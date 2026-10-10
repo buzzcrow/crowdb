@@ -1,7 +1,7 @@
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
 <!-- Licensed under the Apache License, Version 2.0. -->
 
-# Single-node container development
+# Node container deployment and single-node development
 
 This page describes building and running CROWDB from source on a Linux amd64
 development or CI host.
@@ -328,3 +328,64 @@ No host collector change is required by the image build.
 Collector behavior follows the [Linux core pattern documentation](https://docs.kernel.org/admin-guide/sysctl/kernel.html),
 [systemd-coredump manual](https://www.freedesktop.org/software/systemd/man/250/systemd-coredump.socket.html),
 and [Ubuntu Apport documentation](https://ubuntu.com/project/docs/contributors/debugging/apport/).
+
+## Manual multi-node Docker deployment
+
+The same Linux amd64 image supports `CROWDB_STARTUP_MODE=manual`. Each node starts
+SSH on 2222, monitor discovery/control and Web on 9090. KV and application servers
+start through cluster preparation and shared management. Default startup remains
+single-node automatic initialization with virtual disks and disabled editing.
+
+For an isolated bridge test using the system Docker installation:
+
+```bash
+pixi run docker network create crowdb-nodes
+pixi run docker run -d --name node-one --network crowdb-nodes --cpus 2 --memory 1g \
+  --mount type=volume,source=node-one-data,target=/opt/crowdb/data \
+  -e CROWDB_STARTUP_MODE=manual -e CROWDB_PHYSICAL_HOST_ID=test-host \
+  -p 127.0.0.1:19090:9090 crowdb-iceberg-single-node:dev
+```
+
+Repeat with distinct names, volumes and published UI ports. No peer list is needed
+on a multicast-capable bridge. Open a UI, create a rack, move candidates with SSH
+access and initialize selected nodes. The test login is `crowdb` / `crowdb`;
+production uses an explicit password file or preinstalled authorized keys. Every
+node keeps its own Ed25519 private key. Public keys, authorized keys and SSH host
+keys persist under the mounted root; initialization passwords are never persisted
+in console or Group 0 records. Ports advertised to peers are container addresses,
+not the browser's published host ports.
+
+Production Linux host networking uses an immutable image digest, explicit resource
+limits, management interface, physical host identity and persistent directory
+owned by uid 10001. Run the launcher through Pixi:
+
+```bash
+pixi run python container/single-node-container/run-node.py \
+  --image sha256:<verified-local-image-digest> --name crowdb-node --network host \
+  --data-root /var/lib/crowdb --physical-host-id host-one --interface eno1 \
+  --cpus 2 --memory-mib 1024 --password-file /private/ssh-password
+```
+
+The password file must be private and absolute. Existing key access can omit it.
+Permitted block devices use explicit `--device` arguments and must allow read/write
+access for container uid/gid 10001; configure that access on the host before launch.
+`--seed` supplies monitor addresses when multicast is unavailable. The launcher
+validates Docker resources,
+image architecture/digest, mounts and credentials; no runtime socket is mounted
+inside nodes. Host networking uses UI port 9090 directly. Container recreation and
+image upgrades preserve the same persistent root. Runtime support currently covers
+system Docker; containerd/other OCI runtime lifecycle is deferred.
+
+Acceptance harnesses use the same pinned image:
+
+```bash
+pixi run python container/single-node-container/tests/node-containers.py
+pixi run python container/single-node-container/tests/host-node.py
+```
+
+Set `CROWDB_CONTAINER_IMAGE` to its immutable local image ID. Bridge acceptance
+covers independent clusters, cross-UI bootstrap recovery, SSH cancellation, quorum
+loss, stale commands, persistent endpoint/rack updates, voting catch-up and partial
+cleanup. The host harness checks explicit credentials/resources and persisted
+identity/key recovery. The existing container suite covers automatic single-node
+clients, browser behavior, crash/hang recovery and invalid persistent inputs.

@@ -18,8 +18,8 @@ fi
 cargo build --locked --release -p crowdb-kv-client --features ffi
 cmake -S app/crowdb-diskio -B app/crowdb-diskio/build -DCMAKE_BUILD_TYPE=Release
 cmake --build app/crowdb-diskio/build -j 4 --target crowdb-diskio
-cargo build --locked --release \
-    -p crowdb-monitor -p crowdb-kv-server -p crowdb-diskdb \
+cargo build --locked --release --features crowdb-kv-client/ffi \
+    -p crowdb-kv-client -p crowdb-monitor -p crowdb-kv-server -p crowdb-diskdb \
     -p crowdb-chunkdb -p crowdb-chunk-kv-server \
     -p crowdb-access-server -p crowdb-web
 (cd app/crowdb-web/ui && npm ci --prefer-offline && npm run build)

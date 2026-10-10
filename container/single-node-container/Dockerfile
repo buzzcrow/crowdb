@@ -1,7 +1,9 @@
 FROM ubuntu:24.04@sha256:496754492fb28b4d3049432f2ca787449331e23fb14f0dd3fffea86bf5a93eb4
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/* \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates openssh-server util-linux curl && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 crowdb \
-    && useradd --system --uid 10001 --gid 10001 --home-dir /opt/crowdb --shell /usr/sbin/nologin crowdb
+    && useradd --system --uid 10001 --gid 10001 --home-dir /opt/crowdb --shell /bin/sh crowdb \
+    && echo 'crowdb:crowdb' | chpasswd \
+    && mkdir -p /run/sshd
 ARG SOURCE_REVISION
 ARG PREVIEW_VERSION
 ARG RUNTIME_SHA256
@@ -17,8 +19,8 @@ RUN --mount=type=bind,source=.,target=/staged,ro \
     && chown -R crowdb:crowdb /opt/crowdb/data /opt/crowdb/run \
     && chmod 0755 /opt/crowdb/bin/entrypoint \
     && for binary in /opt/crowdb/bin/crowdb-*; do \
-        LD_LIBRARY_PATH=/opt/crowdb/lib ldd "$binary" > /tmp/dependencies.txt 2>&1 || { cat /tmp/dependencies.txt; exit 1; }; \
-        if grep -q 'not found' /tmp/dependencies.txt; then cat /tmp/dependencies.txt; exit 1; fi; \
+        LD_LIBRARY_PATH=/opt/crowdb/lib ldd -r "$binary" > /tmp/dependencies.txt 2>&1 || { cat /tmp/dependencies.txt; exit 1; }; \
+        if grep -Eq 'not found|undefined symbol' /tmp/dependencies.txt; then cat /tmp/dependencies.txt; exit 1; fi; \
     done && rm /tmp/dependencies.txt
 
 LABEL org.opencontainers.image.title="CROWDB Iceberg" \
@@ -33,9 +35,9 @@ LABEL org.opencontainers.image.title="CROWDB Iceberg" \
 ENV PATH="/opt/crowdb/bin:${PATH}" \
     LD_LIBRARY_PATH="/opt/crowdb/lib" \
     CROWDB_RUNTIME_ROOT="/opt/crowdb/run"
-USER crowdb:crowdb
+USER root
 VOLUME ["/opt/crowdb/data"]
-EXPOSE 9090 9091 9092
+EXPOSE 9090 9091 9092 9095 2222
 STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=10s --timeout=5s --start-period=120s --retries=3 CMD crowdb-monitor liveness && crowdb-monitor readiness
 ENTRYPOINT ["/opt/crowdb/bin/entrypoint"]

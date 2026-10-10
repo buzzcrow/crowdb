@@ -15,24 +15,11 @@ use utoipa::ToSchema;
 use crowdb_kv::cluster::group_election::LeaderElection;
 use crowdb_kv::cluster::local_replica::PxLocalReplicaRole;
 use crowdb_protocol::mgmt::{
-    AddGroupInitialRole, AddGroupRequest, GroupSummary, StepDownRequest, StepDownResult,
+    AddGroupInitialRole, AddGroupRequest, GroupSummary, JoinGroupRequest, StepDownRequest, StepDownResult,
 };
 
 use super::{err_json, ErrorResponse, RegistryArc};
 use crate::mgmt::operation_registry::{Operation, OperationKind, OperationStatus, OperationTarget};
-
-/// Request body for [`join_group_via_snapshot`]: bootstrap a new/far-lagging
-/// group member by pulling a snapshot from an existing member instead of
-/// replaying full Paxos history.
-#[derive(ToSchema, Deserialize)]
-pub(super) struct JoinGroupRequest {
-    replica_id: u64,
-    /// crowdb-rpc endpoint (`host:port`) of an existing, already-caught-up member
-    /// of this group to pull the snapshot from. Must run the **same**
-    /// crowdb-tree backend as this store; snapshot sessions accept only the
-    /// same engine kind's portable format.
-    peer_endpoint: String,
-}
 
 /// Query parameter for backward-compatible synchronous mode.
 #[derive(Debug, Deserialize)]
@@ -357,15 +344,38 @@ pub(super) async fn join_group_via_snapshot(
     Path((sid, gid)): Path<(u64, u64)>,
     Json(req): Json<JoinGroupRequest>,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
+    let _execution = if sid == 0 && gid == 0 {
+        Some(super::system_bootstrap::begin(&state)?)
+    } else {
+        None
+    };
+    if sid == 0 && gid == 0 && super::system_bootstrap::has_owner(&state)? {
+        return Err(err_json(
+            StatusCode::CONFLICT,
+            "reserved system group must use identified system join",
+        ));
+    }
+    join_snapshot(State(state), Path((sid, gid)), Json(req)).await
+}
+
+pub(super) async fn join_snapshot(
+    State(state): State<RegistryArc>,
+    Path((sid, gid)): Path<(u64, u64)>,
+    Json(req): Json<JoinGroupRequest>,
+) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
     let store = state
         .get_store(sid)
         .ok_or_else(|| err_json(StatusCode::NOT_FOUND, format!("store {sid} not found")))?;
 
-    if store.get_group(gid).is_some() {
-        return Err(err_json(
-            StatusCode::CONFLICT,
-            format!("group {gid} already exists in store {sid}"),
-        ));
+    if let Some(group) = store.get_group(gid) {
+        return if group.local_replica().id == req.replica_id {
+            Ok(StatusCode::OK)
+        } else {
+            Err(err_json(
+                StatusCode::CONFLICT,
+                format!("group {gid} already exists with another replica in store {sid}"),
+            ))
+        };
     }
 
     info!(

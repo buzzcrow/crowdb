@@ -543,6 +543,15 @@ pub async fn http_stop_node_server(
     State(state): State<AppState>,
     Path(node_id): Path<u64>,
 ) -> Result<Json<StopResult>, (StatusCode, Json<ErrorBody>)> {
+    if state.node_monitor_url.is_some() {
+        crate::services::remote::kv_action(
+            &state,
+            node_id,
+            crowdb_protocol::mgmt::node::NodeServiceAction::Stop,
+        )
+        .await?;
+        return Ok(Json(StopResult { sent: true }));
+    }
     let pid = state.runtime_pid(node_id);
     let node = {
         let cfg = state.config.read().unwrap();
@@ -670,6 +679,11 @@ pub async fn http_delete_node_server(
     State(state): State<AppState>,
     Path(node_id): Path<u64>,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorBody>)> {
+    if state.node_monitor_url.is_some() {
+        return Err(crate::error::err_409(
+            "Managed KV removal requires explicit node/Group 0 cleanup",
+        ));
+    }
     // Require-empty: refuse if the node still hosts replicas in
     // group-0 sysdata. Best-effort — if sysdata is unreachable, the
     // check is skipped (cluster may not be initialized). Skip entirely

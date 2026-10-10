@@ -138,6 +138,17 @@ pub struct RemoteListResponse {
     pub remotes: Vec<RemoteReplicaInfo>,
 }
 
+/// `POST /stores/{sid}/groups/{gid}/join` body.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct JoinGroupRequest {
+    pub replica_id: u64,
+    /// RPC endpoint of a caught-up member supplying the snapshot.
+    pub peer_endpoint: String,
+    #[serde(default)]
+    pub bootstrap: Option<SystemBootstrapIdentity>,
+}
+
 // ── Step-down ───────────────────────────────────────────────────
 
 /// `POST /stores/{sid}/groups/{gid}/step-down` body.

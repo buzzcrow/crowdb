@@ -28,7 +28,9 @@ pub struct DeployDiskdbBody {
     pub http_port: Option<u16>,
 }
 
-fn validate_diskdb_ports(body: &DeployDiskdbBody) -> Result<(u16, u16, u16), (StatusCode, Json<ErrorBody>)> {
+pub(super) fn validate_diskdb_ports(
+    body: &DeployDiskdbBody,
+) -> Result<(u16, u16, u16), (StatusCode, Json<ErrorBody>)> {
     let listen_port = body.listen_port.unwrap_or(body.rpc_port);
     let http_port = body.http_port.unwrap_or_else(|| body.rpc_port.saturating_add(1));
     let rpc_listen_port = body.rpc_port.saturating_add(2);
@@ -87,6 +89,9 @@ async fn deploy_diskdb(
     node_id: u64,
     body: DeployDiskdbBody,
 ) -> Result<(StatusCode, Json<DiskdbDeployResult>), (StatusCode, Json<ErrorBody>)> {
+    if state.node_monitor_url.is_some() {
+        return super::remote::deploy(&state, node_id, &body).await;
+    }
     if !crate::services::dependencies::group0_ready(&state).await {
         return Err(err_409(
             "Group 0 is not ready; deploy Paxos-KV and initialize Group 0 before starting DiskDB",
@@ -216,6 +221,9 @@ async fn restart_diskdb(
     state: AppState,
     node_id: u64,
 ) -> Result<Json<DiskdbDeployResult>, (StatusCode, Json<ErrorBody>)> {
+    if state.node_monitor_url.is_some() {
+        return super::remote::restart(&state, node_id).await;
+    }
     let (entry, node) = diskdb_restart_inputs(&state, node_id)?;
 
     let rpc_port = entry
@@ -324,6 +332,15 @@ pub async fn http_stop_diskdb(
     State(state): State<AppState>,
     Path(node_id): Path<u64>,
 ) -> Result<Json<crate::lifecycle::StopResult>, (StatusCode, Json<ErrorBody>)> {
+    if state.node_monitor_url.is_some() {
+        let _ = crate::services::remote::act(
+            &state,
+            &format!("diskdb-{node_id}"),
+            crowdb_protocol::mgmt::node::NodeServiceAction::Stop,
+        )
+        .await?;
+        return Ok(Json(crate::lifecycle::StopResult { sent: true }));
+    }
     {
         let cfg = state.config.read().unwrap();
         let exists = cfg
@@ -373,6 +390,15 @@ pub async fn http_delete_diskdb(
     State(state): State<AppState>,
     Path(node_id): Path<u64>,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorBody>)> {
+    if state.node_monitor_url.is_some() {
+        let _ = crate::services::remote::act(
+            &state,
+            &format!("diskdb-{node_id}"),
+            crowdb_protocol::mgmt::node::NodeServiceAction::Delete,
+        )
+        .await?;
+        return Ok(StatusCode::NO_CONTENT);
+    }
     let pid = {
         let cfg = state.config.read().unwrap();
         if !cfg

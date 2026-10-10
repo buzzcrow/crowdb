@@ -238,25 +238,20 @@ async fn main() {
     // - First-boot mode: no group 0 on disk. Use --stores/--groups CLI
     //   args (if given) to create stores; otherwise boot empty so the
     //   operator can call POST /system/init.
-    let local_groups = crowdb_kv_server::recovery::restore::scan_local_groups(&registry.config.wal_root)
+    let mut local_groups = crowdb_kv_server::recovery::restore::scan_local_groups(&registry.config.wal_root)
         .await
         .unwrap_or_else(|e| {
             warn!(error = %e, wal_root = %registry.config.wal_root.display(), "scan_local_groups failed; treating as empty");
             Vec::new()
         });
-    if crowdb_kv_server::recovery::restore::group0_exists(&registry.config.wal_root) {
-        info!(
-            local_count = local_groups.len(),
-            "restore mode: group 0 present on disk, loading local stores/groups"
-        );
-        if bootstrap.is_some() {
-            warn!("restore mode: --stores/--groups ignored (local disk is the source of truth)");
-        }
-        crowdb_kv_server::recovery::restore::load_local_groups(&local_groups, args.replica, &registry).await;
-        crowdb_kv_server::recovery::reconcile::reconcile_with_group0(&registry).await;
-    } else {
+    let cleanup_pending = mgmt::system_cleanup_pending(&registry.config.config_root)
+        .expect("cannot inspect system cleanup fence");
+    if cleanup_pending {
+        local_groups.retain(|group| group.store_id != 0);
+    }
+    if local_groups.is_empty() {
         info!("first-boot mode: no group 0 on disk");
-        if let Some(b) = bootstrap.as_ref() {
+        if let Some(b) = bootstrap.as_ref().filter(|_| !cleanup_pending) {
             create_and_start_stores(
                 &b.store_ids,
                 &b.group_ids,
@@ -267,11 +262,24 @@ async fn main() {
             .await;
         }
         // Reconcile is a no-op without group 0; skip the call.
+    } else {
+        info!(
+            local_count = local_groups.len(),
+            "restore mode: local groups present on disk, loading local stores/groups"
+        );
+        if bootstrap.is_some() {
+            warn!("restore mode: --stores/--groups ignored (local disk is the source of truth)");
+        }
+        crowdb_kv_server::recovery::restore::load_local_groups(&local_groups, args.replica, &registry).await;
+        crowdb_kv_server::recovery::reconcile::reconcile_with_group0(&registry).await;
     }
 
     // Start the keep-alive loop (registers under /srv/kv-server/<id>).
     let keepalive = if let Some(identity) = service_identity {
-        let mgmt_endpoint = format!("http://{display_addr}");
+        let mgmt_endpoint = args.management_advertise_addr.map_or_else(
+            || format!("http://{display_addr}"),
+            |address| format!("http://{}", SocketAddr::new(address, bound_mgmt_addr.port())),
+        );
         // The group-0 RPC endpoint is the first store's listen addr.
         // In first-boot mode (store 0 not created yet), derive it from
         // the first port in --ports + the bind IP. Falling back to the

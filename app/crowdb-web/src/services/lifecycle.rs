@@ -48,6 +48,18 @@ pub(super) async fn delete_for_reset(state: AppState, id: String) -> Result<Json
 }
 
 async fn act(state: AppState, id: String, action: Action, reset: bool) -> Result<Json<Value>, Failure> {
+    if state.node_monitor_url.is_some() {
+        return super::remote::act(
+            &state,
+            &id,
+            match action {
+                Action::Restart => crowdb_protocol::mgmt::node::NodeServiceAction::Restart,
+                Action::Stop => crowdb_protocol::mgmt::node::NodeServiceAction::Stop,
+                Action::Delete => crowdb_protocol::mgmt::node::NodeServiceAction::Delete,
+            },
+        )
+        .await;
+    }
     let (entry, launch) = {
         let config = state.config.read().unwrap();
         let entry = config

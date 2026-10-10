@@ -12,6 +12,7 @@ publish = false
 workspace = true
 
 [dependencies]
+crowdb-console-shared = { path = "../../lib/crowdb-console-shared" }
 clap = { version = "4", features = ["derive"] }
 crowdb-kv-client = { path = "../../lib/crowdb-kv-client" }
 crowdb-diskio-client = { path = "../../lib/crowdb-diskio-client" }
@@ -30,6 +31,8 @@ toml = "0.8"
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 mdns-sd = "0.21.5"
 axum = "0.7"
+ssh-key = "0.6"
+if-addrs = "0.13"
 
 [dev-dependencies]
 crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi", features = ["test-util"] }

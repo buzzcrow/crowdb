@@ -5,6 +5,7 @@
 
 pub mod lifecycle;
 pub mod proxy;
+mod remote;
 
 pub use lifecycle::*;
 pub use proxy::*;

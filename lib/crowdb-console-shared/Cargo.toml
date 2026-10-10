@@ -17,7 +17,9 @@ thiserror = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 form_urlencoded = "1"
 hex = "0.4"
-tokio = { workspace = true, features = ["rt", "macros", "time", "process", "io-util"] }
+sha2 = "0.10"
+uuid = { version = "1", features = ["v4", "serde"] }
+tokio = { workspace = true, features = ["rt", "macros", "time", "process", "io-util", "net"] }
 futures = "0.3"
 tracing = { workspace = true }
 dirs = "5"

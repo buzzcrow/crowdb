@@ -96,7 +96,11 @@ pub(super) async fn add_store(
     } else {
         None
     };
-    if req.store_id == 0 && super::system_bootstrap::has_owner(&state)? {
+    if req.store_id == 0
+        && (super::system_bootstrap::has_owner(&state)?
+            || super::system_bootstrap::system_cleanup_pending(&state.config.config_root)
+                .map_err(|error| err_json(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?)
+    {
         return Err(err_json(
             StatusCode::CONFLICT,
             "reserved system store must use identified system initialization",

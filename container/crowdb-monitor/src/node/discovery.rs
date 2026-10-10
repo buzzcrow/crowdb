@@ -14,6 +14,8 @@ pub const NODE_SERVICE_TYPE: &str = "_crowdb-node._tcp.local.";
 
 #[derive(Debug, Error)]
 pub enum DiscoveryError {
+    #[error("discovery state I/O failed: {0}")]
+    Io(#[from] std::io::Error),
     #[error("node discovery failed: {0}")]
     Mdns(#[from] mdns_sd::Error),
     #[error("node discovery configuration is invalid: {0}")]
@@ -27,6 +29,7 @@ pub struct DiscoveryConfig {
     pub addresses: Vec<IpAddr>,
     pub monitor_port: u16,
     pub cluster_id: Option<Uuid>,
+    pub seeds: Vec<String>,
 }
 
 pub struct NodeDiscovery {
@@ -39,6 +42,60 @@ pub struct NodeDiscovery {
 }
 
 impl NodeDiscovery {
+    pub(super) fn observe_seed(&mut self, seed: &str, advertisement: Option<NodeAdvertisement>) {
+        let instance = format!("seed:{seed}");
+        if let Some(advertisement) = advertisement {
+            if advertisement == self.local {
+                return;
+            }
+            self.cache.observe(instance, advertisement);
+        } else {
+            self.cache.remove(&instance);
+        }
+    }
+
+    pub(super) fn bind_cluster(&mut self, cluster: Option<String>) -> Result<(), DiscoveryError> {
+        if cluster == self.local.cluster_id {
+            return Ok(());
+        }
+        let instance = self
+            .fullname
+            .strip_suffix(NODE_SERVICE_TYPE)
+            .ok_or(DiscoveryError::Invalid("invalid local service name"))?
+            .trim_end_matches('.');
+        let mut properties = vec![
+            ("id".to_owned(), self.local.discovery_id.clone()),
+            ("version".to_owned(), self.local.protocol_version.to_string()),
+        ];
+        if let Some(cluster) = &cluster {
+            properties.push(("cluster".to_owned(), cluster.clone()));
+        }
+        let mut addresses = Vec::new();
+        let mut port = 0;
+        for endpoint in &self.local.monitor_endpoints {
+            let endpoint = reqwest::Url::parse(endpoint)
+                .map_err(|_| DiscoveryError::Invalid("invalid local endpoint"))?;
+            addresses.push(
+                endpoint
+                    .host_str()
+                    .ok_or(DiscoveryError::Invalid("missing host"))?
+                    .trim_matches(['[', ']'])
+                    .parse::<IpAddr>()
+                    .map_err(|_| DiscoveryError::Invalid("invalid IP address"))?,
+            );
+            port = endpoint.port().ok_or(DiscoveryError::Invalid("missing port"))?;
+        }
+        self.daemon.register(ServiceInfo::new(
+            NODE_SERVICE_TYPE,
+            instance,
+            &format!("crowdb-{instance}.local."),
+            addresses.as_slice(),
+            port,
+            properties.as_slice(),
+        )?)?;
+        self.local.cluster_id = cluster;
+        Ok(())
+    }
     /// # Errors
     /// Rejects empty management scope, wildcard addresses and unusable metadata.
     pub fn start(identity: NodeIdentity, config: &DiscoveryConfig) -> Result<Self, DiscoveryError> {

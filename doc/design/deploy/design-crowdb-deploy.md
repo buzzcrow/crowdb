@@ -3,10 +3,10 @@
 
 # CROWDB - Design: Multi-node Deployment
 
-This document defines the target architecture for node discovery, Group-0
-bootstrap, shared console control and light-container deployment. It is a design
-contract under review, not a claim that LAN discovery or containerd lifecycle
-integration is implemented. Unresolved mechanisms are identified explicitly.
+Node containers run discovery, SSH, monitor and Web before cluster creation.
+Group 0 owns confirmed topology and management operations. Standard Docker is
+the supported container runtime; containerd integration remains outside this
+implementation. The packaged image supports Linux amd64.
 
 The [console architecture](../console/design-crowdb-console.md) defines the
 shared operation layer; the [Group-0 architecture](../kv/design-crowdb-kv-group0.md)
@@ -29,7 +29,7 @@ making node discovery a membership protocol.
 - [10. Resource and lifecycle management](#10-resource-and-lifecycle-management)
 - [11. Configuration and observability](#11-configuration-and-observability)
 - [12. Correctness and validation](#12-correctness-and-validation)
-- [13. Decisions still required](#13-decisions-still-required)
+- [13. Supported scope](#13-supported-scope)
 
 ## 1. Goals and boundaries
 
@@ -123,8 +123,9 @@ change either identity. Duplicate live UUID claims are identity conflicts.
 
 ### 4.1 mDNS and DNS-SD
 
-Monitors both announce and browse a CROWDB node discovery type. The proposed
-type is `_crowdb-node._tcp.local.`; finalize the name before publication.
+Monitors announce and browse `_crowdb-node._tcp.local.` on the configured
+management interfaces. Candidate expiry removes observations after five seconds;
+it never removes a confirmed member.
 
 - mDNS transports local-link DNS queries/responses using UDP port 5353 and
   multicast groups `224.0.0.251` / `ff02::fb`.
@@ -137,8 +138,7 @@ type is `_crowdb-node._tcp.local.`; finalize the name before publication.
 These mechanisms come from [RFC 6762](https://www.rfc-editor.org/rfc/rfc6762.html)
 and [RFC 6763](https://www.rfc-editor.org/rfc/rfc6763.html). The standards define
 discovery and caching; CROWDB defines admission and authorization separately.
-Implement standard announcements, refresh, cache expiry and clean departure,
-rather than inventing a high-frequency broadcast heartbeat.
+Announcements, refresh, cache expiry and clean departure follow these mechanisms.
 
 Each monitor's discovered-peer cache feeds its local UI backend. Browser code
 does not send mDNS traffic. Peers query/announce directly within the discovery
@@ -212,6 +212,14 @@ after Group 0 and topology publication are ready.
 The accepted bootstrap manifest captures the chosen initial node/rack mapping.
 After bootstrap, all rack edits and node admissions are committed through
 Group 0. Rediscovery cannot overwrite operator-confirmed rack placement.
+
+Connection and rack edits authenticate the currently discovered UUID over SSH.
+`NodeRecord` keeps its discovery UUID, numeric ID, admission operation and physical
+host identity. `node_update` persists fixed source/target inputs in Group 0 before
+changing hardware, refreshes peer RPC endpoints without changing voting flags,
+then publishes the updated mapping. A retry from another UI resumes those same
+inputs. Moving a node with disk groups is rejected until those groups are removed;
+this prevents losing its hardware children during relocation.
 
 Physical host/failure-domain information remains independently inspectable.
 Several test containers may occupy different virtual racks while sharing one
@@ -297,6 +305,31 @@ recreate deleted resources. Unreachable nodes remain pending cleanup and are
 not eligible for reuse. Existing committed clusters require explicit destructive
 cleanup rather than cancellation of an uncommitted draft.
 
+The public fixed `PreparedBootstrap` manifest is a recovery record distributed to
+selected monitors over authenticated SSH. It is not a global cluster registry or
+an authority before consensus. KV-server durable acceptance arbitrates resource
+ownership at each participant. A private Unix control socket handles local
+monitor commands; the unauthenticated HTTP handshake only exposes observations.
+SSH connection/authentication has a ten-second bound; bidirectional proof has a
+twenty-second bound. Passwords are discarded, sessions are reused during setup,
+and only public keys cross nodes.
+
+### 6.4 Voting replica admission
+
+Node admission grants hardware/service management access; it does not add a voter.
+Adding a replica uses `JoinGroupRequest` to import a snapshot from a confirmed
+leader. Existing peers first register the new replica without voting rights.
+The target wires existing peers and catches up through WAL until its contiguous
+applied frontier reaches the leader's observed frontier. Only then is the new
+replica promoted and published with store membership in Group 0. Once promotion
+begins, an ambiguous response retains the caught-up replica for retry rather than
+deleting a replica another peer may already count in its quorum.
+
+System replica join uses identified system ownership before creating store 0.
+Generic join cannot bypass an accepted system bootstrap. Independent clusters
+remain separate: operators explicitly clean one cluster, wait for every node's
+cleanup, admit the released nodes to the retained cluster and add voting replicas.
+
 ## 7. Shared UI and management operations
 
 The UI presents explicit lifecycle states:
@@ -348,17 +381,18 @@ For a three-voter Group 0 partitioned two-to-one, only the two-voter side can
 commit management mutations. The minority cannot use its local replica or
 monitor cache as replacement authority and cannot bootstrap a new Group 0.
 
-The deployment policy is that a node may execute controlled actions only while
-holding valid authorization from the current Group 0. Define bounded grants
-and renewal for operations that outlive a single consensus commit. Fencing
-generations distinguish old ownership/authorization from current grants;
-execution boundaries must reject expired or superseded commands.
+The monitor checks cluster binding and the complete current service intent
+through linearizable Group-0 reads before executing a management command. Each
+read has a three-second bound. It checks the intent again after stopping an old
+process and before starting its replacement. A superseded operation or unavailable
+authority rejects execution. Recovery reads current desired intents through the
+same authority path and does not execute a retained command solely from disk.
 
-A bare increasing token is insufficient unless the receiving execution path
-knows which generations are current and validates them. Likewise, a lease is
-insufficient unless timing, renewal, expiry and restart behavior are defined.
-No design claim of stale-node exclusion is valid until those enforcement
-details are resolved and tested.
+Admission commands similarly match the current cluster publication and UUID,
+numeric ID, operation ID and cancellation state. Local durable cancellation and
+retirement markers reject delayed commands after cleanup or restart. Long-running
+data ownership uses its existing expiry and fencing contract rather than deriving
+an extended lease from these management checks.
 
 Monitors and UIs remain available for diagnostics during authority loss.
 Group-0 unavailability does not by itself stop existing data services. Each
@@ -412,8 +446,8 @@ not require changing node identity, discovery or cluster-management semantics.
 - Explicit management/data-plane network selection; discovery uses management.
 - Stable disk/device identity and explicitly permitted block-device access.
 - Host-persistent config, node state, server state, logs and crash artifacts.
-- Explicit CPU/memory and device assignments; resource claims are validated
-  before runtime side effects.
+- Explicit CPU quotas, memory limits and permitted block devices; the launcher
+  validates inputs before creating the container and verifies applied resources.
 
 Host networking removes a container bridge/NAT layer but does not itself
 guarantee high performance. Disk passthrough does not itself bypass filesystem
@@ -438,8 +472,8 @@ cache: the storage engine's raw-block/direct-I/O path defines that behavior.
 Docker bridge behavior is described in the
 [Docker reference](https://docs.docker.com/engine/network/drivers/bridge/).
 The test profile measures functional correctness, not raw-disk production
-performance. Multi-host host-network tests separately validate LAN discovery
-and real resource access. macOS-hosted Linux containers require a VM/network
+performance. Linux host-network acceptance separately validates explicit resource
+inputs, credentials and persistent replacement using the same image. macOS-hosted Linux containers require a VM/network
 setup that is tested explicitly; image portability does not make the VM's LAN
 multicast behavior equivalent to Linux host networking.
 
@@ -449,22 +483,25 @@ Containers are packaging, resource/isolation and upgrade units. Deployment
 plans explicitly assign host resources; monitors validate and execute, rather
 than autonomously choose global placement.
 
-- **CPU/memory:** cpuset, memory limits and optional NUMA assignments define
-  container boundaries. Application thread placement stays within those limits.
-  IRQ/kernel affinity tuning is host policy, not image content.
+- **CPU/memory:** the production launcher validates CPU quotas and memory limits
+  against host capacity, then verifies Docker applied them. Memory is at least
+  512 MiB. Hardware observations respect container limits. CPU affinity, NUMA
+  and IRQ tuning remain host policy.
 - **Disk:** stable device references, exclusive intended ownership and supported
   engine access modes. Important data never lives only in the writable layer.
 - **Network:** host ports and management/data interfaces are explicit.
   RDMA device access and TCP fallback remain the responsibility of their
   transport contracts, not the discovery mechanism.
-- **Lifecycle:** explicit start, stop, drain, upgrade and rollback operations.
-  Image upgrades pin digests and preserve state. Stateful service rollback is
-  allowed only within its storage/protocol compatibility contract.
+- **Lifecycle:** monitor-managed services support explicit deployment, start,
+  stop and restart using shared operation records. Container replacement or
+  image upgrade is performed externally with a pinned digest and the same
+  persistent root; storage/protocol compatibility remains required.
 - **Monitoring:** container and process health are separate observations.
   Existing monitor supervision can recover eligible process exits; it must not
   silently override a deliberate stop, expired authorization or upgrade drain.
-- **Runtime access:** monitor receives the minimum runtime/device privileges
-  needed. Application/UI containers do not all receive the containerd socket.
+- **Runtime access:** the launcher uses the system Docker daemon. Node containers
+  supervise local processes and receive no Docker or containerd socket. Explicit
+  permitted block devices are passed through by the host launcher.
 
 No automatic global placement/config reconciliation is required. Monitor
 detects drift against confirmed deployment inputs and reports it; local
@@ -520,11 +557,10 @@ Before adoption, measure discovery latency/traffic and stale-view bounds at the
 intended LAN size. Broad ecosystem use of mDNS is not proof of unlimited
 single-domain scalability.
 
-## 13. Decisions still required
+## 13. Supported scope
 
 The discovery identity and monitor placement decisions are settled: durable
 UUIDs identify candidates, Group 0 owns admitted numeric IDs, and each node's
-monitor/UI run in its node container. No human decisions remain open in this
-design. Implementation must still define and verify bounded management grants,
-fencing enforcement, conditional ID allocation and explicit runtime privileges
-within these contracts.
+monitor/UI run in its node container. No human decisions remain open in this design. Other OCI runtime lifecycle,
+additional architectures and Kubernetes integration remain outside the supported
+Docker deployment scope.

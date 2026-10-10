@@ -17,6 +17,10 @@ pub struct Cli {
     #[arg(long, default_value = "0.0.0.0")]
     pub management_addr: String,
 
+    /// Reachable address advertised in the Group 0 service registry.
+    #[arg(long, env = "CROWDB_KV_MANAGEMENT_ADVERTISE_ADDR")]
+    pub management_advertise_addr: Option<std::net::IpAddr>,
+
     /// Node root directory. Derives `wal_root`=`<root>`/waldata,
     /// `config_root`=`<root>`/conf, `data_root`=`<root>`/ctdata, `log_dir`=`<root>`/log
     /// (fixed on-disk layout). Required on every start.

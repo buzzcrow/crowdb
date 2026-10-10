@@ -64,6 +64,17 @@ impl BootstrapManifest {
     }
 
     #[must_use]
+    pub fn system_bootstrap_identity(&self) -> crowdb_protocol::mgmt::SystemBootstrapIdentity {
+        crowdb_protocol::mgmt::SystemBootstrapIdentity {
+            cluster_id: self.deployment_id.to_string(),
+            operation_id: self.deployment_id.to_string(),
+            configuration_digest: digest_hex(
+                format!("{}:{}", self.profile_digest, self.config_digest).as_bytes(),
+            ),
+        }
+    }
+
+    #[must_use]
     pub fn next_step(&self) -> Option<&str> {
         self.steps
             .iter()
@@ -177,8 +188,20 @@ impl BootstrapSession {
             manifest.validate(&profile_digest, &config_digest, steps)?;
             return Ok(Self { directory, manifest });
         }
-        if fs::read_dir(data_root)?.next().is_some() {
+        if fs::read_dir(data_root)?.any(|entry| match entry {
+            Ok(entry) => !matches!(entry.file_name().to_str(), Some("node-identity" | "ssh")),
+            Err(_) => true,
+        }) {
             return invalid("non-empty data root has no bootstrap manifest");
+        }
+        if data_root.join("node-identity").exists() {
+            crate::NodeIdentity::load_or_create(data_root)
+                .map_err(|error| ManifestError::Invalid(error.to_string()))?;
+        }
+        if data_root.join("ssh").exists()
+            && !fs::symlink_metadata(data_root.join("ssh"))?.file_type().is_dir()
+        {
+            return invalid("SSH identity root is not a directory");
         }
         fs::create_dir(&directory)?;
         File::open(data_root)?.sync_all()?;

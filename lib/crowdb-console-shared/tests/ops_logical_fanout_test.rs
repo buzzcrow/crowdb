@@ -36,6 +36,13 @@ impl TestNode {
         };
         let app = Router::new()
             .route(
+                "/stores/:sid/groups/:gid/join",
+                post(|State(state): State<TestNodeState>| async move {
+                    state.created.store(true, Ordering::SeqCst);
+                    StatusCode::CREATED
+                }),
+            )
+            .route(
                 "/stores/:sid/groups",
                 post(|State(state): State<TestNodeState>| async move {
                     state.created.store(true, Ordering::SeqCst);
@@ -63,7 +70,12 @@ impl TestNode {
                 "/topology",
                 get(|State(state): State<TestNodeState>| async move {
                     let endpoint = (!state.omit_endpoint).then_some("127.0.0.1:10100");
-                    Json(json!({"stores": [{"store_id": 77, "listen_addr": endpoint, "groups": []}]}))
+                    Json(
+                        json!({"stores": [{"store_id": 77, "listen_addr": endpoint, "groups": [{
+                            "group_id": 7, "leader_id": 700, "local_replica_id": 700, "force_classic": false,
+                            "local_replica": {"id":700,"role":"leader","voting":true,"kv_store":{}}
+                        }]}]}),
+                    )
                 }),
             )
             .with_state(state.clone());

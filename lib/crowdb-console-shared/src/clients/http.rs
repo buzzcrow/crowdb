@@ -21,6 +21,29 @@ pub struct ServerClient {
 }
 
 impl ServerClient {
+    pub(crate) fn resolve_rpc_endpoint(&self, endpoint: &str) -> Result<String> {
+        let endpoint = endpoint
+            .strip_prefix("http://")
+            .or_else(|| endpoint.strip_prefix("https://"))
+            .unwrap_or(endpoint);
+        let Ok(address) = endpoint.parse::<std::net::SocketAddr>() else {
+            return Ok(endpoint.to_owned());
+        };
+        if !address.ip().is_unspecified() {
+            return Ok(endpoint.to_owned());
+        }
+        let origin = reqwest::Url::parse(&self.base_url).map_err(|error| Error::Config(error.to_string()))?;
+        let host = origin
+            .host_str()
+            .ok_or_else(|| Error::Config("missing management host".into()))?
+            .trim_matches(['[', ']']);
+        Ok(if host.contains(':') {
+            format!("[{host}]:{}", address.port())
+        } else {
+            format!("{host}:{}", address.port())
+        })
+    }
+
     /// Build a new client. `base_url` may include or omit a trailing slash.
     ///
     /// # Errors

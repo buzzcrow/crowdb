@@ -3,9 +3,6 @@
 
 //! System initialization and health-check endpoints.
 
-use std::net::SocketAddr;
-use std::sync::Arc;
-
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
@@ -14,7 +11,6 @@ use tracing::info;
 use crowdb_kv::cluster::group_election::LeaderElection;
 use crowdb_kv::cluster::kv_server::KvServer;
 use crowdb_kv::cluster::local_replica::PxLocalReplicaRole;
-use crowdb_kv::cluster::px_kv_store::PxKvStore;
 use crowdb_kv::cluster::status::{StatusLevel, StoreStatus};
 use crowdb_protocol::mgmt::{HealthResponse, SystemInitRequest, SystemInitResponse};
 
@@ -105,49 +101,7 @@ pub(super) async fn system_init(
     let _execution = super::system_bootstrap::begin(&state)?;
     super::system_bootstrap::accept(&state, req.replica_id, req.bootstrap.as_ref())?;
 
-    // Create store 0 if it does not exist. Use the shared port resolver so
-    // store 0 consumes the port pool port deterministically — using
-    // `0.0.0.0:0` here lets the OS pick a random port that may collide with
-    // a future pool allocation (e.g. `add_store` for store 1).
-    if !state.contains_store(SYSTEM_STORE_ID) {
-        let port = super::resolve_store_port(&state, None, SYSTEM_STORE_ID).await;
-        let addr: SocketAddr = format!("0.0.0.0:{port}")
-            .parse()
-            .map_err(|e| err_json(StatusCode::BAD_REQUEST, format!("invalid address: {e}")))?;
-        let mut store = PxKvStore::new(SYSTEM_STORE_ID, addr);
-        store.rpc_workers = state.rpc_workers;
-        if let Some(ref mr) = state.metrics_registry {
-            store.set_metrics_registry(Arc::clone(mr));
-        }
-        store.set_scan_byte_budget(state.config.server.scan_byte_budget);
-        store.set_peer_pool_size(state.config.server.peer_pool_size);
-        store.set_enable_nagle(state.config.server.enable_nagle);
-        store.set_quickack(state.config.server.quickack);
-        store.set_event_write(state.config.server.event_write);
-        store.set_send_queue_capacity(state.config.server.send_queue_capacity);
-        store.set_snapshot_source_config(
-            state.config.server.snapshot_chunk_bytes,
-            state.config.server.snapshot_source_sessions,
-            state.config.server.snapshot_session_lease_ms,
-        );
-        let store = Arc::new(store);
-        store.start().await.map_err(|e| {
-            err_json(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to start store 0: {e}"),
-            )
-        })?;
-        store.wire_rpc_transport();
-        state.add_store(SYSTEM_STORE_ID, &store);
-        info!(s = SYSTEM_STORE_ID, "system store 0 created via /system/init");
-    }
-
-    let store = state.get_store(SYSTEM_STORE_ID).ok_or_else(|| {
-        err_json(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "store 0 not found after creation",
-        )
-    })?;
+    let store = super::system_store::ensure(&state).await?;
 
     // Check if group 0 already exists.
     if let Some(group) = store.get_group(SYSTEM_GROUP_ID) {

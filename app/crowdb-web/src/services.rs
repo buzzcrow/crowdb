@@ -13,6 +13,7 @@ mod operation;
 pub(crate) use operation::Operation;
 mod plans;
 mod publication;
+pub(crate) mod remote;
 pub(crate) mod rpc_health;
 
 pub(crate) fn routes() -> axum::Router<crate::state::AppState> {
@@ -29,7 +30,7 @@ pub(crate) fn routes() -> axum::Router<crate::state::AppState> {
         .route("/api/services/:id", delete(lifecycle::delete))
 }
 
-type Failure = (axum::http::StatusCode, axum::Json<crate::error::ErrorBody>);
+pub(crate) type Failure = (axum::http::StatusCode, axum::Json<crate::error::ErrorBody>);
 
 pub(crate) fn node_removal(
     state: &crate::state::AppState,

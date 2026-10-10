@@ -59,7 +59,7 @@ client_gate=$(cat container/single-node-container/tests/container-e2e.sh)
 [[ "$publish_job" == *'Confirm release branch head before image push'*'Build and replace release branch image with attestations'*'Sign published digest'* ]]
 grep -Fq 'org.crowdb.runtime.sha256="$RUNTIME_SHA256"' container/single-node-container/Dockerfile
 
-grep -Fq 'branches: [ "main", "release/**" ]' .github/workflows/ci.yml
+grep -Eq 'branches: \[ "main", "release/\*\*"(, "[^"]+")* \]' .github/workflows/ci.yml
 
 preview_events=$(sed -n '/^on:/,/^jobs:/p' "$preview")
 [[ "$preview_events" == *'workflow_dispatch:'* ]]

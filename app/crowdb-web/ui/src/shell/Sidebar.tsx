@@ -30,6 +30,7 @@ function datacenterRoot(children: TreeNode[]): TreeNode {
 }
 
 interface SidebarProps {
+  onCandidatesChanged?: () => void;
   nodeManagement?: boolean;
   allServers?: ServerSummary[];
   racks?: Rack[];
@@ -39,6 +40,7 @@ interface SidebarProps {
   nodeHealthById?: Record<string, NodeHealth>;
   loading?: boolean;
   readonly?: boolean;
+  candidateReadonly?: boolean;
   width?: number;
   clusterInitialized?: boolean;
   onNodeClick?: (node: TreeNode) => void;
@@ -59,6 +61,7 @@ interface SidebarProps {
 }
 
 export function Sidebar({
+  onCandidatesChanged,
   nodeManagement = false,
   allServers = [],
   racks = [],
@@ -68,6 +71,7 @@ export function Sidebar({
   nodeHealthById = {},
   loading,
   readonly,
+  candidateReadonly,
   width = 280,
   clusterInitialized = true,
   onNodeClick,
@@ -431,7 +435,7 @@ export function Sidebar({
                 )}
         </div>
       )}</div>
-      {nodeManagement && domain === Domain.Cluster && <CandidateNodes />}
+      {nodeManagement && domain === Domain.Cluster && <CandidateNodes racks={racks} readonly={candidateReadonly} onChange={onCandidatesChanged} />}
     </aside>
   );
 }

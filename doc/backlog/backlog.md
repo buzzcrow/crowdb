@@ -23,15 +23,6 @@ live in the linked document; implementation follows
   Group-0 bootstrap, shared UI authority and light-container deployment.
   **Area:** monitor / console / deployment. **Complexity:** High.
   **Dependencies:** existing Group 0; bootstrap and authorization decisions.
-- **[R210](R210-console-service-configuration-health.md)** — unified node service
-  configuration and health. **Area:** console / deployment / FlatBuffer RPC.
-  **Complexity:** High. **Dependencies:** none recorded.
-- **[R211](R211-console-access-health-listener.md)** — independent Access Server
-  health listener. **Area:** console / access server / deployment.
-  **Complexity:** Medium. **Dependencies:** R210.
-- **[R212](R212-console-node-create-and-cluster-scope.md)** — reliable node
-  creation and Cluster scope. **Area:** console / node lifecycle / UI.
-  **Complexity:** High. **Dependencies:** R210, R211.
 
 ## Access server and external data
 

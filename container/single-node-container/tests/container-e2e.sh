@@ -45,7 +45,7 @@ start_container() {
     fi
     docker run -d --name "$name" \
         "${mount_args[@]}" \
-        -p 127.0.0.1:9092:9092 -p 127.0.0.1::9091 -p 127.0.0.1::9090 -p 127.0.0.1::9093 -p 127.0.0.1::9094 \
+        -p 127.0.0.1:9092:9092 -p 127.0.0.1::9091 -p 127.0.0.1::9090 -p 127.0.0.1::9093 \
         "$image" >/dev/null
     for attempt in $(seq 1 240); do
         state=$(docker inspect --format '{{.State.Status}}' "$name")
@@ -77,7 +77,7 @@ verify_public_services() {
     dataset_port=$(port 9093)
     docker exec "$name" crowdb-monitor readiness >/dev/null
     docker exec "$name" curl --fail --silent --show-error --max-time 5 \
-        "http://127.0.0.1:9094/_crowdb/health/ready" >/dev/null
+        http://127.0.0.1:9094/_crowdb/health/ready >/dev/null
     curl --fail --silent --show-error --max-time 5 \
         "http://127.0.0.1:$web_port/api/authority" | jq -e '.source == "group0" and .available == true' >/dev/null
     curl --fail --silent --show-error --max-time 5 \
@@ -150,31 +150,19 @@ verify_listener_failure_propagation() {
 }
 
 verify_web_logical() {
-    local web_port status create_response create_status
+    local web_port status
     web_port=$(port 9090)
-    # The console assumes an administrator session. The Access management
-    # token authenticates Iceberg management, not logical console routes.
-    create_response=$(curl --silent --show-error --max-time 10 \
-        --header 'Content-Type: application/json' --write-out '\n%{http_code}' \
-        --data '{"store_id":7,"nodes":[1]}' "http://127.0.0.1:$web_port/api/stores")
-    create_status=${create_response##*$'\n'}
-    if [[ "$create_status" != 201 ]]; then
-        echo "Web store create returned $create_status: ${create_response%$'\n'*}" >&2
-        return 1
-    fi
-    jq -e '.store_id == 7 and .nodes == [1]' <<<"${create_response%$'\n'*}" >/dev/null
     curl --fail --silent --show-error --max-time 10 \
-        "http://127.0.0.1:$web_port/api/stores" | jq -e 'any(.[]; .store_id == 7)' >/dev/null
-    status=$(curl --silent --show-error --max-time 10 --output /dev/null \
-        --write-out '%{http_code}' --request POST "http://127.0.0.1:$web_port/api/racks")
-    if [[ "$status" != 503 ]]; then
-        echo "Forbidden container hardware mutation returned $status instead of 503" >&2
-        return 1
-    fi
-    curl --fail --silent --show-error --max-time 10 --request DELETE \
-        "http://127.0.0.1:$web_port/api/stores/7" >/dev/null
-    curl --fail --silent --show-error --max-time 10 \
-        "http://127.0.0.1:$web_port/api/stores" | jq -e 'all(.[]; .store_id != 7)' >/dev/null
+        "http://127.0.0.1:$web_port/api/stores" | jq -e 'any(.[]; .store_id == 0)' >/dev/null
+    for endpoint in /api/stores /api/racks /api/node/admit; do
+        status=$(curl --silent --show-error --max-time 10 --output /dev/null \
+            --write-out '%{http_code}' --request POST --header 'Content-Type: application/json' \
+            --data '{}' "http://127.0.0.1:$web_port$endpoint")
+        if [[ "$status" != 403 ]]; then
+            echo "Read-only single-node mutation $endpoint returned $status instead of 403" >&2
+            return 1
+        fi
+    done
 }
 
 verify_child_recovery() {
@@ -262,7 +250,7 @@ verify_invalid_manifest_rejected() {
     for attempt in $(seq 1 30); do
         if [[ $(docker inspect --format '{{.State.Status}}' "$name") == exited ]]; then
             [[ $(docker inspect --format '{{.State.ExitCode}}' "$name") != 0 ]]
-            docker logs "$name" 2>&1 | grep -F 'Manifest(' >/dev/null
+            docker logs "$name" 2>&1 | grep -F 'bootstrap manifest cannot be decoded' >/dev/null
             return 0
         fi
         sleep 1
@@ -279,7 +267,7 @@ verify_invalid_profile_rejected() {
     for attempt in $(seq 1 30); do
         if [[ $(docker inspect --format '{{.State.Status}}' "$name") == exited ]]; then
             [[ $(docker inspect --format '{{.State.ExitCode}}' "$name") != 0 ]]
-            docker logs "$name" 2>&1 | grep -F 'Profile(' >/dev/null
+            docker logs "$name" 2>&1 | grep -F 'failed to decode deployment profile' >/dev/null
             return 0
         fi
         sleep 1
@@ -334,9 +322,9 @@ client_env=$(docker exec "$name" crowdb-monitor credentials show --format env)
 [[ $(docker exec "$name" stat -c %a /opt/crowdb/data/secrets/client.env) == 600 ]]
 docker exec "$name" cat /opt/crowdb/data/bootstrap/manifest.json | jq -e '.state == "ready"' >/dev/null
 [[ $(docker exec "$name" stat -c %a /opt/crowdb/data/crash) == 700 ]]
-[[ $(docker exec "$name" readlink /proc/1/cwd) == /opt/crowdb/data/crash ]]
+[[ $(docker exec --user crowdb "$name" readlink /proc/1/cwd) == /opt/crowdb/data/crash ]]
 kv_pid=$(docker exec "$name" cat /opt/crowdb/run/status/monitor.json | jq -er '.services.kv.pid')
-[[ $(docker exec "$name" readlink "/proc/$kv_pid/cwd") == /opt/crowdb/data/crash ]]
+[[ $(docker exec --user crowdb "$name" readlink "/proc/$kv_pid/cwd") == /opt/crowdb/data/crash ]]
 verify_public_services
 node container/single-node-container/tests/web-ui.cjs "http://127.0.0.1:$(port 9090)" "$name"
 echo "checking S3 and Iceberg client writes"

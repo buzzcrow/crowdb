@@ -3,6 +3,15 @@
 
 //! Local monitor observations, separate from confirmed cluster topology.
 
+mod admission;
+mod update;
+pub(crate) use update::update;
+mod authority;
+mod preparation;
+pub(crate) use admission::binding as cluster_binding;
+pub(crate) use admission::{admissions, admit, control_socket, node_key_path, records, save};
+pub(crate) use authority::{guard, status};
+
 use axum::{extract::State, http::StatusCode, Json};
 use crowdb_protocol::mgmt::node::{CandidateNode, CandidateSnapshot, CandidateState, NodeHandshake};
 use serde::{de::DeserializeOwned, Serialize};
@@ -75,3 +84,9 @@ async fn read<T: DeserializeOwned>(client: &reqwest::Client, url: &str) -> Resul
     }
     serde_json::from_slice(&bytes).map_err(|_| StatusCode::BAD_GATEWAY)
 }
+
+mod cleanup;
+pub(crate) use cleanup::cleanup;
+
+mod cancel;
+pub(crate) use cancel::cancel;

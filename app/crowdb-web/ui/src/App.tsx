@@ -8,6 +8,7 @@ import { DomainProvider, useDomain } from './contexts/DomainContext';
 import { SelectionProvider, useSelection, type SelectedEntity } from './contexts/SelectionContext';
 import { ToastProvider, useToast } from './contexts/ToastContext';
 import { ActivityProvider, useActivity } from './contexts/ActivityContext';
+import { useNodeAuthority } from './data/useNodeAuthority';
 import { useClusterTree } from './data/useClusterTree';
 import { useLogicalTree } from './data/useLogicalTree';
 import { useCapacityTree } from './data/useCapacityTree';
@@ -111,8 +112,10 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
 
   const { menuState, openMenu, closeMenu } = useContextMenu();
 
-  const managementAuthorized = true;
-  const topologyReadonly = readonly || managed;
+  const nodeAuthority = useNodeAuthority(nodeManagement);
+  const managementAuthorized = !nodeManagement || nodeAuthority?.available === true;
+  const draftEditable = nodeAuthority?.phase === 'unbound_draft';
+  const topologyReadonly = readonly || managed || (nodeManagement && !managementAuthorized && !draftEditable);
   const logicalReadonly = readonly;
   const ownsSidebar = domain === Domain.Iceberg || domain === Domain.S3 || (domain === Domain.Chunk || domain === Domain.ChunkKV);
   const physicalActive = domain === Domain.Cluster;
@@ -243,7 +246,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
     }
   }, [managed, refreshPhysical, refreshLogical, refreshCapacity, refreshAllServers]);
 
-  const servicePlans = useNodeServicePlans(stores, nodeDiskGroups, handleRefresh, !topologyReadonly);
+  const servicePlans = useNodeServicePlans(stores, nodeDiskGroups, handleRefresh, !topologyReadonly && managementAuthorized);
   const clusterHealth: ClusterHealth = useMemo(() => {
     if (dataError) return domain === Domain.Capacity ? 'Degraded' : 'Failed';
     const statuses = [
@@ -355,11 +358,11 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
   }, []);
 
   const handleAdd = useCallback(() => {
-    if (readonly) return;
+    if (readonly || (nodeManagement && !managementAuthorized && !draftEditable)) return;
     if (physicalActive || capacityActive) setDialog((d) => ({ ...d, addRack: true }));
     else if (!clusterInitialized) setDialog((d) => ({ ...d, initCluster: true }));
-    else setDialog((d) => ({ ...d, addStore: true }));
-  }, [readonly, physicalActive, capacityActive, clusterInitialized]);
+    else if (managementAuthorized) setDialog((d) => ({ ...d, addStore: true }));
+  }, [readonly, physicalActive, capacityActive, clusterInitialized, nodeManagement, managementAuthorized, draftEditable]);
 
   const closeDialogs = useCallback(() => setDialog({}), []);
 
@@ -497,7 +500,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
         refreshing={refreshing}
         onShowTopology={() => {}}
         onShowCapacity={() => { if (centerPanel !== 'chunk') setCenterPanel('capacity'); }}
-        onResetCluster={topologyReadonly ? undefined : handleResetCluster}
+        onResetCluster={topologyReadonly || nodeManagement ? undefined : handleResetCluster}
       />
 
       {dataError && (
@@ -510,6 +513,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
       )}
 
       <div hidden={ownsSidebar}><Sidebar
+        onCandidatesChanged={handleRefresh}
         nodeManagement={nodeManagement}
         allServers={allServers}
         racks={racks}
@@ -518,6 +522,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
         nodeStores={nodeStores}
         nodeHealthById={nodeHealthById}
         loading={loading}
+        candidateReadonly={readonly}
         readonly={domain === Domain.KV ? logicalReadonly : topologyReadonly}
         width={sidebarWidth}
         clusterInitialized={clusterInitialized}
@@ -547,7 +552,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
       >
         {(
           <div hidden={domain !== Domain.Cluster} style={{ display: domain === Domain.Cluster ? 'flex' : 'none' }} className="tw-flex-1 tw-min-h-0 tw-flex-col">{!managed && <div className="tw-px-4 tw-py-2 tw-text-xs tw-bg-panel tw-border-b tw-border-border">Physical topology · Rack → Node → Service · Deploy and manage services here</div>}
-          {!clusterInitialized && !loading && !logError && <p className="tw-px-4 tw-py-2 tw-text-xs tw-text-muted" data-testid="bootstrap-state">Bootstrap: add racks and nodes, deploy KV servers, then initialize Group 0 in KV. Changes are saved in the default workspace.</p>}
+          {!clusterInitialized && !loading && !logError && <p className="tw-px-4 tw-py-2 tw-text-xs tw-text-muted" data-testid="bootstrap-state">{nodeManagement ? 'Bootstrap: create a rack, move discovered candidates, then initialize Group 0 in KV. This draft is local until publication.' : 'Bootstrap: add racks and nodes, deploy KV servers, then initialize Group 0 in KV. Changes are saved in the default workspace.'}</p>}
           <div className="tw-flex-1 tw-min-h-0"><ClusterView
             active={domain === Domain.Cluster}
             scope={Domain.Cluster}
@@ -626,11 +631,12 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
         />
       )}
       <InitClusterDialog
+        preparedNodes={nodeManagement && draftEditable}
         isOpen={!!dialog.initCluster}
         onClose={closeDialogs}
         nodes={nodes}
         servers={servers}
-        defaultNodeIds={storeDialogDefaults.nodeIds}
+        defaultNodeIds={nodeManagement && draftEditable ? [] : storeDialogDefaults.nodeIds}
         onSuccess={handleInitSuccess}
       />
       <AddStoreDialog
@@ -812,7 +818,7 @@ export default function App(props: CrowdbConsoleProps = {}) {
       <SelectionProvider>
         <ToastProvider>
           <ActivityProvider>
-            <AppContent {...props} managed={mode === 'docker'} nodeManagement={mode === 'node'} />
+            <AppContent {...props} readonly={props.readonly || mode === 'docker'} managed={mode === 'docker'} nodeManagement={mode === 'node' || mode === 'docker'} />
           </ActivityProvider>
         </ToastProvider>
       </SelectionProvider>

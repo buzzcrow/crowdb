@@ -525,3 +525,13 @@ single-record `remove_*` methods are kept for internal use.
 - **I1 — ID reuse safety**: After a rack/node/disk-group/disk is
   removed, its ID can be safely reused. The group-0 sysdata deletion
   is the fence against resurrection.
+
+Deployment nodes use the [deployment architecture](../deploy/design-crowdb-deploy.md)
+for discovery, numeric ID allocation, SSH admission and system-resource ownership.
+The KV server durably accepts one `SystemBootstrapIdentity` before store 0 creation;
+identified initialization and snapshot join share this exclusion. Cleanup retires
+the operation before deleting store 0 and releasing bindings, fencing delayed
+commands. Published topology and node/service operations require current Group 0
+authority. Its unavailability is an error, never an empty ownership set. Other data
+groups retain their own Paxos authority; ownership-dependent services obey their
+existing expiry/fencing rules.

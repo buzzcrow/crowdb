@@ -62,13 +62,18 @@ async fn target(ctx: &OpContext, reject_cleanup: bool) -> TestNode {
             }),
         )
         .route(
-            "/stores/:sid/groups",
+            "/stores/:sid/groups/:gid/join",
             post(|| async { StatusCode::INTERNAL_SERVER_ERROR }),
         )
         .route(
             "/topology",
             get(|| async {
-                Json(json!({"stores": [{"store_id": 77, "listen_addr": "127.0.0.1:10100", "groups": []}]}))
+                Json(
+                    json!({"stores": [{"store_id": 77, "listen_addr": "127.0.0.1:10100", "groups": [{
+                        "group_id": 7, "leader_id": 700, "local_replica_id": 700, "force_classic": false,
+                        "local_replica": {"id":700, "role":"leader", "voting":true,"kv_store":{}}
+                    }]}]}),
+                )
             }),
         )
         .with_state(state.clone());

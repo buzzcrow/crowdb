@@ -18,6 +18,8 @@ use crowdb_protocol::mgmt::TopologyResponse;
 use crate::error::{Error, Result};
 use crate::ReadEndpointPolicy;
 
+mod address;
+
 type GroupKey = (u64, u64);
 
 /// Per-endpoint read statistics owned by one published route generation.
@@ -241,7 +243,8 @@ impl TopologyCache {
             let url = format!("{}/topology", seed.trim_end_matches('/'));
             match self.http.get(&url).send().await {
                 Ok(resp) => match resp.json::<TopologyResponse>().await {
-                    Ok(body) => {
+                    Ok(mut body) => {
+                        address::resolve_local_endpoints(&mut body, seed);
                         self.merge_from_generation(body, base_generation);
                         return Ok(());
                     }

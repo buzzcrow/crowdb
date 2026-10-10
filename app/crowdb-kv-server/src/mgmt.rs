@@ -16,7 +16,10 @@ pub mod operation_registry;
 mod replica_ops;
 mod store_ops;
 mod system_bootstrap;
+pub use system_bootstrap::system_cleanup_pending;
 mod system_init;
+mod system_join;
+mod system_store;
 mod topology;
 
 use axum::routing::{get, post};
@@ -134,7 +137,9 @@ pub fn router(state: RegistryArc) -> Router {
     Router::new()
         .route("/health", get(system_init::health_check))
         .route("/system/init", post(system_init::system_init))
+        .route("/system/join", post(system_join::join))
         .route("/system/prepare", post(system_bootstrap::prepare))
+        .route("/system/cleanup", post(system_bootstrap::cleanup))
         .route("/system/group0-discovery", post(discovery::update))
         .route("/stores", get(store_ops::list_stores).post(store_ops::add_store))
         .route(
@@ -223,7 +228,7 @@ pub fn router(state: RegistryArc) -> Router {
             SystemInitResponse,
             AddStoreRequest,
             AddGroupRequest,
-            group_ops::JoinGroupRequest,
+            crowdb_protocol::mgmt::JoinGroupRequest,
             RemoteReplicaInfo,
             RemoteListResponse,
             TopologyResponse,

@@ -46,7 +46,21 @@ pub(crate) async fn http_cluster_init(
 ) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ErrorBody>)> {
     let _operation = crate::services::Operation::claim(&state, vec!["cluster/init".into()])?;
     let ctx = state.op_context().await.map_err(|e| err_502(format!("{e}")))?;
-    let summary = if state.web_mode.is_some() || state.config_path.is_some() {
+    let summary = if state.node_monitor_url.is_some() {
+        let operation = crowdb_console_shared::deployment::PreparedBootstrap::open_with_nodes(
+            &state.runtime_root.join("prepared-bootstrap.json"),
+            &ctx.config(),
+            &body.nodes,
+            crate::node::records(&state)?,
+        )
+        .map_err(map_config_err)?;
+        prepare_monitors(&state, &operation).await?;
+        let result = operation.execute(&ctx).await;
+        if result.is_ok() {
+            bind_monitors(&state, &operation).await?;
+        }
+        result
+    } else if state.web_mode.is_some() || state.config_path.is_some() {
         let path = state.runtime_root.join("bootstrap-intent.toml");
         if state.web_mode == Some(crowdb_console_shared::config::web::WebMode::BareMetal) {
             if let Some(source) = &body.bootstrap_file {
@@ -108,6 +122,87 @@ pub(crate) async fn http_cluster_init(
             })).collect::<Vec<_>>(),
         })),
     ))
+}
+
+async fn prepare_monitors(
+    state: &AppState,
+    operation: &crowdb_console_shared::deployment::PreparedBootstrap,
+) -> Result<(), (StatusCode, Json<ErrorBody>)> {
+    let config = operation.intent.to_config();
+    let credentials = crowdb_monitor::ServerCredentials::load_or_create(state.runtime_root.as_ref())
+        .map_err(|error| err_502(error.to_string()))?;
+    let results = futures::future::join_all(operation.intent.members().iter().map(async |member| {
+        let mut node = config
+            .node(*member)
+            .cloned()
+            .ok_or_else(|| err_502("Sealed bootstrap member is missing"))?;
+        node.ssh_key = Some(crate::node::node_key_path(state).to_string_lossy().into_owned());
+        crowdb_console_shared::deployment::admission::remote_control(
+            &node,
+            &crowdb_protocol::mgmt::node::NodeControl::StartKv {
+                node_id: *member,
+                bootstrap: operation.identity.clone(),
+                manifest: Some(serde_json::to_value(operation).map_err(|error| err_502(error.to_string()))?),
+                credentials: Some(crowdb_protocol::mgmt::node::NodeServiceCredentials {
+                    environment: credentials.server_env(),
+                }),
+                admission: None,
+            },
+        )
+        .await
+        .map_err(map_config_err)?;
+        crate::node::save(
+            &state.runtime_root.join("bootstrap-progress.json"),
+            &serde_json::json!({"operation_id": operation.identity.operation_id, "phase": "preparing", "node_id": member}),
+        )?;
+        Ok::<(), (StatusCode, Json<ErrorBody>)>(())
+    }))
+    .await;
+    for result in results {
+        result?;
+    }
+    Ok(())
+}
+
+async fn bind_monitors(
+    state: &AppState,
+    operation: &crowdb_console_shared::deployment::PreparedBootstrap,
+) -> Result<(), (StatusCode, Json<ErrorBody>)> {
+    let config = operation.intent.to_config();
+    let seeds = config
+        .servers
+        .iter()
+        .map(|server| server.url.clone())
+        .collect::<Vec<_>>();
+    let results = futures::future::join_all(operation.intent.members().iter().map(async |member| {
+        let mut node = config
+            .node(*member)
+            .cloned()
+            .ok_or_else(|| err_502("Sealed bootstrap member is missing"))?;
+        node.ssh_key = Some(crate::node::node_key_path(state).to_string_lossy().into_owned());
+        crowdb_console_shared::deployment::admission::remote_control(
+            &node,
+            &crowdb_protocol::mgmt::node::NodeControl::Bind {
+                binding: crowdb_protocol::mgmt::node::NodeBinding {
+                    node_id: *member,
+                    bootstrap: operation.identity.clone(),
+                    management_seeds: seeds.clone(),
+                },
+            },
+        )
+        .await
+        .map_err(map_config_err)?;
+        Ok::<(), (StatusCode, Json<ErrorBody>)>(())
+    }))
+    .await;
+    for result in results {
+        result?;
+    }
+    crate::node::save(
+        &state.runtime_root.join("bootstrap-progress.json"),
+        &serde_json::json!({"operation_id": operation.identity.operation_id, "phase": "active"}),
+    )?;
+    Ok(())
 }
 
 async fn ensure_data_group(ctx: &ops::OpContext, nodes: &[u64]) -> crowdb_console_shared::error::Result<()> {

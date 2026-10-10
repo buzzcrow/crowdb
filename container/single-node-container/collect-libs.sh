@@ -23,11 +23,11 @@ for binary in \
 done
 
 for binary in "$output"/bin/*; do
-    if ! LD_LIBRARY_PATH="$build_root/.pixi/envs/default/lib:$build_root/target/release" ldd "$binary" > "$output/dependencies.txt"; then
+    if ! LD_LIBRARY_PATH="$build_root/.pixi/envs/default/lib:$build_root/target/release" ldd -r "$binary" > "$output/dependencies.txt"; then
         cat "$output/dependencies.txt" >&2
         exit 1
     fi
-    if grep -q 'not found' "$output/dependencies.txt"; then
+    if grep -Eq 'not found|undefined symbol' "$output/dependencies.txt"; then
         cat "$output/dependencies.txt" >&2
         exit 1
     fi
@@ -65,8 +65,8 @@ for artifact in "$output"/bin/* "$output"/lib/*; do
 done
 
 for binary in "$output"/bin/*; do
-    LD_LIBRARY_PATH="$output/lib" ldd "$binary" > "$output/dependencies.txt"
-    if grep -q 'not found' "$output/dependencies.txt"; then
+    LD_LIBRARY_PATH="$output/lib" ldd -r "$binary" > "$output/dependencies.txt"
+    if grep -Eq 'not found|undefined symbol' "$output/dependencies.txt"; then
         cat "$output/dependencies.txt" >&2
         exit 1
     fi

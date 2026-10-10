@@ -16,8 +16,9 @@ use serde::{Deserialize, Serialize};
 
 use super::{err_json, ErrorResponse, RegistryArc};
 
-type ManagementError = (StatusCode, Json<ErrorResponse>);
+pub(super) type ManagementError = (StatusCode, Json<ErrorResponse>);
 const OWNERSHIP_FILE: &str = "system-bootstrap.json";
+const RETIRED_FILE: &str = "system-bootstrap-cleanup.json";
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,6 +74,9 @@ pub(super) fn accept(
 ) -> Result<(), ManagementError> {
     let root = &state.config.config_root;
     let path = root.join(OWNERSHIP_FILE);
+    if root.join(RETIRED_FILE).exists() {
+        return Err(err_json(StatusCode::CONFLICT, "system cleanup has not completed"));
+    }
     let Some(identity) = identity else {
         return if has_owner(state)? {
             Err(err_json(
@@ -84,6 +88,18 @@ pub(super) fn accept(
         };
     };
     validate(replica_id, identity)?;
+    if root
+        .join(format!("system-bootstrap-retired-{}.json", identity.operation_id))
+        .exists()
+    {
+        return Err(err_json(
+            StatusCode::CONFLICT,
+            "bootstrap operation was explicitly retired",
+        ));
+    }
+    if root.join(RETIRED_FILE).exists() {
+        return Err(err_json(StatusCode::CONFLICT, "system cleanup has not completed"));
+    }
     let accepted = AcceptedBootstrap {
         version: 1,
         replica_id,
@@ -196,4 +212,17 @@ fn storage_error(error: &std::io::Error) -> ManagementError {
         StatusCode::INTERNAL_SERVER_ERROR,
         format!("system bootstrap persistence failed: {error}"),
     )
+}
+
+mod cleanup;
+pub(super) use cleanup::cleanup;
+
+/// # Errors
+/// Reports unreadable cleanup markers instead of restarting a retired system store.
+pub fn system_cleanup_pending(root: &Path) -> std::io::Result<bool> {
+    match fs::symlink_metadata(root.join(RETIRED_FILE)) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
 }

@@ -25,6 +25,10 @@ struct Args {
     #[arg(long, conflicts_with_all = ["config", "test_mode"])]
     runtime_dir: Option<std::path::PathBuf>,
 
+    /// Directory containing the built console UI for standalone node mode.
+    #[arg(long, conflicts_with = "config")]
+    ui_root: Option<std::path::PathBuf>,
+
     /// Local monitor discovery/handshake endpoint.
     #[arg(long)]
     node_monitor: Option<String>,
@@ -122,6 +126,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
     if let Some(config) = process_config {
         state = state.with_process_config(&config);
+    }
+    if let Some(root) = args.ui_root {
+        state.ui_root = std::sync::Arc::new(root);
     }
     if let Some(endpoint) = &args.node_monitor {
         state = state.with_node_monitor(endpoint)?;

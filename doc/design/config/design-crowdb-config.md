@@ -148,8 +148,15 @@ artifacts rather than compiling a second set.
 Group 0 owns hardware/topology and service registration. It does not store
 container mounts, process PIDs or restart policy. Docker Web reads live Group 0
 topology and fresh monitor process status independently; missing authority does
-not produce an empty or cached topology. Hardware/process mutation is disabled,
-while authenticated logical operations use the existing operation paths.
+not produce an empty or cached topology. Automatic single-node startup disables hardware/process mutation at both UI and
+backend. Manual node startup runs only monitor, SSH and Web until an operator
+prepares nodes and initializes Group 0; then shared authority enables management.
+Both startup policies use the same image and services. Discovery UUID, SSH keys,
+host keys, binding and operation recovery records reside on the persistent root.
+`CROWDB_KV_MANAGEMENT_ADVERTISE_ADDR` specifies the reachable management address
+for service registration independently of the local listening address. See the
+[deployment architecture](../deploy/design-crowdb-deploy.md) for ownership and
+recovery ordering.
 
 Public examples and the container profile use Console 9090, S3 9091 and
 Iceberg 9092. Standalone Web defaults to 9090; explicit service configuration

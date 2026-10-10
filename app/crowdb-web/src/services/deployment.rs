@@ -20,6 +20,7 @@ mod chunk_slots;
 mod credentials;
 mod geometry;
 mod launch;
+mod remote;
 
 #[derive(Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -106,6 +107,9 @@ async fn deploy_inner(
     body: Deploy,
 ) -> Result<(StatusCode, Json<Value>), Failure> {
     validate(&body)?;
+    if state.node_monitor_url.is_some() {
+        return remote::deploy(&state, node_id, &body).await;
+    }
     if !super::dependencies::group0_ready(&state).await {
         return Err(err_409(
             "Group 0 is not ready; deploy Paxos-KV and initialize Group 0 before starting this service",

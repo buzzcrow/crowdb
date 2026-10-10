@@ -26,6 +26,7 @@ impl Drop for TestRoot {
 
 fn config(port: u16) -> DiscoveryConfig {
     DiscoveryConfig {
+        seeds: Vec::new(),
         interfaces: vec!["lo".into()],
         addresses: vec![IpAddr::from([127, 0, 0, 1])],
         monitor_port: port,

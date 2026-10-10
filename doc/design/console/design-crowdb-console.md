@@ -316,6 +316,13 @@ credential reference associated with a node. Each bare-metal console resolves
 the reference in its own local secret store. Bootstrap intent rejects inline
 private keys and passwords; the launch registry accepts references only.
 
+Node admission installs each node's public Ed25519 key and proves access in
+both directions with strict host-key checking. Preparation reuses one
+key-authenticated candidate session and one session per existing peer; the
+two directional proofs run concurrently. Ordered preparation commands reuse
+their authenticated connection. A failed stage preserves durable progress for
+retry, while initialization passwords remain only in the submitted request.
+
 ### 5.3 Process lifecycle (deploy / start / stop)
 
 `LaunchRuntime` uses the validated launch registry for local or SSH process
@@ -334,13 +341,15 @@ Configured managed Web uses the managed router and a versioned process configura
 mode-specific process view. `/api/stores/...` provides authenticated logical
 mutations through shared operations in both modes. Bare-metal Web additionally
 exposes rack, node, disk-group and disk reads and authenticated mutations, plus
-registry-backed launch controls and bootstrap. Docker Web does not expose
-hardware or process mutation routes. Unknown managed API routes report
+registry-backed launch controls and bootstrap. Automatic single-node Docker Web does not expose
+hardware or process mutation routes. Manual node Web exposes candidate/rack
+preparation before bootstrap and routes subsequent shared management through
+Group 0 and authenticated monitor execution. Unknown managed API routes report
 unavailable rather than entering an in-memory topology path.
 
 A mutation is accepted only after the required node-side steps and Group 0
-publication are confirmed. The Console assumes a root operator until UI login is introduced. Container
-mode still rejects topology, deployment, and disk-management writes at the
+publication are confirmed. The Console assumes a root operator until UI login is introduced. Automatic single-node container
+mode rejects topology, deployment, and disk-management writes at the
 backend; logical and Access operations use server-held protocol credentials.
 The SPA calls the Axum backend; it does not talk directly to KV management
 endpoints.
@@ -660,8 +669,9 @@ The following invariants apply:
 CLI and bare-metal Web use the shared Group 0 hardware operations. Rack,
 node, disk-group and disk changes update parent and child records in one
 conditional batch where membership changes. Matching retries are confirmed;
-conflicting concurrent writes preserve the existing record. Docker Web does
-not expose hardware or process mutations.
+conflicting concurrent writes preserve the existing record. Automatic single-node Docker Web does
+not expose hardware or process mutations. Manual Docker nodes use the same
+shared hardware operations after confirmed Group 0 publication.
 
 ## 11. Cluster teardown and verification
 
@@ -675,3 +685,13 @@ There is no orphan-guessing reset command. A stopped or unreachable node does
 not imply its membership should be deleted. `cluster clean` derives its
 replica targets from Group 0, wipes each live target, and waits for a new
 leader while preserving topology.
+
+Manual node discovery and bootstrap follow the
+[deployment architecture](../deploy/design-crowdb-deploy.md). The Cluster sidebar
+retains a separate candidate list and explicit draft, fixed bootstrap, publication,
+active, stale authority and cleanup states. Each UI reads its local monitor's
+observations and the shared Group 0 registry. Discovery filtering selects another
+cluster for inspection without merging its membership. Authenticated node updates
+retain UUID/numeric allocations and physical failure domains. Loss of Group 0
+blocks management; existing data groups use their own Paxos authority and confirmed
+endpoint hints for data operations.

@@ -132,17 +132,63 @@ pub(super) fn replica_value(store_id: u64, group_id: u64, replica_id: u64, node_
 }
 
 pub(super) async fn replica(ctx: &OpContext, value: &ReplicaValue) -> Result<()> {
-    create(
-        ctx,
-        KvReplicaKey {
-            store_id: value.store_id,
-            group_id: value.group_id,
-            replica_id: value.replica_id,
+    let store_key = KvStoreKey {
+        store_id: value.store_id,
+    }
+    .to_path();
+    let replica_key = KvReplicaKey {
+        store_id: value.store_id,
+        group_id: value.group_id,
+        replica_id: value.replica_id,
+    }
+    .to_path();
+    for _ in 0..32 {
+        let GetOutcome::Found {
+            value: bytes,
+            revision,
+        } = ctx
+            .kv()
+            .get(0, 0, store_key.as_bytes(), ReadMode::Linearizable, None)
+            .await?
+        else {
+            return Err(Error::NotFound {
+                kind: "store".into(),
+                id: value.store_id.to_string(),
+            });
+        };
+        let mut store: StoreValue =
+            serde_json::from_slice(&bytes).map_err(|error| Error::Config(error.to_string()))?;
+        if let Some(actual) = ctx
+            .sysmd()
+            .get_replica(value.store_id, value.group_id, value.replica_id)
+            .await?
+        {
+            if actual != *value {
+                return Err(Error::Conflict {
+                    kind: "replica".into(),
+                    id: replica_key,
+                });
+            }
+            if store.node_ids.contains(&value.node_id) {
+                return Ok(());
+            }
         }
-        .to_path(),
-        value,
-    )
-    .await
+        if !store.node_ids.contains(&value.node_id) {
+            store.node_ids.push(value.node_id);
+            store.node_ids.sort_unstable();
+        }
+        let batch = [put(&store_key, &store)?, put(&replica_key, value)?];
+        match ctx
+            .kv()
+            .batch_write_cas(0, 0, &batch, store_key.as_bytes(), revision)
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(KvError::CasFailed { .. } | KvError::CasBusy | KvError::OutcomeUnknown) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(KvError::CasBusy.into())
 }
 
 async fn create<T: serde::Serialize>(ctx: &OpContext, key: String, value: &T) -> Result<()> {

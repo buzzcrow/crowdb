@@ -30,8 +30,9 @@ pub use liveness::{probe_liveness, LivenessError, LivenessServer};
 pub use manifest::{BootstrapManifest, BootstrapSession, ManifestError, ManifestState};
 pub use monitor_log::{MonitorEvent, MonitorEventKind, MonitorLog, MonitorLogError};
 pub use node::{
-    serve_node_management, CandidateCache, DiscoveryConfig, DiscoveryError, NodeDiscovery, NodeIdentity,
-    NodeIdentityError, NodeManagementError, NODE_SERVICE_TYPE,
+    control_node, run_node, run_single_node, serve_node_management, CandidateCache, DiscoveryConfig,
+    DiscoveryError, NodeDiscovery, NodeIdentity, NodeIdentityError, NodeManagementError, NodeRuntimeConfig,
+    NODE_SERVICE_TYPE,
 };
 pub use preview::{run_preview, PreviewError};
 pub use probe::{ProbeError, ProbeExecutor};

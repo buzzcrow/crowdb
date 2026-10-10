@@ -26,6 +26,7 @@ async fn local_candidate_is_shown_before_any_kv_server_exists() {
         },
         physical_host_id: "one-host".into(),
         rack_hint: None,
+        hardware: crowdb_protocol::mgmt::node::NodeHardware::default(),
     };
     let expected = handshake.clone();
     let monitor = Router::new()

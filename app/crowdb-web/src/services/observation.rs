@@ -40,6 +40,9 @@ pub struct ServerSummary {
 /// # Panics
 /// Panics if the `RwLock` is poisoned.
 pub async fn http_list_servers(State(state): State<AppState>) -> Json<Vec<ServerSummary>> {
+    if state.node_monitor_url.is_some() && crate::node::cluster_binding(&state).ok().flatten().is_some() {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), super::remote::refresh(&state)).await;
+    }
     let snap = state.monitor_cache.snapshot().await;
     let cfg = state.config.read().unwrap().clone();
     let rows = futures::future::join_all(cfg.servers.iter().map(|s| {

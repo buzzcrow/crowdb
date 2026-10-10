@@ -9,7 +9,7 @@ use crate::clients::http::ServerClient;
 use crate::error::{Error, Result};
 use crate::ops::OpContext;
 
-use super::{remap_zero_host, server_client, strip_scheme};
+use super::server_client;
 
 pub(super) async fn resolve(
     ctx: &OpContext,
@@ -27,7 +27,8 @@ pub(super) async fn resolve(
                 node_id: node_id.to_string(),
                 reason: format!("store {store_id} has no peer RPC endpoint"),
             })?;
-        Ok((client, strip_scheme(&remap_zero_host(endpoint))))
+        let endpoint = client.resolve_rpc_endpoint(endpoint)?;
+        Ok((client, endpoint))
     }))
     .await
     .into_iter()

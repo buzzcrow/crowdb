@@ -131,7 +131,8 @@ impl KvBootstrap {
             if complete || session.manifest().next_step() != Some(name.as_str()) {
                 return Err(KvBootstrapError::Invalid("completed KV group is missing"));
             }
-            self.create_group(group).await?;
+            self.create_group(group, session.manifest().system_bootstrap_identity())
+                .await?;
             let existing = self.wait_present(group).await?;
             verify_group(&existing, group)?;
             self.wait_ready(group).await?;
@@ -163,14 +164,18 @@ impl KvBootstrap {
         Ok(response.error_for_status()?.json().await?)
     }
 
-    async fn create_group(&self, group: &GroupProfile) -> Result<(), KvBootstrapError> {
+    async fn create_group(
+        &self,
+        group: &GroupProfile,
+        bootstrap: crowdb_protocol::mgmt::SystemBootstrapIdentity,
+    ) -> Result<(), KvBootstrapError> {
         let response = if group.role == GroupRole::System {
             self.client
                 .post(self.url("system/init"))
                 .json(&SystemInitRequest {
                     replica_id: group.replica_id,
                     start_election: true,
-                    bootstrap: None,
+                    bootstrap: Some(bootstrap),
                 })
                 .send()
                 .await

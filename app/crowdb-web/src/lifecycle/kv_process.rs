@@ -135,6 +135,11 @@ async fn deploy_node_server(
 ) -> Result<(StatusCode, Json<DeployResult>), (StatusCode, Json<ErrorBody>)> {
     let _ports = crate::services::defaults::claim_ports(&state, &[body.rest_port, body.rpc_port])?;
 
+    if state.node_monitor_url.is_some() {
+        return Err(crate::error::err_409(
+            "Node monitor starts its KV service during admission; use its retained restart operation",
+        ));
+    }
     let workspace_dir = state
         .prepare_node_workspace(node_id)
         .map_err(|e| err_500(e.to_string()))?;
@@ -207,6 +212,27 @@ async fn restart_node_server(
     state: AppState,
     node_id: u64,
 ) -> Result<Json<DeployResult>, (StatusCode, Json<ErrorBody>)> {
+    if state.node_monitor_url.is_some() {
+        let reply = crate::services::remote::kv_action(
+            &state,
+            node_id,
+            crowdb_protocol::mgmt::node::NodeServiceAction::Restart,
+        )
+        .await?;
+        let config = state.config.read().map_err(|error| err_502(error.to_string()))?;
+        let entry = config
+            .server_for_node(node_id)
+            .ok_or_else(|| crate::error::err_404("KV service not found"))?;
+        return Ok(Json(DeployResult {
+            node_id,
+            mgmt_url: entry.url.clone(),
+            rpc_url: entry.rpc_url.clone().unwrap_or_default(),
+            pid: reply["pid"]
+                .as_u64()
+                .and_then(|pid| u32::try_from(pid).ok())
+                .ok_or_else(|| err_502("Monitor returned no KV PID"))?,
+        }));
+    }
     let workspace_dir = state
         .prepare_node_workspace(node_id)
         .map_err(|e| err_500(e.to_string()))?;

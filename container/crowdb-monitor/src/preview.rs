@@ -120,6 +120,7 @@ pub async fn run_preview(profile_path: &Path) -> Result<(), PreviewError> {
     }
     render_configs(&profile, &profile.paths.template_root, &profile.paths.run_root)?;
     let management_seed = management_seed(&profile)?;
+    bind_single_node(&profile, &session, &management_seed)?;
     let mut supervisor = Supervisor::new(
         profile.clone(),
         session.manifest().deployment_id(),
@@ -578,5 +579,21 @@ fn require_directory(path: &Path) -> Result<(), PreviewError> {
     if !fs::symlink_metadata(path)?.file_type().is_dir() {
         return Err(PreviewError::Invalid("required durable directory is missing"));
     }
+    Ok(())
+}
+
+fn bind_single_node(
+    profile: &DeploymentProfile,
+    session: &BootstrapSession,
+    management_seed: &str,
+) -> Result<(), PreviewError> {
+    crate::node::write_single_binding(
+        &profile.paths.data_root,
+        &crowdb_protocol::mgmt::node::NodeBinding {
+            node_id: profile.nodes[0].node_id,
+            bootstrap: session.manifest().system_bootstrap_identity(),
+            management_seeds: vec![management_seed.to_owned()],
+        },
+    )?;
     Ok(())
 }

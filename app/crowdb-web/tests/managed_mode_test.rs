@@ -39,20 +39,8 @@ async fn register_kv_node(sysmd: &CrowdbSysmdClient, endpoint: &str, hosted_stor
         .unwrap();
 }
 
-async fn verify_managed_store_lifecycle(app: &axum::Router, sysmd: &CrowdbSysmdClient, endpoint: &str) {
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/api/stores")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"store_id":7,"nodes":[1]}"#))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::CREATED);
+async fn verify_managed_store_lifecycle(app: &axum::Router, sysmd: &CrowdbSysmdClient) {
+    sysmd.add_store(7, &[1]).await.unwrap();
     let (code, stores) = get_json(app.clone(), "/api/stores").await;
     assert_eq!(code, StatusCode::OK);
     assert!(stores
@@ -60,54 +48,27 @@ async fn verify_managed_store_lifecycle(app: &axum::Router, sysmd: &CrowdbSysmdC
         .unwrap()
         .iter()
         .any(|store| store["store_id"] == 7));
-
-    register_kv_node(sysmd, "http://127.0.0.1:1", &[0, 7]).await;
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::DELETE)
-                .uri("/api/stores/7")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    for (method, path, body) in [
+        (Method::POST, "/api/stores", r#"{"store_id":8,"nodes":[1]}"#),
+        (Method::DELETE, "/api/stores/7", ""),
+        (Method::POST, "/api/management/check", ""),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
     assert!(sysmd.get_store(7).await.unwrap().is_some());
-
-    register_kv_node(sysmd, endpoint, &[0, 7]).await;
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::DELETE)
-                .uri("/api/stores/7")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
-    let (code, stores) = get_json(app.clone(), "/api/stores").await;
-    assert_eq!(code, StatusCode::OK);
-    assert!(!stores
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|store| store["store_id"] == 7));
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/api/stores")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    assert!(sysmd.get_store(8).await.unwrap().is_none());
 }
 
 #[tokio::test]
@@ -115,9 +76,9 @@ async fn docker_root_access_preserves_hardware_restrictions() {
     let token = "m".repeat(64);
     let app = router(AppState::default().with_managed_ui(PathBuf::from("/tmp/crowdb-ui")));
     for (authorization, expected) in [
-        (None, StatusCode::NO_CONTENT),
-        (Some("Bearer wrong".to_owned()), StatusCode::NO_CONTENT),
-        (Some(format!("Bearer {token}")), StatusCode::NO_CONTENT),
+        (None, StatusCode::FORBIDDEN),
+        (Some("Bearer wrong".to_owned()), StatusCode::FORBIDDEN),
+        (Some(format!("Bearer {token}")), StatusCode::FORBIDDEN),
     ] {
         let mut request = Request::builder()
             .method(Method::POST)
@@ -143,12 +104,12 @@ async fn docker_root_access_preserves_hardware_restrictions() {
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
     for (authorization, expected) in [
-        (None, StatusCode::CONFLICT),
-        (Some("Bearer wrong".to_owned()), StatusCode::CONFLICT),
-        (Some(format!("Bearer {token}")), StatusCode::CONFLICT),
+        (None, StatusCode::FORBIDDEN),
+        (Some("Bearer wrong".to_owned()), StatusCode::FORBIDDEN),
+        (Some(format!("Bearer {token}")), StatusCode::FORBIDDEN),
     ] {
         let mut request = Request::builder().method(Method::POST).uri("/api/stores");
         if let Some(value) = authorization {
@@ -188,14 +149,22 @@ async fn managed_mode_does_not_expose_local_topology_or_mutations() {
             .clone()
             .oneshot(
                 Request::builder()
-                    .method(method)
+                    .method(method.clone())
                     .uri(path)
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{path}");
+        assert_eq!(
+            response.status(),
+            if method == Method::GET {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else {
+                StatusCode::FORBIDDEN
+            },
+            "{path}"
+        );
     }
     let response = app
         .oneshot(
@@ -312,7 +281,7 @@ async fn managed_snapshot_uses_group0_and_monitor_without_local_fallback() {
         "single-node services should attach to their container node"
     );
     verify_chunk_kv_placement(&app, &sysmd).await;
-    verify_managed_store_lifecycle(&app, &sysmd, &cluster.mgmt_endpoints[0]).await;
+    verify_managed_store_lifecycle(&app, &sysmd).await;
 
     drop(cluster);
     verify_unavailable_snapshot(app, &store, &mut status, &run_root).await;

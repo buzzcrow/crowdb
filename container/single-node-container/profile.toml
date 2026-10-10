@@ -197,7 +197,7 @@ backoff_max_ms = 5000
 [[services]]
 id = "web"
 program = "/opt/crowdb/bin/crowdb-web"
-args = ["--config", "/opt/crowdb/run/config/crowdb-web.toml"]
+args = ["--config", "/opt/crowdb/run/config/crowdb-web.toml", "--node-monitor", "http://127.0.0.1:9095"]
 dependencies = ["access"]
 fence_listeners = ["127.0.0.1:9090"]
 config_template = "/opt/crowdb/etc/templates/crowdb-web.toml"

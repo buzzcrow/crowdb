@@ -70,6 +70,19 @@ impl ServerClient {
         self.post_empty(&format!("/stores/{sid}/groups"), req).await
     }
 
+    /// Import a new replica's snapshot before it participates in voting.
+    ///
+    /// # Errors
+    /// Returns transport or snapshot import failures.
+    pub async fn join_group(&self, sid: u64, gid: u64, req: &JoinGroupRequest) -> Result<()> {
+        let path = if sid == 0 && gid == 0 {
+            "/system/join".to_owned()
+        } else {
+            format!("/stores/{sid}/groups/{gid}/join")
+        };
+        self.post_empty(&path, req).await
+    }
+
     /// `DELETE /stores/{sid}/groups/{gid}`.
     ///
     /// # Errors

@@ -156,7 +156,7 @@ async fn native(
     })
 }
 
-async fn chunk_kv_config(
+pub(super) async fn chunk_kv_config(
     body: &Deploy,
     seeds: &[String],
     node: &NodeEntry,
@@ -194,7 +194,7 @@ async fn chunk_kv_config(
     Ok(config)
 }
 
-fn access_config(body: &Deploy, seeds: &[String], node: &NodeEntry) -> serde_json::Value {
+pub(super) fn access_config(body: &Deploy, seeds: &[String], node: &NodeEntry) -> serde_json::Value {
     let mut config = json!({ "common":{"management_seeds":seeds},
         "health":{"listen":format!("{}:{}",node.host,body.health_port.unwrap())},
         "s3":{"listen":format!("{}:{}",node.host,body.s3_port.unwrap()),"tenant":"default","region":"us-east-1"},

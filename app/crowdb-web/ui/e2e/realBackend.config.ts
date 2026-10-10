@@ -3,6 +3,7 @@ import { defineConfig, devices } from '@playwright/test';
 
 const port = Number(process.env.CROWDB_WEB_E2E_PORT ?? 4193);
 const baseURL = `http://127.0.0.1:${port}`;
+const nodeURL = process.env.CROWDB_NODE_UI_ORIGIN;
 const webBinary = process.env.CROWDB_WEB_BINARY;
 
 if (webBinary && !existsSync(webBinary)) {
@@ -55,8 +56,8 @@ export default defineConfig({
   // These cases require the isolated six-service native fixture.
   grepInvert: /native diagnostics/,
   testIgnore: ['**/fixtures/**', '**/71-s3-native.spec.ts', '**/72-managed-native.spec.ts'],
-  globalSetup: './globalSetup.ts',
-  globalTeardown: './globalTeardown.ts',
+  globalSetup: nodeURL ? undefined : './globalSetup.ts',
+  globalTeardown: nodeURL ? undefined : './globalTeardown.ts',
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: 0,
@@ -65,7 +66,7 @@ export default defineConfig({
   expect: { timeout: 3_000 },
   reporter: [['list'], ['./slowReporter.ts']],
   use: {
-    baseURL,
+    baseURL: nodeURL ?? baseURL,
     actionTimeout: 3_000,
     trace: 'retain-on-failure',
     headless: true,
@@ -76,7 +77,7 @@ export default defineConfig({
       use: chromiumUse,
     },
   ],
-  webServer: {
+  webServer: nodeURL ? undefined : {
     command: `npm run build && ${serverCommand}`,
     url: `${baseURL}/healthz`,
     reuseExistingServer: false,

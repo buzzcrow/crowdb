@@ -88,7 +88,14 @@ async fn prebootstrap_nonmember_discovers_group0_and_retains_hints_after_restart
     .await
     .unwrap();
     let root = TestDir::new("nonmember-discovery").unwrap();
-    let args = ["--node-id", "2", "--keepalive-interval", "1"];
+    let args = [
+        "--node-id",
+        "2",
+        "--keepalive-interval",
+        "1",
+        "--management-advertise-addr",
+        "127.0.0.2",
+    ];
     let nonmember = start_test_server_at(root.path(), &args, &[0]).await.unwrap();
     let http = reqwest::Client::new();
     let init = http
@@ -120,11 +127,12 @@ async fn prebootstrap_nonmember_discovers_group0_and_retains_hints_after_restart
         let response = http.post(&endpoint).json(&request).send().await.unwrap();
         assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
     }
-    wait_registered(&service, nonmember.base_url()).await;
+    let advertised = nonmember.base_url().replace("127.0.0.1", "127.0.0.2");
+    wait_registered(&service, &advertised).await;
     let initial = service.read_all_kv_server_instances().await.unwrap();
     let original_id = initial
         .iter()
-        .find(|(_, value)| value.rpc_endpoint == nonmember.base_url())
+        .find(|(_, value)| value.rpc_endpoint == advertised)
         .unwrap()
         .0;
     let topology: serde_json::Value = http
@@ -156,11 +164,12 @@ async fn prebootstrap_nonmember_discovers_group0_and_retains_hints_after_restart
         .await
         .unwrap();
     let restarted = start_test_server_at(root.path(), &args, &[0]).await.unwrap();
-    wait_registered(&service, restarted.base_url()).await;
+    let advertised = restarted.base_url().replace("127.0.0.1", "127.0.0.2");
+    wait_registered(&service, &advertised).await;
     let instances = service.read_all_kv_server_instances().await.unwrap();
     let restarted_id = instances
         .iter()
-        .find(|(_, value)| value.rpc_endpoint == restarted.base_url())
+        .find(|(_, value)| value.rpc_endpoint == advertised)
         .unwrap()
         .0;
     assert_eq!(

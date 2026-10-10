@@ -175,6 +175,34 @@ export async function listNodeCandidates(options?: RequestOptions): Promise<Node
   return jsonOrThrow(await fetchWithOptions('/api/node/candidates', options));
 }
 
+export interface NodeDeploymentStatus {
+  phase: 'unbound_draft' | 'bootstrap_in_progress' | 'active' | 'authority_unavailable' | 'recovery_required' | 'cleanup_in_progress' | 'topology_publishing';
+  available: boolean;
+  cluster_id?: string;
+  operation_id?: string;
+  members?: number[];
+  nodes?: { node_id: number; phase: string; store_created: boolean; group_ready: boolean }[];
+  cleanup?: { operation_id: string; completed: number[]; pending: number[]; errors: string[] };
+}
+export interface NodeAdmission { discovery_id: string; node_id: number; rack_id: number; host: string; physical_host_id: string; ssh_user: string; ssh_port: number; operation_id: string; confirmed: boolean; cancelled: boolean }
+export async function nodeAdmissions(options?: RequestOptions): Promise<NodeAdmission[]> {
+  return jsonOrThrow(await fetchWithOptions('/api/node/admissions', options));
+}
+export async function cancelNodeAdmission(discoveryId: string, operationId: string): Promise<{ pending: string[] }> {
+  return jsonOrThrow(await fetchWithOptions('/api/node/cancel', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ discovery_id: discoveryId, operation_id: operationId }), skipDeduplication: true }));
+}
+export async function cleanupNodeCluster(operationId: string): Promise<{ pending: number[]; errors: string[] }> {
+  return jsonOrThrow(await fetchWithOptions('/api/node/cleanup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operation_id: operationId, confirm_delete_system_store: true }), skipDeduplication: true }));
+}
+export async function nodeDeploymentStatus(options?: RequestOptions): Promise<NodeDeploymentStatus> {
+  return jsonOrThrow(await fetchWithOptions('/api/node/status', options));
+}
+export async function admitCandidate(body: { discovery_id: string; rack_id: number; ssh_user: string; ssh_port: number; ssh_password: string | null }): Promise<unknown> {
+  return jsonOrThrow(await fetchWithOptions('/api/node/admit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), skipDeduplication: true }));
+}export async function updateCandidate(body: { discovery_id: string; rack_id: number; ssh_user: string; ssh_port: number; ssh_password: string | null }): Promise<unknown> {
+  return jsonOrThrow(await fetchWithOptions('/api/node/update', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), skipDeduplication: true }));
+}
+
 /**
  * Enhanced fetch wrapper with deduplication, retries, and AbortController support
  */
