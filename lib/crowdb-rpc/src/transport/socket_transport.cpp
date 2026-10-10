@@ -717,15 +717,23 @@ std::shared_ptr<Connection> SocketTransport::connect(const std::string &addr, in
         return nullptr;
     }
 
-    if (::connect(fd, reinterpret_cast<struct sockaddr *>(&sa), sizeof(sa)) < 0) {
-        CRB_LOG_WARN("connect: connect() failed addr={} port={} errno={} ({})", addr, port, errno,
+    const int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        CRB_LOG_WARN("connect: nonblocking setup failed addr={} port={} errno={} ({})", addr, port, errno,
                      std::strerror(errno));
         ::close(fd);
         return nullptr;
     }
 
-    int flags = fcntl(fd, F_GETFL, 0);
-    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    // A missing peer must not block the caller's executor while TCP retries
+    // its handshake. Queued writes wait for writability in the worker;
+    // handshake failures use the same error/close path as established peers.
+    if (::connect(fd, reinterpret_cast<struct sockaddr *>(&sa), sizeof(sa)) < 0 && errno != EINPROGRESS) {
+        CRB_LOG_WARN("connect: connect() failed addr={} port={} errno={} ({})", addr, port, errno,
+                     std::strerror(errno));
+        ::close(fd);
+        return nullptr;
+    }
 
     int nodelay = tcp_nodelay_ ? 1 : 0;
     ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
@@ -737,7 +745,7 @@ std::shared_ptr<Connection> SocketTransport::connect(const std::string &addr, in
 #endif
 
     auto conn = create_connection(fd, addr + ":" + std::to_string(port));
-    CRB_LOG_INFO("rpc transport: connection established -> {}:{} conn_id={}", addr, port,
+    CRB_LOG_INFO("rpc transport: connection initiated -> {}:{} conn_id={}", addr, port,
                  static_cast<long long>(conn->id()));
     return conn;
 }
