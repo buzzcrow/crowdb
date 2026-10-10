@@ -264,6 +264,22 @@ pub struct ct_stats {
 }
 
 #[repr(C)]
+#[derive(Default)]
+pub struct ct_tree_summary {
+    pub root_version: u64,
+    pub covered_slot: u64,
+    pub live_kv: u64,
+    pub live_key_bytes: u64,
+    pub live_value_bytes: u64,
+    pub reachable_leaf_pages: u64,
+    pub reachable_inner_pages: u64,
+    pub reachable_overflow_pages: u64,
+    pub reachable_page_capacity_bytes: u64,
+    pub live_logical_bytes: u64,
+    pub exact: c_int,
+}
+
+#[repr(C)]
 pub struct ct_options {
     pub page_store: *mut ct_page_store,
     pub range_bounded: u8,
@@ -382,6 +398,7 @@ extern "C" {
     pub fn ct_clear_io_error(t: *mut ct_tree);
     pub fn ct_clear(t: *mut ct_tree) -> c_int;
     pub fn ct_get_stats(t: *const ct_tree, out: *mut ct_stats);
+    pub fn ct_get_tree_summary(t: *const ct_tree, out: *mut ct_tree_summary);
     pub fn ct_approximate_split_key(t: *const ct_tree, found: *mut i32, key: *mut ct_buf) -> c_int;
     pub fn ct_inspect_page(
         t: *const ct_tree,

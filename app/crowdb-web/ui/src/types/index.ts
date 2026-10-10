@@ -102,6 +102,17 @@ export interface CrowdbTreeStats {
   buffer_pool_dirty: number;
   buffer_pool_used: number;
   buffer_pool_num_frames: number;
+  summary_root_version: number;
+  summary_covered_slot: number;
+  summary_live_kv: number;
+  summary_live_key_bytes: number;
+  summary_live_value_bytes: number;
+  summary_reachable_leaf_pages: number;
+  summary_reachable_inner_pages: number;
+  summary_reachable_overflow_pages: number;
+  summary_reachable_page_capacity_bytes: number;
+  summary_live_logical_bytes: number;
+  summary_exact: boolean;
 }
 
 export interface LocalReplicaInfo {
@@ -127,6 +138,8 @@ export interface NodeGroup {
   remotes: RemoteReplicaInfo[];
   leader_hint?: ReplicaId;
   read_state?: ReadState;
+  membership_epoch?: number;
+  membership_state?: 'installing' | 'ready';
 }
 
 // Logical View Types
@@ -164,6 +177,8 @@ export interface GroupView {
   replicas: ReplicaView[];
   state: GroupHealth;
   read_state?: ReadState;
+  membership_epoch?: number;
+  membership_state?: 'installing' | 'ready';
 }
 
 export interface ReplicaView {

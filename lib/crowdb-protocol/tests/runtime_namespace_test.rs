@@ -143,7 +143,19 @@ fn descendant_launchers_record_processes_in_the_parent_namespace() {
     let record = namespace
         .root()
         .join(format!("processes/{pid}/process-owner.json"));
-    let value: serde_json::Value = serde_json::from_slice(&std::fs::read(record).unwrap()).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let value = loop {
+        if let Ok(bytes) = std::fs::read(&record) {
+            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                break value;
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "descendant process ownership record becomes readable"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
     assert_eq!(value["processes"][0]["pid"], pid);
     let cluster = RuntimeNamespace::persistent(namespace.data_dir(), "descendant-cluster").unwrap();
     let claims: serde_json::Value = serde_json::from_slice(

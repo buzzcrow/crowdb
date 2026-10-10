@@ -91,6 +91,20 @@ TEST(Overflow, PutGetScanReopenMultiFrame)
             oracle[make_key(i)] = "small" + std::to_string(i);
         }
         ASSERT_TRUE(t.snapshot(nullptr).ok());
+        const auto summary = t.tree_summary();
+        EXPECT_TRUE(summary.exact);
+        uint64_t expected_value_bytes = 0;
+        uint64_t expected_key_bytes   = 0;
+        for (const auto &kv : oracle) {
+            expected_key_bytes += kv.first.size();
+            expected_value_bytes += kv.second.size();
+        }
+        EXPECT_EQ(summary.live_kv, oracle.size());
+        EXPECT_EQ(summary.live_key_bytes, expected_key_bytes);
+        EXPECT_EQ(summary.live_value_bytes, expected_value_bytes);
+        EXPECT_EQ(summary.live_logical_bytes, expected_key_bytes + expected_value_bytes);
+        EXPECT_GT(summary.reachable_overflow_pages, 0U);
+        EXPECT_GT(summary.reachable_page_capacity_bytes, 0U);
 
         for (const auto &kv : oracle) {
             std::string v;
@@ -111,6 +125,8 @@ TEST(Overflow, PutGetScanReopenMultiFrame)
     // Reopen: overflow chains demand-load through resident on first access.
     std::unique_ptr<Crowdbtree> t2;
     ASSERT_TRUE(Crowdbtree::open(opt, &t2).ok());
+    EXPECT_TRUE(t2->tree_summary().exact);
+    EXPECT_EQ(t2->tree_summary().live_kv, oracle.size());
     for (const auto &kv : oracle) {
         std::string v;
         uint64_t    s;

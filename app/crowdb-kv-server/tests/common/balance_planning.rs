@@ -79,6 +79,8 @@ async fn seed_instances(control: &Group0ControlPlane, partition_ids: &[Id128]) {
         .map(|(index, partition_id)| ChunkKvPartitionLoad {
             partition_id: *partition_id,
             durable_bytes: 100,
+            logical_bytes: 0,
+            logical_metrics_exact: false,
             live_byte_samples: if index == 0 {
                 vec![(b"a".to_vec(), 50), (b"f".to_vec(), 50)]
             } else {

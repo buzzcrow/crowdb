@@ -241,6 +241,11 @@ pub struct GroupView {
     /// leader's read-registry handles are wired.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub read_state: Option<crate::snapshot::ReadStateSnapshot>,
+    /// Group-0 membership authority state, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub membership_epoch: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub membership_state: Option<String>,
 }
 
 impl GroupView {
@@ -334,6 +339,8 @@ mod tests {
             }],
             state: GroupHealth::Healthy,
             read_state: None,
+            membership_epoch: None,
+            membership_state: None,
         };
         let s = serde_json::to_string(&v).unwrap();
         assert!(s.contains("\"node_id\":1"));

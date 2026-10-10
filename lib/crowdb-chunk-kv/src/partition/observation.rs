@@ -11,6 +11,7 @@ pub struct TreeObservation {
     pub checkpoint_manifest: u64,
     pub checkpoint_applied_seq: u64,
     pub runtime: Option<crowdb_tree_ffi::Stats>,
+    pub summary: Option<crowdb_tree_ffi::TreeSummary>,
     pub maintenance: crate::PartitionMetricsSnapshot,
 }
 
@@ -37,6 +38,7 @@ impl Partition {
             checkpoint_manifest,
             checkpoint_applied_seq,
             runtime: self.tree.runtime_stats(),
+            summary: self.tree.tree_summary(),
             maintenance: self.metrics.snapshot(),
         })
     }

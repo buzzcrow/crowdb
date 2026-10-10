@@ -10,7 +10,9 @@
 
 use std::collections::HashSet;
 
+use crowdb_kv_client::GroupMembershipSnapshot;
 use crowdb_protocol::key::{KvGroupKey, KvReplicaKey, KvStoreKey};
+use crowdb_protocol::kv_membership::{canonical_members, GroupMember, GroupMembershipState};
 use crowdb_protocol::mgmt::{
     AddGroupInitialRole, AddGroupRequest, AddStoreRequest, RemoteReplicaInfo, StepDownRequest,
 };
@@ -367,6 +369,10 @@ pub async fn remove_group(ctx: &OpContext, store_id: u64, group_id: u64) -> Resu
         .await?;
     }
     publication::remove(ctx, KvGroupKey { store_id, group_id }).await?;
+    ctx.membership()
+        .remove(store_id, group_id)
+        .await
+        .map_err(Error::from)?;
     Ok(())
 }
 
@@ -517,11 +523,33 @@ pub async fn add_replica(
         endpoint: new_endpoint,
         voting: true,
     };
+    let mut requested_members = existing
+        .iter()
+        .map(|replica| GroupMember {
+            replica_id: replica.replica_id,
+            node_id: replica.node_id,
+            endpoint: replica.endpoint.clone(),
+            voting: replica.voting,
+        })
+        .collect::<Vec<_>>();
+    requested_members.push(GroupMember {
+        replica_id: new_rid,
+        node_id,
+        endpoint: new_remote.endpoint.clone(),
+        voting: new_remote.voting,
+    });
+    let installing = begin_membership_change(ctx, store_id, group_id, &existing, requested_members).await?;
+    let expected_epoch = installing.record().epoch;
     for (existing_replica, (peer_client, _)) in existing.iter().zip(&peers) {
         // A lost response may still have applied the remote on this peer.
         rollback.wired_peers.push(existing_replica.node_id);
         if let Err(e) = peer_client
-            .add_remote_replicas(store_id, group_id, std::slice::from_ref(&new_remote))
+            .add_remote_replicas_at_epoch(
+                store_id,
+                group_id,
+                std::slice::from_ref(&new_remote),
+                expected_epoch,
+            )
             .await
         {
             return Err(rollback
@@ -545,7 +573,7 @@ pub async fn add_replica(
         .collect();
     if !existing_remotes.is_empty() {
         if let Err(e) = client
-            .add_remote_replicas(store_id, group_id, &existing_remotes)
+            .add_remote_replicas_at_epoch(store_id, group_id, &existing_remotes, expected_epoch)
             .await
         {
             return Err(rollback
@@ -559,6 +587,10 @@ pub async fn add_replica(
 
     // Record only after every existing peer and the new replica are wired.
     record_replica(ctx, store_id, group_id, new_rid, node_id).await?;
+    ctx.membership()
+        .complete(&installing)
+        .await
+        .map_err(Error::from)?;
     Ok(new_rid)
 }
 
@@ -590,19 +622,48 @@ pub async fn remove_replica(ctx: &OpContext, store_id: u64, group_id: u64, repli
             id: replica_id.to_string(),
         })?;
     let target_node = target.node_id;
-
-    // Step 0: step down if this replica is the leader (best-effort).
-    if let Ok(client) = server_client(ctx, target_node).await {
-        let _ = client
-            .step_down(
-                store_id,
-                group_id,
-                &StepDownRequest {
-                    reason: format!("replica {replica_id} removal"),
-                },
-            )
-            .await;
+    // Removing the last replica leaves no valid Paxos membership. Treat the
+    // request as removal of the now-empty group so the logical projection
+    // cannot retain an orphaned group with zero voting members.
+    if replicas.len() == 1 {
+        return remove_group(ctx, store_id, group_id).await;
     }
+    if target.voting && replicas.iter().filter(|replica| replica.voting).count() <= 1 {
+        return Err(Error::Validation {
+            field: "replica_id".into(),
+            message: "a group must retain a voting replica".into(),
+        });
+    }
+    let requested_members = replicas
+        .iter()
+        .filter(|replica| replica.replica_id != replica_id)
+        .map(|replica| GroupMember {
+            replica_id: replica.replica_id,
+            node_id: replica.node_id,
+            endpoint: replica.endpoint.clone(),
+            voting: replica.voting,
+        })
+        .collect::<Vec<_>>();
+    // Step 0: verify the target is reachable and step it down if it is the
+    // leader before publishing the successor membership. A failed request
+    // must leave Group 0 membership unchanged.
+    let target_client = server_client(ctx, target_node).await?;
+    target_client
+        .step_down(
+            store_id,
+            group_id,
+            &StepDownRequest {
+                reason: format!("replica {replica_id} removal"),
+            },
+        )
+        .await
+        .map_err(|error| Error::UpstreamRpc {
+            node_id: target_node.to_string(),
+            status: format!("step down before replica removal: {error}"),
+        })?;
+
+    let installing = begin_membership_change(ctx, store_id, group_id, &replicas, requested_members).await?;
+    let expected_epoch = installing.record().epoch;
 
     // Step 1: Deregister from every peer.
     for peer in &replicas {
@@ -610,7 +671,10 @@ pub async fn remove_replica(ctx: &OpContext, store_id: u64, group_id: u64, repli
             continue;
         }
         let client = server_client(ctx, peer.node_id).await?;
-        if let Err(error) = client.remove_remote_replica(store_id, group_id, replica_id).await {
+        if let Err(error) = client
+            .remove_remote_replica_at_epoch(store_id, group_id, replica_id, expected_epoch)
+            .await
+        {
             if !already_absent(&error) {
                 return Err(error);
             }
@@ -618,8 +682,10 @@ pub async fn remove_replica(ctx: &OpContext, store_id: u64, group_id: u64, repli
     }
 
     // Step 2: Delete the local group on the target node.
-    let client = server_client(ctx, target_node).await?;
-    if let Err(error) = client.remove_group(store_id, group_id).await {
+    if let Err(error) = target_client
+        .remove_group_at_epoch(store_id, group_id, expected_epoch)
+        .await
+    {
         if !already_absent(&error) {
             return Err(error);
         }
@@ -634,7 +700,91 @@ pub async fn remove_replica(ctx: &OpContext, store_id: u64, group_id: u64, repli
         },
     )
     .await?;
+    ctx.membership()
+        .complete(&installing)
+        .await
+        .map_err(Error::from)?;
     Ok(())
+}
+
+async fn begin_membership_change(
+    ctx: &OpContext,
+    store_id: u64,
+    group_id: u64,
+    existing: &[crowdb_protocol::common::ReplicaValue],
+    requested: Vec<GroupMember>,
+) -> Result<GroupMembershipSnapshot> {
+    let authority = ctx.membership();
+    let mut requested = requested;
+    for member in &mut requested {
+        if member.endpoint.is_empty() {
+            let known = existing
+                .iter()
+                .find(|replica| replica.replica_id == member.replica_id)
+                .and_then(|replica| (!replica.endpoint.is_empty()).then_some(replica.endpoint.clone()));
+            member.endpoint = match known {
+                Some(endpoint) => endpoint,
+                None => rpc_endpoint_for_store(ctx, member.node_id, store_id)
+                    .await
+                    .ok_or_else(|| Error::NodeUnreachable {
+                        node_id: member.node_id.to_string(),
+                        reason: "could not determine crowdb-rpc endpoint".into(),
+                    })?,
+            };
+        }
+    }
+    let current = authority.read(store_id, group_id).await?;
+    let current = if let Some(current) = current {
+        current
+    } else {
+        let mut members = Vec::with_capacity(existing.len());
+        for replica in existing {
+            let endpoint = if replica.endpoint.is_empty() {
+                rpc_endpoint_for_store(ctx, replica.node_id, store_id)
+                    .await
+                    .ok_or_else(|| Error::NodeUnreachable {
+                        node_id: replica.node_id.to_string(),
+                        reason: "could not determine crowdb-rpc endpoint".into(),
+                    })?
+            } else {
+                replica.endpoint.clone()
+            };
+            members.push(GroupMember {
+                replica_id: replica.replica_id,
+                node_id: replica.node_id,
+                endpoint,
+                voting: replica.voting,
+            });
+        }
+        let created = authority
+            .create(store_id, group_id, members)
+            .await
+            .map_err(Error::from)?;
+        authority.complete(&created).await.map_err(Error::from)?
+    };
+    let requested = canonical_members(requested).map_err(|reason| Error::Validation {
+        field: "members".into(),
+        message: reason,
+    })?;
+    if matches!(
+        current.record().installation,
+        GroupMembershipState::Installing { .. }
+    ) {
+        if current.record().members == requested {
+            // A previous coordinator may have lost its reply after the
+            // Group-0 CAS. Reuse the exact Installing successor so fan-out
+            // can resume without creating another epoch.
+            return Ok(current);
+        }
+        return Err(Error::Conflict {
+            kind: "logical membership installation".into(),
+            id: format!("{store_id}/{group_id}"),
+        });
+    }
+    authority
+        .begin_change(store_id, group_id, current.record().epoch, requested)
+        .await
+        .map_err(Error::from)
 }
 
 /// List replicas in a group from group-0 sysdata.

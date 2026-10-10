@@ -525,6 +525,7 @@ class Crowdbtree
     // O(1)), so this is safe to poll periodically (e.g. from a metrics
     // scrape or console panel refresh).
     [[nodiscard]] EngineStats stats() const;
+    [[nodiscard]] TreeSummary tree_summary() const;
 
     // Destructive read of the per-step scan profile since the last call: flushes
     // the scan LatencySummary/Counter handles and returns per-step sum/max/avg.
@@ -614,6 +615,8 @@ class Crowdbtree
     void                  maybe_split_or_merge_locked(uint64_t page_id); // dispatch on leaf size
     void                  set_children_parent_locked(uint64_t page_id, uint64_t parent_page_id);
     void                  store_preserving_parent_locked(uint64_t page_id, PageBase *new_page);
+    void                  refresh_page_summary_locked(PageBase *page);
+    void                  refresh_subtree_summaries_locked(uint64_t page_id);
     void                  sync_page_count_gauges();
     std::vector<uint64_t> path_to_page_id_locked(uint64_t target_page_id) const;
     void                  split_leaf_to_threshold_locked(uint64_t leaf_page_id);
@@ -797,8 +800,17 @@ class Crowdbtree
     // Live leaf/inner page counts (O(1) gauges, maintained at SMO sites and
     // restored from the commit anchor on open()). See leaf_count_atomic() /
     // inner_count_atomic(). An empty tree starts at leaf=1 (root leaf), inner=0.
-    std::atomic<uint64_t> leaf_count_{1};
-    std::atomic<uint64_t> inner_count_{0};
+    std::atomic<uint64_t>         leaf_count_{1};
+    std::atomic<uint64_t>         inner_count_{0};
+    mutable std::atomic<uint64_t> summary_root_version_{0};
+    mutable std::atomic<uint64_t> summary_covered_slot_{0};
+    mutable std::atomic<uint64_t> summary_live_kv_{0};
+    mutable std::atomic<uint64_t> summary_live_key_bytes_{0};
+    mutable std::atomic<uint64_t> summary_live_value_bytes_{0};
+    mutable std::atomic<uint64_t> summary_reachable_overflow_pages_{0};
+    mutable std::atomic<uint64_t> summary_reachable_page_capacity_bytes_{0};
+    mutable std::atomic<uint64_t> summary_live_logical_bytes_{0};
+    mutable std::atomic<bool>     summary_available_{false};
 
     // Logical clock for CLOCK-informed eviction ranking (plan-tree #17).
     // `resident()`'s hot path bumps this and stamps the touched page's own

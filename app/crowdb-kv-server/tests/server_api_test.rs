@@ -634,6 +634,95 @@ async fn batch_add_remote_replicas_from_topology() {
 }
 
 #[tokio::test]
+async fn stale_membership_epoch_rejected_before_persistence() {
+    let server = start_server().await;
+    let response = client()
+        .post(format!("{}/stores/0/groups/1/remotes", server.base_url()))
+        .header("x-crowdb-membership-epoch", "99")
+        .json(&serde_json::json!([{
+            "replica_id": 2,
+            "endpoint": "127.0.0.1:19999",
+            "voting": true
+        }]))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 409);
+
+    let remotes: Value = client()
+        .get(format!("{}/stores/0/groups/1/remotes", server.base_url()))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(remotes["remotes"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn membership_epoch_replay_is_idempotent_but_conflicting_payload_is_rejected() {
+    let server = start_server().await;
+    let path = format!("{}/stores/0/groups/1/remotes", server.base_url());
+    let remote = serde_json::json!([{
+        "replica_id": 2,
+        "endpoint": "127.0.0.1:19999",
+        "voting": true
+    }]);
+
+    let first = client()
+        .post(&path)
+        .header("x-crowdb-membership-epoch", "1")
+        .json(&remote)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.status(), 200);
+
+    let replay = client()
+        .post(&path)
+        .header("x-crowdb-membership-epoch", "1")
+        .json(&remote)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(replay.status(), 200);
+
+    let conflicting = client()
+        .post(&path)
+        .header("x-crowdb-membership-epoch", "1")
+        .json(&serde_json::json!([{
+            "replica_id": 2,
+            "endpoint": "127.0.0.1:29999",
+            "voting": true
+        }]))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(conflicting.status(), 409);
+
+    let remotes: Value = client().get(&path).send().await.unwrap().json().await.unwrap();
+    assert_eq!(remotes["remotes"][0]["endpoint"], "127.0.0.1:19999");
+}
+
+#[tokio::test]
+async fn new_replica_bootstrap_accepts_authority_epoch_two_from_local_epoch_zero() {
+    let server = start_server().await;
+    let response = client()
+        .post(format!("{}/stores/0/groups/1/remotes", server.base_url()))
+        .header("x-crowdb-membership-epoch", "2")
+        .json(&serde_json::json!([{
+            "replica_id": 2,
+            "endpoint": "127.0.0.1:19999",
+            "voting": true
+        }]))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+}
+
+#[tokio::test]
 async fn progressive_setup_multiple_stores_groups_replicas() {
     let server = start_server().await;
 

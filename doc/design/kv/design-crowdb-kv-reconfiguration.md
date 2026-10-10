@@ -59,6 +59,23 @@ A membership mutation is applied to one node per HTTP call. Between the first no
 
 This is a deliberate availability/safety trade-off: writes stall for the cluster-wide duration of the fan-out (one HTTP round-trip per node), then resume immediately. The stall is bounded, self-healing, and loudly visible in the `epoch_mismatch` response bit rather than silently using a stale quorum.
 
+### 2.2 Group-0 complete membership authority
+
+Group 0 keeps one authoritative JSON record at `/kv/members/{store}/{group}`.
+The record contains the complete ordered member list, a positive monotonic
+epoch, and either `Installing { previous_members }` or `Ready`. A console
+membership change first CAS-publishes the complete successor at
+`current_epoch + 1` in `Installing`; peer wiring and consensus fencing then
+use that exact successor before the record is CAS-completed to `Ready`.
+
+The management endpoints carry `x-crowdb-membership-epoch`. A successor
+request is accepted only for the authorized next epoch. A replay at the
+already-installed epoch succeeds only when its remote payload matches the
+existing configuration exactly; a different payload returns HTTP 409 before
+the config file or running group is changed. This protects persistence and
+publication as one guarded operation while allowing a lost response to be
+retried safely.
+
 ---
 
 ## 3. New-Member Bootstrap

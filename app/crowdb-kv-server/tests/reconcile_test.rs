@@ -12,8 +12,9 @@ use crowdb_kv::cluster::group::PxGroup;
 use crowdb_kv::cluster::local_replica::{PxLocalReplica, PxLocalReplicaRole};
 use crowdb_kv::cluster::px_kv_store::PxKvStore;
 use crowdb_kv::common::config::CrowDBConfig;
-use crowdb_kv_server::recovery::reconcile::{plan_reconcile, ReplicaRecord};
+use crowdb_kv_server::recovery::reconcile::{expand_membership_records, plan_reconcile, ReplicaRecord};
 use crowdb_kv_server::store_registry::KvStoreRegistry;
+use crowdb_protocol::kv_membership::{GroupMember, GroupMembership, GroupMembershipState};
 
 fn client() -> reqwest::Client {
     reqwest::Client::new()
@@ -169,6 +170,34 @@ fn plan_reconcile_skips_missing_local_group() {
     ];
     let plan = plan_reconcile(&records, &registry);
     assert!(plan.is_empty());
+}
+
+#[test]
+fn installing_membership_keeps_previous_participants_in_recovery_scope() {
+    let membership = GroupMembership {
+        store_id: 4,
+        group_id: 5,
+        epoch: 9,
+        members: vec![GroupMember {
+            replica_id: 2,
+            node_id: 2,
+            endpoint: "127.0.0.1:10002".into(),
+            voting: true,
+        }],
+        installation: GroupMembershipState::Installing {
+            previous_members: vec![GroupMember {
+                replica_id: 1,
+                node_id: 1,
+                endpoint: "127.0.0.1:10001".into(),
+                voting: true,
+            }],
+        },
+    };
+    let records = expand_membership_records(membership);
+    assert_eq!(
+        records.iter().map(|record| record.replica_id).collect::<Vec<_>>(),
+        vec![2, 1]
+    );
 }
 
 #[tokio::test]

@@ -154,6 +154,10 @@ function TopologyCanvasInner({ active = true, scope, allServers, racks, nodes, s
   const fitRafIdRef = useRef<number | undefined>(undefined);
   const lastCanvasSizeRef = useRef('');
   const [collapsedByDomain, setCollapsedByDomain] = useState<Partial<Record<Domain, Set<string>>>>({});
+  const hasUsableCanvas = useCallback(() => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    return !!rect && Number.isFinite(rect.width) && Number.isFinite(rect.height) && rect.width > 0 && rect.height > 0;
+  }, []);
   useEffect(() => {
     const element = canvasRef.current;
     if (!element) return;
@@ -272,8 +276,12 @@ function TopologyCanvasInner({ active = true, scope, allServers, racks, nodes, s
     // dimensions — newly added nodes lack width/height on the first frame,
     // so a single rAF fitView would ignore them and never re-fit.
     const tryFit = () => {
+      if (!hasUsableCanvas()) {
+        fitRafIdRef.current = requestAnimationFrame(tryFit);
+        return;
+      }
       const savedViewport = viewportsRef.current[domain];
-      if (savedViewport) {
+      if (savedViewport && [savedViewport.x, savedViewport.y, savedViewport.zoom].every(Number.isFinite)) {
         void setViewport(savedViewport, { duration: 250 });
         fitRafIdRef.current = undefined;
         return;
@@ -292,13 +300,13 @@ function TopologyCanvasInner({ active = true, scope, allServers, racks, nodes, s
       fitRafIdRef.current = undefined;
     };
     fitRafIdRef.current = requestAnimationFrame(tryFit);
-  }, [active, returning, fitView, getNodes, nodesInitialized, positioned.nodes, setViewport, domain, refreshToken, viewportWidthKey, canvasSizeKey]);
+  }, [active, returning, fitView, getNodes, hasUsableCanvas, nodesInitialized, positioned.nodes, setViewport, domain, refreshToken, viewportWidthKey, canvasSizeKey]);
 
   // ReactFlow can finish measuring its viewport one tick after a domain tab
   // becomes visible. A delayed fit closes that gap and prevents the viewport
   // calculated while the panel was hidden from surviving a tab return.
   useEffect(() => {
-    if (!active || !nodesInitialized || positioned.nodes.length === 0) return;
+    if (!active || !nodesInitialized || positioned.nodes.length === 0 || !hasUsableCanvas()) return;
     const timer = window.setTimeout(() => {
       viewportsRef.current[domain] = undefined;
       fittedOnceRef.current[domain] = false;
@@ -306,7 +314,7 @@ function TopologyCanvasInner({ active = true, scope, allServers, racks, nodes, s
       fittedOnceRef.current[domain] = true;
     }, 180);
     return () => window.clearTimeout(timer);
-  }, [active, canvasSizeKey, domain, fitView, nodesInitialized, positioned.nodes.length]);
+  }, [active, canvasSizeKey, domain, fitView, hasUsableCanvas, nodesInitialized, positioned.nodes.length]);
 
   const selId = selectedEntity ? selectedNodeId(selectedEntity) : null;
   const activateNode = useCallback((node: Node) => {

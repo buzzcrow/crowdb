@@ -719,7 +719,130 @@ void Crowdbtree::store_preserving_parent_locked(uint64_t page_id, PageBase *new_
         new_page->parent_page_id = old->parent_page_id;
         preserve_native_page_locked(page_id, old);
     }
+    refresh_page_summary_locked(new_page);
     mapping_.store(page_id, new_page);
+    uint64_t parent_id = new_page->parent_page_id;
+    while (parent_id != kInvalidPageId) {
+        PageBase *parent = resident(parent_id);
+        if (parent == nullptr || parent->type != page_type::kInnerBase) {
+            break;
+        }
+        refresh_page_summary_locked(parent);
+        const uint64_t next_parent = parent->parent_page_id;
+        mapping_.store(parent_id, parent);
+        parent_id = next_parent;
+    }
+}
+
+void Crowdbtree::refresh_page_summary_locked(PageBase *page)
+{
+    if (page == nullptr) {
+        return;
+    }
+    if (page->type == page_type::kLeafBase) {
+        auto *leaf = static_cast<LeafBase *>(page);
+        PageSummary summary = leaf->summary();
+        if (leaf->view().delta_count() != 0) {
+            summary.exact = false;
+        }
+        summary.reachable_leaf_pages = 1;
+        summary.reachable_inner_pages = 0;
+        summary.reachable_page_capacity_bytes = leaf->page_bytes();
+        leaf->set_summary(summary);
+        return;
+    }
+    if (page->type == page_type::kOverflowFrame) {
+        auto *overflow = static_cast<OverflowBase *>(page);
+        PageSummary summary;
+        summary.reachable_overflow_pages = 1;
+        summary.reachable_page_capacity_bytes = overflow->page_bytes();
+        summary.exact = true;
+        overflow->set_summary(summary);
+        return;
+    }
+    if (page->type != page_type::kInnerBase) {
+        return;
+    }
+    PageSummary aggregate;
+    aggregate.reachable_inner_pages = 1;
+    aggregate.reachable_page_capacity_bytes = static_cast<InnerBase *>(page)->page_bytes();
+    aggregate.exact = true;
+    for (uint64_t child_id : static_cast<InnerBase *>(page)->children()) {
+        PageBase *child = resident(child_id);
+        if (child == nullptr) {
+            aggregate.exact = false;
+            continue;
+        }
+        PageBase *base = child;
+        while (base->type == page_type::kBatchDelta && base->next != nullptr) {
+            base = base->next;
+        }
+        PageSummary child_summary;
+        if (base->type == page_type::kLeafBase) {
+            child_summary = static_cast<LeafBase *>(base)->summary();
+        }
+        else if (base->type == page_type::kInnerBase) {
+            child_summary = static_cast<InnerBase *>(base)->summary();
+        }
+        else {
+            aggregate.exact = false;
+            continue;
+        }
+        aggregate.live_kv += child_summary.live_kv;
+        aggregate.live_key_bytes += child_summary.live_key_bytes;
+        aggregate.live_value_bytes += child_summary.live_value_bytes;
+        aggregate.live_logical_bytes += child_summary.live_logical_bytes;
+        aggregate.reachable_leaf_pages += child_summary.reachable_leaf_pages;
+        aggregate.reachable_inner_pages += child_summary.reachable_inner_pages;
+        aggregate.reachable_overflow_pages += child_summary.reachable_overflow_pages;
+        aggregate.reachable_page_capacity_bytes += child_summary.reachable_page_capacity_bytes;
+        aggregate.exact = aggregate.exact && child_summary.exact;
+    }
+    static_cast<InnerBase *>(page)->set_summary(aggregate);
+}
+
+void Crowdbtree::refresh_subtree_summaries_locked(uint64_t page_id)
+{
+    PageBase *page = resident(page_id);
+    if (page == nullptr) {
+        return;
+    }
+    PageBase *base = page;
+    while (base->type == page_type::kBatchDelta && base->next != nullptr) {
+        base = base->next;
+    }
+    if (base->type == page_type::kInnerBase) {
+        for (uint64_t child : static_cast<InnerBase *>(base)->children()) {
+            refresh_subtree_summaries_locked(child);
+        }
+    }
+    PageSummary before;
+    if (base->type == page_type::kLeafBase) {
+        before = static_cast<LeafBase *>(base)->summary();
+    }
+    else if (base->type == page_type::kInnerBase) {
+        before = static_cast<InnerBase *>(base)->summary();
+    }
+    refresh_page_summary_locked(base);
+    PageSummary after;
+    if (base->type == page_type::kLeafBase) {
+        after = static_cast<LeafBase *>(base)->summary();
+    }
+    else if (base->type == page_type::kInnerBase) {
+        after = static_cast<InnerBase *>(base)->summary();
+    }
+    const bool changed = before.live_kv != after.live_kv || before.live_key_bytes != after.live_key_bytes ||
+                         before.live_value_bytes != after.live_value_bytes ||
+                         before.live_logical_bytes != after.live_logical_bytes ||
+                         before.reachable_leaf_pages != after.reachable_leaf_pages ||
+                         before.reachable_inner_pages != after.reachable_inner_pages ||
+                         before.reachable_overflow_pages != after.reachable_overflow_pages ||
+                         before.reachable_page_capacity_bytes != after.reachable_page_capacity_bytes ||
+                         before.exact != after.exact;
+    if (changed) {
+        base->durable_addr = kNoAddr;
+        mapping_.store(base->page_id, base);
+    }
 }
 
 std::vector<uint64_t> Crowdbtree::path_to_page_id_locked(uint64_t target_page_id) const
@@ -874,6 +997,7 @@ void Crowdbtree::split_leaf_locked(uint64_t leaf_page_id, std::vector<uint64_t> 
     // whole path is repointed do we shrink `leaf_page_id` to the lower half.
     uint64_t  right_page_id = mapping_.allocate_page_id();
     LeafBase *right         = LeafBase::build(hi, leaf->right_sibling(), pool_, opt_.frame_bytes);
+    refresh_page_summary_locked(right);
     mapping_.store(right_page_id, right);
     propagate_split_locked(std::move(path), leaf_page_id, std::move(sep), right_page_id);
 
@@ -890,8 +1014,9 @@ void Crowdbtree::propagate_split_locked(std::vector<uint64_t> path, uint64_t chi
     if (path.empty()) {
         // child was the root: grow a new root one level up.
         uint64_t new_root = mapping_.allocate_page_id();
-        mapping_.store(new_root,
-                       InnerBase::build({std::move(sep)}, {child_page_id, right_page_id}, pool_, opt_.frame_bytes));
+        InnerBase *root = InnerBase::build({std::move(sep)}, {child_page_id, right_page_id}, pool_, opt_.frame_bytes);
+        refresh_page_summary_locked(root);
+        mapping_.store(new_root, root);
         root_page_id_.store(new_root);
         // O4: set parent pointers on the new root's children.
         set_children_parent_locked(new_root, new_root);
@@ -935,7 +1060,9 @@ void Crowdbtree::propagate_split_locked(std::vector<uint64_t> path, uint64_t chi
 
     uint64_t rinner_page_id = mapping_.allocate_page_id();
     store_preserving_parent_locked(parent_page_id, InnerBase::build(lseps, lchildren, pool_, opt_.frame_bytes));
-    mapping_.store(rinner_page_id, InnerBase::build(rseps, rchildren, pool_, opt_.frame_bytes));
+    InnerBase *rinner = InnerBase::build(rseps, rchildren, pool_, opt_.frame_bytes);
+    refresh_page_summary_locked(rinner);
+    mapping_.store(rinner_page_id, rinner);
     retire_page(parent);
     // O4: set parent pointers on children of both split inner pages.
     set_children_parent_locked(parent_page_id, parent_page_id);
@@ -3657,6 +3784,23 @@ EngineStats Crowdbtree::stats() const
     return s;
 }
 
+TreeSummary Crowdbtree::tree_summary() const
+{
+    TreeSummary s;
+    s.root_version                  = summary_root_version_.load(std::memory_order_acquire);
+    s.covered_slot                  = summary_covered_slot_.load(std::memory_order_acquire);
+    s.live_kv                       = summary_live_kv_.load(std::memory_order_acquire);
+    s.live_key_bytes                = summary_live_key_bytes_.load(std::memory_order_acquire);
+    s.live_value_bytes              = summary_live_value_bytes_.load(std::memory_order_acquire);
+    s.reachable_leaf_pages          = leaf_count_.load(std::memory_order_relaxed);
+    s.reachable_inner_pages         = inner_count_.load(std::memory_order_relaxed);
+    s.reachable_overflow_pages      = summary_reachable_overflow_pages_.load(std::memory_order_acquire);
+    s.reachable_page_capacity_bytes = summary_reachable_page_capacity_bytes_.load(std::memory_order_acquire);
+    s.live_logical_bytes            = summary_live_logical_bytes_.load(std::memory_order_acquire);
+    s.exact                         = summary_available_.load(std::memory_order_acquire);
+    return s;
+}
+
 ScanProfile Crowdbtree::scan_profile() const
 {
     ScanProfile p;
@@ -4122,6 +4266,7 @@ uint64_t Crowdbtree::spill_value_to_overflow_chain_locked(const std::string &val
         uint32_t      len  = static_cast<uint32_t>(std::min<size_t>(cap, n - off));
         OverflowBase *page = OverflowBase::build(next, reinterpret_cast<const uint8_t *>(value.data() + off), len,
                                                  pool_, opt_.frame_bytes);
+        refresh_page_summary_locked(page);
         mapping_.store(pids[i], page);
         next = pids[i];
     }

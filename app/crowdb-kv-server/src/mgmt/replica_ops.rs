@@ -4,7 +4,7 @@
 //! Replica management endpoints: list, add, remove, batch-add remote replicas.
 
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use tracing::{debug, info};
 
@@ -42,7 +42,6 @@ pub(super) async fn list_remote_replicas(
             format!("group {gid} not found in store {sid}"),
         )
     })?;
-
     let remotes: Vec<RemoteReplicaInfo> = group
         .remote_replica_info()
         .into_iter()
@@ -74,6 +73,7 @@ pub(super) async fn list_remote_replicas(
 pub(super) async fn add_remote_replicas(
     State(state): State<RegistryArc>,
     Path((sid, gid)): Path<(u64, u64)>,
+    headers: HeaderMap,
     Json(remotes): Json<Vec<RemoteReplicaInfo>>,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
     let store = state
@@ -85,6 +85,9 @@ pub(super) async fn add_remote_replicas(
             format!("group {gid} not found in store {sid}"),
         )
     })?;
+    let membership_guard = store.membership_guard(gid);
+    let _membership_guard = membership_guard.lock().await;
+    let expected_epoch = check_expected_epoch(&headers, group.membership_epoch())?;
 
     let local_id = group.local_replica().id;
     for r in &remotes {
@@ -97,6 +100,18 @@ pub(super) async fn add_remote_replicas(
                 ),
             ));
         }
+    }
+    if expected_epoch == Some(group.membership_epoch()) {
+        if remotes_match_existing(&group, &remotes) {
+            return Ok(StatusCode::OK);
+        }
+        return Err(err_json(
+            StatusCode::CONFLICT,
+            format!(
+                "membership epoch {} already has a different configuration",
+                group.membership_epoch()
+            ),
+        ));
     }
 
     debug!(
@@ -120,6 +135,10 @@ pub(super) async fn add_remote_replicas(
         .map(|r| (r.replica_id, r.endpoint.clone(), r.voting))
         .collect();
     let new_group = rebuild_group_with_new_remotes(&group, &new_remotes);
+    let new_group = new_group;
+    if let Some(epoch) = expected_epoch {
+        new_group.set_membership_epoch(epoch);
+    }
     new_group.local_replica().set_endpoint(
         store
             .listen_addr()
@@ -161,6 +180,7 @@ pub(super) async fn add_remote_replicas(
 pub(super) async fn remove_remote_replica(
     State(state): State<RegistryArc>,
     Path((sid, gid, rid)): Path<(u64, u64, u64)>,
+    headers: HeaderMap,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
     let store = state
         .get_store(sid)
@@ -171,6 +191,9 @@ pub(super) async fn remove_remote_replica(
             format!("group {gid} not found in store {sid}"),
         )
     })?;
+    let membership_guard = store.membership_guard(gid);
+    let _membership_guard = membership_guard.lock().await;
+    let expected_epoch = check_expected_epoch(&headers, group.membership_epoch())?;
 
     let local_id = group.local_replica().id;
     if rid == local_id {
@@ -183,9 +206,21 @@ pub(super) async fn remove_remote_replica(
     // Check if remote exists
     let exists = group.remote_replica_info().iter().any(|(id, _, _)| *id == rid);
     if !exists {
+        if expected_epoch == Some(group.membership_epoch()) {
+            return Ok(StatusCode::OK);
+        }
         return Err(err_json(
             StatusCode::NOT_FOUND,
             format!("remote replica {rid} not found in group {gid}"),
+        ));
+    }
+    if expected_epoch == Some(group.membership_epoch()) {
+        return Err(err_json(
+            StatusCode::CONFLICT,
+            format!(
+                "membership epoch {} already has a different configuration",
+                group.membership_epoch()
+            ),
         ));
     }
 
@@ -211,6 +246,9 @@ pub(super) async fn remove_remote_replica(
             .collect(),
     );
     new_group.remove_remote_replica(rid);
+    if let Some(epoch) = expected_epoch {
+        new_group.set_membership_epoch(epoch);
+    }
     let current_term = group.local_replica().current_term_snapshot();
     if new_group.quorum() == 1 {
         new_group.local_replica().become_leader();
@@ -260,6 +298,7 @@ pub(super) async fn remove_remote_replica(
 pub(super) async fn batch_add_remote_replicas(
     State(state): State<RegistryArc>,
     Path((sid, gid)): Path<(u64, u64)>,
+    headers: HeaderMap,
     Json(topology): Json<TopologyResponse>,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
     let store = state
@@ -271,6 +310,9 @@ pub(super) async fn batch_add_remote_replicas(
             format!("group {gid} not found in store {sid}"),
         )
     })?;
+    let membership_guard = store.membership_guard(gid);
+    let _membership_guard = membership_guard.lock().await;
+    let expected_epoch = check_expected_epoch(&headers, group.membership_epoch())?;
 
     let local_id = group.local_replica().id;
     let mut new_remotes = Vec::new();
@@ -295,6 +337,18 @@ pub(super) async fn batch_add_remote_replicas(
         info!(s = sid, g = gid, "batch add remotes: no new remotes to add");
         return Ok(StatusCode::OK);
     }
+    if expected_epoch == Some(group.membership_epoch()) {
+        if remotes_match_existing(&group, &new_remotes) {
+            return Ok(StatusCode::OK);
+        }
+        return Err(err_json(
+            StatusCode::CONFLICT,
+            format!(
+                "membership epoch {} already has a different configuration",
+                group.membership_epoch()
+            ),
+        ));
+    }
 
     debug!(
         s = sid,
@@ -317,6 +371,10 @@ pub(super) async fn batch_add_remote_replicas(
         .map(|r| (r.replica_id, r.endpoint.clone(), r.voting))
         .collect();
     let new_group = rebuild_group_with_new_remotes(&group, &remotes_tuple);
+    let new_group = new_group;
+    if let Some(epoch) = expected_epoch {
+        new_group.set_membership_epoch(epoch);
+    }
     new_group.local_replica().set_endpoint(
         store
             .listen_addr()
@@ -338,4 +396,47 @@ pub(super) async fn batch_add_remote_replicas(
         "batch remote replicas added via management API"
     );
     Ok(StatusCode::OK)
+}
+
+const MEMBERSHIP_EPOCH_HEADER: &str = "x-crowdb-membership-epoch";
+
+pub(super) fn check_expected_epoch(
+    headers: &HeaderMap,
+    actual: u64,
+) -> Result<Option<u64>, (StatusCode, Json<ErrorResponse>)> {
+    let Some(value) = headers.get(MEMBERSHIP_EPOCH_HEADER) else {
+        return Ok(None);
+    };
+    let expected = value
+        .to_str()
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or_else(|| err_json(StatusCode::BAD_REQUEST, "invalid membership epoch header"))?;
+    // A freshly-created replacement replica has no persisted peers yet, so
+    // it can legitimately join an already-advanced authority epoch. The
+    // endpoint callers pass the complete successor from Group 0; retain a
+    // narrow bootstrap allowance for a newly-created replica (the supported
+    // membership size is at most seven voters) while still rejecting
+    // arbitrary jumps such as stale requests with epoch 99.
+    if expected != actual
+        && expected != actual.saturating_add(1)
+        && !(actual == 0 && (2..=8).contains(&expected))
+    {
+        return Err(err_json(
+            StatusCode::CONFLICT,
+            format!("membership epoch conflict: expected {expected}, actual {actual}"),
+        ));
+    }
+    Ok(Some(expected))
+}
+
+fn remotes_match_existing(group: &crowdb_kv::cluster::group::PxGroup, remotes: &[RemoteReplicaInfo]) -> bool {
+    let existing = group.remote_replica_info();
+    remotes.iter().all(|requested| {
+        existing.iter().any(|(id, endpoint, voting)| {
+            *id == requested.replica_id
+                && *endpoint == requested.endpoint.as_str()
+                && *voting == requested.voting
+        })
+    })
 }

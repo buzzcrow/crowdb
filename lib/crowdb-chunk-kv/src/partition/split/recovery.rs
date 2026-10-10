@@ -13,6 +13,7 @@ impl Partition {
     ///
     /// # Errors
     /// Rejects a conflicting plan, child artifact or parent replay frontier.
+    #[allow(clippy::too_many_lines)]
     pub async fn resume_split_child_session(
         &self,
         plan: crate::SplitPlan,
@@ -70,6 +71,10 @@ impl Partition {
             child: child_artifact.clone(),
         };
         super::super::validate_split_artifact(&plan, &artifact, artifact.cutover_seq)?;
+        child
+            .tree
+            .force_advance_split_frontier(artifact.cutover_seq)
+            .await?;
         child.activate_local_split_writer(&artifact)?;
         {
             let mut current = self.split_transition.lock().await;
@@ -84,6 +89,13 @@ impl Partition {
             });
         }
         self.install_child_split_ingress(&plan, child.clone()).await?;
+        super::stable_session::finish_child_inheritance(
+            self.tree.as_ref(),
+            &plan,
+            &artifact,
+            child.tree.as_ref(),
+        )
+        .await?;
         self.lifecycle.store(
             super::super::lifecycle_code(crate::PartitionLifecycle::SplitFinalizing),
             std::sync::atomic::Ordering::Release,

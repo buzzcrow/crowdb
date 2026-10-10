@@ -51,6 +51,12 @@ pub fn map_config_err(e: Error) -> (StatusCode, Json<ErrorBody>) {
     let msg = format!("{e}");
     match e {
         Error::Conflict { .. } => (StatusCode::CONFLICT, Json(ErrorBody { error: msg })),
+        Error::UpstreamRpc { ref status, .. } if status.contains("HTTP 409") => {
+            (StatusCode::CONFLICT, Json(ErrorBody { error: msg }))
+        }
+        Error::KvClient(crowdb_kv_client::Error::MembershipConflict { .. }) => {
+            (StatusCode::CONFLICT, Json(ErrorBody { error: msg }))
+        }
         Error::NotFound { .. } => (StatusCode::NOT_FOUND, Json(ErrorBody { error: msg })),
         Error::Validation { .. } => err_400(msg),
         _ => err_500(msg),

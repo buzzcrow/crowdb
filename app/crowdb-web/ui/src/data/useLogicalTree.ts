@@ -57,10 +57,13 @@ export function useLogicalTree({
   const isActiveRef = useRef(true);
   const pollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const hasLoadedRef = useRef(false);
+  const requestIdRef = useRef(0);
 
   // Fetch logical tree data
   const fetchData = useCallback(async () => {
     if (!enabled) return;
+    const requestId = ++requestIdRef.current;
+    const isCurrent = () => requestId === requestIdRef.current;
 
     try {
       // Only show loading state on the initial fetch; subsequent polls
@@ -76,6 +79,7 @@ export function useLogicalTree({
       // Fetch stores with recursive depth
       const storesData = await listStores(recursive);
       const sourceStores = Array.isArray(storesData) ? storesData : [];
+      if (!isCurrent()) return;
 
       // Group identities come from the authoritative catalog. Show them before
       // optional replica observations: one stopped member must not hide healthy
@@ -136,6 +140,7 @@ export function useLogicalTree({
           };
         }),
       );
+      if (!isCurrent()) return;
 
       for (const store of enrichedStores) {
         allGroups.push(...store.groups);
@@ -151,13 +156,16 @@ export function useLogicalTree({
       setReplicas(allReplicas);
       setError(null);
     } catch (err) {
+      if (!isCurrent()) return;
       setStores([]);
       setGroups([]);
       setReplicas([]);
       setError(err instanceof Error ? err : new Error('Unknown error fetching logical tree'));
     } finally {
-      hasLoadedRef.current = true;
-      setLoading(false);
+      if (isCurrent()) {
+        hasLoadedRef.current = true;
+        setLoading(false);
+      }
     }
   }, [enabled, recursive, managed]);
 

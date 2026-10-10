@@ -281,6 +281,10 @@ pub struct ChunkKvExtra {
 pub struct ChunkKvPartitionLoad {
     pub partition_id: crate::chunk_kv::Id128,
     pub durable_bytes: u64,
+    #[serde(default)]
+    pub logical_bytes: u64,
+    #[serde(default)]
+    pub logical_metrics_exact: bool,
     pub live_byte_samples: Vec<(Vec<u8>, u64)>,
     #[serde(default)]
     pub independently_recoverable: bool,

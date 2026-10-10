@@ -614,6 +614,8 @@ async fn assert_chunk_kv_split_plan(target_partitions_per_owner: u32, target_par
                     partition_loads: vec![ChunkKvPartitionLoad {
                         partition_id,
                         durable_bytes: 600,
+                        logical_bytes: 600,
+                        logical_metrics_exact: true,
                         live_byte_samples: vec![
                             (b"a".to_vec(), 100),
                             (b"m".to_vec(), 400),
@@ -827,6 +829,8 @@ async fn put_balance_fixture(control: &Group0ControlPlane) {
         .map(|partition_id| ChunkKvPartitionLoad {
             partition_id: *partition_id,
             durable_bytes: 100,
+            logical_bytes: 0,
+            logical_metrics_exact: false,
             live_byte_samples: vec![(b"a".to_vec(), 100)],
             independently_recoverable: true,
         })

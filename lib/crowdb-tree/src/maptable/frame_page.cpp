@@ -83,6 +83,38 @@ void frame_set_inner_fence_pages(uint8_t *f, uint32_t page_bytes, uint64_t lower
     stamp_trailer(f, page_bytes);
 }
 
+PageSummary frame_summary(const uint8_t *f)
+{
+    PageSummary out;
+    if (f == nullptr || f[fh::kFormatVersion] != kFrameVersion || f[fh::kSummaryFlags] == 0) {
+        return out;
+    }
+    out.live_kv = frame_u64(f, fh::kSummaryLiveKv);
+    out.live_key_bytes = frame_u64(f, fh::kSummaryLiveKeyBytes);
+    out.live_value_bytes = frame_u64(f, fh::kSummaryLiveValueBytes);
+    out.live_logical_bytes = frame_u64(f, fh::kSummaryLiveLogicalBytes);
+    out.reachable_leaf_pages = frame_u64(f, fh::kSummaryLeafPages);
+    out.reachable_inner_pages = frame_u64(f, fh::kSummaryInnerPages);
+    out.reachable_overflow_pages = frame_u64(f, fh::kSummaryOverflowPages);
+    out.reachable_page_capacity_bytes = frame_u64(f, fh::kSummaryPageCapacityBytes);
+    out.exact = true;
+    return out;
+}
+
+void frame_set_summary(uint8_t *f, uint32_t page_bytes, const PageSummary &summary)
+{
+    frame_put_u64(f, fh::kSummaryLiveKv, summary.live_kv);
+    frame_put_u64(f, fh::kSummaryLiveKeyBytes, summary.live_key_bytes);
+    frame_put_u64(f, fh::kSummaryLiveValueBytes, summary.live_value_bytes);
+    frame_put_u64(f, fh::kSummaryLiveLogicalBytes, summary.live_logical_bytes);
+    frame_put_u64(f, fh::kSummaryLeafPages, summary.reachable_leaf_pages);
+    frame_put_u64(f, fh::kSummaryInnerPages, summary.reachable_inner_pages);
+    frame_put_u64(f, fh::kSummaryOverflowPages, summary.reachable_overflow_pages);
+    frame_put_u64(f, fh::kSummaryPageCapacityBytes, summary.reachable_page_capacity_bytes);
+    f[fh::kSummaryFlags] = summary.exact ? 1 : 0;
+    frame_restamp_crc(f, page_bytes);
+}
+
 bool frame_set_fences(uint8_t *f, uint32_t page_bytes, const Slice *lower, const Slice *upper)
 {
     if (f == nullptr || page_bytes <= kFrameHeaderSize + kFrameTrailerSize) {

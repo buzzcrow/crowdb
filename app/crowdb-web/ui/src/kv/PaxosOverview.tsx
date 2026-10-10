@@ -64,6 +64,7 @@ function GroupDetail({ group, selected }: { group: GroupView; selected: Selected
   const read = group.read_state;
   return <section className="tw-border tw-border-border tw-rounded tw-p-3 tw-space-y-3" data-testid="paxos-group-detail">
     <h3 className="tw-font-semibold">Store {group.store_id} / Group {group.group_id}</h3>
+    <p className="tw-text-sm">Membership: {group.membership_state ?? 'unknown'}{group.membership_epoch == null ? '' : ` · epoch ${group.membership_epoch}`}</p>
     {String(group.store_id) === '0' && String(group.group_id) === '0' && <p>System topology group · Data is read-only.</p>}
     <dl className="tw-grid tw-grid-cols-3 tw-gap-3 tw-text-sm">
       <div><dt>Read lease</dt><dd>{read ? (read.lease_valid ? 'Valid' : 'Invalid') : 'Unknown'}</dd></div>

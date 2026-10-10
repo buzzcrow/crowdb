@@ -19,7 +19,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crowdb_protocol::common::{GroupValue, ReplicaValue, StoreValue};
 use crowdb_protocol::common_type::{GroupId, ReplicaId, StoreId};
-use crowdb_protocol::key::{KvGroupKey, KvReplicaKey, KvStoreKey, TextKey};
+use crowdb_protocol::key::{KvGroupKey, KvGroupMembersKey, KvReplicaKey, KvStoreKey, TextKey};
+use crowdb_protocol::kv_membership::GroupMembership;
 use crowdb_protocol::mgmt::{
     AddGroupRequest, AddStoreRequest, GroupSummary, RemoteReplicaInfo, StepDownRequest, StepDownResult,
     StoreDetail, StoreSummary, SystemInitRequest, SystemInitResponse, WipeResult,
@@ -192,6 +193,12 @@ impl KVClusterMetaClient {
 
     /// Read a group record.
     pub async fn get_group(&self, store_id: StoreId, group_id: GroupId) -> Result<Option<GroupValue>> {
+        if get_json::<GroupMembership>(&self.kv, &KvGroupMembersKey { store_id, group_id }.to_path())
+            .await?
+            .is_some()
+        {
+            return Ok(Some(GroupValue { store_id, group_id }));
+        }
         let key = KvGroupKey { store_id, group_id };
         get_json(&self.kv, &key.to_path()).await
     }
@@ -208,9 +215,25 @@ impl KVClusterMetaClient {
     /// List all group records in a store (prefix scan
     /// `/kv/group/<store_id>/`).
     pub async fn list_groups_in_store(&self, store_id: StoreId) -> Result<Vec<GroupValue>> {
-        let entries =
-            scan_prefix::<GroupValue>(&self.kv, &KvGroupKey::text_prefix_for_store(store_id)).await?;
-        Ok(entries.into_iter().map(|(_, v)| v).collect())
+        let mut groups = std::collections::BTreeMap::new();
+        for (_, value) in
+            scan_prefix::<GroupValue>(&self.kv, &KvGroupKey::text_prefix_for_store(store_id)).await?
+        {
+            groups.insert(value.group_id, value);
+        }
+        for (_, membership) in
+            scan_prefix::<GroupMembership>(&self.kv, &KvGroupMembersKey::text_prefix_for_store(store_id))
+                .await?
+        {
+            groups.insert(
+                membership.group_id,
+                GroupValue {
+                    store_id,
+                    group_id: membership.group_id,
+                },
+            );
+        }
+        Ok(groups.into_values().collect())
     }
 
     /// List all group records in one Group 0 scan.
@@ -271,6 +294,23 @@ impl KVClusterMetaClient {
         store_id: StoreId,
         group_id: GroupId,
     ) -> Result<Vec<ReplicaValue>> {
+        if let Some(membership) =
+            get_json::<GroupMembership>(&self.kv, &KvGroupMembersKey { store_id, group_id }.to_path()).await?
+        {
+            return Ok(membership
+                .members
+                .into_iter()
+                .map(|member| ReplicaValue {
+                    store_id,
+                    group_id,
+                    replica_id: member.replica_id,
+                    node_id: member.node_id,
+                    role: String::new(),
+                    voting: member.voting,
+                    endpoint: member.endpoint,
+                })
+                .collect());
+        }
         let entries =
             scan_prefix::<ReplicaValue>(&self.kv, &KvReplicaKey::text_prefix_for_group(store_id, group_id))
                 .await?;

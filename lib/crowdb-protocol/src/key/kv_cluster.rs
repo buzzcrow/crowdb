@@ -100,6 +100,18 @@ pub struct KvGroupMembersKey {
     pub group_id: GroupId,
 }
 
+impl KvGroupMembersKey {
+    #[must_use]
+    pub fn prefix_all() -> String {
+        "/kv/members/".to_string()
+    }
+
+    #[must_use]
+    pub fn text_prefix_for_store(store_id: StoreId) -> String {
+        format!("/kv/members/{store_id}/")
+    }
+}
+
 impl TextKey for KvGroupMembersKey {
     const PATH_MAGIC: &'static str = "/kv";
     const PATH_TYPE: &'static str = "members";

@@ -459,7 +459,18 @@ async fn node_diskio_discovers_disk_groups_created_after_deployment() {
     body["kind"] = json!("diskio");
     call(&app, "POST", "/api/nodes/1/services/deploy", body).await;
     let registry = crowdb_kv_client::ServiceRegistryClient::from_shared(state.kv_client().await);
-    let initial = registry.read_all_diskio_instances().await.unwrap();
+    let initial = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
+        loop {
+            interval.tick().await;
+            let instances = registry.read_all_diskio_instances().await.unwrap();
+            if !instances.is_empty() {
+                break instances;
+            }
+        }
+    })
+    .await
+    .expect("node-local DiskIO registers after deployment");
     assert_eq!(initial.len(), 1);
     assert!(initial[0]
         .1

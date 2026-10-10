@@ -6,6 +6,7 @@
 use crowdb_kv_client::{BatchOp, Error as KvError, GetOutcome, ReadMode};
 use crowdb_protocol::common::{GroupValue, ReplicaValue, StoreValue};
 use crowdb_protocol::key::{KvGroupKey, KvReplicaKey, KvStoreKey, TextKey};
+use crowdb_protocol::kv_membership::GroupMember;
 
 use crate::error::{Error, Result};
 use crate::ops::OpContext;
@@ -28,6 +29,46 @@ pub(super) async fn group(
     group_id: u64,
     members: &[(u64, u64)],
 ) -> Result<()> {
+    let authority = ctx.membership();
+    let mut complete_members = Vec::with_capacity(members.len());
+    for (node_id, replica_id) in members {
+        let endpoint = ctx
+            .sysmd()
+            .read_all_kv_server_instances()
+            .await?
+            .into_iter()
+            .find_map(|(_, instance)| {
+                (instance
+                    .extra
+                    .as_ref()
+                    .and_then(|extra| extra.kv_server.as_ref())
+                    .and_then(|server| server.node_id)
+                    == Some(*node_id))
+                .then_some(instance.rpc_endpoint)
+            });
+        let endpoint = match endpoint {
+            Some(endpoint) => endpoint,
+            None => super::rpc_endpoint_for_store(ctx, *node_id, store_id)
+                .await
+                .ok_or_else(|| Error::Validation {
+                    field: "members.endpoint".into(),
+                    message: format!("node {node_id} has no KV endpoint for store {store_id}"),
+                })?,
+        };
+        complete_members.push(GroupMember {
+            replica_id: *replica_id,
+            node_id: *node_id,
+            endpoint,
+            voting: true,
+        });
+    }
+    // Publish Installing before the materialized topology projection. The
+    // projection remains useful to existing readers, but the complete record
+    // is the authority and is only marked Ready after all records commit.
+    let installing = authority
+        .create(store_id, group_id, complete_members)
+        .await
+        .map_err(Error::from)?;
     let key = KvGroupKey { store_id, group_id }.to_path();
     let value = GroupValue { store_id, group_id };
     let mut replicas: Vec<_> = members
@@ -46,12 +87,16 @@ pub(super) async fn group(
         batch.push(put(&path, replica)?);
     }
     match ctx.kv().batch_write_cas(0, 0, &batch, key.as_bytes(), 0).await {
-        Ok(_) => Ok(()),
+        Ok(_) => {
+            authority.complete(&installing).await.map_err(Error::from)?;
+            Ok(())
+        }
         Err(error @ (KvError::CasFailed { .. } | KvError::OutcomeUnknown)) => {
             let actual = ctx.sysmd().get_group(store_id, group_id).await?;
             let mut actual_replicas = ctx.sysmd().list_replicas_in_group(store_id, group_id).await?;
             actual_replicas.sort_unstable_by_key(|replica| replica.replica_id);
             if actual == Some(value) && actual_replicas == replicas {
+                authority.complete(&installing).await.map_err(Error::from)?;
                 Ok(())
             } else if actual.is_some() {
                 Err(Error::Conflict {

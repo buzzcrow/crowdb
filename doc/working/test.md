@@ -83,7 +83,7 @@ Measurement notes for this host:
   Start timing follow-up passes: ChunkDB 215ms, DiskIO 366ms, ChunkKV 789ms,
   Access 178ms (browser 9.2s, owned fixture 375.59s). The earlier recovery
   reached its listener after 3.15s. User-authorized native Start response
-  budget is now 5s; process/DOM assertions remain 3s. Full Console rerun now passes; R228/R229 remain deferred. Timing log:
+  budget is now 5s; process/DOM assertions remain 3s. Full Console rerun now passes; R229 remains deferred. Timing log:
   `.crowdb-runtime/artifacts/balance-policy-20261009/native-lifecycle-start-distribution.out`.
 
 - Previous full Console gate: 307 completed Rust cases pass, one native wrapper
@@ -117,7 +117,7 @@ Measurement notes for this host:
   captured wall-clock timer. Log:
   `.crowdb-runtime/artifacts/balance-policy-20261009/count-only-core.out`.
   Actual native Page/hidden-Weight acceptance passes (browser 2.3s, owned
-  cluster 345.98s); data-weight placement is deferred to R228, not marked passed.
+  cluster 345.98s); data-weight placement is covered by the completed tree metrics work.
 - Current S3 outage reproduction: exact node-3 case passes in 36.20s; full
   serial mini-cluster file fails 7/8 in 193.41s on node-1. Group 301 allocation
   contacts removed endpoint 11200 after ownership recovery. This is a stale
@@ -146,7 +146,7 @@ Measurement notes for this host:
   the intended new imbalance. Its real split inherited/current Journal browser
   case passes in 18.7 seconds. This is incomplete acceptance, not a Linux skip;
   logs are in `.crowdb-runtime/artifacts/balance-policy-20261009/` and the
-  statistics boundary is recorded for review in `plan-chunk-kv-cutover.md`.
+  statistics boundary is recorded with the completed tree metrics work.
 - The following earlier measurements describe the pre-balance baseline.
 - Full UI passes 225/225 in 306.98 seconds after its topology preparation
   checks current complete membership and matching terms instead of caching an

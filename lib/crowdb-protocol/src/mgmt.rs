@@ -416,6 +416,17 @@ pub struct CrowdbTreeStatsView {
     pub snapshot_total: u64,
     pub l1_get_total: u64,
     pub l1_get_hit_total: u64,
+    pub summary_root_version: u64,
+    pub summary_covered_slot: u64,
+    pub summary_live_kv: u64,
+    pub summary_live_key_bytes: u64,
+    pub summary_live_value_bytes: u64,
+    pub summary_reachable_leaf_pages: u64,
+    pub summary_reachable_inner_pages: u64,
+    pub summary_reachable_overflow_pages: u64,
+    pub summary_reachable_page_capacity_bytes: u64,
+    pub summary_live_logical_bytes: u64,
+    pub summary_exact: bool,
 }
 
 /// One remote replica within a `GroupStatus`.

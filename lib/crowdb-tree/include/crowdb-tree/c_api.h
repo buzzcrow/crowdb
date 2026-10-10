@@ -95,6 +95,21 @@ using ct_stats = struct
     uint64_t l1_get_hit_total;
 };
 
+using ct_tree_summary = struct
+{
+    uint64_t root_version;
+    uint64_t covered_slot;
+    uint64_t live_kv;
+    uint64_t live_key_bytes;
+    uint64_t live_value_bytes;
+    uint64_t reachable_leaf_pages;
+    uint64_t reachable_inner_pages;
+    uint64_t reachable_overflow_pages;
+    uint64_t reachable_page_capacity_bytes;
+    uint64_t live_logical_bytes;
+    int32_t  exact;
+};
+
 // Backend selection for durable storage.
 enum ct_backend : uint8_t {
     CT_BACKEND_FILE      = 0, // FilePageStore (file-based, no alignment)
@@ -326,6 +341,7 @@ ct_status ct_clear(ct_tree *t);
 // own doc comment). `out` must be non-null; a no-op (out left untouched)
 // if `t` is null.
 void ct_get_stats(const ct_tree *t, ct_stats *out);
+void ct_get_tree_summary(const ct_tree *t, ct_tree_summary *out);
 // Advisory resident-page separator; owned key buffer, no page or catalog I/O.
 ct_status ct_approximate_split_key(const ct_tree *t, int32_t *found, ct_buf *key);
 ct_status ct_inspect_page(const ct_tree *t, const uint32_t *path, size_t depth, uint64_t expected_version,

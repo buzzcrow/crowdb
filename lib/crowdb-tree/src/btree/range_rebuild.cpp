@@ -391,8 +391,14 @@ Status rebuild_range(Crowdbtree &source, const KeyRange &range, Config destinati
     if (!saw_source_frame) {
         return Status::corruption("range rebuild: source snapshot has no root");
     }
+    bool source_mapping_clean = true;
+    for (uint64_t seg_idx = 0; seg_idx < MappingTable::kMaxSegments && source_mapping_clean; ++seg_idx) {
+        auto *segment = source.mapping_.segment_at(seg_idx);
+        source_mapping_clean = segment == nullptr || !segment->is_dirty();
+    }
     const bool reuse_inherited_frames =
-        mapping_inherited && destination_options.page_store->inherited_snapshot_matches(*source.opt_.page_store);
+        mapping_inherited && source_mapping_clean &&
+        destination_options.page_store->inherited_snapshot_matches(*source.opt_.page_store);
     for (NativeFrame &frame : source_frames) {
         frame.inherited = reuse_inherited_frames;
     }

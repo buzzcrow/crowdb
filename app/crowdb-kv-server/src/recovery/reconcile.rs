@@ -43,7 +43,7 @@ pub async fn reconcile_with_group0(registry: &KvStoreRegistry) {
         return;
     }
 
-    let Some(replicas) = scan_replica_records(&store0).await else {
+    let Some(replicas) = scan_authoritative_records(&store0).await else {
         return;
     };
     if replicas.is_empty() {
@@ -63,6 +63,40 @@ pub struct ReplicaRecord {
     pub replica_id: u64,
     pub endpoint: String,
     pub voting: bool,
+}
+
+/// Expand an authoritative record into the restart installation scope.
+/// Installing records retain previous members so removed participants remain
+/// visible until the current epoch has completed its fencing.
+#[must_use]
+pub fn expand_membership_records(
+    membership: crowdb_protocol::kv_membership::GroupMembership,
+) -> Vec<ReplicaRecord> {
+    let store_id = membership.store_id;
+    let group_id = membership.group_id;
+    let mut members = membership.members;
+    if let crowdb_protocol::kv_membership::GroupMembershipState::Installing { previous_members } =
+        membership.installation
+    {
+        for previous in previous_members {
+            if !members
+                .iter()
+                .any(|member| member.replica_id == previous.replica_id)
+            {
+                members.push(previous);
+            }
+        }
+    }
+    members
+        .into_iter()
+        .map(|member| ReplicaRecord {
+            store_id,
+            group_id,
+            replica_id: member.replica_id,
+            endpoint: member.endpoint,
+            voting: member.voting,
+        })
+        .collect()
 }
 
 /// One group's reconcile decision: seed remotes (fallback) or log
@@ -176,6 +210,62 @@ fn execute_reconcile(plan: &[ReconcileAction], registry: &KvStoreRegistry) {
         actions = plan.len(),
         seeded, mismatches, "reconcile: scan complete"
     );
+}
+
+/// Prefix-scan group 0 for complete membership records. If no authoritative
+/// records exist yet, retain the old projection scan for pre-R229 groups.
+async fn scan_authoritative_records(
+    store0: &crowdb_kv::cluster::px_kv_store::PxKvStore,
+) -> Option<Vec<ReplicaRecord>> {
+    let response = store0
+        .kv_scan(
+            0,
+            b"/kv/members/",
+            b"",
+            b"",
+            0,
+            0,
+            0,
+            false,
+            false,
+            0,
+            false,
+            0,
+            crowdb_kv::kv::ScanDirection::Forward,
+            0,
+            0,
+        )
+        .await;
+    if !response.ok {
+        warn!(error = %response.error, "reconcile: failed to scan complete membership records");
+        return None;
+    }
+    if !response.items.is_empty() {
+        let mut out = Vec::new();
+        for item in &response.items {
+            match serde_json::from_slice::<crowdb_protocol::kv_membership::GroupMembership>(&item.value) {
+                Ok(membership) => {
+                    if matches!(
+                        membership.installation,
+                        crowdb_protocol::kv_membership::GroupMembershipState::Installing { .. }
+                    ) {
+                        info!(
+                            s = membership.store_id,
+                            g = membership.group_id,
+                            epoch = membership.epoch,
+                            "reconcile: resuming installing membership epoch"
+                        );
+                    }
+                    out.extend(expand_membership_records(membership));
+                }
+                Err(e) => {
+                    warn!(error = %e, "reconcile: failed to decode complete membership; skipping record");
+                }
+            }
+        }
+        return Some(out);
+    }
+    scan_replica_records(store0).await
 }
 
 /// Prefix-scan group 0 for `/kv/replica/` records and decode each value

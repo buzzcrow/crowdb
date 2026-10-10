@@ -166,6 +166,26 @@ impl GroupMembershipClient {
         }
     }
 
+    /// Remove the authoritative record after the group has been removed from
+    /// every hosting node. A lost delete response is confirmed by a
+    /// linearizable read and never treated as success blindly.
+    ///
+    /// # Errors
+    /// Returns transport, delete, or confirmation errors.
+    pub async fn remove(&self, store_id: u64, group_id: u64) -> Result<()> {
+        let key = KvGroupMembersKey { store_id, group_id }.to_path();
+        match self.kv.delete(0, 0, key.as_bytes(), None).await {
+            Ok(_) => Ok(()),
+            Err(error @ (Error::OutcomeUnknown | Error::CasFailed { .. })) => {
+                match self.read(store_id, group_id).await? {
+                    None => Ok(()),
+                    Some(_) => Err(error),
+                }
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     async fn publish(
         &self,
         record: GroupMembership,

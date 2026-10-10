@@ -49,6 +49,11 @@ pub trait PartitionTree: Send + Sync {
         std::sync::Arc<dyn PartitionTree>,
         crowdb_tree_ffi::RangeRebuildStats,
     )>;
+    async fn force_advance_split_frontier(&self, _journal_frontier: u64) -> Result<()> {
+        Err(ChunkKvError::InvalidRequest(
+            "partition tree does not support split frontier advancement".into(),
+        ))
+    }
     async fn begin_split_memtable_view(&self) -> Result<(u64, u64)> {
         Err(ChunkKvError::InvalidRequest(
             "partition tree does not support split memtable views".into(),
@@ -103,6 +108,9 @@ pub trait PartitionTree: Send + Sync {
     fn last_applied_seq(&self) -> u64;
     /// Independently sampled native counters, without scanning keys or pages.
     fn runtime_stats(&self) -> Option<crowdb_tree_ffi::Stats> {
+        None
+    }
+    fn tree_summary(&self) -> Option<crowdb_tree_ffi::TreeSummary> {
         None
     }
     /// Copies one structural page without flushing or folding pending writes.
@@ -436,6 +444,11 @@ impl PartitionTree for CrowdbPartitionTree {
         ))
     }
 
+    async fn force_advance_split_frontier(&self, journal_frontier: u64) -> Result<()> {
+        self.tree.force_advance_slot(journal_frontier);
+        Ok(())
+    }
+
     async fn begin_split_memtable_view(&self) -> Result<(u64, u64)> {
         let tree = std::sync::Arc::clone(&self.tree);
         tokio::task::spawn_blocking(move || tree.begin_split_memtable_view())
@@ -503,6 +516,10 @@ impl PartitionTree for CrowdbPartitionTree {
 
     fn runtime_stats(&self) -> Option<crowdb_tree_ffi::Stats> {
         Some(self.tree.stats())
+    }
+
+    fn tree_summary(&self) -> Option<crowdb_tree_ffi::TreeSummary> {
+        Some(self.tree.tree_summary())
     }
 
     fn inspect_page(

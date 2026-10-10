@@ -142,7 +142,9 @@ try {
     uint64_t leaves = 0;
     uint64_t inners = 0;
     uint64_t next   = next_page_id;
+    bool all_frames_inherited = mapping_inherited;
     for (const auto &frame : frames) {
+        all_frames_inherited = all_frames_inherited && frame.inherited;
         next            = std::max(next, frame.page_id + 1);
         const auto type = frame_page_type(frame.frame.data());
         leaves += static_cast<uint64_t>(type == page_type::kLeafBase);
@@ -177,6 +179,15 @@ try {
     // Generation admission has drained all old batches before slots/mappings
     // change. The remaining publication consists only of non-allocating swaps.
     mapping_.swap_quiescent(staged->mapping);
+    if (all_frames_inherited) {
+        for (uint64_t segment_index = 0; segment_index < MappingTable::kMaxSegments; ++segment_index) {
+            auto *segment = mapping_.segment_at(segment_index);
+            if (segment != nullptr) {
+                segment->persisted_seq.store(segment->write_seq.load(std::memory_order_relaxed),
+                                             std::memory_order_relaxed);
+            }
+        }
+    }
     root_page_id_.store(root_page_id);
     active_ = std::move(successor);
     frozen_.clear();

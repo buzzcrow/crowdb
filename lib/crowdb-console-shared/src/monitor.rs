@@ -232,6 +232,8 @@ impl MonitorCache {
             replicas,
             state,
             read_state,
+            membership_epoch: None,
+            membership_state: None,
         })
     }
 
