@@ -32,6 +32,7 @@ struct PlanningState {
     healthy: HashMap<u64, (InstanceValue, ChunkKvExtra)>,
     partition_loads: HashMap<(u64, Id128), ChunkKvPartitionLoad>,
     partition_bytes: HashMap<(u64, Id128), u64>,
+    partition_metrics_exact: HashMap<(u64, Id128), bool>,
     hosted_epochs: HashMap<(u64, Id128), u64>,
     active_partitions: HashSet<Id128>,
     busy_owners: HashSet<u64>,
@@ -144,6 +145,15 @@ async fn planning_state(
                 .map(move |load| ((*id, load.partition_id), effective_bytes(load)))
         })
         .collect();
+    let partition_metrics_exact = healthy
+        .iter()
+        .flat_map(|(id, (_, extra))| {
+            extra
+                .partition_loads
+                .iter()
+                .map(move |load| ((*id, load.partition_id), load.logical_metrics_exact))
+        })
+        .collect();
     let hosted_epochs = healthy
         .iter()
         .flat_map(|(id, (_, extra))| {
@@ -158,6 +168,7 @@ async fn planning_state(
         healthy,
         partition_loads,
         partition_bytes,
+        partition_metrics_exact,
         hosted_epochs,
         active_partitions: HashSet::new(),
         busy_owners: HashSet::new(),
@@ -230,7 +241,12 @@ async fn plan_split(
             continue;
         };
         let effective_bytes = state.partition_bytes[&(entry.owner.instance_id, entry.partition_id)];
-        if (count_shortfall || effective_bytes > policy.target_partition_bytes)
+        let exact_size = state
+            .partition_metrics_exact
+            .get(&(entry.owner.instance_id, entry.partition_id))
+            .copied()
+            .unwrap_or(false);
+        if (count_shortfall || exact_size && effective_bytes > policy.target_partition_bytes)
             && eligible(entry, state)
             && cooled_down(entry, &state.last_changed_ms, policy, now_ms)
         {

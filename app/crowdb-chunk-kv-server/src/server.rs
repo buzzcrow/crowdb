@@ -408,6 +408,12 @@ impl ChunkKvService {
             let Ok(durable_bytes) = partition.estimated_bytes() else {
                 continue;
             };
+            let summary = partition
+                .observe_tree()
+                .ok()
+                .and_then(|observation| observation.summary);
+            let (logical_bytes, logical_metrics_exact) =
+                summary.map_or((0, false), |summary| (summary.live_logical_bytes, summary.exact));
             let live_byte_samples =
                 if max_samples >= 2 && snapshot.lifecycle == crowdb_chunk_kv::PartitionLifecycle::Serving {
                     self.load_sampling.samples(*id, snapshot.ownership_epoch)
@@ -420,6 +426,8 @@ impl ChunkKvService {
                     low: snapshot.partition_id.low,
                 },
                 durable_bytes,
+                logical_bytes,
+                logical_metrics_exact,
                 live_byte_samples,
                 independently_recoverable: self.independently_recoverable.load().contains(&(
                     Id128 {

@@ -615,6 +615,8 @@ class Crowdbtree
     void                  maybe_split_or_merge_locked(uint64_t page_id); // dispatch on leaf size
     void                  set_children_parent_locked(uint64_t page_id, uint64_t parent_page_id);
     void                  store_preserving_parent_locked(uint64_t page_id, PageBase *new_page);
+    void                  refresh_page_summary_locked(PageBase *page);
+    void                  refresh_subtree_summaries_locked(uint64_t page_id);
     void                  sync_page_count_gauges();
     std::vector<uint64_t> path_to_page_id_locked(uint64_t target_page_id) const;
     void                  split_leaf_to_threshold_locked(uint64_t leaf_page_id);

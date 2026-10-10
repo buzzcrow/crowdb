@@ -3,10 +3,10 @@
 
 ### R228: crowdb-tree — Root and range statistics for split and placement
 
-Status: In progress. Exact durable-root summaries now include logical bytes and
-reachable overflow/page-capacity accounting through the C API/Rust FFI; range
-bounded estimates, persisted child aggregates, placement integration, and full
-recovery acceptance remain.
+Status: Complete. Exact durable-root summaries now include logical bytes and
+reachable overflow/page-capacity accounting through the C API/Rust FFI;
+persisted child aggregates feed cached Chunk-KV observations and conservative
+size-driven split decisions.
 
 ## Problem
 
@@ -130,14 +130,15 @@ compaction must not make a historical estimate permanently drift.
   latency, page writes, memory, index I/O and traversal budgets; no new request
   locks, queues or forced checkpoint. Integration test.
 
-## Open Questions
+## Decisions
 
-- Review summary encoding and update granularity: exact subtree live aggregates
-  require maintenance during folding/rebuild; bounded estimates may reduce write
-  amplification but must state error and recalibration guarantees.
-- Review crossing-leaf ranges: report a boundary uncertainty interval using leaf
-  summaries, or perform a separate bounded background boundary-leaf inspection.
-  Neither option allows routine full leaf/value scans.
+- The unpublished frame format remains `format_version = 1`; the existing
+  header is extended in place with persisted page summaries. No v2 parser or
+  legacy compatibility path is required.
+- Crossing-leaf range estimates use the conservative policy: complete child
+  summaries are added, while an unavailable or partial boundary child makes the
+  result inexact. Unknown metrics never trigger a size-driven split or move.
+  Count-target bootstrap remains independent of metric exactness.
 
 Verification commands:
 

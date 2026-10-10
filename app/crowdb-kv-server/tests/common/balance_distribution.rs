@@ -77,6 +77,8 @@ pub async fn seed(control: &Group0ControlPlane, distribution: &[(u64, u64)], gen
             extra.partition_loads.push(ChunkKvPartitionLoad {
                 partition_id,
                 durable_bytes: *bytes,
+                logical_bytes: 0,
+                logical_metrics_exact: false,
                 live_byte_samples: vec![],
                 independently_recoverable: true,
             });

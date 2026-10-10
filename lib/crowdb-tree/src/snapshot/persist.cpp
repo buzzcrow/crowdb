@@ -548,6 +548,26 @@ Status Crowdbtree::prepare_snapshot_locked(PreparedSnapshot *out, std::vector<Pr
         ctx.forced_segment_images.insert(pf.page_id / MappingTable::kSegmentSize);
     }
 
+    // Fold and refresh all summaries before any page blob is encoded.
+    for (uint64_t seg_idx = 0; seg_idx < MappingTable::kMaxSegments; ++seg_idx) {
+        MappingSegment *segment = mapping_.segment_at(seg_idx);
+        if (segment == nullptr) {
+            continue;
+        }
+        for (uint32_t slot = 0; slot < segment->slot_count; ++slot) {
+            const uint64_t page_id = seg_idx * MappingTable::kSegmentSize + slot;
+            uint64_t word = segment->slots[slot].load(std::memory_order_relaxed);
+            if (!slot_word::is_resident(word)) {
+                continue;
+            }
+            PageBase *page = slot_word::resident_ptr(word);
+            Status fold = fold_snapshot_page_locked(page_id, gc, &page);
+            if (!fold.ok()) {
+                return fold;
+            }
+        }
+    }
+    refresh_subtree_summaries_locked(root_page_id_.load(std::memory_order_acquire));
     Status pages = prepare_snapshot_pages_locked(ctx);
     if (!pages.ok()) {
         return pages;
@@ -573,7 +593,7 @@ Status Crowdbtree::fold_snapshot_page_locked(uint64_t page_id, uint64_t gc, Page
         uint64_t              right = static_cast<LeafBase *>(base)->right_sibling();
         std::vector<uint64_t> dead_overflow;
         LeafBase *fresh = build_leaf_spilling_locked(resolve_leaf_chain_for_rebuild(*page, gc, &dead_overflow), right);
-        mapping_.store(page_id, fresh);
+        store_preserving_parent_locked(page_id, fresh);
         for (PageBase *node = *page; node != nullptr;) {
             PageBase *next = node->next;
             retire_page(node);
@@ -608,7 +628,7 @@ Status Crowdbtree::fold_snapshot_page_locked(uint64_t page_id, uint64_t gc, Page
     size_t                dropped = 0;
     LeafBase *fresh = build_leaf_spilling_locked(resolve_leaf_chain_for_rebuild(*page, gc, &dead_overflow, &dropped),
                                                  leaf->right_sibling());
-    mapping_.store(page_id, fresh);
+    store_preserving_parent_locked(page_id, fresh);
     retire_page(*page);
     for (uint64_t head : dead_overflow) {
         retire_overflow_chain_locked(head);
@@ -1271,33 +1291,26 @@ Status Crowdbtree::snapshot(uint64_t *out_last_applied, uint64_t *out_snapshot_s
     finalize_prepared_snapshot(prepared);
 
     // Publish the exact logical summary only after the root anchor is durable.
-    if (auto view = snapshot_view(); view != nullptr) {
-        uint64_t live_kv     = 0;
-        uint64_t key_bytes   = 0;
-        uint64_t value_bytes = 0;
-        for (const auto &entry : view->entries()) {
-            CellView cell{Slice(entry.cell)};
-            if (cell.is_tombstone()) {
-                continue;
-            }
-            ++live_kv;
-            key_bytes += entry.key.size();
-            value_bytes += cell.value().size();
+    if (PageBase *root = resident(root_page_id_.load(std::memory_order_acquire)); root != nullptr) {
+        PageSummary summary;
+        if (root->type == page_type::kLeafBase) {
+            summary = static_cast<LeafBase *>(root)->summary();
         }
-        summary_live_kv_.store(live_kv, std::memory_order_release);
-        summary_live_key_bytes_.store(key_bytes, std::memory_order_release);
-        summary_live_value_bytes_.store(value_bytes, std::memory_order_release);
-        summary_live_logical_bytes_.store(key_bytes + value_bytes, std::memory_order_release);
-        const uint64_t structural_pages =
-            leaf_count_.load(std::memory_order_relaxed) + inner_count_.load(std::memory_order_relaxed);
-        summary_reachable_overflow_pages_.store(
-            prepared.live_page_count > structural_pages ? prepared.live_page_count - structural_pages : 0,
-            std::memory_order_release);
-        summary_reachable_page_capacity_bytes_.store(prepared.live_page_count * static_cast<uint64_t>(opt_.frame_bytes),
-                                                     std::memory_order_release);
-        summary_covered_slot_.store(prepared.last_applied_slot, std::memory_order_release);
-        summary_root_version_.store(version_.load(std::memory_order_acquire), std::memory_order_release);
-        summary_available_.store(true, std::memory_order_release);
+        else if (root->type == page_type::kInnerBase) {
+            summary = static_cast<InnerBase *>(root)->summary();
+        }
+        if (summary.exact) {
+            summary_live_kv_.store(summary.live_kv, std::memory_order_release);
+            summary_live_key_bytes_.store(summary.live_key_bytes, std::memory_order_release);
+            summary_live_value_bytes_.store(summary.live_value_bytes, std::memory_order_release);
+            summary_live_logical_bytes_.store(summary.live_logical_bytes, std::memory_order_release);
+            summary_reachable_overflow_pages_.store(summary.reachable_overflow_pages, std::memory_order_release);
+            summary_reachable_page_capacity_bytes_.store(summary.reachable_page_capacity_bytes,
+                                                         std::memory_order_release);
+            summary_covered_slot_.store(prepared.last_applied_slot, std::memory_order_release);
+            summary_root_version_.store(prepared.seq, std::memory_order_release);
+            summary_available_.store(true, std::memory_order_release);
+        }
     }
 
     release_snapshot_slot();
@@ -1718,38 +1731,30 @@ Status Crowdbtree::open(const Config &opt, std::unique_ptr<Crowdbtree> *out)
 
     // Reconstruct the cached summary from the selected durable root. This is
     // startup work only; ordinary reads never scan the tree for statistics.
-    if (auto view = tree->snapshot_view(); view != nullptr) {
-        uint64_t live_kv     = 0;
-        uint64_t key_bytes   = 0;
-        uint64_t value_bytes = 0;
-        for (const auto &entry : view->entries()) {
-            CellView cell{Slice(entry.cell)};
-            if (cell.is_tombstone()) {
-                continue;
-            }
-            ++live_kv;
-            key_bytes += entry.key.size();
-            value_bytes += cell.value().size();
+    if (PageBase *root = tree->resident(anchor.root_page_id); root != nullptr) {
+        PageSummary summary;
+        if (root->type == page_type::kLeafBase) {
+            summary = static_cast<LeafBase *>(root)->summary();
         }
-        tree->summary_live_kv_.store(live_kv, std::memory_order_release);
-        tree->summary_live_key_bytes_.store(key_bytes, std::memory_order_release);
-        tree->summary_live_value_bytes_.store(value_bytes, std::memory_order_release);
-        tree->summary_live_logical_bytes_.store(key_bytes + value_bytes, std::memory_order_release);
-        uint64_t live_page_count = 0;
-        for (uint64_t seg_idx = 0; seg_idx < MappingTable::kMaxSegments; ++seg_idx) {
-            if (auto *segment = tree->mapping_.segment_at(seg_idx); segment != nullptr) {
-                live_page_count += segment->live_count.load(std::memory_order_relaxed);
-            }
+        else if (root->type == page_type::kInnerBase) {
+            summary = static_cast<InnerBase *>(root)->summary();
         }
-        const uint64_t structural_pages =
-            tree->leaf_count_.load(std::memory_order_relaxed) + tree->inner_count_.load(std::memory_order_relaxed);
-        tree->summary_reachable_overflow_pages_.store(
-            live_page_count > structural_pages ? live_page_count - structural_pages : 0, std::memory_order_release);
-        tree->summary_reachable_page_capacity_bytes_.store(live_page_count * static_cast<uint64_t>(opt.frame_bytes),
-                                                           std::memory_order_release);
-        tree->summary_covered_slot_.store(anchor.last_applied_slot, std::memory_order_release);
-        tree->summary_root_version_.store(anchor.snapshot_seq, std::memory_order_release);
-        tree->summary_available_.store(true, std::memory_order_release);
+        if (summary.exact) {
+            tree->summary_live_kv_.store(summary.live_kv, std::memory_order_release);
+            tree->summary_live_key_bytes_.store(summary.live_key_bytes, std::memory_order_release);
+            tree->summary_live_value_bytes_.store(summary.live_value_bytes, std::memory_order_release);
+            tree->summary_live_logical_bytes_.store(summary.live_logical_bytes, std::memory_order_release);
+            tree->summary_reachable_overflow_pages_.store(summary.reachable_overflow_pages, std::memory_order_release);
+            tree->summary_reachable_page_capacity_bytes_.store(summary.reachable_page_capacity_bytes,
+                                                               std::memory_order_release);
+            tree->summary_covered_slot_.store(anchor.last_applied_slot, std::memory_order_release);
+            tree->summary_root_version_.store(anchor.snapshot_seq, std::memory_order_release);
+            tree->summary_available_.store(true, std::memory_order_release);
+        }
+        // Reopen must keep lazy recovery lazy: the root was loaded only to
+        // read its persisted summary, so release it before returning.
+        (void)tree->evict_clean_inner(0);
+        (void)tree->evict_clean_leaves(0);
     }
 
     CRB_LOG_INFO("[{}] open: recovered seq={} last_applied={} root_pid={} segments={}", opt.name, anchor.snapshot_seq,

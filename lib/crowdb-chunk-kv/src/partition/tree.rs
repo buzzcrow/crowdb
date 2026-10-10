@@ -105,6 +105,9 @@ pub trait PartitionTree: Send + Sync {
     fn runtime_stats(&self) -> Option<crowdb_tree_ffi::Stats> {
         None
     }
+    fn tree_summary(&self) -> Option<crowdb_tree_ffi::TreeSummary> {
+        None
+    }
     /// Copies one structural page without flushing or folding pending writes.
     ///
     /// # Errors
@@ -503,6 +506,10 @@ impl PartitionTree for CrowdbPartitionTree {
 
     fn runtime_stats(&self) -> Option<crowdb_tree_ffi::Stats> {
         Some(self.tree.stats())
+    }
+
+    fn tree_summary(&self) -> Option<crowdb_tree_ffi::TreeSummary> {
+        Some(self.tree.tree_summary())
     }
 
     fn inspect_page(

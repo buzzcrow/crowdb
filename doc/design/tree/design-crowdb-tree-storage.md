@@ -812,3 +812,10 @@ from the serving root. `reachable_page_capacity_bytes` is page capacity, kept
 separate from logical data bytes. The summary is replaced only after the page,
 directory, and root anchor have passed their durability barrier and is rebuilt
 from the selected root during reopen.
+
+The current unpublished frame format keeps `format_version = 1`; its 128-byte
+header reserves the summary fields for every leaf and inner page. Inner-page
+fields are the sum of the reachable child summaries, and the page CRC covers
+those fields. A root is exact only when every reachable child summary is exact;
+an unavailable or partial child never contributes as zero. This is an internal
+layout extension of the existing format, not a version-2 compatibility path.

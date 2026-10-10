@@ -124,6 +124,26 @@ class LeafBase : public PageBase
             b.try_append_sorted(Slice(e.key), Slice(e.cell));
         }
         b.finish(p->page_id, right_sibling);
+        PageSummary summary;
+        summary.reachable_leaf_pages = 1;
+        summary.reachable_page_capacity_bytes = p->fs_.page_bytes;
+        for (const auto &e : sorted_entries) {
+            CellView cell{Slice(e.cell)};
+            if (cell.is_tombstone()) {
+                continue;
+            }
+            ++summary.live_kv;
+            summary.live_key_bytes += e.key.size();
+            const uint64_t value_bytes = cell.is_overflow() ? cell.overflow_len() : cell.value().size();
+            summary.live_value_bytes += value_bytes;
+            if (cell.is_overflow()) {
+                summary.reachable_overflow_pages +=
+                    (value_bytes + overflow_chunk_cap(p->fs_.page_bytes) - 1) / overflow_chunk_cap(p->fs_.page_bytes);
+            }
+            summary.live_logical_bytes += e.key.size() + value_bytes;
+        }
+        summary.exact = true;
+        frame_set_summary(dst, p->fs_.page_bytes, summary);
         return p;
     }
 
@@ -228,6 +248,16 @@ class LeafBase : public PageBase
     [[nodiscard]] bool lookup(Slice key, CellView *out) const
     {
         return view().lookup(key, out);
+    }
+
+    [[nodiscard]] PageSummary summary() const
+    {
+        return frame_summary(fs_.ptr);
+    }
+
+    void set_summary(const PageSummary &summary) const
+    {
+        frame_set_summary(fs_.ptr, fs_.page_bytes, summary);
     }
 
     [[nodiscard]] size_t lower_bound(Slice key) const
@@ -346,6 +376,16 @@ class InnerBase : public PageBase
         return view().child_for(key);
     }
 
+    [[nodiscard]] PageSummary summary() const
+    {
+        return frame_summary(fs_.ptr);
+    }
+
+    void set_summary(const PageSummary &summary) const
+    {
+        frame_set_summary(fs_.ptr, fs_.page_bytes, summary);
+    }
+
   private:
     FrameStore fs_;
 };
@@ -407,6 +447,16 @@ class OverflowBase : public PageBase
     [[nodiscard]] Slice payload() const
     {
         return view().payload();
+    }
+
+    [[nodiscard]] PageSummary summary() const
+    {
+        return frame_summary(fs_.ptr);
+    }
+
+    void set_summary(const PageSummary &summary) const
+    {
+        frame_set_summary(fs_.ptr, fs_.page_bytes, summary);
     }
 
   private:

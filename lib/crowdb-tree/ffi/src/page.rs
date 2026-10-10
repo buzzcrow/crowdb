@@ -33,7 +33,7 @@ impl PageInspection {
         deltas: u32,
         frame: Vec<u8>,
     ) -> Result<Self, CtError> {
-        if frame.len() < 72 || frame.len() > 1024 * 1024 || !matches!(frame[4], 1 | 2) {
+        if frame.len() < 136 || frame.len() > 1024 * 1024 || !matches!(frame[4], 1 | 2) {
             return Err(CtError::Corruption);
         }
         let inner = frame[4] == 2;
@@ -79,7 +79,7 @@ impl PageInspection {
             let key = if index == 0 {
                 None
             } else {
-                let slot = 64 + (self.count + 1) * 8 + (index - 1) * 8;
+                let slot = 128 + (self.count + 1) * 8 + (index - 1) * 8;
                 Some(bytes(
                     &self.frame,
                     word(&self.frame, slot)? as usize,
@@ -88,7 +88,7 @@ impl PageInspection {
             };
             return Ok(PageEntry {
                 key,
-                child: Some(wide(&self.frame, 64 + index * 8)?),
+                child: Some(wide(&self.frame, 128 + index * 8)?),
                 cell: None,
                 inline_delta: false,
             });
@@ -97,7 +97,7 @@ impl PageInspection {
         let slot = if inline_delta {
             word(&self.frame, 12)? as usize + (index - self.count) * 12
         } else {
-            64 + index * 12
+            128 + index * 12
         };
         let start = word(&self.frame, slot)? as usize;
         let length = word(&self.frame, slot + 4)? as usize;

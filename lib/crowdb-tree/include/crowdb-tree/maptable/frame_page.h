@@ -38,10 +38,23 @@ inline constexpr uint8_t  kFrameHasLowerFence = 1U << 0U;
 inline constexpr uint8_t  kFrameHasUpperFence = 1U << 1U;
 inline constexpr uint8_t  kFrameFencePageIds  = 1U << 2U;
 
-inline constexpr size_t kFrameHeaderSize  = 64;
+inline constexpr size_t kFrameHeaderSize  = 128;
 inline constexpr size_t kFrameTrailerSize = 8;  // logical_len u32 + crc32c u32
 inline constexpr size_t kLeafSlotSize     = 12; // rec_off, key_len, cell_len (u32)
 inline constexpr size_t kInnerSlotSize    = 8;  // rec_off, key_len (u32)
+
+struct PageSummary
+{
+    uint64_t live_kv = 0;
+    uint64_t live_key_bytes = 0;
+    uint64_t live_value_bytes = 0;
+    uint64_t live_logical_bytes = 0;
+    uint64_t reachable_leaf_pages = 0;
+    uint64_t reachable_inner_pages = 0;
+    uint64_t reachable_overflow_pages = 0;
+    uint64_t reachable_page_capacity_bytes = 0;
+    bool exact = false;
+};
 
 // Header field byte offsets within a frame.
 namespace fh
@@ -60,6 +73,15 @@ inline constexpr size_t kLowerFenceOff = 40; // u32
 inline constexpr size_t kLowerFenceLen = 44; // u32
 inline constexpr size_t kUpperFenceOff = 48; // u32
 inline constexpr size_t kUpperFenceLen = 52; // u32
+inline constexpr size_t kSummaryLiveKv = 64;
+inline constexpr size_t kSummaryLiveKeyBytes = 72;
+inline constexpr size_t kSummaryLiveValueBytes = 80;
+inline constexpr size_t kSummaryLiveLogicalBytes = 88;
+inline constexpr size_t kSummaryLeafPages = 96;
+inline constexpr size_t kSummaryInnerPages = 104;
+inline constexpr size_t kSummaryOverflowPages = 112;
+inline constexpr size_t kSummaryPageCapacityBytes = 120;
+inline constexpr size_t kSummaryFlags = 127;
 } // namespace fh
 
 // ── little-endian frame accessors ─────────────────────────────────
@@ -137,6 +159,8 @@ void frame_restamp_crc(uint8_t *f, uint32_t page_bytes);
 [[nodiscard]] uint64_t frame_upper_fence_page_id(const uint8_t *f);
 void                   frame_set_inner_fence_pages(uint8_t *f, uint32_t page_bytes, uint64_t lower_leaf_page_id,
                                                    uint64_t upper_leaf_page_id);
+[[nodiscard]] PageSummary frame_summary(const uint8_t *f);
+void frame_set_summary(uint8_t *f, uint32_t page_bytes, const PageSummary &summary);
 
 // ── Leaf view (zero-copy) ─────────────────────────────────────────
 class LeafFrameView

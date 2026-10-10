@@ -207,6 +207,36 @@ TEST(Persist, TreeSummaryTracksDurableRootAndRejectsUnknownAsZero)
     EXPECT_EQ(t.tree_summary().live_kv, 1U);
 }
 
+TEST(Persist, TreeSummaryAggregatesPersistedInnerPages)
+{
+    MemPageStore store(1);
+    Config opt;
+    opt.page_store = &store;
+    opt.leaf_split_bytes = 256;
+    Crowdbtree t(opt);
+    for (uint64_t slot = 1; slot <= 80; ++slot) {
+        ASSERT_TRUE(t.apply(slot, put_one(make_key(static_cast<int>(slot)), "value")).ok());
+    }
+    ASSERT_TRUE(t.flush().ok());
+    ASSERT_TRUE(t.snapshot().ok());
+    const auto summary = t.tree_summary();
+    EXPECT_TRUE(summary.exact);
+    EXPECT_EQ(summary.live_kv, 80U);
+    EXPECT_GT(summary.reachable_leaf_pages, 1U);
+    EXPECT_GT(summary.reachable_inner_pages, 0U);
+    EXPECT_EQ(summary.live_logical_bytes, summary.live_key_bytes + summary.live_value_bytes);
+
+    std::unique_ptr<Crowdbtree> reopened;
+    ASSERT_TRUE(Crowdbtree::open(opt, &reopened).ok());
+    const auto reopened_summary = reopened->tree_summary();
+    EXPECT_EQ(reopened_summary.root_version, summary.root_version);
+    EXPECT_EQ(reopened_summary.covered_slot, summary.covered_slot);
+    EXPECT_EQ(reopened_summary.live_kv, summary.live_kv);
+    EXPECT_EQ(reopened_summary.live_logical_bytes, summary.live_logical_bytes);
+    EXPECT_EQ(reopened_summary.reachable_leaf_pages, summary.reachable_leaf_pages);
+    EXPECT_EQ(reopened_summary.reachable_inner_pages, summary.reachable_inner_pages);
+}
+
 // clear() must wipe every key and reset watermarks back
 // to a fresh empty tree, in-memory only (no persist() call here) -- proving
 // the wipe itself, independent of durability.

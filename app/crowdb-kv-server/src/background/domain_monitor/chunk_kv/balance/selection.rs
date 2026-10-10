@@ -170,6 +170,9 @@ pub(super) fn partition_load<'a>(
 }
 
 pub(super) fn effective_bytes(load: &ChunkKvPartitionLoad) -> u64 {
+    if load.logical_metrics_exact {
+        return load.logical_bytes;
+    }
     load.durable_bytes.max(
         load.live_byte_samples
             .iter()
