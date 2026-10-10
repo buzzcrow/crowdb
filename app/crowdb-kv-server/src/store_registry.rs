@@ -37,6 +37,7 @@ pub(crate) fn parse_crowtree_backend(s: &str) -> CrowdbTreeBackend {
 
 pub struct KvStoreRegistry {
     stores: ArcSwap<HashMap<u64, Arc<PxKvStore>>>,
+    pub(crate) bootstrap_executing: std::sync::atomic::AtomicBool,
     /// Unified cluster configuration (all sub-configs + flags + paths).
     pub config: CrowDBConfig,
     /// Parsed WAL I/O backend (derived from `config.wal_backend`).
@@ -91,6 +92,7 @@ impl KvStoreRegistry {
         let rpc_workers = config.server.rpc_workers;
         Ok(Self {
             stores: ArcSwap::from_pointee(HashMap::new()),
+            bootstrap_executing: std::sync::atomic::AtomicBool::new(false),
             wal_backend,
             crowtree_backend,
             config,

@@ -8,7 +8,7 @@
 
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use utoipa::ToSchema;
@@ -175,7 +175,6 @@ fn now_ms() -> u64 {
 pub struct AppState {
     pub(crate) registry: Arc<crate::store_registry::KvStoreRegistry>,
     pub(crate) operations: Arc<OperationRegistry>,
-    pub(crate) bootstrap_executing: Arc<AtomicBool>,
 }
 
 impl std::ops::Deref for AppState {
@@ -191,7 +190,6 @@ impl AppState {
         Self {
             registry,
             operations: Arc::new(OperationRegistry::new()),
-            bootstrap_executing: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -203,10 +201,6 @@ impl AppState {
         registry: Arc<crate::store_registry::KvStoreRegistry>,
         operations: Arc<OperationRegistry>,
     ) -> Self {
-        Self {
-            registry,
-            operations,
-            bootstrap_executing: Arc::new(AtomicBool::new(false)),
-        }
+        Self { registry, operations }
     }
 }

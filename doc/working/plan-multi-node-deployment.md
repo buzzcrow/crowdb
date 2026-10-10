@@ -45,7 +45,7 @@ selected cluster from any UI, with durable identity and fail-closed authority.
   schema, lib/crowdb-console-shared/src/ops/cluster/bootstrap/.
   Verified concurrent prepare, persistence across restart, generic-path rejection,
   same-operation init retry and no init calls after one member rejects prepare.
-- [~] **Bootstrap operation integration**: persist UI operation/config identity,
+- [ ] **Bootstrap operation integration**: persist UI operation/config identity,
   route node startup through prepared bootstrap and add fenced terminal cleanup
   plus dynamic monitor cluster binding. Files: shared bootstrap, Web management,
   monitor node lifecycle and KV-server cleanup.
@@ -56,7 +56,13 @@ selected cluster from any UI, with durable identity and fail-closed authority.
 - [ ] **Admission and authority**: authenticated SSH preparation, conditional UUID
   mapping allocation, operation progress and execution-time authority checks.
   Files: lib/crowdb-console-shared/src/ops/, app/crowdb-web/src/mgmt/.
-- [ ] **UI lifecycle**: candidate list, admission and explicit initialization,
+- [x] **Candidate observations in Web/UI**: local-only bounded monitor proxy,
+  standalone `--runtime-dir` and `--node-monitor`, node console mode and separate
+  Cluster sidebar candidate list. Retain observations with a stale marker on
+  monitor loss; discovery never changes racks or grants admission. Files:
+  app/crowdb-web/src/node.rs, state.rs, main.rs, ui/src/shell/CandidateNodes.tsx,
+  tests/node_candidates_test.rs, ui/e2e/flows/12-cluster-discovery.spec.ts.
+- [~] **UI lifecycle**: admission and explicit initialization,
   publication/unavailable states, cluster selection and cleanup recovery. Files:
   app/crowdb-web/ui/src/, ui/e2e/flows/.
 - [ ] **Verify and clean up**: focused crate tests, Docker integration and affected
@@ -97,3 +103,11 @@ selected cluster from any UI, with durable identity and fail-closed authority.
   shared all-member preparation path.
 - Discovery regression tests and focused monitor clippy passed after SIGTERM
   shutdown and multi-interface self-observation handling adjustments.
+- Registry-owned bootstrap execution gate: system_init_test passed (7 tests).
+- Web candidate proxy: node_candidates_test passed (3 tests), with local-origin
+  validation and discovery before any KV server exists.
+- Candidate browser test uses actual monitor and isolated Web roots, without
+  response interception. Passed in 3.5 seconds; baseline 2026-10-10.
+- Existing Cluster lifecycle spec passed (4 tests; 3.1s, 1.4s, 5.1s, 2.3s),
+  within twice the freshly measured baseline.
+- Rust fmt/workspace clippy and UI build/E2E TypeScript lint passed.

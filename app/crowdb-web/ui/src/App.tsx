@@ -67,11 +67,12 @@ export interface CrowdbConsoleProps {
   initialDomain?: Domain;
   /** Container topology is immutable; native data credentials remain independent. */
   managed?: boolean;
+  nodeManagement?: boolean;
   /** Structured event callback for host integration. */
   onEvent?: (event: { type: string; payload?: unknown }) => void;
 }
 
-function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, managed = false }: CrowdbConsoleProps) {
+function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, managed = false, nodeManagement = false }: CrowdbConsoleProps) {
   const { domain, setDomain } = useDomain();
   const { selectedEntity, selectionForDomain, selectEntity, clearSelection } = useSelection();
   const { success, error } = useToast();
@@ -509,6 +510,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
       )}
 
       <div hidden={ownsSidebar}><Sidebar
+        nodeManagement={nodeManagement}
         allServers={allServers}
         racks={racks}
         servers={servers}
@@ -785,7 +787,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
 
 export default function App(props: CrowdbConsoleProps = {}) {
   const apiPrefix = props.apiPrefix ?? '/api';
-  const [mode, setMode] = useState<'loading' | 'legacy' | 'docker' | 'bare-metal-pending' | 'unavailable'>('loading');
+  const [mode, setMode] = useState<'loading' | 'legacy' | 'docker' | 'node' | 'bare-metal-pending' | 'unavailable'>('loading');
   useEffect(() => {
     let active = true;
     fetch(`${apiPrefix}/mode`)
@@ -794,7 +796,7 @@ export default function App(props: CrowdbConsoleProps = {}) {
         return response.json();
       })
       .then((body) => {
-        if (active) setMode(body?.mode === 'docker' || body?.mode === 'bare-metal-pending' || body?.mode === 'legacy' ? body.mode : 'unavailable');
+        if (active) setMode(body?.mode === 'docker' || body?.mode === 'node' || body?.mode === 'bare-metal-pending' || body?.mode === 'legacy' ? body.mode : 'unavailable');
       })
       .catch(() => {
         if (active) setMode('unavailable');
@@ -810,7 +812,7 @@ export default function App(props: CrowdbConsoleProps = {}) {
       <SelectionProvider>
         <ToastProvider>
           <ActivityProvider>
-            <AppContent {...props} managed={mode === 'docker'} />
+            <AppContent {...props} managed={mode === 'docker'} nodeManagement={mode === 'node'} />
           </ActivityProvider>
         </ToastProvider>
       </SelectionProvider>

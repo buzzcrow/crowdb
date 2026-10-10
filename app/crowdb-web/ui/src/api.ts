@@ -160,6 +160,21 @@ export interface RequestOptions {
   skipDeduplication?: boolean;
 }
 
+export interface DiscoveredNode {
+  advertisement: { discovery_id: string; protocol_version: number; monitor_endpoints: string[]; cluster_id: string | null };
+  state: 'unbound' | 'same_cluster' | 'foreign_cluster' | 'incompatible' | 'identity_conflict';
+}
+
+export interface NodeCandidates {
+  local: { advertisement: DiscoveredNode['advertisement']; physical_host_id: string; rack_hint: string | null };
+  candidates: DiscoveredNode[];
+  diagnostics: string[];
+}
+
+export async function listNodeCandidates(options?: RequestOptions): Promise<NodeCandidates> {
+  return jsonOrThrow(await fetchWithOptions('/api/node/candidates', options));
+}
+
 /**
  * Enhanced fetch wrapper with deduplication, retries, and AbortController support
  */

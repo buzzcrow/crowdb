@@ -55,6 +55,7 @@ pub struct AppState {
     pub ui_root: Arc<PathBuf>,
     pub authority_seeds: Arc<Vec<String>>,
     pub monitor_status_path: Option<Arc<PathBuf>>,
+    pub(crate) node_monitor_url: Option<Arc<str>>,
     pub authority_timeout_ms: u64,
     pub(crate) iceberg_read_token: Option<Arc<str>>,
     pub(crate) launch_registry_path: Option<Arc<PathBuf>>,
@@ -115,6 +116,7 @@ impl AppState {
             ui_root: Arc::new(PathBuf::from(FRONTEND_DIST)),
             authority_seeds: Arc::new(Vec::new()),
             monitor_status_path: None,
+            node_monitor_url: None,
             authority_timeout_ms: 3_000,
             iceberg_read_token: None,
             launch_registry_path: None,
@@ -139,6 +141,27 @@ impl AppState {
         self.monitor_status_path = config.monitor_status.clone().map(Arc::new);
         self.authority_timeout_ms = config.request_timeout_ms.unwrap_or(3_000);
         self
+    }
+
+    /// Connect the local node's read-only discovery surface.
+    ///
+    /// # Errors
+    /// Requires a local HTTP monitor origin without embedded credentials.
+    pub fn with_node_monitor(mut self, endpoint: &str) -> Result<Self> {
+        let url = reqwest::Url::parse(endpoint).map_err(|error| Error::Config(error.to_string()))?;
+        if url.scheme() != "http"
+            || !matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))
+            || url.port().is_none()
+            || url.path() != "/"
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err(Error::Config("node monitor must be a local HTTP origin".into()));
+        }
+        self.node_monitor_url = Some(Arc::from(endpoint.trim_end_matches('/')));
+        Ok(self)
     }
 
     /// # Errors

@@ -21,6 +21,14 @@ struct Args {
     #[arg(long, conflicts_with = "config", value_parser = clap::value_parser!(u16).range(1..))]
     port: Option<u16>,
 
+    /// Persistent standalone draft and recovery directory for a node container.
+    #[arg(long, conflicts_with_all = ["config", "test_mode"])]
+    runtime_dir: Option<std::path::PathBuf>,
+
+    /// Local monitor discovery/handshake endpoint.
+    #[arg(long)]
+    node_monitor: Option<String>,
+
     /// Use an in-memory registry instead of the persisted console config.
     #[arg(long, conflicts_with = "config")]
     test_mode: bool,
@@ -104,14 +112,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     } else if process_config.is_some() {
         crowdb_web::AppState::default()
     } else {
-        let directory = crowdb_protocol::port::namespace::runtime_root()
-            .join("persistent")
-            .join("console")
-            .join("default");
+        let directory = args.runtime_dir.clone().unwrap_or_else(|| {
+            crowdb_protocol::port::namespace::runtime_root()
+                .join("persistent")
+                .join("console")
+                .join("default")
+        });
         crowdb_web::AppState::open_standalone(directory)?
     };
     if let Some(config) = process_config {
         state = state.with_process_config(&config);
+    }
+    if let Some(endpoint) = &args.node_monitor {
+        state = state.with_node_monitor(endpoint)?;
     }
     if let Ok(token) = std::env::var("CROWDB_ICEBERG_READ_TOKEN") {
         state = state.with_iceberg_reader(token)?;

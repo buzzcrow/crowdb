@@ -19,6 +19,7 @@ pub async fn mode(
     let mode = match state.web_mode {
         Some(crowdb_console_shared::config::web::WebMode::Docker) => "docker",
         Some(crowdb_console_shared::config::web::WebMode::BareMetal) => "bare-metal-pending",
+        None if state.node_monitor_url.is_some() => "node",
         None => "legacy",
     };
     axum::Json(serde_json::json!({"mode": mode}))

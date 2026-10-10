@@ -7,7 +7,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use axum::{extract::State, http::StatusCode, Json};
@@ -28,11 +28,11 @@ struct AcceptedBootstrap {
     identity: SystemBootstrapIdentity,
 }
 
-pub(super) struct BootstrapExecution(Arc<AtomicBool>);
+pub(super) struct BootstrapExecution(Arc<crate::store_registry::KvStoreRegistry>);
 
 impl Drop for BootstrapExecution {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
+        self.0.bootstrap_executing.store(false, Ordering::Release);
     }
 }
 
@@ -46,7 +46,7 @@ pub(super) fn begin(state: &RegistryArc) -> Result<BootstrapExecution, Managemen
                 "system bootstrap is executing; retry the same operation",
             )
         })?;
-    Ok(BootstrapExecution(Arc::clone(&state.bootstrap_executing)))
+    Ok(BootstrapExecution(Arc::clone(&state.registry)))
 }
 
 pub(super) async fn prepare(

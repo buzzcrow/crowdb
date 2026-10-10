@@ -24,6 +24,7 @@ mod managed;
 mod managed_hardware;
 mod managed_logical;
 pub mod mgmt;
+mod node;
 pub mod owner_assignment;
 pub mod physical;
 mod services;
@@ -44,6 +45,7 @@ pub fn router(state: AppState) -> axum::Router {
         let managed = axum::Router::new()
             .route("/healthz", get(health::healthz))
             .route("/api/mode", get(health::mode))
+            .route("/api/node/candidates", get(node::candidates))
             .route("/api/authority", get(managed::authority))
             .route("/api/preview", get(managed::snapshot))
             .route("/api/chunk-kv/catalog", get(chunk_kv::catalog))
@@ -172,6 +174,7 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/api/access/connections", post(access::configure))
         .route("/healthz", get(health::healthz))
         .route("/api/mode", get(health::mode))
+        .route("/api/node/candidates", get(node::candidates))
         // ── Physical tree (A3): rack + node lifecycle ────────────────
         .route(
             "/api/racks",
