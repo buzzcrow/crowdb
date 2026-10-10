@@ -11,7 +11,7 @@ COMPONENT_PACKAGES = {
     "test-cpp": {"crowdb-tree-ffi", "crowdb-rpc-ffi"},
     "test-core": {
         "crowdb-common", "crowdb-test-harness", "crowdb-protocol",
-        "crowdb-kv", "crowdb-kv-client", "crowdb-e2e",
+        "crowdb-kv", "crowdb-kv-client", "e2e-test",
     },
     "test-storage": {
         "crowdb-chunkdb-client", "crowdb-chunk-kv", "crowdb-chunk-kv-client",

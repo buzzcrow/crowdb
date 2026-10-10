@@ -12,6 +12,8 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+from client import run_client
+
 HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 LABEL = "org.crowdb.e2e.run"
 
@@ -56,44 +58,53 @@ def redact(value):
 
 
 class Cluster:
-    """The runner owns lifecycle; RPC clients live on this cluster's network."""
+    """The runner owns lifecycle; host clients use inspected node IPs."""
 
-    def __init__(self, image, artifacts, command=docker):
+    def __init__(self, image, artifacts, command=docker, data_root=None, node_count=3):
+        if node_count < 1:
+            raise ValueError("a cluster needs at least one node")
         self.run_id = "crowdb-e2e-" + uuid.uuid4().hex
         self.image, self.command = image, command
         self.artifacts = Path(artifacts) / self.run_id
         self.artifacts.mkdir(parents=True)
-        self.containers, self.volumes, self.origins, self.addresses = [], [], [], []
+        self.containers, self.origins, self.addresses = [], [], []
         self.servers = []
+        self.node_count = node_count
+        self.data_root = Path(data_root).resolve() / self.run_id if data_root else self.artifacts / "nodes"
+        self.data_paths = []
         self.network_created = False
         self.closed = False
+        self.timings = {}
 
     def start(self):
         # Record allocations before calls: a timed-out daemon response can have
         # created the resource. Cleanup still checks its ownership label.
         self.network_created = True
         self.command("network", "create", "--label", f"{LABEL}={self.run_id}", self.run_id)
-        for index in range(3):
-            name, volume = f"{self.run_id}-node{index}", f"{self.run_id}-data{index}"
-            self.volumes.append(volume)
-            self.command("volume", "create", "--label", f"{LABEL}={self.run_id}", volume)
+        for index in range(self.node_count):
+            name = f"{self.run_id}-node{index}"
+            data = (self.data_root / f"node{index}" / "data").resolve()
+            (data / "log").mkdir(parents=True)
+            (data / "log" / "container.log").touch()
+            self.data_paths.append(data)
+            (self.artifacts / "mounts.json").write_text(json.dumps({
+                "container_data": "/opt/crowdb/data",
+                "host_data": [str(path) for path in self.data_paths]}, indent=2))
             self.containers.append(name)
             self.servers.append(name)
             self.command("run", "-d", "--name", name, "--label", f"{LABEL}={self.run_id}",
                          "--network", self.run_id, "--network-alias", f"node{index}",
                          "--cpus", "0.5", "--memory", "512m", "--pids-limit", "256",
-                         "--mount", f"type=volume,source={volume},target=/opt/crowdb/data",
-                         "-p", "127.0.0.1::7000", "--entrypoint", "crowdb-kv-server", self.image,
-                         "--root", "/opt/crowdb/data", "--management-port", "7000",
+                         "--mount", f"type=bind,source={data},target=/opt/crowdb/data",
+                         "--ulimit", "core=-1", self.image, "server", "kv",
+                         "--root", "/opt/crowdb/data/kv", "--management-port", "7000",
                          "--ports", "7001..7011", "--stores", str(index), "--groups", "1",
                          "--replica", str(index + 1), "--kv-backend", "block",
-                         "--wal-backend", "block-device", "--election-profile", "e2e", "--log")
+                         "--wal-backend", "block-device", "--election-profile", "e2e",
+                         "--log-dir", "/opt/crowdb/data/log/kv", "--log")
             info = json.loads(self.command("inspect", name))[0]
             self.addresses.append(info["NetworkSettings"]["Networks"][self.run_id]["IPAddress"])
-            binding = info["NetworkSettings"]["Ports"]["7000/tcp"][0]
-            if binding["HostIp"] != "127.0.0.1":
-                raise AssertionError("management port is not bound to loopback")
-            self.origins.append("http://127.0.0.1:" + binding["HostPort"])
+            self.origins.append(f"http://{self.addresses[-1]}:7000")
         self.ready()
         combined = {"stores": []}
         for index, origin in enumerate(self.origins):
@@ -113,7 +124,7 @@ class Cluster:
         for origin in self.origins:
             wait(lambda origin=origin: request(origin, "/topology"),
                  lambda value: len(value["stores"]) == 1 and len(value["stores"][0]["groups"]) == 1,
-                 "KV restored store/group readiness")
+                 f"host-accessible KV store/group readiness at {origin}")
 
     def crash_restart(self):
         for name in self.servers:
@@ -130,32 +141,18 @@ class Cluster:
             address = info["NetworkSettings"]["Networks"][self.run_id]["IPAddress"]
             if address != self.addresses[index]:
                 raise AssertionError("persisted peer RPC address changed during restart")
-            binding = info["NetworkSettings"]["Ports"]["7000/tcp"][0]
-            if binding["HostIp"] != "127.0.0.1":
-                raise AssertionError("management port is not bound to loopback")
-            origins.append("http://127.0.0.1:" + binding["HostPort"])
+            origins.append(f"http://{address}:7000")
         self.origins = origins
 
-    def client(self, bundle, phase):
-        name = self.run_id + "-client-" + phase
-        self.containers.append(name)
+    def client(self, bundle, phase, test_name="e2e_three_node_cluster_kv_put_batch_delete"):
         try:
-            output = self.command("run", "--name", name, "--label", f"{LABEL}={self.run_id}",
-                                  "--network", self.run_id, "--cpus", "0.5", "--memory", "512m",
-                                  "--pids-limit", "256", "--mount", f"type=bind,source={bundle},target=/e2e,readonly",
-                                  "-e", "LD_LIBRARY_PATH=/e2e/lib:/opt/crowdb/lib",
-                                  "-e", "CROWDB_E2E_RPC=" + json.dumps(self.addresses),
-                                  "-e", f"CROWDB_E2E_TOKEN={self.run_id}", "-e", f"CROWDB_E2E_PHASE={phase}",
-                                  "--entrypoint", "/e2e/kv-test", self.image,
-                                  "--ignored", "--exact", "e2e_three_node_cluster_kv_put_batch_delete", "--nocapture",
-                                  timeout=120)
-            (self.artifacts / f"client-{phase}.log").write_text(redact(output))
-            print(output, flush=True)
+            run_client(bundle, self.addresses, self.run_id, phase, self.artifacts, test_name)
         except BaseException as error:
             (self.artifacts / f"client-{phase}.error").write_text(redact(str(error)))
             raise
 
     def diagnostics(self):
+        started = time.monotonic()
         for index, origin in enumerate(self.origins):
             try:
                 (self.artifacts / f"topology-{index}.json").write_text(redact(request(origin, "/topology")))
@@ -166,14 +163,24 @@ class Cluster:
                 try:
                     output = self.command(operation, name)
                     (self.artifacts / f"{name}-{operation}.log").write_text(redact(output))
+                    if operation == "logs" and name in self.servers:
+                        index = self.servers.index(name)
+                        if index < len(self.data_paths):
+                            (self.data_paths[index] / "log" / "container.log").write_text(redact(output))
                 except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
                     (self.artifacts / f"{name}-{operation}.error").write_text(redact(str(error)))
+        self.timings["collect"] = time.monotonic() - started
+        self.write_timings()
+
+    def write_timings(self):
+        (self.artifacts / "timing.json").write_text(json.dumps(self.timings, indent=2))
 
     def close(self):
         if self.closed:
             return
         errors = []
-        for kind, names in (("container", self.containers), ("volume", self.volumes),
+        started = time.monotonic()
+        for kind, names in (("container", self.containers),
                             ("network", [self.run_id] if self.network_created else [])):
             for name in names:
                 try:
@@ -186,13 +193,19 @@ class Cluster:
                 except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
                     errors.append(str(error))
         self.closed = not errors
+        self.timings["stop"] = time.monotonic() - started
+        self.write_timings()
         if errors:
             raise RuntimeError("owned cleanup failed: " + "\n".join(errors))
 
     def __enter__(self):
+        started = time.monotonic()
         try:
-            return self.start()
+            result = self.start()
+            self.timings["start"] = time.monotonic() - started
+            return result
         except BaseException:
+            self.timings["start"] = time.monotonic() - started
             self.__exit__(*sys.exc_info())
             raise
 

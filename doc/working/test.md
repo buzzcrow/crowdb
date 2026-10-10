@@ -14,10 +14,166 @@ itself remains as the ongoing test task backlog. This overrides the
 Unfinished test tasks, grouped by layer. Each task has a checkbox for tracking.
 For test strategy, layer scope, and coverage details, see [`design/kv/design-crowdb-kv-test.md`](../design/kv/design-crowdb-kv-test.md).
 
+## Target test classification and timing
+
+This is the target classification for [R230](../backlog/R230-test-container-layer-e2e.md).
+Rows are scope identifiers, not implemented Pixi commands. The existing KV batch
+covers only part of these flows; pending rows do not imply successful migration.
+Production servers use the release container image, optionally retaining debug
+information. Clients execute on the host against container IPs/fixed ports.
+Each node has a separately mounted host data/log/crash root.
+
+Preserve distinct component UT flow/edge/fault coverage, not every old case.
+Review overlap across modules and E2E; merge/delete redundant checks only after
+mapping assertions to a verified owner. Retain finer internal state/race/crash-cut
+tests locally. Once migrated server E2E passes, delete its old case/unused launcher;
+split mixed tests first. Track missing important flows and add focused coverage.
+Test counts describe executions; they are not a coverage improvement metric.
+
+`tools/benchmark/bench-chunk-kv-regression.sh` and its selections are explicitly
+deferred: preserve their current behavior during migration and decide their
+classification/consolidation only after the remaining work is complete.
+
+### Classification
+
+CI groups below are proposed larger jobs. A job can dispatch several independently
+selected flow groups; measurements and results remain at the finer scope below.
+Component scopes are split further by crate/test binary when measured. SDK rows
+are split by actual SDK client, browser rows by spec, and crash/restart matrices
+by fault target/cut point. Keep a separate case row for unexpectedly slow tests.
+Do not require one CI job for each measurement row.
+
+| Scope                       | Coverage                                            | Proposed CI group |
+| --------------------------- | --------------------------------------------------- | ----------------- |
+| `component.cpp`             | C++ / FFI unit and integration                      | Component         |
+| `component.kv`              | KV / Paxos / WAL / client deterministic flows       | Component         |
+| `component.diskdb`          | Diskdb allocators / ownership / journal transitions | Component         |
+| `component.diskio`          | Diskio / native I/O / client logic                  | Component         |
+| `component.chunkdb`         | Chunkdb placement / lifecycle / tasks / EC          | Component         |
+| `component.chunk-kv`        | Chunk-KV split / handoff / client logic             | Component         |
+| `component.chunk-stream`    | Chunk client / stream deterministic flows           | Component         |
+| `component.access-s3`       | S3 / multipart repository and protocol logic        | Component         |
+| `component.access-iceberg`  | Iceberg commit / FileIO / GC deterministic flows    | Component         |
+| `component.access-dataset`  | Dataset core / adapter / transport / retention      | Component         |
+| `component.console`         | Console / CLI / web logic and stub routes           | Component         |
+| `component.monitor`         | Monitor profile / bootstrap / supervisor logic      | Component         |
+| `component.ui`              | Frontend presentation and unit tests                | Component         |
+| `fixture`                   | Runner / ownership / cleanup / budgets              | Fixture           |
+| `e2e.kv.management`         | Store / group / replica APIs and errors             | Metadata          |
+| `e2e.kv.routing`            | Topology / follower hints / client retries          | Metadata          |
+| `e2e.kv.membership`         | Membership changes / epoch fencing                  | Metadata          |
+| `e2e.kv.recovery`           | Restore / snapshot join / WAL tail / restart        | Metadata          |
+| `e2e.kv.group0`             | Group-0 initialization / discovery / wipe isolation | Metadata          |
+| `e2e.diskdb.allocation`     | Allocate / free / reuse / capacity / routing        | Storage           |
+| `e2e.diskdb.recovery`       | Ownership fencing / persisted journal recovery      | Storage           |
+| `e2e.diskio.io`             | Exact range bytes / registry sync / RPC errors      | Storage           |
+| `e2e.diskio.durability`     | Sync / restart / bounded live I/O failure           | Storage           |
+| `e2e.chunkdb.lifecycle`     | Allocate / reserve / append / seal / delete         | Storage           |
+| `e2e.chunkdb.repair`        | Degraded repair / mirror-EC conversion              | Storage           |
+| `e2e.chunkdb.handoff`       | Task / journal recovery / ownership handoff         | Storage           |
+| `e2e.chunk-stream.objects`  | Small / large / range data / durable publication    | Storage           |
+| `e2e.chunk-stream.recovery` | Takeover / service restart / Diskio errors          | Storage           |
+| `e2e.chunk-kv.protocol`     | Read / write / scan / catalog routing / fencing     | Storage           |
+| `e2e.chunk-kv.recovery`     | Split / transfer / restart / exact records          | Storage           |
+| `e2e.s3.protocol`           | Object / copy / list / multipart / policy           | AccessS3          |
+| `e2e.s3.recovery`           | Service restart / response loss / durable data      | AccessS3          |
+| `e2e.s3.sdk`                | boto3 / AWS CLI / rclone / Java / JS / Go           | AccessS3          |
+| `e2e.iceberg.catalog`       | Namespace / table / commit / auth                   | AccessIceberg     |
+| `e2e.iceberg.fileio`        | FileIO / listing / formats / exact data             | AccessIceberg     |
+| `e2e.iceberg.recovery`      | Commit / file crash matrix / GC / capacity          | AccessIceberg     |
+| `e2e.iceberg.sdk`           | PyIceberg / Java / Rust / RCK compatibility         | AccessIceberg     |
+| `e2e.dataset`               | Audited existing Dataset server flows               | AccessDataset     |
+| `e2e.console.api-cli`       | Real console / CLI operations and authority         | ConsoleDeploy     |
+| `e2e.console.browser`       | Browser provisioning / lifecycle / real data        | ConsoleDeploy     |
+| `e2e.deployment.bootstrap`  | Manual / automatic / full-set / subset startup      | ConsoleDeploy     |
+| `e2e.deployment.recovery`   | Supervision / identity / logs / crash / mounts      | ConsoleDeploy     |
+| `e2e.isolation`             | Same-host mixed-domain concurrency and teardown     | Isolation         |
+| `special.containerd`        | Release image runtime adapter acceptance            | Special           |
+| `special.host-hardware`     | Host networking / real devices / hardware           | Special           |
+| `benchmark`                 | Opt-in throughput / latency benchmarks              | Manual            |
+
+### Measurement rules
+
+- Use monotonic wall-clock measurements. Record host/platform, run date, scope,
+  executed/passed/failed/skipped counts, result and artifact link. Preserve failed
+  run timings too; an early failure is not a complete-suite measurement.
+- For E2E record build/preparation, server startup/readiness, test execution and
+  diagnostics/teardown separately, plus total elapsed seconds. Shared image build
+  is measured once per run; do not charge it to every flow or hide it in test time.
+- Keep per-case durations from Rust/client/browser reports and fixture startup
+  timings, so a slow scenario can be distinguished from a slow bootstrap. Add
+  per-SDK, per-spec and per-fault rows as those selectors are implemented.
+- Record concurrency and CPU/memory budgets with run/image/source identity.
+  Parallel job wall time differs from the sum of its flow durations; record both
+  distinctly and do not add simultaneous durations as elapsed job time.
+- Keep the latest measurement per host and finest measured scope in these tables;
+  retain full reports in artifacts. Show slowest cases and setup phases in each
+  run report, ranked by measured duration. Do not relax an assertion timeout to
+  make a slow-test report disappear.
+- Use `—` for unavailable phase measurements; never derive fine-grained timings
+  from the historical aggregate suite tables. Unexecuted/unmigrated scopes stay
+  pending. CI group names and final Pixi selectors are planned until wired.
+
+### intel7960: target scopes
+
+New rows start unmeasured. The fixture row measures the complete Pixi invocation
+without an image build or server startup; the current test report executes twelve cases.
+Future detailed component and E2E rows replace their unmeasured scope placeholders.
+
+| Scope                       | Date       | Tests | Build s | Start s | Test s | Collect/stop s | Total s | Status  |
+| --------------------------- | ---------- | ----- | ------- | ------- | ------ | -------------- | ------- | ------- |
+| `component.cpp`             | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `component.kv`              | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `component.diskdb`          | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `component.diskio`          | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `component.chunkdb`         | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `component.chunk-kv`        | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `component.chunk-stream`    | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `component.access-s3`       | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `component.access-iceberg`  | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `component.access-dataset`  | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `component.console`         | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `component.monitor`         | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `component.ui`              | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `fixture`                   | 2026-10-11 | 12/12 | —       | —       | —      | —              | 0.366   | PASS    |
+| `e2e.kv.management`         | 2026-10-11 | 1/1   | shared  | 0.733   | 0.350  | 0.075/0.574    | 1.732   | PASS    |
+| `e2e.kv.routing`            | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `e2e.kv.membership`         | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `e2e.kv.recovery`           | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `e2e.kv.group0`             | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `e2e.diskdb.allocation`     | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `e2e.diskdb.recovery`       | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `e2e.diskio.io`             | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `e2e.diskio.durability`     | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `e2e.chunkdb.lifecycle`     | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `e2e.chunkdb.repair`        | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `e2e.chunkdb.handoff`       | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `e2e.chunk-stream.objects`  | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `e2e.chunk-stream.recovery` | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `e2e.chunk-kv.protocol`     | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `e2e.chunk-kv.recovery`     | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `e2e.s3.protocol`           | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `e2e.s3.recovery`           | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `e2e.s3.sdk`                | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `e2e.iceberg.catalog`       | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `e2e.iceberg.fileio`        | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `e2e.iceberg.recovery`      | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `e2e.iceberg.sdk`           | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `e2e.dataset`               | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `e2e.console.api-cli`       | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `e2e.console.browser`       | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `e2e.deployment.bootstrap`  | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `e2e.deployment.recovery`   | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `e2e.isolation`             | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `special.containerd`        | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `special.host-hardware`     | —          | —     | —       | —       | —      | —              | —       | Pending |
+| `benchmark`                 | —          | —     | —       | —       | —      | —              | —       | Pending |
+
 ## Suite Timing
 
-Each platform section keeps one row per test package and only the latest run.
-Leave unexecuted packages in place with `—`; record elapsed time in seconds.
+These existing aggregate rows retain the historical task measurements. New
+classification measurements above use finer scopes and are not inferred from
+these totals. Keep one latest row per package/platform; use `—` when unmeasured.
 
 ### macOS
 
@@ -48,6 +204,15 @@ Leave unexecuted packages in place with `—`; record elapsed time in seconds.
 | `test-iceberg-sdk` | 2026-10-09 | 11/11     | 571.23  | ✓                        |
 
 Measurement notes for this host:
+
+- Container migration acceptance (2026-10-11): host clients, retained-debug
+  release image, fixed ports, no port publishing. Artifacts:
+  `.crowdb-runtime/artifacts/container-e2e/run-c2d57c0480f946c2828ebab5b0f35d8f/`.
+  Warm client build: 0.619s; scenario wall: 9.069s. Two concurrent three-node
+  startups: 1.456/1.550s; CRUD cases: 0.623/0.626s; recovery/survivor checks:
+  0.224/0.236s. Collect: 0.211/0.218s; stop: 1.162/1.182s. Recovery wall also
+  includes SIGKILL/restart and coordination; the client duration is not its
+  complete flow duration. Scope rows remain pending for unmigrated assertions.
 
 - Access and Iceberg rows retain their earlier partial-run counts/times, but
   are not complete task acceptance. The parent tasks must dispatch their SDK

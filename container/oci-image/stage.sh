@@ -4,9 +4,17 @@
 set -euo pipefail
 [[ $(uname -sm) == "Linux x86_64" ]] || { echo "Linux amd64 build host required; macOS VM backend is reserved" >&2; exit 1; }
 cd "$(git rev-parse --show-toplevel)"
+case "${CROWDB_KEEP_DEBUG_INFO:-0}" in
+    0) cmake_debug_args=() ;;
+    1)
+        export CARGO_PROFILE_RELEASE_DEBUG=2
+        cmake_debug_args=(-DCMAKE_CXX_FLAGS_RELEASE='-O3 -DNDEBUG -g')
+        ;;
+    *) echo 'CROWDB_KEEP_DEBUG_INFO must be 0 or 1' >&2; exit 1 ;;
+esac
 # Build on the host, reusing the existing Cargo, CMake and npm artifacts.
 cargo build --locked --release -p crowdb-kv-client --features ffi
-cmake -S app/crowdb-diskio -B app/crowdb-diskio/build -DCMAKE_BUILD_TYPE=Release
+cmake -S app/crowdb-diskio -B app/crowdb-diskio/build -DCMAKE_BUILD_TYPE=Release "${cmake_debug_args[@]}"
 cmake --build app/crowdb-diskio/build -j 4 --target crowdb-diskio
 cargo build --locked --release --features crowdb-kv-client/ffi \
     -p crowdb-kv-client -p crowdb-monitor -p crowdb-kv-server -p crowdb-diskdb \

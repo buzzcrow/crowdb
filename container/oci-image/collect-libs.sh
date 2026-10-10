@@ -3,6 +3,11 @@ set -euo pipefail
 
 build_root=$(git rev-parse --show-toplevel)
 output=${1:?runtime staging directory is required}
+case "${CROWDB_KEEP_DEBUG_INFO:-0}" in
+    0) debug_info=stripped ;;
+    1) debug_info=retained ;;
+    *) echo 'CROWDB_KEEP_DEBUG_INFO must be 0 or 1' >&2; exit 1 ;;
+esac
 mkdir -p "$output/bin" "$output/lib"
 
 for binary in \
@@ -60,9 +65,12 @@ for library in "$output"/lib/*; do
 done
 rm "$output/dependencies.txt"
 
-for artifact in "$output"/bin/* "$output"/lib/*; do
-    strip --strip-debug "$artifact"
-done
+if [[ "$debug_info" == stripped ]]; then
+    for artifact in "$output"/bin/* "$output"/lib/*; do
+        strip --strip-debug "$artifact"
+    done
+fi
+printf '%s\n' "$debug_info" > "$output/DEBUG_INFO"
 
 for binary in "$output"/bin/*; do
     LD_LIBRARY_PATH="$output/lib" ldd -r "$binary" > "$output/dependencies.txt"

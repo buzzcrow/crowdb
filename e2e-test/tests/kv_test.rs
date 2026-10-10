@@ -4,6 +4,7 @@
 //! Packaged three-voter KV CRUD, persistence and isolation acceptance.
 
 mod common;
+mod kv;
 
 use bytes::Bytes;
 use crowdb_kv::rpc::{KvBatchItem, KvBatchWriteRequest, KvDeleteRequest, KvGetRequest, KvSetRequest};

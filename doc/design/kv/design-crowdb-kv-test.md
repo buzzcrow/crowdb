@@ -75,7 +75,7 @@ servers on isolated bridges and a network-local Rust RPC client, preserving
 protocol assertions, crash recovery and concurrent-fixture isolation. Remaining
 process suites keep their component owner until each migration retains its
 assertions; component-local logic tests remain in `crowdb-kv-server`. See the
-[container E2E component](../../../container/crowdb-e2e/README.md) for current
+[container E2E component](../../../e2e-test/README.md) for current
 profiles and migration ownership.
 
 **KV operation correctness rule:** every layer that applies KV mutations

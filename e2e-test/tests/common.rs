@@ -31,13 +31,13 @@ pub fn nodes() -> Vec<ServerNode> {
         .enumerate()
         .map(|(index, rpc_ip)| ServerNode {
             node_id: u64::try_from(index).unwrap(),
-            origin: format!("http://node{index}:7000"),
+            origin: format!("http://{rpc_ip}:7000"),
             rpc_ip,
         })
         .collect()
 }
 fn client() -> reqwest::Client {
-    reqwest::Client::new()
+    reqwest::Client::builder().no_proxy().build().unwrap()
 }
 async fn topology(node: &ServerNode) -> Value {
     client()

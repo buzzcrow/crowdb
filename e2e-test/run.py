@@ -9,13 +9,15 @@ import json
 import signal
 import subprocess
 import threading
+import time
 import uuid
 from pathlib import Path
 
 from client import bundle_client
 from fixture import Cluster, docker
+from release import check_startup
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def capacity(concurrency, cpus, memory_mib):
@@ -28,13 +30,13 @@ def interrupt(_signal, _frame):
     raise KeyboardInterrupt("container E2E interrupted")
 
 
-def run_pair(image, artifacts, bundle, count):
+def run_pair(image, artifacts, bundle, count, data_root=None):
     ready = threading.Barrier(count, timeout=180)
     retired, failed = threading.Event(), threading.Event()
 
     def scenario(index):
         try:
-            with Cluster(image, artifacts) as cluster:
+            with Cluster(image, artifacts, data_root=data_root) as cluster:
                 cluster.client(bundle, "write")
                 ready.wait()
                 if index == 0:
@@ -55,7 +57,7 @@ def run_pair(image, artifacts, bundle, count):
             raise
 
     # At most two fixtures constitute the initial isolation acceptance. The
-    # budget is reserved for each node plus its client sidecar, even while idle.
+    # budget is reserved for each node plus its host client, even while idle.
     with concurrent.futures.ThreadPoolExecutor(max_workers=count) as pool:
         futures = [pool.submit(scenario, index) for index in range(count)]
         try:
@@ -76,6 +78,7 @@ def main():
     parser.add_argument("--cpus", type=float, default=4)
     parser.add_argument("--memory-mib", type=int, default=4096)
     parser.add_argument("--image", default="crowdb-node:dev")
+    parser.add_argument("--data-root", type=Path, help="host parent for independent per-run/node data mounts")
     parser.add_argument("--artifacts", type=Path, default=ROOT / ".crowdb-runtime/artifacts/container-e2e")
     args = parser.parse_args()
     signal.signal(signal.SIGTERM, interrupt)
@@ -99,13 +102,25 @@ def main():
         "repo_digests": identity.get("RepoDigests", []), "labels": labels, "client_revision": revision,
         "layer": args.layer, "slots": slots}, indent=2))
     print(f"KV fixture slots: {slots}; exact image {identity['Id']}; artifacts {run_root}", flush=True)
+    started = time.monotonic()
     bundle = bundle_client(run_root / "client")
+    timings = {"client_build": time.monotonic() - started}
     with (bundle / "kv-test").open("rb") as executable:
         client_digest = hashlib.file_digest(executable, "sha256").hexdigest()
-    source_diff = subprocess.check_output(["git", "diff", "HEAD", "--", "container/crowdb-e2e"])
+    client_source = hashlib.sha256()
+    for path in sorted((ROOT / "e2e-test").rglob("*")):
+        if path.is_file() and path.suffix in (".rs", ".py", ".toml"):
+            client_source.update(str(path.relative_to(ROOT)).encode())
+            client_source.update(path.read_bytes())
     (run_root / "client-identity.json").write_text(json.dumps({"sha256": client_digest,
-        "revision": revision, "tracked_diff_sha256": hashlib.sha256(source_diff).hexdigest()}, indent=2))
-    run_pair(identity["Id"], run_root, bundle, min(slots, 2))
+        "revision": revision, "source_sha256": client_source.hexdigest()}, indent=2))
+    started = time.monotonic()
+    run_pair(identity["Id"], run_root, bundle, min(slots, 2), args.data_root)
+    with Cluster(identity["Id"], run_root, data_root=args.data_root, node_count=1) as cluster:
+        cluster.client(bundle, "management", "kv::management::management_lifecycle")
+    check_startup(identity["Id"], run_root)
+    timings["scenarios_wall"] = time.monotonic() - started
+    (run_root / "timing.json").write_text(json.dumps(timings, indent=2))
     print("Container KV CRUD, crash recovery and available fixture isolation checks passed", flush=True)
 
 

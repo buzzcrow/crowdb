@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 ARG SOURCE_REVISION
 ARG RUNTIME_SHA256
 ARG PREVIEW_VERSION
+ARG DEBUG_INFO=stripped
 RUN --mount=type=bind,source=.,target=/staged,ro \
     test -n "$SOURCE_REVISION" && test -n "$PREVIEW_VERSION" \
     && test "$(cat /staged/SOURCE_REVISION)" = "$SOURCE_REVISION" \
@@ -32,6 +33,7 @@ LABEL org.opencontainers.image.title="CROWDB Node" \
       org.opencontainers.image.revision="$SOURCE_REVISION" \
       org.opencontainers.image.version="$PREVIEW_VERSION" \
       org.crowdb.runtime.sha256="$RUNTIME_SHA256" \
+      org.crowdb.debug-info="$DEBUG_INFO" \
       org.crowdb.startup.default="manual"
 ENV CROWDB_STARTUP_MODE="manual" \
     PATH="/opt/crowdb/bin:${PATH}" \

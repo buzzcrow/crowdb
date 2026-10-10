@@ -25,6 +25,34 @@ case "$(cat /proc/sys/kernel/core_pattern)" in
         ;;
 esac
 
+if test "$#" -gt 0; then
+    test "$1" = server || { echo 'Expected server SERVICE [arguments]' >&2; exit 1; }
+    shift
+    service=${1:-}
+    case "$service" in
+        kv) program=crowdb-kv-server ;;
+        diskdb) program=crowdb-diskdb ;;
+        diskio) program=crowdb-diskio ;;
+        chunkdb) program=crowdb-chunkdb ;;
+        chunk-kv) program=crowdb-chunk-kv-server ;;
+        access) program=crowdb-access-server ;;
+        web) program=crowdb-web ;;
+        *) echo 'Unknown server service' >&2; exit 1 ;;
+    esac
+    shift
+    if test -e /opt/crowdb/data/accepted-node.json || test -e /opt/crowdb/data/bootstrap/manifest.json; then
+        echo 'Standalone server mode requires a separate data root from a managed node' >&2
+        exit 1
+    fi
+    mkdir -p "$CROWDB_CORE_DIR" "/opt/crowdb/data/log/$service"
+    chown crowdb:crowdb /opt/crowdb/data /opt/crowdb/data/log "$CROWDB_CORE_DIR" "/opt/crowdb/data/log/$service"
+    cd "$CROWDB_CORE_DIR"
+    exec setpriv --reuid=crowdb --regid=crowdb --init-groups "/opt/crowdb/bin/$program" "$@"
+fi
+
+profile=${CROWDB_PROFILE_PATH:-/opt/crowdb/etc/profile.toml}
+/opt/crowdb/bin/crowdb-monitor validate "$profile"
+
 mode=${CROWDB_STARTUP_MODE:-manual}
 case "$mode" in single|manual) ;; *) echo 'CROWDB_STARTUP_MODE must be single or manual' >&2; exit 1 ;; esac
 previous=
@@ -86,6 +114,6 @@ EOF
 if test "$mode" = manual; then
     test -n "${CROWDB_PHYSICAL_HOST_ID:-}" || { echo 'Manual mode requires CROWDB_PHYSICAL_HOST_ID' >&2; exit 1; }
     exec setpriv --reuid=crowdb --regid=crowdb --init-groups /opt/crowdb/bin/crowdb-monitor run \
-        --profile /opt/crowdb/etc/profile.toml --mode manual --interface "${CROWDB_MANAGEMENT_INTERFACE:-eth0}" --physical-host-id "$CROWDB_PHYSICAL_HOST_ID"
+        --profile "$profile" --mode manual --interface "${CROWDB_MANAGEMENT_INTERFACE:-eth0}" --physical-host-id "$CROWDB_PHYSICAL_HOST_ID"
 fi
-exec setpriv --reuid=crowdb --regid=crowdb --init-groups /opt/crowdb/bin/crowdb-monitor run --profile /opt/crowdb/etc/profile.toml --mode single
+exec setpriv --reuid=crowdb --regid=crowdb --init-groups /opt/crowdb/bin/crowdb-monitor run --profile "$profile" --mode single

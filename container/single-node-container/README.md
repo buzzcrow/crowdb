@@ -6,6 +6,42 @@
 This page describes building and running CROWDB from source on a Linux amd64
 development or CI host.
 
+## Service selection and inspectable data
+
+The same release image supports the complete managed profile, a mounted profile
+for an explicitly selected service set, or one standalone server. Service
+selection does not rebuild the image. Without a command, the usual startup
+mode and complete bundled profile apply. To supply a validated profile, mount
+it read-only and set `CROWDB_PROFILE_PATH` to its container path; the monitor
+validates the profile and its dependency graph before startup.
+
+Standalone services use the normal entrypoint command `server SERVICE [arguments]`.
+Supported services are `kv`, `diskdb`, `diskio`, `chunkdb`, `chunk-kv`, `access`
+and `web`; arguments are the corresponding released server's CLI arguments.
+This starts only that server, without monitor automatic recovery or SSH. Supply
+its required external dependencies explicitly. Unknown services fail; an existing
+managed-node data root cannot be switched to standalone mode.
+
+```sh
+pixi run docker run --name kv-node --network my-owned-bridge \
+  --mount type=bind,source=/absolute/node-data,target=/opt/crowdb/data \
+  --ulimit core=-1 crowdb-node:dev server kv \
+  --root /opt/crowdb/data/kv --management-port 7000 --ports 7001..7011 \
+  --stores 0 --groups 1 --replica 1 --log-dir /opt/crowdb/data/log/kv --log
+```
+
+Use different host data directories per node/cluster. Data and service logs are
+locally readable under that mount; relative kernel core patterns use
+`data/crash` as the standalone process working directory. Host core collectors
+still follow host policy; see the crash debugging section below. Preserve the
+matching binary/debug information when inspecting a dump.
+
+Set `CROWDB_KEEP_DEBUG_INFO=1` while running `pixi run stage-single-node-container`
+to retain debug information in the release-optimized Rust and C++ binaries.
+The normal OCI build records `org.crowdb.debug-info` and the receipt's
+`debug_info` mode. Build once and reuse its immutable image for every selected
+service set; default packaging continues to strip debug information.
+
 This profile explicitly selects `test_single_node`. KV groups have one voter;
 chunk writes use one 1 MiB mirror copy with no EC or conversion. The profile
 provides no data protection, and a failed copy returns an I/O error. Production

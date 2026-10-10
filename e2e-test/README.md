@@ -1,7 +1,23 @@
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
 <!-- Licensed under the Apache License, Version 2.0. -->
 
-# Container layer E2E
+# E2E tests
+
+The root-level `e2e-test/` is the unified E2E project. Its Rust workspace package
+is `e2e-test`; server domains use separate test modules within this crate.
+The Python runner owns container lifecycle and scheduling. Future browser and
+SDK clients with independent language dependencies live under `clients/<client>/`
+and consume the same fixture endpoints and ownership contract. They do not
+introduce separate server launchers. Domain profiles and migration scope are
+tracked in the [working plan](../doc/working/plan-container-e2e.md).
+
+Test clients run on the host against inspected node-container IPs and fixed
+ports, with three node containers for a three-node cluster. A separate one-node
+fixture exercises the management lifecycle. Host bridge IP reachability is
+required; remote Docker and Linux-VM routing are not implicitly supported.
+Containers supply server subsets or clusters from the formal release image;
+they are not test execution environments. Domain profiles configure that same
+server artifact rather than introducing separate test-server builds.
 
 This component owns progressively migrated real-server acceptance. The first
 profile is KV: three packaged `crowdb-kv-server` processes with block tree storage,
@@ -14,6 +30,8 @@ block-device WAL and the existing `e2e` election preset. It consumes the shared
 pixi run test-container-e2e-fixture
 pixi run clean-env
 pixi run test-container-e2e --layer kv --concurrency 2 --cpus 4 --memory-mib 4096
+# Optional parent outside the default artifact directory:
+pixi run test-container-e2e --layer kv --data-root /path/to/e2e-data
 ```
 
 Build/import the shared OCI image first. An absent image, missing Docker daemon,
@@ -22,7 +40,7 @@ required test. There is no successful missing-prerequisite skip.
 `--layer all` currently selects the only implemented layer, KV.
 
 `--concurrency` is a cap. Each slot reserves 2 CPUs and 2048 MiB for three
-0.5-CPU/512-MiB servers and one equally bounded client. The effective cap also
+0.5-CPU/512-MiB servers plus a host-client resource allowance. The effective cap also
 accounts for Docker daemon capacity. Two slots run two isolated fixtures at once;
 one slot runs the CRUD/recovery scenario without claiming concurrent isolation.
 The initial batch uses at most two slots. CI sets `--require-isolation` and
@@ -31,15 +49,15 @@ profiles remain pending.
 
 ## Lifecycle and endpoints
 
-- Each fixture owns a UUID-labeled bridge network, three named data volumes,
-  three server containers and its client containers. No global prune or shared
+- Each fixture owns a UUID-labeled bridge network, independent host data bind
+  mounts and its server containers. No global prune or shared
   implicit cluster is used. Cleanup verifies ownership labels and exact names.
 - Network-local management is fixed at `7000`; store RPC uses `7001..7011`.
   Every fixture reuses the same names, store/replica IDs and port pool inside its
   own network. New fixtures do not call the legacy offset/probe/flock allocator.
-- Only management is temporarily published, with Docker-assigned ports bound
-  to `127.0.0.1`. The host receives those endpoints from container inspection.
-- RPC clients run in a sidecar on the owned network. Peer topology rewrites
+- No service port is host-published. Management and RPC clients use inspected
+  node IPs directly, so concurrent fixtures reuse all fixed internal ports.
+- Host RPC clients consume the owned endpoint list. Peer topology rewrites
   wildcard listen addresses to inspected bridge IPs (the C++ RPC transport
   expects numeric addresses) while retaining actual
   returned store ports. RPC ports are never host-published.
@@ -47,21 +65,24 @@ profiles remain pending.
   It does not create Group 0, run discovery, SSH, monitor or console, and makes
   no claim about management bootstrap authority. Deployment profiles continue
   to own that coverage until their migration.
-- SIGKILL/restart retains the same volumes, network identities and internal
-  endpoints. Runtime-assigned host mappings are refreshed after restart because
-  Docker can change them; container service ports and peer IPs remain fixed.
+- SIGKILL/restart retains the same mounted data, network identities and internal
+  endpoints. Inspection rejects a changed peer IP rather than masking stale
+  topology by choosing another endpoint.
   Monitor automatic recovery is absent in this layer profile.
-- Client compilation uses locked Cargo dependencies; its executable and Pixi
-  shared-library dependencies are mounted read-only in the shared image.
+- Client compilation uses locked Cargo dependencies; the staged executable and
+  Pixi shared-library dependencies execute on the host with per-run environment.
   Normal component Rust gates leave the container-only test ignored; this
   runner explicitly executes it and missing fixture setup fails.
 - Interruption or partial startup gathers diagnostics and tears down owned
   allocations. Operations have bounded deadlines; SIGINT/SIGTERM abort runner
   coordination and cleanup follows in-flight operations. SIGKILL cannot execute
   cleanup; retained resource labels identify orphaned fixture ownership.
+- Node mounts and their logs/data/crash files remain on the host after teardown.
+  `mounts.json` records paths. Startup, client phases, collection and teardown
+  produce timing reports; a required client invocation must execute one case.
 
 Listener implementations and later migrations follow the
-[TCP restart/ownership contract](../../doc/design/rpc/design-crowdb-rpc-tcp.md#7-listener-ownership-and-restart):
+[TCP restart/ownership contract](../doc/design/rpc/design-crowdb-rpc-tcp.md#7-listener-ownership-and-restart):
 `SO_REUSEADDR` before bind, stable four-digit endpoints and one live owner;
 no default `SO_REUSEPORT` or conflict-driven port hopping.
 

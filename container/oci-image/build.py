@@ -38,6 +38,10 @@ def main():
     runtime_sha256 = content.hexdigest()
     revision = (context / "SOURCE_REVISION").read_text().strip()
     version = (context / "VERSION").read_text().strip()
+    debug_path = context / "DEBUG_INFO"
+    debug_info = debug_path.read_text().strip() if debug_path.exists() else "stripped"
+    if debug_info not in ("stripped", "retained"):
+        parser.error("staged DEBUG_INFO must be stripped or retained")
     base = (context / "Dockerfile").read_text().splitlines()[0].split()[1]
     output.parent.mkdir(parents=True, exist_ok=True)
     cache = (args.cache or output.parent / "oci-build-cache").resolve()
@@ -53,6 +57,7 @@ def main():
                        "--opt", f"platform={args.platform}", "--opt", f"build-arg:SOURCE_REVISION={revision}",
                        "--opt", f"build-arg:PREVIEW_VERSION={version}",
                        "--opt", f"build-arg:RUNTIME_SHA256={runtime_sha256}",
+                       "--opt", f"build-arg:DEBUG_INFO={debug_info}",
                        "--output", f"type=oci,dest={temporary},oci-mediatypes=true"]
             for name in ("http_proxy", "https_proxy", "all_proxy", "no_proxy"):
                 value = os.environ.get(name, "")
@@ -67,7 +72,8 @@ def main():
         if result["labels"].get("org.opencontainers.image.revision") != revision or result["labels"].get("org.opencontainers.image.version") != version:
             raise ValueError("built image differs from staged source metadata")
         result.pop("config")
-        result.update(revision=revision, version=version, base_image=base, tools=versions, runtime_sha256=runtime_sha256)
+        result.update(revision=revision, version=version, base_image=base, tools=versions,
+                      runtime_sha256=runtime_sha256, debug_info=debug_info)
         os.replace(temporary, output)
         receipt_path = Path(directory) / "receipt.json"
         receipt_path.write_text(json.dumps(result, indent=2) + "\n")

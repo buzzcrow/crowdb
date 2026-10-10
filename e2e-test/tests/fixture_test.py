@@ -89,16 +89,15 @@ class FixtureTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 capacity(*args)
 
-    def test_restart_refreshes_host_mapping_and_retains_peer_endpoint(self):
+    def test_restart_retains_direct_host_and_peer_endpoints(self):
         with tempfile.TemporaryDirectory() as directory:
             cluster = Cluster("image", directory)
             cluster.servers, cluster.addresses = ["server"], ["172.18.0.2"]
-            cluster.origins = ["http://127.0.0.1:30000"]
-            info = {"NetworkSettings": {"Networks": {cluster.run_id: {"IPAddress": "172.18.0.2"}},
-                    "Ports": {"7000/tcp": [{"HostIp": "127.0.0.1", "HostPort": "30001"}]}}}
+            cluster.origins = ["http://172.18.0.2:7000"]
+            info = {"NetworkSettings": {"Networks": {cluster.run_id: {"IPAddress": "172.18.0.2"}}}}
             cluster.command = lambda *_args: json.dumps([info])
             cluster.refresh_endpoints()
-            self.assertEqual(cluster.origins, ["http://127.0.0.1:30001"])
+            self.assertEqual(cluster.origins, ["http://172.18.0.2:7000"])
             info["NetworkSettings"]["Networks"][cluster.run_id]["IPAddress"] = "172.18.0.3"
             with self.assertRaisesRegex(AssertionError, "peer RPC address changed"):
                 cluster.refresh_endpoints()
