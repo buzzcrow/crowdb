@@ -45,7 +45,7 @@ selected cluster from any UI, with durable identity and fail-closed authority.
   schema, lib/crowdb-console-shared/src/ops/cluster/bootstrap/.
   Verified concurrent prepare, persistence across restart, generic-path rejection,
   same-operation init retry and no init calls after one member rejects prepare.
-- [ ] **Bootstrap operation integration**: persist UI operation/config identity,
+- [~] **Bootstrap operation integration**: persist UI operation/config identity,
   route node startup through prepared bootstrap and add fenced terminal cleanup
   plus dynamic monitor cluster binding. Files: shared bootstrap, Web management,
   monitor node lifecycle and KV-server cleanup.
@@ -62,7 +62,7 @@ selected cluster from any UI, with durable identity and fail-closed authority.
   monitor loss; discovery never changes racks or grants admission. Files:
   app/crowdb-web/src/node.rs, state.rs, main.rs, ui/src/shell/CandidateNodes.tsx,
   tests/node_candidates_test.rs, ui/e2e/flows/12-cluster-discovery.spec.ts.
-- [~] **UI lifecycle**: admission and explicit initialization,
+- [ ] **UI lifecycle**: admission and explicit initialization,
   publication/unavailable states, cluster selection and cleanup recovery. Files:
   app/crowdb-web/ui/src/, ui/e2e/flows/.
 - [ ] **Verify and clean up**: focused crate tests, Docker integration and affected
@@ -111,3 +111,79 @@ selected cluster from any UI, with durable identity and fail-closed authority.
 - Existing Cluster lifecycle spec passed (4 tests; 3.1s, 1.4s, 5.1s, 2.3s),
   within twice the freshly measured baseline.
 - Rust fmt/workspace clippy and UI build/E2E TypeScript lint passed.
+
+- Real Docker bridge acceptance passed: three independent volumes and monitors,
+  no peer list, mutual Ed25519 SSH, identified bootstrap and all three UIs
+  reading the same Group-0 cluster/topology. Later cleanup/admission extensions
+  need fresh Docker verification.
+- Full monitor suite passed after shared node discovery/automatic startup changes.
+- KV system_init_test passed 8 tests including explicit cleanup, delayed-operation
+  fencing, new-operation reuse and restart.
+- Current additions: sealed bootstrap, private monitor control, SSH operation
+  tagging/cancellation, Group-0 CAS admission allocation, UI retry/cleanup,
+  per-node bindings and automatic single-node discovery/read-only enforcement.
+- Remaining verification/implementation: cleanup with unreachable members,
+  post-bootstrap admission/cancellation, quorum partitions and deployment grants,
+  remote managed-service lifecycle, cluster selection/reconfiguration, production
+  resource inputs, Docker host-network and single-node regression, full gates.
+
+- Later-node admission exposed wildcard RPC listeners in discovered topology.
+  Client normalization now resolves only wildcard local listeners through the
+  reporting management origin. Real RPC regression topology_endpoint_test passed.
+- system_init_test passed all 8 cleanup/exclusion cases after generic cleanup fencing.
+- Focused Cluster lifecycle/discovery browser verification passed 5 tests (2.8s,
+  1.5s, 5.1s, 2.5s, 2.7s); cluster filtering is covered.
+- Service intents now persist in Group 0; target monitor validates current intent,
+  retains execution, recovers committed requests and reports application probes.
+  Cross-UI lifecycle, DiskDB and KV routing require refreshed Docker verification.
+- Four-node Docker extension currently awaits rerun after RPC topology fix.
+  Single-node full container regression awaits rerun with container-internal curl.
+
+- Refreshed complete monitor suite passed. Explicit seed expiry and live bindings
+  use real HTTP and multicast transports.
+- Four-node bridge suite passed with application RPC health, shared service intents,
+  cross-UI service lifecycle, minority management rejection and explicit cleanup.
+- Host-network production launcher passed digest pinning, explicit secret mount,
+  resource boundaries, bootstrap, container replacement and identity/key recovery.
+- Native S3 multipart browser reproduction passed after restoring the KV client
+  FFI build; the full console gate is running again.
+- Bootstrap recovery now copies validated public fixed inputs and authenticated
+  private service credentials to each participant before starting its KV replica.
+  Other UIs recover the same operation independently of the initiating UI.
+
+## Blocked
+
+- Command: `pixi run bash -c 'export CROWDB_CONTAINER_IMAGE=crowdb-node:r227; bash container/single-node-container/tests/container-e2e.sh'`.
+- Five root-cause-driven runs remain unsuccessful:
+  - Initial discovery identity creation raced automatic bootstrap's empty-root check.
+    Identity creation is now synchronous before the single-node bootstrap task.
+  - The persistent-root symlink assertion ran as root after adding the SSH entry
+    point. It now checks using the container's service user.
+  - The single-node internal Access health listener required container-local curl;
+    curl is now packaged and that private listener is probed inside the container.
+  - A KV client build omitted `ffi`, removing DiskIO C ABI symbols. Packaging now
+    preserves that feature and checks unresolved symbols before image assembly.
+  - The fifth run passed boot, client writes/readback, browser checks, crash/hang
+    recovery for every service, persisted-volume restart and restart-budget checks,
+    then failed the corrupt-manifest diagnostic assertion.
+- Exact final boundary: `verify_invalid_manifest_rejected` observes nonzero
+  container exit, then requires `docker logs ... | grep -F 'Manifest('`.
+  Actual log: `Error: "preview manifest failed: bootstrap manifest cannot be decoded: expected value at line 1 column 1"`.
+  The invalid manifest is rejected; the old diagnostic spelling is absent.
+- Root cause: the same-image single/manual command wrapper now returns the
+  contextual display error rather than the former debug enum representation.
+  No sixth attempt or assertion edit has been made.
+- Proposed continuation: retain the nonzero-exit assertion, match the concrete
+  manifest decoding diagnostic, rerun the complete container suite, then finish
+  multi-node browser/recovery coverage, module/documentation cleanup and full gates.
+  Alternative: restore the former CLI diagnostic representation, preserving the
+  old test spelling, then repeat the same acceptance gate.
+- The implement-requirement skill requires recording/committing this state and
+  requesting a human decision after five failed root-cause-driven attempts.
+- R227 remains open. Recent full workspace clippy passed; focused KV bootstrap
+  tests passed (8), the prior four-node application-health suite and host-network
+  replacement suite passed. Latest monitor/protocol rerun is finishing. The full
+  console gate was stopped before completion; full console UI has not run.
+- All implementation edits are retained in the worktree. The most recent browser
+  coverage and cross-UI manifest recovery additions still require execution and
+  must not be described as verified or complete.
