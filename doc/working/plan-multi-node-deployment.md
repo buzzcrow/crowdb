@@ -151,7 +151,7 @@ selected cluster from any UI, with durable identity and fail-closed authority.
   private service credentials to each participant before starting its KV replica.
   Other UIs recover the same operation independently of the initiating UI.
 
-## Blocked
+## Resumed verification
 
 - Command: `pixi run bash -c 'export CROWDB_CONTAINER_IMAGE=crowdb-node:r227; bash container/single-node-container/tests/container-e2e.sh'`.
 - Five root-cause-driven runs remain unsuccessful:
@@ -172,7 +172,9 @@ selected cluster from any UI, with durable identity and fail-closed authority.
   The invalid manifest is rejected; the old diagnostic spelling is absent.
 - Root cause: the same-image single/manual command wrapper now returns the
   contextual display error rather than the former debug enum representation.
-  No sixth attempt or assertion edit has been made.
+  After user authorization, the assertion retains nonzero exit and checks this
+  concrete decoding diagnostic. The invalid-profile case similarly checks its
+  contextual decode diagnostic.
 - Proposed continuation: retain the nonzero-exit assertion, match the concrete
   manifest decoding diagnostic, rerun the complete container suite, then finish
   multi-node browser/recovery coverage, module/documentation cleanup and full gates.
@@ -187,3 +189,60 @@ selected cluster from any UI, with durable identity and fail-closed authority.
 - All implementation edits are retained in the worktree. The most recent browser
   coverage and cross-UI manifest recovery additions still require execution and
   must not be described as verified or complete.
+
+- User confirmed continuing R227; R228 is unrelated and remains untouched.
+- Latest monitor and protocol full rerun completed successfully.
+- Latest release build and workspace rs-lint passed. Full test-console is running;
+  shared-console and CLI tests passed and Web tests are in progress.
+- First resumed single-node run failed because the shell source was edited while
+  running, producing an unexpected EOF. Run a fixed temporary script copy and
+  pin the image digest for the next full execution.
+- First real Docker UI run found missing static assets: manual Web startup omitted
+  the profile's UI directory. Added explicit --ui-root and Web log-directory
+  arguments; image rebuild and browser rerun are pending.
+- Monitor acceptance now distinguishes reserved identity from complete preparation.
+  Automatic KV startup waits for complete manifest/credential persistence.
+- Added Group-0 regression cases for bootstrap registry retries preserving later
+  admissions, service retries retaining operation identity, and cross-node service
+  ID collision rejection. Their focused execution is pending.
+- Remaining contract gaps to implement/verify: authenticated endpoint/rack updates
+  with stable IDs; cancellation after target KV preparation; interrupted bootstrap
+  recovery from a second UI; disjoint-cluster cleanup and voting catch-up; data-group
+  operation during Group-0 loss; partial cleanup with unreachable nodes; final
+  permanent docs and full gates. R227 must remain open until these are handled.
+
+## Blocked
+
+- Resumed Docker command: `pixi run bash -c 'export CROWDB_CONTAINER_IMAGE=<pinned-image-id>; python container/single-node-container/tests/node-containers.py'`.
+- Five root-cause-driven Docker browser runs failed after user authorization:
+  1. Manual Web startup omitted the static UI directory. Added --ui-root.
+  2. The admission dialog was trapped in the fixed sidebar stacking context.
+     Moved admission/recovery dialogs into a portal.
+  3. Preparation restart coverage used the previous randomly published host port.
+     Refresh Docker's actual port mapping after restart.
+  4. The body portal escaped the console's scoped CSS. Portal now targets the
+     nearest .crowdb-console root, retaining embedding styles and ownership.
+  5. Real mutual SSH preparation for the third node exceeds the 3-second UI
+     assertion budget. No assertion timeout increase or sixth run was made.
+- Latest image: sha256:66c08eb74c3daeec89ebfab6a52b54e3cdb486e592f848a656c1271614eb5ac2.
+- Exact latest boundary: 12-cluster-discovery.spec.ts:91 expects the admission
+  dialog count to reach zero within 3000 ms; it remains open with Verifying SSH.
+  Trace records successful first/second admission responses at 368 ms / 2048 ms;
+  the third request has not completed when the assertion ends. This establishes
+  the first slow boundary, but does not prove whether the third operation would
+  eventually succeed.
+- Proposed continuation: instrument the SSH preparation stages, reuse authenticated
+  sessions for each peer's key/host setup, and avoid repeated handshakes while
+  preserving all-pair bidirectional strict-key proof. Rerun the same browser gate
+  at its existing assertion budget, then finish the remaining contract gaps.
+- Alternative: expose admission as a durable asynchronous UI operation with visible
+  per-peer progress, testing the pending state and final admission separately.
+  This expands the UI/API implementation but supports larger clusters naturally.
+- Required human continuation follows implement-requirement's five-attempt rule.
+  Implementation edits and regression assertions remain preserved.
+- Other gates: deployment_test passed 4 tests; workspace rs-lint passed; monitor
+  runtime/integration suites passed and isolated monitor doc-test rerun passed.
+  Full test-console failed native balance seed_values with Deadline; isolated
+  reproduction is running. Full UI has two failures so far; duplicate-rack passes
+  alone in 1.7 seconds. Single-node container regression is still running through
+  crash/hang recovery with its pinned image and fixed script copy.
