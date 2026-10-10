@@ -5,7 +5,9 @@
 
 use std::sync::{Arc, RwLock};
 
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, CrowdbSysmdClient, ServiceDiscoveryClient};
+use crowdb_kv_client::{
+    ClientConfig, CrowdbKvClient, CrowdbSysmdClient, GroupMembershipClient, ServiceDiscoveryClient,
+};
 
 use crate::config::{ConsoleConfig, NodeEntry, ServerEntry};
 use crate::error::{Error, Result};
@@ -169,6 +171,12 @@ impl OpContext {
     #[must_use]
     pub fn kv(&self) -> &CrowdbKvClient {
         &self.kv
+    }
+
+    /// Access the complete epoch-qualified Group-0 membership authority.
+    #[must_use]
+    pub fn membership(&self) -> GroupMembershipClient {
+        GroupMembershipClient::from_shared(Arc::clone(&self.kv))
     }
 
     /// Re-seed the group-0 leader hint. Called after deploying servers

@@ -127,6 +127,11 @@ pub(super) async fn group_view(
         .list_replicas_in_group(sid, gid)
         .await
         .map_err(|error| err_502(format!("Group 0 replica lookup failed: {error}")))?;
+    let membership = ctx
+        .membership()
+        .read(sid, gid)
+        .await
+        .map_err(|error| err_502(format!("Group 0 membership authority lookup failed: {error}")))?;
     let instances = ctx
         .sysmd()
         .read_all_kv_server_instances()
@@ -144,7 +149,7 @@ pub(super) async fn group_view(
         }
     }
     let reports = observe_replicas(sid, gid, &members, &registered).await;
-    Ok(project_group(sid, gid, members, reports))
+    Ok(project_group(sid, gid, members, reports, membership.as_ref()))
 }
 
 async fn observe_replicas(
@@ -175,6 +180,7 @@ fn project_group(
     gid: u64,
     members: Vec<ReplicaValue>,
     reports: Vec<Option<NodeGroup>>,
+    membership: Option<&crowdb_kv_client::GroupMembershipSnapshot>,
 ) -> GroupView {
     let mut replicas = Vec::with_capacity(members.len());
     let mut observed = 0usize;
@@ -225,6 +231,15 @@ fn project_group(
         replicas,
         state,
         read_state,
+        membership_epoch: membership.as_ref().map(|value| value.record().epoch),
+        membership_state: membership
+            .as_ref()
+            .map(|value| match &value.record().installation {
+                crowdb_protocol::kv_membership::GroupMembershipState::Installing { .. } => {
+                    "installing".to_string()
+                }
+                crowdb_protocol::kv_membership::GroupMembershipState::Ready => "ready".to_string(),
+            }),
     }
 }
 

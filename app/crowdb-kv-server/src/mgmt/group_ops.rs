@@ -5,7 +5,7 @@
 //! readiness, and async operation polling.
 
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 use serde::{Deserialize, Serialize};
@@ -447,11 +447,30 @@ pub(super) async fn join_group_via_snapshot(
 pub(super) async fn remove_group(
     State(state): State<RegistryArc>,
     Path((sid, gid)): Path<(u64, u64)>,
+    headers: HeaderMap,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
     let store = state
         .get_store(sid)
         .ok_or_else(|| err_json(StatusCode::NOT_FOUND, format!("store {sid} not found")))?;
 
+    let group = store.get_group(gid).ok_or_else(|| {
+        err_json(
+            StatusCode::NOT_FOUND,
+            format!("group {gid} not found in store {sid}"),
+        )
+    })?;
+    let membership_guard = store.membership_guard(gid);
+    let _membership_guard = membership_guard.lock().await;
+    let expected_epoch = super::replica_ops::check_expected_epoch(&headers, group.membership_epoch())?;
+    if expected_epoch == Some(group.membership_epoch()) {
+        return Err(err_json(
+            StatusCode::CONFLICT,
+            format!(
+                "membership epoch {} already has a different configuration",
+                group.membership_epoch()
+            ),
+        ));
+    }
     info!(s = sid, g = gid, "removing PxGroup via management API");
     if !store.remove_group(gid) {
         return Err(err_json(

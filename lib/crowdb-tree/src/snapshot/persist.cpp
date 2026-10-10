@@ -1270,6 +1270,28 @@ Status Crowdbtree::snapshot(uint64_t *out_last_applied, uint64_t *out_snapshot_s
 
     finalize_prepared_snapshot(prepared);
 
+    // Publish the exact logical summary only after the root anchor is durable.
+    if (auto view = snapshot_view(); view != nullptr) {
+        uint64_t live_kv = 0;
+        uint64_t key_bytes = 0;
+        uint64_t value_bytes = 0;
+        for (const auto &entry : view->entries()) {
+            CellView cell{Slice(entry.cell)};
+            if (cell.is_tombstone()) {
+                continue;
+            }
+            ++live_kv;
+            key_bytes += entry.key.size();
+            value_bytes += cell.value().size();
+        }
+        summary_live_kv_.store(live_kv, std::memory_order_release);
+        summary_live_key_bytes_.store(key_bytes, std::memory_order_release);
+        summary_live_value_bytes_.store(value_bytes, std::memory_order_release);
+        summary_covered_slot_.store(prepared.last_applied_slot, std::memory_order_release);
+        summary_root_version_.store(version_.load(std::memory_order_acquire), std::memory_order_release);
+        summary_available_.store(true, std::memory_order_release);
+    }
+
     release_snapshot_slot();
     if (out_last_applied != nullptr) {
         *out_last_applied = prepared.last_applied_slot;
@@ -1685,6 +1707,29 @@ Status Crowdbtree::open(const Config &opt, std::unique_ptr<Crowdbtree> *out)
     tree->durable_snapshot_seq_.store(anchor.snapshot_seq, std::memory_order_release);
     tree->leaf_count_.store(anchor.leaf_count, std::memory_order_relaxed);
     tree->inner_count_.store(anchor.inner_count, std::memory_order_relaxed);
+
+    // Reconstruct the cached summary from the selected durable root. This is
+    // startup work only; ordinary reads never scan the tree for statistics.
+    if (auto view = tree->snapshot_view(); view != nullptr) {
+        uint64_t live_kv = 0;
+        uint64_t key_bytes = 0;
+        uint64_t value_bytes = 0;
+        for (const auto &entry : view->entries()) {
+            CellView cell{Slice(entry.cell)};
+            if (cell.is_tombstone()) {
+                continue;
+            }
+            ++live_kv;
+            key_bytes += entry.key.size();
+            value_bytes += cell.value().size();
+        }
+        tree->summary_live_kv_.store(live_kv, std::memory_order_release);
+        tree->summary_live_key_bytes_.store(key_bytes, std::memory_order_release);
+        tree->summary_live_value_bytes_.store(value_bytes, std::memory_order_release);
+        tree->summary_covered_slot_.store(anchor.last_applied_slot, std::memory_order_release);
+        tree->summary_root_version_.store(anchor.snapshot_seq, std::memory_order_release);
+        tree->summary_available_.store(true, std::memory_order_release);
+    }
 
     CRB_LOG_INFO("[{}] open: recovered seq={} last_applied={} root_pid={} segments={}", opt.name, anchor.snapshot_seq,
                  anchor.last_applied_slot, anchor.root_page_id, entries.size());

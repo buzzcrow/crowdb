@@ -27,6 +27,9 @@ use tracing::{debug, info, info_span, Instrument};
 pub struct PxKvStore {
     pub store_id: u64,
     groups: ArcSwap<HashMap<u64, Arc<PxGroup>>>,
+    /// Serializes management membership submission through persistence and
+    /// publication. Data-path operations never take this guard.
+    membership_guards: Mutex<HashMap<u64, Arc<tokio::sync::Mutex<()>>>>,
     pub(crate) server_state: Mutex<RpcTaskState>,
     pub(crate) listen_addr: SocketAddr,
     /// crowdb-rpc server state (R32 migration). Holds the `RpcServer`
@@ -83,6 +86,7 @@ impl PxKvStore {
         Self {
             store_id,
             groups: ArcSwap::from_pointee(HashMap::new()),
+            membership_guards: Mutex::new(HashMap::new()),
             server_state: Mutex::new(RpcTaskState::default()),
             rpc_server_state: Mutex::new(RpcServerState::default()),
             client_rpc_server_state: Mutex::new(RpcServerState::default()),
@@ -102,6 +106,18 @@ impl PxKvStore {
             #[cfg(feature = "test-util")]
             get_delay: Mutex::new(None),
         }
+    }
+
+    /// Return the management-only guard for one group's membership update.
+    /// Callers hold it from validation through durable persistence and live
+    /// group publication.
+    pub fn membership_guard(&self, group_id: u64) -> Arc<tokio::sync::Mutex<()>> {
+        let mut guards = self.membership_guards.lock();
+        Arc::clone(
+            guards
+                .entry(group_id)
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+        )
     }
 
     /// Configured endpoint used when persisting a candidate group before the

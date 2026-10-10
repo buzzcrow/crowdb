@@ -75,7 +75,17 @@ impl ServerClient {
     /// # Errors
     /// Transport / non-2xx status codes surface as `Error::UpstreamRpc`.
     pub async fn remove_group(&self, sid: u64, gid: u64) -> Result<()> {
-        self.delete_path(&format!("/stores/{sid}/groups/{gid}")).await
+        self.delete_path_with_epoch(&format!("/stores/{sid}/groups/{gid}"), None)
+            .await
+    }
+
+    /// Remove a group while fencing the request to a membership epoch.
+    ///
+    /// # Errors
+    /// Returns an upstream error, including a conflict for a stale epoch.
+    pub async fn remove_group_at_epoch(&self, sid: u64, gid: u64, epoch: u64) -> Result<()> {
+        self.delete_path_with_epoch(&format!("/stores/{sid}/groups/{gid}"), Some(epoch))
+            .await
     }
 
     /// `GET /stores/{sid}/groups/{gid}/remotes`.
@@ -95,7 +105,32 @@ impl ServerClient {
     /// # Errors
     /// Transport / non-2xx status codes surface as `Error::UpstreamRpc`.
     pub async fn add_remote_replicas(&self, sid: u64, gid: u64, remotes: &[RemoteReplicaInfo]) -> Result<()> {
-        self.post_empty(&format!("/stores/{sid}/groups/{gid}/remotes"), remotes)
+        self.add_remote_replicas_with_epoch(sid, gid, remotes, None).await
+    }
+
+    /// Add remotes while fencing the request to a membership epoch.
+    ///
+    /// # Errors
+    /// Returns an upstream error, including a conflict for a stale epoch.
+    pub async fn add_remote_replicas_at_epoch(
+        &self,
+        sid: u64,
+        gid: u64,
+        remotes: &[RemoteReplicaInfo],
+        epoch: u64,
+    ) -> Result<()> {
+        self.add_remote_replicas_with_epoch(sid, gid, remotes, Some(epoch))
+            .await
+    }
+
+    async fn add_remote_replicas_with_epoch(
+        &self,
+        sid: u64,
+        gid: u64,
+        remotes: &[RemoteReplicaInfo],
+        epoch: Option<u64>,
+    ) -> Result<()> {
+        self.post_empty_with_epoch(&format!("/stores/{sid}/groups/{gid}/remotes"), remotes, epoch)
             .await
     }
 
@@ -104,7 +139,32 @@ impl ServerClient {
     /// # Errors
     /// Transport / non-2xx status codes surface as `Error::UpstreamRpc`.
     pub async fn remove_remote_replica(&self, sid: u64, gid: u64, rid: u64) -> Result<()> {
-        self.delete_path(&format!("/stores/{sid}/groups/{gid}/remotes/{rid}"))
+        self.delete_remote_replica_with_epoch(sid, gid, rid, None).await
+    }
+
+    /// Remove a remote while fencing the request to a membership epoch.
+    ///
+    /// # Errors
+    /// Returns an upstream error, including a conflict for a stale epoch.
+    pub async fn remove_remote_replica_at_epoch(
+        &self,
+        sid: u64,
+        gid: u64,
+        rid: u64,
+        epoch: u64,
+    ) -> Result<()> {
+        self.delete_remote_replica_with_epoch(sid, gid, rid, Some(epoch))
+            .await
+    }
+
+    async fn delete_remote_replica_with_epoch(
+        &self,
+        sid: u64,
+        gid: u64,
+        rid: u64,
+        epoch: Option<u64>,
+    ) -> Result<()> {
+        self.delete_path_with_epoch(&format!("/stores/{sid}/groups/{gid}/remotes/{rid}"), epoch)
             .await
     }
 
@@ -190,27 +250,35 @@ impl ServerClient {
     }
 
     async fn post_empty<B: serde::Serialize + ?Sized>(&self, path: &str, body: &B) -> Result<()> {
+        self.post_empty_with_epoch(path, body, None).await
+    }
+
+    async fn post_empty_with_epoch<B: serde::Serialize + ?Sized>(
+        &self,
+        path: &str,
+        body: &B,
+        epoch: Option<u64>,
+    ) -> Result<()> {
         let url = format!("{}{path}", self.base_url());
         let cid = crate::corr_id::current_or_new();
         let started = std::time::Instant::now();
-        let resp = self
-            .inner()
-            .post(&url)
-            .header(crate::corr_id::HEADER, &cid)
-            .json(body)
-            .send()
-            .await
-            .map_err(|e| {
-                crate::clients::log_ops_http(
-                    &cid,
-                    "POST",
-                    &url,
-                    0,
-                    started.elapsed().as_millis(),
-                    Some(&format!("transport error: {e}")),
-                );
-                self.rpc_err(format!("POST {path}: {e}"))
-            })?;
+        let request = self.inner().post(&url).header(crate::corr_id::HEADER, &cid);
+        let request = if let Some(value) = epoch {
+            request.header("x-crowdb-membership-epoch", value)
+        } else {
+            request
+        };
+        let resp = request.json(body).send().await.map_err(|e| {
+            crate::clients::log_ops_http(
+                &cid,
+                "POST",
+                &url,
+                0,
+                started.elapsed().as_millis(),
+                Some(&format!("transport error: {e}")),
+            );
+            self.rpc_err(format!("POST {path}: {e}"))
+        })?;
         let status = resp.status();
         crate::clients::log_ops_http(
             &cid,
@@ -228,26 +296,30 @@ impl ServerClient {
     }
 
     async fn delete_path(&self, path: &str) -> Result<()> {
+        self.delete_path_with_epoch(path, None).await
+    }
+
+    async fn delete_path_with_epoch(&self, path: &str, epoch: Option<u64>) -> Result<()> {
         let url = format!("{}{path}", self.base_url());
         let cid = crate::corr_id::current_or_new();
         let started = std::time::Instant::now();
-        let resp = self
-            .inner()
-            .delete(&url)
-            .header(crate::corr_id::HEADER, &cid)
-            .send()
-            .await
-            .map_err(|e| {
-                crate::clients::log_ops_http(
-                    &cid,
-                    "DELETE",
-                    &url,
-                    0,
-                    started.elapsed().as_millis(),
-                    Some(&format!("transport error: {e}")),
-                );
-                self.rpc_err(format!("DELETE {path}: {e}"))
-            })?;
+        let request = self.inner().delete(&url).header(crate::corr_id::HEADER, &cid);
+        let request = if let Some(value) = epoch {
+            request.header("x-crowdb-membership-epoch", value)
+        } else {
+            request
+        };
+        let resp = request.send().await.map_err(|e| {
+            crate::clients::log_ops_http(
+                &cid,
+                "DELETE",
+                &url,
+                0,
+                started.elapsed().as_millis(),
+                Some(&format!("transport error: {e}")),
+            );
+            self.rpc_err(format!("DELETE {path}: {e}"))
+        })?;
         let status = resp.status();
         crate::clients::log_ops_http(
             &cid,

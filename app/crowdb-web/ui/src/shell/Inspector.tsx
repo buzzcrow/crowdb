@@ -280,6 +280,15 @@ function DetailsTab({ entity, nodes, racks, servers, stores, capacityUsage, hard
             label: 'Buffer Pool Resident/Used/Frames',
             value: `${replica.crowtree_stats.buffer_pool_resident}/${replica.crowtree_stats.buffer_pool_used}/${replica.crowtree_stats.buffer_pool_num_frames}`,
           },
+          { label: 'Tree Summary', value: replica.crowtree_stats.summary_exact ? 'Exact' : 'Unavailable' },
+          ...(replica.crowtree_stats.summary_exact
+            ? [
+                { label: 'Summary Root Version', value: String(replica.crowtree_stats.summary_root_version) },
+                { label: 'Summary Covered Slot', value: String(replica.crowtree_stats.summary_covered_slot) },
+                { label: 'Live KV', value: String(replica.crowtree_stats.summary_live_kv) },
+                { label: 'Live Key/Value Bytes', value: `${replica.crowtree_stats.summary_live_key_bytes}/${replica.crowtree_stats.summary_live_value_bytes}` },
+              ]
+            : []),
         ]
       : []),
   ];

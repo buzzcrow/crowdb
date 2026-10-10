@@ -59,5 +59,13 @@ pub fn crowdb_tree_stats_to_view(s: CrowdbTreeStats) -> CrowdbTreeStatsView {
         snapshot_total: s.snapshot_total,
         l1_get_total: s.l1_get_total,
         l1_get_hit_total: s.l1_get_hit_total,
+        summary_root_version: s.summary_root_version,
+        summary_covered_slot: s.summary_covered_slot,
+        summary_live_kv: s.summary_live_kv,
+        summary_live_key_bytes: s.summary_live_key_bytes,
+        summary_live_value_bytes: s.summary_live_value_bytes,
+        summary_reachable_leaf_pages: s.summary_reachable_leaf_pages,
+        summary_reachable_inner_pages: s.summary_reachable_inner_pages,
+        summary_exact: s.summary_exact,
     }
 }

@@ -182,6 +182,31 @@ TEST(Persist, CheckpointThenReopenRestoresKeys)
     }
 }
 
+TEST(Persist, TreeSummaryTracksDurableRootAndRejectsUnknownAsZero)
+{
+    MemPageStore store(1);
+    Config opt;
+    opt.page_store = &store;
+    Crowdbtree t(opt);
+    EXPECT_FALSE(t.tree_summary().exact);
+    ASSERT_TRUE(t.apply(1, put_one("a", "one")).ok());
+    ASSERT_TRUE(t.apply(2, put_one("b", "two")).ok());
+    ASSERT_TRUE(t.flush().ok());
+    ASSERT_TRUE(t.snapshot().ok());
+    const auto summary = t.tree_summary();
+    EXPECT_TRUE(summary.exact);
+    EXPECT_EQ(summary.live_kv, 2U);
+    EXPECT_EQ(summary.live_key_bytes, 2U);
+    EXPECT_EQ(summary.live_value_bytes, 6U);
+
+    ASSERT_TRUE(t.apply(3, del_one("a")).ok());
+    ASSERT_TRUE(t.flush().ok());
+    // The old durable root remains authoritative until the next snapshot.
+    EXPECT_EQ(t.tree_summary().live_kv, 2U);
+    ASSERT_TRUE(t.snapshot().ok());
+    EXPECT_EQ(t.tree_summary().live_kv, 1U);
+}
+
 // clear() must wipe every key and reset watermarks back
 // to a fresh empty tree, in-memory only (no persist() call here) -- proving
 // the wipe itself, independent of durability.

@@ -525,6 +525,7 @@ class Crowdbtree
     // O(1)), so this is safe to poll periodically (e.g. from a metrics
     // scrape or console panel refresh).
     [[nodiscard]] EngineStats stats() const;
+    [[nodiscard]] TreeSummary tree_summary() const;
 
     // Destructive read of the per-step scan profile since the last call: flushes
     // the scan LatencySummary/Counter handles and returns per-step sum/max/avg.
@@ -799,6 +800,12 @@ class Crowdbtree
     // inner_count_atomic(). An empty tree starts at leaf=1 (root leaf), inner=0.
     std::atomic<uint64_t> leaf_count_{1};
     std::atomic<uint64_t> inner_count_{0};
+    mutable std::atomic<uint64_t> summary_root_version_{0};
+    mutable std::atomic<uint64_t> summary_covered_slot_{0};
+    mutable std::atomic<uint64_t> summary_live_kv_{0};
+    mutable std::atomic<uint64_t> summary_live_key_bytes_{0};
+    mutable std::atomic<uint64_t> summary_live_value_bytes_{0};
+    mutable std::atomic<bool> summary_available_{false};
 
     // Logical clock for CLOCK-informed eviction ranking (plan-tree #17).
     // `resident()`'s hot path bumps this and stamps the touched page's own

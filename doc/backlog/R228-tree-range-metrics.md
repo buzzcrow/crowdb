@@ -3,9 +3,9 @@
 
 ### R228: crowdb-tree — Root and range statistics for split and placement
 
-Status: Deferred implementation by user request. Establish the metrics contract
-and review page-format, maintenance and performance costs before implementation.
-Data-weighted placement and its console display remain disabled meanwhile.
+Status: In progress. Exact root summaries now publish with durable snapshots and
+are exposed through the C API/Rust FFI; structural child aggregates, range
+bounded estimates, placement integration, and full recovery acceptance remain.
 
 ## Problem
 
