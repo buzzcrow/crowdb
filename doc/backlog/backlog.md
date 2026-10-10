@@ -19,10 +19,6 @@ live in the linked document; implementation follows
 
 ## Console and service control
 
-- **[R227](R227-console-multi-node-deployment.md)** — multi-node discovery,
-  Group-0 bootstrap, shared UI authority and light-container deployment.
-  **Area:** monitor / console / deployment. **Complexity:** High.
-  **Dependencies:** existing Group 0; bootstrap and authorization decisions.
 
 ## Access server and external data
 
