@@ -19,11 +19,6 @@ live in the linked document; implementation follows
 
 ## Console and service control
 
-- **[R229](R229-kv-membership-conflict.md)** — complete members record with epoch CAS and
-  server submission protection; explicit conflicts across UI servers.
-  **Area:** KV client / KV server / Console. **Complexity:** Medium.
-  **Status:** Members/epoch CAS model approved; implementation pending.
-
 - **[R227](R227-console-multi-node-deployment.md)** — multi-node discovery,
   Group-0 bootstrap, shared UI authority and light-container deployment.
   **Area:** monitor / console / deployment. **Complexity:** High.

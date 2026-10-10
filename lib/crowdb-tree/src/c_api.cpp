@@ -443,8 +443,8 @@ ct_status ct_open(const ct_options *opt, ct_tree **out)
             for (int fd : static_cast<BlockPageStore *>(h->store.get())->all_extent_fds()) {
                 h->uring->register_fd(fd);
             }
-            h->async_store = std::make_unique<BlockAsyncPageStore>(static_cast<BlockPageStore *>(h->store.get()),
-                                                                    h->uring.get());
+            h->async_store =
+                std::make_unique<BlockAsyncPageStore>(static_cast<BlockPageStore *>(h->store.get()), h->uring.get());
             o.async_uring      = h->uring.get();
             o.async_page_store = h->async_store.get();
         }
@@ -713,15 +713,15 @@ void ct_get_tree_summary(const ct_tree *t, ct_tree_summary *out)
     if (t == nullptr || out == nullptr) {
         return;
     }
-    const auto s = t->tree->tree_summary();
-    out->root_version = s.root_version;
-    out->covered_slot = s.covered_slot;
-    out->live_kv = s.live_kv;
-    out->live_key_bytes = s.live_key_bytes;
-    out->live_value_bytes = s.live_value_bytes;
-    out->reachable_leaf_pages = s.reachable_leaf_pages;
+    const auto s               = t->tree->tree_summary();
+    out->root_version          = s.root_version;
+    out->covered_slot          = s.covered_slot;
+    out->live_kv               = s.live_kv;
+    out->live_key_bytes        = s.live_key_bytes;
+    out->live_value_bytes      = s.live_value_bytes;
+    out->reachable_leaf_pages  = s.reachable_leaf_pages;
     out->reachable_inner_pages = s.reachable_inner_pages;
-    out->exact = s.exact ? 1 : 0;
+    out->exact                 = s.exact ? 1 : 0;
 }
 
 char *ct_flush_metrics_str(ct_tree *t, double window_secs, const char *timestamp, size_t width)

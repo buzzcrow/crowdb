@@ -1272,8 +1272,8 @@ Status Crowdbtree::snapshot(uint64_t *out_last_applied, uint64_t *out_snapshot_s
 
     // Publish the exact logical summary only after the root anchor is durable.
     if (auto view = snapshot_view(); view != nullptr) {
-        uint64_t live_kv = 0;
-        uint64_t key_bytes = 0;
+        uint64_t live_kv     = 0;
+        uint64_t key_bytes   = 0;
         uint64_t value_bytes = 0;
         for (const auto &entry : view->entries()) {
             CellView cell{Slice(entry.cell)};
@@ -1711,8 +1711,8 @@ Status Crowdbtree::open(const Config &opt, std::unique_ptr<Crowdbtree> *out)
     // Reconstruct the cached summary from the selected durable root. This is
     // startup work only; ordinary reads never scan the tree for statistics.
     if (auto view = tree->snapshot_view(); view != nullptr) {
-        uint64_t live_kv = 0;
-        uint64_t key_bytes = 0;
+        uint64_t live_kv     = 0;
+        uint64_t key_bytes   = 0;
         uint64_t value_bytes = 0;
         for (const auto &entry : view->entries()) {
             CellView cell{Slice(entry.cell)};

@@ -104,7 +104,7 @@ using ct_tree_summary = struct
     uint64_t live_value_bytes;
     uint64_t reachable_leaf_pages;
     uint64_t reachable_inner_pages;
-    int32_t exact;
+    int32_t  exact;
 };
 
 // Backend selection for durable storage.

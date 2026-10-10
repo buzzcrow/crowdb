@@ -185,7 +185,7 @@ TEST(Persist, CheckpointThenReopenRestoresKeys)
 TEST(Persist, TreeSummaryTracksDurableRootAndRejectsUnknownAsZero)
 {
     MemPageStore store(1);
-    Config opt;
+    Config       opt;
     opt.page_store = &store;
     Crowdbtree t(opt);
     EXPECT_FALSE(t.tree_summary().exact);
