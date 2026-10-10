@@ -9,9 +9,16 @@ struct TestRunRoot(PathBuf);
 
 impl TestRunRoot {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!("cm-live-{}", Uuid::new_v4().simple()));
+        // macOS limits Unix-domain socket paths to a short fixed buffer. Keep
+        // this test root under /tmp instead of the long per-user temp path.
+        let base = if cfg!(target_os = "macos") {
+            PathBuf::from("/tmp")
+        } else {
+            std::env::temp_dir()
+        };
+        let root = base.join(format!("cm-live-{}", Uuid::new_v4().simple()));
         fs::create_dir_all(&root).unwrap();
-        Self(root.canonicalize().unwrap())
+        Self(root)
     }
 }
 

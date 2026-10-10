@@ -76,7 +76,7 @@ async fn durable_plan_survives_state_recreation_and_rejects_competing_writers() 
         .iter()
         .map(|kind| ((*kind).to_string(), json!({"state":"waiting"})))
         .collect();
-    let body = json!({"revision":0,"steps":steps,"overrides":{"access-server":{"http_port":9092,"s3_port":9091,"health_port":9093},"paxos-kv":{"http_port":19910,"rpc_port":19920}}});
+    let body = json!({"revision":0,"steps":steps,"overrides":{"access-server":{"http_port":9092,"s3_port":9091,"health_port":9094},"paxos-kv":{"http_port":19910,"rpc_port":19920}}});
     let (status, saved) = request(&app, "PUT", "/api/nodes/1/service-plan", body.clone()).await;
     assert_eq!(status, StatusCode::OK, "{saved}");
     assert_eq!(saved["revision"], 1);
@@ -84,7 +84,7 @@ async fn durable_plan_survives_state_recreation_and_rejects_competing_writers() 
     for value in defaults.as_object().unwrap().values() {
         for field in ["http_port", "rpc_port", "s3_port", "health_port"] {
             if let Some(port) = value[field].as_u64() {
-                assert!(![9091, 9092, 9093, 19910, 19920].contains(&port), "{defaults}");
+                assert!(![9091, 9092, 9094, 19910, 19920].contains(&port), "{defaults}");
             }
         }
     }

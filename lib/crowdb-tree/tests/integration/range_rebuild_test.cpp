@@ -971,7 +971,7 @@ TEST(RangeRebuild, RecoveredTreeValidatesBeforeEnablingSubtreePruning)
     EXPECT_EQ(live_entries(*first), live_entries(*second));
 }
 
-TEST(RangeRebuild, LazyRecoveryRejectsAResolvedPageOutsideTheTreeRange)
+TEST(RangeRebuild, LazyRecoveryRetainsPhysicalPagesWhileEnforcingTheNarrowedRange)
 {
     MemPageStore store(1);
     Config       options;
@@ -987,8 +987,15 @@ TEST(RangeRebuild, LazyRecoveryRejectsAResolvedPageOutsideTheTreeRange)
     options.key_range = KeyRange::bounded(std::string("a"), std::string("m"));
     std::unique_ptr<Crowdbtree> bounded;
     ASSERT_TRUE(Crowdbtree::open(options, &bounded).ok());
-    EXPECT_FALSE(bounded->get(Slice("b"), nullptr, nullptr));
-    EXPECT_TRUE(bounded->io_failed());
+    std::string value;
+    EXPECT_TRUE(bounded->get(Slice("b"), nullptr, &value));
+    EXPECT_EQ(value, "inside");
+    EXPECT_FALSE(bounded->get(Slice("z"), nullptr, nullptr));
+    EXPECT_FALSE(bounded->io_failed());
+    EXPECT_FALSE(bounded->put(Slice("z"), Slice("rejected")).ok());
+    EXPECT_EQ(live_entries(*bounded), (std::map<std::string, std::string>{
+                                          {"b", "inside"}
+    }));
 }
 
 TEST(RangeRebuild, CApiBuildsAnIndependentTreeOnAnInjectedStore)

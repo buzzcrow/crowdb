@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "crowdb-common/atomic_shared_ptr.h"
 #include "crowdb-tree/backend/page_purpose.h"
 #include "crowdb-tree/status.h"
 
@@ -16,6 +17,8 @@
 
 namespace crowdb::tree::detail
 {
+
+using common::AtomicSharedPtr;
 
 inline constexpr uint32_t kMaxMirrorCopies = 5;
 
@@ -122,9 +125,9 @@ class MemoryChunkTransport final : public ChunkTransport
 
     template <typename Mutation> Status mutate(ChunkId chunk_id, Mutation mutation);
 
-    std::atomic<uint64_t>                      next_chunk_id_{1};
-    std::atomic<std::shared_ptr<const Chunks>> chunks_;
-    std::atomic<bool>                          unavailable_{false};
+    std::atomic<uint64_t>         next_chunk_id_{1};
+    AtomicSharedPtr<const Chunks> chunks_;
+    std::atomic<bool>             unavailable_{false};
 };
 
 } // namespace crowdb::tree::detail

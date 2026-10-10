@@ -4,7 +4,7 @@
 import type { SplitQuery } from './query';
 import { createPortal } from 'react-dom';
 import { buttonClass } from '../access/Workbench';
-import { identity, range, type Partition } from './catalog';
+import { identity, range, type BalanceSummary, type Partition } from './catalog';
 import { RuntimeObservation } from './RuntimeObservation';
 import { useRuntimeObservation } from './useRuntimeObservation';
 import { TreeStorage, JournalStorage } from './StorageObservation';
@@ -16,7 +16,7 @@ function Properties({ values, stacked = false }: { stacked?: boolean; values: Re
   </dl>;
 }
 
-export function PartitionDetail({ partition: p, generation, currentGeneration, active, catalogPage, catalogOffset, onBack, onChunk, propertyHost, query, onQuery }: { query: SplitQuery; onQuery: (query: SplitQuery) => void; propertyHost: HTMLDivElement | null; onChunk: (id: string) => void; partition: Partition; generation: string; currentGeneration?: string; active: boolean; catalogPage: number; catalogOffset: number; onBack: () => void }) {
+export function PartitionDetail({ partition: p, generation, currentGeneration, active, catalogPage, catalogOffset, onBack, onChunk, propertyHost, query, onQuery }: { balance?: BalanceSummary; query: SplitQuery; onQuery: (query: SplitQuery) => void; propertyHost: HTMLDivElement | null; onChunk: (id: string) => void; partition: Partition; generation: string; currentGeneration?: string; active: boolean; catalogPage: number; catalogOffset: number; onBack: () => void }) {
   const tab = query.tab;
   const setTab = (tab: string) => onQuery({ ...query, tab });
   const overlay = p.artifact.tail_overlay;

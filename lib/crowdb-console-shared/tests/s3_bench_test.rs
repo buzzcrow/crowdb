@@ -34,7 +34,10 @@ fn mixed_weights_reject_ambiguous_or_invalid_terms() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "starts the complete memory-backed storage and S3 process stack"]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "starts the complete memory-backed storage and S3 process stack"
+)]
 async fn memory_mix_exercises_every_s3_operation() {
     let runtime = TestDir::new("s3-memory-bench").expect("create benchmark runtime");
     let work_dir = runtime.path().to_path_buf();

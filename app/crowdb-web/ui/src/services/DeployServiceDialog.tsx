@@ -23,7 +23,7 @@ export function DeployServiceDialog({ nodeId, kind, servers, stores, diskGroups,
   const [httpPort, setHttpPort] = useState(String(base));
   const [rpcPort, setRpcPort] = useState(String(kind === 'diskio' ? base : base + 100));
   const [s3Port, setS3Port] = useState('9091');
-  const [healthPort, setHealthPort] = useState('9093');
+  const [healthPort, setHealthPort] = useState('9094');
   const [diskGroup, setDiskGroup] = useState(String(diskGroups[0]?.id ?? ''));
   const [store, setStore] = useState(String(stores.find(store => String(store.store_id) !== '0')?.store_id ?? stores[0]?.store_id ?? ''));
   const firstGroup = stores.find(entry => String(entry.store_id) === store)?.groups.find(entry => String(entry.group_id) !== '0');

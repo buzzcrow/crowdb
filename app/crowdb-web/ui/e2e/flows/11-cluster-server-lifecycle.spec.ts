@@ -5,6 +5,7 @@
 import { test, expect } from '../fixtures/realBackend';
 import { apiContext, clusterInit, createNode, createRack, deployNodeServer, freePort, resetAll, seedRackAndNode, stopNodeServer } from '../fixtures/consoleSetup';
 import { step } from '../fixtures/stepTimer';
+import { observeDefaultDeployments } from '../fixtures/defaultDeployments';
 import { readFileSync } from 'node:fs';
 
 test('native diagnostics: auxiliary menus stop and restart the actual typed process', async ({ page, request }) => {
@@ -23,7 +24,7 @@ test('native diagnostics: auxiliary menus stop and restart the actual typed proc
   };
   await page.goto('/?domain=Cluster');
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
-  for (const [kind, label, prefix] of [['chunkdb', 'CDB (ChunkDB)', 'CDB'], ['diskio', 'DiskIO', 'DIO'], ['chunk-kv', 'Chunk-KV', 'CKV'], ['access-server', 'Access Server', 'AS']]) {
+  for (const [kind, label, prefix] of [['chunkdb', 'crowdb-chunk-db', 'CDB'], ['diskio', 'crowdb-disk-io', 'DIO'], ['chunk-kv', 'crowdb-chunk-kv', 'CKV'], ['access-server', 'crowdb-access-server', 'AS']]) {
     const original = (await list()).find((row: { node_id: number; service_type: string }) => row.node_id === 1 && row.service_type === kind);
     expect(original.pid).toBeGreaterThan(0); expect(alive(original.pid)).toBe(true);
     const node = sidebar.getByRole('button', { name: 'N-1', exact: true });
@@ -31,24 +32,44 @@ test('native diagnostics: auxiliary menus stop and restart the actual typed proc
     await expect(item).toBeVisible();
     await node.click({ button: 'right' });
     await page.getByRole('menuitem', { name: `${prefix}-1 Running`, exact: true }).hover();
+    const stoppedObservation = page.waitForResponse(async response => {
+      if (new URL(response.url()).pathname !== '/api/servers' || !response.ok()) return false;
+      const rows = await response.json();
+      return rows.some((row: { id: string; pid?: number }) => row.id === original.id && !row.pid);
+    });
     await page.getByRole('menuitem', { name: `Stop ${label}`, exact: true }).click();
+    await stoppedObservation;
+    await expect(page.getByRole('button', { name: 'Refresh', exact: true }).locator('svg')).not.toHaveClass(/tw-animate-spin/);
     await expect.poll(() => alive(original.pid), { intervals: [100] }).toBe(false);
     await expect.poll(async () => {
       const stopped = (await list()).find((row: { id: string }) => row.id === original.id);
       return { id: stopped?.id, pid: stopped?.pid ?? null };
     }, { intervals: [100] }).toEqual({ id: original.id, pid: null });
+    let startSubmitted = false;
     try {
       await node.click({ button: 'right' });
       await page.getByRole('menuitem', { name: `${prefix}-1 Stopped`, exact: true }).hover();
-      await page.getByRole('menuitem', { name: `Start ${label}`, exact: true }).click();
-      await expect.poll(async () => {
+      // Native recovery previously reached its listener after 3.15s; keep a
+      // modest response budget while process and DOM assertions remain 3s.
+      const started = page.waitForResponse(response =>
+        new URL(response.url()).pathname === `/api/services/${original.id}/restart`
+        && response.request().method() === 'POST', { timeout: 5_000 });
+      const startAt = performance.now();
+      startSubmitted = true;
+      const response = await step(`native lifecycle: ${original.id} Start response`, async () => {
+        await page.getByRole('menuitem', { name: `Start ${label}`, exact: true }).click();
+        return started;
+      });
+      console.log(`[START] ${original.id}: ${(performance.now() - startAt).toFixed(0)}ms`);
+      expect(response.status(), await response.text()).toBe(200);
+      await step(`native lifecycle: ${original.id} new process`, () => expect.poll(async () => {
         const current = (await list()).find((row: { id: string }) => row.id === original.id);
         return current?.pid && current.pid !== original.pid && alive(current.pid);
-      }, { intervals: [100] }).toBe(true);
+      }, { intervals: [100] }).toBe(true));
       expect((await list()).filter((row: { id: string }) => row.id === original.id)).toHaveLength(1);
     } finally {
       const current = (await list()).find((row: { id: string }) => row.id === original.id);
-      if (!current?.pid) expect((await request.post(`/api/services/${original.id}/restart`, { data: {} })).ok()).toBe(true);
+      if (!startSubmitted && !current?.pid) expect((await request.post(`/api/services/${original.id}/restart`, { data: {} })).ok()).toBe(true);
     }
   }
   expect(await list()).toHaveLength(18);
@@ -167,8 +188,8 @@ test.describe('cluster · server lifecycle', () => {
   test('deploys and stops a real crowdb-kv-server through the UI', async ({ page, baseURL }) => {
     await step('deploy-ui: seedRackAndNode', () => seedRackAndNode(baseURL!, 4, 4));
 
-    const restPort = freePort();
-    const rpcPort = freePort();
+    const restPort = freePort('kv-mgmt');
+    const rpcPort = freePort('kv-listen');
     const api = await apiContext(baseURL!);
     try {
       await step('deploy-ui: deploy dialog', async () => {
@@ -183,7 +204,9 @@ test.describe('cluster · server lifecycle', () => {
         await expect(page.getByRole('dialog', { name: /deploy CrowDB Storage on 4/i })).toBeVisible();
         await page.getByLabel('REST Port').fill(String(restPort));
         await page.getByLabel('RPC Port').fill(String(rpcPort));
-        await page.getByRole('button', { name: 'Deploy' }).click();
+        const deploy = page.getByRole('button', { name: 'Deploy' });
+        await expect(deploy).toBeEnabled({ timeout: process.platform === 'darwin' ? 30_000 : 3_000 });
+        await deploy.click();
       });
 
       await step('deploy-ui: poll server', () => expect.poll(async () => {
@@ -387,7 +410,7 @@ test('native diagnostics: auxiliary dialogs reopen with unused IDs ports and val
   const servers = await serversResponse.json();
   await page.goto('/?domain=Cluster');
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
-  for (const [kind, label] of [['chunkdb', 'CDB (ChunkDB)'], ['diskio', 'DiskIO'], ['chunk-kv', 'Chunk-KV'], ['access-server', 'Access Server']]) {
+  for (const [kind, label] of [['chunkdb', 'crowdb-chunk-db'], ['diskio', 'crowdb-disk-io'], ['chunk-kv', 'crowdb-chunk-kv'], ['access-server', 'crowdb-access-server']]) {
     for (let reopen = 0; reopen < 2; reopen++) {
       await sidebar.getByRole('button', { name: 'N-1', exact: true }).click({ button: 'right' });
       await page.getByRole('menuitem', { name: `Deploy ${label}`, exact: true }).click();
@@ -415,7 +438,7 @@ test('native diagnostics: auxiliary dialogs reopen with unused IDs ports and val
 // Baseline: 1.3s (2026-10-04); existing instances come from the owned fixture.
 test('native diagnostics: interrupted six-service plan reconciles without duplicate deployment', async ({ page, request }) => {
   test.skip(!!process.env.CROWDB_NATIVE_PLAN_PREREQUISITES, 'Requires the complete six-service fixture phase');
-  const kinds = ['kv', 'diskdb', 'chunkdb', 'diskio', 'chunk-kv', 'access-server'];
+  const kinds = ['paxos-kv', 'diskdb', 'chunkdb', 'diskio', 'chunk-kv', 'access-server'];
   const servers = await request.get('/api/servers');
   expect(servers.ok()).toBe(true);
   const original = await servers.json();
@@ -425,9 +448,9 @@ test('native diagnostics: interrupted six-service plan reconciles without duplic
   for (const kind of kinds) expect(original.filter((row: { node_id: number; service_type: string }) => row.node_id === 1 && row.service_type === kind)).toHaveLength(1);
   const saved = await request.put('/api/nodes/1/service-plan', { data: {
     revision: 0,
-    steps: Object.fromEntries(kinds.map(kind => [kind, { state: kind === 'kv' ? 'deployed' : kind === 'chunkdb' ? 'deploying' : 'pending' }])),
+    steps: Object.fromEntries(kinds.map(kind => [kind, { state: kind === 'paxos-kv' ? 'deployed' : kind === 'chunkdb' ? 'deploying' : 'pending' }])),
   } });
-  expect(saved.ok()).toBe(true);
+  expect(saved.ok(), await saved.text()).toBe(true);
   let deploymentRequests = 0;
   page.on('request', current => {
     if (current.method() === 'POST' && /\/api\/nodes\/\d+\/(server|diskdb|services)\/deploy$/.test(new URL(current.url()).pathname)) deploymentRequests++;
@@ -472,7 +495,8 @@ test('native diagnostics: interrupted six-service plan reconciles without duplic
 // Baseline: 7.6s (2026-10-04); prerequisite services are controlled through real lifecycle APIs.
 test('native diagnostics: waiting plan resumes when DiskIO prerequisites arrive', async ({ page, request }) => {
   test.skip(!process.env.CROWDB_NATIVE_PLAN_PREREQUISITES, 'Requires the partial deployment fixture phase');
-  const kinds = ['kv', 'diskdb', 'chunkdb', 'diskio', 'chunk-kv', 'access-server'];
+  const kinds = ['paxos-kv', 'diskdb', 'chunkdb', 'diskio', 'chunk-kv', 'access-server'];
+  const deployments = observeDefaultDeployments(page);
   const list = async () => {
     const response = await request.get('/api/servers');
     expect(response.ok()).toBe(true);
@@ -503,7 +527,7 @@ test('native diagnostics: waiting plan resumes when DiskIO prerequisites arrive'
         revision: 0,
         steps: Object.fromEntries(kinds.map(kind => [kind, { state: ['chunk-kv', 'access-server'].includes(kind) ? 'pending' : 'deployed' }])),
       } });
-      expect(saved.ok()).toBe(true);
+      expect(saved.ok(), await saved.text()).toBe(true);
       await page.goto('/?domain=Cluster');
       await open();
       await expect(dialog).toContainText('restart registered DiskIO services');
@@ -524,6 +548,8 @@ test('native diagnostics: waiting plan resumes when DiskIO prerequisites arrive'
       expect(deploys).toEqual([]);
       expect((await request.post(`/api/services/${diskioIds[1]}/restart`, { data: {} })).ok()).toBe(true);
       await expect(dialog.getByRole('listitem').filter({ hasText: 'deploying' })).toHaveCount(1);
+      await deployments.verify(1, 'chunk-kv');
+      await deployments.verify(1, 'access-server');
       await expect.poll(async () => {
         const response = await request.get('/api/service-plans');
         expect(response.ok()).toBe(true);

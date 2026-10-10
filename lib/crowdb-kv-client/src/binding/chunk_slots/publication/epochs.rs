@@ -134,6 +134,11 @@ impl ChunkSlotMapClient {
             }) {
                 return Ok(());
             }
+            if next.head().generation <= before.0.generation {
+                return Err(Error::CasFailed {
+                    current_revision: before.1,
+                });
+            }
             return Err(invalid(
                 "epoch map",
                 "publication must advance exactly one generation",

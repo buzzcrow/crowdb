@@ -14,160 +14,275 @@ itself remains as the ongoing test task backlog. This overrides the
 Unfinished test tasks, grouped by layer. Each task has a checkbox for tracking.
 For test strategy, layer scope, and coverage details, see [`design/kv/design-crowdb-kv-test.md`](../design/kv/design-crowdb-kv-test.md).
 
-## Current CI Test Design
-
-Regular CI uses nine parallel jobs, grouped by runtime requirements. Component tasks in
-`pixi.toml` select library, binary, and integration test targets with
-`--tests`; benchmark targets are excluded. Group scripts under
-`tools/pixi-tasks/` define execution order. GitHub Actions calls those group
-tasks. See [tools/README.md](../../tools/README.md) for the tooling map.
-
-| Job           | Group task                              | Coverage                                         |
-| ------------- | --------------------------------------- | ------------------------------------------------ |
-| Lint          | `check-ci-test-tasks`, fmt, clippy       | Package assignments and reachable CI tasks       |
-| CppTests      | `test-cpp`                              | C++ and Rust FFI                                 |
-| UnitTests     | `test-unit`                             | Rust libraries, including `test-access-iceberg`  |
-| ServerTests   | `test-server`                           | Native services, streams, access server, monitor  |
-| S3E2E         | `-e s3-e2e test-boto3-e2e`              | Access S3, access server and 17 boto3 cases      |
-| IcebergE2E    | `-e iceberg-e2e test-iceberg-e2e`       | PyIceberg, native storage, GC and crash recovery |
-| IcebergSDK    | `-e iceberg-e2e test-iceberg-sdk`       | Official Java SDK and pinned Apache RCK          |
-| ConsoleTests  | `test-console`                          | Shared operations, CLI and Web                   |
-| UITests       | `test-console-ui`                       | Vitest and real-backend Playwright               |
-
-Subprocess suites run sequentially inside each job and clean disposable runtime
-state. Iceberg jobs use the pinned `iceberg-e2e` Pixi environment for Python,
-Maven and Java; Rust/native builds use the default environment. The RCK task
-fetches and verifies its exact Apache Iceberg source revision. Test-only child
-listener functions remain ignored and are invoked by their parent crash tests.
-
-`test-chunk-stream` runs in ServerTests because its acceptance tests spawn KV,
-DiskDB, ChunkDB and DiskIO. The component task builds those binaries before
-testing. `test-console-server` builds KV and DiskDB for deployment and restart
-coverage. These tasks must work without service binaries left by another job.
-
-`test-suite` runs the host groups, including both Iceberg groups and the Rust
-SDK task. The Rust SDK task is available through
-`pixi run -e iceberg-e2e test-rust-iceberg-e2e` and the manual-only
-`IcebergRustSDK` workflow. It does not run on regular pushes or pull requests.
-DockerPreview is a manual-only workflow that runs
-`pixi run test-single-node-container` on a Linux amd64 Docker host. The release
-workflow also runs this image test before publication.
-
-IcebergE2E uses the release profile for PyIceberg and native acceptance. The
-access-server component suite runs in ServerTests, so IcebergE2E does not run it
-again.
-
-### CI test-task check
-
-`pixi run check-ci-test-tasks` validates every workspace package against
-`TASK_PACKAGES` in `tools/ci-checks/check-ci-test-tasks.py`, including the
-test harness's own runtime-namespace tests.
-The guard follows Pixi group calls and checked-in shell scripts from CI, so a
-required component task disconnected from its job fails validation. It also
-checks that DockerPreview and IcebergRustSDK are reachable from their manual
-workflows and absent from regular CI.
-
-### Adding tests
-
-1. Add package tests under the owning crate's `tests/`; existing component tasks
-   discover ordinary targets through `--all-targets`.
-2. For a new package, add a component task and its `TASK_PACKAGES` assignment.
-3. Add the component to the group script matching its runtime requirements.
-4. Feature-gated or ignored tests require explicit task selectors. Do not count
-   compiling an ignored test as executing it; exclude subprocess helper entries.
-5. Run `pixi run check-ci-test-tasks`, the affected suites, and workflow validation.
-6. Measure changed suites with `pixi run bash tools/test-metrics/measure.sh TASK...`
-   and update the timing table. Environment selection is automatic.
-
 ## Suite Timing
 
-Keep baseline timings alongside new measurements to identify runtime regressions.
-The machine columns retain independent runs; their dates appear below the header.
-The m5pro measurement date was not recorded. New measurements, exact commands,
-reported test counts and exit codes are saved under
-`.crowdb-runtime/artifacts/measure-tests/`. Timing includes incremental builds
-and subprocess startup/shutdown, so feature changes and cold builds affect it.
-Counts are runner-reported cases, not assertions; ignored cases are excluded.
-IcebergE2E and Java/Rust/RCK SDK acceptance use release binaries, matching
-the published container profile. Other component suites retain their default
-test profile. The focused debug native 100 MiB multipart upload, completion,
-restart, replay, and full read passed on 2026-09-29 in 54.40 s. Its previous
-10 s completion deadline failure did not recur after the streaming I/O changes.
+Each platform section keeps one row per test package and only the latest run.
+Leave unexecuted packages in place with `—`; record elapsed time in seconds.
 
-Status icons: ✅ = PASS, ⚠️ = PASS with ignored tests, ❌ = FAIL,
-⏳ = measurement pending.
-A dash means timing was not recorded, not a skipped test. Container scenarios
-are checked by scripts and do not report a Rust-style test count.
+### macOS
 
-| Suite                          | Tests | m5pro   | 5950-24.04 | 7960-24.04 | Status |
-| ------------------------------ | ----- | ------- | ---------- | ---------- | ------ |
-| Test date                      | —     | —       | 2026-09-10 | 2026-09-28 | —      |
-| `test-tree-ct`                 | 568   | 20.1 s  | 52.75 s    | —          | ✅      |
-| `test-common-ct`               | 28    | —       | 0.66 s     | —          | ✅      |
-| `test-tree-ffi`                | 31    | 13.5 s  | 2.89 s     | —          | ✅      |
-| `test-rpc-ct`                  | 67    | —       | 4.32 s     | —          | ✅      |
-| `test-rpc-ffi`                 | 15    | —       | 10.43 s    | —          | ✅      |
-| `test-diskio-ct`               | 121   | —       | 8.12 s     | —          | ✅      |
-| `test-common`                  | 77    | 21.9 s  | 20.56 s    | —          | ✅      |
-| `test-harness`                 | 2     | —       | —          | —          | ✅      |
-| `test-protocol`                | 135   | 12.2 s  | 3.75 s     | —          | ✅      |
-| `test-kv-core`                 | 572   | 43.2 s  | 72.87 s    | —          | ✅      |
-| `test-kv-client`               | 58    | 23.4 s  | 27.55 s    | —          | ✅      |
-| `test-chunkdb-client`          | 10    | 13.8 s  | 7.65 s     | —          | ✅      |
-| `test-chunk-kv`                | 19    | —       | 5.32 s     | —          | ✅      |
-| `test-chunk-stream`            | 15    | —       | 1.56 s     | —          | ✅      |
-| `test-chunk-kv-client`         | 12    | —       | 0.37 s     | —          | ✅      |
-| `test-chunk-kv-server`         | 24    | —       | 6.57 s     | —          | ✅      |
-| `test-kv-server`               | 89    | 53.0 s  | 53.94 s    | —          | ✅      |
-| `test-diskdb`                  | 141   | 42.8 s  | 36.88 s    | —          | ✅      |
-| `test-diskdb-client`           | 7     | 13.9 s  | 25.44 s    | —          | ✅      |
-| `test-chunkdb`                 | 102   | 27.8 s  | 41.61 s    | —          | ✅      |
-| `test-chunk-client`            | 105   | —       | 57.98 s    | —          | ✅      |
-| `test-diskio-client`           | 4     | —       | 10.33 s    | —          | ✅      |
-| `test-access-s3`               | 59    | —       | 5.02 s     | —          | ✅      |
-| `test-console-shared`          | 115   | 39.2 s  | 81.29 s    | —          | ✅      |
-| `test-console-cli`             | 15    | 69.4 s  | 8.54 s     | —          | ✅      |
-| `test-console-server`          | 82    | 50.7 s  | 79.91 s    | —          | ✅      |
-| `test-console-ui`              | 142   | 165.7 s | 252.99 s   | —          | ✅      |
-| `test-boto3-e2e`               | 162   | —       | 162 s      | —          | ✅      |
-| `test-access-iceberg`          | 692   | —       | —          | 110.69 s   | ✅      |
-| `test-access-server`           | 85    | —       | —          | 60.33 s    | ✅      |
-| `test-monitor`                 | 56    | —       | —          | 45.86 s    | ✅      |
-| `test-pyiceberg-e2e`           | 87    | —       | —          | —          | ✅      |
-| `test-iceberg-native`          | 9     | —       | —          | 1024.67 s  | ✅      |
-| `test-java-iceberg-e2e`        | 10    | —       | —          | 551.31 s   | ✅      |
-| `test-java-iceberg-fileio-e2e` | 3     | —       | —          | —          | ✅      |
-| `test-rust-iceberg-e2e`        | 5     | —       | —          | 1457.31 s  | ✅      |
-| `test-iceberg-rck`             | 1     | —       | —          | 307.34 s   | ✅      |
-| `test-single-node-container`   | —     | —       | —          | —          | ✅      |
+| Test package       | Date       | Tests   | Seconds | Status                                  |
+| ------------------ | ---------- | ------- | ------- | --------------------------------------- |
+| `test-cpp`         | 2026-10-07 | 860/860 | 55      | ✓                                       |
+| `test-core`        | 2026-10-07 | 977/978 | 368     | ✓ 1 ignored                            |
+| `test-storage`     | 2026-10-07 | 811/815 | 1064    | ✓ 4 ignored                            |
+| `test-access`      | 2026-10-07 | 906/906 | —       | ✓                                       |
+| `test-console`     | 2026-10-07 | 77/79   | 61      | ✓ 2 ignored                            |
+| `test-console-ui`  | 2026-10-07 | 63/63   | 192     | ✓                                       |
+| `test-boto3-e2e`   | 2026-10-07 | 32/32   | 295     | ✓                                       |
+| `test-iceberg-e2e` | 2026-10-07 | —       | 338     | ✓                                       |
+| `test-iceberg-sdk` | 2026-10-07 | —       | —       | X Maven dependency resolution stalled  |
 
-The Java group includes the FileIO task; its row is not an additional run.
-PyIceberg, S3, UI and container acceptance passed before timing collection;
-their task wall-clock durations were not recorded. The completed UI rerun has
-86 component and 56 browser cases (browser runner time: 4.7 minutes).
+### intel7960
 
----
+| Test package       | Date       | Tests     | Seconds | Status                   |
+| ------------------ | ---------- | --------- | ------- | ------------------------ |
+| `test-cpp`         | 2026-10-09 | 942/942   | 131.26  | ✓                        |
+| `test-core`        | 2026-10-09 | 994/994   | ~140.23 | ✓                        |
+| `test-storage`     | 2026-10-09 | 841/841   | 916.53  | ✓                        |
+| `test-access`      | 2026-10-09 | 1036/1037 | 412.60  | Pending: coverage gap    |
+| `test-console`     | 2026-10-09 | 350/350   | ~1588.1 | ✓                        |
+| `test-console-ui`  | 2026-10-09 | 229/229   | 307.40  | ✓                        |
+| `test-boto3-e2e`   | 2026-10-09 | 255/255   | 428.89  | ✓                        |
+| `test-iceberg-e2e` | 2026-10-09 | 29/32     | 789.37  | Pending: coverage gap    |
+| `test-iceberg-sdk` | 2026-10-09 | 11/11     | 571.23  | ✓                        |
 
-## Slowest Tests (2026-09-10)
+Measurement notes for this host:
 
-All individual tests or test binaries with wall-clock time >= 7 s.
+- Access and Iceberg rows retain their earlier partial-run counts/times, but
+  are not complete task acceptance. The parent tasks must dispatch their SDK
+  cases automatically in one invocation; see
+  [task completeness plan](plan-test-task-completeness.md). Prior passing SDK
+  runs do not close those parent-task coverage gaps.
 
-| Suite                 | Time    | Test / binary                                                               |
-| --------------------- | ------- | --------------------------------------------------------------------------- |
-| `test-kv-core`        | 38.76 s | `group_test` — Paxos group election, reconfiguration, recovery (99 tests)   |
-| `test-console-ui`     | 21.7 s  | `13-todo-ui-behavior:29` — deploy 3 nodes, disjoint DiskDB listeners        |
-| `test-chunk-client`   | 18.33 s | `small_object_writer_e2e` — small-write E2E with real ChunkDB + DiskIO (14) |
-| `test-console-server` | 18.07 s | `cluster_deployer_test` — deployer lifecycle (3 tests)                      |
-| `test-console-shared` | 15.12 s | `lifecycle_e2e_test` — lifecycle E2E (1 test)                               |
-| `test-console-ui`     | 10.8 s  | `50-chunk-capacity-disk-group:428` — assign disk-group to diskdb via UI     |
-| `test-chunk-client`   | 10.39 s | `chunk_reader_e2e` — chunk reader E2E with failure injection (6 tests)      |
-| `test-console-server` | 9.93 s  | `cluster_restart_incremental_test` — restart cycles (5 tests)               |
-| `test-console-ui`     | 8.9 s   | `21-kv-reconfig:254` — stop non-leader, stop leader triggers reelection     |
-| `test-chunkdb`        | 8.42 s  | `full_stack_test` — full stack E2E (20 tests)                               |
-| `test-console-ui`     | 8.0 s   | `13-todo-ui-behavior:269` — close dialog, preserve KV on DiskDB fail        |
-| `test-console-server` | 7.97 s  | `replica_leader_removal_test` — leader removal (2 tests)                    |
-| `test-kv-server`      | 7.75 s  | `cluster_e2e_test` — cluster E2E with kv-server subprocess spawns (6)       |
-| `test-console-ui`     | 7.7 s   | `31-kv-ops-advanced:98` — prefix/selected/inline delete + copy, load more   |
+- Latest complete Console gate passes 350 Rust test executions (including
+  three dedicated phase wrapper reruns), zero failed/ignored. All 23 native
+  browser cases pass: 20 in the main fixture, plus one in each dedicated
+  prerequisite-plan, journal interruption, and production split phase.
+  Dedicated wrapper times: 17.90s, 50.09s, 308.15s; final counts are 4/4/4
+  with complete acknowledged-data checks. The task interval is approximately
+  1588.13s from log creation to final write, not an independent wall timer.
+  Start samples across two fixtures: ChunkDB 215/255ms, DiskIO 366/466ms,
+  ChunkKV 789/3800ms, Access 178/148ms. Native Start response budget is 5s;
+  process/DOM assertions remain 3s. Core recovery is unchanged; fsync has
+  not been established as the delay source. Full log:
+  `.crowdb-runtime/artifacts/balance-policy-20261009/console-start-budget-final.out`.
+
+- Latest complete UI task passes 166 unit and all 63 browser cases (229/229),
+  measured independently at 307.40 seconds. Reload cancellation can no longer
+  publish failed progress from an old page; serial deployment completions and
+  bucket creation are asserted before their durable/DOM checks. Budgets and
+  real KV/S3/Iceberg data assertions are retained. Log:
+  `.crowdb-runtime/artifacts/balance-policy-20261009/ui-reload-acceptance-final.out`.
+- The three separately scheduled native phases now pass explicitly, zero
+  ignored: prerequisite-plan resumption 19.32s, journal interruption 54.26s,
+  production split/count convergence and complete data checks 350.85s (4/4/4).
+  Their logs are `native-plan-response-order.out`, `native-journal-final.out`,
+  and `native-count-final.out` in the balance-policy artifact directory.
+  These focused successes do not replace complete Console acceptance; native
+  Start timing follow-up passes: ChunkDB 215ms, DiskIO 366ms, ChunkKV 789ms,
+  Access 178ms (browser 9.2s, owned fixture 375.59s). The earlier recovery
+  reached its listener after 3.15s. User-authorized native Start response
+  budget is now 5s; process/DOM assertions remain 3s. Full Console rerun now passes; R228/R229 remain deferred. Timing log:
+  `.crowdb-runtime/artifacts/balance-policy-20261009/native-lifecycle-start-distribution.out`.
+
+- Previous full Console gate: 307 completed Rust cases pass, one native wrapper
+  fails (zero ignored Rust cases). Its browser phase passes 19, fails the
+  lifecycle case and schedules three cases separately. The gate stops before
+  those independent phases. S3 passes 8/8 again (159.10s). First lifecycle
+  divergence: Start is still restoring trees during the immediate 3s PID poll;
+  cleanup sends duplicate restart and reports 409. Test correction awaits and
+  asserts that original response before the unchanged process/DOM assertion.
+  Focused lifecycle acceptance also fails the unchanged 3s response budget
+  (345.63s fixture); core startup is unchanged and fsync is not yet established
+  as the cause. `~1111s` (Console) and `~371s` (UI) are
+  task-log creation-to-final-write intervals, not independent wall timers.
+  Complete log: `.crowdb-runtime/artifacts/balance-policy-20261009/count-only-console.out`.
+
+- Sequential same-group additions fix the topology fixture: its complete
+  spec passes 5/5 in 33.1s; original isolated case failed 2/3 ready groups.
+  Cross-UI/server conflict protection remains proposed in R229, not implemented.
+- Earlier count-only UI attempt: 164 unit tests and 62/63 browser tests pass.
+  Multi-rack topology leader election observes 2/3 ready groups within its
+  unchanged 10s budget; three-node real-data flow passes. Full task log:
+  `.crowdb-runtime/artifacts/balance-policy-20261009/count-only-ui.out`.
+- Approved allocation routing change passes both allocator regressions:
+  pre-send failure reroutes once; discarded post-allocation reply does not
+  replay (durable busy bytes checked). Complete serial S3 mini-cluster file
+  passes 8/8, zero ignored, in 183.98s after rebuilding services. Full Console
+  acceptance is pending.
+
+- Current count-only Core passes 994/994 with zero ignored. Its ~140.23s is
+  the complete task log's creation-to-final-write interval, not a separately
+  captured wall-clock timer. Log:
+  `.crowdb-runtime/artifacts/balance-policy-20261009/count-only-core.out`.
+  Actual native Page/hidden-Weight acceptance passes (browser 2.3s, owned
+  cluster 345.98s); data-weight placement is deferred to R228, not marked passed.
+- Current S3 outage reproduction: exact node-3 case passes in 36.20s; full
+  serial mini-cluster file fails 7/8 in 193.41s on node-1. Group 301 allocation
+  contacts removed endpoint 11200 after ownership recovery. This is a stale
+  DiskDB routing cache, not a crash/fsync timeout. Original runtime was
+  `.crowdb-runtime/ephemeral/s3-mini-protected-outage-1-2995274-5/`; full-gate
+  cleanup removed this disposable runtime. First-divergence details are retained.
+  Full Console still lacks final acceptance; no retry/readiness workaround added.
+- Latest balance implementation: Core 993/993, Storage 841/841 and full UI 227/227 pass, with
+  zero ignored cases. UI includes all 63 browser cases, including the original
+  six-service recovery and three-node real KV/S3/Iceberg flow. Logs are under
+  `.crowdb-runtime/artifacts/measure-tests/20261009T053116.399322Z/`.
+- Latest consistent Console attempt stops at the node-3 S3 outage test: large
+  object allocation contacts the stopped DiskDB endpoint and returns 503.
+  Its 158/159 count covers only the stages reached, not the full suite. Logs:
+  `.crowdb-runtime/artifacts/measure-tests/20261009T052410.043897Z/`;
+  service logs are preserved under
+  `.crowdb-runtime/artifacts/balance-policy-20261009/outage-3/`.
+  The preceding attempt mixed old/new diagnostic binaries during a field
+  addition and is not final acceptance evidence; it also observed an independent
+  empty multipart ListParts response after successful uploads. Both remain
+  investigation items, with no deadline increases or caller retries.
+- Isolated normal native restart/multipart acceptance passes in 24.03 seconds.
+  Dedicated weighted acceptance fails in 968.43 seconds: new acknowledged
+  writes do not update the opened manifest's retained-pack estimate without a
+  checkpoint, so the unified policy continues to observe tolerance rather than
+  the intended new imbalance. Its real split inherited/current Journal browser
+  case passes in 18.7 seconds. This is incomplete acceptance, not a Linux skip;
+  logs are in `.crowdb-runtime/artifacts/balance-policy-20261009/` and the
+  statistics boundary is recorded for review in `plan-chunk-kv-cutover.md`.
+- The following earlier measurements describe the pre-balance baseline.
+- Full UI passes 225/225 in 306.98 seconds after its topology preparation
+  checks current complete membership and matching terms instead of caching an
+  earlier leader seen while a new replica is unknown. The entire affected
+  five-case spec also passes. Original six-service recovery and real three-node
+  KV/S3/Iceberg data assertions pass in both complete UI attempts.
+- Console remains failing. Serial Console-shared acceptance passes the S3
+  cluster cases; the full attempt still fails real Page observation with a
+  changed catalog generation before any browser lifecycle mutation. Ordering
+  alone does not establish a stable catalog. A stronger focused preparation
+  check requires one normal policy cooldown at the same complete generation;
+  it fails within the unchanged ten-minute preparation deadline because new
+  weighted transfers continue after reaching 4/4/4. Those unsuccessful
+  experiments are withdrawn and archived pending fixture-versus-convergence
+  review. The focused run takes 672.13 seconds including setup and teardown.
+  Logs are retained at
+  `.crowdb-runtime/artifacts/native-stable-catalog-focused.out` and
+  `.crowdb-runtime/artifacts/native-restart-failure-2545228/`.
+- Simultaneous S3 cluster startup previously failed during tree bootstrap.
+  Block WAL sync reached 2.13 seconds and leadership changed. The exact test
+  passes alone (31.12 seconds); all eight S3 cluster cases pass serially
+  (176.24 seconds). Console-shared acceptance now runs sequentially with every
+  case and durable sync retained.
+- Eight of the nine Linux tasks pass, with the additional Rust SDK task also
+  passing. Console remains incomplete at native catalog observation. Its latest
+  full attempt used the subsequently withdrawn ordering experiment; no complete
+  pass of the restored selection is claimed. The three later fixture phases
+  were not reached in that failed attempt. Final independent measurements are
+  retained in `.crowdb-runtime/artifacts/measure-tests/20261009T022131.804646Z/`.
+- The original Console source/root epoch failure has passing focused recovery
+  regressions and native split/transfer data checks. An earlier focused native
+  browser selection with block defaults passes journal owner interruption,
+  Iceberg metadata inspection and S3 multipart pagination. Its enclosing
+  native case passed in 398.17 seconds. This is not a full Console pass. Complete Storage
+  subsequently passes after the additional handoff lost-response and abort
+  regressions.
+- Seconds cover each complete Pixi task, including prerequisite builds.
+  An earlier Storage attempt stopped at the real-service restart case: direct
+  block WAL reads returned EINVAL and replay skipped the segment. Aligned reads
+  and narrowly scoped empty-tail cleanup fix recovery; all 118 group tests,
+  109 WAL tests and the complete 839-case Storage task now pass.
+  Each Rust case is counted once per test binary; a later explicit run resolves
+  its earlier ignored entry. SDK subprocess checks use their Rust harness
+  cases. The child listener helper is invoked by its parent and is not counted
+  as a separate acceptance case.
+- Cluster processes explicitly use block tree storage and block-device WAL;
+  these are also the system defaults. Durable synchronization remains enabled.
+  The user accepted occasional slow sync through file-backed device simulation
+  on 2026-10-09. Native API preparation requests use a separate ten-second
+  budget and cases allow three minutes; page actions and UI assertions retain
+  their three-second budgets. Ordinary UI tests retain their existing budgets.
+- Linux executes ordinary cluster, deployment and protocol tests. The macOS
+  exceptions remain. Dedicated Iceberg native workloads run explicitly;
+  Java and Boto3 SDK cases run in their respective environment tasks.
+- Access's one separately scheduled case is
+  `official_boto3_recognizes_a_copy_error_after_http_200_and_keepalives`; it
+  passed in the complete Boto3 task. Iceberg E2E's three separately scheduled
+  cases are the official Java catalog/snapshot, opaque metadata/data/delete
+  reads and S3 FileIO checks; all passed in `test-iceberg-sdk`. These are
+  environment-specific SDK harnesses, not skipped ordinary Linux tests.
+- SIGSEGV was reproduced under GDB and ASAN. Concurrent RPC connection
+  destruction freed its close callback while the I/O worker still executed it.
+  Retaining the connection through both callbacks fixed the use-after-free.
+  The C++ disconnect regressions passed 100 ASAN repetitions, and both actual
+  leader-removal tests passed 40 GDB repetitions after the fix.
+- Core, original binary, stacks and ASAN report are retained under
+  `/tmp/crowdb-core-investigation/`; see its `README.md`. Earlier copied-binary
+  trials without the required KV binary skipped tests and are not evidence.
+- ChunkKV recovery now distinguishes materialized split halves from remaining
+  overlays. Startup discards obsolete recovery only after a newer authoritative
+  catalog generation is proven; unchanged-generation errors remain failures.
+- The Console inspection fixture reached five partitions before DiskDB could
+  no longer reserve a 256-MiB block on its small secondary disks. The fixture
+  now provisions its secondary disks with the production-policy acceptance
+  capacity while preserving the first disk's 80-zone browser contract;
+  the twelve-partition assertion and its original deadline remain unchanged.
+  Native failure logs are retained in
+  `.crowdb-runtime/artifacts/native-restart-failure-1208503/`.
+- Large values could exhaust the bounded split-sampling page after one key.
+  Sampling now reads at most one extra live key using an exclusive continuation.
+  The regression failed before the fix and passes with the existing sample and
+  heartbeat bounds.
+- The official Rust SDK fixture's lock entry still had version `0.2.2` while
+  its manifest had `0.3.0`, so `--locked` rejected the build. The fixture lock
+  now matches without changing third-party dependencies; the version gate also
+  rejects a stale fixture lock entry. The locked build passed.
+- The additional `test-rust-iceberg-e2e` task passed all 5 cases with no ignored
+  tests in 1376.40 seconds, including full native retirement grace, namespace
+  and table lifecycle, lost replies across listeners and native storage restart.
+  This separate Rust SDK task is not included in the Java SDK row above.
+  Its final logs are in
+  `.crowdb-runtime/artifacts/measure-tests/20261009T022131.804646Z/`.
+- Disposable CLI clusters inherit their outer test's port ownership. Process
+  records survive data cleanup, and cleanup removes nested test claims while
+  preserving operator namespaces. Earlier test claims exhausted the port range;
+  removing confirmed test records and fixing their lifecycle restored all 983
+  Core cases. The original claims are backed up in
+  `.crowdb-runtime/artifacts/claims-before-owned-test-cleanup.json`.
+- Complete measurement logs and results are retained under
+  `.crowdb-runtime/artifacts/measure-tests/20261008T111850.953337Z/` and
+  `.crowdb-runtime/artifacts/measure-tests/20261008T114852.396832Z/`.
+  The final Core and subsequent tasks continue under
+  `.crowdb-runtime/artifacts/measure-tests/20261008T121934.101621Z/`.
+  The later full Console failure is recorded under
+  `.crowdb-runtime/artifacts/measure-tests/20261008T131808.656006Z/`.
+  Final independent-fix verification continues under
+  `.crowdb-runtime/artifacts/measure-tests/20261008T144104.319807Z/`.
+  Boto3's focused batch-delete case and complete affected-suite rerun passed
+  without relaxed limits after removing old test processes.
+
+### amd5950
+
+| Test package       | Date | Tests | Seconds | Status |
+| ------------------ | ---- | ----- | ------- | ------ |
+| `test-cpp`         | —    | —     | —       | ⏳     |
+| `test-core`        | —    | —     | —       | ⏳     |
+| `test-storage`     | —    | —     | —       | ⏳     |
+| `test-access`      | —    | —     | —       | ⏳     |
+| `test-console`     | —    | —     | —       | ⏳     |
+| `test-console-ui`  | —    | —     | —       | ⏳     |
+| `test-boto3-e2e`   | —    | —     | —       | ⏳     |
+| `test-iceberg-e2e` | —    | —     | —       | ⏳     |
+| `test-iceberg-sdk` | —    | —     | —       | ⏳     |
+
+The measurement helper writes logs and aggregate results below
+`.crowdb-runtime/artifacts/measure-tests/`. Keep slow individual-test notes next
+to the component measurement that produced them.
+
+Remaining action item from the macOS full-suite runs:
+
+- [ ] `test-iceberg-sdk`: Maven `dependency:go-offline` stayed idle for more
+  than eight minutes on macOS; rerun when the pinned dependency cache is
+  available.
+
+The complete macOS UI package now passes all 63 tests, including the 23-node
+topology setup and the three-node KV/S3/Iceberg data flow.
 
 ---
 

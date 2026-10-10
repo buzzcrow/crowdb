@@ -243,6 +243,7 @@ fn prepared_split() -> SplitTransition {
         },
         planned_at_ms: 0,
         phase: SplitPhase::ChildPrepared,
+        handoff_proof: None,
         readiness_proof: Some(SplitReadinessProof {
             cutover_seq: 55,
             parent_next_epoch: 4,
@@ -253,7 +254,7 @@ fn prepared_split() -> SplitTransition {
             child_applied_seq: 55,
             child_tree_manifest: 1,
             child_root_manifest_generation: 1,
-            retained_parent_tail_overlay: overlay.clone(),
+            retained_parent_tail_overlay: Some(overlay.clone()),
             child_tail_overlay: overlay,
         }),
         failure: None,
@@ -281,7 +282,7 @@ async fn split_shrinks_parent_and_adds_exact_child_in_one_generation() {
         transition
             .readiness_proof
             .as_ref()
-            .map(|proof| proof.retained_parent_tail_overlay.clone())
+            .and_then(|proof| proof.retained_parent_tail_overlay.clone())
     );
     assert_eq!(
         pages[0].entries[1].artifact.tail_overlay,

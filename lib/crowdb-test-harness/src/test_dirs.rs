@@ -11,12 +11,9 @@
 //! so failed-test data is always available for debugging.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use crowdb_protocol::port::namespace::{RuntimeNamespace, RuntimeNamespaceError};
 use crowdb_protocol::ServicePort;
-
-static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Find the workspace root by walking up from `CARGO_MANIFEST_DIR` until
 /// a `pixi.toml` marker file is found. Falls back to `CARGO_MANIFEST_DIR`
@@ -85,11 +82,6 @@ pub fn test_log_dir() -> PathBuf {
             .join(format!("legacy-process-{}", std::process::id()))
             .join("log"),
     )
-}
-
-fn unique_suffix() -> String {
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("{}-{}", std::process::id(), n)
 }
 
 /// One complete ephemeral runtime environment.
@@ -184,9 +176,11 @@ impl TestDir {
     /// # Errors
     /// Returns `io::Error` if `create_dir_all` fails.
     pub fn new(tag: &str) -> std::io::Result<Self> {
-        let path = ephemeral_root()
-            .join(format!("{tag}-{}", unique_suffix()))
-            .join("data");
+        let mut namespace = RuntimeNamespace::ephemeral(tag).map_err(std::io::Error::other)?;
+        let path = namespace.data_dir();
+        // Keep process ownership outside the disposable data directory so
+        // clean-env can stop descendants even after a failed CLI invocation.
+        namespace.preserve();
         std::fs::create_dir_all(&path)?;
         Ok(Self { path, cleanup: true })
     }

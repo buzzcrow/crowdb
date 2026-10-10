@@ -139,6 +139,10 @@ test.describe('kv cluster · multi-rack/multi-store/multi-group topology', () =>
   test.describe.configure({ timeout: 180_000 });
 
   test.beforeAll(async () => {
+    // The full UI suite leaves many service processes to drain through the
+    // reset endpoint.  Give macOS enough time for those registrations to
+    // disappear before bootstrapping the next group-0 cluster.
+    test.setTimeout(180_000);
     await step('topology: resetAll', () => resetAll(apiBase));
 
     const allNodes = [
@@ -189,13 +193,12 @@ test.describe('kv cluster · multi-rack/multi-store/multi-group topology', () =>
       addGroup(apiBase, 901, 9003, 1, [200, 201, 202]),
     ]));
 
-    // Extend store 199 to nodes 192+193 via addReplica. Both calls
-    // are independent Paxos writes to group-0 sysdata — run them
-    // concurrently instead of serially.
-    await step('topology: addReplica x2', () => Promise.all([
-      addReplica(apiBase, 199, 1990, 192, 19901),
-      addReplica(apiBase, 199, 1990, 193, 19902),
-    ]));
+    // Each addition changes the same group's peer configuration. Follow
+    // the reconfiguration contract: finish one member before adding another.
+    await step('topology: addReplica x2', async () => {
+      await addReplica(apiBase, 199, 1990, 192, 19901);
+      await addReplica(apiBase, 199, 1990, 193, 19902);
+    });
 
     // Groups 1991/1992 span all 3 nodes — create after addReplica
     // extends store 199's node set.
@@ -244,23 +247,29 @@ test.describe('kv cluster · multi-rack/multi-store/multi-group topology', () =>
         }
       });
 
-      // Monitor leader election via API polling.
-      // Three concurrent fresh elections (one per group) need a few
-      // election deadlines (default 4-8 s each) plus PreVote/RequestVote
-      // round-trip; 30 s gives headroom on a busy CI machine.
+      // Observe the current complete membership, not an earlier leader seen
+      // while a newly added replica was still unknown or catching up.
       const groups = [1990, 1991, 1992];
       const leaders = new Map<number, number>();
 
       // Poll until all groups have exactly one leader, or timeout.
       await step('multi-rack: poll leaders', () => expect.poll(async () => {
+        leaders.clear();
         for (const gid of groups) {
-          if (leaders.has(gid)) continue;
           const response = await api.get(`/api/stores/199/groups/${gid}`);
           if (!response.ok()) continue;
-          const detail: { replicas: Array<{ replica_id: number; role: string }> } = await response.json();
+          const detail: { replicas: Array<{
+            replica_id: number; role: string; state: string; engine_healthy: boolean;
+            election?: { current_term: number; lease_remaining_ms?: number; bulk_phase1_in_flight_slots: number };
+          }> } = await response.json();
           const leaderReplicas = detail.replicas.filter((r) => r.role === 'leader');
-          if (leaderReplicas.length === 1) {
-            leaders.set(gid, leaderReplicas[0].replica_id);
+          const leader = leaderReplicas.length === 1 ? leaderReplicas[0] : undefined;
+          if (leader && (leader.election?.lease_remaining_ms ?? 0) > 0
+            && detail.replicas.length === 3 && detail.replicas.every(replica =>
+              replica.state === 'running' && replica.engine_healthy
+              && replica.election?.current_term === leader.election?.current_term
+              && replica.election?.bulk_phase1_in_flight_slots === 0)) {
+            leaders.set(gid, leader.replica_id);
           }
         }
         return leaders.size;

@@ -65,7 +65,10 @@ fn local_launch_state_rejects_topology_and_legacy_console_file() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "starts the complete local storage and S3 process stack"]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "starts the complete local storage and S3 process stack"
+)]
 async fn persistent_cluster_survives_stop_restart_and_range_read() {
     let dir = TestDir::new("s3-mini-persistent-e2e").expect("create test directory");
     let started = s3::start(dir.path()).await.expect("start persistent cluster");
@@ -140,7 +143,10 @@ async fn persistent_cluster_survives_stop_restart_and_range_read() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "starts a complete simulated three-rack process stack"]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "starts a complete simulated three-rack process stack"
+)]
 async fn protected_cluster_starts_and_reads_after_restart() {
     let dir = TestDir::new("s3-mini-protected-e2e").expect("create test directory");
     let started = s3::start_protected_test_cluster(dir.path())
@@ -204,19 +210,28 @@ async fn protected_cluster_starts_and_reads_after_restart() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "stops one node in a complete simulated three-rack process stack"]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "stops one node in a complete simulated three-rack process stack"
+)]
 async fn protected_cluster_reads_and_writes_after_node_one_stops() {
     protected_cluster_reads_and_writes_after_node_stops(1).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "stops one node in a complete simulated three-rack process stack"]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "stops one node in a complete simulated three-rack process stack"
+)]
 async fn protected_cluster_reads_and_writes_after_node_three_stops() {
     protected_cluster_reads_and_writes_after_node_stops(3).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "stops one node in a complete simulated three-rack process stack"]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "stops one node in a complete simulated three-rack process stack"
+)]
 async fn protected_cluster_reads_and_writes_after_node_two_stops() {
     protected_cluster_reads_and_writes_after_node_stops(2).await;
 }
@@ -286,16 +301,22 @@ async fn protected_cluster_reads_and_writes_after_node_stops(failed_node: u64) {
     let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(seeds)));
     let bindings = RangeBindingClient::from_shared(Arc::clone(&kv));
     let failed_instance = 20_000 + failed_node - 1;
+    let registry = ServiceRegistryClient::from_shared(Arc::clone(&kv));
+    let hardware = crowdb_kv_client::HardwareClient::from_shared(Arc::clone(&kv));
     let reassigned = tokio::time::timeout(Duration::from_secs(25), async {
         loop {
-            if bindings.refresh().await.is_ok()
-                && bindings.snapshot().len() == 1_024
-                && bindings
-                    .snapshot()
-                    .iter()
-                    .all(|binding| binding.instance_id != failed_instance)
-            {
-                break;
+            if bindings.refresh().await.is_ok() {
+                let snapshot = bindings.snapshot();
+                if crowdb_protocol::chunk_slot::ChunkSlot::all().all(|slot| {
+                    let owners = snapshot
+                        .iter()
+                        .filter(|binding| binding.slots.contains(slot))
+                        .collect::<Vec<_>>();
+                    owners.len() == 1 && owners[0].instance_id != failed_instance
+                }) && diskdb_ownership_recovered(&registry, &hardware, failed_node).await
+                {
+                    break;
+                }
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
@@ -305,7 +326,7 @@ async fn protected_cluster_reads_and_writes_after_node_stops(failed_node: u64) {
         let snapshot = bindings.snapshot();
         let stale = snapshot
             .iter()
-            .filter(|binding| binding.instance_id == failed_instance)
+            .filter(|binding| binding.instance_id == failed_instance && !binding.slots.is_empty())
             .count();
         let instances = ServiceRegistryClient::from_shared(kv)
             .read_all_instance_observations("chunkdb")
@@ -354,28 +375,40 @@ async fn protected_cluster_reads_and_writes_after_node_stops(failed_node: u64) {
     assert_eq!(read_back, new_body);
     if failed_node == 2 {
         let (outage_config, _) = s3::load(dir.path()).expect("load outage cluster");
-        let surviving_chunkdb = outage_config
+        let surviving_chunkdbs = outage_config
             .servers
             .iter()
-            .find(|server| {
+            .filter(|server| {
                 server.service_type == crowdb_console_shared::config::ServiceType::Chunkdb
                     && server.node_id != Some(failed_node)
             })
-            .and_then(|server| server.rpc_url.as_deref())
-            .expect("surviving ChunkDB RPC");
+            .map(|server| server.rpc_url.as_deref().expect("surviving ChunkDB RPC"));
         let chunk_transport = Arc::new(ChunkdbRpcTransport::new());
-        let chunks = chunk_transport
-            .send_list_chunks(
-                surviving_chunkdb,
-                &ListChunksRequest {
-                    max_keys: 1_024,
-                    ..ListChunksRequest::default()
-                },
-            )
-            .await
-            .expect("list chunks written during outage");
+        let mut chunks = Vec::new();
+        for endpoint in surviving_chunkdbs {
+            let mut start_token = None;
+            loop {
+                let listed = chunk_transport
+                    .send_list_chunks(
+                        endpoint,
+                        &ListChunksRequest {
+                            start_token,
+                            max_keys: 1_024,
+                            ..ListChunksRequest::default()
+                        },
+                    )
+                    .await
+                    .expect("list chunks written during outage");
+                let next = listed.next_token;
+                chunks.extend(listed.chunks);
+                if next.is_none() {
+                    break;
+                }
+                assert_ne!(next, start_token, "chunk listing must advance");
+                start_token = next;
+            }
+        }
         let degraded_chunks = chunks
-            .chunks
             .iter()
             .filter(|chunk| chunk.chunk_type == ChunkType::S3 as i32)
             .filter(|chunk| {
@@ -464,4 +497,33 @@ async fn protected_cluster_reads_and_writes_after_node_stops(failed_node: u64) {
         .expect("placement repair did not complete after ChunkDB restart");
     }
     s3::delete(dir.path()).expect("delete protected cluster");
+}
+
+async fn diskdb_ownership_recovered(
+    registry: &ServiceRegistryClient,
+    hardware: &crowdb_kv_client::HardwareClient,
+    failed_node: u64,
+) -> bool {
+    let instances = registry.read_all_diskdb_instances().await.unwrap();
+    let owners = hardware.list_owners().await.unwrap();
+    let mut surviving_groups = hardware
+        .list_disk_groups()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|group| group.node_id != failed_node);
+    !instances.iter().any(|(id, _)| *id == 10_000 + failed_node)
+        && surviving_groups.all(|group| {
+            owners.iter().any(|owner| {
+                owner.dg_id == group.dg_id
+                    && instances.iter().any(|(id, value)| {
+                        *id == owner.instance_id
+                            && value
+                                .extra
+                                .as_ref()
+                                .and_then(|extra| extra.diskdb.as_ref())
+                                .is_some_and(|diskdb| diskdb.owned_dg_ids.contains(&group.dg_id))
+                    })
+            })
+        })
 }

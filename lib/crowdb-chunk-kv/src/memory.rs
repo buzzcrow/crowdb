@@ -18,6 +18,7 @@ pub struct MemoryPartitionTree {
     tree_id: u64,
     values: RwLock<BTreeMap<Vec<u8>, ValueRevision>>,
     last_applied: AtomicU64,
+    checkpoint_applied: AtomicU64,
     fail_next_apply: AtomicBool,
     rebuild_paused: Arc<AtomicBool>,
     rebuild_started: Arc<Notify>,
@@ -35,6 +36,7 @@ impl Default for MemoryPartitionTree {
             tree_id: 1,
             values: RwLock::default(),
             last_applied: AtomicU64::new(0),
+            checkpoint_applied: AtomicU64::new(u64::MAX),
             fail_next_apply: AtomicBool::new(false),
             rebuild_paused: Arc::new(AtomicBool::new(false)),
             rebuild_started: Arc::new(Notify::new()),
@@ -224,6 +226,8 @@ impl PartitionTree for MemoryPartitionTree {
     }
 
     async fn checkpoint(&self, _wal_replay_offset: u64) -> Result<(u64, u64)> {
+        self.checkpoint_applied
+            .store(self.last_applied.load(Ordering::Acquire), Ordering::Release);
         let applied = self.last_applied.load(Ordering::Acquire);
         Ok((applied, applied))
     }
@@ -238,6 +242,7 @@ impl PartitionTree for MemoryPartitionTree {
             tree_id: self.tree_id,
             values: RwLock::new(values),
             last_applied: AtomicU64::new(applied),
+            checkpoint_applied: AtomicU64::new(applied),
             fail_next_apply: AtomicBool::new(false),
             rebuild_paused: Arc::clone(&self.rebuild_paused),
             rebuild_started: Arc::clone(&self.rebuild_started),
@@ -279,6 +284,7 @@ impl PartitionTree for MemoryPartitionTree {
             tree_id,
             values: RwLock::new(filtered),
             last_applied: AtomicU64::new(self.last_applied.load(Ordering::Acquire)),
+            checkpoint_applied: AtomicU64::new(u64::MAX),
             fail_next_apply: AtomicBool::new(false),
             rebuild_paused: Arc::clone(&self.rebuild_paused),
             rebuild_started: Arc::clone(&self.rebuild_started),
@@ -356,8 +362,16 @@ impl PartitionTree for MemoryPartitionTree {
             .cloned()
             .ok_or_else(|| crate::ChunkKvError::SplitRetry("split memtable view is stale".into()))?;
         let mut values = destination.values.write().await;
-        for (key, value) in view.into_iter().filter(|(key, _)| range.contains(key)) {
-            values.insert(key, value);
+        for (key, value) in view
+            .into_iter()
+            .filter(|(key, value)| range.contains(key) && value.revision <= journal_frontier)
+        {
+            if values
+                .get(&key)
+                .map_or(true, |current| current.revision <= value.revision)
+            {
+                values.insert(key, value);
+            }
         }
         destination.last_applied.store(
             destination
@@ -383,7 +397,12 @@ impl PartitionTree for MemoryPartitionTree {
     }
 
     fn checkpoint_state(&self) -> Result<(u64, u64)> {
-        let applied = self.last_applied.load(Ordering::Acquire);
+        let checkpoint = self.checkpoint_applied.load(Ordering::Acquire);
+        let applied = if checkpoint == u64::MAX {
+            self.last_applied.load(Ordering::Acquire)
+        } else {
+            checkpoint
+        };
         Ok((applied, applied))
     }
 }

@@ -40,7 +40,7 @@ const deploymentDefaults = {
   diskio: { instance_id: '1', rpc_port: 13010 },
   chunkdb: { instance_id: '1', http_port: 12010, rpc_port: 12110 },
   'chunk-kv': { instance_id: '1', http_port: 15010, rpc_port: 15110 },
-  'access-server': { instance_id: '1', http_port: 9092, s3_port: 9091, health_port: 9093 },
+  'access-server': { instance_id: '1', http_port: 9092, s3_port: 9091, health_port: 9094 },
 };
 
 function installFetchMock(response: any = {}, status = 200) {

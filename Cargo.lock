@@ -608,8 +608,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 
 [[package]]
+name = "crowdb-access-dataset"
+version = "0.3.0"
+dependencies = [
+ "async-trait",
+ "bincode",
+ "crowdb-chunk-kv-client",
+ "crowdb-protocol",
+ "md-5",
+ "reqwest",
+ "serde",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "crowdb-access-iceberg"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -645,7 +661,7 @@ dependencies = [
 
 [[package]]
 name = "crowdb-access-multipart"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "crowdb-protocol",
  "md-5",
@@ -655,7 +671,7 @@ dependencies = [
 
 [[package]]
 name = "crowdb-access-s3"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "aes-gcm",
  "arc-swap",
@@ -693,7 +709,7 @@ dependencies = [
 
 [[package]]
 name = "crowdb-access-server"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -701,6 +717,7 @@ dependencies = [
  "bincode",
  "chrono",
  "crc",
+ "crowdb-access-dataset",
  "crowdb-access-iceberg",
  "crowdb-access-s3",
  "crowdb-access-server",
@@ -739,7 +756,7 @@ dependencies = [
 
 [[package]]
 name = "crowdb-chunk-client"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -763,7 +780,7 @@ dependencies = [
 
 [[package]]
 name = "crowdb-chunk-kv"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -774,6 +791,7 @@ dependencies = [
  "crowdb-tree-ffi",
  "futures",
  "serde",
+ "serde_bytes",
  "sha2",
  "thiserror 2.0.18",
  "tokio",
@@ -782,7 +800,7 @@ dependencies = [
 
 [[package]]
 name = "crowdb-chunk-kv-client"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -801,7 +819,7 @@ dependencies = [
 
 [[package]]
 name = "crowdb-chunk-kv-server"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -810,11 +828,13 @@ dependencies = [
  "clap",
  "crowdb-chunk-client",
  "crowdb-chunk-kv",
+ "crowdb-chunk-kv-server",
  "crowdb-chunk-stream",
  "crowdb-common",
  "crowdb-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
+ "crowdb-test-harness",
  "crowdb-tree-ffi",
  "serde",
  "serde_json",
@@ -827,7 +847,7 @@ dependencies = [
 
 [[package]]
 name = "crowdb-chunk-stream"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -849,7 +869,7 @@ dependencies = [
 
 [[package]]
 name = "crowdb-chunkdb"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "arc-swap",
  "axum",
@@ -886,7 +906,7 @@ dependencies = [
 
 [[package]]
 name = "crowdb-chunkdb-client"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "arc-swap",
  "bytes",
@@ -901,7 +921,7 @@ dependencies = [
 
 [[package]]
 name = "crowdb-cli"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "axum",
  "chrono",
@@ -932,7 +952,7 @@ dependencies = [
 
 [[package]]
 name = "crowdb-common"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "crowdb-test-harness",
  "flate2",
@@ -951,7 +971,7 @@ dependencies = [
 
 [[package]]
 name = "crowdb-console-shared"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -976,7 +996,7 @@ dependencies = [
 
 [[package]]
 name = "crowdb-diskdb"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "arc-swap",
  "axum",
@@ -1012,7 +1032,7 @@ dependencies = [
 
 [[package]]
 name = "crowdb-diskdb-client"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "arc-swap",
  "bytes",
@@ -1031,7 +1051,7 @@ dependencies = [
 
 [[package]]
 name = "crowdb-diskio-client"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "arc-swap",
  "bytes",
@@ -1052,7 +1072,7 @@ dependencies = [
 
 [[package]]
 name = "crowdb-kv"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "arc-swap",
  "bytes",
@@ -1085,7 +1105,7 @@ dependencies = [
 
 [[package]]
 name = "crowdb-kv-client"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "arc-swap",
  "axum",
@@ -1109,7 +1129,7 @@ dependencies = [
 
 [[package]]
 name = "crowdb-kv-server"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "arc-swap",
  "axum",
@@ -1134,7 +1154,7 @@ dependencies = [
 
 [[package]]
 name = "crowdb-monitor"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "clap",
  "crowdb-diskio-client",
@@ -1157,7 +1177,7 @@ dependencies = [
 
 [[package]]
 name = "crowdb-protocol"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "bincode",
  "bytes",
@@ -1176,7 +1196,7 @@ dependencies = [
 
 [[package]]
 name = "crowdb-rpc-ffi"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "arc-swap",
  "bytes",
@@ -1191,7 +1211,7 @@ dependencies = [
 
 [[package]]
 name = "crowdb-test-harness"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "crowdb-chunkdb-client",
  "crowdb-diskdb-client",
@@ -1208,7 +1228,7 @@ dependencies = [
 
 [[package]]
 name = "crowdb-tree-ffi"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "bytes",
  "cc",
@@ -1220,7 +1240,7 @@ dependencies = [
 
 [[package]]
 name = "crowdb-web"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -3483,6 +3503,16 @@ checksum = "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e"
 dependencies = [
  "serde_core",
  "serde_derive",
+]
+
+[[package]]
+name = "serde_bytes"
+version = "0.11.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5d440709e79d88e51ac01c4b72fc6cb7314017bb7da9eeff678aa94c10e3ea8"
+dependencies = [
+ "serde",
+ "serde_core",
 ]
 
 [[package]]

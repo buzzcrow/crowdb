@@ -101,6 +101,15 @@ pub async fn start_test_server_with_ports(args: &[&str], ports: &[u16]) -> std_i
     Ok(handle)
 }
 
+fn configure_storage_backends(cmd: &mut Command, args: &[&str]) {
+    if !args.iter().any(|arg| arg.starts_with("--kv-backend")) {
+        cmd.args(["--kv-backend", "block"]);
+    }
+    if !args.iter().any(|arg| arg.starts_with("--wal-backend")) {
+        cmd.args(["--wal-backend", "block-device"]);
+    }
+}
+
 /// Start a server at a caller-owned `root` path. The caller is
 /// responsible for keeping `root` alive for the process's lifetime
 /// (e.g. holding the `TestDir`). Used by restart/restore
@@ -131,6 +140,7 @@ pub async fn start_test_server_at(
 
     let bin = crowdb_kv_server_bin();
     let mut cmd = Command::new(bin);
+    configure_storage_backends(&mut cmd, args);
     cmd.args(args)
         .arg("--root")
         .arg(root)

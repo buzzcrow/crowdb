@@ -94,14 +94,14 @@ fn count_imbalance_precedes_bytes_and_respects_cooldown() {
 }
 
 #[test]
-fn balanced_counts_require_weighted_improvement_threshold() {
+fn balanced_counts_do_not_move_for_unequal_pack_bytes() {
     let config = BalanceConfig {
         cooldown_ms: 0,
         ..BalanceConfig::default()
     };
     let owners = vec![owner(1, 2, 1_000), owner(2, 2, 100)];
     let useful = partition(1, 1, 300, 0);
-    assert!(choose_transfer(&owners, &[useful], 1, &config).is_some());
+    assert!(choose_transfer(&owners, &[useful], 1, &config).is_none());
     let harmful = partition(2, 1, 800, 0);
     assert!(choose_transfer(&owners, &[harmful], 1, &config).is_none());
 }

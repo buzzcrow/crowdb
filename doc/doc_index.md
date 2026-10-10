@@ -20,6 +20,7 @@ listed document or section needed by the task.
 | `doc/design/rpc/design-crowdb-rpc.md`                     | RPC engine, wire format, FFI, and transport.               |
 | `doc/design/console/design-crowdb-console.md`             | Console architecture and service lifecycle.                |
 | `doc/design/config/design-crowdb-config.md`               | Configuration ownership, precedence, validation, reload.   |
+| `doc/design/deploy/design-crowdb-deploy.md`               | Node discovery, Group-0 bootstrap, multi-node deployment.   |
 | `doc/design/access-server/design-crowdb-access-server.md` | S3, Iceberg, native Dataset access, and GPU delivery.      |
 
 ## Backlog (`doc/backlog/`)
@@ -121,6 +122,7 @@ Temporary plans live under `doc/working/`; flow analyses live under
 | `doc/design/access-server/iceberge/iceberg-table-spec-1.11.0.md`              | Backed-up normative Iceberg table format specification. |
 | `doc/design/access-server/iceberge/iceberg-rest-catalog-open-api-1.11.0.yaml` | Backed-up normative Iceberg REST Catalog OpenAPI.       |
 | `doc/design/access-server/dataset/design-crowdb-access-dataset.md`            | Dataset HTTP, native topology access, and GPU delivery. |
+| `doc/design/access-server/dataset/spec-crowdb-dataset.md`                      | Normative Dataset concepts, behavior, invariants, and compatibility. |
 
 Prefer the most specific match. Open a root design only for cross-topic work;
 update its row when a permanent document is renamed or materially rescoped.

@@ -75,6 +75,13 @@ fn parse_root_cli_option() {
     // --config is now optional.
     assert!(cli.config.is_none());
     assert_eq!(cli.binding_monitor_interval, 1);
+    assert_eq!(cli.kv_backend, "block");
+    assert_eq!(cli.wal_backend, "block-device");
+    assert!(!cli.no_fsync);
+    let defaults = CrowDBConfig::default();
+    assert_eq!(defaults.crowtree_backend, cli.kv_backend);
+    assert_eq!(defaults.wal_backend, cli.wal_backend);
+    assert!(!defaults.wal_skip_fsync);
 }
 
 #[test]
@@ -82,6 +89,17 @@ fn parse_root_is_required() {
     // Omitting --root should fail (clap rejects the invocation).
     let result = Cli::try_parse_from(["crowdb-kv-server", "--management-port", "10000"]);
     assert!(result.is_err());
+}
+
+#[test]
+fn loaded_configuration_uses_durable_block_defaults() {
+    let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("block-default-config");
+    let path = root.path().join("server.toml");
+    std::fs::write(&path, "").unwrap();
+    let loaded = CrowDBConfig::load_from_file(&path).unwrap();
+    assert_eq!(loaded.crowtree_backend, "block");
+    assert_eq!(loaded.wal_backend, "block-device");
+    assert!(!loaded.wal_skip_fsync);
 }
 
 #[test]

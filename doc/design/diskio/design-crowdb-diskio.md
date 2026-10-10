@@ -474,13 +474,14 @@ Two registration modes:
 
 A `PollingMode` config per pipeline:
 
-- **Classic** — `io_uring_wait_cqe_timeout` every iteration, 50ms
-  timeout. Simplest mode; used by crowdb-tree's single-pipeline
-  topology.
+- **Classic** — event-wait on the poll thread's private eventfd with a
+  bounded timeout. Both submissions and kernel completions wake it;
+  no pipeline waits on an empty CQ while another pipeline has ready work.
+  Used by crowdb-tree's single-pipeline topology.
 - **Hybrid** `{ busy_poll_budget }` — busy-poll the CQ ring's shared
   memory via `io_uring_peek_cqe` with no syscall while I/O is active.
   After `busy_poll_budget` consecutive empty peeks, transition to
-  `epoll_wait` on the pipeline's eventfd. Any CQE resets the counter,
+  `epoll_wait` on the poll thread's private eventfd. Any CQE resets the counter,
   returning to busy-poll. Gives sub-µs CQE dispatch during I/O bursts,
   sleeps when idle, no core burned at idle. Default for `UringEngine`.
 - **Sqpoll** `{ sq_thread_idle }` — opt-in for sustained high-IOPS:
@@ -492,6 +493,12 @@ When multiple Hybrid-mode pipelines share a poll thread, the thread
 uses the **minimum** `busy_poll_budget` across its assigned Hybrid
 pipelines — the most conservative budget wins.
 
+Each pipeline registers its owning poll thread's private eventfd with
+`io_uring`. The poll thread drains ready CQEs from every assigned pipeline
+and then signals the separate pipeline eventfds consumed by external
+reactors. External notifications therefore follow callback completion;
+external consumers cannot steal the poll thread's wakeup.
+
 ### 7.4 Batched SQE Submission
 
 Client threads fill SQE slots (lock-free CAS on shadow tail + per-slot
@@ -501,12 +508,12 @@ thread submits all pending SQEs in one `io_uring_enter` per iteration
 `io_uring_enter`; only the polling thread does.
 
 In busy-poll mode (I/O active), SQEs are submitted within <1µs of
-being filled. In event-wait mode (idle), the first client to fill an
-SQE after the thread sleeps writes the pipeline's eventfd (waking the
-thread); subsequent clients in the same burst skip the eventfd write
-via a `thread_sleeping` CAS — at most one eventfd write per sleep
-cycle. For N=32 SQEs in a burst: batching = 2 syscalls, unbatched =
-32. **16× reduction.**
+being filled. The first client changing `pending_submit` from false to
+true writes the owning poll thread's private eventfd. Subsequent clients
+in the same pending batch skip that write. The eventfd remains readable
+if the thread has not entered event-wait yet, so a submission cannot lose
+its wakeup. The thread publishes newly pending SQEs after waking and
+before draining completions.
 
 ### 7.5 Pipeline Topology
 

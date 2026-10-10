@@ -251,8 +251,11 @@ PageBase *Crowdbtree::install_loaded_page(uint64_t page_id, uint64_t addr, uint3
         io_failed_.store(true);
         return nullptr;
     }
-    if (!frame_validate_key_range(frame.data(), raw_len, opt_.key_range)) {
-        CRB_LOG_ERROR("[{}] demand-load frame or range validation failed: pid={} addr={}", name_, page_id, addr);
+    // A retained split parent can reopen the original physical root with a
+    // narrower logical range. Range checks belong to requests; inherited
+    // frames remain valid until background pruning removes their other keys.
+    if (!frame_validate(frame.data(), raw_len)) {
+        CRB_LOG_ERROR("[{}] demand-load frame validation failed: pid={} addr={}", name_, page_id, addr);
         io_failed_.store(true);
         return nullptr;
     }

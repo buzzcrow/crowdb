@@ -1,254 +1,125 @@
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
 <!-- Licensed under the Apache License, Version 2.0. -->
 
-# New Requirements — Backlog & Analysis
+# CROWDB Backlog Index
 
-Forward-looking implementation items. Each item is classified by priority,
-complexity, and dependency. Before implementation, follow the
-[Implementation Process](#implementation-process) below.
+This index contains only requirements that are not complete. Completed
+requirements and their temporary execution plans are removed during the final
+`implement-requirement` cleanup. Requirement detail and acceptance criteria
+live in the linked document; implementation follows
+[`implement-requirement`](../../.agents/skills/implement-requirement/SKILL.md).
 
----
+**Next R number: R230** — R221 is reserved by another workstream.
 
-## Item Index
+## Dataset and access
 
-**Next R number: R222** — Bump this line in the same commit when adding a new item.
+- **[R220](R220-dataset-fat-client-plan.md)** — Dataset SDK fat-client direct
+  access and optimization contract. **Area:** Dataset SDK. **Complexity:** High.
+  **Status:** Deferred until the core Dataset contract has workload measurements.
 
-### Next Milestone — Chunk-backed range KV
+## Console and service control
 
-R144 is a deferred merge follow-up to the completed chunk-KV server and routed
-client split/transfer baseline. R147 is the remaining deferred chunk lifecycle
-follow-up. R148 follows the now-measured mirror-only production baseline and
-keeps stream metadata scale-out and sealed-chunk EC disabled until that
-requirement is implemented.
-- **[R144](R144-chunk-kv-partition-merge.md)** — adjacent partition merge —
-  Area: crowdb-tree / KV / server / group 0 — Deferred follow-up that composes
-  two adjacent chunk-backed trees, fences both owners, reconciles their WAL
-  sequences, and atomically replaces both parent ranges with one destination.
-- **[R147](R147-tree-chunk-gc.md)** — reclaim B+tree chunk strips — Area:
-  crowdb-tree / chunkdb / diskdb — Turn tree logical-GC results into durable,
-  manifest-fenced reclaim candidates. Repack mixed live strips, then use an
-  idempotent generic in-chunk operation to release whole unreachable strips or
-  chunks without racing retained manifests, snapshot pins, or layout readers.
-- **[R148](R148-chunk-stream-scale-out.md)** — partition metadata scale-out and
-  sealed-chunk EC — Area: chunk-stream / chunk-kv / KV / chunkdb — Move the
-  stream namespace and tree root catalog as one fenced binding generation,
-  optionally shard their indexes, and convert sealed mirror chunks to EC.
+- **[R229](R229-kv-membership-conflict.md)** — complete members record with epoch CAS and
+  server submission protection; explicit conflicts across UI servers.
+  **Area:** KV client / KV server / Console. **Complexity:** Medium.
+  **Status:** Members/epoch CAS model approved; implementation pending.
 
-### Planned — S3 data access service
+- **[R227](R227-console-multi-node-deployment.md)** — multi-node discovery,
+  Group-0 bootstrap, shared UI authority and light-container deployment.
+  **Area:** monitor / console / deployment. **Complexity:** High.
+  **Dependencies:** existing Group 0; bootstrap and authorization decisions.
+- **[R210](R210-console-service-configuration-health.md)** — unified node service
+  configuration and health. **Area:** console / deployment / FlatBuffer RPC.
+  **Complexity:** High. **Dependencies:** none recorded.
+- **[R211](R211-console-access-health-listener.md)** — independent Access Server
+  health listener. **Area:** console / access server / deployment.
+  **Complexity:** Medium. **Dependencies:** R210.
+- **[R212](R212-console-node-create-and-cluster-scope.md)** — reliable node
+  creation and Cluster scope. **Area:** console / node lifecycle / UI.
+  **Complexity:** High. **Dependencies:** R210, R211.
 
-R152–R166 delivered the limited basic S3 service, including the restart
-acceptance baseline. Multipart upload is available; R168–R169 defer
-shared-storage GC without blocking basic large-object deletion. R170 adds
-optional cuObject/RDMA acceleration after the TCP baseline is correct and measured.
-- **[R196](R196-access-upload-benchmark-regression.md)** — S3 and Iceberg HTTP
-  upload benchmark regression — Area: CLI / access server / benchmark — Add a
-  shared real-protocol CLI workload and retained local regression scripts for
-  direct and multipart small/large uploads, with correctness gates, metrics,
-  and profile-matched performance baselines.
-- **[R193](R193-chunkdb-node-failure-budget.md)** — configurable node failure
-  budget and EC placement — Area: KV / chunkdb / chunk IO / deployment —
-  Generalize the fixed one-node and three-node profiles to larger clusters.
-  Validate mirror copies and EC against the worst configured set of failed
-  nodes. A six-node cluster with a two-node budget admits `4+2` and `8+4` EC,
-  but rejects `2+1`. Persist degraded placement and restore full protection
-  after capacity returns.
+## Access server and external data
+
 - **[R168](R168-s3-shared-object-reclamation.md)** — shared small-object
-  reclamation — Area: access server / S3 / chunkdb — **Deferred on R95.** Turn
-  exact pending shared ranges into qualified, restart-safe physical deletion.
-- **[R169](R169-s3-shared-chunk-tree-gc.md)** — B+tree and shared-chunk garbage
-  collection — Area: access server / S3 / crowdb-tree / chunkdb — **Deferred on
-  measurement, R147, and R168.** Compact fragmented shared chunks and retire
-  obsolete S3 metadata without erasing reader or recovery authority.
-- **[R170](R170-s3-cuobject-rdma.md)** — optional cuObject RDMA data plane —
-  Area: access server / S3 / DiskIO / RDMA — **Deferred until basic TCP S3 is
-  stable.** Keep acceleration in a separate optional library and requirement;
-  AccessServer coordinates while DiskIO-owned cuObjServer endpoints transfer
-  parallel logical spans directly to or from client registered memory.
+  reclamation. **Area:** access server / S3 / chunkdb. **Complexity:** High.
+  **Status:** Deferred until R95 and the basic S3 delete path are stable.
+- **[R169](R169-s3-shared-chunk-tree-gc.md)** — shared-chunk and B+tree garbage
+  collection. **Area:** access server / S3 / crowdb-tree / chunkdb.
+  **Complexity:** High. **Status:** Deferred until R147, R168, and workload
+  measurements are complete.
+- **[R170](R170-s3-cuobject-rdma.md)** — optional cuObject RDMA data plane.
+  **Area:** access server / S3 / DiskIO / RDMA. **Complexity:** High.
+  **Status:** Deferred until the basic TCP S3 path is stable and measured.
+- **[R185](R185-access-iceberg-cache-invalidation.md)** — bounded Iceberg cache
+  and invalidation. **Area:** access server / Iceberg / Group 0 / Chunk-KV.
+  **Complexity:** Medium. **Status:** Deferred pending focused cache measurements.
+- **[R186](R186-access-iceberg-orc-validation.md)** — selected ORC validation.
+  **Area:** access server / Iceberg. **Complexity:** Medium. **Status:**
+  Deferred as an independent follow-up by user decision.
+- **[R196](R196-access-upload-benchmark-regression.md)** — S3 and Iceberg HTTP
+  upload benchmark regression. **Area:** access server / CLI / benchmarks.
+  **Complexity:** Medium. **Dependencies:** completed upload correctness paths.
 
-### Planned — Native Iceberg storage
+## Chunk, Chunk-KV, and recovery
 
-The native catalog correctness milestone is complete: catalog/service foundation,
-namespace, immutable FileIO, atomic table commits, reclamation and REST/official-SDK
-conformance. Its contract and executable profile are retained in
-[Native Iceberg Storage](../design/access-server/iceberge/design-crowdb-iceberg.md).
-The [container client matrix](../../container/single-node-container/tests/ecosystem/README.md)
-has separate passing engine/restart acceptance. Caches and selected ORC remain
-independent deferred work.
+- **[R83](R83-chunkdb-complete-recovery-flow.md)** — complete data recovery and
+  recovery-speed control. **Area:** chunkdb / diskdb / DiskIO.
+  **Complexity:** High. **Dependencies:** chunkdb server and DiskIO recovery path.
+- **[R84](R84-chunkdb-post-disk-move-placement-scanner.md)** — post-move chunk
+  placement scanner. **Area:** chunkdb / diskdb. **Complexity:** Medium.
+  **Dependencies:** R81 Part 2 and the chunkdb server.
+- **[R92](R92-chunkdb-in-chunk-gc.md)** — in-chunk garbage-collection operations.
+  **Area:** chunkdb / chunk IO. **Complexity:** High. **Dependencies:** chunk
+  lifecycle and qualified range ownership.
+- **[R95](R95-chunkdb-chunk-range-delete.md)** — qualified chunk-range deletion
+  and orphan scanning. **Area:** chunkdb / chunk IO / S3.
+  **Complexity:** High. **Dependencies:** chunk-range ownership records.
+- **[R96](R96-chunkdb-console-cli-integration.md)** — chunkdb CLI management
+  integration. **Area:** chunkdb / console / CLI. **Complexity:** Medium.
+  **Dependencies:** stable chunkdb management surface.
+- **[R147](R147-tree-chunk-gc.md)** — reclaim B+tree chunk strips. **Area:**
+  crowdb-tree / chunkdb / diskdb. **Complexity:** High. **Status:** Deferred
+  until immutable page packs and durable reclaim candidates are available.
+- **[R148](R148-chunk-stream-scale-out.md)** — stream metadata scale-out and
+  sealed-chunk EC. **Area:** chunk-stream / chunk-kv / KV / chunkdb.
+  **Complexity:** High. **Status:** Deferred until the measured single-group
+  mirror path is complete.
+- **[R193](R193-chunkdb-node-failure-budget.md)** — configurable node-failure
+  budget and EC placement. **Area:** KV / chunkdb / chunk IO / deployment.
+  **Complexity:** High. **Status:** Planned.
+- **[R207](R207-chunkdb-repo-metadata-chunk-kv.md)** — repo metadata and tasks on
+  chunk-kv. **Area:** chunkdb / chunk-kv. **Complexity:** High.
+  **Status:** Deferred beyond the direct-KV stage.
 
-- **[R185](R185-access-iceberg-cache-invalidation.md)** — bounded cache and
-  invalidation — Area: access server / Iceberg / Group 0 / Chunk-KV — **Deferred
-  pending focused cache measurements on the completed uncached baseline.** Add one budgeted
-  cache manager, qualified entries, internal-RPC invalidation, and TTL safety nets.
+## KV, DiskDB, and topology
 
-- **[R186](R186-access-iceberg-orc-validation.md)** — selected ORC validation —
-  Area: access server / Iceberg — **Independent follow-up retained by user
-  decision; outside the verified client ecosystem.** Add bounded canonical ORC
-  schema, row-count and delete validation with official-client fixtures. The Parquet catalog is
-  complete; ORC does not block container or client-ecosystem acceptance.
-
-### High Priority
-
-- **[R207](R207-chunkdb-repo-metadata-chunk-kv.md)** — repo chunk metadata and
-  tasks on chunk-kv — Area: chunkdb / chunk-kv — High complexity.
-  **Deferred beyond the completed direct-KV stage.** When selected, migrate
-  S3/IcebergTable/business Stream metadata and associated tasks to chunk-kv;
-  system Wal/BtreePage/PageIndex metadata stays in KV groups. Define range-local
-  publication, key/split rules, isolated tasks, safe conversion and measured
-  Paxos relief. Future Dataset follows the user-data layer with its own type.
+- **[R80](R80-diskdb-rebalance.md)** — disk space rebalance convergence.
+  **Area:** diskdb / DiskIO. **Complexity:** Medium.
+- **[R82](R82-kv-watch-notify-coalescing.md)** — watch/notify coalescing.
+  **Area:** KV / diskdb. **Complexity:** Medium.
+- **[R102](R102-diskdb-dynamic-binding-migration.md)** — dynamic disk-group
+  binding migration. **Area:** diskdb / KV. **Complexity:** High.
 - **[R103](R103-chunkdb-range-migration.md)** — dynamic slot ownership and
-  KV-group expansion/shrink — Area: chunkdb / kv — **Deferred until dynamic
-  changes are requested.** The fixed-topology stage is implemented. Independently
-  support fenced server-slot handoff without metadata copy, and storage-slot
-  migration of complete chunk/task/index/reservation state when groups are
-  added, drained or rebalanced. Include durable recovery and safe cleanup;
-  preserve independent bitmap maps, fixed slot identity and DiskIO payload.
-  R207 owns future backend conversion; legacy conversion is not a prerequisite.
-- **[R102](R102-diskdb-dynamic-binding-migration.md)** — diskdb dynamic
-  disk-group binding migration — Area: diskdb / kv — Reuse the common
-  `BindingStrategy` framework
-  (`doc/design/chunkdb/design-crowdb-chunkdb-range-binding.md` §5) to
-  dynamically rebind diskdb disk-groups to paxos groups, replacing the
-  operator-manual `BindMapValue` write with automatic monitoring +
-  rebinding. Monitor detects instance join/leave, rebalances disk-group
-  assignments, migrates data during rebinding.
-- **[R80](R80-diskdb-rebalance.md)** — diskdb space rebalance across
-  disks — Area: diskdb — Complete the existing passive allocator and durable
-  relocation baseline with sustained-skew admission, projected-improvement and
-  target-headroom gates, bounded repeated moves, truthful stalled/balanced
-  status, and a real DiskIO/ChunkDB convergence test for newly added or
-  recovered empty disks.
-- **[R82](R82-kv-watch-notify-coalescing.md)** — watch/notify
-  coalescing (debounce) — Area: kv / diskdb — the watch/notify
-  extension ships without coalescing: one notify per changed key per
-  matching prefix. Burst writes to a watched prefix (e.g. diskdb
-  `batch_write` touching 10 disks) generate 10 separate notifies,
-  amplifying subscriber wakeups + re-read load. Add a per-prefix
-  debounce coalescer with timer-task flush between the apply-path hook
-  and `WatchRegistry::emit`. The original coalescer was removed because
-  the timer task captured no registry/coalescer refs (buffered keys
-  were silently dropped); R82 must wire the `Weak` refs properly. Load
-  optimization, not correctness — the safety-net poller covers missed
-  notifies.
-
-### Data Path (diskio + chunk object writers + read flow)
-
-Chunk reads, read repair, mirror-to-EC conversion, write error handling, and
-end-to-end Chunk IO performance workloads are landed. The RPC migration items
-(R115, R116, R117) are in a separate area (see RPC Migration section below).
-
-### Medium Priority
-
-- **[R83](R83-chunkdb-complete-recovery-flow.md)** — chunkdb
-  complete recovery flow (real data recovery + speed control) —
-  Area: chunkdb / diskdb / diskio — diskdb's recovery is disk-layer
-  only: the R76 `RecoveryScanTask` lists impacted busy blocks +
-  `owner_chunk` but the repair step is a placeholder
-  (`RecoveryAction::LogOnly`, no data rebuild). There is no chunkdb
-  yet (only a reserved proto surface), so when a disk goes `Bad` the
-  impacted blocks are handed to a "future recovery/relocation path"
-  (§8) that does not exist — no surviving replica/parity is read, no
-  rebuilt data is written, no strip is updated. Full data recovery
-  needs chunkdb (the chunk→strip→segment owner) to rebuild lost
-  mirror replicas / EC data+parity from surviving strips via the
-  `diskio` service, `UpdateChunkStrip` to new segments, and free the
-  old `Bad`-disk segments. Recovery speed must be throttled at the
-  chunkdb layer (configurable bandwidth/IOps/concurrency) so
-  foreground traffic is not starved. Blocked on the chunkdb server
-  component + the `diskio` service (both unlanded; must be filed as
-  their own backlog items first). Replaces R76's `LogOnly` with
-  `Relocate` / `RebuildFromEc`.
-- **[R84](R84-chunkdb-post-disk-move-placement-scanner.md)** —
-  chunkdb post-disk-move placement scanner — Area: chunkdb / diskdb —
-  R81 Part 2 adds disk move with a stable `DiskId` (record copy
-  during Maintenance, no full scan). The move is placement-only and
-  the data is intact, but there is no verification that chunk
-  placement is still consistent after a move: chunks reference blocks
-  via `Segment { disk_id, ... }` (in `MirrorStrip` / `EcStrip`), and
-  every chunk with a segment on the moved disk must still reach that
-  segment via the disk's new placement. Add a placement-integrity
-  scanner (chunkdb-side, following diskdb's `ScannerTask` /
-  `BgRunner` pattern, §10) that walks chunk→strip→segment after a
-  move (and periodically), resolves each segment's `DiskId` to its
-  current group-0 placement, and reports unreachable / orphaned
-  segments — handing `Bad`/`Missing`-disk segments to R83 for
-  rebuild. Triggered on move via watch/notify (R78) with a periodic
-  safety net. Blocked on the chunkdb server component (unlanded) and
-  R81 Part 2.
-### RPC Migration (legacy → crowdb-rpc)
-
-Historical migration order: R115 → R116 (unary); R117 (streaming) followed
-R114 plus the original R32 consensus migration. R115 first validated the
-migration pattern (schema, server, client, and error mapping) before the
-streaming services. All four migrations follow the
-zero-copy wrapper convention (`design-crowdb-rpc.md` §6): `FB`-prefixed
-flatbuffer types, wrapper classes in `crowdb-protocol`, no owned
-intermediate structs, no per-field copy. The four transport migrations (R115
-diskdb, the original R32 KV consensus scope, R117 KV client-facing, and R116
-chunkdb) are DONE. The post-migration KV server/library review is also complete.
-
-- **[R33](R33-crowdb-tree-rename.md)** — Extract crowdb-tree to separate repo and rename — Area:
-  workspace — Move `crowdbtree/` into its own git repository (preserving
-  history), wire `crowdb-kv` to depend on `crowdb-tree-ffi` as an external
-  dependency, and rename the crate/namespace/macros from `crowdbtree` to
-  `crowdb-tree` / `crow::tree` / `CROWDB_TREE_*`. Establishes the `crowdb-kv` →
-  `crowdb-tree` dependency boundary analogous to `crowdb-kv` → `crowdb-common`.
-  Most naturally done after R12.
-- **[R50](R50-epoch-protected-memtable.md)** — Epoch-protected
-  lock-free MemTable — Area: scan / get / crowdb-tree engine —
-  **Done.** `MemTable::snapshot()` deep-copied every live L0 entry
-  (key + full cell payload) on every scan regardless of range or
-  `limit`, and an L0 `get` hit copied twice. Root cause: L0 was the
-  only reader-visible structure outside the engine's EBR scheme.
-  Replaced the `absl::btree_map` under `mu_` with a
-  `ConcurrentSkipList` (inline keys, versioned cell pointers,
-  epoch-deferred reclamation). Readers now traverse L0 lock-free
-  under their existing epoch guard with zero copy; the cursor seeks
-  directly (no `upper_bound` skip pass); `get_view` borrows the
-  cell directly off the node. Closes the known gap at
-  `crowdb-tree.h:81`. All 383 `test-tree-ct` tests pass.
-
-### Low Priority
-
-**Complexity — Low (placeholder):**
-- **[R5](R5-rdma-alloc.md)** — RDMA-pinned allocation — Blocked by: RDMA backend — Area: crowdbtree
-  engine — `buffer::allocate` seam is designed for RDMA-pinned memory but no
-  RDMA backend exists yet; placeholder only.
+  KV-group expansion/shrink. **Area:** chunkdb / KV. **Complexity:** High.
+  **Status:** Deferred by user decision until dynamic ownership is requested.
 - **[R139](R139-group0-service-config.md)** — Group-0 distributed service
-  configuration — Area: config / control plane — Publish versioned,
-  scoped config through group 0; each service validates revisions, applies
-  dynamic fields atomically, and reports fields that require restart.
+  configuration. **Area:** configuration / control plane. **Complexity:** Medium.
+  **Status:** Deferred until the file-backed service configuration contract.
+- **[R144](R144-chunk-kv-partition-merge.md)** — adjacent partition merge.
+  **Area:** chunk-kv / KV / group 0. **Complexity:** High. **Status:** Deferred
+  until manifest reuse, transfer fencing, and transition recovery are stable.
 
-**Complexity — Medium:**
-- **[R4](R4-bounded-mempool.md)** — Bounded memory pool — Area: crowdbtree engine — `buffer::allocate` uses
-  unbounded `std::malloc`; a burst of large writes can spike RSS without
-  backpressure.
-- **[R60](R60-tree-scan-sibling-leaf-readahead.md)** — Sibling-leaf
-  readahead on cold scans — **Deferred pending cold file/block-backed
-  measurement.** Area: scan / crowdb-tree engine — the scan
-  path demand-loads each L1 leaf inline (sync) or one pending page per
-  reactor round trip (async), so a cold multi-leaf range pays one
-  stall/round-trip per leaf, serialized with merge work on prior
-  leaves. The scan knows `right_sibling` before finishing the current
-  leaf — issue a readahead for the next
-  leaf to overlap I/O with merging. Sync path: prefetch the
-  right-sibling page id via a page-cache async-resolve seam. Async
-  path: use a fixed one-leaf lookahead to overlap the next leaf read with
-  merge and packing of the current resident leaf. Readahead is scan-only and
-  conditional on the range, remaining limits, deadline, residency, and async
-  disk backend. Win is zero on mem-mode (leaves resident); implement only if
-  a cold benchmark with eviction shows a material latency or throughput
-  improvement. Medium complexity.
----
+## Tree and memory
 
-## Implementation Process
-
-Each item follows the lifecycle defined in the
-[`/implement-requirement` workflow](../../.agents/skills/implement-requirement/SKILL.md):
-understand → design → plan → implement → merge design → cleanup.
-
-After the PR is merged, all obsolete working docs (design draft, plan doc)
-must be deleted — see the workflow's Post-merge cleanup section.
-
----
-
-<!-- Reference implementation details: see ~/.codeium/windsurf/memories/global_rules.md -->
+- **[R4](R4-bounded-mempool.md)** — bounded memory pool for tree allocations.
+  **Area:** crowdb-tree engine. **Complexity:** Medium.
+- **[R5](R5-rdma-alloc.md)** — RDMA-registered host-buffer allocation.
+  **Area:** crowdb-tree / RDMA. **Complexity:** High. **Status:** Design
+  proposal; blocked on an RDMA backend.
+- **[R60](R60-tree-scan-sibling-leaf-readahead.md)** — sibling-leaf readahead on
+  cold scans. **Area:** crowdb-tree / scan / DiskIO. **Complexity:** Medium.
+  **Status:** Deferred pending cold file/block-backed measurements.
+- **[R228](R228-tree-range-metrics.md)** — root/range page, logical-byte and live-KV
+  metrics for continuous split sizing and data-weight placement. **Area:** tree /
+  chunk-KV / console. **Complexity:** High. **Status:** Deferred implementation
+  pending statistics-format/performance review; count placement remains enabled.

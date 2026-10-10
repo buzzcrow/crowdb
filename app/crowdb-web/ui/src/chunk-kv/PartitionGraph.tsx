@@ -9,7 +9,7 @@ import { Boxes, ChevronDown, ChevronRight, Cog, Database, FolderTree, ScanSearch
 import type { ServerSummary } from '../api';
 import { buttonClass } from '../access/Workbench';
 import { serviceInstanceLabel } from '../services/client';
-import { range, type Partition } from './catalog';
+import { range, type BalanceSummary, type Partition } from './catalog';
 
 const endpointKey = (value: string) => value.replace(/^[a-z]+:\/\//, '').replace(/\/$/, '');
 const SERVER_LIMIT = 8;
@@ -104,7 +104,7 @@ function GraphCanvas({ layout, edges, layoutKey }: { layout: Node<Card>[]; edges
 
 export function PartitionGraph({ entries, servers, selectedId, disabled, onSelect, onTree, query, onQuery }: {
   query: GraphQuery; onQuery: (query: GraphQuery) => void;
-  entries: Partition[]; servers: ServerSummary[]; selectedId?: string; disabled: boolean;
+  balance?: BalanceSummary; entries: Partition[]; servers: ServerSummary[]; selectedId?: string; disabled: boolean;
   onSelect: (partition: Partition) => void; onTree: (partition: Partition) => void;
 }) {
   const { serverPage, offsets } = query;
@@ -113,6 +113,7 @@ export function PartitionGraph({ entries, servers, selectedId, disabled, onSelec
   const setOffsets = (update: (value: Record<string, number>) => Record<string, number>) => onQuery({ ...query, offsets: update(offsets) });
   const setCollapsed = (update: (value: Set<string>) => Set<string>) => onQuery({ ...query, collapsed: [...update(collapsed)] });
   const groups = servers.map(server => ({
+    endpoint: endpointKey(server.rpc_url ?? server.endpoint ?? ''),
     id: `server-${server.id ?? server.rpc_url ?? server.endpoint}`,
     label: serviceInstanceLabel('chunk-kv', server.id ?? String(server.node_id)),
     entries: entries.filter(entry => endpointKey(entry.endpoint) === endpointKey(server.rpc_url ?? server.endpoint ?? '')),
@@ -122,7 +123,7 @@ export function PartitionGraph({ entries, servers, selectedId, disabled, onSelec
     if (matched.has(entry.id)) continue;
     const id = `owner-${entry.owner_id}`;
     let group = groups.find(group => group.id === id);
-    if (!group) { group = { id, label: `CKV-${entry.owner_id}`, entries: [] }; groups.push(group); }
+    if (!group) { group = { id, endpoint: endpointKey(entry.endpoint), label: `CKV-${entry.owner_id}`, entries: [] }; groups.push(group); }
     group.entries.push(entry);
   }
   const page = Math.min(serverPage, Math.max(0, Math.ceil(groups.length / SERVER_LIMIT) - 1));

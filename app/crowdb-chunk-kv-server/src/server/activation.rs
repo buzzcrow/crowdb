@@ -10,6 +10,28 @@ use crowdb_protocol::chunk_kv::{
 };
 
 impl ChunkKvService {
+    pub(crate) fn split_child_is_independent(&self, transition: &SplitTransition) -> bool {
+        self.catalog
+            .load()
+            .entry_for_partition(transition.child.partition_id)
+            .is_some_and(|entry| {
+                entry.owner_epoch >= transition.child.owner_epoch
+                    && entry.transition_id != Some(transition.transition_id)
+                    && entry.artifact.tail_overlay.as_ref().map_or(true, |overlay| {
+                        overlay.source_stream_name != transition.parent_artifact.stream_name
+                    })
+            })
+    }
+
+    /// Returns whether cold parent recovery still needs durable handoff dispatch.
+    #[must_use]
+    pub fn needs_split_handoff_recovery(&self, partition_id: Id128) -> bool {
+        self.hosted_partition(partition_id).is_some_and(|parent| {
+            parent.lifecycle() == crowdb_chunk_kv::PartitionLifecycle::Prepared
+                && parent.split_ingress().is_none()
+        })
+    }
+
     /// Activates a recovered split writer only with exact committed catalog evidence.
     ///
     /// # Errors
@@ -62,11 +84,13 @@ impl ChunkKvService {
                 "committed split does not prove this serving assignment".into(),
             ));
         }
-        self.partitions
-            .load()
-            .get(&partition_id)
-            .ok_or(ChunkKvError::OutOfRange)?
-            .activate_recovered_overlay(owner_epoch)
+        let partitions = self.partitions.load();
+        let partition = partitions.get(&partition_id).ok_or(ChunkKvError::OutOfRange)?;
+        if artifact.tail_overlay.is_none() {
+            partition.activate_recovered(owner_epoch)
+        } else {
+            partition.activate_recovered_overlay(owner_epoch)
+        }
     }
 
     /// Activates one replayed assignment after a matching catalog and serving
@@ -93,7 +117,7 @@ impl ChunkKvService {
                 "catalog does not publish this serving assignment".into(),
             ));
         }
-        // A local split dispatcher owns both replacement writers.  Its old
+        // A local split dispatcher retains the parent and routes to its child.  Its old
         // parent identity remains a compatibility route for g1 requests, not
         // a partition that a later grant may reactivate at its obsolete epoch.
         if self.local_split_sessions.load().contains_key(&partition_id) {
@@ -106,12 +130,15 @@ impl ChunkKvService {
             .activate_recovered(owner_epoch)
     }
 
-    /// Returns the catalog transition attached to one hosted assignment.
+    /// Returns the transition needed to prove a recovered overlay assignment.
+    /// A materialized split half can retain the pair's transition marker until
+    /// its sibling is materialized, but already uses independent recovery.
     #[must_use]
-    pub fn catalog_transition_id(&self, partition_id: Id128) -> Option<Id128> {
+    pub fn catalog_overlay_transition_id(&self, partition_id: Id128) -> Option<Id128> {
         self.catalog
             .load()
             .entry_for_partition(partition_id)
+            .filter(|entry| entry.artifact.tail_overlay.is_some())
             .and_then(|entry| entry.transition_id)
     }
 

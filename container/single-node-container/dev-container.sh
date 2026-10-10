@@ -46,7 +46,7 @@ start_container() {
     fi
 
     if ! docker run --detach --name "$name" \
-        --expose 9090 --expose 9091 --expose 9092 --expose 9093 \
+        --expose 9090 --expose 9091 --expose 9092 --expose 9093 --expose 9094 \
         "$image"; then
         if docker container inspect "$name" >/dev/null 2>&1; then
             docker rm --force --volumes "$name" >/dev/null

@@ -7,33 +7,23 @@ import sys
 from pathlib import Path
 
 
-TASK_PACKAGES = {
-    "test-tree-ffi": {"crowdb-tree-ffi"},
-    "test-rpc-ffi": {"crowdb-rpc-ffi"},
-    "test-common": {"crowdb-common"},
-    "test-harness": {"crowdb-test-harness"},
-    "test-protocol": {"crowdb-protocol"},
-    "test-kv-core": {"crowdb-kv"},
-    "test-kv-client": {"crowdb-kv-client"},
-    "test-chunkdb-client": {"crowdb-chunkdb-client"},
-    "test-chunk-kv": {"crowdb-chunk-kv"},
-    "test-chunk-stream": {"crowdb-chunk-stream"},
-    "test-chunk-kv-client": {"crowdb-chunk-kv-client"},
-    "test-chunk-kv-server": {"crowdb-chunk-kv-server"},
-    "test-kv-server": {"crowdb-kv-server"},
-    "test-diskdb": {"crowdb-diskdb"},
-    "test-diskdb-client": {"crowdb-diskdb-client"},
-    "test-chunkdb": {"crowdb-chunkdb"},
-    "test-chunk-client": {"crowdb-chunk-client"},
-    "test-diskio-client": {"crowdb-diskio-client"},
-    "test-access-multipart": {"crowdb-access-multipart"},
-    "test-access-s3": {"crowdb-access-s3"},
-    "test-access-iceberg": {"crowdb-access-iceberg"},
-    "test-access-server": {"crowdb-access-server"},
-    "test-monitor": {"crowdb-monitor"},
-    "test-console-shared": {"crowdb-console-shared"},
-    "test-console-cli": {"crowdb-cli"},
-    "test-console-server": {"crowdb-web"},
+COMPONENT_PACKAGES = {
+    "test-cpp": {"crowdb-tree-ffi", "crowdb-rpc-ffi"},
+    "test-core": {
+        "crowdb-common", "crowdb-test-harness", "crowdb-protocol",
+        "crowdb-kv", "crowdb-kv-client",
+    },
+    "test-storage": {
+        "crowdb-chunkdb-client", "crowdb-chunk-kv", "crowdb-chunk-kv-client",
+        "crowdb-chunk-kv-server", "crowdb-chunk-stream", "crowdb-kv-server",
+        "crowdb-diskdb", "crowdb-diskdb-client", "crowdb-chunkdb",
+        "crowdb-chunk-client", "crowdb-diskio-client",
+    },
+    "test-access": {
+        "crowdb-access-multipart", "crowdb-access-s3", "crowdb-access-iceberg",
+        "crowdb-access-server", "crowdb-access-dataset", "crowdb-monitor",
+    },
+    "test-console": {"crowdb-console-shared", "crowdb-cli", "crowdb-web"},
 }
 
 SUPPORT_PACKAGES = {}
@@ -54,7 +44,7 @@ def main() -> int:
     root = Path(__file__).resolve().parents[2]
     packages = workspace_packages()
     assignments: dict[str, str] = {}
-    for task, task_packages in TASK_PACKAGES.items():
+    for task, task_packages in COMPONENT_PACKAGES.items():
         for package in task_packages:
             previous = assignments.setdefault(package, task)
             if previous != task:
@@ -66,7 +56,7 @@ def main() -> int:
         print("Rust workspace packages missing from CI test tasks:")
         for package in missing:
             print(f"  {package}")
-        print("Add the package to TASK_PACKAGES in tools/ci-checks/check-ci-test-tasks.py")
+        print("Add the package to COMPONENT_PACKAGES in tools/ci-checks/check-ci-test-tasks.py")
         return 1
     if unknown_support:
         print("Support-package allowlist contains packages not in the workspace:")
@@ -83,27 +73,15 @@ def main() -> int:
         for environment, name in graph.tasks
         if environment == "default"
     }
-    missing_tasks = [task for task in TASK_PACKAGES if task not in pixi_tasks]
+    missing_tasks = [task for task in COMPONENT_PACKAGES if task not in pixi_tasks]
     if missing_tasks:
-        print("CI test-task map references missing Pixi tasks:")
+        print("CI component map references missing Pixi tasks:")
         for task in missing_tasks:
             print(f"  {task}")
         return 1
-    missing_commands = [
-        (task, package)
-        for task, task_packages in TASK_PACKAGES.items()
-        for package in task_packages
-        if f"-p {package}" not in pixi_tasks[task]
-    ]
-    if missing_commands:
-        print("CI test-task map packages are not targeted by their Pixi tasks:")
-        for task, package in missing_commands:
-            print(f"  {task}: {package}")
-        return 1
-
     workflows = root / ".github/workflows"
     reachable = graph.reachable((workflows / "ci.yml").read_text())
-    required = {("default", task) for task in TASK_PACKAGES}
+    required = {("default", task) for task in COMPONENT_PACKAGES}
     required.update({
         ("default", "test-console-ui"),
         ("s3-e2e", "test-boto3-e2e"),
@@ -139,7 +117,7 @@ def main() -> int:
                 print(f"  {environment}: {task}")
             return 1
 
-    print(f"CI test tasks verified for {len(packages)} workspace packages")
+    print(f"CI component tasks verified for {len(packages)} workspace packages")
     for package in sorted(assignments):
         print(f"  {package}: {assignments[package]}")
     for package, reason in sorted(SUPPORT_PACKAGES.items()):

@@ -33,7 +33,14 @@ adapters wrap crowdb-tree and R141 `ChunkStream`; injected implementations
 support deterministic tests. The raw stream handle is private, so a server
 cannot bypass partition ordering, trim, or epoch checks.
 
-The tree is range-bounded at construction. Rust never implements the tree page
+The tree enforces its logical request range at construction. A retained parent
+keeps the original physical root, whose pages may still contain keys and
+separators outside the narrowed range until background pruning completes.
+Reopening that root validates frame checksums and structure without treating
+those physical keys as corruption; point reads, scans and mutations still
+enforce the current logical range. Importing a newly rebuilt range snapshot
+continues to require every imported key to fit its destination range.
+Rust never implements the tree page
 path through `crowdb-chunk-client`; the production tree selects R140's native
 page-store backend at runtime. A balance target opens the source's pinned tree
 manifest directly from shared page chunks and owns a distinct target WAL. It
@@ -116,41 +123,48 @@ shrinks to `[old_start, split_key)`; the new child receives
 any identity, range, epoch, or stream fails closed. The new child initially
 remains on the parent owner. Placement is a later balance operation.
 
+Split creates only the child's tree and WAL. The retained parent uses its
+existing tree, WAL and mutation path; it is not rebuilt into a second
+destination tree or moved to a replacement WAL. Local handoff means that
+traffic still enters the parent, which dispatches the child range to the child.
+It is distinct from the later catalog publication that exposes both ranges to
+external routing. A higher candidate epoch alone proves neither boundary.
+
 Split preparation follows these ordered steps:
 
 1. Enter `SplitPreparing` and range-rebuild the child base from one exact
    pinned parent tree view. The parent remains the only mutation sequencer and
    continues its normal WAL and memtable path while the child tree, WAL, and
    live memtable are prepared.
-2. Both destination stores and base trees are opened, and all fallible
-   preparation that does not depend on the final frontier is completed while
-   the parent continues serving. The parent mutation worker then processes one
-   ordered `SplitCutover` marker after all earlier mutations are durable and
-   applied. The marker records the right-range inheritance frontier `C`,
-   attaches the fixed parent view, seeds both writers from its bounded request
-   result cache instead of rescanning parent history, replays any previously
-   acknowledged destination-WAL tail, and installs key routing. Destination
-   tail replay is bounded preparation retry work; the marker performs no base
-   rebuild, parent-history replay, checkpoint, filtered publication, or
-   materialization. Mutations at or below `C` remain in parent order; later
-   right-range mutations enter the child WAL and live memtable.
-   Later left-range mutations continue through the retained parent. A request
-   that raced with route installation and reaches the old parent queue after
-   the marker is forwarded by key rather than assigned an old-parent sequence.
-3. The route change does not seal, publish, checkpoint, or wait for a
+2. Prepare the child storage and establish an ordered parent frontier `C`.
+   Fixing this frontier does not stop parent journal appends or reads. Persist
+   a handoff status in the split transition, binding the parent and child
+   identities, epochs, pinned base and WAL replay boundaries. Successful durable
+   status update is the local handoff commit point. Resolve an uncertain result
+   by reading that exact transition; an in-memory `SplitCutover` message is not
+   durable evidence. Do not await this update in the mutation worker or add a
+   split-owned request waiting queue.
+3. After the handoff status is committed, install in-memory key dispatch to
+   the child. Until dispatch changes, writes continue to the original parent
+   WAL, including writes after `C`; afterward, left-range writes continue to
+   that same WAL and right-range writes enter the child WAL. The handoff proof
+   and replay rules must cover the parent suffix between fixing `C` and changing
+   dispatch exactly once. `C` alone cannot be treated as the final inherited
+   parent frontier if parent writes continued beyond it. The child view must
+   include those acknowledged writes for reads and conditional mutations.
+   Seed its bounded request result cache and recover any acknowledged child-WAL
+   tail without reevaluating conditions. A mutation racing dispatch must have
+   exactly one writer and preserve its logical request identity.
+4. The route change does not seal, publish, checkpoint, or wait for a
    memtable. The child immediately reads its base, its live memtable, and the
-   right-range portion of the parent generation containing `C`. Conditional
-   mutations consult that same merged view.
-4. Independently rotate the old parent memtable at its fixed `C` frontier. The
-   detached generation enters one split-owned shared queue. Post-route writes
-   are already isolated in the retained-parent or child writer memtable and
-   are not members of this shared generation.
-5. In background, bulk-publish the shared generation once into each range:
-   only the retained range into the parent and only entries at or below `C` in
-   the child range into the child. Newer live-writer revisions win over an
-   older shared entry. Release the shared generation only after both filtered
-   publications and their durable frontiers are recorded in one immutable
-   `SplitArtifact`.
+   right-range inherited parent view, including the covered handoff interval.
+   Conditional mutations consult that same merged view.
+5. Complete inherited-view publication in background, preserving the original
+   parent tree and its normal checkpoint path. The child materializes only its
+   range; newer child revisions win over older inherited entries. Retain the
+   shared view and replay dependencies until the complete inherited frontier
+   and durable storage proofs are recorded in one immutable `SplitArtifact`.
+   Handoff status is not final readiness and does not replace this artifact.
 6. Publish one catalog generation that shrinks the retained parent (same ID,
    new epoch) and inserts exactly one new child. The parent owner already has
    both writers active, so refresh only publishes this catalog and serving
@@ -163,21 +177,26 @@ child base is durable, preparation persists
 `root/<child_tree_id>/pin/<transition_id> = child_root_generation`. Readiness is
 not recorded until that operation succeeds. A retry with the same generation is
 idempotent; another generation under the same transition identity is corruption.
-If local child construction fails before readiness, preparation removes the pin
-while the parent is still the sole authority.
+Preparation may remove the unpublished child's pin after an authoritative abort
+only before handoff commit. After handoff commit, recovery continues the same
+split and retains its base, WAL and pin even if final readiness is absent.
 
 A prepared or restarted child recovers in three layers: open the exact base
-manifest, replay the retained parent suffix through `C` with range filtering,
-then replay its own WAL from `C + 1`. Records at or below the base sequence
-restore retained request outcomes without reapplying tree mutations. Failed
+manifest, replay the retained parent suffix through the final inherited frontier
+with range filtering, then replay its own WAL from the recorded child start.
+The proof must include parent writes accepted while handoff status was being
+persisted; the earlier fixed `C` is not automatically that final frontier.
+Records at or below the base sequence restore retained request outcomes without
+reapplying tree mutations. Failed
 conditions remain no-ops with their original result. Sequence gaps, a wrong
 source stream or epoch, a mismatched range, or a child WAL beginning anywhere
-other than `C + 1` reject recovery.
+other than the proof's exact child start reject recovery.
 
 The child recognizes two minimum-position namespaces. A retained parent-stream
-position at or below `C` is satisfied by the inherited overlay frontier. A
-child-stream position waits for the child's applied frontier. New mutations
-return only child-stream positions. This preserves read-after-write across a
+position covered by the inherited suffix is satisfied by the inherited overlay
+frontier. A child-stream position waits for the child's applied frontier. New
+child mutations return only child-stream positions; retained-parent mutations
+continue returning parent-stream positions. This preserves read-after-write across a
 catalog split without treating two streams as one offset space.
 
 After activation, bounded background passes independently prune the retained
@@ -197,11 +216,14 @@ The split invariants are:
 
 - **SPLIT-PARENT-STABLE:** split preserves the parent partition, tree, stream,
   owner, and lower range boundary and creates exactly one new child;
-- **SPLIT-ONE-WRITER:** before `C` the old parent sequences the full range;
-  after `C` the retained parent and child sequence disjoint ranges;
-- **SPLIT-ROUTE-FRONTIER:** `C` is the last parent-ordered right-range
-  mutation, not the later physical seal frontier; child mutations begin after
-  `C` and a raced old-parent admission is forwarded instead of resequenced;
+- **SPLIT-ONE-WRITER:** before in-memory dispatch changes the parent sequences
+  the full range; afterward parent and child sequence disjoint ranges;
+- **SPLIT-ROUTE-FRONTIER:** the fixed preparation frontier, durable handoff
+  commit and in-memory dispatch are distinct boundaries. Recovery includes all
+  parent writes through the final inherited frontier and the complete child
+  tail; no acknowledged mutation falls between them or executes twice;
+- **SPLIT-HANDOFF-DURABLE:** persist handoff before child write admission;
+  restart after commit resumes the same split even before catalog publication;
 - **SPLIT-OVERLAY-DURABLE:** base plus parent suffix plus child WAL reconstructs
   values and request outcomes before activation;
 - **SPLIT-NO-FOREGROUND-WAIT:** routing does not wait for memtable seal,
@@ -209,6 +231,12 @@ The split invariants are:
   or ownership materialization; and
 - **SPLIT-PIN-BEFORE-RECLAIM:** physical deletion never precedes the last
   catalog, snapshot, forwarding, or retry reference.
+
+Implementation verification remains required for the durable handoff status and
+the exact replay/sequence representation covering continued parent appends
+between fixing `C` and installing dispatch. It must not be resolved by pausing
+parent writes, queueing requests behind status persistence, or retaining a
+second destination tree/WAL for the parent.
 
 ## 6. Remote Balance Storage Contract
 

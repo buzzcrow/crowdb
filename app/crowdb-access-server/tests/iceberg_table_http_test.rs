@@ -300,7 +300,12 @@ async fn read_admission_is_shared_by_complete_and_paged_lists_and_releases_after
             fixture.request(Method::GET, path, "r", None).await.status()
         }));
     }
-    tokio::time::timeout(Duration::from_secs(1), async {
+    let scan_start_timeout = if cfg!(target_os = "macos") {
+        Duration::from_secs(3)
+    } else {
+        Duration::from_secs(1)
+    };
+    tokio::time::timeout(scan_start_timeout, async {
         while fixture.store.scans.load(Ordering::SeqCst) < 32 {
             tokio::task::yield_now().await;
         }

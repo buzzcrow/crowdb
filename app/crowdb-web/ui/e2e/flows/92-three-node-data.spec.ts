@@ -106,6 +106,10 @@ async function addDisks({ page }: UIContext) {
       const branch = sidebar.getByTestId(`tree-node-N-${id}`);
       const expand = branch.getByRole('button', { name: 'Expand', exact: true });
       if (await expand.count()) await expand.click();
+      await expect.poll(
+        () => sidebar.getByRole('button', { name: `DG-${id}`, exact: true }).count(),
+        { timeout: 5_000, intervals: [100], message: `Disk group DG-${id} appears in the refreshed tree` },
+      ).toBeGreaterThan(0);
       await sidebar.getByRole('button', { name: `DG-${id}`, exact: true }).click({ button: 'right' });
       await page.getByRole('menuitem', { name: 'Add Disk', exact: true }).click();
       const disks = page.getByRole('dialog', { name: 'Add Disks', exact: true });
@@ -119,12 +123,18 @@ async function verifyServices({ page, request, deployments }: UIContext) {
   await step('three-node: all six services resume without Retry', async () => {
     await expect.poll(async () => (await (await request.get('/api/chunk-storage-readiness')).json()), { intervals: [100] }).toMatchObject({ ready: true });
     for (const kind of ['paxos-kv', 'diskdb', 'diskio', 'chunkdb', 'chunk-kv', 'access-server']) {
-      for (const id of [1, 2, 3]) {
+      const pending = new Set([1, 2, 3]);
+      while (pending.size) {
+        // The serial plan may start any ready node first. Verify each actual
+        // completion before checking its durable progress, without charging
+        // earlier nodes' startup time to a later node's assertion.
+        const id = await deployments.nextCompleted([...pending], kind);
         await deployments.verify(id, kind);
         await expect.poll(async () => {
           const plans = await (await request.get('/api/service-plans')).json();
           return plans[id].steps[kind];
         }, { intervals: [100], message: `Node ${id}: ${kind} automatically deploys` }).toEqual({ state: 'deployed' });
+        pending.delete(id);
       }
     }
     const servers = await (await request.get('/api/servers')).json();
@@ -151,12 +161,22 @@ async function s3RoundTrip({ page, request }: UIContext) {
     await page.getByTestId('domain-s3').click();
     await page.getByText('S3 actions', { exact: true }).click();
     await page.getByLabel('New bucket', { exact: true }).fill('ui-three-node');
+    const created = page.waitForResponse(response => new URL(response.url()).pathname === '/api/access/s3/ui-three-node'
+      && response.request().method() === 'PUT');
     await page.getByRole('button', { name: 'Create bucket', exact: true }).click();
+    const bucketResponse = await created;
+    expect(bucketResponse.status(), bucketResponse.statusText()).toBe(200);
     await page.getByRole('navigation', { name: 'S3 buckets' }).getByRole('button', { name: 'ui-three-node', exact: true }).click();
     await page.getByText('Bucket actions', { exact: true }).click();
     await page.getByLabel('Object key', { exact: true }).fill('round-trip.txt');
     await page.getByLabel('Object file').setInputFiles({ name: 'round-trip.txt', mimeType: 'text/plain', buffer: Buffer.from(content) });
-    await page.getByRole('button', { name: 'Upload', exact: true }).click();
+    await step('three-node: S3 upload mutation', async () => {
+      const uploaded = page.waitForResponse(response => response.request().method() === 'PUT'
+        && new URL(response.url()).pathname === '/api/access/s3/ui-three-node/round-trip.txt');
+      await page.getByRole('button', { name: 'Upload', exact: true }).click();
+      const response = await uploaded;
+      expect(response.status(), response.statusText()).toBe(200);
+    });
     await page.getByRole('button', { name: 'round-trip.txt', exact: true }).click();
     await page.getByText('Object actions', { exact: true }).click();
     await page.getByRole('button', { name: 'Preview first 4 KiB', exact: true }).click();
@@ -172,7 +192,11 @@ async function icebergRoundTrip({ page, baseURL }: UIContext) {
     await page.getByTestId('domain-iceberg').click();
     await page.getByText('Catalog actions', { exact: true }).click();
     await page.getByLabel('Namespace name', { exact: true }).fill('ui_three_node');
+    const createdNamespace = page.waitForResponse(response => new URL(response.url()).pathname === '/api/access/iceberg/v1/namespaces' && response.request().method() === 'POST');
     await page.getByRole('button', { name: 'Create namespace', exact: true }).click();
+    const namespaceResponse = await createdNamespace;
+    expect(namespaceResponse.status(), await namespaceResponse.text()).toBe(200);
+    expect((await namespaceResponse.json()).namespace).toEqual(['ui_three_node']);
     const tree = page.getByRole('navigation', { name: 'Iceberg tree' });
     await tree.getByRole('button', { name: 'ui_three_node', exact: true }).click();
     await page.getByText('Namespace actions', { exact: true }).click();
@@ -203,6 +227,15 @@ async function teardown({ request, baseURL }: UIContext) {
         .map((server: { id: string }) => request.delete(`/api/services/${server.id}`)));
       for (const response of results) expect(response.ok(), await response.text()).toBe(true);
     }
+    await step('three-node: stop owned authority services', async () => {
+      for (const kind of ['diskdb', 'paxos-kv']) {
+        const stops = await Promise.all(servers.filter((server: { service_type: string; pid?: number }) => server.service_type === kind && server.pid)
+          .map((server: { node_id: number }) => request.post(`/api/nodes/${server.node_id}/${kind === 'diskdb' ? 'diskdb' : 'server'}/stop`)));
+        for (const response of stops) expect(response.ok(), await response.text()).toBe(true);
+      }
+      await expect.poll(async () => (await (await request.get('/api/servers')).json())
+        .filter((server: { pid?: number }) => server.pid).length, { intervals: [100] }).toBe(0);
+    });
     await resetAll(baseURL!);
   });
 }

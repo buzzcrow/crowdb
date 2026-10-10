@@ -23,10 +23,12 @@ pub struct TestServers {
 impl TestServers {
     pub async fn start(advertise_leader: bool) -> Self {
         let leader = Arc::new(PxKvStore::new(1, "127.0.0.1:0".parse().unwrap()));
-        leader.add_group(PxGroup::new(
-            1,
-            PxLocalReplica::new(1, PxLocalReplicaRole::Leader),
-        ));
+        let leader_role = if advertise_leader {
+            PxLocalReplicaRole::Leader
+        } else {
+            PxLocalReplicaRole::Follower
+        };
+        leader.add_group(PxGroup::new(1, PxLocalReplica::new(1, leader_role)));
         leader.start().await.unwrap();
         let follower = Arc::new(PxKvStore::new(1, "127.0.0.1:0".parse().unwrap()));
         follower.add_group(PxGroup::new(

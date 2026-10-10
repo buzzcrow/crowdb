@@ -3,6 +3,8 @@
 import config from './realBackend.config';
 export default {
   ...config,
+  metadata: { ...config.metadata, fileBackedSync: true },
+  timeout: 180_000,
   globalSetup: undefined,
   globalTeardown: undefined,
   webServer: undefined,

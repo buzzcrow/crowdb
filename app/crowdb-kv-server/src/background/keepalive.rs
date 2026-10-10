@@ -50,7 +50,7 @@ impl KeepAliveLoop {
             group0_management_seeds
         };
         let handle = tokio::spawn(async move {
-            let kv_client = CrowdbKvClient::new(ClientConfig::new(mgmt_seeds));
+            let kv_client = CrowdbKvClient::new(ClientConfig::new(mgmt_seeds.clone()));
             if bootstrap_local {
                 kv_client.seed_leader(0, 0, ep);
             }
@@ -58,7 +58,7 @@ impl KeepAliveLoop {
             let mut discovered_seeds = Vec::new();
 
             let discovery_ready = !bootstrap_local
-                || refresh_discovery(&registry, &svc, &mut discovered_seeds).await;
+                || refresh_discovery(&registry, &svc, &mgmt_seeds, &mut discovered_seeds).await;
 
             // Initial registration.
             let (stores, groups) = hosted_summary(&registry);
@@ -88,7 +88,7 @@ impl KeepAliveLoop {
                 tokio::select! {
                     _ = ticker.tick() => {
                         if bootstrap_local
-                            && !refresh_discovery(&registry, &svc, &mut discovered_seeds).await
+                            && !refresh_discovery(&registry, &svc, &mgmt_seeds, &mut discovered_seeds).await
                         {
                             continue;
                         }
@@ -158,6 +158,7 @@ impl KeepAliveLoop {
 async fn refresh_discovery(
     registry: &KvStoreRegistry,
     service: &ServiceRegistryClient,
+    bootstrap_seeds: &[String],
     current: &mut Vec<String>,
 ) -> bool {
     match super::discovery::load(&registry.config.config_root).await {
@@ -171,9 +172,24 @@ async fn refresh_discovery(
             true
         }
         Ok(Some(_)) => true,
-        Ok(None) => registry
-            .get_store(0)
-            .is_some_and(|store| store.get_group(0).is_some()),
+        Ok(None) => {
+            let Some(group) = registry.get_store(0).and_then(|store| store.get_group(0)) else {
+                return false;
+            };
+            // Bootstrap membership is wired before election. Resolve its
+            // elected leader before sending the first registration write.
+            if group.leader_id() == 0 {
+                return false;
+            }
+            if current.is_empty() {
+                if let Err(error) = service.kv().refresh_topology().await {
+                    debug!(%error, "keep-alive: bootstrap leader unavailable; deferring registration");
+                    return false;
+                }
+                *current = bootstrap_seeds.to_vec();
+            }
+            true
+        }
         Err(error) => {
             warn!(%error, "keep-alive: discovery hints unreadable; deferring registration");
             false

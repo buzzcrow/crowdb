@@ -4,10 +4,7 @@
 use std::os::unix::fs::PermissionsExt;
 
 use axum::{body::Body, http::Request};
-use crowdb_console_shared::{
-    config::{NodeEntry, RackEntry, ServerEntry},
-    ConsoleConfig,
-};
+use crowdb_console_shared::config::{NodeEntry, RackEntry};
 use crowdb_web::{router, AppState};
 use serde_json::{json, Value};
 use tower::ServiceExt;
@@ -41,24 +38,27 @@ impl Drop for TestProcess {
     }
 }
 
+struct TestCluster(std::path::PathBuf);
+
+impl Drop for TestCluster {
+    fn drop(&mut self) {
+        crowdb_console_shared::ops::s3::stop(&self.0).unwrap();
+    }
+}
+
 #[tokio::test]
-#[ignore = "Requires an isolated native storage chain and its private credential directory"]
+#[cfg_attr(target_os = "macos", ignore = "Requires a complete native storage chain")]
 async fn native_access_deployment_provisions_private_credentials_and_reuses_them() {
-    let source = std::path::PathBuf::from(std::env::var("CROWDB_NATIVE_DEPLOYMENT_DATA").unwrap());
-    let seed = std::env::var("CROWDB_NATIVE_DEPLOYMENT_SEED").unwrap();
+    let fixture = crowdb_test_harness::test_dirs::tempdir_in_test_data("native-access-storage");
+    let source = fixture.path().to_owned();
+    let _cluster = TestCluster(source.clone());
+    crowdb_console_shared::ops::s3::start(&source).await.unwrap();
+    let (cluster, _) = crowdb_console_shared::ops::s3::load(&source).unwrap();
     let workspace = crowdb_test_harness::test_dirs::tempdir_in_test_data("native-access-deploy");
-    std::fs::create_dir(workspace.path().join("secrets")).unwrap();
-    std::fs::set_permissions(
-        workspace.path().join("secrets"),
-        std::fs::Permissions::from_mode(0o700),
-    )
-    .unwrap();
-    std::fs::copy(
-        source.join("secrets/server.env"),
-        workspace.path().join("secrets/server.env"),
-    )
-    .unwrap();
-    let mut config = ConsoleConfig::default();
+    let mut config = cluster;
+    config
+        .servers
+        .retain(|server| server.service_type != crowdb_console_shared::config::ServiceType::AccessServer);
     config
         .add_rack(RackEntry {
             id: 1,
@@ -77,17 +77,24 @@ async fn native_access_deployment_provisions_private_credentials_and_reuses_them
             ssh_credential_ref: None,
         })
         .unwrap();
-    config.servers.push(ServerEntry::new("kv-native", seed));
-    let state = AppState::with_runtime_root(config, workspace.path().to_owned());
+    let seeds = config
+        .servers
+        .iter()
+        .filter(|server| server.service_type == crowdb_console_shared::config::ServiceType::PaxosKv)
+        .map(|server| server.url.clone())
+        .collect();
+    let mut state = AppState::with_runtime_root(config, workspace.path().to_owned());
+    state.authority_seeds = std::sync::Arc::new(seeds);
     let app = router(state.clone());
     let http = crowdb_protocol::port::alloc::alloc_test_port(crowdb_protocol::ServicePort::Web);
     let s3 = crowdb_protocol::port::alloc::alloc_test_port(crowdb_protocol::ServicePort::Web);
+    let health = crowdb_protocol::port::alloc::alloc_test_port(crowdb_protocol::ServicePort::Web);
     let (status, body) = call(
         &app,
         "POST",
         "/api/nodes/1/services/deploy",
         json!({
-        "kind":"access-server", "instance_id":"902", "http_port":http, "s3_port":s3,
+        "kind":"access-server", "instance_id":"902", "http_port":http, "s3_port":s3, "health_port":health,
         "test_single_node":true }),
     )
     .await;

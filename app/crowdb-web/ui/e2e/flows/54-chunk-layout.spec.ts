@@ -92,13 +92,13 @@ test('native diagnostics: Chunk default ownership and Node type pagination stay 
 test('native diagnostics: Chunk replacement windows and real Mirror EC placement', async ({ page, request }) => {
   const fixture = JSON.parse(process.env.CROWDB_NATIVE_CHUNK_FIXTURE ?? 'null');
   expect(fixture, 'Run with CROWDB_NATIVE_DATA_WINDOWS=1').not.toBeNull();
+  let observation = page.waitForResponse(response => new URL(response.url()).pathname === '/api/chunks');
   await page.goto('/?domain=Chunk');
   const rows = page.getByRole('table', { name: 'Chunks' }).getByRole('button');
   const pages = page.getByRole('navigation', { name: 'Chunk page window' });
-  let after: string | null = null;
   const seen = new Set<string>();
   for (let window = 0; window < 20; window++) {
-    const response = await request.get(`/api/chunks?limit=10${after ? `&after=${after}` : ''}`);
+    const response = await observation;
     expect(response.ok(), await response.text()).toBeTruthy();
     const data = await response.json();
     expect(data.failures).toEqual([]);
@@ -108,7 +108,10 @@ test('native diagnostics: Chunk replacement windows and real Mirror EC placement
     await expect.poll(() => rows.allTextContents(), { intervals: [100] }).toEqual(expected);
     for (const id of expected) { expect(seen.has(id)).toBe(false); seen.add(id); }
     if (!data.next) { await expect(pages.getByRole('button', { name: 'Next', exact: true })).toBeDisabled(); break; }
-    after = data.next;
+    observation = page.waitForResponse(response => {
+      const url = new URL(response.url());
+      return url.pathname === '/api/chunks' && url.searchParams.get('after') === data.next;
+    });
     await pages.getByRole('button', { name: 'Next', exact: true }).click();
   }
   for (const id of fixture.ids) expect(seen.has(id), id).toBe(true);

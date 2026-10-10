@@ -47,6 +47,7 @@ fn wal_config_defaults_use_flush_names_and_wake_drain_flush() {
 
 /// W3: wake-drain-flush issues exactly one durable flush for a single record
 /// with no batching delay (the default wake-drain-flush policy).
+#[cfg_attr(target_os = "macos", ignore = "per-write fsync is disabled on macOS")]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn single_record_durable_flush_without_interval_wait() {
     let device = MemBlockDevice::new();
@@ -65,6 +66,7 @@ async fn single_record_durable_flush_without_interval_wait() {
 /// queued record is drained even if a normal wake were missed. With a short
 /// watchdog and real time, sleeping past several cycles fires the timer; the
 /// `watchdog_wakeups` counter increments and the writer stays functional.
+#[cfg_attr(target_os = "macos", ignore = "per-write fsync is disabled on macOS")]
 #[tokio::test(flavor = "current_thread")]
 async fn watchdog_wakes_idle_writer_and_stays_functional() {
     let device = MemBlockDevice::new();
@@ -156,6 +158,7 @@ async fn burst_appends_coalesce_into_fewer_flushes() {
 /// drained batch. Driving the appends with `tokio::join!` polls every append
 /// future in a single sweep so all requests are enqueued before the worker
 /// runs; wake-drain then collapses them into one `fdatasync`.
+#[cfg_attr(target_os = "macos", ignore = "per-write fsync is disabled on macOS")]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn file_backend_durable_flush_once_per_drained_batch() {
     let device = MemBlockDevice::new();
@@ -194,6 +197,7 @@ async fn file_backend_durable_flush_once_per_drained_batch() {
 /// Vectored batch write: a drained batch larger than `MAX_IOV` (1024) slices
 /// is split into multiple vectored writes while still using a single flush and
 /// recovering all records.
+#[cfg_attr(target_os = "macos", ignore = "per-write fsync is disabled on macOS")]
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn large_binary_batch_splits_across_iov_max_and_replays() {
     let device = MemBlockDevice::new();
@@ -241,6 +245,7 @@ async fn large_binary_batch_splits_across_iov_max_and_replays() {
 
 /// W3: a durable-flush failure in the worker fails the in-flight append and
 /// marks the WAL failed; subsequent appends fail fast.
+#[cfg_attr(target_os = "macos", ignore = "per-write fsync is disabled on macOS")]
 #[tokio::test(flavor = "current_thread")]
 async fn flush_error_fails_append_and_marks_wal_failed() {
     let device = MemBlockDevice::new();
@@ -492,6 +497,7 @@ async fn concurrent_appends_all_acks_resolved_and_replay_complete() {
 
 /// Writer failure: when `fdatasync` fails, pending append acks must fail and
 /// the WAL must be marked `is_failed()`. Subsequent appends must be rejected.
+#[cfg_attr(target_os = "macos", ignore = "per-write fsync is disabled on macOS")]
 #[tokio::test(flavor = "current_thread")]
 async fn writer_failure_fails_acks_and_marks_wal_failed() {
     let device = MemBlockDevice::new();
@@ -595,6 +601,7 @@ async fn aligned_engine_append_rotate_seal_replays_all_records() {
 /// half of the disk-loss recovery contract at the API level. The full
 /// fail-out procedure (step-out RPC + reconfiguration, design-crowdb-kv-wal.md
 /// §8.1) is not yet implemented and is tested separately once it lands.
+#[cfg_attr(target_os = "macos", ignore = "per-write fsync is disabled on macOS")]
 #[tokio::test(flavor = "current_thread")]
 async fn disk_loss_failed_slot_not_indexed_after_flush_error() {
     let device = MemBlockDevice::new();

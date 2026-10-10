@@ -84,3 +84,10 @@ retry_max_ms = 60000
 corruption_attempts = 3
 minimum_retention_ms = 604800000
 catalogs = []
+
+[dataset]
+listen = "0.0.0.0:9093"
+max_in_flight = 3
+request_timeout_seconds = 5
+lease_ttl_seconds = 60
+max_batch_size = 10000

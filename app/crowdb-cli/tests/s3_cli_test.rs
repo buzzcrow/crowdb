@@ -13,7 +13,7 @@ fn cli() -> Command {
 }
 
 #[test]
-#[ignore = "starts the complete local storage stack twice"]
+#[cfg_attr(target_os = "macos", ignore = "starts the complete local storage stack twice")]
 fn interrupted_s3_launch_resumes_confirmed_group_zero_without_topology_file() {
     let directory = TestDir::new("s3-bootstrap-replay-cli").expect("test directory");
     let root = directory.path();
@@ -58,7 +58,7 @@ fn interrupted_s3_launch_resumes_confirmed_group_zero_without_topology_file() {
 }
 
 #[test]
-#[ignore = "starts the complete local storage stack twice"]
+#[cfg_attr(target_os = "macos", ignore = "starts the complete local storage stack twice")]
 fn interrupted_s3_storage_launch_replays_without_local_topology() {
     let directory = TestDir::new("s3-storage-replay-cli").expect("test directory");
     let root = directory.path();

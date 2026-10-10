@@ -673,7 +673,6 @@ async fn assert_chunk_kv_split_plan(target_partitions_per_owner: u32, target_par
         cutover_seq: 11,
         target_stream_start_seq: 12,
     };
-    prepared.retained_parent_artifact.tail_overlay = Some(overlay.clone());
     prepared.child.artifact.tail_overlay = Some(overlay.clone());
     prepared.phase = SplitPhase::ChildPrepared;
     prepared.readiness_proof = Some(crowdb_protocol::chunk_kv::SplitReadinessProof {
@@ -686,7 +685,7 @@ async fn assert_chunk_kv_split_plan(target_partitions_per_owner: u32, target_par
         child_applied_seq: 11,
         child_tree_manifest: 1,
         child_root_manifest_generation: 1,
-        retained_parent_tail_overlay: overlay.clone(),
+        retained_parent_tail_overlay: None,
         child_tail_overlay: overlay,
     });
     prepared.validate().unwrap();

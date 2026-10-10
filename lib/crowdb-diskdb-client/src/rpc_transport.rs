@@ -152,7 +152,7 @@ impl DiskdbRpcTransport {
         self.connections
             .get_or_try_install(&normalized, || {
                 let conn = self.server.connect(&host, port).map_err(|e| {
-                    DiskdbClientError::Unreachable(format!("rpc connect to {host}:{port}: {e:?}"))
+                    DiskdbClientError::ConnectFailed(format!("rpc connect to {host}:{port}: {e:?}"))
                 })?;
                 self.rpc.attach(&conn);
                 Ok(conn)

@@ -4,11 +4,14 @@
 //! Slow acceptance of the persisted production balance policy and real data.
 
 use crowdb_chunk_kv_client::{
-    ChunkKvClient, ChunkKvRangeCatalogMap, ChunkKvRangeCatalogSource, ChunkKvRpcTransport, ClientConfig,
-    Group0ChunkKvRangeCatalogSource,
+    BatchItem, ChunkKvClient, ChunkKvRangeCatalogMap, ChunkKvRangeCatalogSource, ChunkKvRpcTransport,
+    ClientConfig, Group0ChunkKvRangeCatalogSource,
 };
 use crowdb_kv_client::ServiceRegistryClient;
-use crowdb_protocol::{chunk_kv::ChunkKvRangeCatalogPartitionState, common::ChunkKvExtra};
+use crowdb_protocol::{
+    chunk_kv::{ChunkKvRangeCatalogPartitionState, OperationResult, PointOperation},
+    common::ChunkKvExtra,
+};
 use crowdb_web::AppState;
 use std::{
     collections::BTreeMap,
@@ -19,100 +22,78 @@ use std::{
 pub(super) struct TestNativeBalance;
 
 impl TestNativeBalance {
-    pub(super) async fn verify(state: &AppState) {
+    pub(super) async fn settle_for_inspection(state: &AppState) {
         let kv = state.kv_client().await;
         let source = Arc::new(Group0ChunkKvRangeCatalogSource::from_shared(kv.clone()));
-        let registry = ServiceRegistryClient::from_shared(kv);
+        let registry = ServiceRegistryClient::from_shared(kv.clone());
         let client = ChunkKvClient::new(
             ClientConfig::default(),
             source.clone(),
             Arc::new(ChunkKvRpcTransport::new(64, 1, 2)),
         )
         .unwrap();
-        for index in 0..512 {
-            let result = client
-                .put(super::native_load::key(index), super::native_load::value(index))
-                .await
-                .unwrap();
-            assert!(result.result.is_ok());
-        }
+        seed_values(&client).await;
+        wait_balanced(&source, &registry, &kv, Instant::now()).await;
+        verify_values(&client).await;
+    }
+
+    pub(super) async fn verify(state: &AppState) {
+        let kv = state.kv_client().await;
+        let source = Arc::new(Group0ChunkKvRangeCatalogSource::from_shared(kv.clone()));
+        let registry = ServiceRegistryClient::from_shared(kv.clone());
+        let client = ChunkKvClient::new(
+            ClientConfig::default(),
+            source.clone(),
+            Arc::new(ChunkKvRpcTransport::new(64, 1, 2)),
+        )
+        .unwrap();
+        seed_values(&client).await;
         // The normal policy has a one-minute cooldown. This slow acceptance
         // observes that real horizon; it does not replace any request/lease budget.
         let started = Instant::now();
-        let catalog = wait_balanced(&source, &registry, started).await;
-        let mut interval = tokio::time::interval(Duration::from_millis(500));
-        let mut report = Instant::now();
-        let hot_owner = catalog.entries()[0].owner.instance_id;
-        let hot_keys: Vec<_> = (0..512)
-            .filter(|index| {
-                catalog
-                    .route(&super::native_load::key(*index))
-                    .unwrap()
-                    .owner
-                    .instance_id
-                    == hot_owner
-            })
-            .collect();
-        assert!(!hot_keys.is_empty());
-        let mut previous = observe(&registry).await;
-        let mut transferred = false;
-        for index in &hot_keys {
-            assert!(client
-                .put(super::native_load::key(*index), hot_value(*index))
-                .await
-                .unwrap()
-                .result
-                .is_ok());
-            let current = load(&source).await;
-            if !transferred {
-                transferred = verify_transfer(&catalog, &current, &previous);
-            }
-            previous = observe(&registry).await;
-        }
-        while !transferred {
-            interval.tick().await;
-            let current = load(&source).await;
-            transferred = verify_transfer(&catalog, &current, &previous);
-            previous = observe(&registry).await;
-            if report.elapsed() >= Duration::from_secs(30) {
-                eprintln!(
-                    "[PHASE] native weighted balance {}s: counts={:?}, bytes={:?}",
-                    started.elapsed().as_secs(),
-                    counts(&current),
-                    previous
-                        .iter()
-                        .map(|(owner, extra)| (*owner, extra.durable_bytes))
-                        .collect::<Vec<_>>()
-                );
-                report = Instant::now();
-            }
-            assert!(
-                started.elapsed() < Duration::from_secs(15 * 60),
-                "unequal retained data did not redistribute"
-            );
-        }
-        verify_values(&client, &hot_keys).await;
+        wait_balanced(&source, &registry, &kv, started).await;
+        verify_values(&client).await;
     }
 }
 
-async fn verify_values(client: &ChunkKvClient, hot_keys: &[u64]) {
+async fn seed_values(client: &ChunkKvClient) {
+    for batch in 0..32 {
+        let items = (batch * 16..(batch + 1) * 16)
+            .map(|index| BatchItem {
+                request_id: None,
+                operation: PointOperation::Put {
+                    key: super::native_load::key(index),
+                    value: super::native_load::value(index),
+                },
+            })
+            .collect();
+        let outcomes = client.batch_mutate(items).await.unwrap();
+        assert_eq!(outcomes.len(), 16);
+        for outcome in outcomes {
+            assert!(matches!(
+                outcome.unwrap().result.unwrap(),
+                OperationResult::Mutation { applied: true, .. }
+            ));
+        }
+    }
+}
+
+async fn verify_values(client: &ChunkKvClient) {
     for index in 0..512 {
         let result = client.get(super::native_load::key(index), None).await.unwrap();
-        let crowdb_protocol::chunk_kv::OperationResult::Value(Some(record)) = result.result.unwrap() else {
-            panic!("native balance lost a record");
+        let operation = result.result.unwrap();
+        let crowdb_protocol::chunk_kv::OperationResult::Value(Some(record)) = operation else {
+            panic!("native balance lost record {index}: {operation:?}");
         };
-        let expected = if hot_keys.contains(&index) {
-            hot_value(index)
-        } else {
-            super::native_load::value(index)
-        };
-        assert_eq!(record.value, expected);
+        let expected = super::native_load::value(index);
+        assert_eq!(record.value, expected, "native balance record {index}");
     }
 }
 
 async fn wait_balanced(
     source: &Group0ChunkKvRangeCatalogSource,
     registry: &ServiceRegistryClient,
+    kv: &crowdb_kv_client::CrowdbKvClient,
     started: Instant,
 ) -> ChunkKvRangeCatalogMap {
     let mut interval = tokio::time::interval(Duration::from_millis(500));
@@ -164,7 +145,8 @@ async fn wait_balanced(
             report = Instant::now();
         }
         if counts.len() == 3
-            && counts.values().all(|count| *count == 4)
+            && catalog.entries().len() >= 12
+            && placement_ready(kv, catalog.generation()).await
             && catalog.entries().iter().all(|entry| {
                 entry.state == ChunkKvRangeCatalogPartitionState::Serving
                     && entry.transition_id.is_none()
@@ -175,38 +157,42 @@ async fn wait_balanced(
         }
         assert!(
             started.elapsed() < Duration::from_secs(10 * 60),
-            "normal count balance did not converge: {counts:?}"
+            "normal count-based placement did not converge: {counts:?}"
         );
         previous = Some(catalog);
     }
 }
 
-fn verify_transfer(
-    before: &ChunkKvRangeCatalogMap,
-    after: &ChunkKvRangeCatalogMap,
-    observed: &BTreeMap<u64, ChunkKvExtra>,
-) -> bool {
-    let Some((old, moved)) = before.entries().iter().find_map(|old| {
-        after
-            .entries()
-            .iter()
-            .find(|entry| {
-                entry.partition_id == old.partition_id && entry.owner.instance_id != old.owner.instance_id
-            })
-            .map(|entry| (old, entry))
-    }) else {
+async fn placement_ready(kv: &crowdb_kv_client::CrowdbKvClient, generation: u64) -> bool {
+    use crowdb_protocol::chunk_kv::balance::{BalanceObservation, OBSERVATION_KEY};
+    let value = kv
+        .get(
+            0,
+            0,
+            OBSERVATION_KEY.as_bytes(),
+            crowdb_kv_client::ReadMode::Linearizable,
+            None,
+        )
+        .await
+        .unwrap();
+    let crowdb_kv_client::GetOutcome::Found { value, .. } = value else {
         return false;
     };
-    // Every owner had four partitions; a first transfer cannot fix count spread.
-    assert!(counts(before).values().all(|count| *count == 4));
-    let source_bytes = observed[&old.owner.instance_id].durable_bytes;
-    let target_bytes = observed[&moved.owner.instance_id].durable_bytes;
-    assert!(source_bytes > target_bytes, "actual transfer must leave the owner with more retained data: source={source_bytes}, target={target_bytes}");
-    eprintln!(
-        "[PHASE] native weighted transfer {:?}: {} ({source_bytes} bytes) -> {} ({target_bytes} bytes)",
-        old.partition_id, old.owner.instance_id, moved.owner.instance_id
-    );
-    true
+    let observation: BalanceObservation = serde_json::from_slice(&value).unwrap();
+    let now = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap();
+    observation.catalog_generation == generation
+        && now.saturating_sub(observation.observed_at_ms) <= observation.valid_for_ms
+        && (observation.reason == "within tolerance"
+            || observation.reason == "no useful safe move"
+                && observation.partitions.iter().all(|partition| {
+                    partition.reason == "no improving target" || partition.reason == "insufficient benefit"
+                }))
 }
 
 async fn load(source: &Group0ChunkKvRangeCatalogSource) -> ChunkKvRangeCatalogMap {
@@ -236,11 +222,4 @@ async fn observe(registry: &ServiceRegistryClient) -> BTreeMap<u64, ChunkKvExtra
             (owner, value.extra.unwrap().chunk_kv.unwrap())
         })
         .collect()
-}
-fn hot_value(index: u64) -> Vec<u8> {
-    let mut value = super::native_load::value(index);
-    value.extend(super::native_load::value(index + 512));
-    value.extend(super::native_load::value(index + 1024));
-    value.extend(super::native_load::value(index + 1536));
-    value
 }

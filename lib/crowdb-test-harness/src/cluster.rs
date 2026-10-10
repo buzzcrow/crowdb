@@ -426,6 +426,10 @@ fn spawn_kv_process(
         &listen_port.to_string(),
         "--election-profile",
         "e2e",
+        "--kv-backend",
+        "block",
+        "--wal-backend",
+        "block-device",
     ])
     .stdout(Stdio::piped())
     .stderr(Stdio::piped());

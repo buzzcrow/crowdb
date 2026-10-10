@@ -16,6 +16,8 @@ fn defaults_close_the_documented_timing_contract() {
     assert_eq!(config.monitor.lease_duration_ms, 12_000);
     assert!(config.balance.enabled);
     assert!(config.monitor.chunk_kv_range_balance.is_some());
+    assert_eq!(config.balance.byte_weight_percent, 0);
+    assert_eq!(config.balance.imbalance_tolerance_percent, 20);
     assert_eq!(config.balance.target_partitions_per_owner, 4);
     assert_eq!(config.balance.minimum_weighted_improvement_percent, 25);
     assert_eq!(config.balance.cooldown_ms, 60_000);
@@ -46,6 +48,8 @@ max_owner_request_rate = 0",
     .unwrap();
 
     assert!(config.enabled);
+    assert_eq!(config.byte_weight_percent, 0);
+    assert_eq!(config.imbalance_tolerance_percent, 20);
 }
 
 #[test]
@@ -114,5 +118,16 @@ fn stream_directory_geometry_survives_config_round_trip() {
     let restored: ChunkKvServerConfig = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
     assert_eq!(restored.storage, config.storage);
     config.storage.stream_extent_page_entries = 0;
+    assert!(config.validate().is_err());
+}
+
+#[test]
+fn data_weight_is_reserved_until_tree_range_metrics_are_available() {
+    let mut config = ChunkKvServerConfig {
+        instance_id: 1,
+        ..ChunkKvServerConfig::default()
+    };
+    config.validate().unwrap();
+    config.balance.byte_weight_percent = 80;
     assert!(config.validate().is_err());
 }

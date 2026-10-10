@@ -27,9 +27,19 @@ use crate::error::{Error, Result};
 /// commonly run below a short-lived shell or `pixi run`; session detachment
 /// prevents that parent from sending the service a terminal hangup on exit.
 pub(crate) fn detached_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
-    let mut command = Command::new("setsid");
-    command.arg(program);
-    command
+    #[cfg(target_os = "linux")]
+    {
+        let mut command = Command::new("setsid");
+        command.arg(program);
+        command
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        // macOS does not ship the Linux `setsid` utility. The console server
+        // owns the child task for the lifetime of the web process, so a plain
+        // spawn is sufficient on platforms without that helper.
+        Command::new(program)
+    }
 }
 
 /// Inputs for a deploy. The console picks the ports; the user provides ids.
@@ -265,6 +275,16 @@ fn resolve_config_path(req: &DeployRequest) -> Option<PathBuf> {
 // (just "bin/crowdb-kv-server") — an absolute or full-relative path
 // would be resolved relative to the new CWD and fail with ENOENT.
 fn resolve_launch_binary(binary: &Path, workspace_dir: Option<&Path>) -> Result<PathBuf> {
+    #[cfg(target_os = "macos")]
+    if workspace_dir.is_some() {
+        // Mach-O binaries use @loader_path for pixi's dylibs. Staging the
+        // executable under a temporary workspace changes that loader path;
+        // launch the built absolute binary in place on macOS instead.
+        return resolve_binary_path(binary).ok_or_else(|| Error::Validation {
+            field: "binary".into(),
+            message: format!("could not resolve server binary path: {}", binary.display()),
+        });
+    }
     if let Some(dir) = workspace_dir {
         stage_server_binary(binary, dir)?;
         Ok(PathBuf::from("bin").join(

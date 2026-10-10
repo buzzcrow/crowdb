@@ -79,9 +79,14 @@ async fn python(test: &TestTableHttp, mode: &str, count: usize) {
     let mode = mode.to_owned();
     let status = tokio::task::spawn_blocking(move || {
         let python = std::env::var_os("CROWDB_ICEBERG_E2E_PYTHON").expect("set pinned Python path");
-        std::process::Command::new("timeout")
-            .arg("60")
-            .arg(python)
+        let mut command = if cfg!(target_os = "macos") {
+            std::process::Command::new(python)
+        } else {
+            let mut command = std::process::Command::new("timeout");
+            command.arg("60").arg(python);
+            command
+        };
+        command
             .arg(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/tests/common/iceberg_namespace_client.py"
@@ -143,9 +148,14 @@ async fn official_catalog_continues_through_empty_namespace_pages() {
     let endpoint = test.endpoint();
     let status = tokio::task::spawn_blocking(move || {
         let maven = std::env::var_os("CROWDB_ICEBERG_E2E_MVN").expect("set pinned Maven path");
-        std::process::Command::new("timeout")
-            .arg("60")
-            .arg(maven)
+        let mut command = if cfg!(target_os = "macos") {
+            std::process::Command::new(maven)
+        } else {
+            let mut command = std::process::Command::new("timeout");
+            command.arg("60").arg(maven);
+            command
+        };
+        command
             .args(["-o", "--batch-mode", "--no-transfer-progress", "-f"])
             .arg(concat!(
                 env!("CARGO_MANIFEST_DIR"),

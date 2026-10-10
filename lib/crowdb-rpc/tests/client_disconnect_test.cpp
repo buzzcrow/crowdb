@@ -5,6 +5,7 @@
 #include "crowdb-rpc/pool.h"
 #include "crowdb-rpc/transport/socket_transport.h"
 
+#include <fcntl.h>
 #include <gtest/gtest.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -15,6 +16,22 @@
 
 namespace
 {
+int socketpair_nonblocking(int sockets[2])
+{
+    if (::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0) {
+        return -1;
+    }
+    for (int socket : {sockets[0], sockets[1]}) {
+        const int flags = ::fcntl(socket, F_GETFL, 0);
+        if (flags < 0 || ::fcntl(socket, F_SETFL, flags | O_NONBLOCK) != 0) {
+            ::close(sockets[0]);
+            ::close(sockets[1]);
+            return -1;
+        }
+    }
+    return 0;
+}
+
 struct Completion
 {
     std::atomic<int> calls{0};
@@ -30,6 +47,32 @@ void complete(uint64_t /*request_id*/, crowdb_rpc_buffer_t /*control*/, crowdb_r
 }
 } // namespace
 
+TEST(ClientDisconnectTest, CloseRetainsConnectionUntilBothCallbacksFinish)
+{
+    using namespace crowdb::rpc;
+    SystemBufferPool          pool;
+    auto                      connection = std::make_shared<Connection>(1, "closing", &pool);
+    std::weak_ptr<Connection> lifetime   = connection;
+    std::atomic<bool>         entered{false};
+    std::atomic<bool>         release{false};
+    std::atomic<int>          cleanups{0};
+    connection->set_on_rpc_close([&](Connection *) {
+        entered.store(true, std::memory_order_release);
+        entered.notify_one();
+        release.wait(false, std::memory_order_acquire);
+    });
+    connection->set_on_close([&](Connection *) { ++cleanups; });
+    std::thread closer([handle = connection.get()] { handle->close(); });
+    entered.wait(false, std::memory_order_acquire);
+    connection.reset();
+    EXPECT_FALSE(lifetime.expired());
+    release.store(true, std::memory_order_release);
+    release.notify_one();
+    closer.join();
+    EXPECT_EQ(cleanups.load(), 1);
+    EXPECT_TRUE(lifetime.expired());
+}
+
 TEST(ClientDisconnectTest, PeerCloseFailsSlabAndMapWithoutReaperAndPreservesOtherConnection)
 {
     using namespace crowdb::rpc;
@@ -40,8 +83,8 @@ TEST(ClientDisconnectTest, PeerCloseFailsSlabAndMapWithoutReaperAndPreservesOthe
     transport.start();
     int first[2]{};
     int second[2]{};
-    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0, first), 0);
-    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0, second), 0);
+    ASSERT_EQ(socketpair_nonblocking(first), 0);
+    ASSERT_EQ(socketpair_nonblocking(second), 0);
     std::atomic<int> cleanups{0};
     auto             closed = transport.create_connection(first[0], "closed", {}, [&](Connection *) { ++cleanups; });
     auto             live   = transport.create_connection(second[0], "live");

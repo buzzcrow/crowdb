@@ -22,6 +22,7 @@ mod client;
 mod config;
 mod error;
 mod hardware;
+mod membership;
 mod metrics;
 mod service;
 mod transport;
@@ -47,6 +48,7 @@ pub use hardware::{
     HardwareCapacitySummary, HardwareClient, NodeCapacityEntry, NodeUsage, RackCapacityEntry, RackUsage,
     SpaceUsageClient,
 };
+pub use membership::{GroupMembershipClient, GroupMembershipSnapshot};
 pub use metrics::{ClientMetrics, ClientMetricsSnapshot, LeaderChangeEpisode, WindowLatencySnapshot};
 pub use service::{
     DomainMonitorClient, ServiceDiscoveryClient, ServiceRegistryClient, WatchNotify, WatchNotifyClient,

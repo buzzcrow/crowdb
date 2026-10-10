@@ -36,6 +36,8 @@ fn tracked_access_configs_load_and_set_bounded_read_resources() {
         assert_eq!(config.small_write.policy().max_pipelines, 32);
         assert!(config.s3.listen.is_some());
         assert!(config.iceberg.listen.is_some());
+        assert_eq!(config.dataset.max_in_flight, 3);
+        assert_eq!(config.dataset.max_batch_size, 10_000);
         assert_eq!(config.iceberg.native_budget_bytes, Some(256 * 1024 * 1024));
         assert_eq!(config.s3.list_scan_bytes, Some(4 * 1024 * 1024));
         assert_eq!(config.iceberg.gc.kv_bytes, Some(64 * 1024 * 1024));
@@ -73,6 +75,19 @@ fn invalid_read_budget_is_rejected() {
     assert!(config.validate().is_err());
     config.read.stream_slots = 3;
     config.small_write.memory_budget_bytes = 1;
+    assert!(config.validate().is_err());
+}
+
+#[test]
+fn dataset_listener_limits_are_bounded() {
+    let mut config = AccessConfig::default();
+    config.dataset.max_in_flight = 0;
+    assert!(config.validate().is_err());
+    config.dataset.max_in_flight = 1;
+    config.dataset.max_batch_size = 0;
+    assert!(config.validate().is_err());
+    config.dataset.max_batch_size = 10_000;
+    config.dataset.listen = Some("not-an-address".into());
     assert!(config.validate().is_err());
 }
 
@@ -140,7 +155,7 @@ fn independent_health_listener_rejects_data_listener_ports() {
     let mut config = crowdb_access_server::config::AccessConfig::default();
     config.s3.listen = Some("0.0.0.0:9091".into());
     config.iceberg.listen = Some("0.0.0.0:9092".into());
-    config.health.listen = Some("127.0.0.1:9093".into());
+    config.health.listen = Some("127.0.0.1:9094".into());
     config.validate().unwrap();
     for value in ["127.0.0.1:9091", "127.0.0.1:9092", "127.0.0.1:0", "invalid"] {
         config.health.listen = Some(value.into());

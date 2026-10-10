@@ -3,6 +3,7 @@
 
 //! Catalog store and scan validation.
 
+mod recovery;
 mod scan;
 mod store;
 mod transition;

@@ -277,13 +277,7 @@ impl RuntimeNamespace {
                 service,
                 identity: key.clone(),
             })?;
-        claims.push(PortClaim {
-            port,
-            namespace_id: self.manifest.id.clone(),
-            mode: self.manifest.mode,
-            owner_pid: self.manifest.owner_pid,
-            owner_start: self.manifest.owner_start.clone(),
-        });
+        claims.push(self.port_claim(port));
         write_claims(&mut registry, &claims)?;
         self.manifest.assignments.insert(key, port);
         self.save_manifest()?;
@@ -314,12 +308,20 @@ impl RuntimeNamespace {
     }
 
     fn port_claim(&self, port: u16) -> PortClaim {
+        // A CLI's saved cluster can live inside a disposable test environment.
+        // Its claims belong to that outer process, which outlives the launcher.
+        let disposable_owner = self.root.ancestors().skip(1).find_map(|parent| {
+            let bytes = fs::read(parent.join("namespace.json")).ok()?;
+            let manifest = serde_json::from_slice::<NamespaceManifest>(&bytes).ok()?;
+            (manifest.mode == NamespaceMode::Ephemeral).then_some(manifest)
+        });
+        let owner = disposable_owner.as_ref().unwrap_or(&self.manifest);
         PortClaim {
             port,
             namespace_id: self.manifest.id.clone(),
-            mode: self.manifest.mode,
-            owner_pid: self.manifest.owner_pid,
-            owner_start: self.manifest.owner_start.clone(),
+            mode: owner.mode,
+            owner_pid: owner.owner_pid,
+            owner_start: owner.owner_start.clone(),
         }
     }
 
@@ -584,7 +586,9 @@ pub fn release_process_ports() -> Result<(), RuntimeNamespaceError> {
 
 /// Record a spawned child beneath its owning disposable workspace before readiness.
 /// Separate PID files avoid a shared manifest update race between concurrent Nodes.
-/// Persistent workspaces are never enrolled in disposable cleanup.
+/// Workspaces beneath an owned disposable namespace are enrolled even when
+/// a child CLI creates a persistent manifest inside it. Standalone persistent
+/// workspaces are never enrolled in disposable cleanup.
 ///
 /// # Errors
 /// Returns an error when an owned manifest or child identity cannot be persisted.
@@ -597,8 +601,10 @@ pub fn record_workspace_process(workspace: &Path, pid: u32) -> Result<(), Runtim
             Err(error) => return Err(error.into()),
         };
         let manifest: NamespaceManifest = serde_json::from_slice(&bytes)?;
-        if manifest.mode != NamespaceMode::Ephemeral
-            || manifest.owner_pid != std::process::id()
+        if manifest.mode != NamespaceMode::Ephemeral {
+            continue;
+        }
+        if !owned_by_current_ancestor(manifest.owner_pid)
             || process_start(manifest.owner_pid).as_deref() != Some(&manifest.owner_start)
         {
             return Ok(());
@@ -619,6 +625,39 @@ pub fn record_workspace_process(workspace: &Path, pid: u32) -> Result<(), Runtim
         return Ok(());
     }
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn owned_by_current_ancestor(owner_pid: u32) -> bool {
+    let mut pid = std::process::id();
+    loop {
+        if pid == owner_pid {
+            return true;
+        }
+        if pid <= 1 {
+            return false;
+        }
+        let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            return false;
+        };
+        let Some(parent) = stat.rsplit_once(") ").and_then(|(_, fields)| {
+            fields
+                .split_whitespace()
+                .nth(1)
+                .and_then(|value| value.parse::<u32>().ok())
+        }) else {
+            return false;
+        };
+        if parent == pid {
+            return false;
+        }
+        pid = parent;
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn owned_by_current_ancestor(owner_pid: u32) -> bool {
+    owner_pid == std::process::id()
 }
 
 #[cfg(target_os = "linux")]

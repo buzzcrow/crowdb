@@ -157,7 +157,9 @@ impl DiskdbClientPool {
     ) -> Result<T, DiskdbClientError> {
         if matches!(
             result,
-            Err(DiskdbClientError::Unreachable(_) | DiskdbClientError::NotOwner(_))
+            Err(DiskdbClientError::ConnectFailed(_)
+                | DiskdbClientError::Unreachable(_)
+                | DiskdbClientError::NotOwner(_))
         ) {
             // Allocation may already have succeeded when the reply was lost.
             // Refresh for the next supervised attempt, but never replay this
@@ -169,14 +171,14 @@ impl DiskdbClientPool {
 
     /// Allocate blocks on the diskdb instance owning `disk_group_id`.
     ///
-    /// The mutation is sent once. A transport failure is ambiguous because
-    /// DiskDB may already have persisted the tentative blocks, so retrying
-    /// here could allocate a second physical set for the same chunk.
+    /// A connection failure before submission refreshes discovery and permits
+    /// one attempt at a different endpoint. Once submitted, the mutation is
+    /// never replayed: DiskDB may have persisted blocks before losing its reply.
     ///
     /// # Errors
-    /// Returns `DiskdbClientError::Unreachable` if the endpoint is not cached
-    /// or the RPC transport fails, or `DiskdbClientError::Rpc` for a server
-    /// error.
+    /// Returns `DiskdbClientError::ConnectFailed` when connection setup fails,
+    /// `DiskdbClientError::Unreachable` for missing routing or an ambiguous
+    /// transport failure, or `DiskdbClientError::Rpc` for a server error.
     pub async fn allocate_blocks(
         &self,
         dg_id: u64,
@@ -205,11 +207,7 @@ impl DiskdbClientPool {
             allow_disk_reuse: false,
         };
 
-        let endpoint = self.endpoint_for_dg(dg_id).await.map_err(|e| {
-            DiskdbClientError::Unreachable(format!("no endpoint for disk_group {dg_id}: {e}"))
-        })?;
-        self.refresh_after_owner_failure(self.transport.allocate_blocks(&endpoint, &req).await)
-            .await
+        self.allocate_at_owner(&req).await
     }
 
     pub async fn allocate_blocks_reusing_disks(
@@ -227,11 +225,31 @@ impl DiskdbClientPool {
             owner_chunk: Some(*owner_chunk),
             allow_disk_reuse: true,
         };
+        self.allocate_at_owner(&req).await
+    }
+
+    async fn allocate_at_owner(
+        &self,
+        request: &AllocateBlocksRequest,
+    ) -> Result<AllocateResponse, DiskdbClientError> {
+        let dg_id = request.disk_group_id;
         let endpoint = self.endpoint_for_dg(dg_id).await.map_err(|error| {
             DiskdbClientError::Unreachable(format!("no endpoint for disk_group {dg_id}: {error}"))
         })?;
-        self.refresh_after_owner_failure(self.transport.allocate_blocks(&endpoint, &req).await)
-            .await
+        let result = self.transport.allocate_blocks(&endpoint, request).await;
+        if matches!(result, Err(DiskdbClientError::ConnectFailed(_))) {
+            if self.refresh_endpoints().await.is_err() {
+                return result;
+            }
+            let replacement = self.endpoints.load().get(&dg_id).cloned();
+            if let Some(replacement) = replacement.filter(|replacement| *replacement != endpoint) {
+                return self
+                    .refresh_after_owner_failure(self.transport.allocate_blocks(&replacement, request).await)
+                    .await;
+            }
+            return result;
+        }
+        self.refresh_after_owner_failure(result).await
     }
 
     /// Deliver an already-reserved target to its owning `DiskDB` for durable
@@ -367,6 +385,8 @@ impl DiskdbClientPool {
     /// Replace the endpoint snapshot atomically in integration tests.
     pub fn replace_endpoints_for_tests(&self, endpoints: Vec<(u64, String)>) {
         self.endpoints.store(Arc::new(endpoints.into_iter().collect()));
+        self.last_registry_refresh_ms
+            .store(unix_time_ms(), Ordering::Release);
     }
 
     /// Return one complete endpoint snapshot in stable order.

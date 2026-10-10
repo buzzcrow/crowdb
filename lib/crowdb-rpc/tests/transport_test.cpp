@@ -24,6 +24,25 @@ using crowdb::rpc::OutFrame;
 using crowdb::rpc::SocketTransport;
 using crowdb::rpc::SystemBufferPool;
 
+namespace
+{
+int socketpair_nonblocking(int sockets[2])
+{
+    if (::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0) {
+        return -1;
+    }
+    for (int socket : {sockets[0], sockets[1]}) {
+        const int flags = ::fcntl(socket, F_GETFL, 0);
+        if (flags < 0 || ::fcntl(socket, F_SETFL, flags | O_NONBLOCK) != 0) {
+            ::close(sockets[0]);
+            ::close(sockets[1]);
+            return -1;
+        }
+    }
+    return 0;
+}
+} // namespace
+
 // Loopback test: start a SocketTransport, create a TCP connection to a
 // listening socket, send a frame, verify it arrives on the other side.
 class TransportLoopbackTest : public ::testing::Test
@@ -388,7 +407,7 @@ TEST_F(TransportLoopbackTest, CrossThreadSubmitRejectsFreedPeerAfterClose)
     SocketTransport transport(1, 1);
     transport.start();
     int sockets[2]{};
-    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0, sockets), 0);
+    ASSERT_EQ(socketpair_nonblocking(sockets), 0);
     auto                      connection = transport.create_connection(sockets[0], "peer-close");
     auto                     *handle     = connection.get();
     std::weak_ptr<Connection> lifetime   = connection;

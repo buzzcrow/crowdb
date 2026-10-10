@@ -30,8 +30,8 @@ static constexpr uint64_t SUB_BUCKET_MASK  = 127; // SUB_BUCKET_COUNT - 1
 static constexpr size_t   NUM_MAGNITUDES   = 18;  // magnitudes 0..17 → up to 2^34
 // 1 underflow + NUM_MAGNITUDES * SUB_BUCKET_COUNT regular + 1 overflow.
 static constexpr size_t NUM_BUCKETS = 1 + (NUM_MAGNITUDES * SUB_BUCKET_COUNT) + 1;
-static constexpr size_t UNDERFLOW   = 0;
-static constexpr size_t OVERFLOW    = NUM_BUCKETS - 1;
+static constexpr size_t kUnderflow = 0;
+static constexpr size_t kOverflow  = NUM_BUCKETS - 1;
 
 // ── HDR index / boundary math ─────────────────────────────────────
 
@@ -41,12 +41,12 @@ static constexpr size_t OVERFLOW    = NUM_BUCKETS - 1;
 static size_t bucket_index(uint64_t v)
 {
     if (v < (1ULL << UNIT_MAGNITUDE)) {
-        return UNDERFLOW;
+        return kUnderflow;
     }
     uint32_t highest_bit = 63 - static_cast<uint32_t>(__builtin_clzll(v));
     uint32_t magnitude   = highest_bit - UNIT_MAGNITUDE;
     if (magnitude >= NUM_MAGNITUDES) {
-        return OVERFLOW;
+        return kOverflow;
     }
     uint64_t sub_bucket = (v >> (highest_bit - SUB_BUCKET_BITS)) & SUB_BUCKET_MASK;
     return 1 + (static_cast<size_t>(magnitude) * SUB_BUCKET_COUNT) + static_cast<size_t>(sub_bucket);
@@ -57,10 +57,10 @@ static size_t bucket_index(uint64_t v)
 // the max trackable value (2^(UNIT_MAGNITUDE + NUM_MAGNITUDES)).
 static uint64_t bucket_upper_bound(size_t index)
 {
-    if (index == UNDERFLOW) {
+    if (index == kUnderflow) {
         return 1ULL << UNIT_MAGNITUDE;
     }
-    if (index == OVERFLOW) {
+    if (index == kOverflow) {
         return 1ULL << (UNIT_MAGNITUDE + static_cast<uint32_t>(NUM_MAGNITUDES));
     }
     size_t   linear           = index - 1;
@@ -85,11 +85,11 @@ static uint64_t percentile(const std::vector<uint64_t> &bucket_counts, uint64_t 
     for (size_t i = 0; i < bucket_counts.size(); ++i) {
         cumulative += bucket_counts[i];
         if (cumulative >= target) {
-            size_t capped = std::min(i, OVERFLOW - 1);
+            size_t capped = std::min(i, kOverflow - 1);
             return bucket_upper_bound(capped);
         }
     }
-    return bucket_upper_bound(OVERFLOW - 1);
+    return bucket_upper_bound(kOverflow - 1);
 }
 
 // Find the highest non-empty bucket's upper bound. The overflow
@@ -98,7 +98,7 @@ static uint64_t max_latency(const std::vector<uint64_t> &bucket_counts)
 {
     for (size_t i = bucket_counts.size(); i-- > 0;) {
         if (bucket_counts[i] > 0) {
-            size_t capped = std::min(i, OVERFLOW - 1);
+            size_t capped = std::min(i, kOverflow - 1);
             return bucket_upper_bound(capped);
         }
     }

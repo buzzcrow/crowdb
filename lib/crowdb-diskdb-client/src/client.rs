@@ -576,7 +576,9 @@ impl DiskdbClient {
                 Err(e) => {
                     if matches!(
                         e,
-                        DiskdbClientError::Unreachable(_) | DiskdbClientError::NotOwner(_)
+                        DiskdbClientError::ConnectFailed(_)
+                            | DiskdbClientError::Unreachable(_)
+                            | DiskdbClientError::NotOwner(_)
                     ) {
                         warn!(dg_id, attempt, error = %e, "rpc transient error, retrying");
                         last_err = Some(e);

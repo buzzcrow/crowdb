@@ -3,6 +3,7 @@
 
 //! Bounded catalog observations for the Chunk-KV workbench.
 
+mod balance;
 mod runtime;
 pub(crate) use runtime::runtime;
 
@@ -145,6 +146,7 @@ async fn observe(state: &AppState, query: &CatalogQuery) -> Result<Json<Value>, 
     if query.offset >= page.entries.len() {
         return Err(err_400("Catalog offset is outside the referenced page"));
     }
+    let balance = balance::observe(&kv, head.generation).await;
     let entries: Vec<_> = page
         .entries
         .iter()
@@ -158,6 +160,7 @@ async fn observe(state: &AppState, query: &CatalogQuery) -> Result<Json<Value>, 
                 "start": hex::encode(&entry.range.start), "end": entry.range.end.as_ref().map(hex::encode),
                 "owner_id": entry.owner.instance_id.to_string(), "endpoint": entry.owner.rpc_endpoint,
                 "epoch": entry.owner_epoch.to_string(), "state": entry.state, "artifact": artifact,
+                "balance": balance::partition(&balance, entry),
                 "transition_id": entry.transition_id.map(|id| format!("{:016x}{:016x}", id.high, id.low)),
             })
         })
@@ -178,7 +181,8 @@ async fn observe(state: &AppState, query: &CatalogQuery) -> Result<Json<Value>, 
     Ok(Json(
         json!({"generation":head.generation.to_string(),"page":query.page,
         "offset":query.offset,"catalog_pages":head.pages.len(),"entries":entries,"next":next,
-        "source":"group0","coverage":"referenced page","runtime_available":false}),
+        "source":"group0","coverage":"referenced page","runtime_available":false,
+        "balance":balance::summary(&balance)}),
     ))
 }
 

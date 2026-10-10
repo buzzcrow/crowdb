@@ -4,7 +4,8 @@
 //! Diskio test harness: subprocess management, IO helpers, and
 //! binary discovery for disk-io E2E tests.
 
-use std::process::{Command, Stdio};
+use std::path::Path;
+use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -88,7 +89,11 @@ pub fn crowdb_lib_dir() -> Option<std::path::PathBuf> {
     ];
     for c in &candidates {
         let p = std::path::PathBuf::from(c);
-        if p.join("libcrowdb_kv_client.so").exists() {
+        #[cfg(target_os = "macos")]
+        let exists = p.join("libcrowdb_kv_client.dylib").exists();
+        #[cfg(not(target_os = "macos"))]
+        let exists = p.join("libcrowdb_kv_client.so").exists();
+        if exists {
             return p.canonicalize().ok();
         }
     }
@@ -158,6 +163,34 @@ fn record_child(runtime: &mut crate::test_dirs::TestRuntime, child: &std::proces
         .unwrap_or_else(|error| panic!("record DiskIO process: {error}"));
 }
 
+fn wait_for_listening_port(child: &mut Child, log_path: &Path) -> i32 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut port = None;
+    while std::time::Instant::now() < deadline && port.is_none() {
+        std::thread::sleep(Duration::from_millis(50));
+        if let Ok(content) = std::fs::read_to_string(log_path) {
+            for line in content.lines() {
+                if let Some(idx) = line.find("listening on ") {
+                    let after = &line[idx + "listening on ".len()..];
+                    if let Some(colon) = after.find(':') {
+                        let rest = &after[colon + 1..];
+                        let port_str: String = rest.chars().take_while(char::is_ascii_digit).collect();
+                        if let Ok(p) = port_str.parse::<i32>() {
+                            port = Some(p);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    port.unwrap_or_else(|| {
+        let _ = child.kill();
+        let log = std::fs::read_to_string(log_path).unwrap_or_default();
+        panic!("crowdb-diskio did not start. Log:\n{log}");
+    })
+}
+
 impl DiskioProcess {
     pub fn log_content(&self) -> String {
         std::fs::read_to_string(&self.log_path).unwrap_or_default()
@@ -206,9 +239,12 @@ impl DiskioProcess {
 
         let mut cmd = Command::new(&bin);
         cmd.args(["--port", &assigned_port.to_string(), "--bind", "127.0.0.1"])
-            .env("LD_LIBRARY_PATH", lib_dir.to_str().unwrap())
             .stdout(Stdio::from(log_file))
             .stderr(Stdio::from(log_file2));
+        #[cfg(target_os = "macos")]
+        cmd.env("DYLD_LIBRARY_PATH", &lib_dir);
+        #[cfg(not(target_os = "macos"))]
+        cmd.env("LD_LIBRARY_PATH", &lib_dir);
 
         if opts.no_o_direct {
             cmd.arg("--no-o-direct");
@@ -255,34 +291,7 @@ impl DiskioProcess {
         record_child(runtime, &child);
         eprintln!("crowdb-diskio ({}) log: {}", opts.dummy_disk, log_path.display());
 
-        let observed_port = {
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
-            let mut port = None;
-            while std::time::Instant::now() < deadline && port.is_none() {
-                std::thread::sleep(Duration::from_millis(50));
-                if let Ok(content) = std::fs::read_to_string(&log_path) {
-                    for line in content.lines() {
-                        if let Some(idx) = line.find("listening on ") {
-                            let after = &line[idx + "listening on ".len()..];
-                            if let Some(colon) = after.find(':') {
-                                let rest = &after[colon + 1..];
-                                let port_str: String =
-                                    rest.chars().take_while(char::is_ascii_digit).collect();
-                                if let Ok(p) = port_str.parse::<i32>() {
-                                    port = Some(p);
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            port.unwrap_or_else(|| {
-                let _ = child.kill();
-                let log = std::fs::read_to_string(&log_path).unwrap_or_default();
-                panic!("crowdb-diskio did not start. Log:\n{log}");
-            })
-        };
+        let observed_port = wait_for_listening_port(&mut child, &log_path);
 
         assert_eq!(
             observed_port,

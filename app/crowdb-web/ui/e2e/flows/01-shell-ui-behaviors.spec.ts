@@ -14,6 +14,7 @@ import {
   resetAll,
   seedRackAndNode,
   stopNodeServer,
+  stopNodeServerAndReleasePorts,
   waitForLeader,
 } from '../fixtures/consoleSetup';
 import { step } from '../fixtures/stepTimer';
@@ -151,9 +152,9 @@ test.describe('shell · UI behaviors', () => {
     } finally {
       await api.dispose();
       await step('shell: stop servers', () => Promise.all([
-        stopNodeServer(baseURL!, 201),
-        stopNodeServer(baseURL!, 202),
-        stopNodeServer(baseURL!, 203),
+        stopNodeServerAndReleasePorts(baseURL!, 201),
+        stopNodeServerAndReleasePorts(baseURL!, 202),
+        stopNodeServerAndReleasePorts(baseURL!, 203),
       ]));
     }
 

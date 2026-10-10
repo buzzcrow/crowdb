@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "crowdb-common/atomic_shared_ptr.h"
 #include "crowdb-rpc/buffer.h"
 #include "crowdb-rpc/connection.h"
 #include "crowdb-rpc/framing.h"
@@ -75,7 +76,7 @@ class HandlerRegistry
     }
 
   private:
-    std::atomic<std::shared_ptr<const HandlerTable>> handlers_;
+    common::AtomicSharedPtr<const HandlerTable> handlers_;
 };
 
 } // namespace crowdb::rpc

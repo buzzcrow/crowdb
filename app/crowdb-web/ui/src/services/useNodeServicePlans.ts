@@ -109,6 +109,8 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
       if (!busy.current && input.current.enabled && !stopped.current) {
         busy.current = true;
         try {
+          await recovery.current;
+          if (disposed || stopped.current) return;
           for (const [key, initial] of Object.entries(plansRef.current)) {
             if (disposed || stopped.current) break;
             if (!serviceOrder.some(kind => ['pending', 'waiting'].includes(initial[kind].state))) continue;
@@ -118,6 +120,7 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
             let existing;
             try { existing = await listServers(); }
             catch (error) {
+              if (disposed || stopped.current) return;
               for (const kind of serviceOrder) if (!['deployed', 'disabled'].includes(plan[kind].state)) await write(kind, { state: 'failed', detail: String(error) });
               continue;
             }
@@ -182,6 +185,14 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
                 wakePending.current = true;
                 deploymentStarted = true;
               } catch (error) {
+                if (disposed || stopped.current) return;
+                // Hardware can change between the readiness probe and mutation.
+                // A rejected prerequisite has not launched a service; keep it queued.
+                const dependency = String(error).match(/^Error: HTTP 409: (Waiting: .+)$/);
+                if (dependency && (kind === 'chunkdb' || kind === 'chunk-kv')) {
+                  await write(kind, { state: 'waiting', detail: dependency[1] });
+                  continue;
+                }
                 const listeners = Object.entries(overrides.current[id]?.[kind] ?? {}).map(([name, port]) => `${name}=${port}`).join(', ');
                 const detail = `${serviceLabels[kind]}${listeners ? ` (${listeners})` : ''}: ${String(error)}`.slice(0, 4096);
                 // A node without a fixed ChunkDB slot is valid. Keep it as a
@@ -194,21 +205,33 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
             try { await input.current.refresh(); } catch { /* The shared data hooks report refresh errors. */ }
           }
         } catch (error) {
+          if (disposed || stopped.current) return;
           for (const id of Object.keys(plansRef.current)) failProgress(Number(id), `Progress could not be saved: ${String(error)}. Reload to reconcile before retrying.`);
         } finally { busy.current = false; }
       }
       if (!disposed) {
         const hasQueuedWork = Object.values(plansRef.current).some(plan => serviceOrder.some(kind => plan[kind].state === 'waiting'));
         const waitingForAuthority = Object.values(plansRef.current).some(plan => serviceOrder.some(kind => plan[kind].detail === 'Waiting: initialize Group 0 in Paxos KV'));
+        const waitingForRestart = Object.values(plansRef.current).some(plan => serviceOrder.some(kind => plan[kind].detail?.startsWith('Waiting: restart registered DiskIO services')));
         const hasDisks = Object.values(input.current.groups).some(node => Object.values(node.disksByDg).some(disks => disks.length > 0));
-        const delay = wakePending.current ? 0 : hasQueuedWork && !hasDisks && !waitingForAuthority ? 10000 : 2000;
+        const delay = wakePending.current ? 0 : hasQueuedWork && !hasDisks && !waitingForAuthority && !waitingForRestart ? 10000 : 2000;
         wakePending.current = false;
         timer = setTimeout(() => { running.current = tick(); }, delay);
       }
     }
     wake.current = () => { if (busy.current) wakePending.current = true; else { clearTimeout(timer); running.current = tick(); } };
     running.current = tick();
-    return () => { disposed = true; clearTimeout(timer); };
+    const dispose = () => { disposed = true; clearTimeout(timer); };
+    const restore = (event: PageTransitionEvent) => { if (event.persisted) window.location.reload(); };
+    window.addEventListener('pagehide', dispose);
+    window.addEventListener('beforeunload', dispose);
+    window.addEventListener('pageshow', restore);
+    return () => {
+      dispose();
+      window.removeEventListener('pagehide', dispose);
+      window.removeEventListener('beforeunload', dispose);
+      window.removeEventListener('pageshow', restore);
+    };
   }, [persist, failProgress]);
   useEffect(() => { wake.current(); }, [prerequisiteKey]);
   return { plans, start, stop };

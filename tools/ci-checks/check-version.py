@@ -48,6 +48,13 @@ require("pixi.toml workspace version", pixi["workspace"]["version"], EXPECTED)
 
 fixture = load_toml(ROOT / "app/crowdb-access-server/tests/common/iceberg_rust/Cargo.toml")
 require("Iceberg Rust fixture version", fixture["package"]["version"], EXPECTED)
+fixture_lock = load_toml(ROOT / "app/crowdb-access-server/tests/common/iceberg_rust/Cargo.lock")
+fixture_versions = [
+    package["version"]
+    for package in fixture_lock["package"]
+    if package["name"] == fixture["package"]["name"] and "source" not in package
+]
+require("Iceberg Rust fixture lock version", fixture_versions, [EXPECTED])
 
 ui_root = ROOT / "app/crowdb-web/ui"
 package_json = json.loads((ui_root / "package.json").read_text(encoding="utf-8"))

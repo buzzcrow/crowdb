@@ -183,11 +183,8 @@ impl WalEngine {
             };
             let record_format = select_record_format(config.wal_record_format);
 
-            // Skip runtime (per-write) fsync when --no-fsync is set, or
-            // on macOS where fsync is prohibitively slow (APFS semantics
-            // make sync_all ~10x slower than Linux). The shutdown flush
-            // (flush_all) always does a real fsync regardless of this
-            // flag, so data is still persisted at shutdown.
+            // macOS skips per-write fsync because APFS makes it prohibitively
+            // expensive. The shutdown flush (flush_all) remains durable.
             let skip_runtime_fsync = config.wal_skip_fsync || cfg!(target_os = "macos");
 
             let (writer_tx, task) = spawn_pipeline_writer(

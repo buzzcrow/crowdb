@@ -1,13 +1,26 @@
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
 <!-- Licensed under the Apache License, Version 2.0. -->
 
-# Chunk KV Server
+# CROWDB - Design: Chunk KV Server
 
 `crowdb-chunk-kv-server` is the standalone ownership, routing, and network
 boundary for chunk-backed metadata partitions. It hosts zero or many R142
 partition handles but never owns or bypasses a raw tree or stream. Group 0 is
 the durable catalog and monitor authority; monitor-issued serving grants are
 the only authority to admit data requests.
+
+## Contents
+
+- [1. Catalog Publication](#1-catalog-publication)
+- [2. Domain Monitors](#2-domain-monitors)
+- [3. Serving Authority](#3-serving-authority)
+- [4. Request Contract](#4-request-contract)
+- [5. Ordered Reads](#5-ordered-reads)
+- [6. Split Publication](#6-split-publication)
+- [7. Child Balance State Machine](#7-child-balance-state-machine)
+- [8. Placement Policy](#8-placement-policy)
+- [9. Lifecycle and Observability](#9-lifecycle-and-observability)
+- [Open Issues](#open-issues)
 
 ## 1. Catalog Publication
 
@@ -139,9 +152,99 @@ routed client.
 
 ## 6. Split Publication
 
-The split transition phases are `Planned`, `ParentPreparing`,
-`ChildPrepared`, `CatalogCommitted`, and `Aborted`. The server and group-0
-monitor advance them in this order:
+### 6.1. Publication boundary and durable steps
+
+The group-0 catalog head publication is the external range and assignment
+cutover. A local writer handoff is a separate operation: the same process can
+dispatch the old parent route to the retained parent and child before the new
+catalog is visible. This compatibility must preserve every acknowledged WAL
+record; it does not authorize a different owner to serve an unpublished range.
+
+The parent retains its existing tree and journal. Only the child receives new
+storage. Handoff is parent-local range dispatch, not replacement of the parent
+writer with another tree/WAL and not remote ownership transfer. The successful
+durable handoff status update commits the obligation to resume this split;
+in-memory dispatch changes afterward. Handoff status is distinct from final
+`ChildPrepared` readiness and from external catalog publication. A candidate
+epoch or a process-local dispatcher cannot substitute for this status.
+
+- **S1 — Plan:** persist the transition identity, expected parent assignment,
+  split key, both successor epochs and complete storage identities. Reserve the
+  affected partition and owner against another topology transition.
+- **S2 — Prepare:** persist `ParentPreparing` before creating artifacts. Pin the
+  exact base, construct the bounded child view and establish the common WAL
+  frontier `C`. Persist the exact handoff status before changing local dispatch.
+  Parent journal appends and reads continue while the status is persisted;
+  no handoff waiting queue or mutation-worker wait for that update is allowed.
+  Bind the original parent storage, child storage, pinned base and replay
+  boundaries. Cover the additional parent suffix before actual dispatch in
+  child recovery; fixing `C` does not by itself end parent right-range writes.
+- **S3 — Ready:** persist the exact retained-parent and child artifacts,
+  overlays, common cursor and readiness proof as `ChildPrepared`. A process-local
+  handle or heartbeat cannot substitute for this durable proof.
+- **S4 — Publish:** validate that the current catalog still contains the planned
+  parent. Publish one successor head replacing it with two adjacent Serving
+  entries. This head is the external split commit point. On an ambiguous result,
+  reread the authoritative head and accept only the exact intended successors;
+  an unrelated newer generation is not proof that this split committed.
+- **S5 — Reconcile:** persist `CatalogCommitted` after proving publication.
+  Install the matching catalog and grants; preserve old-route dispatch without
+  allowing a retired writer to append. Restart must use the published assignment
+  together with its exact durable split proof.
+- **S6 — Materialize and retire:** checkpoint independently recoverable halves,
+  publish removal of their overlays and transition markers, then release pins.
+  Reclaim only artifacts with no catalog, replay, retry or pin references.
+
+Crash recovery must distinguish these boundaries:
+
+- Before handoff status commit, recover the published parent and retry or abort
+  preparation; no child mutation may have been acknowledged.
+- After status commit but before in-memory dispatch, resume the same split.
+  Recover the complete original parent journal, including writes made while the
+  status update was in flight; an empty child WAL is valid.
+- After dispatch but before catalog publication, resume the same split from the
+  original parent journal and the child journal. The old parent route remains
+  published; do not discard the child or choose authority by the maximum local
+  epoch. Neither final readiness nor catalog publication is needed to establish
+  that the committed handoff must be recovered.
+- An uncertain handoff update requires exact durable transition reread. Stale
+  preparation or abort work must not overwrite a committed handoff.
+  While the process remains live, retain and retry the exact prepared child
+  base, WAL handle and pins. Do not reopen its WAL, release its pins or rebuild
+  a different candidate merely because publication returned an error. Writes
+  arriving on the parent meanwhile are covered by the later dispatch frontier.
+  Once dispatch is installed, its live writers own finalization; only a proven
+  pre-handoff abort may discard the pending candidate.
+- After publication but before `CatalogCommitted` persistence, prove the exact
+  successor entries and finish the transition marker; do not roll back the split.
+- After publication, recover each assigned half's complete own WAL. The child
+  inherits only the parent prefix through the final readiness frontier `C2`
+  recorded in its catalog artifact, then replays its own WAL. This bound applies
+  even when the child WAL is empty: later retained-parent records belong to the
+  parent's next epoch and must not extend child inheritance. Require matching
+  grants before admitting requests.
+
+The initial handoff status fixes `C`, before the eventual in-memory dispatch
+frontier `C2`. While only that initial status exists, recovery derives `C2` from
+the first child record's sequence minus one, or inherits the parent tail when
+the child WAL is empty. Final readiness records the exact boundary explicitly;
+published catalog recovery uses that boundary instead of rediscovering it from
+the current parent tail.
+
+The durable handoff proof is stored in the split transition while its phase is
+`ParentPreparing`. Revision CAS preserves an existing proof and reconciles an
+unknown write result by exact reread. Initial and final replay frontiers remain
+distinct; additional real-process crash windows are recorded under Open Issues.
+
+### 6.2. Local execution and storage retention
+
+The split transition phase symbols are `Planned`, `ParentPreparing`,
+`ChildPrepared`, `CatalogCommitted`, and `Aborted`. A separately persisted
+`handoff_proof` distinguishes preparation from committed local handoff before
+final readiness. It binds the pinned tree base, original parent stream and
+initial inherited frontier while the transition remains `ParentPreparing`.
+Final readiness extends that frontier without replacing its base. The server and
+group-0 monitor advance them in this order:
 
 1. Group 0 persists the complete plan before local work begins. The existing
    parent keeps its identity, tree, stream, owner, and lower boundary; its next
@@ -149,8 +252,11 @@ monitor advance them in this order:
    fixed by the plan.
 2. The parent process persists `ParentPreparing`, renews its serving grant as
    an active owner, checkpoints the exact parent base, builds the child's
-   range-bounded base, performs the bounded writer handoff, and installs the
-   local child handle.
+   range-bounded base, fixes `C`, and persists the handoff status without stopping
+   parent writes or reads. It then installs parent-to-child dispatch. Left-range
+   writes retain the original parent journal; right-range writes move to the
+   child journal only when dispatch changes. Replay coverage includes parent
+   writes between the fixed frontier and that dispatch change.
 3. Readiness binds the exact common cutover, the retained-parent next epoch,
    and the child's complete tail overlay.
    It is persisted before catalog publication.
@@ -167,9 +273,11 @@ monitor advance them in this order:
    the actual writer or writers used by the operation.
 
 Before child materialization, heartbeat load reports the child as dependent.
-After process restart, either split half may reopen with its historical tail
-overlay in Prepared state. A matching serving grant alone cannot activate that
-overlay. Startup loads the persisted split transition and requires its committed
+After process restart, the retained parent reopens its original tree and WAL
+through ordinary range-filtered recovery; it has no split tail overlay. The
+child reopens its exact pinned base, replays the range-filtered parent suffix,
+and then replays its own WAL. A matching serving grant alone cannot activate
+the child overlay. Startup loads the persisted split transition and requires its committed
 phase, transition identity, range, owner, epoch and complete storage artifact to
 match the current Serving catalog entry. Transfer overlays retain their separate
 committed-transfer validation. Missing or conflicting evidence leaves the writer
@@ -189,10 +297,76 @@ restart. Root reclamation treats the oldest durable pin as an upper bound. The
 owner releases the pin only after installing the newer catalog generation whose
 child has no overlay and whose parent and child have no split marker. Pin delete
 is idempotent and remains reconciliation work after an ambiguous response or a
-crash. An abort before readiness removes unpublished child state and its pin;
-after readiness, durable transition and catalog evidence decide cleanup.
+crash. An abort before handoff commit may remove unpublished child state and its
+pin. After handoff commit, absence of readiness or a child catalog entry is not
+permission to abort or delete child storage; recover and complete the same split.
+
+The parent also retains its existing checkpoint generation while the child
+depends on the inherited parent WAL prefix. Publishing that prefix into the
+child's live tree does not release this dependency: the pinned recovery base
+still needs those journal records after a crash. Parent checkpoint publication
+remains suppressed by the existing transition pin until the catalog records an
+independent child. Parent reads and journal appends continue throughout this
+interval. The same completed catalog releases both generation pins.
 
 ## 7. Child Balance State Machine
+
+### 7.1. Owner cutover and durable steps
+
+The first successful catalog head publication naming the target in
+`TargetCatchingUp` is the owner cutover. The later `Serving` publication changes
+readiness, not ownership. A candidate target epoch in a plan is not effective
+tree or serving authority. Source release precedes the owner cutover and creates
+a recovery obligation; it is not itself a catalog owner change.
+
+- **T1 — Plan:** persist the exact source assignment, target identity and higher
+  epoch, artifacts, lease bounds and transition identity before preparation.
+- **T2 — Prepare source:** persist `SourcePreparing`, pin an immutable root,
+  initialize the independent target WAL and record replay start cursor `P`.
+  Source remains the published owner and accepts writes under its existing grant.
+- **T3 — Prepare target:** persist `TargetPreparing`; open the pinned base and
+  replay the source suffix into a Prepared view. Persist readiness before
+  `TargetPrepared`. Preparation must not advance the shared tree's effective
+  owner epoch or disable source recovery. Target cannot admit data mutations.
+- **T4 — Seal source:** after exact target readiness, close source admission,
+  drain admitted writes and persist release proof with final durable cursor `C`.
+  With an unreachable source, wait for lease exclusion and recover the complete
+  durable tail instead of treating `P` as final. No target data admission is
+  allowed while the catalog still names source. A durable release cannot be
+  undone merely because the catalog still has the old assignment.
+- **T5 — Publish owner:** validate the source assignment and durable release,
+  then publish the target epoch, `TargetCatchingUp` and complete replay artifacts
+  in one catalog successor. Resolve ambiguous publication by exact head reread.
+  Effective target storage authority must follow this published assignment;
+  a crash before that authority update is completed must allow idempotent repair.
+- **T6 — Catch up:** recover the complete source prefix through `C`, followed by
+  the target WAL. The published release proof permits durable unconditional
+  target appends; reads and conditional operations wait for the complete view.
+  Source cannot append, including through a stale client route or old grant.
+- **T7 — Serve:** persist final readiness, publish the same target assignment
+  as Serving, persist `CatalogCommitted` and activate only with its exact grant.
+  A crash between head publication and phase persistence must finish the marker
+  from exact catalog evidence rather than strand or reverse the assignment.
+- **T8 — Retire:** clear the completed overlay only after independent recovery
+  is proven. Release pins and reclaim old resources only after all recovery,
+  retry and forwarding references have cleared.
+
+Restart first reads the authoritative catalog and then the matching durable
+transition. Before release it restores source; after release but before owner
+publication it keeps source fenced and completes publication; after owner
+publication it restores target. A local tree epoch, heartbeat or cached page
+cannot independently choose the owner. Missing or conflicting proof fails closed.
+
+An abort is permitted only before durable release and owner publication. Persist
+the exact abort before discarding the prepared target; stale workers must not
+publish or activate that aborted transition. Candidate epochs are not reused,
+and cleanup must retain any source-referenced base, WAL or pin. Restoring source
+does not require synchronous deletion of unrelated target temporary objects.
+
+The effective-tree-authority ordering and publication/phase crash windows still
+require implementation verification; known gaps are recorded under Open Issues.
+
+### 7.2. Execution, proofs and recovery
 
 A balance transition persists source and target owners, increasing target
 epoch, source and target artifacts, readiness limits, old-grant deadline,
@@ -319,7 +493,7 @@ The balance invariants are:
 
 Balancing targets at least `live_owner_count * target_partitions_per_owner`,
 defaulting to four partitions per owner. Split chooses the largest eligible
-partition using approximate retained pack weights. A split boundary comes from
+partition using approximate retained pack estimates. A split boundary comes from
 a resident index separator or a bounded small key window; exact byte or key
 medians are unnecessary. Live-key witnesses establish nonempty children when
 the observation is made. Concurrent mutations can change that observation.
@@ -330,19 +504,89 @@ an unsplittable largest partition does not exclude the remaining candidates.
 Retained pack estimates use the opened manifest, including shared packs, rather
 than cumulative write counters. The estimate is deliberately coarse and can
 lag unsnapshotted mutations; observation does not scan remote metadata or data.
-The retained parent and new split child stay local. Once independently
-recoverable, count-correcting placement takes priority over further splitting;
-weighted placement follows eligible splits. Placement minimizes partition-count
-difference first, then durable-byte spread. A move must repair count imbalance
-or improve weighted spread by at least 25%. Request rate and target headroom are
-safety filters. A child with a parent-tail overlay is ineligible. The default
-per-partition cooldown is one minute. Split pacing includes recent splits and
-transfers; repeat-placement pacing includes only recent transfers, so a split
-does not postpone a child's first placement. An owner participates in at most
-one transition at a time. Transfer preparation, estimated catch-up and forwarding
-retain independent ten-minute safety windows. Healthy, independently recoverable
-partitions with capacity on an idle target must make actual balance progress
-within forty seconds; splitting alone is not placement progress.
+The retained parent and new split child stay local. Range splitting deliberately
+uses an approximate boundary and does not guarantee equal child sizes. Split
+sizing and minimum partition supply do not require exact placement equality.
+A move uses assigned partition counts; byte estimates remain capacity filters.
+An indivisible range may prevent further useful count balancing, in which case
+placement remains unchanged.
+
+### 8.1 Count-Based Placement
+
+Placement currently uses assigned split count only: `w_i = p_i / P`, including
+healthy owners with zero assignments. `byte_weight_percent` is reserved and must
+be zero; nonzero settings are rejected until root/range statistics are available.
+The data contribution is disabled. Physical shared-pack bytes, memtable bytes,
+write counters and accumulated split ratios are not placement data weights.
+Tolerance defaults to 20% relative to equal owner share; minimum global-loss
+improvement defaults to 25%. Missing or epoch-mismatched assignment observations
+still defer planning. Capacity/headroom remains a separate safety filter.
+
+Tree statistics do not yet expose current root/range page, logical-byte or live-KV
+aggregates. Existing retained-pack estimates remain coarse inputs to automatic
+split sizing/candidate ranking and capacity checks; they can include shared packs
+and lag ordinary flushes. Count balancing does not make those estimates exact.
+The split execution, boundary sampling, recovery and publication contracts remain
+unchanged. Console does not display Weight or weighted balance explanations.
+
+### 8.2 Tolerance and Move Selection
+
+Equal owner weight is `1 / N`. The observation's relative deviation is
+`D = max_i(abs(N * w_i - 1))`; `imbalance_tolerance_percent` bounds `100 * D`.
+Within tolerance, no load-balancing move is planned. Outside tolerance, evaluate
+candidate moves against the same global loss
+`L = sum_i((N * w_i - 1)^2)` before and after the move. The partition count
+contribution moves; the byte contribution is zero. The normalized denominators
+stay fixed for each candidate evaluation. Only the two affected owner terms
+change, so each candidate's loss delta requires constant arithmetic.
+
+A candidate must strictly reduce loss and meet
+`minimum_weighted_improvement_percent` of the current loss. A count difference
+does not authorize a move that worsens the global count score. Choose the greatest loss
+reduction among safe eligible candidates; stable partition/target identities
+break ties. Use validated bounded integer/fixed-point arithmetic, sufficient
+intermediate width, and conservative threshold comparisons; UI rounding does
+not decide eligibility. With unchanged observations, a reverse move increases
+the same loss and cannot qualify. Observation changes remain subject to
+thresholds and cooldown, rather than triggering actions for every small change.
+
+For example, two owners with weights 20% and 80% can move a partition whose
+contribution is 40 percentage points to obtain 60% and 40%. A relative tolerance
+of 20% includes that result because equal owner weight is 50%. This is an
+illustration of configured thresholds, not a promise that split yields two
+40-point children. When no safe indivisible candidate offers enough improvement,
+report no useful move and keep the placement.
+
+Request rate, target headroom, fresh health, exact assignment and independent
+recoverability are safety filters. A parent-tail overlay is ineligible. One
+partition and each participating owner have at most one active transition.
+Default per-partition cooldown is one minute; cooldown supplements scoring and
+tolerance. Split pacing includes recent splits and transfers; repeat-placement
+pacing includes only transfers, so split does not postpone first placement.
+Transfer preparation, estimated catch-up and forwarding retain independent
+ten-minute safety windows. A safe candidate outside tolerance that meets the
+improvement threshold must make placement progress within forty seconds when
+its cooldown has elapsed; splitting alone is not placement progress.
+
+### 8.3 Decision Observation
+
+The monitor's bounded decision observation identifies policy coefficients and
+thresholds, catalog generation, assignment/owner identities, observation time,
+source freshness, counts, estimated bytes, count/byte weight contributions,
+owner weights, deviation and loss. It records the selected or best rejected
+candidate's predicted weights and improvement, plus move/no-move reason:
+within tolerance, insufficient benefit, unavailable observation, cooldown,
+active transition, inherited overlay, unhealthy owner or capacity/rate limit.
+Policy version identifies the scoring formula. Diagnostics retain at most 256
+owners, 4096 partition contributions and 2 MiB, independently of the planner's
+complete metadata input. Omitted details display unavailable; they do not alter
+planning. Unchanged diagnostics are renewed within half their freshness window
+rather than written on every tick. Do not emit or persist all candidate pairs
+on every tick. This diagnostic
+observation is not catalog authority and does not advance catalog generation.
+The observation remains backend diagnostic metadata; Console currently hides
+Weight and balance explanations. Catalog generation/identity mismatch remains
+explicit; UI refresh does not bypass stale cursor rejection.
 
 ## 9. Lifecycle and Observability
 
@@ -380,13 +624,31 @@ generation.
 
 ## Open Issues
 
+- **Prepared transfer crash coverage:** preparation preserves source tree
+  authority; mutable target authority requires the exact published owner
+  assignment. Fault injection must cover source and target restart around
+  that publication, including overlapping source checkpoint work.
+- **Split handoff crash coverage:** the durable handoff status precedes local
+  dispatch and preserves the original parent tree and WAL. Recovery composes
+  the exact child base, range-filtered parent suffix and child WAL. Fault
+  injection must cover status persistence with continuing parent writes,
+  dispatch before final readiness and an unconfirmed status response. Status
+  persistence remains outside the mutation worker.
+- **Head publication before phase persistence:** transfer and split publication
+  and their committed transition markers are separate writes. Recovery must
+  prove exact catalog results and finish markers after a crash in between;
+  fault injection must verify admission and eventual recovery at both transfer
+  publications and the split publication.
+- **Abort racing publication:** an abort decision must be serialized with
+  publication under the monitor fence and transition revision. A previously
+  loaded readiness proof must not publish after an authoritative abort. Verify
+  this race before treating cleanup as safe.
+
 - Real-process fault injection should continue expanding coverage of ambiguous
   catalog writes and process death at every balance phase.
-- A source crash while a remote target is only prepared and a newer local split
-  is still materializing can advance stream writer authority ahead of the
-  catalog assignment. Immediate source recovery then fails closed on the stale
-  catalog epoch. Recovery should reconcile this exact interleaving without
-  weakening the single-writer or exact-transition proofs.
+- Overlapping remote transfer preparation, local split materialization and
+  source restart need fault coverage that proves exact catalog and transition
+  reconciliation without weakening single-writer or replay epoch checks.
 - Completed transfers remove their catalog overlay, but physical reclamation of
   the departed source tree and stream, plus expiry of the stale-route
   forwarding grace period, still need a manifest-fenced background policy.

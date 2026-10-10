@@ -181,7 +181,7 @@ class MemoryRootCatalog final : public RootCatalog
         bool                       reclaiming = false;
     };
 
-    std::atomic<std::shared_ptr<const CatalogState>> state_;
+    AtomicSharedPtr<const CatalogState> state_;
 
     struct StoredReferenceSegment
     {
@@ -190,7 +190,7 @@ class MemoryRootCatalog final : public RootCatalog
     };
 
     using ReferenceSegmentStore = std::vector<StoredReferenceSegment>;
-    std::atomic<std::shared_ptr<const ReferenceSegmentStore>> reference_segment_store_;
+    AtomicSharedPtr<const ReferenceSegmentStore> reference_segment_store_;
     std::atomic<bool>                                         block_next_publish_{false};
     mutable std::atomic<bool>                                 publish_blocked_{false};
     std::atomic<bool>                                         release_publish_{false};
@@ -276,6 +276,10 @@ struct ChunkPageStoreStats
 class ChunkPageStore final : public PageStore, public AsyncPageStore
 {
   public:
+    using PageStore::submit_fsync;
+    using PageStore::submit_read;
+    using PageStore::submit_write;
+
     struct Config
     {
         uint64_t tree_id                        = 0;
@@ -410,8 +414,8 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     bool                                                      anchor_dirty_       = false;
     std::atomic<bool>                                         unavailable_{false};
     std::atomic<uint8_t>                                      mirror_write_failure_mask_{0};
-    mutable std::atomic<std::shared_ptr<const ChunkManifest>> cached_layout_;
-    mutable std::atomic<std::shared_ptr<const ChunkManifest>> bootstrap_layout_;
+    mutable AtomicSharedPtr<const ChunkManifest> cached_layout_;
+    mutable AtomicSharedPtr<const ChunkManifest> bootstrap_layout_;
     mutable std::shared_ptr<const CachedPack>                 cached_pack_;
     mutable std::atomic<uint64_t>                             layout_valid_until_ms_{0};
     std::atomic<uint64_t>                                     generations_published_{0};

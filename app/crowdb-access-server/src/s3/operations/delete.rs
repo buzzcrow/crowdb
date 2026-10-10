@@ -27,21 +27,27 @@ impl ProductionS3Operations {
             .map(str::parse::<usize>)
             .transpose()
             .map_err(|_| S3ErrorCode::InvalidRequest)?;
-        if declared.is_some_and(|length| length > MAX_DELETE_BODY) {
-            return Err(S3ErrorCode::InvalidRequest);
-        }
         let headers = request.headers().clone();
         let mut bytes = Vec::new();
+        let mut oversized = declared.is_some_and(|length| length > MAX_DELETE_BODY);
         let mut body = request.into_body();
         while let Some(frame) = body.frame().await {
             let data = frame
                 .map_err(|_| S3ErrorCode::InvalidRequest)?
                 .into_data()
                 .map_err(|_| S3ErrorCode::InvalidRequest)?;
+            if oversized {
+                continue;
+            }
             if bytes.len().saturating_add(data.len()) > MAX_DELETE_BODY {
-                return Err(S3ErrorCode::InvalidRequest);
+                oversized = true;
+                bytes.clear();
+                continue;
             }
             bytes.extend_from_slice(&data);
+        }
+        if oversized {
+            return Err(S3ErrorCode::InvalidRequest);
         }
         if declared.is_some_and(|length| length != bytes.len()) {
             return Err(S3ErrorCode::InvalidRequest);

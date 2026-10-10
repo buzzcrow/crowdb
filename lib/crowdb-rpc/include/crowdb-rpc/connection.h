@@ -36,7 +36,7 @@ struct TransportStats;
 //
 // on_frame_callback is set by the caller (RpcClient on the client side,
 // RpcServer on the server side) to dispatch received frames.
-class Connection
+class Connection : public std::enable_shared_from_this<Connection>
 {
   public:
     using OnFrameCallback = std::function<void(Frame *, Connection *)>;

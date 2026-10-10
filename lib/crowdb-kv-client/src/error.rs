@@ -34,6 +34,13 @@ pub enum Error {
     #[error("compare-and-set key is busy")]
     CasBusy,
 
+    #[error("group membership conflict for {store_id}/{group_id}, expected epoch {expected_epoch}")]
+    MembershipConflict {
+        store_id: u64,
+        group_id: u64,
+        expected_epoch: u64,
+    },
+
     #[error("compare-and-set outcome is unknown; reconcile with a read")]
     OutcomeUnknown,
 

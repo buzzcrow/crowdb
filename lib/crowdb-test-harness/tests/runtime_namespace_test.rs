@@ -1,7 +1,41 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_test_harness::test_dirs::{runtime_root, TestRuntime};
+use crowdb_test_harness::test_dirs::{runtime_root, TestDir, TestRuntime};
+
+#[test]
+fn disposable_data_cleanup_preserves_process_ownership_for_cleanup() {
+    let directory = TestDir::new("cleanup-ownership").expect("create test directory");
+    let data = directory.path().to_path_buf();
+    let root = data.parent().unwrap().to_path_buf();
+    let workspace = data.join("cli-cluster");
+    let mut namespace =
+        crowdb_protocol::port::namespace::RuntimeNamespace::persistent(&workspace, "nested-cli-cluster")
+            .expect("create CLI manifest inside test data");
+    let port = namespace
+        .assign_port(crowdb_protocol::ServicePort::ChunkKvRpc, 0)
+        .expect("assign disposable CLI port");
+    let claims: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(runtime_root().join("ports/claims.json")).unwrap()).unwrap();
+    let claim = claims
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|claim| claim["namespace_id"] == namespace.id() && claim["port"] == port)
+        .expect("registered CLI port");
+    assert_eq!(claim["mode"], "ephemeral");
+    assert_eq!(claim["owner_pid"], std::process::id());
+    let pid = std::process::id();
+    crowdb_protocol::port::namespace::record_workspace_process(&workspace, pid)
+        .expect("record process ownership");
+    drop(namespace);
+    drop(directory);
+
+    assert!(!data.exists());
+    assert!(root.join("namespace.json").is_file());
+    assert!(root.join(format!("processes/{pid}/process-owner.json")).is_file());
+    std::fs::remove_dir_all(root).expect("remove regression namespace");
+}
 
 #[test]
 fn runtime_namespace_owns_disjoint_standard_paths() {

@@ -34,6 +34,7 @@ mod load_sampling;
 mod observation;
 mod prepared_transfer;
 mod reconcile;
+mod routing;
 pub(crate) use observation::PageQuery;
 
 const DEFAULT_SCAN_RESPONSE_BYTES: usize = 17 * 1024 * 1024;
@@ -404,7 +405,9 @@ impl ChunkKvService {
         }
         for (id, partition) in partitions.iter() {
             let snapshot = partition.snapshot();
-            let durable_bytes = partition.estimated_bytes().unwrap_or_default();
+            let Ok(durable_bytes) = partition.estimated_bytes() else {
+                continue;
+            };
             let live_byte_samples =
                 if max_samples >= 2 && snapshot.lifecycle == crowdb_chunk_kv::PartitionLifecycle::Serving {
                     self.load_sampling.samples(*id, snapshot.ownership_epoch)
@@ -1465,20 +1468,6 @@ impl ChunkKvService {
             })
     }
 
-    fn partition_for_request(
-        &self,
-        routing: &RequestRouting,
-        key: &[u8],
-        entry: &ChunkKvRangeCatalogEntry,
-    ) -> Option<Partition> {
-        self.local_split_sessions
-            .load()
-            .get(&routing.partition_id)
-            .map(|session| session.dispatcher.clone())
-            .filter(|dispatcher| dispatcher.snapshot().range.contains(key))
-            .or_else(|| self.partition_for_catalog_entry(entry))
-    }
-
     fn authorize_resolved_writers(
         &self,
         catalog: &CatalogSnapshot,
@@ -1542,6 +1531,12 @@ impl ChunkKvService {
     fn local_split_writer(&self, entry: &ChunkKvRangeCatalogEntry) -> Option<Partition> {
         self.local_split_sessions.load().values().find_map(|session| {
             let dispatcher = &session.dispatcher;
+            // Until catalog publication the full-range parent assignment is
+            // still served by this dispatcher. Reopening it would create a
+            // second publisher for the retained original tree.
+            if partition_matches_entry(dispatcher, entry) {
+                return Some(dispatcher.clone());
+            }
             let ingress = dispatcher.split_ingress()?;
             [ingress.retained_parent(), ingress.child()]
                 .into_iter()

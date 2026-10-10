@@ -28,9 +28,7 @@ use crowdb_kv_client::{
     ClientConfig, CrowdbKvClient, DomainMonitorClient, HardwareClient,
     RangeBindingClient as KvRangeBindingClient, ServiceRegistryClient, WatchNotifyClient,
 };
-use crowdb_protocol::chunk_kv::{
-    DomainFailurePolicy, DomainMonitorDescriptor, EnsureDomainMonitorOutcome, EnsureDomainMonitorRequest,
-};
+use crowdb_protocol::chunk_kv::{EnsureDomainMonitorOutcome, EnsureDomainMonitorRequest};
 use tracing::{error, info, warn};
 
 /// CROWDB diskdb server CLI.
@@ -229,21 +227,7 @@ async fn main() {
         Arc::new(DiskdbRpcTransport::new()),
     ));
     let monitor_request = EnsureDomainMonitorRequest {
-        descriptor: DomainMonitorDescriptor {
-            domain: "diskdb-ownership".into(),
-            service_registry_name: "diskdb".into(),
-            driver_version: 1,
-            capability_version: 1,
-            heartbeat_interval_ms: 5_000,
-            suspect_after_ms: 10_000,
-            dead_after_ms: 15_000,
-            lease_duration_ms: 20_000,
-            max_clock_skew_ms: 1_000,
-            self_fence_margin_ms: 1_000,
-            failure_policy: DomainFailurePolicy::AutomaticSharedStorage,
-            balance_policy: "disk-group-count-v1".into(),
-            chunk_kv_range_balance: None,
-        },
+        descriptor: config.load().ownership_monitor_descriptor(),
     };
     // Domain monitor registration is retried in the background so the
     // diskdb can start serving even when the KV server (group-0) is not

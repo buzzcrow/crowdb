@@ -6,7 +6,7 @@ import { expect } from './realBackend';
 
 /** Observe actual automatic deployment mutations before checking durable progress. */
 export function observeDefaultDeployments(page: Page) {
-  const replies = new Map<string, Response>();
+  const replies = new Map<string, Response[]>();
   function key(response: Response) {
     if (response.request().method() !== 'POST') return undefined;
     const path = new URL(response.url()).pathname;
@@ -17,12 +17,29 @@ export function observeDefaultDeployments(page: Page) {
   }
   page.on('response', response => {
     const identity = key(response);
-    if (identity && !replies.has(identity)) replies.set(identity, response);
+    if (identity) replies.set(identity, [...(replies.get(identity) ?? []), response]);
   });
   return {
+    async nextCompleted(nodes: number[], kind: string) {
+      const pending = new Set(nodes.map(node => `${node}:${kind}`));
+      const completed = nodes.find(node => replies.get(`${node}:${kind}`)?.some(response => response.status() === 201));
+      if (completed !== undefined) return completed;
+      const timeout = process.platform === 'darwin' ? 30_000 : 3_000;
+      const response = await page.waitForResponse(response => pending.has(key(response) ?? '') && response.status() === 201, { timeout });
+      return Number(key(response)!.split(':')[0]);
+    },
     async verify(node: number, kind: string) {
       const identity = `${node}:${kind}`;
-      const response = replies.get(identity) ?? await page.waitForResponse(response => key(response) === identity);
+      const timeout = process.platform === 'darwin' ? 30_000 : 3_000;
+      const response = replies.get(identity)?.find(response => response.status() === 201)
+        ?? await page.waitForResponse(response => key(response) === identity && response.status() === 201, { timeout });
+      for (const rejected of replies.get(identity) ?? []) {
+        if (rejected === response) break;
+        const body = await rejected.json();
+        expect(rejected.status(), JSON.stringify(body)).toBe(409);
+        expect(['chunkdb', 'chunk-kv']).toContain(kind);
+        expect(body.error).toMatch(/^Waiting: /);
+      }
       expect(response.status(), `Node ${node} ${kind}: ${await response.text()}`).toBe(201);
     },
   };

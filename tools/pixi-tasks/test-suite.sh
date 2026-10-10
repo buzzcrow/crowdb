@@ -5,8 +5,9 @@ set -euo pipefail
 cd "${PIXI_PROJECT_ROOT:?}"
 
 pixi run test-cpp
-pixi run test-unit
-pixi run test-server
+pixi run test-core
+pixi run test-storage
+pixi run test-access
 pixi run -e s3-e2e test-boto3-e2e
 pixi run -e iceberg-e2e test-iceberg-e2e
 pixi run -e iceberg-e2e test-iceberg-sdk

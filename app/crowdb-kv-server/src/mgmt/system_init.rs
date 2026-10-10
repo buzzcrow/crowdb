@@ -157,7 +157,11 @@ pub(super) async fn system_init(
         SYSTEM_STORE_ID,
         SYSTEM_GROUP_ID,
         req.replica_id,
-        PxLocalReplicaRole::Leader,
+        if req.start_election {
+            PxLocalReplicaRole::Leader
+        } else {
+            PxLocalReplicaRole::Follower
+        },
         &state.config,
         state.wal_backend.clone(),
         state.crowtree_backend,

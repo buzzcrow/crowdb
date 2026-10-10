@@ -153,6 +153,33 @@ impl ProductionStreamRuntime {
         .await
     }
 
+    /// Opens the current physical WAL generation without claiming writer authority.
+    /// Historical record authority remains the replay caller's responsibility.
+    ///
+    /// # Errors
+    /// Returns a binding, manifest, durable cursor or concurrent epoch error.
+    pub async fn open_read_only_current(
+        &self,
+        stream_name: StreamName,
+        metadata_store_id: u64,
+    ) -> Result<ChunkStream> {
+        let binding = self.active_binding(stream_name).await?;
+        let metadata = self.metadata(metadata_store_id, binding.metadata_group_id)?;
+        let manifest = metadata
+            .load_current(stream_name)
+            .await?
+            .ok_or_else(|| StreamError::InvalidRequest("read-only stream manifest does not exist".into()))?;
+        ChunkStream::open_read_only(
+            stream_name,
+            manifest.writer_epoch,
+            self.config.clone(),
+            self.registry.clone(),
+            metadata,
+            self.chunks.clone(),
+        )
+        .await
+    }
+
     async fn active_binding(&self, stream_name: StreamName) -> Result<StreamBinding> {
         let registry: &dyn StreamRegistry = self.registry.as_ref();
         let binding = registry

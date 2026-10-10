@@ -348,6 +348,13 @@ The split matters: replay/restore are purely *local* (this node's WAL), but `Acc
 ### 6.1 Replay — rebuild acceptor state (`replay_group`)
 
 1. Discover all segments under `<wal_disk>/group<gid>/seg-*.ck`, order by `segment_id`.
+   A zero-byte final segment on each WAL disk can result from a crash between
+   file creation and header writing. Remove that empty tail; it contains no
+   acknowledged records. A nonempty unreadable segment, invalid header, or
+   empty intermediate segment prevents local recovery; never skip it and serve
+   a partial acceptor history. The direct block backend
+   aligns physical reads and copies the requested byte range, including short
+   header reads and record ranges spanning block boundaries.
 2. Walk each segment's records in order; verify `magic`, `version`, `crc32c`.
    On the first failure, **truncate that segment at the offset and stop** (a torn
    tail from a crash mid-write); later segments are still processed.

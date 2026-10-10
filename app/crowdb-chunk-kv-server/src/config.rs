@@ -136,7 +136,9 @@ impl ChunkKvServerConfig {
         self.monitor
             .validate()
             .map_err(|error| ConfigError::Invalid(error.to_string()))?;
-        if self.balance.target_partitions_per_owner == 0
+        if self.balance.byte_weight_percent != 0
+            || self.balance.imbalance_tolerance_percent > 100
+            || self.balance.target_partitions_per_owner == 0
             || self.balance.target_partition_bytes == 0
             || self.balance.minimum_weighted_improvement_percent > 100
             || self.balance.cooldown_ms == 0
@@ -253,6 +255,8 @@ fn default_monitor() -> DomainMonitorDescriptor {
 
 fn balance_policy(config: &BalanceConfig) -> ChunkKvRangeBalancePolicy {
     ChunkKvRangeBalancePolicy {
+        byte_weight_percent: config.byte_weight_percent,
+        imbalance_tolerance_percent: config.imbalance_tolerance_percent,
         target_partitions_per_owner: u32::try_from(config.target_partitions_per_owner).unwrap_or(u32::MAX),
         target_partition_bytes: config.target_partition_bytes,
         minimum_weighted_improvement_percent: config.minimum_weighted_improvement_percent,

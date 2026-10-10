@@ -8,6 +8,20 @@ const rejectInterception = async () => {
 };
 
 export const test = base.extend({
+  request: async ({ request, playwright, baseURL }, use, testInfo) => {
+    if (testInfo.project.metadata.fileBackedSync !== true) {
+      await use(request);
+      return;
+    }
+    // File-backed native devices can spend tens of milliseconds in each
+    // durable sync. Data preparation has a separate budget from UI actions.
+    const durableRequest = await playwright.request.newContext({ baseURL, timeout: 10_000 });
+    try {
+      await use(durableRequest);
+    } finally {
+      await durableRequest.dispose();
+    }
+  },
   context: async ({ context }, use) => {
     context.route = rejectInterception;
     context.routeFromHAR = rejectInterception;

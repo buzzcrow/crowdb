@@ -7,7 +7,7 @@ Thank you for contributing to CROWDB.
 
 ## Development status
 
-CROWDB is under active development at version `0.2.2`. It has not reached
+CROWDB is under active development at version `0.3.0`. It has not reached
 alpha, is not recommended for production, and must be tested with disposable
 data. Compatibility is not yet maintained for persisted data, WAL, metadata, or
 other on-disk formats. A change may deliberately replace an unreleased format

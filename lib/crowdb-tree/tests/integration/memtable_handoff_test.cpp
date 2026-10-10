@@ -216,4 +216,32 @@ TEST(MemTableHandoff, OverlayJournalCutoverDoesNotCreditL1Coverage)
     expect_value(destination, 1, "inherited");
 }
 
+TEST(MemTableHandoff, ContinuingParentDoesNotAdvanceChildPastInheritedFrontier)
+{
+    Crowdbtree source;
+    ASSERT_TRUE(source.apply(1, put("apple", "left")).ok());
+    ASSERT_TRUE(source.apply(2, put("zebra", "inherited")).ok());
+    Config child_config;
+    child_config.key_range = KeyRange::bounded(std::string("m"), std::nullopt);
+    Crowdbtree child(child_config);
+    ASSERT_TRUE(child.install_split_memtable_overlay(source, 2).ok());
+    ASSERT_TRUE(child.apply(3, put("zebra", "child-newer")).ok());
+    ASSERT_TRUE(source.apply(3, put("banana", "parent-after-handoff")).ok());
+    uint64_t generation = 0;
+    uint64_t captured   = 0;
+    ASSERT_TRUE(source.begin_split_memtable_view(&generation, &captured).ok());
+    ASSERT_EQ(captured, 3U);
+    ASSERT_TRUE(source.publish_split_memtable_view(generation, 2, child, child_config.key_range).ok());
+    ASSERT_TRUE(child.clear_split_memtable_overlay(source).ok());
+    ASSERT_EQ(child.last_applied_slot(), 2U);
+    uint64_t    slot = 0;
+    std::string value;
+    ASSERT_TRUE(child.get(Slice("zebra"), &slot, &value));
+    ASSERT_EQ(slot, 3U);
+    ASSERT_EQ(value, "child-newer");
+    ASSERT_FALSE(child.get(Slice("banana"), &slot, &value));
+    ASSERT_TRUE(source.release_split_memtable_view(generation).ok());
+    ASSERT_TRUE(source.apply(4, put("cherry", "parent-continues")).ok());
+}
+
 #endif

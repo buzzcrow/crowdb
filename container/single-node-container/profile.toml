@@ -174,9 +174,9 @@ backoff_max_ms = 5000
 id = "access"
 program = "/opt/crowdb/bin/crowdb-access-server"
 args = ["--config", "/opt/crowdb/run/config/access.toml"]
-env = { CROWDB_S3_PUBLIC_URI = "http://localhost:9091", CROWDB_S3_REGION = "us-east-1", CROWDB_ICEBERG_PUBLIC_URI = "http://localhost:9092", CROWDB_ICEBERG_GC_ENABLED = "0", CROWDB_MANAGEMENT_SEEDS = "http://127.0.0.1:10000", CROWDB_ACCESS_HEALTH_LISTEN = "127.0.0.1:9093", CROWDB_ACCESS_LOG_DIR = "/opt/crowdb/data/log/access" }
+env = { CROWDB_S3_PUBLIC_URI = "http://localhost:9091", CROWDB_S3_REGION = "us-east-1", CROWDB_ICEBERG_PUBLIC_URI = "http://localhost:9092", CROWDB_ICEBERG_GC_ENABLED = "0", CROWDB_MANAGEMENT_SEEDS = "http://127.0.0.1:10000", CROWDB_ACCESS_HEALTH_LISTEN = "127.0.0.1:9094", CROWDB_ACCESS_LOG_DIR = "/opt/crowdb/data/log/access" }
 dependencies = ["kv", "chunk-kv", "chunkdb", "diskio"]
-fence_listeners = ["127.0.0.1:9092", "127.0.0.1:9091", "127.0.0.1:9093"]
+fence_listeners = ["127.0.0.1:9092", "127.0.0.1:9091", "127.0.0.1:9094"]
 config_template = "/opt/crowdb/etc/templates/access.toml"
 [services.probe]
 kind = "http"
@@ -186,7 +186,7 @@ timeout_ms = 1000
 failure_threshold = 5
 [[services.additional_probes]]
 kind = "http"
-target = "http://127.0.0.1:9093/_crowdb/health/ready"
+target = "http://127.0.0.1:9094/_crowdb/health/ready"
 timeout_ms = 1000
 failure_threshold = 5
 [services.restart]

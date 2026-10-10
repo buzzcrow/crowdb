@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_protocol::chunk_kv::{SplitPhase, SplitReadinessProof, SplitTransition};
+use crowdb_protocol::chunk_kv::{SplitPhase, SplitReadinessProof, SplitTransition, TailOverlayArtifact};
 
 use crate::MonitorError;
 
@@ -66,6 +66,30 @@ impl SplitStateMachine {
         }
     }
 
+    /// Records the proof to persist before installing local child dispatch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a conflicting proof or outside parent preparation.
+    pub fn record_handoff(&mut self, proof: TailOverlayArtifact) -> Result<(), MonitorError> {
+        if let Some(existing) = &self.transition.handoff_proof {
+            return if existing == &proof {
+                Ok(())
+            } else {
+                Err(MonitorError::PlanFailed("split handoff proof conflicts".into()))
+            };
+        }
+        if self.transition.phase != SplitPhase::ParentPreparing {
+            return Err(MonitorError::PlanFailed("split parent was not preparing".into()));
+        }
+        let mut next = self.transition.clone();
+        next.handoff_proof = Some(proof);
+        next.validate()
+            .map_err(|error| MonitorError::PlanFailed(error.to_string()))?;
+        self.transition = next;
+        Ok(())
+    }
+
     /// Records the exact common cutover frontier reported by the child.
     ///
     /// # Errors
@@ -82,12 +106,21 @@ impl SplitStateMachine {
         if self.transition.phase != SplitPhase::ParentPreparing {
             return Err(MonitorError::PlanFailed("split parent was not preparing".into()));
         }
-        self.transition.retained_parent_artifact.tail_overlay =
-            Some(proof.retained_parent_tail_overlay.clone());
-        self.transition.child.artifact.tail_overlay = Some(proof.child_tail_overlay.clone());
-        self.transition.readiness_proof = Some(proof);
-        self.transition.phase = SplitPhase::ChildPrepared;
-        self.validate_current()
+        let mut next = self.transition.clone();
+        if next.retained_parent_artifact.tree_id != next.parent_artifact.tree_id
+            || next.retained_parent_artifact.stream_name != next.parent_artifact.stream_name
+        {
+            next.retained_parent_artifact
+                .tail_overlay
+                .clone_from(&proof.retained_parent_tail_overlay);
+        }
+        next.child.artifact.tail_overlay = Some(proof.child_tail_overlay.clone());
+        next.readiness_proof = Some(proof);
+        next.phase = SplitPhase::ChildPrepared;
+        next.validate()
+            .map_err(|error| MonitorError::PlanFailed(error.to_string()))?;
+        self.transition = next;
+        Ok(())
     }
 
     /// Marks the atomic catalog update after the retained parent and child are ready.
@@ -114,8 +147,13 @@ impl SplitStateMachine {
     ///
     /// Returns an error after commit or for an empty/conflicting reason.
     pub fn abort(&mut self, reason: &str) -> Result<(), MonitorError> {
-        if reason.is_empty() || self.transition.phase == SplitPhase::CatalogCommitted {
-            return Err(MonitorError::PlanFailed("committed split cannot abort".into()));
+        if reason.is_empty()
+            || self.transition.phase == SplitPhase::CatalogCommitted
+            || self.transition.handoff_proof.is_some()
+        {
+            return Err(MonitorError::PlanFailed(
+                "committed split handoff cannot abort".into(),
+            ));
         }
         if self.transition.phase == SplitPhase::Aborted {
             return if self.transition.failure.as_deref() == Some(reason) {

@@ -44,17 +44,19 @@ async fn provision(
     let entry = ops::hardware::add_disk_group_bound_to_group0(&ctx, node_id, id, &name, Some(binding))
         .await
         .map_err(map_config_err)?;
-    if !ctx
-        .config()
-        .disk_groups
-        .iter()
-        .any(|g| g.node_id == node_id && g.id == id)
     {
-        ctx.config_mut()
-            .add_disk_group(entry.clone())
-            .map_err(map_config_err)?;
+        // Group-0 publication can overlap service registration. Merge only
+        // this entry so the older operation snapshot cannot erase services.
+        let mut config = state.config.write().unwrap();
+        if !config
+            .disk_groups
+            .iter()
+            .any(|g| g.node_id == node_id && g.id == id)
+        {
+            config.add_disk_group(entry.clone()).map_err(map_config_err)?;
+        }
     }
-    state.commit_op_context(&ctx).map_err(map_persist_err)?;
+    state.persist().map_err(map_persist_err)?;
 
     Ok((StatusCode::CREATED, Json(entry)))
 }

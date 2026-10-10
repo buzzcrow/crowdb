@@ -513,3 +513,27 @@ pub fn validate(config: &DdbConfig) -> Result<(), String> {
 fn is_power_of_two(n: u32) -> bool {
     n > 0 && n.is_power_of_two()
 }
+
+impl DdbConfig {
+    /// Keep ownership observation at least as frequent as configured heartbeats.
+    /// The ordinary controller retains its five-second observation cadence.
+    #[must_use]
+    pub fn ownership_monitor_descriptor(&self) -> crowdb_protocol::chunk_kv::DomainMonitorDescriptor {
+        use crowdb_protocol::chunk_kv::{DomainFailurePolicy, DomainMonitorDescriptor};
+        DomainMonitorDescriptor {
+            domain: "diskdb-ownership".into(),
+            service_registry_name: "diskdb".into(),
+            driver_version: 1,
+            capability_version: 1,
+            heartbeat_interval_ms: u64::from(self.heartbeat.interval_secs.min(5)) * 1_000,
+            suspect_after_ms: 10_000,
+            dead_after_ms: 15_000,
+            lease_duration_ms: 20_000,
+            max_clock_skew_ms: 1_000,
+            self_fence_margin_ms: 1_000,
+            failure_policy: DomainFailurePolicy::AutomaticSharedStorage,
+            balance_policy: "disk-group-count-v1".into(),
+            chunk_kv_range_balance: None,
+        }
+    }
+}

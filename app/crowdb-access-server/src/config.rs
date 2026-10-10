@@ -18,6 +18,7 @@ pub struct AccessConfig {
     pub small_write: SmallWriteConfig,
     pub s3: S3Config,
     pub iceberg: IcebergConfig,
+    pub dataset: DatasetConfig,
     pub health: HealthConfig,
 }
 
@@ -222,6 +223,30 @@ pub struct IcebergConfig {
     pub gc: IcebergGcConfig,
 }
 
+/// Dataset's listener and read-admission limits. Dataset is optional so an
+/// existing S3/Iceberg deployment keeps its current startup behavior.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
+pub struct DatasetConfig {
+    pub listen: Option<String>,
+    pub max_in_flight: usize,
+    pub max_batch_size: usize,
+    pub request_timeout_seconds: u64,
+    pub lease_ttl_seconds: u64,
+}
+
+impl Default for DatasetConfig {
+    fn default() -> Self {
+        Self {
+            listen: None,
+            max_in_flight: 3,
+            max_batch_size: 10_000,
+            request_timeout_seconds: 60,
+            lease_ttl_seconds: 60,
+        }
+    }
+}
+
 impl AccessConfig {
     #[must_use]
     pub fn s3_small_write(&self) -> &SmallWriteConfig {
@@ -256,6 +281,7 @@ pub struct IcebergGcConfig {
 }
 
 impl BaseConfig for AccessConfig {
+    #[allow(clippy::too_many_lines)]
     fn validate(&self) -> Result<(), String> {
         if self.common.diskio_connections_per_endpoint == 0 || self.common.diskio_rpc_workers == 0 {
             return Err("common DiskIO connections and RPC workers must be nonzero".into());
@@ -284,6 +310,7 @@ impl BaseConfig for AccessConfig {
         if self.iceberg.native_budget_bytes == Some(0) {
             return Err("Iceberg native budget must be nonzero".into());
         }
+        self.validate_dataset()?;
         if self.iceberg.ec_data == Some(0)
             || self.iceberg.ec_code == Some(0)
             || self.iceberg.max_chunk_size == Some(0)
@@ -345,6 +372,7 @@ impl BaseConfig for AccessConfig {
             self.s3.listen.as_deref(),
             self.iceberg.listen.as_deref(),
             self.health.listen.as_deref(),
+            self.dataset.listen.as_deref(),
         ];
         let mut ports = std::collections::HashSet::new();
         for listen in listeners.into_iter().flatten() {
@@ -360,6 +388,24 @@ impl BaseConfig for AccessConfig {
 }
 
 impl AccessConfig {
+    fn validate_dataset(&self) -> Result<(), String> {
+        if self.dataset.max_in_flight == 0 || self.dataset.max_in_flight > 64 {
+            return Err("dataset.max_in_flight must be between 1 and 64".into());
+        }
+        if self.dataset.max_batch_size == 0
+            || self.dataset.max_batch_size > crowdb_access_dataset::MAX_BATCH_SIZE
+        {
+            return Err("dataset.max_batch_size is outside Dataset bounds".into());
+        }
+        if self.dataset.request_timeout_seconds == 0 || self.dataset.request_timeout_seconds > 300 {
+            return Err("dataset.request_timeout_seconds must be between 1 and 300".into());
+        }
+        if self.dataset.lease_ttl_seconds == 0 || self.dataset.lease_ttl_seconds > 3600 {
+            return Err("dataset.lease_ttl_seconds must be between 1 and 3600".into());
+        }
+        Ok(())
+    }
+
     fn validate_small_writes(&self) -> Result<(), String> {
         for config in [
             &self.small_write,

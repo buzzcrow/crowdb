@@ -8,6 +8,7 @@
 
 #ifdef CROWDB_HAVE_SPDLOG
 
+#    include "crowdb-common/atomic_shared_ptr.h"
 #    include "crowdb-common/compressing_sink.h"
 
 #    include <pthread.h>
@@ -37,7 +38,7 @@ std::atomic<bool> g_enabled{true};
 } // namespace
 
 using ThreadNames = std::unordered_map<size_t, std::string>;
-std::atomic<std::shared_ptr<const ThreadNames>> g_thread_names{std::make_shared<const ThreadNames>()};
+AtomicSharedPtr<const ThreadNames> g_thread_names{std::make_shared<const ThreadNames>()};
 
 void set_current_thread_name(const char *name)
 {

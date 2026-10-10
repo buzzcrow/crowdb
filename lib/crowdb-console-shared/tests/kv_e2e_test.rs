@@ -58,6 +58,7 @@ async fn store_rpc_endpoint(mgmt_url: &str, store_id: u64) -> String {
     format!("127.0.0.1:{port}")
 }
 
+#[cfg_attr(target_os = "macos", ignore = "local server deployment is Linux-only")]
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn put_get_delete_cycle() {

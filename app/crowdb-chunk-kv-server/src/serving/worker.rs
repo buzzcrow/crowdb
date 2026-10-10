@@ -193,15 +193,22 @@ impl TransitionExecutor {
     ///
     /// Returns an error when the hosted child cannot delete the durable pin.
     pub fn release_split_generation_pin(&self, transition: &SplitTransition) -> Result<(), MonitorError> {
-        let Some(partition) = self.service.hosted_partition(transition.child.partition_id) else {
+        if transition.phase == SplitPhase::CatalogCommitted
+            && !self.service.split_child_is_independent(transition)
+        {
             return Ok(());
-        };
-        partition
-            .release_generation_pin(crowdb_chunk_kv::TransitionId {
-                high: transition.transition_id.high,
-                low: transition.transition_id.low,
-            })
-            .map_err(|error| plan_error(&error.to_string()))
+        }
+        for id in [transition.parent_id, transition.child.partition_id] {
+            if let Some(partition) = self.service.hosted_partition(id) {
+                partition
+                    .release_generation_pin(crowdb_chunk_kv::TransitionId {
+                        high: transition.transition_id.high,
+                        low: transition.transition_id.low,
+                    })
+                    .map_err(|error| plan_error(&error.to_string()))?;
+            }
+        }
+        Ok(())
     }
 
     /// Aborts local split ingress and removes the unpublished child using the
@@ -250,7 +257,11 @@ impl TransitionExecutor {
             range: transition.range.clone(),
             owner: transition.target.clone(),
             owner_epoch: transition.target_epoch,
-            state: ChunkKvRangeCatalogPartitionState::Prepared,
+            state: if transition.phase == TransferPhase::CatchupPublished {
+                ChunkKvRangeCatalogPartitionState::TargetCatchingUp
+            } else {
+                ChunkKvRangeCatalogPartitionState::Prepared
+            },
             artifact: transition.target_artifact.clone(),
             transition_id: Some(transition.transition_id),
         };
@@ -355,9 +366,16 @@ impl TransitionExecutor {
         if artifact.child.applied_seq != artifact.cutover_seq {
             return Err(plan_error("split child does not share the cutover frontier"));
         }
-        let retained_parent_tail_overlay = split_tail_overlay(&artifact, &artifact.retained_parent);
+        let mut retained_parent_tail_overlay = None;
         let mut retained_parent_artifact = transition.retained_parent_artifact.clone();
-        retained_parent_artifact.tail_overlay = Some(retained_parent_tail_overlay.clone());
+        if retained_parent_artifact.tree_id != transition.parent_artifact.tree_id
+            || retained_parent_artifact.stream_name != transition.parent_artifact.stream_name
+        {
+            retained_parent_tail_overlay = Some(split_tail_overlay(&artifact, &artifact.retained_parent));
+            retained_parent_artifact
+                .tail_overlay
+                .clone_from(&retained_parent_tail_overlay);
+        }
         info!(
             transition_id_high = transition.transition_id.high,
             transition_id_low = transition.transition_id.low,
@@ -366,8 +384,8 @@ impl TransitionExecutor {
             parent_epoch = transition.parent_epoch,
             expected_source_stream_high = transition.parent_artifact.stream_name.high,
             expected_source_stream_low = transition.parent_artifact.stream_name.low,
-            observed_source_stream_high = retained_parent_tail_overlay.source_stream_name.high,
-            observed_source_stream_low = retained_parent_tail_overlay.source_stream_name.low,
+            observed_source_stream_high = artifact.retained_parent.parent_stream_name.high,
+            observed_source_stream_low = artifact.retained_parent.parent_stream_name.low,
             cutover_seq = artifact.cutover_seq,
             "local split readiness prepared"
         );
@@ -443,25 +461,14 @@ impl TransitionStorage for ChunkKvStorage {
         let prepared =
             ChunkKvStorage::prepare_split(self, parent, transition, max_catchup_lag_records).await?;
         let artifact = prepared.artifact.clone();
-        let retained_parent = prepared
-            .retained_parent
-            .ok_or_else(|| plan_error("split session did not create a retained parent writer"))?
-            .open_warmed(PartitionConfig::default())
-            .map_err(|error| plan_error(&error.to_string()))?;
         let child = prepared
             .child
             .open_warmed(PartitionConfig::default())
             .map_err(|error| plan_error(&error.to_string()))?;
-        retained_parent
-            .activate_local_split_writer(&artifact)
-            .map_err(|error| plan_error(&error.to_string()))?;
-        child
-            .activate_local_split_writer(&artifact)
-            .map_err(|error| plan_error(&error.to_string()))?;
-        parent
-            .install_split_ingress(retained_parent.clone(), child.clone())
-            .await
-            .map_err(|error| plan_error(&error.to_string()))?;
+        let retained_parent = parent
+            .split_ingress()
+            .ok_or_else(|| plan_error("split child dispatch is absent"))?
+            .retained_parent();
         Ok(PreparedLocalSplit {
             artifact,
             retained_parent,

@@ -34,10 +34,12 @@ export function DeployServerDialog({
   const [rpcPort, setRpcPort] = useState(defaultRpcPort);
   const [isLoading, setIsLoading] = useState(false);
   const wasOpenRef = useRef(false);
+  const portsEditedRef = useRef(false);
   const { success, error } = useToast();
 
   useEffect(() => {
     if (isOpen && !wasOpenRef.current) {
+      portsEditedRef.current = false;
       setRestPort(defaultRestPort);
       setRpcPort(defaultRpcPort);
     }
@@ -46,7 +48,7 @@ export function DeployServerDialog({
 
   const defaults = useDeploymentDefaults(isOpen);
   useEffect(() => {
-    if (!defaults.values) return;
+    if (!defaults.values || portsEditedRef.current) return;
     setRestPort(String(defaults.values['paxos-kv'].http_port));
     setRpcPort(String(defaults.values['paxos-kv'].rpc_port));
   }, [defaults.values]);
@@ -85,7 +87,7 @@ export function DeployServerDialog({
       description="Spawn a CrowDB Storage instance on this node. Required before stores or replicas can be created."
       confirmLabel="Deploy"
       onConfirm={handleSubmit}
-      confirmDisabled={!defaults.values || !valid || isLoading}
+      confirmDisabled={!valid || isLoading}
       confirmLoading={isLoading}
     >
       <div className="tw-space-y-4">
@@ -95,14 +97,20 @@ export function DeployServerDialog({
           label="REST Port"
           inputMode="numeric"
           value={restPort}
-          onChange={(e) => setRestPort(e.target.value)}
+          onChange={(e) => {
+            portsEditedRef.current = true;
+            setRestPort(e.target.value);
+          }}
           autoFocus
         />
         <Input
           label="RPC Port"
           inputMode="numeric"
           value={rpcPort}
-          onChange={(e) => setRpcPort(e.target.value)}
+          onChange={(e) => {
+            portsEditedRef.current = true;
+            setRpcPort(e.target.value);
+          }}
         />
       </div>
     </Dialog>

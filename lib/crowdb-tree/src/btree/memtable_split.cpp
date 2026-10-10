@@ -133,8 +133,8 @@ try {
         if (generation == 0 || generation != split_memtable_generation_ || split_shared_memtables_.empty()) {
             return Status::invalid_argument("split memtable view generation is not active");
         }
-        if (journal_frontier != split_memtable_frontier_) {
-            return Status::invalid_argument("split publication must use its captured frontier");
+        if (journal_frontier > split_memtable_frontier_) {
+            return Status::invalid_argument("split publication exceeds its captured frontier");
         }
         for (const auto &table : split_shared_memtables_) {
             auto snapshot = table->snapshot(journal_frontier);
@@ -146,9 +146,9 @@ try {
         return left.key == right.key ? left.slot > right.slot : left.key < right.key;
     });
 
-    // The split view stops at the journal frontier captured when the source
-    // installed its replacement active memtable.  Publishing later must not
-    // advance the destination over post-view journal records.
+    // The retained parent keeps appending while the view is captured in the
+    // background. Publish only the inherited prefix, without crediting later
+    // parent records to the child's independent sequence namespace.
     const uint64_t          cs      = journal_frontier;
     uint64_t                page_id = kInvalidPageId;
     Slice                   high_key;

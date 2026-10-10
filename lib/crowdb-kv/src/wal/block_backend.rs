@@ -275,7 +275,26 @@ impl BlockSegment {
     }
 
     pub(super) fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<usize> {
-        self.file.read_at(buf, offset)
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        match self.device.alignment {
+            WalBlockAlignment::Unaligned => self.file.read_at(buf, offset),
+            WalBlockAlignment::Aligned { io_unit_bytes } => {
+                let plan = self.device.alignment.plan_write(offset, buf.len());
+                let mut raw = vec![0_u8; plan.aligned_len + io_unit_bytes];
+                let start = raw.as_mut_ptr().align_offset(io_unit_bytes);
+                if start >= io_unit_bytes {
+                    return Err(io::Error::other("BlockDevice: failed to align O_DIRECT buffer"));
+                }
+                let aligned = &mut raw[start..start + plan.aligned_len];
+                let read = self.file.read_at(aligned, plan.aligned_offset)?;
+                let payload = plan.payload_offset_within_aligned;
+                let available = read.saturating_sub(payload).min(buf.len());
+                buf[..available].copy_from_slice(&aligned[payload..payload + available]);
+                Ok(available)
+            }
+        }
     }
 
     pub(super) fn read_exact_at(&self, buf: &mut [u8], offset: u64) -> io::Result<()> {

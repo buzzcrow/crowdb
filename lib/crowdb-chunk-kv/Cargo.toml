@@ -23,6 +23,7 @@ crowdb-chunk-stream = { path = "../crowdb-chunk-stream" }
 crowdb-tree-ffi = { path = "../crowdb-tree/ffi", features = ["chunk-rpc"] }
 futures = "0.3"
 serde = { version = "1", features = ["derive"] }
+serde_bytes = "0.11"
 sha2 = "0.10"
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync", "time"] }

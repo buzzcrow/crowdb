@@ -191,7 +191,10 @@ async fn assert_system_chunk_purposes(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "starts a complete simulated three-rack production storage stack"]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "starts a complete simulated three-rack production storage stack"
+)]
 async fn s3_and_iceberg_keep_distinct_policies_on_protected_storage() {
     let dir = TestDir::new("access-production-protocol-policy").unwrap();
     s3::start_protected_test_cluster(dir.path()).await.unwrap();

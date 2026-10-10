@@ -527,7 +527,7 @@ impl BaseConfig for CrowDBConfig {
             self.data_root = PathBuf::from("ctdata");
         }
         if self.wal_backend.is_empty() {
-            self.wal_backend = "file".to_string();
+            self.wal_backend = "block-device".to_string();
         }
         if self.crowtree_backend.is_empty() {
             self.crowtree_backend = "block".to_string();
@@ -556,7 +556,7 @@ impl Default for CrowDBConfig {
             wal_root: PathBuf::from("waldata"),
             config_root: PathBuf::from("conf"),
             data_root: PathBuf::from("ctdata"),
-            wal_backend: "file".to_string(),
+            wal_backend: "block-device".to_string(),
             crowtree_backend: "block".to_string(),
             wal_skip_fsync: false,
             log_dir: "log".to_string(),

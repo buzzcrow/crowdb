@@ -359,6 +359,13 @@ impl PxGroup {
         // Reset lease state at the start of the tenure. The first heartbeat
         // round that gets quorum extends the lease and unlocks read fast-path.
         replica.reset_lease_to(lease_now());
+        if self.quorum() == 1 {
+            // A single-voter group already has a local quorum. Establish its
+            // read lease as soon as leader state starts so the lease cannot
+            // remain at the tenure-entry baseline while the ticker is being
+            // scheduled.
+            replica.renew_lease(lease_now(), cfg);
+        }
 
         // Drop any safe-slot / per-peer watermarks inherited from a prior
         // tenure. `group_safe_slot` only advances within a tenure, so a new
@@ -369,11 +376,8 @@ impl PxGroup {
         // serve reads immediately. Multi-replica leaders must finish bulk
         // Phase 1 / the first heartbeat round before `leader_read_ready` is
         // set by those paths.
-        if self.quorum() == 1 {
-            self.leader_read_ready.store(true, Ordering::Release);
-        } else {
-            self.leader_read_ready.store(false, Ordering::Release);
-        }
+        self.leader_read_ready
+            .store(self.quorum() == 1, Ordering::Release);
 
         // Per-leadership-tenure cancel token. Cancelled by the step-down
         // sequence; aborts in-flight bulk Phase 1 and any future
@@ -406,6 +410,15 @@ impl PxGroup {
             self.leader_read_ready.store(true, Ordering::Release);
         }
 
+        // Establish the first quorum heartbeat before waiting on the ticker.
+        // This makes lease readiness deterministic when the election driver
+        // enters leader state immediately before a paused-time advance.
+        if let HeartbeatOutcome::SteppedDown { peer_term } = self.run_heartbeat_round(cfg, leader_term).await
+        {
+            self.step_down(&tenure_cancel, leader_term, StepDownReason::HigherTerm(peer_term));
+            return;
+        }
+
         let mut ticker = tokio::time::interval(Duration::from_millis(cfg.heartbeat_interval_ms));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         // First tick fires immediately; consume it so the loop starts clean.
@@ -434,12 +447,6 @@ impl PxGroup {
                 tenure_cancel.cancel();
                 return;
             }
-            // Lease-unrenewable check on every Leader tick.
-            let last_quorum = replica.last_quorum_heartbeat_at();
-            if lease_now().duration_since(last_quorum) >= Duration::from_millis(cfg.lease_duration_ms) {
-                self.step_down(&tenure_cancel, leader_term, StepDownReason::LeaseUnrenewable);
-                return;
-            }
             tokio::select! {
                 biased;
                 () = cancel.cancelled() => {
@@ -453,7 +460,18 @@ impl PxGroup {
                 }
                 _ = ticker.tick() => {
                     match self.run_heartbeat_round(cfg, leader_term).await {
-                        HeartbeatOutcome::Continued { .. } => {
+                        HeartbeatOutcome::Continued { quorum_acked } => {
+                            // Check lease expiry after this round has had a
+                            // chance to renew it. This ordering matters when
+                            // paused time advances across a tick and the
+                            // lease duration in one jump.
+                            if !quorum_acked
+                                && lease_now().duration_since(replica.last_quorum_heartbeat_at())
+                                    >= Duration::from_millis(cfg.lease_duration_ms)
+                            {
+                                self.step_down(&tenure_cancel, leader_term, StepDownReason::LeaseUnrenewable);
+                                return;
+                            }
                             // Opportunistic background repair: close the lowest
                             // gap in the open prefix so the contiguous frontier
                             // (and group safe-slot) can advance past abandoned

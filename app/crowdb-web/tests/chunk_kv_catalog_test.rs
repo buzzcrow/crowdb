@@ -1,6 +1,9 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+#[path = "common/catalog_balance.rs"]
+mod catalog_balance;
+
 use std::sync::Arc;
 
 use axum::{
@@ -93,6 +96,7 @@ async fn catalog_windows_pin_generation_validate_checksums_and_keep_exact_ids() 
         get(app.clone(), "?generation=9&offset=105").await.0,
         StatusCode::BAD_REQUEST
     );
+    verify_balance(&kv, &app, &page).await;
     verify_runtime(&state, &app).await;
     page.entries[0].owner_epoch = 1;
     kv.put(
@@ -337,4 +341,61 @@ fn catalog_fixture() -> (ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage) {
     };
     head.seal().unwrap();
     (head, page)
+}
+
+async fn verify_balance(kv: &CrowdbKvClient, app: &axum::Router, page: &ChunkKvRangeCatalogPage) {
+    use crowdb_protocol::chunk_kv::balance::OBSERVATION_KEY;
+    catalog_balance::seed(kv, page).await;
+    let (status, first) = get(app.clone(), "").await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, tail) = get(app.clone(), "?generation=9&offset=100").await;
+    assert_eq!(
+        first["entries"][0]["balance"]["partition"]["weight"],
+        tail["entries"][0]["balance"]["partition"]["weight"]
+    );
+    assert_eq!(first["balance"]["owners"][0]["partition_count"], "105");
+    assert_eq!(first["balance"]["owners"][0]["weight"]["byte_units"], "800000000");
+    assert_eq!(
+        first["entries"][0]["balance"]["partition"]["weight"]["byte_units"],
+        "7619047"
+    );
+    let crowdb_kv_client::GetOutcome::Found { value, .. } = kv
+        .get(
+            0,
+            0,
+            OBSERVATION_KEY.as_bytes(),
+            crowdb_kv_client::ReadMode::Linearizable,
+            None,
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("Missing seeded balance");
+    };
+    let original: Value = serde_json::from_slice(&value).unwrap();
+    for (field, expected) in [
+        ("catalog_generation", "Stale balance catalog generation"),
+        ("observed_at_ms", "Stale balance observation"),
+        ("owner_epoch", "within tolerance"),
+    ] {
+        let mut value = original.clone();
+        if field == "owner_epoch" {
+            value["partitions"][0][field] = 1.into();
+        } else {
+            value[field] = 0.into();
+        }
+        kv.put(
+            0,
+            0,
+            OBSERVATION_KEY.as_bytes(),
+            &serde_json::to_vec(&value).unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+        let (status, observed) = get(app.clone(), "").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(observed["entries"][0]["balance"].is_null());
+        assert_eq!(observed["balance"]["reason"], expected);
+    }
 }

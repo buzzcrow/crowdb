@@ -672,6 +672,15 @@ permission to reclaim data.
 sends one request per DiskDB data group and runs those requests concurrently.
 DiskDB persists each allocated busy block as Tentative before responding.
 
+**Allocation routing failure**: Only a typed connection-establishment failure
+before RPC submission permits rerouting the same allocation. ChunkDB refreshes
+the service registry and makes at most one attempt at a different endpoint.
+If discovery fails, the endpoint is unchanged, or no owner is advertised, it
+returns the original failure. Any failure during RPC submission or while awaiting
+the reply remains ambiguous and is never replayed by the allocator. Discovery
+may refresh for the next independent request. Successful allocation adds no
+registry read or lock beyond the existing periodic discovery policy.
+
 **Success boundary**: The Active chunk and every referenced Tentative busy
 block are durable before ChunkDB returns success. DiskDB commit changes the
 matching busy records to Committed in one ordinary batch write. A

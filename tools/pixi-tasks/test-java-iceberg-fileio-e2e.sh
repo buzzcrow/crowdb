@@ -4,6 +4,12 @@
 set -euo pipefail
 cd "${PIXI_PROJECT_ROOT:?}"
 
+# Catalog clients run Maven offline; prepare their dependencies even when this
+# task is invoked without the broader Java SDK acceptance task.
+pixi run -e iceberg-e2e -- mvn --batch-mode --no-transfer-progress \
+    -f app/crowdb-access-server/tests/common/iceberg_java/pom.xml \
+    dependency:go-offline compile exec:help
+
 pixi run -e default -- cmake -S app/crowdb-diskio -B app/crowdb-diskio/build -DCMAKE_BUILD_TYPE=Release
 pixi run -e default -- cmake --build app/crowdb-diskio/build -j 4 --target crowdb-diskio
 pixi run -e default -- cargo build --release -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb -p crowdb-chunk-kv-server -p crowdb-access-server

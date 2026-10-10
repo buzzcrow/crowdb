@@ -78,6 +78,31 @@ async fn committed_split_proves_both_recovered_writers_and_rejects_mismatches() 
 }
 
 #[tokio::test]
+async fn materialized_split_half_recovers_while_sibling_keeps_the_transition_marker() {
+    let transition = transition();
+    for retained in [true, false] {
+        let mut clean = entry(&transition, retained);
+        clean.artifact.tail_overlay = None;
+        let partition = recovered(&clean).await;
+        let service = ChunkKvService::new(1, 4).unwrap();
+        install(&service, &clean, &partition);
+        assert_eq!(service.catalog_overlay_transition_id(clean.partition_id), None);
+        let sibling = entry(&transition, !retained);
+        assert_eq!(
+            service.catalog_overlay_transition_id(sibling.partition_id),
+            Some(transition.transition_id),
+        );
+        service
+            .activate_recovered_partition(clean.partition_id, clean.owner_epoch)
+            .unwrap();
+        assert_eq!(partition.lifecycle(), PartitionLifecycle::Serving);
+        assert!(service
+            .activate_recovered_partition(clean.partition_id, clean.owner_epoch - 1)
+            .is_err());
+    }
+}
+
+#[tokio::test]
 async fn materialized_catalog_replaces_unactivated_overlay_with_independent_recovery() {
     let transition = transition();
     let original = entry(&transition, true);
@@ -184,6 +209,7 @@ fn transition() -> SplitTransition {
         },
         planned_at_ms: 0,
         phase: SplitPhase::CatalogCommitted,
+        handoff_proof: None,
         readiness_proof: Some(SplitReadinessProof {
             cutover_seq: 1,
             parent_next_epoch: 2,
@@ -194,7 +220,7 @@ fn transition() -> SplitTransition {
             child_applied_seq: 1,
             child_tree_manifest: 1,
             child_root_manifest_generation: 1,
-            retained_parent_tail_overlay: overlay.clone(),
+            retained_parent_tail_overlay: Some(overlay.clone()),
             child_tail_overlay: overlay,
         }),
         failure: None,
@@ -352,6 +378,11 @@ fn install(service: &ChunkKvService, entry: &ChunkKvRangeCatalogEntry, partition
         entries: vec![self::entry(&transition, true), self::entry(&transition, false)],
         checksum: [0; 32],
     };
+    *page
+        .entries
+        .iter_mut()
+        .find(|current| current.partition_id == entry.partition_id)
+        .unwrap() = entry.clone();
     page.seal().unwrap();
     let mut head = ChunkKvRangeCatalogHead {
         generation: 1,

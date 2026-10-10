@@ -45,8 +45,20 @@ library.
 - **`memory`** — in-memory, non-durable. Explicit low-durability choice
   for tests and dev.
 
-`--kv-backend` (`text` default, or `block` for `O_DIRECT`) only applies
-when `--kv-engine crowdb-tree` is selected.
+`--kv-backend` defaults to `block`: the tree uses an aligned block page
+store with direct I/O on Linux. `file` explicitly selects buffered file
+storage, and `mem-block` explicitly selects an in-memory block device.
+
+`--wal-backend` defaults to `block-device`: aligned real-file block storage
+with direct I/O on Linux and durable synchronization before acknowledgement.
+`file`, `uring` and `mem-block` remain explicit alternatives. File-backed
+device simulation still traverses the filesystem and can incur variable VFS
+and filesystem-log synchronization latency. Backend selection does not disable
+durable synchronization.
+
+Backend selection must match an existing data directory. Defaults select the
+backend for a new deployment; they do not convert stored tree formats. Existing
+file-backend deployments continue to specify `file` explicitly on restart.
 
 ### 2.2 Startup ordering
 

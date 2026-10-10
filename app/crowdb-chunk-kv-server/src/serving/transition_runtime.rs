@@ -37,13 +37,18 @@ impl TransitionProcessor {
     pub async fn tick(&self) -> Result<(), MonitorError> {
         let transfers = self.store.list_transfer_transitions().await?;
         let splits = self.store.list_split_transitions().await?;
+        let mut first_error = None;
         for (transition, revision) in transfers {
-            self.process_transfer(transition, revision).await?;
+            if let Err(error) = self.process_transfer(transition, revision).await {
+                first_error.get_or_insert(error);
+            }
         }
         for (transition, revision) in splits {
-            self.process_split(transition, revision).await?;
+            if let Err(error) = self.process_split(transition, revision).await {
+                first_error.get_or_insert(error);
+            }
         }
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
 
     async fn process_transfer(
@@ -160,6 +165,17 @@ impl TransitionProcessor {
         }
         if machine.transition().phase == SplitPhase::ParentPreparing {
             let proof = self.executor.prepare_split_parent(machine.transition()).await?;
+            let (latest, latest_revision) = self
+                .store
+                .load_split_transition(machine.transition().transition_id)
+                .await?
+                .ok_or_else(|| {
+                    MonitorError::PlanFailed("split transition disappeared during preparation".into())
+                })?;
+            if latest.handoff_proof.is_some() {
+                machine = SplitStateMachine::restore(latest)?;
+                revision = latest_revision;
+            }
             machine.record_child_ready(proof)?;
             self.store
                 .persist_split_transition(machine.transition(), revision)

@@ -363,6 +363,7 @@ fn no_bridged_cpp_names_in_rust_section() {
     assert!(out.contains("s.1.g.0.paxos.inflight_slots.g"));
 }
 
+#[cfg_attr(target_os = "macos", ignore = "per-write fsync is disabled on macOS")]
 #[tokio::test]
 async fn wal_fsync_and_write_bw_counts_match() {
     use crowdb_kv::paxos::roles::{PxBallot, SlotIndex};
