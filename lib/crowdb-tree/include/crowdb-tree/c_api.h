@@ -104,6 +104,9 @@ using ct_tree_summary = struct
     uint64_t live_value_bytes;
     uint64_t reachable_leaf_pages;
     uint64_t reachable_inner_pages;
+    uint64_t reachable_overflow_pages;
+    uint64_t reachable_page_capacity_bytes;
+    uint64_t live_logical_bytes;
     int32_t  exact;
 };
 

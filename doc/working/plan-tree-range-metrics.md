@@ -1,21 +1,17 @@
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
 <!-- Licensed under the Apache License, Version 2.0. -->
 
-# Tree range metrics plan
+# Tree range metrics Plan
 
-Upstream: [R228](../backlog/R228-tree-range-metrics.md).
+Upstream: [R228](../backlog/R228-tree-range-metrics.md), [tree storage design](../design/tree/design-crowdb-tree-storage.md).
 
-- [x] Define and expose an exact root summary with root version, coverage slot,
-  live KV count, logical key/value bytes, and reachable page counts.
-- [x] Update the cached summary only after durable snapshot anchor publication;
-  rebuild it from the selected durable root on reopen.
-- [x] Expose the summary through the C API and Rust tree FFI.
-- [x] Carry summary qualification and values through topology status and show
-  exact/unavailable state in the tree inspector.
-- [ ] Carry exact child aggregates in persisted inner-page metadata.
-- [ ] Add bounded range summaries and split/placement consumers.
-- [ ] Add crash, split, overwrite/delete, overflow, compaction, and legacy-page
-  acceptance coverage before enabling data-weighted placement.
+Goal: publish durable-root metrics that distinguish live logical data from reachable page and overflow storage, while keeping reads O(1) and unknown legacy state unavailable.
 
-Verification so far: `pixi run cargo test -p crowdb-tree-ffi --lib` and the
-`crowdb-tree` C++ targets build successfully.
+- [x] **Summary contract**: extend the tree summary/C API/FFI and protocol view with overflow, reachable-byte, and logical-byte fields; document zero-versus-unavailable semantics. Files: `lib/crowdb-tree/include/crowdb-tree/btree/diagnostics.h`, `lib/crowdb-tree/include/crowdb-tree/c_api.h`, `lib/crowdb-tree/ffi/src/stats.rs`, `lib/crowdb-protocol/src/mgmt.rs`, design docs.
+- [x] **Durable publication accounting**: compute summary accounting from the selected snapshot, publish only after anchor durability, and reconstruct structural counts on reopen. Files: `lib/crowdb-tree/src/snapshot/persist.cpp`, `lib/crowdb-tree/src/btree/crowdb-tree.cpp`.
+- [x] **Acceptance coverage**: empty, overwrite/delete, overflow and reopen cases verify logical and structural metrics and coverage fencing. Files: `lib/crowdb-tree/tests/integration/persist_test.cpp`, `lib/crowdb-tree/tests/integration/overflow_test.cpp`.
+- [ ] **Verification and cleanup**: run affected C++/Rust tests and formatting/lint gates, then remove the completed backlog entry and this plan in the final cleanup commit.
+
+Files: `lib/crowdb-tree/include/crowdb-tree/btree/diagnostics.h`, `lib/crowdb-tree/include/crowdb-tree/c_api.h`, `lib/crowdb-tree/src/btree/crowdb-tree.cpp`, `lib/crowdb-tree/src/snapshot/persist.cpp`, `lib/crowdb-tree/ffi/src/stats.rs`, `lib/crowdb-tree/ffi/src/sys.rs`, `lib/crowdb-protocol/src/mgmt.rs`, `lib/crowdb-tree/tests/integration/persist_test.cpp`, `doc/design/tree/design-crowdb-tree-storage.md`.
+
+Tests: `pixi run test-cpp`; `pixi run cargo test -p crowdb-tree-ffi`; `pixi run rs-fmt-check`; `pixi run tree-fmt`; `pixi run tree-lint`; `pixi run rs-lint`.

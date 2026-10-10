@@ -66,6 +66,9 @@ pub fn crowdb_tree_stats_to_view(s: CrowdbTreeStats) -> CrowdbTreeStatsView {
         summary_live_value_bytes: s.summary_live_value_bytes,
         summary_reachable_leaf_pages: s.summary_reachable_leaf_pages,
         summary_reachable_inner_pages: s.summary_reachable_inner_pages,
+        summary_reachable_overflow_pages: s.summary_reachable_overflow_pages,
+        summary_reachable_page_capacity_bytes: s.summary_reachable_page_capacity_bytes,
+        summary_live_logical_bytes: s.summary_live_logical_bytes,
         summary_exact: s.summary_exact,
     }
 }

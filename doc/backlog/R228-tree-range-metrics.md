@@ -3,9 +3,10 @@
 
 ### R228: crowdb-tree — Root and range statistics for split and placement
 
-Status: In progress. Exact root summaries now publish with durable snapshots and
-are exposed through the C API/Rust FFI; structural child aggregates, range
-bounded estimates, placement integration, and full recovery acceptance remain.
+Status: In progress. Exact durable-root summaries now include logical bytes and
+reachable overflow/page-capacity accounting through the C API/Rust FFI; range
+bounded estimates, persisted child aggregates, placement integration, and full
+recovery acceptance remain.
 
 ## Problem
 

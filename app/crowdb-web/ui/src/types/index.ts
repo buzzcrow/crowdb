@@ -109,6 +109,9 @@ export interface CrowdbTreeStats {
   summary_live_value_bytes: number;
   summary_reachable_leaf_pages: number;
   summary_reachable_inner_pages: number;
+  summary_reachable_overflow_pages: number;
+  summary_reachable_page_capacity_bytes: number;
+  summary_live_logical_bytes: number;
   summary_exact: boolean;
 }
 

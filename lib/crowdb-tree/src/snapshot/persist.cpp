@@ -1287,6 +1287,14 @@ Status Crowdbtree::snapshot(uint64_t *out_last_applied, uint64_t *out_snapshot_s
         summary_live_kv_.store(live_kv, std::memory_order_release);
         summary_live_key_bytes_.store(key_bytes, std::memory_order_release);
         summary_live_value_bytes_.store(value_bytes, std::memory_order_release);
+        summary_live_logical_bytes_.store(key_bytes + value_bytes, std::memory_order_release);
+        const uint64_t structural_pages =
+            leaf_count_.load(std::memory_order_relaxed) + inner_count_.load(std::memory_order_relaxed);
+        summary_reachable_overflow_pages_.store(
+            prepared.live_page_count > structural_pages ? prepared.live_page_count - structural_pages : 0,
+            std::memory_order_release);
+        summary_reachable_page_capacity_bytes_.store(prepared.live_page_count * static_cast<uint64_t>(opt_.frame_bytes),
+                                                     std::memory_order_release);
         summary_covered_slot_.store(prepared.last_applied_slot, std::memory_order_release);
         summary_root_version_.store(version_.load(std::memory_order_acquire), std::memory_order_release);
         summary_available_.store(true, std::memory_order_release);
@@ -1726,6 +1734,19 @@ Status Crowdbtree::open(const Config &opt, std::unique_ptr<Crowdbtree> *out)
         tree->summary_live_kv_.store(live_kv, std::memory_order_release);
         tree->summary_live_key_bytes_.store(key_bytes, std::memory_order_release);
         tree->summary_live_value_bytes_.store(value_bytes, std::memory_order_release);
+        tree->summary_live_logical_bytes_.store(key_bytes + value_bytes, std::memory_order_release);
+        uint64_t live_page_count = 0;
+        for (uint64_t seg_idx = 0; seg_idx < MappingTable::kMaxSegments; ++seg_idx) {
+            if (auto *segment = tree->mapping_.segment_at(seg_idx); segment != nullptr) {
+                live_page_count += segment->live_count.load(std::memory_order_relaxed);
+            }
+        }
+        const uint64_t structural_pages =
+            tree->leaf_count_.load(std::memory_order_relaxed) + tree->inner_count_.load(std::memory_order_relaxed);
+        tree->summary_reachable_overflow_pages_.store(
+            live_page_count > structural_pages ? live_page_count - structural_pages : 0, std::memory_order_release);
+        tree->summary_reachable_page_capacity_bytes_.store(live_page_count * static_cast<uint64_t>(opt.frame_bytes),
+                                                           std::memory_order_release);
         tree->summary_covered_slot_.store(anchor.last_applied_slot, std::memory_order_release);
         tree->summary_root_version_.store(anchor.snapshot_seq, std::memory_order_release);
         tree->summary_available_.store(true, std::memory_order_release);

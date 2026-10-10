@@ -273,6 +273,9 @@ pub struct ct_tree_summary {
     pub live_value_bytes: u64,
     pub reachable_leaf_pages: u64,
     pub reachable_inner_pages: u64,
+    pub reachable_overflow_pages: u64,
+    pub reachable_page_capacity_bytes: u64,
+    pub live_logical_bytes: u64,
     pub exact: c_int,
 }
 

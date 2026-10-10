@@ -8,14 +8,17 @@ namespace crowdb::tree
 {
 struct TreeSummary
 {
-    uint64_t root_version          = 0;
-    uint64_t covered_slot          = 0;
-    uint64_t live_kv               = 0;
-    uint64_t live_key_bytes        = 0;
-    uint64_t live_value_bytes      = 0;
-    uint64_t reachable_leaf_pages  = 0;
-    uint64_t reachable_inner_pages = 0;
-    bool     exact                 = true;
+    uint64_t root_version                  = 0;
+    uint64_t covered_slot                  = 0;
+    uint64_t live_kv                       = 0;
+    uint64_t live_key_bytes                = 0;
+    uint64_t live_value_bytes              = 0;
+    uint64_t reachable_leaf_pages          = 0;
+    uint64_t reachable_inner_pages         = 0;
+    uint64_t reachable_overflow_pages      = 0;
+    uint64_t reachable_page_capacity_bytes = 0;
+    uint64_t live_logical_bytes            = 0;
+    bool     exact                         = true;
 };
 
 // Result of a cadence-driven compact_sparse_blocks() pass (R129). Snapshot

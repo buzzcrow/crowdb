@@ -36,6 +36,9 @@ pub struct TreeSummary {
     pub live_value_bytes: u64,
     pub reachable_leaf_pages: u64,
     pub reachable_inner_pages: u64,
+    pub reachable_overflow_pages: u64,
+    pub reachable_page_capacity_bytes: u64,
+    pub live_logical_bytes: u64,
     pub exact: bool,
 }
 
@@ -74,6 +77,9 @@ pub struct Stats {
     pub summary_live_value_bytes: u64,
     pub summary_reachable_leaf_pages: u64,
     pub summary_reachable_inner_pages: u64,
+    pub summary_reachable_overflow_pages: u64,
+    pub summary_reachable_page_capacity_bytes: u64,
+    pub summary_live_logical_bytes: u64,
     pub summary_exact: bool,
 }
 
@@ -89,6 +95,9 @@ impl Crowdbtree {
             live_value_bytes: raw.live_value_bytes,
             reachable_leaf_pages: raw.reachable_leaf_pages,
             reachable_inner_pages: raw.reachable_inner_pages,
+            reachable_overflow_pages: raw.reachable_overflow_pages,
+            reachable_page_capacity_bytes: raw.reachable_page_capacity_bytes,
+            live_logical_bytes: raw.live_logical_bytes,
             exact: raw.exact != 0,
         }
     }
@@ -145,6 +154,9 @@ impl Crowdbtree {
             summary_live_value_bytes: summary.live_value_bytes,
             summary_reachable_leaf_pages: summary.reachable_leaf_pages,
             summary_reachable_inner_pages: summary.reachable_inner_pages,
+            summary_reachable_overflow_pages: summary.reachable_overflow_pages,
+            summary_reachable_page_capacity_bytes: summary.reachable_page_capacity_bytes,
+            summary_live_logical_bytes: summary.live_logical_bytes,
             summary_exact: summary.exact,
         }
     }

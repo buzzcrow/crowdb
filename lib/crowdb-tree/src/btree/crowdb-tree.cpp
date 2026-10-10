@@ -3660,14 +3660,17 @@ EngineStats Crowdbtree::stats() const
 TreeSummary Crowdbtree::tree_summary() const
 {
     TreeSummary s;
-    s.root_version          = summary_root_version_.load(std::memory_order_acquire);
-    s.covered_slot          = summary_covered_slot_.load(std::memory_order_acquire);
-    s.live_kv               = summary_live_kv_.load(std::memory_order_acquire);
-    s.live_key_bytes        = summary_live_key_bytes_.load(std::memory_order_acquire);
-    s.live_value_bytes      = summary_live_value_bytes_.load(std::memory_order_acquire);
-    s.reachable_leaf_pages  = leaf_count_.load(std::memory_order_relaxed);
-    s.reachable_inner_pages = inner_count_.load(std::memory_order_relaxed);
-    s.exact                 = summary_available_.load(std::memory_order_acquire);
+    s.root_version                  = summary_root_version_.load(std::memory_order_acquire);
+    s.covered_slot                  = summary_covered_slot_.load(std::memory_order_acquire);
+    s.live_kv                       = summary_live_kv_.load(std::memory_order_acquire);
+    s.live_key_bytes                = summary_live_key_bytes_.load(std::memory_order_acquire);
+    s.live_value_bytes              = summary_live_value_bytes_.load(std::memory_order_acquire);
+    s.reachable_leaf_pages          = leaf_count_.load(std::memory_order_relaxed);
+    s.reachable_inner_pages         = inner_count_.load(std::memory_order_relaxed);
+    s.reachable_overflow_pages      = summary_reachable_overflow_pages_.load(std::memory_order_acquire);
+    s.reachable_page_capacity_bytes = summary_reachable_page_capacity_bytes_.load(std::memory_order_acquire);
+    s.live_logical_bytes            = summary_live_logical_bytes_.load(std::memory_order_acquire);
+    s.exact                         = summary_available_.load(std::memory_order_acquire);
     return s;
 }
 

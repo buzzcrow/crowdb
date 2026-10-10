@@ -805,6 +805,9 @@ class Crowdbtree
     mutable std::atomic<uint64_t> summary_live_kv_{0};
     mutable std::atomic<uint64_t> summary_live_key_bytes_{0};
     mutable std::atomic<uint64_t> summary_live_value_bytes_{0};
+    mutable std::atomic<uint64_t> summary_reachable_overflow_pages_{0};
+    mutable std::atomic<uint64_t> summary_reachable_page_capacity_bytes_{0};
+    mutable std::atomic<uint64_t> summary_live_logical_bytes_{0};
     mutable std::atomic<bool>     summary_available_{false};
 
     // Logical clock for CLOCK-informed eviction ranking (plan-tree #17).

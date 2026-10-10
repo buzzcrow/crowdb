@@ -713,15 +713,18 @@ void ct_get_tree_summary(const ct_tree *t, ct_tree_summary *out)
     if (t == nullptr || out == nullptr) {
         return;
     }
-    const auto s               = t->tree->tree_summary();
-    out->root_version          = s.root_version;
-    out->covered_slot          = s.covered_slot;
-    out->live_kv               = s.live_kv;
-    out->live_key_bytes        = s.live_key_bytes;
-    out->live_value_bytes      = s.live_value_bytes;
-    out->reachable_leaf_pages  = s.reachable_leaf_pages;
-    out->reachable_inner_pages = s.reachable_inner_pages;
-    out->exact                 = s.exact ? 1 : 0;
+    const auto s                       = t->tree->tree_summary();
+    out->root_version                  = s.root_version;
+    out->covered_slot                  = s.covered_slot;
+    out->live_kv                       = s.live_kv;
+    out->live_key_bytes                = s.live_key_bytes;
+    out->live_value_bytes              = s.live_value_bytes;
+    out->reachable_leaf_pages          = s.reachable_leaf_pages;
+    out->reachable_inner_pages         = s.reachable_inner_pages;
+    out->reachable_overflow_pages      = s.reachable_overflow_pages;
+    out->reachable_page_capacity_bytes = s.reachable_page_capacity_bytes;
+    out->live_logical_bytes            = s.live_logical_bytes;
+    out->exact                         = s.exact ? 1 : 0;
 }
 
 char *ct_flush_metrics_str(ct_tree *t, double window_secs, const char *timestamp, size_t width)
