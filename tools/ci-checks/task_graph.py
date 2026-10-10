@@ -6,7 +6,7 @@ import re
 import tomllib
 from pathlib import Path
 
-CALL = re.compile(r"\bpixi\s+run\s+(?:-e\s+([\w-]+)\s+)?(?!-)([\w-]+)")
+CALL = re.compile(r"\bpixi\s+run\s+(?:--skip-deps\s+)?(?:-e\s+([\w-]+)\s+)?(?!-)([\w-]+)")
 SCRIPT = re.compile(r"(?:bash|source)\s+(tools/[\w/.-]+\.sh)")
 
 

@@ -5,6 +5,7 @@ set -euo pipefail
 cd "${PIXI_PROJECT_ROOT:?}"
 
 for package in \
+    crowdb-e2e \
     crowdb-common \
     crowdb-test-harness \
     crowdb-protocol \

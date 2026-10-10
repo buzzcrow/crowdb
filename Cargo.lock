@@ -1073,6 +1073,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "crowdb-e2e"
+version = "0.3.0"
+dependencies = [
+ "bytes",
+ "crowdb-kv",
+ "crowdb-kv-client",
+ "reqwest",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "crowdb-kv"
 version = "0.3.0"
 dependencies = [

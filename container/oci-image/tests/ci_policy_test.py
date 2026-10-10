@@ -20,9 +20,9 @@ class ReleasePolicyTest(unittest.TestCase):
         workflow = yaml.load((ROOT / ".github/workflows/release-container.yml").read_text(), Loader=yaml.BaseLoader)
         self.assertEqual(set(workflow["on"]), {"workflow_dispatch"})
         jobs = workflow["jobs"]
-        self.assertEqual(set(jobs["publish"]["needs"]), {"construct", "verify", "containerd"})
+        self.assertEqual(set(jobs["publish"]["needs"]), {"construct", "verify", "containerd", "kv"})
         self.assertEqual(jobs["publish"]["environment"], "DockerHub")
-        for name in ("construct", "verify", "containerd"):
+        for name in ("construct", "verify", "containerd", "kv"):
             self.assertNotIn("id-token", jobs[name]["permissions"])
             self.assertNotIn("secrets.", str(jobs[name]))
             self.assertNotIn("DOCKERHUB_TOKEN", str(jobs[name]))
@@ -37,11 +37,11 @@ class ReleasePolicyTest(unittest.TestCase):
     def test_missing_failed_or_stale_gate_rejects_publication(self):
         verified = {"version": "0.3.0", "revision": "revision", "image_digest": "sha256:digest"}
         env = {"GITHUB_SHA": "revision", "GITHUB_REF_NAME": "release/0.3.0",
-               "DOCKER_VERIFIED_DIGEST": "sha256:digest", "CONTAINERD_VERIFIED_DIGEST": "sha256:digest"}
+               "DOCKER_VERIFIED_DIGEST": "sha256:digest", "CONTAINERD_VERIFIED_DIGEST": "sha256:digest", "KV_VERIFIED_DIGEST": "sha256:digest"}
         with patch.dict("os.environ", env, clear=True), patch("publish.subprocess.check_output", return_value="revision refs/heads/release/0.3.0\n"):
             check_source(verified, "0.3.0")
             for key, value in (("GITHUB_SHA", "stale"), ("GITHUB_REF_NAME", "main"),
-                               ("DOCKER_VERIFIED_DIGEST", ""), ("CONTAINERD_VERIFIED_DIGEST", "different")):
+                               ("DOCKER_VERIFIED_DIGEST", ""), ("CONTAINERD_VERIFIED_DIGEST", "different"), ("KV_VERIFIED_DIGEST", "")):
                 with self.subTest(key=key), patch.dict("os.environ", {key: value}), self.assertRaises(ValueError):
                     check_source(verified, "0.3.0")
         with patch.dict("os.environ", env, clear=True), patch("publish.subprocess.check_output", return_value="new-head refs/heads/release/0.3.0\n"), self.assertRaisesRegex(ValueError, "branch moved"):

@@ -69,8 +69,14 @@ ui e2e     (Playwright browser: SPA + real backend)                <- app/crowdb
 
 **Placement rule:** a test that only needs the `crowdb-kv` library (even if it
 binds the embedded crowdb-rpc server via `PxKvStore::start`) lives in `crowdb-kv`. A
-test that boots the `crowdb-kv-server` binary / HTTP management API lives in
-`crowdb-kv-server`.
+test that boots the `crowdb-kv-server` binary / HTTP management API migrates
+to the centralized container E2E component. Its first KV profile runs packaged
+servers on isolated bridges and a network-local Rust RPC client, preserving
+protocol assertions, crash recovery and concurrent-fixture isolation. Remaining
+process suites keep their component owner until each migration retains its
+assertions; component-local logic tests remain in `crowdb-kv-server`. See the
+[container E2E component](../../../container/crowdb-e2e/README.md) for current
+profiles and migration ownership.
 
 **KV operation correctness rule:** every layer that applies KV mutations
 (replica, group, store) must test all operation types and orderings:

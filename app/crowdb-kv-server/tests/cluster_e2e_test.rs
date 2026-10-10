@@ -8,9 +8,7 @@ mod common;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use crowdb_kv::rpc::{
-    KvBatchItem, KvBatchWriteRequest, KvDeleteRequest, KvErrorCode, KvGetRequest, KvSetRequest,
-};
+use crowdb_kv::rpc::{KvDeleteRequest, KvErrorCode, KvGetRequest, KvSetRequest};
 use crowdb_kv_client::KvRpcTransport;
 use serde_json::Value;
 
@@ -96,7 +94,6 @@ enum KvOp {
     Put(KvSetRequest),
     Get(KvGetRequest),
     Delete(KvDeleteRequest),
-    BatchWrite(KvBatchWriteRequest),
 }
 
 /// Execute a KV operation against the current leader, refreshing the leader
@@ -123,7 +120,6 @@ async fn run_kv_op_with_retry(nodes: &[ServerNode], group_id: u64, op: &KvOp) ->
             KvOp::Put(req) => client.put(req.clone()).await,
             KvOp::Get(req) => client.get(req.clone()).await,
             KvOp::Delete(req) => client.delete(req.clone()).await,
-            KvOp::BatchWrite(req) => client.batch_write(req.clone()).await,
         };
         match result {
             Ok(resp) => {
@@ -250,145 +246,6 @@ async fn wire_topology(nodes: &[ServerNode], group_id: u64) {
             node.node_id
         );
     }
-}
-
-async fn remotes(node: &ServerNode, group_id: u64) -> Value {
-    client()
-        .get(format!(
-            "{}/stores/{}/groups/{group_id}/remotes",
-            node.mgmt_base(),
-            node.node_id
-        ))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap()
-}
-
-#[tokio::test]
-#[allow(clippy::too_many_lines)]
-async fn e2e_three_node_cluster_kv_put_batch_delete() {
-    let group_id = 1;
-    let nodes = start_cluster(&[0, 1, 2], group_id).await;
-    wire_topology(&nodes, group_id).await;
-
-    for node in &nodes {
-        let remotes = remotes(node, group_id).await;
-        assert_eq!(
-            remotes["remotes"].as_array().unwrap().len(),
-            2,
-            "node {} should have 2 remotes",
-            node.node_id
-        );
-    }
-
-    let resp = run_kv_op_with_retry(
-        &nodes,
-        group_id,
-        &KvOp::Put(KvSetRequest {
-            version: 1,
-            key: Bytes::from_static(b"hello"),
-            value: Bytes::from_static(b"world"),
-            seq: 1,
-            ttl_ms: 0,
-            client_id: 100,
-            request_id: 1001,
-            request_create_ms: 10001,
-            group_id,
-        }),
-    )
-    .await;
-    assert!(resp.ok, "put should succeed: {}", resp.error);
-
-    // Get: read the value we just wrote through the leader. Verifies the
-    // Paxos chosen value reached the local-replica learner store on the
-    // node serving the read. The handler returns ok=true with the bytes
-    // in `value` for a hit (see `kv_service::get`).
-    let resp = run_kv_op_with_retry(
-        &nodes,
-        group_id,
-        &KvOp::Get(KvGetRequest {
-            version: 1,
-            key: Bytes::from_static(b"hello"),
-            request_id: 1011,
-            request_create_ms: 10011,
-            group_id,
-            read_mode: 0,
-            min_slot: 0,
-        }),
-    )
-    .await;
-    assert!(resp.ok, "get should succeed: {}", resp.error);
-    assert_eq!(resp.value, Bytes::from_static(b"world"));
-
-    let resp = run_kv_op_with_retry(
-        &nodes,
-        group_id,
-        &KvOp::BatchWrite(KvBatchWriteRequest {
-            version: 1,
-            items: vec![
-                KvBatchItem {
-                    key: Bytes::from_static(b"hello"),
-                    value: Bytes::from_static(b"updated"),
-                    is_delete: false,
-                },
-                KvBatchItem {
-                    key: Bytes::from_static(b"foo"),
-                    value: Bytes::from_static(b"bar"),
-                    is_delete: false,
-                },
-            ],
-            seq: 2,
-            client_id: 100,
-            request_id: 1002,
-            request_create_ms: 10002,
-            group_id,
-        }),
-    )
-    .await;
-    assert!(resp.ok, "batch should succeed: {}", resp.error);
-
-    let resp = run_kv_op_with_retry(
-        &nodes,
-        group_id,
-        &KvOp::Delete(KvDeleteRequest {
-            version: 1,
-            key: Bytes::from_static(b"hello"),
-            seq: 3,
-            client_id: 100,
-            request_id: 1003,
-            request_create_ms: 10003,
-            group_id,
-        }),
-    )
-    .await;
-    assert!(resp.ok, "delete should succeed: {}", resp.error);
-
-    // Get-after-Delete: the chosen tombstone propagated to the learner.
-    // `kv_get` for a missing key returns `ok=false, not_found=true` (see
-    // `PxKvStore::kv_get`); only the `not_found` flag is asserted here.
-    let resp = run_kv_op_with_retry(
-        &nodes,
-        group_id,
-        &KvOp::Get(KvGetRequest {
-            version: 1,
-            key: Bytes::from_static(b"hello"),
-            request_id: 1013,
-            request_create_ms: 10013,
-            group_id,
-            read_mode: 0,
-            min_slot: 0,
-        }),
-    )
-    .await;
-    assert!(
-        resp.not_found,
-        "deleted key must read as not_found: value={:?}",
-        resp.value
-    );
-    assert!(resp.value.is_empty());
 }
 
 #[tokio::test]

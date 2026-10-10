@@ -27,7 +27,7 @@ def check_source(verified, tag):
     head = subprocess.check_output(["git", "ls-remote", "origin", "refs/heads/" + branch], text=True).split()[0]
     if head != revision:
         raise ValueError("release branch moved after verification")
-    for key in ("DOCKER_VERIFIED_DIGEST", "CONTAINERD_VERIFIED_DIGEST"):
+    for key in ("DOCKER_VERIFIED_DIGEST", "CONTAINERD_VERIFIED_DIGEST", "KV_VERIFIED_DIGEST"):
         if os.environ.get(key) != verified["image_digest"]:
             raise ValueError(f"missing or different runtime gate digest: {key}")
 

@@ -154,8 +154,50 @@ jobs:
       id: artifact
       run: pixi run python container/oci-image/ci-receipt.py target/crowdb.oci.tar
 
+
+  kv:
+    needs: construct
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      digest: ${{ steps.artifact.outputs.digest }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ needs.construct.outputs.revision }}
+        submodules: true
+    - uses: prefix-dev/setup-pixi@v0.8.1
+      with:
+        pixi-version: v0.77.0
+    - uses: actions/download-artifact@v4
+      with:
+        name: verified-oci-image
+        path: target
+    - name: Install client compilation prerequisites
+      run: |
+        pixi run sudo apt-get update
+        pixi run sudo apt-get install -y protobuf-compiler
+    - name: Import the shared verified image
+      run: pixi run image-import "$PWD/target/crowdb.oci.tar" --image crowdb-node:dev
+    - name: Verify centralized KV fixtures and protocol layer
+      run: |
+        pixi run test-container-e2e-fixture
+        pixi run clean-env
+        pixi run test-container-e2e --layer kv --concurrency 2 --require-isolation --cpus 4 --memory-mib 4096
+    - name: Record KV verified digest
+      id: artifact
+      run: pixi run python container/oci-image/ci-receipt.py target/crowdb.oci.tar
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: kv-container-e2e-diagnostics
+        path: .crowdb-runtime/artifacts/container-e2e
+        if-no-files-found: error
+
   publish:
-    needs: [construct, verify, containerd]
+    needs: [construct, verify, containerd, kv]
     runs-on: ubuntu-24.04
     environment: DockerHub
     permissions:
@@ -178,6 +220,7 @@ jobs:
         DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
         DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         DOCKER_VERIFIED_DIGEST: ${{ needs.verify.outputs.digest }}
+        KV_VERIFIED_DIGEST: ${{ needs.kv.outputs.digest }}
         CONTAINERD_VERIFIED_DIGEST: ${{ needs.containerd.outputs.digest }}
         IMAGE_TAG: ${{ needs.construct.outputs.version }}
       run: pixi run --manifest-path container/oci-image/pixi.toml -e publisher release "$PWD/target/crowdb.oci.tar" --tag "$IMAGE_TAG"

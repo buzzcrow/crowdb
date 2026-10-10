@@ -71,6 +71,14 @@ Numbered work items:
    automatic/read-only single mode remain distinct.
 4. **Networking and clients**: default parallel fixtures use dedicated bridge
    networks, fixed container-internal ports and runtime-assigned host ports.
+   Container-local services progressively use fixed four-digit ports; the initial
+   KV layer uses management `7000` and store RPC pool `7001..7011`. Namespace
+   isolation replaces offset, probe and cross-test port-allocation algorithms.
+   Listeners follow the [restart/ownership contract](../design/rpc/design-crowdb-rpc-tcp.md#7-listener-ownership-and-restart):
+   enable `SO_REUSEADDR` before bind; retain fixed endpoints through restart;
+   reject unresolved live ownership conflicts without port hopping or default
+   `SO_REUSEPORT`. Remove legacy allocation code only after its remaining host test/deployment
+   callers migrate. Host-published temporary ports remain runtime assigned.
    HTTP/UI clients can run on the host. Clients depending on advertised RPC
    topology or callbacks run in the fixture network unless endpoint routing is
    explicitly supported. A client sidecar joins only its owned network and uses

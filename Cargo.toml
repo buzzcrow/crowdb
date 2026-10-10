@@ -24,6 +24,7 @@ members = [
     "app/crowdb-chunk-kv-server",
     "app/crowdb-access-server",
     "container/crowdb-monitor",
+    "container/crowdb-e2e",
     "lib/crowdb-access-s3",
     "lib/crowdb-access-iceberg",
     "lib/crowdb-access-dataset",

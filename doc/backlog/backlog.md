@@ -16,7 +16,8 @@ live in the linked document; implementation follows
 - **[R230](R230-test-container-layer-e2e.md)** — shared container cluster fixtures,
   isolated concurrent layer E2E, CI gates and gradual real-server test migration.
   **Area:** test / container / CI. **Complexity:** High.
-  **Status:** Planned; Docker baseline first, OCI/containerd adapter follows.
+  **Status:** In progress; Docker KV CRUD, recovery/isolation fixtures and CI gates
+  implemented. Other scenarios/layers and allocator retirement remain pending.
 
 ## Dataset and access
 

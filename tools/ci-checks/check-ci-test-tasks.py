@@ -11,7 +11,7 @@ COMPONENT_PACKAGES = {
     "test-cpp": {"crowdb-tree-ffi", "crowdb-rpc-ffi"},
     "test-core": {
         "crowdb-common", "crowdb-test-harness", "crowdb-protocol",
-        "crowdb-kv", "crowdb-kv-client",
+        "crowdb-kv", "crowdb-kv-client", "crowdb-e2e",
     },
     "test-storage": {
         "crowdb-chunkdb-client", "crowdb-chunk-kv", "crowdb-chunk-kv-client",
@@ -83,6 +83,8 @@ def main() -> int:
     reachable = graph.reachable((workflows / "ci.yml").read_text())
     required = {("default", task) for task in COMPONENT_PACKAGES}
     required.update({
+        ("default", "test-container-e2e"),
+        ("default", "test-container-e2e-fixture"),
         ("default", "test-console-ui"),
         ("s3-e2e", "test-boto3-e2e"),
         ("iceberg-e2e", "test-pyiceberg-e2e"),
