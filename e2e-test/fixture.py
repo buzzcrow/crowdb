@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path
 
 from client import run_client
+from kv_topology import ready_nodes, wire_nodes
 
 HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 LABEL = "org.crowdb.e2e.run"
@@ -60,7 +61,8 @@ def redact(value):
 class Cluster:
     """The runner owns lifecycle; host clients use inspected node IPs."""
 
-    def __init__(self, image, artifacts, command=docker, data_root=None, node_count=3):
+    def __init__(self, image, artifacts, command=docker, data_root=None, node_count=3,
+                 store_ids=None, wire_replicas=True, stores_per_node=None, groups=(1,), groups_per_node=None):
         if node_count < 1:
             raise ValueError("a cluster needs at least one node")
         self.run_id = "crowdb-e2e-" + uuid.uuid4().hex
@@ -70,11 +72,29 @@ class Cluster:
         self.containers, self.origins, self.addresses = [], [], []
         self.servers = []
         self.node_count = node_count
+        store_ids = tuple(range(node_count)) if store_ids is None else tuple(store_ids)
+        self.stores_per_node = tuple(tuple(stores) for stores in stores_per_node) if stores_per_node else tuple(
+            (store,) for store in store_ids)
+        self.groups = tuple(groups)
+        self.groups_per_node = tuple(tuple(groups) for groups in groups_per_node) if groups_per_node else (
+            self.groups,) * node_count
+        if len(self.stores_per_node) != node_count or any(
+                not stores or len(stores) != len(set(stores)) or any(store < 0 for store in stores)
+                for stores in self.stores_per_node):
+            raise ValueError("each node needs a nonempty set of nonnegative store IDs")
+        if len(self.groups_per_node) != node_count or any(
+                len(groups) != len(set(groups)) or any(group < 0 for group in groups)
+                for groups in self.groups_per_node):
+            raise ValueError("each node needs distinct nonnegative group IDs")
+        if wire_replicas and any(groups != self.groups_per_node[0] for groups in self.groups_per_node):
+            raise ValueError("mixed group layouts require explicit test-controlled wiring")
+        self.wire_replicas = wire_replicas
         self.data_root = Path(data_root).resolve() / self.run_id if data_root else self.artifacts / "nodes"
         self.data_paths = []
         self.network_created = False
         self.closed = False
-        self.timings = {}
+        self.timings = {"status": "failed"}
+        self.started = None
 
     def start(self):
         # Record allocations before calls: a timed-out daemon response can have
@@ -92,13 +112,15 @@ class Cluster:
                 "host_data": [str(path) for path in self.data_paths]}, indent=2))
             self.containers.append(name)
             self.servers.append(name)
+            group_args = ("--groups", ",".join(map(str, self.groups_per_node[index]))) if self.groups_per_node[index] else ()
             self.command("run", "-d", "--name", name, "--label", f"{LABEL}={self.run_id}",
                          "--network", self.run_id, "--network-alias", f"node{index}",
                          "--cpus", "0.5", "--memory", "512m", "--pids-limit", "256",
                          "--mount", f"type=bind,source={data},target=/opt/crowdb/data",
                          "--ulimit", "core=-1", self.image, "server", "kv",
                          "--root", "/opt/crowdb/data/kv", "--management-port", "7000",
-                         "--ports", "7001..7011", "--stores", str(index), "--groups", "1",
+                         "--ports", "7001..7011", "--stores", ",".join(map(str, self.stores_per_node[index])),
+                         *group_args,
                          "--replica", str(index + 1), "--kv-backend", "block",
                          "--wal-backend", "block-device", "--election-profile", "e2e",
                          "--log-dir", "/opt/crowdb/data/log/kv", "--log")
@@ -106,33 +128,30 @@ class Cluster:
             self.addresses.append(info["NetworkSettings"]["Networks"][self.run_id]["IPAddress"])
             self.origins.append(f"http://{self.addresses[-1]}:7000")
         self.ready()
-        combined = {"stores": []}
-        for index, origin in enumerate(self.origins):
-            topology = request(origin, "/topology")
-            store = topology["stores"][0]
-            assert store["store_id"] == index, topology
-            assert store["groups"][0]["group_id"] == 1, topology
-            # Wildcard listeners are not peer addresses. The C++ transport
-            # consumes numeric IPs; discover those on this owned bridge.
-            store["listen_addr"] = self.addresses[index] + ":" + store["listen_addr"].rsplit(":", 1)[1]
-            combined["stores"].append(store)
-        for index, origin in enumerate(self.origins):
-            request(origin, f"/stores/{index}/groups/1/remotes/batch", combined)
+        (self.artifacts / "endpoints.json").write_text(json.dumps({"nodes": [
+            {"name": name, "ip": self.addresses[index], "management_port": 7000,
+             "rpc_ports": list(range(7001, 7012)), "stores": self.stores_per_node[index], "groups": self.groups_per_node[index],
+             "replica_id": index + 1, "data": str(self.data_paths[index])}
+            for index, name in enumerate(self.servers)]}, indent=2))
+        if not self.wire_replicas:
+            return self
+        wire_nodes(self.origins, self.addresses, self.stores_per_node, self.groups, request)
         return self
 
     def ready(self):
-        for origin in self.origins:
-            wait(lambda origin=origin: request(origin, "/topology"),
-                 lambda value: len(value["stores"]) == 1 and len(value["stores"][0]["groups"]) == 1,
-                 f"host-accessible KV store/group readiness at {origin}")
+        ready_nodes(self.origins, self.stores_per_node, self.groups_per_node, request, wait)
 
     def crash_restart(self):
-        for name in self.servers:
-            self.command("kill", "--signal", "KILL", name)
-        for name in self.servers:
-            self.command("start", name)
-        self.refresh_endpoints()
-        self.ready()
+        started = time.monotonic()
+        try:
+            for name in self.servers:
+                self.command("kill", "--signal", "KILL", name)
+            for name in self.servers:
+                self.command("start", name)
+            self.refresh_endpoints()
+            self.ready()
+        finally:
+            self.timings["restart"] = time.monotonic() - started
 
     def refresh_endpoints(self):
         origins = []
@@ -193,13 +212,18 @@ class Cluster:
                 except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
                     errors.append(str(error))
         self.closed = not errors
+        if errors:
+            self.timings["status"] = "failed"
         self.timings["stop"] = time.monotonic() - started
+        if self.started is not None:
+            self.timings["total"] = time.monotonic() - self.started
         self.write_timings()
         if errors:
             raise RuntimeError("owned cleanup failed: " + "\n".join(errors))
 
     def __enter__(self):
         started = time.monotonic()
+        self.started = started
         try:
             result = self.start()
             self.timings["start"] = time.monotonic() - started
@@ -211,6 +235,8 @@ class Cluster:
 
     def __exit__(self, _kind, error, _traceback):
         if self.closed:
+            self.timings["status"] = "pass" if error is None else "failed"
+            self.write_timings()
             return
         collection_error = None
         try:
@@ -220,6 +246,7 @@ class Cluster:
             if error is not None:
                 error.add_note(str(diagnostic_error))
         try:
+            self.timings["status"] = "pass" if error is None and collection_error is None else "failed"
             self.close()
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as cleanup_error:
             if error is None:

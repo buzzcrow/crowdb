@@ -51,24 +51,13 @@ name = "group0_discovery_test"
 path = "tests/group0_discovery_test.rs"
 
 [[test]]
-name = "async_ops_test"
-path = "tests/async_ops_test.rs"
-
-[[test]]
 name = "cli_parse_test"
 path = "tests/cli_parse_test.rs"
 
-[[test]]
-name = "cluster_e2e_test"
-path = "tests/cluster_e2e_test.rs"
 
 [[test]]
 name = "deployment_reconfig_test"
 path = "tests/deployment_reconfig_test.rs"
-
-[[test]]
-name = "multi_store_test"
-path = "tests/multi_store_test.rs"
 
 [[test]]
 name = "monitor_supervisor_test"
@@ -98,13 +87,6 @@ path = "tests/reconcile_test.rs"
 name = "restore_test"
 path = "tests/restore_test.rs"
 
-[[test]]
-name = "server_api_test"
-path = "tests/server_api_test.rs"
-
-[[test]]
-name = "snapshot_join_e2e_test"
-path = "tests/snapshot_join_e2e_test.rs"
 
 [[test]]
 name = "startup_test"

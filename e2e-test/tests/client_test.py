@@ -32,6 +32,8 @@ class ClientTest(unittest.TestCase):
             self.assertEqual(json.loads(second["CROWDB_E2E_RPC"]), ["172.19.0.2"])
             self.assertEqual(first["CROWDB_E2E_TOKEN"], "first")
             self.assertEqual(second["CROWDB_E2E_TOKEN"], "second")
+            self.assertIn("172.18.0.2", first["NO_PROXY"].split(","))
+            self.assertNotIn("172.18.0.2", second["no_proxy"].split(","))
         self.assertEqual(dict(os.environ), original)
 
     def test_timeout_keeps_partial_output_and_failure(self):

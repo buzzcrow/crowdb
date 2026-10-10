@@ -3,4 +3,12 @@
 
 //! KV public management and data-plane acceptance.
 
+mod cluster;
+mod maintenance;
 mod management;
+mod membership;
+mod operations;
+mod progressive;
+mod reconfiguration;
+mod routing;
+mod snapshot;

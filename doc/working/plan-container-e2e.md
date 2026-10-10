@@ -451,10 +451,13 @@ Goal: review and migrate all real-server tests into domain modules under contain
   code after the final caller; preserve and review remaining host deployment
   requirements explicitly. Files: profile/fixture, service configs, protocol
   port module, monitor templates and former test harnesses.
-- [ ] **KV management batch**: move startup/exit, management store/group/replica
-  lifecycle and error cases; parameterize compatible checks, keep membership
-  epoch and Group-0 wipe assertions. Files: kv-server tests and `tests/kv/`.
-- [ ] **KV recovery/membership batch**: add profile node-count/config support;
+- [x] **KV management/async/multi-store batch**: consolidate all 38 server API,
+  six async operation and one multi-store source cases into eight independently
+  owned container flows; verify epoch fences, maintenance, operation completion
+  and persistent store isolation. Files: kv-server tests and `tests/kv/`.
+- [ ] **KV startup/exit batch**: migrate executable startup/exit checks and
+  empty-root initialization; preserve component CLI/configuration tests.
+- [~] **KV recovery/membership batch**: add profile node-count/config support;
   migrate restore, snapshot/WAL tail, dynamic group/membership and Group-0
   discovery; retain deterministic KV-client flows and test actual production
   leader retry. Retire component process helper only after all callers migrate.
@@ -555,7 +558,7 @@ Goal: review and migrate all real-server tests into domain modules under contain
   `metrics_prefix_filter_excludes_non_matching` map to independently owned
   `kv::management::management_lifecycle`, with discovery/metrics/store/group
   checkpoints preserving status/body/count/error assertions. All 18 source cases were removed after real release-container verification.
-  Other server API cases stay until their independent assertions migrate.
+  This was the first verified subset; the subsequent batch below completes the file.
 - Acceptance artifacts: `.crowdb-runtime/artifacts/container-e2e/run-c2d57c0480f946c2828ebab5b0f35d8f/`;
   exact image config `sha256:96e297780624131a1db323f7fdac8aaef0e819076f1c50a86fae78ab94bc0613`.
   Warm client build 0.619s; complete scenario wall 9.069s. Three-node startup
@@ -628,3 +631,123 @@ Goal: review and migrate all real-server tests into domain modules under contain
   missing prerequisites, exact image identity and preserved fault assertions.
   New task names and matrix rows above are planned until implemented; do not
   present them as already available or verified.
+
+## Management, membership and multi-store acceptance
+
+- The remaining 20 `server_api_test` cases map to `kv::membership` replica
+  lifecycle and epoch replay/authority bootstrap, `kv::progressive` topology
+  wiring, and `kv::maintenance` synchronous step-down plus flush/wipe. Their
+  assertions retain exact HTTP statuses, local-removal rejection, missing
+  resources, replica counts, stale/conflicting epoch rejection without mutation,
+  idempotent replay, progressive per-store topology and post-wipe exact writes.
+- All six `async_ops_test` cases map to management discovery (readiness schema
+  and missing operation) and `kv::operations::async_and_sync_leader_lifecycle`
+  (three-voter readiness, asynchronous acceptance/completion and synchronous
+  acceptance followed by restored cluster readiness).
+- `multi_store_test::multi_store_per_node_isolation` maps to
+  `kv::routing::multi_store_isolation_and_recovery`: original separate keys and
+  exact bytes, strengthened with same-key isolation, cross-store misses and
+  SIGKILL/restart durability across three containers with two stores each.
+- These three source files and their explicit Cargo test registrations were
+  deleted after acceptance. Component UT files remain. Cluster topology,
+  follower hints, dynamic groups, five-voter membership, snapshot join and
+  Group-0 bootstrap/restore remain separate unfinished work.
+- Acceptance: `pixi run clean-env && pixi run test-container-e2e --scope all
+  --concurrency 2 --require-isolation` passed. Artifact directory:
+  `.crowdb-runtime/artifacts/container-e2e/run-f8abf634d02e4d63a055d7941ed642f1/`.
+  Ten fixtures, nine unique Rust test functions, thirteen exact client phases
+  and three release startup rejection checks passed; client build 1.872s and
+  scenario wall 21.786s. Per-flow timings are recorded in `test.md`.
+- Formal release image config:
+  `sha256:e5f84a21b8bcbd4e1ed176aa2d31dc9ba87884610682e067c2f00cff6f8c6ab2`.
+  The runner verifies packaged server inputs against the image source commit;
+  client/docs/test-registration-only changes can reuse it, while dirty or
+  untracked production inputs reject reuse. Client revision is recorded
+  independently. Reports mark failed cleanup as failed even when clients pass,
+  and rank complete fixture durations and client phases for slow-flow review.
+
+## Cluster flow acceptance
+
+- `cluster_e2e_test::{e2e_follower_returns_not_leader_hint,
+  e2e_topology_reflects_cluster_state}` map to
+  `kv::cluster::topology_and_follower_hint`: nontrivial store IDs 10/20/30, exact
+  local replica/group identities, fixed RPC endpoint and direct follower write
+  rejection with exact current leader endpoint.
+- `cluster_e2e_test::{e2e_dynamic_group_management,
+  e2e_multi_group_isolated_kv}` map to
+  `kv::cluster::dynamic_groups_isolate_data`: create/elect/use/delete group 2,
+  exact topology counts, same-key distinct values, group-1 tombstone leaving
+  group-2 value intact and successful group-1 write after group-2 removal.
+- `cluster_e2e_test::e2e_kv_after_dynamic_replica_change` maps to
+  `kv::reconfiguration::quorum_expands_and_shrinks_without_losing_writes`: five
+  containers, 3→5→3 membership with changed survivor set, stable automatic
+  election, acknowledged values across expansion/shrink, delete and new write.
+  The already migrated CRUD case remains in its recovery/isolation owner.
+  All cases in the original file now have verified owners; delete the file and
+  explicit Cargo registration. Component internal Paxos/election tests remain.
+- Scoped routing and membership acceptance passed with the same formal image.
+  Artifacts: `run-2b865a05b3504498ac6c62b1cc110fa5` and
+  `run-c55577fa86c74768b29d0b582fa3a480` below the common artifact root.
+  Budget reservation now includes the largest selected node count plus its
+  host client: five-node flows reserve 3 CPUs/3072 MiB per slot, independently
+  from three-node concurrent isolation reservations.
+
+- Explicit remaining server API mapping (source prefix
+  `app/crowdb-kv-server/tests/server_api_test.rs::`):
+  - `list_remote_replicas_empty`, `add_and_list_remote_replicas`,
+    `add_remote_rejects_local_replica`, `remove_remote_replica`,
+    `remove_remote_rejects_local_replica`, `remove_remote_not_found` →
+    `kv::membership::replica_lifecycle`.
+  - `stale_membership_epoch_rejected_before_persistence`,
+    `membership_epoch_replay_is_idempotent_but_conflicting_payload_is_rejected`,
+    `new_replica_bootstrap_accepts_authority_epoch_two_from_local_epoch_zero` →
+    `kv::membership::epoch_replay_and_authority_bootstrap`.
+  - `batch_add_remote_replicas_from_topology`,
+    `progressive_setup_multiple_stores_groups_replicas` →
+    `kv::progressive::topology_wiring_and_progressive_setup`.
+  - `step_down_via_api_flips_leader_to_follower`,
+    `step_down_rejects_when_not_leader` →
+    `kv::maintenance::synchronous_step_down_fence`.
+  - `step_down_group_not_found`, `flush_group_drains_local_engine`,
+    `flush_group_not_found`, `wipe_user_data_clears_keys_and_preserves_group0`,
+    `wipe_user_data_store_not_found`, `wipe_user_data_group_not_found`,
+    `wipe_user_data_in_openapi` →
+    `kv::maintenance::flush_and_wipe_preserve_group_and_resume_writes`.
+- Explicit async source mapping (`async_ops_test.rs::`):
+  `readiness_api_returns_200_when_leader_elected`,
+  `readiness_api_returns_503_before_leader_election`,
+  `get_operation_returns_404_for_unknown_id` → management discovery plus
+  cluster readiness; `async_step_down_returns_operation_id`,
+  `sync_step_down_preserves_old_behavior`,
+  `ready_endpoint_after_full_cluster_lifecycle` →
+  `kv::operations::async_and_sync_leader_lifecycle`.
+
+## Snapshot join acceptance
+
+- `snapshot_join_e2e_test::e2e_new_member_joins_via_snapshot_then_catches_up_wal_tail`
+  maps to `kv::snapshot::snapshot_import_precedes_wiring_and_catches_up_tail`.
+  Two voting nodes acknowledge exact pre-join values. A bare third store joins
+  through the release management API, then direct MIN_SLOT reads prove imported
+  values before any remote wiring. One bootstrap batch wires its existing peers;
+  existing nodes add it as non-voting. An acknowledged post-join write is read
+  locally on that replica after WAL-tail catch-up. The source file and explicit
+  Cargo registration are removed after acceptance.
+- Fixture profiles now declare per-node groups and omit `--groups` for bare
+  stores through the normal release startup path. Mixed group layouts require
+  explicit case-controlled wiring. Readiness accepts omitted empty `groups`
+  fields while requiring exact configured groups; that response boundary has a
+  focused fixture test. First run found the omitted-field parsing issue, fixed
+  without changing server behavior or deadlines.
+- Scoped recovery acceptance passed in
+  `.crowdb-runtime/artifacts/container-e2e/run-124c62ba7fa8467da45d741af9e371aa/`.
+  Group-0 restore/discovery and empty-root system initialization remain pending.
+
+- Final combined acceptance for this batch passed: fourteen independent
+  fixtures, thirteen unique Rust test functions and seventeen exact client
+  phases, plus three release startup rejection checks. Artifact directory:
+  `.crowdb-runtime/artifacts/container-e2e/run-42152dd490414633bb80a5c7426bf32f/`.
+  Warm client build 0.413s; scenario wall 32.816s, two slots,
+  6 CPUs/6144 MiB. Fixture checks 19/19 (0.474s); workspace fmt/clippy and
+  changed Python compilation passed. No production component UT was removed.
+  Group-0 restore/discovery/initialization is the next KV migration scope;
+  other service domains and final Pixi/CI classification remain unfinished.

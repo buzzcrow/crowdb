@@ -120,54 +120,81 @@ New rows start unmeasured. The fixture row measures the complete Pixi invocation
 without an image build or server startup; the current test report executes twelve cases.
 Future detailed component and E2E rows replace their unmeasured scope placeholders.
 
-| Scope                       | Date       | Tests | Build s | Start s | Test s | Collect/stop s | Total s | Status  |
-| --------------------------- | ---------- | ----- | ------- | ------- | ------ | -------------- | ------- | ------- |
-| `component.cpp`             | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `component.kv`              | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `component.diskdb`          | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `component.diskio`          | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `component.chunkdb`         | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `component.chunk-kv`        | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `component.chunk-stream`    | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `component.access-s3`       | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `component.access-iceberg`  | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `component.access-dataset`  | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `component.console`         | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `component.monitor`         | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `component.ui`              | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `fixture`                   | 2026-10-11 | 12/12 | —       | —       | —      | —              | 0.366   | PASS    |
-| `e2e.kv.management`         | 2026-10-11 | 1/1   | shared  | 0.733   | 0.350  | 0.075/0.574    | 1.732   | PASS    |
-| `e2e.kv.routing`            | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `e2e.kv.membership`         | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `e2e.kv.recovery`           | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `e2e.kv.group0`             | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `e2e.diskdb.allocation`     | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `e2e.diskdb.recovery`       | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `e2e.diskio.io`             | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `e2e.diskio.durability`     | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `e2e.chunkdb.lifecycle`     | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `e2e.chunkdb.repair`        | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `e2e.chunkdb.handoff`       | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `e2e.chunk-stream.objects`  | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `e2e.chunk-stream.recovery` | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `e2e.chunk-kv.protocol`     | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `e2e.chunk-kv.recovery`     | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `e2e.s3.protocol`           | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `e2e.s3.recovery`           | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `e2e.s3.sdk`                | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `e2e.iceberg.catalog`       | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `e2e.iceberg.fileio`        | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `e2e.iceberg.recovery`      | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `e2e.iceberg.sdk`           | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `e2e.dataset`               | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `e2e.console.api-cli`       | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `e2e.console.browser`       | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `e2e.deployment.bootstrap`  | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `e2e.deployment.recovery`   | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `e2e.isolation`             | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `special.containerd`        | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `special.host-hardware`     | —          | —     | —       | —       | —      | —              | —       | Pending |
-| `benchmark`                 | —          | —     | —       | —       | —      | —              | —       | Pending |
+| Scope                       | Date       | Tests | Build s | Start s  | Test s   | Collect/stop s | Total s  | Status  |
+| --------------------------- | ---------- | ----- | ------- | -------- | -------- | -------------- | -------- | ------- |
+| `component.cpp`             | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `component.kv`              | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `component.diskdb`          | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `component.diskio`          | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `component.chunkdb`         | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `component.chunk-kv`        | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `component.chunk-stream`    | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `component.access-s3`       | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `component.access-iceberg`  | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `component.access-dataset`  | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `component.console`         | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `component.monitor`         | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `component.ui`              | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `fixture`                   | 2026-10-11 | 19/19 | —       | —        | —        | —              | 0.474    | PASS    |
+| `e2e.kv.management`         | 2026-10-11 | 5/5   | shared  | per flow | per flow | per flow       | per flow | Partial |
+| `e2e.kv.routing`            | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.kv.membership`         | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.kv.recovery`           | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.kv.group0`             | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.diskdb.allocation`     | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.diskdb.recovery`       | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.diskio.io`             | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.diskio.durability`     | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.chunkdb.lifecycle`     | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.chunkdb.repair`        | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.chunkdb.handoff`       | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.chunk-stream.objects`  | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.chunk-stream.recovery` | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.chunk-kv.protocol`     | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.chunk-kv.recovery`     | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.s3.protocol`           | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.s3.recovery`           | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.s3.sdk`                | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.iceberg.catalog`       | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.iceberg.fileio`        | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.iceberg.recovery`      | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.iceberg.sdk`           | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.dataset`               | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.console.api-cli`       | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.console.browser`       | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.deployment.bootstrap`  | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.deployment.recovery`   | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.isolation`             | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `special.containerd`        | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `special.host-hardware`     | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `benchmark`                 | —          | —     | —       | —        | —        | —              | —        | Pending |
+
+## Migrated KV flow timing
+
+Linux, 2026-10-11; all rows PASS. Seconds measured against the same retained-debug
+release image. These are verified flows within still incomplete parent scopes.
+Two fixture slots ran concurrently with a 6 CPU/6144 MiB budget: warm client
+build 0.413s, complete scenario wall 32.816s. Client sums include write
+and verify phases where applicable; survivor wall includes coordination with the
+crashed fixture. Rows rank fixture wall time. `results.json` also ranks the
+slowest individual client phases.
+
+| Flow                                                              | Nodes | Start | Client | Restart | Collect | Stop  | Wall  |
+| ----------------------------------------------------------------- | ----- | ----- | ------ | ------- | ------- | ----- | ----- |
+| quorum_expands_and_shrinks_without_losing_writes (kv.membership)  | 5     | 2.344 | 3.906  | 0.000   | 0.364   | 1.829 | 8.444 |
+| e2e_three_node_cluster_kv_put_batch_delete (kv.isolation)         | 3     | 1.426 | 0.851  | 0.000   | 0.222   | 1.156 | 7.365 |
+| dynamic_groups_isolate_data (kv.routing)                          | 3     | 1.707 | 2.456  | 0.000   | 0.229   | 1.394 | 5.787 |
+| e2e_three_node_cluster_kv_put_batch_delete (kv.recovery)          | 3     | 1.585 | 0.857  | 1.907   | 0.215   | 1.191 | 5.757 |
+| multi_store_isolation_and_recovery (kv.routing)                   | 3     | 1.794 | 0.133  | 2.226   | 0.217   | 1.274 | 5.646 |
+| async_and_sync_leader_lifecycle (kv.management)                   | 3     | 1.708 | 2.138  | 0.000   | 0.213   | 1.094 | 5.153 |
+| topology_wiring_and_progressive_setup (kv.management)             | 2     | 1.234 | 2.397  | 0.000   | 0.152   | 1.068 | 4.852 |
+| snapshot_import_precedes_wiring_and_catches_up_tail (kv.recovery) | 3     | 1.464 | 1.524  | 0.000   | 0.222   | 1.168 | 4.379 |
+| topology_and_follower_hint (kv.routing)                           | 3     | 1.492 | 0.917  | 0.000   | 0.216   | 1.217 | 3.843 |
+| flush_and_wipe_preserve_group_and_resume_writes (kv.management)   | 1     | 0.840 | 0.877  | 0.000   | 0.072   | 0.633 | 2.424 |
+| management_lifecycle (kv.management)                              | 1     | 0.781 | 0.392  | 0.000   | 0.070   | 0.589 | 1.833 |
+| synchronous_step_down_fence (kv.management)                       | 1     | 0.744 | 0.343  | 0.000   | 0.073   | 0.586 | 1.747 |
+| epoch_replay_and_authority_bootstrap (kv.membership)              | 1     | 0.734 | 0.302  | 0.000   | 0.075   | 0.620 | 1.732 |
+| replica_lifecycle (kv.membership)                                 | 1     | 0.762 | 0.111  | 0.000   | 0.074   | 0.622 | 1.570 |
 
 ## Suite Timing
 
@@ -180,14 +207,14 @@ these totals. Keep one latest row per package/platform; use `—` when unmeasure
 | Test package       | Date       | Tests   | Seconds | Status                                  |
 | ------------------ | ---------- | ------- | ------- | --------------------------------------- |
 | `test-cpp`         | 2026-10-07 | 860/860 | 55      | ✓                                       |
-| `test-core`        | 2026-10-07 | 977/978 | 368     | ✓ 1 ignored                            |
-| `test-storage`     | 2026-10-07 | 811/815 | 1064    | ✓ 4 ignored                            |
+| `test-core`        | 2026-10-07 | 977/978 | 368     | ✓ 1 ignored                             |
+| `test-storage`     | 2026-10-07 | 811/815 | 1064    | ✓ 4 ignored                             |
 | `test-access`      | 2026-10-07 | 906/906 | —       | ✓                                       |
-| `test-console`     | 2026-10-07 | 77/79   | 61      | ✓ 2 ignored                            |
+| `test-console`     | 2026-10-07 | 77/79   | 61      | ✓ 2 ignored                             |
 | `test-console-ui`  | 2026-10-07 | 63/63   | 192     | ✓                                       |
 | `test-boto3-e2e`   | 2026-10-07 | 32/32   | 295     | ✓                                       |
 | `test-iceberg-e2e` | 2026-10-07 | —       | 338     | ✓                                       |
-| `test-iceberg-sdk` | 2026-10-07 | —       | —       | X Maven dependency resolution stalled  |
+| `test-iceberg-sdk` | 2026-10-07 | —       | —       | X Maven dependency resolution stalled   |
 
 ### intel7960
 
@@ -426,15 +453,15 @@ Measurement notes for this host:
 
 | Test package       | Date | Tests | Seconds | Status |
 | ------------------ | ---- | ----- | ------- | ------ |
-| `test-cpp`         | —    | —     | —       | ⏳     |
-| `test-core`        | —    | —     | —       | ⏳     |
-| `test-storage`     | —    | —     | —       | ⏳     |
-| `test-access`      | —    | —     | —       | ⏳     |
-| `test-console`     | —    | —     | —       | ⏳     |
-| `test-console-ui`  | —    | —     | —       | ⏳     |
-| `test-boto3-e2e`   | —    | —     | —       | ⏳     |
-| `test-iceberg-e2e` | —    | —     | —       | ⏳     |
-| `test-iceberg-sdk` | —    | —     | —       | ⏳     |
+| `test-cpp`         | —    | —     | —       | ⏳      |
+| `test-core`        | —    | —     | —       | ⏳      |
+| `test-storage`     | —    | —     | —       | ⏳      |
+| `test-access`      | —    | —     | —       | ⏳      |
+| `test-console`     | —    | —     | —       | ⏳      |
+| `test-console-ui`  | —    | —     | —       | ⏳      |
+| `test-boto3-e2e`   | —    | —     | —       | ⏳      |
+| `test-iceberg-e2e` | —    | —     | —       | ⏳      |
+| `test-iceberg-sdk` | —    | —     | —       | ⏳      |
 
 The measurement helper writes logs and aggregate results below
 `.crowdb-runtime/artifacts/measure-tests/`. Keep slow individual-test notes next

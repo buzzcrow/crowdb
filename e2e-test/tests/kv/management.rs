@@ -1,21 +1,9 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+use crate::common::management::{addresses, client, origin, request};
 use reqwest::{Client, Method};
 use serde_json::{json, Value};
-
-async fn request(client: &Client, base: &str, method: Method, path: &str, body: Value, status: u16) -> Value {
-    let response = client
-        .request(method, format!("{base}{path}"))
-        .json(&body)
-        .send()
-        .await
-        .unwrap();
-    let actual = response.status().as_u16();
-    let text = response.text().await.unwrap();
-    assert_eq!(actual, status, "{path}: {text}");
-    serde_json::from_str(&text).unwrap_or(Value::Null)
-}
 
 async fn discovery(client: &Client, base: &str) {
     let health = request(client, base, Method::GET, "/health", Value::Null, 200).await;
@@ -37,6 +25,17 @@ async fn discovery(client: &Client, base: &str) {
     assert_eq!(store["groups"][0]["local_replica_id"], 1);
     let alias = request(client, base, Method::GET, "/top", Value::Null, 200).await;
     assert!(!alias["stores"].as_array().unwrap().is_empty());
+    // Before election completes either state is valid, but the schema is fixed.
+    let response = client
+        .get(format!("{base}/stores/0/groups/1/ready"))
+        .send()
+        .await
+        .unwrap();
+    assert!(matches!(response.status().as_u16(), 200 | 503));
+    let ready: Value = response.json().await.unwrap();
+    assert!(ready["leader_id"].as_u64().is_some());
+    assert!(ready["voting_replicas"].as_u64().is_some());
+    request(client, base, Method::GET, "/operations/99999", Value::Null, 404).await;
 }
 
 async fn metrics(client: &Client, base: &str) {
@@ -148,11 +147,8 @@ async fn stores(client: &Client, base: &str) {
 #[tokio::test]
 #[ignore = "requires the release-container fixture; run pixi run test-container-e2e"]
 async fn management_lifecycle() {
-    let addresses: Vec<String> =
-        serde_json::from_str(&std::env::var("CROWDB_E2E_RPC").expect("fixture IPs")).unwrap();
-    assert_eq!(addresses.len(), 1, "management case owns one fresh server");
-    let base = format!("http://{}:7000", addresses[0]);
-    let client = Client::builder().no_proxy().build().unwrap();
+    let base = origin(&addresses(1)[0]);
+    let client = client();
     discovery(&client, &base).await;
     metrics(&client, &base).await;
     stores(&client, &base).await;

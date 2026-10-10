@@ -16,14 +16,18 @@ from pathlib import Path
 from client import bundle_client
 from fixture import Cluster, docker
 from release import check_startup
+from scenarios import KV_CASES, run_cases
+from image_identity import verify_server_sources
+from report import write_report
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def capacity(concurrency, cpus, memory_mib):
-    if concurrency < 1 or cpus < 2 or memory_mib < 2048:
-        raise ValueError("KV needs at least one 2-CPU / 2048-MiB fixture slot")
-    return min(concurrency, int(cpus // 2), memory_mib // 2048)
+def capacity(concurrency, cpus, memory_mib, nodes=3):
+    fixture_cpus, fixture_memory = (nodes + 1) * 0.5, (nodes + 1) * 512
+    if concurrency < 1 or nodes < 1 or cpus < fixture_cpus or memory_mib < fixture_memory:
+        raise ValueError(f"KV needs at least one {fixture_cpus:g}-CPU / {fixture_memory}-MiB fixture slot")
+    return min(concurrency, int(cpus // fixture_cpus), memory_mib // fixture_memory)
 
 
 def interrupt(_signal, _frame):
@@ -36,7 +40,11 @@ def run_pair(image, artifacts, bundle, count, data_root=None):
 
     def scenario(index):
         try:
-            with Cluster(image, artifacts, data_root=data_root) as cluster:
+            cluster = Cluster(image, artifacts, data_root=data_root)
+            (cluster.artifacts / "case.json").write_text(json.dumps({
+                "scope": "kv.recovery" if index == 0 else "kv.isolation",
+                "case": "e2e_three_node_cluster_kv_put_batch_delete"}, indent=2))
+            with cluster:
                 cluster.client(bundle, "write")
                 ready.wait()
                 if index == 0:
@@ -73,6 +81,8 @@ def run_pair(image, artifacts, bundle, count, data_root=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--layer", choices=("kv", "all"), default="kv")
+    parser.add_argument("--scope", choices=("all", "kv.management", "kv.membership", "kv.routing", "kv.recovery", "kv.isolation"),
+                        default="all")
     parser.add_argument("--concurrency", type=int, default=2)
     parser.add_argument("--require-isolation", action="store_true")
     parser.add_argument("--cpus", type=float, default=4)
@@ -87,21 +97,31 @@ def main():
         parser.error("the first container E2E profile requires a Linux daemon")
     slots = capacity(args.concurrency, min(args.cpus, info["NCPU"]),
                      min(args.memory_mib, info["MemTotal"] // 1048576))
-    if args.require_isolation and slots < 2:
+    selected = [case for case in KV_CASES if args.scope == "all" or case.scope == args.scope]
+    largest = max((len(case.stores_per_node or case.stores) for case in selected), default=3)
+    case_slots = capacity(args.concurrency, min(args.cpus, info["NCPU"]),
+                          min(args.memory_mib, info["MemTotal"] // 1048576), largest)
+    if (args.require_isolation or args.scope == "kv.isolation") and slots < 2:
         parser.error("concurrent isolation acceptance needs two fixture slots")
+    if args.require_isolation and args.scope in ("kv.management", "kv.membership", "kv.routing"):
+        parser.error("isolation acceptance requires all, kv.recovery or kv.isolation scope")
     identity = json.loads(docker("image", "inspect", args.image))[0]
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     labels = identity["Config"].get("Labels") or {}
-    if labels.get("org.opencontainers.image.revision") != revision:
-        parser.error("image/source revision differs; rebuild the shared OCI image")
+    try:
+        source_identity = verify_server_sources(ROOT, labels.get("org.opencontainers.image.revision"))
+    except ValueError as error:
+        parser.error(str(error))
     args.artifacts.mkdir(parents=True, exist_ok=True)
     # Unique artifacts/client bundle avoid concurrent runner collisions.
     run_root = args.artifacts / ("run-" + uuid.uuid4().hex)
     run_root.mkdir()
     (run_root / "identity.json").write_text(json.dumps({"image": args.image, "id": identity["Id"],
         "repo_digests": identity.get("RepoDigests", []), "labels": labels, "client_revision": revision,
-        "layer": args.layer, "slots": slots}, indent=2))
-    print(f"KV fixture slots: {slots}; exact image {identity['Id']}; artifacts {run_root}", flush=True)
+        "layer": args.layer, "scope": args.scope, "slots": slots, "case_slots": case_slots,
+        "largest_case_nodes": largest,
+        "source_identity": source_identity}, indent=2))
+    print(f"KV isolation slots: {slots}; case slots: {case_slots}; exact image {identity['Id']}; artifacts {run_root}", flush=True)
     started = time.monotonic()
     bundle = bundle_client(run_root / "client")
     timings = {"client_build": time.monotonic() - started}
@@ -115,13 +135,19 @@ def main():
     (run_root / "client-identity.json").write_text(json.dumps({"sha256": client_digest,
         "revision": revision, "source_sha256": client_source.hexdigest()}, indent=2))
     started = time.monotonic()
-    run_pair(identity["Id"], run_root, bundle, min(slots, 2), args.data_root)
-    with Cluster(identity["Id"], run_root, data_root=args.data_root, node_count=1) as cluster:
-        cluster.client(bundle, "management", "kv::management::management_lifecycle")
-    check_startup(identity["Id"], run_root)
-    timings["scenarios_wall"] = time.monotonic() - started
-    (run_root / "timing.json").write_text(json.dumps(timings, indent=2))
-    print("Container KV CRUD, crash recovery and available fixture isolation checks passed", flush=True)
+    timings["status"] = "failed"
+    try:
+        if args.scope in ("all", "kv.recovery", "kv.isolation"):
+            run_pair(identity["Id"], run_root, bundle, min(slots, 2), args.data_root)
+        if args.scope in ("all", "kv.management", "kv.membership", "kv.routing", "kv.recovery"):
+            run_cases(identity["Id"], run_root, bundle, case_slots, args.data_root, args.scope)
+        if args.scope == "all":
+            check_startup(identity["Id"], run_root)
+        timings["status"] = "pass"
+    finally:
+        timings["scenarios_wall"] = time.monotonic() - started
+        write_report(run_root, timings)
+    print(f"Container KV scope {args.scope} passed", flush=True)
 
 
 if __name__ == "__main__":

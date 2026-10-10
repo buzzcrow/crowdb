@@ -85,6 +85,10 @@ class FixtureTest(unittest.TestCase):
         self.assertEqual(capacity(8, 4, 8192), 2)
         self.assertEqual(capacity(8, 16, 2048), 1)
         self.assertEqual(capacity(1, 16, 16384), 1)
+        self.assertEqual(capacity(8, 4, 4096, nodes=5), 1)
+        self.assertEqual(capacity(8, 6, 6144, nodes=5), 2)
+        with self.assertRaises(ValueError):
+            capacity(1, 2, 2048, nodes=5)
         for args in ((0, 4, 4096), (1, 1, 4096), (2, 4, 1024)):
             with self.assertRaises(ValueError):
                 capacity(*args)

@@ -16,6 +16,8 @@ def run_client(bundle, addresses, token, phase, artifacts,
     env = os.environ.copy()
     env.update(CROWDB_E2E_RPC=json.dumps(addresses), CROWDB_E2E_TOKEN=token,
                CROWDB_E2E_PHASE=phase)
+    bypass = ",".join(filter(None, [env.get("NO_PROXY", ""), env.get("no_proxy", ""), *addresses]))
+    env.update(NO_PROXY=bypass, no_proxy=bypass)
     env["LD_LIBRARY_PATH"] = str(Path(bundle) / "lib") + ":" + env.get("LD_LIBRARY_PATH", "")
     started = time.monotonic()
     try:
@@ -28,14 +30,14 @@ def run_client(bundle, addresses, token, phase, artifacts,
         output += (stderr.decode(errors="replace") if isinstance(stderr, bytes) else stderr)
         Path(artifacts, f"client-{phase}.log").write_text(output)
         Path(artifacts, f"client-{phase}.json").write_text(json.dumps({
-            "phase": phase, "seconds": time.monotonic() - started,
+            "phase": phase, "case": test_name, "seconds": time.monotonic() - started,
             "status": "timeout", "execution": "host"}, indent=2))
         print(output, end="", flush=True)
         raise
     output = result.stdout + result.stderr
     Path(artifacts, f"client-{phase}.log").write_text(output)
     Path(artifacts, f"client-{phase}.json").write_text(json.dumps({
-        "phase": phase, "seconds": time.monotonic() - started,
+        "phase": phase, "case": test_name, "seconds": time.monotonic() - started,
         "exit_code": result.returncode, "execution": "host"}, indent=2))
     print(output, end="", flush=True)
     if result.returncode or "test result: ok. 1 passed; 0 failed;" not in output:
