@@ -49,6 +49,11 @@ pub trait PartitionTree: Send + Sync {
         std::sync::Arc<dyn PartitionTree>,
         crowdb_tree_ffi::RangeRebuildStats,
     )>;
+    async fn force_advance_split_frontier(&self, _journal_frontier: u64) -> Result<()> {
+        Err(ChunkKvError::InvalidRequest(
+            "partition tree does not support split frontier advancement".into(),
+        ))
+    }
     async fn begin_split_memtable_view(&self) -> Result<(u64, u64)> {
         Err(ChunkKvError::InvalidRequest(
             "partition tree does not support split memtable views".into(),
@@ -437,6 +442,11 @@ impl PartitionTree for CrowdbPartitionTree {
             }),
             stats,
         ))
+    }
+
+    async fn force_advance_split_frontier(&self, journal_frontier: u64) -> Result<()> {
+        self.tree.force_advance_slot(journal_frontier);
+        Ok(())
     }
 
     async fn begin_split_memtable_view(&self) -> Result<(u64, u64)> {

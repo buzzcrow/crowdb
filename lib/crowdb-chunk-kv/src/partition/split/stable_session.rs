@@ -77,8 +77,7 @@ impl Partition {
             child: (*proof).clone(),
         };
         super::super::validate_split_artifact(&plan, &artifact, proof.applied_seq)?;
-        self.finish_child_inheritance(&plan, &artifact, child.tree.as_ref())
-            .await?;
+        finish_child_inheritance(self.tree.as_ref(), &plan, &artifact, child.tree.as_ref()).await?;
         self.record_split_artifact(artifact.clone()).await?;
         let writer = PreparedSplitWriter {
             artifact: (*proof).clone(),
@@ -128,35 +127,34 @@ impl Partition {
             .await?;
         let (artifact, child) = installed.await.map_err(|_| ChunkKvError::WriteStalled)??;
         self.pending_child_preparation.store(None);
-        self.finish_child_inheritance(&plan, &artifact, child_tree.as_ref())
-            .await?;
+        finish_child_inheritance(self.tree.as_ref(), &plan, &artifact, child_tree.as_ref()).await?;
         self.record_split_artifact(artifact.clone()).await?;
         self.metrics.split_finalization();
         Ok((artifact, child))
     }
+}
 
-    async fn finish_child_inheritance(
-        &self,
-        plan: &SplitPlan,
-        artifact: &SplitArtifact,
-        child_tree: &dyn PartitionTree,
-    ) -> Result<()> {
-        let (generation, captured) = self.tree.begin_split_memtable_view().await?;
-        let publication = if captured < artifact.cutover_seq {
-            Err(ChunkKvError::ApplyStateUnknown)
-        } else {
-            self.tree
-                .publish_split_memtable_view(generation, artifact.cutover_seq, child_tree, &plan.child.range)
-                .await
-        };
-        let release = self.tree.release_split_memtable_view(generation).await;
-        publication?;
-        release?;
-        child_tree
-            .clear_split_memtable_overlay(self.tree.as_ref())
-            .await?;
-        Ok(())
+pub(super) async fn finish_child_inheritance(
+    parent_tree: &dyn PartitionTree,
+    plan: &SplitPlan,
+    artifact: &SplitArtifact,
+    child_tree: &dyn PartitionTree,
+) -> Result<()> {
+    parent_tree
+        .force_advance_split_frontier(artifact.cutover_seq)
+        .await?;
+    let (generation, captured) = parent_tree.begin_split_memtable_view().await?;
+    if captured < artifact.cutover_seq {
+        parent_tree.release_split_memtable_view(generation).await?;
+        return Err(ChunkKvError::ApplyStateUnknown);
     }
+    let publication = parent_tree
+        .publish_split_memtable_view(generation, artifact.cutover_seq, child_tree, &plan.child.range)
+        .await;
+    let release = parent_tree.release_split_memtable_view(generation).await;
+    publication?;
+    release?;
+    Ok(())
 }
 
 pub(crate) async fn install_child_cutover(
@@ -182,7 +180,7 @@ async fn install_child_cutover_inner(
     };
     request
         .child_tree
-        .install_split_memtable_overlay(request.parent.tree.as_ref(), cutover_seq)
+        .force_advance_split_frontier(cutover_seq)
         .await?;
     let mut child = prepare_writer(
         &request.plan.child,

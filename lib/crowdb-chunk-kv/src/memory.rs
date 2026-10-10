@@ -298,6 +298,11 @@ impl PartitionTree for MemoryPartitionTree {
         Ok((Arc::new(rebuilt), stats))
     }
 
+    async fn force_advance_split_frontier(&self, journal_frontier: u64) -> Result<()> {
+        self.last_applied.fetch_max(journal_frontier, Ordering::AcqRel);
+        Ok(())
+    }
+
     async fn begin_split_memtable_view(&self) -> Result<(u64, u64)> {
         let generation = self
             .next_split_view

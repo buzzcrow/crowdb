@@ -114,7 +114,3 @@ live in the linked document; implementation follows
 - **[R60](R60-tree-scan-sibling-leaf-readahead.md)** — sibling-leaf readahead on
   cold scans. **Area:** crowdb-tree / scan / DiskIO. **Complexity:** Medium.
   **Status:** Deferred pending cold file/block-backed measurements.
-- **[R228](R228-tree-range-metrics.md)** — root/range page, logical-byte and live-KV
-  metrics for continuous split sizing and data-weight placement. **Area:** tree /
-  chunk-KV / console. **Complexity:** High. **Status:** Deferred implementation
-  pending statistics-format/performance review; count placement remains enabled.
