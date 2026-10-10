@@ -622,6 +622,12 @@ pub async fn remove_replica(ctx: &OpContext, store_id: u64, group_id: u64, repli
             id: replica_id.to_string(),
         })?;
     let target_node = target.node_id;
+    // Removing the last replica leaves no valid Paxos membership. Treat the
+    // request as removal of the now-empty group so the logical projection
+    // cannot retain an orphaned group with zero voting members.
+    if replicas.len() == 1 {
+        return remove_group(ctx, store_id, group_id).await;
+    }
     if target.voting && replicas.iter().filter(|replica| replica.voting).count() <= 1 {
         return Err(Error::Validation {
             field: "replica_id".into(),

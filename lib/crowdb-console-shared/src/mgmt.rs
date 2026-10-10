@@ -177,7 +177,7 @@ impl ServerClient {
     /// # Errors
     /// Transport / non-2xx status codes surface as `Error::UpstreamRpc`.
     pub async fn step_down(&self, sid: u64, gid: u64, req: &StepDownRequest) -> Result<StepDownResult> {
-        self.post_json(&format!("/stores/{sid}/groups/{gid}/step-down"), req)
+        self.post_json(&format!("/stores/{sid}/groups/{gid}/step-down?sync=true"), req)
             .await
     }
 
