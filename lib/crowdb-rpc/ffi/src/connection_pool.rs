@@ -16,6 +16,8 @@ use crate::Connection;
 pub enum ConnectionPoolError<E> {
     /// Establishing one of the candidate pool's connections failed.
     Connect(E),
+    /// Every candidate connection closed before acquisition completed.
+    Closed,
     /// Installing another endpoint would exceed the configured bound.
     Capacity { max_endpoints: usize },
 }
@@ -24,6 +26,7 @@ impl<E: std::fmt::Display> std::fmt::Display for ConnectionPoolError<E> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Connect(error) => write!(formatter, "connection failed: {error}"),
+            Self::Closed => write!(formatter, "candidate connections closed during acquisition"),
             Self::Capacity { max_endpoints } => {
                 write!(formatter, "endpoint connection limit {max_endpoints} reached")
             }
@@ -256,9 +259,7 @@ impl ConnectionPoolIndex {
                 });
                 let previous = self.snapshot.compare_and_swap(&current, replacement);
                 if Arc::ptr_eq(&previous, &current) {
-                    return Ok(candidate
-                        .select()
-                        .expect("newly connected pool must have an open connection"));
+                    return self.select_candidate(endpoint, &candidate);
                 }
             }
         }
@@ -314,11 +315,21 @@ impl ConnectionPoolIndex {
             });
             let previous = self.snapshot.compare_and_swap(&current, replacement);
             if Arc::ptr_eq(&previous, &current) {
-                return Ok(candidate
-                    .select()
-                    .expect("newly connected pool must have an open connection"));
+                return self.select_candidate(endpoint, &candidate);
             }
         }
+    }
+
+    fn select_candidate<E>(
+        &self,
+        endpoint: &str,
+        candidate: &ConnectionPool,
+    ) -> Result<SelectedConnection, ConnectionPoolError<E>> {
+        if let Some(selected) = candidate.select() {
+            return Ok(selected);
+        }
+        self.invalidate(endpoint, candidate.generation);
+        Err(ConnectionPoolError::Closed)
     }
 
     /// Remove an endpoint only when it is still the selected generation.

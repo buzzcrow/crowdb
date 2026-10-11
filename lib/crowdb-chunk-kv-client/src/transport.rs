@@ -123,6 +123,9 @@ impl ChunkKvRpcTransport {
                 Ok(connection)
             })
             .map_err(|error| match error {
+                ConnectionPoolError::Closed => {
+                    ClientError::Transport("connection closed during acquisition".into())
+                }
                 ConnectionPoolError::Connect(error) => error,
                 ConnectionPoolError::Capacity { .. } => {
                     ClientError::Transport("owner connection limit reached".into())

@@ -164,6 +164,10 @@ impl KvRpcTransport {
                 Ok(conn)
             })
             .map_err(|error| match error {
+                ConnectionPoolError::Closed => Error::Transport {
+                    endpoint: rpc_endpoint.to_string(),
+                    status: "connection closed during acquisition".into(),
+                },
                 ConnectionPoolError::Connect(error) => error,
                 ConnectionPoolError::Capacity { max_endpoints } => Error::Transport {
                     endpoint: rpc_endpoint.to_string(),

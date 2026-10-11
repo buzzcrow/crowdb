@@ -218,6 +218,9 @@ impl ChunkdbRpcTransport {
                 Ok(conn)
             })
             .map_err(|error| match error {
+                ConnectionPoolError::Closed => {
+                    ChunkdbClientError::ConnectFailed("connection closed during acquisition".into())
+                }
                 ConnectionPoolError::Connect(error) => error,
                 ConnectionPoolError::Capacity { max_endpoints } => ChunkdbClientError::Unreachable(format!(
                     "endpoint connection limit {max_endpoints} reached"

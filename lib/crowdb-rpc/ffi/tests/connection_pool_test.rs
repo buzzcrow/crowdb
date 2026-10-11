@@ -110,3 +110,38 @@ fn closed_member_is_skipped_and_degraded_generation_is_replaced() {
     assert_eq!(pool.healthy_count(), 2);
     server.stop();
 }
+
+#[test]
+fn acquisition_reports_connections_closed_before_publication() {
+    let server = running_server();
+    let pool = ConnectionPoolIndex::new(2, Some(1));
+    let closed_connect = || {
+        let connection = server.connect("127.0.0.1", server.port())?;
+        connection.close();
+        Ok::<_, RpcError>(connection)
+    };
+    assert!(matches!(
+        pool.get_or_try_install("server", closed_connect),
+        Err(ConnectionPoolError::Closed)
+    ));
+    assert!(
+        pool.is_empty(),
+        "failed candidate must not consume endpoint capacity"
+    );
+    let active = pool
+        .get_or_try_install("server", || server.connect("127.0.0.1", server.port()))
+        .unwrap();
+    active.close();
+    assert!(matches!(
+        pool.replace_if_degraded("server", active.generation(), closed_connect),
+        Err(ConnectionPoolError::Closed)
+    ));
+    assert!(
+        pool.is_empty(),
+        "failed replacement must retire only its generation"
+    );
+    pool.get_or_try_install("server", || server.connect("127.0.0.1", server.port()))
+        .unwrap();
+    assert_eq!(pool.healthy_count(), 2);
+    server.stop();
+}

@@ -158,6 +158,9 @@ impl DiskdbRpcTransport {
                 Ok(conn)
             })
             .map_err(|error| match error {
+                ConnectionPoolError::Closed => {
+                    DiskdbClientError::ConnectFailed("connection closed during acquisition".into())
+                }
                 ConnectionPoolError::Connect(error) => error,
                 ConnectionPoolError::Capacity { max_endpoints } => DiskdbClientError::Unreachable(format!(
                     "endpoint connection limit {max_endpoints} reached"

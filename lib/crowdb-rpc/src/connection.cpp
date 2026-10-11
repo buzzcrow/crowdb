@@ -385,18 +385,18 @@ void Connection::close()
         }
         in_send_.store(false, std::memory_order_release);
     }
-    if (on_rpc_close_callback_) {
-        on_rpc_close_callback_(this);
+    if (const auto *callback = on_rpc_close_callback_.get(); callback != nullptr && *callback) {
+        (*callback)(this);
     }
-    if (on_close_callback_) {
-        on_close_callback_(this);
+    if (const auto *callback = on_close_callback_.get(); callback != nullptr && *callback) {
+        (*callback)(this);
     }
 }
 
 void Connection::on_frame(Frame *frame)
 {
-    if (on_frame_callback_) {
-        on_frame_callback_(frame, this);
+    if (const auto *callback = on_frame_callback_.get(); callback != nullptr && *callback) {
+        (*callback)(frame, this);
     }
 }
 

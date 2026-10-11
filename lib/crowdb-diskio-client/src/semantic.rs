@@ -1004,6 +1004,9 @@ impl DiskioClient {
 #[allow(clippy::needless_pass_by_value)]
 fn classify_pool_error(error: ConnectionPoolError<RpcError>) -> DiskioError {
     match error {
+        ConnectionPoolError::Closed => {
+            DiskioError::TransportUnavailable("connection closed during acquisition".into())
+        }
         ConnectionPoolError::Connect(error) => DiskioError::TransportUnavailable(error.to_string()),
         ConnectionPoolError::Capacity { max_endpoints } => DiskioError::TopologyInconsistent(format!(
             "DiskIO endpoint count exceeds configured maximum {max_endpoints}"

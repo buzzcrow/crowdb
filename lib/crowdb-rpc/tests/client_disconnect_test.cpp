@@ -12,6 +12,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <future>
 #include <thread>
 
 namespace
@@ -143,4 +144,32 @@ TEST(ClientDisconnectTest, AttachedConnectionOutlivesFfiClientHandle)
     crowdb_rpc_conn_destroy(connection);
     crowdb_rpc_server_stop(server);
     crowdb_rpc_server_destroy(server);
+}
+
+TEST(ClientDisconnectTest, ReplacingCloseCallbackRetainsAnActiveInvocation)
+{
+    using crowdb::rpc::Connection;
+    using crowdb::rpc::SystemBufferPool;
+    SystemBufferPool   pool;
+    auto               connection = std::make_shared<Connection>(1, "callback-lifetime", &pool);
+    auto               owner      = std::make_shared<int>(42);
+    std::weak_ptr<int> observed   = owner;
+    std::promise<void> entered;
+    std::promise<void> release;
+    auto               released = release.get_future().share();
+    connection->set_on_rpc_close([owner, &entered, &released](Connection *) {
+        (void)owner;
+        entered.set_value();
+        released.wait();
+    });
+    owner.reset();
+    std::thread worker([&] { connection->close(); });
+    const auto  ready = entered.get_future().wait_for(std::chrono::seconds(1));
+    EXPECT_EQ(ready, std::future_status::ready);
+    connection->set_on_rpc_close([](Connection *) {});
+    EXPECT_FALSE(observed.expired()) << "an active callback must retain its client owner";
+    release.set_value();
+    worker.join();
+    connection.reset();
+    EXPECT_TRUE(observed.expired());
 }

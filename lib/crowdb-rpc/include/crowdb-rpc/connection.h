@@ -5,6 +5,7 @@
 
 #include "crowdb-common/mpsc_queue.h"
 #include "crowdb-rpc/buffer.h"
+#include "crowdb-rpc/connection_callback.h"
 #include "crowdb-rpc/framing.h"
 #include "crowdb-rpc/transport.h"
 
@@ -111,18 +112,18 @@ class Connection : public std::enable_shared_from_this<Connection>
     // Callbacks (set by RpcClient / RpcServer).
     void set_on_frame(OnFrameCallback cb)
     {
-        on_frame_callback_ = std::move(cb);
+        on_frame_callback_.set(std::move(cb));
     }
 
     void set_on_close(OnCloseCallback cb)
     {
-        on_close_callback_ = std::move(cb);
+        on_close_callback_.set(std::move(cb));
     }
 
     // RPC completion is separate from the transport's connection cleanup.
     void set_on_rpc_close(OnCloseCallback cb)
     {
-        on_rpc_close_callback_ = std::move(cb);
+        on_rpc_close_callback_.set(std::move(cb));
     }
 
     // Send queue capacity (backpressure bound, fixed at construction).
@@ -203,9 +204,9 @@ class Connection : public std::enable_shared_from_this<Connection>
     OutFrame *pending_frames_[BATCH_MAX];
     int       pending_count_{0};
 
-    OnFrameCallback on_frame_callback_;
-    OnCloseCallback on_close_callback_;
-    OnCloseCallback on_rpc_close_callback_;
+    ConnectionCallback<OnFrameCallback> on_frame_callback_;
+    ConnectionCallback<OnCloseCallback> on_close_callback_;
+    ConnectionCallback<OnCloseCallback> on_rpc_close_callback_;
 };
 
 } // namespace crowdb::rpc

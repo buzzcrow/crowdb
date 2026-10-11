@@ -120,6 +120,7 @@ impl KvClientRpcForwarder {
                 Ok(conn)
             })
             .map_err(|error| match error {
+                ConnectionPoolError::Closed => RpcError::ConnectionClosed,
                 ConnectionPoolError::Connect(error) => error,
                 ConnectionPoolError::Capacity { .. } => RpcError::AllDown,
             })
