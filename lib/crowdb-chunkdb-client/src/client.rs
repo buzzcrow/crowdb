@@ -162,7 +162,9 @@ impl ChunkdbClient {
         {
             return;
         }
-        if self.refresh_endpoints().await.is_err() {
+        // Registry freshness alone cannot make a cached service assignment live.
+        // Advance both snapshots before selecting an owner for a new mutation.
+        if self.refresh_routes().await.is_err() {
             self.last_registry_refresh_ms.store(0, Ordering::Release);
         }
     }
