@@ -422,8 +422,6 @@ CONSOLE_OPERATION_CASES = (
     Case("console.web.authority", "console::web_authority::snapshot_validates_later_replica_hosts_as_well_as_original_store_hosts", console_web=True),
 )
 
-
-
 DATASET_CASES = (
     Case("dataset.http", "access_dataset::listener_authenticates_and_serves_create_open"),
     Case("dataset.http", "access_dataset::publish_persist_restart_and_scan_round_trip"),
@@ -431,8 +429,13 @@ DATASET_CASES = (
 
 ALL_CASES = CONSOLE_OPERATION_CASES + DATASET_CASES + ICEBERG_CASES + S3_LANGUAGE_CASES + S3_SPECIAL_CASES + S3_RECOVERY_CASES + S3_CASES + CHUNK_KV_CASES + CHUNK_CLIENT_CASES + CHUNK_STREAM_CASES + CHUNKDB_CASES + KV_CASES + DISKDB_CASES + DEPLOYMENT_CASES + DISKIO_CASES
 
+MANUAL_CASES = (
+    Case("iceberg.manual.tpc", "access_iceberg::tpc::parallel_loader_stress", client_timeout=3600),
+)
+
 def select_cases(layer="all", scope="all", case_name=None):
-    return tuple(case for case in ALL_CASES
+    candidates = MANUAL_CASES if scope == "iceberg.manual.tpc" else ALL_CASES
+    return tuple(case for case in candidates
                  if (layer == "all" or case.scope.startswith(layer + "."))
                  and (scope == "all" or case.scope == scope or case.scope.startswith(scope + ".")
                       or (scope == "console.operations" and case in CONSOLE_OPERATION_CASES))
@@ -475,6 +478,8 @@ def case_nodes(case):
     return 2 if case.scope.startswith(("diskdb.", "chunkdb.")) else len(case.stores_per_node or case.stores)
 
 def case_resources(case, node_cpus):
+    if case.scope == "iceberg.manual.tpc":
+        return case_nodes(case) * node_cpus + 4.5, (case_nodes(case) + 1) * 512 + 8192
     if case.scope == "deployment.listeners":
         return max(2, node_cpus) + 1, 3072
     if case.scope == "iceberg.sdk.rck":

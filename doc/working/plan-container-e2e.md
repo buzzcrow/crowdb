@@ -58,14 +58,6 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   replay, retained Diskdb local launch, no local topology/legacy console file,
   completed marker/intent removal and owned deletion. They start real services
   indirectly through CLI; retain unrelated HTTP stubs and argument validation UT.
-- [ ] **Manual TPC loader owner**: migrate ignored
-  `tpc_loader_parallel_stress` in
-  `app/crowdb-access-server/tests/iceberg_file_http_test.rs` to a root manual
-  scope with explicit prerequisites. Preserve two concurrent host loader
-  processes (TPCH workers 8, TPCDS workers 24, SF1, token workers 32) and exact
-  validation. `CROWDB_TPC_LOADER_PYTHON` is unset and the external loader Python
-  environment is absent. The explicit legacy native preparation path remains
-  until equivalent acceptance; do not report a skip as a pass.
 - [ ] **Console browser migration**: resolve the mode contract below, then
   accept both managed browser flows and audit every spec using
   `app/crowdb-web/ui/e2e/realBackend.config.ts`. Two copied flows under
@@ -123,7 +115,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   explicit special/manual task classification, canonical selectors and aggregate
   delegates. Check no duplicate execution or remaining implicit native server
   preparation. `test-storage`/`test-access` component cleanup is committed;
-  manual TPC and native Console paths remain. Java FileIO has SDK ownership and
+  native Console paths remain. Manual TPC is now an explicit root scope with a separate locked host environment. Java FileIO has SDK ownership and
   foreground GC has the native GC delegate; preserve these distinct selections.
 - [ ] **CI shared-image jobs**: finish and commit drafts in
   `.github/workflows/ci.yml` and `iceberg-rust-sdk.yml`. All container domain jobs

@@ -93,7 +93,7 @@ as environment baselines, not as evidence of migration completion.
 ## Remaining issues
 
 - [ ] **Migration closure**: remaining real-server Console lifecycle/cluster
-  flows, CLI S3 bootstrap replay and Iceberg manual TPC need canonical
+  flows and CLI S3 bootstrap replay need canonical
   container owners. Preserve old assertions and important component UTs until
   equivalent owners pass. Final Pixi/CI taxonomy and complete-domain measurements remain pending.
   KV/KV and KV/Web isolation acceptance passes.

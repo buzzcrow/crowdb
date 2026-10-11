@@ -14,6 +14,7 @@ mod response_loss;
 mod rust_retired;
 mod rust_sdk;
 pub(crate) mod signed_file;
+mod tpc;
 use crowdb_access_iceberg::catalog::{Capabilities, ManagementPrivilege};
 use crowdb_access_iceberg::key::OperationId;
 use crowdb_access_iceberg::operation::{ManagementAction, ManagementRequest, RequestIdentity};

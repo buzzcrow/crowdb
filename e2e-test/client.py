@@ -11,6 +11,18 @@ import tarfile
 import time
 from pathlib import Path
 
+CLIENT_BUILD_DIRS = ("target", "node_modules", "dist", "__pycache__", "sdk-check", ".pixi")
+
+
+def client_sources(root):
+    """Enumerate client inputs without traversing installed dependency trees."""
+    for directory, children, files in os.walk(root):
+        children[:] = sorted(name for name in children if name not in CLIENT_BUILD_DIRS)
+        for name in sorted(files):
+            path = Path(directory) / name
+            if path.is_file():
+                yield path
+
 
 def run_client(bundle, addresses, token, phase, artifacts,
                test_name="e2e_three_node_cluster_kv_put_batch_delete", timeout=120):
@@ -71,8 +83,7 @@ def bundle_client(output):
     (output / "lib").mkdir(parents=True)
     shutil.copy2(binaries[0], output / "domain-test")
     shutil.copytree(Path(__file__).parent / "clients", output / "clients",
-                    ignore=shutil.ignore_patterns("target", "node_modules", "dist",
-                                                "__pycache__", "sdk-check"))
+                    ignore=shutil.ignore_patterns(*CLIENT_BUILD_DIRS))
     result = subprocess.run(["ldd", "-r", str(output / "domain-test")], capture_output=True, text=True, check=True)
     if "not found" in result.stdout or "undefined symbol" in result.stdout:
         raise RuntimeError(result.stdout)

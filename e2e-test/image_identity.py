@@ -22,6 +22,8 @@ SERVER_PATHS = (
     ":(exclude)tools/pixi-tasks/test-s3-client.sh",
     ":(exclude)tools/pixi-tasks/test-s3-sdk.sh",
     ":(exclude)tools/pixi-tasks/test-iceberg-native.sh",
+    # Retired native host preparation never entered the release staging path.
+    ":(exclude)tools/pixi-tasks/prepare-iceberg.sh",
     ":(exclude)tools/pixi-tasks/test-iceberg-e2e.sh",
     ":(exclude)tools/pixi-tasks/test-iceberg-listing-native.sh",
     ":(exclude)tools/pixi-tasks/test-pyiceberg-e2e.sh",

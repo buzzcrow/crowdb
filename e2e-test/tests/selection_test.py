@@ -23,6 +23,14 @@ class SelectionTest(unittest.TestCase):
                 docker.assert_not_called()
         return output.getvalue()
 
+    def test_manual_tpc_is_explicit_and_missing_client_fails_before_servers(self):
+        required = json.loads(self.invoke("--list", "--layer", "iceberg"))
+        self.assertTrue(all(case["scope"] != "iceberg.manual.tpc" for case in required))
+        manual = json.loads(self.invoke("--list", "--scope", "iceberg.manual.tpc"))
+        self.assertEqual([case["case"] for case in manual], ["access_iceberg::tpc::parallel_loader_stress"])
+        with patch("run.Path.is_file", return_value=False), self.assertRaises(SystemExit):
+            self.invoke("--scope", "iceberg.manual.tpc")
+
     def test_list_selects_exact_scope_and_case_without_runtime_prerequisites(self):
         cases = json.loads(self.invoke("--list", "--scope", "kv.group0"))
         self.assertEqual(len(cases), 8)
@@ -72,7 +80,7 @@ class SelectionTest(unittest.TestCase):
                 self.assertEqual(case["nodes"], 4 if case["scope"] == "console.web.lifecycle"
                                  else 1 if case["scope"] in ("console.web.standalone", "console.web.registry")
                                  else 5 if case["scope"].startswith("console.web.")
-                                 else 1 if case["scope"] in ("console.managed", "console.clients") else 3)
+                                 else 1 if case["scope"] in ("console.clients",) else 3)
         iceberg = json.loads(self.invoke("--list", "--layer", "iceberg"))
         self.assertEqual(len(iceberg), 32)
         self.assertTrue(all(case["scope"].startswith("iceberg.") and case["nodes"] == 14

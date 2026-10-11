@@ -4,11 +4,6 @@
 set -euo pipefail
 cd "${PIXI_PROJECT_ROOT:?}"
 
-if [[ -n "${CROWDB_TPC_LOADER_PYTHON:-}" ]]; then
-    source tools/pixi-tasks/prepare-iceberg.sh
-    pixi run -e default -- cargo test --release -p crowdb-access-server --features iceberg-e2e \
-        --test iceberg_file_http_test tpc_loader_parallel_stress -- --ignored --exact --test-threads=1
-fi
 pixi run -e default -- cargo test --release -p crowdb-access-server \
     --test iceberg_commit_recovery_test --test iceberg_file_recovery_test -- --test-threads=1
 

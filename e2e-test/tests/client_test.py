@@ -10,10 +10,26 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from client import run_client
+from client import client_sources, run_client
 
 
 class ClientTest(unittest.TestCase):
+    def test_client_identity_keeps_locks_and_excludes_mutable_environments(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            project = root / "tpc-loader"
+            project.mkdir()
+            for name in ("pixi.toml", "pixi.lock"):
+                (project / name).write_text("locked client")
+            for directory in (".pixi/envs/default", "target", "node_modules"):
+                path = project / directory
+                path.mkdir(parents=True)
+                (path / "installed.py").write_text("mutable dependency")
+            self.assertEqual(
+                {path.relative_to(root).as_posix() for path in client_sources(root)},
+                {"tpc-loader/pixi.toml", "tpc-loader/pixi.lock"},
+            )
+
     def test_zero_matching_cases_cannot_pass(self):
         result = subprocess.CompletedProcess([], 0, "test result: ok. 0 passed; 0 failed;", "")
         with tempfile.TemporaryDirectory() as root, patch("client.subprocess.run", return_value=result):

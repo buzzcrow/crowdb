@@ -14,7 +14,7 @@ import time
 import uuid
 from pathlib import Path
 
-from client import bundle_cli, bundle_client, bundle_iceberg_rust, bundle_iceberg_java, bundle_iceberg_rck
+from client import bundle_cli, bundle_client, bundle_iceberg_rust, bundle_iceberg_java, bundle_iceberg_rck, client_sources
 from fixture import Cluster, docker
 from release import check_startup
 from scenarios import case_nodes, case_resources, run_cases, select_cases
@@ -86,7 +86,7 @@ def run_pair(image, artifacts, bundle, count, data_root=None, node_cpus=0.5):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--layer", choices=("kv", "diskdb", "diskio", "chunkdb", "chunk-stream", "chunk-client", "chunk-kv", "s3", "iceberg", "dataset", "console", "deployment", "all"), default="all")
-    parser.add_argument("--scope", choices=("all", "dataset.http", "console.discovery", "console.hardware", "console.logical", "console.bootstrap", "console.cleanup", "console.deployment", "console.cli", "console.operations", "console.web", "console.web.authority", "console.web.slots", "console.web.catalog", "console.web.standalone", "console.web.registry", "console.web.lifecycle", "console.web.wal", "console.clients", "iceberg.benchmark", "iceberg.metadata", "iceberg.namespace", "iceberg.files", "iceberg.files.listing", "iceberg.catalog", "iceberg.gc", "iceberg.sdk", "iceberg.sdk.java", "iceberg.sdk.rust", "iceberg.sdk.rck", "s3.protocol", "s3.recovery", "s3.responses", "s3.benchmark", "s3.sdk", "s3.credentials", "s3.policy", "s3.nodes", "kv.management", "kv.membership", "kv.routing", "kv.recovery", "kv.isolation", "kv.group0", "kv.client", "kv.metadata", "diskdb.allocation", "diskdb.ownership", "diskdb.reuse", "diskdb.recovery", "chunkdb.allocation", "chunkdb.lifecycle", "chunkdb.recovery", "chunkdb.placement", "chunkdb.io", "chunkdb.conversion", "chunkdb.repair", "chunkdb.slots", "chunkdb.handoff", "chunk-kv.protocol", "chunk-kv.recovery", "chunk-client.reader", "chunk-client.large_repair", "chunk-client.small_flow", "chunk-client.benchmark", "chunk-client.large", "chunk-client.small", "chunk-stream.objects", "chunk-stream.recovery", "chunk-stream.errors", "deployment.selection", "deployment.supervision", "deployment.hardware", "deployment.bootstrap", "deployment.balance", "deployment.listeners", "deployment.browser", "deployment.anonymous", "deployment.failures", "deployment.clients", "deployment.storage", "deployment.validation", "deployment.kv", "diskio.durability", "diskio.direct", "diskio.io.mem", "diskio.io.null", "diskio.discovery", "diskio.errors", "diskio.faults", "diskio.semantic"),
+    parser.add_argument("--scope", choices=("all", "dataset.http", "console.discovery", "console.hardware", "console.logical", "console.bootstrap", "console.cleanup", "console.deployment", "console.cli", "console.operations", "console.web", "console.web.authority", "console.web.slots", "console.web.catalog", "console.web.standalone", "console.web.registry", "console.web.lifecycle", "console.web.wal", "console.clients", "iceberg.manual.tpc", "iceberg.benchmark", "iceberg.metadata", "iceberg.namespace", "iceberg.files", "iceberg.files.listing", "iceberg.catalog", "iceberg.gc", "iceberg.sdk", "iceberg.sdk.java", "iceberg.sdk.rust", "iceberg.sdk.rck", "s3.protocol", "s3.recovery", "s3.responses", "s3.benchmark", "s3.sdk", "s3.credentials", "s3.policy", "s3.nodes", "kv.management", "kv.membership", "kv.routing", "kv.recovery", "kv.isolation", "kv.group0", "kv.client", "kv.metadata", "diskdb.allocation", "diskdb.ownership", "diskdb.reuse", "diskdb.recovery", "chunkdb.allocation", "chunkdb.lifecycle", "chunkdb.recovery", "chunkdb.placement", "chunkdb.io", "chunkdb.conversion", "chunkdb.repair", "chunkdb.slots", "chunkdb.handoff", "chunk-kv.protocol", "chunk-kv.recovery", "chunk-client.reader", "chunk-client.large_repair", "chunk-client.small_flow", "chunk-client.benchmark", "chunk-client.large", "chunk-client.small", "chunk-stream.objects", "chunk-stream.recovery", "chunk-stream.errors", "deployment.selection", "deployment.supervision", "deployment.hardware", "deployment.bootstrap", "deployment.balance", "deployment.listeners", "deployment.browser", "deployment.anonymous", "deployment.failures", "deployment.clients", "deployment.storage", "deployment.validation", "deployment.kv", "diskio.durability", "diskio.direct", "diskio.io.mem", "diskio.io.null", "diskio.discovery", "diskio.errors", "diskio.faults", "diskio.semantic"),
                         default="all")
     parser.add_argument("--concurrency", type=int, default=2)
     parser.add_argument("--case", help="fully qualified named flow within the selected scope")
@@ -110,6 +110,12 @@ def main():
         print(json.dumps([{"scope": case.scope, "case": case.name,
                            "nodes": case_nodes(case)} for case in selected], indent=2))
         return
+    if args.scope == "iceberg.manual.tpc":
+        manifest = ROOT / "e2e-test/clients/tpc-loader/pixi.toml"
+        python = manifest.parent / ".pixi/envs/default/bin/python"
+        if not python.is_file():
+            parser.error("manual TPC requires the locked client environment; run pixi install --manifest-path " + str(manifest))
+        os.environ["CROWDB_E2E_TPC_MANIFEST"] = str(manifest)
     signal.signal(signal.SIGTERM, interrupt)
     info = json.loads(docker("info", "--format", "{{json .}}"))
     if info["OSType"] != "linux":
@@ -167,14 +173,13 @@ def main():
     with (bundle / "domain-test").open("rb") as executable:
         client_digest = hashlib.file_digest(executable, "sha256").hexdigest()
     client_source = hashlib.sha256()
-    for path in sorted((ROOT / "e2e-test").rglob("*")):
-        if path.is_file() and not {"target", "node_modules", "dist", "__pycache__"}.intersection(path.relative_to(ROOT / "e2e-test").parts) and path.suffix in (".rs", ".py", ".toml"):
+    for path in client_sources(ROOT / "e2e-test"):
+        if path.suffix in (".rs", ".py", ".toml"):
             client_source.update(str(path.relative_to(ROOT)).encode())
             client_source.update(path.read_bytes())
-    for path in sorted((bundle / "clients").rglob("*")):
-        if path.is_file() and not {"target", "node_modules", "dist", "__pycache__"}.intersection(path.relative_to(bundle / "clients").parts):
-            client_source.update(str(path.relative_to(bundle)).encode())
-            client_source.update(path.read_bytes())
+    for path in client_sources(bundle / "clients"):
+        client_source.update(str(path.relative_to(bundle)).encode())
+        client_source.update(path.read_bytes())
     executable_digests = {}
     for name in ("domain-test", "crowdb-cli", "iceberg-rust-client"):
         path = bundle / name
