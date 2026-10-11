@@ -134,9 +134,11 @@ pub async fn verify_chunk_services(
                         .and_then(|extra| extra.chunk_kv.as_ref())
                         .is_none())
             {
-                return Err(ChunkBootstrapError::Invalid(
-                    "chunk registration conflicts with configuration",
-                ));
+                return Err(ChunkBootstrapError::Invalid(match wanted.service {
+                    "chunkdb" => "ChunkDB registration conflicts with configuration",
+                    "chunk-kv" => "Chunk-KV registration conflicts with configuration",
+                    _ => "chunk registration conflicts with configuration",
+                }));
             }
         }
         // Persisted assignments can remain in recovery after their tree chunk
