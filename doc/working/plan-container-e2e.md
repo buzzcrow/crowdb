@@ -1436,3 +1436,17 @@ Only the exited-storage timing migration awaits a human design choice; S3 and su
   `run-1d8e098f263d44229b37b4648b7a24fe`: 1 passing host client, 0.27 seconds.
   Only these two source owners are retired; multiple-workspace and reset flows
   remain until their distinct assertions pass under their canonical owners.
+
+## Workspace and reset component boundary
+
+- `lifecycle_routes_test::{multiple_racks_and_nodes_create_expected_workspaces,
+  reset_waits_for_owned_children_before_removing_workspaces}` retain every
+  workspace/log/staged-binary/unused-node/PID/reset ordering assertion with a
+  fake child exposing only `/health`. They do not exercise KV data/consensus.
+  Packaged child deployment/readiness/restart/stop lives in the passing public
+  Web container owner above. Remove binary-absence skips and host KV launchers
+  from these two component proofs.
+- Retained four-case component gate: original real-child setup 0.60 seconds;
+  fake-child setup 0.39 seconds. Clippy and formatting pass. A pre-bound health
+  peer was rejected by the real Web port-ownership validator (409); start the
+  health stub in the fake child after the normal launch, preserving validation.

@@ -4,14 +4,14 @@
 //! Integration coverage for the physical tree (A3) routes: rack + node
 //! CRUD, rack detail, rack-scoped node add, node detail, node-addressed
 //! server lifecycle. The CRUD path runs without any upstream server.
-//! The deploy path requires the `crowdb-kv-server` binary and skips
-//! silently otherwise.
+//! Workspace/reset tests use a fake child exposing only a health stub. Packaged KV
+//! deployment/restart/stop acceptance belongs to the release container tests.
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use crowdb_console_shared::lifecycle::{crowdb_kv_server_bin, stop_pid_with_timeout};
+use crowdb_console_shared::lifecycle::stop_pid_with_timeout;
 use crowdb_console_shared::ConsoleConfig;
 use crowdb_web::{router, AppState};
 use serde_json::{json, Value};
@@ -225,19 +225,13 @@ async fn rack_node_crud_through_web_routes() {
 
 #[tokio::test]
 async fn multiple_racks_and_nodes_create_expected_workspaces() {
-    let bin = match crowdb_kv_server_bin() {
-        Some(p) if p.exists() => p,
-        _ => {
-            eprintln!("skipping: crowdb-kv-server binary not built");
-            return;
-        }
-    };
-
     let dir = tempdir("multi-workspace");
     let cfg_path = dir.join("console.toml");
     let addr = spawn_web_with_path(cfg_path.clone()).await;
     let base = format!("http://{addr}");
     let client = reqwest::Client::new();
+    let stub = TestChildStub::new(&dir);
+    let bin = &stub.binary;
 
     let (s, _) = json_post(
         &client,
@@ -328,9 +322,9 @@ async fn multiple_racks_and_nodes_create_expected_workspaces() {
 
 #[tokio::test]
 async fn reset_waits_for_owned_children_before_removing_workspaces() {
-    let bin = crowdb_kv_server_bin().expect("build crowdb-kv-server before acceptance");
-    assert!(bin.exists());
     let dir = tempdir("reset-waits");
+    let stub = TestChildStub::new(&dir);
+    let bin = &stub.binary;
     let addr = spawn_web_with_path(dir.join("console.toml")).await;
     let base = format!("http://{addr}");
     let client = reqwest::Client::new();
@@ -376,4 +370,35 @@ async fn reset_waits_for_owned_children_before_removing_workspaces() {
         );
     }
     guard.pids.clear();
+}
+
+struct TestChildStub {
+    binary: std::path::PathBuf,
+}
+
+impl TestChildStub {
+    fn new(dir: &std::path::Path) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let binary = dir.join("fake-child");
+        std::fs::write(
+            &binary,
+            r#"#!/usr/bin/env python3
+import http.server
+import sys
+port = int(sys.argv[sys.argv.index("--management-port") + 1])
+class Health(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b'{"status":"ok"}'
+        self.send_response(200 if self.path == "/health" else 404)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        Self { binary }
+    }
 }

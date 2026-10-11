@@ -32,10 +32,10 @@ unmeasured as complete tasks.
 | KV           | intel7960   | 2026-10-11 | 50 / 0 / 0                | 167.938 | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-a96dd4c4985945a9912bcc72a51b6c80/results.json) |
 | Diskdb       | intel7960   | 2026-10-11 | 5 / 0 / 0                 | 14.198  | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-cfc58fa353574c6898cfe40463c7a814/results.json) |
 | Diskio       | intel7960   | 2026-10-11 | 8 / 0 / 0                 | 21.449  | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-517a0c2c29c04e0ca5ee8feb558e7394/results.json) |
-| Chunkdb      | intel7960   | —          | —                         | —       | —          | —                                                                                                         |
+| Chunkdb      | intel7960   | 2026-10-11 | 11 / 0 / 0                | 70.267  | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-370769d47f72492d8cfaef8ae77c61ea/results.json) |
 | Chunk client | intel7960   | —          | —                         | —       | —          | —                                                                                                         |
 | Chunk stream | intel7960   | —          | —                         | —       | —          | —                                                                                                         |
-| Chunk-KV     | intel7960   | —          | —                         | —       | —          | —                                                                                                         |
+| Chunk-KV     | intel7960   | 2026-10-11 | 2 / 0 / 0                 | 22.520  | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-e8fbdfdc8be94d408309d5623227794d/results.json) |
 | S3           | intel7960   | —          | —                         | —       | —          | —                                                                                                         |
 | Iceberg      | intel7960   | —          | —                         | —       | —          | —                                                                                                         |
 | Dataset      | intel7960   | —          | —                         | —       | —          | —                                                                                                         |
