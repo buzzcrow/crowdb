@@ -43,6 +43,17 @@ SERVER_PATHS = (
     ":(exclude)tools/ci-checks/check-ci-test-tasks.py",
     # This host-only RPC benchmark is not a dependency or staged server binary.
     ":(exclude)app/crowdb-cli/src/commands/bench/rpc.rs",
+    # Audited host-only crate: every consumer uses a dev-dependency. A new
+    # runtime/build dependency changes its owning manifest and rejects reuse.
+    ":(exclude)lib/crowdb-test-harness/Cargo.toml",
+    ":(exclude)lib/crowdb-test-harness/src/lib.rs",
+    ":(exclude)lib/crowdb-test-harness/src/cluster.rs",
+    ":(exclude)lib/crowdb-test-harness/src/hardware.rs",
+    ":(exclude)lib/crowdb-test-harness/src/logging.rs",
+    ":(exclude)lib/crowdb-test-harness/src/diskio.rs",
+    ":(exclude)lib/crowdb-test-harness/src/diskdb.rs",
+    ":(exclude)lib/crowdb-test-harness/src/chunkdb.rs",
+    ":(exclude)lib/crowdb-test-harness/src/chunk_kv.rs",
 )
 
 
@@ -57,7 +68,7 @@ def production_manifest(manifest):
 def lock_matches(before, after, manifests):
     def packages(lock):
         return {(p["name"], p["version"], p.get("source")): p
-                for p in lock["package"] if p["name"] != "e2e-test"}
+                for p in lock["package"] if p["name"] not in ("e2e-test", "crowdb-test-harness")}
     old, new = packages(before), packages(after)
     if old.keys() != new.keys():
         return False

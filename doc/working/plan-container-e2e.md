@@ -31,7 +31,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 - Delete original real-server owners only after equivalent accepted assertions.
   Keep deterministic component UT. Run executable commands through `pixi run`;
   native server gates require `clean-env`, never during another server gate.
-- Accepted fixture gate: 76 pass, `/tmp/crowdb-ecosystem-staged-fixture.log`,
+- Accepted fixture gate: 77 pass, `/tmp/crowdb-harness-staged-fixture.log`,
   using an export of the staged source. Console browser drafts are excluded.
   Retained S3 component UT pass 5/5; Web/Console-shared/E2E all-target clippy
   and workspace fmt pass.
@@ -59,7 +59,9 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 - [ ] **Launcher and coverage audit**: enumerate remaining production executable
   and in-process service launch sites, including C++/browser/SDK/manual tasks.
   Map every original distinct flow to an accepted E2E or retained component UT.
-  Remove duplicate old owners and unused harness helpers only after verification.
+  Remove duplicate old owners only after verification. Unused native KV/storage
+  harnesses are removed; shared `TestDir`/ownership UTs remain. Explicit production
+  local-launch port allocation remains until its deployment callers are audited.
   Audit fixed listener ports/dynamic store pools and retire unused test port
   allocation code; preserve actual deployment callers. Verify data/log/crash
   mount mappings and truthful unsupported host-core diagnostics.

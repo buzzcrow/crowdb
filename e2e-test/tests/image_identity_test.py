@@ -119,6 +119,19 @@ class ImageIdentityTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "server sources differ"):
             verify_server_sources(self.root, self.revision)
 
+    def test_retired_host_harness_does_not_exempt_new_runtime_dependencies(self):
+        harness = self.root / "lib/crowdb-test-harness/src/cluster.rs"
+        harness.parent.mkdir(parents=True)
+        harness.write_text("old native host fixture\n")
+        self.commit()
+        revision = self.git("rev-parse", "HEAD")
+        harness.unlink()
+        self.assertTrue(verify_server_sources(self.root, revision)["server_sources_match"])
+        self.manifest.write_text(self.manifest.read_text() +
+                                 '\n[dependencies]\ncrowdb-test-harness = { path = "../../lib/crowdb-test-harness" }\n')
+        with self.assertRaisesRegex(ValueError, "Cargo.toml"):
+            verify_server_sources(self.root, revision)
+
     def test_host_sdk_delegates_do_not_exempt_release_build_tooling(self):
         directory = self.root / "tools/pixi-tasks"
         directory.mkdir(parents=True)

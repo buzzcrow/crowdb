@@ -75,6 +75,10 @@ are excluded. Console uses one effective case slot at 0.25 CPU/server with a
   host clients in 0.833 / 2.338 seconds. These manual profiles are separate from
   ordinary Iceberg domain counts. Private mounted data/raw logs are retained;
   published artifacts contain credential-redacted reports only.
+- **Component ownership**: after removing unused native process harnesses,
+  affected ChunkDB/chunk-client/chunk-stream/DiskDB-client component tests pass
+  328/328, shared directory/ownership tests pass 4/4, and all eight changed
+  consumer crates pass all-target clippy. Existing component flows are retained.
 - **Release startup**: 14 rejection cases pass in 7.879 seconds on the rebuilt
   image, including missing/short/duplicate Iceberg writer credentials, rejected
   legacy Web configuration and forbidden Docker launch registry. Native duplicate

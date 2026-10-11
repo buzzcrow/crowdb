@@ -36,4 +36,4 @@ if-addrs = "0.13"
 
 [dev-dependencies]
 crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi", features = ["test-util"] }
-crowdb-test-harness = { path = "../../lib/crowdb-test-harness", features = ["kv-client"] }
+crowdb-test-harness = { path = "../../lib/crowdb-test-harness" }
