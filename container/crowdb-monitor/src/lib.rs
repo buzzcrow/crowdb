@@ -34,7 +34,7 @@ pub use node::{
     DiscoveryError, NodeDiscovery, NodeIdentity, NodeIdentityError, NodeManagementError, NodeRuntimeConfig,
     NODE_SERVICE_TYPE,
 };
-pub use preview::{run_preview, PreviewError};
+pub use preview::{preview_step_names, run_preview, PreviewError};
 pub use probe::{ProbeError, ProbeExecutor};
 pub use process::{ProcessError, ProcessManager};
 pub use profile::{

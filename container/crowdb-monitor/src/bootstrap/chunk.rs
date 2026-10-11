@@ -47,26 +47,64 @@ struct BootstrapPartition {
     owner_epoch: u64,
 }
 
+struct ExpectedRegistration {
+    service: &'static str,
+    instance_id: u64,
+    endpoint: String,
+    chunk_kv_metadata: bool,
+}
+
+fn expected_registrations(
+    profile: &DeploymentProfile,
+) -> Result<Vec<ExpectedRegistration>, ChunkBootstrapError> {
+    let config_root = profile.paths.run_root.join("config");
+    let mut expected = Vec::new();
+    if profile.services.iter().any(|service| service.id == "chunkdb") {
+        let config: ChunkdbConfig = toml::from_str(&fs::read_to_string(config_root.join("chunkdb.toml"))?)
+            .map_err(|_| ChunkBootstrapError::Invalid("ChunkDB configuration cannot be parsed"))?;
+        let instance_id = config
+            .server
+            .instance_id
+            .parse::<u64>()
+            .map_err(|_| ChunkBootstrapError::Invalid("ChunkDB instance ID is invalid"))?;
+        if instance_id == 0 {
+            return Err(ChunkBootstrapError::Invalid("ChunkDB instance ID is zero"));
+        }
+        expected.push(ExpectedRegistration {
+            service: "chunkdb",
+            instance_id,
+            endpoint: format!("http://{}", config.server.rpc_listen_addr),
+            chunk_kv_metadata: false,
+        });
+    }
+    if profile.services.iter().any(|service| service.id == "chunk-kv") {
+        let config: ChunkKvConfig =
+            toml::from_str(&fs::read_to_string(config_root.join("chunk-kv.toml"))?)
+                .map_err(|_| ChunkBootstrapError::Invalid("Chunk-KV configuration cannot be parsed"))?;
+        if config.instance_id == 0 || config.bootstrap_partition.owner_epoch == 0 {
+            return Err(ChunkBootstrapError::Invalid(
+                "Chunk-KV identity or owner epoch is zero",
+            ));
+        }
+        expected.push(ExpectedRegistration {
+            service: "chunk-kv",
+            instance_id: config.instance_id,
+            endpoint: config.rpc_advertise_addr,
+            chunk_kv_metadata: true,
+        });
+    }
+    Ok(expected)
+}
+
 /// # Errors
-/// Requires the live `ChunkDB` and `Chunk-KV` registrations to match rendered configuration.
+/// Requires selected live chunk registrations to match their rendered configuration.
 pub async fn verify_chunk_services(
     management_seed: &str,
     profile: &DeploymentProfile,
 ) -> Result<(), ChunkBootstrapError> {
-    let config_root = profile.paths.run_root.join("config");
-    let chunkdb: ChunkdbConfig = toml::from_str(&fs::read_to_string(config_root.join("chunkdb.toml"))?)
-        .map_err(|_| ChunkBootstrapError::Invalid("ChunkDB configuration cannot be parsed"))?;
-    let chunk_kv: ChunkKvConfig = toml::from_str(&fs::read_to_string(config_root.join("chunk-kv.toml"))?)
-        .map_err(|_| ChunkBootstrapError::Invalid("Chunk-KV configuration cannot be parsed"))?;
-    let chunkdb_id = chunkdb
-        .server
-        .instance_id
-        .parse::<u64>()
-        .map_err(|_| ChunkBootstrapError::Invalid("ChunkDB instance ID is invalid"))?;
-    if chunkdb_id == 0 || chunk_kv.instance_id == 0 || chunk_kv.bootstrap_partition.owner_epoch == 0 {
-        return Err(ChunkBootstrapError::Invalid(
-            "chunk identity or owner epoch is zero",
-        ));
+    let expected = expected_registrations(profile)?;
+    if expected.is_empty() {
+        return Ok(());
     }
     let registry = ServiceRegistryClient::new(CrowdbKvClient::new(ClientConfig::new(vec![
         management_seed.to_owned()
@@ -74,50 +112,36 @@ pub async fn verify_chunk_services(
     registry.kv().refresh_topology().await?;
     let deadline = Instant::now() + READY_DEADLINE;
     loop {
-        let chunkdb_instances = registry.read_all_instances("chunkdb").await?;
-        let chunk_kv_instances = registry.read_all_instances("chunk-kv").await?;
-        if chunkdb_instances.len() > 1 || chunk_kv_instances.len() > 1 {
-            return Err(ChunkBootstrapError::Invalid(
-                "unexpected live chunk service instance",
-            ));
-        }
-        if let Some((id, instance)) = chunkdb_instances.first() {
-            if *id != chunkdb_id
-                || instance.instance_id != chunkdb_id
-                || instance.rpc_endpoint != format!("http://{}", chunkdb.server.rpc_listen_addr)
+        let mut ready = true;
+        for wanted in &expected {
+            let instances = registry.read_all_instances(wanted.service).await?;
+            if instances.len() > 1 {
+                return Err(ChunkBootstrapError::Invalid(
+                    "unexpected live chunk service instance",
+                ));
+            }
+            let Some((id, instance)) = instances.first() else {
+                ready = false;
+                continue;
+            };
+            if *id != wanted.instance_id
+                || instance.instance_id != wanted.instance_id
+                || instance.rpc_endpoint != wanted.endpoint
+                || (wanted.chunk_kv_metadata
+                    && instance
+                        .extra
+                        .as_ref()
+                        .and_then(|extra| extra.chunk_kv.as_ref())
+                        .is_none())
             {
                 return Err(ChunkBootstrapError::Invalid(
-                    "ChunkDB registration conflicts with configuration",
+                    "chunk registration conflicts with configuration",
                 ));
             }
         }
-        if let Some((id, instance)) = chunk_kv_instances.first() {
-            if *id != chunk_kv.instance_id
-                || instance.instance_id != chunk_kv.instance_id
-                || instance.rpc_endpoint != chunk_kv.rpc_advertise_addr
-                || instance
-                    .extra
-                    .as_ref()
-                    .and_then(|extra| extra.chunk_kv.as_ref())
-                    .is_none()
-            {
-                return Err(ChunkBootstrapError::Invalid(
-                    "Chunk-KV registration conflicts with configuration",
-                ));
-            }
-        }
-        // A persisted assignment may remain in recovery when its tree chunk was
-        // deleted.  Registration proves that the service is alive; the service
-        // itself keeps retrying recovery and must not make the whole container
-        // exit while that repair is pending.
-        if !chunkdb_instances.is_empty() && !chunk_kv_instances.is_empty() {
-            return Ok(());
-        }
-        if Instant::now() >= deadline {
-            // Registration can lag or remain unavailable while a persisted
-            // assignment is being repaired.  The child process is already
-            // supervised by its liveness probe; keep the container alive and
-            // let the next reconciliation/monitor cycle observe the state.
+        // Persisted assignments can remain in recovery after their tree chunk
+        // disappears. Keep the existing supervision policy while repair retries.
+        if ready || Instant::now() >= deadline {
             return Ok(());
         }
         sleep(PROBE_INTERVAL).await;

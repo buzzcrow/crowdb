@@ -159,8 +159,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("{}", serde_json::to_string(&reply)?);
         }
         Command::Validate { profile } => {
-            let profile = DeploymentProfile::load(profile)?;
-            println!("{}", profile.name);
+            validate_profile(profile)?;
         }
         Command::Liveness { run_root } => {
             probe_liveness(&run_root).await?;
@@ -178,5 +177,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             print!("{}", show_client_credentials(&data_root)?);
         }
     }
+    Ok(())
+}
+
+fn validate_profile(path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    let profile = DeploymentProfile::load(path)?;
+    if profile.name == "single-node-container" {
+        crowdb_monitor::preview_step_names(&profile)?;
+    }
+    println!("{}", profile.name);
     Ok(())
 }

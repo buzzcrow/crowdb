@@ -11,6 +11,7 @@ pub async fn run_single_node(
     config: NodeRuntimeConfig,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let profile = crate::DeploymentProfile::load(&config.profile)?;
+    crate::preview_step_names(&profile)?;
     super::NodeIdentity::load_or_create(&profile.paths.data_root)?;
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let root = profile.paths.data_root;

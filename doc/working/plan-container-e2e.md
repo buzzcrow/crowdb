@@ -432,6 +432,15 @@ Goal: review and migrate all real-server tests into domain modules under contain
   test unknown/missing dependencies and selected-service restart/reconciliation
   against one unchanged image. Files: release entrypoint/profile, monitor
   profile validation/runtime, container README, E2E profiles/deployment cases.
+  Component implementation verified: the selected normal profile controls both
+  initial bootstrap and restart authority checks. KV-only skips disk creation;
+  storage prefixes skip Access/catalog bootstrap. CLI validation and direct
+  single-node startup reject unknown services, missing selected/declared
+  dependencies, mismatched management seeds and invalid durable KV roots before
+  identity/discovery startup. Default full-set bootstrap order is unchanged.
+  Focused selection/preview/profile tests: 10 passed; profile/render/supervisor/
+  manifest/crash-retention tests: 23 passed; monitor all-target clippy and Rust
+  fmt passed. Actual same-image subset acceptance remains pending.
 - [ ] **Debug information and inspectable data**: add a release staging option
   retaining debug info, mount each node's owned data root at a discoverable host
   path, retain logs/crash evidence on failure and record matching binary IDs.
