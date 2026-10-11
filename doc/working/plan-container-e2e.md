@@ -57,15 +57,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   endpoints; signaling validates service PID and run ownership. Preserve UI
   assertions and remove native runners only after matching acceptance. Current
   root Console operation inventory is 87 cases; the two draft browser cases are additional.
-- [~] **Deployer lifecycle owners**: migrate the two real-server cases in
-  `app/crowdb-web/tests/cluster_deployer_test.rs`. Preserve three-member leader
-  resolution, repeated cycles without leaked state, stop <5 seconds and
-  post-stop reset <1 second. Retain the empty-reset component proof. Silent
-  missing-binary skips must disappear with retirement. Cancellation/reset
-  ownership is now entirely component-local: five deterministic cases pass
-  in 1.31 seconds with fake children and pinned metadata, Web all-target
-  clippy passes. No actual KV/Diskdb executable is started by those tests.
-- [ ] **Bridge SSH admission profile**: reconcile
+- [~] **Bridge SSH admission profile**: reconcile
   `container/single-node-container/tests/node-containers.py`, `node-admission.py`,
   `node-bootstrap.py` and `node-recovery.py` with accepted root deployment flows.
   Move remaining distinct public SSH admission/authentication, literal credential,
@@ -133,7 +125,16 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   and protected restart at 0.2 CPU/server with a 4 CPU / 8192 MiB budget. Logs:
   `/tmp/crowdb-s3-ci-quota-ready.log` and
   `/tmp/crowdb-s3-protected-ci-quota-ready.log`. Keep the failed evidence in
-  `run-13a1737806c349b3b051ee3f5c68c46e`. Actual remote CI has not run.
+  `run-13a1737806c349b3b051ee3f5c68c46e`. Deployer local orchestration now uses a pinned Console protocol peer and fake
+  sleep children: two cases pass in 0.20 seconds, including actual local PID
+  reaping after early HTTP stop acknowledgement, stop <5 seconds, reset <1
+  second and three reset-before-reprovision cycles without store/child leakage.
+  The empty Web reset proof remains component-local. Packaged KV leader and
+  endpoint resolution are covered by `console::server_management::full_store_group_remote_cycle`;
+  packaged deployment/restart/stop by `console::web_kv_lifecycle::deploy_restart_and_stop_retains_fixed_ports_and_workspace`,
+  and three-container restoration by `console::web_cluster_recovery`.
+  The old real-server Deployer owners and silent binary skips are removed.
+  Actual remote CI has not run.
 - [ ] **Final regression and measurements**: run full Iceberg/Console and required registered layers on the same image,
   then relevant component/fmt/lint gates. Update `doc/working/test.md` using one
   row per domain and actual complete-run counts/wall times/environment/image.
