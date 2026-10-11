@@ -1074,3 +1074,50 @@ Source `lib/crowdb-kv-client/tests/chunk_slot_map_test.rs`: all eight cases exer
   full-suite (tree, common, RPC, Diskio and Rust FFI) and tree-lint exit zero.
   Linux verified; kqueue remains subject to the macOS platform gate. No new image
   or migrated Chunkdb container pass claimed before release packaging.
+
+## Chunkdb first public boundary targets
+
+- `allocator_pool_test::allocation_connect_failure_reroutes_but_lost_reply_does_not`
+  -> `chunkdb.allocation` preserves unsent reroute, ambiguous lost reply and exact
+  two-MiB busy witness. Keep `endpoint_refresh_is_one_complete_publication` local.
+- `full_stack_test::chunkdb_full_stack_allocate_seal_delete` ->
+  `chunkdb.lifecycle` preserves active/query identity, three prefetched mirror
+  copies, all persisted physical assessments, exact byte cursor/KiB rounding,
+  unused-tail release, empty deleted layout and exact allocation free facts.
+  Target additionally checks repeated delete and public tombstone query.
+- New `chunkdb.recovery` witnesses exact public chunk and raw metadata bytes plus
+  revision before crashing all three service containers; post-restart checks the
+  same records, then seals and deletes through the production client.
+- New `chunkdb.placement` checks public mirror 2/3 and EC 2+1/4+2/8+4 matrices:
+  exact shard counts and persisted rack/node/disk protection with loss bounds.
+- Host test target/bundle becomes `domain_test`/`domain-test`; no server binaries
+  or server launchers are bundled. Diskdb diagnostic manifests list the actual
+  seeded disk groups for both ordinary and protected Chunkdb fixtures.
+- All four new targets remain pending release-container acceptance. Do not
+  remove the two old public source cases before the corresponding target passes.
+- First release run `run-74d56f13d2334071bd69db5a0cc06261` refused readiness:
+  production Chunkdb requires at least three actual metadata voters; the initial
+  one-KV fixture exposed an empty metadata voting registry. Correct fixture uses
+  three wired packaged KV containers (same store 0, groups 0/1), registers only
+  their inspected actual replicas through public metadata APIs, plus Diskdb and
+  Chunkdb containers. Five nodes per fixture still fit concurrency two at six
+  CPUs / 6144 MiB. Production mode and its startup validation are unchanged.
+- Second run `run-187d50f8e55a4be8b89f210c55310cce` successfully started
+  production Chunkdb but the probe incorrectly parsed its plain-text `/ready`
+  response as JSON. Corrected to require HTTP 200 plus exact `ok`, and fail
+  immediately with logs if the service exits. No timeout or assertion relaxed.
+- Final-source acceptance `run-6308a1cf82014b9cb72cb3840e65f8c6`: four cases,
+  nine host phases including four seeds, concurrency two, 12.181 s scenario wall.
+  Removed the old allocation wire case and old public lifecycle case only after
+  target acceptance; allocator snapshot UT and all 36 retained handler/geometry
+  flows plus it pass (37 tests). Shared host fixtures remain for the still-pending
+  three Diskio cases, partial-EC byte proof and multislot failover.
+- Rebuilt formal release image from `6f17c8f690d1bfeb594aa010d209be72b8ce1e0b`:
+  OCI manifest `sha256:16911413347a2c73c237aa1513151f125609704bd9c1cf8645cb2452d0a62125`,
+  config `sha256:6cd7f00266bee11cc6c2820a3e302c1607f1fa31567151ab1ebb3b2fcc31960c`,
+  runtime `dd4ac552c34396f4b511bc00a26e9a2c7860fd899640caaf5931fc645e95c66b`.
+  Normal release optimizations with retained debug info; all profiles use this
+  single artifact. Host target rename and fixture split pass affected clippy/fmt.
+- Shared Diskdb fixture regression `run-f188655e12184ecc944f6525a84b57de`
+  passes all five flows against this image. Thirty fixture tests pass in 1.041 s.
+  The Chunkdb batch stays active for remaining byte/repair/failover boundaries.

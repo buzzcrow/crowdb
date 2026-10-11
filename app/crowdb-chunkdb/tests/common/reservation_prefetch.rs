@@ -5,11 +5,7 @@ use super::*;
 
 #[tokio::test]
 async fn append_offset_prefetch_survives_cursor_progress_and_live_writer_protects_group() {
-    assert!(
-        std::env::var("CROWDB_KV_SERVER_BIN").is_ok() || common::cluster::crowdb_kv_server_bin().is_some(),
-        "build crowdb-kv-server before reservation acceptance"
-    );
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     seed_hardware(&cluster.make_hardware_client()).await;
     let _diskdb = DiskdbServer::start(&cluster).await;
     let harness = ChunkdbHarness::start(&cluster).await;

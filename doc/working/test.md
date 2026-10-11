@@ -79,6 +79,9 @@ Do not require one CI job for each measurement row.
 | `e2e.diskio.direct`         | O_DIRECT fsync / unaligned ranges / crash recovery        | Storage           |
 | `e2e.diskio.durability`     | Sync / restart / bounded live I/O failure                 | Storage           |
 | `e2e.chunkdb.lifecycle`     | Allocate / reserve / append / seal / delete               | Storage           |
+| `e2e.chunkdb.allocation`    | Unsent reroute / ambiguous reply / exact allocation count | Storage           |
+| `e2e.chunkdb.placement`     | Public mirror / EC geometry and physical protection      | Storage           |
+| `e2e.chunkdb.recovery`      | Exact chunk metadata / revision across dependency crash  | Storage           |
 | `e2e.chunkdb.repair`        | Degraded repair / mirror-EC conversion                    | Storage           |
 | `e2e.chunkdb.handoff`       | Task / journal recovery / ownership handoff               | Storage           |
 | `e2e.chunk-stream.objects`  | Small / large / range data / durable publication          | Storage           |
@@ -166,7 +169,10 @@ Future detailed component and E2E rows replace their unmeasured scope placeholde
 | `e2e.diskio.semantic`       | 2026-10-11 | 1/1   | shared  | 2.046    | 8.051    | 1.408          | 11.510   | PASS    |
 | `e2e.diskio.direct`         | 2026-10-11 | 1/1   | shared  | 0.691    | 0.059    | 0.640          | 1.957    | PASS    |
 | `e2e.diskio.durability`     | 2026-10-11 | 1/1   | shared  | 0.709    | 0.059    | 0.801          | 2.173    | PASS    |
-| `e2e.chunkdb.lifecycle`     | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.chunkdb.lifecycle`    | 2026-10-11 | 1/1   | shared  | 3.547    | 0.170    | 2.180          | 5.900    | PASS    |
+| `e2e.chunkdb.allocation`   | 2026-10-11 | 1/1   | shared  | 1.925    | 0.065    | 1.034          | 3.028    | PASS    |
+| `e2e.chunkdb.placement`    | 2026-10-11 | 1/1   | shared  | 3.356    | 0.215    | 2.257          | 5.832    | PASS    |
+| `e2e.chunkdb.recovery`     | 2026-10-11 | 1/1   | shared  | 2.934    | 0.518    | 1.879          | 9.139    | PASS    |
 | `e2e.chunkdb.repair`        | —          | —     | —       | —        | —        | —              | —        | Pending |
 | `e2e.chunkdb.handoff`       | —          | —     | —       | —        | —        | —              | —        | Pending |
 | `e2e.chunk-stream.objects`  | —          | —     | —       | —        | —        | —              | —        | Pending |
@@ -611,3 +617,24 @@ Source: `app/crowdb-kv-server/`. Tests: 9 files.
   restart phase. Semantic control responses retain each kill/start duration.
 - File-backed tests passed through the supported engine fallback on this host;
   real block-device/io_uring hardware acceptance remains separate.
+
+## Chunkdb first public boundary timing
+
+- Run `run-6308a1cf82014b9cb72cb3840e65f8c6`: four cases, nine host phases
+  (including four seeds), concurrency two, 12.181 s scenario wall. Host-client
+  build 13.615 s includes shared Cargo lock wait; client columns exclude seed.
+- Three lifecycle/placement/recovery profiles each own three KV voters plus
+  Diskdb and Chunkdb; allocation transport owns KV plus Diskdb. All use formal
+  release source `6f17c8f690d1bfeb594aa010d209be72b8ce1e0b`, OCI manifest
+  `sha256:16911413347a2c73c237aa1513151f125609704bd9c1cf8645cb2452d0a62125`,
+  config `sha256:6cd7f00266bee11cc6c2820a3e302c1607f1fa31567151ab1ebb3b2fcc31960c`,
+  retained debug info and release optimization.
+- Original allocation/lifecycle public cases retired after acceptance. Thirty-four
+  internal flows, mixed geometry, single-rack placement and allocator snapshot UT
+  remain and pass (37 tests). The 34 internal flows take 6.39 s; geometry 0.15 s,
+  single-rack 0.83 s and allocator snapshot 0.08 s, excluding build.
+- Chunkdb migration is partial: Diskio byte repair/conversion, multislot failover
+  and public handoff remain pending. These passing rows cover only the named
+  currently selectable cases; they do not claim those remaining flows.
+- Recovery total includes a separately recorded 3.800 s dependency restart.
+  Collection/stop columns sum only diagnostic collection and teardown.

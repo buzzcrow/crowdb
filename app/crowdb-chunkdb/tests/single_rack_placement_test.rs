@@ -16,7 +16,7 @@ use crowdb_protocol::common::ChunkId;
 
 #[tokio::test]
 async fn production_single_rack_allocates_mirror_ec_and_publishes_conversion() {
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     let groups =
         seed_hardware_layout_with_zones(&cluster.make_hardware_client(), &[(100, vec![10, 11, 12])], 32)
             .await;

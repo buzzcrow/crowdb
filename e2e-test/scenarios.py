@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 from fixture import Cluster
 from diskdb_fixture import DiskdbCluster
+from chunkdb_fixture import ChunkdbCluster
 from managed_fixture import ManagedCluster
 from diskio_fixture import DiskioCluster, DiskioDiscoveryCluster, DiskioSemanticCluster
 
@@ -30,6 +31,7 @@ class Case:
     diskio_fault_rate: float = 0
     diskio_direct: bool = False
     diskdb_restart_metadata: bool = False
+    chunkdb_server: bool = False
 
 
 KV_CASES = (
@@ -117,16 +119,47 @@ DISKIO_CASES = (
     Case("diskio.semantic", "diskio::semantic::semantic_client_owns_route_transport_payload_and_durability", diskio_backend="semantic"),
     Case("diskio.faults", "diskio::faults::disk_io_fault_errors", diskio_backend="mem", diskio_fault_rate=1.0),
 )
-ALL_CASES = KV_CASES + DISKDB_CASES + DEPLOYMENT_CASES + DISKIO_CASES
+CHUNKDB_CASES = (
+    Case("chunkdb.placement", "chunkdb::placement::mirror_and_ec_matrix_publish_protected_geometry", chunkdb_server=True),
+    Case("chunkdb.recovery", "chunkdb::recovery::crash_recovery_preserves_exact_chunk_records_and_placement", chunkdb_server=True, restart=True),
+    Case("chunkdb.lifecycle", "chunkdb::lifecycle::allocate_seal_delete_preserves_physical_placement_and_free_facts", chunkdb_server=True),
+    Case("chunkdb.allocation", "chunkdb::allocation::allocation_connect_failure_reroutes_but_lost_reply_does_not"),
+)
+ALL_CASES = CHUNKDB_CASES + KV_CASES + DISKDB_CASES + DEPLOYMENT_CASES + DISKIO_CASES
 
 def case_nodes(case):
+    if case.chunkdb_server:
+        return 5
     if case.diskio_backend == "semantic":
         return 4
     if case.diskio_backend:
         return 2
     if len(case.service_selection) > 2:
         return 4
-    return 2 if case.scope.startswith("diskdb.") else len(case.stores_per_node or case.stores)
+    return 2 if case.scope.startswith(("diskdb.", "chunkdb.")) else len(case.stores_per_node or case.stores)
+
+def allocate_cluster(case, image, artifacts, bundle, data_root):
+    if case.chunkdb_server:
+        return ChunkdbCluster(image, artifacts, bundle, data_root=data_root)
+    if case.scope.startswith("deployment."):
+        return ManagedCluster(image, artifacts, services=case.service_selection or ("kv",), data_root=data_root)
+    if case.diskio_backend == "semantic":
+        return DiskioSemanticCluster(image, artifacts, bundle, data_root=data_root)
+    if case.diskio_backend:
+        return DiskioDiscoveryCluster(image, artifacts, bundle, case.diskio_backend,
+                                      fault_rate=case.diskio_fault_rate, data_root=data_root)
+    if case.scope.startswith("diskio."):
+        return DiskioCluster(image, artifacts, direct=case.diskio_direct, data_root=data_root)
+    if case.scope.startswith(("diskdb.", "chunkdb.")):
+        return DiskdbCluster(image, artifacts, bundle, restart_metadata=case.diskdb_restart_metadata,
+                             data_root=data_root)
+    return Cluster(image, artifacts, data_root=data_root,
+                   node_count=len(case.stores_per_node or case.stores),
+                   store_ids=case.stores, wire_replicas=case.wired,
+                   stores_per_node=case.stores_per_node, groups=case.groups,
+                   groups_per_node=case.groups_per_node, node_args=case.node_args,
+                   advertise=case.advertise)
+
 
 def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case_name=None, layer="all"):
     selected = tuple(case for case in ALL_CASES if (layer == "all" or case.scope.startswith(layer + ".")) and (scope == "all" or case.scope == scope)
@@ -135,12 +168,7 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
         raise ValueError(f"no migrated cases for scope {scope}")
 
     def run(case):
-        count = len(case.stores_per_node or case.stores)
-        cluster = ManagedCluster(image, artifacts, services=case.service_selection or ("kv",), data_root=data_root) if case.scope.startswith("deployment.") else DiskioSemanticCluster(image, artifacts, bundle, data_root=data_root) if case.diskio_backend == "semantic" else DiskioDiscoveryCluster(image, artifacts, bundle, case.diskio_backend, fault_rate=case.diskio_fault_rate, data_root=data_root) if case.diskio_backend else DiskioCluster(image, artifacts, direct=case.diskio_direct, data_root=data_root) if case.scope.startswith("diskio.") else DiskdbCluster(image, artifacts, bundle, restart_metadata=case.diskdb_restart_metadata, data_root=data_root) if case.scope.startswith("diskdb.") else Cluster(image, artifacts, data_root=data_root, node_count=count,
-                          store_ids=case.stores, wire_replicas=case.wired,
-                          stores_per_node=case.stores_per_node, groups=case.groups,
-                          groups_per_node=case.groups_per_node, node_args=case.node_args,
-                          advertise=case.advertise)
+        cluster = allocate_cluster(case, image, artifacts, bundle, data_root)
         (cluster.artifacts / "case.json").write_text(json.dumps({
             "scope": case.scope, "case": case.name}, indent=2))
         with cluster:

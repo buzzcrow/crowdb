@@ -34,6 +34,8 @@ pixi run test-container-e2e --layer kv --concurrency 2 --cpus 4 --memory-mib 409
 pixi run test-container-e2e --layer diskdb --concurrency 2
 # Diskio file/direct durability, Mem/Null I/O, discovery and client faults:
 pixi run test-container-e2e --layer diskio --concurrency 2 --cpus 6 --memory-mib 6144
+# Chunkdb public allocation, protected geometry, lifecycle and metadata recovery:
+pixi run test-container-e2e --layer chunkdb --concurrency 2 --cpus 6 --memory-mib 6144
 # Normal release monitor full set, service subsets and persisted restart:
 pixi run test-container-e2e --layer deployment --concurrency 2 --cpus 6 --memory-mib 6144
 # Run one domain scope (other migrated scopes: kv.membership, kv.routing,
@@ -49,7 +51,16 @@ pixi run test-container-e2e --layer kv --data-root /path/to/e2e-data
 Build/import the shared OCI image first. An absent image, missing Docker daemon,
 unsupported daemon, changed release server sources or inadequate budget fails the
 required test. There is no successful missing-prerequisite skip.
-`--layer all` currently selects KV, Diskdb, Diskio and deployment service selection.
+`--layer all` currently selects KV, Diskdb, Diskio, Chunkdb and deployment service selection.
+
+Chunkdb lifecycle, placement and recovery use five owned containers: three KV
+voters, one Diskdb and one production-mode Chunkdb. Actual inspected KV replicas
+are registered through the public metadata API. Allocation transport acceptance
+needs only KV and Diskdb. The placement profile seeds four distinct failure
+domains and checks metadata geometry; Diskio byte repair/conversion acceptance
+is a separate migration batch still pending. Important internal task, journal,
+fence and placement proofs remain in the Chunkdb component with pinned memory
+metadata and their original assertions.
 Other domain migrations remain tracked in the working plan. Image and client
 revisions are recorded independently. Client/documentation/test-registration
 commits reuse an image after verifying the release server inputs still match;

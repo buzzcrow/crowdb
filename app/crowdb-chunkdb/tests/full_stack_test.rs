@@ -199,14 +199,9 @@ fn start_diskio_groups(
 
 #[tokio::test]
 async fn physical_ec_reports_the_two_rack_layout_truthfully() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: crowdb-kv-server binary not found");
-        return;
-    }
-
     for (data_num, code_num) in [(10, 2), (20, 2), (40, 4)] {
         for priority in [FailureDomainPriority::RackFirst, FailureDomainPriority::NodeFirst] {
-            let cluster = KvCluster::start().await;
+            let cluster = KvCluster::start_pinned().await;
             let disk_groups = seed_hardware_layout_with_zones(
                 &cluster.make_hardware_client(),
                 &[(100, vec![10, 11, 12, 13]), (101, vec![20, 21])],
@@ -293,11 +288,7 @@ async fn physical_ec_reports_the_two_rack_layout_truthfully() {
 
 #[tokio::test]
 async fn diskdb_refreshes_new_failure_domains_without_restart() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: crowdb-kv-server binary not found");
-        return;
-    }
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     let mut disk_groups = seed_hardware_layout_with_zones(
         &cluster.make_hardware_client(),
         &[(100, vec![10, 11, 12, 13]), (101, vec![20, 21])],
@@ -712,12 +703,7 @@ async fn expanded_topology_converges_degraded_ec_matrix() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn degraded_ec_markers_recreate_one_task_per_large_strip_after_admission_gap() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: crowdb-kv-server binary not found");
-        return;
-    }
-
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     let disk_groups = seed_hardware_layout_with_zones(
         &cluster.make_hardware_client(),
         &[(100, vec![10]), (101, vec![20])],
@@ -864,11 +850,7 @@ struct CompleteTaskHandler;
 
 #[tokio::test]
 async fn explicit_single_node_mode_rejects_ec_and_extra_copies() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: crowdb-kv-server binary is unavailable");
-        return;
-    }
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     seed_hardware(&cluster.make_hardware_client()).await;
     let _diskdb = DiskdbServer::start(&cluster).await;
     let harness = ChunkdbHarness::start(&cluster).await;
@@ -1024,11 +1006,7 @@ async fn assert_invalid_production_mirror_copies(handler: &LifecycleHandler) {
 
 #[tokio::test]
 async fn production_ec_stays_degraded_ec_and_mirrors_use_two_copies_after_one_node_loss() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: crowdb-kv-server binary is unavailable");
-        return;
-    }
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     let hardware = cluster.make_hardware_client();
     let groups = seed_hardware_layout_with_zones(
         &hardware,
@@ -1283,11 +1261,7 @@ async fn production_degraded_ec_task_repairs_after_node_returns() {
 
 #[tokio::test]
 async fn active_chunk_creates_one_deadline_indexed_finalizer() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: crowdb-kv-server binary is unavailable");
-        return;
-    }
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     seed_hardware(&cluster.make_hardware_client()).await;
     let _diskdb = DiskdbServer::start(&cluster).await;
     let harness = ChunkdbHarness::start(&cluster).await;
@@ -1323,11 +1297,7 @@ async fn active_chunk_creates_one_deadline_indexed_finalizer() {
 
 #[tokio::test]
 async fn finalizer_reclaims_an_empty_active_chunk() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: crowdb-kv-server binary is unavailable");
-        return;
-    }
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     seed_hardware(&cluster.make_hardware_client()).await;
     let _diskdb = DiskdbServer::start(&cluster).await;
     let harness = ChunkdbHarness::start(&cluster).await;
@@ -1361,11 +1331,7 @@ async fn finalizer_reclaims_an_empty_active_chunk() {
 
 #[tokio::test]
 async fn finalizer_waits_for_pre_expiry_requests_before_scanning() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: crowdb-kv-server binary is unavailable");
-        return;
-    }
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     seed_hardware(&cluster.make_hardware_client()).await;
     let _diskdb = DiskdbServer::start(&cluster).await;
     let harness = ChunkdbHarness::start(&cluster).await;
@@ -1415,12 +1381,7 @@ impl TaskHandler for CompleteTaskHandler {
 
 #[tokio::test]
 async fn task_survives_claim_expiry_takeover_and_completion() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: crowdb-kv-server binary is unavailable");
-        return;
-    }
-
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     let bindings = BindingCache::new();
     bindings
         .replace(default_binding_table(STORE_ID, DATA_GROUP_ID))
@@ -1500,11 +1461,7 @@ async fn task_survives_claim_expiry_takeover_and_completion() {
 
 #[tokio::test]
 async fn unavailable_strip_survives_crash_gap_and_is_admitted_as_repair_task() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: crowdb-kv-server binary is unavailable");
-        return;
-    }
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     seed_hardware(&cluster.make_hardware_client()).await;
     let _diskdb = DiskdbServer::start(&cluster).await;
     let harness = ChunkdbHarness::start(&cluster).await;
@@ -1580,11 +1537,7 @@ async fn unavailable_strip_survives_crash_gap_and_is_admitted_as_repair_task() {
 
 #[tokio::test]
 async fn degraded_ec_strip_is_admitted_as_a_persistent_placement_task() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: crowdb-kv-server binary is unavailable");
-        return;
-    }
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     seed_hardware(&cluster.make_hardware_client()).await;
     let _diskdb = DiskdbServer::start(&cluster).await;
     let bindings = BindingCache::new();
@@ -1640,150 +1593,8 @@ async fn degraded_ec_strip_is_admitted_as_a_persistent_placement_task() {
 }
 
 #[tokio::test]
-#[allow(clippy::too_many_lines)]
-async fn chunkdb_full_stack_allocate_seal_delete() {
-    // Skip if crowdb-kv-server binary is not built.
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
-        return;
-    }
-
-    // 1. Start the kv cluster.
-    let cluster = KvCluster::start().await;
-    eprintln!("kv cluster started");
-
-    // 2. Seed hardware metadata.
-    let hw = cluster.make_hardware_client();
-    seed_hardware(&hw).await;
-    eprintln!("hardware seeded");
-
-    // 3. Start diskdb in-process.
-    let diskdb = DiskdbServer::start(&cluster).await;
-    eprintln!("diskdb started: {}", diskdb.rpc_endpoint);
-
-    // 4. Wire chunkdb handler.
-    let harness = ChunkdbHarness::start(&cluster).await;
-    eprintln!("chunkdb harness ready");
-
-    // 5. Allocate a chunk with three prefetched strips (1 MiB each,
-    // 3 mirror copies).
-    let chunk = harness
-        .handler
-        .allocate_chunk(
-            None,
-            1, // 1 unit per strip
-            3, // 3 strips
-            StripType::Mirror,
-            0,
-            0,
-            3, // 3 mirror copies
-            ChunkType::S3,
-            0,
-            0,
-        )
-        .await
-        .expect("allocate_chunk");
-    assert_eq!(chunk.state, ChunkState::Active as i32);
-    assert!(!chunk.strips.is_empty(), "chunk should have strips");
-    for strip in &chunk.strips {
-        let assessment = strip
-            .placement_assessment
-            .as_ref()
-            .expect("allocated strips persist a physical placement assessment");
-        assert_eq!(assessment.loss_budget, 2);
-        assert_eq!(assessment.max_fragments_per_rack, 1);
-        assert_eq!(assessment.max_fragments_per_node, 1);
-        assert_eq!(assessment.max_fragments_per_disk, 1);
-        assert!(assessment.rack_protected);
-        assert!(assessment.node_protected);
-        assert!(assessment.disk_protected);
-        assert!(!strip.placement_repair_required);
-    }
-    eprintln!("chunk allocated: {} strips", chunk.strips.len());
-
-    // 6. Query the chunk.
-    let chunk_id = chunk.id.as_ref().expect("chunk has id");
-    let queried = harness.handler.query_chunk(chunk_id).await.expect("query_chunk");
-    assert_eq!(queried.id, chunk.id);
-    assert_eq!(queried.state, ChunkState::Active as i32);
-    eprintln!("chunk queried");
-
-    // 7. Seal the chunk.
-    let sealed = harness
-        .handler
-        .seal_chunk_bytes(chunk_id, 100 * 1024 - 17)
-        .await
-        .expect("seal_chunk");
-    assert_eq!(sealed.state, ChunkState::Sealed as i32);
-    assert_eq!(sealed.sealed_length, 100);
-    assert_eq!(sealed.acknowledged_cursor, 100 * 1024 - 17);
-    assert_eq!(sealed.strips.len(), 1);
-    assert_eq!(sealed.capacity, 1024);
-    assert!(sealed.cleanup_intents.is_empty());
-    eprintln!("chunk sealed");
-    let owned_segments: Vec<_> = sealed
-        .strips
-        .iter()
-        .flat_map(|strip| match strip.strip.as_ref().unwrap() {
-            Strip::MirrorStrip(mirror) => mirror.segments.clone(),
-            Strip::EcStrip(ec) => ec.segments.clone(),
-        })
-        .collect();
-
-    // 8. Delete the chunk.
-    let deleted = harness
-        .handler
-        .delete_chunk(chunk_id)
-        .await
-        .expect("delete_chunk");
-    assert_eq!(deleted.state, ChunkState::Deleted as i32);
-    eprintln!("chunk deleted");
-    assert!(deleted.strips.is_empty());
-    let disk_records = cluster.make_ddb_kv_client();
-    for segment in &owned_segments {
-        let records = disk_records
-            .read_zone_records(
-                (STORE_ID, DATA_GROUP_ID),
-                &segment.disk_id.unwrap(),
-                segment.zone_index,
-            )
-            .await
-            .unwrap();
-        assert!(
-            records.free.iter().any(|record| {
-                record.key.unit_offset == segment.unit_offset
-                    && record.key.allocation_ts == segment.allocation_ts
-            }),
-            "disk block must be freed before chunk layout is cleared: {segment:?}"
-        );
-    }
-
-    // 9. Delete again → should return the same idempotent tombstone.
-    let deleted_again = harness
-        .handler
-        .delete_chunk(chunk_id)
-        .await
-        .expect("idempotent delete");
-    assert_eq!(deleted_again.state, ChunkState::Deleted as i32);
-    eprintln!("second delete returned Deleted (idempotent)");
-
-    // 10. Query after delete → should return the deleted chunk (state=Deleted).
-    let queried_after = harness
-        .handler
-        .query_chunk(chunk_id)
-        .await
-        .expect("query after delete");
-    assert_eq!(queried_after.state, ChunkState::Deleted as i32);
-    eprintln!("chunk queried after delete (state=Deleted)");
-}
-
-#[tokio::test]
 async fn chunkdb_fenced_range_replacement_is_idempotent_and_preserves_geometry() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: crowdb-kv-server binary not found");
-        return;
-    }
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     seed_hardware(&cluster.make_hardware_client()).await;
     let _diskdb = DiskdbServer::start(&cluster).await;
     let harness = ChunkdbHarness::start(&cluster).await;
@@ -1899,11 +1710,7 @@ async fn assert_stale_replacement_conflicts(
 
 #[tokio::test]
 async fn mirror_range_is_atomically_replaced_by_tentative_ec_strip() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: crowdb-kv-server binary is unavailable");
-        return;
-    }
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     seed_hardware(&cluster.make_hardware_client()).await;
     let _diskdb = DiskdbServer::start(&cluster).await;
     let harness = ChunkdbHarness::start_with_layout_validity(&cluster, Duration::from_millis(1)).await;
@@ -1976,11 +1783,7 @@ async fn mirror_range_is_atomically_replaced_by_tentative_ec_strip() {
 
 #[tokio::test]
 async fn deletion_during_conversion_clears_task_ownership_before_tentative_cleanup() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: crowdb-kv-server binary is unavailable");
-        return;
-    }
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     seed_hardware(&cluster.make_hardware_client()).await;
     let _diskdb = DiskdbServer::start(&cluster).await;
     let harness = ChunkdbHarness::start(&cluster).await;
@@ -2080,11 +1883,7 @@ async fn deletion_during_conversion_clears_task_ownership_before_tentative_clean
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn relocation_handoff_claims_publishes_and_defers_source_free() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: crowdb-kv-server binary is unavailable");
-        return;
-    }
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     seed_hardware(&cluster.make_hardware_client()).await;
     let _diskdb = DiskdbServer::start(&cluster).await;
     let harness = ChunkdbHarness::start_with_layout_validity(&cluster, Duration::from_millis(1)).await;
@@ -2243,11 +2042,7 @@ async fn relocation_handoff_claims_publishes_and_defers_source_free() {
 
 #[tokio::test]
 async fn relocation_rejects_a_target_that_weakens_physical_placement() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: crowdb-kv-server binary is unavailable");
-        return;
-    }
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     seed_hardware(&cluster.make_hardware_client()).await;
     let _diskdb = DiskdbServer::start(&cluster).await;
     let harness = ChunkdbHarness::start(&cluster).await;
@@ -2312,11 +2107,7 @@ async fn relocation_rejects_a_target_that_weakens_physical_placement() {
 
 #[tokio::test]
 async fn relocation_marks_deleted_owner_stale_without_publishing_target() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: crowdb-kv-server binary is unavailable");
-        return;
-    }
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     seed_hardware(&cluster.make_hardware_client()).await;
     let _diskdb = DiskdbServer::start(&cluster).await;
     let harness = ChunkdbHarness::start(&cluster).await;
@@ -2389,11 +2180,7 @@ async fn relocation_marks_deleted_owner_stale_without_publishing_target() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn cross_domain_rebalance_hands_one_safe_move_to_target_diskdb() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: crowdb-kv-server binary is unavailable");
-        return;
-    }
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     seed_hardware(&cluster.make_hardware_client()).await;
     let diskdb = DiskdbServer::start(&cluster).await;
     let harness = ChunkdbHarness::start_with_layout_validity(&cluster, Duration::from_millis(1)).await;
@@ -2615,11 +2402,7 @@ async fn cross_domain_rebalance_hands_one_safe_move_to_target_diskdb() {
 
 #[tokio::test]
 async fn chunkdb_restart_reconciles_expired_replacement_cleanup_intent() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: crowdb-kv-server binary not found");
-        return;
-    }
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     seed_hardware(&cluster.make_hardware_client()).await;
     let _diskdb = DiskdbServer::start(&cluster).await;
     let harness = ChunkdbHarness::start_with_layout_validity(&cluster, Duration::from_millis(1)).await;
@@ -2684,11 +2467,7 @@ async fn chunkdb_restart_reconciles_expired_replacement_cleanup_intent() {
 
 #[tokio::test]
 async fn chunkdb_lock_serializes_concurrent_append() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
-        return;
-    }
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     let hw = cluster.make_hardware_client();
     seed_hardware(&hw).await;
     let _diskdb = DiskdbServer::start(&cluster).await;
@@ -2741,11 +2520,7 @@ async fn chunkdb_lock_serializes_concurrent_append() {
 
 #[tokio::test]
 async fn chunkdb_lock_no_deadlock_different_chunks() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
-        return;
-    }
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     let hw = cluster.make_hardware_client();
     seed_hardware(&hw).await;
     let _diskdb = DiskdbServer::start(&cluster).await;
@@ -2793,11 +2568,7 @@ async fn chunkdb_lock_no_deadlock_different_chunks() {
 
 #[tokio::test]
 async fn chunkdb_cache_hit_on_second_query() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
-        return;
-    }
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     let hw = cluster.make_hardware_client();
     seed_hardware(&hw).await;
     let _diskdb = DiskdbServer::start(&cluster).await;
@@ -2865,11 +2636,7 @@ async fn chunkdb_cache_hit_on_second_query() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn reserved_strips_stay_hidden_until_idempotent_confirmation() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
-        return;
-    }
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     let hw = cluster.make_hardware_client();
     seed_hardware(&hw).await;
     let _diskdb = DiskdbServer::start(&cluster).await;
@@ -3053,11 +2820,7 @@ async fn assert_consumed_reservation_waits_for_reuse_grace(
 
 #[tokio::test]
 async fn expired_consumed_reservation_waits_for_reuse_grace() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
-        return;
-    }
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     let hw = cluster.make_hardware_client();
     seed_hardware(&hw).await;
     let _diskdb = DiskdbServer::start(&cluster).await;
@@ -3149,11 +2912,7 @@ async fn expired_consumed_reservation_waits_for_reuse_grace() {
 
 #[tokio::test]
 async fn reservation_admission_rejects_overcommit_and_rebuilds_durable_usage() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
-        return;
-    }
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     let hw = cluster.make_hardware_client();
     seed_hardware(&hw).await;
     let _diskdb = DiskdbServer::start(&cluster).await;
@@ -3216,11 +2975,7 @@ async fn reservation_admission_rejects_overcommit_and_rebuilds_durable_usage() {
 
 #[tokio::test]
 async fn completed_conversion_reservation_is_taken_over_as_a_durable_task() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
-        return;
-    }
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     let hw = cluster.make_hardware_client();
     seed_hardware(&hw).await;
     let _diskdb = DiskdbServer::start(&cluster).await;
@@ -3298,11 +3053,7 @@ async fn completed_conversion_reservation_is_taken_over_as_a_durable_task() {
 
 #[tokio::test]
 async fn generated_chunk_ids_stay_with_the_serving_range_owner() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
-        return;
-    }
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     let hw = cluster.make_hardware_client();
     seed_hardware(&hw).await;
     let _diskdb = DiskdbServer::start(&cluster).await;
@@ -3331,11 +3082,7 @@ async fn generated_chunk_ids_stay_with_the_serving_range_owner() {
 
 #[tokio::test]
 async fn allocated_chunk_type_matches_its_id_prefix() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
-        return;
-    }
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     let hw = cluster.make_hardware_client();
     seed_hardware(&hw).await;
     let _diskdb = DiskdbServer::start(&cluster).await;
@@ -3380,11 +3127,7 @@ async fn allocated_chunk_type_matches_its_id_prefix() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn conversion_reservation_allocates_joint_plan_and_cleans_every_early_tail() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
-        return;
-    }
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     let hw = cluster.make_hardware_client();
     seed_hardware(&hw).await;
     let _diskdb = DiskdbServer::start(&cluster).await;
@@ -3496,11 +3239,7 @@ async fn conversion_reservation_allocates_joint_plan_and_cleans_every_early_tail
 
 #[tokio::test]
 async fn chunkdb_lock_serializes_concurrent_seal() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
-        return;
-    }
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     let hw = cluster.make_hardware_client();
     seed_hardware(&hw).await;
     let _diskdb = DiskdbServer::start(&cluster).await;
@@ -3538,11 +3277,7 @@ async fn chunkdb_lock_serializes_concurrent_seal() {
 
 #[tokio::test]
 async fn chunkdb_lock_serializes_concurrent_delete() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
-        return;
-    }
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     let hw = cluster.make_hardware_client();
     seed_hardware(&hw).await;
     let _diskdb = DiskdbServer::start(&cluster).await;
@@ -3577,11 +3312,7 @@ async fn chunkdb_lock_serializes_concurrent_delete() {
 
 #[tokio::test]
 async fn chunkdb_lock_serializes_concurrent_append_delete() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
-        return;
-    }
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     let hw = cluster.make_hardware_client();
     seed_hardware(&hw).await;
     let _diskdb = DiskdbServer::start(&cluster).await;
@@ -3635,11 +3366,7 @@ async fn chunkdb_lock_serializes_concurrent_append_delete() {
 
 #[tokio::test]
 async fn chunkdb_shared_writer_cursor_is_fenced_and_orphan_is_sealed() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
-        return;
-    }
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     let hw = cluster.make_hardware_client();
     seed_hardware(&hw).await;
     let _diskdb = DiskdbServer::start(&cluster).await;

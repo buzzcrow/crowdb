@@ -22,7 +22,7 @@ def run_client(bundle, addresses, token, phase, artifacts,
     env["LD_LIBRARY_PATH"] = str(Path(bundle) / "lib") + ":" + env.get("LD_LIBRARY_PATH", "")
     started = time.monotonic()
     try:
-        result = subprocess.run([str(Path(bundle) / "kv-test"), "--ignored", "--exact",
+        result = subprocess.run([str(Path(bundle) / "domain-test"), "--ignored", "--exact",
             test_name, "--nocapture"],
             env=env, capture_output=True, text=True, check=False, timeout=120)
     except subprocess.TimeoutExpired as error:
@@ -42,11 +42,11 @@ def run_client(bundle, addresses, token, phase, artifacts,
         "exit_code": result.returncode, "execution": "host"}, indent=2))
     print(output, end="", flush=True)
     if result.returncode or "test result: ok. 1 passed; 0 failed;" not in output:
-        raise RuntimeError(f"host KV {phase} did not complete exactly one passing case")
+        raise RuntimeError(f"host client {phase} did not complete exactly one passing case")
 
 
 def bundle_client(output):
-    result = subprocess.run(["cargo", "test", "--locked", "-p", "e2e-test", "--test", "kv_test",
+    result = subprocess.run(["cargo", "test", "--locked", "-p", "e2e-test", "--test", "domain_test",
                              "--no-run", "--message-format=json"], capture_output=True, text=True,
                             check=False, timeout=600)
     print(result.stderr, end="", flush=True)
@@ -54,14 +54,14 @@ def bundle_client(output):
         print(result.stdout, end="", flush=True)
         raise RuntimeError("container RPC client compilation failed")
     binaries = [item["executable"] for line in result.stdout.splitlines() if line.startswith("{")
-                and (item := json.loads(line)).get("target", {}).get("name") == "kv_test"
+                and (item := json.loads(line)).get("target", {}).get("name") == "domain_test"
                 and item.get("executable")]
     if len(binaries) != 1:
-        raise RuntimeError("missing or ambiguous KV test executable")
+        raise RuntimeError("missing or ambiguous domain test executable")
     output = Path(output).resolve()
     (output / "lib").mkdir(parents=True)
-    shutil.copy2(binaries[0], output / "kv-test")
-    result = subprocess.run(["ldd", "-r", str(output / "kv-test")], capture_output=True, text=True, check=True)
+    shutil.copy2(binaries[0], output / "domain-test")
+    result = subprocess.run(["ldd", "-r", str(output / "domain-test")], capture_output=True, text=True, check=True)
     if "not found" in result.stdout or "undefined symbol" in result.stdout:
         raise RuntimeError(result.stdout)
     prefix = Path(os.environ["CONDA_PREFIX"]).resolve()

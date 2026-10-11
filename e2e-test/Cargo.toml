@@ -11,6 +11,8 @@ repository.workspace = true
 workspace = true
 
 [dev-dependencies]
+crowdb-chunkdb-client = { path = "../lib/crowdb-chunkdb-client" }
+crowdb-chunkdb = { path = "../app/crowdb-chunkdb", features = ["test-util"] }
 bytes = "1"
 flatbuffers = { workspace = true }
 crowdb-diskio-client = { path = "../lib/crowdb-diskio-client", features = ["test-util"] }
@@ -24,5 +26,5 @@ reqwest = { version = "0.12", features = ["json"] }
 serde_json = "1"
 
 [[test]]
-name = "kv_test"
-path = "tests/kv_test.rs"
+name = "domain_test"
+path = "tests/domain_test.rs"

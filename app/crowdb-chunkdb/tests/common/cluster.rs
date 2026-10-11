@@ -1,12 +1,12 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Full-stack cluster harness for chunkdb integration tests.
+//! Metadata and internal service fixtures for Chunkdb component proofs.
 //!
-//! Starts a real 3-node `crowdb-kv-server` cluster (store 0, groups 0
-//! and 1), seeds hardware metadata, starts diskdb in-process as a
-//! crowdb-rpc server, registers it in the service registry, and wires the
-//! chunkdb lifecycle handler. Tests call the handler directly.
+//! Direct handler tests select pinned in-memory metadata. Legacy executable
+//! metadata setup remains only for flows awaiting their container owner.
+//! Internal Diskdb service wiring supplies component allocation dependencies;
+//! public packaged-server flows belong to the container acceptance crate.
 
 #![allow(dead_code)]
 
@@ -38,6 +38,7 @@ use crowdb_diskdb::recovery::ZoneLoader;
 use crowdb_diskdb::scanner::ScanState;
 use crowdb_diskdb::service::DiskdbRpcService;
 use crowdb_diskdb_client::DiskdbRpcTransport;
+use crowdb_kv::cluster::kv_server::KvServer;
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient, RetryConfig, ServiceRegistryClient};
 use crowdb_protocol::chunkdb::rpc::{RelocateSegmentHandoffRequest, RelocationHandoffDisposition};
 use crowdb_protocol::common::{DiskId, HwStatus, NodeValue, RackValue};
@@ -254,7 +255,8 @@ pub async fn leader_endpoint(nodes: &[KvNode], group_id: u64) -> String {
 
 #[allow(dead_code)]
 pub struct KvCluster {
-    _permit: OwnedSemaphorePermit,
+    _permit: Option<OwnedSemaphorePermit>,
+    memory_store: Option<Arc<crowdb_kv::cluster::PxKvStore>>,
     pub nodes: Vec<KvNode>,
     pub group0_leader_endpoint: String,
     pub group1_leader_endpoint: String,
@@ -262,6 +264,30 @@ pub struct KvCluster {
 }
 
 impl KvCluster {
+    /// Pinned memory dependency for tests that invoke component handlers.
+    /// Full executable packaging, elections and durability have E2E owners.
+    pub async fn start_pinned() -> Self {
+        use crowdb_kv::cluster::group::PxGroup;
+        use crowdb_kv::cluster::{PxKvStore, PxLocalReplica, PxLocalReplicaRole};
+        let store = Arc::new(PxKvStore::new(0, "127.0.0.1:0".parse().unwrap()));
+        for id in [0, 1] {
+            store.add_group(PxGroup::new(
+                id,
+                PxLocalReplica::new(1, PxLocalReplicaRole::Leader),
+            ));
+        }
+        store.start().await.expect("start pinned memory dependency");
+        let endpoint = store.listen_addr().unwrap().to_string();
+        Self {
+            _permit: None,
+            memory_store: Some(store),
+            nodes: Vec::new(),
+            group0_leader_endpoint: endpoint.clone(),
+            group1_leader_endpoint: endpoint,
+            mgmt_endpoints: Vec::new(),
+        }
+    }
+
     pub async fn start() -> Self {
         Self::start_with_groups(&[0, 1]).await
     }
@@ -296,7 +322,8 @@ impl KvCluster {
         let mgmt_endpoints: Vec<String> = nodes.iter().map(|n| n.base_url().to_string()).collect();
 
         Self {
-            _permit: permit,
+            _permit: Some(permit),
+            memory_store: None,
             nodes,
             group0_leader_endpoint,
             group1_leader_endpoint,
@@ -321,6 +348,14 @@ impl KvCluster {
 
     pub fn make_ddb_kv_client(&self) -> Arc<DdbKvClient> {
         Arc::new(DdbKvClient::from_shared(self.make_crowdb_client()))
+    }
+}
+
+impl Drop for KvCluster {
+    fn drop(&mut self) {
+        if let Some(store) = &self.memory_store {
+            store.stop();
+        }
     }
 }
 

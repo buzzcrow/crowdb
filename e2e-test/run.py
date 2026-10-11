@@ -80,8 +80,8 @@ def run_pair(image, artifacts, bundle, count, data_root=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--layer", choices=("kv", "diskdb", "diskio", "deployment", "all"), default="all")
-    parser.add_argument("--scope", choices=("all", "kv.management", "kv.membership", "kv.routing", "kv.recovery", "kv.isolation", "kv.group0", "kv.client", "kv.metadata", "diskdb.allocation", "diskdb.ownership", "diskdb.reuse", "diskdb.recovery", "deployment.selection", "diskio.durability", "diskio.direct", "diskio.io.mem", "diskio.io.null", "diskio.discovery", "diskio.errors", "diskio.faults", "diskio.semantic"),
+    parser.add_argument("--layer", choices=("kv", "diskdb", "diskio", "chunkdb", "deployment", "all"), default="all")
+    parser.add_argument("--scope", choices=("all", "kv.management", "kv.membership", "kv.routing", "kv.recovery", "kv.isolation", "kv.group0", "kv.client", "kv.metadata", "diskdb.allocation", "diskdb.ownership", "diskdb.reuse", "diskdb.recovery", "chunkdb.allocation", "chunkdb.lifecycle", "chunkdb.recovery", "chunkdb.placement", "deployment.selection", "diskio.durability", "diskio.direct", "diskio.io.mem", "diskio.io.null", "diskio.discovery", "diskio.errors", "diskio.faults", "diskio.semantic"),
                         default="all")
     parser.add_argument("--concurrency", type=int, default=2)
     parser.add_argument("--case", help="fully qualified named flow within the selected scope")
@@ -136,7 +136,7 @@ def main():
     started = time.monotonic()
     bundle = bundle_client(run_root / "client")
     timings = {"client_build": time.monotonic() - started}
-    with (bundle / "kv-test").open("rb") as executable:
+    with (bundle / "domain-test").open("rb") as executable:
         client_digest = hashlib.file_digest(executable, "sha256").hexdigest()
     client_source = hashlib.sha256()
     for path in sorted((ROOT / "e2e-test").rglob("*")):

@@ -1,8 +1,9 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Packaged three-voter KV CRUD, persistence and isolation acceptance.
+//! Host clients for packaged server domain acceptance.
 
+mod chunkdb;
 mod common;
 mod deployment;
 mod diskdb;
