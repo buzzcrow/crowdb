@@ -1,3 +1,6 @@
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
+
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::time::Duration;
@@ -12,28 +15,21 @@ use crowdb_access_iceberg::{
 use reqwest::Method;
 use serde_json::Value;
 
-use super::{
-    child::TestCommitChild, common::TestIcebergStack, path, process::TestIcebergProcess, setup_with_bounds,
-    TestFileClient,
-};
+use super::{child::TestCommitListener, common::TestCommitFixture, path, setup_with_bounds, TestFileClient};
 
 pub async fn run() {
-    let (mut stack, process, mut client, table) = setup_with_bounds(ClearBounds {
+    let (stack, process, mut client, table) = setup_with_bounds(ClearBounds {
         request_ms: 300_000,
         delegated_access_ms: 900_000,
         ..ClearBounds::default()
     })
     .await;
-    let directory = stack
-        .cluster
-        .runtime_mut()
-        .service_dir("iceberg", "file-faults")
-        .unwrap();
+    let directory = stack.directory.path().to_path_buf();
     drop(process);
     for multipart in [false, true] {
         let baseline = prepare(&stack, &mut client, table, multipart, "baseline").await;
-        let child = TestCommitChild::start(
-            &stack.cluster.mgmt_endpoints,
+        let child = TestCommitListener::start(
+            &stack,
             directory.join(format!("baseline-{multipart}.json")),
             usize::MAX,
             false,
@@ -70,7 +66,7 @@ pub async fn run() {
 }
 
 async fn interrupt(
-    stack: &TestIcebergStack,
+    stack: &TestCommitFixture,
     directory: &Path,
     client: &mut TestFileClient,
     table: TableLocation,
@@ -79,8 +75,8 @@ async fn interrupt(
     after: bool,
 ) -> String {
     let case = prepare(stack, client, table, multipart, &format!("{offset}-{after}")).await;
-    let mut child = TestCommitChild::start(
-        &stack.cluster.mgmt_endpoints,
+    let mut child = TestCommitListener::start(
+        stack,
         directory.join(format!("{multipart}-{offset}-{after}.json")),
         offset,
         after,
@@ -94,16 +90,16 @@ async fn interrupt(
         result = &mut request => panic!("file boundary {multipart}/{offset}/{after} returned early: {result:?}"),
     };
     let label = boundary["label"].as_str().unwrap().to_owned();
-    println!("kill multipart={multipart} boundary={offset} after={after}: {label}");
+    println!("interrupt multipart={multipart} boundary={offset} after={after}: {label}");
     drop(child);
     assert!(
         request.await.unwrap().is_err(),
         "interruption must lose the response"
     );
-    let recovery = TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
+    let recovery = TestCommitListener::normal(stack).await;
     client.address = recovery.address;
     let first = case.execute(client).await;
-    let files = FileRepository::new(stack.store().await);
+    let files = FileRepository::new(stack.store());
     let context = client.credentials.grant().context;
     let record = files
         .load(context, &table.file(&case.key).unwrap())
@@ -124,7 +120,7 @@ async fn interrupt(
     let conflict = client.send(Method::PUT, &case.path, "", &changed, false).await;
     assert_eq!(conflict.status(), 409);
     if let Some(upload) = &case.upload {
-        let session = MultipartRepository::new(stack.store().await)
+        let session = MultipartRepository::new(stack.store())
             .load(context, upload.parse().unwrap())
             .await
             .unwrap()
@@ -136,8 +132,8 @@ async fn interrupt(
     label
 }
 
-async fn released_by_recovery(stack: &TestIcebergStack, published: &MultipartSession) {
-    let store = stack.store().await;
+async fn released_by_recovery(stack: &TestCommitFixture, published: &MultipartSession) {
+    let store = stack.store();
     let sessions = MultipartRepository::new(store.clone());
     let admission = MultipartAdmission::new(store);
     if published.credit.is_none() {
@@ -206,7 +202,7 @@ impl TestFileCase {
 }
 
 async fn prepare(
-    stack: &TestIcebergStack,
+    stack: &TestCommitFixture,
     client: &mut TestFileClient,
     table: TableLocation,
     multipart: bool,
@@ -224,7 +220,7 @@ async fn prepare(
         complete: String::new(),
     };
     if multipart {
-        let setup = TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
+        let setup = TestCommitListener::normal(stack).await;
         client.address = setup.address;
         let create = client
             .send(Method::POST, &case.path, "uploads=", b"", false)

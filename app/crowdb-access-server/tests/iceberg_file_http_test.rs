@@ -5,14 +5,8 @@ mod common;
 #[allow(dead_code)]
 mod process;
 
-#[path = "common/iceberg_commit_child.rs"]
-mod child;
-#[path = "common/iceberg_commit_fault.rs"]
-mod fault;
 #[path = "common/iceberg_file_listing.rs"]
 mod listing;
-#[path = "common/iceberg_file_recovery.rs"]
-mod recovery;
 
 use common::{now_ms, TestIcebergStack};
 use crowdb_access_iceberg::catalog::{CatalogRepository, ClearBounds, ManagementPrivilege};
@@ -25,18 +19,6 @@ use reqwest::Client;
 #[path = "common/iceberg_signed_file.rs"]
 mod signed;
 use signed::TestFileClient;
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "test-only child listener invoked by native file crash matrix"]
-async fn native_fault_listener_child() {
-    child::run().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires native storage and kills listener subprocesses at durable FileIO boundaries"]
-async fn native_file_publication_recovers_across_listeners_at_every_durable_write() {
-    recovery::run().await;
-}
 
 async fn setup() -> (
     TestIcebergStack,

@@ -14,9 +14,8 @@ pixi run -e default -- cargo test --release -p crowdb-access-server --features i
 pixi run -e default -- cargo test --release -p crowdb-access-server --features iceberg-e2e \
     --test iceberg_file_http_test -- --ignored --test-threads=1 \
     --skip native_fault_listener_child --skip official_java_ "${manual_args[@]}"
-pixi run -e default -- cargo test --release -p crowdb-access-server --features iceberg-e2e \
-    --test iceberg_commit_crash_test native_table_publication_recovers_before_and_after_every_durable_write \
-    -- --ignored --exact --test-threads=1
+pixi run -e default -- cargo test --release -p crowdb-access-server \
+    --test iceberg_commit_recovery_test --test iceberg_file_recovery_test -- --test-threads=1
 
 pixi run -e default -- python e2e-test/run.py --layer iceberg --scope iceberg.files \
     --image "${CROWDB_E2E_IMAGE:-crowdb-node:dev}" --concurrency 1 --cpus 8 --memory-mib 8192

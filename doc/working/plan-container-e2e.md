@@ -1648,3 +1648,20 @@ Source `lib/crowdb-kv-client/tests/chunk_slot_map_test.rs`: all eight cases exer
   `run-8ea46023e1dc49eb90e514b379ebeab4`: 39/39 pass, 418.700 seconds,
   previous 614.941. Protected reader `run-166442e37f8045cb92c2b884e0e30e09`
   passes its unchanged 15-second failure bound (client 1.65 seconds).
+
+### FileIO durable publication cuts remain component-local
+
+- Original native `native_file_publication_recovers_across_listeners_at_every_durable_write`
+  baseline passes in 19.82 seconds. Equivalent component owner
+  `iceberg_file_recovery_test` passes in 1.55 seconds without Docker or installed
+  servers. It retains direct publication's exact one authority CAS, multipart's
+  six durable writes, all 14 before/after cuts, lost responses, immutable record
+  equality, exact 65,552-byte GET, changed PUT 409 and terminal-credit recovery.
+- Retained catalog state and ArcSwap chunk metadata/disk seams feed the actual
+  NativeFileBlocks and ChunkIoClient writer/reader: native frames, mirrored
+  bytes and acknowledged cursors survive fresh listeners. No production hook,
+  lock, unsafe or altered deadline. Fix the mock's absent layout lease rather
+  than weakening reader validation. Table and file matrices share the boundary
+  store and cancellation listener. Retire the native matrix/child launcher only
+  after both baseline and component proofs pass. Listing SDK and manual TPC
+  launch ownership remain separately pending.
