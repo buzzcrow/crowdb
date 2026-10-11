@@ -48,6 +48,8 @@ pixi run test-container-e2e --layer deployment --concurrency 2 --cpus 6 --memory
 pixi run test-container-e2e --scope kv.management --concurrency 2
 # KV/KV and KV/Web crash-and-retirement isolation with exact survivor data:
 pixi run test-container-e2e --layer kv --scope kv.isolation --require-isolation --concurrency 2
+# Explicit Linux host-network admission/recovery; run on an exclusive host:
+pixi run test-container-e2e --profile host --concurrency 1 --cpus 4 --memory-mib 4096
 # Select one exact client case or list available profiles without Docker:
 pixi run test-container-e2e --case kv::bootstrap::custom_replica
 pixi run test-container-e2e --list --scope kv.group0
@@ -60,6 +62,9 @@ unsupported daemon, changed release server sources or inadequate budget fails th
 required test. There is no successful missing-prerequisite skip.
 `--layer all` selects registered KV, Diskdb, Diskio, Chunkdb, chunk-client,
 chunk-stream, Chunk-KV, S3, Iceberg, Dataset, Console and deployment cases.
+The host profile retains its owned bind-mounted data/log/crash root and an exact
+image/source record; fixed ports require an exclusive Linux host. It is an
+explicit deployment acceptance and is excluded from ordinary bridge domains.
 Writable managed Console migration remains unresolved; complete migration and
 the all-domain gate are pending. DiskIO process-exit faults retain their network
 namespace, so the original 15-second stream/reader/repair bounds still apply.

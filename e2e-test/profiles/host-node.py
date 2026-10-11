@@ -11,16 +11,15 @@ import shutil
 import sys
 import tempfile
 import uuid
-from importlib.util import spec_from_file_location, module_from_spec
-spec = spec_from_file_location("node_containers", Path(__file__).with_name("node-containers.py"))
-helpers = module_from_spec(spec)
-spec.loader.exec_module(helpers)
-docker, request, wait, IMAGE = helpers.docker, helpers.request, helpers.wait, helpers.IMAGE
+import signal
+from contextlib import nullcontext
+from node import docker, request, wait, IMAGE
 
 
 def main():
-    name = "crowdb-host-test-" + uuid.uuid4().hex[:8]
-    with tempfile.TemporaryDirectory(prefix="crowdb-host-node-") as directory:
+    name = os.environ.get("CROWDB_E2E_PROFILE_NAME", "crowdb-host-test-" + uuid.uuid4().hex[:8])
+    with (nullcontext(os.environ["CROWDB_E2E_PROFILE_DATA"]) if "CROWDB_E2E_PROFILE_DATA" in os.environ
+          else tempfile.TemporaryDirectory(prefix="crowdb-host-node-")) as directory:
         root = Path(directory)
         secret = root / "password"
         secret.write_text("host-ssh-acceptance")
@@ -74,9 +73,13 @@ def main():
             raise
         finally:
             docker("rm", "-f", name)
-            docker("run", "--rm", "--network", "none", "--entrypoint", "/bin/chmod", "--mount",
-                   f"type=bind,source={root},target=/test", IMAGE, "-R", "0777", "/test/node")
+            if "CROWDB_E2E_PROFILE_DATA" not in os.environ:
+                docker("run", "--rm", "--network", "none", "--entrypoint", "/bin/chmod", "--mount",
+                       f"type=bind,source={root},target=/test", IMAGE, "-R", "0777", "/test/node")
 
 
 if __name__ == "__main__":
+    def interrupt(_signal, _frame):
+        raise KeyboardInterrupt("owned host profile interrupted")
+    signal.signal(signal.SIGTERM, interrupt)
     main()

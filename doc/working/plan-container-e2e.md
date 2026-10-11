@@ -9,7 +9,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 
 ## Resume context
 
-- Branch `task-deploy`; latest accepted three-voter recovery is committed as `793ebdfb`. R230 is unfinished. Do not delete the
+- Branch `task-deploy`; latest accepted local Deployer split is committed as `90645b38`. R230 is unfinished. Do not delete the
   requirement/backlog entry until every remaining owner and required gate passes.
 - Working tree contains uncommitted Console browser migration drafts. Shared-image CI is committed. S3 node-fault migration and local-state component proofs are accepted.
   Preserve these drafts. `e2e-test/clients/console-ui/node_modules/` is local
@@ -29,7 +29,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 - Delete original real-server owners only after equivalent accepted assertions.
   Keep deterministic component UT. Run executable commands through `pixi run`;
   native server gates require `clean-env`, never during another server gate.
-- Accepted fixture gate: 61 pass, `/tmp/crowdb-ci-staged-fixture-gate.log`,
+- Accepted fixture gate: 63 pass, `/tmp/crowdb-host-staged-fixture.log`,
   using an export of the staged source. Console browser drafts are excluded.
   Retained S3 component UT pass 5/5; Web/Console-shared/E2E all-target clippy
   and workspace fmt pass.
@@ -63,10 +63,27 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   Move remaining distinct public SSH admission/authentication, literal credential,
   stale intent and recovery assertions under the root runner; these already use
   formal server containers. `lib/crowdb-console-shared/tests/launch_ssh_test.rs`
-  is a fake SSH peer plus sleep child and remains a component UT.
-- [ ] **Host-network and containerd profiles**: root explicit profiles must own
-  `container/single-node-container/tests/host-node.py` and
+  is a fake SSH peer plus sleep child and remains a component UT. Original
+  three-node browser selection failed twice: first the rack POST remained
+  pending, then the initial `/api/mode` request remained pending. Traces:
+  `app/crowdb-web/ui/e2e/test-results/crowdb-node-test-879d890b` and
+  `crowdb-node-test-961c2cc9`; logs `/tmp/crowdb-bridge-admission-before-relocation.log`
+  and `/tmp/crowdb-bridge-admission-serial-check.log`. One-node probes before
+  and after interrupted-preparation cleanup pass rack/node/server requests in
+  milliseconds. Browser first divergence remains unresolved; do not classify
+  these pending requests as a confirmed readonly-policy failure.
+- [ ] **Containerd profiles**: root explicit profiles must own
   `container/oci-image/tests/containerd-host.py` / `containerd-cluster.py`.
+  Host-network acceptance is migrated to `e2e-test/profiles/host-node.py` and
+  `--profile host --concurrency 1`, with the old owner removed after acceptance.
+  Same-image resource rejection, CPU/memory limits, SSH admission, identity
+  recovery and cleanup pass; private bind-mounted node data stays outside
+  uploaded artifacts. Root profile reserves 2.5 CPU / 1536 MiB and pins the
+  inspected release image and source. Docker preview/release delegates use it.
+  Acceptance: `run-9869315124ca45cb9ba3e3b3b245be90`, 6.740 seconds; explicit interruption
+  also fails visibly, reaps the owned node and retains report/data
+  (`/tmp/crowdb-host-interrupt-check`). Ownership guards reject changed image
+  or data mounts before teardown.
   Preserve resource rejection, actual CPU/memory limits, real SSH admission,
   persistent cluster/credential identity and cleanup. Host fixed ports require
   exclusive scheduling; nested privileged Linux hosts and a containerd socket
@@ -108,10 +125,9 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   no image. Resource audit fits every declared case: S3 maximum 3.9 CPU /
   7872 MiB in a 4 CPU / 8192 MiB job, Iceberg maximum 4 CPU / 11264 MiB in
   12288 MiB. YAML and 28-package task reachability pass. The isolated component
-  SDK gate passes eight tests. Console 84-operation measurement passes in 605.125 seconds at 0.25 CPU/server,
+  SDK gate passes eight tests. Console 87-operation measurement passes in 627.744 seconds at 0.25 CPU/server,
   one effective case slot, 4 CPU / 8192 MiB,
-  `run-40fe7a0e77bb4dcbbd9cc1ba31e4c0c4`; the subsequently accepted recovery
-  case is not included in that report. Private Access deployment passes in
+  `run-29a68eb2454c4fe5baf55c3d6cd8b610`; recovery and TERM/KILL owners are included. Private Access deployment passes in
   `run-39606819b51543abb1a03e7509906a66`;
   source CLI/Web early-exit validation remains component-local. Web TERM/KILL
   acceptance passes with two concurrent isolated namespaces in

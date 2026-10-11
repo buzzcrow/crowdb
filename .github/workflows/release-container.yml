@@ -100,7 +100,7 @@ jobs:
         pixi run clean-env
         pixi run --skip-deps test-single-node-container
         pixi run python container/single-node-container/tests/node-containers.py
-        pixi run python container/single-node-container/tests/host-node.py
+        pixi run test-container-e2e --profile host --concurrency 1 --cpus 4 --memory-mib 4096
         pixi install --locked --manifest-path container/oci-image/pixi.toml -e runtime
         pixi run python container/oci-image/tests/containerd-cluster.py
     - name: Record verified digest

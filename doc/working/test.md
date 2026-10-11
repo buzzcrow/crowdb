@@ -29,7 +29,7 @@ budget); its three joint faults and protected restart add four cases.
 Iceberg uses two case slots at 0.5 CPU/server (24 CPU / 32768 MiB budget);
 its full catalog retirement grace accounts for 1205 seconds of client time.
 KV includes the KV/KV and KV/Web isolation pairs. Console measures
-`console.operations` (84 owners in the measured run; recovery adds one accepted owner); unaccepted managed browser drafts
+`console.operations` (87 accepted owners); unaccepted managed browser drafts
 are excluded. Console uses one effective case slot at 0.25 CPU/server with a
 4 CPU / 8192 MiB budget; the previous run used higher capacity.
 
@@ -45,7 +45,7 @@ are excluded. Console uses one effective case slot at 0.25 CPU/server with a
 | S3           | intel7960   | 2026-10-11 | 43 / 0 / 0                | 1135.695 | 418.700    | [report](../../.crowdb-runtime/artifacts/container-e2e/run-04461b8645414e83b7aa98cd5aa63ae2/results.json) |
 | Iceberg      | intel7960   | 2026-10-11 | 32 / 0 / 0                | 1515.042 | 1542.472   | [report](../../.crowdb-runtime/artifacts/container-e2e/run-9dd41619b7a04bd3b7e0693e3b432b74/results.json) |
 | Dataset      | intel7960   | 2026-10-11 | 2 / 0 / 0                 | 18.024   | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-d869ca04e48d46dabadb36e4db510c81/results.json) |
-| Console      | intel7960   | 2026-10-11 | 84 / 0 / 0                | 605.125  | 270.310    | [report](../../.crowdb-runtime/artifacts/container-e2e/run-40fe7a0e77bb4dcbbd9cc1ba31e4c0c4/results.json) |
+| Console      | intel7960   | 2026-10-11 | 87 / 0 / 0                | 627.744  | 605.125    | [report](../../.crowdb-runtime/artifacts/container-e2e/run-29a68eb2454c4fe5baf55c3d6cd8b610/results.json) |
 | Deployment   | intel7960   | 2026-10-11 | 33 / 0 / 0                | 294.359  | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-5f0be57000ed4481968a78dad965273d/results.json) |
 
 ## Environments
@@ -57,6 +57,10 @@ are excluded. Console uses one effective case slot at 0.25 CPU/server with a
   Earlier domain rows retain their own image identity in the linked reports.
   Optimized binaries retain debug info; mounted data/log/crash paths and actual
   host core collector are recorded per run. Receipt: `target/crowdb.oci.tar.json`.
+- **Linux host profile**: explicit host-network admission/recovery passes 1/1
+  in 6.740 seconds on intel7960, 2 CPU / 1024 MiB node quota
+  plus the host client reservation; [report](../../.crowdb-runtime/artifacts/container-e2e/run-9869315124ca45cb9ba3e3b3b245be90/results.json).
+  This special profile is separate from the bridge Deployment measurement.
 - **macOS**: historical native task measurements below. Container migration
   acceptance has not been measured; Linux VM routing is not assumed.
 - **amd5950**: no recorded measurements.
