@@ -9,7 +9,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 
 ## Resume context
 
-- Branch `task-deploy`; latest accepted Web KV migration is `1dac8917`. R230 is unfinished. Do not delete the
+- Branch `task-deploy`; accepted Web management/bootstrap migration is `217965c9`. R230 is unfinished. Do not delete the
   requirement/backlog entry until every remaining owner and required gate passes.
 - Working tree contains uncommitted Console browser migration drafts. Shared-image CI is committed. S3 node-fault migration and local-state component proofs are accepted.
   Preserve these drafts. `e2e-test/clients/console-ui/node_modules/` is local
@@ -57,19 +57,18 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   and fixture tests are unaccepted drafts. Host browser consumes owned container
   endpoints; signaling validates service PID and run ownership. Preserve UI
   assertions and remove native runners only after matching acceptance. Current
-  root Console operation inventory is 91 cases; the two draft browser cases are additional.
+  root Console operation inventory is 92 cases; the two draft browser cases are additional.
   Also migrate the server-owning `app/crowdb-web/tests/native_cluster_provisioning_test.rs`
   and its `nativeDiagnostics.config.ts` browser callbacks; they are outside the
   default realBackend selection and remain in `test-console.sh`. Audit
   `71-s3-native.spec.ts` / `nativeS3.config.ts` and `72-managed-native.spec.ts` /
   `managedNative.config.ts` separately; no accepted root replacement is claimed.
-- [ ] **Remaining Web route server owners**: final direct-launch audit still
-  finds three native KV launcher files: `mgmt_routes_test.rs`, `replica_routes_test.rs`,
+- [~] **Remaining Web route server owners**: final direct-launch audit still
+  finds two native KV launcher files: `replica_routes_test.rs`,
   and `replica_leader_removal_test.rs` under
   `app/crowdb-web/tests/`. Map each real-server case before deleting helpers;
   keep malformed-input, unavailable-upstream and isolated router UT portions.
-  Management needs
-  legacy versus sealed bootstrap persistence, bidirectional
+  Remaining coverage needs bidirectional
   replica wiring, leader removal/re-election and unreachable-leader membership.
   These are unfinished owners, independent of the two managed browser
   drafts. Do not count the previous 87 passing root operations as proof of their coverage.
@@ -107,7 +106,14 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   initial Group-0 IDs, missing-topology 422, completed/replayed data-group creation,
   absent invalid hardware bindings and stable replica ID pass
   (`/tmp/crowdb-root-web-bootstrap`). The old ops file/launcher is removed.
-  Management bootstrap variants remain native owners to migrate.
+  Management bootstrap owners are now retired: the sealed-input variant maps to
+  `console::web_sealed_bootstrap::bare_metal_bootstrap_consumes_sealed_topology_without_local_topology`
+  (two release containers, HTTP 201, Group-0 identity, intent/topology removal,
+  `/tmp/crowdb-root-web-sealed-bootstrap`, `run-6d91726b6917420580a4988f6701506e`).
+  The in-memory variant splits HTTP initialization into the accepted shared Web
+  bootstrap and no-file-publication into `standalone_startup_test.rs` component UT.
+  The existing replay/binding flow passes again (`/tmp/crowdb-root-web-bootstrap-split`).
+  `mgmt_routes_test.rs` retains only cached-topology authority rejection UT.
 - [ ] **Native Console assertion mapping**: classify all three original cases
   before removal: `node_diskio_discovers_disk_groups_created_after_deployment`,
   `one_rack_three_nodes_provision_all_services_without_metadata_repairs`, and
@@ -152,7 +158,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   Public exports now retain machine-readable measurements and redacted logs,
   excluding mounted data/configuration and host client build trees. YAML and
   28-package task reachability pass; actual remote CI has not run.
-- [~] **Final regression and measurements**: all complete registered domain and
+- [ ] **Final regression and measurements**: all complete registered domain and
   special-profile runners on the coalescer image have finished. KV 50, Diskdb 5,
   Diskio 8, Chunkdb 11, Chunk-client 40, Chunk-stream 4, Chunk-KV 2, Dataset 2,
   Deployment 33, Console operations 87, and Iceberg 32 pass. Linux host, SSH

@@ -28,6 +28,7 @@ from console_access_fixture import AccessDeploymentCluster
 from console_lifetime_fixture import DisposableWebCluster
 from console_recovery_fixture import RecoveringWebCluster
 from console_web_fixture import ConsoleWebCluster
+from console_bootstrap_fixture import BootstrapWebCluster
 from console_standalone_fixture import StandaloneWebCluster
 from console_registry_fixture import RegistryWebCluster
 from console_typed_fixture import TypedWebCluster
@@ -336,6 +337,7 @@ ICEBERG_CASES = (
     Case("iceberg.namespace", "access_iceberg::namespace::namespace_functional_crud_survives_native_storage_and_listener_restart"),
 )
 CONSOLE_OPERATION_CASES = (
+    Case("console.web.bootstrap", "console::web_sealed_bootstrap::bare_metal_bootstrap_consumes_sealed_topology_without_local_topology"),
     Case("console.web.standalone", "console::web_bootstrap::bootstrap_replays_data_group_without_changing_replica_or_publishing_invalid_bindings"),
     Case("console.web.standalone", "console::web_management::store_and_group_management_cycle_preserves_identity"),
     Case("console.web.standalone", "console::web_kv::put_get_delete_and_binary_values_through_web_routes"),
@@ -454,6 +456,8 @@ def select_cases(layer="all", scope="all", case_name=None):
 
 
 def case_nodes(case):
+    if case.scope == "console.web.bootstrap":
+        return 2
     if case.scope == "console.web.disposable":
         return 1
     if case.scope == "console.web.recovery":
@@ -509,6 +513,8 @@ def case_resources(case, node_cpus):
 
 
 def allocate_cluster(case, image, artifacts, bundle, data_root):
+    if case.scope == "console.web.bootstrap":
+        return BootstrapWebCluster(image, artifacts, data_root=data_root)
     if case.scope == "console.web.disposable":
         return DisposableWebCluster(image, artifacts, data_root=data_root)
     if case.scope == "console.web.recovery":
