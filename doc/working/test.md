@@ -21,23 +21,26 @@ commands and fixture requirements belong in the [E2E README](../../e2e-test/READ
 
 ## Container domain measurements
 
-Final complete-domain runs are pending. Individually verified migration batches
-are recorded in the execution plan and their artifacts.
+Rows measure current complete registered domain tasks; remaining migration
+coverage is tracked below. Intel7960 runs use concurrency 2; wall time includes
+startup, clients and teardown, excluding the shared image and host client build.
+KV includes the KV/KV and KV/Web isolation pairs. Other domains remain
+unmeasured as complete tasks.
 
-| Domain       | Environment | Date | Passed / failed / skipped | Wall s | Previous s | Report |
-| ------------ | ----------- | ---- | ------------------------- | ------ | ---------- | ------ |
-| KV           | intel7960   | —    | —                         | —      | —          | —      |
-| Diskdb       | intel7960   | —    | —                         | —      | —          | —      |
-| Diskio       | intel7960   | —    | —                         | —      | —          | —      |
-| Chunkdb      | intel7960   | —    | —                         | —      | —          | —      |
-| Chunk client | intel7960   | —    | —                         | —      | —          | —      |
-| Chunk stream | intel7960   | —    | —                         | —      | —          | —      |
-| Chunk-KV     | intel7960   | —    | —                         | —      | —          | —      |
-| S3           | intel7960   | —    | —                         | —      | —          | —      |
-| Iceberg      | intel7960   | —    | —                         | —      | —          | —      |
-| Dataset      | intel7960   | —    | —                         | —      | —          | —      |
-| Console      | intel7960   | —    | —                         | —      | —          | —      |
-| Deployment   | intel7960   | —    | —                         | —      | —          | —      |
+| Domain       | Environment | Date       | Passed / failed / skipped | Wall s  | Previous s | Report                                                                                                    |
+| ------------ | ----------- | ---------- | ------------------------- | ------- | ---------- | --------------------------------------------------------------------------------------------------------- |
+| KV           | intel7960   | 2026-10-11 | 50 / 0 / 0                | 167.938 | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-a96dd4c4985945a9912bcc72a51b6c80/results.json) |
+| Diskdb       | intel7960   | 2026-10-11 | 5 / 0 / 0                 | 14.198  | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-cfc58fa353574c6898cfe40463c7a814/results.json) |
+| Diskio       | intel7960   | 2026-10-11 | 8 / 0 / 0                 | 21.449  | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-517a0c2c29c04e0ca5ee8feb558e7394/results.json) |
+| Chunkdb      | intel7960   | —          | —                         | —       | —          | —                                                                                                         |
+| Chunk client | intel7960   | —          | —                         | —       | —          | —                                                                                                         |
+| Chunk stream | intel7960   | —          | —                         | —       | —          | —                                                                                                         |
+| Chunk-KV     | intel7960   | —          | —                         | —       | —          | —                                                                                                         |
+| S3           | intel7960   | —          | —                         | —       | —          | —                                                                                                         |
+| Iceberg      | intel7960   | —          | —                         | —       | —          | —                                                                                                         |
+| Dataset      | intel7960   | —          | —                         | —       | —          | —                                                                                                         |
+| Console      | intel7960   | —          | —                         | —       | —          | —                                                                                                         |
+| Deployment   | intel7960   | —          | —                         | —       | —          | —                                                                                                         |
 
 ## Environments
 

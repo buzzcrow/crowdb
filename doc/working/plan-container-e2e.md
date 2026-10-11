@@ -1423,3 +1423,16 @@ Only the exited-storage timing migration awaits a human design choice; S3 and su
   with Production. Next fixture must use three actual KV node containers plus
   the writable Web deployment node; keep every original PID/delete/workdir and
   seed assertion. No release-only test switch or deadline extension is accepted.
+
+## Public Web KV lifecycle ownership
+
+- Consolidated `lifecycle_routes_test::{deploy_then_stop_local_server,
+  deploy_then_restart_local_server}` into one formal release owner
+  `console::web_kv_lifecycle::deploy_restart_and_stop_retains_fixed_ports_and_workspace`.
+  Retains node ID/PID, staged binary/log/workspace, node/server GET, duplicate
+  deployment 409, changed restart PID, exact fixed management endpoint, updated
+  declaration PID and cleared stop PID. Production ports are 7000/7001.
+- Original focused baseline: 2 passed, 1.62 seconds. Accepted
+  `run-1d8e098f263d44229b37b4648b7a24fe`: 1 passing host client, 0.27 seconds.
+  Only these two source owners are retired; multiple-workspace and reset flows
+  remain until their distinct assertions pass under their canonical owners.

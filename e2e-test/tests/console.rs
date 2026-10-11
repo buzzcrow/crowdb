@@ -32,6 +32,7 @@ mod server_management;
 mod web_authority;
 mod web_catalog;
 mod web_isolation;
+mod web_kv_lifecycle;
 mod web_recovery;
 mod web_registry;
 mod web_slots;
