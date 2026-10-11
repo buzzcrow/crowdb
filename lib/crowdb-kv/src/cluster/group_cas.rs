@@ -119,6 +119,12 @@ impl PxGroup {
             return ProposeResult::OutcomeUnknown;
         }
 
+        // A preceding acknowledged write can be chosen before its async
+        // engine apply completes. Fence that frontier before evaluating the
+        // revision, including chosen entries beyond a temporary slot gap.
+        self.local_replica
+            .await_apply_fence(self.local_replica.last_chosen_slot())
+            .await;
         let observed = self
             .local_replica
             .learner

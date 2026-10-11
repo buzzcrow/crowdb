@@ -96,3 +96,56 @@ async fn same_expected_revision_allows_exactly_one_cas() {
         1
     );
 }
+
+#[tokio::test]
+async fn create_if_absent_waits_for_acknowledged_async_apply() {
+    let mut group = PxGroup::new(1, PxLocalReplica::new(1, PxLocalReplicaRole::Leader));
+    group.set_async_engine_apply(true);
+    let group = Arc::new(group);
+    group.set_self_weak();
+    let apply_gate = Arc::new(tokio::sync::Notify::new());
+    group
+        .local_replica()
+        .learner
+        .set_apply_gate_for_tests(Arc::clone(&apply_gate));
+    let key = Bytes::from_static(b"async-cas-key");
+    assert!(matches!(
+        group
+            .propose(encode_put(&key, b"winner"), Some(91), Some(1))
+            .await,
+        ProposeResult::Chosen { slot: 1 }
+    ));
+    assert_eq!(group.local_replica().contiguous_applied(), 0);
+    let contender = Arc::clone(&group);
+    let mut pending = tokio::spawn(async move {
+        contender
+            .propose_cas(encode_put(&key, b"loser"), key, 0, 92, 1)
+            .await
+    });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(20), &mut pending)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        group.local_replica().contiguous_chosen(),
+        1,
+        "CAS must not choose a replacement while its acknowledged predecessor is unapplied"
+    );
+    apply_gate.notify_one();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), pending)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(result, ProposeResult::CasFailed { current_revision: 1 }),
+        "{result:?}"
+    );
+    let value = group
+        .local_replica()
+        .learner
+        .engine_get_bytes(b"async-cas-key")
+        .await
+        .unwrap();
+    assert_eq!(value.1.as_ref(), b"winner");
+}
