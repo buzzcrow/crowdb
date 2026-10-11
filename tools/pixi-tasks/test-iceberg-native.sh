@@ -13,6 +13,6 @@ pixi run -e default -- cargo test --release -p crowdb-access-server \
     --test iceberg_commit_recovery_test --test iceberg_file_recovery_test -- --test-threads=1
 
 pixi run -e default -- python e2e-test/run.py --layer iceberg --scope iceberg.files \
-    --image "${CROWDB_E2E_IMAGE:-crowdb-node:dev}" --concurrency 1 --cpus 8 --memory-mib 8192
+    --image "${CROWDB_E2E_IMAGE:-crowdb-node:dev}" --concurrency 1 --cpus "${CROWDB_E2E_CPUS:-8}" --memory-mib "${CROWDB_E2E_MEMORY_MIB:-8192}"
 pixi run -e default -- python e2e-test/run.py --layer iceberg --scope iceberg.gc \
-    --image "${CROWDB_E2E_IMAGE:-crowdb-node:dev}" --concurrency 1 --cpus 8 --memory-mib 8192
+    --image "${CROWDB_E2E_IMAGE:-crowdb-node:dev}" --concurrency 1 --cpus "${CROWDB_E2E_CPUS:-8}" --memory-mib "${CROWDB_E2E_MEMORY_MIB:-8192}"

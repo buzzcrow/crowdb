@@ -4,4 +4,4 @@
 set -euo pipefail
 cd "${PIXI_PROJECT_ROOT:?}"
 pixi run -e default -- python e2e-test/run.py --layer iceberg --scope iceberg.sdk.rust \
-    --cpus 16 --memory-mib 16384
+    --cpus "${CROWDB_E2E_CPUS:-16}" --memory-mib "${CROWDB_E2E_MEMORY_MIB:-16384}"
