@@ -192,6 +192,14 @@ fields. CI consumes the once-built OCI artifact in independent KV jobs in both
 regular CI, preview and release workflows. Successful KV digest validation is required by
 publication; workflow dispatch/publication remain separate operator actions.
 
+CI exports reports and redacted text diagnostics with
+`pixi run python e2e-test/publish.py --source .crowdb-runtime/artifacts/container-e2e --output target/container-e2e-public`.
+The output must be a fresh directory outside the original runs. Mounted node
+data, generated server configuration, client build trees and private credentials
+remain in the original host directories; they are excluded from upload. JSON
+measurements retain their original status/count/timing values. Local raw logs
+and crash data remain available for investigation.
+
 ## First-batch ownership inventory
 
 - Moved: the three-voter CRUD/batch/delete scenario from kv-server's

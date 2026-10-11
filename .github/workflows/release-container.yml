@@ -190,11 +190,14 @@ jobs:
     - name: Record KV verified digest
       id: artifact
       run: pixi run python container/oci-image/ci-receipt.py target/crowdb.oci.tar
+    - name: Export redacted container diagnostics
+      if: always()
+      run: pixi run python e2e-test/publish.py --source .crowdb-runtime/artifacts/container-e2e --output target/container-e2e-public
     - uses: actions/upload-artifact@v4
       if: always()
       with:
         name: kv-container-e2e-diagnostics
-        path: .crowdb-runtime/artifacts/container-e2e
+        path: target/container-e2e-public/
         if-no-files-found: error
 
   publish:
