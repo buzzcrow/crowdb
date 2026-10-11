@@ -20,6 +20,7 @@ SERVER_PATHS = (
     ":(exclude)container/oci-image/README.md",
     # Host SDK client delegates are not read by staging or the OCI builder.
     ":(exclude)tools/pixi-tasks/test-storage.sh",
+    ":(exclude)tools/pixi-tasks/test-core.sh",
     ":(exclude)tools/pixi-tasks/test-access.sh",
     ":(exclude)tools/pixi-tasks/test-s3-e2e.sh",
     ":(exclude)tools/pixi-tasks/test-s3-client.sh",
@@ -47,6 +48,7 @@ SERVER_PATHS = (
     # runtime/build dependency changes its owning manifest and rejects reuse.
     ":(exclude)lib/crowdb-test-harness/Cargo.toml",
     ":(exclude)lib/crowdb-test-harness/src/lib.rs",
+    ":(exclude)lib/crowdb-test-harness/src/test_dirs.rs",
     ":(exclude)lib/crowdb-test-harness/src/cluster.rs",
     ":(exclude)lib/crowdb-test-harness/src/hardware.rs",
     ":(exclude)lib/crowdb-test-harness/src/logging.rs",

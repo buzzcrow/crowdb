@@ -11,7 +11,7 @@ COMPONENT_PACKAGES = {
     "test-cpp": {"crowdb-tree-ffi", "crowdb-rpc-ffi"},
     "test-core": {
         "crowdb-common", "crowdb-test-harness", "crowdb-protocol",
-        "crowdb-kv", "crowdb-kv-client", "e2e-test",
+        "crowdb-kv", "crowdb-kv-client",
     },
     "test-storage": {
         "crowdb-chunkdb-client", "crowdb-chunk-kv", "crowdb-chunk-kv-client",
@@ -26,7 +26,9 @@ COMPONENT_PACKAGES = {
     "test-console": {"crowdb-console-shared", "crowdb-cli", "crowdb-web"},
 }
 
-SUPPORT_PACKAGES = {}
+SUPPORT_PACKAGES = {
+    "e2e-test": "Host acceptance client, built and executed by test-container-e2e",
+}
 
 
 def workspace_packages() -> set[str]:

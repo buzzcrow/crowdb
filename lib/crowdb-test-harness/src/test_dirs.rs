@@ -13,7 +13,6 @@
 use std::path::{Path, PathBuf};
 
 use crowdb_protocol::port::namespace::{RuntimeNamespace, RuntimeNamespaceError};
-use crowdb_protocol::ServicePort;
 
 /// Find the workspace root by walking up from `CARGO_MANIFEST_DIR` until
 /// a `pixi.toml` marker file is found. Falls back to `CARGO_MANIFEST_DIR`
@@ -125,20 +124,6 @@ impl TestRuntime {
     /// Return a stable root for one logical service identity.
     pub fn service_dir(&self, service: &str, identity: &str) -> Result<PathBuf, RuntimeNamespaceError> {
         self.namespace.service_dir(service, identity)
-    }
-
-    /// Return one stable port for a logical listener in this environment.
-    pub fn assign_port(&mut self, service: ServicePort, instance: u16) -> Result<u16, RuntimeNamespaceError> {
-        self.namespace.assign_port(service, instance)
-    }
-
-    /// Return one stable port for an arbitrary logical service identity.
-    pub fn assign_named_port(
-        &mut self,
-        service: ServicePort,
-        identity: &str,
-    ) -> Result<u16, RuntimeNamespaceError> {
-        self.namespace.assign_named_port(service, identity)
     }
 
     /// Record a child process for targeted runtime cleanup.
