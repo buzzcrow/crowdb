@@ -30,11 +30,14 @@ SERVER_PATHS = (
     ":(exclude)tools/pixi-tasks/test-rust-iceberg-e2e.sh",
     ":(exclude)tools/pixi-tasks/test-java-iceberg-fileio-e2e.sh",
     ":(exclude)tools/pixi-tasks/test-java-iceberg-e2e.sh",
+    ":(exclude)tools/pixi-tasks/test-iceberg-sdk-component.sh",
     ":(exclude)tools/pixi-tasks/test-iceberg-rck.sh",
     # The retired host layout inspector was never part of release staging.
     ":(exclude)lib/crowdb-chunkdb-client/examples/single_node_chunk_layout.rs",
     # Version verification reads host SDK manifests and is never staged.
     ":(exclude)tools/ci-checks/check-version.py",
+    # CI task reachability inspects host test delegates, never release inputs.
+    ":(exclude)tools/ci-checks/check-ci-test-tasks.py",
     # This host-only RPC benchmark is not a dependency or staged server binary.
     ":(exclude)app/crowdb-cli/src/commands/bench/rpc.rs",
 )
@@ -112,6 +115,8 @@ def verify_server_sources(root, revision):
             # This component gate is never called by release staging/building.
             for manifest in (before, after):
                 manifest.get("tasks", {}).pop("test-storage", None)
+                manifest.get("feature", {}).get("iceberg-e2e", {}).get("tasks", {}).pop(
+                    "test-iceberg-sdk-component", None)
             if before == after:
                 continue
         if path == "Cargo.lock" and current.is_file():

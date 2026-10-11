@@ -121,6 +121,7 @@ test-rust-iceberg-e2e = "bash tools/pixi-tasks/test-rust-iceberg-e2e.sh"
 test-iceberg-rck = "bash tools/pixi-tasks/test-iceberg-rck.sh"
 test-iceberg-e2e = "bash tools/pixi-tasks/test-iceberg-e2e.sh"
 test-iceberg-sdk = "bash tools/pixi-tasks/test-iceberg-sdk.sh"
+test-iceberg-sdk-component = "bash tools/pixi-tasks/test-iceberg-sdk-component.sh"
 test-java-iceberg-fileio-e2e = { cmd = "bash tools/pixi-tasks/test-java-iceberg-fileio-e2e.sh" }
 test-pyiceberg-e2e = { cmd = "bash tools/pixi-tasks/test-pyiceberg-e2e.sh" }
 

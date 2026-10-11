@@ -87,12 +87,14 @@ def main() -> int:
         ("default", "test-container-e2e-fixture"),
         ("default", "test-console-ui"),
         ("s3-e2e", "test-boto3-e2e"),
-        ("iceberg-e2e", "test-pyiceberg-e2e"),
-        ("iceberg-e2e", "test-iceberg-native"),
-        ("iceberg-e2e", "test-java-iceberg-e2e"),
-        ("iceberg-e2e", "test-java-iceberg-fileio-e2e"),
-        ("iceberg-e2e", "test-iceberg-rck"),
+        ("iceberg-e2e", "test-iceberg-sdk-component"),
     })
+    # Container selectors own the release domains; legacy SDK/native delegates
+    # are selectable aliases and must not execute again in the required jobs.
+    workflow = (workflows / "ci.yml").read_text()
+    if "test-container-e2e --layer iceberg " not in workflow:
+        print("Regular CI must run the complete Iceberg container domain, including Rust SDK")
+        return 1
     unreachable = sorted(required - reachable)
     if unreachable:
         print("Test tasks not reachable from regular CI:")

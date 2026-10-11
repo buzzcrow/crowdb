@@ -4,4 +4,4 @@
 set -euo pipefail
 cd "${PIXI_PROJECT_ROOT:?}"
 pixi run -e default -- python e2e-test/run.py --layer iceberg --scope iceberg.sdk.java \
-    --image "${CROWDB_E2E_IMAGE:-crowdb-node:dev}" --cpus "${CROWDB_E2E_CPUS:-16}" --memory-mib "${CROWDB_E2E_MEMORY_MIB:-16384}"
+    --image "${CROWDB_E2E_IMAGE:-crowdb-node:dev}" --node-cpus "${CROWDB_E2E_NODE_CPUS:-0.5}" --cpus "${CROWDB_E2E_CPUS:-16}" --memory-mib "${CROWDB_E2E_MEMORY_MIB:-16384}"

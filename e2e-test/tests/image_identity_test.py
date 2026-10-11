@@ -70,6 +70,20 @@ class ImageIdentityTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "pixi.toml"):
                 verify_server_sources(self.root, revision)
 
+    def test_sdk_component_task_addition_preserves_environment_and_release_guards(self):
+        manifest = self.root / "pixi.toml"
+        original = ('[feature.iceberg-e2e.dependencies]\npython = "3.12.*"\n'
+                    '[feature.iceberg-e2e.tasks]\ntest-iceberg-e2e = "existing container gate"\n')
+        manifest.write_text(original)
+        self.commit()
+        revision = self.git("rev-parse", "HEAD")
+        added = original + 'test-iceberg-sdk-component = "host SDK proof"\n'
+        manifest.write_text(added)
+        self.assertTrue(verify_server_sources(self.root, revision)["server_sources_match"])
+        manifest.write_text(added.replace('3.12.*', '3.13.*'))
+        with self.assertRaisesRegex(ValueError, "pixi.toml"):
+            verify_server_sources(self.root, revision)
+
     def test_dirty_server_edit_cannot_use_stale_image(self):
         (self.root / "app/server/src/main.rs").write_text("changed server\n")
         with self.assertRaisesRegex(ValueError, "server sources differ"):

@@ -14,8 +14,7 @@ env:
   RUST_BACKTRACE: 1
   RUST_LIB_BACKTRACE: 1
 
-# 10 parallel jobs. See doc/working/test.md § "Current CI Test Design"
-# for the component assignment rule and how to add new test tasks.
+# Component gates and independent container domains share one release image.
 jobs:
   Lint:
     runs-on: ubuntu-latest
@@ -77,8 +76,8 @@ jobs:
         df -h
         echo "=== CROWDB runtime files ==="
         find .crowdb-runtime -maxdepth 4 -type f -print 2>/dev/null || true
-    - name: Upload test logs on failure
-      if: failure()
+    - name: Upload S3 measurements and diagnostics
+      if: always()
       uses: actions/upload-artifact@v4
       with:
         name: runtime-cpp-${{ github.run_attempt }}
@@ -130,8 +129,8 @@ jobs:
         df -h
         echo "=== CROWDB runtime files ==="
         find .crowdb-runtime -maxdepth 4 -type f -print 2>/dev/null || true
-    - name: Upload test logs on failure
-      if: failure()
+    - name: Upload S3 measurements and diagnostics
+      if: always()
       uses: actions/upload-artifact@v4
       with:
         name: runtime-unit-${{ github.run_attempt }}
@@ -185,8 +184,8 @@ jobs:
         df -h
         echo "=== CROWDB runtime files ==="
         find .crowdb-runtime -maxdepth 4 -type f -print 2>/dev/null || true
-    - name: Upload test logs on failure
-      if: failure()
+    - name: Upload S3 measurements and diagnostics
+      if: always()
       uses: actions/upload-artifact@v4
       with:
         name: runtime-storage-${{ github.run_attempt }}
@@ -240,8 +239,8 @@ jobs:
         df -h
         echo "=== CROWDB runtime files ==="
         find .crowdb-runtime -maxdepth 4 -type f -print 2>/dev/null || true
-    - name: Upload test logs on failure
-      if: failure()
+    - name: Upload S3 measurements and diagnostics
+      if: always()
       uses: actions/upload-artifact@v4
       with:
         name: runtime-access-${{ github.run_attempt }}
@@ -264,10 +263,17 @@ jobs:
       run: pixi run clean-env
 
   S3E2E:
-    runs-on: ubuntu-latest
+    env:
+      CROWDB_E2E_NODE_CPUS: "0.2"
+      CROWDB_E2E_CPUS: "4"
+      CROWDB_E2E_MEMORY_MIB: "8192"
+    needs: ContainerImage
+    timeout-minutes: 90
+    runs-on: ubuntu-24.04
     steps:
     - uses: actions/checkout@v4
       with:
+        ref: ${{ needs.ContainerImage.outputs.revision }}
         submodules: true
     - name: Free disk space
       run: |
@@ -283,6 +289,12 @@ jobs:
       uses: Swatinem/rust-cache@v2
     - name: Clean env
       run: pixi run clean-env
+    - uses: actions/download-artifact@v4
+      with:
+        name: verified-oci-image
+        path: target
+    - name: Import shared release image
+      run: pixi run image-import "$PWD/target/crowdb.oci.tar" --image crowdb-node:dev
     - name: Run real-storage boto3 S3 E2E
       run: pixi run -e s3-e2e test-boto3-e2e
     - name: Capture runner state on failure
@@ -296,8 +308,8 @@ jobs:
         df -h
         echo "=== CROWDB runtime files ==="
         find .crowdb-runtime -maxdepth 4 -type f -print 2>/dev/null || true
-    - name: Upload test logs on failure
-      if: failure()
+    - name: Upload S3 measurements and diagnostics
+      if: always()
       uses: actions/upload-artifact@v4
       with:
         name: runtime-s3-e2e-${{ github.run_attempt }}
@@ -320,10 +332,17 @@ jobs:
       run: pixi run clean-env
 
   IcebergE2E:
+    env:
+      CROWDB_E2E_NODE_CPUS: "0.25"
+      CROWDB_E2E_CPUS: "4"
+      CROWDB_E2E_MEMORY_MIB: "12288"
+    needs: ContainerImage
+    timeout-minutes: 90
     runs-on: ubuntu-24.04
     steps:
     - uses: actions/checkout@v4
       with:
+        ref: ${{ needs.ContainerImage.outputs.revision }}
         submodules: true
     - name: Free disk space
       run: |
@@ -334,10 +353,16 @@ jobs:
       with:
         pixi-version: latest
     - uses: Swatinem/rust-cache@v2
+    - uses: actions/download-artifact@v4
+      with:
+        name: verified-oci-image
+        path: target
+    - name: Import shared release image
+      run: pixi run image-import "$PWD/target/crowdb.oci.tar" --image crowdb-node:dev
     - name: Run Iceberg acceptance
-      run: pixi run -e iceberg-e2e test-iceberg-e2e
-    - name: Upload Iceberg failure logs
-      if: failure()
+      run: pixi run test-container-e2e --layer iceberg --concurrency 2 --node-cpus 0.25 --cpus 4 --memory-mib 12288
+    - name: Upload Iceberg measurements and diagnostics
+      if: always()
       uses: actions/upload-artifact@v4
       with:
         name: runtime-iceberge2e-${{ github.run_attempt }}
@@ -362,10 +387,12 @@ jobs:
       run: pixi run clean-env
 
   IcebergSDK:
+    timeout-minutes: 90
     runs-on: ubuntu-24.04
     steps:
     - uses: actions/checkout@v4
       with:
+        ref: ${{ github.sha }}
         submodules: true
     - name: Free disk space
       run: |
@@ -376,10 +403,10 @@ jobs:
       with:
         pixi-version: latest
     - uses: Swatinem/rust-cache@v2
-    - name: Run Iceberg acceptance
-      run: pixi run -e iceberg-e2e test-iceberg-sdk
-    - name: Upload Iceberg failure logs
-      if: failure()
+    - name: Run Iceberg component SDK proofs
+      run: pixi run -e iceberg-e2e test-iceberg-sdk-component
+    - name: Upload Iceberg measurements and diagnostics
+      if: always()
       uses: actions/upload-artifact@v4
       with:
         name: runtime-icebergsdk-${{ github.run_attempt }}
@@ -438,8 +465,8 @@ jobs:
         df -h
         echo "=== CROWDB runtime files ==="
         find .crowdb-runtime -maxdepth 4 -type f -print 2>/dev/null || true
-    - name: Upload test logs on failure
-      if: failure()
+    - name: Upload S3 measurements and diagnostics
+      if: always()
       uses: actions/upload-artifact@v4
       with:
         name: runtime-console-${{ github.run_attempt }}
@@ -500,8 +527,8 @@ jobs:
         df -h
         echo "=== CROWDB runtime files ==="
         find .crowdb-runtime -maxdepth 4 -type f -print 2>/dev/null || true
-    - name: Upload test logs on failure
-      if: failure()
+    - name: Upload S3 measurements and diagnostics
+      if: always()
       uses: actions/upload-artifact@v4
       with:
         name: runtime-ui-${{ github.run_attempt }}
@@ -573,7 +600,7 @@ jobs:
         pixi run sudo apt-get clean
         pixi run df -h /
     - name: Stage runtime without a container daemon
-      run: pixi run stage-single-node-container
+      run: pixi run env CROWDB_KEEP_DEBUG_INFO=1 bash container/oci-image/stage.sh
     - name: Install locked standalone builder
       run: pixi install --locked --manifest-path container/oci-image/pixi.toml
     - name: Build OCI without Docker
@@ -632,3 +659,78 @@ jobs:
         name: kv-container-e2e-diagnostics
         path: .crowdb-runtime/artifacts/container-e2e
         if-no-files-found: error
+
+  ContainerConsole:
+    needs: ContainerImage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ needs.ContainerImage.outputs.revision }}
+        submodules: true
+    - uses: prefix-dev/setup-pixi@v0.8.1
+      with:
+        pixi-version: v0.77.0
+    - name: Install client compilation prerequisites
+      run: |
+        pixi run sudo apt-get update
+        pixi run sudo apt-get install -y protobuf-compiler
+    - uses: Swatinem/rust-cache@v2
+    - uses: actions/download-artifact@v4
+      with:
+        name: verified-oci-image
+        path: target
+    - name: Import formal release image
+      run: pixi run image-import target/crowdb.oci.tar --image crowdb-node:dev
+    - name: Run Console and CLI operation flows
+      run: pixi run test-container-e2e --scope console.operations --concurrency 2 --node-cpus 0.25 --cpus 4 --memory-mib 8192
+    - name: Upload measured flows and diagnostics
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: container-console-operations-${{ github.run_attempt }}
+        path: .crowdb-runtime/artifacts/container-e2e/
+        include-hidden-files: true
+        if-no-files-found: error
+        retention-days: 7
+
+  ContainerStorage:
+    needs: ContainerImage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        layer: [diskdb, diskio, chunkdb, chunk-stream, chunk-client, chunk-kv, dataset, deployment]
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ needs.ContainerImage.outputs.revision }}
+        submodules: true
+    - uses: prefix-dev/setup-pixi@v0.8.1
+      with:
+        pixi-version: v0.77.0
+    - uses: actions/download-artifact@v4
+      with:
+        name: verified-oci-image
+        path: target
+    - name: Install client compilation prerequisites
+      run: |
+        pixi run sudo apt-get update
+        pixi run sudo apt-get install -y protobuf-compiler
+    - name: Import shared release image
+      run: pixi run image-import "$PWD/target/crowdb.oci.tar" --image crowdb-node:dev
+    - name: Verify container domain
+      run: pixi run test-container-e2e --layer "${{ matrix.layer }}" --concurrency 2 --node-cpus 0.25 --cpus 4 --memory-mib 8192
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: container-${{ matrix.layer }}-${{ github.run_attempt }}
+        path: .crowdb-runtime/artifacts/container-e2e
+        include-hidden-files: true
+        if-no-files-found: error
+        retention-days: 7

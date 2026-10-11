@@ -8,4 +8,4 @@ pixi run -e iceberg-e2e test-pyiceberg-e2e
 pixi run -e iceberg-e2e test-iceberg-native
 
 pixi run -e default -- python e2e-test/run.py --layer iceberg --scope iceberg.benchmark \
-    --image "${CROWDB_E2E_IMAGE:-crowdb-node:dev}" --concurrency 1 --cpus "${CROWDB_E2E_CPUS:-8}" --memory-mib "${CROWDB_E2E_MEMORY_MIB:-8192}"
+    --image "${CROWDB_E2E_IMAGE:-crowdb-node:dev}" --concurrency 1 --node-cpus "${CROWDB_E2E_NODE_CPUS:-0.5}" --cpus "${CROWDB_E2E_CPUS:-8}" --memory-mib "${CROWDB_E2E_MEMORY_MIB:-8192}"
