@@ -21,6 +21,10 @@ class RetainedNetworkTest(unittest.TestCase):
         cpu, memory = case_resources(Case("s3.nodes", "joint", s3_node_fault=True), 0.2)
         self.assertAlmostEqual(cpu, 3.9)
         self.assertEqual(memory, 7872)
+        cpu, memory = case_resources(Case("console.web.wal", "unreachable",
+                                         stores=(0,) * 5, preserve_network=True), 0.25)
+        self.assertAlmostEqual(cpu, 2.25)
+        self.assertEqual(memory, 3664)
 
     def test_server_uses_retained_namespace_and_cleanup_removes_it_last(self):
         with tempfile.TemporaryDirectory() as directory:

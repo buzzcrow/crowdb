@@ -9,25 +9,22 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 
 ## Resume context
 
-- Branch `task-deploy`; accepted bootstrap migration is `aeab91d4`; membership fix is `8a8171f0`. R230 is unfinished. Do not delete the
+- Branch `task-deploy`; bootstrap migration `aeab91d4`, late DiskIO `1e23527b`, membership fix `cb159e7b`. R230 is unfinished. Do not delete the
   requirement/backlog entry until every remaining owner and required gate passes.
 - Working tree contains uncommitted Console browser migration drafts. Shared-image CI is committed. S3 node-fault migration and local-state component proofs are accepted.
   Preserve these drafts. `e2e-test/clients/console-ui/node_modules/` is local
   dependency state; never stage it.
-- Last accepted formal release image archive was built from
-  `b7b1247b172f43562c9ffccfd95afef109bc3dde`, including ordered S3 batch response
-  streaming, optimized binaries and retained debug information. OCI digest
-  `sha256:703141e93338f2d0969c32a4a2d4512a0964cf999b8f67e8bd72de352970d0c1`;
-  config `sha256:497764c9d5a6e068eaa0666ae15a6da1769d7d2f2304fcdaa31a7c6e84667db0`;
-  runtime `bb593260b39841eefa0c012c7bbdfd714ac64fe56fed9c56c4f2be99234f562b`.
-  Accepted backup: `target/crowdb.oci-b7b1247b.tar[.json]`, tag
-  `crowdb-node:b7b1247b`. A rebuild for the membership fix is in progress;
-  logs `/tmp/crowdb-voting-release-{stage,build,import}.log`. The original
-  thousand-key test passes all three phases (35.984/49.485/61.853 seconds),
-  complete wall 167.160 seconds: `/tmp/crowdb-delete-stream-exact`.
-  Full S3 passes 43/43 at CI quotas in 1545.602 seconds:
-  `/tmp/crowdb-delete-stream-final-s3-ci`, `run-6e60f23a5a18442ebda5d08fe5ec1842`,
-  0.2 CPU/node, 4 CPU / 8192 MiB, effective one case slot.
+- Current formal image is built/imported from
+  `cb159e7b64606f50dff8ee8ff28f0236331f890b`, including S3 streaming and
+  replica voting/epoch fixes. OCI `sha256:a54e48cdd00b58aff064679ee2a6cf9c42d2890312cc61e2cc868739a554275a`;
+  config `sha256:0d292af22a2e38e9178da93138c7d278dffb81d15a429f190ab4b0ae8817ac2c`;
+  runtime `945b18e7eac5b600ee8c5a80387b1c170a5da6742389125408a36861c1f65a91`.
+  Receipt: `target/crowdb.oci.tar.json`; optimized with retained debug information.
+  Logs: `/tmp/crowdb-voting-epoch-release-{stage,build,import}.log`.
+  Last full S3 43/43 (1545.602 seconds) and Console 89/89 (644.632 seconds)
+  used `b7b1247b`; backup `target/crowdb.oci-b7b1247b.tar[.json]` and tag
+  `crowdb-node:b7b1247b` remain. These results are baselines, not full acceptance
+  of the newer image/inventory. Compact domain reports are linked in `test.md`.
 - Containers run formal servers, host processes run clients. Fixed ports,
   inspected IPs, independent networks/data mounts, and three actual KV voters
   in three containers remain mandatory. Runtime service selection reuses one
@@ -75,6 +72,21 @@ and the named run artifacts.
   ordinary release deployment, without test-single-node mode. Evidence:
   `/tmp/crowdb-root-web-diskio-late`, `run-36431c401abc4dfe991287a950d14765`;
   old case/helper removed; the other two native provisioning cases remain.
+- `replica_add_remove_wires_peers_bidirectionally` → `console::web_replicas`:
+  two actual KV voters, bidirectional remotes, exact list/detail, missing 404,
+  leader delete 204, lone-voter re-election within ten seconds. Added authority
+  voting and persisted epoch consistency proof. Evidence:
+  `/tmp/crowdb-voting-epoch-web-replicas`, `run-5bd51543ace04ad78fa968985013772b`.
+- `remove_leader_from_five_node_group_elects_new_leader` →
+  `console::web_leader_removal`: five actual voters, delete 204, four remaining,
+  removed peer absent on all nodes, new physical leader within ten seconds.
+  Evidence: `/tmp/crowdb-voting-epoch-web-leader`, `run-36708ce7afd8422d8090c81f8591ee7a`.
+- `remove_unreachable_leader_retains_group0_membership` → same root module:
+  owned kill/death within five seconds, original 500/error text, retained Group-0
+  member and unknown role/state. Preserve network namespaces to retain endpoint
+  failure semantics; reserve all five helpers. Two independent parallel runs
+  pass: `/tmp/crowdb-voting-epoch-web-unreachable-retained-{a,b}`.
+  Both original replica files/launchers are removed.
 - `swagger_routes_are_removed` → component `swagger_routes_test.rs`: all three
   retired paths; no real server startup (`ff711b4c`).
 
@@ -95,31 +107,12 @@ and the named run artifacts.
   and fixture tests are unaccepted drafts. Host browser consumes owned container
   endpoints; signaling validates service PID and run ownership. Preserve UI
   assertions and remove native runners only after matching acceptance. Current
-  root Console operation inventory is 93 cases; the two draft browser cases are additional.
+  root Console operation inventory is 96 cases; the two draft browser cases are additional.
   Also migrate the server-owning `app/crowdb-web/tests/native_cluster_provisioning_test.rs`
   and its `nativeDiagnostics.config.ts` browser callbacks; they are outside the
   default realBackend selection and remain in `test-console.sh`. Audit
   `71-s3-native.spec.ts` / `nativeS3.config.ts` and `72-managed-native.spec.ts` /
   `managedNative.config.ts` separately; no accepted root replacement is claimed.
-- [~] **Replica route migration**: accept the three migrated HTTP flows in
-  `e2e-test/tests/console/web_replicas.rs` and `web_leader_removal.rs` using
-  `WalWebCluster` (two/five actual KV containers plus Web). Preserve bidirectional
-  wiring, missing replica 404, leader removal 204, ten-second re-election,
-  every surviving node's physical remotes, and unreachable leader 500/error
-  text with retained Group-0 membership and unknown role/state. Originals
-  `replica_routes_test.rs` and `replica_leader_removal_test.rs` remain until passed.
-  First root attempt exposed non-voting Group-0 metadata after physical promotion
-  (`/tmp/crowdb-root-web-replicas`, `run-03371a8cafbb47be8f7879372937edeb`).
-  Fix `8a8171f0` preserves learner catch-up and describes the final voter in the
-  Installing target; 17 affected component UT and all-target clippy pass.
-  The rebuilt `8a8171f0` image passes authoritative voting, but the next deletion
-  and third-member join expose physical epoch 3 versus authority epoch 2 (HTTP
-  409). Evidence: `/tmp/crowdb-voting-web-{replicas,leader,unreachable}`. The next
-  fix leaves learner preparation at the old epoch and promotes with the exact
-  successor header. Both affected component gates still pass. Rebuild/import,
-  verify authoritative voting and equal physical/authority epochs,
-  then remove originals. Files: `lib/crowdb-console-shared/src/ops/kv_logical.rs`,
-  `e2e-test/scenarios.py`, `e2e-test/tests/selection_test.py`, above test files.
 - [ ] **Native Console assertion mapping**: classify the two remaining original cases
   before removal: `one_rack_three_nodes_provision_all_services_without_metadata_repairs`, and
   `native_page_and_iceberg_inspection`. Retain Group-0 initialization hint budget;
@@ -162,7 +155,7 @@ and the named run artifacts.
   Public exports now retain machine-readable measurements and redacted logs,
   excluding mounted data/configuration and host client build trees. YAML and
   28-package task reachability pass; actual remote CI has not run.
-- [ ] **Final regression and measurements**: rerun affected complete domains
+- [~] **Final regression and measurements**: rerun affected complete domains
   after the remaining inventory and formal-image changes settle. Baselines are
   recorded by domain in `test.md`; per-case details remain in artifacts. The last
   complete Console run covered 89 cases, while accepted bootstrap migration adds

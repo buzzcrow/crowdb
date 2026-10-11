@@ -73,6 +73,7 @@ class Case:
     iceberg_gc_page_items: int | None = None
     iceberg_deferred_access: bool = False
     console_web: bool = False
+    preserve_network: bool = False
     client_timeout: int = 120
 
 
@@ -337,6 +338,9 @@ ICEBERG_CASES = (
     Case("iceberg.namespace", "access_iceberg::namespace::namespace_functional_crud_survives_native_storage_and_listener_restart"),
 )
 CONSOLE_OPERATION_CASES = (
+    Case("console.web.wal", "console::web_leader_removal::remove_leader_from_five_node_group_elects_new_leader", stores=(0, 0, 0, 0, 0)),
+    Case("console.web.wal", "console::web_leader_removal::remove_unreachable_leader_retains_group0_membership", stores=(0, 0, 0, 0, 0), preserve_network=True),
+    Case("console.web.wal", "console::web_replicas::replica_add_remove_wires_peers_bidirectionally", stores=(0, 0)),
     Case("console.web.standalone", "console::web_diskio_discovery::diskio_discovers_disk_groups_created_after_web_deployment"),
     Case("console.web.bootstrap", "console::web_sealed_bootstrap::bare_metal_bootstrap_consumes_sealed_topology_without_local_topology"),
     Case("console.web.standalone", "console::web_bootstrap::bootstrap_replays_data_group_without_changing_replica_or_publishing_invalid_bindings"),
@@ -509,7 +513,8 @@ def case_resources(case, node_cpus):
     if len(case.service_selection) > 2:
         return max(2, node_cpus) + 0.5, 2560
     nodes = case_nodes(case)
-    retained_networks = 12 if case.s3_node_fault else 6 if case.diskio_process_exit else 0
+    retained_networks = (len(case.stores) if case.preserve_network else
+                         12 if case.s3_node_fault else 6 if case.diskio_process_exit else 0)
     return nodes * node_cpus + 0.5 + retained_networks * 0.05, (nodes + 1) * 512 + retained_networks * 16
 
 
@@ -523,7 +528,8 @@ def allocate_cluster(case, image, artifacts, bundle, data_root):
     if case.scope == "console.web.access":
         return AccessDeploymentCluster(image, artifacts, bundle, data_root=data_root)
     if case.scope == "console.web.wal":
-        return WalWebCluster(image, artifacts, len(case.stores), data_root=data_root)
+        return WalWebCluster(image, artifacts, len(case.stores), data_root=data_root,
+                             preserve_network=case.preserve_network)
     if case.scope == "console.web.lifecycle":
         return TypedWebCluster(image, artifacts, data_root=data_root)
     if case.scope == "console.web.registry":

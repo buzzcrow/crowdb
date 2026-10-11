@@ -22,7 +22,8 @@ class WalWebCluster(Cluster):
             address = str(subnet.network_address + index + 2)
             args = list(arguments(self, index, address))
             args[args.index("--wal-backend") + 1] = "file"
-            self.addresses.append(start_node(self, index, data, tuple(args), address))
+            self.addresses.append(start_node(self, index, data, tuple(args), address,
+                                             preserve_network=self.preserve_network))
             self.origins.append(f"http://{address}:7000")
         Cluster.ready(self)
         index = self.node_count
