@@ -2,8 +2,10 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
+mod anonymous;
 mod bootstrap;
 mod clients;
+mod failures;
 mod hardware_bootstrap;
 mod kv_bootstrap;
 mod storage;

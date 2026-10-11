@@ -96,81 +96,6 @@ verify_listener_failure_propagation() {
     docker exec "$name" crowdb-monitor readiness
 }
 
-verify_child_recovery() {
-    local service=$1 signal=$2 expected_event=$3 old_pid old_generation new_pid new_generation state
-    state=$(docker exec "$name" cat /opt/crowdb/run/status/monitor.json)
-    old_pid=$(jq -er --arg service "$service" '.services[$service].pid' <<<"$state")
-    old_generation=$(jq -er --arg service "$service" '.services[$service].generation' <<<"$state")
-    docker exec "$name" kill -"$signal" "$old_pid"
-    for attempt in $(seq 1 90); do
-        if [[ $(docker inspect --format '{{.State.Status}}' "$name") != running ]]; then
-            echo "container exited while recovering $service" >&2
-            return 1
-        fi
-        state=$(docker exec "$name" cat /opt/crowdb/run/status/monitor.json)
-        new_pid=$(jq -er --arg service "$service" '.services[$service].pid // empty' <<<"$state") || true
-        new_generation=$(jq -er --arg service "$service" '.services[$service].generation' <<<"$state")
-        if [[ $(jq -r '.phase' <<<"$state") == ready && "$new_pid" != "$old_pid" && -n "$new_pid" ]] &&
-            (( new_generation > old_generation )); then
-            docker exec "$name" cat /opt/crowdb/data/log/monitor/monitor.log |
-                jq -se --arg service "$service" --arg kind "$expected_event" \
-                    'any(.[]; .service == $service and .kind == $kind)' >/dev/null
-            docker exec "$name" crowdb-monitor readiness
-            return 0
-        fi
-        sleep 1
-    done
-    echo "$service did not recover after $signal" >&2
-    return 1
-}
-
-verify_restart_exhaustion() {
-    local old_pid state exit_code
-    for attempt in $(seq 1 5); do
-        verify_child_recovery web KILL child_exited
-    done
-    state=$(docker exec "$name" cat /opt/crowdb/run/status/monitor.json)
-    old_pid=$(jq -er '.services.web.pid' <<<"$state")
-    docker exec "$name" kill -KILL "$old_pid"
-    for attempt in $(seq 1 40); do
-        if [[ $(docker inspect --format '{{.State.Status}}' "$name") == exited ]]; then
-            exit_code=$(docker inspect --format '{{.State.ExitCode}}' "$name")
-            [[ "$exit_code" != 0 ]]
-            docker logs "$name" 2>&1 | grep -F '"kind":"restart_exhausted"' >/dev/null
-            return 0
-        fi
-        sleep 1
-    done
-    echo 'container stayed running after restart budget exhaustion' >&2
-    return 1
-}
-
-verify_recovery_identity_rejection() {
-    local old_pid ready_before ready_after exit_code
-    ready_before=$(docker exec "$name" cat /opt/crowdb/data/log/monitor/monitor.log |
-        jq -s '[.[] | select(.kind == "ready")] | length')
-    old_pid=$(docker exec "$name" cat /opt/crowdb/run/status/monitor.json | jq -er '.services.web.pid')
-    docker exec --user root "$name" /bin/sh -c 'printf "invalid credentials\n" > /opt/crowdb/data/secrets/server.env'
-    docker exec "$name" kill -KILL "$old_pid"
-    for attempt in $(seq 1 40); do
-        if [[ $(docker inspect --format '{{.State.Status}}' "$name") == exited ]]; then
-            exit_code=$(docker inspect --format '{{.State.ExitCode}}' "$name")
-            [[ "$exit_code" != 0 ]]
-            ready_after=$(docker run --rm --network none --user root \
-                --mount "type=bind,source=$root,target=/data" \
-                --entrypoint /bin/sh "$image" -c \
-                'cat /data/log/monitor/monitor.log' |
-                jq -s '[.[] | select(.kind == "ready")] | length')
-            [[ "$ready_after" == "$ready_before" ]]
-            docker logs "$name" 2>&1 | grep -F 'server credentials are incomplete' >/dev/null
-            return 0
-        fi
-        sleep 1
-    done
-    echo 'container restored readiness with changed durable credentials' >&2
-    return 1
-}
-
 
 start_container
 echo "checking empty-volume boot"
@@ -195,21 +120,5 @@ start_container
 echo "checking persisted-volume restart"
 docker exec "$name" crowdb-monitor readiness
 docker exec "$name" cat /opt/crowdb/data/bootstrap/manifest.json | jq -e '.state == "ready"' >/dev/null
-echo "checking restart budget exhaustion"
-verify_restart_exhaustion
-python container/single-node-container/tests/logs.py "$root" "$name"
-docker rm "$name" >/dev/null
-start_container
-echo "checking recovery rejects changed durable identity"
-verify_recovery_identity_rejection
 docker rm -v "$name" >/dev/null
-start_container anonymous
-echo "checking default anonymous-volume boot"
-docker inspect "$name" | jq -e '.[0].Mounts | any(.Destination == "/opt/crowdb/data" and .Type == "volume")' >/dev/null
-docker exec "$name" crowdb-monitor readiness
-docker exec "$name" cat /opt/crowdb/data/bootstrap/manifest.json | jq -e '.state == "ready"' >/dev/null
-docker logs "$name" 2>&1 | grep -F 'For data you want to keep across container recreation' >/dev/null
-echo "checking monitor death exits the container"
-docker kill --signal=KILL "$name" >/dev/null
-[[ $(docker wait "$name") != 0 ]]
 echo "container E2E passed"

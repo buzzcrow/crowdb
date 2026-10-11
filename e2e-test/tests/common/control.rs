@@ -28,6 +28,10 @@ pub(crate) async fn recover_service(service: &str, signal: &str) -> Value {
     .await
 }
 
+pub(crate) async fn monitor_failure(action: &str) -> Value {
+    request_with_timeout(json!({"action": action, "node": 0}), Duration::from_secs(495)).await
+}
+
 async fn request_with_timeout(body: Value, timeout: Duration) -> Value {
     let directory = PathBuf::from(std::env::var("CROWDB_E2E_CONTROL").expect("owned lifecycle control"));
     let id = format!(

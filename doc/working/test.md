@@ -1144,3 +1144,13 @@ Source: `app/crowdb-kv-server/`. Tests: 9 files.
 | deployment.supervision | web_hang                                                                          |     23.385 |      28.491 | run-f1261241061e4e0faae2fea7ff06c2f2 |
 | deployment.validation  | invalid_manifest_is_rejected                                                      |      0.022 |       5.696 | run-18c32de4733a4cad9a1ec1929cb46a39 |
 | deployment.validation  | invalid_profile_is_rejected                                                       |      0.023 |       4.969 | run-18c32de4733a4cad9a1ec1929cb46a39 |
+
+### Terminal lifecycle and default-volume measurements
+
+- Same source/config as the fresh release deployment measurements above. Each named flow owns its release container and persistent state.
+
+| Scope                  | Named flow                                                                    | Client (s) | Fixture (s) | Accepted run                         |
+| ---------------------- | ----------------------------------------------------------------------------- | ---------- | ----------- | ------------------------------------ |
+| deployment.failures    | restart_exhaustion_exits_the_container                                        |     60.274 |      68.204 | run-c560ffe7c4c54c4fb47ac83461767904 |
+| deployment.failures    | recovery_rejects_changed_durable_credentials                                  |      2.252 |      10.238 | run-c560ffe7c4c54c4fb47ac83461767904 |
+| deployment.anonymous   | default_anonymous_volume_is_ready_and_monitor_death_exits_container           |      0.366 |       4.721 | run-d919293a24e64f03a09b125f8087676e |

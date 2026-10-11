@@ -65,6 +65,9 @@ class ManagedCluster(Cluster):
         deadline = time.monotonic() + 60
         last = None
         while time.monotonic() < deadline:
+            cancelled = getattr(self, "control_cancelled", None)
+            if cancelled is not None and cancelled.is_set():
+                raise RuntimeError("managed readiness cancelled during fixture teardown")
             state = json.loads(self.command("inspect", self.servers[0]))[0]["State"]
             if not state["Running"]:
                 raise AssertionError("normal release monitor exited: " + self.command("logs", self.servers[0]))

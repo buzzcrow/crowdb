@@ -19,6 +19,8 @@ from managed_fixture import ManagedCluster
 from deployment_bootstrap_fixture import InterruptedBootstrapCluster
 from deployment_validation_fixture import RejectedBootstrapCluster
 from deployment_clients_fixture import DeploymentClientsCluster
+from deployment_failure_fixture import DeploymentFailureCluster
+from deployment_anonymous_fixture import AnonymousReleaseCluster
 from console_web_fixture import ConsoleWebCluster
 from diskio_fixture import DiskioCluster, DiskioDiscoveryCluster, DiskioSemanticCluster
 
@@ -129,6 +131,9 @@ DISKDB_CASES = (
 )
 
 DEPLOYMENT_CASES = (
+    Case("deployment.anonymous", "deployment::anonymous::default_anonymous_volume_is_ready_and_monitor_death_exits_container", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
+    Case("deployment.failures", "deployment::failures::restart_exhaustion_exits_the_container", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web"), client_timeout=540),
+    Case("deployment.failures", "deployment::failures::recovery_rejects_changed_durable_credentials", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web"), client_timeout=540),
     Case("deployment.clients", "deployment::clients::official_clients_and_protocol_layout_survive_restart", restart=True, service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web"), client_timeout=420),
     Case("deployment.kv", "deployment::kv_bootstrap::monitor_creates_real_kv_groups_then_validates_after_restart", restart=True, service_selection=("kv",)),
     Case("deployment.validation", "deployment::validation::invalid_profile_is_rejected", service_selection=("kv",)),
@@ -438,6 +443,10 @@ def case_resources(case, node_cpus):
 
 
 def allocate_cluster(case, image, artifacts, bundle, data_root):
+    if case.scope == "deployment.anonymous":
+        return AnonymousReleaseCluster(image, artifacts, services=case.service_selection, data_root=data_root)
+    if case.scope == "deployment.failures":
+        return DeploymentFailureCluster(image, artifacts, services=case.service_selection, data_root=data_root)
     if case.scope == "deployment.clients":
         return DeploymentClientsCluster(image, artifacts, services=case.service_selection, data_root=data_root)
     if case.scope == "deployment.validation":
