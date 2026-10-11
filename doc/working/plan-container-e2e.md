@@ -1721,3 +1721,24 @@ Source `lib/crowdb-kv-client/tests/chunk_slot_map_test.rs`: all eight cases exer
   Node-one surviving DiskIO containers exit 139 after group-0 list timeout.
   Host Apport has no matching report; an owned debug sidecar can inspect the
   unchanged release binary. Do not retire native owners before corrected proof.
+
+### DiskIO late FFI completion root cause
+
+- Isolated node-one fault still crashes a surviving DiskIO at one CPU per
+  server after component builds finish. Attach an owned GDB sidecar to the
+  unchanged formal image: SIGSEGV occurs in `std::string::_M_set_length`, called
+  by `on_ffi_complete` from `crowdb_hw_list_disks_in_group` completion. Its
+  `user_data` points to the abandoned stack `SyncCallbackCtx`; the main stack
+  contains overwritten disk-list JSON. Fatal backtrace is preserved at
+  `/tmp/crowdb-diskio-caught-crash.log`. Host Apport supplies no matching core.
+- Replace stack callback storage with a shared result independently retained
+  by waiter and completion. Late completion releases its own holder after
+  publishing the copied body with release/acquire ordering; bounded wait stays
+  ten seconds. Apply the same ownership to heartbeat. Completed FFI errors now
+  report failure rather than being misclassified as wait timeout.
+- Deterministic DiskIO component proofs cover releasing the waiting owner before
+  cross-thread completion, final reclamation, response ownership and error
+  status. Full C++ tree (630), RPC (87), DiskIO (142, including both new cases)
+  gates and both Rust FFI portions pass. Full tree-lint and changed-file
+  tree-lint exit zero; C++ format and Rust workspace format pass. Rebuild the formal
+  debug-retaining release image from the verified fix before acceptance reruns.
