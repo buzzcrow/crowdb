@@ -52,6 +52,7 @@ pub struct AppState {
     pub test_mode: bool,
     pub managed_mode: bool,
     pub web_mode: Option<WebMode>,
+    pub readonly: bool,
     pub ui_root: Arc<PathBuf>,
     pub authority_seeds: Arc<Vec<String>>,
     pub monitor_status_path: Option<Arc<PathBuf>>,
@@ -113,6 +114,7 @@ impl AppState {
             test_mode: false,
             managed_mode: false,
             web_mode: None,
+            readonly: false,
             ui_root: Arc::new(PathBuf::from(FRONTEND_DIST)),
             authority_seeds: Arc::new(Vec::new()),
             monitor_status_path: None,
@@ -136,6 +138,7 @@ impl AppState {
         self.config_path = None;
         self.managed_mode = true;
         self.web_mode = Some(config.mode);
+        self.readonly = config.readonly;
         self.ui_root = Arc::new(config.ui_root.clone());
         self.authority_seeds = Arc::new(config.group0_management_seeds.clone());
         self.monitor_status_path = config.monitor_status.clone().map(Arc::new);

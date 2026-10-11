@@ -19,6 +19,8 @@ pub enum WebMode {
 pub struct WebProcessConfig {
     pub version: u32,
     pub mode: WebMode,
+    #[serde(default)]
+    pub readonly: bool,
     pub bind: String,
     pub port: u16,
     pub group0_management_seeds: Vec<String>,

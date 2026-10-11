@@ -9,7 +9,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 
 ## Resume context
 
-- Branch `task-deploy`; latest accepted browser migration `62ebdfd8`; native route migration `da0ab099`; runtime membership fix `cb159e7b`. R230 is unfinished. Do not delete the
+- Branch `task-deploy`; latest accepted browser migration `99ed5435`; native route migration `da0ab099`; runtime membership fix `cb159e7b`. R230 is unfinished. Do not delete the
   requirement/backlog entry until every remaining owner and required gate passes.
 - Working tree contains uncommitted Console browser migration drafts. Shared-image CI is committed. S3 node-fault migration and local-state component proofs are accepted.
   Preserve these drafts. `e2e-test/clients/console-ui/node_modules/` is local
@@ -141,6 +141,8 @@ and the named run artifacts.
   internal test profiles allow writes. Preserve Docker physical-mutation
   restrictions. Implement process configuration, API mode and UI propagation,
   component proofs and both release-container browser owners before closure.
+  Configuration 2/2, managed router 5/5 and UI production build pass; release
+  image rebuild and actual writable/readonly browser gates remain pending.
 
 
 - [ ] **CLI S3 bootstrap replay owners**: migrate the two server-starting

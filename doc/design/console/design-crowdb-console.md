@@ -351,6 +351,12 @@ A mutation is accepted only after the required node-side steps and Group 0
 publication are confirmed. The Console assumes a root operator until UI login is introduced. Automatic single-node container
 mode rejects topology, deployment, and disk-management writes at the
 backend; logical and Access operations use server-held protocol credentials.
+Docker Web is writable by default. The process configuration explicitly sets
+`readonly = true` to reject every non-read request with 403; `/api/mode` exposes
+this flag and the SPA disables write controls accordingly. The public
+single-container profile enables readonly, while internal writable profiles
+select the same release image with readonly disabled. Docker physical-management
+restrictions apply independently of readonly.
 The SPA calls the Axum backend; it does not talk directly to KV management
 endpoints.
 

@@ -6,6 +6,14 @@
 This page describes building and running CROWDB from source on a Linux amd64
 development or CI host.
 
+The public single-container Web template explicitly sets `readonly = true`.
+Docker Web otherwise defaults to writable logical and Access operations; physical
+management remains unavailable. To use writable Web internally, mount a normal
+Web template with `readonly = false` at
+`/opt/crowdb/etc/templates/crowdb-web.toml`. The same release image renders that
+configuration at startup; no rebuild is required. `/api/mode` reports readonly
+and the browser disables write controls when it is enabled.
+
 ## Service selection and inspectable data
 
 The same release image supports the complete managed profile, a mounted profile

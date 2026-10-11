@@ -77,7 +77,9 @@ async fn verify_managed_store_lifecycle(app: &axum::Router, sysmd: &CrowdbSysmdC
 #[tokio::test]
 async fn docker_root_access_preserves_hardware_restrictions() {
     let token = "m".repeat(64);
-    let app = router(AppState::default().with_managed_ui(PathBuf::from("/tmp/crowdb-ui")));
+    let mut state = AppState::default().with_managed_ui(PathBuf::from("/tmp/crowdb-ui"));
+    state.readonly = true;
+    let app = router(state);
     for (authorization, expected) in [
         (None, StatusCode::FORBIDDEN),
         (Some("Bearer wrong".to_owned()), StatusCode::FORBIDDEN),
@@ -133,8 +135,10 @@ async fn docker_root_access_preserves_hardware_restrictions() {
 }
 
 #[tokio::test]
-async fn managed_mode_does_not_expose_local_topology_or_mutations() {
-    let app = router(AppState::default().with_managed_ui(PathBuf::from("/tmp/crowdb-ui")));
+async fn managed_readonly_mode_does_not_expose_local_topology_or_mutations() {
+    let mut state = AppState::default().with_managed_ui(PathBuf::from("/tmp/crowdb-ui"));
+    state.readonly = true;
+    let app = router(state);
     for (method, path) in [
         (Method::GET, "/api/racks"),
         (Method::GET, "/api/stores"),
@@ -241,6 +245,7 @@ async fn managed_snapshot_uses_group0_and_monitor_without_local_fallback() {
     let config = WebProcessConfig {
         version: 1,
         mode: WebMode::Docker,
+        readonly: true,
         bind: "127.0.0.1".into(),
         port: 8080,
         group0_management_seeds: cluster.mgmt_endpoints.clone(),
@@ -347,4 +352,62 @@ async fn verify_unavailable_snapshot(
     assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(unavailable["reason"], "monitor_unavailable");
     assert!(unavailable["monitor"].is_null());
+}
+
+#[tokio::test]
+async fn docker_defaults_to_logical_writes_and_keeps_physical_routes_unavailable() {
+    let state = AppState::default().with_managed_ui(PathBuf::from("/tmp/crowdb-ui"));
+    assert!(!state.readonly);
+    let app = router(state);
+    let (code, mode) = get_json(app.clone(), "/api/mode").await;
+    assert_eq!(code, StatusCode::OK);
+    assert_eq!(mode["mode"], "docker");
+    assert_eq!(mode["readonly"], false);
+    for (path, expected) in [
+        ("/api/management/check", StatusCode::NO_CONTENT),
+        ("/api/nodes/1/disk-groups", StatusCode::SERVICE_UNAVAILABLE),
+        ("/api/diskdb/scan", StatusCode::SERVICE_UNAVAILABLE),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(path)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected, "{path}");
+    }
+}
+
+#[tokio::test]
+async fn explicit_readonly_rejects_data_mutations_and_keeps_mode_observable() {
+    let mut state = AppState::default().with_managed_ui(PathBuf::from("/tmp/crowdb-ui"));
+    state.readonly = true;
+    let app = router(state);
+    let (code, mode) = get_json(app.clone(), "/api/mode").await;
+    assert_eq!(code, StatusCode::OK);
+    assert_eq!(mode["readonly"], true);
+    for (method, path) in [
+        (Method::POST, "/api/stores/0/groups/1/kv/put"),
+        (Method::PUT, "/api/access/s3/readonly/object"),
+        (Method::DELETE, "/api/access/s3/readonly/object"),
+        (Method::PATCH, "/api/access/s3/readonly/object"),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{path}");
+    }
 }

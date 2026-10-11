@@ -796,6 +796,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
 
 export default function App(props: CrowdbConsoleProps = {}) {
   const apiPrefix = props.apiPrefix ?? '/api';
+  const [serverReadonly, setServerReadonly] = useState(false);
   const [mode, setMode] = useState<'loading' | 'legacy' | 'docker' | 'node' | 'bare-metal-pending' | 'unavailable'>('loading');
   useEffect(() => {
     let active = true;
@@ -805,7 +806,10 @@ export default function App(props: CrowdbConsoleProps = {}) {
         return response.json();
       })
       .then((body) => {
-        if (active) setMode(body?.mode === 'docker' || body?.mode === 'node' || body?.mode === 'bare-metal-pending' || body?.mode === 'legacy' ? body.mode : 'unavailable');
+        if (active) {
+          setMode(body?.mode === 'docker' || body?.mode === 'node' || body?.mode === 'bare-metal-pending' || body?.mode === 'legacy' ? body.mode : 'unavailable');
+          setServerReadonly(body?.readonly === true);
+        }
       })
       .catch(() => {
         if (active) setMode('unavailable');
@@ -821,7 +825,7 @@ export default function App(props: CrowdbConsoleProps = {}) {
       <SelectionProvider>
         <ToastProvider>
           <ActivityProvider>
-            <AppContent {...props} readonly={props.readonly || mode === 'docker'} managed={mode === 'docker'} nodeManagement={mode === 'node' || mode === 'docker'} />
+            <AppContent {...props} readonly={props.readonly || serverReadonly} managed={mode === 'docker'} nodeManagement={mode === 'node' || mode === 'docker'} />
           </ActivityProvider>
         </ToastProvider>
       </SelectionProvider>

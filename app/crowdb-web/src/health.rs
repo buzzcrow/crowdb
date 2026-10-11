@@ -22,7 +22,7 @@ pub async fn mode(
         None if state.node_monitor_url.is_some() => "node",
         None => "legacy",
     };
-    axum::Json(serde_json::json!({"mode": mode}))
+    axum::Json(serde_json::json!({"mode": mode, "readonly": state.readonly}))
 }
 
 pub async fn managed_api_unavailable() -> axum::http::StatusCode {
@@ -38,7 +38,7 @@ pub(crate) async fn require_editable(
         *request.method(),
         axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
     );
-    if state.web_mode == Some(crowdb_console_shared::config::web::WebMode::Docker) && !observe {
+    if state.readonly && !observe {
         return Err(axum::http::StatusCode::FORBIDDEN);
     }
     Ok(next.run(request).await)
