@@ -23,11 +23,9 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   Receipt: `target/crowdb.oci.tar.json`. Import is complete. The original
   thousand-key test passes all three phases (35.984/49.485/61.853 seconds),
   complete wall 167.160 seconds: `/tmp/crowdb-delete-stream-exact`.
-  Full S3 at CI quotas is active: `/tmp/crowdb-delete-stream-final-s3-ci`,
-  session 25823, 0.2 CPU/node, 4 CPU / 8192 MiB, effective one case slot.
-  Coalescer baseline is retained as `crowdb-node:fca2b4fa` and
-  `target/crowdb.oci-fca2b4fa.tar[.json]`; older `ec070372` and `d9dd29c4`
-  artifacts are retained too. Never bypass source/image provenance checks.
+  Full S3 passes 43/43 at CI quotas in 1545.602 seconds:
+  `/tmp/crowdb-delete-stream-final-s3-ci`, `run-6e60f23a5a18442ebda5d08fe5ec1842`,
+  0.2 CPU/node, 4 CPU / 8192 MiB, effective one case slot.
 - Containers run formal servers, host processes run clients. Fixed ports,
   inspected IPs, independent networks/data mounts, and three actual KV voters
   in three containers remain mandatory. Runtime service selection reuses one
@@ -146,28 +144,18 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   Deployment 33, Console operations 87, and Iceberg 32 pass. Linux host, SSH
   bridge admission, containerd host/cluster and both ecosystem profiles pass.
   Logs/reports: `/tmp/crowdb-coalesce-final-*`. Core UT passes 978/978.
-  S3 remains 42/43: the third phase of
-  `test_batch_delete_thousand_keys_and_unversioned_retry` reaches its original
-  120-second bound. Isolated passing runs do not close this failure.
-  All-node CPU sampling shows little throttling. The pinned SDK has a 60-second
-  idle-read timeout and legacy retries; the buffered response sends no progress
-  until all 1,000 durable sequential deletions finish. SDK retransmission is the
-  current diagnosis to verify with the formal image.
-  `DeleteSelection::stream` now validates before mutations and yields ordered
-  results; production `delete_objects` streams the XML opening/results/closing,
-  with whitespace for Quiet successes. No timeout or assertion is changed.
-  Full S3 component UT passes 114, Access-server UT 108 plus the separately passing pinned SDK test, and focused clippy passes. Fix committed as `6f191caf`; full workspace clippy/fmt pass.
-  The formal image above is built; finish import, then run the exact original
-  case and complete S3 at CI quotas.
-  Exact-case acceptance passes as recorded above; full CI-quota S3 remains active.
-  Full Console operations (89 owners) is active in
-  `/tmp/crowdb-delete-stream-final-console-ci`, session 28369, 0.25 CPU/node,
-  4 CPU / 8192 MiB. Focused Iceberg RCK passes all six upstream cases at its CI quota in
+  Ordered S3 response streaming is committed as `6f191caf`; full workspace
+  clippy/fmt, S3 UT 114, Access-server UT 108 plus the pinned SDK test pass.
+  Full S3 now passes 43/43 on the current formal image at CI quotas, as above.
+  Full Console operations passes 89/89 in 644.632 seconds at 0.25 CPU/node,
+  4 CPU / 8192 MiB: `/tmp/crowdb-delete-stream-final-console-ci`,
+  `run-a7fd884f7ee44daea0056926d1ee1c71`. Focused Iceberg RCK passes all six upstream cases at its CI quota in
   62.324 seconds: `/tmp/crowdb-delete-stream-rck-ci`,
   `run-b90f13d8f8034bfa9a25267f312dd074`. Preserve run reports; no
-  production source or global cleanup may change while these gates run.
-  Update `test.md` with complete domain counts, timings and actual image identity;
-  per-case details stay in artifacts. Remote CI and macOS remain unmeasured.
+  production source or global cleanup may change while any gate runs.
+  `test.md` records these complete domain counts/timings and actual image identity;
+  rerun affected complete domains after remaining migrations change their inventory.
+  Per-case details stay in artifacts. Remote CI and macOS remain unmeasured.
   The document layout is accepted and needs no redesign. Do not run global
   cleanup during an active container gate.
 - [ ] **Deferred benchmark decision**: review
