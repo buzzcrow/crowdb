@@ -50,7 +50,7 @@ class SelectionTest(unittest.TestCase):
 
     def test_console_operations_combines_host_client_scopes(self):
         cases = json.loads(self.invoke("--list", "--scope", "console.operations"))
-        self.assertEqual(len(cases), 84)
+        self.assertEqual(len(cases), 85)
         self.assertTrue(all(case["scope"] != "console.managed" for case in cases))
         exact = json.loads(self.invoke("--list", "--scope", "console.operations", "--case", cases[0]["case"]))
         self.assertEqual(exact, [cases[0]])
@@ -70,14 +70,14 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(len(dataset), 2)
         self.assertTrue(all(case["scope"] == "dataset.http" and case["nodes"] == 13 for case in dataset))
         console = json.loads(self.invoke("--list", "--layer", "console"))
-        self.assertEqual(len(console), 84)
+        self.assertEqual(len(console), 85)
         wal_nodes = {"restart_3node_1group": 4, "restart_5node_1group": 6,
                      "restart_5node_2group": 6, "restart_6node_2group_overlap": 7}
         for case in console:
             if case["scope"] == "console.web.wal":
                 self.assertEqual(case["nodes"], wal_nodes[case["case"].rsplit("::", 1)[-1]])
             else:
-                self.assertEqual(case["nodes"], 4 if case["scope"] == "console.web.lifecycle"
+                self.assertEqual(case["nodes"], 4 if case["scope"] in ("console.web.lifecycle", "console.web.recovery")
                                  else 1 if case["scope"] in ("console.web.standalone", "console.web.registry")
                                  else 13 if case["scope"] == "console.web.access"
                                  else 5 if case["scope"].startswith("console.web.")

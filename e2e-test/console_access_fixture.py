@@ -4,7 +4,8 @@
 
 import json
 
-from allocation import LABEL, node_data, start_node
+from allocation import start_node
+from console_standalone_fixture import prepare_config
 from chunk_kv_fixture import ChunkKvCluster
 from fixture import HTTP, wait
 
@@ -14,22 +15,12 @@ class AccessDeploymentCluster(ChunkKvCluster):
         super().start()
         self.client(self.bundle, "catalog-initialize", "access_iceberg::initialize")
         self.client(self.bundle, "deployment-authority", "console::web_access::prepare")
-        data = node_data(self, 12)
-        config = data / "persistent/console/default/config.json"
-        config.parent.mkdir(parents=True)
-        config.write_text(json.dumps({"rack": [{"id": 1, "name": "native fixture"}],
+        data = prepare_config(self, 12, {
+            "rack": [{"id": 1, "name": "native fixture"}],
             "node": [{"id": node, "rack_id": 1, "host": "127.0.0.1", "ssh_port": 22, "ssh_user": ""}
                      for node in (1, 2, 3)],
             "server": [{"id": f"kv-{index + 1}", "url": origin, "node_id": index + 1,
-                        "auto_start": False} for index, origin in enumerate(self.origins[:3])]}))
-        config.chmod(0o600)
-        preparation = self.run_id + "-web-config-owner"
-        self.containers.append(preparation)
-        self.command("run", "--rm", "--name", preparation, "--label", f"{LABEL}={self.run_id}",
-                     "--network", "none", "--user", "0", "--entrypoint", "/bin/chown",
-                     "--cpus", str(self.node_cpus), "--memory", "64m",
-                     "--mount", f"type=bind,source={data},target=/opt/crowdb/data",
-                     self.image, "-R", "crowdb:crowdb", "/opt/crowdb/data/persistent/console/default")
+                        "auto_start": False} for index, origin in enumerate(self.origins[:3])]})
         address = start_node(self, 12, data,
             ("server", "web", "--bind", "0.0.0.0", "--port", "9090",
              "--ui-root", "/opt/crowdb/ui", "--log-dir", "/opt/crowdb/data/log/web"),

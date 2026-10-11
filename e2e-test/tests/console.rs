@@ -42,3 +42,5 @@ mod web_standalone;
 mod web_wal_restart;
 
 mod web_access;
+
+mod web_cluster_recovery;

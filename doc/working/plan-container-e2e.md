@@ -9,10 +9,9 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 
 ## Resume context
 
-- Branch `task-deploy`; ownership fix is committed as `d6d07589`. R230 is unfinished. Do not delete the
+- Branch `task-deploy`; latest accepted Access migration is committed as `63f06d03`. R230 is unfinished. Do not delete the
   requirement/backlog entry until every remaining owner and required gate passes.
-- Working tree contains uncommitted Console browser migration and shared-image
-  CI drafts. S3 node-fault migration and local-state component proofs are accepted.
+- Working tree contains uncommitted Console browser migration drafts. Shared-image CI is committed. S3 node-fault migration and local-state component proofs are accepted.
   Preserve these drafts. `e2e-test/clients/console-ui/node_modules/` is local
   dependency state; never stage it.
 - Formal release image `crowdb-node:dev` is built/imported from `ec070372`, with
@@ -57,13 +56,13 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   and fixture tests are unaccepted drafts. Host browser consumes owned container
   endpoints; signaling validates service PID and run ownership. Preserve UI
   assertions and remove native runners only after matching acceptance. Current
-  root Console baseline is 83 cases; the two draft browser cases are additional.
-- [ ] **Web standalone and disposable lifetime**: migrate real owners in
-  `app/crowdb-web/tests/standalone_startup_test.rs`: three-member Group-0 plus
-  Diskdb recovery, graceful test-mode shutdown, and forced-exit orphan cleanup.
-  Three voters must occupy separate containers. Preserve authoritative rack
-  restoration over corrupted local cache, three replicas, four servers and
-  retained Diskdb launch inputs. Split fake-child cleanup/ownership proofs into
+  root Console operation inventory is 85 cases; the two draft browser cases are additional.
+- [~] **Web disposable lifetime**: migrate graceful test-mode shutdown and
+  forced-exit orphan cleanup in `app/crowdb-web/tests/standalone_startup_test.rs`.
+  Three-member recovery is accepted in `run-1136b7037e9f43d38d282b84847a8bb0`
+  and its original native owner is removed. It verifies separate release voter
+  containers, authoritative rack over corrupted cache, three replicas, four
+  servers and retained Diskdb launch inputs. Split fake-child cleanup/ownership proofs into
   component tests; container PID-namespace teardown alone does not prove native
   orphan cleanup. Public `lifecycle::http_internal_reset` and
   `AppState::set_runtime_pid` are available; existing fake-child reset proof is
@@ -125,14 +124,17 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 - [ ] **Close CI classification**: finish selectors after the remaining native
   owners and managed browser contract are resolved. Shared-image jobs now cover
   all accepted container domains on one source-pinned formal artifact; debug
-  info and diagnostics are retained. Console selects its 84 accepted operation
+  info and diagnostics are retained. Console selects its 85 accepted operation
   owners, excluding unaccepted browser drafts. Iceberg executes the complete
   32-case domain once, including Rust SDK; the separate SDK component job needs
   no image. Resource audit fits every declared case: S3 maximum 3.9 CPU /
   7872 MiB in a 4 CPU / 8192 MiB job, Iceberg maximum 4 CPU / 11264 MiB in
   12288 MiB. YAML and 28-package task reachability pass. The isolated component
-  SDK gate passes eight tests. Console full-domain remeasurement is running
-  after accepting private Access deployment in `run-39606819b51543abb1a03e7509906a66`;
+  SDK gate passes eight tests. Console 84-operation measurement passes in 605.125 seconds at 0.25 CPU/server,
+  one effective case slot, 4 CPU / 8192 MiB,
+  `run-40fe7a0e77bb4dcbbd9cc1ba31e4c0c4`; the subsequently accepted recovery
+  case is not included in that report. Private Access deployment passes in
+  `run-39606819b51543abb1a03e7509906a66`;
   source CLI/Web early-exit validation remains component-local. Low-quota S3 node-two restart revealed missing
   dependency readiness; staged startup barriers now pass all three node faults
   and protected restart at 0.2 CPU/server with a 4 CPU / 8192 MiB budget. Logs:

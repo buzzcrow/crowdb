@@ -8,6 +8,22 @@ from allocation import create_network, node_data, start_node
 from fixture import Cluster, HTTP, wait
 
 
+def prepare_config(cluster, index, config):
+    data = node_data(cluster, index)
+    path = data / "persistent/console/default/config.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(config))
+    path.chmod(0o600)
+    preparation = cluster.run_id + "-web-config-owner"
+    cluster.containers.append(preparation)
+    cluster.command("run", "--rm", "--name", preparation, "--label",
+        f"org.crowdb.e2e.run={cluster.run_id}", "--network", "none", "--user", "0",
+        "--entrypoint", "/bin/chown", "--cpus", str(cluster.node_cpus), "--memory", "64m",
+        "--mount", f"type=bind,source={data},target=/opt/crowdb/data", cluster.image,
+        "-R", "crowdb:crowdb", "/opt/crowdb/data/persistent/console/default")
+    return data
+
+
 class StandaloneWebCluster(Cluster):
     def __init__(self, image, artifacts, rejected=False, **kwargs):
         super().__init__(image, artifacts, node_count=1, wire_replicas=False,
