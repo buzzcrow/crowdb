@@ -9,6 +9,7 @@ mod metadata;
 mod namespace;
 mod native;
 mod native_files;
+mod rck;
 mod response_loss;
 mod rust_retired;
 mod rust_sdk;

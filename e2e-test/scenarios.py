@@ -247,6 +247,7 @@ S3_SPECIAL_CASES = (Case("s3.policy", "access_s3::protocol_http::combined_http_l
 S3_LANGUAGE_CASES = tuple(Case("s3.sdk", "s3.sdk::" + language, sdk_client=True, s3_language=language)
                           for language in ("java", "js", "go"))
 ICEBERG_CASES = (
+    Case("iceberg.sdk.rck", "access_iceberg::rck::apache_rest_compatibility_kit_supported_catalog_surface", client_timeout=960),
     Case("iceberg.benchmark", "access_iceberg::file_http::profiles::large::five_mib_profile", iceberg_deferred_access=True),
     Case("iceberg.benchmark", "access_iceberg::file_http::profiles::small_file_profiles", iceberg_deferred_access=True),
     Case("iceberg.files", "access_iceberg::file_http::capacity::full_simulated_disk_preserves_file_authority_then_recovers_after_compaction", iceberg_deferred_access=True),
@@ -282,6 +283,7 @@ ICEBERG_CASES = (
     Case("iceberg.namespace", "access_iceberg::namespace::namespace_functional_crud_survives_native_storage_and_listener_restart"),
 )
 CONSOLE_OPERATION_CASES = (
+    Case("console.web.slots", "console::web_slots::owner_windows_keep_disjoint_slots_generations_and_exact_ids", console_web=True),
     Case("console.discovery", "console::discovery::discover_registered_diskdb_instance", (0, 0, 0), True, groups=(0,)),
     Case("console.discovery", "console::discovery::chunk_kv_raw_observation_preserves_load_and_partition_state", (0, 0, 0), True, groups=(0,)),
     Case("console.discovery", "console::discovery::cache_hit_within_ttl", (0, 0, 0), True, groups=(0,)),
@@ -398,6 +400,8 @@ def case_nodes(case):
     return 2 if case.scope.startswith(("diskdb.", "chunkdb.")) else len(case.stores_per_node or case.stores)
 
 def case_resources(case, node_cpus):
+    if case.scope == "iceberg.sdk.rck":
+        return case_nodes(case) * node_cpus + 0.5, case_nodes(case) * 512 + 4096
     if len(case.service_selection) > 2:
         return max(2, node_cpus) + 0.5, 2560
     nodes = case_nodes(case)

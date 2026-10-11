@@ -29,3 +29,4 @@ mod replica_cleanup;
 mod server_data;
 mod server_management;
 mod web_authority;
+mod web_slots;

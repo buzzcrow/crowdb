@@ -3,9 +3,11 @@
 """Build and stage the locked Rust RPC client, never a host server."""
 
 import json
+import io
 import os
 import shutil
 import subprocess
+import tarfile
 import time
 from pathlib import Path
 
@@ -130,3 +132,30 @@ def bundle_cli(output):
         raise RuntimeError("missing or ambiguous host CLI executable")
     shutil.copy2(binaries[0], Path(output) / "crowdb-cli")
 
+
+def bundle_iceberg_rck(output):
+    """Verify immutable upstream source and isolate Gradle outputs per run."""
+    revision = "6976e020b894f6a6777704df2b8c4458cb291ae9"
+    root = Path(__file__).resolve().parents[1]
+    source = Path(os.environ.get("CROWDB_ICEBERG_RCK_ROOT", root / "target/iceberg-rck"))
+    if not source.exists():
+        source.mkdir(parents=True)
+        subprocess.run(["git", "-C", str(source), "init"], check=True, timeout=60)
+        subprocess.run(["git", "-C", str(source), "fetch", "--depth", "1",
+                        "https://github.com/apache/iceberg.git", revision], check=True, timeout=600)
+        subprocess.run(["git", "-C", str(source), "checkout", "--detach", "FETCH_HEAD"],
+                       check=True, timeout=60)
+    actual = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"],
+                                     text=True, timeout=60).strip()
+    dirty = subprocess.check_output(["git", "-C", str(source), "status", "--porcelain",
+                                     "--untracked-files=no"], text=True, timeout=60)
+    if actual != revision or dirty:
+        raise RuntimeError(f"RCK requires clean {revision}; checkout preserved at {source}")
+    destination = Path(output) / "clients/iceberg-rck/source"
+    archive = subprocess.check_output(["git", "-C", str(source), "archive", revision],
+                                      timeout=60)
+    destination.mkdir(parents=True)
+    with tarfile.open(fileobj=io.BytesIO(archive)) as tree:
+        tree.extractall(destination, filter="data")
+    (destination.parent / "source.json").write_text(json.dumps({
+        "upstream": "https://github.com/apache/iceberg.git", "revision": revision}, indent=2))

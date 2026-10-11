@@ -1,42 +1,32 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use axum::{
-    body::Body,
-    http::{Request, StatusCode},
-};
 use crowdb_kv_client::{ChunkSlotMapClient, ClientConfig, CrowdbKvClient};
 use crowdb_protocol::chunk_slot::{ChunkSlotBootstrap, ChunkStorageGroup};
-use crowdb_web::{router, AppState};
+use reqwest::StatusCode;
 use serde_json::Value;
 use std::sync::Arc;
-use tower::ServiceExt;
 
-async fn get(state: &AppState, query: &str) -> (StatusCode, Value) {
-    let response = router(state.clone())
-        .oneshot(
-            Request::get(format!("/api/chunk-slots?{query}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
+async fn get(origin: &str, query: &str) -> (StatusCode, Value) {
+    let response = reqwest::Client::new()
+        .get(format!("{origin}/api/chunk-slots?{query}"))
+        .send()
         .await
         .unwrap();
     let status = response.status();
-    let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
-        .await
-        .unwrap();
-    (status, serde_json::from_slice(&body).unwrap())
+    (status, response.json().await.unwrap())
 }
 
 #[tokio::test]
+#[ignore = "requires owned release Web and KV containers"]
 async fn owner_windows_keep_disjoint_slots_generations_and_exact_ids() {
-    let cluster = crowdb_test_harness::cluster::KvCluster::start().await;
+    let cluster = super::fixture::web_kv().await;
     let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
         cluster.mgmt_endpoints.clone(),
     )));
     kv.seed_leader(0, 0, cluster.group0_leader_endpoint.clone());
-    let state = AppState::new(cluster.mgmt_endpoints.clone());
-    *state.kv_client.write().await = Some(kv.clone());
+    let addresses = crate::common::management::addresses(5);
+    let state = format!("http://{}:9090", addresses[3]);
     let bootstrap = ChunkSlotBootstrap {
         service_instances: vec![1, u64::MAX],
         storage_groups: vec![
@@ -104,7 +94,7 @@ async fn owner_windows_keep_disjoint_slots_generations_and_exact_ids() {
     assert!(missing["next"].is_null());
 }
 
-async fn assert_bitmaps(state: &AppState, bootstrap: &ChunkSlotBootstrap) {
+async fn assert_bitmaps(state: &str, bootstrap: &ChunkSlotBootstrap) {
     for (layer, expected) in [
         (
             "service",

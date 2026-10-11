@@ -24,6 +24,7 @@ SERVER_PATHS = (
     ":(exclude)tools/pixi-tasks/test-rust-iceberg-e2e.sh",
     ":(exclude)tools/pixi-tasks/test-java-iceberg-fileio-e2e.sh",
     ":(exclude)tools/pixi-tasks/test-java-iceberg-e2e.sh",
+    ":(exclude)tools/pixi-tasks/test-iceberg-rck.sh",
     # Version verification reads host SDK manifests and is never staged.
     ":(exclude)tools/ci-checks/check-version.py",
 )

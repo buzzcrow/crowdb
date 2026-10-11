@@ -1,0 +1,9 @@
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
+// Compile artifacts may be cached; HTTP acceptance must execute against this run.
+allprojects {
+  tasks.withType(Test).configureEach {
+    outputs.upToDateWhen { false }
+    outputs.cacheIf { false }
+  }
+}

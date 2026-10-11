@@ -1058,3 +1058,7 @@ Source: `app/crowdb-kv-server/`. Tests: 9 files.
 | ------------------------- | ---------------------------------------------------------------------------------------------- | ---------- | ----------- |
 | iceberg.benchmark         | five_mib_profile                                                                               |      4.269 |      18.827 |
 | iceberg.benchmark         | small_file_profiles                                                                            |     40.945 |      56.008 |
+
+- `run-d48cca26df0c4eaca6c4d2bb71538ceb`: 1 passing owner; `iceberg.sdk.rck` / `apache_rest_compatibility_kit_supported_catalog_surface`: client 38.065 s, fixture 54.222 s.
+
+- `run-d3d0d1e6d3cf4b638c7022066237e3df`: 1 passing owner; `console.web.slots` / `owner_windows_keep_disjoint_slots_generations_and_exact_ids`: client 0.256 s, fixture 6.067 s.
