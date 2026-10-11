@@ -161,8 +161,9 @@ void crowdb_rpc_client_dump_pending(crowdb_rpc_client_t client);
 // directly on the I/O worker thread when the response arrives — no
 // oneshot channel, no scheduler round-trip, no per-call heap alloc.
 // The request_id must be provided by the caller (embedded in the
-// flatbuffer control). Returns CROWDB_RPC_OK on success. On submit error,
-// returns CROWDB_RPC_ERR_SEND_QUEUE (callback NOT invoked).
+// flatbuffer control). CROWDB_RPC_OK transfers user_data ownership to the
+// completion, even if disconnect wins before a rejected submit returns.
+// CROWDB_RPC_ERR_SEND_QUEUE guarantees the callback was not invoked.
 // The pool must be sized first (set_completion_pool_size).
 crowdb_rpc_status crowdb_rpc_client_send(crowdb_rpc_client_t client, crowdb_rpc_server_t server, crowdb_rpc_conn_t conn,
                                          uint64_t request_id, crowdb_rpc_buffer_t control, crowdb_rpc_buffer_t data,
