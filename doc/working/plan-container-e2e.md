@@ -30,7 +30,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 - Delete original real-server owners only after equivalent accepted assertions.
   Keep deterministic component UT. Run executable commands through `pixi run`;
   native server gates require `clean-env`, never during another server gate.
-- Accepted fixture gate: 58 pass, `/tmp/crowdb-tpc-staged-fixture-gate.log`,
+- Accepted fixture gate: 59 pass, `/tmp/crowdb-ci-staged-fixture-gate.log`,
   using an export of the staged source. Console browser drafts are excluded.
   Retained S3 component UT pass 5/5; Web/Console-shared/E2E all-target clippy
   and workspace fmt pass.
@@ -87,11 +87,32 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   cover this owner. Classify early-exit executable validation separately:
   Web managed-mode config/registry rejection and Access writer-auth validation
   never reach backend startup; keep their deterministic validation coverage.
-- [ ] **Special deployment owners**: finish inventory/disposition of SSH/node
-  admission, artifact policies, host-network/real-device and Docker/containerd
-  profiles. Classify external Trino/Spark/Flink gates and prerequisites. Preserve
-  distinct ownership/resource assertions; ordinary bridge acceptance does not
-  establish hardware/host/containerd support.
+- [ ] **Bridge SSH admission profile**: reconcile
+  `container/single-node-container/tests/node-containers.py`, `node-admission.py`,
+  `node-bootstrap.py` and `node-recovery.py` with accepted root deployment flows.
+  Move remaining distinct public SSH admission/authentication, literal credential,
+  stale intent and recovery assertions under the root runner; these already use
+  formal server containers. `lib/crowdb-console-shared/tests/launch_ssh_test.rs`
+  is a fake SSH peer plus sleep child and remains a component UT.
+- [ ] **Host-network and containerd profiles**: root explicit profiles must own
+  `container/single-node-container/tests/host-node.py` and
+  `container/oci-image/tests/containerd-host.py` / `containerd-cluster.py`.
+  Preserve resource rejection, actual CPU/memory limits, real SSH admission,
+  persistent cluster/credential identity and cleanup. Host fixed ports require
+  exclusive scheduling; nested privileged Linux hosts and a containerd socket
+  are explicit prerequisites. Ordinary Docker bridge results do not prove them.
+- [ ] **External engine profile**: classify/move
+  `container/single-node-container/tests/ecosystem/` as an explicit manual child
+  under `e2e-test/clients/`; Python, DuckDB, Trino, Spark and Flink consume one
+  formal server image with host clients and locked engine dependencies. Keep
+  external toolchain prerequisites, restart/exact-data assertions and credential
+  redaction. Missing prerequisites fail an explicitly requested gate.
+- [ ] **Artifact policy boundary**: keep OCI artifact/build/runtime sandbox and
+  release-policy component checks with `container/oci-image` / packaging tooling;
+  they do not own ordinary service flows. Separate server executable validation
+  from `image-smoke.sh` into accepted root deployment validation. Audit
+  `docker-preview.yml` and `release-container.yml` references after moving
+  special profiles; retain release digest/snapshotter/policy proofs.
 
 ## Final integration and closure
 
@@ -108,14 +129,21 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   preparation. `test-storage`/`test-access` component cleanup is committed;
   native Console paths remain. Manual TPC is now an explicit root scope with a separate locked host environment. Java FileIO has SDK ownership and
   foreground GC has the native GC delegate; preserve these distinct selections.
-- [ ] **CI shared-image jobs**: finish and commit drafts in
-  `.github/workflows/ci.yml` and `iceberg-rust-sdk.yml`. All container domain jobs
-  consume one source-pinned formal artifact; preserve debug info and diagnostic
-  uploads. S3 now registers 43 cases. S3 node quota is 0.2 CPU: maximum declared case budget 3.9 CPU /
-  7872 MiB fits its 4 CPU / 8192 MiB job. Console draft uses full domain;
-  storage matrix selects domains. YAML parses; package reachability covers 28
-  workspace packages. Validate selectors, required result counts and job graph;
-  actual remote CI has not run. No push is authorized by this handoff.
+- [ ] **Close CI classification**: finish selectors after the remaining native
+  owners and managed browser contract are resolved. Shared-image jobs now cover
+  all accepted container domains on one source-pinned formal artifact; debug
+  info and diagnostics are retained. Console selects its 83 accepted operation
+  owners, excluding unaccepted browser drafts. Iceberg executes the complete
+  32-case domain once, including Rust SDK; the separate SDK component job needs
+  no image. Resource audit fits every declared case: S3 maximum 3.9 CPU /
+  7872 MiB in a 4 CPU / 8192 MiB job, Iceberg maximum 4 CPU / 11264 MiB in
+  12288 MiB. YAML and 28-package task reachability pass. The isolated component
+  SDK gate passes eight tests. Low-quota S3 node-two restart revealed missing
+  dependency readiness; staged startup barriers now pass all three node faults
+  and protected restart at 0.2 CPU/server with a 4 CPU / 8192 MiB budget. Logs:
+  `/tmp/crowdb-s3-ci-quota-ready.log` and
+  `/tmp/crowdb-s3-protected-ci-quota-ready.log`. Keep the failed evidence in
+  `run-13a1737806c349b3b051ee3f5c68c46e`. Actual remote CI has not run.
 - [ ] **Final regression and measurements**: run full Iceberg/Console and required registered layers on the same image,
   then relevant component/fmt/lint gates. Update `doc/working/test.md` using one
   row per domain and actual complete-run counts/wall times/environment/image.

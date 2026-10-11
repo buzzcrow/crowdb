@@ -59,26 +59,70 @@ pub(super) async fn restart() {
     for index in (0..14).rev() {
         crate::common::control::node("stop", index).await;
     }
-    for index in 0..14 {
-        crate::common::control::node("start", index).await;
-    }
     let addresses = crate::common::management::addresses(14);
     let http = reqwest::Client::new();
+    for index in 0..3 {
+        crate::common::control::node("start", index).await;
+    }
+    crate::common::management::wait_for_leader(&http, &format!("http://{}:7000", addresses[0])).await;
+    for (index, address) in addresses.iter().enumerate().take(6).skip(3) {
+        crate::common::control::node("start", index).await;
+        ready(&http, &format!("http://{address}:7101/ready")).await;
+    }
+    for (index, address) in addresses.iter().enumerate().take(12).skip(6) {
+        crate::common::control::node("start", index).await;
+        if index < 9 {
+            ready(&http, &format!("http://{address}:7301/ready")).await;
+        }
+    }
+    storage_ready().await;
+    crate::common::control::node("start", 12).await;
+    ready(&http, &format!("http://{}:7401/ready", addresses[12])).await;
+    crate::common::control::node("start", 13).await;
+    ready(
+        &http,
+        &format!("http://{}:7501/_crowdb/health/ready", addresses[13]),
+    )
+    .await;
+}
+
+async fn ready(http: &reqwest::Client, endpoint: &str) {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if http
-                .get(format!("http://{}:7501/_crowdb/health/ready", addresses[13]))
+                .get(endpoint)
                 .send()
                 .await
                 .is_ok_and(|response| response.status().is_success())
             {
-                break;
+                return;
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
     })
     .await
-    .expect("restarted S3 readiness");
+    .unwrap_or_else(|_| panic!("restarted dependency readiness: {endpoint}"));
+}
+
+async fn storage_ready() {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let result = crowdb_diskio_client::DiskioClient::connect_with_clients(
+            ServiceRegistryClient::new(super::kv_client()),
+            HardwareClient::new(super::kv_client()),
+            crowdb_diskio_client::DiskioClientConfig::default(),
+        )
+        .await;
+        match result {
+            Ok(client) if client.status().disks == 3 => return,
+            result => assert!(
+                tokio::time::Instant::now() < deadline,
+                "restarted DiskIO owners must publish all three disks: {:?}",
+                result.as_ref().map(|client| client.status().disks)
+            ),
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 pub(super) async fn repaired(chunks: &[ChunkId]) {
