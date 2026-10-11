@@ -9,7 +9,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 
 ## Resume context
 
-- Branch `task-deploy`; latest accepted Access migration is committed as `63f06d03`. R230 is unfinished. Do not delete the
+- Branch `task-deploy`; latest accepted three-voter recovery is committed as `793ebdfb`. R230 is unfinished. Do not delete the
   requirement/backlog entry until every remaining owner and required gate passes.
 - Working tree contains uncommitted Console browser migration drafts. Shared-image CI is committed. S3 node-fault migration and local-state component proofs are accepted.
   Preserve these drafts. `e2e-test/clients/console-ui/node_modules/` is local
@@ -29,7 +29,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 - Delete original real-server owners only after equivalent accepted assertions.
   Keep deterministic component UT. Run executable commands through `pixi run`;
   native server gates require `clean-env`, never during another server gate.
-- Accepted fixture gate: 59 pass, `/tmp/crowdb-ci-staged-fixture-gate.log`,
+- Accepted fixture gate: 61 pass, `/tmp/crowdb-ci-staged-fixture-gate.log`,
   using an export of the staged source. Console browser drafts are excluded.
   Retained S3 component UT pass 5/5; Web/Console-shared/E2E all-target clippy
   and workspace fmt pass.
@@ -56,22 +56,8 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   and fixture tests are unaccepted drafts. Host browser consumes owned container
   endpoints; signaling validates service PID and run ownership. Preserve UI
   assertions and remove native runners only after matching acceptance. Current
-  root Console operation inventory is 85 cases; the two draft browser cases are additional.
-- [~] **Web disposable lifetime**: migrate graceful test-mode shutdown and
-  forced-exit orphan cleanup in `app/crowdb-web/tests/standalone_startup_test.rs`.
-  Three-member recovery is accepted in `run-1136b7037e9f43d38d282b84847a8bb0`
-  and its original native owner is removed. It verifies separate release voter
-  containers, authoritative rack over corrupted cache, three replicas, four
-  servers and retained Diskdb launch inputs. Split fake-child cleanup/ownership proofs into
-  component tests; container PID-namespace teardown alone does not prove native
-  orphan cleanup. Public `lifecycle::http_internal_reset` and
-  `AppState::set_runtime_pid` are available; existing fake-child reset proof is
-  in `lifecycle_routes_test.rs`. New `cleanup_test.rs` uses fake children to
-  prove exact process-identity cleanup, stale/persistent-owner preservation and
-  port-claim pruning; 1 pass in 0.80 seconds, harness all-target clippy passes.
-  This does not replace Web shutdown/orphan wiring acceptance. Keep the pure
-  failed-publication UT.
-- [ ] **Deployer lifecycle owners**: migrate the two real-server cases in
+  root Console operation inventory is 87 cases; the two draft browser cases are additional.
+- [~] **Deployer lifecycle owners**: migrate the two real-server cases in
   `app/crowdb-web/tests/cluster_deployer_test.rs`. Preserve three-member leader
   resolution, repeated cycles without leaked state, stop <5 seconds and
   post-stop reset <1 second. Retain the empty-reset component proof. Silent
@@ -124,7 +110,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 - [ ] **Close CI classification**: finish selectors after the remaining native
   owners and managed browser contract are resolved. Shared-image jobs now cover
   all accepted container domains on one source-pinned formal artifact; debug
-  info and diagnostics are retained. Console selects its 85 accepted operation
+  info and diagnostics are retained. Console selects its 87 accepted operation
   owners, excluding unaccepted browser drafts. Iceberg executes the complete
   32-case domain once, including Rust SDK; the separate SDK component job needs
   no image. Resource audit fits every declared case: S3 maximum 3.9 CPU /
@@ -135,7 +121,14 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   `run-40fe7a0e77bb4dcbbd9cc1ba31e4c0c4`; the subsequently accepted recovery
   case is not included in that report. Private Access deployment passes in
   `run-39606819b51543abb1a03e7509906a66`;
-  source CLI/Web early-exit validation remains component-local. Low-quota S3 node-two restart revealed missing
+  source CLI/Web early-exit validation remains component-local. Web TERM/KILL
+  acceptance passes with two concurrent isolated namespaces in
+  `run-0a9ddc754927435bb0be473e41a70d9f`: TERM reaps the real child, KILL leaves
+  it alive with an exact process-owner record, owned cleanup removes ephemeral
+  data and preserves operator data. All actual-server owners are removed from
+  `standalone_startup_test.rs`; failed-publication UT remains. The unchanged
+  component clean-env proof retains stale/persistent-owner and claim-pruning
+  assertions, complemented by host-controller PID-reuse ownership guards. Low-quota S3 node-two restart revealed missing
   dependency readiness; staged startup barriers now pass all three node faults
   and protected restart at 0.2 CPU/server with a 4 CPU / 8192 MiB budget. Logs:
   `/tmp/crowdb-s3-ci-quota-ready.log` and

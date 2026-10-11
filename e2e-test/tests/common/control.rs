@@ -16,7 +16,7 @@ pub(crate) async fn configure_chunkdb(options: Value) -> Value {
     request(json!({"action": "configure-chunkdb", "node": 4, "options": options})).await
 }
 
-async fn request(body: Value) -> Value {
+pub(crate) async fn request(body: Value) -> Value {
     request_with_timeout(body, Duration::from_secs(65)).await
 }
 
