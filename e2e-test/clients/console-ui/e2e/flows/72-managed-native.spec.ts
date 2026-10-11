@@ -1,5 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
+import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 import { test, expect } from '../fixtures/realBackend';
 import { step } from '../fixtures/stepTimer';
 
@@ -96,11 +99,11 @@ test('Managed native KV, Iceberg, S3 and Chunk operations retain hardware bounda
 
 test('Managed native authority outage hides stale topology and retains monitor observation', async ({ page }) => {
   const pid = Number(process.env.CROWDB_NATIVE_KV_PID);
-  expect(pid, 'Run the owned host-native managed runner').toBeGreaterThan(0);
+  expect(pid, 'Run the owned release-container managed runner').toBeGreaterThan(0);
   await page.goto('/');
   await expect(page.getByTestId('managed-source')).toHaveText('Source: Group 0');
   await page.clock.install();
-  process.kill(pid, 'SIGSTOP');
+  await signalService(pid, 'STOP');
   try {
     // One 3-second UI poll plus the backend's 3-second authority budget.
     const failed = page.waitForResponse(response => response.url().endsWith('/api/preview') && response.status() === 503, { timeout: 10000 });
@@ -113,9 +116,23 @@ test('Managed native authority outage hides stale topology and retains monitor o
     await expect(page.getByRole('complementary', { name: 'Cluster tree sidebar' }).getByRole('button', { name: 'N-1', exact: true })).toHaveCount(0);
     await expect(page.getByRole('region', { name: 'Monitor status' })).toBeVisible();
   } finally {
-    process.kill(pid, 'SIGCONT');
+    await signalService(pid, 'CONT');
   }
   await page.clock.runFor(3001);
   await expect(page.getByTestId('managed-unavailable')).toHaveCount(0);
   await expect(page.getByRole('complementary', { name: 'Cluster tree sidebar' })).toBeVisible();
 });
+
+async function signalService(pid: number, signal: 'STOP' | 'CONT') {
+  const directory = process.env.CROWDB_E2E_CONTROL;
+  expect(directory, 'Owned container control is required').toBeTruthy();
+  const id = randomUUID();
+  const request = join(directory!, `${id}.request.json`);
+  writeFileSync(`${request}.tmp`, JSON.stringify({ action: 'signal-service', node: 0, service: 'kv', pid, signal }));
+  renameSync(`${request}.tmp`, request);
+  const response = join(directory!, `${id}.response.json`);
+  await expect.poll(() => existsSync(response), { intervals: [100] }).toBe(true);
+  const result = JSON.parse(readFileSync(response, 'utf8'));
+  expect(result.ok, JSON.stringify(result)).toBe(true);
+  expect(result.result).toEqual({ pid, signal });
+}

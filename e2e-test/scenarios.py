@@ -27,6 +27,7 @@ from deployment_failure_fixture import DeploymentFailureCluster
 from deployment_anonymous_fixture import AnonymousReleaseCluster
 from deployment_browser_fixture import DeploymentBrowserCluster
 from deployment_listener_fixture import OccupiedAccessCluster
+from console_fixture import ConsoleCluster
 from console_access_fixture import AccessDeploymentCluster
 from console_lifetime_fixture import DisposableWebCluster
 from console_recovery_fixture import RecoveringWebCluster
@@ -79,6 +80,7 @@ class Case:
     console_web: bool = False
     preserve_network: bool = False
     shell_browser: str | None = None
+    console_browser: str | None = None
     client_timeout: int = 120
 
 
@@ -343,6 +345,8 @@ ICEBERG_CASES = (
     Case("iceberg.namespace", "access_iceberg::namespace::namespace_functional_crud_survives_native_storage_and_listener_restart"),
 )
 CONSOLE_OPERATION_CASES = (
+    Case("console.managed", "console::managed::authority_outage", console_browser="Managed native authority outage hides stale topology and retains monitor observation"),
+    Case("console.managed", "console::managed::hardware_and_user_flows", console_browser="Managed native KV, Iceberg, S3 and Chunk operations retain hardware boundaries"),
     Case("console.browser.kv", "console::browser_kv::pagination", shell_browser="Group selection opens data directly; pages replace rows and expose complete values"),
     Case("console.browser.kv", "console::browser_kv::binary_bytes", shell_browser="binary byte runs retain printable fields and use distinct uppercase hex without a prefix"),
     Case("console.browser.kv", "console::browser_kv::auto_scan", shell_browser="auto-scan fires on initial group selection (G-0 shows data without manual Scan)"),
@@ -358,10 +362,10 @@ CONSOLE_OPERATION_CASES = (
     Case("console.browser.shell", "console::shell::embedding", shell_browser="embedding honors apiPrefix, readonly, and module opt-out"),
     Case("console.browser.shell", "console::shell::backend_unavailable", shell_browser="shows an alert when backend API requests fail"),
     Case("console.browser.shell", "console::shell::domain_toggle", shell_browser="domain toggle switches between all seven domains"),
+    Case("console.web.standalone", "console::web_diskio_discovery::diskio_discovers_disk_groups_created_after_web_deployment"),
     Case("console.web.wal", "console::web_leader_removal::remove_leader_from_five_node_group_elects_new_leader", stores=(0, 0, 0, 0, 0)),
     Case("console.web.wal", "console::web_leader_removal::remove_unreachable_leader_retains_group0_membership", stores=(0, 0, 0, 0, 0), preserve_network=True),
     Case("console.web.wal", "console::web_replicas::replica_add_remove_wires_peers_bidirectionally", stores=(0, 0)),
-    Case("console.web.standalone", "console::web_diskio_discovery::diskio_discovers_disk_groups_created_after_web_deployment"),
     Case("console.web.bootstrap", "console::web_sealed_bootstrap::bare_metal_bootstrap_consumes_sealed_topology_without_local_topology"),
     Case("console.web.standalone", "console::web_bootstrap::bootstrap_replays_data_group_without_changing_replica_or_publishing_invalid_bindings"),
     Case("console.web.standalone", "console::web_management::store_and_group_management_cycle_preserves_identity"),
@@ -503,7 +507,7 @@ def case_nodes(case):
         return 2
     if case.console_web:
         return 5
-    if case.service_selection or (case.scope.startswith("deployment.") and case.scope != "deployment.hardware"):
+    if case.console_browser or case.service_selection or (case.scope.startswith("deployment.") and case.scope != "deployment.hardware"):
         return 1
     if case.access_protocol or case.scope.startswith("dataset."):
         return 13
@@ -534,7 +538,7 @@ def case_resources(case, node_cpus):
         return max(2, node_cpus) + 1, 3072
     if case.scope == "iceberg.sdk.rck":
         return case_nodes(case) * node_cpus + 0.5, case_nodes(case) * 512 + 4096
-    if len(case.service_selection) > 2:
+    if case.console_browser or len(case.service_selection) > 2:
         return max(2, node_cpus) + 0.5, 2560
     nodes = case_nodes(case)
     retained_networks = (len(case.stores) if case.preserve_network else
@@ -582,6 +586,8 @@ def allocate_cluster(case, image, artifacts, bundle, data_root):
         return ConsoleWebCluster(image, artifacts, data_root=data_root)
     if case.scope.startswith("dataset."):
         return AccessDatasetCluster(image, artifacts, bundle, data_root=data_root)
+    if case.console_browser:
+        return ConsoleCluster(image, artifacts, bundle, data_root=data_root)
     if case.scope.startswith("iceberg."):
         return AccessIcebergCluster(image, artifacts, bundle, native_files=case.iceberg_native_files, catalog_lifecycle=case.iceberg_catalog_lifecycle,
                                     gc_worker=case.iceberg_gc, gc_page_items=case.iceberg_gc_page_items,
@@ -638,7 +644,7 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
         cluster = allocate_cluster(case, image, artifacts, bundle, data_root)
         cluster.case_name = case.name
         cluster.client_timeout = case.client_timeout
-        cluster.node_cpus = max(2, node_cpus) if case.shell_browser or len(case.service_selection) > 2 else node_cpus
+        cluster.node_cpus = max(2, node_cpus) if case.shell_browser or case.console_browser or len(case.service_selection) > 2 else node_cpus
         (cluster.artifacts / "case.json").write_text(json.dumps({
             "scope": case.scope, "case": case.name}, indent=2))
         return cluster
@@ -650,6 +656,8 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
                 cluster.browser(case.shell_browser)
             elif case.scope == "deployment.browser":
                 cluster.browser()
+            elif case.console_browser:
+                cluster.browser(case.console_browser)
             elif case.s3_recovery:
                 run_recovery(cluster, case.s3_recovery)
             elif case.s3_language:
@@ -670,7 +678,7 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
                 cluster.client(bundle, case.name.rsplit("::", 1)[-1], case.name)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=slots) as pool:
-        futures = [pool.submit(run, case) for case in selected if not case.shell_browser]
+        futures = [pool.submit(run, case) for case in selected if not (case.shell_browser or case.console_browser)]
         errors = []
         try:
             for future in concurrent.futures.as_completed(futures):
@@ -682,7 +690,7 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
             for future in futures:
                 future.cancel()
             raise
-        errors.extend(run_browser_batches([case for case in selected if case.shell_browser],
+        errors.extend(run_browser_batches([case for case in selected if case.shell_browser or case.console_browser],
                                           slots, prepare, run))
         if errors:
             for error in errors[1:]:

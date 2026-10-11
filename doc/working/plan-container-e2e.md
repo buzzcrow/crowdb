@@ -11,16 +11,16 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 
 - Branch `task-deploy`; latest accepted browser migration `99ed5435`; native route migration `da0ab099`; runtime membership fix `cb159e7b`. R230 is unfinished. Do not delete the
   requirement/backlog entry until every remaining owner and required gate passes.
-- Working tree contains uncommitted Console browser migration drafts. Shared-image CI is committed. S3 node-fault migration and local-state component proofs are accepted.
+- Working tree contains the unaccepted three-node native Console fixture exploration. Shared-image CI is committed. S3 node-fault migration and local-state component proofs are accepted.
   Preserve these drafts. `e2e-test/clients/console-ui/node_modules/` is local
   dependency state; never stage it.
 - Current formal image is built/imported from
-  `cb159e7b64606f50dff8ee8ff28f0236331f890b`, including S3 streaming and
-  replica voting/epoch fixes. OCI `sha256:a54e48cdd00b58aff064679ee2a6cf9c42d2890312cc61e2cc868739a554275a`;
-  config `sha256:0d292af22a2e38e9178da93138c7d278dffb81d15a429f190ab4b0ae8817ac2c`;
-  runtime `945b18e7eac5b600ee8c5a80387b1c170a5da6742389125408a36861c1f65a91`.
+  `3923ffc549f8f58fa6656a50824a3b02aff4e070`, including S3 streaming,
+  replica voting/epoch fixes and explicit Web readonly policy. OCI `sha256:0c1f070dca690adfac19e96c057806f7bd3ffd33b0c657812908f8b700144eee`;
+  config `sha256:7d4876084b4dc093d6d6c0d2a7fab3b92598a8be739647d7a1f9c0de19d0df97`;
+  runtime `176bfc8b60ec518315ea1abf7681cd18c614b091396bc751b9e8b1069bd148cc`.
   Receipt: `target/crowdb.oci.tar.json`; optimized with retained debug information.
-  Logs: `/tmp/crowdb-voting-epoch-release-{stage,build,import}.log`.
+  Logs: `/tmp/crowdb-explicit-readonly-release-{stage,build,import}.log`.
   Last full S3 43/43 (1545.602 seconds) and Console 89/89 (644.632 seconds)
   used `b7b1247b`; backup `target/crowdb.oci-b7b1247b.tar[.json]` and tag
   `crowdb-node:b7b1247b` remain. These results are baselines, not full acceptance
@@ -33,8 +33,8 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 - Delete original real-server owners only after equivalent accepted assertions.
   Keep deterministic component UT. Run executable commands through `pixi run`;
   native server gates require `clean-env`, never during another server gate.
-- Accepted fixture gate: 87 pass, `/tmp/crowdb-kv-canvas-accepted-fixture.log`,
-  using an export of the staged source. Console browser drafts are excluded.
+- Accepted fixture gate: 89 pass, `/tmp/crowdb-managed-accepted-fixture.log`,
+  including the accepted managed browser fixture and ownership controls.
   S3 component UT passes 114/114; Access-server passes 108 plus its pinned
   SDK protocol test; Web/Console-shared/E2E all-target clippy
   and workspace fmt pass.
@@ -131,6 +131,16 @@ and the named run artifacts.
   pass with two independent containers in `/tmp/crowdb-root-browser-kv-literal`
   and `/tmp/crowdb-root-browser-canvas`. Browser selectors escape literal test
   names, including parentheses, so exactly one case runs per fixture.
+- Both original managed browser cases → `console.managed`: physical write 503,
+  KV put/query/delete, Iceberg schema and demo cleanup, S3 preview and actual
+  Chunk/disk placement, Group-0 outage under the original ten-second bound,
+  retained monitor observation and recovery. Each host browser owns a complete
+  release node and workspace; pause/resume targets the owned container KV PID.
+  Normal mounted Web configuration explicitly disables readonly internally.
+  Both cases pass concurrently in 25.023s (`run-1a8ef3d01e5a45e7a969da8202e25c42`).
+  The public readonly browser gate passes (`run-f196be80010c4dbaa5c6fc46b99bb59e`).
+  Original managed spec and native server launcher are retired; its old script
+  delegates to the root scope. The same immutable image serves both modes.
 - `swagger_routes_are_removed` → component `swagger_routes_test.rs`: all three
   retired paths; no real server startup (`ff711b4c`).
 
@@ -141,28 +151,27 @@ and the named run artifacts.
   internal test profiles allow writes. Preserve Docker physical-mutation
   restrictions. Implement process configuration, API mode and UI propagation,
   component proofs and both release-container browser owners before closure.
-  Configuration 2/2, managed router 5/5 and UI production build pass; release
-  image rebuild and actual writable/readonly browser gates remain pending.
+  Configuration 2/2, managed router 5/5 and UI production build pass; both
+  writable managed and public readonly release browser gates pass.
 
 
 - [ ] **CLI S3 bootstrap replay owners**: migrate the two server-starting
   cases in `app/crowdb-cli/tests/s3_cli_test.rs`:
   `interrupted_s3_launch_resumes_confirmed_group_zero_without_topology_file`
   and `interrupted_s3_storage_launch_replays_without_local_topology`.
-  Preserve failed-launch markers, relative-root resolution, confirmed Group-0
-  replay, retained Diskdb local launch, no local topology/legacy console file,
-  completed marker/intent removal and owned deletion. They start real services
-  indirectly through CLI; retain unrelated HTTP stubs and argument validation UT.
-- [~] **Console browser migration**: resolve the mode contract below, then
-  accept both managed browser flows and audit every spec using
-  `app/crowdb-web/ui/e2e/realBackend.config.ts`. Two copied flows under
-  `e2e-test/clients/console-ui/e2e/`, `console_fixture.py`, browser configuration
-  and fixture tests are unaccepted drafts. Host browser consumes owned container
-  endpoints; signaling validates service PID and run ownership. Preserve UI
-  assertions and remove native runners only after matching acceptance. Current
-  root Console operation inventory is 111 cases; the two managed draft browser cases are additional.
-  All three original shell assertions have accepted root owners; the original
-  embedding spec is removed.
+  CLI startup and lifecycle now operate on a three-node container cluster,
+  using the formal image, public admission/bootstrap and fixed per-node ports.
+  A container name selects its owning cluster; root paths select mounted data.
+  Preserve interrupted-start markers, relative-root resolution, confirmed Group-0
+  replay, retained Diskdb container service, no local topology/legacy console
+  file, completed marker/intent removal and owned deletion. Migrate the old
+  binary-failure injection to owned container/client interruption at equivalent
+  checkpoints. Retain unrelated HTTP stubs and argument validation UT.
+- [~] **Console browser migration**: audit and migrate the remaining specs using
+  `app/crowdb-web/ui/e2e/realBackend.config.ts`. Host browsers consume owned
+  container endpoints; signals validate container ownership and current service
+  PID. Current accepted Console operation inventory is 113 cases. Shell,
+  registry, KV data, canvas and both managed flows have accepted owners.
   Also migrate the server-owning `app/crowdb-web/tests/native_cluster_provisioning_test.rs`
   and its `nativeDiagnostics.config.ts` browser callbacks; they are outside the
   default realBackend selection and remain in `test-console.sh`. Audit
@@ -222,34 +231,10 @@ and the named run artifacts.
   `run-5cfba02195364ce483aac4b5a3eaf1ee`; logs under
   `/tmp/crowdb-voting-epoch-final-{console,deployment}-ci.log`.
   The fifteen newer shell/registry/KV/canvas browser cases pass separately and are not
-  included in the complete 96-case measurement. Current accepted Console inventory is 111;
+  included in the complete 96-case measurement. Current accepted Console inventory is 113;
   final full-domain measurement remains pending. Remote CI and macOS remain
   unmeasured. Files: `doc/working/test.md`, root runner reports.
-- [ ] **Deferred benchmark decision**: review
-  `tools/benchmark/bench-chunk-kv-regression.sh` only after migration and coverage
-  measurements are complete; user explicitly deferred this decision. Keep it.
 - [ ] **Close R230**: after inventory, assertion mapping, local gates and required
   environment results are satisfied, remove R230 detail/backlog entry and this
   plan in the final cleanup commit. Requirement commits use coherent verified
   batches and single-line subjects without requirement numbers.
-
-## Blocked
-
-### CLI S3 local deployment mode
-
-- Original two CLI replay owners generate `deployment.mode = "test_unsafe_placement"`
-  via `lifecycle::chunkdb_config` when `protected_test = false`. Formal release
-  explicitly rejects that mode in `ChunkdbConfig::validate`; do not bypass it
-  with a debug server build, replace generated configuration or weaken safety.
-- An owned host CLI adapter experiment ran each server in a separate immutable
-  release container, including three KV voters. First attempt failed at the
-  standard entrypoint's UID preparation; normal Docker binary entrypoint with
-  the host UID then reached the actual mode rejection. Neither is accepted.
-  Command: `pixi run python /tmp/crowdb-cli-container-prototype.py`; logs
-  `/tmp/crowdb-cli-container-prototype-direct.log`; retained case
-  `run-04c5b1f48deb42599edc622f7fc4f946/cli-local/after-kv`. Owned containers and
-  adapter processes were cleaned; original CLI tests remain.
-- Pending choice asked once: preserve release restrictions and separate local
-  launch control component UT from normal container storage recovery, or change
-  CLI default local deployment to a supported release mode. Continue independent
-  work while waiting; this is a contract choice, not a fifth failing-test retry.

@@ -339,6 +339,10 @@ pixi run test-container-e2e --layer s3 --scope s3.recovery --concurrency 1 --cpu
   or relaxed UI deadlines. Failed clients and partial startup still clean up.
 - Backend-unavailable checks use a closed container listener at port 9091 so
   Chromium does not need to authorize a private-IP page accessing loopback.
+- `console.managed` runs both full-stack managed browser flows. Its mounted Web
+  template sets readonly false while the public release template remains true.
+  Both use the same image; physical capabilities remain restricted. The host
+  control channel pauses/resumes only the current owned KV service PID.
 - These accepted cases are included once in `console.operations`; managed
   browser migration and the other native UI flows remain pending.
 

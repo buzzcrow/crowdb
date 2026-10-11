@@ -50,8 +50,8 @@ class SelectionTest(unittest.TestCase):
 
     def test_console_operations_combines_host_client_scopes(self):
         cases = json.loads(self.invoke("--list", "--scope", "console.operations"))
-        self.assertEqual(len(cases), 111)
-        self.assertTrue(all(case["scope"] != "console.managed" for case in cases))
+        self.assertEqual(len(cases), 113)
+        self.assertEqual(sum(case["scope"] == "console.managed" for case in cases), 2)
         exact = json.loads(self.invoke("--list", "--scope", "console.operations", "--case", cases[0]["case"]))
         self.assertEqual(exact, [cases[0]])
 
@@ -70,10 +70,9 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(len(dataset), 2)
         self.assertTrue(all(case["scope"] == "dataset.http" and case["nodes"] == 13 for case in dataset))
         console = json.loads(self.invoke("--list", "--layer", "console"))
-        self.assertEqual(len(console), 111)
+        self.assertEqual(len(console), 113)
         wal_nodes = {"remove_leader_from_five_node_group_elects_new_leader": 6,
-                     "remove_unreachable_leader_retains_group0_membership": 6,
-                     "replica_add_remove_wires_peers_bidirectionally": 3, "restart_3node_1group": 4, "restart_5node_1group": 6,
+                     "remove_unreachable_leader_retains_group0_membership": 6, "replica_add_remove_wires_peers_bidirectionally": 3, "restart_3node_1group": 4, "restart_5node_1group": 6,
                      "restart_5node_2group": 6, "restart_6node_2group_overlap": 7}
         for case in console:
             if case["scope"] == "console.web.wal":
@@ -84,7 +83,7 @@ class SelectionTest(unittest.TestCase):
                                  else 2 if case["scope"] == "console.web.bootstrap"
                                  else 13 if case["scope"] == "console.web.access"
                                  else 5 if case["scope"].startswith("console.web.")
-                                 else 1 if case["scope"] in ("console.browser.shell", "console.browser.registry", "console.browser.kv", "console.browser.canvas", "console.clients") else 3)
+                                 else 1 if case["scope"] in ("console.managed", "console.browser.shell", "console.browser.registry", "console.browser.kv", "console.browser.canvas", "console.clients") else 3)
         iceberg = json.loads(self.invoke("--list", "--layer", "iceberg"))
         self.assertEqual(len(iceberg), 32)
         self.assertTrue(all(case["scope"].startswith("iceberg.") and case["nodes"] == 14
@@ -95,3 +94,12 @@ class SelectionTest(unittest.TestCase):
             self.invoke("--layer", "kv", "--case", diskdb[0]["case"])
         with self.assertRaises(SystemExit):
             self.invoke("--layer", "diskdb", "--require-isolation")
+
+
+class CaseResourcesTest(unittest.TestCase):
+    def test_full_managed_node_reserves_its_services_and_host_client(self):
+        from scenarios import CONSOLE_OPERATION_CASES, case_nodes, case_resources
+        for case in (case for case in CONSOLE_OPERATION_CASES if case.console_browser):
+            self.assertEqual(case_nodes(case), 1)
+            self.assertEqual(case_resources(case, 0.25), (2.5, 2560))
+            self.assertEqual(case_resources(case, 3), (3.5, 2560))

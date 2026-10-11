@@ -11,6 +11,7 @@ from unittest.mock import Mock
 from control import Control
 from fixture import Cluster, LABEL
 from chunkdb_fixture import ChunkdbStorageCluster
+from console_fixture import ConsoleCluster
 
 
 class ControlTest(unittest.TestCase):
@@ -69,3 +70,28 @@ class ControlTest(unittest.TestCase):
             with Control(cluster):
                 time.sleep(0.05)
             cluster.control.assert_called_once()
+
+
+class ConsoleControlTest(unittest.TestCase):
+    def test_signals_require_owned_node_observed_pid_and_supported_service(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cluster = ConsoleCluster("image", directory, Path(directory))
+            cluster.servers = ["owned"]
+            inspected = [{"Config": {"Labels": {LABEL: cluster.run_id}}, "State": {"Running": True}}]
+            cluster.command = Mock(return_value=json.dumps(inspected))
+            cluster.observation = Mock(return_value={"services": {"kv": {"pid": 42}}})
+            body = {"action": "signal-service", "node": 0, "service": "kv", "pid": 42, "signal": "STOP"}
+            for field, value in (("service", "web"), ("pid", 43), ("pid", True), ("signal", "KILL"), ("node", 1)):
+                cluster.command.reset_mock()
+                with self.assertRaises(ValueError):
+                    cluster.control(dict(body, **{field: value}))
+                self.assertTrue(all(call.args[0] == "inspect" for call in cluster.command.call_args_list))
+            cluster.command.reset_mock()
+            self.assertEqual(cluster.control(body), {"pid": 42, "signal": "STOP"})
+            cluster.command.assert_any_call("exec", "owned", "/bin/kill", "-STOP", "42")
+            inspected[0]["Config"]["Labels"][LABEL] = "foreign"
+            cluster.command.return_value = json.dumps(inspected)
+            cluster.command.reset_mock()
+            with self.assertRaisesRegex(ValueError, "ownership"):
+                cluster.control(body)
+            cluster.command.assert_called_once_with("inspect", "owned")
