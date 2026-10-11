@@ -1,3 +1,6 @@
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
+
 #[path = "common/iceberg_stack.rs"]
 #[allow(dead_code)]
 mod common;
@@ -5,57 +8,23 @@ mod common;
 #[allow(dead_code)]
 mod process;
 
-#[path = "common/iceberg_file_listing.rs"]
-mod listing;
-
 use common::{now_ms, TestIcebergStack};
-use crowdb_access_iceberg::catalog::{CatalogRepository, ClearBounds, ManagementPrivilege};
-use crowdb_access_iceberg::file::{FileGrant, FileGrantIssuer, FileOperation, FileOperations, TableLocation};
-use crowdb_access_iceberg::key::OperationId;
-use crowdb_access_iceberg::operation::{ManagementAction, ManagementRequest, RequestIdentity};
-use crowdb_access_iceberg::wire::BearerAuthenticator;
-use reqwest::Client;
+use crowdb_access_iceberg::{
+    catalog::{CatalogRepository, ClearBounds, ManagementPrivilege},
+    key::OperationId,
+    operation::{ManagementAction, ManagementRequest, RequestIdentity},
+};
 
-#[path = "common/iceberg_signed_file.rs"]
-mod signed;
-use signed::TestFileClient;
-
-async fn setup() -> (
-    TestIcebergStack,
-    process::TestIcebergProcess,
-    TestFileClient,
-    TableLocation,
-) {
-    setup_with_bounds(ClearBounds {
-        delegated_access_ms: 900_000,
-        ..ClearBounds::default()
-    })
-    .await
-}
-
-async fn setup_with_bounds(
-    bounds: ClearBounds,
-) -> (
-    TestIcebergStack,
-    process::TestIcebergProcess,
-    TestFileClient,
-    TableLocation,
-) {
-    setup_with_bounds_and_file_limit(bounds, 16 * 1024 * 1024, 64 * 1024 * 1024).await
-}
-
-async fn setup_with_bounds_and_file_limit(
-    bounds: ClearBounds,
-    max_request_bytes: u64,
-    max_file_bytes: u64,
-) -> (
-    TestIcebergStack,
-    process::TestIcebergProcess,
-    TestFileClient,
-    TableLocation,
-) {
+async fn setup() -> (TestIcebergStack, process::TestIcebergProcess) {
     let stack = TestIcebergStack::start().await;
-    let repository = CatalogRepository::new(stack.store().await, bounds).unwrap();
+    let repository = CatalogRepository::new(
+        stack.store().await,
+        ClearBounds {
+            delegated_access_ms: 900_000,
+            ..ClearBounds::default()
+        },
+    )
+    .unwrap();
     repository
         .execute(
             ManagementRequest {
@@ -76,81 +45,17 @@ async fn setup_with_bounds_and_file_limit(
         .await
         .unwrap();
     common::activate(&repository).await;
-    let context = repository.status().await.unwrap().0.context;
     let process = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
-    let client = Client::new();
-    let endpoint = format!("http://{}", process.address);
-    let namespace = client
-        .post(format!("{endpoint}/v1/namespaces"))
-        .bearer_auth("w".repeat(32))
-        .json(&serde_json::json!({"namespace": ["analytics"]}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(namespace.status(), 200, "{}", namespace.text().await.unwrap());
-    let draft = client
-        .post(format!("{endpoint}/v1/namespaces/analytics/tables"))
-        .bearer_auth("w".repeat(32))
-        .json(&serde_json::json!({"name": "files", "stage-create": true,
-            "schema": {"type": "struct", "fields": []}}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(draft.status(), 200, "{}", draft.text().await.unwrap());
-    let draft: serde_json::Value = draft.json().await.unwrap();
-    let ports = crowdb_protocol::ServicePort::AccessServerIcebergHttp;
-    assert!((ports.base()..ports.base() + ports.range_size()).contains(&process.address.port()));
-    assert_eq!(draft["config"]["s3.endpoint"], endpoint);
-    let table: TableLocation = format!("{}/", draft["metadata"]["location"].as_str().unwrap())
-        .parse()
-        .unwrap();
-    let authenticator =
-        BearerAuthenticator::new(&"r".repeat(32), &"w".repeat(32), &"m".repeat(32), &"c".repeat(32)).unwrap();
-    let issuer = FileGrantIssuer::new(authenticator.namespace_token_key(), 15 * 60 * 1000).unwrap();
-    let started = now_ms();
-    let credentials = issuer
-        .issue(FileGrant {
-            context,
-            table: table.table,
-            principal: [7; 32],
-            nonce: OperationId::random(),
-            issued_ms: started - 1_000,
-            expires_ms: started + 10 * 60 * 1000,
-            operations: FileOperations::new(&[
-                FileOperation::Head,
-                FileOperation::Get,
-                FileOperation::ListObjects,
-                FileOperation::Put,
-                FileOperation::CreateMultipart,
-                FileOperation::UploadPart,
-                FileOperation::ListParts,
-                FileOperation::CompleteMultipart,
-                FileOperation::AbortMultipart,
-            ])
-            .unwrap(),
-            max_request_bytes,
-            max_file_bytes,
-        })
-        .unwrap();
-    let client = TestFileClient {
-        client,
-        credentials,
-        address: process.address,
-    };
-    (stack, process, client, table)
-}
-
-fn path(table: TableLocation, key: &str) -> String {
-    format!("/{}/{}", table.bucket(), table.file(key).unwrap().object_key())
+    (stack, process)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "manual TPC-H and TPC-DS loader stress on the small cluster"]
 async fn tpc_loader_parallel_stress() {
-    let (_stack, _process, client, _table) = setup().await;
+    let (_stack, process) = setup().await;
     let python = std::env::var("CROWDB_TPC_LOADER_PYTHON")
         .expect("set CROWDB_TPC_LOADER_PYTHON to the installed TPC loader environment");
-    let endpoint = format!("http://{}", client.address);
+    let endpoint = format!("http://{}", process.address);
     let mut commands = Vec::new();
     for (benchmark, workers) in [("tpch", "8"), ("tpcds", "24")] {
         let mut command = tokio::process::Command::new("pixi");

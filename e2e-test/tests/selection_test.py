@@ -74,7 +74,7 @@ class SelectionTest(unittest.TestCase):
                                  else 5 if case["scope"].startswith("console.web.")
                                  else 1 if case["scope"] in ("console.managed", "console.clients") else 3)
         iceberg = json.loads(self.invoke("--list", "--layer", "iceberg"))
-        self.assertEqual(len(iceberg), 30)
+        self.assertEqual(len(iceberg), 32)
         self.assertTrue(all(case["scope"].startswith("iceberg.") and case["nodes"] == 14
                             for case in iceberg))
         kv = json.loads(self.invoke("--list", "--layer", "kv"))

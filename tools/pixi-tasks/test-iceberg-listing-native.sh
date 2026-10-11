@@ -3,5 +3,5 @@
 # Licensed under the Apache License, Version 2.0.
 set -euo pipefail
 cd "${PIXI_PROJECT_ROOT:?}"
-source tools/pixi-tasks/prepare-iceberg.sh
-pixi run -e default cargo test --release -p crowdb-access-server --features iceberg-e2e --test iceberg_file_http_test listing:: -- --include-ignored --test-threads=1
+pixi run -e default -- python e2e-test/run.py --layer iceberg --scope iceberg.files.listing \
+    --image "${CROWDB_E2E_IMAGE:-crowdb-node:dev}" --concurrency 2 --cpus 16 --memory-mib 16384

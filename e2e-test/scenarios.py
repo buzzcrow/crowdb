@@ -290,6 +290,8 @@ S3_SPECIAL_CASES = (Case("s3.policy", "access_s3::protocol_http::combined_http_l
 S3_LANGUAGE_CASES = tuple(Case("s3.sdk", "s3.sdk::" + language, sdk_client=True, s3_language=language)
                           for language in ("java", "js", "go"))
 ICEBERG_CASES = (
+    Case("iceberg.files.listing", "access_iceberg::file_http::listing::native_list_objects_v2_serves_selected_files_and_rejects_foreign_scope", iceberg_deferred_access=True),
+    Case("iceberg.files.listing", "access_iceberg::file_http::listing::official_pyarrow_native_fileio_creates_exact_files_and_lists_table_prefixes", iceberg_deferred_access=True),
     Case("iceberg.sdk.rck", "access_iceberg::rck::apache_rest_compatibility_kit_supported_catalog_surface", client_timeout=960),
     Case("iceberg.benchmark", "access_iceberg::file_http::profiles::large::five_mib_profile", iceberg_deferred_access=True),
     Case("iceberg.benchmark", "access_iceberg::file_http::profiles::small_file_profiles", iceberg_deferred_access=True),

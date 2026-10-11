@@ -1665,3 +1665,19 @@ Source `lib/crowdb-kv-client/tests/chunk_slot_map_test.rs`: all eight cases exer
   store and cancellation listener. Retire the native matrix/child launcher only
   after both baseline and component proofs pass. Listing SDK and manual TPC
   launch ownership remain separately pending.
+
+### File listing protocol and official PyArrow migrated
+
+- Both original listing owners pass their native baseline in 14.20 seconds.
+  Container protocol `run-6767bc53a6b94201bd855b665754fda8` passes (client
+  1.95 s); official SDK `run-76ea7f0a740442dea52c3c1ebb558990` passes (3.72 s).
+  Retain exact selected files, pagination token, delimiter/URL encoding, foreign
+  prefix/general-S3-token rejection, Unicode file names, exact creation and
+  HEAD/GET through pinned PyIceberg 0.11.1 / PyArrow 25.0.0.
+- Root `access_iceberg::file_http::listing` and host client
+  `clients/iceberg-python/listing.py` consume the same protected formal-image
+  profile and fixed 7502 endpoint. Retire old listing helpers only after both
+  container owners pass; keep manual TPC native setup separately pending.
+  The listing task delegates to `iceberg.files.listing`; normal native task
+  runs component recovery gates and container files/GC without host server
+  preparation. Only explicitly configured manual TPC still prepares host servers.

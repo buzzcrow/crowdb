@@ -1,7 +1,11 @@
-use super::{path, setup};
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
+
+use super::setup::{path, setup};
 use reqwest::Method;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires the owned release Iceberg profile"]
 async fn native_list_objects_v2_serves_selected_files_and_rejects_foreign_scope() {
     let (_stack, _process, client, table) = setup().await;
     for key in ["data/a.json", "data/nested/b.json", "metadata/c.json"] {
@@ -89,15 +93,14 @@ async fn official_pyarrow_native_fileio_creates_exact_files_and_lists_table_pref
         "access_key": client.credentials.access_key_id(), "secret_key": client.credentials.secret_access_key(),
         "session_token": client.credentials.session_token() });
     let status = tokio::task::spawn_blocking(move || {
-        let python =
-            std::env::var_os("CROWDB_ICEBERG_E2E_PYTHON").expect("run the native listing client task");
         let mut child = Command::new("timeout")
             .arg("60")
-            .arg(python)
-            .arg(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/common/iceberg_listing_native_client.py"
-            ))
+            .arg("pixi")
+            .args(["run", "-e", "iceberg-e2e", "python"])
+            .arg(
+                std::path::PathBuf::from(std::env::var("CROWDB_E2E_CLIENT_ROOT").unwrap())
+                    .join("iceberg-python/listing.py"),
+            )
             .stdin(Stdio::piped())
             .spawn()
             .unwrap();

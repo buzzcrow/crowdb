@@ -7,6 +7,7 @@ mod concurrency;
 mod direct_profile;
 mod java_sdk;
 mod lifecycle;
+mod listing;
 mod multipart_profile;
 mod profiles;
 mod publication;

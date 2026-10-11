@@ -90,7 +90,7 @@ as environment baselines, not as evidence of migration completion.
 ## Remaining issues
 
 - [ ] **Migration closure**: remaining real-server Console lifecycle/cluster
-  flows, S3 mini-cluster and Iceberg listing SDK/manual TPC need canonical
+  flows, S3 mini-cluster and Iceberg manual TPC need canonical
   container owners. Preserve old assertions and important component UTs until
   equivalent owners pass. Final Pixi/CI taxonomy and complete-domain measurements remain pending.
   KV/KV and KV/Web isolation acceptance passes.
