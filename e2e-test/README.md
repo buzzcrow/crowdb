@@ -53,6 +53,9 @@ pixi run test-container-e2e --profile host --concurrency 1 --cpus 4 --memory-mib
 # Explicit native containerd in isolated privileged Linux hosts:
 pixi run test-container-e2e --profile containerd-host --concurrency 1 --cpus 3 --memory-mib 2048
 pixi run test-container-e2e --profile containerd-cluster --concurrency 1 --node-cpus 0.75 --cpus 4 --memory-mib 6144
+# Manual discovery/SSH/bootstrap and four host browser acceptance flows:
+pixi run bash -c 'cd e2e-test/clients/console-ui && npm ci --ignore-scripts'
+pixi run test-container-e2e --profile bridge-admission --concurrency 1 --node-cpus 0.5 --cpus 4 --memory-mib 6144
 # Select one exact client case or list available profiles without Docker:
 pixi run test-container-e2e --case kv::bootstrap::custom_replica
 pixi run test-container-e2e --list --scope kv.group0
@@ -344,3 +347,12 @@ pixi run test-container-e2e --layer s3 --scope s3.recovery --concurrency 1 --cpu
   client/fixture times remain in each run's `results.json`.
   Manual admission, native host and ecosystem
   profiles and final Pixi/CI classification remain in the working plan.
+
+`bridge-admission` runs manual release nodes on an owned bridge, using inspected
+IPs and fixed Web/SSH listeners without host port publishing. Its five-node peak
+reserves 3.5 CPU / 6144 MiB at 0.5 CPU/node, including the host browser. Four
+browser reports must each pass exactly once with zero skips. Browser traces,
+node data/log/crash files and credentials stay under the private per-run data
+root; only redacted client output and identity/results are uploaded. Both
+partial startup and active-browser interruption remove all owned runtime
+resources and terminate the host browser children while retaining diagnostics.

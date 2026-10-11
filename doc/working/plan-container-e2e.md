@@ -54,19 +54,16 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   endpoints; signaling validates service PID and run ownership. Preserve UI
   assertions and remove native runners only after matching acceptance. Current
   root Console operation inventory is 87 cases; the two draft browser cases are additional.
-- [~] **Bridge SSH admission closure**: full root profile passes on the rebuilt
-  formal image in 126.754 seconds (`run-5f3eb820ec604a439cc87ede1f140364`),
-  including all four browser flows, literal credential/authentication failure,
-  interrupted bootstrap, cancellation fencing, cross-UI services, independent
-  cleanup, persistent IP/rack update, snapshot/WAL voting catch-up and minority
-  gating. Finalize per-browser reports and zero-skip validation, prove partial
-  interruption cleanup, then retire the four old Python owners and their four
-  mixed native-spec cases. Update canonical CI delegates and client preparation.
-  Five nodes plus host browser reserve 3.5 CPU / 6144 MiB at 0.5 CPU/node.
-  Keep `launch_ssh_test.rs` (fake SSH peer/sleep child) as component UT.
-- [ ] **External engine profile**: classify/move
+- [~] **External engine profile**: classify/move
   `container/single-node-container/tests/ecosystem/` as an explicit manual child
-  under `e2e-test/clients/`; Python, DuckDB, Trino, Spark and Flink consume one
+  under `e2e-test/clients/`; draft `--profile ecosystem` / `ecosystem-python`
+  reuses the central ManagedCluster with private bind mounts and direct fixed
+  endpoints. Original baseline passes Python/DuckDB/Spark/Flink but Trino
+  exceeded its unchanged 60-second query deadline. The original unbounded
+  Trino JVM uses 80% initial heap; explicit 1 CPU / 4 GiB limits now pass the
+  complete original matrix and persisted-volume restart. Accept the root
+  direct-IP profile and interruption cleanup before deleting old owners. Keep failed stage/state evidence in
+  `/tmp/crowdb-ecosystem-legacy-ready`. Python, DuckDB, Trino, Spark and Flink consume one
   formal server image with host clients and locked engine dependencies. Keep
   external toolchain prerequisites, restart/exact-data assertions and credential
   redaction. Missing prerequisites fail an explicitly requested gate.

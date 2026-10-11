@@ -432,7 +432,7 @@ explicitly select automatic single-node startup.
 Acceptance harnesses use the same pinned image:
 
 ```bash
-pixi run python container/single-node-container/tests/node-containers.py
+pixi run test-container-e2e --profile bridge-admission --concurrency 1 --node-cpus 0.5 --cpus 4 --memory-mib 6144
 pixi run python container/single-node-container/tests/host-node.py
 ```
 

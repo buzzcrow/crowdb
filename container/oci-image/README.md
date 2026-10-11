@@ -165,7 +165,7 @@ Workflow execution and live registry signing require a release dispatch.
 ```bash
 pixi run test-oci-image
 pixi run --skip-deps test-single-node-container
-pixi run python container/single-node-container/tests/node-containers.py
+pixi run test-container-e2e --profile bridge-admission --concurrency 1 --node-cpus 0.5 --cpus 4 --memory-mib 6144
 pixi run test-container-e2e --profile host --concurrency 1 --cpus 4 --memory-mib 4096
 pixi run test-container-e2e --profile containerd-cluster --concurrency 1 --node-cpus 0.75 --cpus 4 --memory-mib 6144
 # One disposable privileged Linux host, with native containerd and no Docker socket inside:

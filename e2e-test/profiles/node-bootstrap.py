@@ -4,8 +4,7 @@
 
 """Real browser preparation and recovery from an independent UI."""
 import json
-import os
-import subprocess
+from bridge_node import browser
 import urllib.error
 
 
@@ -18,13 +17,9 @@ def verify(docker, request, wait, verify_incomplete_preparation, PREFIX, names, 
                         node["state"] == "unbound" for node in result["candidates"]), "unbound discovery after preparation cleanup")
     identities = {entry["advertisement"]["discovery_id"] for entry in snapshot["candidates"]}
     assert len(identities) == 3
-    environment = dict(os.environ, CROWDB_NODE_UI_ORIGIN=origins[0],
-                       CROWDB_NODE_UI_PREPARE_ONLY="1",
-                       CROWDB_WEB_E2E_OUTPUT=f"test-results/{PREFIX}",
-                       CROWDB_NODE_UI_IDENTITIES=json.dumps(sorted(identities)))
-    subprocess.run(["npx", "playwright", "test", "--config=e2e/realBackend.config.ts",
-                    "e2e/flows/12-cluster-discovery.spec.ts", "--grep", "Docker candidates"],
-                   cwd="app/crowdb-web/ui", env=environment, check=True, timeout=120)
+    browser(origins[0], "Docker candidates", "prepare",
+            CROWDB_NODE_UI_PREPARE_ONLY="1",
+            CROWDB_NODE_UI_IDENTITIES=json.dumps(sorted(identities)))
     prepared = request(origins[0], "/api/node/admissions")
     docker("pause", names[2])
     try:
@@ -38,12 +33,8 @@ def verify(docker, request, wait, verify_incomplete_preparation, PREFIX, names, 
         docker("unpause", names[2])
     fixed = request(origins[0], "/api/node/status")
     assert fixed["phase"] == "bootstrap_in_progress", fixed
-    environment.pop("CROWDB_NODE_UI_PREPARE_ONLY")
-    environment["CROWDB_NODE_UI_ORIGIN"] = origins[1]
-    environment["CROWDB_NODE_UI_RECOVERY_ORIGIN"] = origins[1]
-    subprocess.run(["npx", "playwright", "test", "--config=e2e/realBackend.config.ts",
-                    "e2e/flows/12-cluster-discovery.spec.ts", "--grep", "another UI resumes"],
-                   cwd="app/crowdb-web/ui", env=environment, check=True, timeout=120)
+    browser(origins[1], "another UI resumes", "resume",
+            CROWDB_NODE_UI_RECOVERY_ORIGIN=origins[1])
     records = request(origins[0], "/api/node/admissions")
     print("Three nodes prepared and bootstrapped through the actual browser UI", flush=True)
     clusters = []

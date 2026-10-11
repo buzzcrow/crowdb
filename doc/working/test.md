@@ -51,12 +51,21 @@ are excluded. Console uses one effective case slot at 0.25 CPU/server with a
 ## Environments
 
 - **intel7960**: Linux Docker bridge containers; host clients access inspected
-  private IPs and fixed service ports. Latest verified release source
+  private IPs and fixed service ports. Prior complete domain measurements use release source
   `ec0703725994ae746c7c7cc2d42a8b889a72402d`, OCI digest
   `sha256:40b41c9f808a262d78236e5b1acbe685ca7de37e5b695089ea3e0f9c029e5979`.
   Earlier domain rows retain their own image identity in the linked reports.
+  The rebuilt image from `d9dd29c41e94ad48a58940fc01b7ad700bdd0cf3`
+  (OCI `sha256:bb3c6951ef7f3203ba49354678032bf3016c3db9004412875630a1b0783b57b0`)
+  fixes non-voting heartbeat catch-up; final full-domain remeasurement is pending.
   Optimized binaries retain debug info; mounted data/log/crash paths and actual
   host core collector are recorded per run. Receipt: `target/crowdb.oci.tar.json`.
+- **Bridge SSH admission**: the explicit five-node peak profile passes in
+  123.686 seconds on the rebuilt image, 0.5 CPU/node with a 3.5 CPU /
+  6144 MiB reservation; [report](../../.crowdb-runtime/artifacts/container-e2e/run-e05c9cea49344b21a6d94b724c1071c9/results.json).
+  Four host browser flows pass with zero skips. Partial-startup and active-browser
+  interruption clean up owned resources/clients in 1.128 / 1.385 seconds.
+  This profile is separate from the ordinary Deployment domain measurement.
 - **Linux host profile**: explicit host-network admission/recovery passes 1/1
   in 6.740 seconds on intel7960, 2 CPU / 1024 MiB node quota
   plus the host client reservation; [report](../../.crowdb-runtime/artifacts/container-e2e/run-9869315124ca45cb9ba3e3b3b245be90/results.json).

@@ -31,7 +31,7 @@ class ReleasePolicyTest(unittest.TestCase):
         self.assertNotIn("build-push-action", str(jobs["publish"]))
         self.assertIn("publisher release", str(jobs["publish"]))
         self.assertIn("test-single-node-container", str(jobs["verify"]))
-        self.assertIn("node-containers.py", str(jobs["verify"]))
+        self.assertIn("--profile bridge-admission", str(jobs["verify"]))
         self.assertIn("--profile host --concurrency 1", str(jobs["verify"]))
         self.assertIn("--profile containerd-cluster --concurrency 1", str(jobs["verify"]))
         self.assertIn("--profile containerd-host --concurrency 1", str(jobs["containerd"]))

@@ -4,21 +4,15 @@
 
 """Interrupted SSH admission and cross-UI managed-service lifecycle."""
 import json
+from bridge_node import start_node, origin_for, CLIENT, BROWSER_OUTPUT
 import urllib.error
 
 
-def verify(docker, request, wait, IMAGE, PREFIX, names, volumes, origins, identities, records):
+def verify(docker, request, wait, IMAGE, PREFIX, names, origins, identities, records):
     # A new candidate stays unbound until another UI commits its admission.
     fourth = f"{PREFIX}-3"
     names.append(fourth)
-    volume = f"{fourth}-data"
-    volumes.append(volume)
-    docker("run", "-d", "--name", fourth, "--network", PREFIX, "--cpus", "2", "--memory", "1g",
-           "--mount", f"type=volume,source={volume},target=/opt/crowdb/data",
-           "-e", "CROWDB_STARTUP_MODE=manual", "-e", "CROWDB_PHYSICAL_HOST_ID=one-docker-host",
-           "-p", "127.0.0.1::9090", IMAGE)
-    mapping = json.loads(docker("inspect", fourth))[0]["NetworkSettings"]["Ports"]["9090/tcp"][0]
-    fourth_origin = "http://127.0.0.1:" + mapping["HostPort"]
+    fourth_origin = start_node(fourth)
     discovered = wait(lambda: request(origins[1], "/api/node/candidates"),
                       lambda result: len(result["candidates"]) == 4, "fourth candidate discovery")
     candidate = next(item for item in discovered["candidates"] if item["advertisement"]["discovery_id"] not in identities)

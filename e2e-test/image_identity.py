@@ -13,6 +13,8 @@ SERVER_PATHS = (
     "app", "lib", "container", "tools", "cmake", ".cargo",
     "Cargo.toml", "Cargo.lock", "pixi.toml", "pixi.lock", "CMakeLists.txt",
     ":(glob,exclude)**/tests/**",
+    # Host browser specs are excluded from the UI build (tsconfig includes src).
+    ":(exclude)app/crowdb-web/ui/e2e/flows/12-cluster-discovery.spec.ts",
     # The staging script does not package this operator documentation.
     ":(exclude)container/single-node-container/README.md",
     ":(exclude)container/oci-image/README.md",

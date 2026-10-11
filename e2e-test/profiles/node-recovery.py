@@ -4,28 +4,13 @@
 
 """Independent cluster cleanup, persistent endpoint changes and voting catch-up."""
 import json
-import os
-import subprocess
+from bridge_node import start_node, origin_for, browser
 
 
-def browser(origin, selection, **inputs):
-    environment = dict(os.environ, CROWDB_NODE_UI_ORIGIN=origin, **inputs)
-    subprocess.run(["npx", "playwright", "test", "--config=e2e/realBackend.config.ts",
-                    "e2e/flows/12-cluster-discovery.spec.ts", "--grep", selection],
-                   cwd="app/crowdb-web/ui", env=environment, check=True, timeout=120)
-
-
-def verify(docker, request, wait, image, network, names, volumes, origins, cluster):
+def verify(docker, request, wait, image, network, names, origins, cluster):
     name = network + "-4"
     names.append(name)
-    volume = name + "-data"
-    volumes.append(volume)
-    docker("run", "-d", "--name", name, "--network", network, "--cpus", "2", "--memory", "1g",
-           "--mount", f"type=volume,source={volume},target=/opt/crowdb/data",
-           "-e", "CROWDB_STARTUP_MODE=manual", "-e", "CROWDB_PHYSICAL_HOST_ID=one-docker-host",
-           "-p", "127.0.0.1::9090", image)
-    mapping = json.loads(docker("inspect", name))[0]["NetworkSettings"]["Ports"]["9090/tcp"][0]
-    origin = "http://127.0.0.1:" + mapping["HostPort"]
+    origin = start_node(name)
     snapshot = wait(lambda: request(origin, "/api/node/candidates"), lambda result: bool(result["local"]), "independent node discovery")
     identity = snapshot["local"]["advertisement"]["discovery_id"]
     request(origin, "/api/racks", {"id":1, "name":"independent-rack"})
@@ -39,8 +24,7 @@ def verify(docker, request, wait, image, network, names, volumes, origins, clust
     credentials = json.loads(docker("exec", "--user", "crowdb", name, "crowdb-monitor", "control", "--json", json.dumps({"command":"service_credentials", "cluster_id":independent["cluster_id"]})))
     wait(lambda: request(origins[0], "/api/node/candidates"), lambda result: any(
         node["advertisement"]["discovery_id"] == identity and node["state"] == "foreign_cluster" for node in result["candidates"]), "foreign cluster separation")
-    browser(origins[0], "independent cluster", CROWDB_NODE_UI_FOREIGN_ORIGIN=origin, CROWDB_NODE_UI_FOREIGN_UUID=identity,
-            CROWDB_WEB_E2E_OUTPUT=f"test-results/{network}-foreign")
+    browser(origins[0], "independent cluster", "foreign", CROWDB_NODE_UI_FOREIGN_ORIGIN=origin, CROWDB_NODE_UI_FOREIGN_UUID=identity)
     delayed = {"command":"start_kv", "node_id":record["node_id"], "bootstrap":binding["bootstrap"], "manifest":manifest, "credentials":credentials}
     try:
         docker("exec", "--user", "crowdb", name, "crowdb-monitor", "control", "--json", json.dumps(delayed))
@@ -60,14 +44,13 @@ def verify(docker, request, wait, image, network, names, volumes, origins, clust
     docker("network", "disconnect", network, name)
     docker("network", "connect", "--ip", changed, network, name)
     docker("start", name)
-    mapping = json.loads(docker("inspect", name))[0]["NetworkSettings"]["Ports"]["9090/tcp"][0]
-    origin = "http://127.0.0.1:" + mapping["HostPort"]
+    origin = origin_for(name)
     assert old != changed
     wait(lambda: request(origins[0], "/api/node/candidates"), lambda result: any(
         node["advertisement"]["discovery_id"] == identity and node["state"] == "same_cluster" and changed in str(node["advertisement"]["monitor_endpoints"])
         for node in result["candidates"]), "persistent node new endpoint")
     assert docker("exec", name, "cat", "/opt/crowdb/data/ssh/id_ed25519.pub") == key
-    browser(origins[0], "node update", CROWDB_NODE_UI_UPDATE_UUID=identity, CROWDB_WEB_E2E_OUTPUT=f"test-results/{network}-update")
+    browser(origins[0], "node update", "update", CROWDB_NODE_UI_UPDATE_UUID=identity)
     for peer in origins:
         updated = next(node for node in request(peer, "/api/node/admissions") if node["discovery_id"] == identity)
         assert updated["node_id"] == joined["node_id"] and updated["rack_id"] == 2 and updated["host"] == changed, updated

@@ -8,26 +8,11 @@ import ipaddress
 import hashlib
 from importlib.util import spec_from_file_location, module_from_spec
 from pathlib import Path
-import os
-import subprocess
 import time
 import urllib.error
-import urllib.request
 import uuid
 
-IMAGE = os.environ.get("CROWDB_CONTAINER_IMAGE", "crowdb-node:dev")
-PREFIX = "crowdb-node-test-" + uuid.uuid4().hex[:8]
-HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-
-
-def docker(*args):
-    result = subprocess.run(["docker", *args], text=True, capture_output=True, timeout=60)
-    if result.returncode:
-        displayed = list(args)
-        if "--json" in displayed:
-            displayed[displayed.index("--json") + 1] = "<node-control request>"
-        raise RuntimeError(f"docker {' '.join(displayed)}\n{result.stdout}\n{result.stderr}")
-    return result.stdout.strip()
+from bridge_node import IMAGE, PREFIX, docker, HTTP, origin_for, start_node, cleanup
 
 
 def request(origin, path, body=None):
@@ -86,8 +71,7 @@ def verify_incomplete_preparation(name, origin):
     accepted = json.loads(docker("exec", name, "cat", "/opt/crowdb/data/accepted-node.json"))
     assert accepted["prepared"] is False, accepted
     docker("restart", name)
-    mapping = json.loads(docker("inspect", name))[0]["NetworkSettings"]["Ports"]["9090/tcp"][0]
-    origin = "http://127.0.0.1:" + mapping["HostPort"]
+    origin = origin_for(name)
     wait(lambda: request(origin, "/api/node/candidates"), lambda result: bool(result["local"]), "UI after incomplete preparation restart")
     # The reserved identity remains, but a failed preparation cannot start a replica.
     assert docker("exec", name, "sh", "-c", "test ! -d /opt/crowdb/data/kv/node-999") == ""
@@ -100,32 +84,22 @@ def verify_incomplete_preparation(name, origin):
 
 def main():
     names = []
-    volumes = []
     origins = []
-    network_created = False
     try:
         networks = docker("network", "ls", "--quiet").splitlines()
         occupied = [ipaddress.ip_network(config["Subnet"]) for network in json.loads(docker("network", "inspect", *networks))
                     for config in (network["IPAM"]["Config"] or []) if config.get("Subnet")]
         subnets = [ipaddress.ip_network(f"172.30.{index}.0/24") for index in range(256)]
         subnet = next(candidate for candidate in subnets if not any(candidate.overlaps(network) for network in occupied if network.version == 4))
-        docker("network", "create", "--subnet", str(subnet), PREFIX)
-        network_created = True
+        docker("network", "create", "--label", f"org.crowdb.e2e.run={PREFIX}", "--subnet", str(subnet), PREFIX)
         for index in range(3):
             name = f"{PREFIX}-{index}"
             names.append(name)
-            volume = f"{name}-data"
-            volumes.append(volume)
-            docker("run", "-d", "--name", name, "--network", PREFIX, "--cpus", "2", "--memory", "1g",
-                   "--mount", f"type=volume,source={volume},target=/opt/crowdb/data",
-                   "-e", "CROWDB_STARTUP_MODE=manual", "-e", "CROWDB_PHYSICAL_HOST_ID=one-docker-host",
-                   "-p", "127.0.0.1::9090", IMAGE)
-            mapping = json.loads(docker("inspect", name))[0]["NetworkSettings"]["Ports"]["9090/tcp"][0]
-            origins.append("http://127.0.0.1:" + mapping["HostPort"])
+            origins.append(start_node(name))
         identities, records, clusters = scenario("node-bootstrap.py").verify(
             docker, request, wait, verify_incomplete_preparation, PREFIX, names, origins)
         admission_case = scenario("node-admission.py")
-        fourth, fourth_origin, joined = admission_case.verify(docker, request, wait, IMAGE, PREFIX, names, volumes, origins, identities, records)
+        fourth, fourth_origin, joined = admission_case.verify(docker, request, wait, IMAGE, PREFIX, names, origins, identities, records)
         admission_case.services(docker, request, wait, origins, fourth, joined)
         request(origins[1], "/api/racks", {"id": 2, "name": "shared-rack"})
         assert len(request(origins[0], "/api/racks")) == 2
@@ -152,15 +126,14 @@ def main():
             for name in names[1:3]:
                 docker("unpause", name)
         wait(lambda: request(origins[0], "/api/node/status"), lambda result: result["phase"] == "active", "authority recovery")
-        scenario("node-recovery.py").verify(docker, request, wait, IMAGE, PREFIX, names, volumes, origins, clusters[0])
+        scenario("node-recovery.py").verify(docker, request, wait, IMAGE, PREFIX, names, origins, clusters[0])
         operation_id = request(origins[0], "/api/node/status")["operation_id"]
         docker("stop", "--time", "10", fourth)
         result = request(origins[0], "/api/node/cleanup", {"operation_id": operation_id, "confirm_delete_system_store": True})
         assert result["pending"] == [joined["node_id"]], result
         assert request(origins[0], "/api/node/status")["phase"] == "cleanup_in_progress"
         docker("start", fourth)
-        mapping = json.loads(docker("inspect", fourth))[0]["NetworkSettings"]["Ports"]["9090/tcp"][0]
-        fourth_origin = "http://127.0.0.1:" + mapping["HostPort"]
+        fourth_origin = origin_for(fourth)
         origins[3] = fourth_origin
         wait(lambda: request(fourth_origin, "/api/node/candidates"), lambda result: bool(result["local"]), "unreachable cleanup target returns")
         result = request(origins[0], "/api/node/cleanup", {"operation_id": operation_id, "confirm_delete_system_store": True})
@@ -178,13 +151,12 @@ def main():
                 print(diagnostic, flush=True)
         raise
     finally:
-        for name in names:
-            docker("rm", "-f", name)
-        for volume in volumes:
-            docker("volume", "rm", volume)
-        if network_created:
-            docker("network", "rm", PREFIX)
+        cleanup(PREFIX)
 
 
 if __name__ == "__main__":
+    import signal
+    def interrupt(_signal, _frame):
+        raise KeyboardInterrupt("owned bridge admission interrupted")
+    signal.signal(signal.SIGTERM, interrupt)
     main()

@@ -95,9 +95,10 @@ jobs:
         pixi run sudo apt-get update
         pixi run sudo apt-get install -y protobuf-compiler
         pixi run install-ui-deps
+        pixi run bash -c 'cd e2e-test/clients/console-ui && npm ci --ignore-scripts'
         pixi run clean-env
         pixi run --skip-deps test-single-node-container
-        pixi run python container/single-node-container/tests/node-containers.py
+        pixi run test-container-e2e --profile bridge-admission --concurrency 1 --node-cpus 0.5 --cpus 4 --memory-mib 6144
         pixi run test-container-e2e --profile host --concurrency 1 --cpus 4 --memory-mib 4096
         pixi install --locked --manifest-path container/oci-image/pixi.toml -e runtime
         pixi run test-container-e2e --profile containerd-cluster --concurrency 1 --node-cpus 0.75 --cpus 4 --memory-mib 6144

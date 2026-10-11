@@ -84,6 +84,21 @@ class ImageIdentityTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "pixi.toml"):
             verify_server_sources(self.root, revision)
 
+    def test_unbundled_browser_spec_can_move_without_exempting_ui_sources(self):
+        directory=self.root / "app/crowdb-web/ui"
+        spec=directory / "e2e/flows/12-cluster-discovery.spec.ts"
+        source=directory / "src/App.tsx"
+        for path in (spec,source):
+            path.parent.mkdir(parents=True,exist_ok=True)
+            path.write_text("original\n")
+        self.commit()
+        revision=self.git("rev-parse","HEAD")
+        spec.write_text("migrated host browser cases\n")
+        self.assertTrue(verify_server_sources(self.root,revision)["server_sources_match"])
+        source.write_text("changed deployed UI\n")
+        with self.assertRaisesRegex(ValueError,"App.tsx"):
+            verify_server_sources(self.root,revision)
+
     def test_dirty_server_edit_cannot_use_stale_image(self):
         (self.root / "app/server/src/main.rs").write_text("changed server\n")
         with self.assertRaisesRegex(ValueError, "server sources differ"):
