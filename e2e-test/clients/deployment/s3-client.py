@@ -11,7 +11,7 @@ from botocore.config import Config
 BUCKET = "crowdb-preview-e2e"
 KEY = "objects/persisted.parquet"
 LARGE_KEY = "objects/large.bin"
-fixture = Path(__file__).resolve().parents[3] / "lib/crowdb-access-iceberg/tests/common/parquet_scalar_official.rs"
+fixture = Path(os.environ["CROWDB_E2E_SOURCE_ROOT"]) / "lib/crowdb-access-iceberg/tests/common/parquet_scalar_official.rs"
 encoded = re.search(r'pub const PARQUET_1_0_FALSE: &str = "([^"]+)"', fixture.read_text()).group(1)
 BODY = base64.b64decode(encoded)
 LARGE_BODY = bytes(range(256)) * (9 * 1024 * 1024 // 256)

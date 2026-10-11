@@ -25,6 +25,8 @@ SERVER_PATHS = (
     ":(exclude)tools/pixi-tasks/test-java-iceberg-fileio-e2e.sh",
     ":(exclude)tools/pixi-tasks/test-java-iceberg-e2e.sh",
     ":(exclude)tools/pixi-tasks/test-iceberg-rck.sh",
+    # The retired host layout inspector was never part of release staging.
+    ":(exclude)lib/crowdb-chunkdb-client/examples/single_node_chunk_layout.rs",
     # Version verification reads host SDK manifests and is never staged.
     ":(exclude)tools/ci-checks/check-version.py",
 )

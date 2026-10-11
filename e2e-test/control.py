@@ -36,6 +36,7 @@ class Control:
             self.done.wait(0.025)
 
     def __enter__(self):
+        self.cluster.control_cancelled = self.done
         self.worker.start()
         return self
 

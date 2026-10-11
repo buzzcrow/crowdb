@@ -11,6 +11,7 @@ repository.workspace = true
 workspace = true
 
 [dev-dependencies]
+crowdb-monitor = { path = "../container/crowdb-monitor" }
 futures = "0.3"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 base64 = "0.22"

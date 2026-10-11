@@ -17,6 +17,18 @@ pub(crate) async fn configure_chunkdb(options: Value) -> Value {
 }
 
 async fn request(body: Value) -> Value {
+    request_with_timeout(body, Duration::from_secs(65)).await
+}
+
+pub(crate) async fn recover_service(service: &str, signal: &str) -> Value {
+    request_with_timeout(
+        json!({"action": "recover-service", "node": 0, "service": service, "signal": signal}),
+        Duration::from_secs(95),
+    )
+    .await
+}
+
+async fn request_with_timeout(body: Value, timeout: Duration) -> Value {
     let directory = PathBuf::from(std::env::var("CROWDB_E2E_CONTROL").expect("owned lifecycle control"));
     let id = format!(
         "{}-{}",
@@ -28,7 +40,7 @@ async fn request(body: Value) -> Value {
     std::fs::write(&temporary, body.to_string()).unwrap();
     std::fs::rename(temporary, path).unwrap();
     let response = directory.join(format!("{id}.response.json"));
-    let deadline = Instant::now() + Duration::from_secs(65);
+    let deadline = Instant::now() + timeout;
     loop {
         if response.exists() {
             let response: Value = serde_json::from_slice(&std::fs::read(response).unwrap()).unwrap();

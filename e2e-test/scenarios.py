@@ -16,6 +16,9 @@ from access_iceberg_fixture import AccessIcebergCluster
 from access_dataset_fixture import AccessDatasetCluster
 from s3_recovery import SERVICE_NODES, run_recovery
 from managed_fixture import ManagedCluster
+from deployment_bootstrap_fixture import InterruptedBootstrapCluster
+from deployment_validation_fixture import RejectedBootstrapCluster
+from deployment_clients_fixture import DeploymentClientsCluster
 from console_web_fixture import ConsoleWebCluster
 from diskio_fixture import DiskioCluster, DiskioDiscoveryCluster, DiskioSemanticCluster
 
@@ -126,11 +129,34 @@ DISKDB_CASES = (
 )
 
 DEPLOYMENT_CASES = (
+    Case("deployment.clients", "deployment::clients::official_clients_and_protocol_layout_survive_restart", restart=True, service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web"), client_timeout=420),
+    Case("deployment.kv", "deployment::kv_bootstrap::monitor_creates_real_kv_groups_then_validates_after_restart", restart=True, service_selection=("kv",)),
+    Case("deployment.validation", "deployment::validation::invalid_profile_is_rejected", service_selection=("kv",)),
+    Case("deployment.validation", "deployment::validation::invalid_manifest_is_rejected", service_selection=("kv",)),
+    Case("deployment.storage", "deployment::storage::chunk_services_validate_live_registration_and_logical_topology", restart=True, service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
+    Case("deployment.storage", "deployment::storage::real_iceberg_catalog_and_listener_survive_restart", restart=True, service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
+    Case("deployment.bootstrap", "deployment::bootstrap::interrupted_bootstrap_preserves_completed_steps", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
+    Case("deployment.hardware", "deployment::hardware_bootstrap::writes_and_validates_hardware_with_real_group_zero", (0, 0, 0), True, groups=(0,)),
+    Case("deployment.hardware", "deployment::hardware_bootstrap::conflicting_group_zero_record_rejects_without_creating_hardware", (0, 0, 0), True, groups=(0,)),
     Case("deployment.selection", "deployment::selected_kv_services_recover_acknowledged_data", restart=True),
     Case("deployment.selection", "deployment::selected_storage_services_recover_acknowledged_data", restart=True,
          service_selection=("kv", "diskdb")),
     Case("deployment.selection", "deployment::complete_release_services_recover_acknowledged_data", restart=True,
          service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
+    Case("deployment.supervision", "deployment::supervision::kv_crash", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web"), client_timeout=180),
+    Case("deployment.supervision", "deployment::supervision::kv_hang", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web"), client_timeout=180),
+    Case("deployment.supervision", "deployment::supervision::diskdb_crash", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web"), client_timeout=180),
+    Case("deployment.supervision", "deployment::supervision::diskdb_hang", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web"), client_timeout=180),
+    Case("deployment.supervision", "deployment::supervision::diskio_crash", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web"), client_timeout=180),
+    Case("deployment.supervision", "deployment::supervision::diskio_hang", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web"), client_timeout=180),
+    Case("deployment.supervision", "deployment::supervision::chunkdb_crash", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web"), client_timeout=180),
+    Case("deployment.supervision", "deployment::supervision::chunkdb_hang", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web"), client_timeout=180),
+    Case("deployment.supervision", "deployment::supervision::chunk_kv_crash", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web"), client_timeout=180),
+    Case("deployment.supervision", "deployment::supervision::chunk_kv_hang", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web"), client_timeout=180),
+    Case("deployment.supervision", "deployment::supervision::access_crash", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web"), client_timeout=180),
+    Case("deployment.supervision", "deployment::supervision::access_hang", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web"), client_timeout=180),
+    Case("deployment.supervision", "deployment::supervision::web_crash", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web"), client_timeout=180),
+    Case("deployment.supervision", "deployment::supervision::web_hang", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web"), client_timeout=180),
 )
 
 DISKIO_CASES = (
@@ -283,6 +309,8 @@ ICEBERG_CASES = (
     Case("iceberg.namespace", "access_iceberg::namespace::namespace_functional_crud_survives_native_storage_and_listener_restart"),
 )
 CONSOLE_OPERATION_CASES = (
+    Case("console.web.catalog", "console::web_catalog::published_owner_change_invalidates_saved_catalog_and_runtime_cursors", console_web=True),
+    Case("console.clients", "console::observation::formal_server_appears_healthy_in_aggregate_snapshot", stores_per_node=((),), groups=()),
     Case("console.web.slots", "console::web_slots::owner_windows_keep_disjoint_slots_generations_and_exact_ids", console_web=True),
     Case("console.discovery", "console::discovery::discover_registered_diskdb_instance", (0, 0, 0), True, groups=(0,)),
     Case("console.discovery", "console::discovery::chunk_kv_raw_observation_preserves_load_and_partition_state", (0, 0, 0), True, groups=(0,)),
@@ -359,6 +387,7 @@ CONSOLE_OPERATION_CASES = (
 )
 
 
+
 DATASET_CASES = (
     Case("dataset.http", "access_dataset::listener_authenticates_and_serves_create_open"),
     Case("dataset.http", "access_dataset::publish_persist_restart_and_scan_round_trip"),
@@ -377,7 +406,7 @@ def select_cases(layer="all", scope="all", case_name=None):
 def case_nodes(case):
     if case.console_web:
         return 5
-    if case.service_selection:
+    if case.service_selection or (case.scope.startswith("deployment.") and case.scope != "deployment.hardware"):
         return 1
     if case.access_protocol or case.scope.startswith("dataset."):
         return 13
@@ -409,6 +438,13 @@ def case_resources(case, node_cpus):
 
 
 def allocate_cluster(case, image, artifacts, bundle, data_root):
+    if case.scope == "deployment.clients":
+        return DeploymentClientsCluster(image, artifacts, services=case.service_selection, data_root=data_root)
+    if case.scope == "deployment.validation":
+        kind = "profile" if "invalid_profile" in case.name else "manifest"
+        return RejectedBootstrapCluster(image, artifacts, kind, data_root=data_root)
+    if case.scope == "deployment.bootstrap":
+        return InterruptedBootstrapCluster(image, artifacts, services=case.service_selection, data_root=data_root)
     if case.console_web:
         return ConsoleWebCluster(image, artifacts, data_root=data_root)
     if case.scope.startswith("dataset."):
@@ -436,7 +472,7 @@ def allocate_cluster(case, image, artifacts, bundle, data_root):
                                      fault_rate=case.diskio_fault_rate, data_root=data_root)
     if case.chunkdb_server:
         return ChunkdbCluster(image, artifacts, bundle, data_root=data_root)
-    if case.scope.startswith("deployment."):
+    if case.scope.startswith("deployment.") and case.scope != "deployment.hardware":
         return ManagedCluster(image, artifacts, services=case.service_selection or ("kv",), data_root=data_root)
     if case.diskio_backend == "semantic":
         return DiskioSemanticCluster(image, artifacts, bundle, data_root=data_root)

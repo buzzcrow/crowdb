@@ -4,19 +4,19 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient};
 use crowdb_monitor::{
     hardware_step_names, BootstrapSession, DeploymentProfile, HardwareBootstrap, MonitorLog,
 };
 use crowdb_protocol::common::{HwStatus, RackValue};
-use crowdb_test_harness::cluster::KvCluster;
 use uuid::Uuid;
 
 struct TestRoot(PathBuf);
 
 impl TestRoot {
     fn new() -> Self {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../.crowdb-runtime/ephemeral")
+        let root = PathBuf::from(std::env::var("CROWDB_E2E_ARTIFACTS").unwrap())
+            .join("client-data")
             .join(format!("monitor-hardware-{}", Uuid::new_v4()));
         fs::create_dir_all(root.join("data")).unwrap();
         Self(root.canonicalize().unwrap())
@@ -24,7 +24,7 @@ impl TestRoot {
 
     fn profile(&self) -> DeploymentProfile {
         let mut profile = DeploymentProfile::load(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-container/profile.toml"),
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../container/single-node-container/profile.toml"),
         )
         .unwrap();
         profile.paths.install_root.clone_from(&self.0);
@@ -60,26 +60,18 @@ impl TestRoot {
     }
 }
 
-impl Drop for TestRoot {
-    fn drop(&mut self) {
-        if !std::thread::panicking() {
-            fs::remove_dir_all(&self.0).unwrap();
-        }
-    }
-}
-
 #[tokio::test]
+#[ignore = "requires owned release Group 0 containers"]
 async fn writes_and_validates_hardware_with_real_group_zero() {
-    if crowdb_test_harness::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping real KV bootstrap: crowdb-kv-server binary is unavailable");
-        return;
-    }
-    let cluster = KvCluster::start().await;
+    let seeds = crate::common::management::addresses(3)
+        .iter()
+        .map(|ip| crate::common::management::origin(ip))
+        .collect::<Vec<_>>();
     let root = TestRoot::new();
     let profile = root.profile();
     let mut session = root.session();
     let mut events = root.events(&profile).await;
-    let bootstrap = HardwareBootstrap::new(cluster.mgmt_endpoints[0].clone());
+    let bootstrap = HardwareBootstrap::new(seeds[0].clone());
     bootstrap
         .reconcile(&mut session, &profile, &mut events)
         .await
@@ -92,7 +84,7 @@ async fn writes_and_validates_hardware_with_real_group_zero() {
         .reconcile(&mut restart, &profile, &mut events)
         .await
         .unwrap();
-    let hardware = cluster.make_hardware_client();
+    let hardware = HardwareClient::new(CrowdbKvClient::new(ClientConfig::new(seeds.clone())));
     let disks = hardware.list_all_disks().await.unwrap();
     assert_eq!(disks.len(), 4);
     assert!(disks.iter().all(|disk| disk.value.zone_count == 1));
@@ -108,13 +100,13 @@ async fn writes_and_validates_hardware_with_real_group_zero() {
 }
 
 #[tokio::test]
+#[ignore = "requires owned release Group 0 containers"]
 async fn conflicting_group_zero_record_rejects_without_creating_hardware() {
-    if crowdb_test_harness::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping real KV bootstrap: crowdb-kv-server binary is unavailable");
-        return;
-    }
-    let cluster = KvCluster::start().await;
-    let hardware = cluster.make_hardware_client();
+    let seeds = crate::common::management::addresses(3)
+        .iter()
+        .map(|ip| crate::common::management::origin(ip))
+        .collect::<Vec<_>>();
+    let hardware = HardwareClient::new(CrowdbKvClient::new(ClientConfig::new(seeds.clone())));
     hardware
         .add_rack(
             1,
@@ -130,7 +122,7 @@ async fn conflicting_group_zero_record_rejects_without_creating_hardware() {
     let profile = root.profile();
     let mut session = root.session();
     let mut events = root.events(&profile).await;
-    let bootstrap = HardwareBootstrap::new(cluster.mgmt_endpoints[0].clone());
+    let bootstrap = HardwareBootstrap::new(seeds[0].clone());
     assert!(bootstrap
         .reconcile(&mut session, &profile, &mut events)
         .await

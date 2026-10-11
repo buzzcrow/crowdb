@@ -1062,3 +1062,85 @@ Source: `app/crowdb-kv-server/`. Tests: 9 files.
 - `run-d48cca26df0c4eaca6c4d2bb71538ceb`: 1 passing owner; `iceberg.sdk.rck` / `apache_rest_compatibility_kit_supported_catalog_surface`: client 38.065 s, fixture 54.222 s.
 
 - `run-d3d0d1e6d3cf4b638c7022066237e3df`: 1 passing owner; `console.web.slots` / `owner_windows_keep_disjoint_slots_generations_and_exact_ids`: client 0.256 s, fixture 6.067 s.
+
+### Monitor, deployment and Web acceptance
+- Same formal image config `sha256:c6c054e56522efcdde98366cabd114571e13e3253cf4cc1c9e650819dd75faf6`; each fault scenario owns its full release container.
+
+- `run-06d28b770ff44e5391f7ec4b0d21e477`: 3 passing owners.
+
+| Scope                  | Named flow                                                                 | Client (s) | Fixture (s) |
+| ---------------------- | -------------------------------------------------------------------------- | ---------- | ----------- |
+| console.clients        | formal_server_appears_healthy_in_aggregate_snapshot                        |      0.047 |       1.466 |
+| console.clients        | put_get_delete_cycle                                                       |      0.838 |       2.304 |
+| console.clients        | full_store_group_remote_cycle                                              |      1.529 |       3.033 |
+
+- `run-ff753234d94e4d838c45d582b657bf7b`: 1 passing owners.
+
+| Scope                  | Named flow                                                                 | Client (s) | Fixture (s) |
+| ---------------------- | -------------------------------------------------------------------------- | ---------- | ----------- |
+| console.web.catalog    | published_owner_change_invalidates_saved_catalog_and_runtime_cursors       |      0.278 |       5.881 |
+
+- `run-63921b227f644bd2a162643e3891d318`: 14 passing owners.
+
+| Scope                  | Named flow                                                                 | Client (s) | Fixture (s) |
+| ---------------------- | -------------------------------------------------------------------------- | ---------- | ----------- |
+| deployment.supervision | access_crash                                                               |      3.610 |       8.338 |
+| deployment.supervision | access_hang                                                                |     23.586 |      28.020 |
+| deployment.supervision | chunk_kv_crash                                                             |      3.698 |       8.311 |
+| deployment.supervision | chunk_kv_hang                                                              |     23.918 |      28.201 |
+| deployment.supervision | chunkdb_crash                                                              |      3.509 |       8.122 |
+| deployment.supervision | chunkdb_hang                                                               |     23.665 |      28.241 |
+| deployment.supervision | diskdb_crash                                                               |      7.586 |      12.402 |
+| deployment.supervision | diskdb_hang                                                                |     26.982 |      31.613 |
+| deployment.supervision | diskio_crash                                                               |      7.760 |      13.139 |
+| deployment.supervision | diskio_hang                                                                |     26.489 |      30.995 |
+| deployment.supervision | kv_crash                                                                   |     29.106 |      33.783 |
+| deployment.supervision | kv_hang                                                                    |     48.110 |      52.699 |
+| deployment.supervision | web_crash                                                                  |      3.688 |       8.282 |
+| deployment.supervision | web_hang                                                                   |     23.855 |      28.432 |
+
+- `run-f16aa9b5eff7493787b86398330f1b1b`: 2 passing owners.
+
+| Scope                  | Named flow                                                                 | Client (s) | Fixture (s) |
+| ---------------------- | -------------------------------------------------------------------------- | ---------- | ----------- |
+| deployment.hardware    | conflicting_group_zero_record_rejects_without_creating_hardware            |      0.130 |       4.024 |
+| deployment.hardware    | writes_and_validates_hardware_with_real_group_zero                         |      0.271 |       3.787 |
+
+- `run-d649f54bbf36450fabd09b7fa5d90d5c`: 1 passing owners.
+
+| Scope                  | Named flow                                                                 | Client (s) | Fixture (s) |
+| ---------------------- | -------------------------------------------------------------------------- | ---------- | ----------- |
+| deployment.bootstrap   | interrupted_bootstrap_preserves_completed_steps                            |      0.090 |      13.073 |
+
+### Fresh release deployment measurements
+
+- Formal release source `7a47012129be3e3015c463db5f17726593c6e8df`, config `sha256:bccfcd41f739d0370c4687ffc96bcbc18c45ed0edc0dc64e496e0886cee65649`, optimized with debug info retained. Server quota: 0.25 CPU for selected KV, 2 CPU for the complete service set; host-client/resource reservations enforced. The full 25-owner run has 23 initial passes; corrected storage/validation scopes and the additional SDK/runtime owner pass independently on the identical image.
+
+| Scope                  | Named flow                                                                        | Client (s) | Fixture (s) | Accepted run                         |
+| ---------------------- | --------------------------------------------------------------------------------- | ---------- | ----------- | ------------------------------------ |
+| deployment.bootstrap   | interrupted_bootstrap_preserves_completed_steps                                   |      0.103 |      14.896 | run-f1261241061e4e0faae2fea7ff06c2f2 |
+| deployment.clients     | official_clients_and_protocol_layout_survive_restart                              |     17.956 |      28.969 | run-704a072312a34ea5816676437a12acef |
+| deployment.selection   | complete_release_services_recover_acknowledged_data                               |      0.187 |      10.083 | run-f1261241061e4e0faae2fea7ff06c2f2 |
+| deployment.hardware    | conflicting_group_zero_record_rejects_without_creating_hardware                   |      0.120 |       3.649 | run-f1261241061e4e0faae2fea7ff06c2f2 |
+| deployment.hardware    | writes_and_validates_hardware_with_real_group_zero                                |      0.181 |       3.967 | run-f1261241061e4e0faae2fea7ff06c2f2 |
+| deployment.kv          | monitor_creates_real_kv_groups_then_validates_after_restart                       |      0.390 |      12.525 | run-f1261241061e4e0faae2fea7ff06c2f2 |
+| deployment.selection   | selected_kv_services_recover_acknowledged_data                                    |      0.197 |      11.344 | run-f1261241061e4e0faae2fea7ff06c2f2 |
+| deployment.selection   | selected_storage_services_recover_acknowledged_data                               |      0.175 |      13.220 | run-f1261241061e4e0faae2fea7ff06c2f2 |
+| deployment.storage     | chunk_services_validate_live_registration_and_logical_topology                    |      0.870 |      10.836 | run-c208b8a204e54cec953c8a67413a8b1b |
+| deployment.storage     | real_iceberg_catalog_and_listener_survive_restart                                 |      0.453 |      10.091 | run-c208b8a204e54cec953c8a67413a8b1b |
+| deployment.supervision | access_crash                                                                      |      3.073 |       8.251 | run-f1261241061e4e0faae2fea7ff06c2f2 |
+| deployment.supervision | access_hang                                                                       |     23.246 |      28.458 | run-f1261241061e4e0faae2fea7ff06c2f2 |
+| deployment.supervision | chunk_kv_crash                                                                    |      3.170 |       8.333 | run-f1261241061e4e0faae2fea7ff06c2f2 |
+| deployment.supervision | chunk_kv_hang                                                                     |     28.375 |      33.430 | run-f1261241061e4e0faae2fea7ff06c2f2 |
+| deployment.supervision | chunkdb_crash                                                                     |      6.754 |      13.961 | run-f1261241061e4e0faae2fea7ff06c2f2 |
+| deployment.supervision | chunkdb_hang                                                                      |     23.663 |      28.869 | run-f1261241061e4e0faae2fea7ff06c2f2 |
+| deployment.supervision | diskdb_crash                                                                      |      8.072 |      23.367 | run-f1261241061e4e0faae2fea7ff06c2f2 |
+| deployment.supervision | diskdb_hang                                                                       |     27.154 |      32.653 | run-f1261241061e4e0faae2fea7ff06c2f2 |
+| deployment.supervision | diskio_crash                                                                      |      8.075 |      13.355 | run-f1261241061e4e0faae2fea7ff06c2f2 |
+| deployment.supervision | diskio_hang                                                                       |     27.438 |      34.985 | run-f1261241061e4e0faae2fea7ff06c2f2 |
+| deployment.supervision | kv_crash                                                                          |     28.499 |      34.082 | run-f1261241061e4e0faae2fea7ff06c2f2 |
+| deployment.supervision | kv_hang                                                                           |     49.114 |      54.550 | run-f1261241061e4e0faae2fea7ff06c2f2 |
+| deployment.supervision | web_crash                                                                         |      3.249 |       8.359 | run-f1261241061e4e0faae2fea7ff06c2f2 |
+| deployment.supervision | web_hang                                                                          |     23.385 |      28.491 | run-f1261241061e4e0faae2fea7ff06c2f2 |
+| deployment.validation  | invalid_manifest_is_rejected                                                      |      0.022 |       5.696 | run-18c32de4733a4cad9a1ec1929cb46a39 |
+| deployment.validation  | invalid_profile_is_rejected                                                       |      0.023 |       4.969 | run-18c32de4733a4cad9a1ec1929cb46a39 |

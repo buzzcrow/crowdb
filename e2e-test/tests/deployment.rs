@@ -2,6 +2,13 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
+mod bootstrap;
+mod clients;
+mod hardware_bootstrap;
+mod kv_bootstrap;
+mod storage;
+mod supervision;
+mod validation;
 
 #[tokio::test]
 #[ignore = "requires the normal release-monitor container fixture"]
@@ -22,10 +29,18 @@ async fn complete_release_services_recover_acknowledged_data() {
 }
 
 async fn witness(storage: bool) {
+    witness_with_write(
+        storage,
+        std::env::var("CROWDB_E2E_PHASE").as_deref() == Ok("write"),
+    )
+    .await;
+}
+
+async fn witness_with_write(storage: bool, write: bool) {
     let addresses: Vec<String> = serde_json::from_str(&std::env::var("CROWDB_E2E_RPC").unwrap()).unwrap();
     let client = CrowdbKvClient::new(ClientConfig::new(vec![format!("http://{}:10000", addresses[0])]));
     let token = std::env::var("CROWDB_E2E_TOKEN").unwrap();
-    if std::env::var("CROWDB_E2E_PHASE").as_deref() == Ok("write") {
+    if write {
         let outcome = client
             .put(0, 1, b"selected-node-witness", token.as_bytes(), None)
             .await

@@ -1474,6 +1474,7 @@ dependencies = [
  "crowdb-diskio-client",
  "crowdb-kv",
  "crowdb-kv-client",
+ "crowdb-monitor",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
  "flatbuffers",
