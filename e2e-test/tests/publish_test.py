@@ -19,6 +19,8 @@ class PublishTest(unittest.TestCase):
             (source / "nodes").mkdir()
             (source / "nodes/config.toml").write_text('writer_token = "private-value-123"\n')
             (source / "nodes/raw.log").write_text("private node log")
+            (source / "client").mkdir()
+            (source / "client/build.log").write_text("private host client build")
             (source / "runtime.log").write_text(
                 "failure private-value-123\nAuthorization: Bearer other-secret-123\n"
                 'CROWDB_S3_MASTER_KEY=1111111111111111\n'
@@ -36,6 +38,7 @@ class PublishTest(unittest.TestCase):
                 self.assertNotIn(secret, text)
             self.assertIn("private-value-123", (source / "runtime.log").read_text())
             self.assertFalse((output / "nodes").exists())
+            self.assertFalse((output / "client").exists())
             self.assertFalse((output / "copied.log").exists())
             self.assertFalse((output / "service.toml").exists())
 

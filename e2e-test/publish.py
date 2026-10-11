@@ -13,7 +13,7 @@ SECRET = re.compile(
     r'(?:(?:Bearer|Basic)\s+)?([^\s,"\'}&{\[\]]+)')
 REPORTS = {"results.json", "timing.json", "identity.json", "client-identity.json",
            "case.json", "endpoints.json", "mounts.json", "s3-node-endpoints.json"}
-PRIVATE = {"nodes", "clients", "private", "node_modules", "source"}
+PRIVATE = {"nodes", "client", "clients", "private", "node_modules", "source"}
 SECRET_KEY = re.compile(
     r'(?i)token|password|secret|access[_-]?key|master[_-]?key|authorization|credential|signature')
 
