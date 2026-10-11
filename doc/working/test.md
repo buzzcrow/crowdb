@@ -30,14 +30,16 @@ Its three joint faults and protected restart add four cases.
 Iceberg uses two case slots at 0.5 CPU/server (16 CPU / 32768 MiB budget);
 its full catalog retirement grace accounts for 1205 seconds of client time.
 KV includes the KV/KV and KV/Web isolation pairs. Console measures
-`console.operations` (99 accepted owners; latest complete measurement covers the
+`console.operations` (104 accepted owners; latest complete measurement covers the
 preceding 96-owner inventory); unaccepted managed browser drafts
 are excluded. Console uses one effective case slot at 0.25 CPU/server with a
 4 CPU / 8192 MiB budget; the previous run used the same quota with fewer cases.
 Deployment now uses the same CI quota and one case slot; its previous run used
 0.5 CPU/server with two slots. The changed quota explains the wall-time increase.
-The three newly migrated shell browser flows pass separately; they are excluded
-from the complete Console measurement above.
+The eight newly migrated shell/registry browser flows pass separately; they are
+excluded from the complete Console measurement above. Registry batch: 5/5 at
+CI budget in 38.580s; host browsers use fixed listener plans and bounded batches
+with stable container networks during execution. Per-case timing stays in reports.
 
 | Domain       | Environment | Date       | Passed / failed / skipped | Wall s   | Previous s | Report                                                                                                    |
 | ------------ | ----------- | ---------- | ------------------------- | -------- | ---------- | --------------------------------------------------------------------------------------------------------- |

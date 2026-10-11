@@ -5,6 +5,9 @@
 import concurrent.futures
 import json
 from dataclasses import dataclass
+from contextlib import nullcontext
+
+from browser_batch import run_browser_batches
 
 from fixture import Cluster
 from diskdb_fixture import DiskdbCluster
@@ -340,6 +343,11 @@ ICEBERG_CASES = (
     Case("iceberg.namespace", "access_iceberg::namespace::namespace_functional_crud_survives_native_storage_and_listener_restart"),
 )
 CONSOLE_OPERATION_CASES = (
+    Case("console.browser.registry", "console::browser_registry::empty", shell_browser="renders the SPA shell against a real empty backend"),
+    Case("console.browser.registry", "console::browser_registry::datacenter", shell_browser="datacenter root wraps racks; Add Rack from datacenter context menu"),
+    Case("console.browser.registry", "console::browser_registry::ownership_scope", shell_browser="keeps Cluster and unprovisioned Chunk selections free of ownership probes"),
+    Case("console.browser.registry", "console::browser_registry::access_plan", shell_browser="persists an Access-only plan with three independent ports across reload"),
+    Case("console.browser.registry", "console::browser_registry::slot_warning", shell_browser="fixed-slot warning stays healthy and persists across reload"),
     Case("console.browser.shell", "console::shell::embedding", shell_browser="embedding honors apiPrefix, readonly, and module opt-out"),
     Case("console.browser.shell", "console::shell::backend_unavailable", shell_browser="shows an alert when backend API requests fail"),
     Case("console.browser.shell", "console::shell::domain_toggle", shell_browser="domain toggle switches between all seven domains"),
@@ -619,14 +627,18 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
     if not selected:
         raise ValueError(f"no migrated cases for scope {scope}")
 
-    def run(case):
+    def prepare(case):
         cluster = allocate_cluster(case, image, artifacts, bundle, data_root)
         cluster.case_name = case.name
         cluster.client_timeout = case.client_timeout
         cluster.node_cpus = max(2, node_cpus) if case.shell_browser or len(case.service_selection) > 2 else node_cpus
         (cluster.artifacts / "case.json").write_text(json.dumps({
             "scope": case.scope, "case": case.name}, indent=2))
-        with cluster:
+        return cluster
+
+    def run(case, owned=None):
+        cluster = owned if owned is not None else prepare(case)
+        with nullcontext(cluster) if owned is not None else cluster:
             if case.shell_browser:
                 cluster.browser(case.shell_browser)
             elif case.scope == "deployment.browser":
@@ -651,7 +663,7 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
                 cluster.client(bundle, case.name.rsplit("::", 1)[-1], case.name)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=slots) as pool:
-        futures = [pool.submit(run, case) for case in selected]
+        futures = [pool.submit(run, case) for case in selected if not case.shell_browser]
         errors = []
         try:
             for future in concurrent.futures.as_completed(futures):
@@ -663,6 +675,8 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
             for future in futures:
                 future.cancel()
             raise
+        errors.extend(run_browser_batches([case for case in selected if case.shell_browser],
+                                          slots, prepare, run))
         if errors:
             for error in errors[1:]:
                 errors[0].add_note(f"another independent fixture failed: {error}")

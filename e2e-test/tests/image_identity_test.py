@@ -104,13 +104,17 @@ class ImageIdentityTest(unittest.TestCase):
         spec=directory / "e2e/flows/12-cluster-discovery.spec.ts"
         shell=directory / "e2e/flows/00-shell-embedding.spec.ts"
         source=directory / "src/App.tsx"
-        for path in (spec,shell,source):
+        registry=directory / "e2e/flows/10-cluster-rack-node.spec.ts"
+        warning=directory / "e2e/flows/13-todo-ui-behavior.spec.ts"
+        for path in (spec,shell,registry,warning,source):
             path.parent.mkdir(parents=True,exist_ok=True)
             path.write_text("original\n")
         self.commit()
         revision=self.git("rev-parse","HEAD")
         spec.write_text("migrated host browser cases\n")
         shell.unlink()
+        registry.write_text("remaining native registry cases\n")
+        warning.write_text("remaining native service deployment cases\n")
         self.assertTrue(verify_server_sources(self.root,revision)["server_sources_match"])
         source.write_text("changed deployed UI\n")
         with self.assertRaisesRegex(ValueError,"App.tsx"):

@@ -16,6 +16,8 @@ SERVER_PATHS = (
     # Host browser specs are excluded from the UI build (tsconfig includes src).
     ":(exclude)app/crowdb-web/ui/e2e/flows/12-cluster-discovery.spec.ts",
     ":(exclude)app/crowdb-web/ui/e2e/flows/00-shell-embedding.spec.ts",
+    ":(exclude)app/crowdb-web/ui/e2e/flows/10-cluster-rack-node.spec.ts",
+    ":(exclude)app/crowdb-web/ui/e2e/flows/13-todo-ui-behavior.spec.ts",
     # The staging script does not package this operator documentation.
     ":(exclude)container/single-node-container/README.md",
     ":(exclude)container/oci-image/README.md",

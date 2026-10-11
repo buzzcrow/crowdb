@@ -324,6 +324,15 @@ pixi run test-container-e2e --layer s3 --scope s3.recovery --concurrency 1 --cpu
   The Web/KV node reserves at least 2 CPU plus the host browser (2.5 CPU /
   2560 MiB total). A 4 CPU budget runs one case; 6 CPU allows two.
   The proxy page must be ready before the embedding navigation is checked.
+- `console.browser.registry` covers the empty shell, datacenter rack menu,
+  ownership-probe scope, persisted Access-only listener plan and fixed-slot
+  warning. It uses public HTTP setup and fixed Access ports 9000/9001/9002;
+  dependencies remain unprovisioned and the Access service stays waiting.
+- Host shell/registry clients run in batches bounded by the same case slots.
+  All batch containers start before clients run concurrently; all clients finish
+  before any batch network is removed. Other selected server cases finish first.
+  This prevents Docker bridge churn during browser mutations without retries
+  or relaxed UI deadlines. Failed clients and partial startup still clean up.
 - Backend-unavailable checks use a closed container listener at port 9091 so
   Chromium does not need to authorize a private-IP page accessing loopback.
 - These accepted cases are included once in `console.operations`; managed
@@ -331,6 +340,7 @@ pixi run test-container-e2e --layer s3 --scope s3.recovery --concurrency 1 --cpu
 
 ```sh
 pixi run test-container-e2e --scope console.browser.shell --concurrency 2
+pixi run test-container-e2e --scope console.browser.registry --concurrency 2
 ```
 
 ## Console WAL recovery

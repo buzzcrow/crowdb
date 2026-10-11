@@ -28,29 +28,6 @@ const DISK_GROUP_ID = 7710;
 const DISK_ID = '0123456789abcdef-0123456789abcdef';
 
 test.describe('todo-ui behavior · service deployment and view ownership', () => {
-  test('fixed-slot warning stays healthy and persists across reload', async ({ page, baseURL }) => {
-    await resetAll(baseURL!);
-    await createRack(baseURL!, { id: 705, name: 'Slot warning' });
-    const api = await apiContext(baseURL!);
-    try {
-      const node = await api.post('/api/nodes', { data: { id: 705, rack_id: 705, host: '127.0.0.1', ssh: { type: 'KeyDefault', user: '' } } });
-      expect(node.ok(), await node.text()).toBeTruthy();
-      const detail = 'CDB instance is outside the fixed slot plan; explicit slot migration is required';
-      const steps = Object.fromEntries(['access-server', 'chunk-kv', 'chunkdb', 'diskdb', 'diskio', 'paxos-kv'].map(kind => [kind, kind === 'chunkdb' ? { state: 'warning', detail } : { state: 'disabled' }]));
-      const saved = await api.put('/api/nodes/705/service-plan', { data: { revision: 0, steps } });
-      expect(saved.ok(), await saved.text()).toBeTruthy();
-      await page.goto('/?domain=Cluster');
-      const item = page.getByTestId('tree-node-SERVICE-chunkdb-705');
-      await expect(item.getByTitle('Healthy', { exact: true })).toBeVisible();
-      await expect(item.getByRole('button', { name: 'CDB-705', exact: true })).toHaveAttribute('title', `CDB-705 · ${detail}`);
-      await page.reload();
-      await expect(item.getByTitle('Healthy', { exact: true })).toBeVisible();
-      expect((await (await api.get('/api/service-plans')).json())['705'].steps.chunkdb.state).toBe('warning');
-    } finally {
-      await api.dispose();
-      await resetAll(baseURL!);
-    }
-  });
 
   // Baseline: 17.1s (2026-10-06)
   test('creates three PKV and DiskDB node plans and keeps derived listeners disjoint', async ({ page, baseURL }) => {
