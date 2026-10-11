@@ -2,16 +2,29 @@
 # Licensed under the Apache License, Version 2.0.
 """Every migrated object/stream case must be reachable through the runner."""
 
+import ast
 import re
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scenarios import Case, CHUNK_CLIENT_CASES, CHUNK_STREAM_CASES, run_cases
+from scenarios import Case, CHUNK_CLIENT_CASES, CHUNK_STREAM_CASES, S3_CASES, run_cases
 
 
 class ScenarioInventoryTest(unittest.TestCase):
+    def test_s3_sdk_cases_have_exactly_one_runner_owner(self):
+        root = Path(__file__).resolve().parents[1] / "clients/s3"
+        declared = []
+        for path in root.glob("*.py"):
+            for node in ast.walk(ast.parse(path.read_text())):
+                if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
+                    declared.append("s3.protocol::" + node.name)
+        registered = [case.name for case in S3_CASES]
+        self.assertEqual(len(declared), len(set(declared)))
+        self.assertEqual(len(registered), len(set(registered)))
+        self.assertEqual(set(declared), set(registered))
+
     def test_object_and_stream_cases_have_exactly_one_runner_owner(self):
         root = Path(__file__).resolve().parent
         paths = [root / "chunk_stream.rs", root / "chunk_client.rs"]

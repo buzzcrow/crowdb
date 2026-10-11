@@ -3,11 +3,13 @@
 
 # Optional S3 language SDK verification
 
-- Run from the repository root through Pixi. These are explicit manual tasks;
-  routine tests, container acceptance and release workflows do not call them.
-- Each task prepares its isolated toolchain, starts a fresh real-storage stack,
-  runs the client and an injected MPU-failure cleanup case, then stops the stack.
-  Run sequentially: the fixture uses fixed local service ports.
+- Run from the repository root through Pixi. Language clients live in separate
+  `s3-java`, `s3-js` and `s3-go` projects, with their existing dependency locks.
+- The unified runner starts a fresh protected, persistent release-container
+  stack for each language; clients execute on the host. Fixed service ports
+  belong to independent bridge networks, so fixture concurrency is supported.
+- The `s3.sdk` scope also runs as part of the S3 container gate. Every recipe
+  includes normal operations and injected MPU-failure cleanup.
 - Java: AWS SDK 2.55.10, OpenJDK 21, Maven 3.9, URLConnection transport.
 - JavaScript: AWS SDK v3 3.1146.0, Node.js 22, TypeScript, Node HTTP transport.
 - Go: AWS SDK v2 core 1.47.1 / S3 1.114.0, Go 1.25, net/http transport,
@@ -42,13 +44,13 @@ Do not put credentials in commands or commit them to client configuration.
   Forced termination or an unavailable endpoint can prevent cleanup; the task
   reports failure rather than claiming resources were removed.
 - Diagnostics show scenario stages and error codes/types. They omit SDK
-  exception messages, stack traces, credentials and presigned URLs. Raw fixture
-  configuration contains credentials and must not be uploaded as a CI artifact.
+  exception messages, stack traces, credentials and presigned URLs. The runner deletes the private credential handoff file immediately and redacts
+  client diagnostics before saving artifacts.
 
 ## Verified contract
 
-Local verification on 2026-10-03 runs Java, Go and JavaScript sequentially on
-fresh real-storage fixtures. Each pinned recipe passes normal operations and
+Local verification on 2026-10-11 runs Java, Go and JavaScript sequentially on
+fresh 14-node formal release-container fixtures. Each pinned recipe passes normal operations and
 the injected uploaded-part failure with verified bucket/MPU cleanup. The
 GitHub Actions workflow has not been dispatched by this local verification.
 

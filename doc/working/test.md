@@ -736,3 +736,88 @@ Source: `app/crowdb-kv-server/`. Tests: 9 files.
 - Objects `run-d3773353e00943cc8704485116f3a8b8`: eight cases pass, 46.542 s scenario wall, 4.534 s client build. Two independent eleven-container profiles run concurrently. Five large-object cases include complete EC bytes/parity/metadata, protected two-copy mirror ranges, concurrent complete mirror strips, chunk rotation and range streaming, and unknown-size partial tails. Three small-object cases include exact shared-frame ranges across strips, cancellation followed by a durable survivor, and IcebergTable type-preserving chunk rotation.
 - Restart `run-b30240af4fa64db0aed6c0ab4c0a913d`: 18.397 s scenario wall / 4.630 s build (shared Cargo lock), complete eleven-service restart, 7.603 s restart phase. Eighteen file devices each expose one physical 128-MiB zone with hexadecimal CLI IDs matching public hardware metadata. Exact prefix and suffix survive; the successor chunk differs from the abandoned writer chunk.
 - Formal image remains source `94aa2834`, config `sha256:c9d68aac2556f0ed855e9c20a9852c1aab87a80b8605df05a123e9efe79d674e`. Component writer/reader/pressure, stream fencing/recovery/publication and corruption proofs remain. The complete client/stream migration is still active; exited-Diskio failure-budget behavior is unresolved and receives no PASS claim.
+
+## Access S3 container migration measurements
+
+- 2026-10-11: 36 named owners passed against formal image
+  `sha256:c9d68aac2556f0ed855e9c20a9852c1aab87a80b8605df05a123e9efe79d674e`,
+  source `94aa283499d77d641b2fcd7d9a7846cb12455b8f`. Servers stayed unchanged;
+  host clients used protected two-copy storage across six failure domains.
+- Protocol budget: two independent 14-node fixtures, 16 CPU / 16384 MiB.
+  Other batches: one fixture, 8 CPU / 8192 MiB. SDK prepare time is included
+  in host client totals; seed/setup and diagnostic/cleanup are fixture time.
+- The default boto3 native metrics were separately checked with all original
+  counters and zero added large-writer payload copies. The retired S3 full
+  stack range-delete assertion moved to the existing Chunkdb lifecycle owner.
+- This is the S3 batch result; unfinished domains and the two exited-storage
+  timing decisions prevent claiming the complete migration gate passed.
+
+| Scope          | Case                                                                           | Host client seconds | Fixture seconds | Status |
+| -------------- | ------------------------------------------------------------------------------ | ------------------- | --------------- | ------ |
+| s3.benchmark   | access_s3::benchmark::direct_chunk_path                                        | 0.341               | 16.866          | PASS   |
+| s3.benchmark   | s3.benchmark::s3_request_path                                                  | 1.042               | 16.316          | PASS   |
+| s3.credentials | s3.credentials::release_cli_issue_ensure_lookup                                | 1.393               | 17.015          | PASS   |
+| s3.protocol    | s3.protocol::test_aws_chunked_trailers_are_verified_before_publication         | 0.874               | 16.599          | PASS   |
+| s3.protocol    | s3.protocol::test_aws_cli_workflow                                             | 12.488              | 26.153          | PASS   |
+| s3.protocol    | s3.protocol::test_basic_bucket_object_matrix                                   | 6.714               | 20.290          | PASS   |
+| s3.protocol    | s3.protocol::test_batch_delete_preserves_exact_keys_and_quiet                  | 1.035               | 14.617          | PASS   |
+| s3.protocol    | s3.protocol::test_batch_delete_rejects_entire_invalid_request                  | 1.293               | 16.713          | PASS   |
+| s3.protocol    | s3.protocol::test_batch_delete_thousand_keys_and_unversioned_retry             | 74.530              | 89.070          | PASS   |
+| s3.protocol    | s3.protocol::test_concurrent_overwrite_delete_and_get_are_portable             | 1.635               | 17.186          | PASS   |
+| s3.protocol    | s3.protocol::test_copy_captures_source_before_overwrite_and_delete             | 6.756               | 22.044          | PASS   |
+| s3.protocol    | s3.protocol::test_default_boto3_checksums_and_multipart                        | 10.718              | 26.536          | PASS   |
+| s3.protocol    | s3.protocol::test_fragmentation_and_storage_boundaries                         | 2.316               | 17.724          | PASS   |
+| s3.protocol    | s3.protocol::test_independent_frontends_share_one_namespace                    | 0.917               | 15.488          | PASS   |
+| s3.protocol    | s3.protocol::test_invalid_user_metadata_preserves_objects_and_sessions         | 1.002               | 14.865          | PASS   |
+| s3.protocol    | s3.protocol::test_multipart_copy_selects_ranges_and_replaces_parts             | 11.064              | 27.880          | PASS   |
+| s3.protocol    | s3.protocol::test_multipart_replaces_parts_and_publishes_selected_bytes        | 2.235               | 15.675          | PASS   |
+| s3.protocol    | s3.protocol::test_ordinary_put_size_matrix                                     | 5.869               | 21.707          | PASS   |
+| s3.protocol    | s3.protocol::test_presigned_transfers_tamper_and_expiry                        | 2.725               | 16.628          | PASS   |
+| s3.protocol    | s3.protocol::test_rclone_workflow                                              | 5.376               | 20.891          | PASS   |
+| s3.protocol    | s3.protocol::test_server_side_copy_preserves_bytes_and_supported_metadata      | 1.268               | 16.898          | PASS   |
+| s3.protocol    | s3.protocol::test_signed_raw_http_wire_contract                                | 0.734               | 14.178          | PASS   |
+| s3.protocol    | s3.protocol::test_slow_response_reader_keeps_full_object_consistent            | 1.102               | 14.715          | PASS   |
+| s3.protocol    | s3.protocol::test_slow_signed_upload_releases_native_buffers                   | 4.723               | 19.190          | PASS   |
+| s3.protocol    | s3.protocol::test_truncated_signed_upload_does_not_publish_and_releases_credit | 1.988               | 18.161          | PASS   |
+| s3.protocol    | s3.protocol::test_user_metadata_publication_copy_and_multipart                 | 1.350               | 16.803          | PASS   |
+| s3.recovery    | s3.recovery::access                                                            | 3.398               | 18.801          | PASS   |
+| s3.recovery    | s3.recovery::chunk-kv                                                          | 2.559               | 19.759          | PASS   |
+| s3.recovery    | s3.recovery::chunkdb                                                           | 2.607               | 19.270          | PASS   |
+| s3.recovery    | s3.recovery::diskdb                                                            | 2.625               | 18.990          | PASS   |
+| s3.recovery    | s3.recovery::diskio                                                            | 3.198               | 22.846          | PASS   |
+| s3.recovery    | s3.recovery::group0                                                            | 2.932               | 24.626          | PASS   |
+| s3.responses   | s3.responses::lost_put_and_multipart_replies_are_idempotent                    | 1.607               | 16.893          | PASS   |
+| s3.sdk         | s3.sdk::go                                                                     | 4.132               | 19.547          | PASS   |
+| s3.sdk         | s3.sdk::java                                                                   | 11.173              | 26.218          | PASS   |
+| s3.sdk         | s3.sdk::js                                                                     | 7.949               | 21.682          | PASS   |
+
+- Exact artifact runs (wall / client build seconds):
+  - `run-e0fce6afb33a449dab0ebfb5f29f947c`: 256.930 / 0.516.
+  - `run-141601d6ca444108b8175cc9981898d4`: 124.304 / 0.621.
+  - `run-ed7be660027b43758f71633caf9c4f2f`: 67.454 / 0.661.
+  - `run-f6e3d5aac18d443cac222bce62abeea4`: 16.898 / 0.579.
+  - `run-85d94889f34e487f84f6c3716cf6fb8b`: 16.323 / 0.672.
+  - `run-748762abb1394f3587ab28712b4b83f3`: 16.876 / 9.971.
+  - `run-648f9a14aaf347608d9d5ae271308e92`: 17.022 / 0.501.
+
+### S3 CI CPU quota and cross-protocol acceptance
+
+- 2026-10-11: the 23 protocol cases and all three language SDKs passed with
+  0.25 CPU per service container. Two protocol fixtures reserve 8 CPU /
+  16384 MiB; a single language fixture reserves 4 CPU / 8192 MiB. Client
+  timeouts and production retry policies stayed unchanged. Every ordinary
+  HTTP operation asserts zero added large payload copies; the two large copy
+  owners assert their copy path ran.
+- `run-54794303700e412cb5ab69ed2e004695`: 23 passing owners, wall 314.083s, client build 14.281s.
+- `run-237237925570436daf13a89bfce17622`: 3 passing owners, wall 79.713s, client build 13.254s.
+- `run-6747308f1f01457294232abd53ee56b4`: 1 passing owners, wall 23.541s, client build 14.012s.
+  - `access_s3::policy::s3_and_iceberg_keep_distinct_policies_on_protected_storage`: client 2.356s; fixture 23.533s.
+- `run-943681fa038d4e449ad2307c84571fd4`: 1 passing owners, wall 21.860s, client build 70.868s.
+  - `access_s3::protocol_http::combined_http_listeners_keep_protocol_chunk_policies_separate`: client 3.593s; fixture 21.853s.
+- `run-889988f5ffdd44c7806750d816f4f0df`: 1 passing owners, wall 5.379s, client build 3.747s.
+- Retained S3 library UT: 113 passing cases. Focused Access config/XML/copy/
+  metadata-inspection/service UT: 16 passing cases, plus the pinned boto3
+  embedded-error compatibility proof. Three lifecycle UTs cover terminal
+  storage failure and coordinated shutdown of two or three protocol services.
+- The original protected exited-Diskio 15-second budget comparison remains
+  an explicit legacy E2E source. Full migration acceptance is still pending.

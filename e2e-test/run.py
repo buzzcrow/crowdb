@@ -23,8 +23,10 @@ from report import write_report
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def capacity(concurrency, cpus, memory_mib, nodes=3):
-    fixture_cpus, fixture_memory = (nodes + 1) * 0.5, (nodes + 1) * 512
+def capacity(concurrency, cpus, memory_mib, nodes=3, node_cpus=0.5):
+    if node_cpus <= 0:
+        raise ValueError("node CPU quota must be positive")
+    fixture_cpus, fixture_memory = nodes * node_cpus + 0.5, (nodes + 1) * 512
     if concurrency < 1 or nodes < 1 or cpus < fixture_cpus or memory_mib < fixture_memory:
         raise ValueError(f"KV needs at least one {fixture_cpus:g}-CPU / {fixture_memory}-MiB fixture slot")
     return min(concurrency, int(cpus // fixture_cpus), memory_mib // fixture_memory)
@@ -34,13 +36,14 @@ def interrupt(_signal, _frame):
     raise KeyboardInterrupt("container E2E interrupted")
 
 
-def run_pair(image, artifacts, bundle, count, data_root=None):
+def run_pair(image, artifacts, bundle, count, data_root=None, node_cpus=0.5):
     ready = threading.Barrier(count, timeout=180)
     retired, failed = threading.Event(), threading.Event()
 
     def scenario(index):
         try:
             cluster = Cluster(image, artifacts, data_root=data_root)
+            cluster.node_cpus = node_cpus
             (cluster.artifacts / "case.json").write_text(json.dumps({
                 "scope": "kv.recovery" if index == 0 else "kv.isolation",
                 "case": "e2e_three_node_cluster_kv_put_batch_delete"}, indent=2))
@@ -80,14 +83,15 @@ def run_pair(image, artifacts, bundle, count, data_root=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--layer", choices=("kv", "diskdb", "diskio", "chunkdb", "chunk-stream", "chunk-client", "chunk-kv", "deployment", "all"), default="all")
-    parser.add_argument("--scope", choices=("all", "kv.management", "kv.membership", "kv.routing", "kv.recovery", "kv.isolation", "kv.group0", "kv.client", "kv.metadata", "diskdb.allocation", "diskdb.ownership", "diskdb.reuse", "diskdb.recovery", "chunkdb.allocation", "chunkdb.lifecycle", "chunkdb.recovery", "chunkdb.placement", "chunkdb.io", "chunkdb.conversion", "chunkdb.repair", "chunkdb.slots", "chunkdb.handoff", "chunk-kv.protocol", "chunk-kv.recovery", "chunk-client.reader", "chunk-client.large_repair", "chunk-client.small_flow", "chunk-client.benchmark", "chunk-client.large", "chunk-client.small", "chunk-stream.objects", "chunk-stream.recovery", "chunk-stream.errors", "deployment.selection", "diskio.durability", "diskio.direct", "diskio.io.mem", "diskio.io.null", "diskio.discovery", "diskio.errors", "diskio.faults", "diskio.semantic"),
+    parser.add_argument("--layer", choices=("kv", "diskdb", "diskio", "chunkdb", "chunk-stream", "chunk-client", "chunk-kv", "s3", "deployment", "all"), default="all")
+    parser.add_argument("--scope", choices=("all", "s3.protocol", "s3.recovery", "s3.responses", "s3.benchmark", "s3.sdk", "s3.credentials", "s3.policy", "kv.management", "kv.membership", "kv.routing", "kv.recovery", "kv.isolation", "kv.group0", "kv.client", "kv.metadata", "diskdb.allocation", "diskdb.ownership", "diskdb.reuse", "diskdb.recovery", "chunkdb.allocation", "chunkdb.lifecycle", "chunkdb.recovery", "chunkdb.placement", "chunkdb.io", "chunkdb.conversion", "chunkdb.repair", "chunkdb.slots", "chunkdb.handoff", "chunk-kv.protocol", "chunk-kv.recovery", "chunk-client.reader", "chunk-client.large_repair", "chunk-client.small_flow", "chunk-client.benchmark", "chunk-client.large", "chunk-client.small", "chunk-stream.objects", "chunk-stream.recovery", "chunk-stream.errors", "deployment.selection", "diskio.durability", "diskio.direct", "diskio.io.mem", "diskio.io.null", "diskio.discovery", "diskio.errors", "diskio.faults", "diskio.semantic"),
                         default="all")
     parser.add_argument("--concurrency", type=int, default=2)
     parser.add_argument("--case", help="fully qualified named flow within the selected scope")
     parser.add_argument("--list", action="store_true", help="list implemented named flows without starting servers")
     parser.add_argument("--require-isolation", action="store_true")
     parser.add_argument("--cpus", type=float, default=4)
+    parser.add_argument("--node-cpus", type=float, default=0.5, help="Docker CPU quota per server; host client reserves 0.5 CPU")
     parser.add_argument("--memory-mib", type=int, default=4096)
     parser.add_argument("--image", default="crowdb-node:dev")
     parser.add_argument("--data-root", type=Path, help="host parent for independent per-run/node data mounts")
@@ -110,10 +114,10 @@ def main():
     if info["OSType"] != "linux":
         parser.error("the first container E2E profile requires a Linux daemon")
     slots = capacity(args.concurrency, min(args.cpus, info["NCPU"]),
-                     min(args.memory_mib, info["MemTotal"] // 1048576))
+                     min(args.memory_mib, info["MemTotal"] // 1048576), node_cpus=args.node_cpus)
     largest = max((case_nodes(case) for case in selected), default=3)
     case_slots = capacity(args.concurrency, min(args.cpus, info["NCPU"]),
-                          min(args.memory_mib, info["MemTotal"] // 1048576), largest)
+                          min(args.memory_mib, info["MemTotal"] // 1048576), largest, args.node_cpus)
     if (args.require_isolation or args.scope == "kv.isolation") and slots < 2:
         parser.error("concurrent isolation acceptance needs two fixture slots")
     identity = json.loads(docker("image", "inspect", args.image))[0]
@@ -131,6 +135,7 @@ def main():
         "repo_digests": identity.get("RepoDigests", []), "labels": labels, "client_revision": revision,
         "layer": args.layer, "scope": args.scope, "slots": slots, "case_slots": case_slots,
         "largest_case_nodes": largest, "selected_cases": [case.name for case in selected],
+        "node_cpus": args.node_cpus,
         "source_identity": source_identity}, indent=2))
     print(f"KV isolation slots: {slots}; case slots: {case_slots}; exact image {identity['Id']}; artifacts {run_root}", flush=True)
     started = time.monotonic()
@@ -149,9 +154,9 @@ def main():
     timings["status"] = "failed"
     try:
         if args.layer in ("kv", "all") and not args.case and args.scope in ("all", "kv.recovery", "kv.isolation"):
-            run_pair(identity["Id"], run_root, bundle, min(slots, 2), args.data_root)
+            run_pair(identity["Id"], run_root, bundle, min(slots, 2), args.data_root, args.node_cpus)
         if selected:
-            run_cases(identity["Id"], run_root, bundle, case_slots, args.data_root, args.scope, args.case, args.layer)
+            run_cases(identity["Id"], run_root, bundle, case_slots, args.data_root, args.scope, args.case, args.layer, args.node_cpus)
         if args.layer in ("kv", "deployment", "all") and args.scope == "all" and not args.case:
             check_startup(identity["Id"], run_root)
         timings["status"] = "pass"

@@ -19,6 +19,7 @@ class ChunkKvCluster(ChunkdbStorageCluster):
     def start(self):
         super().start()
         index = len(self.servers)
+        self.chunk_kv_index = index
         address = str(ipaddress.ip_address(self.addresses[0]) + index)
         config = self.artifacts / "chunk-kv.toml"
         seeds = json.dumps(self.origins[:3])
@@ -65,7 +66,8 @@ metadata_group_id = 1
             "ip": address, "rpc_port": 7402, "http_port": 7401, "node": index}, indent=2))
         return self
 
-    def ready_chunk_kv(self, index=11):
+    def ready_chunk_kv(self, index=None):
+        index = self.chunk_kv_index if index is None else index
         address = self.addresses[index]
         def probe():
             state = json.loads(self.command("inspect", self.servers[index]))[0]["State"]
@@ -82,8 +84,8 @@ metadata_group_id = 1
 
     def crash_restart(self):
         started = time.monotonic()
-        self.command("kill", "--signal", "KILL", self.servers[11])
+        self.command("kill", "--signal", "KILL", self.servers[self.chunk_kv_index])
         super().crash_restart()
-        self.command("start", self.servers[11])
+        self.command("start", self.servers[self.chunk_kv_index])
         self.ready_chunk_kv()
         self.timings["restart"] = time.monotonic() - started

@@ -5,7 +5,7 @@ import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "app/crowdb-access-server/tests/s3_e2e"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "e2e-test/clients/s3"))
 from clients import aws_workflow, rclone_workflow
 
 os.environ["CROWDB_S3_E2E_ACCESS_KEY"] = os.environ["AWS_ACCESS_KEY_ID"]

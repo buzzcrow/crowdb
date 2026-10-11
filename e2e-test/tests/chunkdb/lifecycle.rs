@@ -1,11 +1,11 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport};
+use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbClientError, ChunkdbRpcTransport};
 use crowdb_kv_client::{GetOutcome, ReadMode, ServiceRegistryClient};
 use crowdb_protocol::chunkdb::rpc::{
-    AllocateChunkRequest, ChunkState, ChunkType, DeleteChunkRequest, QueryChunkRequest, SealChunkRequest,
-    Strip, StripType,
+    AllocateChunkRequest, ChunkState, ChunkType, DeleteChunkRangeRequest, DeleteChunkRequest,
+    QueryChunkRequest, SealChunkRequest, Strip, StripType,
 };
 use crowdb_protocol::key::{BinaryKey, FreeBlockKey};
 use std::sync::Arc;
@@ -70,6 +70,16 @@ async fn allocate_seal_delete_preserves_physical_placement_and_free_facts() {
         .chunk
         .unwrap();
     assert_eq!(queried.state, ChunkState::Deleted as i32);
+    assert!(matches!(
+        client
+            .delete_chunk_range(DeleteChunkRangeRequest {
+                chunk_id: Some(id),
+                chunk_offset: 0,
+                chunk_size: 1,
+            })
+            .await,
+        Err(ChunkdbClientError::Unimplemented(_))
+    ));
 }
 
 async fn assert_free_facts(segments: &[crowdb_protocol::diskdb::rpc::Segment]) {

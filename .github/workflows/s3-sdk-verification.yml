@@ -18,6 +18,9 @@ env:
   CARGO_INCREMENTAL: "0"
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
   CARGO_PROFILE_TEST_DEBUG: line-tables-only
+  CROWDB_E2E_NODE_CPUS: "0.25"
+  CROWDB_E2E_CPUS: "4"
+  CROWDB_E2E_MEMORY_MIB: "8192"
 
 jobs:
   verify:
@@ -31,6 +34,14 @@ jobs:
         with:
           pixi-version: latest
       - uses: Swatinem/rust-cache@v2
+      - name: Install client and release compilation prerequisites
+        run: |
+          pixi run sudo apt-get update
+          pixi run sudo apt-get install -y protobuf-compiler
+      - name: Build and import one formal release image for all selected clients
+        env:
+          CROWDB_KEEP_DEBUG_INFO: "1"
+        run: pixi run build-single-node-container
       - name: Run selected SDK recipe
         env:
           SDK: ${{ inputs.sdk }}
@@ -40,8 +51,7 @@ jobs:
             all) pixi run test-s3-sdks ;;
             *) echo 'Unknown SDK selection' >&2; exit 2 ;;
           esac
-      # Client stage/code diagnostics are in the job log. Runtime files contain
-      # fixture credentials and must not be uploaded as unrestricted artifacts.
+      # Client stages and fixture timings stay in the job log and local reports.
       - name: Clean subprocesses
         if: always()
         run: pixi run clean-env

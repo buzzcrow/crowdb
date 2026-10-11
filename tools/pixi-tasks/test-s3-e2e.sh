@@ -3,10 +3,7 @@
 # Licensed under the Apache License, Version 2.0.
 set -euo pipefail
 cd "${PIXI_PROJECT_ROOT:?}"
-
-pixi run -e default build-cpp
-pixi run -e default -- cargo build -p crowdb-web -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb -p crowdb-chunk-kv-server -p crowdb-access-server
-pixi run -e default -- cargo test -p crowdb-access-s3 --tests
-pixi run -e default -- cargo test -p crowdb-access-server --tests
-pixi run -e s3-e2e test-boto3-copy-error
-CROWDB_S3_E2E_PYTHON="$PIXI_PROJECT_ROOT/.pixi/envs/s3-e2e/bin/python" pixi run -e default -- cargo test -p crowdb-access-server --features s3-e2e --test s3_full_stack_test -- --nocapture
+exec pixi run -e default -- python e2e-test/run.py --layer s3 \
+    --image "${CROWDB_E2E_IMAGE:-crowdb-node:dev}" \
+    --concurrency "${CROWDB_E2E_CONCURRENCY:-2}" \
+    --node-cpus "${CROWDB_E2E_NODE_CPUS:-0.5}" --cpus "${CROWDB_E2E_CPUS:-16}" --memory-mib "${CROWDB_E2E_MEMORY_MIB:-16384}"

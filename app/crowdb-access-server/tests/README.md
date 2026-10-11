@@ -11,7 +11,7 @@ Client recipes: [container development](../../../container/single-node-container
 - The [manual ecosystem fixture](../../../container/single-node-container/tests/ecosystem/README.md)
   uses a separate locked environment and workflow dispatch. Its matrix records
   only actual pinned client operations against the container and a volume restart.
-- [S3 language SDKs](common/s3_sdks/README.md) and the Rust Iceberg SDK retain
+- [S3 language SDKs](../../../e2e-test/clients/S3-SDK.md) and the Rust Iceberg SDK retain
   independent manual workflows. They are not default test dependencies.
 - Selected ORC and optional caches remain independent backlog ownership under
   [ORC validation](../../../doc/backlog/R186-access-iceberg-orc-validation.md)

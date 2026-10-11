@@ -1182,3 +1182,43 @@ Only the exited-storage timing migration awaits a human design choice; S3 and su
 - Alternative A: retain the 15-second overall outage bound and introduce a shared production operation/fault budget across reads, writes and replacement attempts. This changes cancellation/ambiguous-write handling and requires a deliberate production contract.
 - Alternative B: retain current per-I/O/replacement retry policy, distinguish vanished endpoint/network blackholes from process-refusal outages, and define the corresponding container fault contract explicitly. Preserve the original process-refusal timing proof locally until equivalent release-container coverage exists.
 - An asynchronous user question requested this choice. No choice is inferred from the preselected answer or elapsed time. No timeout was increased, assertion weakened, caller retry added, or production workaround implemented. Original host cases remain; these two migrations and the full all-domain gate are not declared complete. This is a contract choice, not exhaustion of five root-cause fix attempts.
+
+### S3 migration in progress
+
+- Host compatibility clients now live under `e2e-test/clients/s3/`, split by
+  wire, upload, multipart, copy, concurrency, object, metadata and CLI contracts.
+  All 23 existing unittest methods have one named `s3.protocol` runner owner.
+- `AccessS3Cluster` adds two formal release Access containers to the protected
+  persistent 12-node Chunk-KV profile, with fixed 7500/7501 endpoints and mounted
+  logs/data. Host Group-0 credential provisioning checks issue/ensure/lookup
+  identity; temporary credential handoff is owner-only and deleted immediately.
+- First acceptance remains in progress. Preserve original S3 launchers until
+  native metrics, admin CLI, response loss, each service restart and language SDK
+  assertions have equivalent passing owners. No whole S3 pass is claimed.
+
+### Additional Access production launchers
+
+- `protocol_production_policy_test` now runs against the persistent multislot
+  container profile: three Chunkdb services and three metadata groups, exact
+  native S3/Iceberg bytes, protocol protection policies and WAL/tree/index
+  purposes. The original host launcher was deleted after its owner passed.
+- Combined S3/Iceberg HTTP policies now run against one normal combined Access
+  container. Exact small mirrors and 2+1 versus 4+2 EC policies passed; the
+  original combined HTTP launcher was retired.
+- Terminal small-write-manager handling and two/three-protocol shutdown were
+  extracted unchanged into `listeners.rs` and covered by three component UTs.
+  The old file-triggered test-util subprocess hook was removed. The existing
+  Chunk client manager-failure proof remains local. A freshly staged formal
+  image must verify these equivalent production lifecycle paths next.
+- The original protected exited-Diskio repair/rotation test remains under the
+  existing `s3-e2e` feature as an explicit legacy E2E comparison. Its 15-second
+  bound and all repair/failure counters are unchanged. It is a third instance
+  of the existing exited-IP versus connection-refusal budget decision, not a
+  unit test and not a migrated passing owner.
+- S3 host task delegates are explicitly excluded from image source inputs:
+  staging and the OCI builder do not read these three scripts. Build tooling,
+  runtime sources, dependency/features and new packages still require a new
+  image; fixture provenance tests cover this boundary.
+- Per-node CPU quota is explicit. The host client retains a separate 0.5-CPU
+  reservation; CI uses 0.25 CPU per server, fitting a single 14-node fixture
+  in 4 CPU / 8192 MiB. Protocol and language clients passed at this quota.

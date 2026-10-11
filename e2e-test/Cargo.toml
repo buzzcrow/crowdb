@@ -11,6 +11,17 @@ repository.workspace = true
 workspace = true
 
 [dev-dependencies]
+futures = "0.3"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+base64 = "0.22"
+hmac = "0.12"
+md-5 = "0.10"
+sha2 = "0.10"
+percent-encoding = "2"
+crowdb-console-shared = { path = "../lib/crowdb-console-shared" }
+crowdb-access-server = { path = "../app/crowdb-access-server" }
+crowdb-access-iceberg = { path = "../lib/crowdb-access-iceberg" }
+crowdb-access-s3 = { path = "../lib/crowdb-access-s3" }
 async-trait = "0.1"
 crowdb-chunk-client = { path = "../lib/crowdb-chunk-client" }
 crowdb-chunk-kv-client = { path = "../lib/crowdb-chunk-kv-client" }
@@ -28,7 +39,7 @@ crowdb-kv = { path = "../lib/crowdb-kv" }
 crowdb-kv-client = { path = "../lib/crowdb-kv-client" }
 crowdb-protocol = { path = "../lib/crowdb-protocol" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
 serde_json = "1"
 
 [[test]]

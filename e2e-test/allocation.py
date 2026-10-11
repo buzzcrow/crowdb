@@ -47,6 +47,7 @@ def start_node(cluster, index, data, arguments, address=None, environment=(), mo
     network_args = ("--ip", address) if address else ()
     environment_args = tuple(item for value in environment for item in ("--env", value))
     mount_args = tuple(item for value in mounts for item in ("--mount", value))
+    cpus = str(getattr(cluster, "node_cpus", cpus))
     operation = ("run", "-d") if running else ("create",)
     cluster.command(*operation, "--name", name, "--label", f"{LABEL}={cluster.run_id}",
                     "--network", cluster.run_id, "--network-alias", f"node{index}",

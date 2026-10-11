@@ -5,7 +5,7 @@
 
 The root-level `e2e-test/` is the unified E2E project. Its Rust workspace package
 is `e2e-test`; server domains use separate test modules within this crate.
-The Python runner owns container lifecycle and scheduling. Future browser and
+The Python runner owns container lifecycle and scheduling. Browser and
 SDK clients with independent language dependencies live under `clients/<client>/`
 and consume the same fixture endpoints and ownership contract. They do not
 introduce separate server launchers. Domain profiles and migration scope are
@@ -243,3 +243,26 @@ pending.
 - Address validation, authoritative-owner topology and synthetic native-route
   lease recovery remain component tests. The shared host Diskio launcher remains
   until chunk client/stream callers migrate, and is not used by this domain.
+
+## Access S3
+
+- `s3.protocol` owns 23 existing boto3, AWS CLI and rclone contracts. Each case
+  uses two Access frontends, one protected Chunk-KV server, six persistent
+  Diskio failure domains, Chunkdb, Diskdb and three KV voters. HTTP/health
+  ports are 7500/7501; every fixture owns its bridge and bind-mounted data.
+- `s3.recovery` separately restarts each service class and checks exact bytes,
+  overwrites, deletions, copies and unfinished multipart sessions.
+- `s3.responses` tests lost committed responses. `s3.credentials` runs the
+  exact release credential CLI on the host. `s3.benchmark` records functional
+  direct Chunk and HTTP request-path samples, including Access CPU/RSS.
+- `s3.sdk` owns the [Java, JavaScript and Go client projects](clients/S3-SDK.md),
+  their original locks and injected-failure cleanup checks.
+- Native buffer, payload-copy and read metrics remain asserted. Parsers,
+  signatures, repository state machines, publication races and fake transport
+  wire proofs remain component tests. These wire stubs do not start a CROWDB
+  release server or replace production storage acceptance.
+
+```sh
+pixi run test-container-e2e --layer s3 --concurrency 2 --cpus 16 --memory-mib 16384
+pixi run test-container-e2e --layer s3 --scope s3.recovery --concurrency 1 --cpus 8 --memory-mib 8192
+```

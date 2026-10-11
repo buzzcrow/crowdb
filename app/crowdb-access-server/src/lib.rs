@@ -7,6 +7,8 @@ pub mod config;
 pub mod dataset;
 mod http_receive;
 pub mod iceberg;
+#[cfg(feature = "s3")]
+pub mod listeners;
 mod multipart_complete;
 pub mod upload_flow;
 

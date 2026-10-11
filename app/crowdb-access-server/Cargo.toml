@@ -70,12 +70,6 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "test-util"] }
 
 [[test]]
-name = "s3_full_stack_test"
-path = "tests/s3_full_stack_test.rs"
-harness = false
-required-features = ["s3-e2e"]
-
-[[test]]
 name = "iceberg_full_stack_test"
 path = "tests/iceberg_full_stack_test.rs"
 required-features = ["iceberg-e2e"]
@@ -103,3 +97,8 @@ required-features = ["iceberg-e2e"]
 name = "iceberg_file_http_test"
 path = "tests/iceberg_file_http_test.rs"
 required-features = ["iceberg-e2e"]
+
+[[test]]
+name = "protocol_http_policy_test"
+path = "tests/protocol_http_policy_test.rs"
+required-features = ["s3-e2e"]

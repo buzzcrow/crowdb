@@ -10,6 +10,9 @@ from fixture import Cluster
 from diskdb_fixture import DiskdbCluster
 from chunkdb_fixture import ChunkdbCluster, ChunkdbStorageCluster
 from chunk_kv_fixture import ChunkKvCluster
+from access_s3_fixture import AccessS3Cluster
+from access_protocol_fixture import AccessProtocolCluster
+from s3_recovery import SERVICE_NODES, run_recovery
 from managed_fixture import ManagedCluster
 from diskio_fixture import DiskioCluster, DiskioDiscoveryCluster, DiskioSemanticCluster
 
@@ -37,6 +40,12 @@ class Case:
     chunkdb_multi: bool = False
     storage_backend: str = "mem"
     chunk_kv_empty_catalog: bool = False
+    sdk_client: bool = False
+    s3_recovery: str | None = None
+    s3_script: str | None = None
+    s3_language: str | None = None
+    s3_policy: bool = False
+    access_protocol: bool = False
 
 
 KV_CASES = (
@@ -191,9 +200,49 @@ CHUNK_KV_CASES = (
     Case("chunk-kv.protocol", "chunk_kv::production_transport_calls_direct_owner_rpc", chunk_kv_empty_catalog=True),
     Case("chunk-kv.recovery", "chunk_kv::recovery::routed_native_records_and_tombstones_survive_complete_service_restart", restart=True),
 )
-ALL_CASES = CHUNK_KV_CASES + CHUNK_CLIENT_CASES + CHUNK_STREAM_CASES + CHUNKDB_CASES + KV_CASES + DISKDB_CASES + DEPLOYMENT_CASES + DISKIO_CASES
+S3_CASES = (
+    Case("s3.protocol", "s3.protocol::test_aws_chunked_trailers_are_verified_before_publication", sdk_client=True),
+    Case("s3.protocol", "s3.protocol::test_aws_cli_workflow", sdk_client=True),
+    Case("s3.protocol", "s3.protocol::test_basic_bucket_object_matrix", sdk_client=True),
+    Case("s3.protocol", "s3.protocol::test_batch_delete_preserves_exact_keys_and_quiet", sdk_client=True),
+    Case("s3.protocol", "s3.protocol::test_batch_delete_rejects_entire_invalid_request", sdk_client=True),
+    Case("s3.protocol", "s3.protocol::test_batch_delete_thousand_keys_and_unversioned_retry", sdk_client=True),
+    Case("s3.protocol", "s3.protocol::test_concurrent_overwrite_delete_and_get_are_portable", sdk_client=True),
+    Case("s3.protocol", "s3.protocol::test_copy_captures_source_before_overwrite_and_delete", sdk_client=True),
+    Case("s3.protocol", "s3.protocol::test_default_boto3_checksums_and_multipart", sdk_client=True),
+    Case("s3.protocol", "s3.protocol::test_fragmentation_and_storage_boundaries", sdk_client=True),
+    Case("s3.protocol", "s3.protocol::test_independent_frontends_share_one_namespace", sdk_client=True),
+    Case("s3.protocol", "s3.protocol::test_invalid_user_metadata_preserves_objects_and_sessions", sdk_client=True),
+    Case("s3.protocol", "s3.protocol::test_multipart_copy_selects_ranges_and_replaces_parts", sdk_client=True),
+    Case("s3.protocol", "s3.protocol::test_multipart_replaces_parts_and_publishes_selected_bytes", sdk_client=True),
+    Case("s3.protocol", "s3.protocol::test_ordinary_put_size_matrix", sdk_client=True),
+    Case("s3.protocol", "s3.protocol::test_presigned_transfers_tamper_and_expiry", sdk_client=True),
+    Case("s3.protocol", "s3.protocol::test_rclone_workflow", sdk_client=True),
+    Case("s3.protocol", "s3.protocol::test_server_side_copy_preserves_bytes_and_supported_metadata", sdk_client=True),
+    Case("s3.protocol", "s3.protocol::test_signed_raw_http_wire_contract", sdk_client=True),
+    Case("s3.protocol", "s3.protocol::test_slow_response_reader_keeps_full_object_consistent", sdk_client=True),
+    Case("s3.protocol", "s3.protocol::test_slow_signed_upload_releases_native_buffers", sdk_client=True),
+    Case("s3.protocol", "s3.protocol::test_truncated_signed_upload_does_not_publish_and_releases_credit", sdk_client=True),
+    Case("s3.protocol", "s3.protocol::test_user_metadata_publication_copy_and_multipart", sdk_client=True),
+)
+S3_RECOVERY_CASES = tuple(Case("s3.recovery", "s3.recovery::" + service, sdk_client=True, s3_recovery=service)
+                          for service in SERVICE_NODES)
+S3_SPECIAL_CASES = (Case("s3.policy", "access_s3::protocol_http::combined_http_listeners_keep_protocol_chunk_policies_separate", access_protocol=True),
+                    Case("s3.policy", "access_s3::policy::s3_and_iceberg_keep_distinct_policies_on_protected_storage", s3_policy=True),
+                    Case("s3.credentials", "s3.credentials::release_cli_issue_ensure_lookup", sdk_client=True, s3_script="admin"),
+                    Case("s3.benchmark", "access_s3::benchmark::direct_chunk_path"),
+                    Case("s3.responses", "s3.responses::lost_put_and_multipart_replies_are_idempotent",
+                        sdk_client=True, s3_script="lost_reply"),
+                    Case("s3.benchmark", "s3.benchmark::s3_request_path", sdk_client=True, s3_script="benchmark"))
+S3_LANGUAGE_CASES = tuple(Case("s3.sdk", "s3.sdk::" + language, sdk_client=True, s3_language=language)
+                          for language in ("java", "js", "go"))
+ALL_CASES = S3_LANGUAGE_CASES + S3_SPECIAL_CASES + S3_RECOVERY_CASES + S3_CASES + CHUNK_KV_CASES + CHUNK_CLIENT_CASES + CHUNK_STREAM_CASES + CHUNKDB_CASES + KV_CASES + DISKDB_CASES + DEPLOYMENT_CASES + DISKIO_CASES
 
 def case_nodes(case):
+    if case.access_protocol:
+        return 13
+    if case.scope.startswith("s3."):
+        return 14
     if case.scope.startswith("chunk-kv."):
         return 12
     if case.chunkdb_multi:
@@ -211,6 +260,13 @@ def case_nodes(case):
     return 2 if case.scope.startswith(("diskdb.", "chunkdb.")) else len(case.stores_per_node or case.stores)
 
 def allocate_cluster(case, image, artifacts, bundle, data_root):
+    if case.access_protocol:
+        return AccessProtocolCluster(image, artifacts, bundle, data_root=data_root)
+    if case.s3_policy:
+        return ChunkKvCluster(image, artifacts, bundle, service_instances=(11, 12, 13),
+                              storage_groups=(1, 2, 3), data_root=data_root)
+    if case.scope.startswith("s3."):
+        return AccessS3Cluster(image, artifacts, bundle, data_root=data_root)
     if case.scope.startswith("chunk-kv."):
         return ChunkKvCluster(image, artifacts, bundle, empty_catalog=case.chunk_kv_empty_catalog,
                               data_root=data_root)
@@ -242,7 +298,7 @@ def allocate_cluster(case, image, artifacts, bundle, data_root):
                    advertise=case.advertise)
 
 
-def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case_name=None, layer="all"):
+def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case_name=None, layer="all", node_cpus=0.5):
     selected = tuple(case for case in ALL_CASES if (layer == "all" or case.scope.startswith(layer + ".")) and (scope == "all" or case.scope == scope)
                      and (not case_name or case.name == case_name))
     if not selected:
@@ -250,10 +306,20 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
 
     def run(case):
         cluster = allocate_cluster(case, image, artifacts, bundle, data_root)
+        cluster.case_name = case.name
+        cluster.node_cpus = node_cpus
         (cluster.artifacts / "case.json").write_text(json.dumps({
             "scope": case.scope, "case": case.name}, indent=2))
         with cluster:
-            if case.restart:
+            if case.s3_recovery:
+                run_recovery(cluster, case.s3_recovery)
+            elif case.s3_language:
+                cluster.language_client(case.s3_language)
+            elif case.s3_script:
+                cluster.script_client(case.s3_script)
+            elif case.sdk_client:
+                cluster.sdk_client(case.name.rsplit("::", 1)[-1])
+            elif case.restart:
                 cluster.client(bundle, "write", case.name)
                 for data in cluster.data_paths:
                     for path in case.persisted_paths:

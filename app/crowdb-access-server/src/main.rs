@@ -94,47 +94,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::env::args().skip(1).filter(|arg| arg != "dataset").collect(),
                 wait_for_shutdown(Some(shutdown_rx)),
             );
-            tokio::pin!(s3, iceberg, dataset);
-            tokio::select! {
-                result = &mut s3 => {
-                    let _ = shutdown_tx.send(true);
-                    let _ = dataset.await;
-                    let other = iceberg.await;
-                    result.map_err(|error| -> Box<dyn std::error::Error> { error })?;
-                    other.map_err(|error| -> Box<dyn std::error::Error> { error })?;
-                }
-                result = &mut iceberg => {
-                    let _ = shutdown_tx.send(true);
-                    let _ = dataset.await;
-                    let other = s3.await;
-                    result.map_err(|error| -> Box<dyn std::error::Error> { error })?;
-                    other?;
-                }
-                result = &mut dataset => {
-                    let _ = shutdown_tx.send(true);
-                    let other_s3 = s3.await;
-                    let other_iceberg = iceberg.await;
-                    result.map_err(|error| -> Box<dyn std::error::Error> { error })?;
-                    other_s3?;
-                    other_iceberg.map_err(|error| -> Box<dyn std::error::Error> { error })?;
-                }
-            }
+            Box::pin(crowdb_access_server::listeners::run_three(
+                s3,
+                async {
+                    iceberg
+                        .await
+                        .map_err(|error| -> Box<dyn std::error::Error> { error })
+                },
+                async {
+                    dataset
+                        .await
+                        .map_err(|error| -> Box<dyn std::error::Error> { error })
+                },
+                shutdown_tx,
+            ))
+            .await?;
         } else {
-            tokio::pin!(s3, iceberg);
-            tokio::select! {
-                result = &mut s3 => {
-                    let _ = shutdown_tx.send(true);
-                    let other = iceberg.await;
-                    result?;
-                    other.map_err(|error| -> Box<dyn std::error::Error> { error })?;
-                }
-                result = &mut iceberg => {
-                    let _ = shutdown_tx.send(true);
-                    let other = s3.await;
-                    result.map_err(|error| -> Box<dyn std::error::Error> { error })?;
-                    other?;
-                }
-            }
+            Box::pin(crowdb_access_server::listeners::run_pair(
+                s3,
+                async {
+                    iceberg
+                        .await
+                        .map_err(|error| -> Box<dyn std::error::Error> { error })
+                },
+                shutdown_tx,
+            ))
+            .await?;
         }
     }
     #[cfg(not(feature = "s3"))]
@@ -252,15 +237,12 @@ async fn run_s3(
         let health_listener = bind_health_listener(access_config).await?;
         let health_handler = Arc::new(AccessHealthHandler(Arc::clone(&handler)));
         health.set_listener(DependencyHealth::Ready);
-        #[cfg(feature = "test-util")]
-        install_test_small_manager_failure(Arc::clone(&chunks));
-        let serve_result: Result<(), Box<dyn std::error::Error>> = tokio::select! {
-            result = serve(listener, handler, wait_for_shutdown(shutdown.clone())) => result.map_err(Into::into),
-            result = serve(health_listener, health_handler, wait_for_shutdown(shutdown)) => result.map_err(Into::into),
-            () = chunks.wait_for_small_write_manager_failure() => {
-                Err("S3 small-write manager stopped unexpectedly".into())
-            }
-        };
+        let serve_result = crowdb_access_server::listeners::serve_s3(
+            serve(listener, handler, wait_for_shutdown(shutdown.clone())),
+            serve(health_listener, health_handler, wait_for_shutdown(shutdown)),
+            chunks.wait_for_small_write_manager_failure(),
+        )
+        .await;
         health.stop();
         expiry_task.abort();
         let shutdown_result = chunks.shutdown_small_writes().await;
@@ -282,18 +264,6 @@ async fn bind_health_listener(access_config: &AccessConfig) -> std::io::Result<T
         .or_else(|| std::env::var("CROWDB_ACCESS_HEALTH_LISTEN").ok())
         .unwrap_or_else(|| "127.0.0.1:9094".into());
     TcpListener::bind(address).await
-}
-
-#[cfg(all(feature = "s3", feature = "test-util"))]
-fn install_test_small_manager_failure(chunks: Arc<crowdb_chunk_client::ChunkIoClient>) {
-    if let Some(path) = std::env::var_os("CROWDB_TEST_STOP_S3_MANAGER_FILE") {
-        tokio::spawn(async move {
-            while !std::path::Path::new(&path).exists() {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-            let _ = chunks.stop_small_write_manager_for_test().await;
-        });
-    }
 }
 
 #[cfg(feature = "s3")]

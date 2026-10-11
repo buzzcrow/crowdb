@@ -1,34 +1,23 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use std::path::Path;
 use std::sync::Arc;
 
+use bytes::Bytes;
 use crowdb_access_iceberg::storage::{self as iceberg_storage, IcebergLargeWriteSettings};
 use crowdb_access_s3::storage::{S3LargeWriteSettings, S3StorageClients, S3WritePolicies, S3WriteSettings};
 use crowdb_chunk_client::{
     ChunkIoClient, ChunkIoWriter, ChunkReadPolicy, LargeWritePolicy, SmallWritePolicy,
 };
 use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport};
-use crowdb_console_shared::{config::ServiceType, ops::s3};
 use crowdb_kv_client::{
     ChunkSlotMapClient, ClientConfig, CrowdbKvClient, GetOutcome, ReadMode, ServiceRegistryClient,
 };
 use crowdb_protocol::chunk_slot::ChunkSlot;
 use crowdb_protocol::chunkdb::rpc::{ChunkType, Location, QueryChunkRequest, Strip};
 use crowdb_protocol::common::ChunkId;
-use crowdb_test_harness::test_dirs::TestDir;
-use hyper::body::Bytes;
 
 const MIB: usize = 1024 * 1024;
-
-struct StopClusterOnDrop<'a>(&'a Path);
-
-impl Drop for StopClusterOnDrop<'_> {
-    fn drop(&mut self) {
-        let _ = s3::stop(self.0);
-    }
-}
 
 async fn write_small(client: &ChunkIoClient, payload: Bytes) -> Location {
     let mut writer = client.prepare_small_write(payload.len()).await.unwrap();
@@ -191,21 +180,13 @@ async fn assert_system_chunk_purposes(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[cfg_attr(
-    target_os = "macos",
-    ignore = "starts a complete simulated three-rack production storage stack"
-)]
+#[ignore = "requires the owned multislot protected release storage"]
 async fn s3_and_iceberg_keep_distinct_policies_on_protected_storage() {
-    let dir = TestDir::new("access-production-protocol-policy").unwrap();
-    s3::start_protected_test_cluster(dir.path()).await.unwrap();
-    let _cleanup = StopClusterOnDrop(dir.path());
-    let (config, _) = s3::load(dir.path()).unwrap();
-    let seeds = config
-        .servers
+    let ips = crate::common::management::addresses(14);
+    let seeds: Vec<_> = ips[..3]
         .iter()
-        .filter(|server| server.service_type == ServiceType::PaxosKv)
-        .map(|server| server.url.clone())
-        .collect::<Vec<_>>();
+        .map(|ip| crate::common::management::origin(ip))
+        .collect();
 
     let (s3_policies, iceberg_large, iceberg_small) = production_policies();
     assert_ne!(s3_policies.large.ec_scheme, iceberg_large.ec_scheme);
@@ -287,5 +268,4 @@ async fn s3_and_iceberg_keep_distinct_policies_on_protected_storage() {
     .await;
     s3_chunks.shutdown_small_writes().await.unwrap();
     iceberg_chunks.shutdown_small_writes().await.unwrap();
-    s3::delete(dir.path()).unwrap();
 }
