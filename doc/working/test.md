@@ -1154,3 +1154,11 @@ Source: `app/crowdb-kv-server/`. Tests: 9 files.
 | deployment.failures    | restart_exhaustion_exits_the_container                                        |     60.274 |      68.204 | run-c560ffe7c4c54c4fb47ac83461767904 |
 | deployment.failures    | recovery_rejects_changed_durable_credentials                                  |      2.252 |      10.238 | run-c560ffe7c4c54c4fb47ac83461767904 |
 | deployment.anonymous   | default_anonymous_volume_is_ready_and_monitor_death_exits_container           |      0.366 |       4.721 | run-d919293a24e64f03a09b125f8087676e |
+
+### Shipped readonly Web browser
+
+- Baseline unchanged script: 6.089 s. Accepted run `run-604b717d7494423f9a4ec4232c6fb7ee`, same retained-debug release config as above. Original 3-second DOM and 10-second response bounds retained; installed host browser only.
+
+| Scope              | Named flow                                                      | Browser (s) | Dependency preparation (s) | Fixture (s) |
+| ------------------ | --------------------------------------------------------------- | ----------- | -------------------------- | ----------- |
+| deployment.browser | readonly_release_ui_preserves_domains_and_live_authority         |       6.181 |                      3.319 |      14.637 |

@@ -21,6 +21,7 @@ from deployment_validation_fixture import RejectedBootstrapCluster
 from deployment_clients_fixture import DeploymentClientsCluster
 from deployment_failure_fixture import DeploymentFailureCluster
 from deployment_anonymous_fixture import AnonymousReleaseCluster
+from deployment_browser_fixture import DeploymentBrowserCluster
 from console_web_fixture import ConsoleWebCluster
 from diskio_fixture import DiskioCluster, DiskioDiscoveryCluster, DiskioSemanticCluster
 
@@ -131,6 +132,7 @@ DISKDB_CASES = (
 )
 
 DEPLOYMENT_CASES = (
+    Case("deployment.browser", "deployment::browser::readonly_release_ui_preserves_domains_and_live_authority", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
     Case("deployment.anonymous", "deployment::anonymous::default_anonymous_volume_is_ready_and_monitor_death_exits_container", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
     Case("deployment.failures", "deployment::failures::restart_exhaustion_exits_the_container", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web"), client_timeout=540),
     Case("deployment.failures", "deployment::failures::recovery_rejects_changed_durable_credentials", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web"), client_timeout=540),
@@ -443,6 +445,8 @@ def case_resources(case, node_cpus):
 
 
 def allocate_cluster(case, image, artifacts, bundle, data_root):
+    if case.scope == "deployment.browser":
+        return DeploymentBrowserCluster(image, artifacts, bundle, services=case.service_selection, data_root=data_root)
     if case.scope == "deployment.anonymous":
         return AnonymousReleaseCluster(image, artifacts, services=case.service_selection, data_root=data_root)
     if case.scope == "deployment.failures":
@@ -514,7 +518,9 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
         (cluster.artifacts / "case.json").write_text(json.dumps({
             "scope": case.scope, "case": case.name}, indent=2))
         with cluster:
-            if case.s3_recovery:
+            if case.scope == "deployment.browser":
+                cluster.browser()
+            elif case.s3_recovery:
                 run_recovery(cluster, case.s3_recovery)
             elif case.s3_language:
                 cluster.language_client(case.s3_language)

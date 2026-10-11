@@ -1,0 +1,11 @@
+{
+  "name": "crowdb-console-e2e-client",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@playwright/test": "1.60.0",
+    "typescript": "5.9.3",
+    "@types/node": "25.7.0"
+  }
+}

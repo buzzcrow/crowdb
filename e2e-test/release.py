@@ -53,7 +53,7 @@ def check_startup(image, artifacts):
     check("managed-root", ["server", "kv"], "requires a separate data root")
     profile = root / "invalid-profile.toml"
     profile.write_text("version = [\n")
-    check("invalid-profile", [], "Error: Decode", mounts=(
+    check("invalid-profile", [], "failed to decode deployment profile", mounts=(
         f"type=bind,source={profile.resolve()},target=/opt/crowdb/etc/selected.toml,readonly",),
         environment=("CROWDB_PROFILE_PATH=/opt/crowdb/etc/selected.toml",))
     source = Path(__file__).resolve().parents[1] / "container/single-node-container/profile.toml"

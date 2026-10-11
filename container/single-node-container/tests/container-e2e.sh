@@ -38,7 +38,6 @@ start_container() {
     fi
     docker run -d --name "$name" -e CROWDB_STARTUP_MODE=single \
         "${mount_args[@]}" \
-        -p 127.0.0.1:9092:9092 -p 127.0.0.1::9091 -p 127.0.0.1::9090 -p 127.0.0.1::9093 \
         "$image" >/dev/null
     for attempt in $(seq 1 240); do
         state=$(docker inspect --format '{{.State.Status}}' "$name")
@@ -53,12 +52,6 @@ start_container() {
     done
     docker logs "$name"
     return 1
-}
-
-port() {
-    local published
-    published=$(docker port "$name" "$1/tcp")
-    printf '%s\n' "${published##*:}"
 }
 
 verify_listener_failure_propagation() {
@@ -102,11 +95,9 @@ echo "checking empty-volume boot"
 docker exec "$name" crowdb-monitor readiness
 client_env=$(docker exec "$name" crowdb-monitor credentials show --format env)
 docker exec "$name" cat /opt/crowdb/data/bootstrap/manifest.json | jq -e '.state == "ready"' >/dev/null
-node container/single-node-container/tests/web-ui.cjs "http://127.0.0.1:$(port 9090)" "$name"
 echo "checking combined access listener failure propagation"
 verify_listener_failure_propagation s3
 verify_listener_failure_propagation iceberg
-node container/single-node-container/tests/web-ui.cjs "http://127.0.0.1:$(port 9090)"
 sleep 12
 docker exec "$name" crowdb-monitor readiness
 if grep -Rq 'local split planned' "$root/log/kv"; then

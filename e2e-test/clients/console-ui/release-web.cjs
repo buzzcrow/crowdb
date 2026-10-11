@@ -2,9 +2,10 @@
 // Licensed under the Apache License, Version 2.0.
 
 const { existsSync, mkdirSync } = require('node:fs');
-const { execFileSync } = require('node:child_process');
+const { writeFileSync, renameSync, readFileSync } = require('node:fs');
+const { randomUUID } = require('node:crypto');
 const { resolve } = require('node:path');
-const { chromium, expect } = require('../../../app/crowdb-web/ui/node_modules/@playwright/test');
+const { chromium, expect } = require('@playwright/test');
 
 async function main() {
   const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE || [
@@ -42,11 +43,9 @@ async function main() {
 }
 
 async function verifyAuthorityOutage(page, container) {
-  const docker = (...args) => execFileSync('docker', args, { encoding: 'utf8', timeout: 10000 });
-  const status = JSON.parse(docker('exec', container, 'cat', '/opt/crowdb/run/status/monitor.json'));
-  const pid = String(status.services.kv.pid);
+  const pid = Number(process.env.CROWDB_E2E_KV_PID);
   await page.clock.install();
-  docker('exec', container, 'kill', '-STOP', pid);
+  await signalService('STOP', pid);
   try {
     const failedSnapshot = page.waitForResponse(response =>
       response.url().endsWith('/api/preview') && response.status() === 503,
@@ -58,10 +57,26 @@ async function verifyAuthorityOutage(page, container) {
     expect(body.monitor.services.kv.pid).toBe(Number(pid));
     await expect(page.getByRole('complementary', { name: 'Cluster tree sidebar' }).getByRole('button', { name: 'N-1', exact: true })).toHaveCount(0, { timeout: 3000 });
   } finally {
-    docker('exec', container, 'kill', '-CONT', pid);
+    await signalService('CONT', pid);
   }
   await page.clock.runFor(3001);
   await expect(page.getByRole('complementary', { name: 'Cluster tree sidebar' })).toBeVisible({ timeout: 3000 });
+}
+
+async function signalService(signal, pid) {
+  const id = randomUUID();
+  const root = process.env.CROWDB_E2E_CONTROL;
+  const request = resolve(root, `${id}.request.json`);
+  const response = resolve(root, `${id}.response.json`);
+  writeFileSync(request + '.tmp', JSON.stringify({ action: 'signal-kv', node: 0, signal, pid }));
+  renameSync(request + '.tmp', request);
+  const deadline = Date.now() + 10000;
+  while (!existsSync(response)) {
+    if (Date.now() >= deadline) throw new Error('Owned browser signal timed out');
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  const result = JSON.parse(readFileSync(response, 'utf8'));
+  if (!result.ok) throw new Error(result.error);
 }
 
 main().catch((error) => { console.error(error); process.exitCode = 1; });
