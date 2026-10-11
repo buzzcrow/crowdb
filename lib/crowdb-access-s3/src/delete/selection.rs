@@ -1,8 +1,9 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{DeleteResults, MAX_DELETE_BODY};
+use super::{DeleteResult, DeleteResults, MAX_DELETE_BODY};
 use crate::error::S3ErrorCode;
+use futures::StreamExt;
 use quick_xml::{events::Event, Reader};
 
 #[derive(Debug, Eq, PartialEq)]
@@ -42,7 +43,20 @@ impl DeleteSelection {
     /// Dropping the future cancels remaining work; completed mutations are not rolled back.
     /// # Errors
     /// Rejects a manually constructed invalid selection before invoking the callback.
-    pub async fn execute<F, Fut>(&self, mut delete: F) -> Result<DeleteResults, S3ErrorCode>
+    pub async fn execute<F, Fut>(&self, delete: F) -> Result<DeleteResults, S3ErrorCode>
+    where
+        F: FnMut(Vec<u8>) -> Fut,
+        Fut: std::future::Future<Output = Result<(), S3ErrorCode>>,
+    {
+        Ok(self.stream(delete)?.collect().await)
+    }
+
+    /// Validates the whole selection, then yields each independent result in order.
+    /// No deletion starts until the stream is polled. Dropping it cancels pending work.
+    ///
+    /// # Errors
+    /// Rejects an invalid selection before invoking any deletion callback.
+    pub fn stream<F, Fut>(&self, delete: F) -> Result<impl futures::Stream<Item = DeleteResult>, S3ErrorCode>
     where
         F: FnMut(Vec<u8>) -> Fut,
         Fut: std::future::Future<Output = Result<(), S3ErrorCode>>,
@@ -53,12 +67,14 @@ impl DeleteSelection {
         for key in &self.keys {
             validate_key(key)?;
         }
-        let mut results = Vec::with_capacity(self.keys.len());
-        for key in &self.keys {
-            let result = delete(key.clone()).await;
-            results.push((key.clone(), result));
-        }
-        Ok(results)
+        Ok(futures::stream::unfold(
+            (self.keys.clone().into_iter(), delete),
+            |(mut keys, mut delete)| async move {
+                let key = keys.next()?;
+                let result = delete(key.clone()).await;
+                Some(((key, result), (keys, delete)))
+            },
+        ))
     }
 }
 

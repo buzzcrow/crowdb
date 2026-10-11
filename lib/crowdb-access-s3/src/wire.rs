@@ -251,25 +251,41 @@ pub fn copy_result(etag: &str, modified_ms: u64, part: bool) -> String {
 
 #[must_use]
 pub fn delete_objects(results: &[(Vec<u8>, Result<(), crate::error::S3ErrorCode>)], quiet: bool) -> String {
-    let mut output = xml_start("DeleteResult");
+    let mut output = delete_objects_start();
     for (key, result) in results {
-        match result {
-            Ok(()) if quiet => {}
-            Ok(()) => {
-                output.push_str("<Deleted>");
-                element(&mut output, "Key", &String::from_utf8_lossy(key));
-                output.push_str("</Deleted>");
-            }
-            Err(code) => {
-                output.push_str("<Error>");
-                element(&mut output, "Key", &String::from_utf8_lossy(key));
-                element(&mut output, "Code", code.code());
-                element(&mut output, "Message", code.message());
-                output.push_str("</Error>");
-            }
-        }
+        output.push_str(&delete_object_result(key, result, quiet));
     }
     output.push_str("</DeleteResult>");
+    output
+}
+
+#[must_use]
+pub fn delete_objects_start() -> String {
+    xml_start("DeleteResult")
+}
+
+#[must_use]
+pub fn delete_object_result(
+    key: &[u8],
+    result: &Result<(), crate::error::S3ErrorCode>,
+    quiet: bool,
+) -> String {
+    let mut output = String::new();
+    match result {
+        Ok(()) if quiet => {}
+        Ok(()) => {
+            output.push_str("<Deleted>");
+            element(&mut output, "Key", &String::from_utf8_lossy(key));
+            output.push_str("</Deleted>");
+        }
+        Err(code) => {
+            output.push_str("<Error>");
+            element(&mut output, "Key", &String::from_utf8_lossy(key));
+            element(&mut output, "Code", code.code());
+            element(&mut output, "Message", code.message());
+            output.push_str("</Error>");
+        }
+    }
     output
 }
 

@@ -9,7 +9,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 
 ## Resume context
 
-- Branch `task-deploy`; latest accepted CI diagnostic export is committed as `fb5b9b5e`. R230 is unfinished. Do not delete the
+- Branch `task-deploy`; handoff checkpoint is `808ea848`. R230 is unfinished. Do not delete the
   requirement/backlog entry until every remaining owner and required gate passes.
 - Working tree contains uncommitted Console browser migration drafts. Shared-image CI is committed. S3 node-fault migration and local-state component proofs are accepted.
   Preserve these drafts. `e2e-test/clients/console-ui/node_modules/` is local
@@ -90,28 +90,29 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   Public exports now retain machine-readable measurements and redacted logs,
   excluding mounted data/configuration and host client build trees. YAML and
   28-package task reachability pass; actual remote CI has not run.
-- [~] **Final regression and measurements**: run full Iceberg/Console and required registered layers on the same image,
-  then relevant component/fmt/lint gates. Update `doc/working/test.md` using one
-  row per domain and actual complete-run counts/wall times/environment/image.
-  Keep per-case detail in artifacts; never sum partial batches into a full pass.
-  Rebuilt formal image source/digests are above. New-image KV passes 50/50 in
-  96.977 seconds (`run-7587d4ce83f142c5b6238a8b941d47d8`). Complete S3 and
-  Iceberg runs are active in `/tmp/crowdb-coalesce-final-{s3,iceberg}`; each has
-  a 16 CPU budget, respectively 16384/32768 MiB, with 0.5 CPU/server.
-  Previous image domain counts/timings, including its S3/Iceberg failures,
-  remain recorded in `test.md`; do not replace them with partial passing counts.
-  Rerun remaining complete registered domains and required special profiles on
-  this image after active SDK gates finish. Verify CI quota settings separately;
-  remote CI is unmeasured. Workspace clippy passed in 24.78 seconds and fmt passes.
-  Remaining domain runner: `/tmp/crowdb-coalesce-other-domains.py` (session 87106).
-  Console/special-profile runner waits for S3 teardown, then executes sequentially:
-  `/tmp/crowdb-coalesce-console-profiles.py` (session 5377). Its selections are
-  Console operations, Linux host, SSH bridge admission, containerd host/cluster,
-  and both external-engine manual profiles. Preserve their logs/reports and
-  verify their actual exit status. Do not run global cleanup during an active gate.
-  After all container runners finish, rerun `pixi run test-core` for the new
-  coalescer regression; the previous 977-case run predates that added test.
-  The simplified document layout is accepted and needs no further redesign.
+- [~] **Final regression and measurements**: all complete registered domain and
+  special-profile runners on the coalescer image have finished. KV 50, Diskdb 5,
+  Diskio 8, Chunkdb 11, Chunk-client 40, Chunk-stream 4, Chunk-KV 2, Dataset 2,
+  Deployment 33, Console operations 87, and Iceberg 32 pass. Linux host, SSH
+  bridge admission, containerd host/cluster and both ecosystem profiles pass.
+  Logs/reports: `/tmp/crowdb-coalesce-final-*`. Core UT passes 978/978.
+  S3 remains 42/43: the third phase of
+  `test_batch_delete_thousand_keys_and_unversioned_retry` reaches its original
+  120-second bound. Isolated passing runs do not close this failure.
+  All-node CPU sampling shows little throttling. The pinned SDK has a 60-second
+  idle-read timeout and legacy retries; the buffered response sends no progress
+  until all 1,000 durable sequential deletions finish. SDK retransmission is the
+  current diagnosis to verify with the formal image.
+  `DeleteSelection::stream` now validates before mutations and yields ordered
+  results; production `delete_objects` streams the XML opening/results/closing,
+  with whitespace for Quiet successes. No timeout or assertion is changed.
+  Full S3 component UT passes 114, Access-server UT 108 plus the separately passing pinned SDK test, and focused clippy passes. Commit after remaining gates,
+  retain the previous image/archive, rebuild the optimized debug-retaining formal
+  image, then run the exact original case and complete S3 at CI quotas.
+  Update `test.md` with complete domain counts, timings and actual image identity;
+  per-case details stay in artifacts. Remote CI and macOS remain unmeasured.
+  The document layout is accepted and needs no redesign. Do not run global
+  cleanup during an active container gate.
 - [ ] **Deferred benchmark decision**: review
   `tools/benchmark/bench-chunk-kv-regression.sh` only after migration and coverage
   measurements are complete; user explicitly deferred this decision. Keep it.

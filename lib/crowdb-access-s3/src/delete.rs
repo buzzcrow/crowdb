@@ -10,4 +10,5 @@ pub use integrity::validate_integrity;
 pub use selection::DeleteSelection;
 
 pub const MAX_DELETE_BODY: usize = 2 * 1024 * 1024;
-pub type DeleteResults = Vec<(Vec<u8>, Result<(), crate::error::S3ErrorCode>)>;
+pub type DeleteResult = (Vec<u8>, Result<(), crate::error::S3ErrorCode>);
+pub type DeleteResults = Vec<DeleteResult>;

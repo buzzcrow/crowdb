@@ -688,6 +688,7 @@ dependencies = [
  "crowdb-kv-client",
  "crowdb-protocol",
  "flatbuffers",
+ "futures",
  "hmac",
  "httpdate",
  "hyper",
