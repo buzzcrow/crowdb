@@ -58,18 +58,18 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   and fixture tests are unaccepted drafts. Host browser consumes owned container
   endpoints; signaling validates service PID and run ownership. Preserve UI
   assertions and remove native runners only after matching acceptance. Current
-  root Console operation inventory is 88 cases; the two draft browser cases are additional.
+  root Console operation inventory is 89 cases; the two draft browser cases are additional.
   Also migrate the server-owning `app/crowdb-web/tests/native_cluster_provisioning_test.rs`
   and its `nativeDiagnostics.config.ts` browser callbacks; they are outside the
   default realBackend selection and remain in `test-console.sh`. Audit
   `71-s3-native.spec.ts` / `nativeS3.config.ts` and `72-managed-native.spec.ts` /
   `managedNative.config.ts` separately; no accepted root replacement is claimed.
 - [ ] **Remaining Web route server owners**: final direct-launch audit still
-  finds five native KV launcher files: `kv_routes_test.rs`, `mgmt_routes_test.rs`, `replica_routes_test.rs`,
+  finds four native KV launcher files: `mgmt_routes_test.rs`, `replica_routes_test.rs`,
   `replica_leader_removal_test.rs`, and `ops_migration_test.rs` under
   `app/crowdb-web/tests/`. Map each real-server case before deleting helpers;
   keep malformed-input, unavailable-upstream and isolated router UT portions.
-  KV needs exact put/get/delete through Web. Management needs
+  Management needs
   legacy versus sealed bootstrap persistence, full management cycle, bidirectional
   replica wiring, leader removal/re-election and unreachable-leader membership.
   Ops delegation needs cluster init, Store creation, replica-conflict 409 and KV
@@ -84,6 +84,14 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   removed. Evidence: `/tmp/crowdb-root-web-metrics-standalone`,
   `run-6b649392966f4925a9ea92304d854db1`. The bare-metal profile correctly rejects
   these legacy routes; no production mode or assertions were changed.
+  Web KV consolidation is accepted: original
+  `kv_put_get_delete_through_web_routes` maps to
+  `console::web_kv::put_get_delete_and_binary_values_through_web_routes`.
+  Store/group creation, endpoint status, text values, deletion visibility and
+  binary hex values pass at CI quotas (`/tmp/crowdb-root-web-kv`,
+  `run-994fc98b33dc4b1bbe62f76df1d820b6`). Shared legacy bootstrap also reruns
+  metrics successfully. Keep `kv_get_returns_502_when_leader_unreachable` as
+  pinned cached-authority component UT; the original production launcher is removed.
 - [ ] **Native Console assertion mapping**: classify all three original cases
   before removal: `node_diskio_discovers_disk_groups_created_after_deployment`,
   `one_rack_three_nodes_provision_all_services_without_metadata_repairs`, and

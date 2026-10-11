@@ -47,3 +47,6 @@ mod web_cluster_recovery;
 
 mod web_lifetime;
 mod web_metrics;
+
+mod web_kv;
+mod web_legacy;
