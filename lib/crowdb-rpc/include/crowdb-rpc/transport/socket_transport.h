@@ -6,6 +6,8 @@
 #include "crowdb-rpc/connection.h"
 #include "crowdb-rpc/transport.h"
 
+#include <folly/concurrency/ConcurrentHashMap.h>
+
 #include <atomic>
 #include <functional>
 #include <memory>
@@ -103,8 +105,10 @@ enum class SocketEvent {
 struct EngineEvent
 {
     SocketEvent type;
-    int         fd;   // socket fd (for Readable/Writable/Error/Accept)
-    Connection *conn; // connection for Readable/Writable/Error (nullptr otherwise)
+    int         fd;                // socket fd (for Readable/Writable/Error/Accept)
+    Connection *conn;              // resolved and retained by the worker before dispatch
+    int64_t     connection_id = 0; // kernel events carry identity, never an owning pointer
+    bool        write_side    = false;
 };
 
 class SocketEngine
@@ -261,7 +265,14 @@ class Worker
 
     friend class SocketTransport;
 
+    using ClosedConnections = std::vector<std::pair<int, int64_t>>;
     void run_loop();
+    void drain_notified();
+    void process_readable(const EngineEvent &ev, ClosedConnections &closed_fds);
+    void process_writable(const EngineEvent &ev, ClosedConnections &closed_fds);
+    void process_error(const EngineEvent &ev, ClosedConnections &closed_fds);
+    void flush_responses(ClosedConnections &closed_fds);
+    void retire_closed(const ClosedConnections &closed_fds);
     void close_connections();
 };
 
@@ -348,9 +359,10 @@ class SocketTransport : public Transport
     //   - nullopt if the connection is absent or already unregistered
     // Cross-thread submit rejects both absent and expired handles.
     std::optional<std::shared_ptr<Connection>> lookup_conn(Connection *conn);
+    std::shared_ptr<Connection>                lookup_connection_id(int64_t id) const;
 
     // Current live connection count (for metrics reporting). Takes the
-    // live_conns_ mutex — call only from the metrics flush thread.
+    // registry — call only from the metrics flush thread.
     size_t connection_count() const;
 
     // The buffer pool (for callers that allocate request buffers).
@@ -472,8 +484,9 @@ class SocketTransport : public Transport
     // closes, it is removed from this map; submit() on a stale handle
     // returns false instead of crashing. Only used for cross-thread
     // submits (tokio mode); worker-thread submits skip this lookup.
-    mutable std::mutex                                          live_conns_mu_;
-    std::unordered_map<Connection *, std::weak_ptr<Connection>> live_conns_;
+    // Readers do not take a bucket lock; writers serialize only connection lifecycle.
+    folly::ConcurrentHashMap<Connection *, std::weak_ptr<Connection>> live_conns_;
+    folly::ConcurrentHashMap<int64_t, std::weak_ptr<Connection>>      event_conns_;
 
     // Cross-thread submit pending: connections with enqueued frames from
     // non-I/O-worker threads. Shared across all workers — any worker that
@@ -487,7 +500,7 @@ class SocketTransport : public Transport
 
 // Thread-local pointer to the current worker thread's Worker object.
 // Set in Worker::start(), cleared after run_loop() returns. submit()
-// checks this to skip lookup_conn (and its global mutex) when called
+// checks this to skip lookup_conn when called
 // from an I/O worker thread — the connection is guaranteed alive there.
 extern thread_local Worker *tl_current_worker;
 

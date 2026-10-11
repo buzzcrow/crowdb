@@ -272,6 +272,9 @@ retry:
                 all_sent = false;
                 break;
             }
+            if (errno == ECONNREFUSED) {
+                mark_connect_refused();
+            }
             cnt_write_error().inc();
             CRB_LOG_WARN("try_send: writev hard error fd={} conn_id={} name={} errno={} ({})", fd,
                          static_cast<long long>(id_), name_, errno, std::strerror(errno));

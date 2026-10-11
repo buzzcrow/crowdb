@@ -220,6 +220,8 @@ void crowdb_rpc_conn_destroy(crowdb_rpc_conn_t conn);
 
 // Return non-zero while the underlying transport connection is open.
 int crowdb_rpc_conn_is_open(crowdb_rpc_conn_t conn);
+// True only for a TCP refusal before peer acceptance; resets remain ambiguous.
+int crowdb_rpc_conn_connect_refused(crowdb_rpc_conn_t conn);
 
 // Close the underlying transport connection. Safe to call repeatedly.
 void crowdb_rpc_conn_close(crowdb_rpc_conn_t conn);

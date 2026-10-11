@@ -63,6 +63,23 @@ class Connection : public std::enable_shared_from_this<Connection>
         return open_.load(std::memory_order_relaxed);
     }
 
+    // Exactly one worker owns descriptor teardown, including duplicate events.
+    bool claim_socket_cleanup()
+    {
+        return !socket_cleanup_claimed_.exchange(true, std::memory_order_acq_rel);
+    }
+
+    // TCP ECONNREFUSED proves the peer never accepted this connection.
+    void mark_connect_refused()
+    {
+        connect_refused_.store(true, std::memory_order_release);
+    }
+
+    [[nodiscard]] bool connect_refused() const
+    {
+        return connect_refused_.load(std::memory_order_acquire);
+    }
+
     // Push a frame to the send queue (called by Transport::submit).
     // Returns true on success, false if the queue is full (backpressure).
     bool enqueue_send(OutFrame *frame);
@@ -182,6 +199,8 @@ class Connection : public std::enable_shared_from_this<Connection>
     FrameParser parser_;
 
     std::atomic<bool> open_{true};
+    std::atomic<bool> connect_refused_{false};
+    std::atomic<bool> socket_cleanup_claimed_{false};
 
     // Lock-free bounded MPSC ring buffer (crowdb::common::MpscQueue). Multiple
     // producer threads push via enqueue_send (Transport::submit); the I/O

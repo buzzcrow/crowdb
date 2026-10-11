@@ -188,17 +188,39 @@ impl DiskdbRpcTransport {
                 None,
                 msg_type,
             )
-            .map_err(|error| self.map_rpc_error(error, &normalized, generation))?;
-        future
-            .await
-            .map_err(|error| self.map_rpc_error(error, &normalized, generation))
+            .map_err(|error| {
+                self.map_rpc_error(
+                    error,
+                    &normalized,
+                    generation,
+                    selected.connection().connect_refused(),
+                )
+            })?;
+        future.await.map_err(|error| {
+            self.map_rpc_error(
+                error,
+                &normalized,
+                generation,
+                selected.connection().connect_refused(),
+            )
+        })
     }
 
-    fn map_rpc_error(&self, error: RpcError, endpoint: &str, generation: u64) -> DiskdbClientError {
+    fn map_rpc_error(
+        &self,
+        error: RpcError,
+        endpoint: &str,
+        generation: u64,
+        connect_refused: bool,
+    ) -> DiskdbClientError {
         if error.is_retryable() {
             self.connections.invalidate(endpoint, generation);
         }
-        DiskdbClientError::from(error)
+        if connect_refused && error.is_retryable() {
+            DiskdbClientError::ConnectFailed(format!("TCP refused before request submission: {error}"))
+        } else {
+            DiskdbClientError::from(error)
+        }
     }
 
     // ── Public RPC methods ─────────────────────────────────────

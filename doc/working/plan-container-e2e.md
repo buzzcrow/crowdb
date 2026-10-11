@@ -1030,3 +1030,47 @@ Source `lib/crowdb-kv-client/tests/chunk_slot_map_test.rs`: all eight cases exer
   UT pass (1.121 s), affected application/E2E all-target clippy and Rust fmt pass.
   Production unchanged; same proven release image reused. Shared harness stays
   until remaining Chunkdb/stream callers migrate.
+
+## Chunkdb allocation transport diagnosis
+
+- First container transfer of `allocation_connect_failure_reroutes_but_lost_reply_does_not`
+  failed at the first unsent allocation: TCP ECONNREFUSED was surfaced as generic
+  ConnectionClosed, so the pool correctly refused to replay an ambiguous request.
+  Artifact: `run-0726ac967e2a40779db1fb65a4c19a1e`. No assertion or timeout relaxed.
+- Native transport now retains the narrow ECONNREFUSED fact from socket SO_ERROR
+  or failed read/writev before notifying close. Existing FFI Connection exposes it;
+  Diskdb transport maps only proven refusal to ConnectFailed, retaining unknown
+  outcome for established peer loss/reset/timeout. No new lock or unsafe scope.
+- Native regression exercises 100 refusals across worker and caller-write paths
+  plus accepted peer loss; it passes. Original allocation test passes and still
+  proves exactly two allocations after one reroute and one lost reply.
+- Production gates and exact release-image rebuild must finish before claiming
+  migrated container acceptance. Remaining Chunkdb fixture work is unverified.
+
+- Stress reproduction exposed a second defect: ASan reported a freed Connection
+  at `Worker::run_loop` while a second worker processed an already returned epoll
+  event. Events now carry monotonically assigned connection IDs; dispatch resolves
+  and retains the corresponding generation through the batch. Descriptor cleanup
+  has one atomic owner, and deferred map removal checks ID before erasing a reused
+  fd. Connection registration no longer reads a shared map outside its mutex.
+- Registry lookup uses existing required Folly ConcurrentHashMap: readers take
+  no bucket lock; only connection lifecycle writers serialize. No hot-path mutex
+  introduced. Stale IDs resolve to nothing; callbacks remain pinned during close.
+- ASan regression passes 100 repeats of 100 connections (10,000 refusals), with
+  accepted-peer loss still distinguished. Native full-suite/lint and Rust gates
+  are running against the final fix; release image will be rebuilt afterward.
+- Chunkdb retained component split is in progress: 33 direct handler cases now
+  use pinned memory metadata, retaining all state/fence/task/journal/placement
+  assertions. Reservation-prefetch plus mixed-geometry and single-rack helpers
+  follow the same boundary. Three Diskio-dependent flows, partial EC byte flow
+  and multi-group failover still retain their legacy setup until public targets
+  pass. Public allocation, lifecycle and exact-record crash fixtures are added
+  but not yet accepted against the rebuilt image.
+- Final-source Rust verification: six Diskdb client component tests, both
+  allocator-pool tests, 34 retained full-stack internal flows, mixed geometry and
+  single-rack placement pass. The latter 36 cases use pinned metadata, including
+  reservation-prefetch. Affected RPC/Diskdb-client/Chunkdb/E2E all-target clippy
+  and workspace fmt pass; thirty fixture tests pass in 0.933 s. Final native
+  full-suite (tree, common, RPC, Diskio and Rust FFI) and tree-lint exit zero.
+  Linux verified; kqueue remains subject to the macOS platform gate. No new image
+  or migrated Chunkdb container pass claimed before release packaging.
