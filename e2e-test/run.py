@@ -20,6 +20,7 @@ from release import check_startup
 from scenarios import case_nodes, case_resources, run_cases, select_cases
 from image_identity import verify_server_sources
 from report import write_report
+from mixed_isolation import run_mixed
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -187,6 +188,8 @@ def main():
     try:
         if args.layer in ("kv", "all") and not args.case and args.scope in ("all", "kv.recovery", "kv.isolation"):
             run_pair(identity["Id"], run_root, bundle, min(slots, 2), args.data_root, args.node_cpus)
+            if slots >= 2:
+                run_mixed(identity["Id"], run_root, bundle, args.data_root, args.node_cpus)
         if selected:
             run_cases(identity["Id"], run_root, bundle, case_slots, args.data_root, args.scope, args.case, args.layer, args.node_cpus)
         if args.layer in ("kv", "deployment", "all") and args.scope == "all" and not args.case:

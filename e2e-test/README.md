@@ -44,6 +44,8 @@ pixi run test-container-e2e --layer deployment --concurrency 2 --cpus 6 --memory
 # Run one domain scope (other migrated scopes: kv.membership, kv.routing,
 # kv.recovery, kv.isolation, kv.group0, kv.client, kv.metadata):
 pixi run test-container-e2e --scope kv.management --concurrency 2
+# KV/KV and KV/Web crash-and-retirement isolation with exact survivor data:
+pixi run test-container-e2e --layer kv --scope kv.isolation --require-isolation --concurrency 2
 # Select one exact client case or list available profiles without Docker:
 pixi run test-container-e2e --case kv::bootstrap::custom_replica
 pixi run test-container-e2e --list --scope kv.group0

@@ -322,6 +322,7 @@ ICEBERG_CASES = (
     Case("iceberg.namespace", "access_iceberg::namespace::namespace_functional_crud_survives_native_storage_and_listener_restart"),
 )
 CONSOLE_OPERATION_CASES = (
+    Case("console.web.standalone", "console::web_isolation::survives_peer_fixture_retirement"),
     Case("console.web.standalone", "console::web_recovery::standalone_recovers_kv_before_and_after_group0_init"),
     Case("console.web.registry", "console::web_registry::bare_metal_web_loads_launch_policy_without_restoring_topology"),
     Case("console.web.standalone", "console::web_standalone::empty_ui_persists_rack_and_node_across_restart"),

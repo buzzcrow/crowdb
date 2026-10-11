@@ -514,11 +514,14 @@ Goal: review and migrate all real-server tests into domain modules under contain
   whenever a layer lands. Remove production server build dependencies from
   component test jobs only as their last server consumer retires. Files:
   `pixi.toml`, `tools/pixi-tasks/test-*.sh`, `.github/workflows/`, CI inventory.
-- [ ] **Mixed-domain concurrency acceptance**: run different migrated domain
-  fixtures concurrently on one host with independent host test clients. Fault
-  and retire one while checking exact bytes/topology on another; verify no
-  global cleanup, shared workspace artifacts or port allocator can affect it.
-  Extend beyond the first KV/KV pair. Files: scheduler, isolation scenarios, CI.
+- [x] **Mixed-domain concurrency acceptance**: preserve KV/KV acceptance and
+  add three-voter KV versus standalone release Web, with independent networks,
+  bind mounts and host client workspaces. Both write exact witnesses before the
+  barrier; crash/restart/verify/retire KV, then verify Web's exact rack/node data
+  and health. `--scope kv.isolation --require-isolation` runs both pairs.
+  Accepted `run-000c4652c4444d648b20f92008062c7a`: scenario wall 14.249 seconds,
+  host build 9.018 seconds. Failure wake-up/owned teardown component proof passes.
+  Files: `e2e-test/mixed_isolation.py`, `tests/console/web_isolation.rs`.
 - [ ] **Final Pixi test classification**: separate component logic gates from
   required container E2E domain gates; use one canonical selection path, update
   suite aggregators and old aliases without duplicate execution. Files:
@@ -1405,3 +1408,18 @@ Only the exited-storage timing migration awaits a human design choice; S3 and su
 
 - Both occupied-listener owners pass in `run-6360a52e1976425abf4c1dcb7900c180`: normal release entrypoint starts a second access container in the owned node network namespace, with separate data/log/crash mount and copied private server environment. Only the protocol under test remains occupied; the other protocol and health listener use explicit distinct fixed addresses. Preserve nonzero exit, Address already in use, 30-second failure bound and parent normal readiness. Reserve the complete node, extra process and host client (3 CPU/3072 MiB at the CI quota). Retire the old docker-exec child launcher.
 - Single-node split policy passes on an externally selected data root in `run-17106e704fb44b28971fecac49f07723`: persisted domain descriptor has no range balance policy, no split transition appears throughout the original 12-second interval, actual KV logs contain no local split planned event and acknowledged data remains. Read data mount locations from fixture metadata. The original deployment shell now delegates entirely to the canonical 33-owner deployment layer; no host port publishing, global temporary data deletion, server/client launch or duplicate assertions remain in it. Image packaging/policy task taxonomy and other deployment profiles still await final closure.
+
+## Typed Web lifecycle migration evidence
+
+- Original `service_lifecycle_test::deploys_real_chunkdb_with_fixed_cluster_seeds_and_retained_launch`
+  baseline passes (1.37 seconds). Its host owner remains intact.
+- Draft release owner has not passed and is excluded from accepted commits.
+  Setup corrections uncovered release constraints: init returns 201; unsafe
+  placement is unavailable in release; normal Chunkdb needs live DiskIO and
+  disk groups with discovered disks; disk IDs use CrowDB's 128-bit format.
+- Latest `run-d7d025161b064eebbd7da749bfaf9e3c` reaches normal Chunkdb startup
+  but receives 502 after the child exits 0. Mounted structured log identifies
+  the first production divergence: group 0/0 has one voting node, incompatible
+  with Production. Next fixture must use three actual KV node containers plus
+  the writable Web deployment node; keep every original PID/delete/workdir and
+  seed assertion. No release-only test switch or deadline extension is accepted.
