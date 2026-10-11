@@ -527,16 +527,13 @@ Goal: review and migrate all real-server tests into domain modules under contain
   domain matrix jobs, resource limits and mixed-domain isolation acceptance;
   retain component and special-profile gates. Update preview/release dependency
   and accepted-digest wiring. Files: `.github/workflows/`, CI task graph checks.
-- [ ] **Final test.md tables**: reconcile `doc/working/test.md` task rows with the
-  final categories, record scope/platform support and measured counts/timings,
-  distinguish unavailable/unexecuted profiles from passes, and document
-  concurrency/budget/artifact identity. Preserve this persistent file and do not
-  relabel historical measurements as results for the migrated suites.
-  Initial target scope/CI-group and per-phase timing tables are now recorded in
-  that file (46 scopes; pending rows are not implemented task claims). Fixture
-  check passed 9/9 on 2026-10-11, full invocation measured at 0.436 seconds.
-  Extend to per-binary, per-SDK, browser spec and fault cases during execution;
-  report slowest cases/setup phases while CI combines multiple measured scopes.
+- [ ] **Final domain measurements**: populate `doc/working/test.md` with final
+  complete-domain runs by environment, counts, wall time and report links.
+  The user revised tracking to one row per domain: per-case/SDK/fault details
+  stay in artifacts, not this persistent document. Its simplified rules,
+  environment baselines and remaining issues are recorded; full measurements
+  still await migration closure. Never sum separate batch timings or label
+  partial migration acceptance as a full domain pass.
 - [ ] **Closure audit**: rescan all launchers and task delegates, verify every
   original assertion mapping, run component gates without Docker/server binaries
   and complete required layers on the same immutable image. Retire unused
