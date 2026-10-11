@@ -24,6 +24,7 @@ from deployment_failure_fixture import DeploymentFailureCluster
 from deployment_anonymous_fixture import AnonymousReleaseCluster
 from deployment_browser_fixture import DeploymentBrowserCluster
 from deployment_listener_fixture import OccupiedAccessCluster
+from console_access_fixture import AccessDeploymentCluster
 from console_web_fixture import ConsoleWebCluster
 from console_standalone_fixture import StandaloneWebCluster
 from console_registry_fixture import RegistryWebCluster
@@ -333,6 +334,7 @@ ICEBERG_CASES = (
     Case("iceberg.namespace", "access_iceberg::namespace::namespace_functional_crud_survives_native_storage_and_listener_restart"),
 )
 CONSOLE_OPERATION_CASES = (
+    Case("console.web.access", "console::web_access::native_access_deployment_provisions_private_credentials_and_reuses_them"),
     Case("console.web.wal", "console::web_wal_restart::restart_3node_1group", stores=(0, 0, 0)),
     Case("console.web.wal", "console::web_wal_restart::restart_5node_1group", stores=(0, 0, 0, 0, 0)),
     Case("console.web.wal", "console::web_wal_restart::restart_5node_2group", stores=(0, 0, 0, 0, 0)),
@@ -443,6 +445,8 @@ def select_cases(layer="all", scope="all", case_name=None):
 
 
 def case_nodes(case):
+    if case.scope == "console.web.access":
+        return 13
     if case.s3_node_fault:
         return 14
     if case.scope == "console.web.wal":
@@ -492,6 +496,8 @@ def case_resources(case, node_cpus):
 
 
 def allocate_cluster(case, image, artifacts, bundle, data_root):
+    if case.scope == "console.web.access":
+        return AccessDeploymentCluster(image, artifacts, bundle, data_root=data_root)
     if case.scope == "console.web.wal":
         return WalWebCluster(image, artifacts, len(case.stores), data_root=data_root)
     if case.scope == "console.web.lifecycle":

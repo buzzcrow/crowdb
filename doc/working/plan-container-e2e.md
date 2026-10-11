@@ -80,13 +80,6 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   ownership is now entirely component-local: five deterministic cases pass
   in 1.31 seconds with fake children and pinned metadata, Web all-target
   clippy passes. No actual KV/Diskdb executable is started by those tests.
-- [ ] **Native Access deployment through Web**: migrate
-  `app/crowdb-web/tests/native_access_deployment_test.rs` real storage/Access
-  launcher. Preserve private credential provisioning and reuse through public
-  Web deployment operations; existing protocol credential tests alone do not
-  cover this owner. Classify early-exit executable validation separately:
-  Web managed-mode config/registry rejection and Access writer-auth validation
-  never reach backend startup; keep their deterministic validation coverage.
 - [ ] **Bridge SSH admission profile**: reconcile
   `container/single-node-container/tests/node-containers.py`, `node-admission.py`,
   `node-bootstrap.py` and `node-recovery.py` with accepted root deployment flows.
@@ -132,13 +125,15 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 - [ ] **Close CI classification**: finish selectors after the remaining native
   owners and managed browser contract are resolved. Shared-image jobs now cover
   all accepted container domains on one source-pinned formal artifact; debug
-  info and diagnostics are retained. Console selects its 83 accepted operation
+  info and diagnostics are retained. Console selects its 84 accepted operation
   owners, excluding unaccepted browser drafts. Iceberg executes the complete
   32-case domain once, including Rust SDK; the separate SDK component job needs
   no image. Resource audit fits every declared case: S3 maximum 3.9 CPU /
   7872 MiB in a 4 CPU / 8192 MiB job, Iceberg maximum 4 CPU / 11264 MiB in
   12288 MiB. YAML and 28-package task reachability pass. The isolated component
-  SDK gate passes eight tests. Low-quota S3 node-two restart revealed missing
+  SDK gate passes eight tests. Console full-domain remeasurement is running
+  after accepting private Access deployment in `run-39606819b51543abb1a03e7509906a66`;
+  source CLI/Web early-exit validation remains component-local. Low-quota S3 node-two restart revealed missing
   dependency readiness; staged startup barriers now pass all three node faults
   and protected restart at 0.2 CPU/server with a 4 CPU / 8192 MiB budget. Logs:
   `/tmp/crowdb-s3-ci-quota-ready.log` and
