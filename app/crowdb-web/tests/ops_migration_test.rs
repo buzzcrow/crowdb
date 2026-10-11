@@ -1,10 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! C9: Integration tests verifying that migrated handlers delegate to
-//! `ops::*` functions and that removed Swagger/openapi routes return 404.
-//! Also covers the `DELETE /api/nodes/:id/server` require-empty check
-//! (409 with replicas, 204 when empty).
+//! Shared operation delegation and removed API routes.
+//! Server removal retains the require-empty replica check.
 
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -119,44 +117,30 @@ async fn spawn_web(upstream: &Upstream) -> SocketAddr {
 
 #[tokio::test]
 async fn swagger_routes_are_removed() {
-    let Some(upstream) = spawn_upstream().await else {
-        eprintln!("skipping: crowdb-kv-server binary not built");
-        return;
-    };
-    let web = spawn_web(&upstream).await;
-    let base = format!("http://{web}");
-    let http = reqwest::Client::new();
-
-    // Swagger UI was removed. These routes are no longer API endpoints —
-    // they fall through to the SPA fallback (200 with HTML, not a Swagger
-    // JSON response). We assert the response is NOT a Swagger/OpenAPI
-    // JSON payload.
-    let resp = http.get(format!("{base}/api/swagger/")).send().await.unwrap();
-    let body = resp.text().await.unwrap_or_default();
-    assert!(
-        !body.contains("\"swagger\""),
-        "GET /api/swagger/ should not return Swagger JSON"
-    );
-
-    let resp = http.get(format!("{base}/api/swagger.json")).send().await.unwrap();
-    let body = resp.text().await.unwrap_or_default();
-    assert!(
-        !body.contains("\"swagger\""),
-        "GET /api/swagger.json should not return Swagger JSON"
-    );
-
-    let resp = http
-        .get(format!("{base}/api/nodes/1/openapi.json"))
-        .send()
-        .await
-        .unwrap();
-    let body = resp.text().await.unwrap_or_default();
-    assert!(
-        !body.contains("\"openapi\"") && !body.contains("\"swagger\""),
-        "GET /api/nodes/1/openapi.json should not return OpenAPI JSON"
-    );
-
-    let _ = stop_pid_with_timeout(upstream.pid, Duration::from_secs(1));
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+    let app = router(AppState::default());
+    for path in ["/api/swagger/", "/api/swagger.json", "/api/nodes/1/openapi.json"] {
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(
+            !body.contains("\"swagger\""),
+            "{path} must not return Swagger JSON"
+        );
+        if path.ends_with("openapi.json") {
+            assert!(
+                !body.contains("\"openapi\""),
+                "{path} must not return OpenAPI JSON"
+            );
+        }
+    }
 }
 
 #[tokio::test]

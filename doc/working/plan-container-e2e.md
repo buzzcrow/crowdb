@@ -9,7 +9,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 
 ## Resume context
 
-- Branch `task-deploy`; handoff checkpoint is `808ea848`. R230 is unfinished. Do not delete the
+- Branch `task-deploy`; latest accepted Web KV migration is `1dac8917`. R230 is unfinished. Do not delete the
   requirement/backlog entry until every remaining owner and required gate passes.
 - Working tree contains uncommitted Console browser migration drafts. Shared-image CI is committed. S3 node-fault migration and local-state component proofs are accepted.
   Preserve these drafts. `e2e-test/clients/console-ui/node_modules/` is local
@@ -38,7 +38,8 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   native server gates require `clean-env`, never during another server gate.
 - Accepted fixture gate: 81 pass, `/tmp/crowdb-public-export-fixture-final.log`,
   using an export of the staged source. Console browser drafts are excluded.
-  Retained S3 component UT pass 5/5; Web/Console-shared/E2E all-target clippy
+  S3 component UT passes 114/114; Access-server passes 108 plus its pinned
+  SDK protocol test; Web/Console-shared/E2E all-target clippy
   and workspace fmt pass.
 
 ## Remaining migrations
@@ -75,6 +76,9 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   Ops delegation needs cluster init, Store creation, replica-conflict 409 and KV
   reads. These are unfinished owners, independent of the two managed browser
   drafts. Do not count the previous 87 passing root operations as proof of their coverage.
+  `swagger_routes_are_removed` now runs without a server in the component,
+  directly checking all three retired Swagger/OpenAPI paths; it passes in
+  0.01 seconds. Preserve this UT while migrating the four real-server ops cases.
   Current search evidence: `/tmp/crowdb-r230-remaining-launch-sites.txt`.
   Metrics consolidation is accepted: three original metric cases map to
   `console::web_metrics::structured_metrics_preserve_node_group_and_store_scopes`.
@@ -116,8 +120,8 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   Remove duplicate old owners only after verification. Unused native KV/storage
   harnesses are removed; shared `TestDir`/ownership UTs remain. Explicit production
   local-launch port allocation remains until its deployment callers are audited.
-  Compiled root client audit finds 290 tests: 277 registered Rust flows and 13
-  explicit preparation/isolation helpers (`/tmp/crowdb-r230-client-helper-audit.txt`).
+  The pre-route-migration root client audit found 290 tests: 277 registered
+  Rust flows and 13 explicit preparation/isolation helpers (`/tmp/crowdb-r230-client-helper-audit.txt`).
   SDK/browser flows have separate declared host owners.
   Audit fixed listener ports/dynamic store pools and retire unused test port
   allocation code; preserve actual deployment callers. Verify data/log/crash
@@ -155,6 +159,13 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   Full S3 component UT passes 114, Access-server UT 108 plus the separately passing pinned SDK test, and focused clippy passes. Fix committed as `6f191caf`; full workspace clippy/fmt pass.
   The formal image above is built; finish import, then run the exact original
   case and complete S3 at CI quotas.
+  Exact-case acceptance passes as recorded above; full CI-quota S3 remains active.
+  Full Console operations (89 owners) is active in
+  `/tmp/crowdb-delete-stream-final-console-ci`, session 28369, 0.25 CPU/node,
+  4 CPU / 8192 MiB. Focused Iceberg RCK passes all six upstream cases at its CI quota in
+  62.324 seconds: `/tmp/crowdb-delete-stream-rck-ci`,
+  `run-b90f13d8f8034bfa9a25267f312dd074`. Preserve run reports; no
+  production source or global cleanup may change while these gates run.
   Update `test.md` with complete domain counts, timings and actual image identity;
   per-case details stay in artifacts. Remote CI and macOS remain unmeasured.
   The document layout is accepted and needs no redesign. Do not run global
