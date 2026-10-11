@@ -53,6 +53,8 @@ fn stop_persists_only_local_launch_inputs_and_preserves_data() {
     }
     assert!(!directory.path().join("console.toml").exists());
     assert_eq!(std::fs::read(sentinel).unwrap(), b"preserve");
+    s3::delete(directory.path()).unwrap();
+    assert!(!directory.path().exists());
 }
 
 #[test]
