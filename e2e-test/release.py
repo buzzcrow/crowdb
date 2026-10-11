@@ -39,7 +39,8 @@ def check_startup(image, artifacts):
             (root / f"{case}.log").write_text(result.stdout + result.stderr)
             assert result.returncode != 0, f"{case}: invalid startup succeeded"
             diagnostic = result.stdout + result.stderr
-            assert expected in diagnostic, f"{case}: {diagnostic}"
+            accepted = (expected,) if isinstance(expected, str) else expected
+            assert any(text in diagnostic for text in accepted), f"{case}: {diagnostic}"
             results.append({"case": case, "seconds": time.monotonic() - started,
                             "exit_code": result.returncode, "status": "pass"})
         finally:
@@ -52,6 +53,34 @@ def check_startup(image, artifacts):
     check("unknown-service", ["server", "unknown"], "Unknown server service")
     check("iceberg-missing-environment", ["iceberg"], "Error: NotPresent",
           entrypoint="/opt/crowdb/bin/crowdb-access-server")
+    for case, writer in (("missing", None), ("short", "short"),
+                         ("reader", "r" * 32), ("manager", "m" * 32), ("clearer", "c" * 32)):
+        environment = ("CROWDB_MANAGEMENT_SEEDS=127.0.0.1:1",
+                       "CROWDB_ICEBERG_READ_TOKEN=" + "r" * 32,
+                       "CROWDB_ICEBERG_MANAGE_TOKEN=" + "m" * 32,
+                       "CROWDB_ICEBERG_CLEAR_TOKEN=" + "c" * 32)
+        if writer is not None:
+            environment += ("CROWDB_ICEBERG_WRITE_TOKEN=" + writer,)
+        expected = ("CROWDB_ICEBERG_WRITE_TOKEN must be set" if writer is None else
+                    "invalid or oversized text field")
+        check("iceberg-writer-" + case, ["iceberg", "serve"], expected,
+              environment=environment, entrypoint="/opt/crowdb/bin/crowdb-access-server")
+    old_config = root / "old-web.toml"
+    old_config.write_text("[[rack]]\nid = 1\n")
+    check("web-old-mixed-config", ["server", "web", "--config", "/opt/crowdb/etc/old-web.toml"],
+          ("version", "unknown field"), mounts=(
+              f"type=bind,source={old_config.resolve()},target=/opt/crowdb/etc/old-web.toml,readonly",))
+    managed_config = root / "managed-web.toml"
+    managed_config.write_text("version = 1\nmode = 'docker'\nbind = '127.0.0.1'\nport = 9090\n"
+        "group0_management_seeds = ['http://127.0.0.1:10000']\nui_root = '/opt/crowdb/ui'\n"
+        "monitor_status = '/opt/crowdb/run/status/monitor.json'\nlog_dir = '/opt/crowdb/data/log/web'\n"
+        "log_max_file_mb = 30\nlog_max_files = 5\n")
+    registry = root / "registry.toml"
+    registry.write_text("version = 1\n")
+    check("web-managed-registry", ["server", "web", "--config", "/opt/crowdb/etc/managed-web.toml",
+          "--registry", "/opt/crowdb/etc/registry.toml"], "docker web does not accept --registry", mounts=(
+              f"type=bind,source={managed_config.resolve()},target=/opt/crowdb/etc/managed-web.toml,readonly",
+              f"type=bind,source={registry.resolve()},target=/opt/crowdb/etc/registry.toml,readonly"))
     check("chunk-kv-missing-config", ["server", "chunk-kv", "--config", "/opt/crowdb/etc/missing.toml",
           "--log-dir", "/opt/crowdb/data/log/chunk-kv", "--log"], "failed to load configuration")
     check("managed-root", ["server", "kv"], "requires a separate data root")

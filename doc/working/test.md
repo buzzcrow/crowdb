@@ -75,6 +75,11 @@ are excluded. Console uses one effective case slot at 0.25 CPU/server with a
   host clients in 0.833 / 2.338 seconds. These manual profiles are separate from
   ordinary Iceberg domain counts. Private mounted data/raw logs are retained;
   published artifacts contain credential-redacted reports only.
+- **Release startup**: 14 rejection cases pass in 7.879 seconds on the rebuilt
+  image, including missing/short/duplicate Iceberg writer credentials, rejected
+  legacy Web configuration and forbidden Docker launch registry. Native duplicate
+  owners are removed; token-validation and managed-router component UTs remain.
+  Evidence: `/tmp/crowdb-startup-owner-migration/release-startup/timing.json`.
 - **Linux host profile**: explicit host-network admission/recovery passes 1/1
   in 6.740 seconds on intel7960, 2 CPU / 1024 MiB node quota
   plus the host client reservation; [report](../../.crowdb-runtime/artifacts/container-e2e/run-9869315124ca45cb9ba3e3b3b245be90/results.json).
