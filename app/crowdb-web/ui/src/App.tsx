@@ -12,6 +12,7 @@ import { useNodeAuthority } from './data/useNodeAuthority';
 import { useClusterTree } from './data/useClusterTree';
 import { useLogicalTree } from './data/useLogicalTree';
 import { useCapacityTree } from './data/useCapacityTree';
+import { MonitorSummary } from './managed/MonitorSummary';
 import { Header, ClusterHealth } from './shell/Header';
 import { Sidebar } from './shell/Sidebar';
 import { useNodeServicePlans } from './services/useNodeServicePlans';
@@ -502,6 +503,8 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
         onShowCapacity={() => { if (centerPanel !== 'chunk') setCenterPanel('capacity'); }}
         onResetCluster={topologyReadonly || nodeManagement ? undefined : handleResetCluster}
       />
+
+      {managed && <MonitorSummary apiPrefix={apiPrefix} />}
 
       {dataError && (
         <div
