@@ -24,7 +24,9 @@ commands and fixture requirements belong in the [E2E README](../../e2e-test/READ
 Rows measure current complete registered domain tasks; remaining migration
 coverage is tracked below. Intel7960 runs use concurrency 2; wall time includes
 startup, clients and teardown, excluding the shared image and host client build.
-KV includes the KV/KV and KV/Web isolation pairs. Other domains remain
+KV includes the KV/KV and KV/Web isolation pairs. Console measures
+`console.operations` (78 accepted owners); unaccepted managed browser drafts
+are excluded. Other domains remain
 unmeasured as complete tasks.
 
 | Domain       | Environment | Date       | Passed / failed / skipped | Wall s  | Previous s | Report                                                                                                    |
@@ -36,10 +38,10 @@ unmeasured as complete tasks.
 | Chunk client | intel7960   | —          | —                         | —       | —          | —                                                                                                         |
 | Chunk stream | intel7960   | —          | —                         | —       | —          | —                                                                                                         |
 | Chunk-KV     | intel7960   | 2026-10-11 | 2 / 0 / 0                 | 22.520  | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-e8fbdfdc8be94d408309d5623227794d/results.json) |
-| S3           | intel7960   | —          | —                         | —       | —          | —                                                                                                         |
+| S3           | intel7960   | 2026-10-11 | 38 / 0 / 0                | 433.351 | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-d6434ad353d34b5bb60a0751b4b400c2/results.json) |
 | Iceberg      | intel7960   | —          | —                         | —       | —          | —                                                                                                         |
-| Dataset      | intel7960   | —          | —                         | —       | —          | —                                                                                                         |
-| Console      | intel7960   | —          | —                         | —       | —          | —                                                                                                         |
+| Dataset      | intel7960   | 2026-10-11 | 2 / 0 / 0                 | 18.024  | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-d869ca04e48d46dabadb36e4db510c81/results.json) |
+| Console      | intel7960   | 2026-10-11 | 78 / 0 / 0                | 161.415 | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-3d2b8ad6fc5349f7a2a961ecd4ec7bd3/results.json) |
 | Deployment   | intel7960   | —          | —                         | —       | —          | —                                                                                                         |
 
 ## Environments
