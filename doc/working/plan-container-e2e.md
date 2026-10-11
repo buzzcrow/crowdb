@@ -68,6 +68,13 @@ and the named run artifacts.
 - `legacy_in_memory_web_bootstrap_does_not_persist_topology` → shared root Web
   bootstrap plus component `in_memory_configuration_path_never_publishes_topology_or_bootstrap_intent`.
   `mgmt_routes_test.rs` now retains only cached-authority rejection UT.
+- `node_diskio_discovers_disk_groups_created_after_deployment` →
+  `console::web_diskio_discovery`: readiness before/after Group-0 init, one
+  initially empty DiskIO registration, discovery of groups 11/12 within the
+  original ten-second bounds, final storage readiness. Uses fixed port 7200 and
+  ordinary release deployment, without test-single-node mode. Evidence:
+  `/tmp/crowdb-root-web-diskio-late`, `run-36431c401abc4dfe991287a950d14765`;
+  old case/helper removed; the other two native provisioning cases remain.
 - `swagger_routes_are_removed` → component `swagger_routes_test.rs`: all three
   retired paths; no real server startup (`ff711b4c`).
 
@@ -88,7 +95,7 @@ and the named run artifacts.
   and fixture tests are unaccepted drafts. Host browser consumes owned container
   endpoints; signaling validates service PID and run ownership. Preserve UI
   assertions and remove native runners only after matching acceptance. Current
-  root Console operation inventory is 92 cases; the two draft browser cases are additional.
+  root Console operation inventory is 93 cases; the two draft browser cases are additional.
   Also migrate the server-owning `app/crowdb-web/tests/native_cluster_provisioning_test.rs`
   and its `nativeDiagnostics.config.ts` browser callbacks; they are outside the
   default realBackend selection and remain in `test-console.sh`. Audit
@@ -113,11 +120,9 @@ and the named run artifacts.
   verify authoritative voting and equal physical/authority epochs,
   then remove originals. Files: `lib/crowdb-console-shared/src/ops/kv_logical.rs`,
   `e2e-test/scenarios.py`, `e2e-test/tests/selection_test.py`, above test files.
-- [ ] **Native Console assertion mapping**: classify all three original cases
-  before removal: `node_diskio_discovers_disk_groups_created_after_deployment`,
-  `one_rack_three_nodes_provision_all_services_without_metadata_repairs`, and
-  `native_page_and_iceberg_inspection`. Retain late DiskIO discovery of groups
-  11/12 at the original 10-second bound; Group-0 initialization hint budget;
+- [ ] **Native Console assertion mapping**: classify the two remaining original cases
+  before removal: `one_rack_three_nodes_provision_all_services_without_metadata_repairs`, and
+  `native_page_and_iceberg_inspection`. Retain Group-0 initialization hint budget;
   pre-registration binding and live owner acquisition; stable Store selection;
   missing-binding rejection plus explicit repair; exact 18-service inventory;
   multipart replacement bytes and physical locations across each service restart;

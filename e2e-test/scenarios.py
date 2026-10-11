@@ -337,6 +337,7 @@ ICEBERG_CASES = (
     Case("iceberg.namespace", "access_iceberg::namespace::namespace_functional_crud_survives_native_storage_and_listener_restart"),
 )
 CONSOLE_OPERATION_CASES = (
+    Case("console.web.standalone", "console::web_diskio_discovery::diskio_discovers_disk_groups_created_after_web_deployment"),
     Case("console.web.bootstrap", "console::web_sealed_bootstrap::bare_metal_bootstrap_consumes_sealed_topology_without_local_topology"),
     Case("console.web.standalone", "console::web_bootstrap::bootstrap_replays_data_group_without_changing_replica_or_publishing_invalid_bindings"),
     Case("console.web.standalone", "console::web_management::store_and_group_management_cycle_preserves_identity"),

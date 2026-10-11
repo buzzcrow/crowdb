@@ -55,3 +55,5 @@ mod web_management;
 
 mod web_bootstrap;
 mod web_sealed_bootstrap;
+
+mod web_diskio_discovery;

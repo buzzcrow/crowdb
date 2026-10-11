@@ -50,7 +50,7 @@ class SelectionTest(unittest.TestCase):
 
     def test_console_operations_combines_host_client_scopes(self):
         cases = json.loads(self.invoke("--list", "--scope", "console.operations"))
-        self.assertEqual(len(cases), 92)
+        self.assertEqual(len(cases), 93)
         self.assertTrue(all(case["scope"] != "console.managed" for case in cases))
         exact = json.loads(self.invoke("--list", "--scope", "console.operations", "--case", cases[0]["case"]))
         self.assertEqual(exact, [cases[0]])
@@ -70,7 +70,7 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(len(dataset), 2)
         self.assertTrue(all(case["scope"] == "dataset.http" and case["nodes"] == 13 for case in dataset))
         console = json.loads(self.invoke("--list", "--layer", "console"))
-        self.assertEqual(len(console), 92)
+        self.assertEqual(len(console), 93)
         wal_nodes = {"restart_3node_1group": 4, "restart_5node_1group": 6,
                      "restart_5node_2group": 6, "restart_6node_2group_overlap": 7}
         for case in console:
