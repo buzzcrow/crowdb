@@ -9,7 +9,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 
 ## Resume context
 
-- Branch `task-deploy`; latest accepted RCK archive fix is committed as `372d841f`. R230 is unfinished. Do not delete the
+- Branch `task-deploy`; latest accepted CI diagnostic export is committed as `fb5b9b5e`. R230 is unfinished. Do not delete the
   requirement/backlog entry until every remaining owner and required gate passes.
 - Working tree contains uncommitted Console browser migration drafts. Shared-image CI is committed. S3 node-fault migration and local-state component proofs are accepted.
   Preserve these drafts. `e2e-test/clients/console-ui/node_modules/` is local
@@ -34,7 +34,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 - Delete original real-server owners only after equivalent accepted assertions.
   Keep deterministic component UT. Run executable commands through `pixi run`;
   native server gates require `clean-env`, never during another server gate.
-- Accepted fixture gate: 78 pass, `/tmp/crowdb-rck-accepted-fixture.log`,
+- Accepted fixture gate: 81 pass, `/tmp/crowdb-public-export-fixture-final.log`,
   using an export of the staged source. Console browser drafts are excluded.
   Retained S3 component UT pass 5/5; Web/Console-shared/E2E all-target clippy
   and workspace fmt pass.
@@ -70,6 +70,9 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   Remove duplicate old owners only after verification. Unused native KV/storage
   harnesses are removed; shared `TestDir`/ownership UTs remain. Explicit production
   local-launch port allocation remains until its deployment callers are audited.
+  Compiled root client audit finds 290 tests: 277 registered Rust flows and 13
+  explicit preparation/isolation helpers (`/tmp/crowdb-r230-client-helper-audit.txt`).
+  SDK/browser flows have separate declared host owners.
   Audit fixed listener ports/dynamic store pools and retire unused test port
   allocation code; preserve actual deployment callers. Verify data/log/crash
   mount mappings and truthful unsupported host-core diagnostics.
@@ -84,7 +87,9 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   formal artifact; special host/containerd gates use root profiles. Add the
   remaining accepted browser delegates. Bridge admission is already integrated. Check
   each job's CPU/memory reservation and upload only redacted diagnostics.
-  Actual remote CI has not run.
+  Public exports now retain machine-readable measurements and redacted logs,
+  excluding mounted data/configuration and host client build trees. YAML and
+  28-package task reachability pass; actual remote CI has not run.
 - [~] **Final regression and measurements**: run full Iceberg/Console and required registered layers on the same image,
   then relevant component/fmt/lint gates. Update `doc/working/test.md` using one
   row per domain and actual complete-run counts/wall times/environment/image.
@@ -98,7 +103,14 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   Rerun remaining complete registered domains and required special profiles on
   this image after active SDK gates finish. Verify CI quota settings separately;
   remote CI is unmeasured. Workspace clippy passed in 24.78 seconds and fmt passes.
-  Do not run global cleanup during an active gate.
+  Remaining domain runner: `/tmp/crowdb-coalesce-other-domains.py` (session 87106).
+  Console/special-profile runner waits for S3 teardown, then executes sequentially:
+  `/tmp/crowdb-coalesce-console-profiles.py` (session 5377). Its selections are
+  Console operations, Linux host, SSH bridge admission, containerd host/cluster,
+  and both external-engine manual profiles. Preserve their logs/reports and
+  verify their actual exit status. Do not run global cleanup during an active gate.
+  After all container runners finish, rerun `pixi run test-core` for the new
+  coalescer regression; the previous 977-case run predates that added test.
   The simplified document layout is accepted and needs no further redesign.
 - [ ] **Deferred benchmark decision**: review
   `tools/benchmark/bench-chunk-kv-regression.sh` only after migration and coverage
