@@ -13,9 +13,6 @@ pub(super) async fn register_actual_voters() {
     );
     let metadata = KVClusterMetaClient::new(crate::common::hardware::kv_client());
     metadata.add_store(0, &[1, 2, 3]).await.unwrap();
-    for group_id in [0, 1] {
-        metadata.add_group(0, group_id).await.unwrap();
-    }
     for (index, address) in addresses.iter().enumerate() {
         let topology: serde_json::Value = reqwest::Client::new()
             .get(format!("http://{address}:7000/topology"))
@@ -31,7 +28,9 @@ pub(super) async fn register_actual_voters() {
         assert_eq!(store["store_id"], 0);
         for group in store["groups"].as_array().unwrap() {
             let group_id = group["group_id"].as_u64().unwrap();
-            assert!([0, 1].contains(&group_id));
+            if index == 0 {
+                metadata.add_group(0, group_id).await.unwrap();
+            }
             assert_eq!(group["remotes"].as_array().unwrap().len(), 2);
             assert_eq!(group["local_replica"]["voting"], true);
             metadata

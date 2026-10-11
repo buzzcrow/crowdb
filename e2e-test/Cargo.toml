@@ -11,6 +11,8 @@ repository.workspace = true
 workspace = true
 
 [dev-dependencies]
+bincode = "1"
+crowdb-common = { path = "../lib/crowdb-common/rust" }
 crowdb-chunkdb-client = { path = "../lib/crowdb-chunkdb-client" }
 crowdb-chunkdb = { path = "../app/crowdb-chunkdb", features = ["test-util"] }
 bytes = "1"

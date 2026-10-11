@@ -2,3 +2,6 @@
 // Licensed under the Apache License, Version 2.0.
 
 pub mod cluster;
+
+#[allow(dead_code)]
+pub mod diskio_stub;

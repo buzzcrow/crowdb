@@ -82,7 +82,10 @@ Do not require one CI job for each measurement row.
 | `e2e.chunkdb.allocation`    | Unsent reroute / ambiguous reply / exact allocation count | Storage           |
 | `e2e.chunkdb.placement`     | Public mirror / EC geometry and physical protection      | Storage           |
 | `e2e.chunkdb.recovery`      | Exact chunk metadata / revision across dependency crash  | Storage           |
-| `e2e.chunkdb.repair`        | Degraded repair / mirror-EC conversion                    | Storage           |
+| `e2e.chunkdb.io`            | Exact bytes across every Diskio owner / disk              | Storage           |
+| `e2e.chunkdb.conversion`    | Partial mirror-EC / parity / expired claim / dirty tail   | Storage           |
+| `e2e.chunkdb.repair`        | Missing data/parity repair / durable completed task       | Storage           |
+| `e2e.chunkdb.slots`         | Three service owners / purpose bands / storage failover   | Storage           |
 | `e2e.chunkdb.handoff`       | Task / journal recovery / ownership handoff               | Storage           |
 | `e2e.chunk-stream.objects`  | Small / large / range data / durable publication          | Storage           |
 | `e2e.chunk-stream.recovery` | Takeover / service restart / Diskio errors                | Storage           |
@@ -169,12 +172,15 @@ Future detailed component and E2E rows replace their unmeasured scope placeholde
 | `e2e.diskio.semantic`       | 2026-10-11 | 1/1   | shared  | 2.046    | 8.051    | 1.408          | 11.510   | PASS    |
 | `e2e.diskio.direct`         | 2026-10-11 | 1/1   | shared  | 0.691    | 0.059    | 0.640          | 1.957    | PASS    |
 | `e2e.diskio.durability`     | 2026-10-11 | 1/1   | shared  | 0.709    | 0.059    | 0.801          | 2.173    | PASS    |
-| `e2e.chunkdb.lifecycle`    | 2026-10-11 | 1/1   | shared  | 3.547    | 0.170    | 2.180          | 5.900    | PASS    |
-| `e2e.chunkdb.allocation`   | 2026-10-11 | 1/1   | shared  | 1.925    | 0.065    | 1.034          | 3.028    | PASS    |
-| `e2e.chunkdb.placement`    | 2026-10-11 | 1/1   | shared  | 3.356    | 0.215    | 2.257          | 5.832    | PASS    |
-| `e2e.chunkdb.recovery`     | 2026-10-11 | 1/1   | shared  | 2.934    | 0.518    | 1.879          | 9.139    | PASS    |
-| `e2e.chunkdb.repair`        | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `e2e.chunkdb.handoff`       | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.chunkdb.lifecycle`    | 2026-10-11 | 1/1   | shared  | 3.257    | 0.181    | 2.118          | 5.559    | PASS    |
+| `e2e.chunkdb.allocation`   | 2026-10-11 | 1/1   | shared  | 1.957    | 0.092    | 0.995          | 3.047    | PASS    |
+| `e2e.chunkdb.placement`    | 2026-10-11 | 1/1   | shared  | 3.198    | 0.215    | 2.233          | 5.651    | PASS    |
+| `e2e.chunkdb.recovery`     | 2026-10-11 | 1/1   | shared  | 3.509    | 0.327    | 2.429          | 9.752    | PASS    |
+| `e2e.chunkdb.io`           | 2026-10-11 | 1/1   | shared  | 6.364    | 0.136    | 4.386          | 10.888   | PASS    |
+| `e2e.chunkdb.conversion`   | 2026-10-11 | 2/2   | shared  | 12.889   | 6.616    | 8.645          | 28.157   | PASS    |
+| `e2e.chunkdb.repair`       | 2026-10-11 | 2/2   | shared  | 12.102   | 8.571    | 8.657          | 29.337   | PASS    |
+| `e2e.chunkdb.slots`        | 2026-10-11 | 1/1   | shared  | 4.801    | 18.223   | 7.645          | 30.673   | PASS    |
+| `e2e.chunkdb.handoff`      | 2026-10-11 | 1/1   | shared  | 6.124    | 1.726    | 4.364          | 12.216   | PASS    |
 | `e2e.chunk-stream.objects`  | —          | —     | —       | —        | —        | —              | —        | Pending |
 | `e2e.chunk-stream.recovery` | —          | —     | —       | —        | —        | —              | —        | Pending |
 | `e2e.chunk-kv.protocol`     | —          | —     | —       | —        | —        | —              | —        | Pending |
@@ -633,8 +639,15 @@ Source: `app/crowdb-kv-server/`. Tests: 9 files.
   internal flows, mixed geometry, single-rack placement and allocator snapshot UT
   remain and pass (37 tests). The 34 internal flows take 6.39 s; geometry 0.15 s,
   single-rack 0.83 s and allocator snapshot 0.08 s, excluding build.
-- Chunkdb migration is partial: Diskio byte repair/conversion, multislot failover
-  and public handoff remain pending. These passing rows cover only the named
-  currently selectable cases; they do not claim those remaining flows.
+- Chunkdb public migration now includes degraded topology repair and journal handoff; the final eleven-case acceptance below supersedes this initial four-case measurement.
 - Recovery total includes a separately recorded 3.800 s dependency restart.
   Collection/stop columns sum only diagnostic collection and teardown.
+
+## Chunkdb storage and multislot timing
+
+- `run-9801d52258a74d099b0e77138b3c9e91`: nine cases pass, 54.618 s wall, 0.574 s client build; concurrency two with 12 CPUs / 12288 MiB. Scope conversion totals include two independently owned fixtures, not concurrent wall time.
+- Formal source `94aa2834`, Docker config `sha256:c9d68aac2556f0ed855e9c20a9852c1aab87a80b8605df05a123e9efe79d674e`; release optimized with debug info retained. KV full regression passed concurrently on the same image.
+- Longest case is multislot fault recovery: 31.443 s fixture / 18.703 s host client. Logs retain seed discovery against the stopped voter and failover to surviving voters for future latency review.
+- Source retirement follows exact bytes, completed tasks, dirty tail, atomic revisions and all purpose routing assertions. Deterministic component claim, fencing and placement tests remain.
+
+- Final Chunkdb batch `run-6ae19b8e9e724a3fb3dc2b6edf863481`: eleven cases pass, 67.887 s wall / 0.647 s client build, concurrency two, 12 CPUs / 12288 MiB. Repair owns two cases (four-shard byte repair and degraded topology restoration). Journal handoff owns one exact copy/publication/source-free case. Retained component full-stack tests: 36 pass in 20.30 s; all other Chunkdb component targets also pass.

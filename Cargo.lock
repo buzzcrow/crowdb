@@ -1454,9 +1454,11 @@ dependencies = [
 name = "e2e-test"
 version = "0.3.0"
 dependencies = [
+ "bincode",
  "bytes",
  "crowdb-chunkdb",
  "crowdb-chunkdb-client",
+ "crowdb-common",
  "crowdb-diskdb-client",
  "crowdb-diskio-client",
  "crowdb-kv",

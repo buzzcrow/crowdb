@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from fixture import Cluster
 from diskdb_fixture import DiskdbCluster
-from chunkdb_fixture import ChunkdbCluster
+from chunkdb_fixture import ChunkdbCluster, ChunkdbStorageCluster
 from managed_fixture import ManagedCluster
 from diskio_fixture import DiskioCluster, DiskioDiscoveryCluster, DiskioSemanticCluster
 
@@ -32,6 +32,8 @@ class Case:
     diskio_direct: bool = False
     diskdb_restart_metadata: bool = False
     chunkdb_server: bool = False
+    chunkdb_storage: bool = False
+    chunkdb_multi: bool = False
 
 
 KV_CASES = (
@@ -120,6 +122,13 @@ DISKIO_CASES = (
     Case("diskio.faults", "diskio::faults::disk_io_fault_errors", diskio_backend="mem", diskio_fault_rate=1.0),
 )
 CHUNKDB_CASES = (
+    Case("chunkdb.handoff", "chunkdb::handoff::relocation_journal_copies_publishes_then_frees_exact_source", chunkdb_storage=True),
+    Case("chunkdb.repair", "chunkdb::repair::topology::degraded_ec_recovers_protection_and_exact_bytes_after_node_returns", chunkdb_storage=True),
+    Case("chunkdb.conversion", "chunkdb::conversion::foreground::expired_client_claim_preserves_dirty_destination_tail_and_completes_once", chunkdb_storage=True),
+    Case("chunkdb.slots", "chunkdb::slots::three_service_owners_preserve_all_purposes_across_paxos_failover", chunkdb_multi=True),
+    Case("chunkdb.repair", "chunkdb::repair::four_missing_shards_repair_partial_data_and_parity", chunkdb_storage=True),
+    Case("chunkdb.conversion", "chunkdb::conversion::manual_partial_mirror_to_ec_preserves_exact_shards", chunkdb_storage=True),
+    Case("chunkdb.io", "chunkdb::io::all_failure_domains_route_exact_segment_bytes", chunkdb_storage=True),
     Case("chunkdb.placement", "chunkdb::placement::mirror_and_ec_matrix_publish_protected_geometry", chunkdb_server=True),
     Case("chunkdb.recovery", "chunkdb::recovery::crash_recovery_preserves_exact_chunk_records_and_placement", chunkdb_server=True, restart=True),
     Case("chunkdb.lifecycle", "chunkdb::lifecycle::allocate_seal_delete_preserves_physical_placement_and_free_facts", chunkdb_server=True),
@@ -128,6 +137,10 @@ CHUNKDB_CASES = (
 ALL_CASES = CHUNKDB_CASES + KV_CASES + DISKDB_CASES + DEPLOYMENT_CASES + DISKIO_CASES
 
 def case_nodes(case):
+    if case.chunkdb_multi:
+        return 7
+    if case.chunkdb_storage:
+        return 11
     if case.chunkdb_server:
         return 5
     if case.diskio_backend == "semantic":
@@ -139,6 +152,11 @@ def case_nodes(case):
     return 2 if case.scope.startswith(("diskdb.", "chunkdb.")) else len(case.stores_per_node or case.stores)
 
 def allocate_cluster(case, image, artifacts, bundle, data_root):
+    if case.chunkdb_multi:
+        return ChunkdbCluster(image, artifacts, bundle, service_instances=(11, 12, 13),
+                              storage_groups=(1, 2, 3), data_root=data_root)
+    if case.chunkdb_storage:
+        return ChunkdbStorageCluster(image, artifacts, bundle, data_root=data_root)
     if case.chunkdb_server:
         return ChunkdbCluster(image, artifacts, bundle, data_root=data_root)
     if case.scope.startswith("deployment."):

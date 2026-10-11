@@ -11,35 +11,7 @@ pub(super) async fn topology(client: &Client, ip: &str) -> Value {
     request(client, &origin(ip), Method::GET, "/topology", Value::Null, 200).await
 }
 
-pub(super) async fn leader(client: &Client, ips: &[String], group: u64) -> usize {
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let mut stable = None;
-    loop {
-        let mut leaders = Vec::new();
-        for (index, ip) in ips.iter().enumerate() {
-            let topo = topology(client, ip).await;
-            let groups = topo["stores"][0]["groups"].as_array().unwrap();
-            let state = groups.iter().find(|state| state["group_id"] == group).unwrap();
-            if state["local_replica"]["role"] == "leader" {
-                leaders.push(index);
-            }
-        }
-        if leaders.len() == 1 {
-            match stable {
-                Some((index, since)) if index == leaders[0] => {
-                    if Instant::now().duration_since(since) >= Duration::from_millis(800) {
-                        return index;
-                    }
-                }
-                _ => stable = Some((leaders[0], Instant::now())),
-            }
-        } else {
-            stable = None;
-        }
-        assert!(Instant::now() < deadline, "no unique leader for group {group}");
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-}
+pub(super) use crate::common::management::leader;
 
 #[tokio::test]
 #[ignore = "requires three release-container nodes with stores ten, twenty and thirty"]

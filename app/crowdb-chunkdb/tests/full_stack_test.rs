@@ -1,11 +1,9 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Full-stack E2E test: real KV cluster + diskdb + chunkdb in-process.
-//!
-//! Verifies the allocate → append → seal → query → delete lifecycle
-//! against a real 3-node crowdb-kv-server cluster with diskdb running
-//! in-process as a crowdb-rpc server.
+//! Pinned component proofs for lifecycle, task claims, placement and journals.
+//! Public packaged-server flows belong to the container acceptance crate.
+//! Volatile Diskio protocol stubs isolate internal unsafe placement matrices.
 
 mod common;
 
@@ -19,6 +17,7 @@ use common::cluster::{
     seed_hardware, seed_hardware_layout_from_disk_group, seed_hardware_layout_with_zones, ChunkdbHarness,
     DiskdbServer, KvCluster, DATA_GROUP_ID, STORE_ID,
 };
+use common::diskio_stub::TestDiskio;
 use crowdb_chunkdb::allocator::StripAllocType;
 use crowdb_chunkdb::chunkdb_config::{DeploymentMode, PlacementRebalanceConfig};
 use crowdb_chunkdb::conversion::io::ConversionDiskIo;
@@ -56,8 +55,6 @@ use crowdb_protocol::chunkdb::rpc::{
 };
 use crowdb_protocol::common::{ChunkId, DiskGroupUsageSummary, HwStatus};
 use crowdb_protocol::diskdb::rpc::RelocationJournalPhase;
-use crowdb_protocol::{port::alloc as port_alloc, ServicePort};
-use crowdb_test_harness::diskio::{DiskioGroup0Identity, DiskioProcess, DiskioStartOpts};
 
 fn max_fragment_count<K: Eq + Hash>(counts: &HashMap<K, u32>) -> u32 {
     *counts.values().max().expect("segment count")
@@ -122,10 +119,9 @@ async fn assert_conversion_task_pending(
         SegmentOwnerDisposition::TaskPending
     );
 
-    let port = port_alloc::alloc_test_port(ServicePort::ChunkdbRpc);
-    let endpoint = format!("http://127.0.0.1:{port}");
     let server = Arc::new(crowdb_rpc_ffi::RpcServer::new(None));
-    server.listen("127.0.0.1", i32::from(port)).unwrap();
+    server.listen("127.0.0.1", 0).unwrap();
+    let endpoint = format!("http://127.0.0.1:{}", server.port());
     let mut registry = MetricsRegistry::new();
     let service = Arc::new(
         ChunkdbRpcService::new(
@@ -168,33 +164,26 @@ async fn assert_conversion_task_pending(
     }
 }
 
-fn start_diskio_groups(
+async fn start_diskio_groups(
     cluster: &KvCluster,
     groups: &[(u64, u64, u64)],
     instance_base: u64,
-) -> Vec<DiskioProcess> {
-    groups
-        .iter()
-        .enumerate()
-        .map(|(index, &(disk_group_id, rack_id, node_id))| {
-            DiskioProcess::start_for_group(
-                &DiskioStartOpts {
-                    dummy_disk: "mem",
-                    kv_seeds: &cluster.mgmt_endpoints,
-                    disks: &[],
-                    fault_error_rate: 0.0,
-                    fault_latency_ms: None,
-                    no_o_direct: false,
-                },
-                DiskioGroup0Identity {
-                    instance_id: instance_base.saturating_add(u64::try_from(index).unwrap()),
-                    rack_id,
-                    node_id,
-                    disk_group_id,
-                },
+) -> Vec<TestDiskio> {
+    let service = cluster.make_service_registry_client();
+    let mut disks = Vec::new();
+    for (index, &(group, rack, node)) in groups.iter().enumerate() {
+        disks.push(
+            TestDiskio::start(
+                &service,
+                instance_base + u64::try_from(index).unwrap(),
+                rack,
+                node,
+                group,
             )
-        })
-        .collect()
+            .await,
+        );
+    }
+    disks
 }
 
 #[tokio::test]
@@ -314,66 +303,9 @@ async fn diskdb_refreshes_new_failure_domains_without_restart() {
     }
 }
 
-#[tokio::test]
-async fn diskio_routes_cover_every_group_in_the_two_rack_fixture() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: crowdb-kv-server binary not found");
-        return;
-    }
-    if !crowdb_test_harness::diskio::check_diskio_only() {
-        return;
-    }
-    let cluster = KvCluster::start().await;
-    let disk_groups = seed_hardware_layout_with_zones(
-        &cluster.make_hardware_client(),
-        &[(100, vec![10, 11, 12, 13]), (101, vec![20, 21])],
-        32,
-    )
-    .await;
-    let _diskdb = DiskdbServer::start_with_disk_groups_and_zones(&cluster, &disk_groups, 32).await;
-    let service = cluster.make_service_registry_client();
-    let hardware = cluster.make_hardware_client();
-    let io = ConversionDiskIo::deferred(crowdb_chunkdb::chunkdb_config::ConversionIoConfig::default());
-    assert!(
-        io.refresh(&service, &hardware).await.is_err(),
-        "DiskIO routes must be unavailable before the services start"
-    );
-    let diskio = start_diskio_groups(
-        &cluster,
-        &[
-            (1000, 100, 10),
-            (1001, 100, 11),
-            (1002, 100, 12),
-            (1003, 100, 13),
-            (1004, 101, 20),
-            (1005, 101, 21),
-        ],
-        2_000,
-    );
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
-    loop {
-        if io.refresh(&service, &hardware).await.is_ok() {
-            break;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "DiskIO routes were not published"
-        );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert_eq!(diskio.len(), disk_groups.len());
-}
-
 #[allow(clippy::too_many_lines)]
 async fn assert_expanded_topology_converges_ec(data_num: u32, code_num: u32, required_racks: u64) {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: crowdb-kv-server binary not found");
-        return;
-    }
-    if !crowdb_test_harness::diskio::check_diskio_only() {
-        return;
-    }
-    let cluster = KvCluster::start().await;
+    let cluster = KvCluster::start_pinned().await;
     // Two nodes exceed every matrix entry's node loss budget before expansion.
     let mut disk_groups = seed_hardware_layout_with_zones(
         &cluster.make_hardware_client(),
@@ -382,7 +314,7 @@ async fn assert_expanded_topology_converges_ec(data_num: u32, code_num: u32, req
     )
     .await;
     let diskdb = DiskdbServer::start_with_disk_groups_and_zones(&cluster, &disk_groups, 32).await;
-    let mut diskio = start_diskio_groups(&cluster, &[(1000, 100, 10), (1001, 101, 20)], 2_000);
+    let mut diskio = start_diskio_groups(&cluster, &[(1000, 100, 10), (1001, 101, 20)], 2_000).await;
     let service = cluster.make_service_registry_client();
     let hardware = cluster.make_hardware_client();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
@@ -462,7 +394,7 @@ async fn assert_expanded_topology_converges_ec(data_num: u32, code_num: u32, req
     let expansion_groups: Vec<_> = (0..expansion_racks)
         .map(|offset| (2000 + offset, 102 + offset, 30 + offset))
         .collect();
-    diskio.extend(start_diskio_groups(&cluster, &expansion_groups, 3_000));
+    diskio.extend(start_diskio_groups(&cluster, &expansion_groups, 3_000).await);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     loop {
         if io.refresh(&service, &hardware).await.is_ok()
@@ -1101,15 +1033,8 @@ async fn production_ec_stays_degraded_ec_and_mirrors_use_two_copies_after_one_no
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn production_degraded_ec_task_repairs_after_node_returns() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: crowdb-kv-server binary is unavailable");
-        return;
-    }
-    if !crowdb_test_harness::diskio::check_diskio_only() {
-        return;
-    }
-    let cluster = KvCluster::start().await;
+async fn placement_task_requeues_and_survives_scanner_replacement() {
+    let cluster = KvCluster::start_pinned().await;
     let hardware = cluster.make_hardware_client();
     let groups = seed_hardware_layout_with_zones(
         &hardware,
@@ -1118,11 +1043,9 @@ async fn production_degraded_ec_task_repairs_after_node_returns() {
     )
     .await;
     let _diskdb = DiskdbServer::start_with_disk_groups_and_zones(&cluster, &groups, 32).await;
-    let service = cluster.make_service_registry_client();
     let io = Arc::new(ConversionDiskIo::deferred(
         crowdb_chunkdb::chunkdb_config::ConversionIoConfig::default(),
     ));
-    assert!(io.refresh(&service, &hardware).await.is_err());
 
     let harness = ChunkdbHarness::start_with_disk_group_count(&cluster, Duration::from_secs(30), 3).await;
     hardware
@@ -1142,37 +1065,22 @@ async fn production_degraded_ec_task_repairs_after_node_returns() {
         .with_layout_validity(Duration::from_millis(1)),
     );
     let chunk = handler
-        .allocate_chunk(None, 1024, 1, StripType::Ec, 2, 1, 0, ChunkType::S3, 0, 0)
+        .allocate_chunk(
+            None,
+            1024,
+            1,
+            StripType::Ec,
+            2,
+            1,
+            0,
+            ChunkType::S3,
+            17,
+            3_600_000,
+        )
         .await
         .expect("allocate degraded EC strip");
     assert!(chunk.strips[0].placement_repair_required);
     let chunk_id = chunk.id.expect("chunk identity");
-    let Some(Strip::EcStrip(ec)) = chunk.strips[0].strip.as_ref() else {
-        panic!("degraded allocation must remain EC");
-    };
-
-    let diskio = start_diskio_groups(
-        &cluster,
-        &[(1000, 100, 10), (1001, 101, 11), (1002, 102, 12)],
-        2_000,
-    );
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
-    loop {
-        if io.refresh(&service, &hardware).await.is_ok() {
-            break;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "DiskIO routes were not published"
-        );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    for segment in &ec.segments {
-        io.write_segment(segment, 1024 * 1024, Bytes::from(vec![0x5a; 1024 * 1024]))
-            .await
-            .expect("seed degraded EC fragment");
-    }
-
     let bindings = BindingCache::new();
     bindings
         .replace(default_binding_table(STORE_ID, DATA_GROUP_ID))
@@ -1229,34 +1137,27 @@ async fn production_degraded_ec_task_repairs_after_node_returns() {
     );
     let scanner = TaskScanner::new(Arc::clone(&tasks), manager, executor, 16, Duration::from_secs(1));
 
-    hardware.set_node_status(102, 12, HwStatus::Up).await.unwrap();
-    harness
-        .topology
-        .replace(build_snapshot(&hardware).await.expect("recovered topology"));
-    for _ in 0..6 {
-        let summary = scanner.run_once(u64::MAX).await.unwrap();
-        if !handler.query_chunk(&chunk_id).await.unwrap().strips[0].placement_repair_required {
-            break;
-        }
-        assert!(
-            summary.tasks_completed_or_requeued > 0,
-            "placement task did not resume"
-        );
-    }
-    let repaired = handler.query_chunk(&chunk_id).await.unwrap();
-    let assessment = repaired.strips[0].placement_assessment.as_ref().unwrap();
-    assert!(assessment.rack_protected && assessment.node_protected && assessment.disk_protected);
-    assert!(!repaired.strips[0].placement_repair_required);
-    let Some(Strip::EcStrip(ec)) = repaired.strips[0].strip.as_ref() else {
-        panic!("repaired strip must remain EC");
-    };
-    for segment in &ec.segments {
-        assert_eq!(
-            io.read_segment(segment, 1024 * 1024).await.unwrap(),
-            Bytes::from(vec![0x5a; 1024 * 1024])
-        );
-    }
-    assert_eq!(diskio.len(), 3);
+    let due = tasks
+        .list_partition(&chunk_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|task| task.kind == TASK_KIND_REPAIR_PLACEMENT)
+        .unwrap()
+        .eligible_at_ms;
+    assert_eq!(
+        scanner.run_once(due).await.unwrap().tasks_completed_or_requeued,
+        1
+    );
+    assert!(handler.query_chunk(&chunk_id).await.unwrap().strips[0].placement_repair_required);
+    let durable = tasks.list_partition(&chunk_id).await.unwrap();
+    let task = durable
+        .iter()
+        .find(|task| task.kind == TASK_KIND_REPAIR_PLACEMENT)
+        .unwrap();
+    assert_eq!(task.state, ChunkTaskState::RetryWait);
+    assert_eq!(task.attempt, 2);
+    assert_eq!(task.claim_generation, 2);
 }
 
 #[tokio::test]
@@ -1931,10 +1832,9 @@ async fn relocation_handoff_claims_publishes_and_defers_source_free() {
         .unwrap()
         .into_iter()
         .all(|t| t.kind == TASK_KIND_FINALIZE_CHUNK));
-    let port = port_alloc::alloc_test_port(ServicePort::ChunkdbRpc);
-    let endpoint = format!("http://127.0.0.1:{port}");
     let server = Arc::new(crowdb_rpc_ffi::RpcServer::new(None));
-    server.listen("127.0.0.1", i32::from(port)).unwrap();
+    server.listen("127.0.0.1", 0).unwrap();
+    let endpoint = format!("http://127.0.0.1:{}", server.port());
     let mut registry = MetricsRegistry::new();
     let service = Arc::new(
         ChunkdbRpcService::new(

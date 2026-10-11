@@ -10,9 +10,9 @@ from fixture import Cluster, request, wait
 
 
 class DiskdbCluster(Cluster):
-    def __init__(self, image, artifacts, bundle, restart_metadata=False, seed_case="diskdb::hardware::seed", kv_nodes=1, **kwargs):
+    def __init__(self, image, artifacts, bundle, restart_metadata=False, seed_case="diskdb::hardware::seed", kv_nodes=1, kv_groups=(0, 1), **kwargs):
         super().__init__(image, artifacts, node_count=kv_nodes, stores_per_node=((0,),) * kv_nodes,
-                         groups=(0, 1), advertise=True, **kwargs)
+                         groups=kv_groups, advertise=True, **kwargs)
         self.diskdb_index = kv_nodes
         self.bundle = bundle
         self.seed_case = seed_case
@@ -48,7 +48,7 @@ miss_threshold = 3
 temp_failure_timeout_secs = 900
 [reporting]
 interval_secs = 2
-''')
+''' + self.diskdb_extra_config())
         observed = start_node(self, self.diskdb_index, data, ("server", "diskdb", "--config",
             "/opt/crowdb/etc/e2e-diskdb.toml", "--log-dir", "/opt/crowdb/data/log/diskdb", "--log"),
             address=address, mounts=(f"type=bind,source={config},target=/opt/crowdb/etc/e2e-diskdb.toml,readonly",))
@@ -62,6 +62,9 @@ interval_secs = 2
         if observed != address:
             raise AssertionError("Diskdb inspected IP differs from its advertised endpoint")
         return self
+
+    def diskdb_extra_config(self):
+        return ""
 
     def crash_restart(self):
         started = time.monotonic()

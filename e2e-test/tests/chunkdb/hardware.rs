@@ -26,6 +26,21 @@ async fn seed() {
     .await;
 }
 
+#[tokio::test]
+#[ignore = "requires the owned protected storage fixture"]
+async fn seed_storage() {
+    super::voting::register_actual_voters().await;
+    seed_hardware_layout_from_disk_group(
+        &HardwareClient::new(crate::common::hardware::kv_client()),
+        &(0..6)
+            .map(|index| (100 + index, vec![10 + index]))
+            .collect::<Vec<_>>(),
+        4,
+        1000,
+    )
+    .await;
+}
+
 async fn seed_hardware_layout_from_disk_group(
     hw: &HardwareClient,
     layout: &[(u64, Vec<u64>)],

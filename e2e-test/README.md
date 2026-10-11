@@ -34,8 +34,8 @@ pixi run test-container-e2e --layer kv --concurrency 2 --cpus 4 --memory-mib 409
 pixi run test-container-e2e --layer diskdb --concurrency 2
 # Diskio file/direct durability, Mem/Null I/O, discovery and client faults:
 pixi run test-container-e2e --layer diskio --concurrency 2 --cpus 6 --memory-mib 6144
-# Chunkdb public allocation, protected geometry, lifecycle and metadata recovery:
-pixi run test-container-e2e --layer chunkdb --concurrency 2 --cpus 6 --memory-mib 6144
+# Chunkdb lifecycle/recovery, multislot failover and real Diskio conversion/repair:
+pixi run test-container-e2e --layer chunkdb --concurrency 2 --cpus 12 --memory-mib 12288
 # Normal release monitor full set, service subsets and persisted restart:
 pixi run test-container-e2e --layer deployment --concurrency 2 --cpus 6 --memory-mib 6144
 # Run one domain scope (other migrated scopes: kv.membership, kv.routing,
@@ -57,8 +57,13 @@ Chunkdb lifecycle, placement and recovery use five owned containers: three KV
 voters, one Diskdb and one production-mode Chunkdb. Actual inspected KV replicas
 are registered through the public metadata API. Allocation transport acceptance
 needs only KV and Diskdb. The placement profile seeds four distinct failure
-domains and checks metadata geometry; Diskio byte repair/conversion acceptance
-is a separate migration batch still pending. Important internal task, journal,
+domains and checks metadata geometry. The storage profile owns eleven containers:
+three KV, Diskdb, Chunkdb and six Diskio failure domains, with eighteen disks.
+The multislot profile owns three Chunkdb service instances, three KV voters and
+Diskdb. Storage cases verify public conversion, partial bytes, exact parity,
+expired foreground claim takeover, four missing-shard repair, degraded node-return
+repair and exact relocation journal copy/publication/source-free ordering. All eleven
+Chunkdb cases and their source retirement pass. Important internal task, journal,
 fence and placement proofs remain in the Chunkdb component with pinned memory
 metadata and their original assertions.
 Other domain migrations remain tracked in the working plan. Image and client

@@ -2,8 +2,14 @@
 // Licensed under the Apache License, Version 2.0.
 
 mod allocation;
+mod conversion;
+mod handoff;
 mod hardware;
+mod io;
 mod lifecycle;
 mod placement;
 mod recovery;
+mod repair;
+mod slots;
+mod tasks;
 mod voting;
