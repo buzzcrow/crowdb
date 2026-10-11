@@ -35,18 +35,18 @@ are excluded. Console uses one effective case slot at 0.25 CPU/server with a
 
 | Domain       | Environment | Date       | Passed / failed / skipped | Wall s   | Previous s | Report                                                                                                    |
 | ------------ | ----------- | ---------- | ------------------------- | -------- | ---------- | --------------------------------------------------------------------------------------------------------- |
-| KV           | intel7960   | 2026-10-11 | 50 / 0 / 0                | 94.794   | 167.938    | [report](../../.crowdb-runtime/artifacts/container-e2e/run-b1dedf87060b4ca083095864b0996bd0/results.json) |
-| Diskdb       | intel7960   | 2026-10-11 | 5 / 0 / 0                 | 14.198   | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-cfc58fa353574c6898cfe40463c7a814/results.json) |
-| Diskio       | intel7960   | 2026-10-11 | 8 / 0 / 0                 | 20.802   | 21.449     | [report](../../.crowdb-runtime/artifacts/container-e2e/run-7ca260ddd87c489e949438bc9d7b9d59/results.json) |
-| Chunkdb      | intel7960   | 2026-10-11 | 11 / 0 / 0                | 70.267   | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-370769d47f72492d8cfaef8ae77c61ea/results.json) |
-| Chunk client | intel7960   | 2026-10-11 | 40 / 0 / 0                | 456.101  | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-0bc1b0c5c6184c14a4248bccb13391d2/results.json) |
-| Chunk stream | intel7960   | 2026-10-11 | 4 / 0 / 0                 | 36.149   | 52.184     | [report](../../.crowdb-runtime/artifacts/container-e2e/run-8c9d46d75aa04f7c8b409cd8cb285aa5/results.json) |
-| Chunk-KV     | intel7960   | 2026-10-11 | 2 / 0 / 0                 | 22.520   | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-e8fbdfdc8be94d408309d5623227794d/results.json) |
-| S3           | intel7960   | 2026-10-11 | 43 / 0 / 0                | 1135.695 | 418.700    | [report](../../.crowdb-runtime/artifacts/container-e2e/run-04461b8645414e83b7aa98cd5aa63ae2/results.json) |
-| Iceberg      | intel7960   | 2026-10-11 | 32 / 0 / 0                | 1515.042 | 1542.472   | [report](../../.crowdb-runtime/artifacts/container-e2e/run-9dd41619b7a04bd3b7e0693e3b432b74/results.json) |
-| Dataset      | intel7960   | 2026-10-11 | 2 / 0 / 0                 | 18.024   | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-d869ca04e48d46dabadb36e4db510c81/results.json) |
-| Console      | intel7960   | 2026-10-11 | 87 / 0 / 0                | 627.744  | 605.125    | [report](../../.crowdb-runtime/artifacts/container-e2e/run-29a68eb2454c4fe5baf55c3d6cd8b610/results.json) |
-| Deployment   | intel7960   | 2026-10-11 | 33 / 0 / 0                | 294.359  | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-5f0be57000ed4481968a78dad965273d/results.json) |
+| KV           | intel7960   | 2026-10-12 | 50 / 0 / 0                | 105.519  | 94.794     | [report](../../.crowdb-runtime/artifacts/container-e2e/run-0497f80ea35649d5bf811fd5b101e4cc/results.json) |
+| Diskdb       | intel7960   | 2026-10-12 | 5 / 0 / 0                 | 14.048   | 14.198     | [report](../../.crowdb-runtime/artifacts/container-e2e/run-9a6b10db224442a99877a821df96ddf7/results.json) |
+| Diskio       | intel7960   | 2026-10-12 | 8 / 0 / 0                 | 21.507   | 20.802     | [report](../../.crowdb-runtime/artifacts/container-e2e/run-30a61c56a8ca495fa636b0b0b846271e/results.json) |
+| Chunkdb      | intel7960   | 2026-10-12 | 11 / 0 / 0                | 159.207  | 70.267     | [report](../../.crowdb-runtime/artifacts/container-e2e/run-479c24973b70443c9c7e35d4bee8ee2c/results.json) |
+| Chunk client | intel7960   | 2026-10-12 | 40 / 0 / 0                | 628.765  | 456.101    | [report](../../.crowdb-runtime/artifacts/container-e2e/run-957c7ecf692c4e3b9c76c697e2643e11/results.json) |
+| Chunk stream | intel7960   | 2026-10-12 | 4 / 0 / 0                 | 75.707   | 36.149     | [report](../../.crowdb-runtime/artifacts/container-e2e/run-fbaa0d20cd084f34bf45bf8dd73ffeb0/results.json) |
+| Chunk-KV     | intel7960   | 2026-10-12 | 2 / 0 / 0                 | 41.265   | 22.520     | [report](../../.crowdb-runtime/artifacts/container-e2e/run-cbb0e11572254c5789262ebc13b8ae69/results.json) |
+| S3           | intel7960   | 2026-10-12 | 42 / 1 / 0                | 1470.416 | 1135.695   | [report](../../.crowdb-runtime/artifacts/container-e2e/run-52be5dd3b8cb4e7abff03daa44b0509e/results.json) |
+| Iceberg      | intel7960   | 2026-10-12 | 31 / 1 / 0                | 1633.442 | 1515.042   | [report](../../.crowdb-runtime/artifacts/container-e2e/run-a668558dcb8541919c78c4f6e1b4f13d/results.json) |
+| Dataset      | intel7960   | 2026-10-12 | 2 / 0 / 0                 | 31.301   | 18.024     | [report](../../.crowdb-runtime/artifacts/container-e2e/run-438521b1303d4b828e483e1b86c6b559/results.json) |
+| Console      | intel7960   | 2026-10-12 | 87 / 0 / 0                | 676.846  | 627.744    | [report](../../.crowdb-runtime/artifacts/container-e2e/run-6e890de5f4ab479686588a4d23719d23/results.json) |
+| Deployment   | intel7960   | 2026-10-12 | 33 / 0 / 0                | 337.197  | 294.359    | [report](../../.crowdb-runtime/artifacts/container-e2e/run-fb8ec94000ef4856bfd294ddcf7c77de/results.json) |
 
 ## Environments
 
@@ -57,7 +57,9 @@ are excluded. Console uses one effective case slot at 0.25 CPU/server with a
   Earlier domain rows retain their own image identity in the linked reports.
   The rebuilt image from `d9dd29c41e94ad48a58940fc01b7ad700bdd0cf3`
   (OCI `sha256:bb3c6951ef7f3203ba49354678032bf3016c3db9004412875630a1b0783b57b0`)
-  fixes non-voting heartbeat catch-up; final full-domain remeasurement is pending.
+  fixes non-voting heartbeat catch-up. Full domain runs are recorded above;
+  S3 and Iceberg failed once each. A new image incorporating the KV coalescer
+  race fix is being staged; repeat acceptance on that image is pending.
   Optimized binaries retain debug info; mounted data/log/crash paths and actual
   host core collector are recorded per run. Receipt: `target/crowdb.oci.tar.json`.
 - **Bridge SSH admission**: the explicit five-node peak profile passes in
@@ -128,6 +130,12 @@ as environment baselines, not as evidence of migration completion.
 | `test-iceberg-sdk` | 2026-10-07 | —       | —       | X Maven dependency resolution stalled   |
 
 ## Remaining issues
+
+- [ ] **Current regression failures**: S3 thousand-key batch deletion timed out
+  at its unchanged 120-second deadline, including an isolated rerun. A reproduced
+  KV coalescer enqueue-loss race is fixed and 122 group tests pass; packaged
+  acceptance remains pending. Iceberg RCK failed because its archived upstream
+  source lacked `version.txt`; the host archive fix awaits real RCK acceptance.
 
 - [ ] **Migration closure**: remaining real-server Console lifecycle/cluster
   flows and CLI S3 bootstrap replay need canonical

@@ -9,7 +9,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 
 ## Resume context
 
-- Branch `task-deploy`; latest accepted SSH admission migration is committed as `d766eb39`. R230 is unfinished. Do not delete the
+- Branch `task-deploy`; latest accepted KV coalescer fix is committed as `fca2b4fa`. R230 is unfinished. Do not delete the
   requirement/backlog entry until every remaining owner and required gate passes.
 - Working tree contains uncommitted Console browser migration drafts. Shared-image CI is committed. S3 node-fault migration and local-state component proofs are accepted.
   Preserve these drafts. `e2e-test/clients/console-ui/node_modules/` is local
@@ -22,7 +22,8 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   `sha256:701d53a74fcdb21b29f963948cdcf06f49846c90174bd5e1ac13765cc79b9fdb`.
   Receipt: `target/crowdb.oci.tar.json`. Old image/archive `ec070372` is retained
   for historical measurements. Rebuild only when release inputs change; never
-  bypass source/image provenance checks. Final domain timings need this image.
+  bypass source/image provenance checks. A new image is required for the committed coalescer fix; the receipt currently
+  describes the previous image until rebuild/import completes.
 - Containers run formal servers, host processes run clients. Fixed ports,
   inspected IPs, independent networks/data mounts, and three actual KV voters
   in three containers remain mandatory. Runtime service selection reuses one
@@ -54,6 +55,11 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   endpoints; signaling validates service PID and run ownership. Preserve UI
   assertions and remove native runners only after matching acceptance. Current
   root Console operation inventory is 87 cases; the two draft browser cases are additional.
+  Also migrate the server-owning `app/crowdb-web/tests/native_cluster_provisioning_test.rs`
+  and its `nativeDiagnostics.config.ts` browser callbacks; they are outside the
+  default realBackend selection and remain in `test-console.sh`. Audit
+  `71-s3-native.spec.ts` / `nativeS3.config.ts` and `72-managed-native.spec.ts` /
+  `managedNative.config.ts` separately; no accepted root replacement is claimed.
 ## Final integration and closure
 
 - [ ] **Launcher and coverage audit**: enumerate remaining production executable
@@ -81,12 +87,23 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   then relevant component/fmt/lint gates. Update `doc/working/test.md` using one
   row per domain and actual complete-run counts/wall times/environment/image.
   Keep per-case detail in artifacts; never sum partial batches into a full pass.
-  DiskIO on the fixed image passes 8/8 in 20.802 seconds,
-  `run-7ca260ddd87c489e949438bc9d7b9d59`; its domain row is updated.
-  New-image full runs are active: Console `run-6e890de5f4ab479686588a4d23719d23`,
-  S3 `run-52be5dd3b8cb4e7abff03daa44b0509e`, Iceberg
-  `run-a668558dcb8541919c78c4f6e1b4f13d`; reports/logs under
-  `/tmp/crowdb-final-{console,s3,iceberg}`. Do not run `clean-env` while active.
+  Previous-image full runs finished: Console 87/87, KV 50/50, Diskdb 5/5,
+  Diskio 8/8, Chunkdb 11/11, chunk-client 40/40, chunk-stream 4/4,
+  chunk-KV 2/2, Dataset 2/2 and Deployment 33/33. S3 passed 42/43;
+  its thousand-key batch-delete case exceeded the unchanged 120-second bound,
+  including an isolated rerun. Iceberg passed 31/32; the RCK archived upstream
+  source lacked `version.txt`. Reports are `/tmp/crowdb-final-<domain>/run-*/`.
+  KV coalescer idle transition dropped an enqueue between two lock acquisitions;
+  deterministic regression failed before the fix and all 122 group tests pass
+  afterward (`/tmp/crowdb-coalesce-empty-drain-{before,after}.log`). The fix adds
+  no lock; release staging is active in `/tmp/crowdb-coalesce-release-stage.log`.
+  Preserve the previous image/archive as `d9dd29c4`. Build/import the newly
+  staged formal retained-debug image, then run the exact S3 case and RCK before
+  full-domain remeasurement. Do not bypass image/source checks. Serialize the
+  largest SDK budgets; do not run global cleanup during any active gate.
+  The uncommitted RCK archive fix supplies upstream release `version.txt` for
+  pinned peeled tag `6976e020b894f6a6777704df2b8c4458cb291ae9` (1.11.0).
+  Verify outside any Git root before committing it.
   The simplified document layout is accepted and needs no further redesign.
 - [ ] **Deferred benchmark decision**: review
   `tools/benchmark/bench-chunk-kv-regression.sh` only after migration and coverage
@@ -112,3 +129,22 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   the outage flow reaching its original 10-second bound. Original browser
   owners remain. A legacy node-monitor profile may offer a supported writable
   route, but verify its product contract before treating it as the owner.
+
+### CLI S3 local deployment mode
+
+- Original two CLI replay owners generate `deployment.mode = "test_unsafe_placement"`
+  via `lifecycle::chunkdb_config` when `protected_test = false`. Formal release
+  explicitly rejects that mode in `ChunkdbConfig::validate`; do not bypass it
+  with a debug server build, replace generated configuration or weaken safety.
+- An owned host CLI adapter experiment ran each server in a separate immutable
+  release container, including three KV voters. First attempt failed at the
+  standard entrypoint's UID preparation; normal Docker binary entrypoint with
+  the host UID then reached the actual mode rejection. Neither is accepted.
+  Command: `pixi run python /tmp/crowdb-cli-container-prototype.py`; logs
+  `/tmp/crowdb-cli-container-prototype-direct.log`; retained case
+  `run-04c5b1f48deb42599edc622f7fc4f946/cli-local/after-kv`. Owned containers and
+  adapter processes were cleaned; original CLI tests remain.
+- Pending choice asked once: preserve release restrictions and separate local
+  launch control component UT from normal container storage recovery, or change
+  CLI default local deployment to a supported release mode. Continue independent
+  work while waiting; this is a contract choice, not a fifth failing-test retry.
