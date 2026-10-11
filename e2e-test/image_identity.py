@@ -18,6 +18,8 @@ SERVER_PATHS = (
     ":(exclude)app/crowdb-web/ui/e2e/flows/00-shell-embedding.spec.ts",
     ":(exclude)app/crowdb-web/ui/e2e/flows/10-cluster-rack-node.spec.ts",
     ":(exclude)app/crowdb-web/ui/e2e/flows/13-todo-ui-behavior.spec.ts",
+    ":(exclude)app/crowdb-web/ui/e2e/flows/30-kv-ops-basic.spec.ts",
+    ":(exclude)app/crowdb-web/ui/e2e/flows/41-canvas-fit-pan.spec.ts",
     # The staging script does not package this operator documentation.
     ":(exclude)container/single-node-container/README.md",
     ":(exclude)container/oci-image/README.md",

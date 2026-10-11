@@ -50,7 +50,7 @@ class SelectionTest(unittest.TestCase):
 
     def test_console_operations_combines_host_client_scopes(self):
         cases = json.loads(self.invoke("--list", "--scope", "console.operations"))
-        self.assertEqual(len(cases), 104)
+        self.assertEqual(len(cases), 111)
         self.assertTrue(all(case["scope"] != "console.managed" for case in cases))
         exact = json.loads(self.invoke("--list", "--scope", "console.operations", "--case", cases[0]["case"]))
         self.assertEqual(exact, [cases[0]])
@@ -70,7 +70,7 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(len(dataset), 2)
         self.assertTrue(all(case["scope"] == "dataset.http" and case["nodes"] == 13 for case in dataset))
         console = json.loads(self.invoke("--list", "--layer", "console"))
-        self.assertEqual(len(console), 104)
+        self.assertEqual(len(console), 111)
         wal_nodes = {"remove_leader_from_five_node_group_elects_new_leader": 6,
                      "remove_unreachable_leader_retains_group0_membership": 6,
                      "replica_add_remove_wires_peers_bidirectionally": 3, "restart_3node_1group": 4, "restart_5node_1group": 6,
@@ -84,7 +84,7 @@ class SelectionTest(unittest.TestCase):
                                  else 2 if case["scope"] == "console.web.bootstrap"
                                  else 13 if case["scope"] == "console.web.access"
                                  else 5 if case["scope"].startswith("console.web.")
-                                 else 1 if case["scope"] in ("console.browser.shell", "console.browser.registry", "console.clients") else 3)
+                                 else 1 if case["scope"] in ("console.browser.shell", "console.browser.registry", "console.browser.kv", "console.browser.canvas", "console.clients") else 3)
         iceberg = json.loads(self.invoke("--list", "--layer", "iceberg"))
         self.assertEqual(len(iceberg), 32)
         self.assertTrue(all(case["scope"].startswith("iceberg.") and case["nodes"] == 14

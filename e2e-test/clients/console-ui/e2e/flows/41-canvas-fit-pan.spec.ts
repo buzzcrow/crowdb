@@ -3,7 +3,7 @@
 // Baseline: 3.2s / 0.8s / 4.2s (2026-09-28)
 
 import { test, expect, consoleBaseURL } from '../fixtures/realBackend';
-import { createRack, createNode, deployNodeServer, stopNodeServer, freePort, resetAll } from '../fixtures/consoleSetup';
+import { createRack, createNode, deployNodeServer, stopNodeServer } from '../fixtures/localSetup';
 import { step } from '../fixtures/stepTimer';
 
 // One rack/node/server shared by every test in this file so the canvas
@@ -13,12 +13,9 @@ const apiBase = consoleBaseURL();
 
 test.describe('canvas · fit + pan', () => {
   test.beforeAll(async () => {
-    // Reset to clear any leftover server entries from prior runs that
-    // may not have cleaned up (port collisions on re-deploy).
-    await step('canvas: resetAll', () => resetAll(apiBase));
     await step('canvas: create rack', () => createRack(apiBase, { id: 480, name: 'Rack 480' }));
     await step('canvas: create node', () => createNode(apiBase, { id: 480, rack_id: 480 }));
-    await step('canvas: deploy server', () => deployNodeServer(apiBase, 480, freePort(), freePort()));
+    await step('canvas: deploy server', () => deployNodeServer(apiBase, 480));
   });
 
   test.afterAll(async () => {

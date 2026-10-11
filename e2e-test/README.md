@@ -328,7 +328,11 @@ pixi run test-container-e2e --layer s3 --scope s3.recovery --concurrency 1 --cpu
   ownership-probe scope, persisted Access-only listener plan and fixed-slot
   warning. It uses public HTTP setup and fixed Access ports 9000/9001/9002;
   dependencies remain unprovisioned and the Access service stays waiting.
-- Host shell/registry clients run in batches bounded by the same case slots.
+- `console.browser.kv` covers real KV pagination, binary representation and
+  automatic scans. `console.browser.canvas` covers fit, pan, collapsed children
+  and navigation state. These owned Web nodes deploy one ordinary KV server
+  at fixed 7000/7001 using durable defaults.
+- Host shell/registry/KV/canvas clients run in batches bounded by the same case slots.
   All batch containers start before clients run concurrently; all clients finish
   before any batch network is removed. Other selected server cases finish first.
   This prevents Docker bridge churn during browser mutations without retries

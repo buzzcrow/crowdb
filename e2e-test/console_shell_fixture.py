@@ -4,6 +4,7 @@
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -28,7 +29,7 @@ class ShellBrowserCluster(StandaloneWebCluster):
                    CROWDB_WEB_E2E_OUTPUT=str(self.artifacts / "browser"))
         self.invoke(["pixi", "run", "npm", "ci", "--ignore-scripts"], project, env, "browser-prepare")
         self.invoke(["pixi", "run", "npx", "--no-install", "playwright", "test",
-                     "--config=shell.config.ts", "--grep", name], project, env, "browser")
+                     "--config=shell.config.ts", "--grep", re.escape(name)], project, env, "browser")
         stats = json.loads((self.artifacts / "browser/results.json").read_text())["stats"]
         if stats["expected"] != 1 or any(stats[key] for key in ("unexpected", "skipped", "flaky")):
             raise AssertionError(f"shell browser did not complete exactly one case: {stats}")

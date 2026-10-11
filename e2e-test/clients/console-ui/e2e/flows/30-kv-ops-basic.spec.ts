@@ -4,7 +4,7 @@
 // Baseline: binary byte runs 1.6s (2026-10-06).
 
 import { test, expect, consoleBaseURL } from '../fixtures/realBackend';
-import { addGroup, createStore, deployNodeServer, freePort, resetAll, seedRackAndNode, stopNodeServer, waitForLeader } from '../fixtures/consoleSetup';
+import { addGroup, createStore, deployNodeServer, seedRackAndNode, stopNodeServer, waitForLeader } from '../fixtures/localSetup';
 import { step } from '../fixtures/stepTimer';
 import type { APIRequestContext } from '@playwright/test';
 
@@ -39,17 +39,9 @@ async function openKvPanel(page: any) {
 
 test.describe('kv ops · put/get/scan/delete', () => {
   test.beforeAll(async () => {
-    // Reset the cluster so a re-run (e.g. worker restart) deploys fresh:
-    // stopNodeServer alone keeps the config entry, which makes the next
-    // deployNodeServer fail with 409 "already hosts a deployed server".
-    await step('kv: resetAll', () => resetAll(apiBase));
+    await step('kv: seed rack/node', () => seedRackAndNode(apiBase, 9, 9));
     try {
-      await step('kv: seed rack/node', () => seedRackAndNode(apiBase, 9, 9));
-    } catch (err) {
-      if (!String(err).includes('already exists')) throw err;
-    }
-    try {
-      await step('kv: deploy server', () => deployNodeServer(apiBase, 9, freePort(), freePort()));
+      await step('kv: deploy server', () => deployNodeServer(apiBase, 9));
       await step('kv: create store', () => createStore(apiBase, 99, [9]));
       await step('kv: add group', () => addGroup(apiBase, 99, 990, 9900, [9]));
       await step('kv: wait for leader', () => waitForLeader(apiBase, 99, 990));

@@ -33,7 +33,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 - Delete original real-server owners only after equivalent accepted assertions.
   Keep deterministic component UT. Run executable commands through `pixi run`;
   native server gates require `clean-env`, never during another server gate.
-- Accepted fixture gate: 87 pass, `/tmp/crowdb-registry-batched-accepted-fixture.log`,
+- Accepted fixture gate: 87 pass, `/tmp/crowdb-kv-canvas-accepted-fixture.log`,
   using an export of the staged source. Console browser drafts are excluded.
   S3 component UT passes 114/114; Access-server passes 108 plus its pinned
   SDK protocol test; Web/Console-shared/E2E all-target clippy
@@ -120,10 +120,28 @@ and the named run artifacts.
   concurrently after scheduling changes (`run-bb37cf5e8bfd46bcbdc2e63c8d2759ec`); lifecycle component
   proofs cover bounded ordering, client failure and partial-start cleanup.
   Image reuse exempts only the two audited host specs, retaining UI source guards.
+- All three original KV data page cases and all four canvas cases →
+  `console.browser.kv` / `console.browser.canvas`: exact 60-row pagination,
+  selected-key browser history, uppercase binary formatting/CSS, initial and
+  reselected auto-scan, system-group readonly UI;
+  viewport fit/pan/domain restoration, collapsed children/nested state/context
+  menus. Old source files are removed. Owned normal Web/KV uses fixed 7000/7001
+  and durable defaults; no host launch, reset, port allocator or mutation retry.
+  Baseline: `/tmp/crowdb-r230-local-browser-baseline-valid.log`. New 3/3 and 4/4
+  pass with two independent containers in `/tmp/crowdb-root-browser-kv-literal`
+  and `/tmp/crowdb-root-browser-canvas`. Browser selectors escape literal test
+  names, including parentheses, so exactly one case runs per fixture.
 - `swagger_routes_are_removed` → component `swagger_routes_test.rs`: all three
   retired paths; no real server startup (`ff711b4c`).
 
 ## Remaining migrations
+
+- User clarified: Docker Web is writable by default; only explicit readonly
+  disables writes. The public single-container profile enables readonly;
+  internal test profiles allow writes. Preserve Docker physical-mutation
+  restrictions. Implement process configuration, API mode and UI propagation,
+  component proofs and both release-container browser owners before closure.
+
 
 - [ ] **CLI S3 bootstrap replay owners**: migrate the two server-starting
   cases in `app/crowdb-cli/tests/s3_cli_test.rs`:
@@ -140,7 +158,7 @@ and the named run artifacts.
   and fixture tests are unaccepted drafts. Host browser consumes owned container
   endpoints; signaling validates service PID and run ownership. Preserve UI
   assertions and remove native runners only after matching acceptance. Current
-  root Console operation inventory is 104 cases; the two managed draft browser cases are additional.
+  root Console operation inventory is 111 cases; the two managed draft browser cases are additional.
   All three original shell assertions have accepted root owners; the original
   embedding spec is removed.
   Also migrate the server-owning `app/crowdb-web/tests/native_cluster_provisioning_test.rs`
@@ -201,8 +219,8 @@ and the named run artifacts.
   case slot). Reports: `run-ab39e156c2c24da39a5db1bfbcba1a7c` and
   `run-5cfba02195364ce483aac4b5a3eaf1ee`; logs under
   `/tmp/crowdb-voting-epoch-final-{console,deployment}-ci.log`.
-  The eight newer shell/registry browser cases pass separately and are not
-  included in the complete 96-case measurement. Current accepted Console inventory is 104;
+  The fifteen newer shell/registry/KV/canvas browser cases pass separately and are not
+  included in the complete 96-case measurement. Current accepted Console inventory is 111;
   final full-domain measurement remains pending. Remote CI and macOS remain
   unmeasured. Files: `doc/working/test.md`, root runner reports.
 - [ ] **Deferred benchmark decision**: review
@@ -214,21 +232,6 @@ and the named run artifacts.
   batches and single-line subjects without requirement numbers.
 
 ## Blocked
-
-### Managed Console mode contract
-
-- Formal Docker Web uses readonly middleware: every non-read request returns
-  403. Original managed browser flow expects physical writes 503 but successful
-  KV writes and writable Iceberg/S3 demos. Original host setup also omits required
-  discovery configuration. Do not silently change assertions or Docker policy.
-- Pending user choice: preserve Docker readonly and map writable behavior to an
-  ordinary supported writable Console profile, or restore logical/data writes
-  in Docker while preserving physical restrictions. Previous questions have no
-  explicit answer. Continue independent tasks; do not ask repeatedly.
-- Failed evidence: `run-ac7bbae4baf9418cac72b3c66a54f37a` shows 403 vs 503 and
-  the outage flow reaching its original 10-second bound. Original browser
-  owners remain. A legacy node-monitor profile may offer a supported writable
-  route, but verify its product contract before treating it as the owner.
 
 ### CLI S3 local deployment mode
 

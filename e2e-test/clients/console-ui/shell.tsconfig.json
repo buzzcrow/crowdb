@@ -1,4 +1,15 @@
 {
   "extends": "./bridge.tsconfig.json",
-  "include": ["shell.config.ts", "e2e/flows/00-shell.spec.ts", "e2e/flows/10-cluster-rack-node.spec.ts", "e2e/flows/13-todo-ui-behavior.spec.ts", "e2e/fixtures/registrySetup.ts", "e2e/fixtures/realBackend.ts", "e2e/fixtures/stepTimer.ts"]
+  "include": [
+    "shell.config.ts",
+    "e2e/flows/00-shell.spec.ts",
+    "e2e/flows/10-cluster-rack-node.spec.ts",
+    "e2e/flows/13-todo-ui-behavior.spec.ts",
+    "e2e/fixtures/registrySetup.ts",
+    "e2e/fixtures/realBackend.ts",
+    "e2e/fixtures/stepTimer.ts",
+    "e2e/flows/30-kv-ops-basic.spec.ts",
+    "e2e/flows/41-canvas-fit-pan.spec.ts",
+    "e2e/fixtures/localSetup.ts"
+  ]
 }

@@ -343,6 +343,13 @@ ICEBERG_CASES = (
     Case("iceberg.namespace", "access_iceberg::namespace::namespace_functional_crud_survives_native_storage_and_listener_restart"),
 )
 CONSOLE_OPERATION_CASES = (
+    Case("console.browser.kv", "console::browser_kv::pagination", shell_browser="Group selection opens data directly; pages replace rows and expose complete values"),
+    Case("console.browser.kv", "console::browser_kv::binary_bytes", shell_browser="binary byte runs retain printable fields and use distinct uppercase hex without a prefix"),
+    Case("console.browser.kv", "console::browser_kv::auto_scan", shell_browser="auto-scan fires on initial group selection (G-0 shows data without manual Scan)"),
+    Case("console.browser.canvas", "console::browser_canvas::fit", shell_browser="Fit All is available in every view and autofit centers nodes on load"),
+    Case("console.browser.canvas", "console::browser_canvas::collapse", shell_browser="parent cards collapse children, retain nested state and keep context menus"),
+    Case("console.browser.canvas", "console::browser_canvas::pan", shell_browser="clicking Fit All resets the viewport after panning"),
+    Case("console.browser.canvas", "console::browser_canvas::navigation", shell_browser="switching views always fits to window, not the stale viewport"),
     Case("console.browser.registry", "console::browser_registry::empty", shell_browser="renders the SPA shell against a real empty backend"),
     Case("console.browser.registry", "console::browser_registry::datacenter", shell_browser="datacenter root wraps racks; Add Rack from datacenter context menu"),
     Case("console.browser.registry", "console::browser_registry::ownership_scope", shell_browser="keeps Cluster and unprovisioned Chunk selections free of ownership probes"),
