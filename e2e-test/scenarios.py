@@ -29,6 +29,7 @@ from console_lifetime_fixture import DisposableWebCluster
 from console_recovery_fixture import RecoveringWebCluster
 from console_web_fixture import ConsoleWebCluster
 from console_bootstrap_fixture import BootstrapWebCluster
+from console_shell_fixture import ShellBrowserCluster
 from console_standalone_fixture import StandaloneWebCluster
 from console_registry_fixture import RegistryWebCluster
 from console_typed_fixture import TypedWebCluster
@@ -74,6 +75,7 @@ class Case:
     iceberg_deferred_access: bool = False
     console_web: bool = False
     preserve_network: bool = False
+    shell_browser: str | None = None
     client_timeout: int = 120
 
 
@@ -338,6 +340,9 @@ ICEBERG_CASES = (
     Case("iceberg.namespace", "access_iceberg::namespace::namespace_functional_crud_survives_native_storage_and_listener_restart"),
 )
 CONSOLE_OPERATION_CASES = (
+    Case("console.browser.shell", "console::shell::embedding", shell_browser="embedding honors apiPrefix, readonly, and module opt-out"),
+    Case("console.browser.shell", "console::shell::backend_unavailable", shell_browser="shows an alert when backend API requests fail"),
+    Case("console.browser.shell", "console::shell::domain_toggle", shell_browser="domain toggle switches between all seven domains"),
     Case("console.web.wal", "console::web_leader_removal::remove_leader_from_five_node_group_elects_new_leader", stores=(0, 0, 0, 0, 0)),
     Case("console.web.wal", "console::web_leader_removal::remove_unreachable_leader_retains_group0_membership", stores=(0, 0, 0, 0, 0), preserve_network=True),
     Case("console.web.wal", "console::web_replicas::replica_add_remove_wires_peers_bidirectionally", stores=(0, 0)),
@@ -461,6 +466,8 @@ def select_cases(layer="all", scope="all", case_name=None):
 
 
 def case_nodes(case):
+    if case.shell_browser:
+        return 1
     if case.scope == "console.web.bootstrap":
         return 2
     if case.scope == "console.web.disposable":
@@ -504,6 +511,8 @@ def case_nodes(case):
     return 2 if case.scope.startswith(("diskdb.", "chunkdb.")) else len(case.stores_per_node or case.stores)
 
 def case_resources(case, node_cpus):
+    if case.shell_browser:
+        return max(2, node_cpus) + 0.5, 2560
     if case.scope == "iceberg.manual.tpc":
         return case_nodes(case) * node_cpus + 4.5, (case_nodes(case) + 1) * 512 + 8192
     if case.scope == "deployment.listeners":
@@ -519,6 +528,8 @@ def case_resources(case, node_cpus):
 
 
 def allocate_cluster(case, image, artifacts, bundle, data_root):
+    if case.shell_browser:
+        return ShellBrowserCluster(image, artifacts, bundle, data_root=data_root)
     if case.scope == "console.web.bootstrap":
         return BootstrapWebCluster(image, artifacts, data_root=data_root)
     if case.scope == "console.web.disposable":
@@ -612,11 +623,13 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
         cluster = allocate_cluster(case, image, artifacts, bundle, data_root)
         cluster.case_name = case.name
         cluster.client_timeout = case.client_timeout
-        cluster.node_cpus = max(2, node_cpus) if len(case.service_selection) > 2 else node_cpus
+        cluster.node_cpus = max(2, node_cpus) if case.shell_browser or len(case.service_selection) > 2 else node_cpus
         (cluster.artifacts / "case.json").write_text(json.dumps({
             "scope": case.scope, "case": case.name}, indent=2))
         with cluster:
-            if case.scope == "deployment.browser":
+            if case.shell_browser:
+                cluster.browser(case.shell_browser)
+            elif case.scope == "deployment.browser":
                 cluster.browser()
             elif case.s3_recovery:
                 run_recovery(cluster, case.s3_recovery)

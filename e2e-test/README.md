@@ -316,6 +316,23 @@ pixi run test-container-e2e --layer s3 --concurrency 2 --cpus 16 --memory-mib 16
 pixi run test-container-e2e --layer s3 --scope s3.recovery --concurrency 1 --cpus 8 --memory-mib 8192
 ```
 
+## Console browser flows
+
+- `console.browser.shell` runs shell navigation and embedding checks with the
+  pinned host browser against an ordinary release Web container. Each case has
+  its own network, data mount and browser workspace; server ports stay fixed.
+  The Web/KV node reserves at least 2 CPU plus the host browser (2.5 CPU /
+  2560 MiB total). A 4 CPU budget runs one case; 6 CPU allows two.
+  The proxy page must be ready before the embedding navigation is checked.
+- Backend-unavailable checks use a closed container listener at port 9091 so
+  Chromium does not need to authorize a private-IP page accessing loopback.
+- These accepted cases are included once in `console.operations`; managed
+  browser migration and the other native UI flows remain pending.
+
+```sh
+pixi run test-container-e2e --scope console.browser.shell --concurrency 2
+```
+
 ## Console WAL recovery
 
 - `console.operations` includes the public Web WAL recovery flows. Single-node

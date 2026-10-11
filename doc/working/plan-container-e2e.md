@@ -9,7 +9,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 
 ## Resume context
 
-- Branch `task-deploy`; bootstrap migration `aeab91d4`, late DiskIO `1e23527b`, membership fix `cb159e7b`. R230 is unfinished. Do not delete the
+- Branch `task-deploy`; latest accepted native route migration `da0ab099`; runtime membership fix `cb159e7b`. R230 is unfinished. Do not delete the
   requirement/backlog entry until every remaining owner and required gate passes.
 - Working tree contains uncommitted Console browser migration drafts. Shared-image CI is committed. S3 node-fault migration and local-state component proofs are accepted.
   Preserve these drafts. `e2e-test/clients/console-ui/node_modules/` is local
@@ -33,7 +33,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 - Delete original real-server owners only after equivalent accepted assertions.
   Keep deterministic component UT. Run executable commands through `pixi run`;
   native server gates require `clean-env`, never during another server gate.
-- Accepted fixture gate: 84 pass, `/tmp/crowdb-web-bootstrap-fixture.log`,
+- Accepted fixture gate: 84 pass, `/tmp/crowdb-shell-final-accepted-fixture.log`,
   using an export of the staged source. Console browser drafts are excluded.
   S3 component UT passes 114/114; Access-server passes 108 plus its pinned
   SDK protocol test; Web/Console-shared/E2E all-target clippy
@@ -87,6 +87,20 @@ and the named run artifacts.
   failure semantics; reserve all five helpers. Two independent parallel runs
   pass: `/tmp/crowdb-voting-epoch-web-unreachable-retained-{a,b}`.
   Both original replica files/launchers are removed.
+- All three original shell cases → `console.browser.shell` /
+  `clients/console-ui/e2e/flows/00-shell.spec.ts`: backend-unavailable alert,
+  seven-domain navigation and real-data embedding (apiPrefix, readonly, module
+  opt-out). Original spec is removed. Each host browser owns an ordinary release
+  Web container and client workspace; KV uses fixed 7000/7001 inside that node.
+  Unavailable listener uses closed container port 9091 to avoid loopback access
+  from a private-IP page. Proxy page readiness precedes the embedding navigation;
+  original three-second request/DOM assertions remain, with no mutation retries.
+  Three cases pass together concurrently in
+  `/tmp/crowdb-root-shell-proxy-ready/run-11b32d674f504ebfaaa630da85c9077e`,
+  then at CI budget in `/tmp/crowdb-root-shell-ci-final`. Browser fixture reserves
+  at least 2 CPU plus host client (2.5 CPU / 2560 MiB total); 4 CPU budget gives
+  one case slot, 6 CPU allows two. No private browser is installed. Image reuse
+  excludes only the audited unbundled source spec; UI source/build guards remain.
 - `swagger_routes_are_removed` → component `swagger_routes_test.rs`: all three
   retired paths; no real server startup (`ff711b4c`).
 
@@ -107,7 +121,9 @@ and the named run artifacts.
   and fixture tests are unaccepted drafts. Host browser consumes owned container
   endpoints; signaling validates service PID and run ownership. Preserve UI
   assertions and remove native runners only after matching acceptance. Current
-  root Console operation inventory is 96 cases; the two draft browser cases are additional.
+  root Console operation inventory is 99 cases; the two managed draft browser cases are additional.
+  All three original shell assertions have accepted root owners; the original
+  embedding spec is removed.
   Also migrate the server-owning `app/crowdb-web/tests/native_cluster_provisioning_test.rs`
   and its `nativeDiagnostics.config.ts` browser callbacks; they are outside the
   default realBackend selection and remain in `test-console.sh`. Audit
@@ -135,8 +151,12 @@ and the named run artifacts.
   Remove duplicate old owners only after verification. Unused native KV/storage
   harnesses are removed; shared `TestDir`/ownership UTs remain. Explicit production
   local-launch port allocation remains until its deployment callers are audited.
-  Refresh the registered-client/helper audit after route migration; the old
-  pre-migration inventory is `/tmp/crowdb-r230-client-helper-audit.txt`.
+  Latest Rust client audit: 299 compiled tests = 286 registered required/manual
+  owners + 13 preparation/isolation helpers; shell browser cases are separate
+  host owners. Evidence: `/tmp/crowdb-r230-current-client-helper-audit.txt`.
+  Refresh after further migration; remaining launch-site evidence is
+  `/tmp/crowdb-r230-final-launch-sites.txt` and
+  `/tmp/crowdb-r230-current-browser-task-launch-audit.txt`.
   SDK/browser flows have separate declared host owners.
   Audit fixed listener ports/dynamic store pools and retire unused test port
   allocation code; preserve actual deployment callers. Verify data/log/crash
@@ -156,12 +176,16 @@ and the named run artifacts.
   excluding mounted data/configuration and host client build trees. YAML and
   28-package task reachability pass; actual remote CI has not run.
 - [~] **Final regression and measurements**: rerun affected complete domains
-  after the remaining inventory and formal-image changes settle. Baselines are
-  recorded by domain in `test.md`; per-case details remain in artifacts. The last
-  complete Console run covered 89 cases, while accepted bootstrap migration adds
-  three cases (92 accepted; three further replica drafts awaiting acceptance).
-  Do not count individual passes as a complete 95-case domain run. Remote CI and
-  macOS remain unmeasured. Files: `doc/working/test.md`, root runner reports.
+  once the remaining migration inventory settles. The current membership image
+  passes complete Console 96/96 in 691.960 seconds and Deployment 33/33 in
+  601.028 seconds at CI quotas (0.25 CPU/server, 4 CPU / 8192 MiB, one effective
+  case slot). Reports: `run-ab39e156c2c24da39a5db1bfbcba1a7c` and
+  `run-5cfba02195364ce483aac4b5a3eaf1ee`; logs under
+  `/tmp/crowdb-voting-epoch-final-{console,deployment}-ci.log`.
+  The three newer shell browser cases pass separately and are not included in the
+  complete 96-case measurement. Current accepted Console inventory is 99;
+  final full-domain measurement remains pending. Remote CI and macOS remain
+  unmeasured. Files: `doc/working/test.md`, root runner reports.
 - [ ] **Deferred benchmark decision**: review
   `tools/benchmark/bench-chunk-kv-regression.sh` only after migration and coverage
   measurements are complete; user explicitly deferred this decision. Keep it.

@@ -670,7 +670,7 @@ jobs:
         path: target
     - name: Import formal release image
       run: pixi run image-import target/crowdb.oci.tar --image crowdb-node:dev
-    - name: Run Console and CLI operation flows
+    - name: Run Console, CLI and host browser flows
       run: pixi run test-container-e2e --scope console.operations --concurrency 2 --node-cpus 0.25 --cpus 4 --memory-mib 8192
     - name: Export redacted container diagnostics
       if: always()

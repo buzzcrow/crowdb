@@ -102,13 +102,15 @@ class ImageIdentityTest(unittest.TestCase):
     def test_unbundled_browser_spec_can_move_without_exempting_ui_sources(self):
         directory=self.root / "app/crowdb-web/ui"
         spec=directory / "e2e/flows/12-cluster-discovery.spec.ts"
+        shell=directory / "e2e/flows/00-shell-embedding.spec.ts"
         source=directory / "src/App.tsx"
-        for path in (spec,source):
+        for path in (spec,shell,source):
             path.parent.mkdir(parents=True,exist_ok=True)
             path.write_text("original\n")
         self.commit()
         revision=self.git("rev-parse","HEAD")
         spec.write_text("migrated host browser cases\n")
+        shell.unlink()
         self.assertTrue(verify_server_sources(self.root,revision)["server_sources_match"])
         source.write_text("changed deployed UI\n")
         with self.assertRaisesRegex(ValueError,"App.tsx"):

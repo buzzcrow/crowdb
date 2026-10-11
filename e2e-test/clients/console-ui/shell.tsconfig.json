@@ -1,0 +1,4 @@
+{
+  "extends": "./bridge.tsconfig.json",
+  "include": ["shell.config.ts", "e2e/flows/00-shell.spec.ts", "e2e/fixtures/realBackend.ts", "e2e/fixtures/stepTimer.ts"]
+}

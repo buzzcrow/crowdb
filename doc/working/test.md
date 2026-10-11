@@ -30,9 +30,14 @@ Its three joint faults and protected restart add four cases.
 Iceberg uses two case slots at 0.5 CPU/server (16 CPU / 32768 MiB budget);
 its full catalog retirement grace accounts for 1205 seconds of client time.
 KV includes the KV/KV and KV/Web isolation pairs. Console measures
-`console.operations` (89 accepted owners); unaccepted managed browser drafts
+`console.operations` (99 accepted owners; latest complete measurement covers the
+preceding 96-owner inventory); unaccepted managed browser drafts
 are excluded. Console uses one effective case slot at 0.25 CPU/server with a
-4 CPU / 8192 MiB budget; the previous run used higher capacity.
+4 CPU / 8192 MiB budget; the previous run used the same quota with fewer cases.
+Deployment now uses the same CI quota and one case slot; its previous run used
+0.5 CPU/server with two slots. The changed quota explains the wall-time increase.
+The three newly migrated shell browser flows pass separately; they are excluded
+from the complete Console measurement above.
 
 | Domain       | Environment | Date       | Passed / failed / skipped | Wall s   | Previous s | Report                                                                                                    |
 | ------------ | ----------- | ---------- | ------------------------- | -------- | ---------- | --------------------------------------------------------------------------------------------------------- |
@@ -46,8 +51,8 @@ are excluded. Console uses one effective case slot at 0.25 CPU/server with a
 | S3           | intel7960   | 2026-10-12 | 43 / 0 / 0                | 1545.602 | 1456.774   | [report](../../.crowdb-runtime/artifacts/container-e2e/run-6e60f23a5a18442ebda5d08fe5ec1842/results.json) |
 | Iceberg      | intel7960   | 2026-10-12 | 32 / 0 / 0                | 1616.697 | 1633.442   | [report](../../.crowdb-runtime/artifacts/container-e2e/run-da3c624fb35d493e9101d5b3cca7a273/results.json) |
 | Dataset      | intel7960   | 2026-10-12 | 2 / 0 / 0                 | 35.568   | 31.301     | [report](../../.crowdb-runtime/artifacts/container-e2e/run-9bae8737664e45198e61bae2c48d4780/results.json) |
-| Console      | intel7960   | 2026-10-12 | 89 / 0 / 0                | 644.632  | 654.474    | [report](../../.crowdb-runtime/artifacts/container-e2e/run-a7fd884f7ee44daea0056926d1ee1c71/results.json) |
-| Deployment   | intel7960   | 2026-10-12 | 33 / 0 / 0                | 337.716  | 337.197    | [report](../../.crowdb-runtime/artifacts/container-e2e/run-5776d5c987984e4982cbbc2a52d077f8/results.json) |
+| Console      | intel7960   | 2026-10-12 | 96 / 0 / 0                | 691.960  | 644.632    | [report](../../.crowdb-runtime/artifacts/container-e2e/run-ab39e156c2c24da39a5db1bfbcba1a7c/results.json) |
+| Deployment   | intel7960   | 2026-10-12 | 33 / 0 / 0                | 601.028  | 337.716    | [report](../../.crowdb-runtime/artifacts/container-e2e/run-5cfba02195364ce483aac4b5a3eaf1ee/results.json) |
 
 ## Environments
 
@@ -72,6 +77,11 @@ are excluded. Console uses one effective case slot at 0.25 CPU/server with a
   S3 test keeps its original deadlines and passes all phases at CI quota
   (34.710 / 50.016 / 66.055 seconds). Focused Iceberg RCK passes all six
   upstream cases in 62.324 seconds at 0.25 CPU/server, 4 CPU / 12288 MiB.
+  Current formal image includes replica voting/epoch fixes, source
+  `cb159e7b64606f50dff8ee8ff28f0236331f890b`, OCI
+  `sha256:a54e48cdd00b58aff064679ee2a6cf9c42d2890312cc61e2cc868739a554275a`.
+  Complete Console 96/96 and Deployment 33/33 pass at their CI quotas; other
+  domain rows retain the older image identities in their reports.
   Optimized binaries retain debug info; mounted data/log/crash paths and actual
   host core collector are recorded per run. Receipt: `target/crowdb.oci.tar.json`.
 - **Bridge SSH admission**: the explicit five-node peak profile passes in
