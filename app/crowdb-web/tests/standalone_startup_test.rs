@@ -91,33 +91,6 @@ async fn post(web: &TestWeb, http: &Client, path: &str, body: Value) -> Value {
 }
 
 #[tokio::test]
-async fn empty_ui_persists_rack_and_node_across_restart() {
-    let root = tempdir_in_test_data("standalone-empty");
-    let http = Client::builder().timeout(Duration::from_secs(5)).build().unwrap();
-    let web = start(root.path(), &http).await;
-    assert_eq!(get(&web, &http, "/api/mode").await["mode"], "legacy");
-    assert_eq!(get(&web, &http, "/api/racks").await, json!([]));
-    assert_eq!(get(&web, &http, "/api/stores").await, json!([]));
-    assert!(http.get(&web.base).send().await.unwrap().status().is_success());
-    post(&web, &http, "/api/racks", json!({"id":1,"name":"saved-rack"})).await;
-    post(
-        &web,
-        &http,
-        "/api/nodes",
-        json!({"id":1,"rack_id":1,"host":"127.0.0.1"}),
-    )
-    .await;
-    drop(web);
-    let web = start(root.path(), &http).await;
-    assert_eq!(get(&web, &http, "/api/racks").await[0]["name"], "saved-rack");
-    assert_eq!(get(&web, &http, "/api/nodes").await[0]["id"], 1);
-    assert!(root
-        .path()
-        .join("persistent/console/default/config.json")
-        .is_file());
-}
-
-#[tokio::test]
 async fn standalone_recovers_kv_before_and_after_group0_init() {
     let root = tempdir_in_test_data("standalone-recovery");
     let http = Client::builder()
@@ -191,22 +164,6 @@ async fn standalone_recovers_kv_before_and_after_group0_init() {
         get(&web, &http, "/api/stores/7/groups/1/kv/get?key=restart-key").await["value_utf8"],
         "saved-value"
     );
-}
-
-#[test]
-fn malformed_standalone_config_is_preserved_and_rejected() {
-    let root = tempdir_in_test_data("standalone-malformed");
-    let directory = root.path().join("persistent/console/default");
-    std::fs::create_dir_all(&directory).unwrap();
-    let path = directory.join("config.json");
-    std::fs::write(&path, "broken config").unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_crowdb-web"))
-        .env("CROWDB_RUNTIME_ROOT", root.path())
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("config.json"));
-    assert_eq!(std::fs::read_to_string(path).unwrap(), "broken config");
 }
 
 #[test]

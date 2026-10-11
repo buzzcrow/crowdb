@@ -24,6 +24,7 @@ from deployment_anonymous_fixture import AnonymousReleaseCluster
 from deployment_browser_fixture import DeploymentBrowserCluster
 from deployment_listener_fixture import OccupiedAccessCluster
 from console_web_fixture import ConsoleWebCluster
+from console_standalone_fixture import StandaloneWebCluster
 from diskio_fixture import DiskioCluster, DiskioDiscoveryCluster, DiskioSemanticCluster
 
 
@@ -320,6 +321,8 @@ ICEBERG_CASES = (
     Case("iceberg.namespace", "access_iceberg::namespace::namespace_functional_crud_survives_native_storage_and_listener_restart"),
 )
 CONSOLE_OPERATION_CASES = (
+    Case("console.web.standalone", "console::web_standalone::empty_ui_persists_rack_and_node_across_restart"),
+    Case("console.web.standalone", "console::web_standalone::malformed_standalone_config_is_preserved_and_rejected"),
     Case("console.web.catalog", "console::web_catalog::published_owner_change_invalidates_saved_catalog_and_runtime_cursors", console_web=True),
     Case("console.clients", "console::observation::formal_server_appears_healthy_in_aggregate_snapshot", stores_per_node=((),), groups=()),
     Case("console.web.slots", "console::web_slots::owner_windows_keep_disjoint_slots_generations_and_exact_ids", console_web=True),
@@ -415,6 +418,8 @@ def select_cases(layer="all", scope="all", case_name=None):
 
 
 def case_nodes(case):
+    if case.scope == "console.web.standalone":
+        return 1
     if case.scope == "deployment.listeners":
         return 2
     if case.console_web:
@@ -453,6 +458,8 @@ def case_resources(case, node_cpus):
 
 
 def allocate_cluster(case, image, artifacts, bundle, data_root):
+    if case.scope == "console.web.standalone":
+        return StandaloneWebCluster(image, artifacts, rejected="malformed" in case.name, data_root=data_root)
     if case.scope == "deployment.listeners":
         protocol = "iceberg" if "occupied_iceberg" in case.name else "s3"
         return OccupiedAccessCluster(image, artifacts, protocol, services=case.service_selection, data_root=data_root)

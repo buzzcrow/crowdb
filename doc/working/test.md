@@ -1182,3 +1182,12 @@ Source: `app/crowdb-kv-server/`. Tests: 9 files.
 | storage_readiness_test |     1 |                             0.91 |                         0.12 |
 | chunk_kv_catalog_test  |     1 |                             2.24 |                         0.76 |
 | managed_mode_test      |     5 |                             6.01 |                         5.20 |
+
+### Standalone release Web persistence
+
+- Accepted concurrently at 0.25 CPU per container in `run-606e79c944934ad28f5a2d5231f1f835`. Host HTTP client, fixed 9090, original 20-second startup bound and abrupt Web termination.
+
+| Scope                  | Named flow                                           | Client (s) | Fixture (s) |
+| ---------------------- | ---------------------------------------------------- | ---------- | ----------- |
+| console.web.standalone | empty_ui_persists_rack_and_node_across_restart         |      1.014 |       2.456 |
+| console.web.standalone | malformed_standalone_config_is_preserved_and_rejected |      0.021 |       1.441 |

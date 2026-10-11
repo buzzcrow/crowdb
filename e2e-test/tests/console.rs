@@ -32,3 +32,4 @@ mod server_management;
 mod web_authority;
 mod web_catalog;
 mod web_slots;
+mod web_standalone;
