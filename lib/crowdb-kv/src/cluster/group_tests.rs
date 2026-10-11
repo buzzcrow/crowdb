@@ -119,6 +119,25 @@ impl PxGroup {
         *self.coalesce_round_gate.lock() = Some(release);
     }
 
+    /// Pause one empty drain after releasing its queue guard.
+    pub fn arm_coalesce_empty_drain_for_tests(&self) {
+        self.coalesce_empty_drain_gate
+            .store(1, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Whether the armed drain has reached its queue transition.
+    pub fn coalesce_empty_drain_paused_for_tests(&self) -> bool {
+        self.coalesce_empty_drain_gate
+            .load(std::sync::atomic::Ordering::Acquire)
+            == 2
+    }
+
+    /// Let the paused drain finish.
+    pub fn release_coalesce_empty_drain_for_tests(&self) {
+        self.coalesce_empty_drain_gate
+            .store(3, std::sync::atomic::Ordering::Release);
+    }
+
     /// Whether a coalescer round is in flight (pending batch exists).
     #[must_use]
     pub fn has_coalesce_pending_for_tests(&self) -> bool {
