@@ -336,6 +336,8 @@ ICEBERG_CASES = (
     Case("iceberg.namespace", "access_iceberg::namespace::namespace_functional_crud_survives_native_storage_and_listener_restart"),
 )
 CONSOLE_OPERATION_CASES = (
+    Case("console.web.standalone", "console::web_bootstrap::bootstrap_replays_data_group_without_changing_replica_or_publishing_invalid_bindings"),
+    Case("console.web.standalone", "console::web_management::store_and_group_management_cycle_preserves_identity"),
     Case("console.web.standalone", "console::web_kv::put_get_delete_and_binary_values_through_web_routes"),
     Case("console.web.standalone", "console::web_metrics::structured_metrics_preserve_node_group_and_store_scopes"),
     Case("console.web.disposable", "console::web_lifetime::test_mode_termination_reaps_children_and_preserves_persistent_runtime"),

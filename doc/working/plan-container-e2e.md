@@ -34,7 +34,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 - Delete original real-server owners only after equivalent accepted assertions.
   Keep deterministic component UT. Run executable commands through `pixi run`;
   native server gates require `clean-env`, never during another server gate.
-- Accepted fixture gate: 81 pass, `/tmp/crowdb-public-export-fixture-final.log`,
+- Accepted fixture gate: 82 pass, `/tmp/crowdb-export-case-fixture.log`,
   using an export of the staged source. Console browser drafts are excluded.
   S3 component UT passes 114/114; Access-server passes 108 plus its pinned
   SDK protocol test; Web/Console-shared/E2E all-target clippy
@@ -57,26 +57,25 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   and fixture tests are unaccepted drafts. Host browser consumes owned container
   endpoints; signaling validates service PID and run ownership. Preserve UI
   assertions and remove native runners only after matching acceptance. Current
-  root Console operation inventory is 89 cases; the two draft browser cases are additional.
+  root Console operation inventory is 91 cases; the two draft browser cases are additional.
   Also migrate the server-owning `app/crowdb-web/tests/native_cluster_provisioning_test.rs`
   and its `nativeDiagnostics.config.ts` browser callbacks; they are outside the
   default realBackend selection and remain in `test-console.sh`. Audit
   `71-s3-native.spec.ts` / `nativeS3.config.ts` and `72-managed-native.spec.ts` /
   `managedNative.config.ts` separately; no accepted root replacement is claimed.
 - [ ] **Remaining Web route server owners**: final direct-launch audit still
-  finds four native KV launcher files: `mgmt_routes_test.rs`, `replica_routes_test.rs`,
-  `replica_leader_removal_test.rs`, and `ops_migration_test.rs` under
+  finds three native KV launcher files: `mgmt_routes_test.rs`, `replica_routes_test.rs`,
+  and `replica_leader_removal_test.rs` under
   `app/crowdb-web/tests/`. Map each real-server case before deleting helpers;
   keep malformed-input, unavailable-upstream and isolated router UT portions.
   Management needs
-  legacy versus sealed bootstrap persistence, full management cycle, bidirectional
+  legacy versus sealed bootstrap persistence, bidirectional
   replica wiring, leader removal/re-election and unreachable-leader membership.
-  Ops delegation needs cluster init, Store creation, replica-conflict 409 and KV
-  reads. These are unfinished owners, independent of the two managed browser
+  These are unfinished owners, independent of the two managed browser
   drafts. Do not count the previous 87 passing root operations as proof of their coverage.
   `swagger_routes_are_removed` now runs without a server in the component,
   directly checking all three retired Swagger/OpenAPI paths; it passes in
-  0.01 seconds. Preserve this UT while migrating the four real-server ops cases.
+  0.01 seconds. It is retained separately as `swagger_routes_test.rs`.
   Current search evidence: `/tmp/crowdb-r230-remaining-launch-sites.txt`.
   Metrics consolidation is accepted: three original metric cases map to
   `console::web_metrics::structured_metrics_preserve_node_group_and_store_scopes`.
@@ -94,6 +93,21 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   `run-994fc98b33dc4b1bbe62f76df1d820b6`). Shared legacy bootstrap also reruns
   metrics successfully. Keep `kv_get_returns_502_when_leader_unreachable` as
   pinned cached-authority component UT; the original production launcher is removed.
+  `full_mgmt_cycle_through_web_routes` now maps to
+  `console::web_management::store_and_group_management_cycle_preserves_identity`:
+  exact Store identity/listing/empty initial groups, two group IDs, group detail,
+  group and Store deletion pass (`/tmp/crowdb-root-web-management-ops`).
+  The same case covers `add_store_delegates_to_ops_kv_logical` and
+  `delete_server_returns_409_when_replicas_exist` without duplicate lifecycles.
+  `kv_get_delegates_to_ops_kv_data` maps to the existing Web KV flow, now retaining
+  explicit client ID/sequence and exact data (`/tmp/crowdb-root-web-kv-sequence`).
+  These four accepted old cases are removed.
+  `cluster_init_delegates_to_ops_cluster_init` maps to
+  `console::web_bootstrap::bootstrap_replays_data_group_without_changing_replica_or_publishing_invalid_bindings`:
+  initial Group-0 IDs, missing-topology 422, completed/replayed data-group creation,
+  absent invalid hardware bindings and stable replica ID pass
+  (`/tmp/crowdb-root-web-bootstrap`). The old ops file/launcher is removed.
+  Management bootstrap variants remain native owners to migrate.
 - [ ] **Native Console assertion mapping**: classify all three original cases
   before removal: `node_diskio_discovers_disk_groups_created_after_deployment`,
   `one_rack_three_nodes_provision_all_services_without_metadata_repairs`, and

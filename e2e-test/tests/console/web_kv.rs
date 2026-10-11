@@ -43,7 +43,7 @@ async fn put_get_delete_and_binary_values_through_web_routes() {
         &http,
         &base,
         &format!("{path}/put"),
-        json!({"key":"alpha","value":"beta"}),
+        json!({"key":"alpha","value":"beta","client_id":1,"seq":1}),
         200,
     )
     .await;

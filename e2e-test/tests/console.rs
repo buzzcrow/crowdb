@@ -50,3 +50,7 @@ mod web_metrics;
 
 mod web_kv;
 mod web_legacy;
+
+mod web_management;
+
+mod web_bootstrap;

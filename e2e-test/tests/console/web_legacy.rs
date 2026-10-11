@@ -41,6 +41,11 @@ pub(super) async fn bootstrap() -> (Client, String) {
         let status = response.status().as_u16();
         let text = response.text().await.unwrap();
         assert_eq!(status, expected, "{path}: {text}");
+        if path == "/api/cluster/init" {
+            let result: Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(result["store_id"], 0);
+            assert_eq!(result["group_id"], 0);
+        }
     }
     // Observe readiness before executing each flow once.
     let deadline = Instant::now() + Duration::from_secs(3);
