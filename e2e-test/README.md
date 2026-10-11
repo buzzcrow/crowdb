@@ -68,9 +68,11 @@ are registered through the public metadata API. Allocation transport acceptance
 needs only KV and Diskdb. The placement profile seeds four distinct failure
 domains and checks metadata geometry. The storage profile owns eleven containers:
 three KV, Diskdb, Chunkdb and six Diskio failure domains, with eighteen disks.
-Six additional release-image sleep processes own the DiskIO network namespaces,
-so killing a storage service closes its listener without removing its IP. They
-reserve 0.3 CPU / 96 MiB in total and are removed after their service containers.
+Only process-exit scenarios add six release-image sleep processes to retain
+DiskIO network namespaces: killing a storage service closes its listener without
+removing its IP. These scenarios reserve an additional 0.3 CPU / 96 MiB and
+remove namespace owners after their service containers. Ordinary storage cases
+use the eleven service containers directly.
 The multislot profile owns three Chunkdb service instances, three KV voters and
 Diskdb. Storage cases verify public conversion, partial bytes, exact parity,
 expired foreground claim takeover, four missing-shard repair, degraded node-return

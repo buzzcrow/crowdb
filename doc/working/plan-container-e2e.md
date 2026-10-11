@@ -1636,3 +1636,15 @@ Source `lib/crowdb-kv-client/tests/chunk_slot_map_test.rs`: all eight cases exer
   Retire the duplicate native table crash launcher and its native-only loser
   helper after both equivalent matrices pass. Native FileIO crash cuts and the
   manual TPC loader still retain their old owners pending separate migration.
+
+### Retained DiskIO namespaces limited to process-exit proofs
+
+- Only the stream process-exit, protected-reader outage and S3 repair-exhaustion
+  owners retain six DiskIO network namespaces. Ordinary storage profiles use
+  their service containers directly; scheduler budgets include namespace
+  resources only for the three fault owners. No server or client deadline changed.
+- Complete stream `run-8c9d46d75aa04f7c8b409cd8cb285aa5`: 4/4 pass,
+  36.149 seconds fixture wall, previous 52.184. Complete S3
+  `run-8ea46023e1dc49eb90e514b379ebeab4`: 39/39 pass, 418.700 seconds,
+  previous 614.941. Protected reader `run-166442e37f8045cb92c2b884e0e30e09`
+  passes its unchanged 15-second failure bound (client 1.65 seconds).

@@ -13,9 +13,10 @@ from scenarios import Case, case_resources
 
 class RetainedNetworkTest(unittest.TestCase):
     def test_storage_budget_includes_namespace_owners(self):
-        self.assertEqual(case_resources(Case("chunk-client.reader", "reader", chunkdb_storage=True), 0.5),
+        self.assertEqual(case_resources(Case("chunk-client.reader", "reader", chunkdb_storage=True,
+                                            diskio_process_exit=True), 0.5),
                          (6.3, 6240))
-        self.assertEqual(case_resources(Case("iceberg.files", "files"), 0.5), (7.8, 7776))
+        self.assertEqual(case_resources(Case("iceberg.files", "files"), 0.5), (7.5, 7680))
         self.assertEqual(case_resources(Case("kv.management", "kv"), 0.5), (1.0, 1024))
 
     def test_server_uses_retained_namespace_and_cleanup_removes_it_last(self):

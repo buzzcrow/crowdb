@@ -85,7 +85,8 @@ refresh_interval_secs = 1
 class ChunkdbStorageCluster(ChunkdbCluster):
     """Six storage failure domains backed by independently owned Diskio nodes."""
 
-    def __init__(self, image, artifacts, bundle, storage_backend="mem", fault_rate=0, **kwargs):
+    def __init__(self, image, artifacts, bundle, storage_backend="mem", fault_rate=0,
+                 diskio_process_exit=False, **kwargs):
         self.options = dict(conversion_enabled=False, conversion_min_seal_age_secs=0,
                             conversion_scan_interval_secs=1, conversion_max_bandwidth_mbps=50,
                             conversion_task_lease_secs=30, repair_enabled=True,
@@ -93,6 +94,7 @@ class ChunkdbStorageCluster(ChunkdbCluster):
                             repair_memory_bytes=67108864)
         self.storage_backend = storage_backend
         self.fault_rate = fault_rate
+        self.diskio_process_exit = diskio_process_exit
         super().__init__(image, artifacts, bundle, **kwargs)
         self.seed_case = ("chunkdb::hardware::seed_persistent_storage" if storage_backend == "file"
                           else "chunkdb::hardware::seed_storage")
@@ -151,7 +153,8 @@ memory_bytes = {o["repair_memory_bytes"]}
                 "--instance-id", str(8000 + offset), "--rack-id", str(100 + offset),
                 "--node-id", str(10 + offset), "--dg-id", str(1000 + offset),
                 "--sync-interval-ms", "200", "--auto-discover-disks",
-                "--log-dir", "/opt/crowdb/data/log/diskio"), address, preserve_network=True))
+                "--log-dir", "/opt/crowdb/data/log/diskio"), address,
+                preserve_network=self.diskio_process_exit))
             endpoints.append({"node": index, "ip": address, "rpc_port": 7200,
                 "instance_id": 8000 + offset, "disk_group_id": 1000 + offset,
                 "data": str(data), "backend": self.storage_backend, "fault_rate": self.fault_rate})

@@ -51,6 +51,7 @@ class Case:
     diskdb_restart_metadata: bool = False
     chunkdb_server: bool = False
     chunkdb_storage: bool = False
+    diskio_process_exit: bool = False
     chunkdb_multi: bool = False
     storage_backend: str = "mem"
     chunk_kv_empty_catalog: bool = False
@@ -200,7 +201,7 @@ CHUNKDB_CASES = (
 CHUNK_STREAM_CASES = (
     Case("chunk-stream.objects", "chunk_stream::production_idle_writer_stops_after_ownership_takeover", chunkdb_storage=True),
     Case("chunk-stream.recovery", "chunk_stream::production_stream_recovers_exact_bytes_after_service_restarts", chunkdb_storage=True, storage_backend="file", restart=True),
-    Case("chunk-stream.errors", "chunk_stream::production_stream_write_returns_after_diskio_failure", chunkdb_storage=True),
+    Case("chunk-stream.errors", "chunk_stream::production_stream_write_returns_after_diskio_failure", chunkdb_storage=True, diskio_process_exit=True),
     Case("chunk-stream.errors", "chunk_stream::production_stream_write_returns_after_live_diskio_errors", chunkdb_storage=True, diskio_fault_rate=1.0),
 )
 CHUNK_CLIENT_CASES = (
@@ -228,7 +229,7 @@ CHUNK_CLIENT_CASES = (
     Case("chunk-client.small_flow", "chunk_client::small_flow::background_conversion::chunkdb_restart_recovers_an_inflight_conversion_claim", chunkdb_storage=True, storage_backend="mem"),
     Case("chunk-client.small_flow", "chunk_client::small_flow::replica_repair::small_write_repairs_failed_replica_through_real_chunkdb_and_diskio", chunkdb_storage=True, storage_backend="mem"),
     Case("chunk-client.small_flow", "chunk_client::small_flow::replica_repair::protected_small_write_reports_real_diskio_write_failure", chunkdb_storage=True, storage_backend="mem", diskio_fault_rate=1.0),
-    Case("chunk-client.small_flow", "chunk_client::small_flow::replica_repair::protected_read_reports_diskio_process_failure", chunkdb_storage=True, storage_backend="mem"),
+    Case("chunk-client.small_flow", "chunk_client::small_flow::replica_repair::protected_read_reports_diskio_process_failure", chunkdb_storage=True, storage_backend="mem", diskio_process_exit=True),
     Case("chunk-client.small_flow", "chunk_client::small_flow::repair_exhaustion::small_write_repair_preserves_acknowledged_prefix_in_open_block", chunkdb_storage=True, storage_backend="mem"),
     Case("chunk-client.small_flow", "chunk_client::small_flow::repair_exhaustion::small_write_new_chunk_repair_exhaustion_preserves_sealed_predecessor", chunkdb_storage=True, storage_backend="mem"),
     Case("chunk-client.small_flow", "chunk_client::small_flow::batching::small_write_scales_out_on_queued_bytes_then_scales_in_when_empty", chunkdb_storage=True, storage_backend="mem"),
@@ -280,7 +281,7 @@ S3_RECOVERY_CASES = tuple(Case("s3.recovery", "s3.recovery::" + service, sdk_cli
                           for service in SERVICE_NODES)
 S3_SPECIAL_CASES = (Case("s3.policy", "access_s3::protocol_http::combined_http_listeners_keep_protocol_chunk_policies_separate", access_protocol=True),
                     Case("s3.policy", "access_s3::policy::s3_and_iceberg_keep_distinct_policies_on_protected_storage", s3_policy=True),
-                    Case("s3.policy", "access_s3::policy_failure::protected_two_copy_write_stops_after_repair_and_chunk_rotation_fail", s3_policy=True),
+                    Case("s3.policy", "access_s3::policy_failure::protected_two_copy_write_stops_after_repair_and_chunk_rotation_fail", s3_policy=True, diskio_process_exit=True),
                     Case("s3.credentials", "s3.credentials::release_cli_issue_ensure_lookup", sdk_client=True, s3_script="admin"),
                     Case("s3.benchmark", "access_s3::benchmark::direct_chunk_path"),
                     Case("s3.responses", "s3.responses::lost_put_and_multipart_replies_are_idempotent",
@@ -472,8 +473,7 @@ def case_resources(case, node_cpus):
     if len(case.service_selection) > 2:
         return max(2, node_cpus) + 0.5, 2560
     nodes = case_nodes(case)
-    retained_networks = 6 if (case.chunkdb_storage or case.access_protocol or
-                             case.scope.startswith(("chunk-kv.", "s3.", "iceberg.", "dataset."))) else 0
+    retained_networks = 6 if case.diskio_process_exit else 0
     return nodes * node_cpus + 0.5 + retained_networks * 0.05, (nodes + 1) * 512 + retained_networks * 16
 
 
@@ -515,7 +515,8 @@ def allocate_cluster(case, image, artifacts, bundle, data_root):
         return AccessProtocolCluster(image, artifacts, bundle, data_root=data_root)
     if case.s3_policy:
         return ChunkKvCluster(image, artifacts, bundle, service_instances=(11, 12, 13),
-                              storage_groups=(1, 2, 3), data_root=data_root)
+                              storage_groups=(1, 2, 3), diskio_process_exit=case.diskio_process_exit,
+                              data_root=data_root)
     if case.scope.startswith("s3."):
         return AccessS3Cluster(image, artifacts, bundle, data_root=data_root)
     if case.scope.startswith("chunk-kv."):
@@ -526,7 +527,8 @@ def allocate_cluster(case, image, artifacts, bundle, data_root):
                               storage_groups=(1, 2, 3), data_root=data_root)
     if case.chunkdb_storage:
         return ChunkdbStorageCluster(image, artifacts, bundle, storage_backend=case.storage_backend,
-                                     fault_rate=case.diskio_fault_rate, data_root=data_root)
+                                     fault_rate=case.diskio_fault_rate,
+                                     diskio_process_exit=case.diskio_process_exit, data_root=data_root)
     if case.chunkdb_server:
         return ChunkdbCluster(image, artifacts, bundle, data_root=data_root)
     if case.scope.startswith("deployment.") and case.scope != "deployment.hardware":
