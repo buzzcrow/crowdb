@@ -41,6 +41,24 @@ class StandaloneWebCluster(Cluster):
                  lambda body: body == b"ok", "standalone Web listener", seconds=20)
 
     def control(self, body):
+        if body.get("action") in ("export-standalone-config", "seal-bootstrap-intent"):
+            # Reuse the normal lifecycle ownership/index check before file transfer.
+            super().control({"action": "status", "node": body.get("node")})
+            name = self.servers[body["node"]]
+            directory = "/opt/crowdb/data/persistent/console/default"
+            if body["action"] == "export-standalone-config":
+                self.command("cp", f"{name}:{directory}/config.json",
+                             str(self.artifacts / "standalone-config.json"))
+                present = self.command("exec", name, "find", directory, "-maxdepth", "1",
+                                       "-type", "f", "-name", "bootstrap-intent.toml")
+                return {"intent_exists": bool(present)}
+            intent = self.artifacts / "bootstrap-intent.toml"
+            if not intent.is_file() or intent.stat().st_size > 65536:
+                raise ValueError("missing or oversized bootstrap intent")
+            self.command("cp", str(intent), f"{name}:{directory}/bootstrap-intent.toml")
+            self.command("exec", name, "chown", "crowdb:crowdb", f"{directory}/bootstrap-intent.toml")
+            self.command("exec", name, "chmod", "600", f"{directory}/bootstrap-intent.toml")
+            return {"sealed": True}
         result = super().control(body)
         if body.get("action") == "start":
             self.ready()

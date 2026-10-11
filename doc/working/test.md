@@ -1185,6 +1185,8 @@ Source: `app/crowdb-kv-server/`. Tests: 9 files.
 
 ### Standalone release Web persistence
 
+- Three-flow concurrent gate `run-4d4f063a409e4ddfbb7d23aa719e3146`: empty UI client/fixture 1.050/2.522 seconds; malformed config 0.025/1.503 seconds; standalone KV before/after Group 0 and exact acknowledged-value recovery 9.868/11.728 seconds. Original startup/request bounds retained. The recovery case includes whole-node child loss and sealed bootstrap-intent replay.
+
 - The empty-UI case additionally owns shipped SPA root/deep-link/API/health/traversal acceptance: strengthened run `run-ed609d7c88714ab58ac193cfe46214e8`, 1.206-second host client. Distinct missing-UI fallback routing remains one oneshot component proof (0.02 seconds), replacing four ephemeral listener tests (0.11-second baseline).
 
 - Accepted concurrently at 0.25 CPU per container in `run-606e79c944934ad28f5a2d5231f1f835`. Host HTTP client, fixed 9090, original 20-second startup bound and abrupt Web termination.
