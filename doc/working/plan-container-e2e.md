@@ -106,6 +106,13 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   initial Group-0 IDs, missing-topology 422, completed/replayed data-group creation,
   absent invalid hardware bindings and stable replica ID pass
   (`/tmp/crowdb-root-web-bootstrap`). The old ops file/launcher is removed.
+  Replica migration first exposed a production mismatch: physical promotion
+  succeeded but the complete Group-0 membership kept the new replica non-voting;
+  removing the old leader then failed with HTTP 400. The Installing target now
+  describes the final voter, while physical catch-up still begins non-voting.
+  Component gates pass; formal image rebuild and root replica acceptance remain
+  required. Failed evidence: `/tmp/crowdb-root-web-replicas`,
+  `run-03371a8cafbb47be8f7879372937edeb`. Both original replica owner files remain.
   Management bootstrap owners are now retired: the sealed-input variant maps to
   `console::web_sealed_bootstrap::bare_metal_bootstrap_consumes_sealed_topology_without_local_topology`
   (two release containers, HTTP 201, Group-0 identity, intent/topology removal,

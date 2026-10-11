@@ -572,7 +572,9 @@ pub async fn add_replica(
         replica_id: new_rid,
         node_id,
         endpoint: new_remote.endpoint.clone(),
-        voting: new_remote.voting,
+        // Installing describes the completed target membership. Physical
+        // wiring remains non-voting until catch-up and promotion below.
+        voting: true,
     });
     let installing = begin_membership_change(ctx, store_id, group_id, &existing, requested_members).await?;
     let expected_epoch = installing.record().epoch;
