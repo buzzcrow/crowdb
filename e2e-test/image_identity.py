@@ -32,6 +32,13 @@ def verify_server_sources(root, revision):
     runtime_changes = []
     for path in changed.splitlines():
         current = Path(root, path)
+        if path == "Cargo.lock" and current.is_file():
+            before = tomllib.loads(git("show", f"{revision}:{path}"))
+            after = tomllib.loads(current.read_text())
+            for lock in (before, after):
+                lock["package"] = [package for package in lock["package"] if package["name"] != "e2e-test"]
+            if before == after:
+                continue
         if path.endswith("Cargo.toml") and current.is_file():
             before = tomllib.loads(git("show", f"{revision}:{path}"))
             after = tomllib.loads(current.read_text())

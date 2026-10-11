@@ -15,7 +15,9 @@ def write_report(root, timings):
         fixture = json.loads(fixture_path.read_text()) if fixture_path.exists() else {}
         completed = fixture.get("status") == "pass" and bool(phases) and all(
             phase.get("exit_code") == 0 for phase in phases)
-        cases.append({**case, "artifacts": str(directory), "phases": phases,
+        actions = [json.loads(action.read_text()) for action in sorted(
+            (directory / "control").glob("*.response.json"))]
+        cases.append({**case, "actions": actions, "artifacts": str(directory), "phases": phases,
                       "fixture": fixture, "status": "pass" if completed else "failed"})
     cases.sort(key=lambda case: case["fixture"].get("total", 0), reverse=True)
     slowest_clients = sorted(

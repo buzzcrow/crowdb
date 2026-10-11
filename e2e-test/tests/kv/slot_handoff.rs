@@ -1,17 +1,15 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-#[path = "common/handoff_cluster.rs"]
-mod handoff_cluster;
-
+use super::handoff_fixture::TestHandoffCluster;
 use crowdb_kv_client::{ChunkSlotMapClient, Error};
 use crowdb_protocol::chunk_slot::{
     ChunkServiceHandoff, ChunkServiceHandoffPhase, ChunkSlot, ChunkSlotFenceReceipt,
 };
-use handoff_cluster::TestHandoffCluster;
 use std::sync::Arc;
 
 #[tokio::test]
+#[ignore = "requires the owned release-container Group0 and data-group profile"]
 async fn a_replacement_controller_resumes_partial_fences_without_replacing_the_cohort() {
     let test = TestHandoffCluster::start().await;
     let client = ChunkSlotMapClient::new(Arc::clone(&test.kv));
@@ -74,6 +72,7 @@ async fn a_replacement_controller_resumes_partial_fences_without_replacing_the_c
 }
 
 #[tokio::test]
+#[ignore = "requires the owned release-container Group0 and data-group profile"]
 async fn competing_cohorts_use_the_service_head_revision_and_reject_stale_maps() {
     let test = TestHandoffCluster::start().await;
     let first = ChunkSlotMapClient::new(Arc::clone(&test.kv));

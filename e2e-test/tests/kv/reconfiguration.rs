@@ -12,7 +12,7 @@ fn kv(ips: &[String]) -> CrowdbKvClient {
     CrowdbKvClient::new(ClientConfig::new(ips.iter().map(|ip| origin(ip)).collect()))
 }
 
-async fn wire_initial(http: &Client, ips: &[String]) {
+pub(super) async fn wire_initial(http: &Client, ips: &[String]) {
     let mut stores = Vec::new();
     for ip in &ips[..3] {
         let mut topo = topology(http, ip).await;

@@ -1,18 +1,16 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-#[path = "common/handoff_cluster.rs"]
-mod handoff_cluster;
-
+use super::handoff_fixture::TestHandoffCluster;
 use crowdb_kv_client::ChunkSlotMapClient;
 use crowdb_protocol::chunk_slot::{
     ChunkServiceIncarnation, ChunkSlot, ChunkSlotAuthority, ChunkSlotBinding, ChunkSlotBitmap, ChunkSlotMap,
 };
 use crowdb_protocol::key::{ChunkServiceAuthorityKey, TextKey};
-use handoff_cluster::TestHandoffCluster;
 use std::{collections::HashMap, sync::Arc};
 
 #[tokio::test]
+#[ignore = "requires the owned release-container Group0 and data-group profile"]
 async fn missing_cached_endpoint_refreshes_dynamic_owner_before_routing() {
     let test = TestHandoffCluster::start().await;
     let maps = ChunkSlotMapClient::new(Arc::clone(&test.kv));
@@ -41,6 +39,7 @@ async fn missing_cached_endpoint_refreshes_dynamic_owner_before_routing() {
 }
 
 #[tokio::test]
+#[ignore = "requires the owned release-container Group0 and data-group profile"]
 async fn stale_epoch_publications_are_conflicts_and_concurrent_regrants_preserve_all_slots() {
     let test = TestHandoffCluster::start().await;
     let client = ChunkSlotMapClient::new(Arc::clone(&test.kv));
@@ -107,6 +106,7 @@ fn epochs(
 }
 
 #[tokio::test]
+#[ignore = "requires the owned release-container Group0 and data-group profile"]
 async fn complete_epoch_publication_is_atomic_idempotent_and_storage_independent() {
     let test = TestHandoffCluster::start().await;
     let client = ChunkSlotMapClient::new(Arc::clone(&test.kv));
@@ -159,6 +159,7 @@ async fn complete_epoch_publication_is_atomic_idempotent_and_storage_independent
 }
 
 #[tokio::test]
+#[ignore = "requires the owned release-container Group0 and data-group profile"]
 async fn competing_publications_choose_one_complete_epoch_map_without_changing_data_fences() {
     let test = TestHandoffCluster::start().await;
     let client = ChunkSlotMapClient::new(Arc::clone(&test.kv));

@@ -14,6 +14,7 @@ workspace = true
 bytes = "1"
 crowdb-kv = { path = "../lib/crowdb-kv" }
 crowdb-kv-client = { path = "../lib/crowdb-kv-client" }
+crowdb-protocol = { path = "../lib/crowdb-protocol" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 reqwest = { version = "0.12", features = ["json"] }
 serde_json = "1"

@@ -64,6 +64,8 @@ Do not require one CI job for each measurement row.
 | `e2e.kv.membership`         | Membership changes / epoch fencing                  | Metadata          |
 | `e2e.kv.recovery`           | Restore / snapshot join / WAL tail / restart        | Metadata          |
 | `e2e.kv.group0`             | Group-0 initialization / discovery / wipe isolation | Metadata          |
+| `e2e.kv.client`             | Discovery / CRUD / CAS / scan / domain monitor      | Metadata          |
+| `e2e.kv.metadata`           | Slot map / handoff / authority publication          | Metadata          |
 | `e2e.diskdb.allocation`     | Allocate / free / reuse / capacity / routing        | Storage           |
 | `e2e.diskdb.recovery`       | Ownership fencing / persisted journal recovery      | Storage           |
 | `e2e.diskio.io`             | Exact range bytes / registry sync / RPC errors      | Storage           |
@@ -117,7 +119,7 @@ Do not require one CI job for each measurement row.
 ### intel7960: target scopes
 
 New rows start unmeasured. The fixture row measures the complete Pixi invocation
-without an image build or server startup; the current test report executes twelve cases.
+without an image build or server startup; the latest fixture gate executes twenty-five cases.
 Future detailed component and E2E rows replace their unmeasured scope placeholders.
 
 | Scope                       | Date       | Tests | Build s | Start s  | Test s   | Collect/stop s | Total s  | Status  |
@@ -135,12 +137,14 @@ Future detailed component and E2E rows replace their unmeasured scope placeholde
 | `component.console`         | —          | —     | —       | —        | —        | —              | —        | Pending |
 | `component.monitor`         | —          | —     | —       | —        | —        | —              | —        | Pending |
 | `component.ui`              | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `fixture`                   | 2026-10-11 | 19/19 | —       | —        | —        | —              | 0.474    | PASS    |
-| `e2e.kv.management`         | 2026-10-11 | 5/5   | shared  | per flow | per flow | per flow       | per flow | Partial |
-| `e2e.kv.routing`            | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `e2e.kv.membership`         | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `e2e.kv.recovery`           | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `e2e.kv.group0`             | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `fixture`                   | 2026-10-11 | 25/25 | —       | —        | —        | —              | 0.642    | PASS    |
+| `e2e.kv.management`         | 2026-10-11 | 5/5   | shared  | per flow | per flow | per flow       | per flow | PASS    |
+| `e2e.kv.routing`            | 2026-10-11 | 3/3   | shared  | per flow | per flow | per flow       | per flow | PASS    |
+| `e2e.kv.membership`         | 2026-10-11 | 8/8   | shared  | per flow | per flow | per flow       | per flow | PASS    |
+| `e2e.kv.recovery`           | 2026-10-11 | 3/3   | shared  | per flow | per flow | per flow       | per flow | PASS    |
+| `e2e.kv.group0`             | 2026-10-11 | 8/8   | shared  | per flow | per flow | per flow       | per flow | PASS    |
+| `e2e.kv.client`             | 2026-10-11 | 6/6   | shared  | per flow | per flow | per flow       | per flow | PASS    |
+| `e2e.kv.metadata`           | 2026-10-11 | 14/14 | shared  | per flow | per flow | per flow       | per flow | PASS    |
 | `e2e.diskdb.allocation`     | —          | —     | —       | —        | —        | —              | —        | Pending |
 | `e2e.diskdb.recovery`       | —          | —     | —       | —        | —        | —              | —        | Pending |
 | `e2e.diskio.io`             | —          | —     | —       | —        | —        | —              | —        | Pending |
@@ -171,30 +175,68 @@ Future detailed component and E2E rows replace their unmeasured scope placeholde
 
 ## Migrated KV flow timing
 
-Linux, 2026-10-11; all rows PASS. Seconds measured against the same retained-debug
-release image. These are verified flows within still incomplete parent scopes.
-Two fixture slots ran concurrently with a 6 CPU/6144 MiB budget: warm client
-build 0.413s, complete scenario wall 32.816s. Client sums include write
-and verify phases where applicable; survivor wall includes coordination with the
-crashed fixture. Rows rank fixture wall time. `results.json` also ranks the
-slowest individual client phases.
+Linux, 2026-10-11; all 48 fixtures PASS, 47 unique Rust cases and 54
+client phases, plus three release startup rejection checks. These cover the
+currently migrated KV scopes; other server domains remain pending.
+Host clients consumed the formal retained-debug image, source `6c5bc476`,
+config `sha256:f1338467ef62b70542339def054629a745ce7ff58dcc1c4002940edd0c66e5ff`.
+Two fixture slots, 6 CPUs/6144 MiB. Warm client build 0.440s;
+scenario wall 85.987s. Client sums include write/verify
+phases; concurrent fixture walls must not be added as job elapsed time.
+Startup, control actions, collection and teardown are retained in
+[results.json](../../.crowdb-runtime/artifacts/container-e2e/run-5d914d0b899045439e600b7510c5f044/results.json).
+Rows rank measured fixture wall; the report also ranks individual client phases.
 
-| Flow                                                              | Nodes | Start | Client | Restart | Collect | Stop  | Wall  |
-| ----------------------------------------------------------------- | ----- | ----- | ------ | ------- | ------- | ----- | ----- |
-| quorum_expands_and_shrinks_without_losing_writes (kv.membership)  | 5     | 2.344 | 3.906  | 0.000   | 0.364   | 1.829 | 8.444 |
-| e2e_three_node_cluster_kv_put_batch_delete (kv.isolation)         | 3     | 1.426 | 0.851  | 0.000   | 0.222   | 1.156 | 7.365 |
-| dynamic_groups_isolate_data (kv.routing)                          | 3     | 1.707 | 2.456  | 0.000   | 0.229   | 1.394 | 5.787 |
-| e2e_three_node_cluster_kv_put_batch_delete (kv.recovery)          | 3     | 1.585 | 0.857  | 1.907   | 0.215   | 1.191 | 5.757 |
-| multi_store_isolation_and_recovery (kv.routing)                   | 3     | 1.794 | 0.133  | 2.226   | 0.217   | 1.274 | 5.646 |
-| async_and_sync_leader_lifecycle (kv.management)                   | 3     | 1.708 | 2.138  | 0.000   | 0.213   | 1.094 | 5.153 |
-| topology_wiring_and_progressive_setup (kv.management)             | 2     | 1.234 | 2.397  | 0.000   | 0.152   | 1.068 | 4.852 |
-| snapshot_import_precedes_wiring_and_catches_up_tail (kv.recovery) | 3     | 1.464 | 1.524  | 0.000   | 0.222   | 1.168 | 4.379 |
-| topology_and_follower_hint (kv.routing)                           | 3     | 1.492 | 0.917  | 0.000   | 0.216   | 1.217 | 3.843 |
-| flush_and_wipe_preserve_group_and_resume_writes (kv.management)   | 1     | 0.840 | 0.877  | 0.000   | 0.072   | 0.633 | 2.424 |
-| management_lifecycle (kv.management)                              | 1     | 0.781 | 0.392  | 0.000   | 0.070   | 0.589 | 1.833 |
-| synchronous_step_down_fence (kv.management)                       | 1     | 0.744 | 0.343  | 0.000   | 0.073   | 0.586 | 1.747 |
-| epoch_replay_and_authority_bootstrap (kv.membership)              | 1     | 0.734 | 0.302  | 0.000   | 0.075   | 0.620 | 1.732 |
-| replica_lifecycle (kv.membership)                                 | 1     | 0.762 | 0.111  | 0.000   | 0.074   | 0.622 | 1.570 |
+| Flow (scope)                                                                                    | Nodes | Start | Client | Restart | Collect | Stop  | Wall   |
+| ----------------------------------------------------------------------------------------------- | ----- | ----- | ------ | ------- | ------- | ----- | ------ |
+| graceful_leader_shutdown (kv.recovery)                                                          | 3     | 1.693 | 4.721  | 0.000   | 5.227   | 0.962 | 12.608 |
+| unavailable_voter_and_follower_removal (kv.membership)                                          | 4     | 2.045 | 3.203  | 0.000   | 5.297   | 1.012 | 11.561 |
+| remove_leader_and_continue (kv.membership)                                                      | 3     | 1.681 | 2.961  | 0.000   | 5.259   | 0.997 | 10.901 |
+| quorum_expands_and_shrinks_without_losing_writes (kv.membership)                                | 5     | 2.337 | 3.738  | 0.000   | 0.372   | 1.831 | 8.280  |
+| e2e_three_node_cluster_kv_put_batch_delete (kv.isolation)                                       | 3     | 1.707 | 0.914  | 0.000   | 0.222   | 1.168 | 7.523  |
+| e2e_three_node_cluster_kv_put_batch_delete (kv.recovery)                                        | 3     | 1.541 | 0.888  | 1.903   | 0.216   | 1.172 | 5.884  |
+| dynamic_groups_isolate_data (kv.routing)                                                        | 3     | 1.736 | 2.507  | 0.000   | 0.209   | 1.406 | 5.862  |
+| multi_store_isolation_and_recovery (kv.routing)                                                 | 3     | 1.815 | 0.160  | 2.142   | 0.214   | 1.159 | 5.496  |
+| async_and_sync_leader_lifecycle (kv.management)                                                 | 3     | 1.608 | 1.748  | 0.000   | 0.205   | 1.139 | 4.704  |
+| topology_wiring_and_progressive_setup (kv.management)                                           | 2     | 1.117 | 2.238  | 0.000   | 0.146   | 0.913 | 4.417  |
+| snapshot_import_precedes_wiring_and_catches_up_tail (kv.recovery)                               | 3     | 1.549 | 1.303  | 0.000   | 0.209   | 1.236 | 4.299  |
+| topology_and_follower_hint (kv.routing)                                                         | 3     | 1.531 | 0.966  | 0.000   | 0.223   | 1.280 | 4.004  |
+| paused_bootstrap_admits_no_registration_writes (kv.group0)                                      | 1     | 0.865 | 2.353  | 0.000   | 0.070   | 0.644 | 3.937  |
+| nonmember_recovers_discovery_and_registration_identity (kv.group0)                              | 2     | 0.956 | 1.887  | 0.000   | 0.148   | 0.907 | 3.901  |
+| cleanup_fences_delayed_requests (kv.group0)                                                     | 1     | 0.530 | 0.701  | 0.840   | 0.067   | 0.753 | 2.897  |
+| competing_cohorts_use_the_service_head_revision_and_reject_stale_maps (kv.metadata)             | 1     | 1.022 | 0.686  | 0.000   | 0.073   | 0.854 | 2.640  |
+| competing_publications_choose_one_complete_epoch_map_without_changing_data_fences (kv.metadata) | 1     | 1.050 | 0.693  | 0.000   | 0.078   | 0.761 | 2.587  |
+| flush_and_wipe_preserve_group_and_resume_writes (kv.management)                                 | 1     | 0.655 | 0.980  | 0.000   | 0.074   | 0.786 | 2.500  |
+| missing_cached_endpoint_refreshes_dynamic_owner_before_routing (kv.metadata)                    | 1     | 1.149 | 0.585  | 0.000   | 0.070   | 0.621 | 2.427  |
+| stale_epoch_publications_are_conflicts_and_concurrent_regrants_preserve_all_slots (kv.metadata) | 1     | 0.916 | 0.654  | 0.000   | 0.078   | 0.746 | 2.398  |
+| a_replacement_controller_resumes_partial_fences_without_replacing_the_cohort (kv.metadata)      | 1     | 0.899 | 0.775  | 0.000   | 0.073   | 0.636 | 2.385  |
+| complete_epoch_publication_is_atomic_idempotent_and_storage_independent (kv.metadata)           | 1     | 1.108 | 0.569  | 0.000   | 0.071   | 0.609 | 2.358  |
+| prepared_owner_survives_restart (kv.group0)                                                     | 1     | 0.622 | 0.340  | 0.667   | 0.071   | 0.600 | 2.308  |
+| service_client_needs_no_storage_map_and_refreshes_same_owner_endpoints (kv.metadata)            | 1     | 0.915 | 0.520  | 0.000   | 0.075   | 0.787 | 2.301  |
+| orphan_binding_is_preserved_without_creating_a_head (kv.metadata)                               | 1     | 0.837 | 0.643  | 0.000   | 0.080   | 0.734 | 2.298  |
+| paginated_owner_records_preserve_empty_instances (kv.metadata)                                  | 1     | 0.967 | 0.616  | 0.000   | 0.073   | 0.632 | 2.289  |
+| scan_deadline_returns_partial_result (kv.client)                                                | 1     | 0.935 | 0.622  | 0.000   | 0.074   | 0.616 | 2.249  |
+| initialize_and_restore (kv.group0)                                                              | 1     | 0.612 | 0.254  | 0.723   | 0.071   | 0.571 | 2.235  |
+| legacy_records_are_never_overwritten (kv.metadata)                                              | 1     | 1.011 | 0.527  | 0.000   | 0.073   | 0.612 | 2.226  |
+| legacy_chunk_state_without_range_bindings_is_not_reinterpreted (kv.metadata)                    | 1     | 0.870 | 0.561  | 0.000   | 0.061   | 0.728 | 2.224  |
+| initialize_is_atomic_idempotent_and_layer_independent (kv.metadata)                             | 1     | 0.913 | 0.612  | 0.000   | 0.072   | 0.618 | 2.219  |
+| independent_clients_cannot_submit_two_changes_or_skip_installation (kv.group0)                  | 1     | 0.945 | 0.571  | 0.000   | 0.075   | 0.603 | 2.197  |
+| ordinary_and_malformed_writes_cannot_change_slot_authority (kv.membership)                      | 1     | 1.069 | 0.382  | 0.000   | 0.071   | 0.633 | 2.157  |
+| raw_owner_rpc_rejects_malformed_authority_and_cross_namespace_mutation (kv.membership)          | 1     | 0.813 | 0.462  | 0.000   | 0.073   | 0.787 | 2.137  |
+| concurrent_domain_monitor_ensure_reconciles_cas_busy (kv.client)                                | 1     | 0.794 | 0.386  | 0.000   | 0.073   | 0.848 | 2.104  |
+| corrupt_owner_and_partial_generation_fail_closed (kv.metadata)                                  | 1     | 0.946 | 0.478  | 0.000   | 0.076   | 0.572 | 2.075  |
+| put_get_delete_round_trip_via_topology_discovery (kv.client)                                    | 1     | 0.864 | 0.507  | 0.000   | 0.071   | 0.583 | 2.028  |
+| revision_cas_and_conditional_batch_round_trip (kv.client)                                       | 1     | 0.849 | 0.443  | 0.000   | 0.073   | 0.653 | 2.023  |
+| incarnation_change_revokes_old_writes_and_preserves_record_cas (kv.membership)                  | 1     | 0.773 | 0.315  | 0.000   | 0.068   | 0.850 | 2.010  |
+| concurrent_initializers_cannot_combine_different_assignments (kv.metadata)                      | 1     | 0.836 | 0.405  | 0.000   | 0.071   | 0.681 | 1.997  |
+| scan_keys_only_and_scan_count (kv.client)                                                       | 1     | 0.667 | 0.567  | 0.000   | 0.073   | 0.656 | 1.968  |
+| management_lifecycle (kv.management)                                                            | 1     | 0.787 | 0.415  | 0.000   | 0.071   | 0.586 | 1.863  |
+| synchronous_step_down_fence (kv.management)                                                     | 1     | 0.772 | 0.393  | 0.000   | 0.071   | 0.610 | 1.848  |
+| batch_write_and_scan (kv.client)                                                                | 1     | 0.852 | 0.356  | 0.000   | 0.065   | 0.565 | 1.840  |
+| epoch_replay_and_authority_bootstrap (kv.membership)                                            | 1     | 0.779 | 0.306  | 0.000   | 0.071   | 0.570 | 1.731  |
+| replica_lifecycle (kv.membership)                                                               | 1     | 0.852 | 0.062  | 0.000   | 0.066   | 0.580 | 1.563  |
+| custom_replica (kv.group0)                                                                      | 1     | 0.611 | 0.213  | 0.000   | 0.073   | 0.590 | 1.489  |
+| competing_prepares (kv.group0)                                                                  | 1     | 0.625 | 0.065  | 0.000   | 0.072   | 0.597 | 1.362  |
 
 ## Suite Timing
 

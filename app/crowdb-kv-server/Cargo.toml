@@ -55,9 +55,6 @@ name = "cli_parse_test"
 path = "tests/cli_parse_test.rs"
 
 
-[[test]]
-name = "deployment_reconfig_test"
-path = "tests/deployment_reconfig_test.rs"
 
 [[test]]
 name = "monitor_supervisor_test"
@@ -92,9 +89,6 @@ path = "tests/restore_test.rs"
 name = "startup_test"
 path = "tests/startup_test.rs"
 
-[[test]]
-name = "system_init_test"
-path = "tests/system_init_test.rs"
 
 [[test]]
 name = "diskdb_placement_test"

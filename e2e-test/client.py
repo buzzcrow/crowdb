@@ -15,7 +15,8 @@ def run_client(bundle, addresses, token, phase, artifacts,
     """Run the host client with per-invocation endpoints and require one case."""
     env = os.environ.copy()
     env.update(CROWDB_E2E_RPC=json.dumps(addresses), CROWDB_E2E_TOKEN=token,
-               CROWDB_E2E_PHASE=phase)
+               CROWDB_E2E_PHASE=phase, CROWDB_E2E_ARTIFACTS=str(artifacts),
+               CROWDB_E2E_CONTROL=str(Path(artifacts) / "control"))
     bypass = ",".join(filter(None, [env.get("NO_PROXY", ""), env.get("no_proxy", ""), *addresses]))
     env.update(NO_PROXY=bypass, no_proxy=bypass)
     env["LD_LIBRARY_PATH"] = str(Path(bundle) / "lib") + ":" + env.get("LD_LIBRARY_PATH", "")

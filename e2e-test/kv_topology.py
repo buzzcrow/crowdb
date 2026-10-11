@@ -6,7 +6,7 @@
 def ready_nodes(origins, stores_per_node, groups_per_node, request, wait):
     for origin, stores, groups in zip(origins, stores_per_node, groups_per_node, strict=True):
         def matches(topology, stores=stores, groups=groups):
-            found = {store["store_id"]: store for store in topology["stores"]}
+            found = {store["store_id"]: store for store in topology.get("stores", [])}
             return set(found) == set(stores) and all(
                 {group["group_id"] for group in store.get("groups", [])} == set(groups)
                 for store in found.values())

@@ -84,6 +84,20 @@ async fn topology_and_follower_hint() {
     assert!(!response.ok);
     assert_eq!(response.error, "not leader");
     assert_eq!(response.not_leader_hint, format!("{}:7001", ips[leader]));
+    let kv = CrowdbKvClient::new(ClientConfig::new(Vec::new()));
+    kv.seed_leader(10, 1, format!("{}:7001", ips[follower]));
+    let first = kv.put(10, 1, b"redirect-one", b"one", None).await.unwrap();
+    let second = kv.put(10, 1, b"redirect-two", b"two", None).await.unwrap();
+    assert!(first.revision > 0 && second.revision > first.revision);
+    for (key, expected) in [
+        (b"redirect-one", b"one".as_slice()),
+        (b"redirect-two", b"two".as_slice()),
+    ] {
+        assert!(
+            matches!(kv.get(10, 1, key, ReadMode::Linearizable, None).await.unwrap(),
+            GetOutcome::Found { value, .. } if value.as_ref() == expected)
+        );
+    }
 }
 
 async fn add_group(http: &Client, ips: &[String]) {

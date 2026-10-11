@@ -3,11 +3,8 @@
 
 //! Integration tests for node startup reconciliation with group 0.
 
-mod common;
-
 use std::sync::Arc;
 
-use common::process::start_test_server;
 use crowdb_kv::cluster::group::PxGroup;
 use crowdb_kv::cluster::local_replica::{PxLocalReplica, PxLocalReplicaRole};
 use crowdb_kv::cluster::px_kv_store::PxKvStore;
@@ -15,10 +12,6 @@ use crowdb_kv::common::config::CrowDBConfig;
 use crowdb_kv_server::recovery::reconcile::{expand_membership_records, plan_reconcile, ReplicaRecord};
 use crowdb_kv_server::store_registry::KvStoreRegistry;
 use crowdb_protocol::kv_membership::{GroupMember, GroupMembership, GroupMembershipState};
-
-fn client() -> reqwest::Client {
-    reqwest::Client::new()
-}
 
 // ── Unit tests: plan_reconcile (pure decision logic) ────────────
 
@@ -198,63 +191,4 @@ fn installing_membership_keeps_previous_participants_in_recovery_scope() {
         records.iter().map(|record| record.replica_id).collect::<Vec<_>>(),
         vec![2, 1]
     );
-}
-
-#[tokio::test]
-async fn reconcile_skips_when_group0_missing() {
-    // No store 0 / group 0 → reconcile should skip silently.
-    let server = start_test_server(&[]).await.expect("start crowdb-kv-server");
-    // Just verify the server started fine (reconcile ran and returned).
-    let resp = client()
-        .get(format!("{}/health", server.base_url()))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status().as_u16(), 200);
-}
-
-#[tokio::test]
-async fn reconcile_skips_when_group0_empty() {
-    let server = start_test_server(&[]).await.expect("start crowdb-kv-server");
-
-    // Init group 0 but don't write any /kv/store/ records.
-    client()
-        .post(format!("{}/system/init", server.base_url()))
-        .json(&serde_json::json!({}))
-        .send()
-        .await
-        .unwrap();
-
-    // Reconcile would have run at startup before group 0 existed.
-    // After init, group 0 exists but has no /kv/store/ records.
-    // The server should still be healthy.
-    let resp = client()
-        .get(format!("{}/health", server.base_url()))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status().as_u16(), 200);
-}
-
-#[tokio::test]
-async fn reconcile_healthy_after_init() {
-    let server = start_test_server(&[]).await.expect("start crowdb-kv-server");
-
-    // Init group 0.
-    client()
-        .post(format!("{}/system/init", server.base_url()))
-        .json(&serde_json::json!({}))
-        .send()
-        .await
-        .unwrap();
-
-    // The reconcile at startup would have scanned group 0 and found
-    // no /kv/store/ records (not yet initialized). The server should
-    // still be healthy.
-    let resp = client()
-        .get(format!("{}/health", server.base_url()))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status().as_u16(), 200);
 }

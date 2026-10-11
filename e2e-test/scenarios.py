@@ -19,9 +19,52 @@ class Case:
     groups: tuple = (1,)
     restart: bool = False
     groups_per_node: tuple | None = None
+    persisted_paths: tuple = ()
+    node_args: tuple | None = None
+    advertise: bool = False
 
 
 KV_CASES = (
+    Case("kv.metadata", "kv::slot_handoff::a_replacement_controller_resumes_partial_fences_without_replacing_the_cohort", groups=(0, 1)),
+    Case("kv.metadata", "kv::slot_handoff::competing_cohorts_use_the_service_head_revision_and_reject_stale_maps", groups=(0, 1)),
+    Case("kv.metadata", "kv::slot_publication::missing_cached_endpoint_refreshes_dynamic_owner_before_routing", groups=(0, 1)),
+    Case("kv.metadata", "kv::slot_publication::stale_epoch_publications_are_conflicts_and_concurrent_regrants_preserve_all_slots", groups=(0, 1)),
+    Case("kv.metadata", "kv::slot_publication::complete_epoch_publication_is_atomic_idempotent_and_storage_independent", groups=(0, 1)),
+    Case("kv.metadata", "kv::slot_publication::competing_publications_choose_one_complete_epoch_map_without_changing_data_fences", groups=(0, 1)),
+    Case("kv.metadata", "kv::slot_map::initialize_is_atomic_idempotent_and_layer_independent", groups=(0,)),
+    Case("kv.metadata", "kv::slot_map::concurrent_initializers_cannot_combine_different_assignments", groups=(0,)),
+    Case("kv.metadata", "kv::slot_map::paginated_owner_records_preserve_empty_instances", groups=(0,)),
+    Case("kv.metadata", "kv::slot_map::service_client_needs_no_storage_map_and_refreshes_same_owner_endpoints", groups=(0,)),
+    Case("kv.metadata", "kv::slot_map_validation::legacy_records_are_never_overwritten", groups=(0,)),
+    Case("kv.metadata", "kv::slot_map_validation::legacy_chunk_state_without_range_bindings_is_not_reinterpreted", groups=(0,)),
+    Case("kv.metadata", "kv::slot_map_validation::corrupt_owner_and_partial_generation_fail_closed", groups=(0,)),
+    Case("kv.metadata", "kv::slot_map_validation::orphan_binding_is_preserved_without_creating_a_head", groups=(0,)),
+    Case("kv.client", "kv::client_data::put_get_delete_round_trip_via_topology_discovery", (1,)),
+    Case("kv.client", "kv::client_data::revision_cas_and_conditional_batch_round_trip", (1,)),
+    Case("kv.client", "kv::client_data::batch_write_and_scan", (1,)),
+    Case("kv.client", "kv::client_scan::scan_keys_only_and_scan_count", (1,)),
+    Case("kv.client", "kv::client_scan::scan_deadline_returns_partial_result", (1,)),
+    Case("kv.client", "kv::domain_monitor::concurrent_domain_monitor_ensure_reconciles_cas_busy", groups=(0,)),
+    Case("kv.group0", "kv::membership_cas::independent_clients_cannot_submit_two_changes_or_skip_installation", groups=(0,)),
+    Case("kv.membership", "kv::authority::incarnation_change_revokes_old_writes_and_preserves_record_cas", (1,)),
+    Case("kv.membership", "kv::authority::ordinary_and_malformed_writes_cannot_change_slot_authority", (1,)),
+    Case("kv.membership", "kv::authority::raw_owner_rpc_rejects_malformed_authority_and_cross_namespace_mutation", (1,)),
+    Case("kv.group0", "kv::discovery::paused_bootstrap_admits_no_registration_writes",
+         stores_per_node=((),), groups=(), node_args=(("--node-id", "2", "--keepalive-interval", "1"),), advertise=True),
+    Case("kv.group0", "kv::discovery::nonmember_recovers_discovery_and_registration_identity",
+         stores_per_node=((), ()), groups=(), node_args=(
+             ("--instance-id", "9001", "--node-id", "1", "--keepalive-interval", "1"),
+             ("--node-id", "2", "--keepalive-interval", "1")), advertise=True),
+    Case("kv.recovery", "kv::failover::graceful_leader_shutdown", (0, 1, 2), True),
+    Case("kv.membership", "kv::failover::remove_leader_and_continue", (0, 1, 2), True),
+    Case("kv.membership", "kv::failover::unavailable_voter_and_follower_removal",
+         stores_per_node=((0,), (1,), (2,), ()), groups_per_node=((1,), (1,), (1,), ())),
+    Case("kv.group0", "kv::bootstrap::initialize_and_restore", stores_per_node=((),), groups=(), restart=True,
+         persisted_paths=("kv/waldata/store0/group0",)),
+    Case("kv.group0", "kv::bootstrap::custom_replica", stores_per_node=((),), groups=()),
+    Case("kv.group0", "kv::ownership::prepared_owner_survives_restart", stores_per_node=((),), groups=(), restart=True),
+    Case("kv.group0", "kv::ownership::competing_prepares", stores_per_node=((),), groups=()),
+    Case("kv.group0", "kv::ownership::cleanup_fences_delayed_requests", stores_per_node=((),), groups=(), restart=True),
     Case("kv.recovery", "kv::snapshot::snapshot_import_precedes_wiring_and_catches_up_tail",
          (0, 1, 2), groups_per_node=((1,), (1,), ())),
     Case("kv.membership", "kv::reconfiguration::quorum_expands_and_shrinks_without_losing_writes",
@@ -40,8 +83,9 @@ KV_CASES = (
 )
 
 
-def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all"):
-    selected = tuple(case for case in KV_CASES if scope == "all" or case.scope == scope)
+def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case_name=None):
+    selected = tuple(case for case in KV_CASES if (scope == "all" or case.scope == scope)
+                     and (not case_name or case.name == case_name))
     if not selected:
         raise ValueError(f"no migrated cases for scope {scope}")
 
@@ -50,12 +94,17 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all"):
         cluster = Cluster(image, artifacts, data_root=data_root, node_count=count,
                           store_ids=case.stores, wire_replicas=case.wired,
                           stores_per_node=case.stores_per_node, groups=case.groups,
-                          groups_per_node=case.groups_per_node)
+                          groups_per_node=case.groups_per_node, node_args=case.node_args,
+                          advertise=case.advertise)
         (cluster.artifacts / "case.json").write_text(json.dumps({
             "scope": case.scope, "case": case.name}, indent=2))
         with cluster:
             if case.restart:
                 cluster.client(bundle, "write", case.name)
+                for data in cluster.data_paths:
+                    for path in case.persisted_paths:
+                        if not (data / path).is_dir():
+                            raise AssertionError(f"acknowledged state did not persist at {data / path}")
                 cluster.crash_restart()
                 cluster.client(bundle, "verify", case.name)
             else:

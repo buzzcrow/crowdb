@@ -12,11 +12,13 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+from allocation import LABEL, create_network, node_data, start_node
 from client import run_client
+from kv_node import arguments as kv_arguments
+from control import Control
 from kv_topology import ready_nodes, wire_nodes
 
 HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-LABEL = "org.crowdb.e2e.run"
 
 
 def docker(*args, timeout=60):
@@ -58,11 +60,18 @@ def redact(value):
                   r'\1\2<redacted>', text)
 
 
+def persisted_layout(topology):
+    return {store["store_id"]: (store["listen_addr"], {
+        group["group_id"]: group["local_replica_id"] for group in store.get("groups", [])})
+        for store in topology.get("stores", [])}
+
+
 class Cluster:
     """The runner owns lifecycle; host clients use inspected node IPs."""
 
     def __init__(self, image, artifacts, command=docker, data_root=None, node_count=3,
-                 store_ids=None, wire_replicas=True, stores_per_node=None, groups=(1,), groups_per_node=None):
+                 store_ids=None, wire_replicas=True, stores_per_node=None, groups=(1,), groups_per_node=None,
+                 node_args=None, advertise=False):
         if node_count < 1:
             raise ValueError("a cluster needs at least one node")
         self.run_id = "crowdb-e2e-" + uuid.uuid4().hex
@@ -72,6 +81,10 @@ class Cluster:
         self.containers, self.origins, self.addresses = [], [], []
         self.servers = []
         self.node_count = node_count
+        self.node_args = node_args or ((),) * node_count
+        if len(self.node_args) != node_count:
+            raise ValueError("startup arguments must match the node count")
+        self.advertise = advertise
         store_ids = tuple(range(node_count)) if store_ids is None else tuple(store_ids)
         self.stores_per_node = tuple(tuple(stores) for stores in stores_per_node) if stores_per_node else tuple(
             (store,) for store in store_ids)
@@ -79,9 +92,9 @@ class Cluster:
         self.groups_per_node = tuple(tuple(groups) for groups in groups_per_node) if groups_per_node else (
             self.groups,) * node_count
         if len(self.stores_per_node) != node_count or any(
-                not stores or len(stores) != len(set(stores)) or any(store < 0 for store in stores)
+                len(stores) != len(set(stores)) or any(store < 0 for store in stores)
                 for stores in self.stores_per_node):
-            raise ValueError("each node needs a nonempty set of nonnegative store IDs")
+            raise ValueError("each node needs distinct nonnegative store IDs")
         if len(self.groups_per_node) != node_count or any(
                 len(groups) != len(set(groups)) or any(group < 0 for group in groups)
                 for groups in self.groups_per_node):
@@ -97,35 +110,11 @@ class Cluster:
         self.started = None
 
     def start(self):
-        # Record allocations before calls: a timed-out daemon response can have
-        # created the resource. Cleanup still checks its ownership label.
-        self.network_created = True
-        self.command("network", "create", "--label", f"{LABEL}={self.run_id}", self.run_id)
+        subnet = create_network(self)
         for index in range(self.node_count):
-            name = f"{self.run_id}-node{index}"
-            data = (self.data_root / f"node{index}" / "data").resolve()
-            (data / "log").mkdir(parents=True)
-            (data / "log" / "container.log").touch()
-            self.data_paths.append(data)
-            (self.artifacts / "mounts.json").write_text(json.dumps({
-                "container_data": "/opt/crowdb/data",
-                "host_data": [str(path) for path in self.data_paths]}, indent=2))
-            self.containers.append(name)
-            self.servers.append(name)
-            group_args = ("--groups", ",".join(map(str, self.groups_per_node[index]))) if self.groups_per_node[index] else ()
-            self.command("run", "-d", "--name", name, "--label", f"{LABEL}={self.run_id}",
-                         "--network", self.run_id, "--network-alias", f"node{index}",
-                         "--cpus", "0.5", "--memory", "512m", "--pids-limit", "256",
-                         "--mount", f"type=bind,source={data},target=/opt/crowdb/data",
-                         "--ulimit", "core=-1", self.image, "server", "kv",
-                         "--root", "/opt/crowdb/data/kv", "--management-port", "7000",
-                         "--ports", "7001..7011", "--stores", ",".join(map(str, self.stores_per_node[index])),
-                         *group_args,
-                         "--replica", str(index + 1), "--kv-backend", "block",
-                         "--wal-backend", "block-device", "--election-profile", "e2e",
-                         "--log-dir", "/opt/crowdb/data/log/kv", "--log")
-            info = json.loads(self.command("inspect", name))[0]
-            self.addresses.append(info["NetworkSettings"]["Networks"][self.run_id]["IPAddress"])
+            data = node_data(self, index)
+            address = str(subnet.network_address + index + 2) if subnet else None
+            self.addresses.append(start_node(self, index, data, kv_arguments(self, index, address), address))
             self.origins.append(f"http://{self.addresses[-1]}:7000")
         self.ready()
         (self.artifacts / "endpoints.json").write_text(json.dumps({"nodes": [
@@ -144,12 +133,16 @@ class Cluster:
     def crash_restart(self):
         started = time.monotonic()
         try:
+            expected = [request(origin, "/topology") for origin in self.origins]
             for name in self.servers:
                 self.command("kill", "--signal", "KILL", name)
             for name in self.servers:
                 self.command("start", name)
             self.refresh_endpoints()
-            self.ready()
+            for origin, before in zip(self.origins, expected, strict=True):
+                wait(lambda origin=origin: request(origin, "/topology"),
+                     lambda after, before=before: persisted_layout(after) == persisted_layout(before),
+                     f"restored store/group/listener identity at {origin}")
         finally:
             self.timings["restart"] = time.monotonic() - started
 
@@ -165,10 +158,25 @@ class Cluster:
 
     def client(self, bundle, phase, test_name="e2e_three_node_cluster_kv_put_batch_delete"):
         try:
-            run_client(bundle, self.addresses, self.run_id, phase, self.artifacts, test_name)
+            with Control(self):
+                run_client(bundle, self.addresses, self.run_id, phase, self.artifacts, test_name)
         except BaseException as error:
             (self.artifacts / f"client-{phase}.error").write_text(redact(str(error)))
             raise
+
+    def control(self, body):
+        action, node = body.get("action"), body.get("node")
+        if action not in ("stop", "start", "kill", "pause", "unpause"):
+            raise ValueError("unsupported fixture action")
+        if type(node) is not int or not 0 <= node < len(self.servers):
+            raise ValueError("node is outside the owned fixture")
+        name = self.servers[node]
+        info = json.loads(self.command("inspect", name))[0]
+        if info["Config"]["Labels"].get(LABEL) != self.run_id:
+            raise ValueError("node ownership label changed")
+        arguments = ("stop", "--time", "10", name) if action == "stop" else (action, name)
+        self.command(*arguments)
+        return json.loads(self.command("inspect", name))[0]["State"]
 
     def diagnostics(self):
         started = time.monotonic()

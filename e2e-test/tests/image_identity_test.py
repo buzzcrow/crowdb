@@ -62,3 +62,16 @@ class ImageIdentityTest(unittest.TestCase):
         self.manifest.write_text('[package]\nname = "server"\nversion = "0.2.0"\n')
         with self.assertRaisesRegex(ValueError, "Cargo.toml"):
             verify_server_sources(self.root, self.revision)
+
+    def test_client_lock_entry_changes_reuse_image_but_server_dependency_changes_do_not(self):
+        lock = self.root / "Cargo.lock"
+        lock.write_text('version = 4\n[[package]]\nname = "e2e-test"\nversion = "1"\n'
+                        'dependencies = []\n[[package]]\nname = "server"\nversion = "1"\n')
+        self.commit()
+        revision = self.git("rev-parse", "HEAD")
+        lock.write_text(lock.read_text().replace('dependencies = []', 'dependencies = ["server"]'))
+        self.assertTrue(verify_server_sources(self.root, revision)["server_sources_match"])
+        lock.write_text(lock.read_text().replace('name = "server"\nversion = "1"',
+                                                 'name = "server"\nversion = "2"'))
+        with self.assertRaisesRegex(ValueError, "Cargo.lock"):
+            verify_server_sources(self.root, revision)

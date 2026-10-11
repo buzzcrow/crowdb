@@ -426,7 +426,7 @@ Goal: review and migrate all real-server tests into domain modules under contain
   to inspected IPs. Preserve exact topology, restart and isolation assertions;
   keep run-specific client environment/artifacts and remove unnecessary Docker
   publish options. Files: `e2e-test/{fixture,client,run}.py`, common clients.
-- [ ] **Release startup service selection**: document and implement runtime
+- [~] **Release startup service selection**: document and implement runtime
   full-set/subset selection through the normal entrypoint/profile contract,
   preserving existing bootstrap modes. Reuse monitor dependency validation;
   test unknown/missing dependencies and selected-service restart/reconciliation
@@ -455,9 +455,9 @@ Goal: review and migrate all real-server tests into domain modules under contain
   six async operation and one multi-store source cases into eight independently
   owned container flows; verify epoch fences, maintenance, operation completion
   and persistent store isolation. Files: kv-server tests and `tests/kv/`.
-- [ ] **KV startup/exit batch**: migrate executable startup/exit checks and
+- [x] **KV startup/exit batch**: migrate executable startup/exit checks and
   empty-root initialization; preserve component CLI/configuration tests.
-- [~] **KV recovery/membership batch**: add profile node-count/config support;
+- [x] **KV recovery/membership batch**: add profile node-count/config support;
   migrate restore, snapshot/WAL tail, dynamic group/membership and Group-0
   discovery; retain deterministic KV-client flows and test actual production
   leader retry. Retire component process helper only after all callers migrate.
@@ -751,3 +751,144 @@ Goal: review and migrate all real-server tests into domain modules under contain
   changed Python compilation passed. No production component UT was removed.
   Group-0 restore/discovery/initialization is the next KV migration scope;
   other service domains and final Pixi/CI classification remain unfinished.
+
+## Group-0 bootstrap and restore
+
+- `system_init_test::{system_init_creates_store0_group0,
+  system_init_idempotent_store0, system_init_creates_store_visible_in_list,
+  system_init_group_visible_in_list}` and `restore_test::{first_boot_root_only_no_toml,
+  restart_restores_group0_from_disk, restored_store_port_is_not_reallocated}`
+  map to `kv::bootstrap::initialize_and_restore`: empty root/no config, 201 exact
+  identity, 409 repeat init, public lists, mounted WAL directory, SIGKILL restart,
+  fixed port 7001 retained and next store assigned 7002.
+- `system_init_test::system_init_with_custom_replica_id` →
+  `kv::bootstrap::custom_replica` (replica 5).
+- `system_init_test::prepared_store_ownership_survives_restart_and_rejects_takeover`
+  → `kv::ownership::prepared_owner_survives_restart`: prepare without visible
+  membership, persisted authority, conflicting/generic init/store/join fences,
+  authorized init and idempotent retry.
+- `system_init_test::competing_prepares_have_one_durable_winner` →
+  `kv::ownership::competing_prepares`: concurrent 200/409 and winner replay.
+- `system_init_test::explicit_cleanup_fences_delayed_bootstrap_and_allows_a_new_operation`
+  → `kv::ownership::cleanup_fences_delayed_requests`: idempotent cleanup, fenced
+  old requests, new init, rejected old cleanup and fences retained on restart.
+- `reconcile_test::{reconcile_skips_when_group0_missing,
+  reconcile_skips_when_group0_empty, reconcile_healthy_after_init}` merge into
+  bootstrap health checkpoints before/after init and restart. These old cases
+  never invoked a second reconcile after init, so no extra internal reconciliation
+  contract is inferred. Preserve all pure reconcile/membership planning tests
+  and all four disk-scan/group0-existence UTs.
+- Five named flows/eight exact client phases passed against the formal image:
+  `run-404ac5c49e27478d94b98671bde259ed`. WAL-directory assertion added explicitly
+  before fault injection; repeat focused acceptance includes it. Recovery now
+  compares persisted store/group/replica/listener identities captured immediately
+  before the fault, including stores created through management APIs.
+
+## Container exit regression diagnosis
+
+- Full parallel KV acceptance `run-1ba84d6ea14448e996a49e52865ef3ce`
+  fails `kv::failover::graceful_leader_shutdown` after acknowledged five writes
+  and confirmed graceful exit code 0. Two survivors stay pre-candidates;
+  `cluster::leader` rejects absence of a stable unique leader. Preserve the
+  old deployment source until all three mapped cases pass.
+- First divergence: `SocketTransport::connect` performs blocking `connect(2)`
+  before setting `O_NONBLOCK`. A disappearing container IP leaves TCP handshake
+  retries blocking Tokio workers; pre-vote fanout takes 39s and later ~3s,
+  although the configured peer deadline is shorter. This is a production
+  transport defect, not a readiness timeout to increase.
+- Fix attempt 1 sets nonblocking mode before connect, admits `EINPROGRESS`, and
+  lets queued write/error events complete through the existing worker paths.
+  A local saturated listener backlog gives a deterministic pending handshake
+  component regression without Docker or a production executable. RPC tests,
+  C++ lint, rebuilt formal release image and original container failover are
+  required before accepting this fix.
+
+## KV client authority boundary review
+
+- `membership_cas_test::independent_clients_cannot_submit_two_changes_or_skip_installation`
+  has no deterministic hook or internal assertion: it tests independent public
+  clients against an embedded real KV server. Target container owner
+  `kv::membership_cas` retains concurrent one-winner CAS, installation barriers,
+  previous members, ready/idempotent completion, stale completion rejection,
+  unrelated group progress and refreshed client reads.
+- `chunk_slot_owner_fence_test::{process_restart_revokes_old_writes_and_preserves_record_cas,
+  ordinary_and_malformed_writes_cannot_change_slot_authority,
+  raw_owner_rpc_rejects_malformed_authority_and_cross_namespace_mutation}`
+  target `kv::authority` with all old public byte/revision/error-code assertions.
+  The first source case changes incarnation without actually restarting a
+  process; the target name describes that real contract. True persisted restart
+  remains a distinct KV recovery owner.
+- Retain `cancelled_handover_drains_one_slot_without_blocking_another` locally:
+  its held-owner-write and pending-owner-change hooks pin a deterministic race,
+  including cancellation and progress in the neighboring slot. Keep its embedded
+  fixture and test-util seam; public containers cannot replace those assertions.
+- New targets are awaiting formal-container verification. Do not remove old
+  owners until each mapped target passes.
+
+## KV client public flow review
+
+Source `lib/crowdb-kv-client/tests/e2e_single_node_test.rs`:
+
+- `put_get_delete_round_trip_via_topology_discovery` -> `kv.client_data` same name: official discovery, positive revision, exact value, higher delete revision and MinSlot not-found. Passed release-container client 0.38s.
+- `revision_cas_and_conditional_batch_round_trip` -> `kv.client_data` same name: create-if-absent rejection reports exact current revision, matching conditional delete/put commits atomically, exact related value. Passed 0.46s.
+- `batch_write_and_scan` -> `kv.client_data` same name: two acknowledged records, complete untruncated scan. Passed 0.33s; add exact sorted values before final acceptance.
+- `concurrent_domain_monitor_ensure_reconciles_cas_busy` -> `kv.domain_monitor` same name: 32 concurrent official client ensure operations, exactly one Created, all other AlreadyExists. Passed 0.38s against real Group-0.
+- `scan_keys_only_and_scan_count` -> `kv.client_scan` same name: 12 exact sorted keys with empty values, counts 12/0/5. Passed 0.44s.
+- `scan_deadline_returns_partial_result` -> `kv.client_scan` same name: 3,000 acknowledged records, complete no-deadline scan, expired deadline returns timed_out/truncated proper ordered prefix. Population simplified from 3,000 sequential writes to one acknowledged batch. Passed 0.42s; strengthen exact full values before final acceptance.
+- Retain `concurrent_watch_subscriptions_keep_independent_push_handlers`: fixed internal watcher admission checkpoint isolates push-handler multiplexing.
+- Retain `reverse_scan_paginates_without_repeating_boundaries`: internal per-page byte-budget knob forces pagination boundaries.
+- Retain `read_your_writes_uses_auto_tracked_watermark`: client session-state transition checks.
+- Retain `linearizable_multi_page_scan_pays_barrier_once`: deterministic budget and internal exact read-barrier metric, 1 rather than N.
+
+Source `lib/crowdb-kv-client/tests/chunk_slot_map_test.rs`: all eight cases exercise public Group-0 records/client APIs; targets `kv.slot_map` (initialization atomicity/idempotence/layer independence, conflicting concurrent initializers, pagination preserving empty owners, route refresh/unregistration) and `kv.slot_map_validation` (legacy range state, legacy chunks, corrupt owner/partial generation, orphan binding preservation). Source retained until container verification.
+
+## Failover verification follow-up
+
+- Image OCI `sha256:c46270ee88ab849b5e5781d61352ffdfaf3d9f9669f76c3b28b83d3216978d60`, config `sha256:32245c52a081944e3de56c80ae1421261cb61bdf4d4ab456e49cc628abc5bcab`, source `5b87f3bd99b2037d6c208977bb19956f23411194`, retained debug info.
+- Coordinated run `run-2510162cd1d74c0da8b538838ebcc636`: original CRUD/restart/isolation, public client six flows, authority three, membership CAS, Group-0 seven and graceful shutdown/remove-leader passed. Graceful shutdown client 4.81s, original missing-IP election failure fixed without weakening the scenario.
+- Required aggregate FAILED: unavailable-voter/follower-removal wrote after removal, but exact linearizable reads failed. Reproduced alone `run-fef77fcdccb640389ea2b3fd202fe873`. Server logs reveal `newly connected pool must have an open connection` task panics against the refused fourth RPC port; pending Phase-1 recovery can die before opening read readiness. Preserve original scenario and source launcher until fixed verification.
+- Root-cause attempt: `ConnectionPoolIndex` must treat asynchronous close between connect/publication/selection as a recoverable transport error. Both install and degraded replacement remove only their failed candidate generation; no lock, no caller retry/timeout change. Add deterministic closed-candidate UT; map error through all transport consumers. Gates and rebuilt-image acceptance pending.
+
+- Native follow-up: isolated run exited 139 without OOM. Apport `/var/log/apport.log` explicitly rejected `/opt/crowdb/bin/crowdb-kv-server`; no core exists under `/var/crash` or the mounted crash root. Attached GDB to owned fixture PIDs using exact retained-debug binary/source without changing host collector policy. Artifact `refused-native-debug/crowdb-e2e-f3fc5f34f14041799325fc1583bdb82e/gdb-node0.log` captures SIGSEGV in `RpcClient::fail_all`, called from `Connection::close` on the transport worker while client attachment replaces the `std::function` close callback. The initial symbol-less capture is diagnostic only, superseded by the symbolized stack.
+- Root cause: callbacks were mutated in place concurrently with worker invocation; FFI attachment first installs the raw client callback and then replaces it with an owning closure. Publish fully constructed immutable callback versions through lock-free atomic pointers, retaining old versions until connection destruction. No new mutex, Rust unsafe, caller retry or timeout changes. Deterministic C++ UT holds close callback invocation while replacing it and verifies client-owner lifetime through connection destruction. This complements the closed-candidate Rust pool regression.
+
+## KV metadata controller migration
+
+- `chunk_slot_map_test` maps each of its eight public cases to the identically named `kv::slot_map` or `kv::slot_map_validation` case. Preserve atomic initialization, exact legacy records, full slot assignments, empty owners, no-head rejection, corrupt/partial generations, route refresh and unregistration. Source remains until rebuilt-image acceptance passes.
+- `chunk_slot_handoff_test::a_replacement_controller_resumes_partial_fences_without_replacing_the_cohort` -> `kv::slot_handoff` same name: controller replacement resumes durable receipt progress, forged receipts and competing cohorts fail, fencing retries are idempotent and publication cannot be persisted separately.
+- `chunk_slot_handoff_test::competing_cohorts_use_the_service_head_revision_and_reject_stale_maps` -> `kv::slot_handoff` same name: head revision reserves one cohort, stale generation fails and stale CAS cannot discard persisted receipts.
+- `chunk_slot_publication_test` four cases -> `kv::slot_publication` identical names: cached missing endpoint refresh; stale publication conflicts and concurrent full-map regrants; atomic/idempotent complete authority publication with unchanged storage; one concurrent winner and unchanged data fences. Shared setup initializes real Group-0 and data group through the official host client, with no embedded server or internal hook. Source remains pending acceptance.
+- `kv::cluster::topology_and_follower_hint` now also forces the official client's cached leader to a real follower, then verifies hint-followed writes, increasing revisions and exact reads. The old single pinned-role hint-follow case has only the same public write/revision assertions; remove it after this target passes, while retaining bounded/cyclic/no-hint retry UTs.
+
+- RPC fix committed as `6c5bc476`: complete `test-cpp` passes tree 624, common 31, RPC 81, Diskio 139 and both FFI suites; focused KV election 76 and RPC migration 4 pass. `tree-lint` exits 0 with existing warnings; affected Rust transport clippy and workspace fmt pass. Rebuild formal retained-debug release image before accepting the unavailable-voter scenario.
+
+## Remaining KV-client local contracts
+
+- Retain all fourteen `e2e_follower_read_test` cases locally. The fixture pins leader/follower roles and deliberately keeps one learner outside replication while its synthetic topology advertises it. Each read policy checks internal distribution/fallback metrics; two tests inject exactly 50 ms read delay to verify load and latency selection. These controlled lag/selector transitions complement real container election and follower-hint flows.
+- Retain `conditional_retry_test::{conditional_writes_discover_leader_after_explicit_rejection_without_a_hint, conditional_unknown_leader_retries_are_bounded, cyclic_leader_hints_exhaust_a_bounded_budget_for_all_write_forms, discovering_a_replacement_endpoint_does_not_wait_on_the_failed_endpoint_backoff}`. Synthetic no-hint/unknown/cyclic role states verify exact three-attempt budgets, five write forms and internal counters; 250 ms replacement bound isolates a one-second failed-endpoint backoff.
+- Retain `topology_publication_test::repeated_identical_hint_does_not_discard_an_inflight_topology_refresh`: Notify pins publication during repeated hint injection.
+- `topology_endpoint_test::wildcard_listener_uses_reporting_management_host_for_remote_clients` is a public normalization flow. Map to the official container client's wildcard-listener topology discovery and exact write/read checks; verify the actual advertised wildcard before deleting the stub/server source.
+
+## Runtime subset implementation boundary
+
+- Existing `CROWDB_PROFILE_PATH` mounts a normal deployment profile, but `run_preview` unconditionally starts all seven services. Fix this normal monitor path before storage fixtures depend on multi-service subsets. Do not add a test supervisor or build per selection.
+- Validate known release service IDs and their real dependency requirements before creating files or starting children; generic profile validation remains usable by supervisor fake-child UTs. Derive management seed from the selected KV probe rather than requiring Access env.
+- Keep KV and logical-topology bootstrap; include disk files/hardware only for storage selections, S3/Iceberg bootstrap only with Access. Start only selected service IDs and run matching readiness/registry probes. Recovery validation repeats the same selection. Preserve the default complete profile behavior and durable profile digest fence.
+- Split preview service startup/recovery helpers under the owning preview module rather than growing the existing 550-line root. Tests must prove valid KV/storage subsets, unknown IDs, missing dependencies and repeat/recovery step order; container acceptance uses the same retained-debug artifact with host-visible mount roots.
+
+- Deduplication review: `e2e_retry_test::client_follows_not_leader_hint_to_real_leader` uses pinned roles only to establish an ordinary follower redirect, with no internal race/counter assertion. Its raw rejection/hint and two successful writes are now owned by `kv::cluster::topology_and_follower_hint`, which also verifies exact values against an actual elected cluster. Delete the source after new acceptance. Retain the four conditional retry tests and fourteen controlled follower-read tests.
+
+- Rebuilt formal release artifact for RPC fix: source `6c5bc47606ed2e500bc8533956dcdfe25e473499`, OCI manifest `sha256:a44ebecd72d7588f8e78f0e713711f2afa30c39629997d83fe2f72d26b579146`, config `sha256:f1338467ef62b70542339def054629a745ce7ff58dcc1c4002940edd0c66e5ff`, debug info retained, runtime SHA `d4a16c4358b213ca193f442a3c2db87d8d630b2ff097adeade26d2827afded9d`. Build/import is not acceptance; focused failed-case and complete KV run follow.
+- Affected app/client/E2E all-target clippy passes. Retained KV-client tests pass: cancellation 1, conditional retry 4, controlled follower read 14, single-node internal flows 4, topology publication 1, old public redirect 1 (pending deduplication). Fixture gate 25/25, 0.642s, including new scope inventory and fail-before-allocation rejection.
+
+## Verified source retirement
+
+- `deployment_reconfig_test::{graceful_shutdown_leader_under_load, reconfig_via_api_add_then_remove, reconfig_via_api_remove_leader}` -> `kv::failover::{graceful_leader_shutdown, unavailable_voter_and_follower_removal, remove_leader_and_continue}`. All three pass the exact rebuilt formal image during full concurrent acceptance. Delete that source/registration and its final unused `common::{process,test_client}` launcher; preserve direct-path component helpers.
+- `group0_discovery_test::prebootstrap_registration_waits_for_election_before_admitting_writes` -> `kv::discovery::paused_bootstrap_admits_no_registration_writes`; `prebootstrap_nonmember_discovers_group0_and_retains_hints_after_restart` -> `kv::discovery::nonmember_recovers_discovery_and_registration_identity`. Both pass with explicit inspected-IP advertisement and independent node mounts; identity-conflict/corrupt-binding UTs remain.
+- All fourteen slot-map/handoff/publication targets pass. Delete the three legacy public test files and their now-unused embedded handoff server helper. The wildcard discovery target confirms the actual `0.0.0.0:7001` listener and exact official-client values, and the elected follower target confirms raw hints plus corrected-cache writes/reads: delete both duplicate public client source files.
+
+## KV migration acceptance closure
+
+- Full required concurrent acceptance PASSES in `run-5d914d0b899045439e600b7510c5f044`: 46 named flows plus the two-fixture original CRUD/restart/isolation pair, 48 owned fixtures, 47 distinct Rust cases, 54 exact client phases and three release startup rejection checks. Warm client build 0.440s; scenario wall 85.987s; two slots, 6 CPUs/6144 MiB. Every fixture reports pass including owned collection and teardown.
+- Previously failing unavailable-voter/follower-removal also passes alone in `run-8c9a9bf1907e4fb5b4f7071dd274f4ed`, 3.17s client; complete parallel run 3.18s. Graceful actual leader shutdown passes 4.70s. Preserve original refused listener and missing-IP faults and all acknowledged exact values.
+- `test.md` now records all 48 measured flow rows with image/source identity and separate start/client/restart/collect/stop/wall phases. Remaining domains and final Pixi/CI classification remain pending. Next active task is normal release monitor service selection, followed by storage domains.

@@ -81,9 +81,11 @@ def run_pair(image, artifacts, bundle, count, data_root=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--layer", choices=("kv", "all"), default="kv")
-    parser.add_argument("--scope", choices=("all", "kv.management", "kv.membership", "kv.routing", "kv.recovery", "kv.isolation"),
+    parser.add_argument("--scope", choices=("all", "kv.management", "kv.membership", "kv.routing", "kv.recovery", "kv.isolation", "kv.group0", "kv.client", "kv.metadata"),
                         default="all")
     parser.add_argument("--concurrency", type=int, default=2)
+    parser.add_argument("--case", help="fully qualified named flow within the selected scope")
+    parser.add_argument("--list", action="store_true", help="list implemented named flows without starting servers")
     parser.add_argument("--require-isolation", action="store_true")
     parser.add_argument("--cpus", type=float, default=4)
     parser.add_argument("--memory-mib", type=int, default=4096)
@@ -91,20 +93,29 @@ def main():
     parser.add_argument("--data-root", type=Path, help="host parent for independent per-run/node data mounts")
     parser.add_argument("--artifacts", type=Path, default=ROOT / ".crowdb-runtime/artifacts/container-e2e")
     args = parser.parse_args()
+    selected = [case for case in KV_CASES if (args.scope == "all" or case.scope == args.scope)
+                and (not args.case or case.name == args.case)]
+    if args.case and not selected:
+        parser.error("the selected case is not implemented in this scope")
+    if args.case and args.require_isolation:
+        parser.error("a single case cannot claim concurrent isolation acceptance")
+    if args.require_isolation and args.scope not in ("all", "kv.recovery", "kv.isolation"):
+        parser.error("isolation acceptance requires all, kv.recovery or kv.isolation scope")
+    if args.list:
+        print(json.dumps([{"scope": case.scope, "case": case.name,
+                           "nodes": len(case.stores_per_node or case.stores)} for case in selected], indent=2))
+        return
     signal.signal(signal.SIGTERM, interrupt)
     info = json.loads(docker("info", "--format", "{{json .}}"))
     if info["OSType"] != "linux":
         parser.error("the first container E2E profile requires a Linux daemon")
     slots = capacity(args.concurrency, min(args.cpus, info["NCPU"]),
                      min(args.memory_mib, info["MemTotal"] // 1048576))
-    selected = [case for case in KV_CASES if args.scope == "all" or case.scope == args.scope]
     largest = max((len(case.stores_per_node or case.stores) for case in selected), default=3)
     case_slots = capacity(args.concurrency, min(args.cpus, info["NCPU"]),
                           min(args.memory_mib, info["MemTotal"] // 1048576), largest)
     if (args.require_isolation or args.scope == "kv.isolation") and slots < 2:
         parser.error("concurrent isolation acceptance needs two fixture slots")
-    if args.require_isolation and args.scope in ("kv.management", "kv.membership", "kv.routing"):
-        parser.error("isolation acceptance requires all, kv.recovery or kv.isolation scope")
     identity = json.loads(docker("image", "inspect", args.image))[0]
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     labels = identity["Config"].get("Labels") or {}
@@ -119,7 +130,7 @@ def main():
     (run_root / "identity.json").write_text(json.dumps({"image": args.image, "id": identity["Id"],
         "repo_digests": identity.get("RepoDigests", []), "labels": labels, "client_revision": revision,
         "layer": args.layer, "scope": args.scope, "slots": slots, "case_slots": case_slots,
-        "largest_case_nodes": largest,
+        "largest_case_nodes": largest, "selected_cases": [case.name for case in selected],
         "source_identity": source_identity}, indent=2))
     print(f"KV isolation slots: {slots}; case slots: {case_slots}; exact image {identity['Id']}; artifacts {run_root}", flush=True)
     started = time.monotonic()
@@ -137,11 +148,11 @@ def main():
     started = time.monotonic()
     timings["status"] = "failed"
     try:
-        if args.scope in ("all", "kv.recovery", "kv.isolation"):
+        if not args.case and args.scope in ("all", "kv.recovery", "kv.isolation"):
             run_pair(identity["Id"], run_root, bundle, min(slots, 2), args.data_root)
-        if args.scope in ("all", "kv.management", "kv.membership", "kv.routing", "kv.recovery"):
-            run_cases(identity["Id"], run_root, bundle, case_slots, args.data_root, args.scope)
-        if args.scope == "all":
+        if selected:
+            run_cases(identity["Id"], run_root, bundle, case_slots, args.data_root, args.scope, args.case)
+        if args.scope == "all" and not args.case:
             check_startup(identity["Id"], run_root)
         timings["status"] = "pass"
     finally:

@@ -1460,6 +1460,7 @@ dependencies = [
  "bytes",
  "crowdb-kv",
  "crowdb-kv-client",
+ "crowdb-protocol",
  "reqwest",
  "serde_json",
  "tokio",

@@ -12,7 +12,7 @@ introduce separate server launchers. Domain profiles and migration scope are
 tracked in the [working plan](../doc/working/plan-container-e2e.md).
 
 Test clients run on the host against inspected node-container IPs and fixed
-ports, with three node containers for a three-node cluster. Fresh one-, two- and three-node profiles exercise management, membership,
+ports, with three node containers for a three-node cluster. Fresh one- through five-node profiles exercise management, membership,
 async operations and multi-store routing. Host bridge IP reachability is
 required; remote Docker and Linux-VM routing are not implicitly supported.
 Containers supply server subsets or clusters from the formal release image;
@@ -31,8 +31,11 @@ pixi run test-container-e2e-fixture
 pixi run clean-env
 pixi run test-container-e2e --layer kv --concurrency 2 --cpus 4 --memory-mib 4096
 # Run one domain scope (other migrated scopes: kv.membership, kv.routing,
-# kv.recovery, kv.isolation):
+# kv.recovery, kv.isolation, kv.group0, kv.client, kv.metadata):
 pixi run test-container-e2e --scope kv.management --concurrency 2
+# Select one exact client case or list available profiles without Docker:
+pixi run test-container-e2e --case kv::bootstrap::custom_replica
+pixi run test-container-e2e --list --scope kv.group0
 # Optional parent outside the default artifact directory:
 pixi run test-container-e2e --layer kv --data-root /path/to/e2e-data
 ```
@@ -70,14 +73,19 @@ profiles remain pending.
   wildcard listen addresses to inspected bridge IPs (the C++ RPC transport
   expects numeric addresses) while retaining actual
   returned store ports. RPC ports are never host-published.
-- The KV profile directly tests a user-data group, as the original scenario did.
-  It does not create Group 0, run discovery, SSH, monitor or console, and makes
-  no claim about management bootstrap authority. Deployment profiles continue
-  to own that coverage until their migration.
+- KV scopes separately test user-data groups and Group-0 initialization,
+  discovery, membership CAS and metadata authority through public APIs. Bare
+  profiles start no initial store; Group-0 ownership tests explicitly initialize
+  through management. SSH, monitor and console coverage belongs to deployment
+  profiles until their migration.
 - SIGKILL/restart retains the same mounted data, network identities and internal
   endpoints. Inspection rejects a changed peer IP rather than masking stale
   topology by choosing another endpoint.
   Monitor automatic recovery is absent in this layer profile.
+- Host fault requests use a bounded fixture-owned control directory. Only
+  stop/start/kill/pause/unpause of declared nodes are accepted; ownership is
+  rechecked before each action. Responses and individual action timings survive
+  teardown. Client phase time already includes these actions.
 - Client compilation uses locked Cargo dependencies; the staged executable and
   Pixi shared-library dependencies execute on the host with per-run environment.
   Normal component Rust gates leave the container-only test ignored; this
@@ -127,10 +135,16 @@ publication; workflow dispatch/publication remain separate operator actions.
   cases consolidate into eight named KV flow cases. The old files and explicit
   Cargo test registrations were removed after container acceptance. Multi-store
   coverage additionally checks different values for identical keys and restart.
-- KV follow-up: `restore_test`, `reconcile_test`, `system_init_test`, `group0_discovery_test`
-  and `deployment_reconfig_test` launch processes for management APIs, startup,
-  persisted restore and Group-0 operations. Their timing, endpoint and fault
-  assertions must be retained per batch.
+- Group-0 initialization, persisted ownership and discovery now use named
+  container cases. `system_init_test` is removed; `restore_test`, `reconcile_test`
+  and `group0_discovery_test` retain their disk/identity/planning UT portions.
+  All deployment failover flows pass together; `deployment_reconfig_test` and
+  its final process launcher are removed.
+- KV client public CRUD/CAS/scan/deadline, domain monitor ensure, authority
+  and membership CAS flows have container owners. Deterministic watcher
+  admission, forced pagination, internal barrier metrics, watermark and
+  cancelled owner-handover tests remain component-local. Slot-map, handoff and
+  epoch-publication flows pass; their old embedded-server sources are removed.
 - Retain component logic tests: CLI parsing; placement/balance planning;
   monitor state/domain reconciliation tests using embedded stores or mocked
   dependencies. Mixed tests require per-case classification before moving.
@@ -151,3 +165,9 @@ Snapshot join uses two voting nodes and a third bare store from the same release
 image. Direct local reads prove imported old values before remote wiring, then
 verify WAL-tail catch-up on the non-voting member. Node profiles can omit initial
 groups; the management API owns join/bootstrap.
+
+Latest complete KV acceptance: 48 independent fixtures, 47 distinct Rust cases,
+54 client phases and three invalid release-startup checks pass in 85.987 seconds
+with two slots and a 6 CPU/6144 MiB budget. See `doc/working/test.md` for measured
+flow timings. Other service domains and final task/job classification remain
+pending.
