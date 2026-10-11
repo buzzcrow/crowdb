@@ -14,13 +14,15 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 - Working tree contains uncommitted Console browser migration drafts. Shared-image CI is committed. S3 node-fault migration and local-state component proofs are accepted.
   Preserve these drafts. `e2e-test/clients/console-ui/node_modules/` is local
   dependency state; never stage it.
-- Formal release image `crowdb-node:dev` is built/imported from `ec070372`, with
-  optimized binaries and retained debug information. OCI digest
-  `sha256:40b41c9f808a262d78236e5b1acbe685ca7de37e5b695089ea3e0f9c029e5979`;
+- Current formal release image `crowdb-node:dev` is built/imported from
+  `d9dd29c41e94ad48a58940fc01b7ad700bdd0cf3`, with optimized binaries and
+  retained debug information. OCI digest
+  `sha256:bb3c6951ef7f3203ba49354678032bf3016c3db9004412875630a1b0783b57b0`;
   config digest
-  `sha256:b51eae855a8b8d35aeb65cc1bf30622ee7ae0d04f4d2e7b1a73a10bfb7ff3fe5`.
-  Receipt: `target/crowdb.oci.tar.json`. The learner-heartbeat production fix requires a fresh image after its component gate. Rebuild only when release inputs change;
-  never bypass source/image provenance checks.
+  `sha256:701d53a74fcdb21b29f963948cdcf06f49846c90174bd5e1ac13765cc79b9fdb`.
+  Receipt: `target/crowdb.oci.tar.json`. Old image/archive `ec070372` is retained
+  for historical measurements. Rebuild only when release inputs change; never
+  bypass source/image provenance checks. Final domain timings need this image.
 - Containers run formal servers, host processes run clients. Fixed ports,
   inspected IPs, independent networks/data mounts, and three actual KV voters
   in three containers remain mandatory. Runtime service selection reuses one
@@ -52,37 +54,22 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   endpoints; signaling validates service PID and run ownership. Preserve UI
   assertions and remove native runners only after matching acceptance. Current
   root Console operation inventory is 87 cases; the two draft browser cases are additional.
-- [~] **Bridge SSH admission profile**: accept the draft root
-  `--profile bridge-admission` before retiring the four original scripts under
-  `container/single-node-container/tests/`. The draft uses inspected container
-  IPs, fixed Web/SSH ports, private host mounts, five release nodes at peak and
-  a host browser; declared budget is 3.5 CPU / 6144 MiB at 0.5 CPU/node.
-  Four browser flows, wrong-password admission, cancelled preparation fencing,
-  remote service lifecycle and independent-cluster cleanup pass in
-  `run-70a54001bb024a0586f0955c326b1217`; the full profile fails at fifth-node
-  Group-0 replica join: WAL catch-up exceeds the unchanged 10-second deadline.
-  Snapshot imports slot 84 while the leader continues committing. The leader
-  heartbeat currently excludes non-voting replicas. Two component regression
-  tests reproduce missing learner heartbeats and pass after fanout repair with
-  voter-only lease quorum. Complete KV group gate passes 121/121 (44.53 seconds);
-  all-target KV clippy passes. Rebuild the formal image and rerun the complete
-  profile plus interruption cleanup. Log: `/tmp/crowdb-root-bridge-admission-data.log`.
-  Keep `launch_ssh_test.rs` (fake SSH peer/sleep child) as component UT. Old
-  loopback-published browser traces remain under `test-results/crowdb-node-test-879d890b`
-  and `crowdb-node-test-961c2cc9`; do not relabel pending requests as readonly errors.
+- [~] **Bridge SSH admission closure**: full root profile passes on the rebuilt
+  formal image in 126.754 seconds (`run-5f3eb820ec604a439cc87ede1f140364`),
+  including all four browser flows, literal credential/authentication failure,
+  interrupted bootstrap, cancellation fencing, cross-UI services, independent
+  cleanup, persistent IP/rack update, snapshot/WAL voting catch-up and minority
+  gating. Finalize per-browser reports and zero-skip validation, prove partial
+  interruption cleanup, then retire the four old Python owners and their four
+  mixed native-spec cases. Update canonical CI delegates and client preparation.
+  Five nodes plus host browser reserve 3.5 CPU / 6144 MiB at 0.5 CPU/node.
+  Keep `launch_ssh_test.rs` (fake SSH peer/sleep child) as component UT.
 - [ ] **External engine profile**: classify/move
   `container/single-node-container/tests/ecosystem/` as an explicit manual child
   under `e2e-test/clients/`; Python, DuckDB, Trino, Spark and Flink consume one
   formal server image with host clients and locked engine dependencies. Keep
   external toolchain prerequisites, restart/exact-data assertions and credential
   redaction. Missing prerequisites fail an explicitly requested gate.
-- [ ] **Artifact policy boundary**: keep OCI artifact/build/runtime sandbox and
-  release-policy component checks with `container/oci-image` / packaging tooling;
-  they do not own ordinary service flows. Separate server executable validation
-  from `image-smoke.sh` into accepted root deployment validation. Audit
-  `docker-preview.yml` and `release-container.yml` references after moving
-  special profiles; retain release digest/snapshotter/policy proofs.
-
 ## Final integration and closure
 
 - [ ] **Launcher and coverage audit**: enumerate remaining production executable

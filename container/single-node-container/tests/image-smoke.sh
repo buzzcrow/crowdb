@@ -42,10 +42,3 @@ docker run --rm --network none --entrypoint /bin/sh "$image" -ec '
         fi
     done
 '
-
-iceberg_output=$(docker run --rm --network none --entrypoint /opt/crowdb/bin/crowdb-access-server "$image" iceberg 2>&1) && {
-    echo "Iceberg started without required configuration" >&2
-    exit 1
-}
-printf '%s\n' "$iceberg_output"
-[[ "$iceberg_output" == *'Error: NotPresent'* ]]

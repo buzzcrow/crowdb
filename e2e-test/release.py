@@ -16,7 +16,7 @@ def check_startup(image, artifacts):
     root.mkdir()
     results = []
 
-    def check(case, arguments, expected, mounts=(), environment=()):
+    def check(case, arguments, expected, mounts=(), environment=(), entrypoint=None):
         name = "crowdb-e2e-startup-" + uuid.uuid4().hex
         data = root / case
         data.mkdir()
@@ -30,6 +30,8 @@ def check_startup(image, artifacts):
             command.extend(["--mount", mount])
         for value in environment:
             command.extend(["--env", value])
+        if entrypoint is not None:
+            command.extend(["--entrypoint", entrypoint])
         started = time.monotonic()
         try:
             result = subprocess.run(command + [image, *arguments], capture_output=True,
@@ -48,6 +50,8 @@ def check_startup(image, artifacts):
             docker("rm", "-f", name)
 
     check("unknown-service", ["server", "unknown"], "Unknown server service")
+    check("iceberg-missing-environment", ["iceberg"], "Error: NotPresent",
+          entrypoint="/opt/crowdb/bin/crowdb-access-server")
     check("chunk-kv-missing-config", ["server", "chunk-kv", "--config", "/opt/crowdb/etc/missing.toml",
           "--log-dir", "/opt/crowdb/data/log/chunk-kv", "--log"], "failed to load configuration")
     check("managed-root", ["server", "kv"], "requires a separate data root")
