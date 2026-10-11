@@ -56,6 +56,7 @@ class AccessS3Cluster(ChunkKvCluster):
 
     def client_environment(self):
         env = os.environ.copy()
+        env["CROWDB_E2E_CLIENT_ROOT"] = str(self.bundle / "clients")
         env.update(CROWDB_S3_E2E_ENDPOINT=f"http://{self.addresses[12]}:7500",
                    CROWDB_S3_E2E_SECOND_ENDPOINT=f"http://{self.addresses[13]}:7500",
                    CROWDB_S3_E2E_REGION="us-east-1",
@@ -69,8 +70,13 @@ class AccessS3Cluster(ChunkKvCluster):
         return env
 
     def sdk_client(self, method):
-        script = Path(__file__).parent / "clients/s3/basic.py"
-        self.run_sdk(method, script, ["BasicS3CompatibilityTest." + method], unittest_case=True)
+        script = self.bundle / "clients/s3/basic.py"
+        if method == "test_batch_delete_thousand_keys_and_unversioned_retry":
+            for phase in ("initial", "retry", "new-publication"):
+                self.run_sdk(method + "-" + phase, script, ["BasicS3CompatibilityTest." + method],
+                             unittest_case=True, client_variables={"CROWDB_S3_BATCH_PHASE": phase})
+        else:
+            self.run_sdk(method, script, ["BasicS3CompatibilityTest." + method], unittest_case=True)
         if method == "test_default_boto3_checksums_and_multipart":
             verify_native_metrics(self)
         elif method in ("test_multipart_copy_selects_ranges_and_replaces_parts",
@@ -80,8 +86,9 @@ class AccessS3Cluster(ChunkKvCluster):
             verify_payload_copies(self)
 
     def run_sdk(self, method, script, arguments, unittest_case=False, frontend=12,
-                environment="s3-e2e", program="python", timeout=120):
+                environment="s3-e2e", program="python", timeout=120, client_variables=None):
         env = self.client_environment()
+        env.update(client_variables or {})
         env["CROWDB_S3_E2E_ENDPOINT"] = f"http://{self.addresses[frontend]}:7500"
         started = time.monotonic()
         status = "failed"
@@ -108,7 +115,7 @@ class AccessS3Cluster(ChunkKvCluster):
             raise RuntimeError(f"host SDK {method} did not complete exactly one passing case")
 
     def script_client(self, name):
-        script = Path(__file__).parent / f"clients/s3/{name}.py"
+        script = self.bundle / f"clients/s3/{name}.py"
         arguments = []
         if name == "admin":
             binary = self.artifacts / "release-access-cli"
@@ -128,7 +135,7 @@ class AccessS3Cluster(ChunkKvCluster):
             (self.artifacts / "s3-request-path.json").write_text(json.dumps(samples, indent=2))
 
     def language_client(self, language):
-        script = Path(__file__).parent / "clients/s3-sdk.sh"
+        script = self.bundle / "clients/s3-sdk.sh"
         for phase in ("prepare", "verify"):
             self.run_sdk(language + "-" + phase, script, [language, phase],
                          environment="s3-" + language + "-sdk", program="bash", timeout=700)

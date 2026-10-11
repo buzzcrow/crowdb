@@ -1,3 +1,6 @@
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
+
 use std::collections::BTreeMap;
 use std::sync::{atomic::AtomicU8, Arc};
 
@@ -11,7 +14,7 @@ use crowdb_access_iceberg::namespace::{
 use crowdb_access_iceberg::operation::{mutation_identity, PayloadStore, RequestIdentity};
 use crowdb_access_iceberg::record::StorageRecord;
 
-use super::{common::now_ms, fault::TestFaultStore};
+use super::{fault::TestFaultStore, now_ms};
 
 pub async fn prepare(store: Arc<RoutedCatalogStore>, context: CatalogContext) -> NamespacePropertyRequest {
     let request = NamespacePropertyRequest {

@@ -6,7 +6,8 @@ cd "${PIXI_PROJECT_ROOT:?}"
 language=${1:?java, js or go}
 mode=${2:-test}
 case "$language" in java|js|go) ;; *) echo 'Expected java, js or go' >&2; exit 2 ;; esac
-client="e2e-test/clients/s3-$language"
+client_root=${CROWDB_E2E_CLIENT_ROOT:-$PIXI_PROJECT_ROOT/e2e-test/clients}
+client="$client_root/s3-$language"
 if [[ "$mode" == prepare ]]; then
     case "$language" in
         java) cd "$client"; mvn -q --batch-mode package dependency:build-classpath -Dmdep.outputFile=target/classpath ;;
@@ -17,10 +18,10 @@ if [[ "$mode" == prepare ]]; then
 fi
 if [[ "$mode" == verify ]]; then
     CROWDB_S3_SDK_FAULT= timeout --signal=TERM --kill-after=30s 300s \
-        pixi run -e "s3-$language-sdk" -- bash e2e-test/clients/s3-sdk.sh "$language" run
+        pixi run -e "s3-$language-sdk" -- bash "$client_root/s3-sdk.sh" "$language" run
     status=0
     CROWDB_S3_SDK_FAULT=after-mpu timeout --signal=TERM --kill-after=30s 300s \
-        pixi run -e "s3-$language-sdk" -- bash e2e-test/clients/s3-sdk.sh "$language" run || status=$?
+        pixi run -e "s3-$language-sdk" -- bash "$client_root/s3-sdk.sh" "$language" run || status=$?
     # Clients return 42 only for the injected failure after successful cleanup.
     [[ "$status" == 42 ]] || { echo "$language: injected failure/cleanup failed (exit $status)" >&2; exit 1; }
     echo "$language: injected failure cleanup verified"

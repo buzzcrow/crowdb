@@ -1,3 +1,6 @@
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
+
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -17,7 +20,7 @@ use crowdb_access_iceberg::record::StorageRecord;
 use crowdb_chunk_kv_client::MultiScanPage;
 use crowdb_protocol::chunk_kv::ClientRequestId;
 
-use super::common::now_ms;
+use super::now_ms;
 
 pub struct TestCreateRecovery {
     request: NamespaceCreateRequest,

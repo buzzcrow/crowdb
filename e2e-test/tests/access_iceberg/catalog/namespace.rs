@@ -1,3 +1,6 @@
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
+
 use crowdb_access_iceberg::catalog::{CasOutcome, CatalogStore};
 use crowdb_access_iceberg::key::{CatalogId, CatalogScope, NamespaceId, OperationId};
 use crowdb_access_iceberg::namespace::{
@@ -6,9 +9,9 @@ use crowdb_access_iceberg::namespace::{
 use crowdb_access_iceberg::operation::mutation_identity;
 use crowdb_access_iceberg::record::StorageRecord;
 
-use super::common::TestIcebergStack;
+use super::TestNativeStorage;
 
-pub async fn verify_name_index(stack: &TestIcebergStack, catalog: CatalogId) {
+pub async fn verify_name_index(stack: &TestNativeStorage, catalog: CatalogId) {
     let store = stack.store().await;
     let parent = Some(NamespaceId::random());
     let mut entries = Vec::new();

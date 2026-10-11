@@ -821,3 +821,104 @@ Source: `app/crowdb-kv-server/`. Tests: 9 files.
   storage failure and coordinated shutdown of two or three protocol services.
 - The original protected exited-Diskio 15-second budget comparison remains
   an explicit legacy E2E source. Full migration acceptance is still pending.
+
+### Iceberg protected storage first migration batch
+
+- 2026-10-11, `run-4db6ca739f2f472f9687867bc6c8dd6a`: all three named owners pass;
+  72.123 s scenario wall, 13.310 s host-client build. Two independent fixtures
+  run concurrently, 14 release containers each, 0.25 CPU/container, 8 CPU /
+  16384 MiB aggregate reservation. Clients and PyIceberg stay on the host.
+- Formal image config `sha256:d207b46eca74df4362610b01d70d783e910523920fb9a5f9fe9acee6f971e7f4`,
+  source `b299f93bbe1fa86af759e59fd41538dc30cfa2eb`, retained debug information.
+
+| Scope               | Named flow                                                               | Client (s) | Fixture (s) |
+| ------------------- | ------------------------------------------------------------------------ | ---------- | ----------- |
+| `iceberg.metadata`  | `metadata_create_and_commit_stay_within_operation_budget`                  | 0.821      | 17.865      |
+| `iceberg.namespace` | `namespace_functional_crud_survives_native_storage_and_listener_restart`   | 36.228     | 54.250      |
+| `iceberg.files`     | `native_file_tree_publication_and_ranges_survive_catalog_storage_restart`  | 16.426     | 33.690      |
+
+- Metadata create/commit retains the original two-second limits and exact
+  get/CAS budgets. Native files retain three checkpoint intents, tree height,
+  exact full/range bytes, bounded frames, publication replay and multipart
+  completion recovery over two Chunk-KV crashes. A normally configured release
+  GC worker releases expired-session credits while preserving selected parts.
+- PyIceberg retains configuration, bearer/warehouse rejection and namespace
+  CRUD errors, cross-frontend visibility and persisted properties after restart.
+  The complete production profile advertises 14 routes, checked exactly.
+  The catalog lifecycle profile has a short delegation lease and checks exactly
+  the original six namespace routes. Both retain all namespace assertions.
+- Catalog lifecycle, further FileIO/SDK/GC/crash suites and Dataset remain pending.
+
+- `run-4e9a903dd7b74cfd9d1e3a00b04384c5`: 1 passing owners; 92.741 s scenario wall; 0.586 s build.
+
+- `run-e6d70f2565cf473a8003fb6914e660be`: 3 passing owners; 78.644 s scenario wall; 0.722 s build.
+
+- `run-6c94205d10954458a2cc548f495aa897`: 1 passing owners; 24.903 s scenario wall; 8.328 s build.
+
+| Scope           | Named flow                                            | Client (s) | Fixture (s) |
+| --------------- | ----------------------------------------------------- | ---------- | ----------- |
+| iceberg.catalog | catalog_recovery_survives_real_chunk_kv_restart       | 76.693     | 92.734      |
+| iceberg.gc      | authenticated_gc_controls_survive_separate_processes  | 39.202     | 54.529      |
+| iceberg.gc      | enabled_scheduler_admits_durable_purge_markers_once   | 29.180     | 45.512      |
+| iceberg.gc      | enabled_scheduler_admits_and_advances_completed_clear | 15.681     | 33.090      |
+| iceberg.gc      | official_sdk_foreground_progresses_under_gc_backlog   | 9.482      | 24.898      |
+
+- Catalog retains initialize/rename/clear replay, published grace recovery,
+  retired namespace isolation, epoch increments, conditional name recreation,
+  interrupted request journals and exact retry-ledger scans after native restart.
+- GC retains CLI privilege rejection, idempotent task admission, pause/resume,
+  stalled-state inspection/retry, durable purge markers and completed-clear
+  scheduling with one-item pages. The pinned foreground SDK check is mandatory.
+- Concurrent foreground proof retains four official SDK workers, signed metadata
+  reads and refreshed credentials, overlapping GC progress and all 64 writes;
+  normal rack-separated two-copy native protection replaces old one-copy mode.
+- S3 full-image low-quota run `run-e9f2655309a5497ebdf1038e163855ab`: 37/38 pass;
+  thousand-key batch deletion reaches the migration runner's cumulative 120 s process limit at
+  0.25 CPU/container. At default 0.5 CPU the same exact case passes in
+  112.320 s (`run-e645f383561d4808b6924bcae9ef6847`). This is a slow flow requiring
+  adequate gate resources; its three batch operations and assertions stay intact.
+  The cumulative limit also affected the 1 CPU/container run. Source audit
+  confirms the original Python subprocess had no cumulative deadline. The
+  migrated owner now records initial/retry/new-publication as three sequential
+  client phases on its same fixture, preserving all three operations and SDK
+  request deadlines; each phase remains bounded by 120 s. Fresh acceptance
+  of this phase split remains pending.
+
+### Iceberg SDK and signed FileIO acceptance
+
+- `run-b5aa23e83362458ea5272ca331bb292a`: 2 owners, pass; 1218.948 s scenario wall.
+- `run-41cfc3ee4b15416c90f70e958a12b9fe`: 1 owners, pass; 21.253 s scenario wall.
+- `run-8fb3396aafc445b5a9d3bcf62c2bbe76`: 4 owners, pass; 42.522 s scenario wall.
+- `run-90c1aaa3f8f44a95b788a8a790fdd50b`: 1 owners, pass; 138.657 s scenario wall.
+
+| Scope         | Named flow | Client (s) | Fixture (s) |
+| ------------- | ---------- | ---------- | ----------- |
+| iceberg.sdk   | official_rust_client_rejects_retired_native_catalog_after_full_grace             |   1206.136 |    1218.922 |
+| iceberg.sdk   | official_rust_client_lost_reply_survives_native_storage_restart                  |     26.084 |      38.767 |
+| iceberg.sdk   | official_rust_client_namespace_and_table_lifecycle                               |      5.523 |      21.220 |
+| iceberg.files | native_file_tree_publication_and_ranges_survive_catalog_storage_restart          |     14.128 |      26.622 |
+| iceberg.files | explicit_cleanup_rejects_a_retained_metadata_file                                |      1.980 |      16.374 |
+| iceberg.files | concurrent_multipart_creates_use_independent_sessions                            |      1.388 |      15.886 |
+| iceberg.files | explicit_cleanup_supports_single_batch_and_same_path_reupload                    |      1.650 |      14.261 |
+
+- Retirement keeps the complete 1200-second production grace and verifies stale catalog rejection and same-name recreation through the pinned SDK. Lost-reply recovery retains acknowledgement loss, cross-frontend visibility and storage restart. Original Rust SDK server-launching sources retire only after these and the complete namespace/table lifecycle owner pass.
+- Component Iceberg tests: 708 tests in 142 binaries pass. The serial doctest gate passes; its first concurrent run had transitive artifact resolution errors while another Cargo feature build replaced shared outputs. No test assertion changed. Access-server default component gate: 109 tests pass.
+- Host client sources and SDK locks are copied per run, alongside the immutable Rust binaries; source digests include Java, JavaScript, Go and shell inputs. Per-run SDK outputs do not mutate the repository client source.
+
+### Fresh complete S3 and FileIO gates
+
+- `run-095737a638d44969b4514582ee277b44`: 38 passing owners; 408.388 s scenario wall, 5.667 s client build.
+- `run-0280cfaaed50430780f313188cff296b`: 7 passing owners; 73.303 s scenario wall, 1.292 s client build.
+
+| Scope         | Named flow | Client (s) | Fixture (s) |
+| ------------- | ---------- | ---------- | ----------- |
+| iceberg.files | ordinary_put_size_matrix_streams_and_reads_ranges                                |     15.619 |      30.666 |
+| iceberg.files | native_file_tree_publication_and_ranges_survive_catalog_storage_restart          |     15.289 |      27.745 |
+| iceberg.files | small_routing_is_strict_at_the_strip_threshold                                   |      1.931 |      15.812 |
+| iceberg.files | explicit_cleanup_supports_single_batch_and_same_path_reupload                    |      1.920 |      14.877 |
+| iceberg.files | concurrent_multipart_creates_use_independent_sessions                            |      1.515 |      14.489 |
+| iceberg.files | slow_socket_resumes_upload_after_writer_drains                                   |      1.864 |      14.414 |
+| iceberg.files | explicit_cleanup_rejects_a_retained_metadata_file                                |      1.891 |      14.398 |
+
+- The complete S3 set includes all 23 protocol owners, six service-recovery owners, three SDK owners and six specialized owners. The thousand-key owner retains its initial/retry/new-publication operations and exact assertions as three measured phases on one fixture.
+- FileIO keeps original cleanup privilege/reference protection, independent concurrent multipart sessions, 10 KiB/1 MiB/12 MiB/100 MiB complete hashes and ranges, protected large-copy geometry, slow-body socket progress and exact threshold routing metrics. Old equivalent bodies retire after this gate. The first range owner registration omitted its test attribute; zero matching tests correctly failed the runner, and the corrected exact owner and complete seven-owner gate pass.

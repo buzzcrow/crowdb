@@ -1,6 +1,8 @@
 # Copyright 2026-present Gian <crow.db@outlook.com>
 # Licensed under the Apache License, Version 2.0.
 
+import os
+import time
 from base64 import b64encode
 from hashlib import md5
 
@@ -29,21 +31,30 @@ class BatchDeleteCases:
         self.client.delete_bucket(Bucket=bucket)
 
     def test_batch_delete_thousand_keys_and_unversioned_retry(self):
+        phase = os.environ.get("CROWDB_S3_BATCH_PHASE", "all")
+        if phase not in ("all", "initial", "retry", "new-publication"):
+            raise ValueError("unknown batch-delete phase")
         bucket = self.bucket + "-batch-limit"
         keys = [f"bulk/{index:04}/<&>边界" for index in range(1000)]
-        self.client.create_bucket(Bucket=bucket)
-        # Existing and absent keys share the same idempotent success contract.
-        for key in keys[:8]:
-            self.client.put_object(Bucket=bucket, Key=key, Body=b"old")
         selection = {"Objects": [{"Key": key} for key in keys]}
-        for _ in range(2):
+        if phase in ("all", "initial"):
+            self.client.create_bucket(Bucket=bucket)
+            # Existing and absent keys share the same idempotent success contract.
+            for key in keys[:8]:
+                self.client.put_object(Bucket=bucket, Key=key, Body=b"old")
+        for step in ("initial", "retry", "new-publication"):
+            if phase not in ("all", step):
+                continue
+            if step == "new-publication":
+                self.client.put_object(Bucket=bucket, Key=keys[0], Body=b"new publication")
+            started = time.monotonic()
             result = self.client.delete_objects(Bucket=bucket, Delete=selection)
             self.assertEqual([item["Key"] for item in result["Deleted"]], keys)
             self.assertNotIn("Errors", result)
-        self.client.put_object(Bucket=bucket, Key=keys[0], Body=b"new publication")
-        self.client.delete_objects(Bucket=bucket, Delete=selection)
-        self.assertEqual(self.client.list_objects_v2(Bucket=bucket)["KeyCount"], 0)
-        self.client.delete_bucket(Bucket=bucket)
+            print(f"batch thousand phase={step} seconds={time.monotonic() - started:.3f}", flush=True)
+        if phase in ("all", "new-publication"):
+            self.assertEqual(self.client.list_objects_v2(Bucket=bucket)["KeyCount"], 0)
+            self.client.delete_bucket(Bucket=bucket)
 
     def test_batch_delete_rejects_entire_invalid_request(self):
         bucket = self.bucket + "-batch-invalid"

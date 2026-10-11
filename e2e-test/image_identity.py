@@ -15,10 +15,13 @@ SERVER_PATHS = (
     ":(glob,exclude)**/tests/**",
     # The staging script does not package this operator documentation.
     ":(exclude)container/single-node-container/README.md",
-    # Host S3 client delegates are not read by staging or the OCI builder.
+    # Host SDK client delegates are not read by staging or the OCI builder.
     ":(exclude)tools/pixi-tasks/test-s3-e2e.sh",
     ":(exclude)tools/pixi-tasks/test-s3-client.sh",
     ":(exclude)tools/pixi-tasks/test-s3-sdk.sh",
+    ":(exclude)tools/pixi-tasks/test-iceberg-native.sh",
+    ":(exclude)tools/pixi-tasks/test-pyiceberg-e2e.sh",
+    ":(exclude)tools/pixi-tasks/test-rust-iceberg-e2e.sh",
 )
 
 

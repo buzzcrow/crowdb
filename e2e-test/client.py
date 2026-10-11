@@ -11,20 +11,24 @@ from pathlib import Path
 
 
 def run_client(bundle, addresses, token, phase, artifacts,
-               test_name="e2e_three_node_cluster_kv_put_batch_delete"):
+               test_name="e2e_three_node_cluster_kv_put_batch_delete", timeout=120):
     """Run the host client with per-invocation endpoints and require one case."""
     env = os.environ.copy()
     env.update(CROWDB_E2E_RPC=json.dumps(addresses), CROWDB_E2E_TOKEN=token,
                CROWDB_E2E_PHASE=phase, CROWDB_E2E_ARTIFACTS=str(artifacts),
-               CROWDB_E2E_CONTROL=str(Path(artifacts) / "control"))
+               CROWDB_E2E_CONTROL=str(Path(artifacts) / "control"),
+               CROWDB_E2E_CLIENT_ROOT=str(Path(bundle) / "clients"))
     bypass = ",".join(filter(None, [env.get("NO_PROXY", ""), env.get("no_proxy", ""), *addresses]))
     env.update(NO_PROXY=bypass, no_proxy=bypass)
+    sdk = Path(bundle) / "iceberg-rust-client"
+    if sdk.is_file():
+        env["CROWDB_ICEBERG_RUST_CLIENT_BIN"] = str(sdk)
     env["LD_LIBRARY_PATH"] = str(Path(bundle) / "lib") + ":" + env.get("LD_LIBRARY_PATH", "")
     started = time.monotonic()
     try:
         result = subprocess.run([str(Path(bundle) / "domain-test"), "--ignored", "--exact",
             test_name, "--nocapture"],
-            env=env, capture_output=True, text=True, check=False, timeout=120)
+            env=env, capture_output=True, text=True, check=False, timeout=timeout)
     except subprocess.TimeoutExpired as error:
         stdout, stderr = error.stdout or b"", error.stderr or b""
         output = (stdout.decode(errors="replace") if isinstance(stdout, bytes) else stdout)
@@ -61,6 +65,9 @@ def bundle_client(output):
     output = Path(output).resolve()
     (output / "lib").mkdir(parents=True)
     shutil.copy2(binaries[0], output / "domain-test")
+    shutil.copytree(Path(__file__).parent / "clients", output / "clients",
+                    ignore=shutil.ignore_patterns("target", "node_modules", "dist",
+                                                "__pycache__", "sdk-check"))
     result = subprocess.run(["ldd", "-r", str(output / "domain-test")], capture_output=True, text=True, check=True)
     if "not found" in result.stdout or "undefined symbol" in result.stdout:
         raise RuntimeError(result.stdout)
@@ -72,3 +79,22 @@ def bundle_client(output):
             if source.is_relative_to(prefix):
                 shutil.copy2(source, output / "lib" / parts[0])
     return output
+
+
+def bundle_iceberg_rust(output):
+    """Stage the unchanged pinned Apache client separately from server artifacts."""
+    root = Path(__file__).resolve().parents[1]
+    manifest = Path(output) / "clients/iceberg-rust/Cargo.toml"
+    result = subprocess.run(["cargo", "build", "--locked", "--manifest-path", str(manifest),
+        "--target-dir", str(root / "target/iceberg-sdk"), "--message-format=json"],
+        capture_output=True, text=True, check=False, timeout=600)
+    print(result.stderr, end="", flush=True)
+    if result.returncode:
+        print(result.stdout, end="", flush=True)
+        raise RuntimeError("pinned Apache Iceberg Rust client compilation failed")
+    binaries = [item["executable"] for line in result.stdout.splitlines() if line.startswith("{")
+        and (item := json.loads(line)).get("target", {}).get("name") == "crowdb-iceberg-rust-client-fixture"
+        and item.get("executable")]
+    if len(binaries) != 1:
+        raise RuntimeError("missing or ambiguous pinned Rust SDK executable")
+    shutil.copy2(binaries[0], Path(output) / "iceberg-rust-client")

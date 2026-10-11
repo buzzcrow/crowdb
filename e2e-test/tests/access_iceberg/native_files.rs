@@ -1,13 +1,11 @@
-#[path = "common/iceberg_stack.rs"]
-mod common;
-#[path = "common/iceberg_multipart.rs"]
-mod multipart;
-#[path = "common/iceberg_file_worker.rs"]
-mod worker;
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
 
 use std::sync::Arc;
 
-use common::TestIcebergStack;
+mod multipart;
+mod worker;
+use super::native::{activate, TestNativeStorage};
 use crowdb_access_iceberg::catalog::{CatalogContext, CatalogRepository, ClearBounds, ManagementPrivilege};
 use crowdb_access_iceberg::file::{
     ByteRange, ContentFormat, FileContent, FileIdentity, FileKind, FileReader, FileRecord, FileRepository,
@@ -17,9 +15,9 @@ use crowdb_access_iceberg::key::{FileId, OperationId, TableId};
 use crowdb_access_iceberg::operation::{ManagementAction, ManagementRequest, RequestIdentity};
 use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, SmallWritePolicy};
 
-async fn chunks(stack: &TestIcebergStack) -> ChunkIoClient {
+async fn chunks(stack: &TestNativeStorage) -> ChunkIoClient {
     ChunkIoClient::connect(ChunkIoClientConfig {
-        management_seeds: stack.cluster.mgmt_endpoints.clone(),
+        management_seeds: stack.seeds.clone(),
         diskio_connections_per_endpoint: 2,
         diskio_rpc_workers: 1,
         small_write: SmallWritePolicy {
@@ -27,7 +25,7 @@ async fn chunks(stack: &TestIcebergStack) -> ChunkIoClient {
             min_pipelines: 1,
             max_pipelines: 1,
             memory_budget: 8 * 1024 * 1024,
-            mirror_copies: 1,
+            mirror_copies: 2,
             conversion_enabled: false,
             ..SmallWritePolicy::new(crowdb_protocol::chunkdb::rpc::ChunkType::IcebergTable)
         },
@@ -37,7 +35,7 @@ async fn chunks(stack: &TestIcebergStack) -> ChunkIoClient {
 }
 
 async fn assert_checkpoint_intent(
-    stack: &TestIcebergStack,
+    stack: &TestNativeStorage,
     owner: FileIdentity,
     checkpoint: &crowdb_access_iceberg::file::FileWriterCheckpoint,
 ) {
@@ -67,7 +65,7 @@ async fn assert_checkpoint_intent(
     }));
 }
 
-async fn seed_root(stack: &TestIcebergStack) -> CatalogContext {
+async fn seed_root(stack: &TestNativeStorage) -> CatalogContext {
     let repository = CatalogRepository::new(stack.store().await, ClearBounds::default()).unwrap();
     repository
         .execute(
@@ -88,7 +86,7 @@ async fn seed_root(stack: &TestIcebergStack) -> CatalogContext {
         )
         .await
         .unwrap();
-    common::activate(&repository).await;
+    activate(&repository).await;
     repository.status().await.unwrap().0.context
 }
 
@@ -102,11 +100,9 @@ async fn read_all(mut reader: FileReader) -> Vec<u8> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires the owned release native-file storage"]
 async fn native_file_tree_publication_and_ranges_survive_catalog_storage_restart() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .try_init();
-    let mut stack = TestIcebergStack::start().await;
+    let mut stack = TestNativeStorage::new();
     let context = seed_root(&stack).await;
     let owner = FileIdentity {
         table: TableLocation {
@@ -158,7 +154,7 @@ async fn native_file_tree_publication_and_ranges_survive_catalog_storage_restart
     drop(repository);
     drop(blocks);
     drop(client);
-    stack.chunk_kv.restart().await;
+    stack.restart_catalog().await;
     let repository = FileRepository::new(stack.store().await);
     let recovered = repository
         .load(context, &candidate.location)

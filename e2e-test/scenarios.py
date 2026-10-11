@@ -12,6 +12,7 @@ from chunkdb_fixture import ChunkdbCluster, ChunkdbStorageCluster
 from chunk_kv_fixture import ChunkKvCluster
 from access_s3_fixture import AccessS3Cluster
 from access_protocol_fixture import AccessProtocolCluster
+from access_iceberg_fixture import AccessIcebergCluster
 from s3_recovery import SERVICE_NODES, run_recovery
 from managed_fixture import ManagedCluster
 from diskio_fixture import DiskioCluster, DiskioDiscoveryCluster, DiskioSemanticCluster
@@ -46,6 +47,12 @@ class Case:
     s3_language: str | None = None
     s3_policy: bool = False
     access_protocol: bool = False
+    iceberg_native_files: bool = False
+    iceberg_catalog_lifecycle: bool = False
+    iceberg_gc: bool = False
+    iceberg_gc_page_items: int | None = None
+    iceberg_deferred_access: bool = False
+    client_timeout: int = 120
 
 
 KV_CASES = (
@@ -236,11 +243,34 @@ S3_SPECIAL_CASES = (Case("s3.policy", "access_s3::protocol_http::combined_http_l
                     Case("s3.benchmark", "s3.benchmark::s3_request_path", sdk_client=True, s3_script="benchmark"))
 S3_LANGUAGE_CASES = tuple(Case("s3.sdk", "s3.sdk::" + language, sdk_client=True, s3_language=language)
                           for language in ("java", "js", "go"))
-ALL_CASES = S3_LANGUAGE_CASES + S3_SPECIAL_CASES + S3_RECOVERY_CASES + S3_CASES + CHUNK_KV_CASES + CHUNK_CLIENT_CASES + CHUNK_STREAM_CASES + CHUNKDB_CASES + KV_CASES + DISKDB_CASES + DEPLOYMENT_CASES + DISKIO_CASES
+ICEBERG_CASES = (
+    Case("iceberg.files", "access_iceberg::file_http::streaming::ordinary_put_size_matrix_streams_and_reads_ranges", iceberg_deferred_access=True),
+    Case("iceberg.files", "access_iceberg::file_http::streaming::slow_socket_resumes_upload_after_writer_drains", iceberg_deferred_access=True),
+    Case("iceberg.files", "access_iceberg::file_http::routing::small_routing_is_strict_at_the_strip_threshold", iceberg_deferred_access=True),
+
+    Case("iceberg.files", "access_iceberg::file_http::cleanup::concurrent_multipart_creates_use_independent_sessions", iceberg_deferred_access=True),
+    Case("iceberg.files", "access_iceberg::file_http::cleanup::explicit_cleanup_supports_single_batch_and_same_path_reupload", iceberg_deferred_access=True),
+    Case("iceberg.files", "access_iceberg::file_http::cleanup::explicit_cleanup_rejects_a_retained_metadata_file", iceberg_deferred_access=True),
+
+    Case("iceberg.sdk", "access_iceberg::rust_sdk::official_rust_client_namespace_and_table_lifecycle", iceberg_deferred_access=True, client_timeout=600),
+    Case("iceberg.gc", "access_iceberg::gc::foreground::official_sdk_foreground_progresses_under_gc_backlog", iceberg_gc=True, iceberg_gc_page_items=1, client_timeout=180),
+    Case("iceberg.sdk", "access_iceberg::rust_sdk::official_rust_client_lost_reply_survives_native_storage_restart", iceberg_deferred_access=True, client_timeout=1200),
+    Case("iceberg.sdk", "access_iceberg::rust_retired::official_rust_client_rejects_retired_native_catalog_after_full_grace", iceberg_deferred_access=True, client_timeout=1500),
+    Case("iceberg.gc", "access_iceberg::gc::authenticated_gc_controls_survive_separate_processes", iceberg_gc=True),
+    Case("iceberg.gc", "access_iceberg::gc::enabled_scheduler_admits_durable_purge_markers_once", iceberg_gc=True),
+    Case("iceberg.gc", "access_iceberg::gc::enabled_scheduler_admits_and_advances_completed_clear", iceberg_gc=True, iceberg_gc_page_items=1),
+    Case("iceberg.catalog", "access_iceberg::catalog::catalog_recovery_survives_real_chunk_kv_restart", iceberg_catalog_lifecycle=True),
+    Case("iceberg.files", "access_iceberg::native_files::native_file_tree_publication_and_ranges_survive_catalog_storage_restart", iceberg_native_files=True),
+    Case("iceberg.metadata", "access_iceberg::metadata::metadata_create_and_commit_stay_within_operation_budget"),
+    Case("iceberg.namespace", "access_iceberg::namespace::namespace_functional_crud_survives_native_storage_and_listener_restart"),
+)
+ALL_CASES = ICEBERG_CASES + S3_LANGUAGE_CASES + S3_SPECIAL_CASES + S3_RECOVERY_CASES + S3_CASES + CHUNK_KV_CASES + CHUNK_CLIENT_CASES + CHUNK_STREAM_CASES + CHUNKDB_CASES + KV_CASES + DISKDB_CASES + DEPLOYMENT_CASES + DISKIO_CASES
 
 def case_nodes(case):
     if case.access_protocol:
         return 13
+    if case.scope.startswith("iceberg."):
+        return 14
     if case.scope.startswith("s3."):
         return 14
     if case.scope.startswith("chunk-kv."):
@@ -260,6 +290,11 @@ def case_nodes(case):
     return 2 if case.scope.startswith(("diskdb.", "chunkdb.")) else len(case.stores_per_node or case.stores)
 
 def allocate_cluster(case, image, artifacts, bundle, data_root):
+    if case.scope.startswith("iceberg."):
+        return AccessIcebergCluster(image, artifacts, bundle, native_files=case.iceberg_native_files, catalog_lifecycle=case.iceberg_catalog_lifecycle,
+                                    gc_worker=case.iceberg_gc, gc_page_items=case.iceberg_gc_page_items,
+                                    deferred_access=case.iceberg_deferred_access,
+                                    data_root=data_root)
     if case.access_protocol:
         return AccessProtocolCluster(image, artifacts, bundle, data_root=data_root)
     if case.s3_policy:
@@ -307,6 +342,7 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
     def run(case):
         cluster = allocate_cluster(case, image, artifacts, bundle, data_root)
         cluster.case_name = case.name
+        cluster.client_timeout = case.client_timeout
         cluster.node_cpus = node_cpus
         (cluster.artifacts / "case.json").write_text(json.dumps({
             "scope": case.scope, "case": case.name}, indent=2))

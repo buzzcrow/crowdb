@@ -1,3 +1,6 @@
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
+
 use std::sync::Arc;
 
 use crowdb_access_iceberg::catalog::CatalogContext;
@@ -8,10 +11,10 @@ use crowdb_access_iceberg::file::{
 };
 use crowdb_access_iceberg::key::{FileId, OperationId};
 
-use crate::common::TestIcebergStack;
+use super::{chunks, read_all, TestNativeStorage};
 
-pub async fn verify_restart(stack: &mut TestIcebergStack, context: CatalogContext, table: TableLocation) {
-    let client = crate::chunks(stack).await;
+pub async fn verify_restart(stack: &mut TestNativeStorage, context: CatalogContext, table: TableLocation) {
+    let client = chunks(stack).await;
     let blocks = Arc::new(NativeFileBlocks::new(client.clone(), stack.store().await));
     let initial = MultipartSession {
         context,
@@ -84,12 +87,12 @@ pub async fn verify_restart(stack: &mut TestIcebergStack, context: CatalogContex
     drop(repository);
     drop(blocks);
     drop(client);
-    stack.chunk_kv.restart().await;
+    stack.restart_catalog().await;
     verify_resumed(stack, &initial).await;
 }
 
-async fn verify_resumed(stack: &TestIcebergStack, initial: &MultipartSession) {
-    let client = crate::chunks(stack).await;
+async fn verify_resumed(stack: &TestNativeStorage, initial: &MultipartSession) {
+    let client = chunks(stack).await;
     let blocks = Arc::new(NativeFileBlocks::new(client.clone(), stack.store().await));
     let repository = MultipartRepository::new(stack.store().await);
     let recovered = repository
@@ -116,7 +119,7 @@ async fn verify_resumed(stack: &TestIcebergStack, initial: &MultipartSession) {
         .await
         .unwrap();
     let reader = FileReader::from_tree(blocks, initial.owner, tree, None, 4096).unwrap();
-    assert_eq!(crate::read_all(reader).await, b"durable multipart bytes");
+    assert_eq!(read_all(reader).await, b"durable multipart bytes");
     assert!(
         crowdb_access_iceberg::file::FileRepository::new(stack.store().await)
             .load(initial.context, &initial.location)

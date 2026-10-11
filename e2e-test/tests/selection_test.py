@@ -51,6 +51,10 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(len(diskdb), 5)
         self.assertTrue(all(case["scope"].startswith("diskdb.") and case["nodes"] == 2
                             for case in diskdb))
+        iceberg = json.loads(self.invoke("--list", "--layer", "iceberg"))
+        self.assertEqual(len(iceberg), 17)
+        self.assertTrue(all(case["scope"].startswith("iceberg.") and case["nodes"] == 14
+                            for case in iceberg))
         kv = json.loads(self.invoke("--list", "--layer", "kv"))
         self.assertTrue(all(case["scope"].startswith("kv.") for case in kv))
         with self.assertRaises(SystemExit):

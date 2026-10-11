@@ -1,3 +1,6 @@
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -9,7 +12,7 @@ use crowdb_access_iceberg::namespace::{
 };
 use crowdb_access_iceberg::operation::{PayloadStore, RequestIdentity};
 
-use super::common::now_ms;
+use super::now_ms;
 
 pub async fn verify(store: Arc<RoutedCatalogStore>, context: CatalogContext) {
     let identity = RequestIdentity {

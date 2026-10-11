@@ -70,21 +70,6 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "test-util"] }
 
 [[test]]
-name = "iceberg_full_stack_test"
-path = "tests/iceberg_full_stack_test.rs"
-required-features = ["iceberg-e2e"]
-
-[[test]]
-name = "iceberg_file_storage_test"
-path = "tests/iceberg_file_storage_test.rs"
-required-features = ["iceberg-e2e"]
-
-[[test]]
-name = "iceberg_gc_control_test"
-path = "tests/iceberg_gc_control_test.rs"
-required-features = ["iceberg-e2e"]
-
-[[test]]
 name = "iceberg_gc_budget_test"
 path = "tests/iceberg_gc_budget_test.rs"
 

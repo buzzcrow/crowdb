@@ -1,6 +1,17 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+mod catalog;
+mod file_http;
+mod frontend;
+mod gc;
+mod metadata;
+mod namespace;
+mod native;
+mod native_files;
+mod response_loss;
+mod rust_retired;
+mod rust_sdk;
 pub(crate) mod signed_file;
 use crowdb_access_iceberg::catalog::{Capabilities, ManagementPrivilege};
 use crowdb_access_iceberg::key::OperationId;
@@ -62,4 +73,12 @@ async fn initialize() {
             .unwrap();
     }
     chunks.shutdown_small_writes().await.unwrap();
+}
+
+fn namespace_script() -> String {
+    std::path::PathBuf::from(std::env::var("CROWDB_E2E_CLIENT_ROOT").unwrap())
+        .join("iceberg-python/namespace.py")
+        .to_str()
+        .unwrap()
+        .to_owned()
 }

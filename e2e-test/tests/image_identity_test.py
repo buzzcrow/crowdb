@@ -49,14 +49,14 @@ class ImageIdentityTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "server sources differ"):
             verify_server_sources(self.root, self.revision)
 
-    def test_host_s3_delegates_do_not_exempt_release_build_tooling(self):
+    def test_host_sdk_delegates_do_not_exempt_release_build_tooling(self):
         directory = self.root / "tools/pixi-tasks"
         directory.mkdir(parents=True)
-        for name in ("test-s3-e2e.sh", "test-s3-client.sh", "test-s3-sdk.sh", "build-cpp.sh"):
+        for name in ("test-s3-e2e.sh", "test-s3-client.sh", "test-s3-sdk.sh", "test-iceberg-native.sh", "test-pyiceberg-e2e.sh", "test-rust-iceberg-e2e.sh", "build-cpp.sh"):
             (directory / name).write_text("original\n")
         self.commit()
         revision = self.git("rev-parse", "HEAD")
-        for name in ("test-s3-e2e.sh", "test-s3-client.sh", "test-s3-sdk.sh"):
+        for name in ("test-s3-e2e.sh", "test-s3-client.sh", "test-s3-sdk.sh", "test-iceberg-native.sh", "test-pyiceberg-e2e.sh", "test-rust-iceberg-e2e.sh"):
             (directory / name).write_text("changed host client delegate\n")
         self.assertTrue(verify_server_sources(self.root, revision)["server_sources_match"])
         (directory / "build-cpp.sh").write_text("changed release build input\n")

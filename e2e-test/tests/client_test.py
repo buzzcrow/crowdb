@@ -30,6 +30,7 @@ class ClientTest(unittest.TestCase):
             first, second = [call.kwargs["env"] for call in run.call_args_list]
             self.assertEqual(json.loads(first["CROWDB_E2E_RPC"]), ["172.18.0.2"])
             self.assertEqual(json.loads(second["CROWDB_E2E_RPC"]), ["172.19.0.2"])
+            self.assertEqual(first["CROWDB_E2E_CLIENT_ROOT"], str(Path(root) / "clients"))
             self.assertEqual(first["CROWDB_E2E_TOKEN"], "first")
             self.assertEqual(second["CROWDB_E2E_TOKEN"], "second")
             self.assertIn("172.18.0.2", first["NO_PROXY"].split(","))

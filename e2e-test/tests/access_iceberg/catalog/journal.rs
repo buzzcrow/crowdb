@@ -1,3 +1,6 @@
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
+
 use crowdb_access_iceberg::catalog::{CatalogContext, CatalogStore};
 use crowdb_access_iceberg::key::{NamespaceId, OperationId};
 use crowdb_access_iceberg::namespace::{
@@ -7,9 +10,9 @@ use crowdb_access_iceberg::operation::{
     PayloadStore, RequestIdentity, RetryAdmission, RetryLedger, RetryRecord,
 };
 
-use super::common::{now_ms, TestIcebergStack};
+use super::{now_ms, TestNativeStorage};
 
-pub async fn verify_recovery(stack: &mut TestIcebergStack, context: CatalogContext) {
+pub async fn verify_recovery(stack: &mut TestNativeStorage, context: CatalogContext) {
     let store = stack.store().await;
     let property_request = super::property::prepare(store.clone(), context).await;
     let creation_request = super::creation::prepare(store.clone(), context).await;
@@ -58,7 +61,7 @@ pub async fn verify_recovery(stack: &mut TestIcebergStack, context: CatalogConte
         .finish(request.clone(), 200, body.clone(), now_ms())
         .await
         .unwrap();
-    stack.chunk_kv.restart().await;
+    stack.restart_catalog().await;
     let recovered_store = stack.store().await;
     super::property::verify(recovered_store.clone(), &property_request).await;
     super::creation::verify(recovered_store.clone(), &creation_request).await;

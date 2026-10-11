@@ -1,65 +1,24 @@
-#![cfg(feature = "iceberg-e2e")]
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
 
-#[path = "common/iceberg_file_blocks.rs"]
-#[allow(dead_code)]
-mod blocks;
-#[path = "common/iceberg_store.rs"]
-mod common;
-#[path = "common/iceberg_table_http.rs"]
-#[allow(dead_code)]
-mod fixture;
-#[path = "common/iceberg_stack.rs"]
-#[allow(dead_code)]
-mod native_stack;
-#[path = "common/iceberg_process.rs"]
-#[allow(dead_code)]
-mod process;
-
-use std::{sync::Arc, time::Duration};
-
+use super::{
+    frontend::TestFrontend,
+    native::{activate, TestNativeStorage},
+    now_ms,
+};
+use crowdb_access_iceberg::catalog::CatalogError;
 use crowdb_access_iceberg::{
-    catalog::{CatalogError, CatalogRepository, ClearBounds, ManagementPrivilege},
+    catalog::{CatalogRepository, ClearBounds, ManagementPrivilege},
     key::OperationId,
     operation::{ManagementAction, ManagementRequest, RequestIdentity},
-    wire::BearerAuthenticator,
 };
-use crowdb_access_server::iceberg::{serve, IcebergHttpService};
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "builds the pinned official Apache Iceberg Rust client"]
-async fn official_rust_client_rejects_retired_catalog_after_clear() {
-    let fixture = fixture::TestTableHttp::writable().await;
-    let repository = Arc::new(CatalogRepository::new(fixture.store.clone(), ClearBounds::default()).unwrap());
-    let service = IcebergHttpService::new(
-        repository.clone(),
-        BearerAuthenticator::new(&"r".repeat(32), &"w".repeat(32), &"m".repeat(32), &"c".repeat(32)).unwrap(),
-        Duration::from_secs(2),
-    )
-    .with_namespaces(fixture.store.clone())
-    .unwrap()
-    .with_tables(fixture.store.clone(), Arc::new(blocks::TestFileBlocks::default()))
-    .unwrap();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let second_origin = format!("http://{}", listener.local_addr().unwrap());
-    let (stop, stopped) = tokio::sync::oneshot::channel();
-    let server = tokio::spawn(async move {
-        serve(listener, Arc::new(service), async {
-            let _ = stopped.await;
-        })
-        .await
-        .unwrap();
-    });
-    run_client_across_clear(&fixture.endpoint(), &second_origin, &repository, 60).await;
-    stop.send(()).unwrap();
-    server.await.unwrap();
-    fixture.finish().await;
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires pinned Apache Iceberg Rust client and native retirement grace"]
 async fn official_rust_client_rejects_retired_native_catalog_after_full_grace() {
-    let stack = native_stack::TestIcebergStack::start().await;
+    let stack = TestNativeStorage::new();
     let repository = CatalogRepository::new(
         stack.store().await,
         ClearBounds {
@@ -88,16 +47,10 @@ async fn official_rust_client_rejects_retired_native_catalog_after_full_grace() 
         )
         .await
         .unwrap();
-    native_stack::activate(&repository).await;
-    let first = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
-    let second = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
-    run_client_across_clear(
-        &format!("http://{}", first.address),
-        &format!("http://{}", second.address),
-        &repository,
-        1_500,
-    )
-    .await;
+    activate(&repository).await;
+    let first = TestFrontend::start(12).await;
+    let second = TestFrontend::start(13).await;
+    run_client_across_clear(&first.origin.clone(), &second.origin.clone(), &repository, 1_500).await;
 }
 
 async fn run_client_across_clear(
@@ -159,16 +112,7 @@ async fn run_client_across_clear(
         .execute(clear, ManagementPrivilege::Clear, now_ms())
         .await
         .unwrap();
-    common::activate(repository).await;
+    activate(repository).await;
     signal.write_all(&[1]).await.unwrap();
     assert!(client.await.unwrap().success());
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis()
-        .try_into()
-        .unwrap()
 }

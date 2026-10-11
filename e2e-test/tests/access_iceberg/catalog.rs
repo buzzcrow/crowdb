@@ -1,26 +1,21 @@
-#[path = "common/iceberg_background.rs"]
-mod background;
-#[path = "common/iceberg_stack.rs"]
-mod common;
-#[path = "common/iceberg_creation.rs"]
-mod creation;
-#[path = "common/iceberg_drop.rs"]
-mod dropping;
-#[path = "common/iceberg_fault.rs"]
-mod fault;
-#[path = "common/iceberg_journal.rs"]
-mod journal;
-#[path = "common/iceberg_namespace.rs"]
-mod namespace;
-#[path = "common/iceberg_process.rs"]
-mod process;
-#[path = "common/iceberg_property.rs"]
-mod property;
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::{now_ms, TestIcebergStack};
+mod background;
+mod creation;
+mod dropping;
+mod fault;
+use super::frontend;
+mod journal;
+mod namespace;
+mod property;
+use super::{
+    native::{self, TestNativeStorage},
+    now_ms,
+};
 use crowdb_access_iceberg::catalog::{
     CatalogAuthority, CatalogError, CatalogRepository, ClearBounds, ManagementPrivilege,
 };
@@ -70,106 +65,9 @@ async fn execute(repository: &CatalogRepository, request: ManagementRequest) -> 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn metadata_create_and_commit_stay_within_operation_budget() {
-    let stack = TestIcebergStack::start().await;
-    let repository = CatalogRepository::new(
-        stack.store().await,
-        ClearBounds {
-            request_ms: 300_000,
-            delegated_access_ms: 900_000,
-            ..ClearBounds::default()
-        },
-    )
-    .unwrap();
-    execute(
-        &repository,
-        request(ManagementAction::Initialize, "metadata-budget", None),
-    )
-    .await;
-    common::activate(&repository).await;
-    let frontend = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
-    let origin = format!("http://{}", frontend.address);
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .unwrap();
-    let namespace = client
-        .post(format!("{origin}/v1/namespaces"))
-        .bearer_auth("w".repeat(32))
-        .json(&serde_json::json!({"namespace": ["budget"]}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(namespace.status(), 200, "{}", namespace.text().await.unwrap());
-
-    let before = metadata_counters(&client, &origin).await;
-    let started = std::time::Instant::now();
-    let created = client
-        .post(format!("{origin}/v1/namespaces/budget/tables"))
-        .bearer_auth("w".repeat(32))
-        .json(
-            &serde_json::json!({"name":"small", "schema":{"type":"struct", "schema-id":0,
-            "fields":[{"id":1,"name":"value","type":"long","required":false}]}}),
-        )
-        .send()
-        .await
-        .unwrap();
-    let create_duration = started.elapsed();
-    assert_eq!(created.status(), 200, "{}", created.text().await.unwrap());
-    let after_create = metadata_counters(&client, &origin).await;
-
-    let started = std::time::Instant::now();
-    let updated = client
-        .post(format!("{origin}/v1/namespaces/budget/tables/small"))
-        .bearer_auth("w".repeat(32))
-        .json(&serde_json::json!({"requirements":[], "updates":[
-            {"action":"set-properties", "updates":{"sample":"done"}}]}))
-        .send()
-        .await
-        .unwrap();
-    let update_duration = started.elapsed();
-    assert_eq!(updated.status(), 200, "{}", updated.text().await.unwrap());
-    let after_update = metadata_counters(&client, &origin).await;
-
-    let create_get = after_create.0 - before.0;
-    let create_cas = after_create.1 - before.1;
-    let update_get = after_update.0 - after_create.0;
-    let update_cas = after_update.1 - after_create.1;
-    eprintln!(
-        "metadata budget: create={create_duration:?} get={create_get} cas={create_cas}; \
-         update={update_duration:?} get={update_get} cas={update_cas}"
-    );
-    assert!(create_duration < Duration::from_secs(2));
-    assert!(update_duration < Duration::from_secs(2));
-    assert!(
-        create_get <= 160 && create_cas <= 30,
-        "table create performed too many storage operations"
-    );
-    assert!(
-        update_get <= 160 && update_cas <= 20,
-        "table update performed too many storage operations"
-    );
-}
-
-async fn metadata_counters(client: &reqwest::Client, origin: &str) -> (u64, u64) {
-    let response = client
-        .get(format!("{origin}/_crowdb/metrics"))
-        .bearer_auth("m".repeat(32))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200);
-    let value: serde_json::Value = response.json().await.unwrap();
-    let catalog = &value["routes"][4][0]["catalog"];
-    (
-        catalog["get"].as_u64().unwrap(),
-        catalog["compare_exchange"].as_u64().unwrap(),
-    )
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires the owned release native catalog"]
 async fn catalog_recovery_survives_real_chunk_kv_restart() {
-    let mut stack = TestIcebergStack::start().await;
+    let mut stack = TestNativeStorage::new();
     let bounds = ClearBounds {
         request_ms: 500,
         root_lease_ms: 0,
@@ -179,12 +77,12 @@ async fn catalog_recovery_survives_real_chunk_kv_restart() {
     let repository = Arc::new(CatalogRepository::new(stack.store().await, bounds).unwrap());
     let initialize = request(ManagementAction::Initialize, "original", None);
     let original = execute(&repository, initialize.clone()).await;
-    common::activate(&repository).await;
-    let frontend = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
-    let second_frontend = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
+    native::activate(&repository).await;
+    let frontend = frontend::TestFrontend::start(12).await;
+    let second_frontend = frontend::TestFrontend::start(13).await;
     frontend.check_official_reads();
     second_frontend.check_official_reads();
-    let denied = process::command(&stack.cluster.mgmt_endpoints)
+    let denied = frontend::command(&stack.seeds)
         .env("CROWDB_ICEBERG_TOKEN", "r".repeat(32))
         .arg("status")
         .output()
@@ -192,7 +90,7 @@ async fn catalog_recovery_survives_real_chunk_kv_restart() {
     assert!(!denied.status.success());
     assert!(String::from_utf8_lossy(&denied.stderr).contains("management privilege"));
     for action in ["status", "initialize", "rename", "clear"] {
-        let denied = process::command(&stack.cluster.mgmt_endpoints)
+        let denied = frontend::command(&stack.seeds)
             .env("CROWDB_ICEBERG_TOKEN", "w".repeat(32))
             .arg(action)
             .output()
@@ -211,7 +109,7 @@ async fn catalog_recovery_survives_real_chunk_kv_restart() {
         Err(CatalogError::Busy)
     ));
     drop(repository);
-    stack.chunk_kv.restart().await;
+    stack.restart_catalog().await;
     let repository = CatalogRepository::new(stack.store().await, bounds).unwrap();
     let (recovering, _) = repository.status().await.unwrap();
     if let crowdb_access_iceberg::catalog::RootState::Published(transition) = recovering.state {
@@ -227,87 +125,28 @@ async fn catalog_recovery_survives_real_chunk_kv_restart() {
     assert_eq!(execute(&repository, clear).await, replacement);
     assert_eq!(execute(&repository, initialize).await, original);
     assert_eq!(repository.status().await.unwrap().0.context.activation_epoch, 3);
-    common::activate(&repository).await;
+    native::activate(&repository).await;
     verify_retry_scan(&stack, &repository).await;
-    drop(frontend);
-    drop(second_frontend);
+    frontend.stop().await;
+    second_frontend.stop().await;
     namespace::verify_name_index(&stack, latest.catalog).await;
-    let frontend = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
-    let second_frontend = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
+    let frontend = frontend::TestFrontend::start(12).await;
+    let second_frontend = frontend::TestFrontend::start(13).await;
     background::verify(stack.store().await, repository.status().await.unwrap().0.context).await;
     frontend.check_official_reads();
     second_frontend.check_official_reads();
-    drop(frontend);
-    drop(second_frontend);
+    frontend.stop().await;
+    second_frontend.stop().await;
     journal::verify_recovery(&mut stack, repository.status().await.unwrap().0.context).await;
     verify_interrupted_clear(&stack, &repository).await;
-    common::activate(&repository).await;
-    let frontend = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
-    let second_frontend = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
+    native::activate(&repository).await;
+    let frontend = frontend::TestFrontend::start(12).await;
+    let second_frontend = frontend::TestFrontend::start(13).await;
     frontend.check_official_reads();
     second_frontend.check_official_reads();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn namespace_functional_crud_survives_native_storage_and_listener_restart() {
-    let mut stack = TestIcebergStack::start().await;
-    let repository = CatalogRepository::new(
-        stack.store().await,
-        ClearBounds {
-            request_ms: 300_000,
-            ..ClearBounds::default()
-        },
-    )
-    .unwrap();
-    execute(
-        &repository,
-        request(ManagementAction::Initialize, "functional", None),
-    )
-    .await;
-    common::activate(&repository).await;
-    let frontend = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
-    let second_frontend = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
-    frontend.check_official_client();
-    second_frontend.check_official_client();
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .unwrap();
-    let created = client
-        .post(format!("http://{}/v1/namespaces", frontend.address))
-        .bearer_auth("w".repeat(32))
-        .header("content-type", "application/json")
-        .body(r#"{"namespace":["persisted"],"properties":{"owner":"before-restart"}}"#)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(created.status(), 200, "{}", created.text().await.unwrap());
-    verify_retained_namespace(&client, &second_frontend).await;
-    drop(frontend);
-    drop(second_frontend);
-    stack.chunk_kv.restart().await;
-    let frontend = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
-    let second_frontend = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
-    for listener in [&frontend, &second_frontend] {
-        verify_retained_namespace(&client, listener).await;
-        listener.check_official_client();
-    }
-}
-
-async fn verify_retained_namespace(client: &reqwest::Client, listener: &process::TestIcebergProcess) {
-    let response = client
-        .get(format!("http://{}/v1/namespaces/persisted", listener.address))
-        .bearer_auth("r".repeat(32))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 200);
-    let body: serde_json::Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
-    assert_eq!(body["namespace"], serde_json::json!(["persisted"]));
-    assert_eq!(body["properties"], serde_json::json!({"owner":"before-restart"}));
-}
-
-async fn verify_interrupted_clear(stack: &TestIcebergStack, repository: &CatalogRepository) {
+async fn verify_interrupted_clear(stack: &TestNativeStorage, repository: &CatalogRepository) {
     for mode in [1, 2] {
         let (root, authority) = repository.status().await.unwrap();
         let clear = request(
@@ -340,7 +179,7 @@ async fn verify_interrupted_clear(stack: &TestIcebergStack, repository: &Catalog
     }
 }
 
-async fn verify_retry_scan(stack: &TestIcebergStack, repository: &CatalogRepository) {
+async fn verify_retry_scan(stack: &TestNativeStorage, repository: &CatalogRepository) {
     use crowdb_access_iceberg::key::IcebergKey;
     use crowdb_access_iceberg::operation::{RetryAdmission, RetryLedger, RetryRecord};
     use crowdb_chunk_kv_client::MultiScanRequest;

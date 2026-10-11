@@ -1222,3 +1222,85 @@ Only the exited-storage timing migration awaits a human design choice; S3 and su
 - Per-node CPU quota is explicit. The host client retains a separate 0.5-CPU
   reservation; CI uses 0.25 CPU per server, fitting a single 14-node fixture
   in 4 CPU / 8192 MiB. Protocol and language clients passed at this quota.
+
+## Iceberg first verified owners
+
+- Formal `AccessIcebergCluster` adds two normal Iceberg frontends to the
+  protected 12-server persistent storage fixture. Fixed 7502 endpoints,
+  supported runtime configuration and mounted data/logs replace host launchers.
+  Native-file tests initialize their own catalog and start the selected GC
+  frontend only when needed; component test clients never start host servers.
+- `iceberg_full_stack_test::metadata_create_and_commit_stay_within_operation_budget`
+  maps to `access_iceberg::metadata` with identical time/get/CAS assertions.
+- `iceberg_full_stack_test::namespace_functional_crud_survives_native_storage_and_listener_restart`
+  maps to `access_iceberg::namespace`, retaining the official PyIceberg client
+  on both frontends before/after restart and exact persisted properties.
+- `iceberg_file_storage_test::native_file_tree_publication_and_ranges_survive_catalog_storage_restart`
+  maps to `access_iceberg::native_files`, preserving checkpoint/publication/range
+  and multipart recovery assertions, strengthening native mirror protection
+  from the old unsafe colocated single copy to two independent rack copies.
+  Its GC helper now starts the normally configured release worker container.
+- All three pass in `run-4db6ca739f2f472f9687867bc6c8dd6a`; original three cases,
+  file-storage target and its now-unused multipart/worker host helpers retire.
+  Catalog lifecycle and other consumers keep their original ownership until
+  separately migrated and verified. Fine timing rows are in `test.md`.
+- First PyIceberg attempt expected six routes on the full-delegation profile.
+  The migrated client checks all 14 routes there; the short-delegation catalog
+  lifecycle profile retains the exact six-route expectation. No namespace
+  assertion is dropped.
+
+## Iceberg catalog and GC accepted owners
+
+- `iceberg_full_stack_test::catalog_recovery_survives_real_chunk_kv_restart`
+  maps to `access_iceberg::catalog`; all original root/authority/retry/journal
+  and conditional namespace assertions pass in
+  `run-4e9a903dd7b74cfd9d1e3a00b04384c5`. Two fixed-address release frontends
+  stop/restart through owned container control, and the CLI executable/libraries
+  come from that exact image for the host management client. Retire the old
+  full-stack target and its seven unused native client helpers.
+- The four `iceberg_gc_control_test` cases map to `access_iceberg::gc` and
+  `gc::foreground`, preserving task authority, admission/idempotency,
+  pause/resume, stalled-storage retry, durable purge/retired catalog scheduling
+  and simultaneous public SDK foreground progress. Three pass in
+  `run-e6d70f2565cf473a8003fb6914e660be`; foreground passes in
+  `run-6c94205d10954458a2cc548f495aa897`. Retire the old target after all four pass.
+- Normal GC configuration selects the worker and page/interval bounds; ordinary
+  client lifecycle control starts its deferred release container. No custom
+  worker executable, injected production endpoint or fault image is added.
+- Host PyIceberg/native task aliases delegate the migrated scopes. Existing
+  in-memory namespace SDK limits proof remains in its component and still runs.
+- Rust SDK clients now have a root child project with the original pinned lock.
+  The response-loss/native restart owner passes in the ongoing SDK run; the
+  native retirement owner keeps its 1500-second external budget and full
+  production grace wait. Do not retire these original SDK sources before the
+  complete SDK gate succeeds. Host client deadlines are declared per owner;
+  ordinary cases retain 120 seconds and child SDK deadlines remain unchanged.
+
+## S3 batch-delete phase budget diagnosis
+
+- Fresh-image 0.25 CPU run passes 37/38 owners; the thousand-key sequence exceeds
+  the runner's 120-second cumulative subprocess limit. The 0.5 CPU focused run
+  passes in 112.320 s; the two-slot 1 CPU run also reaches the cumulative limit
+  after initial/repeated calls (17.319 s and 34.442 s), during its third call.
+- Exact source audit: original `run_boto3_case` used `Command::output()` without
+  a cumulative deadline; the 120-second process cap was introduced by the
+  migration runner. Boto3 request deadlines/retries have not changed.
+- Split the same owner into initial/retry/new-publication host phases on its
+  one owned fixture. Preserve three full thousand-key requests, exact returned
+  keys, no errors, fresh-publication deletion and zero final objects. Record each
+  phase separately with its bounded 120-second client process limit. The third
+  response now also checks exact keys/no-errors. No request retry or timing
+  assertion is added or weakened. Await focused/full acceptance before closure.
+
+## Iceberg SDK accepted owners and client isolation
+
+- The full native retirement and lost-reply restart gate passes in `run-b5aa23e83362458ea5272ca331bb292a`; full retirement takes 1206.136 s with its original grace intact. The complete namespace/table lifecycle owner passes in `run-41cfc3ee4b15416c90f70e958a12b9fe`. Retire the two old SDK test sources and delegate their Pixi alias to `iceberg.sdk`. Move the remaining version-check reference and old child-project directory during final task taxonomy cleanup.
+- Three signed FileIO cleanup/session owners pass in `run-8fb3396aafc445b5a9d3bcf62c2bbe76`. Further range/streaming/threshold owners are being verified before deleting their old bodies.
+- Bundle each run’s host Python/foreign SDK sources and locks, compile the pinned Rust SDK from that snapshot, and record every client language in its source digest. SDK prepare/build products stay inside the run. The protected native fixture explicitly selects two large mirror copies as well as two small copies.
+- The phased thousand-key S3 owner passes in `run-90c1aaa3f8f44a95b788a8a790fdd50b`; fresh full 38-owner acceptance remains running.
+
+## Fresh S3 and FileIO gate closure
+
+- All 38 S3 owners pass on the fresh image in `run-095737a638d44969b4514582ee277b44`, including the bounded three-phase thousand-key owner. Earlier failed cumulative-cap runs remain documented, superseded by this successful exact gate.
+- Seven FileIO owners pass together in `run-0280cfaaed50430780f313188cff296b`; remove the six newly equivalent old HTTP bodies and their unused cleanup helper/imports. Protected large data uses two normal mirror copies.
+- Default access-server and retained Iceberg component gates pass; fixture tests, all-target clippy and workspace fmt pass. Remaining FileIO publication/crash/SDK/capacity, Dataset, Console, deployment, final taxonomy/CI and the exited-storage deadline choice remain unfinished.

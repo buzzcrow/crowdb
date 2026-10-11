@@ -159,7 +159,8 @@ class Cluster:
     def client(self, bundle, phase, test_name="e2e_three_node_cluster_kv_put_batch_delete"):
         try:
             with Control(self):
-                run_client(bundle, self.addresses, self.run_id, phase, self.artifacts, test_name)
+                run_client(bundle, self.addresses, self.run_id, phase, self.artifacts, test_name,
+                           timeout=getattr(self, "client_timeout", 120))
         except BaseException as error:
             (self.artifacts / f"client-{phase}.error").write_text(redact(str(error)))
             raise

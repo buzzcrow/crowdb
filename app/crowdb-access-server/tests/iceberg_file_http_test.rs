@@ -21,16 +21,13 @@ mod recovery;
 use common::{now_ms, TestIcebergStack};
 use crowdb_access_iceberg::catalog::{CatalogRepository, ClearBounds, ManagementPrivilege};
 use crowdb_access_iceberg::file::{
-    FileGrant, FileGrantIssuer, FileKind, FileLocation, FileOperation, FileOperations, FileRepository,
-    TableLocation,
+    FileGrant, FileGrantIssuer, FileKind, FileOperation, FileOperations, FileRepository, TableLocation,
 };
 use crowdb_access_iceberg::key::OperationId;
 use crowdb_access_iceberg::operation::{ManagementAction, ManagementRequest, RequestIdentity};
 use crowdb_access_iceberg::wire::BearerAuthenticator;
 use crowdb_access_server::config::AccessConfig;
 use crowdb_common::config::load_from_file;
-use crowdb_protocol::chunkdb::rpc::{QueryChunkRequest, Strip};
-use crowdb_test_harness::chunkdb::make_client as make_chunkdb_client;
 use futures::StreamExt;
 use md5::{Digest, Md5};
 use reqwest::{Client, Method};
@@ -181,151 +178,6 @@ async fn setup_with_bounds_and_file_limit(
 
 fn path(table: TableLocation, key: &str) -> String {
     format!("/{}/{}", table.bucket(), table.file(key).unwrap().object_key())
-}
-
-async fn cleanup_client(
-    stack: &TestIcebergStack,
-    client: &TestFileClient,
-    table: TableLocation,
-) -> TestFileClient {
-    let context = CatalogRepository::new(
-        stack.store().await,
-        ClearBounds {
-            delegated_access_ms: 900_000,
-            ..ClearBounds::default()
-        },
-    )
-    .unwrap()
-    .status()
-    .await
-    .unwrap()
-    .0
-    .context;
-    let authenticator =
-        BearerAuthenticator::new(&"r".repeat(32), &"w".repeat(32), &"m".repeat(32), &"c".repeat(32)).unwrap();
-    let issuer = FileGrantIssuer::new(authenticator.namespace_token_key(), 15 * 60 * 1000).unwrap();
-    let started = now_ms();
-    TestFileClient {
-        client: client.client.clone(),
-        credentials: issuer
-            .issue(FileGrant {
-                context,
-                table: table.table,
-                principal: [9; 32],
-                nonce: OperationId::random(),
-                issued_ms: started - 1_000,
-                expires_ms: started + 10 * 60 * 1000,
-                operations: FileOperations::new(&[FileOperation::DeleteObject, FileOperation::DeleteObjects])
-                    .unwrap(),
-                max_request_bytes: 1024 * 1024,
-                max_file_bytes: 1024 * 1024,
-            })
-            .unwrap(),
-        address: client.address,
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn concurrent_multipart_creates_use_independent_sessions() {
-    let (_stack, _process, client, table) = setup().await;
-    let mut requests = tokio::task::JoinSet::new();
-    for index in 0..24 {
-        let object = path(table, &format!("data/concurrent-{index}.parquet"));
-        let request = client.request(Method::POST, &object, "uploads=", b"", false, None);
-        requests.spawn(async move { request.send().await.unwrap() });
-    }
-    while let Some(result) = requests.join_next().await {
-        let response = result.unwrap();
-        assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn explicit_cleanup_supports_single_batch_and_same_path_reupload() {
-    let (stack, _process, client, table) = setup().await;
-    let object = path(table, "data/cleanup.parquet");
-    let initial = client.send(Method::PUT, &object, "", b"first", false).await;
-    assert_eq!(initial.status(), 200, "{}", initial.text().await.unwrap());
-    let ordinary = client.send(Method::DELETE, &object, "", b"", false).await;
-    assert_eq!(ordinary.status(), 403);
-
-    let cleanup = cleanup_client(&stack, &client, table).await;
-    let deleted = cleanup.send(Method::DELETE, &object, "", b"", false).await;
-    assert_eq!(deleted.status(), 204, "{}", deleted.text().await.unwrap());
-    let missing = client.send(Method::GET, &object, "", b"", false).await;
-    assert_eq!(missing.status(), 404);
-    let recreated = client.send(Method::PUT, &object, "", b"second", false).await;
-    assert_eq!(recreated.status(), 200, "{}", recreated.text().await.unwrap());
-
-    let location = table.file("data/cleanup.parquet").unwrap();
-    let missing_key = table.file("data/unknown.parquet").unwrap();
-    let xml = format!(
-        "<Delete><Object><Key>{}</Key></Object><Object><Key>{}</Key></Object></Delete>",
-        location.object_key(),
-        missing_key.object_key()
-    );
-    let response = cleanup
-        .send(
-            Method::POST,
-            &format!("/{}", table.bucket()),
-            "delete=",
-            xml.as_bytes(),
-            true,
-        )
-        .await;
-    let status = response.status();
-    let body = response.text().await.unwrap();
-    assert_eq!(status, 200, "{body}");
-    assert!(body.contains("<Deleted>"), "{body}");
-    assert!(!body.contains("<Error>"), "{body}");
-    assert_eq!(
-        client.send(Method::GET, &object, "", b"", false).await.status(),
-        404
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn explicit_cleanup_rejects_a_retained_metadata_file() {
-    let (stack, _process, client, _) = setup().await;
-    let endpoint = format!("http://{}", client.address);
-    let created = client
-        .client
-        .post(format!("{endpoint}/v1/namespaces/analytics/tables"))
-        .bearer_auth("w".repeat(32))
-        .json(&serde_json::json!({"name":"protected", "schema":{"type":"struct","fields":[]}}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(created.status(), 200, "{}", created.text().await.unwrap());
-    let created: serde_json::Value = created.json().await.unwrap();
-    let location: FileLocation = created["metadata-location"].as_str().unwrap().parse().unwrap();
-    let table = location.table();
-    let cleanup = cleanup_client(&stack, &client, table).await;
-    let object = format!("/{}/{}", table.bucket(), location.object_key());
-    let single = cleanup.send(Method::DELETE, &object, "", b"", false).await;
-    assert_eq!(single.status(), 409, "{}", single.text().await.unwrap());
-    let xml = format!(
-        "<Delete><Object><Key>{}</Key></Object></Delete>",
-        location.object_key()
-    );
-    let batch = cleanup
-        .send(
-            Method::POST,
-            &format!("/{}", table.bucket()),
-            "delete=",
-            xml.as_bytes(),
-            true,
-        )
-        .await;
-    let status = batch.status();
-    let body = batch.text().await.unwrap();
-    assert_eq!(status, 200, "{body}");
-    assert!(body.contains("<Error>"), "{body}");
-    assert!(FileRepository::new(stack.store().await)
-        .load(cleanup.credentials.grant().context, &location)
-        .await
-        .unwrap()
-        .is_some());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -776,133 +628,6 @@ async fn signed_standard_put_get_and_multipart_publish_unbound_files() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn ordinary_put_size_matrix_streams_and_reads_ranges() {
-    let (stack, _process, client, table) = setup_with_bounds_and_file_limit(
-        ClearBounds {
-            request_ms: 120_000,
-            delegated_access_ms: 900_000,
-            ..ClearBounds::default()
-        },
-        128 * 1024 * 1024,
-        128 * 1024 * 1024,
-    )
-    .await;
-    let repository = FileRepository::new(stack.store().await);
-    for size in [10 * 1024, 1024 * 1024, 12 * 1024 * 1024, 100 * 1024 * 1024] {
-        let key = format!("data/size-{size}.parquet");
-        let object = path(table, &key);
-        let bytes = (0..size)
-            .map(|offset| u8::try_from(offset % 256).unwrap())
-            .collect::<Vec<_>>();
-        let expected = Md5::digest(&bytes);
-        let started = Instant::now();
-        let put = client.send(Method::PUT, &object, "", &bytes, true).await;
-        assert_eq!(put.status(), 200, "{}", put.text().await.unwrap());
-        let put_elapsed = started.elapsed();
-        let head = client.send(Method::HEAD, &object, "", b"", false).await;
-        assert_eq!(head.status(), 200);
-        assert_eq!(head.headers()["content-length"], size.to_string());
-        let record = repository
-            .load(client.credentials.grant().context, &table.file(&key).unwrap())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(record.length, size as u64);
-        let locations = record.content.locations(record.length).unwrap().unwrap();
-        assert!(!locations.is_empty());
-        if size == 12 * 1024 * 1024 {
-            let chunkdb = make_chunkdb_client(stack.cluster.make_service_registry_client());
-            let chunk = chunkdb
-                .query_chunk(QueryChunkRequest {
-                    chunk_id: locations[0].chunk_id,
-                })
-                .await
-                .unwrap()
-                .chunk
-                .unwrap();
-            let expected_copies = fixture_config().iceberg.large_mirror_copies.unwrap();
-            assert!(chunk.strips.iter().any(|strip| strip.sealed_length > 0));
-            for strip in &chunk.strips {
-                let Some(Strip::MirrorStrip(mirror)) = strip.strip.as_ref() else {
-                    panic!("single-node large Iceberg write has a mirror strip");
-                };
-                assert_eq!(mirror.segments.len(), usize::try_from(expected_copies).unwrap());
-            }
-        }
-        let get_started = Instant::now();
-        let mut response = client.send(Method::GET, &object, "", b"", false).await;
-        assert_eq!(response.status(), 200);
-        let mut received = Md5::new();
-        let mut received_size = 0;
-        while let Some(chunk) = response.chunk().await.unwrap() {
-            received.update(&chunk);
-            received_size += chunk.len();
-        }
-        assert_eq!(received_size, size);
-        assert_eq!(received.finalize().as_slice(), expected.as_slice());
-        let get_elapsed = get_started.elapsed();
-        for start in [0, usize::min(size - 1, 65500), size - 1] {
-            let end = usize::min(size - 1, start + 127);
-            let range = format!("bytes={start}-{end}");
-            let response = client
-                .send_range(Method::GET, &object, "", b"", false, Some(&range))
-                .await;
-            assert_eq!(response.status(), 206);
-            assert_eq!(response.bytes().await.unwrap().as_ref(), &bytes[start..=end]);
-        }
-        println!("iceberg ordinary size={size} PUT={put_elapsed:?} GET={get_elapsed:?}");
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn slow_socket_resumes_upload_after_writer_drains() {
-    const BLOCK_BYTES: usize = 1024 * 1024;
-    let (_stack, _process, client, table) = setup_with_bounds_and_file_limit(
-        ClearBounds {
-            request_ms: 120_000,
-            delegated_access_ms: 900_000,
-            ..ClearBounds::default()
-        },
-        16 * 1024 * 1024,
-        16 * 1024 * 1024,
-    )
-    .await;
-    let block = hyper::body::Bytes::from(vec![41; BLOCK_BYTES]);
-    let mut md5 = Md5::new();
-    md5.update(&block);
-    md5.update(&block);
-    let digest: [u8; 16] = md5.finalize().into();
-    let object = path(table, "data/slow-socket.parquet");
-    let (sender, receiver) = tokio::sync::mpsc::channel(1);
-    let request = client.request_stream(Method::PUT, &object, 2 * BLOCK_BYTES, digest, receiver);
-    let upload = tokio::spawn(async move { request.send().await.unwrap() });
-    sender.send(Ok(block.clone())).await.unwrap();
-    // Let the first strip finish so no disk task remains to wake the upload.
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    sender.send(Ok(block)).await.unwrap();
-    drop(sender);
-    let response = tokio::time::timeout(std::time::Duration::from_secs(30), upload)
-        .await
-        .expect("socket readiness must resume the idle upload")
-        .unwrap();
-    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
-    let get = client.send(Method::GET, &object, "", b"", false).await;
-    assert_eq!(get.status(), 200);
-    assert_eq!(get.bytes().await.unwrap().len(), 2 * BLOCK_BYTES);
-    let metrics: serde_json::Value = Client::new()
-        .get(format!("http://{}/_crowdb/metrics", client.address))
-        .bearer_auth("m".repeat(32))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert!(metrics["upload_flow"]["body_waits"].as_u64().unwrap() > 0);
-    assert!(metrics["upload_flow"]["body_wait_ns"].as_u64().unwrap() > 0);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "manual 100 MiB upload profile"]
 async fn repeated_100_mib_put_streams_without_client_payload_copy() {
     const BLOCK_BYTES: usize = 1024 * 1024;
@@ -1078,40 +803,6 @@ async fn repeated_100_mib_multipart_upload_profile() {
         parts.iter().map(|part| part.2).max().unwrap()
     );
     profiles::assert_multipart_metrics(&client, PART_COUNT, 100 * BLOCK_BYTES).await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn small_routing_is_strict_at_the_strip_threshold() {
-    let (_stack, _process, client, table) = setup().await;
-    let threshold = fixture_config().iceberg_small_write().threshold_exclusive();
-    let completed = async || {
-        let metrics: serde_json::Value = Client::new()
-            .get(format!("http://{}/_crowdb/metrics", client.address))
-            .bearer_auth("m".repeat(32))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        metrics["chunk_small_write"]["completed"].as_u64().unwrap()
-    };
-    let mut previous = completed().await;
-    for size in [threshold - 1, threshold, threshold + 1] {
-        let object = path(table, &format!("data/threshold-{size}.parquet"));
-        let bytes = vec![u8::try_from(size % 251).unwrap(); size];
-        let response = client.send(Method::PUT, &object, "", &bytes, true).await;
-        assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
-        let current = completed().await;
-        assert_eq!(current - previous, u64::from(size < threshold), "size={size}");
-        previous = current;
-        let last = format!("bytes={}-{}", size - 2, size - 1);
-        let response = client
-            .send_range(Method::GET, &object, "", b"", false, Some(&last))
-            .await;
-        assert_eq!(response.status(), 206);
-        assert_eq!(response.bytes().await.unwrap().as_ref(), &bytes[size - 2..]);
-    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
