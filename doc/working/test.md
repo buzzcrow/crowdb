@@ -35,8 +35,8 @@ unmeasured as complete tasks.
 | Diskdb       | intel7960   | 2026-10-11 | 5 / 0 / 0                 | 14.198  | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-cfc58fa353574c6898cfe40463c7a814/results.json) |
 | Diskio       | intel7960   | 2026-10-11 | 8 / 0 / 0                 | 21.449  | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-517a0c2c29c04e0ca5ee8feb558e7394/results.json) |
 | Chunkdb      | intel7960   | 2026-10-11 | 11 / 0 / 0                | 70.267  | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-370769d47f72492d8cfaef8ae77c61ea/results.json) |
-| Chunk client | intel7960   | —          | —                         | —       | —          | —                                                                                                         |
-| Chunk stream | intel7960   | —          | —                         | —       | —          | —                                                                                                         |
+| Chunk client | intel7960   | 2026-10-11 | 40 / 0 / 0                | 456.101 | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-0bc1b0c5c6184c14a4248bccb13391d2/results.json) |
+| Chunk stream | intel7960   | 2026-10-11 | 4 / 0 / 0                 | 52.184  | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-c46c772fcb0044d38b5a1417519db47e/results.json) |
 | Chunk-KV     | intel7960   | 2026-10-11 | 2 / 0 / 0                 | 22.520  | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-e8fbdfdc8be94d408309d5623227794d/results.json) |
 | S3           | intel7960   | 2026-10-11 | 38 / 0 / 0                | 433.351 | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-d6434ad353d34b5bb60a0751b4b400c2/results.json) |
 | Iceberg      | intel7960   | 2026-10-11 | 30 / 0 / 0                | 1542.472 | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-2e7a318db15149d7942a4f81ea86c2e0/results.json) |
@@ -94,12 +94,6 @@ as environment baselines, not as evidence of migration completion.
   container owners. Preserve old assertions and important component UTs until
   equivalent owners pass. Final Pixi/CI taxonomy and complete-domain measurements remain pending.
   KV/KV and KV/Web isolation acceptance passes.
-- [ ] **Storage outage budget**: original stream/reader and S3 repair proofs
-  require failure within 15 seconds after Diskio exit. Vanished container IPs
-  become network blackholes and exceed that bound. Choose an overall production
-  operation budget or a distinct network-blackhole contract; keep original
-  process-refusal assertions meanwhile. Evidence and alternatives are in the
-  execution plan's `Blocked` section.
 - [ ] **Console mode**: formal Docker Web rejects all non-read requests with
   403; the old browser flow expects logical writes and physical-mutation 503.
   Choose a supported writable Console profile or change Docker write policy

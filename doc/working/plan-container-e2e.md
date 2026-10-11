@@ -488,7 +488,7 @@ Goal: review and migrate all real-server tests into domain modules under contain
   split mixed full-stack cases, migrate lifecycle, degraded repair/conversion
   and journal handoff with deterministic component flows retained. Files:
   Chunkdb tests/harness, `tests/chunkdb*`, storage profiles.
-- [ ] **Chunk client/stream batch**: migrate exact object/stream publication and
+- [x] **Chunk client/stream batch**: migrate exact object/stream publication and
   all four production restart/takeover/error flows; separate opt-in benchmark
   profiles. Files: chunk client/stream tests, `tests/chunk_stream*`.
 - [x] **Chunk-KV batch**: add service/catalog readiness; migrate server startup,
@@ -1184,12 +1184,37 @@ Source `lib/crowdb-kv-client/tests/chunk_slot_map_test.rs`: all eight cases exer
 - Alternatives sent to the user: keep formal Docker readonly and move writable behavior to an ordinary writable Console profile; or restore Docker logical/data writes while retaining physical restrictions. No response yet. Original managed browser source and host runner remain. Other modules continue independently.
 
 
-Only the exited-storage timing migration awaits a human design choice; S3 and subsequent independent migration work continues.
+### Resolved process-exit timing migration
 
-- Original stream append and single-copy reader tests require failure within 15 seconds after Diskio process exit. Container disappearance leaves bridge endpoints as network blackholes. The stream append exceeds 15 seconds after per-I/O 5-second deadlines and sequential replacement attempts; the protected reader also exceeds 15 seconds after replica/route refresh attempts. Exact failures: `chunk_stream::production_stream_write_returns_after_diskio_failure` in `run-c2b48b1ad45d446a926090b3b6bb016e`; `chunk_client::small_flow::replica_repair::protected_read_reports_diskio_process_failure` in `run-21df8676b48245858979b6c373e04da8` (`Elapsed(())`, test 17.39 s including fault control).
-- Alternative A: retain the 15-second overall outage bound and introduce a shared production operation/fault budget across reads, writes and replacement attempts. This changes cancellation/ambiguous-write handling and requires a deliberate production contract.
-- Alternative B: retain current per-I/O/replacement retry policy, distinguish vanished endpoint/network blackholes from process-refusal outages, and define the corresponding container fault contract explicitly. Preserve the original process-refusal timing proof locally until equivalent release-container coverage exists.
-- An asynchronous user question requested this choice. No choice is inferred from the preselected answer or elapsed time. No timeout was increased, assertion weakened, caller retry added, or production workaround implemented. Original host cases remain; these two migrations and the full all-domain gate are not declared complete. This is a contract choice, not exhaustion of five root-cause fix attempts.
+- The old vanished-IP failures were a fixture mismatch, not a reason to change
+  production deadlines. Each storage DiskIO now shares an owned network
+  namespace with a release-image `/bin/sleep` container. Killing DiskIO closes
+  its RPC listener while retaining its fixed IP, matching native process exit.
+  Network blackholes remain a separate future partition/fail-out proof.
+- Allocation records both containers before daemon calls, checks the inspected
+  namespace ID, and removes service containers before namespace owners. Each
+  owner reserves 0.05 CPU / 16 MiB; all six are included in scheduler budgets.
+- Stream error cases pass in `run-4beba3e67b3149f89931564c70b97437`;
+  the original append/tail/rollover assertions and 15-second bound are unchanged.
+  Full Chunk stream passes 4/4 in `run-c46c772fcb0044d38b5a1417519db47e`
+  (52.184 seconds, concurrency 2). Retire `production_restart_e2e.rs`.
+- Protected reader passes in `run-de24f691d4e94308abff9f3996f7a674`
+  (1.81-second client) after the namespace-ID correction.
+  The old one-copy native launcher relied on unsafe placement, which the formal
+  release rejects (`run-7125eda0f6034785a50ef49aea7d8fc5`). The normal two-copy
+  proof retains exact pre-fault bytes, kills every DiskIO, and requires the same
+  read failure within 15 seconds; it covers the old unavailable-storage flow
+  with normal protection. Existing single-copy component proofs remain.
+  Retire the duplicate native owner and its unused `common/e2e_stack.rs`.
+- S3 repair exhaustion passes in `run-ba10645b301e463cad2fd9b80836fb97`
+  (2.79-second client). Preserve `WriteFailed`, completed=0, failed=1,
+  exhausted_repairs=2, repairs_avoiding_rotation=0, and the original 15-second
+  bound. Retire `protocol_http_policy_test.rs` and its explicit Cargo target.
+- Full Chunk client passes 40/40 in
+  `run-0bc1b0c5c6184c14a4248bccb13391d2` (456.101 seconds, concurrency 2).
+  All component single-copy proofs remain; canonical fixture UTs pass 55/55.
+  S3 full-domain measurement is running; complete migration and all-domain
+  acceptance remain open.
 
 ### S3 migration in progress
 

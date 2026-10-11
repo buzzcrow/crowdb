@@ -58,8 +58,9 @@ unsupported daemon, changed release server sources or inadequate budget fails th
 required test. There is no successful missing-prerequisite skip.
 `--layer all` selects registered KV, Diskdb, Diskio, Chunkdb, chunk-client,
 chunk-stream, Chunk-KV, S3, Iceberg, Dataset, Console and deployment cases.
-The whole-storage-outage stream/reader budget and writable managed Console
-contract remain unresolved; complete migration and the all-domain gate are pending.
+Writable managed Console migration remains unresolved; complete migration and
+the all-domain gate are pending. DiskIO process-exit faults retain their network
+namespace, so the original 15-second stream/reader/repair bounds still apply.
 
 Chunkdb lifecycle, placement and recovery use five owned containers: three KV
 voters, one Diskdb and one production-mode Chunkdb. Actual inspected KV replicas
@@ -67,6 +68,9 @@ are registered through the public metadata API. Allocation transport acceptance
 needs only KV and Diskdb. The placement profile seeds four distinct failure
 domains and checks metadata geometry. The storage profile owns eleven containers:
 three KV, Diskdb, Chunkdb and six Diskio failure domains, with eighteen disks.
+Six additional release-image sleep processes own the DiskIO network namespaces,
+so killing a storage service closes its listener without removing its IP. They
+reserve 0.3 CPU / 96 MiB in total and are removed after their service containers.
 The multislot profile owns three Chunkdb service instances, three KV voters and
 Diskdb. Storage cases verify public conversion, partial bytes, exact parity,
 expired foreground claim takeover, four missing-shard repair, degraded node-return

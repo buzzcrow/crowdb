@@ -210,7 +210,7 @@ class Cluster:
             return
         errors = []
         started = time.monotonic()
-        for kind, names in (("container", self.containers),
+        for kind, names in (("container", reversed(self.containers)),
                             ("network", [self.run_id] if self.network_created else [])):
             for name in names:
                 try:

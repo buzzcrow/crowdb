@@ -77,8 +77,3 @@ path = "tests/iceberg_gc_budget_test.rs"
 name = "iceberg_file_http_test"
 path = "tests/iceberg_file_http_test.rs"
 required-features = ["iceberg-e2e"]
-
-[[test]]
-name = "protocol_http_policy_test"
-path = "tests/protocol_http_policy_test.rs"
-required-features = ["s3-e2e"]

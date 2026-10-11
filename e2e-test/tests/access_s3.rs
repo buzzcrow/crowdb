@@ -5,6 +5,7 @@
 
 mod benchmark;
 mod policy;
+mod policy_failure;
 mod protocol_http;
 
 use std::os::unix::fs::OpenOptionsExt;

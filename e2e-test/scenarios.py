@@ -280,6 +280,7 @@ S3_RECOVERY_CASES = tuple(Case("s3.recovery", "s3.recovery::" + service, sdk_cli
                           for service in SERVICE_NODES)
 S3_SPECIAL_CASES = (Case("s3.policy", "access_s3::protocol_http::combined_http_listeners_keep_protocol_chunk_policies_separate", access_protocol=True),
                     Case("s3.policy", "access_s3::policy::s3_and_iceberg_keep_distinct_policies_on_protected_storage", s3_policy=True),
+                    Case("s3.policy", "access_s3::policy_failure::protected_two_copy_write_stops_after_repair_and_chunk_rotation_fail", s3_policy=True),
                     Case("s3.credentials", "s3.credentials::release_cli_issue_ensure_lookup", sdk_client=True, s3_script="admin"),
                     Case("s3.benchmark", "access_s3::benchmark::direct_chunk_path"),
                     Case("s3.responses", "s3.responses::lost_put_and_multipart_replies_are_idempotent",
@@ -471,7 +472,9 @@ def case_resources(case, node_cpus):
     if len(case.service_selection) > 2:
         return max(2, node_cpus) + 0.5, 2560
     nodes = case_nodes(case)
-    return nodes * node_cpus + 0.5, (nodes + 1) * 512
+    retained_networks = 6 if (case.chunkdb_storage or case.access_protocol or
+                             case.scope.startswith(("chunk-kv.", "s3.", "iceberg.", "dataset."))) else 0
+    return nodes * node_cpus + 0.5 + retained_networks * 0.05, (nodes + 1) * 512 + retained_networks * 16
 
 
 def allocate_cluster(case, image, artifacts, bundle, data_root):

@@ -151,7 +151,7 @@ memory_bytes = {o["repair_memory_bytes"]}
                 "--instance-id", str(8000 + offset), "--rack-id", str(100 + offset),
                 "--node-id", str(10 + offset), "--dg-id", str(1000 + offset),
                 "--sync-interval-ms", "200", "--auto-discover-disks",
-                "--log-dir", "/opt/crowdb/data/log/diskio"), address))
+                "--log-dir", "/opt/crowdb/data/log/diskio"), address, preserve_network=True))
             endpoints.append({"node": index, "ip": address, "rpc_port": 7200,
                 "instance_id": 8000 + offset, "disk_group_id": 1000 + offset,
                 "data": str(data), "backend": self.storage_backend, "fault_rate": self.fault_rate})
