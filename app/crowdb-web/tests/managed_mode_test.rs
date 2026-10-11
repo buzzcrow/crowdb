@@ -1,5 +1,8 @@
 use std::path::PathBuf;
 
+#[path = "common/memory_kv.rs"]
+mod memory_kv;
+
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use crowdb_console_shared::config::web::{WebMode, WebProcessConfig};
@@ -187,11 +190,7 @@ async fn managed_mode_does_not_expose_local_topology_or_mutations() {
 
 #[tokio::test]
 async fn managed_snapshot_uses_group0_and_monitor_without_local_fallback() {
-    if crowdb_test_harness::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping real Group 0 test: crowdb-kv-server is unavailable");
-        return;
-    }
-    let cluster = crowdb_test_harness::cluster::KvCluster::start().await;
+    let cluster = memory_kv::TestKvCluster::start().await;
     let kv = CrowdbKvClient::new(ClientConfig::new(cluster.mgmt_endpoints.clone()));
     kv.seed_leader(0, 0, cluster.group0_leader_endpoint.clone());
     let sysmd = CrowdbSysmdClient::new(kv);

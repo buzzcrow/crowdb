@@ -4,6 +4,9 @@
 #[path = "common/catalog_balance.rs"]
 mod catalog_balance;
 
+#[path = "common/memory_kv.rs"]
+mod memory_kv;
+
 use std::sync::Arc;
 
 use axum::{
@@ -40,7 +43,7 @@ async fn get(app: axum::Router, query: &str) -> (StatusCode, Value) {
 
 #[tokio::test]
 async fn catalog_windows_pin_generation_validate_checksums_and_keep_exact_ids() {
-    let cluster = crowdb_test_harness::cluster::KvCluster::start().await;
+    let cluster = memory_kv::TestKvCluster::start().await;
     let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
         cluster.mgmt_endpoints.clone(),
     )));

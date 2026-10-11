@@ -1172,3 +1172,13 @@ Source: `app/crowdb-kv-server/`. Tests: 9 files.
 | deployment.listeners | occupied_s3_listener_terminates_combined_access            |      0.026 |       6.086 | run-6360a52e1976425abf4c1dcb7900c180 |
 | deployment.listeners | occupied_iceberg_listener_terminates_combined_access       |      0.026 |       6.078 | run-6360a52e1976425abf4c1dcb7900c180 |
 | deployment.balance   | single_node_disables_local_chunk_kv_split_planning         |     12.227 |      17.164 | run-17106e704fb44b28971fecac49f07723 |
+
+### Retained Web handler component proofs
+
+- Seven original tests retain their assertions and use pinned in-memory metadata and a topology peer. These measurements exclude compilation. Packaged public authority/catalog/slot and managed deployment flows remain in container acceptance.
+
+| Component target       | Cases | Previous host-server fixture (s) | Pinned component fixture (s) |
+| ---------------------- | ----- | -------------------------------- | ---------------------------- |
+| storage_readiness_test |     1 |                             0.91 |                         0.12 |
+| chunk_kv_catalog_test  |     1 |                             2.24 |                         0.76 |
+| managed_mode_test      |     5 |                             6.01 |                         5.20 |
