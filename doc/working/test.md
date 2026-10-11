@@ -43,56 +43,59 @@ are split by actual SDK client, browser rows by spec, and crash/restart matrices
 by fault target/cut point. Keep a separate case row for unexpectedly slow tests.
 Do not require one CI job for each measurement row.
 
-| Scope                       | Coverage                                            | Proposed CI group |
-| --------------------------- | --------------------------------------------------- | ----------------- |
-| `component.cpp`             | C++ / FFI unit and integration                      | Component         |
-| `component.kv`              | KV / Paxos / WAL / client deterministic flows       | Component         |
-| `component.diskdb`          | Diskdb allocators / ownership / journal transitions | Component         |
-| `component.diskio`          | Diskio / native I/O / client logic                  | Component         |
-| `component.chunkdb`         | Chunkdb placement / lifecycle / tasks / EC          | Component         |
-| `component.chunk-kv`        | Chunk-KV split / handoff / client logic             | Component         |
-| `component.chunk-stream`    | Chunk client / stream deterministic flows           | Component         |
-| `component.access-s3`       | S3 / multipart repository and protocol logic        | Component         |
-| `component.access-iceberg`  | Iceberg commit / FileIO / GC deterministic flows    | Component         |
-| `component.access-dataset`  | Dataset core / adapter / transport / retention      | Component         |
-| `component.console`         | Console / CLI / web logic and stub routes           | Component         |
-| `component.monitor`         | Monitor profile / bootstrap / supervisor logic      | Component         |
-| `component.ui`              | Frontend presentation and unit tests                | Component         |
-| `fixture`                   | Runner / ownership / cleanup / budgets              | Fixture           |
-| `e2e.kv.management`         | Store / group / replica APIs and errors             | Metadata          |
-| `e2e.kv.routing`            | Topology / follower hints / client retries          | Metadata          |
-| `e2e.kv.membership`         | Membership changes / epoch fencing                  | Metadata          |
-| `e2e.kv.recovery`           | Restore / snapshot join / WAL tail / restart        | Metadata          |
-| `e2e.kv.group0`             | Group-0 initialization / discovery / wipe isolation | Metadata          |
-| `e2e.kv.client`             | Discovery / CRUD / CAS / scan / domain monitor      | Metadata          |
-| `e2e.kv.metadata`           | Slot map / handoff / authority publication          | Metadata          |
-| `e2e.diskdb.allocation`     | Allocate / free / reuse / capacity / routing        | Storage           |
-| `e2e.diskdb.recovery`       | Ownership fencing / persisted journal recovery      | Storage           |
-| `e2e.diskio.io`             | Exact range bytes / registry sync / RPC errors      | Storage           |
-| `e2e.diskio.durability`     | Sync / restart / bounded live I/O failure           | Storage           |
-| `e2e.chunkdb.lifecycle`     | Allocate / reserve / append / seal / delete         | Storage           |
-| `e2e.chunkdb.repair`        | Degraded repair / mirror-EC conversion              | Storage           |
-| `e2e.chunkdb.handoff`       | Task / journal recovery / ownership handoff         | Storage           |
-| `e2e.chunk-stream.objects`  | Small / large / range data / durable publication    | Storage           |
-| `e2e.chunk-stream.recovery` | Takeover / service restart / Diskio errors          | Storage           |
-| `e2e.chunk-kv.protocol`     | Read / write / scan / catalog routing / fencing     | Storage           |
-| `e2e.chunk-kv.recovery`     | Split / transfer / restart / exact records          | Storage           |
-| `e2e.s3.protocol`           | Object / copy / list / multipart / policy           | AccessS3          |
-| `e2e.s3.recovery`           | Service restart / response loss / durable data      | AccessS3          |
-| `e2e.s3.sdk`                | boto3 / AWS CLI / rclone / Java / JS / Go           | AccessS3          |
-| `e2e.iceberg.catalog`       | Namespace / table / commit / auth                   | AccessIceberg     |
-| `e2e.iceberg.fileio`        | FileIO / listing / formats / exact data             | AccessIceberg     |
-| `e2e.iceberg.recovery`      | Commit / file crash matrix / GC / capacity          | AccessIceberg     |
-| `e2e.iceberg.sdk`           | PyIceberg / Java / Rust / RCK compatibility         | AccessIceberg     |
-| `e2e.dataset`               | Audited existing Dataset server flows               | AccessDataset     |
-| `e2e.console.api-cli`       | Real console / CLI operations and authority         | ConsoleDeploy     |
-| `e2e.console.browser`       | Browser provisioning / lifecycle / real data        | ConsoleDeploy     |
-| `e2e.deployment.bootstrap`  | Manual / automatic / full-set / subset startup      | ConsoleDeploy     |
-| `e2e.deployment.recovery`   | Supervision / identity / logs / crash / mounts      | ConsoleDeploy     |
-| `e2e.isolation`             | Same-host mixed-domain concurrency and teardown     | Isolation         |
-| `special.containerd`        | Release image runtime adapter acceptance            | Special           |
-| `special.host-hardware`     | Host networking / real devices / hardware           | Special           |
-| `benchmark`                 | Opt-in throughput / latency benchmarks              | Manual            |
+| Scope                       | Coverage                                                  | Proposed CI group |
+| --------------------------- | --------------------------------------------------------- | ----------------- |
+| `component.cpp`             | C++ / FFI unit and integration                            | Component         |
+| `component.kv`              | KV / Paxos / WAL / client deterministic flows             | Component         |
+| `component.diskdb`          | Diskdb allocators / ownership / journal transitions       | Component         |
+| `component.diskio`          | Diskio / native I/O / client logic                        | Component         |
+| `component.chunkdb`         | Chunkdb placement / lifecycle / tasks / EC                | Component         |
+| `component.chunk-kv`        | Chunk-KV split / handoff / client logic                   | Component         |
+| `component.chunk-stream`    | Chunk client / stream deterministic flows                 | Component         |
+| `component.access-s3`       | S3 / multipart repository and protocol logic              | Component         |
+| `component.access-iceberg`  | Iceberg commit / FileIO / GC deterministic flows          | Component         |
+| `component.access-dataset`  | Dataset core / adapter / transport / retention            | Component         |
+| `component.console`         | Console / CLI / web logic and stub routes                 | Component         |
+| `component.monitor`         | Monitor profile / bootstrap / supervisor logic            | Component         |
+| `component.ui`              | Frontend presentation and unit tests                      | Component         |
+| `fixture`                   | Runner / ownership / cleanup / budgets                    | Fixture           |
+| `e2e.kv.management`         | Store / group / replica APIs and errors                   | Metadata          |
+| `e2e.kv.routing`            | Topology / follower hints / client retries                | Metadata          |
+| `e2e.kv.membership`         | Membership changes / epoch fencing                        | Metadata          |
+| `e2e.kv.recovery`           | Restore / snapshot join / WAL tail / restart              | Metadata          |
+| `e2e.kv.group0`             | Group-0 initialization / discovery / wipe isolation       | Metadata          |
+| `e2e.kv.client`             | Discovery / CRUD / CAS / scan / domain monitor            | Metadata          |
+| `e2e.kv.metadata`           | Slot map / handoff / authority publication                | Metadata          |
+| `e2e.diskdb.allocation`     | Allocate / commit / free / capacity / concurrent routing  | Storage           |
+| `e2e.diskdb.ownership`      | Wrong-owner facts / compact rejection / registry routes   | Storage           |
+| `e2e.diskdb.reuse`          | Exhaustion / exact reuse / delayed incarnation retries    | Storage           |
+| `e2e.diskdb.recovery`       | Ownership fencing / persisted journal recovery            | Storage           |
+| `e2e.diskio.io`             | Exact range bytes / registry sync / RPC errors            | Storage           |
+| `e2e.diskio.durability`     | Sync / restart / bounded live I/O failure                 | Storage           |
+| `e2e.chunkdb.lifecycle`     | Allocate / reserve / append / seal / delete               | Storage           |
+| `e2e.chunkdb.repair`        | Degraded repair / mirror-EC conversion                    | Storage           |
+| `e2e.chunkdb.handoff`       | Task / journal recovery / ownership handoff               | Storage           |
+| `e2e.chunk-stream.objects`  | Small / large / range data / durable publication          | Storage           |
+| `e2e.chunk-stream.recovery` | Takeover / service restart / Diskio errors                | Storage           |
+| `e2e.chunk-kv.protocol`     | Read / write / scan / catalog routing / fencing           | Storage           |
+| `e2e.chunk-kv.recovery`     | Split / transfer / restart / exact records                | Storage           |
+| `e2e.s3.protocol`           | Object / copy / list / multipart / policy                 | AccessS3          |
+| `e2e.s3.recovery`           | Service restart / response loss / durable data            | AccessS3          |
+| `e2e.s3.sdk`                | boto3 / AWS CLI / rclone / Java / JS / Go                 | AccessS3          |
+| `e2e.iceberg.catalog`       | Namespace / table / commit / auth                         | AccessIceberg     |
+| `e2e.iceberg.fileio`        | FileIO / listing / formats / exact data                   | AccessIceberg     |
+| `e2e.iceberg.recovery`      | Commit / file crash matrix / GC / capacity                | AccessIceberg     |
+| `e2e.iceberg.sdk`           | PyIceberg / Java / Rust / RCK compatibility               | AccessIceberg     |
+| `e2e.dataset`               | Audited existing Dataset server flows                     | AccessDataset     |
+| `e2e.console.api-cli`       | Real console / CLI operations and authority               | ConsoleDeploy     |
+| `e2e.console.browser`       | Browser provisioning / lifecycle / real data              | ConsoleDeploy     |
+| `e2e.deployment.selection`  | Default services / selected services / same-image restart | Deployment        |
+| `e2e.deployment.bootstrap`  | Manual / automatic / full-set / subset startup            | ConsoleDeploy     |
+| `e2e.deployment.recovery`   | Supervision / identity / logs / crash / mounts            | ConsoleDeploy     |
+| `e2e.isolation`             | Same-host mixed-domain concurrency and teardown           | Isolation         |
+| `special.containerd`        | Release image runtime adapter acceptance                  | Special           |
+| `special.host-hardware`     | Host networking / real devices / hardware                 | Special           |
+| `benchmark`                 | Opt-in throughput / latency benchmarks                    | Manual            |
 
 ### Measurement rules
 
@@ -137,7 +140,7 @@ Future detailed component and E2E rows replace their unmeasured scope placeholde
 | `component.console`         | —          | —     | —       | —        | —        | —              | —        | Pending |
 | `component.monitor`         | —          | —     | —       | —        | —        | —              | —        | Pending |
 | `component.ui`              | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `fixture`                   | 2026-10-11 | 25/25 | —       | —        | —        | —              | 0.642    | PASS    |
+| `fixture`                   | 2026-10-11 | 27/27 | —       | —        | —        | —              | 0.665    | PASS    |
 | `e2e.kv.management`         | 2026-10-11 | 5/5   | shared  | per flow | per flow | per flow       | per flow | PASS    |
 | `e2e.kv.routing`            | 2026-10-11 | 3/3   | shared  | per flow | per flow | per flow       | per flow | PASS    |
 | `e2e.kv.membership`         | 2026-10-11 | 8/8   | shared  | per flow | per flow | per flow       | per flow | PASS    |
@@ -145,7 +148,9 @@ Future detailed component and E2E rows replace their unmeasured scope placeholde
 | `e2e.kv.group0`             | 2026-10-11 | 8/8   | shared  | per flow | per flow | per flow       | per flow | PASS    |
 | `e2e.kv.client`             | 2026-10-11 | 6/6   | shared  | per flow | per flow | per flow       | per flow | PASS    |
 | `e2e.kv.metadata`           | 2026-10-11 | 14/14 | shared  | per flow | per flow | per flow       | per flow | PASS    |
-| `e2e.diskdb.allocation`     | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.diskdb.allocation`     | 2026-10-11 | 1/1   | shared  | 2.191    | 1.893    | 1.041          | 5.129    | PASS    |
+| `e2e.diskdb.reuse`          | 2026-10-11 | 1/1   | shared  | 1.743    | 1.421    | 1.020          | 4.188    | PASS    |
+| `e2e.diskdb.ownership`      | 2026-10-11 | 1/1   | shared  | 2.082    | 0.131    | 1.010          | 3.226    | PASS    |
 | `e2e.diskdb.recovery`       | —          | —     | —       | —        | —        | —              | —        | Pending |
 | `e2e.diskio.io`             | —          | —     | —       | —        | —        | —              | —        | Pending |
 | `e2e.diskio.durability`     | —          | —     | —       | —        | —        | —              | —        | Pending |
@@ -166,12 +171,40 @@ Future detailed component and E2E rows replace their unmeasured scope placeholde
 | `e2e.dataset`               | —          | —     | —       | —        | —        | —              | —        | Pending |
 | `e2e.console.api-cli`       | —          | —     | —       | —        | —        | —              | —        | Pending |
 | `e2e.console.browser`       | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.deployment.selection`  | 2026-10-11 | 3/3   | 3.418   | per flow | per flow | per flow       | 20.153   | PASS    |
 | `e2e.deployment.bootstrap`  | —          | —     | —       | —        | —        | —              | —        | Pending |
 | `e2e.deployment.recovery`   | —          | —     | —       | —        | —        | —              | —        | Pending |
 | `e2e.isolation`             | —          | —     | —       | —        | —        | —              | —        | Pending |
 | `special.containerd`        | —          | —     | —       | —        | —        | —              | —        | Pending |
 | `special.host-hardware`     | —          | —     | —       | —        | —        | —              | —        | Pending |
 | `benchmark`                 | —          | —     | —       | —        | —        | —              | —        | Pending |
+
+## Migrated Diskdb and monitor selection timing
+
+- Host intel7960, 2026-10-11, Linux Docker bridge, concurrency 2, declared
+  6 CPU / 6144 MiB. Server source `d8bf780c351bf3afec87624db74956410e8ced5f`;
+  image config `sha256:10254caf607d21cb102e0b1fd636d55a65625eb06d54895bad0d01cf6bc3be9a`,
+  OCI manifest `sha256:743539d20444ad687f00b771d37d257a5e30803f2b84ade5e40934dc99bfbdd4`,
+  release optimization with debug info retained.
+- Diskdb run `run-12cc7c61426c42498ff12e85536cbcf6`: 3 client flows and 3
+  metadata-seed phases passed; build 2.841 s, scenario wall 7.424 s. Start time
+  includes the host metadata-seed phase; Client below excludes that setup phase.
+  Six deterministic client UT passed; application recovery/fence/journal migration
+  is pending.
+- Monitor selection run `run-baa850f79d5e442e8d9153309e9bf1f2`: full seven-service
+  profile plus KV-only and KV+Diskdb, 6 host write/verify phases and 5 invalid
+  startup checks passed; build 3.418 s, scenario wall 20.153 s. SIGKILL followed
+  by container recreation preserves each node's mounted data and inspected IP.
+  Full deployment/browser/SSH failure matrix remains pending.
+
+| Flow                                                              | Server containers | Start s | Client s | Restart s | Collect/stop s | Wall s |
+| ----------------------------------------------------------------- | ----------------- | ------- | -------- | --------- | -------------- | ------ |
+| `diskdb::allocation::allocate_commit_and_free_through_client`     | 2                 | 2.191   | 1.893    | 0.000     | 1.041          | 5.129  |
+| `diskdb::space_reuse::exhaust_free_compact_and_reuse_exact_space` | 2                 | 1.743   | 1.421    | 0.000     | 1.020          | 4.188  |
+| `diskdb::ownership::wrong_owner_free_is_ignored_by_compaction`    | 2                 | 2.082   | 0.131    | 0.000     | 1.010          | 3.226  |
+| `deployment::complete_release_services_recover_acknowledged_data` | 1                 | 5.891   | 0.179    | 4.302     | 0.832          | 11.210 |
+| `deployment::selected_storage_services_recover_acknowledged_data` | 1                 | 2.853   | 0.184    | 3.405     | 0.792          | 7.239  |
+| `deployment::selected_kv_services_recover_acknowledged_data`      | 1                 | 2.348   | 0.188    | 3.274     | 0.796          | 6.612  |
 
 ## Migrated KV flow timing
 

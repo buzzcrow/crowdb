@@ -13,7 +13,14 @@ for an explicitly selected service set, or one standalone server. Service
 selection does not rebuild the image. Without a command, the usual startup
 mode and complete bundled profile apply. To supply a validated profile, mount
 it read-only and set `CROWDB_PROFILE_PATH` to its container path; the monitor
-validates the profile and its dependency graph before startup.
+validates the profile and its dependency graph before startup. The automatic
+`single-node-container` profile supports selecting `kv`, `diskdb`, `diskio`,
+`chunkdb`, `chunk-kv`, `access` and `web` through its `services` list. Keep each
+selected service's declared dependencies selected. KV is required; KV-only skips
+disk creation, while profiles without Access skip S3 and Iceberg initialization.
+Unknown services and missing dependencies fail before node identity/discovery or
+SSH startup. Restore with the same profile and templates: durable bootstrap
+identity rejects changed selections rather than adopting existing data.
 
 Standalone services use the normal entrypoint command `server SERVICE [arguments]`.
 Supported services are `kv`, `diskdb`, `diskio`, `chunkdb`, `chunk-kv`, `access`

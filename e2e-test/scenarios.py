@@ -7,6 +7,8 @@ import json
 from dataclasses import dataclass
 
 from fixture import Cluster
+from diskdb_fixture import DiskdbCluster
+from managed_fixture import ManagedCluster
 
 
 @dataclass(frozen=True)
@@ -22,6 +24,7 @@ class Case:
     persisted_paths: tuple = ()
     node_args: tuple | None = None
     advertise: bool = False
+    service_selection: tuple = ()
 
 
 KV_CASES = (
@@ -83,15 +86,36 @@ KV_CASES = (
 )
 
 
-def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case_name=None):
-    selected = tuple(case for case in KV_CASES if (scope == "all" or case.scope == scope)
+DISKDB_CASES = (
+    Case("diskdb.allocation", "diskdb::allocation::allocate_commit_and_free_through_client"),
+    Case("diskdb.ownership", "diskdb::ownership::wrong_owner_free_is_ignored_by_compaction"),
+    Case("diskdb.reuse", "diskdb::space_reuse::exhaust_free_compact_and_reuse_exact_space"),
+)
+
+DEPLOYMENT_CASES = (
+    Case("deployment.selection", "deployment::selected_kv_services_recover_acknowledged_data", restart=True),
+    Case("deployment.selection", "deployment::selected_storage_services_recover_acknowledged_data", restart=True,
+         service_selection=("kv", "diskdb")),
+    Case("deployment.selection", "deployment::complete_release_services_recover_acknowledged_data", restart=True,
+         service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
+)
+
+ALL_CASES = KV_CASES + DISKDB_CASES + DEPLOYMENT_CASES
+
+def case_nodes(case):
+    if len(case.service_selection) > 2:
+        return 4
+    return 2 if case.scope.startswith("diskdb.") else len(case.stores_per_node or case.stores)
+
+def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case_name=None, layer="all"):
+    selected = tuple(case for case in ALL_CASES if (layer == "all" or case.scope.startswith(layer + ".")) and (scope == "all" or case.scope == scope)
                      and (not case_name or case.name == case_name))
     if not selected:
         raise ValueError(f"no migrated cases for scope {scope}")
 
     def run(case):
         count = len(case.stores_per_node or case.stores)
-        cluster = Cluster(image, artifacts, data_root=data_root, node_count=count,
+        cluster = ManagedCluster(image, artifacts, services=case.service_selection or ("kv",), data_root=data_root) if case.scope.startswith("deployment.") else DiskdbCluster(image, artifacts, bundle, data_root=data_root) if case.scope.startswith("diskdb.") else Cluster(image, artifacts, data_root=data_root, node_count=count,
                           store_ids=case.stores, wire_replicas=case.wired,
                           stores_per_node=case.stores_per_node, groups=case.groups,
                           groups_per_node=case.groups_per_node, node_args=case.node_args,

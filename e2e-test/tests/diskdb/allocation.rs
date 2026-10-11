@@ -8,53 +8,25 @@
 
 use std::sync::Arc;
 
+use super::hardware::{make_disk_id, CAPACITY_UNITS, DG_ID, UNIT_SIZE_BYTES, ZONE_COUNT};
+use super::{concurrency::run_concurrent_benchmark, make_chunk_id};
 use crowdb_diskdb_client::{DiskdbClient, DiskdbRpcTransport, RetryConfig};
 use crowdb_protocol::diskdb::rpc::{
     AllocateBlocksRequest, CommitBlocksRequest, CompactZoneRequest, FreeBlocksRequest,
 };
-use crowdb_test_harness::cluster::KvCluster;
-use crowdb_test_harness::diskdb::*;
-use crowdb_test_harness::hardware::{
-    make_disk_id, seed_hardware, standard_disk_ids_3, CAPACITY_UNITS, DG_ID, UNIT_SIZE_BYTES, ZONE_COUNT,
-};
 
 #[tokio::test]
+#[ignore = "requires the owned container fixture"]
 #[allow(clippy::too_many_lines)]
 async fn allocate_commit_and_free_through_client() {
-    require_binaries();
-
-    // 1. Start the single-node kv cluster.
-    eprintln!("=== starting kv cluster ===");
-    let cluster = KvCluster::start().await;
-    eprintln!(
-        "kv cluster started: group0={}, group1={}",
-        cluster.group0_leader_endpoint, cluster.group1_leader_endpoint
-    );
-
-    // 2. Seed hardware metadata into group 0.
-    eprintln!("=== seeding hardware metadata ===");
-    let hw = cluster.make_hardware_client();
-    seed_hardware(&hw, &standard_disk_ids_3()).await;
-    eprintln!("hardware metadata seeded (rack=1, node=10, dg=100, 3 disks)");
-
-    // 3. Start crowdb-diskdb subprocess.
-    eprintln!("=== starting crowdb-diskdb ===");
-    let diskdb = DiskdbProcess::start(&cluster.mgmt_endpoints, false);
-    diskdb.wait_for_ready().await;
-    eprintln!(
-        "crowdb-diskdb started: listen=127.0.0.1:{}, http=127.0.0.1:{}",
-        diskdb.listen_port, diskdb.http_port
-    );
-
     // 4. Build the DiskdbClient and refresh endpoints.
-    let svc = cluster.make_service_registry_client();
+    let svc = super::registry();
     let transport = Arc::new(DiskdbRpcTransport::new());
     let client = Arc::new(DiskdbClient::new(svc, transport).with_retry_config(RetryConfig {
         max_retries: 5,
         initial_backoff: std::time::Duration::from_millis(100),
     }));
     client.refresh_endpoints().await.expect("refresh endpoints");
-    eprintln!("diskdb client endpoints refreshed");
 
     // Concurrent first frees must route from their allocation responses
     // without a discovery stampede on an initially empty disk-to-group cache.
@@ -109,12 +81,8 @@ async fn allocate_commit_and_free_through_client() {
         .await
         .expect("allocate 3 blocks");
     assert_eq!(alloc_resp.segments.len(), 3, "expected 3 segments from allocate");
-    eprintln!("  allocated 3 blocks:");
+
     for (i, seg) in alloc_resp.segments.iter().enumerate() {
-        eprintln!(
-            "    seg[{i}]: disk={:?} zone={} offset={} count={}",
-            seg.disk_id, seg.zone_index, seg.unit_offset, seg.unit_count
-        );
         assert_eq!(seg.unit_count, 1, "segment {i} should have unit_count=1");
     }
 
@@ -134,19 +102,11 @@ async fn allocate_commit_and_free_through_client() {
     let group = dg_info.group.expect("disk-group info should have group");
     assert_eq!(group.disk_group_id, DG_ID, "disk-group id mismatch");
     assert!(!group.disk_ids.is_empty(), "disk-group should have disks");
-    eprintln!(
-        "  get_disk_group_info: dg={} disks={}",
-        group.disk_group_id,
-        group.disk_ids.len()
-    );
 
     // Query capacity stats.
     let cap = client.query_disk_group(DG_ID).await.expect("query_disk_group");
     let dg_cap = &cap.disk_groups[0];
-    eprintln!(
-        "  capacity: busy={} free={} cap={}",
-        dg_cap.busy_bytes, dg_cap.free_bytes, dg_cap.capacity_bytes
-    );
+
     assert!(
         dg_cap.capacity_bytes > 0,
         "capacity should be non-zero after sync"
@@ -158,9 +118,6 @@ async fn allocate_commit_and_free_through_client() {
     };
     let free_resp = client.free_blocks(free_req).await.expect("free 3 blocks");
     assert_eq!(free_resp.freed_count, 3, "expected 3 freed");
-    eprintln!("  freed 3 blocks (freed_count={})", free_resp.freed_count);
-
-    eprintln!("smoke test: ALL CHECKS PASSED");
 
     // 6. Query drill-down: get_disk_info, query_disk, query_zone.
     eprintln!("=== query drill-down ===");
@@ -179,10 +136,6 @@ async fn allocate_commit_and_free_through_client() {
         CAPACITY_UNITS * u64::from(UNIT_SIZE_BYTES),
         "capacity_bytes mismatch"
     );
-    eprintln!(
-        "  get_disk_info: dg={} disk={:?} zones={} cap={} busy={} free={}",
-        di.disk_group_id, di.disk_id, di.zone_count, di.capacity_bytes, di.busy_bytes, di.free_bytes
-    );
 
     let disk_cap = client.query_disk(DG_ID, test_disk).await.expect("query_disk");
     let dg_from_disk = &disk_cap.disk_groups[0];
@@ -194,12 +147,6 @@ async fn allocate_commit_and_free_through_client() {
     assert!(
         !disk_from_query.zone_usages.is_empty(),
         "query_disk should return per-zone entries"
-    );
-    eprintln!(
-        "  query_disk: {} zone entries, busy={} free={}",
-        disk_from_query.zone_usages.len(),
-        disk_from_query.busy_bytes,
-        disk_from_query.free_bytes
     );
 
     let zone_cap = client.query_zone(DG_ID, test_disk, 0).await.expect("query_zone");
@@ -213,12 +160,6 @@ async fn allocate_commit_and_free_through_client() {
     assert_eq!(zone_usage.zone_index, 0, "zone_index mismatch");
     let bitmap_len = zone_usage.usage_bitmap.as_ref().map_or(0, Vec::len);
     assert!(bitmap_len > 0, "query_zone should populate usage_bitmap");
-    eprintln!(
-        "  query_zone: zone 0, bitmap {bitmap_len} bytes, busy={} free={}",
-        zone_usage.busy_bytes, zone_usage.free_bytes
-    );
-
-    eprintln!("query drill-down: ALL CHECKS PASSED");
 
     // 7. Concurrent benchmark.
     eprintln!("=== concurrent benchmark ===");
@@ -227,7 +168,6 @@ async fn allocate_commit_and_free_through_client() {
     // 8. Compact + reclaim: verify the persist-only free model.
     eprintln!("=== compact + reclaim ===");
     let total_cap_bytes = 3 * CAPACITY_UNITS * u64::from(UNIT_SIZE_BYTES);
-    let unit_bytes = u64::from(UNIT_SIZE_BYTES);
 
     let cap_before = client
         .query_disk_group(DG_ID)
@@ -235,14 +175,7 @@ async fn allocate_commit_and_free_through_client() {
         .expect("query before compact");
     let busy_before = cap_before.disk_groups[0].busy_bytes;
     let free_before = cap_before.disk_groups[0].free_bytes;
-    eprintln!(
-        "  before compact: busy={} ({} units) free={} ({} units) cap={}",
-        busy_before,
-        busy_before / unit_bytes,
-        free_before,
-        free_before / unit_bytes,
-        total_cap_bytes
-    );
+
     assert!(
         busy_before > 0,
         "persist-only free should keep bitmap bits set (busy > 0)"
@@ -272,19 +205,13 @@ async fn allocate_commit_and_free_through_client() {
             "all zone compaction results should be success for disk {did:?}"
         );
     }
-    eprintln!("  compacted {total_compacted_zones} zones, deleted {total_free_records_deleted} free records");
 
+    assert_eq!(total_compacted_zones, 3 * ZONE_COUNT);
+    assert!(total_free_records_deleted > 0);
     let cap_after = client.query_disk_group(DG_ID).await.expect("query after compact");
     let busy_after = cap_after.disk_groups[0].busy_bytes;
     let free_after = cap_after.disk_groups[0].free_bytes;
-    eprintln!(
-        "  after compact: busy={} ({} units) free={} ({} units) cap={}",
-        busy_after,
-        busy_after / unit_bytes,
-        free_after,
-        free_after / unit_bytes,
-        total_cap_bytes
-    );
+
     assert_eq!(
         busy_after, 0,
         "after compaction all freed bits should be cleared (busy = 0)"
@@ -313,7 +240,6 @@ async fn allocate_commit_and_free_through_client() {
         3,
         "should allocate 3 blocks after compaction"
     );
-    eprintln!("  allocated 3 blocks after compaction (space reclaimed)");
 
     // Clean up: free the 3 blocks.
     let cleanup_req = FreeBlocksRequest {
@@ -321,9 +247,4 @@ async fn allocate_commit_and_free_through_client() {
     };
     let cleanup_resp = client.free_blocks(cleanup_req).await.expect("cleanup free");
     assert_eq!(cleanup_resp.freed_count, 3, "cleanup free should free 3");
-
-    eprintln!("compact + reclaim: ALL CHECKS PASSED");
-
-    eprintln!();
-    eprintln!("diskdb_client_e2e_full_flow: ALL CHECKS PASSED");
 }

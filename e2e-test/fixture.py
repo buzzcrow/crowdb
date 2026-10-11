@@ -26,7 +26,7 @@ def docker(*args, timeout=60):
                             check=False, timeout=timeout)
     if result.returncode:
         raise RuntimeError(f"docker {args}: {result.stdout}\n{result.stderr}")
-    return result.stdout.strip()
+    return (result.stdout + result.stderr if args and args[0] == "logs" else result.stdout).strip()
 
 
 def request(origin, path, body=None):
@@ -192,7 +192,7 @@ class Cluster:
                     (self.artifacts / f"{name}-{operation}.log").write_text(redact(output))
                     if operation == "logs" and name in self.servers:
                         index = self.servers.index(name)
-                        if index < len(self.data_paths):
+                        if index < len(self.data_paths) and (self.data_paths[index] / "log" / "container.log").exists():
                             (self.data_paths[index] / "log" / "container.log").write_text(redact(output))
                 except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
                     (self.artifacts / f"{name}-{operation}.error").write_text(redact(str(error)))

@@ -4,11 +4,12 @@
 
 import json
 import tempfile
+import subprocess
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from fixture import LABEL, Cluster, redact
+from fixture import LABEL, Cluster, redact, docker
 from run import capacity
 
 
@@ -36,6 +37,12 @@ class Daemon:
 
 
 class FixtureTest(unittest.TestCase):
+    def test_logs_keep_stderr_and_inspection_keeps_machine_readable_stdout(self):
+        completed = subprocess.CompletedProcess([], 0, '{"status":"ok"}', "fatal server error")
+        with patch("fixture.subprocess.run", return_value=completed):
+            self.assertIn("fatal server error", docker("logs", "owned-node"))
+            self.assertEqual(json.loads(docker("inspect", "owned-node")), {"status": "ok"})
+
     def test_partial_start_removes_allocated_resources_only(self):
         with tempfile.TemporaryDirectory() as directory:
             daemon = Daemon()

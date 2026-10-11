@@ -4,6 +4,8 @@
 //! Packaged three-voter KV CRUD, persistence and isolation acceptance.
 
 mod common;
+mod deployment;
+mod diskdb;
 mod kv;
 
 use bytes::Bytes;

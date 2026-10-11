@@ -16,7 +16,7 @@ from pathlib import Path
 from client import bundle_client
 from fixture import Cluster, docker
 from release import check_startup
-from scenarios import KV_CASES, run_cases
+from scenarios import ALL_CASES, case_nodes, run_cases
 from image_identity import verify_server_sources
 from report import write_report
 
@@ -80,8 +80,8 @@ def run_pair(image, artifacts, bundle, count, data_root=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--layer", choices=("kv", "all"), default="kv")
-    parser.add_argument("--scope", choices=("all", "kv.management", "kv.membership", "kv.routing", "kv.recovery", "kv.isolation", "kv.group0", "kv.client", "kv.metadata"),
+    parser.add_argument("--layer", choices=("kv", "diskdb", "deployment", "all"), default="all")
+    parser.add_argument("--scope", choices=("all", "kv.management", "kv.membership", "kv.routing", "kv.recovery", "kv.isolation", "kv.group0", "kv.client", "kv.metadata", "diskdb.allocation", "diskdb.ownership", "diskdb.reuse", "deployment.selection"),
                         default="all")
     parser.add_argument("--concurrency", type=int, default=2)
     parser.add_argument("--case", help="fully qualified named flow within the selected scope")
@@ -93,17 +93,17 @@ def main():
     parser.add_argument("--data-root", type=Path, help="host parent for independent per-run/node data mounts")
     parser.add_argument("--artifacts", type=Path, default=ROOT / ".crowdb-runtime/artifacts/container-e2e")
     args = parser.parse_args()
-    selected = [case for case in KV_CASES if (args.scope == "all" or case.scope == args.scope)
+    selected = [case for case in ALL_CASES if (args.layer == "all" or case.scope.startswith(args.layer + ".")) and (args.scope == "all" or case.scope == args.scope)
                 and (not args.case or case.name == args.case)]
-    if args.case and not selected:
+    if not selected and not (args.layer in ("kv", "all") and args.scope in ("kv.recovery", "kv.isolation")):
         parser.error("the selected case is not implemented in this scope")
     if args.case and args.require_isolation:
         parser.error("a single case cannot claim concurrent isolation acceptance")
-    if args.require_isolation and args.scope not in ("all", "kv.recovery", "kv.isolation"):
+    if args.require_isolation and (args.layer not in ("kv", "all") or args.scope not in ("all", "kv.recovery", "kv.isolation")):
         parser.error("isolation acceptance requires all, kv.recovery or kv.isolation scope")
     if args.list:
         print(json.dumps([{"scope": case.scope, "case": case.name,
-                           "nodes": len(case.stores_per_node or case.stores)} for case in selected], indent=2))
+                           "nodes": case_nodes(case)} for case in selected], indent=2))
         return
     signal.signal(signal.SIGTERM, interrupt)
     info = json.loads(docker("info", "--format", "{{json .}}"))
@@ -111,7 +111,7 @@ def main():
         parser.error("the first container E2E profile requires a Linux daemon")
     slots = capacity(args.concurrency, min(args.cpus, info["NCPU"]),
                      min(args.memory_mib, info["MemTotal"] // 1048576))
-    largest = max((len(case.stores_per_node or case.stores) for case in selected), default=3)
+    largest = max((case_nodes(case) for case in selected), default=3)
     case_slots = capacity(args.concurrency, min(args.cpus, info["NCPU"]),
                           min(args.memory_mib, info["MemTotal"] // 1048576), largest)
     if (args.require_isolation or args.scope == "kv.isolation") and slots < 2:
@@ -148,17 +148,17 @@ def main():
     started = time.monotonic()
     timings["status"] = "failed"
     try:
-        if not args.case and args.scope in ("all", "kv.recovery", "kv.isolation"):
+        if args.layer in ("kv", "all") and not args.case and args.scope in ("all", "kv.recovery", "kv.isolation"):
             run_pair(identity["Id"], run_root, bundle, min(slots, 2), args.data_root)
         if selected:
-            run_cases(identity["Id"], run_root, bundle, case_slots, args.data_root, args.scope, args.case)
-        if args.scope == "all" and not args.case:
+            run_cases(identity["Id"], run_root, bundle, case_slots, args.data_root, args.scope, args.case, args.layer)
+        if args.layer in ("kv", "deployment", "all") and args.scope == "all" and not args.case:
             check_startup(identity["Id"], run_root)
         timings["status"] = "pass"
     finally:
         timings["scenarios_wall"] = time.monotonic() - started
         write_report(run_root, timings)
-    print(f"Container KV scope {args.scope} passed", flush=True)
+    print(f"Container scope {args.scope} passed", flush=True)
 
 
 if __name__ == "__main__":

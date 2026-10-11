@@ -23,10 +23,12 @@ def create_network(cluster):
     return subnet
 
 
-def node_data(cluster, index):
+def node_data(cluster, index, prepare_logs=True):
     data = (cluster.data_root / f"node{index}" / "data").resolve()
-    (data / "log").mkdir(parents=True)
-    (data / "log" / "container.log").touch()
+    data.mkdir(parents=True)
+    if prepare_logs:
+        (data / "log").mkdir()
+        (data / "log" / "container.log").touch()
     cluster.data_paths.append(data)
     (cluster.artifacts / "mounts.json").write_text(json.dumps({
         "container_data": "/opt/crowdb/data",

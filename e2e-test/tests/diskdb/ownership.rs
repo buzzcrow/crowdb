@@ -6,30 +6,17 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::hardware::{DG_ID, UNIT_SIZE_BYTES};
+use super::make_chunk_id;
 use crowdb_diskdb_client::{DiskdbClient, DiskdbRpcTransport, RetryConfig};
 use crowdb_protocol::diskdb::rpc::{AllocateBlocksRequest, CompactZoneRequest, FreeBlocksRequest, Segment};
-use crowdb_test_harness::cluster::KvCluster;
-use crowdb_test_harness::diskdb::*;
-use crowdb_test_harness::hardware::{seed_hardware, standard_disk_ids_3, DG_ID, UNIT_SIZE_BYTES};
 
 #[tokio::test]
+#[ignore = "requires the owned container fixture"]
 #[allow(clippy::too_many_lines)]
 async fn wrong_owner_free_is_ignored_by_compaction() {
-    require_binaries();
-
-    // 1. Start kv cluster + seed hardware.
-    eprintln!("=== validate-owner: starting kv cluster ===");
-    let cluster = KvCluster::start().await;
-    let hw = cluster.make_hardware_client();
-    seed_hardware(&hw, &standard_disk_ids_3()).await;
-
-    // 2. Start diskdb.
-    eprintln!("=== validate-owner: starting crowdb-diskdb (validate_owner=true) ===");
-    let diskdb = DiskdbProcess::start(&cluster.mgmt_endpoints, true);
-    diskdb.wait_for_ready().await;
-
     // 3. Build client + refresh endpoints.
-    let svc = cluster.make_service_registry_client();
+    let svc = super::registry();
     let transport = Arc::new(DiskdbRpcTransport::new());
     let client = Arc::new(
         DiskdbClient::new(svc.clone(), transport).with_retry_config(RetryConfig {
@@ -39,16 +26,16 @@ async fn wrong_owner_free_is_ignored_by_compaction() {
     );
     client.refresh_endpoints().await.expect("refresh endpoints");
 
-    svc.register_diskdb(998, "127.0.0.1:1", &[101], &[])
+    svc.register_diskdb(998, "127.0.0.1:1", &[102], &[])
         .await
         .expect("register temporary route");
     client.refresh_endpoints().await.expect("add temporary route");
-    assert!(client.disk_group_ids().contains(&101));
+    assert!(client.disk_group_ids().contains(&102));
     svc.unregister("diskdb", 998)
         .await
         .expect("remove temporary route");
     client.refresh_endpoints().await.expect("remove stale route");
-    assert!(!client.disk_group_ids().contains(&101));
+    assert!(!client.disk_group_ids().contains(&102));
 
     // 4. Allocate 1 block with owner = chunk A.
     let owner_a = make_chunk_id(0, 42);
@@ -65,10 +52,6 @@ async fn wrong_owner_free_is_ignored_by_compaction() {
         .expect("allocate 1 block");
     assert_eq!(alloc_resp.segments.len(), 1, "expected 1 segment");
     let seg = &alloc_resp.segments[0];
-    eprintln!(
-        "  allocated: disk={:?} zone={} offset={}",
-        seg.disk_id, seg.zone_index, seg.unit_offset
-    );
 
     // 5. A wrong-owner free is accepted as an immutable fact. Compaction
     // rejects it because it does not match the current busy incarnation.
@@ -103,7 +86,4 @@ async fn wrong_owner_free_is_ignored_by_compaction() {
         .await
         .expect("query after mismatch");
     assert_eq!(after_wrong.disk_groups[0].busy_bytes, u64::from(UNIT_SIZE_BYTES));
-
-    eprintln!();
-    eprintln!("diskdb_client_e2e_validate_owner: ALL CHECKS PASSED");
 }

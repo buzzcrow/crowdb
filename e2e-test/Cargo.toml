@@ -12,6 +12,7 @@ workspace = true
 
 [dev-dependencies]
 bytes = "1"
+crowdb-diskdb-client = { path = "../lib/crowdb-diskdb-client" }
 crowdb-kv = { path = "../lib/crowdb-kv" }
 crowdb-kv-client = { path = "../lib/crowdb-kv-client" }
 crowdb-protocol = { path = "../lib/crowdb-protocol" }

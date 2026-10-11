@@ -5,14 +5,11 @@
 
 use std::collections::HashSet;
 
+use super::hardware::{standard_disk_ids_3, CAPACITY_UNITS, DG_ID, UNIT_SIZE_BYTES};
+use super::{make_chunk_id, make_client};
 use crowdb_diskdb_client::DiskdbClientError;
 use crowdb_protocol::common::DiskId;
 use crowdb_protocol::diskdb::rpc::{AllocateBlocksRequest, CompactZoneRequest, FreeBlocksRequest, Segment};
-use crowdb_test_harness::cluster::KvCluster;
-use crowdb_test_harness::diskdb::{make_chunk_id, make_client, require_binaries, DiskdbProcess};
-use crowdb_test_harness::hardware::{
-    seed_hardware, standard_disk_ids_3, CAPACITY_UNITS, DG_ID, UNIT_SIZE_BYTES,
-};
 
 const SEGMENT_UNITS: u32 = 2;
 const BLOCKS_PER_REQUEST: u32 = 3;
@@ -20,16 +17,10 @@ const BLOCKS_PER_REQUEST: u32 = 3;
 type UnitAddress = (DiskId, u32, u64);
 
 #[tokio::test]
+#[ignore = "requires the owned container fixture"]
 async fn exhaust_free_compact_and_reuse_exact_space() {
-    require_binaries();
-
-    let cluster = KvCluster::start().await;
     let disk_ids = standard_disk_ids_3();
-    seed_hardware(&cluster.make_hardware_client(), &disk_ids).await;
-    let diskdb = DiskdbProcess::start(&cluster.mgmt_endpoints, false);
-    diskdb.wait_for_ready().await;
-
-    let client = make_client(cluster.make_service_registry_client());
+    let client = make_client(super::registry());
     client.refresh_endpoints().await.expect("refresh endpoints");
 
     let capacity_units = u64::try_from(disk_ids.len()).expect("disk count fits u64") * CAPACITY_UNITS;

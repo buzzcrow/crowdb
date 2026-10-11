@@ -53,4 +53,16 @@ def check_startup(image, artifacts):
     check("invalid-profile", [], "Error: Decode", mounts=(
         f"type=bind,source={profile.resolve()},target=/opt/crowdb/etc/selected.toml,readonly",),
         environment=("CROWDB_PROFILE_PATH=/opt/crowdb/etc/selected.toml",))
+    source = Path(__file__).resolve().parents[1] / "container/single-node-container/profile.toml"
+    for case, body, expected in (
+            ("unknown-selected-service", source.read_text().replace('id = "web"', 'id = "unknown"'), "unknown release service"),
+            ("missing-selected-dependency", source.read_text().replace('dependencies = ["kv"]', 'dependencies = []'), "release service dependency is absent")):
+        profile = root / f"{case}.toml"
+        profile.write_text(body)
+        check(case, [], expected, mounts=(
+            f"type=bind,source={profile.resolve()},target=/opt/crowdb/etc/selected.toml,readonly",),
+            environment=("CROWDB_PROFILE_PATH=/opt/crowdb/etc/selected.toml", "CROWDB_STARTUP_MODE=single"))
+        for path in ("node-identity", "ssh", "bootstrap", "kv"):
+            if (root / case / path).exists():
+                raise AssertionError(f"{case}: invalid selection created {path}")
     (root / "timing.json").write_text(json.dumps(results, indent=2))

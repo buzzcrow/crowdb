@@ -30,6 +30,10 @@ block-device WAL and the existing `e2e` election preset. It consumes the shared
 pixi run test-container-e2e-fixture
 pixi run clean-env
 pixi run test-container-e2e --layer kv --concurrency 2 --cpus 4 --memory-mib 4096
+# Diskdb public allocation/ownership/exact reuse flows:
+pixi run test-container-e2e --layer diskdb --concurrency 2
+# Normal release monitor full set, service subsets and persisted restart:
+pixi run test-container-e2e --layer deployment --concurrency 2 --cpus 6 --memory-mib 6144
 # Run one domain scope (other migrated scopes: kv.membership, kv.routing,
 # kv.recovery, kv.isolation, kv.group0, kv.client, kv.metadata):
 pixi run test-container-e2e --scope kv.management --concurrency 2
@@ -171,3 +175,20 @@ Latest complete KV acceptance: 48 independent fixtures, 47 distinct Rust cases,
 with two slots and a 6 CPU/6144 MiB budget. See `doc/working/test.md` for measured
 flow timings. Other service domains and final task/job classification remain
 pending.
+
+## Storage and normal monitor batches
+
+- Diskdb client allocation, ownership-routing and exhaustion/reuse now have one
+  owner under `tests/diskdb/`; the old client process fixtures are removed after
+  acceptance. Six deterministic client UT remain in their component. Diskdb
+  application recovery/fence/journal scenarios remain pending.
+- `deployment.selection` consumes mounted normal profiles in the same immutable
+  release image: complete seven services, KV-only and KV+Diskdb. Check exact
+  selected readiness, acknowledged host-client writes, abrupt node loss and
+  recreation with preserved data. Unknown/missing-dependency selections fail
+  before partial startup. This does not replace the pending complete deployment
+  UI/SSH and runtime failure matrix.
+- Latest Diskdb client batch: 3 flows/6 host phases, 7.424 s scenario wall at two
+  slots. Normal monitor selection batch: 3 flows/6 host phases and five startup
+  rejection checks, 20.153 s. Detailed measurements and image/source identities
+  are in `doc/working/test.md`; other domains remain pending.

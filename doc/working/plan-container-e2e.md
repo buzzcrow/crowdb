@@ -426,7 +426,7 @@ Goal: review and migrate all real-server tests into domain modules under contain
   to inspected IPs. Preserve exact topology, restart and isolation assertions;
   keep run-specific client environment/artifacts and remove unnecessary Docker
   publish options. Files: `e2e-test/{fixture,client,run}.py`, common clients.
-- [~] **Release startup service selection**: document and implement runtime
+- [x] **Release startup service selection**: document and implement runtime
   full-set/subset selection through the normal entrypoint/profile contract,
   preserving existing bootstrap modes. Reuse monitor dependency validation;
   test unknown/missing dependencies and selected-service restart/reconciliation
@@ -440,7 +440,14 @@ Goal: review and migrate all real-server tests into domain modules under contain
   identity/discovery startup. Default full-set bootstrap order is unchanged.
   Focused selection/preview/profile tests: 10 passed; profile/render/supervisor/
   manifest/crash-retention tests: 23 passed; monitor all-target clippy and Rust
-  fmt passed. Actual same-image subset acceptance remains pending.
+  fmt passed. Same-image full seven-service, KV-only and KV+Diskdb startup,
+  SIGKILL/container recreation and exact acknowledged-value recovery passed in
+  run-baa850f79d5e442e8d9153309e9bf1f2 (20.153 s scenario wall). Each ready
+  monitor exposes exactly the selected services. Five invalid release startup
+  checks passed; unknown selections and missing dependencies created no node
+  identity, SSH, bootstrap or KV state. Data mounts are initially empty and
+  explicitly owned by the release service UID; fixture log precreation must not
+  violate the normal fresh-root bootstrap contract.
 - [ ] **Debug information and inspectable data**: add a release staging option
   retaining debug info, mount each node's owned data root at a discoverable host
   path, retain logs/crash evidence on failure and record matching binary IDs.
@@ -470,7 +477,7 @@ Goal: review and migrate all real-server tests into domain modules under contain
   migrate restore, snapshot/WAL tail, dynamic group/membership and Group-0
   discovery; retain deterministic KV-client flows and test actual production
   leader retry. Retire component process helper only after all callers migrate.
-- [ ] **Diskdb batch**: add dependency-ready Diskdb profile, map client and
+- [~] **Diskdb batch**: add dependency-ready Diskdb profile, map client and
   application assertions, split internal handler flows from real metadata
   setup, migrate allocation/recovery/fence/journal boundaries. Files: Diskdb
   tests, harness `diskdb.rs`, container `tests/diskdb*`, profile/runner.
@@ -901,3 +908,39 @@ Source `lib/crowdb-kv-client/tests/chunk_slot_map_test.rs`: all eight cases exer
 - Full required concurrent acceptance PASSES in `run-5d914d0b899045439e600b7510c5f044`: 46 named flows plus the two-fixture original CRUD/restart/isolation pair, 48 owned fixtures, 47 distinct Rust cases, 54 exact client phases and three release startup rejection checks. Warm client build 0.440s; scenario wall 85.987s; two slots, 6 CPUs/6144 MiB. Every fixture reports pass including owned collection and teardown.
 - Previously failing unavailable-voter/follower-removal also passes alone in `run-8c9a9bf1907e4fb5b4f7071dd274f4ed`, 3.17s client; complete parallel run 3.18s. Graceful actual leader shutdown passes 4.70s. Preserve original refused listener and missing-IP faults and all acknowledged exact values.
 - `test.md` now records all 48 measured flow rows with image/source identity and separate start/client/restart/collect/stop/wall phases. Remaining domains and final Pixi/CI classification remain pending. Next active task is normal release monitor service selection, followed by storage domains.
+
+## Diskdb client migration acceptance
+
+- Source `allocation_lifecycle_test::allocate_commit_and_free_through_client`
+  -> `diskdb::allocation::allocate_commit_and_free_through_client`: preserve
+  32 simultaneous first frees, allocate/commit/query drill-down, all 400
+  concurrent allocate/free cycles, persist-only free, compact all twelve zones,
+  capacity conservation and allocation after reclaim. Simplify verbose reporting
+  and make each concurrent operation assert exact counts and no failures.
+- Source `ownership_routing_test::wrong_owner_free_is_ignored_by_compaction`
+  -> `diskdb::ownership::wrong_owner_free_is_ignored_by_compaction`: retain
+  service endpoint add/remove, accepted wrong-owner immutable free fact and
+  compaction rejecting it without reclaiming the current 1 MiB allocation.
+- Source `space_reuse_test::exhaust_free_compact_and_reuse_exact_space`
+  -> `diskdb::space_reuse::exhaust_free_compact_and_reuse_exact_space`: retain
+  1536 units/four zones/three disks, exact non-overlap and exhaustion, duplicate
+  response-loss retries, free remaining busy until compact, exact freed-address
+  reuse and delayed old-incarnation rejection after replacement allocations.
+- Three targets passed with two independently owned fixtures concurrently in
+  run-12cc7c61426c42498ff12e85536cbcf6, scenario wall 7.424 s, client build
+  2.841 s. Each fixture uses two release containers, KV 7000/7001 and Diskdb
+  7100/7101/7102. The advertised RPC IP equals the inspected owned address.
+  Preserve Rack 1/Node 10/group 100/instance 999 and original disk geometry.
+- Delete the three source files after equivalent target acceptance; preserve
+  all six config/normalization/routing snapshot UT assertions (passed). The
+  shared Diskdb harness still has other callers; retire it after their migration.
+  Internal application flows depending on real KV still need splitting into
+  public E2E and deterministic memory-backed component logic.
+- First startup attempt exposed missing required `[storage]` fields in the new
+  fixture; complete the original normal configuration rather than changing
+  timeout/assertions. Collect Docker stderr along with stdout, with a regression
+  UT preserving machine-readable inspect stdout. Fixture gate: 27 passed.
+- Exact shared release source d8bf780c351bf3afec87624db74956410e8ced5f,
+  OCI manifest sha256:743539d20444ad687f00b771d37d257a5e30803f2b84ade5e40934dc99bfbdd4,
+  config sha256:10254caf607d21cb102e0b1fd636d55a65625eb06d54895bad0d01cf6bc3be9a,
+  debug info retained. All domain selections consume this one artifact.

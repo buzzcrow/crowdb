@@ -1458,6 +1458,7 @@ name = "e2e-test"
 version = "0.3.0"
 dependencies = [
  "bytes",
+ "crowdb-diskdb-client",
  "crowdb-kv",
  "crowdb-kv-client",
  "crowdb-protocol",
