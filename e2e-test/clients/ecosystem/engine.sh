@@ -9,7 +9,7 @@ case "$engine" in
     flink) main=FlinkAcceptance ;;
     *) echo 'Expected spark or flink' >&2; exit 2 ;;
 esac
-project="$PIXI_PROJECT_ROOT/container/single-node-container/tests/ecosystem/$engine"
+project="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$engine"
 classpath="$project/target/ecosystem-classpath.txt"
 mvn --batch-mode --no-transfer-progress -f "$project/pom.xml" compile \
     org.apache.maven.plugins:maven-dependency-plugin:3.8.1:build-classpath \

@@ -11,10 +11,16 @@
 - Locally, run `pixi run build-single-node-container`, then
   `pixi run -e iceberg-ecosystem test-iceberg-container-ecosystem`.
   No default task or default CI job depends on this environment or test.
-- Every run creates its own container, bind volume, generated credentials and
-  public listener checks. Restart preserves that volume and credentials;
-  EXIT cleanup removes only the owned resources. Port 9092 must be free for
-  the image's advertised Iceberg FileIO URI. User volumes are never reused.
+- Every run owns an isolated bridge network and normal release node with private
+  mounted data. Host SDK/JVM clients access its inspected IP and fixed port 9092;
+  the optional pinned Trino engine shares that bridge on port 8080. No host
+  ports are published. Node recreation preserves the same data, IP and credentials.
+  Cleanup removes owned containers/networks and retains data/log/crash files
+  under `.crowdb-runtime/test-data/container-e2e/<run>/ecosystem`.
+- Install `pixi install --locked -e iceberg-ecosystem`; the full profile also
+  requires the pinned Trino image below. Missing prerequisites fail before server
+  allocation. The node reserves 1 CPU / 2 GiB, host clients 2 CPU / 4 GiB and
+  Trino 1 CPU / 4 GiB: `all` needs 4 CPU / 10 GiB, `python` 3 CPU / 6 GiB.
 - `CROWDB_ECOSYSTEM_ARTIFACTS` receives redacted diagnostics, image identity
   and operation reports. Credentials and raw runtime/volume files are excluded.
   A failed infrastructure, dependency, authentication or unknown query stage
@@ -22,14 +28,17 @@
 
 ## Verified capability matrix
 
-The complete `all` profile passed on 2026-10-05 against the actual release image,
-including persisted-volume restart and cleanup. Spark and Flink run in standalone
-JVMs with locked OpenJDK 17.0.18-internal, the full runtime classpath and Flink's Java 17
-module-access configuration. Trino uses its digest-pinned image runtime.
+The complete `all` profile passed on 2026-10-12 in 192.879 seconds against
+release source `d9dd29c41e94ad48a58940fc01b7ad700bdd0cf3`, including persisted-volume
+restart. Run `run-a1ee514316574f269327bbbd858ec139` records exact image and client
+lock identity. Python/DuckDB also passes independently. Actual interruption during
+partial startup and Trino execution removes owned resources and host clients;
+reports remain failed and retained data survives. Spark/Flink run in host JVMs
+with locked Java 17, full runtime classpaths and Flink's module-access configuration.
 Only the operations listed below are established; no engine-wide certification
 or untested format/version is implied.
 
-- **Python**: PyIceberg 0.11.1, Arrow 25.0.1 (Conda package 25.0.0), pandas
+- **Python**: PyIceberg 0.11.1, Arrow 25.0.0, pandas
   3.0.6, Polars 1.35.2. Two snapshots with 8192 rows per append. Filtered current
   and historical Arrow batches, eager pandas/Polars, a notebook-style query and
   a scalar downstream consumer retaining only one batch of at most 8192 rows.

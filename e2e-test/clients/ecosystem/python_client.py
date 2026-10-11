@@ -19,7 +19,7 @@ NAMESPACE = ("ecosystem",)
 TABLE = NAMESPACE + ("batches",)
 HANDOFF = NAMESPACE + ("handoff",)
 BATCH_ROWS = 8192
-PINS = {"pyiceberg": "0.11.1", "pyarrow": "25.0.1", "pandas": "3.0.6",
+PINS = {"pyiceberg": "0.11.1", "pyarrow": "25.0.0", "pandas": "3.0.6",
         "polars": "1.35.2", "duckdb": "1.4.3"}
 SCHEMA = pa.schema([pa.field("id", pa.int64()), pa.field("amount", pa.int64())])
 

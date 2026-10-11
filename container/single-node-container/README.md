@@ -296,8 +296,8 @@ available.
 
 ## Tested Iceberg ecosystem recipes
 
-The [verified client matrix](tests/ecosystem/README.md) covers PyIceberg 0.11.1,
-Arrow 25.0.1, pandas 3.0.6, Polars 1.35.2, DuckDB 1.4.3, Spark 3.5.6 and Flink
+The [verified client matrix](../../e2e-test/clients/ecosystem/README.md) covers PyIceberg 0.11.1,
+Arrow 25.0.0, pandas 3.0.6, Polars 1.35.2, DuckDB 1.4.3, Spark 3.5.6 and Flink
 1.20.2 with Iceberg 1.11.0, and Trino 483 pinned by image digest. Each listed
 profile passed against the actual container, including selected rows after a
 persisted-volume restart. Spark/Flink mutation and Python snapshot handoff are
@@ -313,9 +313,9 @@ The **Iceberg container ecosystem** GitHub Actions workflow runs only by manual
 It defaults to the complete `all` matrix and offers a Python/DuckDB diagnostic
 profile. The environment and task are outside default tests and CI dependencies.
 Reports contain pinned versions, image/source identity and redacted diagnostics;
-the fixture removes its own containers and volume on success and failure.
+the fixture removes owned containers/networks and retains mounted data/logs on success and failure.
 
-The [fixture recipes](tests/ecosystem/README.md#connection-recipes) define exact
+The [fixture recipes](../../e2e-test/clients/ecosystem/README.md#connection-recipes) define exact
 REST, delegated FileIO, endpoint and classpath setup. Trino explicitly uses the
 Iceberg/FileIO origin with path-style S3 access and vended table credentials.
 The matrix selects Parquet/v2. It does not establish ORC, arbitrary engine

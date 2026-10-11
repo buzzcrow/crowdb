@@ -356,3 +356,13 @@ node data/log/crash files and credentials stay under the private per-run data
 root; only redacted client output and identity/results are uploaded. Both
 partial startup and active-browser interruption remove all owned runtime
 resources and terminate the host browser children while retaining diagnostics.
+
+## Manual external engines
+
+- `pixi run -e iceberg-ecosystem test-iceberg-container-ecosystem` delegates to
+  root `--profile ecosystem`; `CROWDB_ECOSYSTEM_PROFILE=python` selects the focused
+  Python/DuckDB profile. Neither belongs to default CI or ordinary Iceberg counts.
+- [Pinned matrix and prerequisites](clients/ecosystem/README.md) describe the
+  host SDK/JVM clients, optional Trino engine, fixed bridge endpoints, retained
+  private data and public redacted reports. Both profiles recreate the formal
+  server against its original mounted data and assert unchanged credentials.

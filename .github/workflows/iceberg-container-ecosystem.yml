@@ -37,8 +37,14 @@ jobs:
         with:
           pixi-version: latest
       - uses: Swatinem/rust-cache@v2
-      - name: Build isolated preview image
+      - name: Build formal release image
         run: pixi run build-single-node-container
+      - name: Prepare locked clients
+        run: |
+          pixi install --locked -e iceberg-ecosystem
+          if [[ "${{ inputs.profile }}" == all ]]; then
+            pixi run docker pull trinodb/trino:483@sha256:fca43d1fdfdcd45f36b791f7117a47f8ce69c58232e5398bfdb8539cd28e778b
+          fi
       - name: Run pinned container clients
         env:
           CROWDB_ECOSYSTEM_PROFILE: ${{ inputs.profile }}

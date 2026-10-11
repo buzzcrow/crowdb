@@ -5,7 +5,6 @@ import json
 import os
 from pathlib import Path
 import subprocess
-import socket
 import sys
 import time
 from urllib.error import URLError
@@ -29,17 +28,16 @@ def query(sql):
         if "nextUri" not in body:
             return rows
         if time.monotonic() >= deadline:
-            raise TimeoutError("Trino query exceeded the functional bound")
+            raise TimeoutError("Trino query exceeded the functional bound: " + json.dumps({"id":body.get("id"),"stats":body.get("stats"),"next_uri":body.get("nextUri")}))
         request = Request(body["nextUri"], headers={"X-Trino-User": "ecosystem"})
 
 
 def main():
     global TRINO_URI
     name, private = sys.argv[1:]
-    with socket.socket() as listener:
-        listener.bind(("127.0.0.1", 0))
-        port = listener.getsockname()[1]
-    TRINO_URI = f"http://127.0.0.1:{port}"
+    address = os.environ["CROWDB_ECOSYSTEM_TRINO_IP"]
+    port = 8080
+    TRINO_URI = f"http://{address}:{port}"
     config = Path(private).joinpath("trino-config")
     config.mkdir(exist_ok=True)
     config.joinpath("catalog").mkdir(exist_ok=True)
@@ -56,7 +54,10 @@ def main():
         "iceberg.rest-catalog.vended-credentials-enabled=true\n"
         "iceberg.rest-catalog.view-endpoints-enabled=false\nfs.s3.enabled=true\ns3.region=us-east-1\n"
         f"s3.endpoint={os.environ['CROWDB_PREVIEW_ICEBERG_URI']}\ns3.path-style-access=true\n")
-    command = ["docker", "run", "-d", "--name", name, "--network", "host", "--platform", "linux/amd64"]
+    command = ["docker", "run", "-d", "--name", name, "--platform", "linux/amd64",
+               "--network", os.environ["CROWDB_ECOSYSTEM_NETWORK"], "--ip", address,
+               "--label", "org.crowdb.e2e.run=" + os.environ["CROWDB_ECOSYSTEM_NETWORK"],
+               "--cpus", "1", "--memory", "4g"]
     for entry in ["config.properties", "node.properties", "catalog"]:
         command.extend(["--mount", f"type=bind,source={config.absolute() / entry},target=/etc/trino/{entry},readonly"])
     subprocess.run([*command, IMAGE], check=True)
@@ -70,7 +71,7 @@ def main():
                 if not info["starting"]:
                     assert info["nodeVersion"]["version"] == "483", info
                     break
-            except URLError:
+            except (URLError, TimeoutError):
                 pass
             state = subprocess.run(["docker", "inspect", "--format", "{{.State.Running}}", name],
                                    check=True, capture_output=True, text=True).stdout.strip()

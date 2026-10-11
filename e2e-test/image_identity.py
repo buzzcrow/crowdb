@@ -120,6 +120,8 @@ def verify_server_sources(root, revision):
                 manifest.get("tasks", {}).pop("test-storage", None)
                 manifest.get("feature", {}).get("iceberg-e2e", {}).get("tasks", {}).pop(
                     "test-iceberg-sdk-component", None)
+                manifest.get("feature", {}).get("iceberg-ecosystem", {}).get("tasks", {}).pop(
+                    "test-iceberg-container-ecosystem", None)
             if before == after:
                 continue
         if path == "Cargo.lock" and current.is_file():

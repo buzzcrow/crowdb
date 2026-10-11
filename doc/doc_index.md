@@ -62,7 +62,7 @@ Temporary plans live under `doc/working/`; flow analyses live under
 | `app/crowdb-web/ui/e2e/README.md`                           | Owned console/browser acceptance and timing.          |
 | `e2e-test/README.md`                                        | Layer fixtures, KV container acceptance and migration. |
 | `container/single-node-container/README.md`                 | Container build, publication and tested client setup. |
-| `container/single-node-container/tests/ecosystem/README.md` | Manual pinned client/engine matrix and exclusions.    |
+| `e2e-test/clients/ecosystem/README.md`                       | Manual pinned client/engine matrix and exclusions.    |
 
 
 ## Project Files (repo root)

@@ -84,6 +84,21 @@ class ImageIdentityTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "pixi.toml"):
             verify_server_sources(self.root, revision)
 
+    def test_manual_engine_delegate_preserves_dependency_and_build_guards(self):
+        manifest = self.root / "pixi.toml"
+        original = ('[feature.iceberg-ecosystem.dependencies]\npython = "3.12.*"\n'
+                    '[feature.iceberg-ecosystem.tasks]\ntest-iceberg-container-ecosystem = "old host client"\n'
+                    '[tasks]\nbuild = "release build"\n')
+        manifest.write_text(original)
+        self.commit()
+        revision = self.git("rev-parse", "HEAD")
+        manifest.write_text(original.replace("old host client", "root container delegate"))
+        self.assertTrue(verify_server_sources(self.root, revision)["server_sources_match"])
+        for changed in (original.replace("3.12.*", "3.13.*"), original.replace("release build", "other build")):
+            manifest.write_text(changed)
+            with self.assertRaisesRegex(ValueError, "pixi.toml"):
+                verify_server_sources(self.root, revision)
+
     def test_unbundled_browser_spec_can_move_without_exempting_ui_sources(self):
         directory=self.root / "app/crowdb-web/ui"
         spec=directory / "e2e/flows/12-cluster-discovery.spec.ts"

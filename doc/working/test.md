@@ -66,6 +66,15 @@ are excluded. Console uses one effective case slot at 0.25 CPU/server with a
   Four host browser flows pass with zero skips. Partial-startup and active-browser
   interruption clean up owned resources/clients in 1.128 / 1.385 seconds.
   This profile is separate from the ordinary Deployment domain measurement.
+- **Manual Iceberg ecosystem**: all five pinned engines plus cross-client
+  snapshot handoff/recreation pass in 192.879 seconds on the rebuilt image,
+  4 CPU / 10240 MiB; [report](../../.crowdb-runtime/artifacts/container-e2e/run-a1ee514316574f269327bbbd858ec139/results.json).
+  Focused Python/DuckDB passes in 19.425 seconds, 3 CPU / 6144 MiB
+  (`run-c25d6063eab24c588d5d32cbde2a030d`, reports under `/tmp/crowdb-root-ecosystem-python`).
+  Partial-startup and active-Trino interruption clean up owned resources and
+  host clients in 0.833 / 2.338 seconds. These manual profiles are separate from
+  ordinary Iceberg domain counts. Private mounted data/raw logs are retained;
+  published artifacts contain credential-redacted reports only.
 - **Linux host profile**: explicit host-network admission/recovery passes 1/1
   in 6.740 seconds on intel7960, 2 CPU / 1024 MiB node quota
   plus the host client reservation; [report](../../.crowdb-runtime/artifacts/container-e2e/run-9869315124ca45cb9ba3e3b3b245be90/results.json).

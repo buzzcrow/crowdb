@@ -9,7 +9,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 
 ## Resume context
 
-- Branch `task-deploy`; latest accepted containerd migration is committed as `92cdfc95`. R230 is unfinished. Do not delete the
+- Branch `task-deploy`; latest accepted SSH admission migration is committed as `d766eb39`. R230 is unfinished. Do not delete the
   requirement/backlog entry until every remaining owner and required gate passes.
 - Working tree contains uncommitted Console browser migration drafts. Shared-image CI is committed. S3 node-fault migration and local-state component proofs are accepted.
   Preserve these drafts. `e2e-test/clients/console-ui/node_modules/` is local
@@ -31,7 +31,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 - Delete original real-server owners only after equivalent accepted assertions.
   Keep deterministic component UT. Run executable commands through `pixi run`;
   native server gates require `clean-env`, never during another server gate.
-- Accepted fixture gate: 66 pass, `/tmp/crowdb-containerd-staged-fixture.log`,
+- Accepted fixture gate: 76 pass, `/tmp/crowdb-ecosystem-staged-fixture.log`,
   using an export of the staged source. Console browser drafts are excluded.
   Retained S3 component UT pass 5/5; Web/Console-shared/E2E all-target clippy
   and workspace fmt pass.
@@ -54,19 +54,6 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   endpoints; signaling validates service PID and run ownership. Preserve UI
   assertions and remove native runners only after matching acceptance. Current
   root Console operation inventory is 87 cases; the two draft browser cases are additional.
-- [~] **External engine profile**: classify/move
-  `container/single-node-container/tests/ecosystem/` as an explicit manual child
-  under `e2e-test/clients/`; draft `--profile ecosystem` / `ecosystem-python`
-  reuses the central ManagedCluster with private bind mounts and direct fixed
-  endpoints. Original baseline passes Python/DuckDB/Spark/Flink but Trino
-  exceeded its unchanged 60-second query deadline. The original unbounded
-  Trino JVM uses 80% initial heap; explicit 1 CPU / 4 GiB limits now pass the
-  complete original matrix and persisted-volume restart. Accept the root
-  direct-IP profile and interruption cleanup before deleting old owners. Keep failed stage/state evidence in
-  `/tmp/crowdb-ecosystem-legacy-ready`. Python, DuckDB, Trino, Spark and Flink consume one
-  formal server image with host clients and locked engine dependencies. Keep
-  external toolchain prerequisites, restart/exact-data assertions and credential
-  redaction. Missing prerequisites fail an explicitly requested gate.
 ## Final integration and closure
 
 - [ ] **Launcher and coverage audit**: enumerate remaining production executable
@@ -85,15 +72,19 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 - [ ] **Close CI classification**: finish selectors after native owners and the
   managed browser contract are resolved. Required domain jobs share one verified
   formal artifact; special host/containerd gates use root profiles. Add the
-  accepted bridge-admission delegate and locked host browser preparation. Check
+  remaining accepted browser delegates. Bridge admission is already integrated. Check
   each job's CPU/memory reservation and upload only redacted diagnostics.
   Actual remote CI has not run.
-- [ ] **Final regression and measurements**: run full Iceberg/Console and required registered layers on the same image,
+- [~] **Final regression and measurements**: run full Iceberg/Console and required registered layers on the same image,
   then relevant component/fmt/lint gates. Update `doc/working/test.md` using one
   row per domain and actual complete-run counts/wall times/environment/image.
   Keep per-case detail in artifacts; never sum partial batches into a full pass.
   DiskIO on the fixed image passes 8/8 in 20.802 seconds,
   `run-7ca260ddd87c489e949438bc9d7b9d59`; its domain row is updated.
+  New-image full runs are active: Console `run-6e890de5f4ab479686588a4d23719d23`,
+  S3 `run-52be5dd3b8cb4e7abff03daa44b0509e`, Iceberg
+  `run-a668558dcb8541919c78c4f6e1b4f13d`; reports/logs under
+  `/tmp/crowdb-final-{console,s3,iceberg}`. Do not run `clean-env` while active.
   The simplified document layout is accepted and needs no further redesign.
 - [ ] **Deferred benchmark decision**: review
   `tools/benchmark/bench-chunk-kv-regression.sh` only after migration and coverage

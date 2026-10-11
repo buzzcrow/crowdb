@@ -88,7 +88,7 @@ def main():
     parser.add_argument("--layer", choices=("kv", "diskdb", "diskio", "chunkdb", "chunk-stream", "chunk-client", "chunk-kv", "s3", "iceberg", "dataset", "console", "deployment", "all"), default="all")
     parser.add_argument("--scope", choices=("all", "dataset.http", "console.discovery", "console.hardware", "console.logical", "console.bootstrap", "console.cleanup", "console.deployment", "console.cli", "console.operations", "console.web", "console.web.disposable", "console.web.recovery", "console.web.access", "console.web.authority", "console.web.slots", "console.web.catalog", "console.web.standalone", "console.web.registry", "console.web.lifecycle", "console.web.wal", "console.clients", "iceberg.manual.tpc", "iceberg.benchmark", "iceberg.metadata", "iceberg.namespace", "iceberg.files", "iceberg.files.listing", "iceberg.catalog", "iceberg.gc", "iceberg.sdk", "iceberg.sdk.java", "iceberg.sdk.rust", "iceberg.sdk.rck", "s3.protocol", "s3.recovery", "s3.responses", "s3.benchmark", "s3.sdk", "s3.credentials", "s3.policy", "s3.nodes", "kv.management", "kv.membership", "kv.routing", "kv.recovery", "kv.isolation", "kv.group0", "kv.client", "kv.metadata", "diskdb.allocation", "diskdb.ownership", "diskdb.reuse", "diskdb.recovery", "chunkdb.allocation", "chunkdb.lifecycle", "chunkdb.recovery", "chunkdb.placement", "chunkdb.io", "chunkdb.conversion", "chunkdb.repair", "chunkdb.slots", "chunkdb.handoff", "chunk-kv.protocol", "chunk-kv.recovery", "chunk-client.reader", "chunk-client.large_repair", "chunk-client.small_flow", "chunk-client.benchmark", "chunk-client.large", "chunk-client.small", "chunk-stream.objects", "chunk-stream.recovery", "chunk-stream.errors", "deployment.selection", "deployment.supervision", "deployment.hardware", "deployment.bootstrap", "deployment.balance", "deployment.listeners", "deployment.browser", "deployment.anonymous", "deployment.failures", "deployment.clients", "deployment.storage", "deployment.validation", "deployment.kv", "diskio.durability", "diskio.direct", "diskio.io.mem", "diskio.io.null", "diskio.discovery", "diskio.errors", "diskio.faults", "diskio.semantic"),
                         default="all")
-    parser.add_argument("--profile", choices=("bridge", "bridge-admission", "host", "containerd-host", "containerd-cluster"), default="bridge")
+    parser.add_argument("--profile", choices=("bridge", "bridge-admission", "host", "containerd-host", "containerd-cluster", "ecosystem", "ecosystem-python"), default="bridge")
     parser.add_argument("--concurrency", type=int, default=2)
     parser.add_argument("--case", help="fully qualified named flow within the selected scope")
     parser.add_argument("--list", action="store_true", help="list implemented named flows without starting servers")
@@ -102,6 +102,11 @@ def main():
     parser.add_argument("--archive", type=Path, default=ROOT / "target/crowdb.oci.tar",
                         help="verified OCI archive for the explicit containerd profile")
     args = parser.parse_args()
+    if args.profile in ("ecosystem", "ecosystem-python"):
+        signal.signal(signal.SIGTERM, interrupt)
+        from ecosystem_profile import run_profile
+        run_profile(args, parser)
+        return
     if args.profile == "bridge-admission":
         signal.signal(signal.SIGTERM, interrupt)
         from admission_profile import run_profile
