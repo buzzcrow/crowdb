@@ -38,3 +38,5 @@ mod web_recovery;
 mod web_registry;
 mod web_slots;
 mod web_standalone;
+
+mod web_wal_restart;

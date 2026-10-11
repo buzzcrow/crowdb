@@ -27,6 +27,7 @@ from console_web_fixture import ConsoleWebCluster
 from console_standalone_fixture import StandaloneWebCluster
 from console_registry_fixture import RegistryWebCluster
 from console_typed_fixture import TypedWebCluster
+from console_wal_fixture import WalWebCluster
 from diskio_fixture import DiskioCluster, DiskioDiscoveryCluster, DiskioSemanticCluster
 
 
@@ -323,6 +324,11 @@ ICEBERG_CASES = (
     Case("iceberg.namespace", "access_iceberg::namespace::namespace_functional_crud_survives_native_storage_and_listener_restart"),
 )
 CONSOLE_OPERATION_CASES = (
+    Case("console.web.wal", "console::web_wal_restart::restart_3node_1group", stores=(0, 0, 0)),
+    Case("console.web.wal", "console::web_wal_restart::restart_5node_1group", stores=(0, 0, 0, 0, 0)),
+    Case("console.web.wal", "console::web_wal_restart::restart_5node_2group", stores=(0, 0, 0, 0, 0)),
+    Case("console.web.wal", "console::web_wal_restart::restart_6node_2group_overlap", stores=(0, 0, 0, 0, 0, 0)),
+    Case("console.web.standalone", "console::web_wal_restart::restart_1node_1group"),
     Case("console.web.standalone", "console::web_kv_lifecycle::deploy_restart_and_stop_retains_fixed_ports_and_workspace"),
     Case("console.web.standalone", "console::web_isolation::survives_peer_fixture_retirement"),
     Case("console.web.lifecycle", "console::web_lifecycle::deploys_real_chunkdb_with_fixed_cluster_seeds_and_retained_launch"),
@@ -425,6 +431,8 @@ def select_cases(layer="all", scope="all", case_name=None):
 
 
 def case_nodes(case):
+    if case.scope == "console.web.wal":
+        return len(case.stores) + 1
     if case.scope == "console.web.lifecycle":
         return 4
     if case.scope in ("console.web.standalone", "console.web.registry"):
@@ -467,6 +475,8 @@ def case_resources(case, node_cpus):
 
 
 def allocate_cluster(case, image, artifacts, bundle, data_root):
+    if case.scope == "console.web.wal":
+        return WalWebCluster(image, artifacts, len(case.stores), data_root=data_root)
     if case.scope == "console.web.lifecycle":
         return TypedWebCluster(image, artifacts, data_root=data_root)
     if case.scope == "console.web.registry":

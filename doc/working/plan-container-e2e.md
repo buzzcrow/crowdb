@@ -1553,3 +1553,35 @@ Only the exited-storage timing migration awaits a human design choice; S3 and su
   retry budget stay unchanged; no new lock, timeout, caller retry or weakening.
   Focused corrected component proof passes in 0.12 seconds. Rebuild the formal
   image after the verified server-library commit before container reruns.
+
+
+## WAL recovery accepted concurrent owners
+
+- New formal image source `8a166bb2d9571a812e95b150a83cebc3008a61e4`,
+  OCI digest `sha256:eb2dea191e735b9f6ba40b29ae6d972971ac8ddcfa967c1bc1fcdf82ab6ecf29`,
+  config `sha256:1fd2f7eda93f6f43b580c53f7274598a2290da192d9bc2972e307d91bf49b8e8`,
+  runtime `ed09a2dcf94a285e5955c07ed4fa764765d63e13a3719ac54ab62f4a33691951`,
+  archive `019da2a921f71135cdedf0a88a71f2fd2f7a9cdcda0318342b3412e2057bb51b`.
+  Same production stage/build/import path, retained optimized debug information.
+- `run-32ef0ca362314faa9557711e4e7d402e`: all four multi-node WAL owners pass
+  at concurrency 2, including six-node overlap that failed on the previous
+  image. Preserve public rack/node 201, bootstrap/store/group APIs and every
+  WAL/KV assertion; only launcher configuration and container batch lifecycle
+  are new. Batch lifecycle validates all labels before contacting Docker and
+  stops/starts only voters, with the Web broker retained. Stop takes about
+  0.7–0.8 seconds and start 1.7–1.9 seconds, eliminating sequential waits.
+- Delete the complete original `cluster_restart_incremental_test.rs` only
+  after single-node and all four concurrent multi-node owners pass. Its native
+  process guards, temporary timestamp conversion and coordinated port allocator
+  are removed with it. Normal launch inputs still choose supported file WAL
+  and durable block KV; clients inspect only owned mounted WAL paths.
+  Canonical Console registration now has 83 owners; final complete domain
+  and refreshed KV isolation gates are running before committing this batch.
+
+- Complete fresh Console `run-1db4f5cf906e4918bda5647e55db7445`: 83/83 pass,
+  270.310 seconds fixture wall at concurrency 2. Fresh KV
+  `run-b1dedf87060b4ca083095864b0996bd0`: 50/50 pass, 94.794 seconds,
+  including KV/KV and KV/Web isolation. Canonical staged fixture 52/52; working
+  tree 54/54 including the two browser-draft guards. Rust fmt and both crates
+  all-target clippy pass after retiring the old file. All five WAL owners are
+  accepted; other native Console, S3 and Iceberg migrations remain open.

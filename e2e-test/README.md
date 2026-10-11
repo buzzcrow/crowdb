@@ -270,6 +270,19 @@ pixi run test-container-e2e --layer s3 --concurrency 2 --cpus 16 --memory-mib 16
 pixi run test-container-e2e --layer s3 --scope s3.recovery --concurrency 1 --cpus 8 --memory-mib 8192
 ```
 
+## Console WAL recovery
+
+- `console.operations` includes the public Web WAL recovery flows. Single-node
+  recovery uses the normal standalone Web and its packaged KV child;
+  `console.web.wal` uses 3/5/6 separate KV containers and one writable Web.
+- Rack/node, Group-0 and store/group creation use the public Web APIs. Clients
+  inspect Accepted records in the mounted WAL and require unchanged max slots
+  after stopping and restarting every voter, then verify exact values/deletions.
+- Multi-node profiles select the supported file-WAL backend from the same
+  release image; standalone recovery retains the normal child defaults.
+  KV storage remains durable. Internal ports are fixed; batch lifecycle
+  validates all voter labels before mutation and leaves Web running.
+
 ## Deployment flows
 
 - The canonical deployment layer has 33 named owners. It covers service
@@ -292,6 +305,7 @@ pixi run test-container-e2e --layer s3 --scope s3.recovery --concurrency 1 --cpu
   through label/PID/executable guards. Default anonymous-volume policy is an
   explicit exception to data bind mounts; logs/crash files are copied to host
   artifacts before its owned volume is removed.
-- Fine measured client/fixture times are recorded in
-  [test.md](../doc/working/test.md). Manual admission, native host and ecosystem
+- Domain wall times are recorded in [test.md](../doc/working/test.md); individual
+  client/fixture times remain in each run's `results.json`.
+  Manual admission, native host and ecosystem
   profiles and final Pixi/CI classification remain in the working plan.
