@@ -129,42 +129,37 @@ fn registry_rejects_remote_hosts_without_ssh_and_config_overrides() {
     }
 }
 
+// Packaged KV auto-start, configuration, restart and stop are covered by the
+// release-container Console registry flow. Keep unmatched live ownership local.
 #[tokio::test]
-async fn launch_registry_starts_native_kv_with_referenced_config() {
-    let dir = tempdir_in_test_data("launch-native-kv");
-    let mut record = launch(dir.path(), "exit 0");
-    record.binary_path = lifecycle::crowdb_kv_server_bin().expect("KV server binary must be built");
-    let port = crowdb_protocol::port::alloc::alloc_test_port(crowdb_protocol::ServicePort::KvServerMgmt);
-    record.args = vec![
-        "--root".into(),
-        dir.path().join("node").to_string_lossy().into_owned(),
-        "--management-addr".into(),
-        "127.0.0.1".into(),
-        "--management-port".into(),
-        port.to_string(),
-        "--node-id".into(),
-        record.node_id.to_string(),
-        "--keepalive-interval".into(),
-        "0".into(),
-    ];
-    record.readiness_url = Some(format!("http://127.0.0.1:{port}/health"));
+async fn live_readiness_without_matching_identity_rejects_launch() {
+    let dir = tempdir_in_test_data("launch-unmatched-owner");
+    let mut record = launch(dir.path(), "touch started\nexec sleep 60");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let router = axum::Router::new().route("/health", axum::routing::get(|| async { "ok" }));
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    record.readiness_url = Some(format!("http://{address}/health"));
     record.auto_start = true;
-    let runtime = LaunchRuntime::new(dir.path().join("runtime"));
-    let identities = runtime
-        .start_enabled(&LaunchRegistry {
-            version: 1,
-            launches: vec![record.clone()],
-        })
-        .await
-        .unwrap();
-    let _guard = TestProcesses(identities.iter().map(|identity| identity.pid).collect());
-    assert_eq!(identities.len(), 1);
-    assert_eq!(runtime.status(&record).await.unwrap(), Some(identities[0]));
-    let unrelated = LaunchRuntime::new(dir.path().join("unrelated-runtime"));
+    let runtime = LaunchRuntime::new(dir.path().join("unrelated-runtime"));
     assert!(matches!(
-        unrelated.start(&record).await,
+        runtime
+            .start_enabled(&LaunchRegistry {
+                version: 1,
+                launches: vec![record.clone()]
+            })
+            .await,
         Err(crowdb_console_shared::error::Error::Conflict { .. })
     ));
-    assert_eq!(runtime.status(&record).await.unwrap(), Some(identities[0]));
-    runtime.stop(&record).await.unwrap();
+    assert_eq!(runtime.status(&record).await.unwrap(), None);
+    assert!(!runtime.root().exists(), "conflict must not publish identity");
+    assert!(
+        !dir.path().join("started").exists(),
+        "foreign listener must not spawn a child"
+    );
+    let reply = reqwest::get(record.readiness_url.as_ref().unwrap())
+        .await
+        .unwrap();
+    assert!(reply.status().is_success(), "foreign listener must remain alive");
+    server.abort();
 }
