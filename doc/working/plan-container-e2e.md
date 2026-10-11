@@ -1518,3 +1518,38 @@ Only the exited-storage timing migration awaits a human design choice; S3 and su
   closed-peer failure assertions in both modes. Clippy all targets and Rust
   formatting pass. Canonical staged fixture gate: 51/51; working tree including
   two unaccepted browser-draft guard tests: 53/53.
+
+
+## WAL recovery migration and target-group discovery divergence
+
+- Original five Web incremental owners retain 50 interleaved puts per group,
+  exact deletion sets, stable leader and store/group counts, Accepted records,
+  five-second WAL convergence, positive max slot, unchanged post-stop and
+  post-restart max slots, and three-second exact KV restoration bounds.
+  Single-node container acceptance `run-0da197dc84ab4e55a81e834ad98b5683` passes;
+  the expanded 79-owner Console run `run-4dd22608d3bf4e2f8a3627fd5a663326` passes
+  in 162.566 seconds. Four remaining original native owners pass in 14.12 s.
+- Multi-node fixtures start 3/5/6 separate KV release containers plus normal
+  writable Web, fixed management 7000/store RPC pool 7001..7011/Web 9090.
+  The existing supported file-WAL backend permits the original SegmentReader
+  assertions directly against mounted data; durable KV remains the block
+  backend. No special server binary/image or test hooks. Explicit normal node
+  IDs are necessary for the original Group-0 per-node registration acceptance.
+  Batch stop/start validates every voter label before mutation, excluding the
+  Web broker. Preserve the original Docker stop grace and client budget.
+- Serial multi-node gate `run-a420b13667e24b2ebbc036e3f5ec0805` passes four
+  owners, but concurrency-2 `run-7a5550dc71e04a3b8f25c659aa081208` fails the
+  six-node overlap at its first Group-2 put. Do not retire these source owners
+  until concurrent acceptance passes. All Group-2 members (nodes 2/5/6) report
+  leader 2000, while other healthy seeds share store 11 without Group 2.
+- Deterministic `multi_seed_discovery_test`: two pinned memory component stores
+  share store 11 but host disjoint groups 1/2. Client seeds list the healthy
+  unrelated group first; original query returns NoLeader after 2.16 seconds.
+  Existing topology refresh accepts the first valid response, even when it
+  cannot answer the target group. Add a cold target-group query using the
+  existing refresh gate: seek a confirmed leader among configured seeds, merge
+  its topology through the existing generation fence, and return the observed
+  endpoint directly. The generic topology refresh/eviction contract and outer
+  retry budget stay unchanged; no new lock, timeout, caller retry or weakening.
+  Focused corrected component proof passes in 0.12 seconds. Rebuild the formal
+  image after the verified server-library commit before container reruns.

@@ -331,11 +331,15 @@ impl CrowdbKvClient {
             // instead of retrying for seconds.
             self.metrics.record_leader_query();
             self.metrics.record_topology_refresh();
-            if let Err(Error::NoSeeds) = self.topology.refresh().await {
-                tracing::warn!(
-                    "resolve_leader: no mgmt seeds configured — call set_mgmt_seeds before KV ops"
-                );
-                return Err(Error::NoSeeds);
+            match self.topology.refresh_leader(store_id, group_id).await {
+                Ok(Some(endpoint)) => return Ok(endpoint),
+                Err(Error::NoSeeds) => {
+                    tracing::warn!(
+                        "resolve_leader: no mgmt seeds configured — call set_mgmt_seeds before KV ops"
+                    );
+                    return Err(Error::NoSeeds);
+                }
+                Ok(None) | Err(_) => {}
             }
             if let Some(ep) = self.topology.leader(store_id, group_id) {
                 return Ok(ep);
