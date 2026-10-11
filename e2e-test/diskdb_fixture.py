@@ -4,14 +4,16 @@
 
 import ipaddress
 import json
+import time
 from allocation import node_data, start_node
 from fixture import Cluster, request, wait
 
 
 class DiskdbCluster(Cluster):
-    def __init__(self, image, artifacts, bundle, **kwargs):
+    def __init__(self, image, artifacts, bundle, restart_metadata=False, **kwargs):
         super().__init__(image, artifacts, node_count=1, groups=(0, 1), advertise=True, **kwargs)
         self.bundle = bundle
+        self.restart_metadata = restart_metadata
 
     def start(self):
         super().start()
@@ -55,3 +57,19 @@ interval_secs = 2
         if observed != address:
             raise AssertionError("Diskdb inspected IP differs from its advertised endpoint")
         return self
+
+    def crash_restart(self):
+        started = time.monotonic()
+        self.command("kill", "--signal", "KILL", self.servers[1])
+        if self.restart_metadata:
+            self.command("kill", "--signal", "KILL", self.servers[0])
+            self.command("start", self.servers[0])
+            Cluster.ready(self)
+        self.command("start", self.servers[1])
+        for index, name in enumerate(self.servers):
+            inspected = json.loads(self.command("inspect", name))[0]
+            if inspected["NetworkSettings"]["Networks"][self.run_id]["IPAddress"] != self.addresses[index]:
+                raise AssertionError("Diskdb dependency IP changed during persisted restart")
+        wait(lambda: request(f"http://{self.addresses[1]}:7101", "/ready"), lambda _: True,
+             "recovered Diskdb readiness")
+        self.timings["restart"] = time.monotonic() - started

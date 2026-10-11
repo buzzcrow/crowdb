@@ -21,7 +21,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
-use common::cluster::{wait_for_disks_ready, KvCluster};
+use common::metadata::{wait_for_disks_ready, TestMetadata};
 use crowdb_diskdb::bg_task::BgCtx;
 use crowdb_diskdb::ddb_config::{DdbConfig, KeepAliveConfig};
 use crowdb_diskdb::liveness::keepalive::KeepAlive;
@@ -131,24 +131,6 @@ async fn seed_hardware(hw: &HardwareClient) {
     hw.set_bind(RACK_ID, NODE_ID, DG_ID, STORE_ID, DATA_GROUP_ID)
         .await
         .expect("set bind");
-}
-
-fn crowdb_kv_server_bin() -> Option<std::path::PathBuf> {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let mut p = dir.to_path_buf();
-            for _ in 0..3 {
-                let candidate = p.join("crowdb-kv-server");
-                if candidate.exists() {
-                    return Some(candidate);
-                }
-                if !p.pop() {
-                    break;
-                }
-            }
-        }
-    }
-    None
 }
 
 struct TestOwnerQuery {
@@ -337,13 +319,8 @@ fn is_zero_owner_handles_valid_chunk() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn scan_ghosts_detects_and_corrects_ghost_busy() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
-        return;
-    }
-
     // 1. Start cluster + seed hardware + first tick.
-    let cluster = KvCluster::start().await;
+    let cluster = TestMetadata::start().await;
     let hw = cluster.make_hardware_client();
     seed_hardware(&hw).await;
 
@@ -465,12 +442,7 @@ async fn scan_ghosts_detects_and_corrects_ghost_busy() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn scan_integrity_detects_corrupt_snapshot() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
-        return;
-    }
-
-    let cluster = KvCluster::start().await;
+    let cluster = TestMetadata::start().await;
     let hw = cluster.make_hardware_client();
     seed_hardware(&hw).await;
 
@@ -556,12 +528,7 @@ async fn scan_integrity_detects_corrupt_snapshot() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn tentative_owner_scanner_reconciles_fault_matrix_and_restart_grace() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
-        return;
-    }
-
-    let cluster = KvCluster::start().await;
+    let cluster = TestMetadata::start().await;
     seed_hardware(&cluster.make_hardware_client()).await;
     let container = Arc::new(DdbDiskGroupContainer::new(INSTANCE_ID));
     let keepalive = KeepAlive::new(

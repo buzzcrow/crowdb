@@ -29,6 +29,7 @@ class Case:
     diskio_backend: str | None = None
     diskio_fault_rate: float = 0
     diskio_direct: bool = False
+    diskdb_restart_metadata: bool = False
 
 
 KV_CASES = (
@@ -91,6 +92,8 @@ KV_CASES = (
 
 
 DISKDB_CASES = (
+    Case("diskdb.recovery", "diskdb::recovery::diskdb_restart_preserves_acknowledged_records", restart=True),
+    Case("diskdb.recovery", "diskdb::recovery::metadata_restart_preserves_acknowledged_records", restart=True, diskdb_restart_metadata=True),
     Case("diskdb.allocation", "diskdb::allocation::allocate_commit_and_free_through_client"),
     Case("diskdb.ownership", "diskdb::ownership::wrong_owner_free_is_ignored_by_compaction"),
     Case("diskdb.reuse", "diskdb::space_reuse::exhaust_free_compact_and_reuse_exact_space"),
@@ -133,7 +136,7 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
 
     def run(case):
         count = len(case.stores_per_node or case.stores)
-        cluster = ManagedCluster(image, artifacts, services=case.service_selection or ("kv",), data_root=data_root) if case.scope.startswith("deployment.") else DiskioSemanticCluster(image, artifacts, bundle, data_root=data_root) if case.diskio_backend == "semantic" else DiskioDiscoveryCluster(image, artifacts, bundle, case.diskio_backend, fault_rate=case.diskio_fault_rate, data_root=data_root) if case.diskio_backend else DiskioCluster(image, artifacts, direct=case.diskio_direct, data_root=data_root) if case.scope.startswith("diskio.") else DiskdbCluster(image, artifacts, bundle, data_root=data_root) if case.scope.startswith("diskdb.") else Cluster(image, artifacts, data_root=data_root, node_count=count,
+        cluster = ManagedCluster(image, artifacts, services=case.service_selection or ("kv",), data_root=data_root) if case.scope.startswith("deployment.") else DiskioSemanticCluster(image, artifacts, bundle, data_root=data_root) if case.diskio_backend == "semantic" else DiskioDiscoveryCluster(image, artifacts, bundle, case.diskio_backend, fault_rate=case.diskio_fault_rate, data_root=data_root) if case.diskio_backend else DiskioCluster(image, artifacts, direct=case.diskio_direct, data_root=data_root) if case.scope.startswith("diskio.") else DiskdbCluster(image, artifacts, bundle, restart_metadata=case.diskdb_restart_metadata, data_root=data_root) if case.scope.startswith("diskdb.") else Cluster(image, artifacts, data_root=data_root, node_count=count,
                           store_ids=case.stores, wire_replicas=case.wired,
                           stores_per_node=case.stores_per_node, groups=case.groups,
                           groups_per_node=case.groups_per_node, node_args=case.node_args,

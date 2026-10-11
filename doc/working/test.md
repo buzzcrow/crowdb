@@ -128,7 +128,7 @@ Do not require one CI job for each measurement row.
 ### intel7960: target scopes
 
 New rows start unmeasured. The fixture row measures the complete Pixi invocation
-without an image build or server startup; the latest fixture gate executes twenty-five cases.
+without an image build or server startup; the latest fixture gate executes thirty cases.
 Future detailed component and E2E rows replace their unmeasured scope placeholders.
 
 | Scope                       | Date       | Tests | Build s | Start s  | Test s   | Collect/stop s | Total s  | Status  |
@@ -154,7 +154,7 @@ Future detailed component and E2E rows replace their unmeasured scope placeholde
 | `e2e.kv.group0`             | 2026-10-11 | 8/8   | shared  | per flow | per flow | per flow       | per flow | PASS    |
 | `e2e.kv.client`             | 2026-10-11 | 6/6   | shared  | per flow | per flow | per flow       | per flow | PASS    |
 | `e2e.kv.metadata`           | 2026-10-11 | 14/14 | shared  | per flow | per flow | per flow       | per flow | PASS    |
-| `e2e.diskdb.allocation`     | 2026-10-11 | 1/1   | shared  | 2.191    | 1.893    | 1.041          | 5.129    | PASS    |
+| `e2e.diskdb.allocation`     | 2026-10-11 | 1/1   | shared  | 2.173    | 1.893    | 1.041          | 5.129    | PASS    |
 | `e2e.diskdb.reuse`          | 2026-10-11 | 1/1   | shared  | 1.743    | 1.421    | 1.020          | 4.188    | PASS    |
 | `e2e.diskdb.ownership`      | 2026-10-11 | 1/1   | shared  | 2.082    | 0.131    | 1.010          | 3.226    | PASS    |
 | `e2e.diskdb.recovery`       | —          | —     | —       | —        | —        | —              | —        | Pending |
@@ -165,7 +165,7 @@ Future detailed component and E2E rows replace their unmeasured scope placeholde
 | `e2e.diskio.faults`         | 2026-10-11 | 1/1   | shared  | 1.889    | 0.233    | 1.007          | 3.131    | PASS    |
 | `e2e.diskio.semantic`       | 2026-10-11 | 1/1   | shared  | 2.046    | 8.051    | 1.408          | 11.510   | PASS    |
 | `e2e.diskio.direct`         | 2026-10-11 | 1/1   | shared  | 0.691    | 0.059    | 0.640          | 1.957    | PASS    |
-| `e2e.diskio.durability`     | 2026-10-11 | 1/1   | shared  | 0.709    | 0.059    | 0.801          | 2.191    | PASS    |
+| `e2e.diskio.durability`     | 2026-10-11 | 1/1   | shared  | 0.709    | 0.059    | 0.801          | 2.173    | PASS    |
 | `e2e.chunkdb.lifecycle`     | —          | —     | —       | —        | —        | —              | —        | Pending |
 | `e2e.chunkdb.repair`        | —          | —     | —       | —        | —        | —              | —        | Pending |
 | `e2e.chunkdb.handoff`       | —          | —     | —       | —        | —        | —              | —        | Pending |
@@ -198,25 +198,30 @@ Future detailed component and E2E rows replace their unmeasured scope placeholde
   image config `sha256:10254caf607d21cb102e0b1fd636d55a65625eb06d54895bad0d01cf6bc3be9a`,
   OCI manifest `sha256:743539d20444ad687f00b771d37d257a5e30803f2b84ade5e40934dc99bfbdd4`,
   release optimization with debug info retained.
-- Diskdb run `run-12cc7c61426c42498ff12e85536cbcf6`: 3 client flows and 3
-  metadata-seed phases passed; build 2.841 s, scenario wall 7.424 s. Start time
-  includes the host metadata-seed phase; Client below excludes that setup phase.
-  Six deterministic client UT passed; application recovery/fence/journal migration
-  is pending.
+- Diskdb run `run-62923a58b6674ed58b9943b84b81dc21`: 5 flows / 12 host phases
+  passed; build 4.322 s, scenario wall 12.726 s. Start includes metadata seeding;
+  Client excludes seed. Recovery kills Diskdb alone or Diskdb plus KV, preserving
+  exact acknowledged records and revisions, then compacts freed space and reuses it.
+- All 173 Diskdb application tests passed in 13.433 s including build. Internal
+  keepalive, ownership fences, journal transitions and scanner proofs remain
+  component tests with pinned in-memory metadata; their host KV process launcher
+  and binary-availability skips are removed. Six deterministic client UT remain.
 - Monitor selection run `run-baa850f79d5e442e8d9153309e9bf1f2`: full seven-service
   profile plus KV-only and KV+Diskdb, 6 host write/verify phases and 5 invalid
   startup checks passed; build 3.418 s, scenario wall 20.153 s. SIGKILL followed
   by container recreation preserves each node's mounted data and inspected IP.
   Full deployment/browser/SSH failure matrix remains pending.
 
-| Flow                                                              | Server containers | Start s | Client s | Restart s | Collect/stop s | Wall s |
-| ----------------------------------------------------------------- | ----------------- | ------- | -------- | --------- | -------------- | ------ |
-| `diskdb::allocation::allocate_commit_and_free_through_client`     | 2                 | 2.191   | 1.893    | 0.000     | 1.041          | 5.129  |
-| `diskdb::space_reuse::exhaust_free_compact_and_reuse_exact_space` | 2                 | 1.743   | 1.421    | 0.000     | 1.020          | 4.188  |
-| `diskdb::ownership::wrong_owner_free_is_ignored_by_compaction`    | 2                 | 2.082   | 0.131    | 0.000     | 1.010          | 3.226  |
-| `deployment::complete_release_services_recover_acknowledged_data` | 1                 | 5.891   | 0.179    | 4.302     | 0.832          | 11.210 |
-| `deployment::selected_storage_services_recover_acknowledged_data` | 1                 | 2.853   | 0.184    | 3.405     | 0.792          | 7.239  |
-| `deployment::selected_kv_services_recover_acknowledged_data`      | 1                 | 2.348   | 0.188    | 3.274     | 0.796          | 6.612  |
+| Flow                                                                | Server containers | Start s | Client s | Restart s | Collect/stop s | Wall s |
+| ------------------------------------------------------------------- | ----------------- | ------- | -------- | --------- | -------------- | ------ |
+| `diskdb::allocation::allocate_commit_and_free_through_client`       | 2                 | 1.856   | 2.780    | 0.000     | 1.013          | 5.653  |
+| `diskdb::space_reuse::exhaust_free_compact_and_reuse_exact_space`   | 2                 | 1.898   | 1.392    | 0.000     | 1.047          | 4.341  |
+| `diskdb::ownership::wrong_owner_free_is_ignored_by_compaction`      | 2                 | 1.792   | 0.082    | 0.000     | 0.982          | 2.859  |
+| `diskdb::recovery::metadata_restart_preserves_acknowledged_records` | 2                 | 2.045   | 0.317    | 2.171     | 0.972          | 5.511  |
+| `diskdb::recovery::diskdb_restart_preserves_acknowledged_records`   | 2                 | 2.072   | 0.315    | 0.695     | 1.032          | 4.123  |
+| `deployment::complete_release_services_recover_acknowledged_data`   | 1                 | 5.891   | 0.179    | 4.302     | 0.832          | 11.210 |
+| `deployment::selected_storage_services_recover_acknowledged_data`   | 1                 | 2.853   | 0.184    | 3.405     | 0.792          | 7.239  |
+| `deployment::selected_kv_services_recover_acknowledged_data`        | 1                 | 2.348   | 0.188    | 3.274     | 0.796          | 6.612  |
 
 ## Migrated KV flow timing
 

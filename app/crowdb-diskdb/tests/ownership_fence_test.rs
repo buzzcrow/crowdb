@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 mod common;
-use common::cluster::KvCluster;
+use common::metadata::TestMetadata;
 use crowdb_diskdb::ddb_kv_client::OwnershipFence;
 use crowdb_diskdb::model::disk_group::DdbDiskGroup;
 use crowdb_diskdb::model::zone::DdbZone;
@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 #[tokio::test]
 async fn handover_rejects_old_writes_and_cannot_reclaim_an_old_generation() {
-    let cluster = KvCluster::start().await;
+    let cluster = TestMetadata::start().await;
     let kv = cluster.make_ddb_kv_client().with_ownership_fencing();
     let fence = OwnershipFence {
         rack_id: 1,
@@ -50,7 +50,7 @@ async fn handover_rejects_old_writes_and_cannot_reclaim_an_old_generation() {
 
 #[tokio::test]
 async fn concurrent_disk_initialization_persists_every_zone_under_one_owner() {
-    let cluster = KvCluster::start().await;
+    let cluster = TestMetadata::start().await;
     let kv = cluster.make_ddb_kv_client().with_ownership_fencing();
     let fence = OwnershipFence {
         rack_id: 1,
@@ -108,7 +108,7 @@ async fn concurrent_disk_initialization_persists_every_zone_under_one_owner() {
 async fn ordinary_writes_cannot_bypass_ownership_handover() {
     use bytes::Bytes;
     use crowdb_kv_client::{BatchOp, GetOutcome, ReadMode};
-    let cluster = KvCluster::start().await;
+    let cluster = TestMetadata::start().await;
     let ddb = cluster.make_ddb_kv_client();
     let kv = ddb.kv();
     let key = b"/diskdb/ownership-fence/1/1/1";

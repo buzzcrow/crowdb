@@ -477,14 +477,14 @@ Goal: review and migrate all real-server tests into domain modules under contain
   migrate restore, snapshot/WAL tail, dynamic group/membership and Group-0
   discovery; retain deterministic KV-client flows and test actual production
   leader retry. Retire component process helper only after all callers migrate.
-- [~] **Diskdb batch**: add dependency-ready Diskdb profile, map client and
+- [x] **Diskdb batch**: add dependency-ready Diskdb profile, map client and
   application assertions, split internal handler flows from real metadata
   setup, migrate allocation/recovery/fence/journal boundaries. Files: Diskdb
   tests, harness `diskdb.rs`, container `tests/diskdb*`, profile/runner.
 - [x] **Diskio batch**: add simulated/null profiles and explicit special-device
   scope; migrate RPC errors, registry sync and durability. Same-port file/direct
   restart passes; shared listener error/collision audit remains in closure. Files: client/C++ launch sites, `tests/diskio*`.
-- [ ] **Chunkdb batch**: add configurable rack/disk geometry and fault policies;
+- [~] **Chunkdb batch**: add configurable rack/disk geometry and fault policies;
   split mixed full-stack cases, migrate lifecycle, degraded repair/conversion
   and journal handoff with deterministic component flows retained. Files:
   Chunkdb tests/harness, `tests/chunkdb*`, storage profiles.
@@ -1006,3 +1006,27 @@ Source `lib/crowdb-kv-client/tests/chunk_slot_map_test.rs`: all eight cases exer
 - Diskio commit gates: workspace fmt, affected all-target clippy, retained3client UT,
   fixture30/30 (1.009s), full test-cpp and tree-lint exit0 pass. Existing tidy
   warnings remain; no production C++ source changed by this migration batch.
+
+## Diskdb application boundary verification
+
+- Public owner: five `tests/diskdb/` flows, including independent Diskdb and
+  metadata crash recovery; run `run-62923a58b6674ed58b9943b84b81dc21` passes
+  concurrency two, twelve host phases, wall 12.726 s. Existing client process
+  flows were already retired after equivalent container acceptance.
+- Retained component owners: `metadata_flow_test` checks internal record/bitmap
+  transitions, keepalive checks reconciliation, ownership_fence checks lease
+  fencing, recovery checks conservative bitmap reconstruction, relocation_journal
+  checks journal transitions, scanner checks evacuation choices. These call
+  internal component APIs and retain every assertion. Their shared metadata
+  helper now uses independent pinned memory stores rather than three host KV
+  executables; fourteen binary-availability skips and duplicate discovery removed.
+- Public recovery witnesses all three busy records and revisions, including
+  persist-only free. Restart conservatively retains busy bits; compaction releases
+  only the freed record and leaves committed neighbors unchanged. Initial test
+  expected automatic reclamation incorrectly; `recovery/journal_replay.rs` and
+  documented free contract confirmed compaction ownership. Corrected expectation
+  with additional pre/post-compaction checks, then all five flows passed.
+- Gates: all 173 application tests pass (13.433 s including build), thirty fixture
+  UT pass (1.121 s), affected application/E2E all-target clippy and Rust fmt pass.
+  Production unchanged; same proven release image reused. Shared harness stays
+  until remaining Chunkdb/stream callers migrate.

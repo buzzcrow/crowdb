@@ -48,7 +48,7 @@ class SelectionTest(unittest.TestCase):
 
     def test_layers_select_only_their_domains_and_count_dependencies(self):
         diskdb = json.loads(self.invoke("--list", "--layer", "diskdb"))
-        self.assertEqual(len(diskdb), 3)
+        self.assertEqual(len(diskdb), 5)
         self.assertTrue(all(case["scope"].startswith("diskdb.") and case["nodes"] == 2
                             for case in diskdb))
         kv = json.loads(self.invoke("--list", "--layer", "kv"))

@@ -5,6 +5,7 @@ mod allocation;
 mod concurrency;
 mod hardware;
 mod ownership;
+mod recovery;
 mod space_reuse;
 
 use crowdb_diskdb_client::{DiskdbClient, DiskdbRpcTransport, RetryConfig};

@@ -184,14 +184,17 @@ pending.
 - Diskdb client allocation, ownership-routing and exhaustion/reuse now have one
   owner under `tests/diskdb/`; the old client process fixtures are removed after
   acceptance. Six deterministic client UT remain in their component. Diskdb
-  application recovery/fence/journal scenarios remain pending.
+  application keepalive/fence/journal/scanner proofs retain component ownership
+  using pinned in-memory metadata, with no host KV launcher. Public recovery
+  independently SIGKILLs Diskdb or Diskdb plus KV and checks exact durable
+  records/revisions, persist-only free, compaction and capacity reuse.
 - `deployment.selection` consumes mounted normal profiles in the same immutable
   release image: complete seven services, KV-only and KV+Diskdb. Check exact
   selected readiness, acknowledged host-client writes, abrupt node loss and
   recreation with preserved data. Unknown/missing-dependency selections fail
   before partial startup. This does not replace the pending complete deployment
   UI/SSH and runtime failure matrix.
-- Latest Diskdb client batch: 3 flows/6 host phases, 7.424 s scenario wall at two
+- Latest Diskdb client batch: 5 flows/12 host phases, 12.726 s scenario wall at two
   slots. Normal monitor selection batch: 3 flows/6 host phases and five startup
   rejection checks, 20.153 s. Detailed measurements and image/source identities
   are in `doc/working/test.md`; other domains remain pending.

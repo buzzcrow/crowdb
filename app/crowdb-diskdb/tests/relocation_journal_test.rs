@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
 use arc_swap::ArcSwap;
-use common::cluster::KvCluster;
+use common::metadata::TestMetadata;
 use crowdb_diskdb::bg_task::BgCtx;
 use crowdb_diskdb::ddb_config::{DdbConfig, KeepAliveConfig, StorageDefaults};
 use crowdb_diskdb::liveness::keepalive::KeepAlive;
@@ -166,7 +166,7 @@ async fn seed_hardware(hw: &HardwareClient) {
 
 #[tokio::test]
 async fn relocation_journal_persists_and_lists_exact_source() {
-    let cluster = KvCluster::start().await;
+    let cluster = TestMetadata::start().await;
     let kv = cluster.make_ddb_kv_client();
     let owner = ChunkId { high: 80, low: 97 };
     let source = Segment {
@@ -219,7 +219,7 @@ async fn relocation_journal_persists_and_lists_exact_source() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn relocation_worker_resumes_after_accept_and_frees_source_only_after_publish() {
-    let cluster = KvCluster::start().await;
+    let cluster = TestMetadata::start().await;
     seed_hardware(&cluster.make_hardware_client()).await;
     let container = Arc::new(DdbDiskGroupContainer::new(INSTANCE_ID));
     let keepalive = KeepAlive::new(
@@ -236,7 +236,7 @@ async fn relocation_worker_resumes_after_accept_and_frees_source_only_after_publ
     )
     .with_ddb_kv_client(cluster.make_ddb_kv_client());
     assert_eq!(keepalive.tick().await.groups_added, 1);
-    common::cluster::wait_for_disks_ready(&container, DG_ID, 3, ZONE_COUNT).await;
+    common::metadata::wait_for_disks_ready(&container, DG_ID, 3, ZONE_COUNT).await;
     container.set_lifecycle_phase(StartupPhase::Up);
     let dg = container.get_disk_group(DG_ID).unwrap();
     let kv = Arc::new(cluster.make_ddb_kv_client());
@@ -364,7 +364,7 @@ async fn relocation_worker_resumes_after_accept_and_frees_source_only_after_publ
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn relocation_restart_matrix_resumes_every_durable_phase() {
-    let cluster = KvCluster::start().await;
+    let cluster = TestMetadata::start().await;
     seed_hardware(&cluster.make_hardware_client()).await;
     let container = Arc::new(DdbDiskGroupContainer::new(INSTANCE_ID));
     let keepalive = KeepAlive::new(
@@ -381,7 +381,7 @@ async fn relocation_restart_matrix_resumes_every_durable_phase() {
     )
     .with_ddb_kv_client(cluster.make_ddb_kv_client());
     assert_eq!(keepalive.tick().await.groups_added, 1);
-    common::cluster::wait_for_disks_ready(&container, DG_ID, 3, ZONE_COUNT).await;
+    common::metadata::wait_for_disks_ready(&container, DG_ID, 3, ZONE_COUNT).await;
     container.set_lifecycle_phase(StartupPhase::Up);
     let dg = container.get_disk_group(DG_ID).unwrap();
     let kv = Arc::new(cluster.make_ddb_kv_client());
@@ -511,7 +511,7 @@ async fn relocation_restart_matrix_resumes_every_durable_phase() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn relocation_stale_discards_target_while_rejected_quarantines_it() {
-    let cluster = KvCluster::start().await;
+    let cluster = TestMetadata::start().await;
     seed_hardware(&cluster.make_hardware_client()).await;
     let container = Arc::new(DdbDiskGroupContainer::new(INSTANCE_ID));
     let keepalive = KeepAlive::new(
@@ -528,7 +528,7 @@ async fn relocation_stale_discards_target_while_rejected_quarantines_it() {
     )
     .with_ddb_kv_client(cluster.make_ddb_kv_client());
     assert_eq!(keepalive.tick().await.groups_added, 1);
-    common::cluster::wait_for_disks_ready(&container, DG_ID, 3, ZONE_COUNT).await;
+    common::metadata::wait_for_disks_ready(&container, DG_ID, 3, ZONE_COUNT).await;
     container.set_lifecycle_phase(StartupPhase::Up);
     let dg = container.get_disk_group(DG_ID).unwrap();
     let kv = Arc::new(cluster.make_ddb_kv_client());
@@ -673,7 +673,7 @@ async fn relocation_stale_discards_target_while_rejected_quarantines_it() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn relocation_adopts_local_target_and_finalizes_remote_source() {
-    let cluster = KvCluster::start().await;
+    let cluster = TestMetadata::start().await;
     seed_hardware(&cluster.make_hardware_client()).await;
     let container = Arc::new(DdbDiskGroupContainer::new(INSTANCE_ID));
     let keepalive = KeepAlive::new(
@@ -684,7 +684,7 @@ async fn relocation_adopts_local_target_and_finalizes_remote_source() {
     )
     .with_ddb_kv_client(cluster.make_ddb_kv_client());
     assert_eq!(keepalive.tick().await.groups_added, 1);
-    common::cluster::wait_for_disks_ready(&container, DG_ID, 3, ZONE_COUNT).await;
+    common::metadata::wait_for_disks_ready(&container, DG_ID, 3, ZONE_COUNT).await;
     container.set_lifecycle_phase(StartupPhase::Up);
     let dg = container.get_disk_group(DG_ID).unwrap();
     let kv = Arc::new(cluster.make_ddb_kv_client());

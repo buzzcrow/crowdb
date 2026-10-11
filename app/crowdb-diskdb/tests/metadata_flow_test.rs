@@ -3,17 +3,17 @@
 
 //! Component-level integration test for crowdb-diskdb.
 //!
-//! Starts a real 3-dg `crowdb-kv-server` cluster (store 0, groups 0
-//! and 1), seeds hardware metadata into group 0, runs the diskdb
-//! sync loop + allocate/free in-process, and verifies that busy/free
-//! records are persisted to the kv cluster.
+//! Uses pinned in-memory metadata groups 0/1, runs Diskdb keepalive and
+//! allocator/compaction operations directly, and checks exact internal
+//! busy/free records and bitmap transitions. Packaged RPC/restart flows
+//! belong to the container E2E domain.
 
 mod common;
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::cluster::{wait_for_disks_ready, KvCluster};
+use common::metadata::{wait_for_disks_ready, TestMetadata};
 use crowdb_diskdb::ddb_config::KeepAliveConfig;
 use crowdb_diskdb::ddb_kv_client::DdbKvClient;
 use crowdb_diskdb::liveness::keepalive::KeepAlive;
@@ -154,15 +154,9 @@ async fn seed_hardware(hw: &HardwareClient) {
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn diskdb_e2e_allocate_free() {
-    // Skip if crowdb-kv-server binary is not built.
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
-        return;
-    }
-
+async fn diskdb_allocate_free() {
     // 1. Start the kv cluster.
-    let cluster = KvCluster::start().await;
+    let cluster = TestMetadata::start().await;
     eprintln!(
         "kv cluster started: group0 leader={}, group1 leader={}",
         cluster.group0_leader_endpoint, cluster.group1_leader_endpoint
@@ -395,18 +389,13 @@ async fn diskdb_e2e_allocate_free() {
     }
     eprintln!("all 3 batch free records verified");
 
-    eprintln!("diskdb_e2e_allocate_free: ALL CHECKS PASSED");
+    eprintln!("diskdb_allocate_free: ALL CHECKS PASSED");
 }
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn diskdb_e2e_blind_free_validation_at_compaction() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
-        return;
-    }
-
-    let cluster = KvCluster::start().await;
+async fn diskdb_blind_free_validation_at_compaction() {
+    let cluster = TestMetadata::start().await;
     let hw = cluster.make_hardware_client();
     seed_hardware(&hw).await;
 
@@ -515,24 +504,19 @@ async fn diskdb_e2e_blind_free_validation_at_compaction() {
     let result = alloc::free_block(&dg, &fake_segment, &free_kv4).await;
     assert!(result.is_ok(), "blind non-busy free should persist: {result:?}");
 
-    eprintln!("diskdb_e2e_blind_free_validation_at_compaction: ALL CHECKS PASSED");
+    eprintln!("diskdb_blind_free_validation_at_compaction: ALL CHECKS PASSED");
 }
 
 /// E2E: allocate ALL space across 3 disks × 4 zones × 128 units = 1536
 /// units in 8-unit ranges, then free ALL of it. Verifies the full
-/// fill/drain cycle against a real KV cluster: every range gets a
+/// fill/drain cycle against isolated memory metadata: every range gets a
 /// `BusyBlockValue`, then a `FreeBlockValue` while the `BusyBlockKey`
 /// remains until compaction. Uses `aggregate_usage` for bulk verification
 /// and samples a subset of KV records for persistence checks.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn diskdb_e2e_allocate_all_free_all() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
-        return;
-    }
-
-    let cluster = KvCluster::start().await;
+async fn diskdb_allocate_all_free_all() {
+    let cluster = TestMetadata::start().await;
     eprintln!(
         "kv cluster started: group0 leader={}, group1 leader={}",
         cluster.group0_leader_endpoint, cluster.group1_leader_endpoint
@@ -768,7 +752,7 @@ async fn diskdb_e2e_allocate_all_free_all() {
     // Final invariant check: still full.
     verify_invariant("still full after free (persist-only)");
 
-    eprintln!("diskdb_e2e_allocate_all_free_all: ALL CHECKS PASSED");
+    eprintln!("diskdb_allocate_all_free_all: ALL CHECKS PASSED");
 }
 
 /// `CompactZone` RPC: allocate → free (persist-only, bitmap stays set)
@@ -777,13 +761,8 @@ async fn diskdb_e2e_allocate_all_free_all() {
 /// `DiskdbService::compact_zone`.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn diskdb_e2e_compact_zone_rpc() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
-        return;
-    }
-
-    let cluster = KvCluster::start().await;
+async fn diskdb_compact_zone_rpc() {
+    let cluster = TestMetadata::start().await;
     let hw = cluster.make_hardware_client();
     seed_hardware(&hw).await;
 
@@ -967,7 +946,7 @@ async fn diskdb_e2e_compact_zone_rpc() {
     }
     assert_eq!(new_segments.len(), 2);
 
-    eprintln!("diskdb_e2e_compact_zone_rpc: ALL CHECKS PASSED");
+    eprintln!("diskdb_compact_zone_rpc: ALL CHECKS PASSED");
 }
 
 /// A.3: Suspect path — Up → Suspect on first absence, Suspect → Up on
@@ -979,13 +958,8 @@ async fn diskdb_e2e_compact_zone_rpc() {
 /// permanently wedging the disk (not allocatable, no timer to fire).
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn diskdb_e2e_suspect_rediscovery() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
-        return;
-    }
-
-    let cluster = KvCluster::start().await;
+async fn diskdb_suspect_rediscovery() {
+    let cluster = TestMetadata::start().await;
     let hw = cluster.make_hardware_client();
     seed_hardware(&hw).await;
 
@@ -1105,24 +1079,5 @@ async fn diskdb_e2e_suspect_rediscovery() {
         "disk should be allocatable after rediscovery"
     );
 
-    eprintln!("diskdb_e2e_suspect_rediscovery: ALL CHECKS PASSED");
-}
-
-/// Find the crowdb-kv-server binary (mirrors the cluster module's logic).
-fn crowdb_kv_server_bin() -> Option<std::path::PathBuf> {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let mut p = dir.to_path_buf();
-            for _ in 0..3 {
-                let candidate = p.join("crowdb-kv-server");
-                if candidate.exists() {
-                    return Some(candidate);
-                }
-                if !p.pop() {
-                    break;
-                }
-            }
-        }
-    }
-    None
+    eprintln!("diskdb_suspect_rediscovery: ALL CHECKS PASSED");
 }

@@ -3,4 +3,4 @@
 
 //! Shared test helpers for crowdb-diskdb integration tests.
 
-pub mod cluster;
+pub mod metadata;
