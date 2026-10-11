@@ -1,7 +1,10 @@
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
+
 use std::path::Path;
 
 use crowdb_access_iceberg::{
-    catalog::{CatalogContext, RoutedCatalogStore},
+    catalog::CatalogContext,
     commit::TableCommitJournal,
     file::FileRepository,
     namespace::{NamespaceIdentifier, NamespaceRepository},
@@ -9,10 +12,10 @@ use crowdb_access_iceberg::{
 };
 use serde_json::json;
 
-use super::{case, child::TestCommitChild, common::TestIcebergStack, process::TestIcebergProcess};
+use super::{case, child::TestCommitListener, common::TestCommitFixture};
 
-pub async fn verify(stack: &TestIcebergStack, context: CatalogContext, directory: &Path, offset: usize) {
-    let setup = TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
+pub async fn verify(stack: &TestCommitFixture, context: CatalogContext, directory: &Path, offset: usize) {
+    let setup = TestCommitListener::normal(stack).await;
     let case = case::TestCommitCase::prepare(
         &format!("http://{}", setup.address),
         "update",
@@ -20,20 +23,14 @@ pub async fn verify(stack: &TestIcebergStack, context: CatalogContext, directory
     )
     .await;
     drop(setup);
-    let mut loser = TestCommitChild::start(
-        &stack.cluster.mgmt_endpoints,
-        directory.join("loser.json"),
-        offset,
-        false,
-    )
-    .await;
+    let mut loser = TestCommitListener::start(stack, directory.join("loser.json"), offset, false).await;
     let endpoint = format!("http://{}", loser.address);
     let path = case.path.clone();
     let identity = case.identity.clone();
     let body = case.body.clone();
     let request = tokio::spawn(async move { case::post(&endpoint, &path, &identity, &body).await });
     assert_eq!(loser.paused().await["label"], "head-2");
-    let store = stack.store().await;
+    let store = stack.store();
     let journal = TableCommitJournal::new(store.clone());
     assert!(journal
         .load(context, case.identity.parse().unwrap())
@@ -51,13 +48,7 @@ pub async fn verify(stack: &TestIcebergStack, context: CatalogContext, directory
         .unwrap();
     let files = FileRepository::new(store.clone());
     let candidate = files.load(context, &candidate_location).await.unwrap().unwrap();
-    let winner = TestCommitChild::start(
-        &stack.cluster.mgmt_endpoints,
-        directory.join("winner.json"),
-        usize::MAX,
-        false,
-    )
-    .await;
+    let winner = TestCommitListener::start(stack, directory.join("winner.json"), usize::MAX, false).await;
     let winning_response = case::success(
         &format!("http://{}", winner.address),
         &case.path,
@@ -67,7 +58,7 @@ pub async fn verify(stack: &TestIcebergStack, context: CatalogContext, directory
     drop(winner);
     drop(loser);
     assert!(request.await.unwrap().is_err());
-    let recovery = TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
+    let recovery = TestCommitListener::normal(stack).await;
     let endpoint = format!("http://{}", recovery.address);
     let first = case::post(&endpoint, &case.path, &case.identity, &case.body)
         .await
@@ -104,7 +95,7 @@ pub async fn verify(stack: &TestIcebergStack, context: CatalogContext, directory
 }
 
 async fn selected(
-    store: std::sync::Arc<RoutedCatalogStore>,
+    store: std::sync::Arc<crate::memory::TestStore>,
     context: CatalogContext,
     name: &str,
 ) -> SelectedTable {

@@ -1213,8 +1213,9 @@ Source `lib/crowdb-kv-client/tests/chunk_slot_map_test.rs`: all eight cases exer
 - Full Chunk client passes 40/40 in
   `run-0bc1b0c5c6184c14a4248bccb13391d2` (456.101 seconds, concurrency 2).
   All component single-copy proofs remain; canonical fixture UTs pass 55/55.
-  S3 full-domain measurement is running; complete migration and all-domain
-  acceptance remain open.
+  S3 full-domain measurement passes 39/39 in
+  `run-9d1c982630dd4b1f80fbd9c2d3c7d9f9` (614.941 seconds).
+  Complete migration and all-domain acceptance remain open.
 
 ### S3 migration in progress
 
@@ -1610,3 +1611,28 @@ Source `lib/crowdb-kv-client/tests/chunk_slot_map_test.rs`: all eight cases exer
   tree 54/54 including the two browser-draft guards. Rust fmt and both crates
   all-target clippy pass after retiring the old file. All five WAL owners are
   accepted; other native Console, S3 and Iceberg migrations remain open.
+
+### Table commit boundary coverage simplified
+
+- Native baseline: `pixi run clean-env && pixi run cargo test -p
+  crowdb-access-server --features iceberg-e2e --test iceberg_commit_crash_test
+  native_table_publication_recovers_before_and_after_every_durable_write --
+  --ignored --exact --nocapture` passes in 311.87 seconds.
+- `iceberg_commit_recovery_test` retains all create/stage/publish-stage/update
+  transitions, request bodies, replay assertions, the exact 22/10/24/4 boundary
+  counts, direct update's four labels and no-journal/non-rebasing loser proof.
+  First component pass: 57.24 seconds; shared-hook follow-up: 49.86 seconds;
+  final accepted matrix: 44.82 seconds. Access all-target clippy with the
+  `iceberg-e2e` feature and workspace fmt both pass.
+  Existing native block framing and actual backend durability are exercised by
+  container Chunk client/stream, native FileIO and official table SDK owners.
+- Each component listener receives fresh repositories over retained ArcSwap
+  catalog/block dependencies. Cancelling `serve` drops its JoinSet and pending
+  connection handlers; the lost HTTP response is still asserted. Block writes
+  retain the native FileWriteIntent-before-bytes ordering. No formal server
+  binary, process launcher, legacy port namespace, new lock or unsafe is used.
+- Generalize the existing `TestCommitStore` boundary wrapper over its public
+  store traits so native FileIO and component table proofs share the same hook.
+  Retire the duplicate native table crash launcher and its native-only loser
+  helper after both equivalent matrices pass. Native FileIO crash cuts and the
+  manual TPC loader still retain their old owners pending separate migration.

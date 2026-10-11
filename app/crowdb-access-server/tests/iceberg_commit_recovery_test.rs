@@ -1,19 +1,25 @@
-#![cfg(feature = "iceberg-e2e")]
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
 
+//! Table publication boundaries over retained deterministic catalog and block stores.
+//! A listener interruption cancels its connection handlers before recovery opens a fresh service.
+
+#[path = "common/iceberg_commit_recovery/blocks.rs"]
+mod blocks;
 #[path = "common/iceberg_commit_case.rs"]
 mod case;
-#[path = "common/iceberg_commit_child.rs"]
+#[path = "common/iceberg_commit_recovery/listener.rs"]
 mod child;
-#[path = "common/iceberg_stack.rs"]
-#[allow(dead_code)]
+#[path = "common/iceberg_commit_recovery/fixture.rs"]
 mod common;
 #[path = "common/iceberg_commit_fault.rs"]
 mod fault;
-#[path = "common/iceberg_commit_loser.rs"]
+#[path = "common/iceberg_commit_recovery/loser.rs"]
 mod loser;
-#[path = "common/iceberg_process.rs"]
-#[allow(dead_code)]
-mod process;
+#[path = "common/iceberg_store.rs"]
+mod memory;
+#[path = "common/iceberg_commit_recovery/store.rs"]
+mod store;
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -28,22 +34,11 @@ use crowdb_access_iceberg::{
 use serde_json::{json, Value};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "test-only child listener invoked by native crash matrix"]
-async fn native_fault_listener_child() {
-    child::run().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires native storage processes and kills listener subprocesses at every durable boundary"]
-async fn native_table_publication_recovers_before_and_after_every_durable_write() {
-    let mut stack = common::TestIcebergStack::start().await;
+async fn table_publication_recovers_before_and_after_every_durable_write() {
+    let stack = common::TestCommitFixture::new();
     let context = initialize(&stack).await;
-    let directory = stack
-        .cluster
-        .runtime_mut()
-        .service_dir("iceberg", "commit-faults")
-        .unwrap();
-    let setup = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
+    let directory = stack.directory.path().to_path_buf();
+    let setup = child::TestCommitListener::normal(&stack).await;
     case::success(
         &format!("http://{}", setup.address),
         "/v1/namespaces",
@@ -58,13 +53,12 @@ async fn native_table_publication_recovers_before_and_after_every_durable_write(
         for offset in 1..=count {
             for after in [false, true] {
                 let name = format!("{kind}-{offset}-{after}");
-                let setup = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
+                let setup = child::TestCommitListener::normal(&stack).await;
                 let case =
                     case::TestCommitCase::prepare(&format!("http://{}", setup.address), kind, name).await;
                 drop(setup);
                 let marker = directory.join(format!("{kind}-{offset}-{after}.json"));
-                let mut child =
-                    child::TestCommitChild::start(&stack.cluster.mgmt_endpoints, marker, offset, after).await;
+                let mut child = child::TestCommitListener::start(&stack, marker, offset, after).await;
                 let endpoint = format!("http://{}", child.address);
                 let path = case.path.clone();
                 let identity = case.identity.clone();
@@ -79,7 +73,7 @@ async fn native_table_publication_recovers_before_and_after_every_durable_write(
                     }
                 };
                 println!(
-                    "kill {kind} boundary {offset}/{count} after={after}: {}",
+                    "interrupt {kind} boundary {offset}/{count} after={after}: {}",
                     boundary["label"]
                 );
                 labels.insert(boundary["label"].as_str().unwrap().to_owned());
@@ -91,7 +85,7 @@ async fn native_table_publication_recovers_before_and_after_every_durable_write(
                     request.await.unwrap().is_err(),
                     "killed request must lose its response"
                 );
-                let recovery = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
+                let recovery = child::TestCommitListener::normal(&stack).await;
                 case.replay(&format!("http://{}", recovery.address)).await;
                 verify_generation(&stack, context, &case).await;
                 drop(recovery);
@@ -115,7 +109,7 @@ async fn native_table_publication_recovers_before_and_after_every_durable_write(
         if kind != "stage" {
             assert!(
                 labels.contains("file-block"),
-                "candidate bytes must use native chunks: {labels:?}"
+                "candidate bytes must pass through file publication: {labels:?}"
             );
             assert!(labels.iter().any(|label| label.starts_with("head-")));
         }
@@ -125,8 +119,8 @@ async fn native_table_publication_recovers_before_and_after_every_durable_write(
     }
 }
 
-async fn baseline(stack: &common::TestIcebergStack, directory: &Path, kind: &str) -> usize {
-    let setup = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
+async fn baseline(stack: &common::TestCommitFixture, directory: &Path, kind: &str) -> usize {
+    let setup = child::TestCommitListener::normal(stack).await;
     let case = case::TestCommitCase::prepare(
         &format!("http://{}", setup.address),
         kind,
@@ -134,8 +128,8 @@ async fn baseline(stack: &common::TestIcebergStack, directory: &Path, kind: &str
     )
     .await;
     drop(setup);
-    let child = child::TestCommitChild::start(
-        &stack.cluster.mgmt_endpoints,
+    let child = child::TestCommitListener::start(
+        stack,
         directory.join(format!("baseline-{kind}.json")),
         usize::MAX,
         false,
@@ -157,11 +151,11 @@ async fn baseline(stack: &common::TestIcebergStack, directory: &Path, kind: &str
 }
 
 async fn verify_generation(
-    stack: &common::TestIcebergStack,
+    stack: &common::TestCommitFixture,
     context: CatalogContext,
     case: &case::TestCommitCase,
 ) {
-    let store = stack.store().await;
+    let store = stack.store();
     let parent = NamespaceRepository::new(store.clone())
         .load(
             context,
@@ -181,9 +175,9 @@ async fn verify_generation(
     }
 }
 
-async fn initialize(stack: &common::TestIcebergStack) -> CatalogContext {
+async fn initialize(stack: &common::TestCommitFixture) -> CatalogContext {
     let repository = CatalogRepository::new(
-        stack.store().await,
+        stack.store(),
         ClearBounds {
             request_ms: 300_000,
             delegated_access_ms: 900_000,
