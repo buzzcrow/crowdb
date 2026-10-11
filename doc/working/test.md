@@ -35,7 +35,7 @@ are excluded. Console uses one effective case slot at 0.25 CPU/server with a
 
 | Domain       | Environment | Date       | Passed / failed / skipped | Wall s   | Previous s | Report                                                                                                    |
 | ------------ | ----------- | ---------- | ------------------------- | -------- | ---------- | --------------------------------------------------------------------------------------------------------- |
-| KV           | intel7960   | 2026-10-12 | 50 / 0 / 0                | 105.519  | 94.794     | [report](../../.crowdb-runtime/artifacts/container-e2e/run-0497f80ea35649d5bf811fd5b101e4cc/results.json) |
+| KV           | intel7960   | 2026-10-12 | 50 / 0 / 0                | 96.977   | 105.519    | [report](../../.crowdb-runtime/artifacts/container-e2e/run-7587d4ce83f142c5b6238a8b941d47d8/results.json) |
 | Diskdb       | intel7960   | 2026-10-12 | 5 / 0 / 0                 | 14.048   | 14.198     | [report](../../.crowdb-runtime/artifacts/container-e2e/run-9a6b10db224442a99877a821df96ddf7/results.json) |
 | Diskio       | intel7960   | 2026-10-12 | 8 / 0 / 0                 | 21.507   | 20.802     | [report](../../.crowdb-runtime/artifacts/container-e2e/run-30a61c56a8ca495fa636b0b0b846271e/results.json) |
 | Chunkdb      | intel7960   | 2026-10-12 | 11 / 0 / 0                | 159.207  | 70.267     | [report](../../.crowdb-runtime/artifacts/container-e2e/run-479c24973b70443c9c7e35d4bee8ee2c/results.json) |
@@ -59,7 +59,11 @@ are excluded. Console uses one effective case slot at 0.25 CPU/server with a
   (OCI `sha256:bb3c6951ef7f3203ba49354678032bf3016c3db9004412875630a1b0783b57b0`)
   fixes non-voting heartbeat catch-up. Full domain runs are recorded above;
   S3 and Iceberg failed once each. A new image incorporating the KV coalescer
-  race fix is being staged; repeat acceptance on that image is pending.
+  race fix was built/imported from `fca2b4fa9f7f51014ef7cff61d940429af393899`,
+  OCI `sha256:c79e4be09c63ea8be0de36d06d3796ee3a5254ee3179e808238b3a256362f657`.
+  Its KV domain passes 50/50. Exact S3 regression passes all three phases
+  (32.588 / 45.012 / 57.879 seconds); all six RCK cases execute and pass.
+  Complete S3/Iceberg and other domain remeasurement remains pending.
   Optimized binaries retain debug info; mounted data/log/crash paths and actual
   host core collector are recorded per run. Receipt: `target/crowdb.oci.tar.json`.
 - **Bridge SSH admission**: the explicit five-node peak profile passes in
@@ -134,8 +138,9 @@ as environment baselines, not as evidence of migration completion.
 - [ ] **Current regression failures**: S3 thousand-key batch deletion timed out
   at its unchanged 120-second deadline, including an isolated rerun. A reproduced
   KV coalescer enqueue-loss race is fixed and 122 group tests pass; packaged
-  acceptance remains pending. Iceberg RCK failed because its archived upstream
-  source lacked `version.txt`; the host archive fix awaits real RCK acceptance.
+  exact regression passes on the rebuilt release image. Iceberg RCK archive
+  metadata is fixed and all six real cases pass. Complete S3/Iceberg runs on
+  the rebuilt image remain pending; domain rows still report previous failures.
 
 - [ ] **Migration closure**: remaining real-server Console lifecycle/cluster
   flows and CLI S3 bootstrap replay need canonical

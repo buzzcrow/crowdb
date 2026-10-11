@@ -9,21 +9,23 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 
 ## Resume context
 
-- Branch `task-deploy`; latest accepted KV coalescer fix is committed as `fca2b4fa`. R230 is unfinished. Do not delete the
+- Branch `task-deploy`; latest accepted RCK archive fix is committed as `372d841f`. R230 is unfinished. Do not delete the
   requirement/backlog entry until every remaining owner and required gate passes.
 - Working tree contains uncommitted Console browser migration drafts. Shared-image CI is committed. S3 node-fault migration and local-state component proofs are accepted.
   Preserve these drafts. `e2e-test/clients/console-ui/node_modules/` is local
   dependency state; never stage it.
 - Current formal release image `crowdb-node:dev` is built/imported from
-  `d9dd29c41e94ad48a58940fc01b7ad700bdd0cf3`, with optimized binaries and
+  `fca2b4fa9f7f51014ef7cff61d940429af393899`, with optimized binaries and
   retained debug information. OCI digest
-  `sha256:bb3c6951ef7f3203ba49354678032bf3016c3db9004412875630a1b0783b57b0`;
+  `sha256:c79e4be09c63ea8be0de36d06d3796ee3a5254ee3179e808238b3a256362f657`;
   config digest
-  `sha256:701d53a74fcdb21b29f963948cdcf06f49846c90174bd5e1ac13765cc79b9fdb`.
-  Receipt: `target/crowdb.oci.tar.json`. Old image/archive `ec070372` is retained
+  `sha256:e102846ba3e0a1171f7c417ae30e77f5665b226bda5bfc210a351fe0a499eedc`.
+  Receipt: `target/crowdb.oci.tar.json`. Old image/archives `ec070372` and `d9dd29c4` are retained
   for historical measurements. Rebuild only when release inputs change; never
-  bypass source/image provenance checks. A new image is required for the committed coalescer fix; the receipt currently
-  describes the previous image until rebuild/import completes.
+  bypass source/image provenance checks. Rebuilt/imported receipt matches the committed coalescer fix.
+  Exact S3 regression passes all three phases in 154.356 seconds; RCK executes
+  all six upstream cases and passes in 51.184 seconds. Artifacts:
+  `/tmp/crowdb-coalesce-s3-exact` and `/tmp/crowdb-rck-distribution-exact`.
 - Containers run formal servers, host processes run clients. Fixed ports,
   inspected IPs, independent networks/data mounts, and three actual KV voters
   in three containers remain mandatory. Runtime service selection reuses one
@@ -32,7 +34,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 - Delete original real-server owners only after equivalent accepted assertions.
   Keep deterministic component UT. Run executable commands through `pixi run`;
   native server gates require `clean-env`, never during another server gate.
-- Accepted fixture gate: 77 pass, `/tmp/crowdb-harness-staged-fixture.log`,
+- Accepted fixture gate: 78 pass, `/tmp/crowdb-rck-accepted-fixture.log`,
   using an export of the staged source. Console browser drafts are excluded.
   Retained S3 component UT pass 5/5; Web/Console-shared/E2E all-target clippy
   and workspace fmt pass.
@@ -87,23 +89,16 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   then relevant component/fmt/lint gates. Update `doc/working/test.md` using one
   row per domain and actual complete-run counts/wall times/environment/image.
   Keep per-case detail in artifacts; never sum partial batches into a full pass.
-  Previous-image full runs finished: Console 87/87, KV 50/50, Diskdb 5/5,
-  Diskio 8/8, Chunkdb 11/11, chunk-client 40/40, chunk-stream 4/4,
-  chunk-KV 2/2, Dataset 2/2 and Deployment 33/33. S3 passed 42/43;
-  its thousand-key batch-delete case exceeded the unchanged 120-second bound,
-  including an isolated rerun. Iceberg passed 31/32; the RCK archived upstream
-  source lacked `version.txt`. Reports are `/tmp/crowdb-final-<domain>/run-*/`.
-  KV coalescer idle transition dropped an enqueue between two lock acquisitions;
-  deterministic regression failed before the fix and all 122 group tests pass
-  afterward (`/tmp/crowdb-coalesce-empty-drain-{before,after}.log`). The fix adds
-  no lock; release staging is active in `/tmp/crowdb-coalesce-release-stage.log`.
-  Preserve the previous image/archive as `d9dd29c4`. Build/import the newly
-  staged formal retained-debug image, then run the exact S3 case and RCK before
-  full-domain remeasurement. Do not bypass image/source checks. Serialize the
-  largest SDK budgets; do not run global cleanup during any active gate.
-  The uncommitted RCK archive fix supplies upstream release `version.txt` for
-  pinned peeled tag `6976e020b894f6a6777704df2b8c4458cb291ae9` (1.11.0).
-  Verify outside any Git root before committing it.
+  Rebuilt formal image source/digests are above. New-image KV passes 50/50 in
+  96.977 seconds (`run-7587d4ce83f142c5b6238a8b941d47d8`). Complete S3 and
+  Iceberg runs are active in `/tmp/crowdb-coalesce-final-{s3,iceberg}`; each has
+  a 16 CPU budget, respectively 16384/32768 MiB, with 0.5 CPU/server.
+  Previous image domain counts/timings, including its S3/Iceberg failures,
+  remain recorded in `test.md`; do not replace them with partial passing counts.
+  Rerun remaining complete registered domains and required special profiles on
+  this image after active SDK gates finish. Verify CI quota settings separately;
+  remote CI is unmeasured. Workspace clippy passed in 24.78 seconds and fmt passes.
+  Do not run global cleanup during an active gate.
   The simplified document layout is accepted and needs no further redesign.
 - [ ] **Deferred benchmark decision**: review
   `tools/benchmark/bench-chunk-kv-regression.sh` only after migration and coverage
