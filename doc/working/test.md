@@ -26,7 +26,7 @@ coverage is tracked below. Intel7960 runs use concurrency 2; wall time includes
 startup, clients and teardown, excluding the shared image and host client build.
 Latest S3 run uses one case slot at 0.5 CPU/server (16 CPU / 16384 MiB
 budget); its three joint faults and protected restart add four cases.
-Iceberg uses two case slots at 0.5 CPU/server (24 CPU / 32768 MiB budget);
+Iceberg uses two case slots at 0.5 CPU/server (16 CPU / 32768 MiB budget);
 its full catalog retirement grace accounts for 1205 seconds of client time.
 KV includes the KV/KV and KV/Web isolation pairs. Console measures
 `console.operations` (87 accepted owners); unaccepted managed browser drafts
@@ -36,17 +36,17 @@ are excluded. Console uses one effective case slot at 0.25 CPU/server with a
 | Domain       | Environment | Date       | Passed / failed / skipped | Wall s   | Previous s | Report                                                                                                    |
 | ------------ | ----------- | ---------- | ------------------------- | -------- | ---------- | --------------------------------------------------------------------------------------------------------- |
 | KV           | intel7960   | 2026-10-12 | 50 / 0 / 0                | 96.977   | 105.519    | [report](../../.crowdb-runtime/artifacts/container-e2e/run-7587d4ce83f142c5b6238a8b941d47d8/results.json) |
-| Diskdb       | intel7960   | 2026-10-12 | 5 / 0 / 0                 | 14.048   | 14.198     | [report](../../.crowdb-runtime/artifacts/container-e2e/run-9a6b10db224442a99877a821df96ddf7/results.json) |
-| Diskio       | intel7960   | 2026-10-12 | 8 / 0 / 0                 | 21.507   | 20.802     | [report](../../.crowdb-runtime/artifacts/container-e2e/run-30a61c56a8ca495fa636b0b0b846271e/results.json) |
-| Chunkdb      | intel7960   | 2026-10-12 | 11 / 0 / 0                | 159.207  | 70.267     | [report](../../.crowdb-runtime/artifacts/container-e2e/run-479c24973b70443c9c7e35d4bee8ee2c/results.json) |
-| Chunk client | intel7960   | 2026-10-12 | 40 / 0 / 0                | 628.765  | 456.101    | [report](../../.crowdb-runtime/artifacts/container-e2e/run-957c7ecf692c4e3b9c76c697e2643e11/results.json) |
-| Chunk stream | intel7960   | 2026-10-12 | 4 / 0 / 0                 | 75.707   | 36.149     | [report](../../.crowdb-runtime/artifacts/container-e2e/run-fbaa0d20cd084f34bf45bf8dd73ffeb0/results.json) |
-| Chunk-KV     | intel7960   | 2026-10-12 | 2 / 0 / 0                 | 41.265   | 22.520     | [report](../../.crowdb-runtime/artifacts/container-e2e/run-cbb0e11572254c5789262ebc13b8ae69/results.json) |
-| S3           | intel7960   | 2026-10-12 | 42 / 1 / 0                | 1470.416 | 1135.695   | [report](../../.crowdb-runtime/artifacts/container-e2e/run-52be5dd3b8cb4e7abff03daa44b0509e/results.json) |
-| Iceberg      | intel7960   | 2026-10-12 | 31 / 1 / 0                | 1633.442 | 1515.042   | [report](../../.crowdb-runtime/artifacts/container-e2e/run-a668558dcb8541919c78c4f6e1b4f13d/results.json) |
-| Dataset      | intel7960   | 2026-10-12 | 2 / 0 / 0                 | 31.301   | 18.024     | [report](../../.crowdb-runtime/artifacts/container-e2e/run-438521b1303d4b828e483e1b86c6b559/results.json) |
-| Console      | intel7960   | 2026-10-12 | 87 / 0 / 0                | 676.846  | 627.744    | [report](../../.crowdb-runtime/artifacts/container-e2e/run-6e890de5f4ab479686588a4d23719d23/results.json) |
-| Deployment   | intel7960   | 2026-10-12 | 33 / 0 / 0                | 337.197  | 294.359    | [report](../../.crowdb-runtime/artifacts/container-e2e/run-fb8ec94000ef4856bfd294ddcf7c77de/results.json) |
+| Diskdb       | intel7960   | 2026-10-12 | 5 / 0 / 0                 | 15.142   | 14.048     | [report](../../.crowdb-runtime/artifacts/container-e2e/run-b4e60f42ad89430184f7cf03467f2d8f/results.json) |
+| Diskio       | intel7960   | 2026-10-12 | 8 / 0 / 0                 | 21.935   | 21.507     | [report](../../.crowdb-runtime/artifacts/container-e2e/run-c974a86a524b43d48d33bfdc9070b100/results.json) |
+| Chunkdb      | intel7960   | 2026-10-12 | 11 / 0 / 0                | 148.686  | 159.207    | [report](../../.crowdb-runtime/artifacts/container-e2e/run-0c0b062166874c109f3935021cdba787/results.json) |
+| Chunk client | intel7960   | 2026-10-12 | 40 / 0 / 0                | 642.098  | 628.765    | [report](../../.crowdb-runtime/artifacts/container-e2e/run-3cb038d49e0b45399f6b71edaeb724c0/results.json) |
+| Chunk stream | intel7960   | 2026-10-12 | 4 / 0 / 0                 | 69.960   | 75.707     | [report](../../.crowdb-runtime/artifacts/container-e2e/run-2d2d84b928b34e99a843d31f33589230/results.json) |
+| Chunk-KV     | intel7960   | 2026-10-12 | 2 / 0 / 0                 | 37.811   | 41.265     | [report](../../.crowdb-runtime/artifacts/container-e2e/run-28da907f564941dba981824882c880e3/results.json) |
+| S3           | intel7960   | 2026-10-12 | 42 / 1 / 0                | 1456.774 | 1470.416   | [report](../../.crowdb-runtime/artifacts/container-e2e/run-51644530c54a45e5bc9f5119272623e4/results.json) |
+| Iceberg      | intel7960   | 2026-10-12 | 32 / 0 / 0                | 1616.697 | 1633.442   | [report](../../.crowdb-runtime/artifacts/container-e2e/run-da3c624fb35d493e9101d5b3cca7a273/results.json) |
+| Dataset      | intel7960   | 2026-10-12 | 2 / 0 / 0                 | 35.568   | 31.301     | [report](../../.crowdb-runtime/artifacts/container-e2e/run-9bae8737664e45198e61bae2c48d4780/results.json) |
+| Console      | intel7960   | 2026-10-12 | 87 / 0 / 0                | 654.474  | 676.846    | [report](../../.crowdb-runtime/artifacts/container-e2e/run-0cbd669c66254ede8e56450d96ae12e4/results.json) |
+| Deployment   | intel7960   | 2026-10-12 | 33 / 0 / 0                | 337.716  | 337.197    | [report](../../.crowdb-runtime/artifacts/container-e2e/run-5776d5c987984e4982cbbc2a52d077f8/results.json) |
 
 ## Environments
 
@@ -61,22 +61,23 @@ are excluded. Console uses one effective case slot at 0.25 CPU/server with a
   S3 and Iceberg failed once each. A new image incorporating the KV coalescer
   race fix was built/imported from `fca2b4fa9f7f51014ef7cff61d940429af393899`,
   OCI `sha256:c79e4be09c63ea8be0de36d06d3796ee3a5254ee3179e808238b3a256362f657`.
-  Its KV domain passes 50/50. Exact S3 regression passes all three phases
+  Its KV and Iceberg domains pass 50/50 and 32/32. Exact S3 regression passes all three phases
   (32.588 / 45.012 / 57.879 seconds); all six RCK cases execute and pass.
-  Complete S3/Iceberg and other domain remeasurement remains pending.
+  All registered domains and special profiles have completed on this image;
+  complete S3 still fails once. The streamed bulk-delete fix awaits a new image.
   Optimized binaries retain debug info; mounted data/log/crash paths and actual
   host core collector are recorded per run. Receipt: `target/crowdb.oci.tar.json`.
 - **Bridge SSH admission**: the explicit five-node peak profile passes in
-  123.686 seconds on the rebuilt image, 0.5 CPU/node with a 3.5 CPU /
-  6144 MiB reservation; [report](../../.crowdb-runtime/artifacts/container-e2e/run-e05c9cea49344b21a6d94b724c1071c9/results.json).
+  148.191 seconds on the coalescer image, 0.5 CPU/node with a 4 CPU /
+  6144 MiB budget; [report](../../.crowdb-runtime/artifacts/container-e2e/run-91a781fe0ee84fec87330d03220c01d5/results.json).
   Four host browser flows pass with zero skips. Partial-startup and active-browser
   interruption clean up owned resources/clients in 1.128 / 1.385 seconds.
   This profile is separate from the ordinary Deployment domain measurement.
 - **Manual Iceberg ecosystem**: all five pinned engines plus cross-client
-  snapshot handoff/recreation pass in 192.879 seconds on the rebuilt image,
-  4 CPU / 10240 MiB; [report](../../.crowdb-runtime/artifacts/container-e2e/run-a1ee514316574f269327bbbd858ec139/results.json).
-  Focused Python/DuckDB passes in 19.425 seconds, 3 CPU / 6144 MiB
-  (`run-c25d6063eab24c588d5d32cbde2a030d`, reports under `/tmp/crowdb-root-ecosystem-python`).
+  snapshot handoff/recreation pass in 196.874 seconds on the coalescer image,
+  4 CPU / 10240 MiB; [report](../../.crowdb-runtime/artifacts/container-e2e/run-a1b52d865abb482ab9809868b226bced/results.json).
+  Focused Python/DuckDB passes in 29.099 seconds, 4 CPU / 6144 MiB
+  (`run-26ef383037904b3f812af8415b6bef83`, reports under `/tmp/crowdb-coalesce-final-ecosystem-python`).
   Partial-startup and active-Trino interruption clean up owned resources and
   host clients in 0.833 / 2.338 seconds. These manual profiles are separate from
   ordinary Iceberg domain counts. Private mounted data/raw logs are retained;
@@ -84,20 +85,21 @@ are excluded. Console uses one effective case slot at 0.25 CPU/server with a
 - **Component ownership**: after removing unused native process harnesses,
   affected ChunkDB/chunk-client/chunk-stream/DiskDB-client component tests pass
   328/328, shared directory/ownership tests pass 4/4, and all eight changed
-  consumer crates pass all-target clippy. Existing component flows are retained.
+  consumer crates pass all-target clippy. Existing component flows are retained. The complete core gate passes 978/978
+  after adding the coalescer race regression.
 - **Release startup**: 14 rejection cases pass in 7.879 seconds on the rebuilt
   image, including missing/short/duplicate Iceberg writer credentials, rejected
   legacy Web configuration and forbidden Docker launch registry. Native duplicate
   owners are removed; token-validation and managed-router component UTs remain.
   Evidence: `/tmp/crowdb-startup-owner-migration/release-startup/timing.json`.
 - **Linux host profile**: explicit host-network admission/recovery passes 1/1
-  in 6.740 seconds on intel7960, 2 CPU / 1024 MiB node quota
-  plus the host client reservation; [report](../../.crowdb-runtime/artifacts/container-e2e/run-9869315124ca45cb9ba3e3b3b245be90/results.json).
+  in 7.310 seconds on intel7960, 2 CPU / 1024 MiB node quota
+  plus the host client reservation; [report](../../.crowdb-runtime/artifacts/container-e2e/run-b2fc758df17b4a3a9bc588c983cd5ec0/results.json).
   This special profile is separate from the bridge Deployment measurement.
 - **Containerd Linux hosts**: explicit profiles reuse the same OCI digest.
-  Manual/single host passes in 135.334 seconds ([report](../../.crowdb-runtime/artifacts/container-e2e/run-03a731dc50974a01b4a7603177c4ff3e/results.json));
-  three-host quorum/recovery passes in 122.033 seconds at 0.75 CPU/node,
-  4 CPU / 6144 MiB budget ([report](../../.crowdb-runtime/artifacts/container-e2e/run-101ddfb3c22d4a7587b78eccd9c49b9d/results.json)).
+  Manual/single host passes in 125.432 seconds ([report](../../.crowdb-runtime/artifacts/container-e2e/run-d6948f2eab7c4d3fbecd3ad6fb4bb2c1/results.json));
+  three-host quorum/recovery passes in 129.661 seconds at 0.75 CPU/node,
+  4 CPU / 6144 MiB budget ([report](../../.crowdb-runtime/artifacts/container-e2e/run-834a3c13f29d49e9b59bac3c9f3b6780/results.json)).
 - **macOS**: historical native task measurements below. Container migration
   acceptance has not been measured; Linux VM routing is not assumed.
 - **amd5950**: no recorded measurements.
@@ -135,13 +137,14 @@ as environment baselines, not as evidence of migration completion.
 
 ## Remaining issues
 
-- [ ] **Current regression failures**: S3 thousand-key batch deletion timed out
-  at its unchanged 120-second deadline, including an isolated rerun. A reproduced
-  KV coalescer enqueue-loss race is fixed and 122 group tests pass; packaged
-  exact regression passes on the rebuilt release image. Iceberg RCK archive
-  metadata is fixed and all six real cases pass. Complete S3/Iceberg runs on
-  the rebuilt image remain pending; domain rows still report previous failures.
-
+- [ ] **S3 bulk-delete deadline**: the rebuilt image passes the exact thousand-key
+  three-phase test alone, but the complete domain failed its new-publication
+  phase at the unchanged 120-second bound (initial/retry 45.217/58.940 seconds).
+  Complete S3 is 42/43. Instrumented exact reproductions and CPU-quota diagnostics
+  show little node CPU throttling. The SDK uses a 60-second idle-read timeout;
+  the buffered response can trigger retransmission while deleting 1,000 keys.
+  Ordered response streaming passes component gates; formal-image acceptance
+  remains pending. Do not treat the isolated pass as full regression closure.
 - [ ] **Migration closure**: remaining real-server Console lifecycle/cluster
   flows and CLI S3 bootstrap replay need canonical
   container owners. Preserve old assertions and important component UTs until
