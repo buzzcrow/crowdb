@@ -32,6 +32,8 @@ pixi run clean-env
 pixi run test-container-e2e --layer kv --concurrency 2 --cpus 4 --memory-mib 4096
 # Diskdb public allocation/ownership/exact reuse flows:
 pixi run test-container-e2e --layer diskdb --concurrency 2
+# Diskio file/direct durability, Mem/Null I/O, discovery and client faults:
+pixi run test-container-e2e --layer diskio --concurrency 2 --cpus 6 --memory-mib 6144
 # Normal release monitor full set, service subsets and persisted restart:
 pixi run test-container-e2e --layer deployment --concurrency 2 --cpus 6 --memory-mib 6144
 # Run one domain scope (other migrated scopes: kv.membership, kv.routing,
@@ -47,7 +49,8 @@ pixi run test-container-e2e --layer kv --data-root /path/to/e2e-data
 Build/import the shared OCI image first. An absent image, missing Docker daemon,
 unsupported daemon, changed release server sources or inadequate budget fails the
 required test. There is no successful missing-prerequisite skip.
-`--layer all` currently selects the only implemented layer, KV. Image and client
+`--layer all` currently selects KV, Diskdb, Diskio and deployment service selection.
+Other domain migrations remain tracked in the working plan. Image and client
 revisions are recorded independently. Client/documentation/test-registration
 commits reuse an image after verifying the release server inputs still match;
 production source, dependency, runtime configuration and build changes require
@@ -192,3 +195,27 @@ pending.
   slots. Normal monitor selection batch: 3 flows/6 host phases and five startup
   rejection checks, 20.153 s. Detailed measurements and image/source identities
   are in `doc/working/test.md`; other domains remain pending.
+
+## Diskio profiles
+
+- `diskio.durability` uses an owned 16 MiB regular data file with buffered file I/O;
+  `diskio.direct` uses the release default O_DIRECT setting on the same geometry.
+  Both fsync acknowledged aligned and unaligned bytes, SIGKILL/restart at the
+  same IP/7200, and verify exact persisted contents plus an unaligned range read.
+  Regular files do not claim real block-device or io_uring capability coverage.
+- `diskio.io.mem` and `diskio.io.null` own KV plus Diskio, with the original four
+  disks including a high-half disk ID. They retain every boundary size, overwrite,
+  zone/offset and 100 concurrent cycles, with exact bytes or NullDisk patterns.
+- `diskio.discovery` owns heartbeat, stable connection pools across refreshes,
+  malformed-owner rejection and new-disk reconciliation through Group 0.
+- `diskio.errors` owns missing disk/zone and missing write creation time;
+  `diskio.faults` owns deterministic I/O errors using the normal release option.
+- `diskio.semantic` owns payload/view framing, ordering, independent strip and
+  priority admission, endpoint replacement and error classification. Its KV and
+  three sequential Diskio generations use four owned containers. Replacement
+  containers are created dormant and started by the bounded fixture control
+  only after the prior generation exits. Startup waits for its RPC listener;
+  tests then verify disk and registry readiness without hiding transport errors.
+- Address validation, authoritative-owner topology and synthetic native-route
+  lease recovery remain component tests. The shared host Diskio launcher remains
+  until chunk client/stream callers migrate, and is not used by this domain.

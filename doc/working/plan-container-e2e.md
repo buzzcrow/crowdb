@@ -481,9 +481,9 @@ Goal: review and migrate all real-server tests into domain modules under contain
   application assertions, split internal handler flows from real metadata
   setup, migrate allocation/recovery/fence/journal boundaries. Files: Diskdb
   tests, harness `diskdb.rs`, container `tests/diskdb*`, profile/runner.
-- [ ] **Diskio batch**: add simulated/null profiles and explicit special-device
-  scope; migrate RPC errors, registry sync and durability. Audit listener restart
-  and live-bind rejection. Files: client/C++ launch sites, `tests/diskio*`.
+- [x] **Diskio batch**: add simulated/null profiles and explicit special-device
+  scope; migrate RPC errors, registry sync and durability. Same-port file/direct
+  restart passes; shared listener error/collision audit remains in closure. Files: client/C++ launch sites, `tests/diskio*`.
 - [ ] **Chunkdb batch**: add configurable rack/disk geometry and fault policies;
   split mixed full-stack cases, migrate lifecycle, degraded repair/conversion
   and journal handoff with deterministic component flows retained. Files:
@@ -944,3 +944,65 @@ Source `lib/crowdb-kv-client/tests/chunk_slot_map_test.rs`: all eight cases exer
   OCI manifest sha256:743539d20444ad687f00b771d37d257a5e30803f2b84ade5e40934dc99bfbdd4,
   config sha256:10254caf607d21cb102e0b1fd636d55a65625eb06d54895bad0d01cf6bc3be9a,
   debug info retained. All domain selections consume this one artifact.
+
+## Diskio verified source retirement
+
+- `disk_io_durability_test::disk_io_e2e_durability` ->
+  `diskio::durability::disk_io_e2e_durability`: exact 4096-byte payload,
+  fsync success, SIGKILL/same-IP/7200 restart and exact recovery; retain the
+  25,220-offset/182-byte unaligned witness. Add O_DIRECT profile and exact
+  2048-offset/238-byte range read, including incomplete frame-magic prefix.
+- `disk_io_full_test::disk_io_e2e_full_flow` -> separate
+  `diskio::io::{mem_disk_full_flow,null_disk_full_flow}`: preserve read-before-
+  write, 0/100/4096/1 MiB/2 MiB sizes, overwrite, zone 1, offset 8192,
+  high-half disk ID, fsync and all 100 concurrent cycles; exact bytes/patterns.
+- `disk_io_errors_test::disk_io_e2e_error_paths` ->
+  `diskio::errors::disk_io_e2e_error_paths` and
+  `diskio::faults::disk_io_fault_errors`: preserve write/read/fsync missing-disk,
+  write/read missing-zone and deterministic injected I/O failures. No whole-case
+  retry or absent-binary skip; fault readiness accepts only explicit IoError.
+- `disk_io_group0_sync_test::disk_io_e2e_group0_sync` ->
+  `diskio::group0::disk_io_e2e_group0_sync`: exact instance/ownership heartbeat,
+  connection pool stability across 100 refreshes, malformed owner preserving
+  prior routes, new disk reconciliation, exact raw and semantic payloads/fsync.
+- `semantic_io_test::semantic_client_owns_route_transport_payload_and_durability`
+  -> same named `diskio::semantic` case: retain buffered/durable/scatter-gather,
+  range rejection before I/O counters, bad zone without retries, status/pools,
+  multi-frame views, independent strip overlap, ordered frames, priority
+  admission, in-flight failure and replacement generation usability, and
+  write/read/fsync DiskFailure without retries. Replace port allocation and
+  host child processes with owned dormant replacement containers and fixed7200.
+- C++ `DiskioStartupTest.WriteReadRoundTrip` and
+  `DiskioServerTest.{WriteAndReadRoundTrip,FsyncRoundTrip}` -> file/direct
+  durability owners including exact payload, fragment prefix, unaligned direct
+  range and sync. `DiskioServerTest.DiskNotExist` -> errors owner;
+  `RejectsWriteWithoutCreationTime` -> explicit malformed wire request ID77,
+  zero creation time returning exact OldRequest/response ID77. Delete both
+  C++ full-server files only after target acceptance.
+- Preserve local client `address_test`, `topology_test`, `native_routes_test`:
+  arithmetic rejection, one authoritative owner and synthetic lease/generation
+  recovery. Preserve C++ aligned writer, engine, disk set, config and identity
+  tests, including ordering/SQ pressure/injected engine faults. These own internal
+  deterministic invariants and do not launch the packaged server executable.
+- Shared Diskio host harness still has chunk client/stream callers; leave until
+  their migration. Remove obsolete harness/HTTP dev dependencies. Image reuse checks unchanged
+  production manifests and permits only proven dev-only edges in existing lock
+  packages; dependency identities/new packages/production edge changes still fail.
+- First semantic attempt exposed Docker start completing before RPC listen;
+  fixture control now verifies the owned replacement listener before returning.
+  Semantic then passes alone and concurrently without relaxing transport errors.
+- Image reuse now excludes only unpackaged single-node README; an added UT still
+  rejects entrypoint changes. Inspection confirms staging never copies README.
+- Shared RPC enables SO_REUSEADDR but currently ignores its option-error result.
+  Finish the common listener error/collision audit in the cross-domain closure
+  task; regular file acceptance does not claim special-device support.
+
+- Final Diskio acceptance: run-4760a5f986824b02b404acfa4828c361 passes all eight
+  fixtures/fourteen phases at concurrency2, client build6.165s, wall20.641s.
+  Same exact d8bf780c release/config image; tests and mounts recorded in test.md.
+- Full test-cpp passes after removing the five migrated C++ full-server cases;
+  retained client UTs3/3 and all-target clippy pass. Fixture gate and tree-lint
+  completion recorded below before committing this batch.
+- Diskio commit gates: workspace fmt, affected all-target clippy, retained3client UT,
+  fixture30/30 (1.009s), full test-cpp and tree-lint exit0 pass. Existing tidy
+  warnings remain; no production C++ source changed by this migration batch.

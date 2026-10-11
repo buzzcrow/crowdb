@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from fixture import Cluster
 from diskdb_fixture import DiskdbCluster
 from managed_fixture import ManagedCluster
+from diskio_fixture import DiskioCluster, DiskioDiscoveryCluster, DiskioSemanticCluster
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,9 @@ class Case:
     node_args: tuple | None = None
     advertise: bool = False
     service_selection: tuple = ()
+    diskio_backend: str | None = None
+    diskio_fault_rate: float = 0
+    diskio_direct: bool = False
 
 
 KV_CASES = (
@@ -100,9 +104,23 @@ DEPLOYMENT_CASES = (
          service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
 )
 
-ALL_CASES = KV_CASES + DISKDB_CASES + DEPLOYMENT_CASES
+DISKIO_CASES = (
+    Case("diskio.direct", "diskio::durability::disk_io_e2e_durability", restart=True, diskio_direct=True),
+    Case("diskio.durability", "diskio::durability::disk_io_e2e_durability", restart=True),
+    Case("diskio.io.mem", "diskio::io::mem_disk_full_flow", diskio_backend="mem"),
+    Case("diskio.io.null", "diskio::io::null_disk_full_flow", diskio_backend="null"),
+    Case("diskio.discovery", "diskio::group0::disk_io_e2e_group0_sync", diskio_backend="mem"),
+    Case("diskio.errors", "diskio::errors::disk_io_e2e_error_paths", diskio_backend="mem"),
+    Case("diskio.semantic", "diskio::semantic::semantic_client_owns_route_transport_payload_and_durability", diskio_backend="semantic"),
+    Case("diskio.faults", "diskio::faults::disk_io_fault_errors", diskio_backend="mem", diskio_fault_rate=1.0),
+)
+ALL_CASES = KV_CASES + DISKDB_CASES + DEPLOYMENT_CASES + DISKIO_CASES
 
 def case_nodes(case):
+    if case.diskio_backend == "semantic":
+        return 4
+    if case.diskio_backend:
+        return 2
     if len(case.service_selection) > 2:
         return 4
     return 2 if case.scope.startswith("diskdb.") else len(case.stores_per_node or case.stores)
@@ -115,7 +133,7 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
 
     def run(case):
         count = len(case.stores_per_node or case.stores)
-        cluster = ManagedCluster(image, artifacts, services=case.service_selection or ("kv",), data_root=data_root) if case.scope.startswith("deployment.") else DiskdbCluster(image, artifacts, bundle, data_root=data_root) if case.scope.startswith("diskdb.") else Cluster(image, artifacts, data_root=data_root, node_count=count,
+        cluster = ManagedCluster(image, artifacts, services=case.service_selection or ("kv",), data_root=data_root) if case.scope.startswith("deployment.") else DiskioSemanticCluster(image, artifacts, bundle, data_root=data_root) if case.diskio_backend == "semantic" else DiskioDiscoveryCluster(image, artifacts, bundle, case.diskio_backend, fault_rate=case.diskio_fault_rate, data_root=data_root) if case.diskio_backend else DiskioCluster(image, artifacts, direct=case.diskio_direct, data_root=data_root) if case.scope.startswith("diskio.") else DiskdbCluster(image, artifacts, bundle, data_root=data_root) if case.scope.startswith("diskdb.") else Cluster(image, artifacts, data_root=data_root, node_count=count,
                           store_ids=case.stores, wire_replicas=case.wired,
                           stores_per_node=case.stores_per_node, groups=case.groups,
                           groups_per_node=case.groups_per_node, node_args=case.node_args,

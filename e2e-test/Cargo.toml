@@ -12,6 +12,9 @@ workspace = true
 
 [dev-dependencies]
 bytes = "1"
+flatbuffers = { workspace = true }
+crowdb-diskio-client = { path = "../lib/crowdb-diskio-client", features = ["test-util"] }
+crowdb-rpc-ffi = { path = "../lib/crowdb-rpc/ffi" }
 crowdb-diskdb-client = { path = "../lib/crowdb-diskdb-client" }
 crowdb-kv = { path = "../lib/crowdb-kv" }
 crowdb-kv-client = { path = "../lib/crowdb-kv-client" }

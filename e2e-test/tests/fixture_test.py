@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from fixture import LABEL, Cluster, redact, docker
 from run import capacity
+from allocation import start_node
 
 
 class Daemon:
@@ -37,6 +38,28 @@ class Daemon:
 
 
 class FixtureTest(unittest.TestCase):
+    def test_deferred_node_records_owned_static_address_without_starting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cluster = Cluster("image", directory)
+            calls = []
+            address = "10.20.30.4"
+            info = [{"NetworkSettings": {"Networks": {cluster.run_id: {
+                "IPAddress": "", "IPAMConfig": {"IPv4Address": address}}}}}]
+            def command(*args):
+                calls.append(args)
+                return json.dumps(info) if args[0] == "inspect" else "created"
+            cluster.command = command
+            self.assertEqual(start_node(cluster, 2, Path(directory), ("server", "diskio"),
+                                        address, running=False), address)
+            self.assertEqual(calls[0][0], "create")
+            self.assertEqual(cluster.servers, cluster.containers)
+            self.assertIn(f"{LABEL}={cluster.run_id}", calls[0])
+            info[0]["NetworkSettings"]["Networks"][cluster.run_id]["IPAMConfig"]["IPv4Address"] = "other"
+            with self.assertRaisesRegex(AssertionError, "explicit network address"):
+                start_node(cluster, 3, Path(directory), (), address, running=False)
+            with self.assertRaisesRegex(ValueError, "explicit advertised address"):
+                start_node(cluster, 4, Path(directory), (), running=False)
+
     def test_logs_keep_stderr_and_inspection_keeps_machine_readable_stdout(self):
         completed = subprocess.CompletedProcess([], 0, '{"status":"ok"}', "fatal server error")
         with patch("fixture.subprocess.run", return_value=completed):

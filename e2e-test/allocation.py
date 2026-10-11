@@ -37,7 +37,9 @@ def node_data(cluster, index, prepare_logs=True):
 
 
 def start_node(cluster, index, data, arguments, address=None, environment=(), mounts=(),
-               cpus="0.5", memory="512m"):
+               cpus="0.5", memory="512m", running=True):
+    if not running and address is None:
+        raise ValueError("a deferred node needs an explicit advertised address")
     name = f"{cluster.run_id}-node{index}"
     # A timed-out allocation can already exist; record it before contacting Docker.
     cluster.containers.append(name)
@@ -45,10 +47,16 @@ def start_node(cluster, index, data, arguments, address=None, environment=(), mo
     network_args = ("--ip", address) if address else ()
     environment_args = tuple(item for value in environment for item in ("--env", value))
     mount_args = tuple(item for value in mounts for item in ("--mount", value))
-    cluster.command("run", "-d", "--name", name, "--label", f"{LABEL}={cluster.run_id}",
+    operation = ("run", "-d") if running else ("create",)
+    cluster.command(*operation, "--name", name, "--label", f"{LABEL}={cluster.run_id}",
                     "--network", cluster.run_id, "--network-alias", f"node{index}",
                     *network_args, "--cpus", cpus, "--memory", memory, "--pids-limit", "256",
                     "--mount", f"type=bind,source={data},target=/opt/crowdb/data",
                     *mount_args, *environment_args, "--ulimit", "core=-1", cluster.image, *arguments)
     info = json.loads(cluster.command("inspect", name))[0]
-    return info["NetworkSettings"]["Networks"][cluster.run_id]["IPAddress"]
+    network = info["NetworkSettings"]["Networks"][cluster.run_id]
+    if not running:
+        if network.get("IPAMConfig", {}).get("IPv4Address") != address:
+            raise AssertionError("deferred node lost its explicit network address")
+        return address
+    return network["IPAddress"]

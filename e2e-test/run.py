@@ -80,8 +80,8 @@ def run_pair(image, artifacts, bundle, count, data_root=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--layer", choices=("kv", "diskdb", "deployment", "all"), default="all")
-    parser.add_argument("--scope", choices=("all", "kv.management", "kv.membership", "kv.routing", "kv.recovery", "kv.isolation", "kv.group0", "kv.client", "kv.metadata", "diskdb.allocation", "diskdb.ownership", "diskdb.reuse", "deployment.selection"),
+    parser.add_argument("--layer", choices=("kv", "diskdb", "diskio", "deployment", "all"), default="all")
+    parser.add_argument("--scope", choices=("all", "kv.management", "kv.membership", "kv.routing", "kv.recovery", "kv.isolation", "kv.group0", "kv.client", "kv.metadata", "diskdb.allocation", "diskdb.ownership", "diskdb.reuse", "deployment.selection", "diskio.durability", "diskio.direct", "diskio.io.mem", "diskio.io.null", "diskio.discovery", "diskio.errors", "diskio.faults", "diskio.semantic"),
                         default="all")
     parser.add_argument("--concurrency", type=int, default=2)
     parser.add_argument("--case", help="fully qualified named flow within the selected scope")

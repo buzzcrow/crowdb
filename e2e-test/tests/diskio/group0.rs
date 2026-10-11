@@ -7,49 +7,29 @@
 
 use std::time::{Duration, Instant};
 
+use crate::common::hardware::{
+    make_disk_id, CAPACITY_UNITS, DG_ID, INSTANCE_ID, NODE_ID, RACK_ID, UNIT_SIZE_BYTES, ZONE_COUNT,
+    ZONE_SIZE_UNITS,
+};
 use crowdb_diskio_client::{
     DiskId as DioDiskId, DiskIoRetCode, DiskioClient as SemanticDiskioClient, DiskioClientConfig, Durability,
     SegmentTarget, TestWireDiskioClient as DiskioClient, TestWireDiskioError as DiskioError,
 };
 use crowdb_protocol::common::HwStatus;
 use crowdb_protocol::diskdb::rpc::{DiskGroupValue, DiskType, DiskValue};
-use crowdb_test_harness::cluster::KvCluster;
-use crowdb_test_harness::diskio::*;
-use crowdb_test_harness::hardware::{
-    make_disk_id, seed_hardware, standard_disk_ids_4, CAPACITY_UNITS, DG_ID, INSTANCE_ID, NODE_ID, RACK_ID,
-    UNIT_SIZE_BYTES, ZONE_COUNT, ZONE_SIZE_UNITS,
-};
 
 /// Verify group-0 periodic sync: (a) heartbeat registers the diskio
 /// instance in the service registry, and (b) disk-list reconciliation
 /// picks up a new disk added to group-0 after startup.
 #[tokio::test]
+#[ignore = "requires the owned packaged Diskio discovery fixture"]
 #[allow(clippy::too_many_lines)]
 async fn disk_io_e2e_group0_sync() {
-    if !check_binaries() {
-        return;
-    }
-
-    eprintln!("=== group0-sync: starting kv cluster ===");
-    let cluster = KvCluster::start().await;
-    let hw = cluster.make_hardware_client();
-    seed_hardware(&hw, &standard_disk_ids_4()).await;
-    eprintln!("hardware metadata seeded (3 initial disks)");
-
-    eprintln!("=== group0-sync: starting diskio ===");
-    let diskio = DiskioProcess::start(&DiskioStartOpts {
-        dummy_disk: "mem",
-        kv_seeds: &cluster.mgmt_endpoints,
-        disks: &[],
-        fault_error_rate: 0.0,
-        fault_latency_ms: None,
-        no_o_direct: false,
-    });
-    let (rpc_server, conn, dio_client) = connect_to_diskio(&diskio);
-    diskio.wait_for_disks(&dio_client, &rpc_server, &conn).await;
-
+    let hw = super::hardware_client();
+    let (rpc_server, conn, dio_client) = super::connect();
+    super::wait_for_disks(&dio_client, &rpc_server, &conn).await;
     eprintln!("=== group0-sync: verifying heartbeat ===");
-    let svc = cluster.make_service_registry_client();
+    let svc = super::registry();
     let deadline = Instant::now() + Duration::from_secs(15);
     let mut heartbeat_ok = false;
     while Instant::now() < deadline {
@@ -178,11 +158,7 @@ async fn disk_io_e2e_group0_sync() {
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    assert!(
-        reconciled,
-        "diskio should reconcile the new disk within 20s. Log:\n{}",
-        diskio.log_content()
-    );
+    assert!(reconciled, "diskio should reconcile the new disk within 20s");
     eprintln!("  new disk reconciled and writable");
 
     semantic.refresh().await.expect("refresh semantic routes");
@@ -216,7 +192,6 @@ async fn disk_io_e2e_group0_sync() {
     assert_eq!(rd, vec![0xCD; 4096], "reconciled disk data should match");
     eprintln!("  reconciled disk read-back verified");
 
-    drop(diskio);
     rpc_server.stop();
 
     eprintln!();

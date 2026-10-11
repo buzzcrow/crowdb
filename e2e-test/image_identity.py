@@ -13,7 +13,51 @@ SERVER_PATHS = (
     "app", "lib", "container", "tools", "cmake", ".cargo",
     "Cargo.toml", "Cargo.lock", "pixi.toml", "pixi.lock", "CMakeLists.txt",
     ":(glob,exclude)**/tests/**",
+    # The staging script does not package this operator documentation.
+    ":(exclude)container/single-node-container/README.md",
 )
+
+
+
+def production_manifest(manifest):
+    result = dict(manifest)
+    result.pop("test", None)
+    result.pop("dev-dependencies", None)
+    return result
+
+
+def lock_matches(before, after, manifests):
+    def packages(lock):
+        return {(p["name"], p["version"], p.get("source")): p
+                for p in lock["package"] if p["name"] != "e2e-test"}
+    old, new = packages(before), packages(after)
+    if old.keys() != new.keys():
+        return False
+    for key, previous in old.items():
+        current = new[key]
+        if previous == current:
+            continue
+        if {k: v for k, v in previous.items() if k != "dependencies"} != {
+                k: v for k, v in current.items() if k != "dependencies"}:
+            return False
+        pair = manifests.get(key[0])
+        if not pair or production_manifest(pair[0]) != production_manifest(pair[1]):
+            return False
+        dev, production = set(), set()
+        for manifest in pair:
+            for alias, specification in manifest.get("dev-dependencies", {}).items():
+                dev.add(specification.get("package", alias) if isinstance(specification, dict) else alias)
+            sections = [manifest, *manifest.get("target", {}).values()]
+            for sections_for_target in sections:
+                for section in ("dependencies", "build-dependencies"):
+                    for alias, specification in sections_for_target.get(section, {}).items():
+                        production.add(specification.get("package", alias) if isinstance(specification, dict) else alias)
+        dev -= production
+        changed = set(previous.get("dependencies", ())) ^ set(current.get("dependencies", ()))
+        if any(dependency.split()[0] not in dev for dependency in changed):
+            return False
+    return {k: v for k, v in before.items() if k != "package"} == {
+        k: v for k, v in after.items() if k != "package"}
 
 
 def verify_server_sources(root, revision):
@@ -29,22 +73,26 @@ def verify_server_sources(root, revision):
         untracked = git("ls-files", "--others", "--exclude-standard", "--", *SERVER_PATHS)
     except subprocess.CalledProcessError as error:
         raise ValueError("image source revision cannot be verified locally; rebuild the shared OCI image") from error
+    manifests = {}
+    for path in changed.splitlines():
+        if path.endswith("Cargo.toml") and Path(root, path).is_file():
+            pair = (tomllib.loads(git("show", f"{revision}:{path}")),
+                    tomllib.loads(Path(root, path).read_text()))
+            name = pair[0].get("package", {}).get("name")
+            if name:
+                manifests[name] = pair
     runtime_changes = []
     for path in changed.splitlines():
         current = Path(root, path)
         if path == "Cargo.lock" and current.is_file():
             before = tomllib.loads(git("show", f"{revision}:{path}"))
             after = tomllib.loads(current.read_text())
-            for lock in (before, after):
-                lock["package"] = [package for package in lock["package"] if package["name"] != "e2e-test"]
-            if before == after:
+            if lock_matches(before, after, manifests):
                 continue
         if path.endswith("Cargo.toml") and current.is_file():
             before = tomllib.loads(git("show", f"{revision}:{path}"))
             after = tomllib.loads(current.read_text())
-            before.pop("test", None)
-            after.pop("test", None)
-            if before == after:
+            if production_manifest(before) == production_manifest(after):
                 continue
         runtime_changes.append(path)
     changed = "\n".join(runtime_changes)

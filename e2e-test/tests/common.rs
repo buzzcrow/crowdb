@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 pub(crate) mod control;
+pub(crate) mod hardware;
 pub(crate) mod management;
 mod test_client;
 

@@ -70,7 +70,13 @@ Do not require one CI job for each measurement row.
 | `e2e.diskdb.ownership`      | Wrong-owner facts / compact rejection / registry routes   | Storage           |
 | `e2e.diskdb.reuse`          | Exhaustion / exact reuse / delayed incarnation retries    | Storage           |
 | `e2e.diskdb.recovery`       | Ownership fencing / persisted journal recovery            | Storage           |
-| `e2e.diskio.io`             | Exact range bytes / registry sync / RPC errors            | Storage           |
+| `e2e.diskio.io.mem`         | Exact MemDisk ranges / overwrite / concurrent bytes       | Storage           |
+| `e2e.diskio.io.null`        | Exact NullDisk patterns / boundary sizes / concurrency    | Storage           |
+| `e2e.diskio.discovery`      | Group-0 heartbeat / owner rejection / disk reconciliation | Storage           |
+| `e2e.diskio.errors`         | Missing disk/zone / missing creation-time rejection       | Storage           |
+| `e2e.diskio.faults`         | Injected write/read/fsync I/O failure                     | Storage           |
+| `e2e.diskio.semantic`       | Views / ordering / admission / route-generation recovery  | Storage           |
+| `e2e.diskio.direct`         | O_DIRECT fsync / unaligned ranges / crash recovery        | Storage           |
 | `e2e.diskio.durability`     | Sync / restart / bounded live I/O failure                 | Storage           |
 | `e2e.chunkdb.lifecycle`     | Allocate / reserve / append / seal / delete               | Storage           |
 | `e2e.chunkdb.repair`        | Degraded repair / mirror-EC conversion                    | Storage           |
@@ -140,7 +146,7 @@ Future detailed component and E2E rows replace their unmeasured scope placeholde
 | `component.console`         | —          | —     | —       | —        | —        | —              | —        | Pending |
 | `component.monitor`         | —          | —     | —       | —        | —        | —              | —        | Pending |
 | `component.ui`              | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `fixture`                   | 2026-10-11 | 27/27 | —       | —        | —        | —              | 0.665    | PASS    |
+| `fixture`                   | 2026-10-11 | 30/30 | —       | —        | —        | —              | 1.009    | PASS    |
 | `e2e.kv.management`         | 2026-10-11 | 5/5   | shared  | per flow | per flow | per flow       | per flow | PASS    |
 | `e2e.kv.routing`            | 2026-10-11 | 3/3   | shared  | per flow | per flow | per flow       | per flow | PASS    |
 | `e2e.kv.membership`         | 2026-10-11 | 8/8   | shared  | per flow | per flow | per flow       | per flow | PASS    |
@@ -152,8 +158,14 @@ Future detailed component and E2E rows replace their unmeasured scope placeholde
 | `e2e.diskdb.reuse`          | 2026-10-11 | 1/1   | shared  | 1.743    | 1.421    | 1.020          | 4.188    | PASS    |
 | `e2e.diskdb.ownership`      | 2026-10-11 | 1/1   | shared  | 2.082    | 0.131    | 1.010          | 3.226    | PASS    |
 | `e2e.diskdb.recovery`       | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `e2e.diskio.io`             | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `e2e.diskio.durability`     | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.diskio.io.mem`         | 2026-10-11 | 1/1   | shared  | 2.027    | 0.564    | 1.029          | 3.622    | PASS    |
+| `e2e.diskio.io.null`        | 2026-10-11 | 1/1   | shared  | 1.855    | 0.856    | 1.086          | 3.801    | PASS    |
+| `e2e.diskio.discovery`      | 2026-10-11 | 1/1   | shared  | 1.907    | 0.926    | 1.102          | 3.940    | PASS    |
+| `e2e.diskio.errors`         | 2026-10-11 | 1/1   | shared  | 1.838    | 0.225    | 1.052          | 3.117    | PASS    |
+| `e2e.diskio.faults`         | 2026-10-11 | 1/1   | shared  | 1.889    | 0.233    | 1.007          | 3.131    | PASS    |
+| `e2e.diskio.semantic`       | 2026-10-11 | 1/1   | shared  | 2.046    | 8.051    | 1.408          | 11.510   | PASS    |
+| `e2e.diskio.direct`         | 2026-10-11 | 1/1   | shared  | 0.691    | 0.059    | 0.640          | 1.957    | PASS    |
+| `e2e.diskio.durability`     | 2026-10-11 | 1/1   | shared  | 0.709    | 0.059    | 0.801          | 2.191    | PASS    |
 | `e2e.chunkdb.lifecycle`     | —          | —     | —       | —        | —        | —              | —        | Pending |
 | `e2e.chunkdb.repair`        | —          | —     | —       | —        | —        | —              | —        | Pending |
 | `e2e.chunkdb.handoff`       | —          | —     | —       | —        | —        | —              | —        | Pending |
@@ -582,3 +594,15 @@ Source: `app/crowdb-kv-server/`. Tests: 9 files.
   no network partition simulation infrastructure exists in the testkit.
   Needs a partition/drop mechanism (e.g. a proxy layer or toxiproxy-style
   interceptor) before the test can be written.
+
+## Diskio migration measurements
+
+- Exact formal release image/source remains the shared Diskdb/selection image above.
+- `run-4760a5f986824b02b404acfa4828c361`: eight owned fixtures, fourteen host-client phases,
+  two slots, 6 CPUs/6144 MiB. Client build 6.165 s;
+  scenario wall 20.641 s. Every flow and cleanup passed.
+- Discovery seed time is included in Start, excluded from Client. Durability
+  Client combines write/verify; per-fixture timing.json retains the separate
+  restart phase. Semantic control responses retain each kill/start duration.
+- File-backed tests passed through the supported engine fallback on this host;
+  real block-device/io_uring hardware acceptance remains separate.

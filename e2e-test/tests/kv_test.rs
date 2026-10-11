@@ -6,6 +6,7 @@
 mod common;
 mod deployment;
 mod diskdb;
+mod diskio;
 mod kv;
 
 use bytes::Bytes;

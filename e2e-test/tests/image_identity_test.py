@@ -49,6 +49,19 @@ class ImageIdentityTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "server sources differ"):
             verify_server_sources(self.root, self.revision)
 
+    def test_unpackaged_operator_documentation_reuses_image_but_entrypoint_changes_do_not(self):
+        directory = self.root / "container/single-node-container"
+        directory.mkdir(parents=True)
+        (directory / "README.md").write_text("operator instructions\n")
+        (directory / "entrypoint.sh").write_text("release runtime\n")
+        self.commit()
+        revision = self.git("rev-parse", "HEAD")
+        (directory / "README.md").write_text("new service-selection instructions\n")
+        self.assertTrue(verify_server_sources(self.root, revision)["server_sources_match"])
+        (directory / "entrypoint.sh").write_text("changed runtime\n")
+        with self.assertRaisesRegex(ValueError, "entrypoint.sh"):
+            verify_server_sources(self.root, revision)
+
     def test_untracked_server_input_cannot_use_stale_image(self):
         (self.root / "app/server/src/extra.rs").write_text("new input\n")
         with self.assertRaisesRegex(ValueError, "extra.rs"):
@@ -57,6 +70,20 @@ class ImageIdentityTest(unittest.TestCase):
     def test_missing_source_label_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "full source revision"):
             verify_server_sources(self.root, None)
+
+    def test_only_proven_dev_dependency_edges_can_change_in_existing_lock_packages(self):
+        self.manifest.write_text(self.manifest.read_text() + '\n[dev-dependencies]\nhelper = "1"\n')
+        lock = self.root / "Cargo.lock"
+        lock.write_text('version = 4\n[[package]]\nname = "server"\nversion = "0.1.0"\n'
+                        'dependencies = ["helper", "production"]\n[[package]]\nname = "helper"\nversion = "1"\n')
+        self.commit()
+        revision = self.git("rev-parse", "HEAD")
+        self.manifest.write_text(self.manifest.read_text().replace('helper = "1"', ''))
+        lock.write_text(lock.read_text().replace('["helper", "production"]', '["production"]'))
+        self.assertTrue(verify_server_sources(self.root, revision)["server_sources_match"])
+        lock.write_text(lock.read_text().replace('["production"]', '[]'))
+        with self.assertRaisesRegex(ValueError, "Cargo.lock"):
+            verify_server_sources(self.root, revision)
 
     def test_production_manifest_changes_require_rebuilding(self):
         self.manifest.write_text('[package]\nname = "server"\nversion = "0.2.0"\n')
