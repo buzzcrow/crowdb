@@ -39,6 +39,8 @@ pixi run test-container-e2e --layer chunkdb --concurrency 2 --cpus 12 --memory-m
 # Host object/stream clients against the same protected storage profile:
 pixi run test-container-e2e --layer chunk-client --concurrency 2 --cpus 12 --memory-mib 12288
 pixi run test-container-e2e --layer chunk-stream --scope chunk-stream.recovery --cpus 6 --memory-mib 6144
+# S3 protocol/SDK, persisted restart and joint storage-node faults:
+pixi run test-container-e2e --layer s3 --concurrency 2 --cpus 20 --memory-mib 24576
 # Normal release monitor full set, service subsets and persisted restart:
 pixi run test-container-e2e --layer deployment --concurrency 2 --cpus 6 --memory-mib 6144
 # Run one domain scope (other migrated scopes: kv.membership, kv.routing,
@@ -80,6 +82,17 @@ repair and exact relocation journal copy/publication/source-free ordering. All e
 Chunkdb cases and their source retirement pass. Important internal task, journal,
 fence and placement proofs remain in the Chunkdb component with pinned memory
 metadata and their original assertions.
+S3 joint-node faults use three actual KV voters and three independent
+Diskdb/Chunkdb/DiskIO failure domains, plus the catalog and Access service.
+Fourteen server containers consume the same image; twelve namespace owners
+retain fixed endpoints while those storage processes exit. At the default
+0.5 CPU quota this profile reserves 8.1 CPU / 7872 MiB, including its host
+client. The three outage cases preserve old/new exact bytes; node two also
+checks persisted degraded EC placement, full restart and the 25-second repair
+bound. A separate protected restart case checks stable endpoints and range
+reads. Local state/secret/owned-directory checks remain component UT, while
+Web health and Group-0 preview have their Console owner.
+
 Other domain migrations remain tracked in the working plan. Image and client
 revisions are recorded independently. Client/documentation/test-registration
 commits reuse an image after verifying the release server inputs still match;

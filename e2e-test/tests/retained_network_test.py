@@ -18,6 +18,9 @@ class RetainedNetworkTest(unittest.TestCase):
                          (6.3, 6240))
         self.assertEqual(case_resources(Case("iceberg.files", "files"), 0.5), (7.5, 7680))
         self.assertEqual(case_resources(Case("kv.management", "kv"), 0.5), (1.0, 1024))
+        cpu, memory = case_resources(Case("s3.nodes", "joint", s3_node_fault=True), 0.2)
+        self.assertAlmostEqual(cpu, 3.9)
+        self.assertEqual(memory, 7872)
 
     def test_server_uses_retained_namespace_and_cleanup_removes_it_last(self):
         with tempfile.TemporaryDirectory() as directory:

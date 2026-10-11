@@ -24,32 +24,35 @@ commands and fixture requirements belong in the [E2E README](../../e2e-test/READ
 Rows measure current complete registered domain tasks; remaining migration
 coverage is tracked below. Intel7960 runs use concurrency 2; wall time includes
 startup, clients and teardown, excluding the shared image and host client build.
+Latest S3 run uses one case slot at 0.5 CPU/server (16 CPU / 16384 MiB
+budget); its three joint faults and protected restart add four cases.
 KV includes the KV/KV and KV/Web isolation pairs. Console measures
 `console.operations` (83 accepted owners); unaccepted managed browser drafts
 are excluded. Other domains remain
 unmeasured as complete tasks.
 
-| Domain       | Environment | Date       | Passed / failed / skipped | Wall s  | Previous s | Report                                                                                                    |
-| ------------ | ----------- | ---------- | ------------------------- | ------- | ---------- | --------------------------------------------------------------------------------------------------------- |
-| KV           | intel7960   | 2026-10-11 | 50 / 0 / 0                | 94.794 | 167.938    | [report](../../.crowdb-runtime/artifacts/container-e2e/run-b1dedf87060b4ca083095864b0996bd0/results.json) |
-| Diskdb       | intel7960   | 2026-10-11 | 5 / 0 / 0                 | 14.198  | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-cfc58fa353574c6898cfe40463c7a814/results.json) |
-| Diskio       | intel7960   | 2026-10-11 | 8 / 0 / 0                 | 21.449  | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-517a0c2c29c04e0ca5ee8feb558e7394/results.json) |
-| Chunkdb      | intel7960   | 2026-10-11 | 11 / 0 / 0                | 70.267  | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-370769d47f72492d8cfaef8ae77c61ea/results.json) |
-| Chunk client | intel7960   | 2026-10-11 | 40 / 0 / 0                | 456.101 | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-0bc1b0c5c6184c14a4248bccb13391d2/results.json) |
-| Chunk stream | intel7960   | 2026-10-11 | 4 / 0 / 0                 | 36.149  | 52.184          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-8c9d46d75aa04f7c8b409cd8cb285aa5/results.json) |
-| Chunk-KV     | intel7960   | 2026-10-11 | 2 / 0 / 0                 | 22.520  | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-e8fbdfdc8be94d408309d5623227794d/results.json) |
-| S3           | intel7960   | 2026-10-11 | 39 / 0 / 0                | 418.700 | 614.941          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-8ea46023e1dc49eb90e514b379ebeab4/results.json) |
+| Domain       | Environment | Date       | Passed / failed / skipped | Wall s   | Previous s | Report                                                                                                    |
+| ------------ | ----------- | ---------- | ------------------------- | -------- | ---------- | --------------------------------------------------------------------------------------------------------- |
+| KV           | intel7960   | 2026-10-11 | 50 / 0 / 0                | 94.794   | 167.938    | [report](../../.crowdb-runtime/artifacts/container-e2e/run-b1dedf87060b4ca083095864b0996bd0/results.json) |
+| Diskdb       | intel7960   | 2026-10-11 | 5 / 0 / 0                 | 14.198   | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-cfc58fa353574c6898cfe40463c7a814/results.json) |
+| Diskio       | intel7960   | 2026-10-11 | 8 / 0 / 0                 | 20.802   | 21.449     | [report](../../.crowdb-runtime/artifacts/container-e2e/run-7ca260ddd87c489e949438bc9d7b9d59/results.json) |
+| Chunkdb      | intel7960   | 2026-10-11 | 11 / 0 / 0                | 70.267   | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-370769d47f72492d8cfaef8ae77c61ea/results.json) |
+| Chunk client | intel7960   | 2026-10-11 | 40 / 0 / 0                | 456.101  | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-0bc1b0c5c6184c14a4248bccb13391d2/results.json) |
+| Chunk stream | intel7960   | 2026-10-11 | 4 / 0 / 0                 | 36.149   | 52.184     | [report](../../.crowdb-runtime/artifacts/container-e2e/run-8c9d46d75aa04f7c8b409cd8cb285aa5/results.json) |
+| Chunk-KV     | intel7960   | 2026-10-11 | 2 / 0 / 0                 | 22.520   | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-e8fbdfdc8be94d408309d5623227794d/results.json) |
+| S3           | intel7960   | 2026-10-11 | 43 / 0 / 0                | 1135.695 | 418.700    | [report](../../.crowdb-runtime/artifacts/container-e2e/run-04461b8645414e83b7aa98cd5aa63ae2/results.json) |
 | Iceberg      | intel7960   | 2026-10-11 | 30 / 0 / 0                | 1542.472 | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-2e7a318db15149d7942a4f81ea86c2e0/results.json) |
-| Dataset      | intel7960   | 2026-10-11 | 2 / 0 / 0                 | 18.024  | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-d869ca04e48d46dabadb36e4db510c81/results.json) |
-| Console      | intel7960   | 2026-10-11 | 83 / 0 / 0                | 270.310 | 161.415    | [report](../../.crowdb-runtime/artifacts/container-e2e/run-1db4f5cf906e4918bda5647e55db7445/results.json) |
-| Deployment   | intel7960   | 2026-10-11 | 33 / 0 / 0                | 294.359 | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-5f0be57000ed4481968a78dad965273d/results.json) |
+| Dataset      | intel7960   | 2026-10-11 | 2 / 0 / 0                 | 18.024   | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-d869ca04e48d46dabadb36e4db510c81/results.json) |
+| Console      | intel7960   | 2026-10-11 | 83 / 0 / 0                | 270.310  | 161.415    | [report](../../.crowdb-runtime/artifacts/container-e2e/run-1db4f5cf906e4918bda5647e55db7445/results.json) |
+| Deployment   | intel7960   | 2026-10-11 | 33 / 0 / 0                | 294.359  | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-5f0be57000ed4481968a78dad965273d/results.json) |
 
 ## Environments
 
 - **intel7960**: Linux Docker bridge containers; host clients access inspected
   private IPs and fixed service ports. Latest verified release source
-  `8a166bb2d9571a812e95b150a83cebc3008a61e4`, OCI digest
-  `sha256:eb2dea191e735b9f6ba40b29ae6d972971ac8ddcfa967c1bc1fcdf82ab6ecf29`.
+  `ec0703725994ae746c7c7cc2d42a8b889a72402d`, OCI digest
+  `sha256:40b41c9f808a262d78236e5b1acbe685ca7de37e5b695089ea3e0f9c029e5979`.
+  Earlier domain rows retain their own image identity in the linked reports.
   Optimized binaries retain debug info; mounted data/log/crash paths and actual
   host core collector are recorded per run. Receipt: `target/crowdb.oci.tar.json`.
 - **macOS**: historical native task measurements below. Container migration
@@ -90,7 +93,7 @@ as environment baselines, not as evidence of migration completion.
 ## Remaining issues
 
 - [ ] **Migration closure**: remaining real-server Console lifecycle/cluster
-  flows, S3 mini-cluster and Iceberg manual TPC need canonical
+  flows, CLI S3 bootstrap replay and Iceberg manual TPC need canonical
   container owners. Preserve old assertions and important component UTs until
   equivalent owners pass. Final Pixi/CI taxonomy and complete-domain measurements remain pending.
   KV/KV and KV/Web isolation acceptance passes.

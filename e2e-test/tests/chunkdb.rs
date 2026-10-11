@@ -12,4 +12,4 @@ mod recovery;
 mod repair;
 mod slots;
 mod tasks;
-mod voting;
+pub(crate) mod voting;

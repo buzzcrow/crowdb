@@ -1,9 +1,10 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Host credential provisioning through the real Group-0 authority.
+//! Host S3 clients, credential authority and protected storage recovery.
 
 mod benchmark;
+mod node_failure;
 mod policy;
 mod policy_failure;
 mod protocol_http;

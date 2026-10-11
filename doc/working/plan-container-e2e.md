@@ -9,17 +9,17 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 
 ## Resume context
 
-- Branch `task-deploy`; HEAD `6f6442c2`. R230 is unfinished. Do not delete the
+- Branch `task-deploy`; ownership fix is committed as `d6d07589`. R230 is unfinished. Do not delete the
   requirement/backlog entry until every remaining owner and required gate passes.
-- Working tree contains uncommitted S3 node-fault migration, Console browser
-  migration, shared-image CI drafts and two S3 local-state component proofs.
+- Working tree contains uncommitted Console browser migration and shared-image
+  CI drafts. S3 node-fault migration and local-state component proofs are accepted.
   Preserve these drafts. `e2e-test/clients/console-ui/node_modules/` is local
   dependency state; never stage it.
-- Formal release image `crowdb-node:dev` is built/imported from `6f6442c2`, with
+- Formal release image `crowdb-node:dev` is built/imported from `ec070372`, with
   optimized binaries and retained debug information. OCI digest
-  `sha256:746036d045623ecda6171dcaeaabe175980128b3d7c3e69ff35de297c066fda5`;
+  `sha256:40b41c9f808a262d78236e5b1acbe685ca7de37e5b695089ea3e0f9c029e5979`;
   config digest
-  `sha256:e33128ddafc2572c9689d5ec887653403ac55f20076fea9a4a7da82ae743df59`.
+  `sha256:b51eae855a8b8d35aeb65cc1bf30622ee7ae0d04f4d2e7b1a73a10bfb7ff3fe5`.
   Receipt: `target/crowdb.oci.tar.json`. Rebuild only when release inputs change;
   never bypass source/image provenance checks.
 - Containers run formal servers, host processes run clients. Fixed ports,
@@ -30,63 +30,34 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 - Delete original real-server owners only after equivalent accepted assertions.
   Keep deterministic component UT. Run executable commands through `pixi run`;
   native server gates require `clean-env`, never during another server gate.
-- Last fixture gate: 58 pass, `/tmp/crowdb-fixture-retained-joint.log`. This
-  includes pending Console fixture proofs, not browser acceptance. Last S3
-  local-state gate: 2 pass, `/tmp/crowdb-s3-local-state-component.log`; fmt and
-  all-target clippy for this new file remain pending.
+- Accepted fixture gate: 56 pass, `/tmp/crowdb-s3-staged-fixture-gate.log`,
+  using an export of the staged source. Console browser drafts are excluded.
+  Retained S3 component UT pass 5/5; Web/Console-shared/E2E all-target clippy
+  and workspace fmt pass.
 
 ## Remaining migrations
 
-- [~] **S3 joint-node faults**: complete all three cases, including node-two
-  persisted degraded EC placement, whole-stack restart, exact recovered bytes
-  and the original 25-second repair bound. Files:
-  `e2e-test/s3_node_fixture.py`, `tests/access_s3/node_failure{.rs,/recovery.rs}`,
-  `fixture.py`, `scenarios.py`, `tests/retained_network_test.py`.
-  The fixture has 14 server containers. All twelve KV/Diskdb/Chunkdb/DiskIO
-  endpoints now retain network namespaces during process exit, matching native
-  closed-port semantics; include twelve owners in resource accounting.
-  Latest full run: `run-27ed80aa67d145e5bec28602e640d850`, command
-  `pixi run test-container-e2e --scope s3.nodes --concurrency 1 --node-cpus 1 --cpus 16 --memory-mib 16384`.
-  Log `/tmp/crowdb-s3-three-nodes-retained-services.log`; run finished, no active
-  test session. Nodes one/three pass (31.20/30.73-second clients); node two
-  fails at the new-object PUT (`node_failure.rs:187`, response body decoding).
-  Overall 2/3 pass, 194.031-second wall; restart/repair assertions were not reached.
-  Failed case `crowdb-e2e-c83ea4ef77f74e98b39f584a083a7ddd`: Access logs show
-  large-write preparation returning submitted-outcome-unknown after a
-  `ConnectionClosed` on stopped node-two Chunkdb endpoint `10.200.62.9:7302`.
-  Isolated resume `run-100471f2a80741acb336aed1bfeb13a8` reproduces the PUT
-  failure. Registry refresh updated endpoints but retained the populated stale
-  service-slot map for ID-less allocation. Periodic refresh now advances both
-  maps through `refresh_routes` before selecting an owner. Deterministic pinned
-  metadata/fake-RPC proof fails before the fix and passes after; three existing
-  dynamic retry proofs also pass, including unknown-mutation no-replay.
-  Chunkdb/client all-target clippy passes. Rebuild the formal image and rerun
-  node two, then all three faults; do not replay an unknown allocation.
-  Isolated corrected node one passes in `run-9ddc8303c6d14dc0a892a3d97557d25a`
-  (31.02-second client). Earlier run `run-055cef59e17d4b8fa5339bda92109e31`
-  passed node three, failed nodes one/two after Chunkdb metadata RPC timeout;
-  surviving DiskIO no longer exited 139. Original DiskIO crash was a late FFI
-  callback writing stack storage; fix is committed in HEAD, fatal backtrace
-  `/tmp/crowdb-diskio-caught-crash.log`. Host Apport provided no matching core.
-- [ ] **Remaining S3 mini-cluster owners**: map and accept
-  `persistent_cluster_survives_stop_restart_and_range_read` and
-  `protected_cluster_starts_and_reads_after_restart`, plus the three node-fault
-  cases in `lib/crowdb-console-shared/tests/s3_mini_cluster_test.rs`. Retain
-  Web health/Group-0 preview, exact bytes, range 8..13 = `object`, stable endpoint,
-  protected three-rack layout, full restart, and local launch state without
-  secrets/topology/legacy `console.toml`. New `s3_local_state_test.rs` covers
-  public stop/load serialization and inline-secret rejection without servers;
-  finish its gates and assertion mapping. The old five server owners and three
-  pure UT remain; do not delete them prematurely. Then run full S3 domain,
-  including protocol/SDK/recovery cases, and commit one accepted migration batch.
-- [ ] **Iceberg final acceptance**: rerun failures on the new image without
+- [~] **Iceberg final acceptance**: rerun failures on the new image without
   simultaneous heavy native compilation, then all 32 registered cases.
   `run-c955f9edebe2413b8c9469379667d0c8` failed 5/32, wall 2527.939 seconds,
   `/tmp/crowdb-iceberg-32-final-domain.log`: Java S3FileIO, repeated 100 MiB
   direct/multipart uploads, small routing, and a Chunk-KV startup readiness
-  failure. Preserve failed evidence. Do not attribute all failures to DiskIO
+  failure. Fresh fixed-image Java SDK passes 3/3 in
+  `run-aeb271cd12c0438eae16bb1e65587580`; native file scope passes 16/16 in
+  `run-baca41b6dc664ca090b80c7533e58119`. Complete 32-case domain is running
+  in `run-9dd41619b7a04bd3b7e0693e3b432b74`, log
+  `/tmp/crowdb-iceberg-32-fixed-image.log`. Preserve failed evidence.
+  Do not attribute all failures to DiskIO
   without a fresh result, or replace the historical 30-pass timing with a
   claimed 32-pass result. Existing component crash-cut matrices stay local.
+- [ ] **CLI S3 bootstrap replay owners**: migrate the two server-starting
+  cases in `app/crowdb-cli/tests/s3_cli_test.rs`:
+  `interrupted_s3_launch_resumes_confirmed_group_zero_without_topology_file`
+  and `interrupted_s3_storage_launch_replays_without_local_topology`.
+  Preserve failed-launch markers, relative-root resolution, confirmed Group-0
+  replay, retained Diskdb local launch, no local topology/legacy console file,
+  completed marker/intent removal and owned deletion. They start real services
+  indirectly through CLI; retain unrelated HTTP stubs and argument validation UT.
 - [ ] **Manual TPC loader owner**: migrate ignored
   `tpc_loader_parallel_stress` in
   `app/crowdb-access-server/tests/iceberg_file_http_test.rs` to a root manual
@@ -112,7 +83,27 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   component tests; container PID-namespace teardown alone does not prove native
   orphan cleanup. Public `lifecycle::http_internal_reset` and
   `AppState::set_runtime_pid` are available; existing fake-child reset proof is
-  in `lifecycle_routes_test.rs`. Keep the pure failed-publication UT.
+  in `lifecycle_routes_test.rs`. New `cleanup_test.rs` uses fake children to
+  prove exact process-identity cleanup, stale/persistent-owner preservation and
+  port-claim pruning; 1 pass in 0.80 seconds, harness all-target clippy passes.
+  This does not replace Web shutdown/orphan wiring acceptance. Keep the pure
+  failed-publication UT.
+- [ ] **Deployer and cancelled lifecycle owners**: audit
+  `app/crowdb-web/tests/cluster_deployer_test.rs` and
+  `deployment_cancellation_test.rs`. Preserve three-member leader resolution,
+  repeated cycles without leaked state, stop <5 seconds, post-stop reset <1
+  second, cancelled Diskdb deploy/restart ownership. KV cancellation and persisted-only
+  PID cleanup now use deterministic fake children and retain their original
+  ownership assertions. Keep these component proofs local; move actual
+  server deployment flows to their container owners. Silent missing-binary
+  skips in the old deployer tests must disappear with retirement.
+- [ ] **Native Access deployment through Web**: migrate
+  `app/crowdb-web/tests/native_access_deployment_test.rs` real storage/Access
+  launcher. Preserve private credential provisioning and reuse through public
+  Web deployment operations; existing protocol credential tests alone do not
+  cover this owner. Classify early-exit executable validation separately:
+  Web managed-mode config/registry rejection and Access writer-auth validation
+  never reach backend startup; keep their deterministic validation coverage.
 - [ ] **Special deployment owners**: finish inventory/disposition of SSH/node
   admission, artifact policies, host-network/real-device and Docker/containerd
   profiles. Classify external Trino/Spark/Flink gates and prerequisites. Preserve
@@ -137,16 +128,17 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 - [ ] **CI shared-image jobs**: finish and commit drafts in
   `.github/workflows/ci.yml` and `iceberg-rust-sdk.yml`. All container domain jobs
   consume one source-pinned formal artifact; preserve debug info and diagnostic
-  uploads. S3 node quota is 0.2 CPU: maximum declared case budget 3.9 CPU /
+  uploads. S3 now registers 43 cases. S3 node quota is 0.2 CPU: maximum declared case budget 3.9 CPU /
   7872 MiB fits its 4 CPU / 8192 MiB job. Console draft uses full domain;
   storage matrix selects domains. YAML parses; package reachability covers 28
   workspace packages. Validate selectors, required result counts and job graph;
   actual remote CI has not run. No push is authorized by this handoff.
-- [ ] **Final regression and measurements**: run affected DiskIO after the FFI
-  fix, full S3/Iceberg/Console and required registered layers on the same image,
+- [ ] **Final regression and measurements**: run full Iceberg/Console and required registered layers on the same image,
   then relevant component/fmt/lint gates. Update `doc/working/test.md` using one
   row per domain and actual complete-run counts/wall times/environment/image.
   Keep per-case detail in artifacts; never sum partial batches into a full pass.
+  DiskIO on the fixed image passes 8/8 in 20.802 seconds,
+  `run-7ca260ddd87c489e949438bc9d7b9d59`; its domain row is updated.
   The simplified document layout is accepted and needs no further redesign.
 - [ ] **Deferred benchmark decision**: review
   `tools/benchmark/bench-chunk-kv-regression.sh` only after migration and coverage

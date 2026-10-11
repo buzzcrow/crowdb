@@ -11,6 +11,7 @@ from diskdb_fixture import DiskdbCluster
 from chunkdb_fixture import ChunkdbCluster, ChunkdbStorageCluster
 from chunk_kv_fixture import ChunkKvCluster
 from access_s3_fixture import AccessS3Cluster
+from s3_node_fixture import S3NodeCluster
 from access_protocol_fixture import AccessProtocolCluster
 from access_iceberg_fixture import AccessIcebergCluster
 from access_dataset_fixture import AccessDatasetCluster
@@ -59,6 +60,7 @@ class Case:
     s3_recovery: str | None = None
     s3_script: str | None = None
     s3_language: str | None = None
+    s3_node_fault: bool = False
     s3_policy: bool = False
     access_protocol: bool = False
     iceberg_native_files: bool = False
@@ -279,7 +281,10 @@ S3_CASES = (
 )
 S3_RECOVERY_CASES = tuple(Case("s3.recovery", "s3.recovery::" + service, sdk_client=True, s3_recovery=service)
                           for service in SERVICE_NODES)
-S3_SPECIAL_CASES = (Case("s3.policy", "access_s3::protocol_http::combined_http_listeners_keep_protocol_chunk_policies_separate", access_protocol=True),
+S3_SPECIAL_CASES = tuple(Case("s3.nodes", f"access_s3::node_failure::node_{node}_outage_preserves_existing_and_new_objects", s3_node_fault=True)
+                        for node in ("one", "two", "three")) + (
+                    Case("s3.recovery", "access_s3::node_failure::protected_restart_preserves_objects_and_fixed_endpoints", s3_node_fault=True),
+                    Case("s3.policy", "access_s3::protocol_http::combined_http_listeners_keep_protocol_chunk_policies_separate", access_protocol=True),
                     Case("s3.policy", "access_s3::policy::s3_and_iceberg_keep_distinct_policies_on_protected_storage", s3_policy=True),
                     Case("s3.policy", "access_s3::policy_failure::protected_two_copy_write_stops_after_repair_and_chunk_rotation_fail", s3_policy=True, diskio_process_exit=True),
                     Case("s3.credentials", "s3.credentials::release_cli_issue_ensure_lookup", sdk_client=True, s3_script="admin"),
@@ -435,6 +440,8 @@ def select_cases(layer="all", scope="all", case_name=None):
 
 
 def case_nodes(case):
+    if case.s3_node_fault:
+        return 14
     if case.scope == "console.web.wal":
         return len(case.stores) + 1
     if case.scope == "console.web.lifecycle":
@@ -475,7 +482,7 @@ def case_resources(case, node_cpus):
     if len(case.service_selection) > 2:
         return max(2, node_cpus) + 0.5, 2560
     nodes = case_nodes(case)
-    retained_networks = 6 if case.diskio_process_exit else 0
+    retained_networks = 12 if case.s3_node_fault else 6 if case.diskio_process_exit else 0
     return nodes * node_cpus + 0.5 + retained_networks * 0.05, (nodes + 1) * 512 + retained_networks * 16
 
 
@@ -515,6 +522,8 @@ def allocate_cluster(case, image, artifacts, bundle, data_root):
                                     data_root=data_root)
     if case.access_protocol:
         return AccessProtocolCluster(image, artifacts, bundle, data_root=data_root)
+    if case.s3_node_fault:
+        return S3NodeCluster(image, artifacts, bundle, data_root=data_root)
     if case.s3_policy:
         return ChunkKvCluster(image, artifacts, bundle, service_instances=(11, 12, 13),
                               storage_groups=(1, 2, 3), diskio_process_exit=case.diskio_process_exit,

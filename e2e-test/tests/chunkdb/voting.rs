@@ -4,7 +4,7 @@
 use crowdb_kv_client::KVClusterMetaClient;
 use crowdb_protocol::common::ReplicaValue;
 
-pub(super) async fn register_actual_voters() {
+pub(crate) async fn register_actual_voters() {
     let addresses: Vec<String> = serde_json::from_str(&std::env::var("CROWDB_E2E_RPC").unwrap()).unwrap();
     assert_eq!(
         addresses.len(),

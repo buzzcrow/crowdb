@@ -71,7 +71,7 @@ class Cluster:
 
     def __init__(self, image, artifacts, command=docker, data_root=None, node_count=3,
                  store_ids=None, wire_replicas=True, stores_per_node=None, groups=(1,), groups_per_node=None,
-                 node_args=None, advertise=False):
+                 node_args=None, advertise=False, preserve_network=False):
         if node_count < 1:
             raise ValueError("a cluster needs at least one node")
         self.run_id = "crowdb-e2e-" + uuid.uuid4().hex
@@ -85,6 +85,7 @@ class Cluster:
         if len(self.node_args) != node_count:
             raise ValueError("startup arguments must match the node count")
         self.advertise = advertise
+        self.preserve_network = preserve_network
         store_ids = tuple(range(node_count)) if store_ids is None else tuple(store_ids)
         self.stores_per_node = tuple(tuple(stores) for stores in stores_per_node) if stores_per_node else tuple(
             (store,) for store in store_ids)
@@ -114,7 +115,8 @@ class Cluster:
         for index in range(self.node_count):
             data = node_data(self, index)
             address = str(subnet.network_address + index + 2) if subnet else None
-            self.addresses.append(start_node(self, index, data, kv_arguments(self, index, address), address))
+            self.addresses.append(start_node(self, index, data, kv_arguments(self, index, address), address,
+                                             preserve_network=self.preserve_network))
             self.origins.append(f"http://{self.addresses[-1]}:7000")
         self.ready()
         (self.artifacts / "endpoints.json").write_text(json.dumps({"nodes": [
