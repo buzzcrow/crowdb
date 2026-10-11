@@ -14,18 +14,20 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 - Working tree contains uncommitted Console browser migration drafts. Shared-image CI is committed. S3 node-fault migration and local-state component proofs are accepted.
   Preserve these drafts. `e2e-test/clients/console-ui/node_modules/` is local
   dependency state; never stage it.
-- Current formal release image `crowdb-node:dev` is built/imported from
-  `fca2b4fa9f7f51014ef7cff61d940429af393899`, with optimized binaries and
-  retained debug information. OCI digest
-  `sha256:c79e4be09c63ea8be0de36d06d3796ee3a5254ee3179e808238b3a256362f657`;
-  config digest
-  `sha256:e102846ba3e0a1171f7c417ae30e77f5665b226bda5bfc210a351fe0a499eedc`.
-  Receipt: `target/crowdb.oci.tar.json`. Old image/archives `ec070372` and `d9dd29c4` are retained
-  for historical measurements. Rebuild only when release inputs change; never
-  bypass source/image provenance checks. Rebuilt/imported receipt matches the committed coalescer fix.
-  Exact S3 regression passes all three phases in 154.356 seconds; RCK executes
-  all six upstream cases and passes in 51.184 seconds. Artifacts:
-  `/tmp/crowdb-coalesce-s3-exact` and `/tmp/crowdb-rck-distribution-exact`.
+- Current formal release image archive is rebuilt from
+  `b7b1247b172f43562c9ffccfd95afef109bc3dde`, including ordered S3 batch response
+  streaming, optimized binaries and retained debug information. OCI digest
+  `sha256:703141e93338f2d0969c32a4a2d4512a0964cf999b8f67e8bd72de352970d0c1`;
+  config `sha256:497764c9d5a6e068eaa0666ae15a6da1769d7d2f2304fcdaa31a7c6e84667db0`;
+  runtime `bb593260b39841eefa0c012c7bbdfd714ac64fe56fed9c56c4f2be99234f562b`.
+  Receipt: `target/crowdb.oci.tar.json`. Import is complete. The original
+  thousand-key test passes all three phases (35.984/49.485/61.853 seconds),
+  complete wall 167.160 seconds: `/tmp/crowdb-delete-stream-exact`.
+  Full S3 at CI quotas is active: `/tmp/crowdb-delete-stream-final-s3-ci`,
+  session 25823, 0.2 CPU/node, 4 CPU / 8192 MiB, effective one case slot.
+  Coalescer baseline is retained as `crowdb-node:fca2b4fa` and
+  `target/crowdb.oci-fca2b4fa.tar[.json]`; older `ec070372` and `d9dd29c4`
+  artifacts are retained too. Never bypass source/image provenance checks.
 - Containers run formal servers, host processes run clients. Fixed ports,
   inspected IPs, independent networks/data mounts, and three actual KV voters
   in three containers remain mandatory. Runtime service selection reuses one
@@ -56,12 +58,48 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   and fixture tests are unaccepted drafts. Host browser consumes owned container
   endpoints; signaling validates service PID and run ownership. Preserve UI
   assertions and remove native runners only after matching acceptance. Current
-  root Console operation inventory is 87 cases; the two draft browser cases are additional.
+  root Console operation inventory is 88 cases; the two draft browser cases are additional.
   Also migrate the server-owning `app/crowdb-web/tests/native_cluster_provisioning_test.rs`
   and its `nativeDiagnostics.config.ts` browser callbacks; they are outside the
   default realBackend selection and remain in `test-console.sh`. Audit
   `71-s3-native.spec.ts` / `nativeS3.config.ts` and `72-managed-native.spec.ts` /
   `managedNative.config.ts` separately; no accepted root replacement is claimed.
+- [ ] **Remaining Web route server owners**: final direct-launch audit still
+  finds five native KV launcher files: `kv_routes_test.rs`, `mgmt_routes_test.rs`, `replica_routes_test.rs`,
+  `replica_leader_removal_test.rs`, and `ops_migration_test.rs` under
+  `app/crowdb-web/tests/`. Map each real-server case before deleting helpers;
+  keep malformed-input, unavailable-upstream and isolated router UT portions.
+  KV needs exact put/get/delete through Web. Management needs
+  legacy versus sealed bootstrap persistence, full management cycle, bidirectional
+  replica wiring, leader removal/re-election and unreachable-leader membership.
+  Ops delegation needs cluster init, Store creation, replica-conflict 409 and KV
+  reads. These are unfinished owners, independent of the two managed browser
+  drafts. Do not count the previous 87 passing root operations as proof of their coverage.
+  Current search evidence: `/tmp/crowdb-r230-remaining-launch-sites.txt`.
+  Metrics consolidation is accepted: three original metric cases map to
+  `console::web_metrics::structured_metrics_preserve_node_group_and_store_scopes`.
+  The formal standalone profile passes all original node structure/nonempty,
+  Group prefix and Store aggregate assertions, with the original 3-second leader
+  readiness bound. Old `metrics_proxy_test.rs` and its native launch helpers are
+  removed. Evidence: `/tmp/crowdb-root-web-metrics-standalone`,
+  `run-6b649392966f4925a9ea92304d854db1`. The bare-metal profile correctly rejects
+  these legacy routes; no production mode or assertions were changed.
+- [ ] **Native Console assertion mapping**: classify all three original cases
+  before removal: `node_diskio_discovers_disk_groups_created_after_deployment`,
+  `one_rack_three_nodes_provision_all_services_without_metadata_repairs`, and
+  `native_page_and_iceberg_inspection`. Retain late DiskIO discovery of groups
+  11/12 at the original 10-second bound; Group-0 initialization hint budget;
+  pre-registration binding and live owner acquisition; stable Store selection;
+  missing-binding rejection plus explicit repair; exact 18-service inventory;
+  multipart replacement bytes and physical locations across each service restart;
+  and page/Iceberg inspection. Internal pinned-role, injected-failure and
+  geometry-validation proofs remain component-local where appropriate.
+  The optional plan-prerequisite, Journal-window, production split/count/transfer,
+  mixed-unit and load branches need explicit ownership too; default case coverage
+  alone does not execute them. Preserve their browser callbacks and existing
+  deadlines. Formal writable deployment control is required for this migration;
+  managed Docker readonly cannot silently replace provisioning assertions.
+
 ## Final integration and closure
 
 - [ ] **Launcher and coverage audit**: enumerate remaining production executable
@@ -106,9 +144,9 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   `DeleteSelection::stream` now validates before mutations and yields ordered
   results; production `delete_objects` streams the XML opening/results/closing,
   with whitespace for Quiet successes. No timeout or assertion is changed.
-  Full S3 component UT passes 114, Access-server UT 108 plus the separately passing pinned SDK test, and focused clippy passes. Commit after remaining gates,
-  retain the previous image/archive, rebuild the optimized debug-retaining formal
-  image, then run the exact original case and complete S3 at CI quotas.
+  Full S3 component UT passes 114, Access-server UT 108 plus the separately passing pinned SDK test, and focused clippy passes. Fix committed as `6f191caf`; full workspace clippy/fmt pass.
+  The formal image above is built; finish import, then run the exact original
+  case and complete S3 at CI quotas.
   Update `test.md` with complete domain counts, timings and actual image identity;
   per-case details stay in artifacts. Remote CI and macOS remain unmeasured.
   The document layout is accepted and needs no redesign. Do not run global

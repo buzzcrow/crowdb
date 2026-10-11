@@ -46,3 +46,4 @@ mod web_access;
 mod web_cluster_recovery;
 
 mod web_lifetime;
+mod web_metrics;
