@@ -26,6 +26,7 @@ from deployment_listener_fixture import OccupiedAccessCluster
 from console_web_fixture import ConsoleWebCluster
 from console_standalone_fixture import StandaloneWebCluster
 from console_registry_fixture import RegistryWebCluster
+from console_typed_fixture import TypedWebCluster
 from diskio_fixture import DiskioCluster, DiskioDiscoveryCluster, DiskioSemanticCluster
 
 
@@ -324,6 +325,7 @@ ICEBERG_CASES = (
 CONSOLE_OPERATION_CASES = (
     Case("console.web.standalone", "console::web_kv_lifecycle::deploy_restart_and_stop_retains_fixed_ports_and_workspace"),
     Case("console.web.standalone", "console::web_isolation::survives_peer_fixture_retirement"),
+    Case("console.web.lifecycle", "console::web_lifecycle::deploys_real_chunkdb_with_fixed_cluster_seeds_and_retained_launch"),
     Case("console.web.standalone", "console::web_recovery::standalone_recovers_kv_before_and_after_group0_init"),
     Case("console.web.registry", "console::web_registry::bare_metal_web_loads_launch_policy_without_restoring_topology"),
     Case("console.web.standalone", "console::web_standalone::empty_ui_persists_rack_and_node_across_restart"),
@@ -423,6 +425,8 @@ def select_cases(layer="all", scope="all", case_name=None):
 
 
 def case_nodes(case):
+    if case.scope == "console.web.lifecycle":
+        return 4
     if case.scope in ("console.web.standalone", "console.web.registry"):
         return 1
     if case.scope == "deployment.listeners":
@@ -463,6 +467,8 @@ def case_resources(case, node_cpus):
 
 
 def allocate_cluster(case, image, artifacts, bundle, data_root):
+    if case.scope == "console.web.lifecycle":
+        return TypedWebCluster(image, artifacts, data_root=data_root)
     if case.scope == "console.web.registry":
         return RegistryWebCluster(image, artifacts, data_root=data_root)
     if case.scope == "console.web.standalone":

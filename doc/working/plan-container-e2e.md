@@ -1412,8 +1412,9 @@ Only the exited-storage timing migration awaits a human design choice; S3 and su
 ## Typed Web lifecycle migration evidence
 
 - Original `service_lifecycle_test::deploys_real_chunkdb_with_fixed_cluster_seeds_and_retained_launch`
-  baseline passes (1.37 seconds). Its host owner remains intact.
-- Draft release owner has not passed and is excluded from accepted commits.
+  baseline passes (1.37 seconds). Its host owner is retired after the accepted
+  three-voter release proof below.
+- Initial single-voter draft could not satisfy the production contract.
   Setup corrections uncovered release constraints: init returns 201; unsafe
   placement is unavailable in release; normal Chunkdb needs live DiskIO and
   disk groups with discovered disks; disk IDs use CrowDB's 128-bit format.
@@ -1450,3 +1451,27 @@ Only the exited-storage timing migration awaits a human design choice; S3 and su
   fake-child setup 0.39 seconds. Clippy and formatting pass. A pre-bound health
   peer was rejected by the real Web port-ownership validator (409); start the
   health stub in the fake child after the normal launch, preserving validation.
+
+## Typed Web lifecycle accepted owner
+
+- `run-3043a9fc73b748d7aeb4f0ee36bdf47c`: 1 passing host client, 1.21 seconds.
+  Three actual KV containers plus one writable Web deployment node use the same
+  formal image. Normal production Chunkdb replaces unsafe-placement mode.
+  Register voters from live topology (including role, voting and endpoint),
+  rather than inventing voting metadata. Host clients provision the same hardware
+  metadata as the source case; an actual normal Mem DiskIO supplies live ownership.
+- Use the supported `--skip-startup-restore` option for this fresh deployment
+  owner. It loads its fixed launch inputs without reconciling preexisting processes;
+  independent standalone recovery cases continue to own restore semantics.
+  Input config is 0600 and initialized with the release service account using
+  an owned, network-disabled image preparation container; private permissions
+  are preserved. Initial configuration with missing node IDs had no seeds.
+- Retain original 201/PID, fixed ownership/seeds, DELETE 200, stopped PID and
+  retained workspace assertions. Strengthen first-seed checking to all three
+  configured seeds. Foreign labels, invalid node indexes, escaped workdirs and
+  invalid/PID-1 identities fail before launch-config export. Zombie status is
+  treated as exited, matching the original process liveness helper.
+- Delete only `service_lifecycle_test::deploys_real_chunkdb_with_fixed_cluster_seeds_and_retained_launch`
+  and its now-unused process guard. The six fake-child lifecycle/identity/reset
+  component proofs remain unchanged. Canonical Console registration now has 78
+  owners; the two unaccepted managed browser drafts remain excluded.

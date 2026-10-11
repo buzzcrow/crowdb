@@ -23,10 +23,12 @@ class StandaloneControlTest(unittest.TestCase):
     def test_file_transfer_rejects_foreign_ownership_before_copy(self):
         with tempfile.TemporaryDirectory() as directory:
             cluster = self.cluster(directory, owner="foreign")
-            for action in ("export-standalone-config", "seal-bootstrap-intent"):
+            for action in ("export-standalone-config", "seal-bootstrap-intent", "export-chunkdb-launch", "inspect-retained-chunkdb-launch"):
                 with self.assertRaisesRegex(ValueError, "ownership"):
                     cluster.control({"action": action, "node": 0})
             self.assertEqual(cluster.command.call_args_list, [
+                unittest.mock.call("inspect", "owned-node0"),
+                unittest.mock.call("inspect", "owned-node0"),
                 unittest.mock.call("inspect", "owned-node0"),
                 unittest.mock.call("inspect", "owned-node0")])
 
@@ -47,3 +49,16 @@ class StandaloneControlTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "missing or oversized"):
                 cluster.control({"action": "seal-bootstrap-intent", "node": 0})
             self.assertTrue(all(call.args[0] == "inspect" for call in cluster.command.call_args_list))
+
+    def test_chunkdb_export_rejects_unowned_paths_and_invalid_pids(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for workdir, pid in (("/etc", 22), ("/opt/crowdb/data/../etc", 22),
+                                 ("/opt/crowdb/data/service", 1), ("/opt/crowdb/data/service", True)):
+                cluster = self.cluster(directory)
+                (Path(directory) / "standalone-config.json").write_text(json.dumps({
+                    "local_launches": {"chunkdb-901": {"workdir": workdir}},
+                    "server": [{"id": "chunkdb-901", "pid": pid}]}))
+                with self.assertRaisesRegex(ValueError, "workdir outside|invalid Chunkdb"):
+                    cluster.control({"action": "export-chunkdb-launch", "node": 0})
+                self.assertFalse(any("chunkdb-launch.toml" in str(call)
+                                     for call in cluster.command.call_args_list))
