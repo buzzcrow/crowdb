@@ -51,8 +51,11 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(len(diskdb), 5)
         self.assertTrue(all(case["scope"].startswith("diskdb.") and case["nodes"] == 2
                             for case in diskdb))
+        dataset = json.loads(self.invoke("--list", "--layer", "dataset"))
+        self.assertEqual(len(dataset), 2)
+        self.assertTrue(all(case["scope"] == "dataset.http" and case["nodes"] == 13 for case in dataset))
         iceberg = json.loads(self.invoke("--list", "--layer", "iceberg"))
-        self.assertEqual(len(iceberg), 17)
+        self.assertEqual(len(iceberg), 27)
         self.assertTrue(all(case["scope"].startswith("iceberg.") and case["nodes"] == 14
                             for case in iceberg))
         kv = json.loads(self.invoke("--list", "--layer", "kv"))
@@ -61,3 +64,14 @@ class SelectionTest(unittest.TestCase):
             self.invoke("--layer", "kv", "--case", diskdb[0]["case"])
         with self.assertRaises(SystemExit):
             self.invoke("--layer", "diskdb", "--require-isolation")
+
+
+class CaseResourcesTest(unittest.TestCase):
+    def test_full_managed_node_reserves_its_services_and_host_client(self):
+        from scenarios import DEPLOYMENT_CASES, case_nodes, case_resources
+        for case in DEPLOYMENT_CASES:
+            if len(case.service_selection) <= 2:
+                continue
+            self.assertEqual(case_nodes(case), 1)
+            self.assertEqual(case_resources(case, 0.25), (2.5, 2560))
+            self.assertEqual(case_resources(case, 3), (3.5, 2560))

@@ -98,3 +98,15 @@ def bundle_iceberg_rust(output):
     if len(binaries) != 1:
         raise RuntimeError("missing or ambiguous pinned Rust SDK executable")
     shutil.copy2(binaries[0], Path(output) / "iceberg-rust-client")
+
+
+def bundle_iceberg_java(output):
+    """Compile pinned host Java SDKs once before independent fixture dispatch."""
+    manifest = Path(output) / "clients/iceberg-java/pom.xml"
+    result = subprocess.run(["pixi", "run", "-e", "iceberg-e2e", "mvn",
+        "--batch-mode", "--no-transfer-progress", "-f", str(manifest),
+        "dependency:go-offline", "compile", "exec:help"],
+        capture_output=True, text=True, check=False, timeout=600)
+    print(result.stdout + result.stderr, end="", flush=True)
+    if result.returncode:
+        raise RuntimeError("pinned Apache Iceberg Java clients failed to compile")

@@ -1458,6 +1458,7 @@ dependencies = [
  "bincode",
  "bytes",
  "chrono",
+ "crowdb-access-dataset",
  "crowdb-access-iceberg",
  "crowdb-access-s3",
  "crowdb-access-server",

@@ -13,10 +13,10 @@ import time
 import uuid
 from pathlib import Path
 
-from client import bundle_client, bundle_iceberg_rust
+from client import bundle_client, bundle_iceberg_rust, bundle_iceberg_java
 from fixture import Cluster, docker
 from release import check_startup
-from scenarios import ALL_CASES, case_nodes, run_cases
+from scenarios import ALL_CASES, case_nodes, case_resources, run_cases
 from image_identity import verify_server_sources
 from report import write_report
 
@@ -83,8 +83,8 @@ def run_pair(image, artifacts, bundle, count, data_root=None, node_cpus=0.5):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--layer", choices=("kv", "diskdb", "diskio", "chunkdb", "chunk-stream", "chunk-client", "chunk-kv", "s3", "iceberg", "deployment", "all"), default="all")
-    parser.add_argument("--scope", choices=("all", "iceberg.metadata", "iceberg.namespace", "iceberg.files", "iceberg.catalog", "iceberg.gc", "iceberg.sdk", "s3.protocol", "s3.recovery", "s3.responses", "s3.benchmark", "s3.sdk", "s3.credentials", "s3.policy", "kv.management", "kv.membership", "kv.routing", "kv.recovery", "kv.isolation", "kv.group0", "kv.client", "kv.metadata", "diskdb.allocation", "diskdb.ownership", "diskdb.reuse", "diskdb.recovery", "chunkdb.allocation", "chunkdb.lifecycle", "chunkdb.recovery", "chunkdb.placement", "chunkdb.io", "chunkdb.conversion", "chunkdb.repair", "chunkdb.slots", "chunkdb.handoff", "chunk-kv.protocol", "chunk-kv.recovery", "chunk-client.reader", "chunk-client.large_repair", "chunk-client.small_flow", "chunk-client.benchmark", "chunk-client.large", "chunk-client.small", "chunk-stream.objects", "chunk-stream.recovery", "chunk-stream.errors", "deployment.selection", "diskio.durability", "diskio.direct", "diskio.io.mem", "diskio.io.null", "diskio.discovery", "diskio.errors", "diskio.faults", "diskio.semantic"),
+    parser.add_argument("--layer", choices=("kv", "diskdb", "diskio", "chunkdb", "chunk-stream", "chunk-client", "chunk-kv", "s3", "iceberg", "dataset", "deployment", "all"), default="all")
+    parser.add_argument("--scope", choices=("all", "dataset.http", "iceberg.metadata", "iceberg.namespace", "iceberg.files", "iceberg.catalog", "iceberg.gc", "iceberg.sdk", "iceberg.sdk.java", "iceberg.sdk.rust", "s3.protocol", "s3.recovery", "s3.responses", "s3.benchmark", "s3.sdk", "s3.credentials", "s3.policy", "kv.management", "kv.membership", "kv.routing", "kv.recovery", "kv.isolation", "kv.group0", "kv.client", "kv.metadata", "diskdb.allocation", "diskdb.ownership", "diskdb.reuse", "diskdb.recovery", "chunkdb.allocation", "chunkdb.lifecycle", "chunkdb.recovery", "chunkdb.placement", "chunkdb.io", "chunkdb.conversion", "chunkdb.repair", "chunkdb.slots", "chunkdb.handoff", "chunk-kv.protocol", "chunk-kv.recovery", "chunk-client.reader", "chunk-client.large_repair", "chunk-client.small_flow", "chunk-client.benchmark", "chunk-client.large", "chunk-client.small", "chunk-stream.objects", "chunk-stream.recovery", "chunk-stream.errors", "deployment.selection", "diskio.durability", "diskio.direct", "diskio.io.mem", "diskio.io.null", "diskio.discovery", "diskio.errors", "diskio.faults", "diskio.semantic"),
                         default="all")
     parser.add_argument("--concurrency", type=int, default=2)
     parser.add_argument("--case", help="fully qualified named flow within the selected scope")
@@ -97,7 +97,7 @@ def main():
     parser.add_argument("--data-root", type=Path, help="host parent for independent per-run/node data mounts")
     parser.add_argument("--artifacts", type=Path, default=ROOT / ".crowdb-runtime/artifacts/container-e2e")
     args = parser.parse_args()
-    selected = [case for case in ALL_CASES if (args.layer == "all" or case.scope.startswith(args.layer + ".")) and (args.scope == "all" or case.scope == args.scope)
+    selected = [case for case in ALL_CASES if (args.layer == "all" or case.scope.startswith(args.layer + ".")) and (args.scope == "all" or case.scope == args.scope or case.scope.startswith(args.scope + "."))
                 and (not args.case or case.name == args.case)]
     if not selected and not (args.layer in ("kv", "all") and args.scope in ("kv.recovery", "kv.isolation")):
         parser.error("the selected case is not implemented in this scope")
@@ -116,8 +116,13 @@ def main():
     slots = capacity(args.concurrency, min(args.cpus, info["NCPU"]),
                      min(args.memory_mib, info["MemTotal"] // 1048576), node_cpus=args.node_cpus)
     largest = max((case_nodes(case) for case in selected), default=3)
-    case_slots = capacity(args.concurrency, min(args.cpus, info["NCPU"]),
-                          min(args.memory_mib, info["MemTotal"] // 1048576), largest, args.node_cpus)
+    resources = [case_resources(case, args.node_cpus) for case in selected] or [(2, 2048)]
+    needed_cpu, needed_memory = max(cost[0] for cost in resources), max(cost[1] for cost in resources)
+    available_cpu = min(args.cpus, info["NCPU"])
+    available_memory = min(args.memory_mib, info["MemTotal"] // 1048576)
+    if available_cpu < needed_cpu or available_memory < needed_memory:
+        parser.error(f"selected cases require at least {needed_cpu:g} CPU / {needed_memory} MiB")
+    case_slots = min(args.concurrency, int(available_cpu // needed_cpu), available_memory // needed_memory)
     if (args.require_isolation or args.scope == "kv.isolation") and slots < 2:
         parser.error("concurrent isolation acceptance needs two fixture slots")
     identity = json.loads(docker("image", "inspect", args.image))[0]
@@ -134,26 +139,31 @@ def main():
     (run_root / "identity.json").write_text(json.dumps({"image": args.image, "id": identity["Id"],
         "repo_digests": identity.get("RepoDigests", []), "labels": labels, "client_revision": revision,
         "layer": args.layer, "scope": args.scope, "slots": slots, "case_slots": case_slots,
-        "largest_case_nodes": largest, "selected_cases": [case.name for case in selected],
+        "largest_case_nodes": largest, "case_cpu_reservation": needed_cpu,
+        "case_memory_reservation_mib": needed_memory, "selected_cases": [case.name for case in selected],
         "node_cpus": args.node_cpus,
         "source_identity": source_identity}, indent=2))
     print(f"KV isolation slots: {slots}; case slots: {case_slots}; exact image {identity['Id']}; artifacts {run_root}", flush=True)
     started = time.monotonic()
     bundle = bundle_client(run_root / "client")
     timings = {"client_build": time.monotonic() - started}
-    if any(case.scope == "iceberg.sdk" for case in selected):
+    if any(case.name.startswith("access_iceberg::rust_") for case in selected):
         started = time.monotonic()
         bundle_iceberg_rust(bundle)
         timings["iceberg_rust_build"] = time.monotonic() - started
+    if any("::java_sdk::" in case.name for case in selected):
+        started = time.monotonic()
+        bundle_iceberg_java(bundle)
+        timings["iceberg_java_build"] = time.monotonic() - started
     with (bundle / "domain-test").open("rb") as executable:
         client_digest = hashlib.file_digest(executable, "sha256").hexdigest()
     client_source = hashlib.sha256()
     for path in sorted((ROOT / "e2e-test").rglob("*")):
-        if path.is_file() and path.suffix in (".rs", ".py", ".toml"):
+        if path.is_file() and not {"target", "node_modules", "dist", "__pycache__"}.intersection(path.relative_to(ROOT / "e2e-test").parts) and path.suffix in (".rs", ".py", ".toml"):
             client_source.update(str(path.relative_to(ROOT)).encode())
             client_source.update(path.read_bytes())
     for path in sorted((bundle / "clients").rglob("*")):
-        if path.is_file():
+        if path.is_file() and not {"target", "node_modules", "dist", "__pycache__"}.intersection(path.relative_to(bundle / "clients").parts):
             client_source.update(str(path.relative_to(bundle)).encode())
             client_source.update(path.read_bytes())
     (run_root / "client-identity.json").write_text(json.dumps({"sha256": client_digest,

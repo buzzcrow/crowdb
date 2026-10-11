@@ -22,6 +22,7 @@ SERVER_PATHS = (
     ":(exclude)tools/pixi-tasks/test-iceberg-native.sh",
     ":(exclude)tools/pixi-tasks/test-pyiceberg-e2e.sh",
     ":(exclude)tools/pixi-tasks/test-rust-iceberg-e2e.sh",
+    ":(exclude)tools/pixi-tasks/test-java-iceberg-fileio-e2e.sh",
 )
 
 

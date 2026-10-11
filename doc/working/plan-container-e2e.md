@@ -1176,6 +1176,14 @@ Source `lib/crowdb-kv-client/tests/chunk_slot_map_test.rs`: all eight cases exer
 
 ## Blocked
 
+### Managed Console mode contract choice
+
+- Formal Docker web mode has `require_editable` middleware rejecting every non-read request with 403. The old managed native browser flow expects physical-mutation 503, successful KV writes and writable Iceberg/S3 demos. It is incompatible with the current whole-Console readonly mode. This is a product-mode choice, not a reason to relax the old assertions silently.
+- Original host baseline fails before browser startup because its monitor launcher omits required discovery configuration. Unchanged first browser flow against the formal image confirms the disconnected `MonitorSummary`; reconnecting the existing component and source label passes 171 UI component tests, production build and TypeScript checks.
+- Fresh-image run `run-ac7bbae4baf9418cac72b3c66a54f37a` preserves both assertions: the combined data flow fails on `/api/racks` 403 vs 503; the pause/outage flow times out at its original 10-second response bound with disconnected preview requests during supervised recovery. Ownership/PID-validated container signaling and trace/log evidence are retained. No client timeout, request retry or assertion changes.
+- Alternatives sent to the user: keep formal Docker readonly and move writable behavior to an ordinary writable Console profile; or restore Docker logical/data writes while retaining physical restrictions. No response yet. Original managed browser source and host runner remain. Other modules continue independently.
+
+
 Only the exited-storage timing migration awaits a human design choice; S3 and subsequent independent migration work continues.
 
 - Original stream append and single-copy reader tests require failure within 15 seconds after Diskio process exit. Container disappearance leaves bridge endpoints as network blackholes. The stream append exceeds 15 seconds after per-I/O 5-second deadlines and sequential replacement attempts; the protected reader also exceeds 15 seconds after replica/route refresh attempts. Exact failures: `chunk_stream::production_stream_write_returns_after_diskio_failure` in `run-c2b48b1ad45d446a926090b3b6bb016e`; `chunk_client::small_flow::replica_repair::protected_read_reports_diskio_process_failure` in `run-21df8676b48245858979b6c373e04da8` (`Elapsed(())`, test 17.39 s including fault control).
@@ -1310,3 +1318,19 @@ Only the exited-storage timing migration awaits a human design choice; S3 and su
 - Original host runner baseline fails before browser startup: its monitor is missing the current required discovery configuration. Container baseline runs the unchanged first browser flow against the formal image (`run-9effe6c52f8349379ceef8d698f31e68`) and confirms a separate existing UI regression: `/api/preview` returns confirmed Group 0 and real monitor observations, but `MonitorSummary` is never mounted by `App`. The normally configured Docker-mode container profile (`run-813a60fc0fce4bbcbf1274f7ba4a03eb`) confirms the same missing component.
 - Reconnect the existing monitor summary in managed mode and expose the confirmed source label. Keep the original browser assertions and 3-second UI bounds; 171 component UI tests pass and production TypeScript/Vite build is verified before refreshing the formal release image. The original failed browser gate is retained; acceptance follows with the rebuilt exact image.
 - Browser outage signals will target the observed KV PID inside its owned release container through guarded fixture control, preserving the original STOP/CONT behavior and live monitor observation. Other Console migration remains pending.
+
+## Large FileIO and Java accepted owners
+
+- Twelve FileIO owners pass together in `run-06f8475d48c7489db24b39ff91714689`; the added 32-request direct-upload owner passes in `run-677b374720884908bf44c3b1c14b2088`. Keep complete bytes/ETags/ranges, metrics, checksum rejection, actual credential expiry, lifecycle fencing and restart replay. Retire only their equivalent old bodies and the now-unused lifecycle/metrics helpers.
+- Three Java native owners pass in the exact separate runs recorded in `test.md`. Their original deadlines remain 600/1200/600 seconds. The locked Maven child project lives under root clients and compiles once per run before parallel dispatch. Verify the combined new `iceberg.sdk.java` scope and delegate its former host FileIO task; Rust keeps a separate `iceberg.sdk.rust` selector.
+- Resource accounting distinguishes the full managed profile's single physical container from its 2-CPU/2048-MiB service footprint, adds host-client reservation, and honors a higher requested quota. Per-fixture ownership/PID signal guards and CLI selections are unit tested. Managed Console's two browser flows remain explicitly unaccepted pending the mode contract choice above.
+
+### Protected Iceberg capacity recovery acceptance
+
+- The formal release-container owner `access_iceberg::file_http::capacity::full_simulated_disk_preserves_file_authority_then_recovers_after_compaction` passes with six full simulated disk groups and two protected copies. Original file-authority, exact-byte, GC resource-stall/proof and recovery assertions remain. All held blocks are freed and every affected disk compacted before recovery.
+- Initial migration failure came from carrying over disk-group IDs 100..105; the protected fixture declares 1000..1005. Corrected the fixture references, preserving all assertions. The client passes in 23.56 s; `/tmp/crowdb-iceberg-capacity-gate-2.log` records acceptance. All-target E2E clippy passes. The obsolete host-stack capacity target and its private workspace helper are retired after acceptance.
+
+### Dataset listener ownership and shared CI artifact
+
+- Audited all four Dataset component test files and the access-server implementation. Component tests use in-memory stores/algorithm fixtures and remain intact. Two production HTTP listener tests were embedded under `src/dataset.rs`; equivalent container clients pass in `run-5569f38c94964c71b2d50abf3789e4c6`, then their inline listener implementations retire. Initial new full-manifest comparison used the caller draft snapshot ID; the existing publication API assigns an authoritative ID. Expected metadata now uses the publish response, preserving original returned-ID assertions and adding complete metadata/byte comparison.
+- CI S3/Iceberg jobs now depend on and import the existing `ContainerImage` artifact. A separate storage matrix selects eight migrated layers with bounded parallelism and diagnostics. Final complete classification and legacy launcher closure remain unfinished.

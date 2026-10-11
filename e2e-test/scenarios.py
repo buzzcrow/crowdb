@@ -13,6 +13,7 @@ from chunk_kv_fixture import ChunkKvCluster
 from access_s3_fixture import AccessS3Cluster
 from access_protocol_fixture import AccessProtocolCluster
 from access_iceberg_fixture import AccessIcebergCluster
+from access_dataset_fixture import AccessDatasetCluster
 from s3_recovery import SERVICE_NODES, run_recovery
 from managed_fixture import ManagedCluster
 from diskio_fixture import DiskioCluster, DiskioDiscoveryCluster, DiskioSemanticCluster
@@ -244,6 +245,18 @@ S3_SPECIAL_CASES = (Case("s3.policy", "access_s3::protocol_http::combined_http_l
 S3_LANGUAGE_CASES = tuple(Case("s3.sdk", "s3.sdk::" + language, sdk_client=True, s3_language=language)
                           for language in ("java", "js", "go"))
 ICEBERG_CASES = (
+    Case("iceberg.files", "access_iceberg::file_http::capacity::full_simulated_disk_preserves_file_authority_then_recovers_after_compaction", iceberg_deferred_access=True),
+    Case("iceberg.files", "access_iceberg::file_http::concurrency::thirty_two_concurrent_direct_puts", iceberg_deferred_access=True),
+    Case("iceberg.files", "access_iceberg::file_http::lifecycle::native_file_credentials_refresh_expire_and_follow_lifecycle_fences", iceberg_deferred_access=True),
+    Case("iceberg.sdk.java", "access_iceberg::file_http::java_sdk::official_java_s3_fileio_uploads_and_reads_native_files", iceberg_deferred_access=True, client_timeout=600),
+    Case("iceberg.sdk.java", "access_iceberg::file_http::java_sdk::official_java_catalog_commits_native_parquet_snapshots_and_staged_tables", iceberg_deferred_access=True, client_timeout=1200),
+    Case("iceberg.sdk.java", "access_iceberg::file_http::java_sdk::official_java_opaque_metadata_publication_preserves_valid_data_and_delete_reads", iceberg_deferred_access=True, client_timeout=600),
+
+    Case("iceberg.files", "access_iceberg::file_http::publication::signed_standard_put_get_and_multipart_publish_unbound_files", iceberg_deferred_access=True),
+    Case("iceberg.files", "access_iceberg::file_http::direct_profile::repeated_100_mib_put_streams_without_client_payload_copy", iceberg_deferred_access=True),
+    Case("iceberg.files", "access_iceberg::file_http::multipart_profile::repeated_100_mib_multipart_upload_profile", iceberg_deferred_access=True),
+    Case("iceberg.files", "access_iceberg::file_http::restart::multipart_100_mib_survives_restart_and_complete_replay", iceberg_deferred_access=True),
+
     Case("iceberg.files", "access_iceberg::file_http::streaming::ordinary_put_size_matrix_streams_and_reads_ranges", iceberg_deferred_access=True),
     Case("iceberg.files", "access_iceberg::file_http::streaming::slow_socket_resumes_upload_after_writer_drains", iceberg_deferred_access=True),
     Case("iceberg.files", "access_iceberg::file_http::routing::small_routing_is_strict_at_the_strip_threshold", iceberg_deferred_access=True),
@@ -252,10 +265,10 @@ ICEBERG_CASES = (
     Case("iceberg.files", "access_iceberg::file_http::cleanup::explicit_cleanup_supports_single_batch_and_same_path_reupload", iceberg_deferred_access=True),
     Case("iceberg.files", "access_iceberg::file_http::cleanup::explicit_cleanup_rejects_a_retained_metadata_file", iceberg_deferred_access=True),
 
-    Case("iceberg.sdk", "access_iceberg::rust_sdk::official_rust_client_namespace_and_table_lifecycle", iceberg_deferred_access=True, client_timeout=600),
+    Case("iceberg.sdk.rust", "access_iceberg::rust_sdk::official_rust_client_namespace_and_table_lifecycle", iceberg_deferred_access=True, client_timeout=600),
     Case("iceberg.gc", "access_iceberg::gc::foreground::official_sdk_foreground_progresses_under_gc_backlog", iceberg_gc=True, iceberg_gc_page_items=1, client_timeout=180),
-    Case("iceberg.sdk", "access_iceberg::rust_sdk::official_rust_client_lost_reply_survives_native_storage_restart", iceberg_deferred_access=True, client_timeout=1200),
-    Case("iceberg.sdk", "access_iceberg::rust_retired::official_rust_client_rejects_retired_native_catalog_after_full_grace", iceberg_deferred_access=True, client_timeout=1500),
+    Case("iceberg.sdk.rust", "access_iceberg::rust_sdk::official_rust_client_lost_reply_survives_native_storage_restart", iceberg_deferred_access=True, client_timeout=1200),
+    Case("iceberg.sdk.rust", "access_iceberg::rust_retired::official_rust_client_rejects_retired_native_catalog_after_full_grace", iceberg_deferred_access=True, client_timeout=1500),
     Case("iceberg.gc", "access_iceberg::gc::authenticated_gc_controls_survive_separate_processes", iceberg_gc=True),
     Case("iceberg.gc", "access_iceberg::gc::enabled_scheduler_admits_durable_purge_markers_once", iceberg_gc=True),
     Case("iceberg.gc", "access_iceberg::gc::enabled_scheduler_admits_and_advances_completed_clear", iceberg_gc=True, iceberg_gc_page_items=1),
@@ -264,10 +277,17 @@ ICEBERG_CASES = (
     Case("iceberg.metadata", "access_iceberg::metadata::metadata_create_and_commit_stay_within_operation_budget"),
     Case("iceberg.namespace", "access_iceberg::namespace::namespace_functional_crud_survives_native_storage_and_listener_restart"),
 )
-ALL_CASES = ICEBERG_CASES + S3_LANGUAGE_CASES + S3_SPECIAL_CASES + S3_RECOVERY_CASES + S3_CASES + CHUNK_KV_CASES + CHUNK_CLIENT_CASES + CHUNK_STREAM_CASES + CHUNKDB_CASES + KV_CASES + DISKDB_CASES + DEPLOYMENT_CASES + DISKIO_CASES
+DATASET_CASES = (
+    Case("dataset.http", "access_dataset::listener_authenticates_and_serves_create_open"),
+    Case("dataset.http", "access_dataset::publish_persist_restart_and_scan_round_trip"),
+)
+
+ALL_CASES = DATASET_CASES + ICEBERG_CASES + S3_LANGUAGE_CASES + S3_SPECIAL_CASES + S3_RECOVERY_CASES + S3_CASES + CHUNK_KV_CASES + CHUNK_CLIENT_CASES + CHUNK_STREAM_CASES + CHUNKDB_CASES + KV_CASES + DISKDB_CASES + DEPLOYMENT_CASES + DISKIO_CASES
 
 def case_nodes(case):
-    if case.access_protocol:
+    if case.service_selection:
+        return 1
+    if case.access_protocol or case.scope.startswith("dataset."):
         return 13
     if case.scope.startswith("iceberg."):
         return 14
@@ -285,11 +305,18 @@ def case_nodes(case):
         return 4
     if case.diskio_backend:
         return 2
-    if len(case.service_selection) > 2:
-        return 4
     return 2 if case.scope.startswith(("diskdb.", "chunkdb.")) else len(case.stores_per_node or case.stores)
 
+def case_resources(case, node_cpus):
+    if len(case.service_selection) > 2:
+        return max(2, node_cpus) + 0.5, 2560
+    nodes = case_nodes(case)
+    return nodes * node_cpus + 0.5, (nodes + 1) * 512
+
+
 def allocate_cluster(case, image, artifacts, bundle, data_root):
+    if case.scope.startswith("dataset."):
+        return AccessDatasetCluster(image, artifacts, bundle, data_root=data_root)
     if case.scope.startswith("iceberg."):
         return AccessIcebergCluster(image, artifacts, bundle, native_files=case.iceberg_native_files, catalog_lifecycle=case.iceberg_catalog_lifecycle,
                                     gc_worker=case.iceberg_gc, gc_page_items=case.iceberg_gc_page_items,
@@ -334,7 +361,7 @@ def allocate_cluster(case, image, artifacts, bundle, data_root):
 
 
 def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case_name=None, layer="all", node_cpus=0.5):
-    selected = tuple(case for case in ALL_CASES if (layer == "all" or case.scope.startswith(layer + ".")) and (scope == "all" or case.scope == scope)
+    selected = tuple(case for case in ALL_CASES if (layer == "all" or case.scope.startswith(layer + ".")) and (scope == "all" or case.scope == scope or case.scope.startswith(scope + "."))
                      and (not case_name or case.name == case_name))
     if not selected:
         raise ValueError(f"no migrated cases for scope {scope}")
@@ -343,7 +370,7 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
         cluster = allocate_cluster(case, image, artifacts, bundle, data_root)
         cluster.case_name = case.name
         cluster.client_timeout = case.client_timeout
-        cluster.node_cpus = node_cpus
+        cluster.node_cpus = max(2, node_cpus) if len(case.service_selection) > 2 else node_cpus
         (cluster.artifacts / "case.json").write_text(json.dumps({
             "scope": case.scope, "case": case.name}, indent=2))
         with cluster:

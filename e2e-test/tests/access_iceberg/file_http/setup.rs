@@ -23,7 +23,7 @@ pub(super) async fn setup() -> (TestNativeStorage, TestFrontend, TestFileClient,
     .await
 }
 
-async fn setup_with_bounds(
+pub(super) async fn setup_with_bounds(
     bounds: ClearBounds,
 ) -> (TestNativeStorage, TestFrontend, TestFileClient, TableLocation) {
     setup_with_bounds_and_file_limit(bounds, 16 * 1024 * 1024, 64 * 1024 * 1024).await

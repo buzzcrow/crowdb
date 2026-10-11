@@ -41,11 +41,14 @@ class ManagedCluster(Cluster):
                      "/opt/crowdb/data")
         self.containers.remove(preparer)
         profile = self.artifacts / "profile.toml"
-        profile.write_text(selected_profile(self.services))
+        profile.write_text(self.profile())
         self.addresses.append(self.launch(data, profile))
         self.origins = [f"http://{self.addresses[0]}:10000"]
         self.ready()
         return self
+
+    def profile(self):
+        return selected_profile(self.services)
 
     def launch(self, data, profile):
         return start_node(self, 0, data, (), address=self.address,

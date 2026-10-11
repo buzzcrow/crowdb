@@ -922,3 +922,44 @@ Source: `app/crowdb-kv-server/`. Tests: 9 files.
 
 - The complete S3 set includes all 23 protocol owners, six service-recovery owners, three SDK owners and six specialized owners. The thousand-key owner retains its initial/retry/new-publication operations and exact assertions as three measured phases on one fixture.
 - FileIO keeps original cleanup privilege/reference protection, independent concurrent multipart sessions, 10 KiB/1 MiB/12 MiB/100 MiB complete hashes and ranges, protected large-copy geometry, slow-body socket progress and exact threshold routing metrics. Old equivalent bodies retire after this gate. The first range owner registration omitted its test attribute; zero matching tests correctly failed the runner, and the corrected exact owner and complete seven-owner gate pass.
+
+### Protected large FileIO and Java SDK timing
+
+- `run-06f8475d48c7489db24b39ff91714689`: 12 passing owners; 128.592 s scenario wall.
+- `run-5cb37e34da204394a290259f7fa62b05`: 1 passing owners; 20.778 s scenario wall.
+- `run-25b9084327ce45a3b07814c62c2cb425`: 1 passing owners; 50.412 s scenario wall.
+- `run-b10e359aeef04fdbacd7ca85ac47ec0d`: 1 passing owners; 22.854 s scenario wall.
+- `run-677b374720884908bf44c3b1c14b2088`: 1 passing owners; 37.460 s scenario wall.
+
+| Scope         | Named flow | Client (s) | Fixture (s) |
+| ------------- | ---------- | ---------- | ----------- |
+| iceberg.files | multipart_100_mib_survives_restart_and_complete_replay                                     |     22.411 |      35.902 |
+| iceberg.files | repeated_100_mib_multipart_upload_profile                                                  |      4.762 |      19.314 |
+| iceberg.files | repeated_100_mib_put_streams_without_client_payload_copy                                   |      5.455 |      19.022 |
+| iceberg.files | native_file_credentials_refresh_expire_and_follow_lifecycle_fences                         |      6.101 |      18.231 |
+| iceberg.files | signed_standard_put_get_and_multipart_publish_unbound_files                                |      2.609 |      13.780 |
+| iceberg.sdk   | official_java_s3_fileio_uploads_and_reads_native_files                                     |      8.367 |      20.770 |
+| iceberg.sdk   | official_java_catalog_commits_native_parquet_snapshots_and_staged_tables                   |     37.323 |      50.404 |
+| iceberg.sdk   | official_java_opaque_metadata_publication_preserves_valid_data_and_delete_reads            |     10.115 |      22.846 |
+| iceberg.files | thirty_two_concurrent_direct_puts                                                          |     24.237 |      37.452 |
+
+- Exact image config `sha256:70b0b5d97171be60db67a17bca295d60bdd7a59dae2413e6275648913da7db73`, source `547fe8fd4005077772f94d61939019539acd85cb`; optimized release binaries retain debug information. Only Console UI changed from the earlier accepted server sources.
+- Native large profiles preserve original attempt/completion/logical-byte metrics, complete multipart/ranged-byte proofs, MD5 rejection without publication, exact two-part composite ETags, bounded 1.2 MiB operation get/CAS/time budgets, complete 100 MiB restart replay and same-name credential fencing. Concurrent direct writes retain the 33-party barrier and all 32 successful 8 MiB requests.
+- Java SDKs preserve normal S3FileIO reads/writes, real Parquet snapshots and staged table restart validation, and selected data/delete-file read proofs. Maven builds once in the run-specific pinned child project; each client keeps its original external deadline. New fine scopes are `iceberg.sdk.java` and `iceberg.sdk.rust`; `iceberg.sdk` combines them.
+- Managed Console is **not accepted**. The restored monitor summary passes component/build gates but the original combined browser proof now exposes current Docker readonly policy: `/api/racks` returns 403, not its older 503 expectation, and user-data writes are forbidden. The authority-outage proof sees disconnected preview requests while supervision recovers dependencies. Original assertions and sources remain until the product-mode disposition is resolved.
+
+### Combined SDK, service selection and Dataset acceptance
+
+- `run-7910db0eaa964d75a517464ea77df80f`: 3 passing owners; 50.102 s scenario wall.
+  - `iceberg.sdk.java` / `official_java_catalog_commits_native_parquet_snapshots_and_staged_tables`: client 35.671 s; fixture 50.095 s.
+  - `iceberg.sdk.java` / `official_java_opaque_metadata_publication_preserves_valid_data_and_delete_reads`: client 10.148 s; fixture 24.012 s.
+  - `iceberg.sdk.java` / `official_java_s3_fileio_uploads_and_reads_native_files`: client 10.054 s; fixture 21.988 s.
+- `run-5e9246c309ad4701ab00414e2df8bb08`: 3 passing owners; 17.852 s scenario wall.
+  - `deployment.selection` / `complete_release_services_recover_acknowledged_data`: client 0.173 s; fixture 9.082 s.
+  - `deployment.selection` / `selected_storage_services_recover_acknowledged_data`: client 0.169 s; fixture 7.052 s.
+  - `deployment.selection` / `selected_kv_services_recover_acknowledged_data`: client 0.189 s; fixture 6.102 s.
+- `run-5569f38c94964c71b2d50abf3789e4c6`: 2 passing owners; 16.746 s scenario wall.
+  - `dataset.http` / `publish_persist_restart_and_scan_round_trip`: client 2.724 s; fixture 16.737 s.
+  - `dataset.http` / `listener_authenticates_and_serves_create_open`: client 1.028 s; fixture 14.811 s.
+
+- Dataset component tests remain: 30 core, 3 retention, 2 adapter and 2 transport tests passed. Two inline HTTP listener owners now run against formal release containers. The publish owner retains its original snapshot/manifest/scan assertions, adds exact payload bytes and restarts Dataset plus Chunk-KV before reading. Publication allocates the authoritative snapshot ID; expected metadata uses the returned ID, preserving original behavior.

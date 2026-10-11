@@ -10,7 +10,7 @@ if [[ -z "${CROWDB_TPC_LOADER_PYTHON:-}" ]]; then
     manual_args=(--skip tpc_loader_parallel_stress)
 fi
 pixi run -e default -- cargo test --release -p crowdb-access-server --features iceberg-e2e \
-    --test iceberg_gc_capacity_test --test iceberg_file_http_test -- --test-threads=1
+    --test iceberg_file_http_test -- --test-threads=1
 pixi run -e default -- cargo test --release -p crowdb-access-server --features iceberg-e2e \
     --test iceberg_file_http_test -- --ignored --test-threads=1 \
     --skip native_fault_listener_child --skip official_java_ "${manual_args[@]}"

@@ -21,6 +21,7 @@ percent-encoding = "2"
 crowdb-console-shared = { path = "../lib/crowdb-console-shared" }
 crowdb-access-server = { path = "../app/crowdb-access-server" }
 crowdb-access-iceberg = { path = "../lib/crowdb-access-iceberg" }
+crowdb-access-dataset = { path = "../lib/crowdb-access-dataset" }
 crowdb-access-s3 = { path = "../lib/crowdb-access-s3" }
 async-trait = "0.1"
 crowdb-chunk-client = { path = "../lib/crowdb-chunk-client" }

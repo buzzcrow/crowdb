@@ -1,7 +1,6 @@
 use super::{catalog_counts, catalog_delta, fixture_config, path, setup, upload_route_counts};
 use super::{
-    CatalogRepository, ClearBounds, Client, FileRepository, Method, TableLocation, TestFileClient,
-    TestIcebergStack,
+    CatalogRepository, ClearBounds, FileRepository, Method, TableLocation, TestFileClient, TestIcebergStack,
 };
 use futures::StreamExt;
 use std::time::Instant;
@@ -97,27 +96,6 @@ pub(super) async fn assert_one_file_chunk(stack: &TestIcebergStack, table: Table
     let chunks = published.content.locations(published.length).unwrap().unwrap();
     assert_eq!(chunks.len(), 1, "5MiB file should fit one configured chunk");
     println!("iceberg 5MiB PUT chunks={}", chunks.len());
-}
-
-pub(super) async fn assert_multipart_metrics(
-    client: &TestFileClient,
-    part_count: usize,
-    logical_bytes: usize,
-) {
-    let metrics: serde_json::Value = Client::new()
-        .get(format!("http://{}/_crowdb/metrics", client.address))
-        .bearer_auth("m".repeat(32))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    println!("iceberg upload flow metrics={}", metrics["upload_flow"]);
-    assert_eq!(metrics["upload_flow"]["attempts"], part_count);
-    assert_eq!(metrics["upload_flow"]["completed"], part_count);
-    assert_eq!(metrics["upload_flow"]["logical_bytes"], logical_bytes);
-    assert_eq!(metrics["upload_flow"]["multipart_completions"], 1);
 }
 
 async fn receive_counts(client: &TestFileClient) -> (u64, u64, u64, u64) {
