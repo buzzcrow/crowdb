@@ -56,6 +56,20 @@ class ImageIdentityTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "server sources differ"):
             verify_server_sources(self.root, revision)
 
+    def test_component_task_edit_does_not_exempt_build_tasks_or_environment(self):
+        manifest = self.root / "pixi.toml"
+        original = '[dependencies]\npython = "3.14.*"\n[tasks]\ntest-storage = "old gate"\nbuild = "release build"\n'
+        manifest.write_text(original)
+        self.commit()
+        revision = self.git("rev-parse", "HEAD")
+        manifest.write_text(original.replace('old gate', 'component gate'))
+        self.assertTrue(verify_server_sources(self.root, revision)["server_sources_match"])
+        for changed in (original.replace('release build', 'changed build'),
+                        original.replace('3.14.*', '3.13.*')):
+            manifest.write_text(changed)
+            with self.assertRaisesRegex(ValueError, "pixi.toml"):
+                verify_server_sources(self.root, revision)
+
     def test_dirty_server_edit_cannot_use_stale_image(self):
         (self.root / "app/server/src/main.rs").write_text("changed server\n")
         with self.assertRaisesRegex(ValueError, "server sources differ"):
@@ -64,11 +78,11 @@ class ImageIdentityTest(unittest.TestCase):
     def test_host_sdk_delegates_do_not_exempt_release_build_tooling(self):
         directory = self.root / "tools/pixi-tasks"
         directory.mkdir(parents=True)
-        for name in ("test-s3-e2e.sh", "test-s3-client.sh", "test-s3-sdk.sh", "test-iceberg-native.sh", "test-iceberg-listing-native.sh", "test-pyiceberg-e2e.sh", "test-rust-iceberg-e2e.sh", "test-java-iceberg-fileio-e2e.sh", "build-cpp.sh"):
+        for name in ("test-storage.sh", "test-access.sh", "test-s3-e2e.sh", "test-s3-client.sh", "test-s3-sdk.sh", "test-iceberg-native.sh", "test-iceberg-e2e.sh", "test-iceberg-listing-native.sh", "test-pyiceberg-e2e.sh", "test-rust-iceberg-e2e.sh", "test-java-iceberg-fileio-e2e.sh", "build-cpp.sh"):
             (directory / name).write_text("original\n")
         self.commit()
         revision = self.git("rev-parse", "HEAD")
-        for name in ("test-s3-e2e.sh", "test-s3-client.sh", "test-s3-sdk.sh", "test-iceberg-native.sh", "test-iceberg-listing-native.sh", "test-pyiceberg-e2e.sh", "test-rust-iceberg-e2e.sh", "test-java-iceberg-fileio-e2e.sh"):
+        for name in ("test-storage.sh", "test-access.sh", "test-s3-e2e.sh", "test-s3-client.sh", "test-s3-sdk.sh", "test-iceberg-native.sh", "test-iceberg-e2e.sh", "test-iceberg-listing-native.sh", "test-pyiceberg-e2e.sh", "test-rust-iceberg-e2e.sh", "test-java-iceberg-fileio-e2e.sh"):
             (directory / name).write_text("changed host client delegate\n")
         self.assertTrue(verify_server_sources(self.root, revision)["server_sources_match"])
         (directory / "build-cpp.sh").write_text("changed release build input\n")

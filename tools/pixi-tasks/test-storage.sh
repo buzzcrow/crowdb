@@ -7,8 +7,7 @@ cd "${PIXI_PROJECT_ROOT:?}"
 cargo test -p crowdb-chunkdb-client --tests
 cargo test -p crowdb-chunk-kv --tests
 cargo test -p crowdb-chunk-kv-client --tests
-# Root-catalog transfer tests start a KV cluster through the test harness.
-cargo build -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb
+# Storage component proofs use pinned in-memory metadata and injected IO.
 cargo test -p crowdb-chunk-kv-server --tests
 cargo test -p crowdb-chunk-stream --tests
 cargo test -p crowdb-kv-server --tests

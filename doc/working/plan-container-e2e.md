@@ -1695,3 +1695,29 @@ Source `lib/crowdb-kv-client/tests/chunk_slot_map_test.rs`: all eight cases exer
   an explicit file after both services become ready, preserving dependency
   stop ordering and both replacement generations. All eight supervisor tests
   pass in 2.87 seconds; affected all-target clippy passes.
+
+### Component delegates and final taxonomy follow-up
+
+- Full `pixi run test-storage` and `pixi run test-access` pass after the above
+  corrections without their former explicit native server/C++ preparation.
+  Remove the storage task's redundant `build-cpp` dependency. Image provenance
+  permits this exact test-task-only manifest edit, rejects every other manifest
+  change, and exempts only audited host delegates; all eleven provenance tests
+  pass. Working-tree fixture checks pass 58, including two pending browser proofs.
+- Final CI draft uses one formal debug-retaining image artifact for S3,
+  Iceberg, Console and the storage domain matrix. Both workflow YAML files parse
+  and CI task reachability passes. Java FileIO has only the SDK task owner;
+  foreground GC has only the native GC delegate owner. Add the existing two
+  benchmark cases to the ordinary Iceberg E2E delegate. Actual CI execution and
+  the pending Console contract still await closure.
+- Fresh complete Iceberg run has four failures so far (Java S3FileIO, repeated
+  100 MiB direct/multipart uploads, small routing). Preserve its failed evidence;
+  investigate first KV quorum/operation delay before any timing-table replacement.
+- S3 joint-node profile draft preserves three actual voters, dynamic public
+  slot epochs and fixed endpoints, with three separately owned failure cases.
+  Node-two draft retains persisted degraded EC chunks, full restart, exact data
+  and original 25-second placement repair. First full draft fault run fails all
+  three cases: node one/three read flow and node two ownership convergence.
+  Node-one surviving DiskIO containers exit 139 after group-0 list timeout.
+  Host Apport has no matching report; an owned debug sidecar can inspect the
+  unchanged release binary. Do not retire native owners before corrected proof.

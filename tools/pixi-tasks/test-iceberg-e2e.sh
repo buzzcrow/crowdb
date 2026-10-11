@@ -7,5 +7,5 @@ cd "${PIXI_PROJECT_ROOT:?}"
 pixi run -e iceberg-e2e test-pyiceberg-e2e
 pixi run -e iceberg-e2e test-iceberg-native
 
-# Java FileIO cases require their own owned native cluster preparation.
-pixi run -e iceberg-e2e test-java-iceberg-fileio-e2e
+pixi run -e default -- python e2e-test/run.py --layer iceberg --scope iceberg.benchmark \
+    --image "${CROWDB_E2E_IMAGE:-crowdb-node:dev}" --concurrency 1 --cpus 8 --memory-mib 8192

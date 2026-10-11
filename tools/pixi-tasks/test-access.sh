@@ -4,11 +4,6 @@
 set -euo pipefail
 cd "${PIXI_PROJECT_ROOT:?}"
 
-if [[ "$(uname -s)" == "Linux" ]]; then
-    pixi run build-cpp
-    cargo build -p crowdb-web -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb -p crowdb-chunk-kv-server -p crowdb-access-server
-fi
-
 for package in \
     crowdb-access-multipart \
     crowdb-access-s3 \

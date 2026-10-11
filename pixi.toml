@@ -225,7 +225,7 @@ test-cpp = { cmd = "bash tools/pixi-tasks/test-cpp.sh", depends-on = ["build-cpp
 
 # ── Component tests ─────────────────────────────────────────────
 test-core = { cmd = "bash tools/pixi-tasks/test-core.sh" }
-test-storage = { cmd = "bash tools/pixi-tasks/test-storage.sh", depends-on = ["build-cpp"] }
+test-storage = { cmd = "bash tools/pixi-tasks/test-storage.sh" }
 test-access = { cmd = "bash tools/pixi-tasks/test-access.sh" }
 
 # ── ConsoleTests job: spawns crowdb-kv-server via lifecycle::deploy_local ──

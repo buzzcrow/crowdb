@@ -16,10 +16,13 @@ SERVER_PATHS = (
     # The staging script does not package this operator documentation.
     ":(exclude)container/single-node-container/README.md",
     # Host SDK client delegates are not read by staging or the OCI builder.
+    ":(exclude)tools/pixi-tasks/test-storage.sh",
+    ":(exclude)tools/pixi-tasks/test-access.sh",
     ":(exclude)tools/pixi-tasks/test-s3-e2e.sh",
     ":(exclude)tools/pixi-tasks/test-s3-client.sh",
     ":(exclude)tools/pixi-tasks/test-s3-sdk.sh",
     ":(exclude)tools/pixi-tasks/test-iceberg-native.sh",
+    ":(exclude)tools/pixi-tasks/test-iceberg-e2e.sh",
     ":(exclude)tools/pixi-tasks/test-iceberg-listing-native.sh",
     ":(exclude)tools/pixi-tasks/test-pyiceberg-e2e.sh",
     ":(exclude)tools/pixi-tasks/test-rust-iceberg-e2e.sh",
@@ -101,6 +104,14 @@ def verify_server_sources(root, revision):
     runtime_changes = []
     for path in changed.splitlines():
         current = Path(root, path)
+        if path == "pixi.toml" and current.is_file():
+            before = tomllib.loads(git("show", f"{revision}:{path}"))
+            after = tomllib.loads(current.read_text())
+            # This component gate is never called by release staging/building.
+            for manifest in (before, after):
+                manifest.get("tasks", {}).pop("test-storage", None)
+            if before == after:
+                continue
         if path == "Cargo.lock" and current.is_file():
             before = tomllib.loads(git("show", f"{revision}:{path}"))
             after = tomllib.loads(current.read_text())
