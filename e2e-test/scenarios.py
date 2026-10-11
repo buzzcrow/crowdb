@@ -22,6 +22,7 @@ from deployment_clients_fixture import DeploymentClientsCluster
 from deployment_failure_fixture import DeploymentFailureCluster
 from deployment_anonymous_fixture import AnonymousReleaseCluster
 from deployment_browser_fixture import DeploymentBrowserCluster
+from deployment_listener_fixture import OccupiedAccessCluster
 from console_web_fixture import ConsoleWebCluster
 from diskio_fixture import DiskioCluster, DiskioDiscoveryCluster, DiskioSemanticCluster
 
@@ -132,6 +133,9 @@ DISKDB_CASES = (
 )
 
 DEPLOYMENT_CASES = (
+    Case("deployment.balance", "deployment::balance::single_node_disables_local_chunk_kv_split_planning", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
+    Case("deployment.listeners", "deployment::listeners::occupied_s3_listener_terminates_combined_access", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
+    Case("deployment.listeners", "deployment::listeners::occupied_iceberg_listener_terminates_combined_access", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
     Case("deployment.browser", "deployment::browser::readonly_release_ui_preserves_domains_and_live_authority", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
     Case("deployment.anonymous", "deployment::anonymous::default_anonymous_volume_is_ready_and_monitor_death_exits_container", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
     Case("deployment.failures", "deployment::failures::restart_exhaustion_exits_the_container", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web"), client_timeout=540),
@@ -411,6 +415,8 @@ def select_cases(layer="all", scope="all", case_name=None):
 
 
 def case_nodes(case):
+    if case.scope == "deployment.listeners":
+        return 2
     if case.console_web:
         return 5
     if case.service_selection or (case.scope.startswith("deployment.") and case.scope != "deployment.hardware"):
@@ -436,6 +442,8 @@ def case_nodes(case):
     return 2 if case.scope.startswith(("diskdb.", "chunkdb.")) else len(case.stores_per_node or case.stores)
 
 def case_resources(case, node_cpus):
+    if case.scope == "deployment.listeners":
+        return max(2, node_cpus) + 1, 3072
     if case.scope == "iceberg.sdk.rck":
         return case_nodes(case) * node_cpus + 0.5, case_nodes(case) * 512 + 4096
     if len(case.service_selection) > 2:
@@ -445,6 +453,9 @@ def case_resources(case, node_cpus):
 
 
 def allocate_cluster(case, image, artifacts, bundle, data_root):
+    if case.scope == "deployment.listeners":
+        protocol = "iceberg" if "occupied_iceberg" in case.name else "s3"
+        return OccupiedAccessCluster(image, artifacts, protocol, services=case.service_selection, data_root=data_root)
     if case.scope == "deployment.browser":
         return DeploymentBrowserCluster(image, artifacts, bundle, services=case.service_selection, data_root=data_root)
     if case.scope == "deployment.anonymous":

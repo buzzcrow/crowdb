@@ -54,9 +54,10 @@ pixi run test-container-e2e --layer kv --data-root /path/to/e2e-data
 Build/import the shared OCI image first. An absent image, missing Docker daemon,
 unsupported daemon, changed release server sources or inadequate budget fails the
 required test. There is no successful missing-prerequisite skip.
-`--layer all` selects the registered KV, Diskdb, Diskio, Chunkdb, chunk-client,
-chunk-stream and deployment cases. Chunk-client migration is being verified;
-the whole-storage-outage stream case currently exposes an unresolved fault budget.
+`--layer all` selects registered KV, Diskdb, Diskio, Chunkdb, chunk-client,
+chunk-stream, Chunk-KV, S3, Iceberg, Dataset, Console and deployment cases.
+The whole-storage-outage stream/reader budget and writable managed Console
+contract remain unresolved; complete migration and the all-domain gate are pending.
 
 Chunkdb lifecycle, placement and recovery use five owned containers: three KV
 voters, one Diskdb and one production-mode Chunkdb. Actual inspected KV replicas
@@ -213,8 +214,8 @@ pending.
   release image: complete seven services, KV-only and KV+Diskdb. Check exact
   selected readiness, acknowledged host-client writes, abrupt node loss and
   recreation with preserved data. Unknown/missing-dependency selections fail
-  before partial startup. This does not replace the pending complete deployment
-  UI/SSH and runtime failure matrix.
+  before partial startup. Single-mode browser/runtime failures now belong to
+  the deployment layer; manual UI/SSH admission remains pending.
 - Latest Diskdb client batch: 5 flows/12 host phases, 12.726 s scenario wall at two
   slots. Normal monitor selection batch: 3 flows/6 host phases and five startup
   rejection checks, 20.153 s. Detailed measurements and image/source identities
@@ -266,3 +267,29 @@ pending.
 pixi run test-container-e2e --layer s3 --concurrency 2 --cpus 16 --memory-mib 16384
 pixi run test-container-e2e --layer s3 --scope s3.recovery --concurrency 1 --cpus 8 --memory-mib 8192
 ```
+
+## Deployment flows
+
+- The canonical deployment layer has 33 named owners. It covers service
+  selection, hardware/KV/logical bootstrap, interruption and persistent recovery,
+  fourteen supervised child crash/hang cases, invalid inputs, official host SDKs,
+  protocol layouts, runtime permissions, readonly release browser behavior,
+  terminal restart exhaustion, durable identity rejection, lifecycle log/secret
+  checks, anonymous-volume policy, Monitor death, occupied protocol listeners
+  and disabled single-node split planning.
+- Complete service fixtures reserve 2 CPUs/2048 MiB for the node plus a host
+  client. Occupied-listener checks reserve an additional 0.5 CPU/512 MiB release
+  process sharing only the owned node's network namespace; the other protocol
+  and health listener remain unoccupied. Independent scenarios keep private
+  networks, credentials and mounts.
+- `container/single-node-container/tests/container-e2e.sh` delegates to this
+  layer. It owns no server launch, client, published port or assertion.
+  Build/import the formal artifact before invoking the canonical runner.
+- Browser clients use the pinned `clients/console-ui` package and the installed
+  system browser. Each fixture prepares its own host workspace. Signals pass
+  through label/PID/executable guards. Default anonymous-volume policy is an
+  explicit exception to data bind mounts; logs/crash files are copied to host
+  artifacts before its owned volume is removed.
+- Fine measured client/fixture times are recorded in
+  [test.md](../doc/working/test.md). Manual admission, native host and ecosystem
+  profiles and final Pixi/CI classification remain in the working plan.

@@ -1162,3 +1162,13 @@ Source: `app/crowdb-kv-server/`. Tests: 9 files.
 | Scope              | Named flow                                                      | Browser (s) | Dependency preparation (s) | Fixture (s) |
 | ------------------ | --------------------------------------------------------------- | ----------- | -------------------------- | ----------- |
 | deployment.browser | readonly_release_ui_preserves_domains_and_live_authority         |       6.181 |                      3.319 |      14.637 |
+
+### Listener failures and single-node balance policy
+
+- Same formal release config as above. Listener cases reserve 3 CPU/3072 MiB including the extra server. Balance case uses an explicitly selected host data parent; original 12-second absence window is retained.
+
+| Scope                | Named flow                                                 | Client (s) | Fixture (s) | Accepted run                         |
+| -------------------- | ---------------------------------------------------------- | ---------- | ----------- | ------------------------------------ |
+| deployment.listeners | occupied_s3_listener_terminates_combined_access            |      0.026 |       6.086 | run-6360a52e1976425abf4c1dcb7900c180 |
+| deployment.listeners | occupied_iceberg_listener_terminates_combined_access       |      0.026 |       6.078 | run-6360a52e1976425abf4c1dcb7900c180 |
+| deployment.balance   | single_node_disables_local_chunk_kv_split_planning         |     12.227 |      17.164 | run-17106e704fb44b28971fecac49f07723 |

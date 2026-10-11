@@ -3,11 +3,13 @@
 
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
 mod anonymous;
+mod balance;
 mod bootstrap;
 mod clients;
 mod failures;
 mod hardware_bootstrap;
 mod kv_bootstrap;
+mod listeners;
 mod storage;
 mod supervision;
 mod validation;
