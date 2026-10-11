@@ -1681,3 +1681,17 @@ Source `lib/crowdb-kv-client/tests/chunk_slot_map_test.rs`: all eight cases exer
   The listing task delegates to `iceberg.files.listing`; normal native task
   runs component recovery gates and container files/GC without host server
   preparation. Only explicitly configured manual TPC still prepares host servers.
+
+### Retained component gate failures diagnosed
+
+- Storage component gate exposed `journal_handoff_test` assuming CAS applies
+  before the preceding chosen frontier is contiguous. The existing conditional
+  write apply fence intentionally waits first. Preserve future revision 853
+  through repeated flushes, assert CAS remains pending across gap 852, close
+  the gap, then verify revision 854, exact journal bytes and durable reopen.
+  Focused proof passes in 0.26 seconds.
+- Monitor dependency restart fixture allowed its fake child to exit after
+  0.2 seconds during readiness under parallel build load. Trigger exit through
+  an explicit file after both services become ready, preserving dependency
+  stop ordering and both replacement generations. All eight supervisor tests
+  pass in 2.87 seconds; affected all-target clippy passes.
