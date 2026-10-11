@@ -8,6 +8,7 @@ mod direct_profile;
 mod java_sdk;
 mod lifecycle;
 mod multipart_profile;
+mod profiles;
 mod publication;
 mod restart;
 mod routing;

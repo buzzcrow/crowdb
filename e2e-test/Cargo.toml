@@ -24,6 +24,8 @@ crowdb-access-iceberg = { path = "../lib/crowdb-access-iceberg" }
 crowdb-access-dataset = { path = "../lib/crowdb-access-dataset" }
 crowdb-access-s3 = { path = "../lib/crowdb-access-s3" }
 async-trait = "0.1"
+axum = "0.7"
+uuid = { version = "1", features = ["v4"] }
 crowdb-chunk-client = { path = "../lib/crowdb-chunk-client" }
 crowdb-chunk-kv-client = { path = "../lib/crowdb-chunk-kv-client" }
 crowdb-chunk-stream = { path = "../lib/crowdb-chunk-stream" }

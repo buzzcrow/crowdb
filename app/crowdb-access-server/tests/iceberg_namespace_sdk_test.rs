@@ -159,7 +159,7 @@ async fn official_catalog_continues_through_empty_namespace_pages() {
             .args(["-o", "--batch-mode", "--no-transfer-progress", "-f"])
             .arg(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/tests/common/iceberg_java/pom.xml"
+                "/../../e2e-test/clients/iceberg-java/pom.xml"
             ))
             .args(["compile", "exec:java", "-Dexec.mainClass=TestIcebergNamespaces"])
             .arg(format!("-Dexec.args={endpoint}"))

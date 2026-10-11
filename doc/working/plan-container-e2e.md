@@ -495,10 +495,10 @@ Goal: review and migrate all real-server tests into domain modules under contain
   transport and storage-backed split/transfer boundaries; preserve local split
   proof tests and add release-image durable split coverage. Files: Chunk-KV server/
   library/client tests, `tests/chunk_kv*`, profile/runner.
-- [~] **S3 batch**: migrate HTTP/production and SDK chains; parameterize shared
+- [ ] **S3 batch**: migrate HTTP/production and SDK chains; parameterize shared
   bootstrap, retain policy/errors/multipart/restart matrix. Files: access-server,
   console/CLI S3 fixtures, SDK scripts, `tests/access_s3*` and client adapters.
-- [ ] **Iceberg/Dataset batches**: migrate catalog/FileIO/SDK/GC/crash boundaries,
+- [~] **Iceberg/Dataset batches**: migrate catalog/FileIO/SDK/GC/crash boundaries,
   preserving worker environments; migrate audited Dataset server flows. Files:
   access tests/helpers, SDK tasks, `tests/access_iceberg*`, `tests/access_dataset*`.
 - [ ] **Console/CLI batch**: migrate real-service operations and web route flows;
@@ -1334,3 +1334,29 @@ Only the exited-storage timing migration awaits a human design choice; S3 and su
 
 - Audited all four Dataset component test files and the access-server implementation. Component tests use in-memory stores/algorithm fixtures and remain intact. Two production HTTP listener tests were embedded under `src/dataset.rs`; equivalent container clients pass in `run-5569f38c94964c71b2d50abf3789e4c6`, then their inline listener implementations retire. Initial new full-manifest comparison used the caller draft snapshot ID; the existing publication API assigns an authoritative ID. Expected metadata now uses the publish response, preserving original returned-ID assertions and adding complete metadata/byte comparison.
 - CI S3/Iceberg jobs now depend on and import the existing `ContainerImage` artifact. A separate storage matrix selects eight migrated layers with bounded parallelism and diagnostics. Final complete classification and legacy launcher closure remain unfinished.
+
+### Final regression work in progress
+
+- Coherent accepted FileIO/Dataset batch committed as `be5757bb`; Console clients and CI matrix remain separate worktree drafts. Root staged selections were checked independently before committing; unaccepted Console owners were excluded from that commit.
+- Eight-layer concurrent regression at the proposed CI quota: DiskDB, DiskIO and ChunkDB pass; Chunk stream reproduces the unchanged 15-second budget failure. Deferred Chunk-KV/Dataset/deployment invocations are correctly rejected once Dataset source-test retirement changes the image source identity. Rebuild the formal release image before rerunning those layers; no bypass added.
+- All 42 focused publication/recovery component cases pass across seven Iceberg test targets. These retain creation/staging/commit/file/MPU replay and failure boundaries; the legacy native custom-listener crash matrices still require exact assertion mapping before retirement.
+- CI component-task inventory passes for all 28 workspace packages. Shared artifact YAML parses and validates with system PyYAML through Pixi; default and Iceberg environments do not include PyYAML. CI runtime acceptance and complete taxonomy remain pending.
+
+## Console operation and host CLI migration
+
+- Move discovery (10), hardware authority (5), group/store publication (7), bootstrap/resume (10), cleanup/fanout/delete (15) and deployment identity (3) to `e2e-test/tests/console/`. Each mutating flow owns three release KV voter containers and fixed 7000/7001 ports. Named assertions are unchanged; host HTTP/proxy doubles test client failure boundaries and never replace production KV.
+- Split mixed `bootstrap_intent_test`, `deployment_test` and `ops_cluster_test`: their six deterministic local owners remain and pass. Retire eight fully migrated operation sources and their old KV launcher helpers only after the corresponding complete scopes pass.
+- The original `concurrent_conflicting_store_publication_is_preserved` passed on its old harness. The first container batch unexpectedly accepted a conflicting store; a diagnostic read confirmed the committed conflict but could mask ordering. Remove that diagnostic before acceptance: the unchanged complete seven-owner scope passes. Record the first divergence; the combined operation gate is an independent check, not a caller retry.
+- Move CLI direct/observation/hardware/management/data and three registry-backed public flows to host clients. Missing host CLI is an error, not a skip. Compile and pin it once per run; record executable hashes alongside the domain client and locked source. Local fake-child launch controls remain in the CLI component. No port allocator or actual server launcher remains in the migrated CLI helpers.
+- `console.operations` combines the 65 accepted host operation clients for broad CI dispatch; fine discovery/hardware/logical/bootstrap/cleanup/deployment/clients/cli scopes remain selectable. Managed browser proof remains separate and unaccepted pending the mode choice.
+- Two FileIO benchmark owners pass on persistent protected formal storage (`run-087b7c04f0bc47b68b603d3b27fc1f03`). Delete the old equivalent native profiles and upload helper; retain the distinct per-write publication/crash matrix until its assertion map and ownership are closed.
+
+## Async apply conflict discovered by migration
+
+- Combined 65-owner Console operation gate has 64 passes and one failure: create-if-absent store publication can overwrite an already acknowledged competing store. Focused/old-harness passes did not resolve the ordering failure.
+- Deterministic regression `cas::create_if_absent_waits_for_acknowledged_async_apply` parks the preceding ordinary write's engine apply after acknowledgement. Before the fix, CAS chooses slot 2 while slot 1 is unapplied; the regression fails with chosen frontier 2 rather than 1.
+- Production defaults enable async engine apply while the pinned leader component defaults disable it. `propose_cas_owned` read the engine revision without the apply fence used by linearizable reads. Fence the captured last-chosen frontier before the revision check; no new locks or caller retries. Commit `712bafe6` passes four CAS, two read/apply fence and twelve owner fence tests, all-target KV clippy and workspace fmt.
+- Fresh formal release source `712bafe63bcc0bd1f63a574f5350e900da2321c0`, OCI `sha256:5024981383d993cedfdbbbfe31d35ec0b4dabae4ab303331f139a8618968e354`, config `sha256:c6c054e56522efcdde98366cabd114571e13e3253cf4cc1c9e650819dd75faf6`; optimized debug info retained. The complete seven-owner logical scope passes at the CI quota (0.25 CPU per voter); all 68 Console/CLI/Bare Metal Web owners pass together at the CI quota in `run-f1e60806f97f447283bc24ce904c1cf4`. Both FileIO performance owners also pass on this image in `run-b4c543cc563746e389617b8a680f20b6`; fine per-owner client and fixture times are recorded in `test.md`.
+- Bare Metal Web authority's three old oneshot owners now use three release KV voters and two independent release Web listeners. Original hierarchy mutations, exact returned authority, duplicate/expired registration rejection, later replica host validation, no stale/local fallback and all-voter-exit 503 assertions pass (`run-074958bb66394e4cab941daddcd4d226`). Remove the old source after this gate. These writable Bare Metal checks do not decide Docker's readonly policy.
+- Java and Rust SDK sources/locks were exact duplicate projects. Keep their single owners at `e2e-test/clients/iceberg-{java,rust}` and repoint retained injected-store SDK wire component tests. Their fake store/block/paging/response-loss assertions remain local; they never launch the packaged storage services. Maven compilation, six SDK wire owners and the namespace empty-page owner pass with the explicit pinned JDK/Maven environment; version verification follows the root Rust client project. Remove only byte-identical old project files.
+- `benchmark_replaces_its_previous_log_directory` is a confirmed pre-existing CLI component failure: unchanged body SHA256 `bc7f76db5289eb6d992b7fd633f1d519180162fa2b0bd5c80b3f71744ef65e4b` equals the original source, and CLI production sources are unchanged. `bench rpc --server-port 1 --metrics-interval 0` returns success after asynchronous connection failure, violating its existing exit-status assertion. Keep this test and assertion; other retained CLI help/fake-child controls pass. This is separate from migrated container flow acceptance.

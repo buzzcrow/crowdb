@@ -22,7 +22,7 @@ async fn official_commit_errors_preserve_heads_and_enforce_count_boundaries() {
             .args(["-o", "--batch-mode", "--no-transfer-progress", "-f"])
             .arg(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/tests/common/iceberg_java/pom.xml"
+                "/../../e2e-test/clients/iceberg-java/pom.xml"
             ))
             .args(["compile", "exec:java", "-Dexec.mainClass=TestIcebergCommitErrors"])
             .arg(format!("-Dexec.args={endpoint}"))
@@ -51,7 +51,7 @@ async fn official_rest_catalog_reads_fixture_generations_without_fileio() {
             .args(["-o", "--batch-mode", "--no-transfer-progress", "-f"])
             .arg(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/tests/common/iceberg_java/pom.xml"
+                "/../../e2e-test/clients/iceberg-java/pom.xml"
             ))
             .args(["compile", "exec:java", "-Dexec.mainClass=TestIcebergCatalogReads"])
             .arg(format!("-Dexec.args={endpoint}"))
@@ -75,7 +75,7 @@ async fn official_staged_catalog_preserves_exact_draft_credential_refresh_uri() 
             .args(["-o", "--batch-mode", "--no-transfer-progress", "-f"])
             .arg(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/tests/common/iceberg_java/pom.xml"
+                "/../../e2e-test/clients/iceberg-java/pom.xml"
             ))
             .args([
                 "compile",
@@ -106,7 +106,7 @@ async fn official_catalog_creates_commits_upgrades_stages_and_refreshes_native_c
             .args(["-o", "--batch-mode", "--no-transfer-progress", "-f"])
             .arg(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/tests/common/iceberg_java/pom.xml"
+                "/../../e2e-test/clients/iceberg-java/pom.xml"
             ))
             .args([
                 "compile",

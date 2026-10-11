@@ -6,6 +6,7 @@ import argparse
 import concurrent.futures
 import hashlib
 import json
+import os
 import signal
 import subprocess
 import threading
@@ -13,10 +14,10 @@ import time
 import uuid
 from pathlib import Path
 
-from client import bundle_client, bundle_iceberg_rust, bundle_iceberg_java
+from client import bundle_cli, bundle_client, bundle_iceberg_rust, bundle_iceberg_java
 from fixture import Cluster, docker
 from release import check_startup
-from scenarios import ALL_CASES, case_nodes, case_resources, run_cases
+from scenarios import case_nodes, case_resources, run_cases, select_cases
 from image_identity import verify_server_sources
 from report import write_report
 
@@ -83,22 +84,21 @@ def run_pair(image, artifacts, bundle, count, data_root=None, node_cpus=0.5):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--layer", choices=("kv", "diskdb", "diskio", "chunkdb", "chunk-stream", "chunk-client", "chunk-kv", "s3", "iceberg", "dataset", "deployment", "all"), default="all")
-    parser.add_argument("--scope", choices=("all", "dataset.http", "iceberg.metadata", "iceberg.namespace", "iceberg.files", "iceberg.catalog", "iceberg.gc", "iceberg.sdk", "iceberg.sdk.java", "iceberg.sdk.rust", "s3.protocol", "s3.recovery", "s3.responses", "s3.benchmark", "s3.sdk", "s3.credentials", "s3.policy", "kv.management", "kv.membership", "kv.routing", "kv.recovery", "kv.isolation", "kv.group0", "kv.client", "kv.metadata", "diskdb.allocation", "diskdb.ownership", "diskdb.reuse", "diskdb.recovery", "chunkdb.allocation", "chunkdb.lifecycle", "chunkdb.recovery", "chunkdb.placement", "chunkdb.io", "chunkdb.conversion", "chunkdb.repair", "chunkdb.slots", "chunkdb.handoff", "chunk-kv.protocol", "chunk-kv.recovery", "chunk-client.reader", "chunk-client.large_repair", "chunk-client.small_flow", "chunk-client.benchmark", "chunk-client.large", "chunk-client.small", "chunk-stream.objects", "chunk-stream.recovery", "chunk-stream.errors", "deployment.selection", "diskio.durability", "diskio.direct", "diskio.io.mem", "diskio.io.null", "diskio.discovery", "diskio.errors", "diskio.faults", "diskio.semantic"),
+    parser.add_argument("--layer", choices=("kv", "diskdb", "diskio", "chunkdb", "chunk-stream", "chunk-client", "chunk-kv", "s3", "iceberg", "dataset", "console", "deployment", "all"), default="all")
+    parser.add_argument("--scope", choices=("all", "dataset.http", "console.discovery", "console.hardware", "console.logical", "console.bootstrap", "console.cleanup", "console.deployment", "console.cli", "console.operations", "console.web", "console.web.authority", "console.clients", "iceberg.benchmark", "iceberg.metadata", "iceberg.namespace", "iceberg.files", "iceberg.catalog", "iceberg.gc", "iceberg.sdk", "iceberg.sdk.java", "iceberg.sdk.rust", "s3.protocol", "s3.recovery", "s3.responses", "s3.benchmark", "s3.sdk", "s3.credentials", "s3.policy", "kv.management", "kv.membership", "kv.routing", "kv.recovery", "kv.isolation", "kv.group0", "kv.client", "kv.metadata", "diskdb.allocation", "diskdb.ownership", "diskdb.reuse", "diskdb.recovery", "chunkdb.allocation", "chunkdb.lifecycle", "chunkdb.recovery", "chunkdb.placement", "chunkdb.io", "chunkdb.conversion", "chunkdb.repair", "chunkdb.slots", "chunkdb.handoff", "chunk-kv.protocol", "chunk-kv.recovery", "chunk-client.reader", "chunk-client.large_repair", "chunk-client.small_flow", "chunk-client.benchmark", "chunk-client.large", "chunk-client.small", "chunk-stream.objects", "chunk-stream.recovery", "chunk-stream.errors", "deployment.selection", "diskio.durability", "diskio.direct", "diskio.io.mem", "diskio.io.null", "diskio.discovery", "diskio.errors", "diskio.faults", "diskio.semantic"),
                         default="all")
     parser.add_argument("--concurrency", type=int, default=2)
     parser.add_argument("--case", help="fully qualified named flow within the selected scope")
     parser.add_argument("--list", action="store_true", help="list implemented named flows without starting servers")
     parser.add_argument("--require-isolation", action="store_true")
     parser.add_argument("--cpus", type=float, default=4)
-    parser.add_argument("--node-cpus", type=float, default=0.5, help="Docker CPU quota per server; host client reserves 0.5 CPU")
+    parser.add_argument("--node-cpus", type=float, default=os.environ.get("CROWDB_E2E_NODE_CPUS", "0.5"), help="Docker CPU quota per server; host client reserves 0.5 CPU")
     parser.add_argument("--memory-mib", type=int, default=4096)
     parser.add_argument("--image", default="crowdb-node:dev")
     parser.add_argument("--data-root", type=Path, help="host parent for independent per-run/node data mounts")
     parser.add_argument("--artifacts", type=Path, default=ROOT / ".crowdb-runtime/artifacts/container-e2e")
     args = parser.parse_args()
-    selected = [case for case in ALL_CASES if (args.layer == "all" or case.scope.startswith(args.layer + ".")) and (args.scope == "all" or case.scope == args.scope or case.scope.startswith(args.scope + "."))
-                and (not args.case or case.name == args.case)]
+    selected = select_cases(args.layer, args.scope, args.case)
     if not selected and not (args.layer in ("kv", "all") and args.scope in ("kv.recovery", "kv.isolation")):
         parser.error("the selected case is not implemented in this scope")
     if args.case and args.require_isolation:
@@ -155,6 +155,10 @@ def main():
         started = time.monotonic()
         bundle_iceberg_java(bundle)
         timings["iceberg_java_build"] = time.monotonic() - started
+    if any(case.scope == "console.cli" for case in selected):
+        started = time.monotonic()
+        bundle_cli(bundle)
+        timings["cli_build"] = time.monotonic() - started
     with (bundle / "domain-test").open("rb") as executable:
         client_digest = hashlib.file_digest(executable, "sha256").hexdigest()
     client_source = hashlib.sha256()
@@ -166,8 +170,14 @@ def main():
         if path.is_file() and not {"target", "node_modules", "dist", "__pycache__"}.intersection(path.relative_to(bundle / "clients").parts):
             client_source.update(str(path.relative_to(bundle)).encode())
             client_source.update(path.read_bytes())
+    executable_digests = {}
+    for name in ("domain-test", "crowdb-cli", "iceberg-rust-client"):
+        path = bundle / name
+        if path.is_file():
+            with path.open("rb") as executable:
+                executable_digests[name] = hashlib.file_digest(executable, "sha256").hexdigest()
     (run_root / "client-identity.json").write_text(json.dumps({"sha256": client_digest,
-        "revision": revision, "source_sha256": client_source.hexdigest()}, indent=2))
+        "revision": revision, "source_sha256": client_source.hexdigest(), "executables": executable_digests}, indent=2))
     started = time.monotonic()
     timings["status"] = "failed"
     try:

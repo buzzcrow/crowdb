@@ -16,6 +16,7 @@ from access_iceberg_fixture import AccessIcebergCluster
 from access_dataset_fixture import AccessDatasetCluster
 from s3_recovery import SERVICE_NODES, run_recovery
 from managed_fixture import ManagedCluster
+from console_web_fixture import ConsoleWebCluster
 from diskio_fixture import DiskioCluster, DiskioDiscoveryCluster, DiskioSemanticCluster
 
 
@@ -53,6 +54,7 @@ class Case:
     iceberg_gc: bool = False
     iceberg_gc_page_items: int | None = None
     iceberg_deferred_access: bool = False
+    console_web: bool = False
     client_timeout: int = 120
 
 
@@ -245,6 +247,8 @@ S3_SPECIAL_CASES = (Case("s3.policy", "access_s3::protocol_http::combined_http_l
 S3_LANGUAGE_CASES = tuple(Case("s3.sdk", "s3.sdk::" + language, sdk_client=True, s3_language=language)
                           for language in ("java", "js", "go"))
 ICEBERG_CASES = (
+    Case("iceberg.benchmark", "access_iceberg::file_http::profiles::large::five_mib_profile", iceberg_deferred_access=True),
+    Case("iceberg.benchmark", "access_iceberg::file_http::profiles::small_file_profiles", iceberg_deferred_access=True),
     Case("iceberg.files", "access_iceberg::file_http::capacity::full_simulated_disk_preserves_file_authority_then_recovers_after_compaction", iceberg_deferred_access=True),
     Case("iceberg.files", "access_iceberg::file_http::concurrency::thirty_two_concurrent_direct_puts", iceberg_deferred_access=True),
     Case("iceberg.files", "access_iceberg::file_http::lifecycle::native_file_credentials_refresh_expire_and_follow_lifecycle_fences", iceberg_deferred_access=True),
@@ -277,14 +281,100 @@ ICEBERG_CASES = (
     Case("iceberg.metadata", "access_iceberg::metadata::metadata_create_and_commit_stay_within_operation_budget"),
     Case("iceberg.namespace", "access_iceberg::namespace::namespace_functional_crud_survives_native_storage_and_listener_restart"),
 )
+CONSOLE_OPERATION_CASES = (
+    Case("console.discovery", "console::discovery::discover_registered_diskdb_instance", (0, 0, 0), True, groups=(0,)),
+    Case("console.discovery", "console::discovery::chunk_kv_raw_observation_preserves_load_and_partition_state", (0, 0, 0), True, groups=(0,)),
+    Case("console.discovery", "console::discovery::cache_hit_within_ttl", (0, 0, 0), True, groups=(0,)),
+    Case("console.discovery", "console::discovery::invalidate_forces_refresh", (0, 0, 0), True, groups=(0,)),
+    Case("console.discovery", "console::discovery::round_robin_selection", (0, 0, 0), True, groups=(0,)),
+    Case("console.discovery", "console::discovery::empty_registry_returns_error", (0, 0, 0), True, groups=(0,)),
+    Case("console.discovery", "console::discovery::discover_by_endpoint_found", (0, 0, 0), True, groups=(0,)),
+    Case("console.discovery", "console::discovery::discover_by_endpoint_not_found", (0, 0, 0), True, groups=(0,)),
+    Case("console.discovery", "console::discovery::zero_ttl_disables_caching", (0, 0, 0), True, groups=(0,)),
+    Case("console.discovery", "console::discovery::expired_instance_filtered", (0, 0, 0), True, groups=(0,)),
+    Case("console.hardware", "console::hardware::separate_consoles_confirm_matching_hardware_and_reject_conflicts", (0, 0, 0), True, groups=(0,)),
+    Case("console.hardware", "console::hardware::concurrent_node_creates_preserve_both_rack_memberships", (0, 0, 0), True, groups=(0,)),
+    Case("console.hardware", "console::hardware::committed_rack_survives_a_lost_conditional_write_response", (0, 0, 0), True, groups=(0,)),
+    Case("console.hardware", "console::hardware::two_consoles_share_disk_groups_and_disks_without_local_topology", (0, 0, 0), True, groups=(0,)),
+    Case("console.hardware", "console::hardware::committed_disk_group_survives_a_lost_response", (0, 0, 0), True, groups=(0,)),
+    Case("console.logical", "console::group_publication::group_and_initial_replica_share_one_committed_revision", (0, 0, 0), True, groups=(0,)),
+    Case("console.logical", "console::group_publication::lost_batch_response_confirms_complete_group_membership", (0, 0, 0), True, groups=(0,)),
+    Case("console.logical", "console::group_publication::group_creation_prepares_a_local_store_on_new_nodes", (0, 0, 0), True, groups=(0,)),
+    Case("console.logical", "console::group_publication::orphan_membership_is_not_overwritten_by_group_creation", (0, 0, 0), True, groups=(0,)),
+    Case("console.logical", "console::logical_publication::concurrent_conflicting_store_publication_is_preserved", (0, 0, 0), True, groups=(0,)),
+    Case("console.logical", "console::logical_publication::concurrent_matching_store_publication_is_confirmed", (0, 0, 0), True, groups=(0,)),
+    Case("console.logical", "console::logical_publication::committed_store_is_confirmed_after_its_write_response_is_lost", (0, 0, 0), True, groups=(0,)),
+    Case("console.bootstrap", "console::bootstrap_publication::bootstrap_rejects_conflicting_hardware_without_overwriting_authority", (0, 0, 0), True, groups=(0,)),
+    Case("console.bootstrap", "console::bootstrap_publication::bootstrap_retry_preserves_known_rack_membership_and_node_runtime_fields", (0, 0, 0), True, groups=(0,)),
+    Case("console.bootstrap", "console::bootstrap_publication::bootstrap_preflights_logical_conflicts_before_publishing_missing_hardware", (0, 0, 0), True, groups=(0,)),
+    Case("console.bootstrap", "console::bootstrap_publication::bootstrap_rejects_a_different_rack_name_even_when_membership_matches", (0, 0, 0), True, groups=(0,)),
+    Case("console.bootstrap", "console::bootstrap_publication::bootstrap_publishes_shared_hardware_labels_and_credential_reference", (0, 0, 0), True, groups=(0,)),
+    Case("console.bootstrap", "console::bootstrap_publication::bootstrap_resumes_missing_records_and_preserves_committed_revisions", (0, 0, 0), True, groups=(0,)),
+    Case("console.cleanup", "console::replica_cleanup::failed_group_creation_removes_new_store", (0, 0, 0), True, groups=(0,)),
+    Case("console.cleanup", "console::replica_cleanup::failed_rollback_is_reported", (0, 0, 0), True, groups=(0,)),
+    Case("console.cleanup", "console::replica_cleanup::automatic_replica_identity_exhaustion_is_validation_error", (0, 0, 0), True, groups=(0,)),
+    Case("console.cleanup", "console::replica_cleanup::existing_replica_host_is_rejected_before_local_mutation", (0, 0, 0), True, groups=(0,)),
+    Case("console.cleanup", "console::logical_delete::store_deletion_cleans_descendants_and_reaches_later_replica_hosts", (0, 0, 0), True, groups=(0,)),
+    Case("console.cleanup", "console::logical_delete::group_deletion_cleans_replicas_and_preserves_siblings", (0, 0, 0), True, groups=(0,)),
+    Case("console.cleanup", "console::logical_delete::failed_store_deletion_preserves_all_authority_records", (0, 0, 0), True, groups=(0,)),
+    Case("console.cleanup", "console::logical_delete::failed_group_deletion_preserves_all_authority_records", (0, 0, 0), True, groups=(0,)),
+    Case("console.cleanup", "console::logical_delete::store_deletion_reconciles_a_lost_metadata_response", (0, 0, 0), True, groups=(0,)),
+    Case("console.cleanup", "console::logical_delete::group_deletion_reconciles_a_lost_metadata_response", (0, 0, 0), True, groups=(0,)),
+    Case("console.cleanup", "console::logical_fanout::peer_wiring_failure_rolls_back_without_publishing_membership", (0, 0, 0), True, groups=(0,)),
+    Case("console.cleanup", "console::logical_fanout::missing_peer_endpoint_rolls_back_without_publishing_membership", (0, 0, 0), True, groups=(0,)),
+    Case("console.cleanup", "console::logical_fanout::replica_creation_requires_every_existing_peer_registration", (0, 0, 0), True, groups=(0,)),
+    Case("console.cleanup", "console::logical_fanout::replica_creation_requires_every_existing_peer_endpoint", (0, 0, 0), True, groups=(0,)),
+    Case("console.cleanup", "console::logical_fanout::replica_creation_rolls_back_when_new_endpoint_is_missing", (0, 0, 0), True, groups=(0,)),
+    Case("console.bootstrap", "console::bootstrap_intent::interrupted_bootstrap_restores_identity_then_clears_verified_intent", (0, 0, 0), True, groups=(0,)),
+    Case("console.bootstrap", "console::bootstrap_intent::committed_group_zero_is_verified_before_stale_intent_is_removed", (0, 0, 0), True, groups=(0,)),
+    Case("console.bootstrap", "console::bootstrap_intent::changed_bootstrap_topology_is_rejected_before_group_zero_mutation", (0, 0, 0), True, groups=(0,)),
+    Case("console.deployment", "console::deployment::concurrent_admissions_allocate_unique_stable_ids_through_group_zero", (0, 0, 0), True, groups=(0,)),
+    Case("console.deployment", "console::deployment::service_retries_retain_identity_and_other_nodes_cannot_claim_the_same_service", (0, 0, 0), True, groups=(0,)),
+    Case("console.deployment", "console::deployment::authenticated_node_update_preserves_ids_and_converges_from_another_console", (0, 0, 0), True, groups=(0,)),
+    Case("console.bootstrap", "console::cluster::clean_requires_confirmed_group_replicas", (0, 0, 0), True, groups=(0,)),
+
+    Case("console.cli", "console::cli_direct::cluster_status_via_direct_group0", (0, 0, 0), True, groups=(0,)),
+    Case("console.cli", "console::cli_direct::cluster_rack_list_ignores_legacy_local_state", (0, 0, 0), True, groups=(0,)),
+    Case("console.cli", "console::cli_direct::cluster_node_list_ignores_legacy_local_state", (0, 0, 0), True, groups=(0,)),
+    Case("console.cli", "console::cli_direct::kv_server_controls_require_launch_registry", (0, 0, 0), True, groups=(0,)),
+    Case("console.cli", "console::cli_direct::incremental_local_deploy_reads_group_zero_instead_of_legacy_file", (0, 0, 0), True, groups=(0,)),
+    Case("console.cli", "console::cli_direct::destroy_reads_group_zero_and_requires_launch_registry", (0, 0, 0), True, groups=(0,)),
+
+    Case("console.cli", "console::cli_observation::cluster_status_topology_via_direct_group0", (0, 0, 0), True, groups=(0,)),
+
+    Case("console.clients", "console::server_management::full_store_group_remote_cycle", stores_per_node=((),), groups=()),
+    Case("console.clients", "console::server_data::put_get_delete_cycle", stores_per_node=((),), groups=()),
+    Case("console.cli", "console::cli_management::store_group_replica_round_trip", (0, 0, 0), True, groups=(0,)),
+    Case("console.cli", "console::cli_hardware::rack_node_lifecycle", (0, 0, 0), True, groups=(0,)),
+    Case("console.cli", "console::cli_data::kv_put_get_delete_round_trip", (0, 0, 0), True, groups=(0,)),
+    Case("console.cli", "console::cli_registry::registry_hardware_uses_group_zero_across_cli_invocations", (0, 0, 0), True, groups=(0,)),
+    Case("console.cli", "console::cli_registry::registry_bootstrap_uses_sealed_intent_without_legacy_topology_file", (0, 0, 0), True, groups=(0,)),
+
+    Case("console.cli", "console::cli_registry::cli_uses_launch_registry_and_runtime_identity_without_legacy_state", (0, 0, 0), True, groups=(0,)),
+    Case("console.web.authority", "console::web_authority::bare_metal_hardware_routes_share_confirmed_group_zero_state", console_web=True),
+    Case("console.web.authority", "console::web_authority::bare_metal_snapshot_requires_live_authority_without_a_docker_monitor", console_web=True),
+    Case("console.web.authority", "console::web_authority::snapshot_validates_later_replica_hosts_as_well_as_original_store_hosts", console_web=True),
+)
+
+
 DATASET_CASES = (
     Case("dataset.http", "access_dataset::listener_authenticates_and_serves_create_open"),
     Case("dataset.http", "access_dataset::publish_persist_restart_and_scan_round_trip"),
 )
 
-ALL_CASES = DATASET_CASES + ICEBERG_CASES + S3_LANGUAGE_CASES + S3_SPECIAL_CASES + S3_RECOVERY_CASES + S3_CASES + CHUNK_KV_CASES + CHUNK_CLIENT_CASES + CHUNK_STREAM_CASES + CHUNKDB_CASES + KV_CASES + DISKDB_CASES + DEPLOYMENT_CASES + DISKIO_CASES
+ALL_CASES = CONSOLE_OPERATION_CASES + DATASET_CASES + ICEBERG_CASES + S3_LANGUAGE_CASES + S3_SPECIAL_CASES + S3_RECOVERY_CASES + S3_CASES + CHUNK_KV_CASES + CHUNK_CLIENT_CASES + CHUNK_STREAM_CASES + CHUNKDB_CASES + KV_CASES + DISKDB_CASES + DEPLOYMENT_CASES + DISKIO_CASES
+
+def select_cases(layer="all", scope="all", case_name=None):
+    return tuple(case for case in ALL_CASES
+                 if (layer == "all" or case.scope.startswith(layer + "."))
+                 and (scope == "all" or case.scope == scope or case.scope.startswith(scope + ".")
+                      or (scope == "console.operations" and case in CONSOLE_OPERATION_CASES))
+                 and (not case_name or case.name == case_name))
+
 
 def case_nodes(case):
+    if case.console_web:
+        return 5
     if case.service_selection:
         return 1
     if case.access_protocol or case.scope.startswith("dataset."):
@@ -315,6 +405,8 @@ def case_resources(case, node_cpus):
 
 
 def allocate_cluster(case, image, artifacts, bundle, data_root):
+    if case.console_web:
+        return ConsoleWebCluster(image, artifacts, data_root=data_root)
     if case.scope.startswith("dataset."):
         return AccessDatasetCluster(image, artifacts, bundle, data_root=data_root)
     if case.scope.startswith("iceberg."):
@@ -361,8 +453,7 @@ def allocate_cluster(case, image, artifacts, bundle, data_root):
 
 
 def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case_name=None, layer="all", node_cpus=0.5):
-    selected = tuple(case for case in ALL_CASES if (layer == "all" or case.scope.startswith(layer + ".")) and (scope == "all" or case.scope == scope or case.scope.startswith(scope + "."))
-                     and (not case_name or case.name == case_name))
+    selected = select_cases(layer, scope, case_name)
     if not selected:
         raise ValueError(f"no migrated cases for scope {scope}")
 

@@ -963,3 +963,98 @@ Source: `app/crowdb-kv-server/`. Tests: 9 files.
   - `dataset.http` / `listener_authenticates_and_serves_create_open`: client 1.028 s; fixture 14.811 s.
 
 - Dataset component tests remain: 30 core, 3 retention, 2 adapter and 2 transport tests passed. Two inline HTTP listener owners now run against formal release containers. The publish owner retains its original snapshot/manifest/scan assertions, adds exact payload bytes and restarts Dataset plus Chunk-KV before reading. Publication allocates the authoritative snapshot ID; expected metadata uses the returned ID, preserving original behavior.
+
+### Container FileIO profile acceptance
+
+- `run-087b7c04f0bc47b68b603d3b27fc1f03`: both owners pass; scenario wall 68.166 s.
+- Source `be5757bb7db1089ec18c59e18fd3944518a27a52`; image config `sha256:6331286a54f51737387e610183a899c5d8dade8284f1a6ab5734bfcbc04b94e9`.
+
+| Scope             | Named flow          | Client (s) | Fixture (s) |
+| ----------------- | ------------------- | ---------- | ----------- |
+| iceberg.benchmark | small_file_profiles |     37.125 |      49.716 |
+| iceberg.benchmark | five_mib_profile    |      4.524 |      18.435 |
+
+- Three small-file sizes retain 128 requests each at concurrency 1 and 32, all preparation/allocation/feed/frame counters, and complete GET bytes. The 5 MiB owner retains direct/multipart operation budgets, exact path metrics, chunk geometry, composite ETag and complete bytes. Both now use persistent protected release storage; old native NullDisk profile sources retire after this gate.
+
+### Fresh Console operations and FileIO acceptance
+- Formal image source `712bafe63bcc0bd1f63a574f5350e900da2321c0`; config `sha256:c6c054e56522efcdde98366cabd114571e13e3253cf4cc1c9e650819dd75faf6`.
+
+- `run-f1e60806f97f447283bc24ce904c1cf4`: 68 passing owners.
+
+| Scope                     | Named flow                                                                                     | Client (s) | Fixture (s) |
+| ------------------------- | ---------------------------------------------------------------------------------------------- | ---------- | ----------- |
+| console.bootstrap         | changed_bootstrap_topology_is_rejected_before_group_zero_mutation                              |      0.095 |       4.054 |
+| console.bootstrap         | committed_group_zero_is_verified_before_stale_intent_is_removed                                |      0.229 |       3.908 |
+| console.bootstrap         | interrupted_bootstrap_restores_identity_then_clears_verified_intent                            |      0.195 |       3.600 |
+| console.bootstrap         | bootstrap_preflights_logical_conflicts_before_publishing_missing_hardware                      |      0.255 |       4.274 |
+| console.bootstrap         | bootstrap_publishes_shared_hardware_labels_and_credential_reference                            |      0.366 |       4.595 |
+| console.bootstrap         | bootstrap_rejects_a_different_rack_name_even_when_membership_matches                           |      0.179 |       4.219 |
+| console.bootstrap         | bootstrap_rejects_conflicting_hardware_without_overwriting_authority                           |      0.172 |       4.086 |
+| console.bootstrap         | bootstrap_resumes_missing_records_and_preserves_committed_revisions                            |      0.390 |       3.897 |
+| console.bootstrap         | bootstrap_retry_preserves_known_rack_membership_and_node_runtime_fields                        |      0.197 |       4.147 |
+| console.bootstrap         | clean_requires_confirmed_group_replicas                                                        |      0.261 |       4.262 |
+| console.cleanup           | failed_group_deletion_preserves_all_authority_records                                          |      0.251 |       4.010 |
+| console.cleanup           | failed_store_deletion_preserves_all_authority_records                                          |      0.189 |       4.021 |
+| console.cleanup           | group_deletion_cleans_replicas_and_preserves_siblings                                          |      0.245 |       4.262 |
+| console.cleanup           | group_deletion_reconciles_a_lost_metadata_response                                             |      0.345 |       4.187 |
+| console.cleanup           | store_deletion_cleans_descendants_and_reaches_later_replica_hosts                              |      0.227 |       3.969 |
+| console.cleanup           | store_deletion_reconciles_a_lost_metadata_response                                             |      0.395 |       4.439 |
+| console.cleanup           | missing_peer_endpoint_rolls_back_without_publishing_membership                                 |      0.325 |       4.374 |
+| console.cleanup           | peer_wiring_failure_rolls_back_without_publishing_membership                                   |      0.257 |       3.900 |
+| console.cleanup           | replica_creation_requires_every_existing_peer_endpoint                                         |      0.182 |       4.089 |
+| console.cleanup           | replica_creation_requires_every_existing_peer_registration                                     |      0.139 |       3.783 |
+| console.cleanup           | replica_creation_rolls_back_when_new_endpoint_is_missing                                       |      0.209 |       3.623 |
+| console.cleanup           | automatic_replica_identity_exhaustion_is_validation_error                                      |      0.125 |       3.735 |
+| console.cleanup           | existing_replica_host_is_rejected_before_local_mutation                                        |      0.131 |       3.934 |
+| console.cleanup           | failed_group_creation_removes_new_store                                                        |      0.188 |       4.061 |
+| console.cleanup           | failed_rollback_is_reported                                                                    |      0.205 |       4.073 |
+| console.cli               | kv_put_get_delete_round_trip                                                                   |      0.447 |       4.308 |
+| console.cli               | cluster_node_list_ignores_legacy_local_state                                                   |      0.204 |       4.069 |
+| console.cli               | cluster_rack_list_ignores_legacy_local_state                                                   |      0.197 |       4.154 |
+| console.cli               | cluster_status_via_direct_group0                                                               |      0.133 |       4.017 |
+| console.cli               | destroy_reads_group_zero_and_requires_launch_registry                                          |      0.482 |       4.352 |
+| console.cli               | incremental_local_deploy_reads_group_zero_instead_of_legacy_file                               |      0.168 |       4.301 |
+| console.cli               | kv_server_controls_require_launch_registry                                                     |      0.144 |       3.780 |
+| console.cli               | rack_node_lifecycle                                                                            |      0.456 |       4.161 |
+| console.cli               | store_group_replica_round_trip                                                                 |      1.840 |       5.556 |
+| console.cli               | cluster_status_topology_via_direct_group0                                                      |      0.355 |       4.240 |
+| console.cli               | cli_uses_launch_registry_and_runtime_identity_without_legacy_state                             |      0.748 |       4.551 |
+| console.cli               | registry_bootstrap_uses_sealed_intent_without_legacy_topology_file                             |      0.341 |       4.250 |
+| console.cli               | registry_hardware_uses_group_zero_across_cli_invocations                                       |      0.594 |       4.549 |
+| console.clients           | put_get_delete_cycle                                                                           |      0.782 |       2.394 |
+| console.clients           | full_store_group_remote_cycle                                                                  |      1.505 |       2.927 |
+| console.deployment        | authenticated_node_update_preserves_ids_and_converges_from_another_console                     |      0.190 |       4.182 |
+| console.deployment        | concurrent_admissions_allocate_unique_stable_ids_through_group_zero                            |      0.495 |       4.196 |
+| console.deployment        | service_retries_retain_identity_and_other_nodes_cannot_claim_the_same_service                  |      0.192 |       3.911 |
+| console.discovery         | cache_hit_within_ttl                                                                           |      0.195 |       4.656 |
+| console.discovery         | chunk_kv_raw_observation_preserves_load_and_partition_state                                    |      0.161 |       4.618 |
+| console.discovery         | discover_by_endpoint_found                                                                     |      0.146 |       3.959 |
+| console.discovery         | discover_by_endpoint_not_found                                                                 |      0.106 |       3.499 |
+| console.discovery         | discover_registered_diskdb_instance                                                            |      0.170 |       4.376 |
+| console.discovery         | empty_registry_returns_error                                                                   |      0.058 |       3.155 |
+| console.discovery         | expired_instance_filtered                                                                      |      0.126 |       3.401 |
+| console.discovery         | invalidate_forces_refresh                                                                      |      0.230 |       4.189 |
+| console.discovery         | round_robin_selection                                                                          |      0.066 |       3.616 |
+| console.discovery         | zero_ttl_disables_caching                                                                      |      0.137 |       3.405 |
+| console.hardware          | committed_disk_group_survives_a_lost_response                                                  |      0.381 |       3.736 |
+| console.hardware          | committed_rack_survives_a_lost_conditional_write_response                                      |      0.115 |       3.814 |
+| console.hardware          | concurrent_node_creates_preserve_both_rack_memberships                                         |      0.202 |       3.651 |
+| console.hardware          | separate_consoles_confirm_matching_hardware_and_reject_conflicts                               |      0.255 |       3.621 |
+| console.hardware          | two_consoles_share_disk_groups_and_disks_without_local_topology                                |      0.442 |       3.966 |
+| console.logical           | group_and_initial_replica_share_one_committed_revision                                         |      0.157 |       3.751 |
+| console.logical           | group_creation_prepares_a_local_store_on_new_nodes                                             |      0.154 |       3.729 |
+| console.logical           | lost_batch_response_confirms_complete_group_membership                                         |      0.245 |       3.927 |
+| console.logical           | orphan_membership_is_not_overwritten_by_group_creation                                         |      0.264 |       4.043 |
+| console.logical           | committed_store_is_confirmed_after_its_write_response_is_lost                                  |      0.094 |       4.071 |
+| console.logical           | concurrent_conflicting_store_publication_is_preserved                                          |      0.268 |       4.237 |
+| console.logical           | concurrent_matching_store_publication_is_confirmed                                             |      0.165 |       4.031 |
+| console.web.authority     | bare_metal_hardware_routes_share_confirmed_group_zero_state                                    |      0.510 |       6.121 |
+| console.web.authority     | bare_metal_snapshot_requires_live_authority_without_a_docker_monitor                           |     13.110 |      33.317 |
+| console.web.authority     | snapshot_validates_later_replica_hosts_as_well_as_original_store_hosts                         |      0.177 |       6.148 |
+
+- `run-b4c543cc563746e389617b8a680f20b6`: 2 passing owners.
+
+| Scope                     | Named flow                                                                                     | Client (s) | Fixture (s) |
+| ------------------------- | ---------------------------------------------------------------------------------------------- | ---------- | ----------- |
+| iceberg.benchmark         | five_mib_profile                                                                               |      4.269 |      18.827 |
+| iceberg.benchmark         | small_file_profiles                                                                            |     40.945 |      56.008 |

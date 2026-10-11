@@ -20,6 +20,9 @@ def run_client(bundle, addresses, token, phase, artifacts,
                CROWDB_E2E_CLIENT_ROOT=str(Path(bundle) / "clients"))
     bypass = ",".join(filter(None, [env.get("NO_PROXY", ""), env.get("no_proxy", ""), *addresses]))
     env.update(NO_PROXY=bypass, no_proxy=bypass)
+    cli = Path(bundle) / "crowdb-cli"
+    if cli.is_file():
+        env["CROWDB_E2E_CLI_BIN"] = str(cli)
     sdk = Path(bundle) / "iceberg-rust-client"
     if sdk.is_file():
         env["CROWDB_ICEBERG_RUST_CLIENT_BIN"] = str(sdk)
@@ -110,3 +113,20 @@ def bundle_iceberg_java(output):
     print(result.stdout + result.stderr, end="", flush=True)
     if result.returncode:
         raise RuntimeError("pinned Apache Iceberg Java clients failed to compile")
+
+
+def bundle_cli(output):
+    """Build the host CLI once and pin its executable alongside the test client."""
+    result = subprocess.run(["cargo", "build", "--locked", "-p", "crowdb-cli", "--bin", "crowdb-cli",
+                             "--message-format=json"], capture_output=True, text=True, check=False, timeout=600)
+    print(result.stderr, end="", flush=True)
+    if result.returncode:
+        print(result.stdout, end="", flush=True)
+        raise RuntimeError("host CLI compilation failed")
+    binaries = [item["executable"] for line in result.stdout.splitlines() if line.startswith("{")
+                and (item := json.loads(line)).get("target", {}).get("name") == "crowdb-cli"
+                and item.get("executable")]
+    if len(binaries) != 1:
+        raise RuntimeError("missing or ambiguous host CLI executable")
+    shutil.copy2(binaries[0], Path(output) / "crowdb-cli")
+

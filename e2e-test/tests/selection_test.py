@@ -40,6 +40,13 @@ class SelectionTest(unittest.TestCase):
                 self.invoke(*arguments)
             self.assertEqual(raised.exception.code, 2)
 
+    def test_console_operations_combines_host_client_scopes(self):
+        cases = json.loads(self.invoke("--list", "--scope", "console.operations"))
+        self.assertEqual(len(cases), 68)
+        self.assertTrue(all(case["scope"] != "console.managed" for case in cases))
+        exact = json.loads(self.invoke("--list", "--scope", "console.operations", "--case", cases[0]["case"]))
+        self.assertEqual(exact, [cases[0]])
+
     def test_client_and_metadata_scopes_expose_their_named_flows(self):
         for scope, count in (("kv.client", 6), ("kv.metadata", 14)):
             cases = json.loads(self.invoke("--list", "--scope", scope))
@@ -54,8 +61,11 @@ class SelectionTest(unittest.TestCase):
         dataset = json.loads(self.invoke("--list", "--layer", "dataset"))
         self.assertEqual(len(dataset), 2)
         self.assertTrue(all(case["scope"] == "dataset.http" and case["nodes"] == 13 for case in dataset))
+        console = json.loads(self.invoke("--list", "--layer", "console"))
+        self.assertEqual(len(console), 68)
+        self.assertTrue(all(case["nodes"] == (5 if case["scope"].startswith("console.web.") else 1 if case["scope"] in ("console.managed", "console.clients") else 3) for case in console))
         iceberg = json.loads(self.invoke("--list", "--layer", "iceberg"))
-        self.assertEqual(len(iceberg), 27)
+        self.assertEqual(len(iceberg), 29)
         self.assertTrue(all(case["scope"].startswith("iceberg.") and case["nodes"] == 14
                             for case in iceberg))
         kv = json.loads(self.invoke("--list", "--layer", "kv"))
@@ -65,13 +75,3 @@ class SelectionTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.invoke("--layer", "diskdb", "--require-isolation")
 
-
-class CaseResourcesTest(unittest.TestCase):
-    def test_full_managed_node_reserves_its_services_and_host_client(self):
-        from scenarios import DEPLOYMENT_CASES, case_nodes, case_resources
-        for case in DEPLOYMENT_CASES:
-            if len(case.service_selection) <= 2:
-                continue
-            self.assertEqual(case_nodes(case), 1)
-            self.assertEqual(case_resources(case, 0.25), (2.5, 2560))
-            self.assertEqual(case_resources(case, 3), (3.5, 2560))

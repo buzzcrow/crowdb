@@ -11,6 +11,7 @@ mod chunk_kv;
 mod chunk_stream;
 mod chunkdb;
 mod common;
+mod console;
 mod deployment;
 mod diskdb;
 mod diskio;
