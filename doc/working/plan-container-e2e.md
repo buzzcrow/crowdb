@@ -9,7 +9,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 
 ## Resume context
 
-- Branch `task-deploy`; latest accepted host-network migration is committed as `2a8c1400`. R230 is unfinished. Do not delete the
+- Branch `task-deploy`; latest accepted containerd migration is committed as `92cdfc95`. R230 is unfinished. Do not delete the
   requirement/backlog entry until every remaining owner and required gate passes.
 - Working tree contains uncommitted Console browser migration drafts. Shared-image CI is committed. S3 node-fault migration and local-state component proofs are accepted.
   Preserve these drafts. `e2e-test/clients/console-ui/node_modules/` is local
@@ -19,7 +19,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   `sha256:40b41c9f808a262d78236e5b1acbe685ca7de37e5b695089ea3e0f9c029e5979`;
   config digest
   `sha256:b51eae855a8b8d35aeb65cc1bf30622ee7ae0d04f4d2e7b1a73a10bfb7ff3fe5`.
-  Receipt: `target/crowdb.oci.tar.json`. Rebuild only when release inputs change;
+  Receipt: `target/crowdb.oci.tar.json`. The learner-heartbeat production fix requires a fresh image after its component gate. Rebuild only when release inputs change;
   never bypass source/image provenance checks.
 - Containers run formal servers, host processes run clients. Fixed ports,
   inspected IPs, independent networks/data mounts, and three actual KV voters
@@ -33,11 +33,6 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   using an export of the staged source. Console browser drafts are excluded.
   Retained S3 component UT pass 5/5; Web/Console-shared/E2E all-target clippy
   and workspace fmt pass.
-
-- Complete Iceberg domain passes 32/32 in 1515.042 seconds on this image,
-  `run-9dd41619b7a04bd3b7e0693e3b432b74`; the full retirement grace client
-  takes 1205 seconds. Earlier failed evidence remains in
-  `run-c955f9edebe2413b8c9469379667d0c8` and `/tmp/crowdb-iceberg-32-final-domain.log`.
 
 ## Remaining migrations
 
@@ -57,21 +52,24 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   endpoints; signaling validates service PID and run ownership. Preserve UI
   assertions and remove native runners only after matching acceptance. Current
   root Console operation inventory is 87 cases; the two draft browser cases are additional.
-- [~] **Bridge SSH admission profile**: reconcile
-  `container/single-node-container/tests/node-containers.py`, `node-admission.py`,
-  `node-bootstrap.py` and `node-recovery.py` with accepted root deployment flows.
-  Move remaining distinct public SSH admission/authentication, literal credential,
-  stale intent and recovery assertions under the root runner; these already use
-  formal server containers. `lib/crowdb-console-shared/tests/launch_ssh_test.rs`
-  is a fake SSH peer plus sleep child and remains a component UT. Original
-  three-node browser selection failed twice: first the rack POST remained
-  pending, then the initial `/api/mode` request remained pending. Traces:
-  `app/crowdb-web/ui/e2e/test-results/crowdb-node-test-879d890b` and
-  `crowdb-node-test-961c2cc9`; logs `/tmp/crowdb-bridge-admission-before-relocation.log`
-  and `/tmp/crowdb-bridge-admission-serial-check.log`. One-node probes before
-  and after interrupted-preparation cleanup pass rack/node/server requests in
-  milliseconds. Browser first divergence remains unresolved; do not classify
-  these pending requests as a confirmed readonly-policy failure.
+- [~] **Bridge SSH admission profile**: accept the draft root
+  `--profile bridge-admission` before retiring the four original scripts under
+  `container/single-node-container/tests/`. The draft uses inspected container
+  IPs, fixed Web/SSH ports, private host mounts, five release nodes at peak and
+  a host browser; declared budget is 3.5 CPU / 6144 MiB at 0.5 CPU/node.
+  Four browser flows, wrong-password admission, cancelled preparation fencing,
+  remote service lifecycle and independent-cluster cleanup pass in
+  `run-70a54001bb024a0586f0955c326b1217`; the full profile fails at fifth-node
+  Group-0 replica join: WAL catch-up exceeds the unchanged 10-second deadline.
+  Snapshot imports slot 84 while the leader continues committing. The leader
+  heartbeat currently excludes non-voting replicas. Two component regression
+  tests reproduce missing learner heartbeats and pass after fanout repair with
+  voter-only lease quorum. Complete KV group gate passes 121/121 (44.53 seconds);
+  all-target KV clippy passes. Rebuild the formal image and rerun the complete
+  profile plus interruption cleanup. Log: `/tmp/crowdb-root-bridge-admission-data.log`.
+  Keep `launch_ssh_test.rs` (fake SSH peer/sleep child) as component UT. Old
+  loopback-published browser traces remain under `test-results/crowdb-node-test-879d890b`
+  and `crowdb-node-test-961c2cc9`; do not relabel pending requests as readonly errors.
 - [ ] **External engine profile**: classify/move
   `container/single-node-container/tests/ecosystem/` as an explicit manual child
   under `e2e-test/clients/`; Python, DuckDB, Trino, Spark and Flink consume one
@@ -100,55 +98,12 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   preparation. `test-storage`/`test-access` component cleanup is committed;
   native Console paths remain. Manual TPC is now an explicit root scope with a separate locked host environment. Java FileIO has SDK ownership and
   foreground GC has the native GC delegate; preserve these distinct selections.
-- [ ] **Close CI classification**: finish selectors after the remaining native
-  owners and managed browser contract are resolved. Shared-image jobs now cover
-  all accepted container domains on one source-pinned formal artifact; debug
-  info and diagnostics are retained. Console selects its 87 accepted operation
-  owners, excluding unaccepted browser drafts. Iceberg executes the complete
-  32-case domain once, including Rust SDK; the separate SDK component job needs
-  no image. Resource audit fits every declared case: S3 maximum 3.9 CPU /
-  7872 MiB in a 4 CPU / 8192 MiB job, Iceberg maximum 4 CPU / 11264 MiB in
-  12288 MiB. YAML and 28-package task reachability pass. The isolated component
-  SDK gate passes eight tests. Console 87-operation measurement passes in 627.744 seconds at 0.25 CPU/server,
-  one effective case slot, 4 CPU / 8192 MiB,
-  `run-29a68eb2454c4fe5baf55c3d6cd8b610`; recovery and TERM/KILL owners are included. Private Access deployment passes in
-  `run-39606819b51543abb1a03e7509906a66`;
-  source CLI/Web early-exit validation remains component-local. Web TERM/KILL
-  acceptance passes with two concurrent isolated namespaces in
-  `run-0a9ddc754927435bb0be473e41a70d9f`: TERM reaps the real child, KILL leaves
-  it alive with an exact process-owner record, owned cleanup removes ephemeral
-  data and preserves operator data. All actual-server owners are removed from
-  `standalone_startup_test.rs`; failed-publication UT remains. The unchanged
-  component clean-env proof retains stale/persistent-owner and claim-pruning
-  assertions, complemented by host-controller PID-reuse ownership guards. Low-quota S3 node-two restart revealed missing
-  dependency readiness; staged startup barriers now pass all three node faults
-  and protected restart at 0.2 CPU/server with a 4 CPU / 8192 MiB budget. Logs:
-  `/tmp/crowdb-s3-ci-quota-ready.log` and
-  `/tmp/crowdb-s3-protected-ci-quota-ready.log`. Keep the failed evidence in
-  `run-13a1737806c349b3b051ee3f5c68c46e`. Deployer local orchestration now uses a pinned Console protocol peer and fake
-  sleep children: two cases pass in 0.20 seconds, including actual local PID
-  reaping after early HTTP stop acknowledgement, stop <5 seconds, reset <1
-  second and three reset-before-reprovision cycles without store/child leakage.
-  The empty Web reset proof remains component-local. Packaged KV leader and
-  endpoint resolution are covered by `console::server_management::full_store_group_remote_cycle`;
-  packaged deployment/restart/stop by `console::web_kv_lifecycle::deploy_restart_and_stop_retains_fixed_ports_and_workspace`,
-  and three-container restoration by `console::web_cluster_recovery`.
-  The old real-server Deployer owners and silent binary skips are removed.
-  Containerd special profiles are now rooted in `e2e-test/profiles/`, with
-  canonical `--profile containerd-host` and `--profile containerd-cluster`.
-  Manual/single host resource/readonly/restart identity passes in 135.334 seconds
-  (`run-03a731dc50974a01b4a7603177c4ff3e`); three-host SSH admission/quorum/member
-  recovery passes in 122.033 seconds at 0.75 CPU/node, declared 3.5 CPU /
-  5120 MiB inside a 4 CPU / 6144 MiB budget
-  (`run-101ddfb3c22d4a7587b78eccd9c49b9d`). Both reuse the verified OCI digest,
-  retain private node/daemon logs under host bind mounts, and use pinned Ubuntu
-  Linux host providers without an internal Docker socket. Old server acceptance
-  Partial-startup interruption also fails visibly and removes every owned
-  Linux host/network (`/tmp/crowdb-containerd-interrupt-final`); cleanup continues
-  across individual failures and refuses unexpected labeled resources. Old
-  owners are removed from OCI packaging tests; Docker preview/release delegates
-  now use the root profiles. Artifact/build/runtime-sandbox/policy tests remain
-  with packaging. Actual remote CI has not run.
+- [ ] **Close CI classification**: finish selectors after native owners and the
+  managed browser contract are resolved. Required domain jobs share one verified
+  formal artifact; special host/containerd gates use root profiles. Add the
+  accepted bridge-admission delegate and locked host browser preparation. Check
+  each job's CPU/memory reservation and upload only redacted diagnostics.
+  Actual remote CI has not run.
 - [ ] **Final regression and measurements**: run full Iceberg/Console and required registered layers on the same image,
   then relevant component/fmt/lint gates. Update `doc/working/test.md` using one
   row per domain and actual complete-run counts/wall times/environment/image.

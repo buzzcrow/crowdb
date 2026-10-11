@@ -5,6 +5,7 @@
 #![cfg(feature = "test-util")]
 
 use crate::cluster::group::{PxGroup, RepairOutcome};
+use crate::cluster::group_election::LeaderElection;
 use crate::paxos::roles::SlotIndex;
 use crate::paxos::PxNodeId;
 
@@ -13,6 +14,18 @@ use crate::paxos::PxNodeId;
 /// repair step, and peer-applied injection — to integration tests under
 /// `tests/` without permanently widening the production public API.
 impl PxGroup {
+    /// Run one heartbeat round without depending on the election timer.
+    pub async fn heartbeat_round_for_tests(self: &std::sync::Arc<Self>) -> bool {
+        matches!(
+            self.run_heartbeat_round(
+                &self.election_config(),
+                self.local_replica().current_term_snapshot()
+            )
+            .await,
+            crate::cluster::group_election::HeartbeatOutcome::Continued { quorum_acked: true }
+        )
+    }
+
     /// Acquire all inflight admission permits across all queues so a
     /// test can exhaust the window and observe `ProposeResult::Busy`
     /// (Reject mode) or blocking (Queue mode). Returns permits that

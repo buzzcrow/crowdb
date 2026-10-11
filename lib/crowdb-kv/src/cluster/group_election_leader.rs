@@ -35,7 +35,7 @@ fn spawn_cancel_bridge(parent: CancellationToken, child: CancellationToken) {
     );
 }
 
-use crate::cluster::group::{PendingReadBarrier, PxGroup};
+use crate::cluster::group::{PendingReadBarrier, PxGroup, RemoteReplicaKind};
 use crate::cluster::group_election::{
     HeartbeatOutcome, LeaderElection, PendingLeaderHandoff, ReadBarrierOutcome, StepDownReason,
 };
@@ -90,7 +90,7 @@ impl PxGroup {
         self.proposing_term.store(term, Ordering::Release);
     }
 
-    /// Fan out one heartbeat round to all voting peers.
+    /// Fan out heartbeats to all peers; only voters renew the lease.
     ///
     /// On quorum-OK: extends `lease_read_until` and bumps
     /// `last_quorum_heartbeat_at`. On any peer reply with
@@ -103,7 +103,10 @@ impl PxGroup {
     ) -> HeartbeatOutcome {
         let replica = self.local_replica();
         let group_id = self.group_id;
-        let voting_peers = self.voting_remote_ids();
+        let peers = self.remote_replicas.iter().filter_map(|remote| match remote {
+            RemoteReplicaKind::Real(remote) => Some((remote.node_id, remote.voting)),
+            RemoteReplicaKind::Placeholder => None,
+        });
         let quorum = self.quorum();
         let t_send = lease_now();
         // `t_send_ms_mono` is monotonic millis since the process-start
@@ -120,16 +123,11 @@ impl PxGroup {
             t_send_ms_mono,
         };
 
-        // Single-voter clusters trivially have quorum; renew lease without RPCs.
         let mut acks: usize = 1;
-        if acks >= quorum {
-            replica.renew_lease(t_send, cfg);
-            return HeartbeatOutcome::Continued { quorum_acked: true };
-        }
 
-        let mut joinset: tokio::task::JoinSet<(PxNodeId, Result<HeartbeatReply, PxReplicaError>)> =
+        let mut joinset: tokio::task::JoinSet<(PxNodeId, bool, Result<HeartbeatReply, PxReplicaError>)> =
             tokio::task::JoinSet::new();
-        for peer_id in voting_peers {
+        for (peer_id, voting) in peers {
             let group_for_task = self.clone();
             let req = payload;
             joinset.spawn(
@@ -139,14 +137,26 @@ impl PxGroup {
                     } else {
                         Err(PxReplicaError::Internal(format!("peer {peer_id} not present")))
                     };
-                    (peer_id, result)
+                    (peer_id, voting, result)
                 }
                 .instrument(tracing::Span::current()),
             );
         }
 
+        // A singleton still sends the commit frontier to joining learners.
+        if acks >= quorum {
+            replica.renew_lease(t_send, cfg);
+            tokio::spawn(
+                async move { while joinset.join_next().await.is_some() {} }
+                    .instrument(tracing::Span::current()),
+            );
+            return HeartbeatOutcome::Continued { quorum_acked: true };
+        }
+
         while let Some(joined) = joinset.join_next().await {
-            let Ok((peer_id, reply)) = joined else { continue };
+            let Ok((peer_id, voting, reply)) = joined else {
+                continue;
+            };
             match reply {
                 Ok(hb) => {
                     if hb.term > leader_term {
@@ -162,7 +172,7 @@ impl PxGroup {
                         return HeartbeatOutcome::SteppedDown { peer_term: hb.term };
                     }
                     if hb.success {
-                        acks += 1;
+                        acks += usize::from(voting);
                         // R65: catch-up is now follower-driven (FetchGap).
                         // The heartbeat round is pure liveness + lease: send
                         // heartbeats, collect replies, check higher term,
