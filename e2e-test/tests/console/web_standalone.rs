@@ -41,6 +41,44 @@ async fn empty_ui_persists_rack_and_node_across_restart() {
         .unwrap()
         .status()
         .is_success());
+    for path in ["/", "/some/spa/route"] {
+        let response = http
+            .get(format!("http://{}:9090{path}", addresses[0]))
+            .send()
+            .await
+            .unwrap();
+        assert!(response.status().is_success());
+        assert!(response.text().await.unwrap().contains("id=\"root\""));
+    }
+    assert_eq!(
+        http.get(format!("http://{}:9090/healthz", addresses[0]))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap(),
+        "ok"
+    );
+    let racks = http
+        .get(format!("http://{}:9090/api/racks", addresses[0]))
+        .send()
+        .await
+        .unwrap();
+    assert!(racks.status().is_success());
+    assert!(racks.headers()[reqwest::header::CONTENT_TYPE]
+        .to_str()
+        .unwrap()
+        .starts_with("application/json"));
+    let traversal = http
+        .get(format!("http://{}:9090/../Cargo.toml", addresses[0]))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(!traversal.contains("[package]") && !traversal.contains("[workspace]"));
     request(&http, "/api/racks", Some(json!({"id":1,"name":"saved-rack"}))).await;
     request(
         &http,

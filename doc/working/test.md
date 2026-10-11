@@ -1185,6 +1185,8 @@ Source: `app/crowdb-kv-server/`. Tests: 9 files.
 
 ### Standalone release Web persistence
 
+- The empty-UI case additionally owns shipped SPA root/deep-link/API/health/traversal acceptance: strengthened run `run-ed609d7c88714ab58ac193cfe46214e8`, 1.206-second host client. Distinct missing-UI fallback routing remains one oneshot component proof (0.02 seconds), replacing four ephemeral listener tests (0.11-second baseline).
+
 - Accepted concurrently at 0.25 CPU per container in `run-606e79c944934ad28f5a2d5231f1f835`. Host HTTP client, fixed 9090, original 20-second startup bound and abrupt Web termination.
 
 | Scope                  | Named flow                                           | Client (s) | Fixture (s) |
