@@ -106,12 +106,21 @@ class ImageIdentityTest(unittest.TestCase):
     def test_unpackaged_operator_documentation_reuses_image_but_entrypoint_changes_do_not(self):
         directory = self.root / "container/single-node-container"
         directory.mkdir(parents=True)
+        oci = self.root / "container/oci-image"
+        oci.mkdir(parents=True)
+        (oci / "README.md").write_text("operator instructions\n")
+        (oci / "Dockerfile").write_text("release image recipe\n")
         (directory / "README.md").write_text("operator instructions\n")
         (directory / "entrypoint.sh").write_text("release runtime\n")
         self.commit()
         revision = self.git("rev-parse", "HEAD")
+        (oci / "README.md").write_text("root containerd acceptance instructions\n")
         (directory / "README.md").write_text("new service-selection instructions\n")
         self.assertTrue(verify_server_sources(self.root, revision)["server_sources_match"])
+        (oci / "Dockerfile").write_text("changed image recipe\n")
+        with self.assertRaisesRegex(ValueError, "Dockerfile"):
+            verify_server_sources(self.root, revision)
+        (oci / "Dockerfile").write_text("release image recipe\n")
         (directory / "entrypoint.sh").write_text("changed runtime\n")
         with self.assertRaisesRegex(ValueError, "entrypoint.sh"):
             verify_server_sources(self.root, revision)

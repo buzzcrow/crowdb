@@ -102,7 +102,7 @@ jobs:
         pixi run python container/single-node-container/tests/node-containers.py
         pixi run test-container-e2e --profile host --concurrency 1 --cpus 4 --memory-mib 4096
         pixi install --locked --manifest-path container/oci-image/pixi.toml -e runtime
-        pixi run python container/oci-image/tests/containerd-cluster.py
+        pixi run test-container-e2e --profile containerd-cluster --concurrency 1 --node-cpus 0.75 --cpus 4 --memory-mib 6144
     - name: Record verified digest
       id: artifact
       run: pixi run python container/oci-image/ci-receipt.py target/crowdb.oci.tar
@@ -143,7 +143,7 @@ jobs:
     - name: Verify containerd host-network startup and recovery
       run: |
         set -o pipefail
-        pixi run sudo "$(command -v pixi)" run --as-is --manifest-path container/oci-image/pixi.toml -e runtime python container/oci-image/tests/containerd-host.py "$PWD/target/crowdb.oci.tar" 2>&1 | pixi run tee target/containerd-acceptance.log
+        pixi run test-container-e2e --profile containerd-host --concurrency 1 --cpus 3 --memory-mib 2048 --archive "$PWD/target/crowdb.oci.tar" 2>&1 | pixi run tee target/containerd-acceptance.log
     - uses: actions/upload-artifact@v4
       if: failure()
       with:

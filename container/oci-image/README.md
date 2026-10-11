@@ -166,11 +166,11 @@ Workflow execution and live registry signing require a release dispatch.
 pixi run test-oci-image
 pixi run --skip-deps test-single-node-container
 pixi run python container/single-node-container/tests/node-containers.py
-pixi run python container/single-node-container/tests/host-node.py
-pixi run python container/oci-image/tests/containerd-cluster.py
-# Administrator-started isolated Linux host, Docker absent:
-pixi run --manifest-path container/oci-image/pixi.toml -e runtime \
-  python container/oci-image/tests/containerd-host.py "$PWD/target/crowdb.oci.tar"
+pixi run test-container-e2e --profile host --concurrency 1 --cpus 4 --memory-mib 4096
+pixi run test-container-e2e --profile containerd-cluster --concurrency 1 --node-cpus 0.75 --cpus 4 --memory-mib 6144
+# One disposable privileged Linux host, with native containerd and no Docker socket inside:
+pixi run test-container-e2e --profile containerd-host --concurrency 1 --cpus 3 --memory-mib 2048 \
+  --archive "$PWD/target/crowdb.oci.tar"
 ```
 
 Developer-only `tests/build-sandbox.py` and `tests/runtime-sandbox.py` use system

@@ -9,7 +9,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 
 ## Resume context
 
-- Branch `task-deploy`; latest accepted local Deployer split is committed as `90645b38`. R230 is unfinished. Do not delete the
+- Branch `task-deploy`; latest accepted host-network migration is committed as `2a8c1400`. R230 is unfinished. Do not delete the
   requirement/backlog entry until every remaining owner and required gate passes.
 - Working tree contains uncommitted Console browser migration drafts. Shared-image CI is committed. S3 node-fault migration and local-state component proofs are accepted.
   Preserve these drafts. `e2e-test/clients/console-ui/node_modules/` is local
@@ -29,7 +29,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 - Delete original real-server owners only after equivalent accepted assertions.
   Keep deterministic component UT. Run executable commands through `pixi run`;
   native server gates require `clean-env`, never during another server gate.
-- Accepted fixture gate: 63 pass, `/tmp/crowdb-host-staged-fixture.log`,
+- Accepted fixture gate: 66 pass, `/tmp/crowdb-containerd-staged-fixture.log`,
   using an export of the staged source. Console browser drafts are excluded.
   Retained S3 component UT pass 5/5; Web/Console-shared/E2E all-target clippy
   and workspace fmt pass.
@@ -72,22 +72,6 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   and after interrupted-preparation cleanup pass rack/node/server requests in
   milliseconds. Browser first divergence remains unresolved; do not classify
   these pending requests as a confirmed readonly-policy failure.
-- [ ] **Containerd profiles**: root explicit profiles must own
-  `container/oci-image/tests/containerd-host.py` / `containerd-cluster.py`.
-  Host-network acceptance is migrated to `e2e-test/profiles/host-node.py` and
-  `--profile host --concurrency 1`, with the old owner removed after acceptance.
-  Same-image resource rejection, CPU/memory limits, SSH admission, identity
-  recovery and cleanup pass; private bind-mounted node data stays outside
-  uploaded artifacts. Root profile reserves 2.5 CPU / 1536 MiB and pins the
-  inspected release image and source. Docker preview/release delegates use it.
-  Acceptance: `run-9869315124ca45cb9ba3e3b3b245be90`, 6.740 seconds; explicit interruption
-  also fails visibly, reaps the owned node and retains report/data
-  (`/tmp/crowdb-host-interrupt-check`). Ownership guards reject changed image
-  or data mounts before teardown.
-  Preserve resource rejection, actual CPU/memory limits, real SSH admission,
-  persistent cluster/credential identity and cleanup. Host fixed ports require
-  exclusive scheduling; nested privileged Linux hosts and a containerd socket
-  are explicit prerequisites. Ordinary Docker bridge results do not prove them.
 - [ ] **External engine profile**: classify/move
   `container/single-node-container/tests/ecosystem/` as an explicit manual child
   under `e2e-test/clients/`; Python, DuckDB, Trino, Spark and Flink consume one
@@ -150,7 +134,21 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   packaged deployment/restart/stop by `console::web_kv_lifecycle::deploy_restart_and_stop_retains_fixed_ports_and_workspace`,
   and three-container restoration by `console::web_cluster_recovery`.
   The old real-server Deployer owners and silent binary skips are removed.
-  Actual remote CI has not run.
+  Containerd special profiles are now rooted in `e2e-test/profiles/`, with
+  canonical `--profile containerd-host` and `--profile containerd-cluster`.
+  Manual/single host resource/readonly/restart identity passes in 135.334 seconds
+  (`run-03a731dc50974a01b4a7603177c4ff3e`); three-host SSH admission/quorum/member
+  recovery passes in 122.033 seconds at 0.75 CPU/node, declared 3.5 CPU /
+  5120 MiB inside a 4 CPU / 6144 MiB budget
+  (`run-101ddfb3c22d4a7587b78eccd9c49b9d`). Both reuse the verified OCI digest,
+  retain private node/daemon logs under host bind mounts, and use pinned Ubuntu
+  Linux host providers without an internal Docker socket. Old server acceptance
+  Partial-startup interruption also fails visibly and removes every owned
+  Linux host/network (`/tmp/crowdb-containerd-interrupt-final`); cleanup continues
+  across individual failures and refuses unexpected labeled resources. Old
+  owners are removed from OCI packaging tests; Docker preview/release delegates
+  now use the root profiles. Artifact/build/runtime-sandbox/policy tests remain
+  with packaging. Actual remote CI has not run.
 - [ ] **Final regression and measurements**: run full Iceberg/Console and required registered layers on the same image,
   then relevant component/fmt/lint gates. Update `doc/working/test.md` using one
   row per domain and actual complete-run counts/wall times/environment/image.

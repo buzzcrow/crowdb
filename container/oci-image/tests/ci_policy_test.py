@@ -32,7 +32,9 @@ class ReleasePolicyTest(unittest.TestCase):
         self.assertIn("publisher release", str(jobs["publish"]))
         self.assertIn("test-single-node-container", str(jobs["verify"]))
         self.assertIn("node-containers.py", str(jobs["verify"]))
-        self.assertIn("host-node.py", str(jobs["verify"]))
+        self.assertIn("--profile host --concurrency 1", str(jobs["verify"]))
+        self.assertIn("--profile containerd-cluster --concurrency 1", str(jobs["verify"]))
+        self.assertIn("--profile containerd-host --concurrency 1", str(jobs["containerd"]))
 
     def test_missing_failed_or_stale_gate_rejects_publication(self):
         verified = {"version": "0.3.0", "revision": "revision", "image_digest": "sha256:digest"}

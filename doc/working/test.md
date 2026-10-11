@@ -61,6 +61,10 @@ are excluded. Console uses one effective case slot at 0.25 CPU/server with a
   in 6.740 seconds on intel7960, 2 CPU / 1024 MiB node quota
   plus the host client reservation; [report](../../.crowdb-runtime/artifacts/container-e2e/run-9869315124ca45cb9ba3e3b3b245be90/results.json).
   This special profile is separate from the bridge Deployment measurement.
+- **Containerd Linux hosts**: explicit profiles reuse the same OCI digest.
+  Manual/single host passes in 135.334 seconds ([report](../../.crowdb-runtime/artifacts/container-e2e/run-03a731dc50974a01b4a7603177c4ff3e/results.json));
+  three-host quorum/recovery passes in 122.033 seconds at 0.75 CPU/node,
+  4 CPU / 6144 MiB budget ([report](../../.crowdb-runtime/artifacts/container-e2e/run-101ddfb3c22d4a7587b78eccd9c49b9d/results.json)).
 - **macOS**: historical native task measurements below. Container migration
   acceptance has not been measured; Linux VM routing is not assumed.
 - **amd5950**: no recorded measurements.

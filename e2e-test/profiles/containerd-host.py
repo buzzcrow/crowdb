@@ -13,7 +13,9 @@ import time
 import urllib.request
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+OCI = Path(__file__).resolve().parents[2] / "container/oci-image"
+
+sys.path.insert(0, str(OCI))
 from artifact import receipt
 from builder import tool
 from runtime import Runtime
@@ -41,7 +43,7 @@ def wait(action, predicate, description, seconds=120):
 
 
 def scenario(runtime, image, data, secret, mode):
-    command = [sys.executable, str(Path(__file__).resolve().parents[1] / "run-node.py"),
+    command = [sys.executable, str(OCI / "run-node.py"),
                "--runtime", "containerd", "--address", runtime.command[2], "--snapshotter", "native", "--image", image,
                "--name", "crowdb-node", "--network", "host", "--data-root", str(data),
                "--physical-host-id", "containerd-acceptance-host", "--interface", "eth0",
@@ -104,7 +106,9 @@ def main():
         config.write_text('version = 4\ndisabled_plugins = ["io.containerd.cri.v1.images", "io.containerd.cri.v1.runtime", "io.containerd.grpc.v1.cri", "io.containerd.podsandbox.controller.v1.podsandbox"]\n')
         command = [tool("containerd"), "--config", str(config), "--root", str(root / "content"),
                    "--state", str(root / "state"), "--address", socket]
-        with (root / "daemon.log").open("w+") as log:
+        diagnostics = Path(os.environ["CROWDB_CONTAINERD_DATA"]) if "CROWDB_CONTAINERD_DATA" in os.environ else root
+        diagnostics.mkdir(parents=True, exist_ok=True)
+        with (diagnostics / "daemon.log").open("w+") as log:
             daemon = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
             runtime = Runtime("containerd", socket, snapshotter="native")
             try:
@@ -113,27 +117,27 @@ def main():
                                 "--local", "--snapshotter", "native", "--platform", "linux/amd64", "--base-name", "docker.io/crowdb/crowdb-acceptance", "--digests", str(args.archive.resolve())], check=True)
                 image = "docker.io/crowdb/crowdb-acceptance@" + verified["image_digest"]
                 if args.serve:
-                    data = root / "node"
+                    data = diagnostics / "node"
                     data.mkdir()
                     os.chown(data, 10001, 10001)
-                    secret = root / "password"
+                    secret = diagnostics / "password"
                     secret.write_text("containerd-test\n")
                     secret.chmod(0o600)
                     Path("/tmp/crowdb-containerd-address").write_text(socket)
-                    subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1] / "run-node.py"),
+                    subprocess.run([sys.executable, str(OCI / "run-node.py"),
                                     "--runtime", "containerd", "--address", socket, "--snapshotter", "native",
                                     "--image", image, "--name", "crowdb-node", "--network", "host",
                                     "--data-root", str(data), "--physical-host-id", os.uname().nodename,
-                                    "--interface", "eth0", "--cpus", "2", "--memory-mib", "1024",
+                                    "--interface", "eth0", "--cpus", os.environ.get("CROWDB_CONTAINERD_NODE_CPUS", "2"), "--memory-mib", "1024",
                                     "--password-file", str(secret)], check=True, timeout=90)
                     while daemon.poll() is None:
                         time.sleep(1)
                     raise RuntimeError("containerd exited during cluster acceptance")
                 for mode in ("manual", "single"):
-                    data = root / mode
+                    data = diagnostics / mode
                     data.mkdir()
                     os.chown(data, 10001, 10001)
-                    secret = root / "password"
+                    secret = diagnostics / "password"
                     secret.write_text("containerd-test\n")
                     secret.chmod(0o600)
                     scenario(runtime, image, data, secret, mode)
@@ -150,4 +154,7 @@ def main():
 
 
 if __name__ == "__main__":
+    def interrupt(_signal, _frame):
+        raise KeyboardInterrupt("containerd host interrupted")
+    signal.signal(signal.SIGTERM, interrupt)
     main()

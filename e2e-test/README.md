@@ -50,6 +50,9 @@ pixi run test-container-e2e --scope kv.management --concurrency 2
 pixi run test-container-e2e --layer kv --scope kv.isolation --require-isolation --concurrency 2
 # Explicit Linux host-network admission/recovery; run on an exclusive host:
 pixi run test-container-e2e --profile host --concurrency 1 --cpus 4 --memory-mib 4096
+# Explicit native containerd in isolated privileged Linux hosts:
+pixi run test-container-e2e --profile containerd-host --concurrency 1 --cpus 3 --memory-mib 2048
+pixi run test-container-e2e --profile containerd-cluster --concurrency 1 --node-cpus 0.75 --cpus 4 --memory-mib 6144
 # Select one exact client case or list available profiles without Docker:
 pixi run test-container-e2e --case kv::bootstrap::custom_replica
 pixi run test-container-e2e --list --scope kv.group0
@@ -65,6 +68,14 @@ chunk-stream, Chunk-KV, S3, Iceberg, Dataset, Console and deployment cases.
 The host profile retains its owned bind-mounted data/log/crash root and an exact
 image/source record; fixed ports require an exclusive Linux host. It is an
 explicit deployment acceptance and is excluded from ordinary bridge domains.
+Containerd profiles require the installed `container/oci-image` runtime Pixi
+environment and a verified OCI archive/receipt. They create one or three
+privileged Linux host containers, with no Docker socket inside them. Each host
+runs native containerd and a formal node; clients execute outside the formal
+node image. Private data/log/crash mounts survive teardown. The host profile
+retains its original 2 CPU / 1024 MiB node resource proof; the cluster profile
+reserves each configurable node quota plus 0.25 CPU of host overhead and a
+shared 0.5 CPU client. Artifact and image identities are verified before startup.
 Writable managed Console migration remains unresolved; complete migration and
 the all-domain gate are pending. DiskIO process-exit faults retain their network
 namespace, so the original 15-second stream/reader/repair bounds still apply.

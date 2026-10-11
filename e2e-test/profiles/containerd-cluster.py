@@ -3,6 +3,8 @@
 """Three isolated Linux hosts, each running a native-network containerd node."""
 
 import json
+import os
+import signal
 import subprocess
 import time
 import urllib.error
@@ -10,7 +12,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[2]
 HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
@@ -50,24 +52,34 @@ def control(host, operation):
 
 
 def main():
-    prefix = "crowdb-containerd-cluster-" + uuid.uuid4().hex[:8]
+    prefix = os.environ.get("CROWDB_CONTAINERD_PREFIX", "crowdb-containerd-cluster-" + uuid.uuid4().hex[:8])
+    archive = Path(os.environ.get("CROWDB_CONTAINERD_ARCHIVE", str(ROOT / "target/crowdb.oci.tar"))).resolve()
+    data_root = Path(os.environ["CROWDB_CONTAINERD_DATA"])
     pixi = docker("version", "--format", "{{.Server.Version}}")
     print("Disposable-host provider Docker " + pixi, flush=True)
     pixi = Path(subprocess.check_output(["which", "pixi"], text=True).strip()).resolve()
     hosts, origins = [], []
-    docker("network", "create", prefix)
+    docker("network", "create", "--label", f"org.crowdb.e2e.run={prefix}", prefix)
     try:
         for index in range(3):
             host = prefix + "-" + str(index)
             hosts.append(host)
-            docker("run", "-d", "--privileged", "--cgroupns", "host", "--network", prefix, "--name", host,
+            data = data_root / f"host{index}"
+            data.mkdir(parents=True)
+            docker("run", "-d", "--label", f"org.crowdb.e2e.run={prefix}",
+                   "--cpus", str(float(os.environ.get("CROWDB_CONTAINERD_NODE_CPUS", "2")) + 0.25), "--memory", "1536m", "--privileged", "--cgroupns", "host", "--network", prefix, "--name", host,
                    "--mount", f"type=bind,source={ROOT},target={ROOT},readonly",
+                   "--mount", f"type=bind,source={data},target=/opt/crowdb-e2e/data",
+                   "--mount", f"type=bind,source={archive},target=/opt/crowdb-e2e/archive.tar,readonly",
+                   "--mount", f"type=bind,source={archive}.json,target=/opt/crowdb-e2e/archive.tar.json,readonly",
+                   "--env", "CROWDB_CONTAINERD_DATA=/opt/crowdb-e2e/data",
+                   "--env", "CROWDB_CONTAINERD_NODE_CPUS=" + os.environ.get("CROWDB_CONTAINERD_NODE_CPUS", "2"),
                    "--mount", f"type=bind,source={pixi},target=/usr/local/bin/pixi,readonly",
                    "--mount", "type=bind,source=/etc/ssl/certs,target=/etc/ssl/certs,readonly",
-                   "--workdir", str(ROOT), "ubuntu:24.04", "/bin/bash", "-euc",
+                   "--workdir", str(ROOT), os.environ["CROWDB_CONTAINERD_HOST_IMAGE"], "/bin/bash", "-euc",
                    '! command -v docker; test ! -e /var/run/docker.sock; '
                    'pixi run --as-is --manifest-path container/oci-image/pixi.toml -e runtime '
-                   'python container/oci-image/tests/containerd-host.py target/crowdb.oci.tar --serve')
+                   'python e2e-test/profiles/containerd-host.py /opt/crowdb-e2e/archive.tar --serve')
             address = json.loads(docker("inspect", host))[0]["NetworkSettings"]["Networks"][prefix]["IPAddress"]
             origins.append("http://" + address + ":9090")
         snapshots = [wait(lambda origin=origin: request(origin, "/api/node/candidates"),
@@ -101,14 +113,28 @@ def main():
             control(host, "readiness")
         print("containerd three-host discovery, SSH admission, Group 0 quorum and member recovery passed", flush=True)
     finally:
+        errors = []
         for host in hosts:
             try:
                 print(control(host, "logs"), flush=True)
                 print(docker("logs", host), flush=True)
+            except Exception as error:
+                errors.append(str(error))
             finally:
-                docker("rm", "-f", host)
-        docker("network", "rm", prefix)
+                try:
+                    docker("rm", "-f", host)
+                except Exception as error:
+                    errors.append(str(error))
+        try:
+            docker("network", "rm", prefix)
+        except Exception as error:
+            errors.append(str(error))
+        if errors:
+            raise RuntimeError("containerd diagnostics/cleanup failed: " + "; ".join(errors))
 
 
 if __name__ == "__main__":
+    def interrupt(_signal, _frame):
+        raise KeyboardInterrupt("owned containerd cluster interrupted")
+    signal.signal(signal.SIGTERM, interrupt)
     main()
