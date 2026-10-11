@@ -9,6 +9,14 @@ use std::time::{Duration, Instant};
 static NEXT_REQUEST: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) async fn node(action: &str, index: usize) -> Value {
+    request(json!({"action": action, "node": index})).await
+}
+
+pub(crate) async fn configure_chunkdb(options: Value) -> Value {
+    request(json!({"action": "configure-chunkdb", "node": 4, "options": options})).await
+}
+
+async fn request(body: Value) -> Value {
     let directory = PathBuf::from(std::env::var("CROWDB_E2E_CONTROL").expect("owned lifecycle control"));
     let id = format!(
         "{}-{}",
@@ -17,7 +25,7 @@ pub(crate) async fn node(action: &str, index: usize) -> Value {
     );
     let path = directory.join(format!("{id}.request.json"));
     let temporary = path.with_extension("tmp");
-    std::fs::write(&temporary, json!({"action": action, "node": index}).to_string()).unwrap();
+    std::fs::write(&temporary, body.to_string()).unwrap();
     std::fs::rename(temporary, path).unwrap();
     let response = directory.join(format!("{id}.response.json"));
     let deadline = Instant::now() + Duration::from_secs(65);
@@ -27,10 +35,7 @@ pub(crate) async fn node(action: &str, index: usize) -> Value {
             assert_eq!(response["ok"], true, "fixture action failed: {response}");
             return response["result"].clone();
         }
-        assert!(
-            Instant::now() < deadline,
-            "fixture action {action} node {index} timed out"
-        );
+        assert!(Instant::now() < deadline, "fixture action {body} timed out");
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }

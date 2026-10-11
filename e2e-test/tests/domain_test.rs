@@ -3,6 +3,9 @@
 
 //! Host clients for packaged server domain acceptance.
 
+mod chunk_client;
+mod chunk_kv;
+mod chunk_stream;
 mod chunkdb;
 mod common;
 mod deployment;

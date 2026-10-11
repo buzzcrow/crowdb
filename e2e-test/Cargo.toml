@@ -11,6 +11,10 @@ repository.workspace = true
 workspace = true
 
 [dev-dependencies]
+async-trait = "0.1"
+crowdb-chunk-client = { path = "../lib/crowdb-chunk-client" }
+crowdb-chunk-kv-client = { path = "../lib/crowdb-chunk-kv-client" }
+crowdb-chunk-stream = { path = "../lib/crowdb-chunk-stream" }
 bincode = "1"
 crowdb-common = { path = "../lib/crowdb-common/rust" }
 crowdb-chunkdb-client = { path = "../lib/crowdb-chunkdb-client" }

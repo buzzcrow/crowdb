@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from fixture import Cluster
 from diskdb_fixture import DiskdbCluster
 from chunkdb_fixture import ChunkdbCluster, ChunkdbStorageCluster
+from chunk_kv_fixture import ChunkKvCluster
 from managed_fixture import ManagedCluster
 from diskio_fixture import DiskioCluster, DiskioDiscoveryCluster, DiskioSemanticCluster
 
@@ -34,6 +35,8 @@ class Case:
     chunkdb_server: bool = False
     chunkdb_storage: bool = False
     chunkdb_multi: bool = False
+    storage_backend: str = "mem"
+    chunk_kv_empty_catalog: bool = False
 
 
 KV_CASES = (
@@ -134,9 +137,65 @@ CHUNKDB_CASES = (
     Case("chunkdb.lifecycle", "chunkdb::lifecycle::allocate_seal_delete_preserves_physical_placement_and_free_facts", chunkdb_server=True),
     Case("chunkdb.allocation", "chunkdb::allocation::allocation_connect_failure_reroutes_but_lost_reply_does_not"),
 )
-ALL_CASES = CHUNKDB_CASES + KV_CASES + DISKDB_CASES + DEPLOYMENT_CASES + DISKIO_CASES
+CHUNK_STREAM_CASES = (
+    Case("chunk-stream.objects", "chunk_stream::production_idle_writer_stops_after_ownership_takeover", chunkdb_storage=True),
+    Case("chunk-stream.recovery", "chunk_stream::production_stream_recovers_exact_bytes_after_service_restarts", chunkdb_storage=True, storage_backend="file", restart=True),
+    Case("chunk-stream.errors", "chunk_stream::production_stream_write_returns_after_diskio_failure", chunkdb_storage=True),
+    Case("chunk-stream.errors", "chunk_stream::production_stream_write_returns_after_live_diskio_errors", chunkdb_storage=True, diskio_fault_rate=1.0),
+)
+CHUNK_CLIENT_CASES = (
+    Case("chunk-client.reader", "chunk_client::reader::data::ec_range_read_recovers_only_the_requested_bytes", chunkdb_storage=True, storage_backend="mem"),
+    Case("chunk-client.reader", "chunk_client::reader::data_loss::ec_read_reports_data_loss_beyond_parity_tolerance", chunkdb_storage=True, storage_backend="mem"),
+    Case("chunk-client.reader", "chunk_client::reader::data_loss::partial_read_preserves_healthy_ec_shard_ranges_around_data_loss", chunkdb_storage=True, storage_backend="mem"),
+    Case("chunk-client.reader", "chunk_client::reader::data_loss::mirror_read_succeeds_and_reports_replica_loss", chunkdb_storage=True, storage_backend="mem"),
+    Case("chunk-client.reader", "chunk_client::reader::recovery::transient_mirror_read_failure_does_not_mark_segment_unavailable", chunkdb_storage=True, storage_backend="mem"),
+    Case("chunk-client.reader", "chunk_client::reader::recovery::chunkdb_restart_admits_verified_corruption_and_repairs_full_shard", chunkdb_storage=True, storage_backend="mem"),
+    Case("chunk-client.reader", "chunk_client::reader::recovery::routed_full_fragment_requests_share_one_durable_repair", chunkdb_storage=True, storage_backend="mem"),
+    Case("chunk-client.large_repair", "chunk_client::large_repair::mirror::large_mirror_replaces_failed_replica_before_ordered_completion", chunkdb_storage=True, storage_backend="mem"),
+    Case("chunk-client.large_repair", "chunk_client::large_repair::mirror_repair::large_mirror_retains_later_framed_buffers_until_failed_first_strip_is_repaired", chunkdb_storage=True, storage_backend="mem"),
+    Case("chunk-client.large_repair", "chunk_client::large_repair::mirror_repair::large_mirror_rotates_after_repair_exhaustion_and_replays_ordered_data", chunkdb_storage=True, storage_backend="mem"),
+    Case("chunk-client.large_repair", "chunk_client::large_repair::mirror::large_mirror_rotates_failed_partial_final_strip", chunkdb_storage=True, storage_backend="mem"),
+    Case("chunk-client.large_repair", "chunk_client::large_repair::mirror::large_mirror_abort_drains_delayed_submitted_write_before_delete", chunkdb_storage=True, storage_backend="mem"),
+    Case("chunk-client.large_repair", "chunk_client::large_repair::mirror_repair::large_mirror_repair_exhaustion_deletes_unsealed_chunk", chunkdb_storage=True, storage_backend="mem"),
+    Case("chunk-client.large_repair", "chunk_client::large_repair::ec::large_write_replaces_failed_data_and_parity_segments_end_to_end", chunkdb_storage=True, storage_backend="mem"),
+    Case("chunk-client.large_repair", "chunk_client::large_repair::ec_repair::large_write_repair_exhaustion_deletes_unsealed_chunk", chunkdb_storage=True, storage_backend="mem"),
+    Case("chunk-client.small_flow", "chunk_client::small_flow::batching::small_write_batches_concurrent_objects_and_reads_them_back", chunkdb_storage=True, storage_backend="mem"),
+    Case("chunk-client.small_flow", "chunk_client::small_flow::batching::eight_closed_mirror_strips_become_one_durable_ec_strip_without_reread", chunkdb_storage=True, storage_backend="mem"),
+    Case("chunk-client.small_flow", "chunk_client::small_flow::conversion::consecutive_conversion_groups_keep_one_mibibyte_shard_geometry", chunkdb_storage=True, storage_backend="mem"),
+    Case("chunk-client.small_flow", "chunk_client::small_flow::conversion::chunkdb_takes_over_durable_conversion_task_after_client_io_failure", chunkdb_storage=True, storage_backend="mem"),
+    Case("chunk-client.small_flow", "chunk_client::small_flow::conversion::manual_chunkdb_trigger_converts_closed_active_range_end_to_end", chunkdb_storage=True),
+    Case("chunk-client.small_flow", "chunk_client::small_flow::background_conversion::automatic_chunkdb_scan_converts_three_groups_and_preserves_tail", chunkdb_storage=True),
+    Case("chunk-client.small_flow", "chunk_client::small_flow::background_conversion::chunkdb_restart_recovers_an_inflight_conversion_claim", chunkdb_storage=True, storage_backend="mem"),
+    Case("chunk-client.small_flow", "chunk_client::small_flow::replica_repair::small_write_repairs_failed_replica_through_real_chunkdb_and_diskio", chunkdb_storage=True, storage_backend="mem"),
+    Case("chunk-client.small_flow", "chunk_client::small_flow::replica_repair::protected_small_write_reports_real_diskio_write_failure", chunkdb_storage=True, storage_backend="mem", diskio_fault_rate=1.0),
+    Case("chunk-client.small_flow", "chunk_client::small_flow::replica_repair::protected_read_reports_diskio_process_failure", chunkdb_storage=True, storage_backend="mem"),
+    Case("chunk-client.small_flow", "chunk_client::small_flow::repair_exhaustion::small_write_repair_preserves_acknowledged_prefix_in_open_block", chunkdb_storage=True, storage_backend="mem"),
+    Case("chunk-client.small_flow", "chunk_client::small_flow::repair_exhaustion::small_write_new_chunk_repair_exhaustion_preserves_sealed_predecessor", chunkdb_storage=True, storage_backend="mem"),
+    Case("chunk-client.small_flow", "chunk_client::small_flow::batching::small_write_scales_out_on_queued_bytes_then_scales_in_when_empty", chunkdb_storage=True, storage_backend="mem"),
+    Case("chunk-client.small_flow", "chunk_client::small_flow::queue_pressure::small_write_scales_out_on_queued_object_count", chunkdb_storage=True, storage_backend="mem"),
+    Case("chunk-client.small_flow", "chunk_client::small_flow::queue_pressure::small_write_carry_does_not_underflow_queue_pressure", chunkdb_storage=True, storage_backend="mem"),
+    Case("chunk-client.benchmark", "chunk_client::benchmark::small_write_benchmark_uses_real_metadata_and_null_disk", chunkdb_storage=True, storage_backend="null"),
+    Case("chunk-client.benchmark", "chunk_client::benchmark::mixed_read_benchmark_prepares_and_verifies_real_frames", chunkdb_storage=True, storage_backend="mem"),
+
+    Case("chunk-client.small", "chunk_client::small::shared_object_spans_mirror_strips_with_one_location", chunkdb_storage=True),
+    Case("chunk-client.small", "chunk_client::small::cancelled_shared_object_keeps_pipeline_available", chunkdb_storage=True),
+    Case("chunk-client.small", "chunk_client::small::small_write_rotates_strips_and_chunks_without_splitting_objects", chunkdb_storage=True),
+
+    Case("chunk-client.large", "chunk_client::large::large_write_multi_strip_persists_data_metadata_and_parity", chunkdb_storage=True),
+    Case("chunk-client.large", "chunk_client::large::large_two_copy_mirror_reads_across_strips", chunkdb_storage=True),
+    Case("chunk-client.large", "chunk_client::large::large_raw_buffers_submit_complete_mirror_strips_concurrently", chunkdb_storage=True),
+    Case("chunk-client.large", "chunk_client::large::large_write_rotates_chunks_without_losing_data", chunkdb_storage=True),
+    Case("chunk-client.large", "chunk_client::large::large_write_unknown_size_partial_tail_is_durable", chunkdb_storage=True),
+)
+CHUNK_KV_CASES = (
+    Case("chunk-kv.protocol", "chunk_kv::production_transport_calls_direct_owner_rpc", chunk_kv_empty_catalog=True),
+    Case("chunk-kv.recovery", "chunk_kv::recovery::routed_native_records_and_tombstones_survive_complete_service_restart", restart=True),
+)
+ALL_CASES = CHUNK_KV_CASES + CHUNK_CLIENT_CASES + CHUNK_STREAM_CASES + CHUNKDB_CASES + KV_CASES + DISKDB_CASES + DEPLOYMENT_CASES + DISKIO_CASES
 
 def case_nodes(case):
+    if case.scope.startswith("chunk-kv."):
+        return 12
     if case.chunkdb_multi:
         return 7
     if case.chunkdb_storage:
@@ -152,11 +211,15 @@ def case_nodes(case):
     return 2 if case.scope.startswith(("diskdb.", "chunkdb.")) else len(case.stores_per_node or case.stores)
 
 def allocate_cluster(case, image, artifacts, bundle, data_root):
+    if case.scope.startswith("chunk-kv."):
+        return ChunkKvCluster(image, artifacts, bundle, empty_catalog=case.chunk_kv_empty_catalog,
+                              data_root=data_root)
     if case.chunkdb_multi:
         return ChunkdbCluster(image, artifacts, bundle, service_instances=(11, 12, 13),
                               storage_groups=(1, 2, 3), data_root=data_root)
     if case.chunkdb_storage:
-        return ChunkdbStorageCluster(image, artifacts, bundle, data_root=data_root)
+        return ChunkdbStorageCluster(image, artifacts, bundle, storage_backend=case.storage_backend,
+                                     fault_rate=case.diskio_fault_rate, data_root=data_root)
     if case.chunkdb_server:
         return ChunkdbCluster(image, artifacts, bundle, data_root=data_root)
     if case.scope.startswith("deployment."):
@@ -202,5 +265,19 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
                 cluster.client(bundle, case.name.rsplit("::", 1)[-1], case.name)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=slots) as pool:
-        for _ in pool.map(run, selected):
-            pass
+        futures = [pool.submit(run, case) for case in selected]
+        errors = []
+        try:
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    future.result()
+                except Exception as error:
+                    errors.append(error)
+        except BaseException:
+            for future in futures:
+                future.cancel()
+            raise
+        if errors:
+            for error in errors[1:]:
+                errors[0].add_note(f"another independent fixture failed: {error}")
+            raise errors[0]

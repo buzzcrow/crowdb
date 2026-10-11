@@ -166,7 +166,7 @@ class Cluster:
 
     def control(self, body):
         action, node = body.get("action"), body.get("node")
-        if action not in ("stop", "start", "kill", "pause", "unpause"):
+        if action not in ("stop", "start", "kill", "pause", "unpause", "status"):
             raise ValueError("unsupported fixture action")
         if type(node) is not int or not 0 <= node < len(self.servers):
             raise ValueError("node is outside the owned fixture")
@@ -174,6 +174,8 @@ class Cluster:
         info = json.loads(self.command("inspect", name))[0]
         if info["Config"]["Labels"].get(LABEL) != self.run_id:
             raise ValueError("node ownership label changed")
+        if action == "status":
+            return info["State"]
         arguments = ("stop", "--time", "10", name) if action == "stop" else (action, name)
         self.command(*arguments)
         return json.loads(self.command("inspect", name))[0]["State"]

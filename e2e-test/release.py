@@ -36,7 +36,8 @@ def check_startup(image, artifacts):
                                     text=True, timeout=30, check=False)
             (root / f"{case}.log").write_text(result.stdout + result.stderr)
             assert result.returncode != 0, f"{case}: invalid startup succeeded"
-            assert expected in result.stderr, f"{case}: {result.stdout}\n{result.stderr}"
+            diagnostic = result.stdout + result.stderr
+            assert expected in diagnostic, f"{case}: {diagnostic}"
             results.append({"case": case, "seconds": time.monotonic() - started,
                             "exit_code": result.returncode, "status": "pass"})
         finally:
@@ -47,6 +48,8 @@ def check_startup(image, artifacts):
             docker("rm", "-f", name)
 
     check("unknown-service", ["server", "unknown"], "Unknown server service")
+    check("chunk-kv-missing-config", ["server", "chunk-kv", "--config", "/opt/crowdb/etc/missing.toml",
+          "--log-dir", "/opt/crowdb/data/log/chunk-kv", "--log"], "failed to load configuration")
     check("managed-root", ["server", "kv"], "requires a separate data root")
     profile = root / "invalid-profile.toml"
     profile.write_text("version = [\n")

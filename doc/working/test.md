@@ -43,71 +43,78 @@ are split by actual SDK client, browser rows by spec, and crash/restart matrices
 by fault target/cut point. Keep a separate case row for unexpectedly slow tests.
 Do not require one CI job for each measurement row.
 
-| Scope                       | Coverage                                                  | Proposed CI group |
-| --------------------------- | --------------------------------------------------------- | ----------------- |
-| `component.cpp`             | C++ / FFI unit and integration                            | Component         |
-| `component.kv`              | KV / Paxos / WAL / client deterministic flows             | Component         |
-| `component.diskdb`          | Diskdb allocators / ownership / journal transitions       | Component         |
-| `component.diskio`          | Diskio / native I/O / client logic                        | Component         |
-| `component.chunkdb`         | Chunkdb placement / lifecycle / tasks / EC                | Component         |
-| `component.chunk-kv`        | Chunk-KV split / handoff / client logic                   | Component         |
-| `component.chunk-stream`    | Chunk client / stream deterministic flows                 | Component         |
-| `component.access-s3`       | S3 / multipart repository and protocol logic              | Component         |
-| `component.access-iceberg`  | Iceberg commit / FileIO / GC deterministic flows          | Component         |
-| `component.access-dataset`  | Dataset core / adapter / transport / retention            | Component         |
-| `component.console`         | Console / CLI / web logic and stub routes                 | Component         |
-| `component.monitor`         | Monitor profile / bootstrap / supervisor logic            | Component         |
-| `component.ui`              | Frontend presentation and unit tests                      | Component         |
-| `fixture`                   | Runner / ownership / cleanup / budgets                    | Fixture           |
-| `e2e.kv.management`         | Store / group / replica APIs and errors                   | Metadata          |
-| `e2e.kv.routing`            | Topology / follower hints / client retries                | Metadata          |
-| `e2e.kv.membership`         | Membership changes / epoch fencing                        | Metadata          |
-| `e2e.kv.recovery`           | Restore / snapshot join / WAL tail / restart              | Metadata          |
-| `e2e.kv.group0`             | Group-0 initialization / discovery / wipe isolation       | Metadata          |
-| `e2e.kv.client`             | Discovery / CRUD / CAS / scan / domain monitor            | Metadata          |
-| `e2e.kv.metadata`           | Slot map / handoff / authority publication                | Metadata          |
-| `e2e.diskdb.allocation`     | Allocate / commit / free / capacity / concurrent routing  | Storage           |
-| `e2e.diskdb.ownership`      | Wrong-owner facts / compact rejection / registry routes   | Storage           |
-| `e2e.diskdb.reuse`          | Exhaustion / exact reuse / delayed incarnation retries    | Storage           |
-| `e2e.diskdb.recovery`       | Ownership fencing / persisted journal recovery            | Storage           |
-| `e2e.diskio.io.mem`         | Exact MemDisk ranges / overwrite / concurrent bytes       | Storage           |
-| `e2e.diskio.io.null`        | Exact NullDisk patterns / boundary sizes / concurrency    | Storage           |
-| `e2e.diskio.discovery`      | Group-0 heartbeat / owner rejection / disk reconciliation | Storage           |
-| `e2e.diskio.errors`         | Missing disk/zone / missing creation-time rejection       | Storage           |
-| `e2e.diskio.faults`         | Injected write/read/fsync I/O failure                     | Storage           |
-| `e2e.diskio.semantic`       | Views / ordering / admission / route-generation recovery  | Storage           |
-| `e2e.diskio.direct`         | O_DIRECT fsync / unaligned ranges / crash recovery        | Storage           |
-| `e2e.diskio.durability`     | Sync / restart / bounded live I/O failure                 | Storage           |
-| `e2e.chunkdb.lifecycle`     | Allocate / reserve / append / seal / delete               | Storage           |
-| `e2e.chunkdb.allocation`    | Unsent reroute / ambiguous reply / exact allocation count | Storage           |
-| `e2e.chunkdb.placement`     | Public mirror / EC geometry and physical protection      | Storage           |
-| `e2e.chunkdb.recovery`      | Exact chunk metadata / revision across dependency crash  | Storage           |
-| `e2e.chunkdb.io`            | Exact bytes across every Diskio owner / disk              | Storage           |
-| `e2e.chunkdb.conversion`    | Partial mirror-EC / parity / expired claim / dirty tail   | Storage           |
-| `e2e.chunkdb.repair`        | Missing data/parity repair / durable completed task       | Storage           |
-| `e2e.chunkdb.slots`         | Three service owners / purpose bands / storage failover   | Storage           |
-| `e2e.chunkdb.handoff`       | Task / journal recovery / ownership handoff               | Storage           |
-| `e2e.chunk-stream.objects`  | Small / large / range data / durable publication          | Storage           |
-| `e2e.chunk-stream.recovery` | Takeover / service restart / Diskio errors                | Storage           |
-| `e2e.chunk-kv.protocol`     | Read / write / scan / catalog routing / fencing           | Storage           |
-| `e2e.chunk-kv.recovery`     | Split / transfer / restart / exact records                | Storage           |
-| `e2e.s3.protocol`           | Object / copy / list / multipart / policy                 | AccessS3          |
-| `e2e.s3.recovery`           | Service restart / response loss / durable data            | AccessS3          |
-| `e2e.s3.sdk`                | boto3 / AWS CLI / rclone / Java / JS / Go                 | AccessS3          |
-| `e2e.iceberg.catalog`       | Namespace / table / commit / auth                         | AccessIceberg     |
-| `e2e.iceberg.fileio`        | FileIO / listing / formats / exact data                   | AccessIceberg     |
-| `e2e.iceberg.recovery`      | Commit / file crash matrix / GC / capacity                | AccessIceberg     |
-| `e2e.iceberg.sdk`           | PyIceberg / Java / Rust / RCK compatibility               | AccessIceberg     |
-| `e2e.dataset`               | Audited existing Dataset server flows                     | AccessDataset     |
-| `e2e.console.api-cli`       | Real console / CLI operations and authority               | ConsoleDeploy     |
-| `e2e.console.browser`       | Browser provisioning / lifecycle / real data              | ConsoleDeploy     |
-| `e2e.deployment.selection`  | Default services / selected services / same-image restart | Deployment        |
-| `e2e.deployment.bootstrap`  | Manual / automatic / full-set / subset startup            | ConsoleDeploy     |
-| `e2e.deployment.recovery`   | Supervision / identity / logs / crash / mounts            | ConsoleDeploy     |
-| `e2e.isolation`             | Same-host mixed-domain concurrency and teardown           | Isolation         |
-| `special.containerd`        | Release image runtime adapter acceptance                  | Special           |
-| `special.host-hardware`     | Host networking / real devices / hardware                 | Special           |
-| `benchmark`                 | Opt-in throughput / latency benchmarks                    | Manual            |
+| Scope                           | Coverage                                                          | Proposed CI group |
+| ------------------------------- | ----------------------------------------------------------------- | ----------------- |
+| `component.cpp`                 | C++ / FFI unit and integration                                    | Component         |
+| `component.kv`                  | KV / Paxos / WAL / client deterministic flows                     | Component         |
+| `component.diskdb`              | Diskdb allocators / ownership / journal transitions               | Component         |
+| `component.diskio`              | Diskio / native I/O / client logic                                | Component         |
+| `component.chunkdb`             | Chunkdb placement / lifecycle / tasks / EC                        | Component         |
+| `component.chunk-kv`            | Chunk-KV split / handoff / client logic                           | Component         |
+| `component.chunk-stream`        | Chunk client / stream deterministic flows                         | Component         |
+| `component.access-s3`           | S3 / multipart repository and protocol logic                      | Component         |
+| `component.access-iceberg`      | Iceberg commit / FileIO / GC deterministic flows                  | Component         |
+| `component.access-dataset`      | Dataset core / adapter / transport / retention                    | Component         |
+| `component.console`             | Console / CLI / web logic and stub routes                         | Component         |
+| `component.monitor`             | Monitor profile / bootstrap / supervisor logic                    | Component         |
+| `component.ui`                  | Frontend presentation and unit tests                              | Component         |
+| `fixture`                       | Runner / ownership / cleanup / budgets                            | Fixture           |
+| `e2e.kv.management`             | Store / group / replica APIs and errors                           | Metadata          |
+| `e2e.kv.routing`                | Topology / follower hints / client retries                        | Metadata          |
+| `e2e.kv.membership`             | Membership changes / epoch fencing                                | Metadata          |
+| `e2e.kv.recovery`               | Restore / snapshot join / WAL tail / restart                      | Metadata          |
+| `e2e.kv.group0`                 | Group-0 initialization / discovery / wipe isolation               | Metadata          |
+| `e2e.kv.client`                 | Discovery / CRUD / CAS / scan / domain monitor                    | Metadata          |
+| `e2e.kv.metadata`               | Slot map / handoff / authority publication                        | Metadata          |
+| `e2e.diskdb.allocation`         | Allocate / commit / free / capacity / concurrent routing          | Storage           |
+| `e2e.diskdb.ownership`          | Wrong-owner facts / compact rejection / registry routes           | Storage           |
+| `e2e.diskdb.reuse`              | Exhaustion / exact reuse / delayed incarnation retries            | Storage           |
+| `e2e.diskdb.recovery`           | Ownership fencing / persisted journal recovery                    | Storage           |
+| `e2e.diskio.io.mem`             | Exact MemDisk ranges / overwrite / concurrent bytes               | Storage           |
+| `e2e.diskio.io.null`            | Exact NullDisk patterns / boundary sizes / concurrency            | Storage           |
+| `e2e.diskio.discovery`          | Group-0 heartbeat / owner rejection / disk reconciliation         | Storage           |
+| `e2e.diskio.errors`             | Missing disk/zone / missing creation-time rejection               | Storage           |
+| `e2e.diskio.faults`             | Injected write/read/fsync I/O failure                             | Storage           |
+| `e2e.diskio.semantic`           | Views / ordering / admission / route-generation recovery          | Storage           |
+| `e2e.diskio.direct`             | O_DIRECT fsync / unaligned ranges / crash recovery                | Storage           |
+| `e2e.diskio.durability`         | Sync / restart / bounded live I/O failure                         | Storage           |
+| `e2e.chunkdb.lifecycle`         | Allocate / reserve / append / seal / delete                       | Storage           |
+| `e2e.chunkdb.allocation`        | Unsent reroute / ambiguous reply / exact allocation count         | Storage           |
+| `e2e.chunkdb.placement`         | Public mirror / EC geometry and physical protection               | Storage           |
+| `e2e.chunkdb.recovery`          | Exact chunk metadata / revision across dependency crash           | Storage           |
+| `e2e.chunkdb.io`                | Exact bytes across every Diskio owner / disk                      | Storage           |
+| `e2e.chunkdb.conversion`        | Partial mirror-EC / parity / expired claim / dirty tail           | Storage           |
+| `e2e.chunkdb.repair`            | Missing data/parity repair / durable completed task               | Storage           |
+| `e2e.chunkdb.slots`             | Three service owners / purpose bands / storage failover           | Storage           |
+| `e2e.chunkdb.handoff`           | Task / journal recovery / ownership handoff                       | Storage           |
+| `e2e.chunk-client.small`        | Shared frames / cancellation / strip and chunk rotation           | Storage           |
+| `e2e.chunk-client.large`        | Data / parity / mirror / partial tails / range streaming          | Storage           |
+| `e2e.chunk-client.reader`       | Range recovery / corruption / transient faults / coalesced repair | Storage           |
+| `e2e.chunk-client.large_repair` | Replica replacement / ordered buffers / exhaustion / abort        | Storage           |
+| `e2e.chunk-client.small_flow`   | Conversion / takeover / repair / queue pressure / scheduling      | Storage           |
+| `e2e.chunk-client.benchmark`    | Functional benchmark frame generation and exact readback          | Storage           |
+| `e2e.chunk-stream.objects`      | Idle writer takeover / durable stream publication                 | Storage           |
+| `e2e.chunk-stream.recovery`     | Complete metadata and file-backed service restart                 | Storage           |
+| `e2e.chunk-stream.errors`       | Live Diskio errors / whole storage outage                         | Storage           |
+| `e2e.chunk-kv.protocol`         | Read / write / scan / catalog routing / fencing                   | Storage           |
+| `e2e.chunk-kv.recovery`         | Split / transfer / restart / exact records                        | Storage           |
+| `e2e.s3.protocol`               | Object / copy / list / multipart / policy                         | AccessS3          |
+| `e2e.s3.recovery`               | Service restart / response loss / durable data                    | AccessS3          |
+| `e2e.s3.sdk`                    | boto3 / AWS CLI / rclone / Java / JS / Go                         | AccessS3          |
+| `e2e.iceberg.catalog`           | Namespace / table / commit / auth                                 | AccessIceberg     |
+| `e2e.iceberg.fileio`            | FileIO / listing / formats / exact data                           | AccessIceberg     |
+| `e2e.iceberg.recovery`          | Commit / file crash matrix / GC / capacity                        | AccessIceberg     |
+| `e2e.iceberg.sdk`               | PyIceberg / Java / Rust / RCK compatibility                       | AccessIceberg     |
+| `e2e.dataset`                   | Audited existing Dataset server flows                             | AccessDataset     |
+| `e2e.console.api-cli`           | Real console / CLI operations and authority                       | ConsoleDeploy     |
+| `e2e.console.browser`           | Browser provisioning / lifecycle / real data                      | ConsoleDeploy     |
+| `e2e.deployment.selection`      | Default services / selected services / same-image restart         | Deployment        |
+| `e2e.deployment.bootstrap`      | Manual / automatic / full-set / subset startup                    | ConsoleDeploy     |
+| `e2e.deployment.recovery`       | Supervision / identity / logs / crash / mounts                    | ConsoleDeploy     |
+| `e2e.isolation`                 | Same-host mixed-domain concurrency and teardown                   | Isolation         |
+| `special.containerd`            | Release image runtime adapter acceptance                          | Special           |
+| `special.host-hardware`         | Host networking / real devices / hardware                         | Special           |
+| `benchmark`                     | Opt-in throughput / latency benchmarks                            | Manual            |
 
 ### Measurement rules
 
@@ -134,74 +141,146 @@ Do not require one CI job for each measurement row.
 ### intel7960: target scopes
 
 New rows start unmeasured. The fixture row measures the complete Pixi invocation
-without an image build or server startup; the latest fixture gate executes thirty cases.
+without an image build or server startup; the latest fixture gate executes thirty-four cases.
 Future detailed component and E2E rows replace their unmeasured scope placeholders.
 
-| Scope                       | Date       | Tests | Build s | Start s  | Test s   | Collect/stop s | Total s  | Status  |
-| --------------------------- | ---------- | ----- | ------- | -------- | -------- | -------------- | -------- | ------- |
-| `component.cpp`             | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `component.kv`              | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `component.diskdb`          | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `component.diskio`          | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `component.chunkdb`         | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `component.chunk-kv`        | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `component.chunk-stream`    | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `component.access-s3`       | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `component.access-iceberg`  | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `component.access-dataset`  | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `component.console`         | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `component.monitor`         | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `component.ui`              | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `fixture`                   | 2026-10-11 | 30/30 | —       | —        | —        | —              | 1.009    | PASS    |
-| `e2e.kv.management`         | 2026-10-11 | 5/5   | shared  | per flow | per flow | per flow       | per flow | PASS    |
-| `e2e.kv.routing`            | 2026-10-11 | 3/3   | shared  | per flow | per flow | per flow       | per flow | PASS    |
-| `e2e.kv.membership`         | 2026-10-11 | 8/8   | shared  | per flow | per flow | per flow       | per flow | PASS    |
-| `e2e.kv.recovery`           | 2026-10-11 | 3/3   | shared  | per flow | per flow | per flow       | per flow | PASS    |
-| `e2e.kv.group0`             | 2026-10-11 | 8/8   | shared  | per flow | per flow | per flow       | per flow | PASS    |
-| `e2e.kv.client`             | 2026-10-11 | 6/6   | shared  | per flow | per flow | per flow       | per flow | PASS    |
-| `e2e.kv.metadata`           | 2026-10-11 | 14/14 | shared  | per flow | per flow | per flow       | per flow | PASS    |
-| `e2e.diskdb.allocation`     | 2026-10-11 | 1/1   | shared  | 2.173    | 1.893    | 1.041          | 5.129    | PASS    |
-| `e2e.diskdb.reuse`          | 2026-10-11 | 1/1   | shared  | 1.743    | 1.421    | 1.020          | 4.188    | PASS    |
-| `e2e.diskdb.ownership`      | 2026-10-11 | 1/1   | shared  | 2.082    | 0.131    | 1.010          | 3.226    | PASS    |
-| `e2e.diskdb.recovery`       | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `e2e.diskio.io.mem`         | 2026-10-11 | 1/1   | shared  | 2.027    | 0.564    | 1.029          | 3.622    | PASS    |
-| `e2e.diskio.io.null`        | 2026-10-11 | 1/1   | shared  | 1.855    | 0.856    | 1.086          | 3.801    | PASS    |
-| `e2e.diskio.discovery`      | 2026-10-11 | 1/1   | shared  | 1.907    | 0.926    | 1.102          | 3.940    | PASS    |
-| `e2e.diskio.errors`         | 2026-10-11 | 1/1   | shared  | 1.838    | 0.225    | 1.052          | 3.117    | PASS    |
-| `e2e.diskio.faults`         | 2026-10-11 | 1/1   | shared  | 1.889    | 0.233    | 1.007          | 3.131    | PASS    |
-| `e2e.diskio.semantic`       | 2026-10-11 | 1/1   | shared  | 2.046    | 8.051    | 1.408          | 11.510   | PASS    |
-| `e2e.diskio.direct`         | 2026-10-11 | 1/1   | shared  | 0.691    | 0.059    | 0.640          | 1.957    | PASS    |
-| `e2e.diskio.durability`     | 2026-10-11 | 1/1   | shared  | 0.709    | 0.059    | 0.801          | 2.173    | PASS    |
-| `e2e.chunkdb.lifecycle`    | 2026-10-11 | 1/1   | shared  | 3.257    | 0.181    | 2.118          | 5.559    | PASS    |
-| `e2e.chunkdb.allocation`   | 2026-10-11 | 1/1   | shared  | 1.957    | 0.092    | 0.995          | 3.047    | PASS    |
-| `e2e.chunkdb.placement`    | 2026-10-11 | 1/1   | shared  | 3.198    | 0.215    | 2.233          | 5.651    | PASS    |
-| `e2e.chunkdb.recovery`     | 2026-10-11 | 1/1   | shared  | 3.509    | 0.327    | 2.429          | 9.752    | PASS    |
-| `e2e.chunkdb.io`           | 2026-10-11 | 1/1   | shared  | 6.364    | 0.136    | 4.386          | 10.888   | PASS    |
-| `e2e.chunkdb.conversion`   | 2026-10-11 | 2/2   | shared  | 12.889   | 6.616    | 8.645          | 28.157   | PASS    |
-| `e2e.chunkdb.repair`       | 2026-10-11 | 2/2   | shared  | 12.102   | 8.571    | 8.657          | 29.337   | PASS    |
-| `e2e.chunkdb.slots`        | 2026-10-11 | 1/1   | shared  | 4.801    | 18.223   | 7.645          | 30.673   | PASS    |
-| `e2e.chunkdb.handoff`      | 2026-10-11 | 1/1   | shared  | 6.124    | 1.726    | 4.364          | 12.216   | PASS    |
-| `e2e.chunk-stream.objects`  | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `e2e.chunk-stream.recovery` | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `e2e.chunk-kv.protocol`     | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `e2e.chunk-kv.recovery`     | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `e2e.s3.protocol`           | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `e2e.s3.recovery`           | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `e2e.s3.sdk`                | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `e2e.iceberg.catalog`       | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `e2e.iceberg.fileio`        | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `e2e.iceberg.recovery`      | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `e2e.iceberg.sdk`           | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `e2e.dataset`               | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `e2e.console.api-cli`       | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `e2e.console.browser`       | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `e2e.deployment.selection`  | 2026-10-11 | 3/3   | 3.418   | per flow | per flow | per flow       | 20.153   | PASS    |
-| `e2e.deployment.bootstrap`  | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `e2e.deployment.recovery`   | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `e2e.isolation`             | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `special.containerd`        | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `special.host-hardware`     | —          | —     | —       | —        | —        | —              | —        | Pending |
-| `benchmark`                 | —          | —     | —       | —        | —        | —              | —        | Pending |
+| Scope                           | Date       | Tests | Build s | Start s  | Test s   | Collect/stop s | Total s  | Status  |
+| ------------------------------- | ---------- | ----- | ------- | -------- | -------- | -------------- | -------- | ------- |
+| `component.cpp`                 | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `component.kv`                  | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `component.diskdb`              | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `component.diskio`              | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `component.chunkdb`             | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `component.chunk-kv`            | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `component.chunk-stream`        | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `component.access-s3`           | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `component.access-iceberg`      | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `component.access-dataset`      | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `component.console`             | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `component.monitor`             | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `component.ui`                  | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `fixture`                       | 2026-10-11 | 34/34 | —       | —        | —        | —              | 1.047    | PASS    |
+| `e2e.kv.management`             | 2026-10-11 | 5/5   | shared  | per flow | per flow | per flow       | per flow | PASS    |
+| `e2e.kv.routing`                | 2026-10-11 | 3/3   | shared  | per flow | per flow | per flow       | per flow | PASS    |
+| `e2e.kv.membership`             | 2026-10-11 | 8/8   | shared  | per flow | per flow | per flow       | per flow | PASS    |
+| `e2e.kv.recovery`               | 2026-10-11 | 3/3   | shared  | per flow | per flow | per flow       | per flow | PASS    |
+| `e2e.kv.group0`                 | 2026-10-11 | 8/8   | shared  | per flow | per flow | per flow       | per flow | PASS    |
+| `e2e.kv.client`                 | 2026-10-11 | 6/6   | shared  | per flow | per flow | per flow       | per flow | PASS    |
+| `e2e.kv.metadata`               | 2026-10-11 | 14/14 | shared  | per flow | per flow | per flow       | per flow | PASS    |
+| `e2e.diskdb.allocation`         | 2026-10-11 | 1/1   | shared  | 2.173    | 1.893    | 1.041          | 5.129    | PASS    |
+| `e2e.diskdb.reuse`              | 2026-10-11 | 1/1   | shared  | 1.743    | 1.421    | 1.020          | 4.188    | PASS    |
+| `e2e.diskdb.ownership`          | 2026-10-11 | 1/1   | shared  | 2.082    | 0.131    | 1.010          | 3.226    | PASS    |
+| `e2e.diskdb.recovery`           | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.diskio.io.mem`             | 2026-10-11 | 1/1   | shared  | 2.027    | 0.564    | 1.029          | 3.622    | PASS    |
+| `e2e.diskio.io.null`            | 2026-10-11 | 1/1   | shared  | 1.855    | 0.856    | 1.086          | 3.801    | PASS    |
+| `e2e.diskio.discovery`          | 2026-10-11 | 1/1   | shared  | 1.907    | 0.926    | 1.102          | 3.940    | PASS    |
+| `e2e.diskio.errors`             | 2026-10-11 | 1/1   | shared  | 1.838    | 0.225    | 1.052          | 3.117    | PASS    |
+| `e2e.diskio.faults`             | 2026-10-11 | 1/1   | shared  | 1.889    | 0.233    | 1.007          | 3.131    | PASS    |
+| `e2e.diskio.semantic`           | 2026-10-11 | 1/1   | shared  | 2.046    | 8.051    | 1.408          | 11.510   | PASS    |
+| `e2e.diskio.direct`             | 2026-10-11 | 1/1   | shared  | 0.691    | 0.059    | 0.640          | 1.957    | PASS    |
+| `e2e.diskio.durability`         | 2026-10-11 | 1/1   | shared  | 0.709    | 0.059    | 0.801          | 2.173    | PASS    |
+| `e2e.chunkdb.lifecycle`         | 2026-10-11 | 1/1   | shared  | 3.257    | 0.181    | 2.118          | 5.559    | PASS    |
+| `e2e.chunkdb.allocation`        | 2026-10-11 | 1/1   | shared  | 1.957    | 0.092    | 0.995          | 3.047    | PASS    |
+| `e2e.chunkdb.placement`         | 2026-10-11 | 1/1   | shared  | 3.198    | 0.215    | 2.233          | 5.651    | PASS    |
+| `e2e.chunkdb.recovery`          | 2026-10-11 | 1/1   | shared  | 3.509    | 0.327    | 2.429          | 9.752    | PASS    |
+| `e2e.chunkdb.io`                | 2026-10-11 | 1/1   | shared  | 6.364    | 0.136    | 4.386          | 10.888   | PASS    |
+| `e2e.chunkdb.conversion`        | 2026-10-11 | 2/2   | shared  | 12.889   | 6.616    | 8.645          | 28.157   | PASS    |
+| `e2e.chunkdb.repair`            | 2026-10-11 | 2/2   | shared  | 12.102   | 8.571    | 8.657          | 29.337   | PASS    |
+| `e2e.chunkdb.slots`             | 2026-10-11 | 1/1   | shared  | 4.801    | 18.223   | 7.645          | 30.673   | PASS    |
+| `e2e.chunkdb.handoff`           | 2026-10-11 | 1/1   | shared  | 6.124    | 1.726    | 4.364          | 12.216   | PASS    |
+| `e2e.chunk-client.large`        | 2026-10-11 | 5/5   | shared  | 31.366   | 4.278    | 22.830         | 58.491   | PASS    |
+| `e2e.chunk-client.small`        | 2026-10-11 | 3/3   | shared  | 18.639   | 1.198    | 13.673         | 33.518   | PASS    |
+| `e2e.chunk-client.reader`       | 2026-10-11 | 7/7   | shared  | 44.014   | 10.351   | 31.382         | 85.768   | PASS    |
+| `e2e.chunk-client.large_repair` | 2026-10-11 | 8/8   | shared  | 46.431   | 5.494    | 32.228         | 84.182   | PASS    |
+| `e2e.chunk-client.small_flow`   | 2026-10-11 | 14/15 | shared  | 103.924  | 64.727   | 64.684         | 233.387  | FAIL    |
+| `e2e.chunk-client.benchmark`    | 2026-10-11 | 2/2   | shared  | 12.359   | 2.358    | 9.125          | 23.847   | PASS    |
+| `e2e.chunk-stream.objects`      | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.chunk-stream.recovery`     | 2026-10-11 | 1/1   | shared  | 6.130    | 0.437    | 4.216          | 18.390   | PASS    |
+| `e2e.chunk-kv.protocol`         | 2026-10-11 | 1/1   | shared  | 7.127    | 0.032    | 4.541          | 11.704   | PASS    |
+| `e2e.chunk-kv.recovery`         | 2026-10-11 | 1/1   | shared  | 9.124    | 0.234    | 5.676          | 22.874   | PASS    |
+| `e2e.s3.protocol`               | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.s3.recovery`               | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.s3.sdk`                    | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.iceberg.catalog`           | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.iceberg.fileio`            | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.iceberg.recovery`          | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.iceberg.sdk`               | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.dataset`                   | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.console.api-cli`           | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.console.browser`           | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.deployment.selection`      | 2026-10-11 | 3/3   | 3.418   | per flow | per flow | per flow       | 20.153   | PASS    |
+| `e2e.deployment.bootstrap`      | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.deployment.recovery`       | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `e2e.isolation`                 | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `special.containerd`            | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `special.host-hardware`         | —          | —     | —       | —        | —        | —              | —        | Pending |
+| `benchmark`                     | —          | —     | —       | —        | —        | —              | —        | Pending |
+
+## Migrated object and Chunk-KV per-case timing
+
+- intel7960, 2026-10-11. All servers use image config
+  `sha256:c9d68aac2556f0ed855e9c20a9852c1aab87a80b8605df05a123e9efe79d674e`,
+  source `94aa283499d77d641b2fcd7d9a7846cb12455b8f`, with release optimization
+  and retained debug info. Clients execute on the host.
+- Object run `run-21df8676b48245858979b6c373e04da8`: 40 cases, 263.815 s wall,
+  5.140 s build, two slots, 12 CPU / 12288 MiB. Thirty-eight passed; the outage
+  reader and original one-copy benchmark counter assumptions failed. Corrected
+  benchmark run `run-3f5767fedbc54bb6834424cd4510d0d2`: both pass, 12.061 s wall,
+  3.700 s build. Rows below use these latest benchmark measurements.
+- Chunk-KV run `run-a563226b470342ab91474403ad22de27`: two cases / three phases
+  pass, 34.589 s wall, 9.479 s build, one slot, 7 CPU / 7168 MiB. Its independently
+  owned fixtures overlap the last object fixtures. Restart covers all twelve
+  services and a new client verifies native values, tombstones and ordered reads.
+- The 15-second outage reader bound remains unresolved; retain its failed timing
+  and source proof. A full object/all-domain pass is not claimed. Client timings
+  exclude seed/readiness but include test-controlled service reconfiguration or
+  fault actions. Summed fixture totals are work across concurrent slots, not job
+  elapsed time. Restart timing is separate from client execution.
+
+| Scope                     | Case                                                                           | Client s | Start s | Restart s | Collect/stop s | Total s | Status |
+| ------------------------- | ------------------------------------------------------------------------------ | -------- | ------- | --------- | -------------- | ------- | ------ |
+| chunk-client.benchmark    | mixed_read_benchmark_prepares_and_verifies_real_frames                         | 1.235    | 6.145   | 0.000     | 4.670          | 12.054  | PASS   |
+| chunk-client.benchmark    | small_write_benchmark_uses_real_metadata_and_null_disk                         | 1.123    | 6.214   | 0.000     | 4.455          | 11.794  | PASS   |
+| chunk-client.large        | large_raw_buffers_submit_complete_mirror_strips_concurrently                   | 0.379    | 6.212   | 0.000     | 4.261          | 10.854  | PASS   |
+| chunk-client.large        | large_two_copy_mirror_reads_across_strips                                      | 0.806    | 6.268   | 0.000     | 4.400          | 11.476  | PASS   |
+| chunk-client.large        | large_write_multi_strip_persists_data_metadata_and_parity                      | 1.176    | 6.581   | 0.000     | 4.295          | 12.055  | PASS   |
+| chunk-client.large        | large_write_rotates_chunks_without_losing_data                                 | 1.369    | 5.731   | 0.000     | 4.434          | 11.535  | PASS   |
+| chunk-client.large        | large_write_unknown_size_partial_tail_is_durable                               | 0.634    | 6.357   | 0.000     | 4.352          | 11.347  | PASS   |
+| chunk-client.large_repair | large_write_replaces_failed_data_and_parity_segments_end_to_end                | 0.886    | 5.515   | 0.000     | 3.964          | 10.368  | PASS   |
+| chunk-client.large_repair | large_write_repair_exhaustion_deletes_unsealed_chunk                           | 0.460    | 6.001   | 0.000     | 3.820          | 10.285  | PASS   |
+| chunk-client.large_repair | large_mirror_abort_drains_delayed_submitted_write_before_delete                | 0.509    | 6.116   | 0.000     | 3.926          | 10.555  | PASS   |
+| chunk-client.large_repair | large_mirror_replaces_failed_replica_before_ordered_completion                 | 1.238    | 5.570   | 0.000     | 4.427          | 11.240  | PASS   |
+| chunk-client.large_repair | large_mirror_rotates_failed_partial_final_strip                                | 0.377    | 6.191   | 0.000     | 4.086          | 10.657  | PASS   |
+| chunk-client.large_repair | large_mirror_repair_exhaustion_deletes_unsealed_chunk                          | 0.772    | 5.386   | 0.000     | 3.850          | 10.010  | PASS   |
+| chunk-client.large_repair | large_mirror_retains_later_framed_buffers_until_failed_first_strip_is_repaired | 0.442    | 5.819   | 0.000     | 4.114          | 10.378  | PASS   |
+| chunk-client.large_repair | large_mirror_rotates_after_repair_exhaustion_and_replays_ordered_data          | 0.810    | 5.833   | 0.000     | 4.043          | 10.689  | PASS   |
+| chunk-client.reader       | ec_range_read_recovers_only_the_requested_bytes                                | 0.948    | 5.705   | 0.000     | 4.440          | 11.095  | PASS   |
+| chunk-client.reader       | ec_read_reports_data_loss_beyond_parity_tolerance                              | 0.583    | 6.213   | 0.000     | 4.528          | 11.328  | PASS   |
+| chunk-client.reader       | mirror_read_succeeds_and_reports_replica_loss                                  | 2.435    | 6.254   | 0.000     | 4.547          | 13.239  | PASS   |
+| chunk-client.reader       | partial_read_preserves_healthy_ec_shard_ranges_around_data_loss                | 1.379    | 5.922   | 0.000     | 4.357          | 11.661  | PASS   |
+| chunk-client.reader       | chunkdb_restart_admits_verified_corruption_and_repairs_full_shard              | 2.443    | 5.939   | 0.000     | 4.646          | 13.032  | PASS   |
+| chunk-client.reader       | routed_full_fragment_requests_share_one_durable_repair                         | 1.567    | 7.041   | 0.000     | 4.316          | 12.926  | PASS   |
+| chunk-client.reader       | transient_mirror_read_failure_does_not_mark_segment_unavailable                | 0.996    | 6.939   | 0.000     | 4.549          | 12.486  | PASS   |
+| chunk-client.small        | cancelled_shared_object_keeps_pipeline_available                               | 0.225    | 6.188   | 0.000     | 4.462          | 10.880  | PASS   |
+| chunk-client.small        | shared_object_spans_mirror_strips_with_one_location                            | 0.366    | 6.082   | 0.000     | 4.676          | 11.127  | PASS   |
+| chunk-client.small        | small_write_rotates_strips_and_chunks_without_splitting_objects                | 0.790    | 6.053   | 0.000     | 4.513          | 11.359  | PASS   |
+| chunk-client.small_flow   | automatic_chunkdb_scan_converts_three_groups_and_preserves_tail                | 18.315   | 7.038   | 0.000     | 4.365          | 29.723  | PASS   |
+| chunk-client.small_flow   | chunkdb_restart_recovers_an_inflight_conversion_claim                          | 11.110   | 6.662   | 0.000     | 4.442          | 22.216  | PASS   |
+| chunk-client.small_flow   | eight_closed_mirror_strips_become_one_durable_ec_strip_without_reread          | 3.064    | 6.841   | 0.000     | 4.037          | 13.946  | PASS   |
+| chunk-client.small_flow   | small_write_batches_concurrent_objects_and_reads_them_back                     | 1.276    | 5.610   | 0.000     | 4.361          | 11.251  | PASS   |
+| chunk-client.small_flow   | small_write_scales_out_on_queued_bytes_then_scales_in_when_empty               | 0.564    | 6.435   | 0.000     | 4.448          | 11.449  | PASS   |
+| chunk-client.small_flow   | chunkdb_takes_over_durable_conversion_task_after_client_io_failure             | 4.839    | 10.563  | 0.000     | 4.639          | 20.046  | PASS   |
+| chunk-client.small_flow   | consecutive_conversion_groups_keep_one_mibibyte_shard_geometry                 | 2.576    | 5.573   | 0.000     | 3.963          | 12.116  | PASS   |
+| chunk-client.small_flow   | manual_chunkdb_trigger_converts_closed_active_range_end_to_end                 | 2.654    | 10.589  | 0.000     | 4.487          | 17.733  | PASS   |
+| chunk-client.small_flow   | small_write_carry_does_not_underflow_queue_pressure                            | 0.559    | 6.121   | 0.000     | 4.428          | 11.110  | PASS   |
+| chunk-client.small_flow   | small_write_scales_out_on_queued_object_count                                  | 0.510    | 6.390   | 0.000     | 4.506          | 11.409  | PASS   |
+| chunk-client.small_flow   | small_write_new_chunk_repair_exhaustion_preserves_sealed_predecessor           | 0.493    | 6.107   | 0.000     | 4.709          | 11.312  | PASS   |
+| chunk-client.small_flow   | small_write_repair_preserves_acknowledged_prefix_in_open_block                 | 0.445    | 6.306   | 0.000     | 4.344          | 11.097  | PASS   |
+| chunk-client.small_flow   | protected_read_reports_diskio_process_failure                                  | 17.417   | 6.246   | 0.000     | 3.087          | 26.755  | FAILED |
+| chunk-client.small_flow   | protected_small_write_reports_real_diskio_write_failure                        | 0.303    | 6.818   | 0.000     | 4.253          | 11.378  | PASS   |
+| chunk-client.small_flow   | small_write_repairs_failed_replica_through_real_chunkdb_and_diskio             | 0.601    | 6.625   | 0.000     | 4.615          | 11.846  | PASS   |
+| chunk-kv.protocol         | production_transport_calls_direct_owner_rpc                                    | 0.032    | 7.127   | 0.000     | 4.541          | 11.704  | PASS   |
+| chunk-kv.recovery         | routed_native_records_and_tombstones_survive_complete_service_restart          | 0.234    | 9.124   | 7.836     | 5.676          | 22.874  | PASS   |
 
 ## Migrated Diskdb and monitor selection timing
 
@@ -651,3 +730,9 @@ Source: `app/crowdb-kv-server/`. Tests: 9 files.
 - Source retirement follows exact bytes, completed tasks, dirty tail, atomic revisions and all purpose routing assertions. Deterministic component claim, fencing and placement tests remain.
 
 - Final Chunkdb batch `run-6ae19b8e9e724a3fb3dc2b6edf863481`: eleven cases pass, 67.887 s wall / 0.647 s client build, concurrency two, 12 CPUs / 12288 MiB. Repair owns two cases (four-shard byte repair and degraded topology restoration). Journal handoff owns one exact copy/publication/source-free case. Retained component full-stack tests: 36 pass in 20.30 s; all other Chunkdb component targets also pass.
+
+## Chunk client and stream accepted boundary timing
+
+- Objects `run-d3773353e00943cc8704485116f3a8b8`: eight cases pass, 46.542 s scenario wall, 4.534 s client build. Two independent eleven-container profiles run concurrently. Five large-object cases include complete EC bytes/parity/metadata, protected two-copy mirror ranges, concurrent complete mirror strips, chunk rotation and range streaming, and unknown-size partial tails. Three small-object cases include exact shared-frame ranges across strips, cancellation followed by a durable survivor, and IcebergTable type-preserving chunk rotation.
+- Restart `run-b30240af4fa64db0aed6c0ab4c0a913d`: 18.397 s scenario wall / 4.630 s build (shared Cargo lock), complete eleven-service restart, 7.603 s restart phase. Eighteen file devices each expose one physical 128-MiB zone with hexadecimal CLI IDs matching public hardware metadata. Exact prefix and suffix survive; the successor chunk differs from the abandoned writer chunk.
+- Formal image remains source `94aa2834`, config `sha256:c9d68aac2556f0ed855e9c20a9852c1aab87a80b8605df05a123e9efe79d674e`. Component writer/reader/pressure, stream fencing/recovery/publication and corruption proofs remain. The complete client/stream migration is still active; exited-Diskio failure-budget behavior is unresolved and receives no PASS claim.

@@ -85,30 +85,45 @@ refresh_interval_secs = 1
 class ChunkdbStorageCluster(ChunkdbCluster):
     """Six storage failure domains backed by independently owned Diskio nodes."""
 
-    def __init__(self, image, artifacts, bundle, **kwargs):
+    def __init__(self, image, artifacts, bundle, storage_backend="mem", fault_rate=0, **kwargs):
+        self.options = dict(conversion_enabled=False, conversion_min_seal_age_secs=0,
+                            conversion_scan_interval_secs=1, conversion_max_bandwidth_mbps=50,
+                            conversion_task_lease_secs=30, repair_enabled=True,
+                            repair_scan_interval_secs=1, repair_max_concurrency=4,
+                            repair_memory_bytes=67108864)
+        self.storage_backend = storage_backend
+        self.fault_rate = fault_rate
         super().__init__(image, artifacts, bundle, **kwargs)
-        self.seed_case = "chunkdb::hardware::seed_storage"
+        self.seed_case = ("chunkdb::hardware::seed_persistent_storage" if storage_backend == "file"
+                          else "chunkdb::hardware::seed_storage")
         self.disk_group_ids = list(range(1000, 1006))
 
     def diskdb_extra_config(self):
         return "[rebalance]\nenabled = false\nplan_interval_secs = 1\n"
 
     def extra_config(self):
-        return '''[lifecycle]
+        o = self.options
+        return f'''[lifecycle]
 cache_capacity = 10000
 sweep_chunk_lock_interval_secs = 60
 lock_hold_warn_threshold_ms = 1000
 layout_validity_ms = 1000
 [conversion]
-enabled = false
+enabled = {str(o["conversion_enabled"]).lower()}
 data_num = 8
 code_num = 4
-min_seal_age_secs = 0
+min_seal_age_secs = {o["conversion_min_seal_age_secs"]}
 min_mirror_strips = 8
 max_concurrency = 4
-max_bandwidth_mbps = 50
-scan_interval_secs = 1
-task_lease_secs = 30
+max_bandwidth_mbps = {o["conversion_max_bandwidth_mbps"]}
+scan_interval_secs = {o["conversion_scan_interval_secs"]}
+task_lease_secs = {o["conversion_task_lease_secs"]}
+[repair]
+enabled = {str(o["repair_enabled"]).lower()}
+allow_unsafe_placement = false
+scan_interval_secs = {o["repair_scan_interval_secs"]}
+max_concurrency = {o["repair_max_concurrency"]}
+memory_bytes = {o["repair_memory_bytes"]}
 '''
 
     def start(self):
@@ -120,16 +135,26 @@ task_lease_secs = 30
             index = self.chunkdb_index + len(self.service_instances) + offset
             address = str(base + index)
             data = node_data(self, index)
+            disks = []
+            if self.storage_backend == "file":
+                for disk in range(1, 4):
+                    disk_id = (1000 + offset) * 10 + disk
+                    path = data / f"disk-{disk_id}.dat"
+                    with path.open("wb") as output:
+                        output.truncate(128 * 1024 * 1024)
+                    path.chmod(0o666)
+                    disks.extend(("--disk", f"{disk_id:x}:/opt/crowdb/data/{path.name}:134217728"))
             self.addresses.append(start_node(self, index, data, (
                 "server", "diskio", "--port", "7200", "--bind", address,
-                "--dummy-disk", "mem", "--kv-seeds", self.origins[0],
+                *(("--dummy-disk", self.storage_backend) if not disks else ("--no-o-direct", *disks)),
+                "--fault-error-rate", str(self.fault_rate), "--kv-seeds", self.origins[0],
                 "--instance-id", str(8000 + offset), "--rack-id", str(100 + offset),
                 "--node-id", str(10 + offset), "--dg-id", str(1000 + offset),
                 "--sync-interval-ms", "200", "--auto-discover-disks",
                 "--log-dir", "/opt/crowdb/data/log/diskio"), address))
             endpoints.append({"node": index, "ip": address, "rpc_port": 7200,
                 "instance_id": 8000 + offset, "disk_group_id": 1000 + offset,
-                "data": str(data)})
+                "data": str(data), "backend": self.storage_backend, "fault_rate": self.fault_rate})
         for endpoint in endpoints:
             def reachable(endpoint=endpoint):
                 state = json.loads(self.command("inspect", self.servers[endpoint["node"]]))[0]["State"]
@@ -141,3 +166,38 @@ task_lease_secs = 30
         (self.artifacts / "storage-endpoints.json").write_text(json.dumps(endpoints, indent=2))
         self.client(self.bundle, "storage-ready", "chunkdb::io::ready")
         return self
+
+    def crash_restart(self):
+        started = time.monotonic()
+        first = self.chunkdb_index + len(self.service_instances)
+        diskio_indices = range(first, first + 6)
+        for index in diskio_indices:
+            self.command("kill", "--signal", "KILL", self.servers[index])
+        super().crash_restart()
+        for index in diskio_indices:
+            self.command("start", self.servers[index])
+        self.client(self.bundle, "storage-ready-recovered", "chunkdb::io::ready")
+        self.timings["restart"] = time.monotonic() - started
+
+    def control(self, body):
+        if body.get("action") != "configure-chunkdb":
+            return super().control(body)
+        if body.get("node") != self.chunkdb_index:
+            raise ValueError("only the owned Chunkdb configuration may change")
+        options = body.get("options")
+        if not isinstance(options, dict) or set(options) != set(self.options):
+            raise ValueError("configuration must contain the complete supported options")
+        for key, value in options.items():
+            expected = bool if key.endswith("enabled") else int
+            minimum = 0 if key == "conversion_min_seal_age_secs" else 1
+            if type(value) is not expected or (expected is int and not minimum <= value <= 268435456):
+                raise ValueError("invalid Chunkdb runtime configuration value")
+        super().control({"action": "status", "node": self.chunkdb_index})
+        super().control({"action": "kill", "node": self.chunkdb_index})
+        self.options = options
+        path = self.artifacts / "chunkdb-888.toml"
+        prefix = path.read_text().split("[lifecycle]", 1)[0]
+        path.write_text(prefix + self.extra_config())
+        state = super().control({"action": "start", "node": self.chunkdb_index})
+        self.ready_chunkdb()
+        return state

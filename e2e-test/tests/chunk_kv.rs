@@ -1,30 +1,24 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use std::sync::Arc;
-
 use crowdb_chunk_kv_client::{ChunkKvRpcTransport, ChunkKvTransport};
-use crowdb_chunk_kv_server::{ChunkKvRpcService, ChunkKvService};
 use crowdb_protocol::chunk_kv::{
     BatchMutationItem, BatchMutationRequest, ChunkKvRpcErrorCode, ClientRequestId, Id128, MultiGetRequest,
     PartitionRouting, PointOperation, PointRequest, RequestRouting,
 };
-use crowdb_rpc_ffi::RpcServer;
+
+mod recovery;
 
 #[tokio::test]
+#[ignore = "requires the owned release Chunk-KV containers"]
 async fn production_transport_calls_direct_owner_rpc() {
-    crowdb_rpc_ffi::init_test_logging();
-    let service = Arc::new(ChunkKvService::new(7, 8).unwrap());
-    let rpc_service = Arc::new(ChunkKvRpcService::new(service, tokio::runtime::Handle::current()));
-    let server = Arc::new(RpcServer::new(None));
-    server.listen("127.0.0.1", 0).unwrap();
-    rpc_service.register_handlers(&server);
-    server.start();
+    let ips = crate::common::management::addresses(12);
+    let endpoint = format!("{}:7402", ips[11]);
 
     let transport = ChunkKvRpcTransport::new(4, 1, 1);
     let response = transport
         .point(
-            &format!("127.0.0.1:{}", server.port()),
+            &endpoint,
             &PointRequest {
                 routing: RequestRouting {
                     request_id: ClientRequestId {
@@ -50,7 +44,7 @@ async fn production_transport_calls_direct_owner_rpc() {
     };
     let multi_get = transport
         .multi_get(
-            &format!("127.0.0.1:{}", server.port()),
+            &endpoint,
             &MultiGetRequest {
                 routing: RequestRouting {
                     request_id,
@@ -72,7 +66,7 @@ async fn production_transport_calls_direct_owner_rpc() {
 
     let batch = transport
         .batch_mutate(
-            &format!("127.0.0.1:{}", server.port()),
+            &endpoint,
             &BatchMutationRequest {
                 routing: PartitionRouting {
                     map_revision: 1,
@@ -89,5 +83,4 @@ async fn production_transport_calls_direct_owner_rpc() {
         .await
         .unwrap();
     assert_eq!(batch.result.unwrap_err().code, ChunkKvRpcErrorCode::NotMyRange);
-    server.stop();
 }

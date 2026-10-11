@@ -36,6 +36,9 @@ pixi run test-container-e2e --layer diskdb --concurrency 2
 pixi run test-container-e2e --layer diskio --concurrency 2 --cpus 6 --memory-mib 6144
 # Chunkdb lifecycle/recovery, multislot failover and real Diskio conversion/repair:
 pixi run test-container-e2e --layer chunkdb --concurrency 2 --cpus 12 --memory-mib 12288
+# Host object/stream clients against the same protected storage profile:
+pixi run test-container-e2e --layer chunk-client --concurrency 2 --cpus 12 --memory-mib 12288
+pixi run test-container-e2e --layer chunk-stream --scope chunk-stream.recovery --cpus 6 --memory-mib 6144
 # Normal release monitor full set, service subsets and persisted restart:
 pixi run test-container-e2e --layer deployment --concurrency 2 --cpus 6 --memory-mib 6144
 # Run one domain scope (other migrated scopes: kv.membership, kv.routing,
@@ -51,7 +54,9 @@ pixi run test-container-e2e --layer kv --data-root /path/to/e2e-data
 Build/import the shared OCI image first. An absent image, missing Docker daemon,
 unsupported daemon, changed release server sources or inadequate budget fails the
 required test. There is no successful missing-prerequisite skip.
-`--layer all` currently selects KV, Diskdb, Diskio, Chunkdb and deployment service selection.
+`--layer all` selects the registered KV, Diskdb, Diskio, Chunkdb, chunk-client,
+chunk-stream and deployment cases. Chunk-client migration is being verified;
+the whole-storage-outage stream case currently exposes an unresolved fault budget.
 
 Chunkdb lifecycle, placement and recovery use five owned containers: three KV
 voters, one Diskdb and one production-mode Chunkdb. Actual inspected KV replicas

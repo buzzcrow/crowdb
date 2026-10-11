@@ -7,8 +7,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, ChunkReadPolicy, SmallWritePolicy};
 use crowdb_chunk_stream::{
-    ProductionStreamRuntime, StreamBinding, StreamBindingState, StreamConfig, StreamError, StreamName,
-    StreamRegistry,
+    ProductionStreamRuntime, StreamBinding, StreamBindingState, StreamConfig, StreamName, StreamRegistry,
 };
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient};
 use crowdb_protocol::common::{DiskId, HwStatus, NodeValue, RackValue};
@@ -16,92 +15,13 @@ use crowdb_protocol::diskdb::rpc::{DiskGroupValue, DiskType, DiskValue};
 use crowdb_test_harness::chunkdb::{self as chunkdb_harness, ChunkdbProcess, ChunkdbStartOptions};
 use crowdb_test_harness::cluster::KvCluster;
 use crowdb_test_harness::diskdb::{self as diskdb_harness, DiskdbProcess};
-use crowdb_test_harness::diskio::{
-    self as diskio_harness, DiskArg, DiskioGroup0Identity, DiskioProcess, DiskioStartOpts,
-};
+use crowdb_test_harness::diskio::{self as diskio_harness, DiskArg, DiskioProcess, DiskioStartOpts};
 use crowdb_test_harness::hardware::INSTANCE_ID;
 use crowdb_test_harness::test_dirs::TestDir;
 
 const TEST_UNIT_BYTES: u32 = 1024 * 1024;
 const TEST_ZONE_SIZE_UNITS: u64 = 16 * 1024;
 const TEST_CAPACITY_UNITS: u64 = TEST_ZONE_SIZE_UNITS;
-
-#[cfg_attr(
-    target_os = "macos",
-    ignore = "restart/diskio FFI test requires Linux shared-library layout"
-)]
-#[tokio::test]
-async fn production_idle_writer_stops_after_ownership_takeover() {
-    assert!(
-        all_binaries_available(),
-        "native stream acceptance requires all binaries"
-    );
-    let disk_root = TestDir::new("chunk-stream-idle-authority").unwrap();
-    let disks = create_disks(&disk_root);
-    let cluster = KvCluster::start().await;
-    seed_restart_hardware(&cluster.make_hardware_client()).await;
-    let diskdb = DiskdbProcess::start(&cluster.mgmt_endpoints, false);
-    diskdb.wait_for_ready().await;
-    let diskio = start_diskio(&disks);
-    register_diskio(&cluster, &diskio).await;
-    let chunkdb = start_chunkdb(&cluster);
-    chunkdb.wait_for_ready().await;
-    let io = connect_chunk_io(&cluster).await;
-    let config = StreamConfig {
-        liveness_interval: Duration::from_millis(50),
-        ..StreamConfig::default()
-    };
-    let old_runtime = ProductionStreamRuntime::new(
-        kv_client(&cluster),
-        &io,
-        30_000,
-        ChunkReadPolicy::default(),
-        config,
-    )
-    .unwrap();
-    let name = StreamName {
-        high: u64::from(std::process::id()),
-        low: 142,
-    };
-    old_runtime
-        .registry()
-        .create(StreamBinding {
-            purpose: crowdb_protocol::chunk_stream::StreamPurpose::Stream,
-            stream_name: name,
-            metadata_group_id: 1,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("idle-authority-e2e".into()),
-        })
-        .await
-        .unwrap();
-    let old = old_runtime.create_registered(name, 0, 1).await.unwrap();
-    let before = old.append(&[Bytes::from_static(b"old")]).await.unwrap();
-    let new_runtime = ProductionStreamRuntime::new(
-        kv_client(&cluster),
-        &io,
-        30_000,
-        ChunkReadPolicy::default(),
-        StreamConfig::default(),
-    )
-    .unwrap();
-    let new = new_runtime.open(name, 0, 2).await.unwrap();
-    let head = new.observe_metadata(None, 0).unwrap();
-    // Observe three real idle periods without invoking an old-writer mutation.
-    tokio::time::sleep(Duration::from_millis(150)).await;
-    assert_eq!(old.metrics().rollovers, 0);
-    assert_eq!(
-        old.append(&[Bytes::from_static(b"stale")]).await,
-        Err(StreamError::WriteStalled)
-    );
-    let reader = new_runtime.open_read_only(name, 0, 2).await.unwrap();
-    let observed = reader.observe_metadata(None, 0).unwrap();
-    assert_eq!(observed.generation, head.generation);
-    assert_eq!(observed.active, head.active);
-    let after = new.append(&[Bytes::from_static(b"new")]).await.unwrap();
-    assert_ne!(before.chunk_id, after.chunk_id);
-    assert_eq!(new.read_at(0, 6).await.unwrap(), Bytes::from_static(b"oldnew"));
-}
 
 fn all_binaries_available() -> bool {
     (std::env::var("CROWDB_KV_SERVER_BIN").is_ok()
@@ -291,108 +211,6 @@ fn kv_client(cluster: &KvCluster) -> Arc<CrowdbKvClient> {
     ignore = "restart/diskio FFI test requires Linux shared-library layout"
 )]
 #[tokio::test]
-async fn production_stream_recovers_exact_bytes_after_service_restarts() {
-    assert!(
-        all_binaries_available(),
-        "native stream acceptance requires all binaries"
-    );
-
-    let disk_root = TestDir::new("chunk-stream-restart").expect("create test disk root");
-    let disks = create_disks(&disk_root);
-    let mut cluster = KvCluster::start().await;
-    seed_restart_hardware(&cluster.make_hardware_client()).await;
-    let diskdb = DiskdbProcess::start(&cluster.mgmt_endpoints, false);
-    diskdb.wait_for_ready().await;
-    let mut diskio = start_diskio(&disks);
-    register_diskio(&cluster, &diskio).await;
-    let mut chunkdb = start_chunkdb(&cluster);
-    chunkdb.wait_for_ready().await;
-
-    let first_io = connect_chunk_io(&cluster).await;
-    let first_runtime = ProductionStreamRuntime::new(
-        kv_client(&cluster),
-        &first_io,
-        30_000,
-        ChunkReadPolicy::default(),
-        StreamConfig::default(),
-    )
-    .expect("assemble initial runtime");
-    let stream_name = StreamName {
-        high: u64::from(std::process::id()),
-        low: 141,
-    };
-    first_runtime
-        .registry()
-        .create(StreamBinding {
-            purpose: crowdb_protocol::chunk_stream::StreamPurpose::Stream,
-            stream_name,
-            metadata_group_id: 1,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("restart-e2e".into()),
-        })
-        .await
-        .expect("publish stream binding");
-    let first_stream = first_runtime
-        .create_registered(stream_name, 0, 1)
-        .await
-        .expect("create stream");
-    let first = first_stream
-        .append(&[Bytes::from_static(b"before-restart|")])
-        .await
-        .expect("append before restart");
-    let abandoned_chunk = first.chunk_id.expect("first append chunk identity");
-    assert_eq!(
-        first_stream.read_at(0, 15).await.expect("read before restart"),
-        Bytes::from_static(b"before-restart|")
-    );
-    drop(first_stream);
-    drop(first_runtime);
-    drop(first_io);
-
-    chunkdb.crash();
-    diskio.child.kill().expect("kill diskio");
-    diskio.child.wait().expect("reap diskio");
-    cluster.crash_and_restart().await;
-
-    diskio = start_diskio(&disks);
-    register_diskio(&cluster, &diskio).await;
-    chunkdb = start_chunkdb(&cluster);
-    chunkdb.wait_for_ready().await;
-    let second_io = connect_chunk_io(&cluster).await;
-    let second_runtime = ProductionStreamRuntime::new(
-        kv_client(&cluster),
-        &second_io,
-        30_000,
-        ChunkReadPolicy::default(),
-        StreamConfig::default(),
-    )
-    .expect("assemble recovered runtime");
-    let second_stream = second_runtime
-        .open(stream_name, 0, 2)
-        .await
-        .expect("recover authoritative stream head");
-    let second = second_stream
-        .append(&[Bytes::from_static(b"after-restart")])
-        .await
-        .expect("append after restart");
-    assert_ne!(
-        second.chunk_id,
-        Some(abandoned_chunk),
-        "takeover must isolate the abandoned writer chunk"
-    );
-    assert_eq!(second.begin, 15);
-    assert_eq!(
-        second_stream.read_at(0, 28).await.expect("read recovered stream"),
-        Bytes::from_static(b"before-restart|after-restart")
-    );
-}
-
-#[cfg_attr(
-    target_os = "macos",
-    ignore = "restart/diskio FFI test requires Linux shared-library layout"
-)]
-#[tokio::test]
 async fn production_stream_write_returns_after_diskio_failure() {
     assert!(
         all_binaries_available(),
@@ -459,90 +277,4 @@ async fn production_stream_write_returns_after_diskio_failure() {
         1,
         "failed mirror write did not rotate once"
     );
-}
-
-#[cfg_attr(
-    target_os = "macos",
-    ignore = "restart/diskio FFI test requires Linux shared-library layout"
-)]
-#[tokio::test]
-async fn production_stream_write_returns_after_live_diskio_errors() {
-    assert!(
-        all_binaries_available(),
-        "native stream acceptance requires all binaries"
-    );
-
-    let cluster = KvCluster::start().await;
-    seed_restart_hardware(&cluster.make_hardware_client()).await;
-    let diskdb = DiskdbProcess::start(&cluster.mgmt_endpoints, false);
-    diskdb.wait_for_ready().await;
-    let mut diskios = Vec::new();
-    for index in 0..3_u64 {
-        let diskio = DiskioProcess::start_for_group(
-            &DiskioStartOpts {
-                dummy_disk: "mem",
-                kv_seeds: &cluster.mgmt_endpoints,
-                disks: &[],
-                fault_error_rate: 1.0,
-                fault_latency_ms: None,
-                no_o_direct: false,
-            },
-            DiskioGroup0Identity {
-                instance_id: INSTANCE_ID + index,
-                rack_id: index + 1,
-                node_id: index + 10,
-                disk_group_id: index + 100,
-            },
-        );
-        diskios.push(diskio);
-    }
-    let chunkdb = start_chunkdb(&cluster);
-    chunkdb.wait_for_ready().await;
-    let chunk_io = connect_chunk_io(&cluster).await;
-    let runtime = ProductionStreamRuntime::new(
-        kv_client(&cluster),
-        &chunk_io,
-        30_000,
-        ChunkReadPolicy::default(),
-        StreamConfig::default(),
-    )
-    .expect("assemble production runtime");
-    let stream_name = StreamName {
-        high: u64::from(std::process::id()),
-        low: 143,
-    };
-    runtime
-        .registry()
-        .create(StreamBinding {
-            purpose: crowdb_protocol::chunk_stream::StreamPurpose::Stream,
-            stream_name,
-            metadata_group_id: 1,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("live-diskio-error-e2e".into()),
-        })
-        .await
-        .expect("publish stream binding");
-    let stream = runtime
-        .create_registered(stream_name, 0, 1)
-        .await
-        .expect("create stream");
-    let result = tokio::time::timeout(
-        Duration::from_secs(15),
-        stream.append(&[Bytes::from_static(b"record")]),
-    )
-    .await
-    .expect("journal append exceeded the 15-second fault budget");
-    assert!(
-        result.is_err(),
-        "journal append succeeded with all DiskIO writes failing"
-    );
-    assert_eq!(stream.tail(), 0);
-    assert_eq!(stream.metrics().rollovers, 1);
-    for diskio in &mut diskios {
-        assert!(
-            diskio.child.try_wait().unwrap().is_none(),
-            "faulted DiskIO exited"
-        );
-    }
 }

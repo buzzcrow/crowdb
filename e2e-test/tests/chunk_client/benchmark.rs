@@ -3,10 +3,6 @@
 
 //! Benchmark flows through real KV, `DiskDB`, `ChunkDB`, and `NullDisk` services.
 
-#[allow(dead_code)]
-#[path = "common/e2e_stack.rs"]
-mod e2e_stack;
-
 use std::sync::Arc;
 
 use crowdb_chunk_client::{
@@ -15,14 +11,14 @@ use crowdb_chunk_client::{
 };
 use crowdb_common::ec::EcScheme;
 
-use e2e_stack::{all_binaries_available, E2eStack};
+use super::stack::TestStack as E2eStack;
 
 const KIB: usize = 1024;
 const MIB: usize = 1024 * KIB;
 
 fn small_policy() -> SmallWritePolicy {
     SmallWritePolicy {
-        mirror_copies: 1,
+        mirror_copies: 2,
         conversion_enabled: false,
         max_pipelines: 2,
         max_batch_bytes: 4 * KIB,
@@ -46,10 +42,8 @@ fn large_policy() -> LargeWritePolicy {
 }
 
 #[tokio::test]
+#[ignore = "requires the owned release storage containers"]
 async fn small_write_benchmark_uses_real_metadata_and_null_disk() {
-    if !all_binaries_available() {
-        return;
-    }
     let stack = E2eStack::start_null(small_policy()).await;
     let result = run_small_write_benchmark(
         stack.client.clone(),
@@ -74,10 +68,14 @@ async fn small_write_benchmark_uses_real_metadata_and_null_disk() {
     assert!(result.latency_p95_us <= result.latency_p99_us);
     assert!(result.latency_p99_us <= result.latency_max_us);
     assert_eq!(result.batch_watchdog_expirations, 0);
-    assert_eq!(result.aggregate_write_requests, result.batches);
-    assert_eq!(result.aggregate_write_objects, 8);
-    assert_eq!(result.aggregate_write_buffers, 8);
-    assert_eq!(result.aggregate_write_logical_bytes, 8 * KIB as u64);
+    let copies = u64::from(small_policy().mirror_copies);
+    assert_eq!(result.aggregate_write_requests, result.batches * copies);
+    assert_eq!(result.aggregate_write_objects, result.objects * copies);
+    assert_eq!(result.aggregate_write_buffers, result.objects * copies);
+    assert_eq!(
+        result.aggregate_write_logical_bytes,
+        result.logical_bytes * copies
+    );
     assert!(result.aggregate_write_payload_bytes >= result.aggregate_write_logical_bytes);
     assert!(result.max_objects_per_write_request > 0);
     assert!(result.max_buffers_per_write_request > 0);
@@ -86,10 +84,8 @@ async fn small_write_benchmark_uses_real_metadata_and_null_disk() {
 }
 
 #[tokio::test]
+#[ignore = "requires the owned release storage containers"]
 async fn mixed_read_benchmark_prepares_and_verifies_real_frames() {
-    if !all_binaries_available() {
-        return;
-    }
     let stack = E2eStack::start(small_policy()).await;
     let result = run_read_benchmark(
         stack.client.clone(),

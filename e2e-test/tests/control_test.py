@@ -10,6 +10,7 @@ from unittest.mock import Mock
 
 from control import Control
 from fixture import Cluster, LABEL
+from chunkdb_fixture import ChunkdbStorageCluster
 
 
 class ControlTest(unittest.TestCase):
@@ -27,6 +28,26 @@ class ControlTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "ownership"):
                 cluster.control({"action": "stop", "node": 0})
             cluster.command.assert_called_once_with("inspect", "owned")
+
+    def test_status_is_read_only_and_requires_owned_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cluster = Cluster("image", directory)
+            cluster.servers = ["owned"]
+            cluster.command = Mock(return_value=json.dumps([{
+                "Config": {"Labels": {LABEL: cluster.run_id}}, "State": {"Running": True}}]))
+            self.assertEqual(cluster.control({"action": "status", "node": 0}), {"Running": True})
+            cluster.command.assert_called_once_with("inspect", "owned")
+
+    def test_storage_reconfiguration_rejects_invalid_options_before_lifecycle_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cluster = ChunkdbStorageCluster("image", directory, "client-bundle")
+            cluster.command = Mock()
+            for options in ({}, {**cluster.options, "repair_enabled": 1},
+                            {**cluster.options, "conversion_task_lease_secs": 0},
+                            {**cluster.options, "repair_allow_unsafe_placement": True}):
+                with self.assertRaises(ValueError):
+                    cluster.control({"action": "configure-chunkdb", "node": 4, "options": options})
+            cluster.command.assert_not_called()
 
     def test_failed_actions_are_reported_and_completed_requests_are_not_replayed(self):
         with tempfile.TemporaryDirectory() as directory:

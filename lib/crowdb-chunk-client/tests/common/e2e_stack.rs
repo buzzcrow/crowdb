@@ -7,12 +7,8 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, SmallWritePolicy};
-use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport};
-use crowdb_diskio_client::{DiskId, DiskIoRetCode, TestWireDiskioClient as DiskioClient};
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, ServiceRegistryClient};
-use crowdb_protocol::chunkdb::rpc::{Chunk, Location, QueryChunkRequest};
+use crowdb_diskio_client::TestWireDiskioClient as DiskioClient;
 use crowdb_protocol::common::DiskId as ProtoDiskId;
-use crowdb_protocol::diskdb::rpc::Segment;
 use crowdb_rpc_ffi::RpcServer;
 use crowdb_test_harness::chunkdb::{self as cdb_harness, ChunkdbProcess, ChunkdbStartOptions};
 use crowdb_test_harness::cluster::KvCluster;
@@ -41,17 +37,14 @@ fn standard_disk_ids() -> Vec<ProtoDiskId> {
 
 pub struct E2eStack {
     _permit: OwnedSemaphorePermit,
-    pub cluster: KvCluster,
+    _cluster: KvCluster,
     _diskdb: DiskdbProcess,
     diskio: DiskioProcess,
-    #[allow(dead_code)]
-    chunkdb: Option<ChunkdbProcess>,
-    #[allow(dead_code)]
-    chunkdb_options: ChunkdbStartOptions,
+    _chunkdb: Option<ChunkdbProcess>,
     pub client: ChunkIoClient,
-    rpc_server: Arc<RpcServer>,
-    diskio_client: Arc<DiskioClient>,
-    diskio_connection: crowdb_rpc_ffi::Connection,
+    _rpc_server: Arc<RpcServer>,
+    _diskio_client: Arc<DiskioClient>,
+    _diskio_connection: crowdb_rpc_ffi::Connection,
 }
 
 impl E2eStack {
@@ -68,46 +61,6 @@ impl E2eStack {
             },
         )
         .await
-    }
-
-    #[allow(dead_code)]
-    pub async fn start_with_diskio_fault_rate(small_write: SmallWritePolicy, fault_error_rate: f64) -> Self {
-        Self::start_with_disk_and_chunkdb_options(
-            small_write,
-            "mem",
-            fault_error_rate,
-            ChunkdbStartOptions {
-                allow_unsafe_ec: true,
-                allow_degraded_failure_domains: true,
-                repair_allow_unsafe_placement: true,
-                ..ChunkdbStartOptions::default()
-            },
-        )
-        .await
-    }
-
-    #[allow(dead_code)]
-    pub async fn start_null(small_write: SmallWritePolicy) -> Self {
-        Self::start_with_disk_and_chunkdb_options(
-            small_write,
-            "null",
-            0.0,
-            ChunkdbStartOptions {
-                allow_unsafe_ec: true,
-                allow_degraded_failure_domains: true,
-                repair_allow_unsafe_placement: true,
-                ..ChunkdbStartOptions::default()
-            },
-        )
-        .await
-    }
-
-    #[allow(dead_code)]
-    pub async fn start_with_chunkdb_options(
-        small_write: SmallWritePolicy,
-        chunkdb_options: ChunkdbStartOptions,
-    ) -> Self {
-        Self::start_with_disk_and_chunkdb_options(small_write, "mem", 0.0, chunkdb_options).await
     }
 
     async fn start_with_disk_and_chunkdb_options(
@@ -174,126 +127,19 @@ impl E2eStack {
 
         Self {
             _permit: permit,
-            cluster,
+            _cluster: cluster,
             _diskdb: diskdb,
             diskio,
-            chunkdb: Some(chunkdb),
-            chunkdb_options,
+            _chunkdb: Some(chunkdb),
             client,
-            rpc_server,
-            diskio_client,
-            diskio_connection,
+            _rpc_server: rpc_server,
+            _diskio_client: diskio_client,
+            _diskio_connection: diskio_connection,
         }
     }
 
-    #[allow(dead_code)]
-    pub async fn wait_for_conversion_active(&self) {
-        tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                let metrics = self
-                    .chunkdb
-                    .as_ref()
-                    .expect("chunkdb is running")
-                    .conversion_metrics()
-                    .await;
-                if metrics["attempts_completed"].as_u64().unwrap_or(0) > 0
-                    && metrics["active"].as_u64().unwrap_or(0) > 0
-                {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("conversion never became active");
-    }
-
-    #[allow(dead_code)]
-    pub async fn repair_metrics(&self) -> serde_json::Value {
-        self.chunkdb
-            .as_ref()
-            .expect("chunkdb is running")
-            .repair_metrics()
-            .await
-    }
-
-    #[allow(dead_code)]
-    pub async fn crash_and_restart_chunkdb(&mut self) {
-        self.crash_and_restart_chunkdb_with_options(self.chunkdb_options)
-            .await;
-    }
-
-    #[allow(dead_code)]
     pub fn crash_diskio(&mut self) {
         self.diskio.child.kill().expect("kill DiskIO process");
         self.diskio.child.wait().expect("reap DiskIO process");
-    }
-
-    #[allow(dead_code)]
-    pub async fn crash_and_restart_chunkdb_with_options(&mut self, options: ChunkdbStartOptions) {
-        let mut chunkdb = self.chunkdb.take().expect("chunkdb is running");
-        chunkdb.crash();
-        drop(chunkdb);
-        let replacement = ChunkdbProcess::start_with_options(&self.cluster.mgmt_endpoints, options);
-        replacement.wait_for_ready().await;
-        let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
-            self.cluster.mgmt_endpoints.clone(),
-        )));
-        let registry = ServiceRegistryClient::from_shared(kv);
-        replacement.wait_for_registry_ready(&registry).await;
-        self.chunkdb = Some(replacement);
-        self.chunkdb_options = options;
-    }
-
-    pub async fn query_chunk(&self, location: &Location) -> Chunk {
-        let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
-            self.cluster.mgmt_endpoints.clone(),
-        )));
-        let service = ServiceRegistryClient::from_shared(kv);
-        let chunkdb = ChunkdbClient::new(service, Arc::new(ChunkdbRpcTransport::new()));
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-        loop {
-            match chunkdb.refresh_endpoints().await {
-                Ok(()) => break,
-                Err(error) if tokio::time::Instant::now() < deadline => {
-                    eprintln!("waiting for ChunkDB discovery after KV recovery: {error}");
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                }
-                Err(error) => panic!("ChunkDB discovery did not recover: {error}"),
-            }
-        }
-        let response = chunkdb
-            .query_chunk(QueryChunkRequest {
-                chunk_id: location.chunk_id,
-            })
-            .await
-            .unwrap();
-        assert!(response.layout_validity_ms > 0);
-        response.chunk.expect("location chunk")
-    }
-
-    pub async fn read_segment(
-        &self,
-        segment: &Segment,
-        unit_bytes: u64,
-        offset: u64,
-        length: u32,
-    ) -> Vec<u8> {
-        let disk_id = segment.disk_id.expect("segment disk ID");
-        let response = self
-            .diskio_client
-            .read(
-                &self.rpc_server,
-                &self.diskio_connection,
-                DiskId::new(disk_id.high, disk_id.low),
-                segment.zone_index,
-                segment.unit_offset * unit_bytes + offset,
-                length,
-                0,
-            )
-            .expect("send disk read");
-        let (code, data) = DiskioClient::await_read_response(response).await.unwrap();
-        assert_eq!(code, DiskIoRetCode::Success);
-        data.expect("successful disk read data").to_vec()
     }
 }

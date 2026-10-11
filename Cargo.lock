@@ -806,7 +806,6 @@ dependencies = [
  "async-trait",
  "bytes",
  "clap",
- "crowdb-chunk-kv-server",
  "crowdb-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
@@ -831,10 +830,10 @@ dependencies = [
  "crowdb-chunk-kv-server",
  "crowdb-chunk-stream",
  "crowdb-common",
+ "crowdb-kv",
  "crowdb-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
- "crowdb-test-harness",
  "crowdb-tree-ffi",
  "serde",
  "serde_json",
@@ -1454,8 +1453,12 @@ dependencies = [
 name = "e2e-test"
 version = "0.3.0"
 dependencies = [
+ "async-trait",
  "bincode",
  "bytes",
+ "crowdb-chunk-client",
+ "crowdb-chunk-kv-client",
+ "crowdb-chunk-stream",
  "crowdb-chunkdb",
  "crowdb-chunkdb-client",
  "crowdb-common",
