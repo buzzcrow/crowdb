@@ -29,6 +29,8 @@ SERVER_PATHS = (
     ":(exclude)lib/crowdb-chunkdb-client/examples/single_node_chunk_layout.rs",
     # Version verification reads host SDK manifests and is never staged.
     ":(exclude)tools/ci-checks/check-version.py",
+    # This host-only RPC benchmark is not a dependency or staged server binary.
+    ":(exclude)app/crowdb-cli/src/commands/bench/rpc.rs",
 )
 
 

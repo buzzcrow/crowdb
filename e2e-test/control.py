@@ -45,3 +45,5 @@ class Control:
         self.worker.join(timeout=65)
         if self.worker.is_alive():
             raise RuntimeError("fixture control did not finish its bounded action")
+        if self.cluster.control_cancelled is self.done:
+            del self.cluster.control_cancelled

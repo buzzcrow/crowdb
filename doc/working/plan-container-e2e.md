@@ -1475,3 +1475,46 @@ Only the exited-storage timing migration awaits a human design choice; S3 and su
   and its now-unused process guard. The six fake-child lifecycle/identity/reset
   component proofs remain unchanged. Canonical Console registration now has 78
   owners; the two unaccepted managed browser drafts remain excluded.
+
+
+## Complete registered Iceberg domain and control lifetime
+
+- Iceberg `run-2e7a318db15149d7942a4f81ea86c2e0`: 30/30 passed,
+  1542.472 seconds fixture wall time at concurrency 2. The retired official
+  Rust client retains its full 900000 ms delegated and 300000 ms request grace;
+  its 1205.56-second client phase is expected protocol coverage. Native durable
+  crash matrices remain unmigrated; this result does not close their coverage.
+- Deployment full run `run-3b01588d417c43dfbfb050e338ac712f` exposed a fixture
+  lifecycle bug: `Control.__exit__` sets the worker cancellation event but left
+  it attached to the cluster after joining. A subsequent between-client
+  `crash_restart` observes that completed worker's event and rejects readiness.
+  Detach the owned event only after the worker terminates, preserving active
+  action cancellation and its existing 65-second join bound. Add a regression
+  proving cancellation is absent between clients and fresh for the next client.
+  No service deadline, assertion or caller retry changes.
+
+
+## CLI RPC benchmark error exit
+
+- Reproduce unchanged `cluster_cli_test::benchmark_replaces_its_previous_log_directory`:
+  closed port 1 fails asynchronous RPC submissions but `bench::rpc::run`
+  unconditionally returns success. Original focused baseline fails in 10.14 s.
+  Coroutine submission failures produce no completed operations and no response
+  callbacks; its report is 0 ops/0 errors. Require at least one completed
+  operation and no recorded errors for success, after printing the complete
+  report. This also rejects recorded Tokio failures. Preserve successful runs. Preserve the original 10-second
+  workload and log-directory assertions; run them for both coroutine and Tokio.
+- The isolated `app/crowdb-cli/src/commands/bench/rpc.rs` host-client source is
+  not a dependency of any server crate and is not built or copied by release
+  `stage.sh`/`collect-libs.sh`. Exclude exactly this file from server provenance
+  comparison, with a regression retaining rejection of changed server sources.
+  No shared RPC code, manifest, release optimization or container contents change.
+
+- Deployment recheck `run-5f0be57000ed4481968a78dad965273d`: 33/33 pass at concurrency 2,
+  294.359 seconds fixture wall time. All previously
+  cancelled between-client restarts pass; supervision deadlines remain unchanged.
+
+- CLI complete component gate passes, including original log replacement and
+  closed-peer failure assertions in both modes. Clippy all targets and Rust
+  formatting pass. Canonical staged fixture gate: 51/51; working tree including
+  two unaccepted browser-draft guard tests: 53/53.

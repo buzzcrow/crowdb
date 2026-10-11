@@ -44,6 +44,18 @@ class ImageIdentityTest(unittest.TestCase):
         self.assertTrue(identity["server_sources_match"])
         self.assertNotEqual(identity["client_revision"], identity["image_revision"])
 
+    def test_host_rpc_benchmark_does_not_exempt_server_rpc_sources(self):
+        benchmark = self.root / "app/crowdb-cli/src/commands/bench/rpc.rs"
+        benchmark.parent.mkdir(parents=True)
+        benchmark.write_text("host benchmark\n")
+        self.commit()
+        revision = self.git("rev-parse", "HEAD")
+        benchmark.write_text("changed host benchmark\n")
+        self.assertTrue(verify_server_sources(self.root, revision)["server_sources_match"])
+        (self.root / "app/server/src/main.rs").write_text("changed server RPC\n")
+        with self.assertRaisesRegex(ValueError, "server sources differ"):
+            verify_server_sources(self.root, revision)
+
     def test_dirty_server_edit_cannot_use_stale_image(self):
         (self.root / "app/server/src/main.rs").write_text("changed server\n")
         with self.assertRaisesRegex(ValueError, "server sources differ"):

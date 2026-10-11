@@ -39,10 +39,10 @@ unmeasured as complete tasks.
 | Chunk stream | intel7960   | —          | —                         | —       | —          | —                                                                                                         |
 | Chunk-KV     | intel7960   | 2026-10-11 | 2 / 0 / 0                 | 22.520  | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-e8fbdfdc8be94d408309d5623227794d/results.json) |
 | S3           | intel7960   | 2026-10-11 | 38 / 0 / 0                | 433.351 | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-d6434ad353d34b5bb60a0751b4b400c2/results.json) |
-| Iceberg      | intel7960   | —          | —                         | —       | —          | —                                                                                                         |
+| Iceberg      | intel7960   | 2026-10-11 | 30 / 0 / 0                | 1542.472 | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-2e7a318db15149d7942a4f81ea86c2e0/results.json) |
 | Dataset      | intel7960   | 2026-10-11 | 2 / 0 / 0                 | 18.024  | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-d869ca04e48d46dabadb36e4db510c81/results.json) |
 | Console      | intel7960   | 2026-10-11 | 78 / 0 / 0                | 161.415 | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-3d2b8ad6fc5349f7a2a961ecd4ec7bd3/results.json) |
-| Deployment   | intel7960   | —          | —                         | —       | —          | —                                                                                                         |
+| Deployment   | intel7960   | 2026-10-11 | 33 / 0 / 0                | 294.359 | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-5f0be57000ed4481968a78dad965273d/results.json) |
 
 ## Environments
 
@@ -92,8 +92,8 @@ as environment baselines, not as evidence of migration completion.
 - [ ] **Migration closure**: remaining real-server Console lifecycle/cluster
   flows, S3 mini-cluster and Iceberg durable crash matrices need canonical
   container owners. Preserve old assertions and important component UTs until
-  equivalent owners pass. Final Pixi/CI taxonomy, mixed-domain isolation and
-  complete-domain measurements remain pending.
+  equivalent owners pass. Final Pixi/CI taxonomy and complete-domain measurements remain pending.
+  KV/KV and KV/Web isolation acceptance passes.
 - [ ] **Storage outage budget**: original stream/reader and S3 repair proofs
   require failure within 15 seconds after Diskio exit. Vanished container IPs
   become network blackholes and exceed that bound. Choose an overall production
@@ -104,9 +104,6 @@ as environment baselines, not as evidence of migration completion.
   403; the old browser flow expects logical writes and physical-mutation 503.
   Choose a supported writable Console profile or change Docker write policy
   before retiring that flow. Readonly release browser acceptance already passes.
-- [ ] **CLI benchmark exit**: existing log-directory replacement test expects
-  nonzero exit for port 1; asynchronous benchmark currently exits 0. Preserve
-  its assertion and diagnose the production exit contract.
 - [ ] **macOS Iceberg SDK**: Maven `dependency:go-offline` stalled for more than
   eight minutes. Rerun with the pinned dependency cache available.
 - [ ] **WAL disk loss**: full fail-out and snapshot rejoin coverage awaits the

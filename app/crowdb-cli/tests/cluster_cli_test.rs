@@ -38,21 +38,32 @@ fn benchmark_replaces_its_previous_log_directory() {
         eprintln!("skipping: crowdb-cli binary not built ({})", cli.display());
         return;
     }
-    let root = tempdir("bench-latest-log");
-    let log_dir = root.join(".crowdb-runtime/artifacts/cli/bench-rpc");
-    fs::create_dir_all(&log_dir).expect("create old benchmark log dir");
-    fs::write(log_dir.join("old-run.marker"), b"old").expect("write old marker");
+    for mode in ["coroutine", "tokio"] {
+        let root = tempdir(&format!("bench-latest-log-{mode}"));
+        let log_dir = root.join(".crowdb-runtime/artifacts/cli/bench-rpc");
+        fs::create_dir_all(&log_dir).expect("create old benchmark log dir");
+        fs::write(log_dir.join("old-run.marker"), b"old").expect("write old marker");
 
-    let output = Command::new(cli)
-        .current_dir(&root)
-        .env("CROWDB_RUNTIME_ROOT", root.join(".crowdb-runtime"))
-        .args(["bench", "rpc", "--server-port", "1", "--metrics-interval", "0"])
-        .output()
-        .expect("run benchmark against closed port");
-    assert!(!output.status.success());
-    assert!(log_dir.is_dir());
-    assert!(!log_dir.join("old-run.marker").exists());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("log dir:"), "stderr={stderr}");
-    let _ = fs::remove_dir_all(root);
+        let output = Command::new(&cli)
+            .current_dir(&root)
+            .env("CROWDB_RUNTIME_ROOT", root.join(".crowdb-runtime"))
+            .args([
+                "bench",
+                "rpc",
+                "--server-port",
+                "1",
+                "--metrics-interval",
+                "0",
+                "--mode",
+                mode,
+            ])
+            .output()
+            .expect("run benchmark against closed port");
+        assert!(!output.status.success());
+        assert!(log_dir.is_dir());
+        assert!(!log_dir.join("old-run.marker").exists());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("log dir:"), "stderr={stderr}");
+        let _ = fs::remove_dir_all(root);
+    }
 }
