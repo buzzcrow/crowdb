@@ -3,17 +3,41 @@
 """Host-client result and per-run environment contracts."""
 
 import json
+import io
 import os
 import subprocess
 import tempfile
+import tarfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from client import client_sources, run_client
+from client import bundle_iceberg_rck, client_sources, run_client
 
 
 class ClientTest(unittest.TestCase):
+    def test_rck_archive_supplies_upstream_version_without_a_parent_git_repo(self):
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode="w") as tree:
+            body = b"upstream build consumes version.txt"
+            info = tarfile.TarInfo("build.gradle")
+            info.size = len(body)
+            tree.addfile(info, io.BytesIO(body))
+        revision = "6976e020b894f6a6777704df2b8c4458cb291ae9"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "cache"
+            source.mkdir()
+            with patch.dict(os.environ, {"CROWDB_ICEBERG_RCK_ROOT": str(source)}), \
+                    patch("client.subprocess.check_output", side_effect=[revision, "", archive.getvalue()]):
+                bundle_iceberg_rck(root / "artifact")
+            output = root / "artifact/clients/iceberg-rck"
+            self.assertEqual((output / "source/version.txt").read_text(), "1.11.0\n")
+            self.assertIn(f"git.commit.id={revision}\n",
+                          (output / "source/iceberg-build.properties").read_text())
+            self.assertEqual(json.loads((output / "source.json").read_text())["revision"], revision)
+            self.assertFalse((output / "source/.git").exists())
+
     def test_client_identity_keeps_locks_and_excludes_mutable_environments(self):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)

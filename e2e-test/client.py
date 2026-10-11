@@ -168,5 +168,18 @@ def bundle_iceberg_rck(output):
     destination.mkdir(parents=True)
     with tarfile.open(fileobj=io.BytesIO(archive)) as tree:
         tree.extractall(destination, filter="data")
+    # The pinned commit is the peeled apache-iceberg-1.11.0 release tag.
+    # Upstream source distributions provide this file because git archive
+    # omits Git metadata; never derive their version from the caller's repo.
+    (destination / "version.txt").write_text("1.11.0\n")
+    # Upstream buildInfo copies this source-distribution file instead of
+    # trying to discover Git metadata outside the archived source tree.
+    (destination / "iceberg-build.properties").write_text(
+        f"git.commit.id={revision}\n"
+        f"git.commit.id.abbrev={revision[:7]}\n"
+        "git.build.version=1.11.0\n"
+        "git.closest.tag.name=apache-iceberg-1.11.0\n"
+        "git.tags=apache-iceberg-1.11.0\n")
     (destination.parent / "source.json").write_text(json.dumps({
-        "upstream": "https://github.com/apache/iceberg.git", "revision": revision}, indent=2))
+        "upstream": "https://github.com/apache/iceberg.git", "revision": revision,
+        "version": "1.11.0"}, indent=2))
