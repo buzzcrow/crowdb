@@ -11,6 +11,21 @@ from publish import publish
 
 
 class PublishTest(unittest.TestCase):
+    def test_credential_domain_names_are_not_secret_assignments(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "original"
+            source.mkdir()
+            case = "s3.credentials::credential_refresh_keeps_old_signed_streams_valid"
+            report = {"cases": [{"case": case, "status": "pass", "seconds": 2.0}]}
+            (source / "results.json").write_text(json.dumps(report))
+            (source / "runtime.log").write_text(case + '\nwriter_token="private-value-123"\n')
+            publish(source, root / "public")
+            self.assertEqual(json.loads((root / "public/results.json").read_text()), report)
+            log = (root / "public/runtime.log").read_text()
+            self.assertIn(case, log)
+            self.assertNotIn("private-value-123", log)
+
     def test_export_preserves_originals_and_excludes_private_data_and_symlinks(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

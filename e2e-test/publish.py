@@ -9,7 +9,7 @@ import re
 
 SECRET = re.compile(
     r'(?i)([\w.-]*(?:token|password|secret|access[_-]?key|master[_-]?key|'
-    r'authorization|credential|signature)[\w.-]*["\']?\s*[:=]\s*["\']?)'
+    r'authorization|credential|signature)[\w.-]*["\']?\s*[:=](?!:)\s*["\']?)'
     r'(?:(?:Bearer|Basic)\s+)?([^\s,"\'}&{\[\]]+)')
 REPORTS = {"results.json", "timing.json", "identity.json", "client-identity.json",
            "case.json", "endpoints.json", "mounts.json", "s3-node-endpoints.json"}
