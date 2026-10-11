@@ -582,12 +582,9 @@ pub async fn add_replica(
         // A lost response may still have applied the remote on this peer.
         rollback.wired_peers.push(existing_replica.node_id);
         if let Err(e) = peer_client
-            .add_remote_replicas_at_epoch(
-                store_id,
-                group_id,
-                std::slice::from_ref(&new_remote),
-                expected_epoch,
-            )
+            // A learner does not change quorum. Keep the current physical
+            // epoch until the caught-up member is promoted to the successor.
+            .add_remote_replicas(store_id, group_id, std::slice::from_ref(&new_remote))
             .await
         {
             return Err(rollback
@@ -628,7 +625,7 @@ pub async fn add_replica(
     }
     // Once promotion starts, a lost response may already have changed quorum.
     // Preserve the caught-up replica and retry; deleting it would break voters.
-    replica_join::promote(&peers, store_id, group_id, &new_remote).await?;
+    replica_join::promote(&peers, store_id, group_id, &new_remote, expected_epoch).await?;
     // Record only after snapshot/WAL catch-up and voting promotion.
     record_replica(ctx, store_id, group_id, new_rid, node_id).await?;
     ctx.membership()

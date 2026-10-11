@@ -9,18 +9,20 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 
 ## Resume context
 
-- Branch `task-deploy`; accepted Web management/bootstrap migration is `217965c9`. R230 is unfinished. Do not delete the
+- Branch `task-deploy`; accepted bootstrap migration is `aeab91d4`; membership fix is `8a8171f0`. R230 is unfinished. Do not delete the
   requirement/backlog entry until every remaining owner and required gate passes.
 - Working tree contains uncommitted Console browser migration drafts. Shared-image CI is committed. S3 node-fault migration and local-state component proofs are accepted.
   Preserve these drafts. `e2e-test/clients/console-ui/node_modules/` is local
   dependency state; never stage it.
-- Current formal release image archive is rebuilt from
+- Last accepted formal release image archive was built from
   `b7b1247b172f43562c9ffccfd95afef109bc3dde`, including ordered S3 batch response
   streaming, optimized binaries and retained debug information. OCI digest
   `sha256:703141e93338f2d0969c32a4a2d4512a0964cf999b8f67e8bd72de352970d0c1`;
   config `sha256:497764c9d5a6e068eaa0666ae15a6da1769d7d2f2304fcdaa31a7c6e84667db0`;
   runtime `bb593260b39841eefa0c012c7bbdfd714ac64fe56fed9c56c4f2be99234f562b`.
-  Receipt: `target/crowdb.oci.tar.json`. Import is complete. The original
+  Accepted backup: `target/crowdb.oci-b7b1247b.tar[.json]`, tag
+  `crowdb-node:b7b1247b`. A rebuild for the membership fix is in progress;
+  logs `/tmp/crowdb-voting-release-{stage,build,import}.log`. The original
   thousand-key test passes all three phases (35.984/49.485/61.853 seconds),
   complete wall 167.160 seconds: `/tmp/crowdb-delete-stream-exact`.
   Full S3 passes 43/43 at CI quotas in 1545.602 seconds:
@@ -34,11 +36,40 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 - Delete original real-server owners only after equivalent accepted assertions.
   Keep deterministic component UT. Run executable commands through `pixi run`;
   native server gates require `clean-env`, never during another server gate.
-- Accepted fixture gate: 82 pass, `/tmp/crowdb-export-case-fixture.log`,
+- Accepted fixture gate: 84 pass, `/tmp/crowdb-web-bootstrap-fixture.log`,
   using an export of the staged source. Console browser drafts are excluded.
   S3 component UT passes 114/114; Access-server passes 108 plus its pinned
   SDK protocol test; Web/Console-shared/E2E all-target clippy
   and workspace fmt pass.
+
+## Accepted assertion references
+
+The completed execution tasks are removed. These compact mappings retain the
+original assertion ownership needed to retire launchers; evidence is in commits
+and the named run artifacts.
+
+- Metrics' three original cases → `console::web_metrics`: node shape/nonempty,
+  Group prefix and Store aggregate, original three-second readiness. Evidence:
+  `/tmp/crowdb-root-web-metrics-standalone`; old file removed (`ee25465b`).
+- KV happy flow and `kv_get_delegates_to_ops_kv_data` → `console::web_kv`:
+  text/binary round trips, client sequence, delete visibility. Evidence:
+  `/tmp/crowdb-root-web-kv-sequence`; unavailable-authority UT retained (`1dac8917`, `217965c9`).
+- `full_mgmt_cycle_through_web_routes`, `add_store_delegates_to_ops_kv_logical`,
+  `delete_server_returns_409_when_replicas_exist` → `console::web_management`:
+  Store identity, empty/two-group listing, detail, deletion and server 409.
+  Evidence: `/tmp/crowdb-root-web-management-ops` (`217965c9`).
+- `cluster_init_delegates_to_ops_cluster_init` → `console::web_bootstrap`:
+  Group-0 IDs, replay, stable replica, missing topology 422, invalid bindings
+  publish nothing. Evidence: `/tmp/crowdb-root-web-bootstrap-split`.
+- `bare_metal_web_bootstrap_consumes_sealed_topology_input` →
+  `console::web_sealed_bootstrap`: sealed source, HTTP 201, no residual intent or
+  topology. Evidence: `/tmp/crowdb-root-web-sealed-bootstrap`,
+  `run-6d91726b6917420580a4988f6701506e` (`aeab91d4`).
+- `legacy_in_memory_web_bootstrap_does_not_persist_topology` → shared root Web
+  bootstrap plus component `in_memory_configuration_path_never_publishes_topology_or_bootstrap_intent`.
+  `mgmt_routes_test.rs` now retains only cached-authority rejection UT.
+- `swagger_routes_are_removed` → component `swagger_routes_test.rs`: all three
+  retired paths; no real server startup (`ff711b4c`).
 
 ## Remaining migrations
 
@@ -63,64 +94,25 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   default realBackend selection and remain in `test-console.sh`. Audit
   `71-s3-native.spec.ts` / `nativeS3.config.ts` and `72-managed-native.spec.ts` /
   `managedNative.config.ts` separately; no accepted root replacement is claimed.
-- [~] **Remaining Web route server owners**: final direct-launch audit still
-  finds two native KV launcher files: `replica_routes_test.rs`,
-  and `replica_leader_removal_test.rs` under
-  `app/crowdb-web/tests/`. Map each real-server case before deleting helpers;
-  keep malformed-input, unavailable-upstream and isolated router UT portions.
-  Remaining coverage needs bidirectional
-  replica wiring, leader removal/re-election and unreachable-leader membership.
-  These are unfinished owners, independent of the two managed browser
-  drafts. Do not count the previous 87 passing root operations as proof of their coverage.
-  `swagger_routes_are_removed` now runs without a server in the component,
-  directly checking all three retired Swagger/OpenAPI paths; it passes in
-  0.01 seconds. It is retained separately as `swagger_routes_test.rs`.
-  Current search evidence: `/tmp/crowdb-r230-remaining-launch-sites.txt`.
-  Metrics consolidation is accepted: three original metric cases map to
-  `console::web_metrics::structured_metrics_preserve_node_group_and_store_scopes`.
-  The formal standalone profile passes all original node structure/nonempty,
-  Group prefix and Store aggregate assertions, with the original 3-second leader
-  readiness bound. Old `metrics_proxy_test.rs` and its native launch helpers are
-  removed. Evidence: `/tmp/crowdb-root-web-metrics-standalone`,
-  `run-6b649392966f4925a9ea92304d854db1`. The bare-metal profile correctly rejects
-  these legacy routes; no production mode or assertions were changed.
-  Web KV consolidation is accepted: original
-  `kv_put_get_delete_through_web_routes` maps to
-  `console::web_kv::put_get_delete_and_binary_values_through_web_routes`.
-  Store/group creation, endpoint status, text values, deletion visibility and
-  binary hex values pass at CI quotas (`/tmp/crowdb-root-web-kv`,
-  `run-994fc98b33dc4b1bbe62f76df1d820b6`). Shared legacy bootstrap also reruns
-  metrics successfully. Keep `kv_get_returns_502_when_leader_unreachable` as
-  pinned cached-authority component UT; the original production launcher is removed.
-  `full_mgmt_cycle_through_web_routes` now maps to
-  `console::web_management::store_and_group_management_cycle_preserves_identity`:
-  exact Store identity/listing/empty initial groups, two group IDs, group detail,
-  group and Store deletion pass (`/tmp/crowdb-root-web-management-ops`).
-  The same case covers `add_store_delegates_to_ops_kv_logical` and
-  `delete_server_returns_409_when_replicas_exist` without duplicate lifecycles.
-  `kv_get_delegates_to_ops_kv_data` maps to the existing Web KV flow, now retaining
-  explicit client ID/sequence and exact data (`/tmp/crowdb-root-web-kv-sequence`).
-  These four accepted old cases are removed.
-  `cluster_init_delegates_to_ops_cluster_init` maps to
-  `console::web_bootstrap::bootstrap_replays_data_group_without_changing_replica_or_publishing_invalid_bindings`:
-  initial Group-0 IDs, missing-topology 422, completed/replayed data-group creation,
-  absent invalid hardware bindings and stable replica ID pass
-  (`/tmp/crowdb-root-web-bootstrap`). The old ops file/launcher is removed.
-  Replica migration first exposed a production mismatch: physical promotion
-  succeeded but the complete Group-0 membership kept the new replica non-voting;
-  removing the old leader then failed with HTTP 400. The Installing target now
-  describes the final voter, while physical catch-up still begins non-voting.
-  Component gates pass; formal image rebuild and root replica acceptance remain
-  required. Failed evidence: `/tmp/crowdb-root-web-replicas`,
-  `run-03371a8cafbb47be8f7879372937edeb`. Both original replica owner files remain.
-  Management bootstrap owners are now retired: the sealed-input variant maps to
-  `console::web_sealed_bootstrap::bare_metal_bootstrap_consumes_sealed_topology_without_local_topology`
-  (two release containers, HTTP 201, Group-0 identity, intent/topology removal,
-  `/tmp/crowdb-root-web-sealed-bootstrap`, `run-6d91726b6917420580a4988f6701506e`).
-  The in-memory variant splits HTTP initialization into the accepted shared Web
-  bootstrap and no-file-publication into `standalone_startup_test.rs` component UT.
-  The existing replay/binding flow passes again (`/tmp/crowdb-root-web-bootstrap-split`).
-  `mgmt_routes_test.rs` retains only cached-topology authority rejection UT.
+- [~] **Replica route migration**: accept the three migrated HTTP flows in
+  `e2e-test/tests/console/web_replicas.rs` and `web_leader_removal.rs` using
+  `WalWebCluster` (two/five actual KV containers plus Web). Preserve bidirectional
+  wiring, missing replica 404, leader removal 204, ten-second re-election,
+  every surviving node's physical remotes, and unreachable leader 500/error
+  text with retained Group-0 membership and unknown role/state. Originals
+  `replica_routes_test.rs` and `replica_leader_removal_test.rs` remain until passed.
+  First root attempt exposed non-voting Group-0 metadata after physical promotion
+  (`/tmp/crowdb-root-web-replicas`, `run-03371a8cafbb47be8f7879372937edeb`).
+  Fix `8a8171f0` preserves learner catch-up and describes the final voter in the
+  Installing target; 17 affected component UT and all-target clippy pass.
+  The rebuilt `8a8171f0` image passes authoritative voting, but the next deletion
+  and third-member join expose physical epoch 3 versus authority epoch 2 (HTTP
+  409). Evidence: `/tmp/crowdb-voting-web-{replicas,leader,unreachable}`. The next
+  fix leaves learner preparation at the old epoch and promotes with the exact
+  successor header. Both affected component gates still pass. Rebuild/import,
+  verify authoritative voting and equal physical/authority epochs,
+  then remove originals. Files: `lib/crowdb-console-shared/src/ops/kv_logical.rs`,
+  `e2e-test/scenarios.py`, `e2e-test/tests/selection_test.py`, above test files.
 - [ ] **Native Console assertion mapping**: classify all three original cases
   before removal: `node_diskio_discovers_disk_groups_created_after_deployment`,
   `one_rack_three_nodes_provision_all_services_without_metadata_repairs`, and
@@ -145,8 +137,8 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   Remove duplicate old owners only after verification. Unused native KV/storage
   harnesses are removed; shared `TestDir`/ownership UTs remain. Explicit production
   local-launch port allocation remains until its deployment callers are audited.
-  The pre-route-migration root client audit found 290 tests: 277 registered
-  Rust flows and 13 explicit preparation/isolation helpers (`/tmp/crowdb-r230-client-helper-audit.txt`).
+  Refresh the registered-client/helper audit after route migration; the old
+  pre-migration inventory is `/tmp/crowdb-r230-client-helper-audit.txt`.
   SDK/browser flows have separate declared host owners.
   Audit fixed listener ports/dynamic store pools and retire unused test port
   allocation code; preserve actual deployment callers. Verify data/log/crash
@@ -165,26 +157,13 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   Public exports now retain machine-readable measurements and redacted logs,
   excluding mounted data/configuration and host client build trees. YAML and
   28-package task reachability pass; actual remote CI has not run.
-- [ ] **Final regression and measurements**: all complete registered domain and
-  special-profile runners on the coalescer image have finished. KV 50, Diskdb 5,
-  Diskio 8, Chunkdb 11, Chunk-client 40, Chunk-stream 4, Chunk-KV 2, Dataset 2,
-  Deployment 33, Console operations 87, and Iceberg 32 pass. Linux host, SSH
-  bridge admission, containerd host/cluster and both ecosystem profiles pass.
-  Logs/reports: `/tmp/crowdb-coalesce-final-*`. Core UT passes 978/978.
-  Ordered S3 response streaming is committed as `6f191caf`; full workspace
-  clippy/fmt, S3 UT 114, Access-server UT 108 plus the pinned SDK test pass.
-  Full S3 now passes 43/43 on the current formal image at CI quotas, as above.
-  Full Console operations passes 89/89 in 644.632 seconds at 0.25 CPU/node,
-  4 CPU / 8192 MiB: `/tmp/crowdb-delete-stream-final-console-ci`,
-  `run-a7fd884f7ee44daea0056926d1ee1c71`. Focused Iceberg RCK passes all six upstream cases at its CI quota in
-  62.324 seconds: `/tmp/crowdb-delete-stream-rck-ci`,
-  `run-b90f13d8f8034bfa9a25267f312dd074`. Preserve run reports; no
-  production source or global cleanup may change while any gate runs.
-  `test.md` records these complete domain counts/timings and actual image identity;
-  rerun affected complete domains after remaining migrations change their inventory.
-  Per-case details stay in artifacts. Remote CI and macOS remain unmeasured.
-  The document layout is accepted and needs no redesign. Do not run global
-  cleanup during an active container gate.
+- [ ] **Final regression and measurements**: rerun affected complete domains
+  after the remaining inventory and formal-image changes settle. Baselines are
+  recorded by domain in `test.md`; per-case details remain in artifacts. The last
+  complete Console run covered 89 cases, while accepted bootstrap migration adds
+  three cases (92 accepted; three further replica drafts awaiting acceptance).
+  Do not count individual passes as a complete 95-case domain run. Remote CI and
+  macOS remain unmeasured. Files: `doc/working/test.md`, root runner reports.
 - [ ] **Deferred benchmark decision**: review
   `tools/benchmark/bench-chunk-kv-regression.sh` only after migration and coverage
   measurements are complete; user explicitly deferred this decision. Keep it.

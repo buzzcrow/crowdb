@@ -100,13 +100,14 @@ pub(super) async fn promote(
     sid: u64,
     gid: u64,
     remote: &RemoteReplicaInfo,
+    epoch: u64,
 ) -> Result<()> {
     let voting = RemoteReplicaInfo {
         voting: true,
         ..remote.clone()
     };
     for (peer, _) in peers {
-        peer.add_remote_replicas(sid, gid, std::slice::from_ref(&voting))
+        peer.add_remote_replicas_at_epoch(sid, gid, std::slice::from_ref(&voting), epoch)
             .await?;
     }
     Ok(())
