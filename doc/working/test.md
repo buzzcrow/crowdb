@@ -1193,3 +1193,13 @@ Source: `app/crowdb-kv-server/`. Tests: 9 files.
 | ---------------------- | ---------------------------------------------------- | ---------- | ----------- |
 | console.web.standalone | empty_ui_persists_rack_and_node_across_restart         |      1.014 |       2.456 |
 | console.web.standalone | malformed_standalone_config_is_preserved_and_rejected |      0.021 |       1.441 |
+
+### Release Web launch registry
+
+- Strengthened PID/runtime identity and stop-removal gate: `run-66a319b2ba7c409f86d0ad4c4dde9fa4`, client 2.486 seconds, fixture 3.996 seconds.
+
+- Accepted run `run-3eb59840d48c462784faac4049d8d294`; original startup/request budgets retained. Normal shipped KV child replaces the original fake child. Docker-mode registry rejection remains a component test.
+
+| Scope                | Named flow                                                       | Client (s) | Fixture (s) |
+| -------------------- | ---------------------------------------------------------------- | ---------- | ----------- |
+| console.web.registry | bare_metal_web_loads_launch_policy_without_restoring_topology      |      2.434 |       4.057 |

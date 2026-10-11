@@ -498,10 +498,10 @@ Goal: review and migrate all real-server tests into domain modules under contain
 - [ ] **S3 batch**: migrate HTTP/production and SDK chains; parameterize shared
   bootstrap, retain policy/errors/multipart/restart matrix. Files: access-server,
   console/CLI S3 fixtures, SDK scripts, `tests/access_s3*` and client adapters.
-- [~] **Iceberg/Dataset batches**: migrate catalog/FileIO/SDK/GC/crash boundaries,
+- [ ] **Iceberg/Dataset batches**: migrate catalog/FileIO/SDK/GC/crash boundaries,
   preserving worker environments; migrate audited Dataset server flows. Files:
   access tests/helpers, SDK tasks, `tests/access_iceberg*`, `tests/access_dataset*`.
-- [ ] **Console/CLI batch**: migrate real-service operations and web route flows;
+- [~] **Console/CLI batch**: migrate real-service operations and web route flows;
   replace browser backend launcher with owned profiles, preserve UI assertions
   and important local reconciliation/cancellation flows. Files: console-shared,
   CLI/web tests and UI E2E fixtures, `tests/console*`.
@@ -1343,6 +1343,10 @@ Only the exited-storage timing migration awaits a human design choice; S3 and su
 - CI component-task inventory passes for all 28 workspace packages. Shared artifact YAML parses and validates with system PyYAML through Pixi; default and Iceberg environments do not include PyYAML. CI runtime acceptance and complete taxonomy remain pending.
 
 ## Console operation and host CLI migration
+
+- Strengthened registry acceptance also matches both initial/replacement API PIDs to the persisted runtime identity and requires the identity file to disappear after stop. Fresh `run-66a319b2ba7c409f86d0ad4c4dde9fa4` passes: 2.486-second host client, 3.996-second fixture; no deadline changes.
+
+- Launch registry acceptance now runs the shipped Bare Metal Web entrypoint and auto-starts the shipped KV binary using the normal launch registry. Host client verifies initial PID, absent topology (KV stores empty and Web authority 503), different restart PID, stopped process, live auto-start policy reload and no PID persisted in policy. Original 5-second startup/3-second request budgets remain. `run-3eb59840d48c462784faac4049d8d294` passes (2.434-second client, 4.057-second fixture), against the unchanged release image; old native Web/fake-child baseline passed in 2.64 seconds. Retire only the old server-launching owner and helper; keep Docker's registry rejection component test.
 
 - Consolidate the four old frontend listener owners into the accepted standalone release case: shipped SPA mount, deep links, exact health body, API JSON content type and no repository-file leakage all pass in `run-ed609d7c88714ab58ac193cfe46214e8` (1.206-second client). Missing-built-UI behavior remains one deterministic oneshot handler test, including the original instructional marker/build hint, API/health coexistence and traversal boundary (0.02 seconds); it no longer starts a local HTTP server. Original four-owner baseline passed in 0.11 seconds. A missing direct `http_body_util` dependency was corrected using the existing Axum body API, without manifest changes.
 

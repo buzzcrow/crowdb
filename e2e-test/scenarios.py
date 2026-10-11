@@ -25,6 +25,7 @@ from deployment_browser_fixture import DeploymentBrowserCluster
 from deployment_listener_fixture import OccupiedAccessCluster
 from console_web_fixture import ConsoleWebCluster
 from console_standalone_fixture import StandaloneWebCluster
+from console_registry_fixture import RegistryWebCluster
 from diskio_fixture import DiskioCluster, DiskioDiscoveryCluster, DiskioSemanticCluster
 
 
@@ -321,6 +322,7 @@ ICEBERG_CASES = (
     Case("iceberg.namespace", "access_iceberg::namespace::namespace_functional_crud_survives_native_storage_and_listener_restart"),
 )
 CONSOLE_OPERATION_CASES = (
+    Case("console.web.registry", "console::web_registry::bare_metal_web_loads_launch_policy_without_restoring_topology"),
     Case("console.web.standalone", "console::web_standalone::empty_ui_persists_rack_and_node_across_restart"),
     Case("console.web.standalone", "console::web_standalone::malformed_standalone_config_is_preserved_and_rejected"),
     Case("console.web.catalog", "console::web_catalog::published_owner_change_invalidates_saved_catalog_and_runtime_cursors", console_web=True),
@@ -418,7 +420,7 @@ def select_cases(layer="all", scope="all", case_name=None):
 
 
 def case_nodes(case):
-    if case.scope == "console.web.standalone":
+    if case.scope in ("console.web.standalone", "console.web.registry"):
         return 1
     if case.scope == "deployment.listeners":
         return 2
@@ -458,6 +460,8 @@ def case_resources(case, node_cpus):
 
 
 def allocate_cluster(case, image, artifacts, bundle, data_root):
+    if case.scope == "console.web.registry":
+        return RegistryWebCluster(image, artifacts, data_root=data_root)
     if case.scope == "console.web.standalone":
         return StandaloneWebCluster(image, artifacts, rejected="malformed" in case.name, data_root=data_root)
     if case.scope == "deployment.listeners":
