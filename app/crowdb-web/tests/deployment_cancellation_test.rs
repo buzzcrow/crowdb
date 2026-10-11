@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 //! Child ownership when a management request is cancelled before readiness.
-//! KV cancellation uses a fake child's deterministic readiness window.
+//! Deterministic fake children isolate readiness and ownership from server startup.
 
 use std::{collections::BTreeSet, path::Path, time::Duration};
 
@@ -15,7 +15,10 @@ use tower::ServiceExt;
 #[path = "common/child_stub.rs"]
 mod child_stub;
 
-use child_stub::TestKvChild;
+#[path = "common/memory_kv.rs"]
+mod memory_kv;
+
+use child_stub::TestChild;
 
 struct TestChildren(BTreeSet<u32>);
 impl Drop for TestChildren {
@@ -33,7 +36,7 @@ async fn reset_stops_a_persisted_kv_child_without_a_runtime_pid_or_launch_record
         AppState::with_runtime_root(ConsoleConfig::default(), root.path().to_owned()).with_test_mode(true);
     let app = router(state.clone());
     prepare_node(&app).await;
-    let stub = TestKvChild::new(root.path());
+    let stub = TestChild::new(root.path());
     let binary = &stub.binary;
     let deployed = success(
         &app,
@@ -119,18 +122,17 @@ async fn cancel_and_reset(kind: &str, restart: bool) {
     let app = router(state.clone());
     let mut children = TestChildren(BTreeSet::new());
     prepare_node(&app).await;
-    let stub = (kind == "kv").then(|| TestKvChild::new(root.path()));
-    let binary = stub.as_ref().map_or_else(
-        || lifecycle::crowdb_kv_server_bin().expect("build the actual KV server"),
-        |stub| stub.binary.clone(),
-    );
-    let kv = json!({"rest_port": free_port(), "rpc_port": free_port(), "binary": binary, "election_profile": "test"});
+    let metadata = if kind == "diskdb" {
+        Some(prepare_diskdb_authority(&state).await)
+    } else {
+        None
+    };
+    let stub = if kind == "diskdb" {
+        TestChild::diskdb(root.path())
+    } else {
+        TestChild::new(root.path())
+    };
     let (mut path, mut body, service) = if kind == "diskdb" {
-        let deployed = success(&app, "/api/nodes/1/server/deploy", kv).await;
-        children
-            .0
-            .insert(u32::try_from(deployed["pid"].as_u64().unwrap()).unwrap());
-        success(&app, "/api/cluster/init", json!({"nodes": [1]})).await;
         let port = crowdb_protocol::port::alloc::alloc_test_port_range(
             crowdb_protocol::ServicePort::DiskdbListen,
             3,
@@ -141,7 +143,11 @@ async fn cancel_and_reset(kind: &str, restart: bool) {
             "crowdb-diskdb",
         )
     } else {
-        ("/api/nodes/1/server/deploy", kv, "crowdb-kv-server")
+        (
+            "/api/nodes/1/server/deploy",
+            json!({"rest_port": free_port(), "rpc_port": free_port(), "binary": stub.binary, "election_profile": "test"}),
+            "crowdb-kv-server",
+        )
     };
     if restart {
         let deployed = success(&app, path, body).await;
@@ -155,9 +161,7 @@ async fn cancel_and_reset(kind: &str, restart: bool) {
         };
         body = json!({});
     }
-    if let Some(stub) = &stub {
-        stub.block_readiness();
-    }
+    stub.block_readiness();
     let started = std::time::Instant::now();
     let deployment = tokio::spawn(request(app.clone(), path, body));
     let pid = tokio::time::timeout(Duration::from_secs(3), async {
@@ -187,15 +191,28 @@ async fn cancel_and_reset(kind: &str, restart: bool) {
     );
     deployment.abort();
     assert!(deployment.await.unwrap_err().is_cancelled());
-    if let Some(stub) = &stub {
-        stub.release_readiness();
-    }
+    stub.release_readiness();
     success(&app, "/internal/reset", json!({})).await;
     eprintln!(
         "[PHASE] {kind} cancelled deployment and Reset: {}ms",
         started.elapsed().as_millis()
     );
     assert_reset(root.path(), &state, &mut children);
+    drop(metadata);
+}
+
+async fn prepare_diskdb_authority(state: &AppState) -> memory_kv::TestKvCluster {
+    let metadata = memory_kv::TestKvCluster::start().await;
+    let kv = std::sync::Arc::new(crowdb_kv_client::CrowdbKvClient::new(
+        crowdb_kv_client::ClientConfig::new(metadata.mgmt_endpoints.clone()),
+    ));
+    kv.seed_leader(0, 0, metadata.group0_leader_endpoint.clone());
+    crowdb_kv_client::CrowdbSysmdClient::from_shared(kv.clone())
+        .add_group(0, 0)
+        .await
+        .unwrap();
+    *state.kv_client.write().await = Some(kv);
+    metadata
 }
 
 fn assert_reset(root: &Path, state: &AppState, children: &mut TestChildren) {

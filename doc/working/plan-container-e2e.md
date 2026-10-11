@@ -30,26 +30,18 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 - Delete original real-server owners only after equivalent accepted assertions.
   Keep deterministic component UT. Run executable commands through `pixi run`;
   native server gates require `clean-env`, never during another server gate.
-- Accepted fixture gate: 56 pass, `/tmp/crowdb-s3-staged-fixture-gate.log`,
+- Accepted fixture gate: 58 pass, `/tmp/crowdb-tpc-staged-fixture-gate.log`,
   using an export of the staged source. Console browser drafts are excluded.
   Retained S3 component UT pass 5/5; Web/Console-shared/E2E all-target clippy
   and workspace fmt pass.
 
+- Complete Iceberg domain passes 32/32 in 1515.042 seconds on this image,
+  `run-9dd41619b7a04bd3b7e0693e3b432b74`; the full retirement grace client
+  takes 1205 seconds. Earlier failed evidence remains in
+  `run-c955f9edebe2413b8c9469379667d0c8` and `/tmp/crowdb-iceberg-32-final-domain.log`.
+
 ## Remaining migrations
 
-- [~] **Iceberg final acceptance**: rerun failures on the new image without
-  simultaneous heavy native compilation, then all 32 registered cases.
-  `run-c955f9edebe2413b8c9469379667d0c8` failed 5/32, wall 2527.939 seconds,
-  `/tmp/crowdb-iceberg-32-final-domain.log`: Java S3FileIO, repeated 100 MiB
-  direct/multipart uploads, small routing, and a Chunk-KV startup readiness
-  failure. Fresh fixed-image Java SDK passes 3/3 in
-  `run-aeb271cd12c0438eae16bb1e65587580`; native file scope passes 16/16 in
-  `run-baca41b6dc664ca090b80c7533e58119`. Complete 32-case domain is running
-  in `run-9dd41619b7a04bd3b7e0693e3b432b74`, log
-  `/tmp/crowdb-iceberg-32-fixed-image.log`. Preserve failed evidence.
-  Do not attribute all failures to DiskIO
-  without a fresh result, or replace the historical 30-pass timing with a
-  claimed 32-pass result. Existing component crash-cut matrices stay local.
 - [ ] **CLI S3 bootstrap replay owners**: migrate the two server-starting
   cases in `app/crowdb-cli/tests/s3_cli_test.rs`:
   `interrupted_s3_launch_resumes_confirmed_group_zero_without_topology_file`
@@ -80,15 +72,14 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   port-claim pruning; 1 pass in 0.80 seconds, harness all-target clippy passes.
   This does not replace Web shutdown/orphan wiring acceptance. Keep the pure
   failed-publication UT.
-- [ ] **Deployer and cancelled lifecycle owners**: audit
-  `app/crowdb-web/tests/cluster_deployer_test.rs` and
-  `deployment_cancellation_test.rs`. Preserve three-member leader resolution,
-  repeated cycles without leaked state, stop <5 seconds, post-stop reset <1
-  second, cancelled Diskdb deploy/restart ownership. KV cancellation and persisted-only
-  PID cleanup now use deterministic fake children and retain their original
-  ownership assertions. Keep these component proofs local; move actual
-  server deployment flows to their container owners. Silent missing-binary
-  skips in the old deployer tests must disappear with retirement.
+- [ ] **Deployer lifecycle owners**: migrate the two real-server cases in
+  `app/crowdb-web/tests/cluster_deployer_test.rs`. Preserve three-member leader
+  resolution, repeated cycles without leaked state, stop <5 seconds and
+  post-stop reset <1 second. Retain the empty-reset component proof. Silent
+  missing-binary skips must disappear with retirement. Cancellation/reset
+  ownership is now entirely component-local: five deterministic cases pass
+  in 1.31 seconds with fake children and pinned metadata, Web all-target
+  clippy passes. No actual KV/Diskdb executable is started by those tests.
 - [ ] **Native Access deployment through Web**: migrate
   `app/crowdb-web/tests/native_access_deployment_test.rs` real storage/Access
   launcher. Preserve private credential provisioning and reuse through public

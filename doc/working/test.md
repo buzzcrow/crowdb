@@ -26,6 +26,8 @@ coverage is tracked below. Intel7960 runs use concurrency 2; wall time includes
 startup, clients and teardown, excluding the shared image and host client build.
 Latest S3 run uses one case slot at 0.5 CPU/server (16 CPU / 16384 MiB
 budget); its three joint faults and protected restart add four cases.
+Iceberg uses two case slots at 0.5 CPU/server (24 CPU / 32768 MiB budget);
+its full catalog retirement grace accounts for 1205 seconds of client time.
 KV includes the KV/KV and KV/Web isolation pairs. Console measures
 `console.operations` (83 accepted owners); unaccepted managed browser drafts
 are excluded. Other domains remain
@@ -41,7 +43,7 @@ unmeasured as complete tasks.
 | Chunk stream | intel7960   | 2026-10-11 | 4 / 0 / 0                 | 36.149   | 52.184     | [report](../../.crowdb-runtime/artifacts/container-e2e/run-8c9d46d75aa04f7c8b409cd8cb285aa5/results.json) |
 | Chunk-KV     | intel7960   | 2026-10-11 | 2 / 0 / 0                 | 22.520   | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-e8fbdfdc8be94d408309d5623227794d/results.json) |
 | S3           | intel7960   | 2026-10-11 | 43 / 0 / 0                | 1135.695 | 418.700    | [report](../../.crowdb-runtime/artifacts/container-e2e/run-04461b8645414e83b7aa98cd5aa63ae2/results.json) |
-| Iceberg      | intel7960   | 2026-10-11 | 30 / 0 / 0                | 1542.472 | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-2e7a318db15149d7942a4f81ea86c2e0/results.json) |
+| Iceberg      | intel7960   | 2026-10-11 | 32 / 0 / 0                | 1515.042 | 1542.472   | [report](../../.crowdb-runtime/artifacts/container-e2e/run-9dd41619b7a04bd3b7e0693e3b432b74/results.json) |
 | Dataset      | intel7960   | 2026-10-11 | 2 / 0 / 0                 | 18.024   | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-d869ca04e48d46dabadb36e4db510c81/results.json) |
 | Console      | intel7960   | 2026-10-11 | 83 / 0 / 0                | 270.310  | 161.415    | [report](../../.crowdb-runtime/artifacts/container-e2e/run-1db4f5cf906e4918bda5647e55db7445/results.json) |
 | Deployment   | intel7960   | 2026-10-11 | 33 / 0 / 0                | 294.359  | —          | [report](../../.crowdb-runtime/artifacts/container-e2e/run-5f0be57000ed4481968a78dad965273d/results.json) |
