@@ -30,10 +30,10 @@ and Deployment use two case slots; complete native nodes retain 1 CPU /
 | S3           | 2026-10-12 | 43 / 0 / 0                | 1545.602 | 1456.774   |
 | Iceberg      | 2026-10-12 | 32 / 0 / 0                | 1616.697 | 1633.442   |
 | Dataset      | 2026-10-12 | 2 / 0 / 0                 | 35.568   | 31.301     |
-| Console      | 2026-10-13 | 149 / 4 / 0               | 2075.462 | 2160.528   |
-| Deployment   | 2026-10-13 | 33 / 0 / 0                | 314.358  | 310.999    |
+| Console      | 2026-10-13 | 153 / 0 / 0               | 2223.972 | 2075.462   |
+| Deployment   | 2026-10-13 | 33 / 0 / 0                | 310.503  | 314.358    |
 
-- Console and Deployment above use the `de0fe0eb` debug release.
+- Console and Deployment above use the `9c0f8805` debug release.
   The other domain rows are earlier baselines; final release gates are pending.
 - Special profiles have separate measurements: bridge SSH 148.191 s, Linux
   host 7.310 s, containerd host/cluster 125.432 / 129.661 s, five-engine Iceberg
@@ -52,12 +52,10 @@ No container measurements. Linux VM routing remains unverified.
 
 ## Remaining issues
 
-- [ ] **Container acceptance**: finish final-image domain runs and CI
-  admission/export checks. Focused ownership and actual-config CLI replay pass.
-  Native load passes in the original concurrent pair after lease-excluded
-  transfer publication was corrected; complete Console and other domains remain
-  pending. Keep resources and deadlines unchanged until measured failures
-  require a decision.
+- [ ] **Container acceptance**: Console and Deployment pass on the final
+  image. Finish remaining domain/profile runs and CI admission/export checks.
+  Keep resources and deadlines unchanged until measured failures require a
+  decision.
 - [ ] **macOS Iceberg SDK**: Maven `dependency:go-offline` stalled for more than
   eight minutes. Rerun with the pinned dependency cache available.
 - [ ] **WAL disk loss**: full fail-out and snapshot rejoin coverage awaits the

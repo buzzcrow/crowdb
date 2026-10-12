@@ -187,11 +187,13 @@ class ImageIdentityTest(unittest.TestCase):
         (oci / "README.md").write_text("operator instructions\n")
         (oci / "Dockerfile").write_text("release image recipe\n")
         (directory / "README.md").write_text("operator instructions\n")
+        (directory / "dev-container.sh").write_text("host development container helper\n")
         (directory / "entrypoint.sh").write_text("release runtime\n")
         self.commit()
         revision = self.git("rev-parse", "HEAD")
         (oci / "README.md").write_text("root containerd acceptance instructions\n")
         (directory / "README.md").write_text("new service-selection instructions\n")
+        (directory / "dev-container.sh").write_text("changed host cleanup command\n")
         self.assertTrue(verify_server_sources(self.root, revision)["server_sources_match"])
         (oci / "Dockerfile").write_text("changed image recipe\n")
         with self.assertRaisesRegex(ValueError, "Dockerfile"):

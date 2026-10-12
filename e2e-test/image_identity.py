@@ -20,6 +20,8 @@ SERVER_PATHS = (
     ":(exclude)tools/pixi-tasks/test-console-managed-native.py",
     # The staging script does not package this operator documentation.
     ":(exclude)container/single-node-container/README.md",
+    # Host development/cleanup commands are not read or packaged by staging.
+    ":(exclude)container/single-node-container/dev-container.sh",
     ":(exclude)container/oci-image/README.md",
     # Host SDK client delegates are not read by staging or the OCI builder.
     ":(exclude)tools/pixi-tasks/test-storage.sh",
