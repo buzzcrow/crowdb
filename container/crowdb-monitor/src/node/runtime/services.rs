@@ -224,6 +224,26 @@ pub(super) fn retained(profile: &DeploymentProfile) -> Result<Vec<NodeServiceInt
             return Err("retained services exceed bound".into());
         }
     }
+    ordered(profile, intents)
+}
+
+fn ordered(
+    profile: &DeploymentProfile,
+    mut intents: Vec<NodeServiceIntent>,
+) -> Result<Vec<NodeServiceIntent>> {
+    let ranks: std::collections::BTreeMap<_, _> = profile
+        .services_in_start_order()?
+        .into_iter()
+        .enumerate()
+        .map(|(rank, service)| (service.id.as_str(), rank))
+        .collect();
+    intents.sort_by(|left, right| {
+        ranks
+            .get(left.kind.as_str())
+            .unwrap_or(&usize::MAX)
+            .cmp(ranks.get(right.kind.as_str()).unwrap_or(&usize::MAX))
+            .then_with(|| left.service_id.cmp(&right.service_id))
+    });
     Ok(intents)
 }
 
@@ -251,12 +271,15 @@ pub(super) async fn desired(profile: &DeploymentProfile) -> Result<Vec<NodeServi
         .into_iter()
         .map(|(_, value)| serde_json::from_slice::<NodeServiceIntent>(&value))
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    Ok(records
-        .into_iter()
-        .filter(|intent| {
-            intent.node_id == binding.node_id && intent.cluster_id == binding.bootstrap.cluster_id
-        })
-        .collect())
+    ordered(
+        profile,
+        records
+            .into_iter()
+            .filter(|intent| {
+                intent.node_id == binding.node_id && intent.cluster_id == binding.bootstrap.cluster_id
+            })
+            .collect(),
+    )
 }
 
 pub(super) fn pending(

@@ -435,7 +435,10 @@ their dependencies have been validated.
 
 System Docker and Pixi-supplied containerd/nerdctl manage the node container.
 The monitor supervises local managed processes; external runtime lifecycle
-recovers the whole node. Standalone BuildKit explicitly exports and validates
+recovers the whole node. Retained service instances restart in their release
+profile's dependency order, with instance names used only to order peers of the
+same service kind. Shutdown uses the reverse dependency order.
+Standalone BuildKit explicitly exports and validates
 OCI media types and blob digests without Docker or containerd dependencies.
 The [OCI image design](design-crowdb-oci-image.md) defines shared construction,
 resource verification and publication without changing cluster semantics.
