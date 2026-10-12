@@ -268,6 +268,16 @@ and the named run artifacts.
   a component proof reaches target validation rather than self-conflict. Eight
   focused components and clippy pass. Validate the rebuilt image without retrying
   the restart or weakening its response contract.
+  The rebuilt image passes all six typed restarts serially
+  (`run-e896a71885634e10ae84637b6e9fe194`, 45.700s). A concurrent three-owner
+  gate passes binding and multipart but restarting the actual Group-0 leader
+  fails: monitor verifies the committed intent after stopping its authority,
+  crossing the unchanged three-second read budget
+  (`run-7cf060c4a6f44ad68efb928d9be3206a`). Move the final intent fence immediately
+  before process disruption, retaining superseded-intent rejection and all
+  deadlines. Recovery now explicitly includes the live authority leader as
+  well as all six original Node-1 restart checks. Rebuild and verify before
+  accepting either new owner.
 
 ## Final integration and closure
 

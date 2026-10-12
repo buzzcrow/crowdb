@@ -56,10 +56,12 @@ pub(super) async fn execute(
             pid: None,
         },
     )?;
+    // Fence the admitted operation immediately before disrupting its service.
+    // KV may provide the authority being read, so verify while it is still live.
+    verify_intent(&binding, &intent).await?;
     if processes.owns(process_id) {
         processes.stop(process_id, Duration::from_secs(10)).await?;
     }
-    verify_intent(&binding, &intent).await?;
     let pid = if matches!(
         intent.action,
         NodeServiceAction::Start | NodeServiceAction::Restart
