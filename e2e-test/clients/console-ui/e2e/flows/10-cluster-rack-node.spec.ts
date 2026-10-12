@@ -21,7 +21,7 @@ test.describe('cluster · registry browser', () => {
     await expect(page.getByTestId('domain-kv')).toBeVisible({ timeout: 3_000 });
 
     const healthText = page.locator('header').getByText(/healthy|degraded|failed|unknown/i);
-    await expect(healthText).toBeVisible({ timeout: 3_000 });
+    await expect(healthText).toHaveText(/Unknown/);
 
     // Ignore transient network 404s; fail only on real JS/runtime errors.
     const jsErrors = consoleErrors.filter((e) => !/Failed to load resource/i.test(e));

@@ -13,8 +13,8 @@ from console_native_fixture import NativeConsoleCluster
 
 class NativeObservationTest(unittest.TestCase):
     def test_invalid_capacity_profile_rejects_before_allocating(self):
-        for sizes in ((80, 8), (80, 8, 0), (80, 8, True), (80, 8, 4097)):
-            with self.assertRaisesRegex(ValueError, "three bounded"):
+        for sizes in ((80, 8), (80, 8, 0), (80, 8, True), (80, 8, 4097), (8,) * 9):
+            with self.assertRaisesRegex(ValueError, "three to eight bounded"):
                 NativeConsoleCluster("image", Path("/unused"), Path("/unused"), disk_gib=sizes)
         for zones in ((1, 1), (1, 1, 0), (1, 1, True), (1, 1, 9)):
             with self.assertRaisesRegex(ValueError, "zone sizes"):

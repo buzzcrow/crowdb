@@ -53,6 +53,7 @@ async function deployDiskDb(page: Page, request: APIRequestContext, kv: LiveServ
   const ddb = await liveService(request, 'diskdb');
   await unchangedService(request, kv);
   await page.goto('/?domain=Cluster');
+  await expect(page.locator('header').getByTitle('Cluster health: Healthy', { exact: true })).toBeVisible();
   const row = serviceRow(page, ddb);
   await row.click({ button: 'right' });
   for (const label of ['Restart DiskDB', 'Stop DiskDB', 'Delete DiskDB']) {

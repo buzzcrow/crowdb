@@ -362,6 +362,7 @@ CONSOLE_OPERATION_CASES = (
     Case("console.native.browser.binding", "console::browser_capacity::binding_recommendations", native_browser="KV binding recommends the least loaded group and initialization creates Group 1", native_bootstrap=False),
     Case("console.native.browser.diskdb", "console::browser_lifecycle::diskdb_and_kv_independence", native_browser="full deploy flow: deploy diskdb via UI, restart, stop, delete via context menu", native_observations=True),
     Case("console.native.browser.crud", "console::browser_capacity::mounted_crud_and_owner_binding", native_browser="native capacity: disk-group CRUD and explicit owner binding use mounted storage", native_spare_disk_gib=4096),
+    Case("console.native.browser.shell", "console::browser_shell::defaults_and_tree", native_browser="shell defaults and tree interactions distinguish live and stopped release nodes", native_disk_gib=(80, 8, 8, 8), native_zone_gib=(1, 1, 1, 1)),
     Case("console.native.browser.transition", "console::native_browser::production_split_and_transfer_journals", native_client=True, native_disk_gib=(256, 256, 256), client_timeout=1020),
     Case("console.native.browser.lifecycle", "console::native_browser::auxiliary_process_menus", native_client=True, client_timeout=360),
     Case("console.native.browser.defaults", "console::native_browser::auxiliary_dialog_defaults", native_client=True, client_timeout=360),
@@ -526,7 +527,9 @@ def select_cases(layer="all", scope="all", case_name=None):
 
 
 def case_nodes(case):
-    if case.cli_replay or case.native_browser or case.native_client:
+    if case.native_browser or case.native_client:
+        return len(case.native_disk_gib)
+    if case.cli_replay:
         return 3
     if case.shell_browser:
         return 1
@@ -574,7 +577,8 @@ def case_nodes(case):
 
 def case_resources(case, node_cpus):
     if case.cli_replay or case.native_browser or case.native_client:
-        return max(1, node_cpus) * 3 + 0.5, 6656
+        count = case_nodes(case)
+        return max(1, node_cpus) * count + 0.5, 2048 * count + 512
     if case.shell_browser:
         return max(2, node_cpus) + 0.5, 2560
     if case.scope == "iceberg.manual.tpc":

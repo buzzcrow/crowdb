@@ -1,6 +1,6 @@
 # Copyright 2026-present Gian <crow.db@outlook.com>
 # Licensed under the Apache License, Version 2.0.
-"""Three normal manual release nodes with public SSH admission and fixed ports."""
+"""Normal manual release nodes with public SSH admission and fixed ports."""
 
 import json
 import urllib.request
@@ -19,15 +19,16 @@ class NativeConsoleCluster(ShellBrowserCluster):
                  zone_gib=(1, 1, 1), spare_disk_gib=0, bootstrap=True, **kwargs):
         if type(bootstrap) is not bool:
             raise ValueError("native bootstrap selection must be a boolean")
-        if (len(disk_gib) != 3 or any(type(size) is not int or not 1 <= size <= 4096
+        count = len(disk_gib)
+        if (not 3 <= count <= 8 or any(type(size) is not int or not 1 <= size <= 4096
                                      for size in disk_gib)):
-            raise ValueError("native disk capacities require three bounded GiB values")
-        if (len(zone_gib) != 3 or any(type(size) is not int or not 1 <= size <= disk
+            raise ValueError("native disk capacities require three to eight bounded GiB values")
+        if (len(zone_gib) != count or any(type(size) is not int or not 1 <= size <= disk
                                     for size, disk in zip(zone_gib, disk_gib))):
-            raise ValueError("native zone sizes require three bounded GiB values")
+            raise ValueError("native zone sizes must match the bounded disk capacities")
         if type(spare_disk_gib) is not int or not 0 <= spare_disk_gib <= 4096:
             raise ValueError("native spare disk requires a bounded GiB value")
-        Cluster.__init__(self, image, artifacts, node_count=3, wire_replicas=False,
+        Cluster.__init__(self, image, artifacts, node_count=count, wire_replicas=False,
                          advertise=True, **kwargs)
         self.bundle = bundle
         self.node_ids = []
@@ -55,7 +56,7 @@ class NativeConsoleCluster(ShellBrowserCluster):
         host = json.loads(self.command("info", "--format", "{{json .}}"))["ID"]
         if not isinstance(host, str) or not host:
             raise AssertionError("Docker physical host identity is absent")
-        for index in range(3):
+        for index in range(self.node_count):
             data = node_data(self, index)
             disk = data / f"disk-{index + 1}.img"
             with disk.open("wb") as file:
@@ -76,8 +77,8 @@ class NativeConsoleCluster(ShellBrowserCluster):
         self.ready()
         self.api("/api/racks", {"id": 1, "name": "native acceptance"}, status=201)
         candidates = wait(lambda: self.api("/api/node/candidates"),
-                          lambda result: len(result["candidates"]) == 3,
-                          "three isolated manual node candidates", seconds=10)["candidates"]
+                          lambda result: len(result["candidates"]) == self.node_count,
+                          "isolated manual node candidates", seconds=10)["candidates"]
         for address in self.addresses:
             candidate = next(entry for entry in candidates if any(
                 urlparse(endpoint).hostname == address
@@ -93,7 +94,7 @@ class NativeConsoleCluster(ShellBrowserCluster):
             wait(lambda: self.api("/api/racks?recursive=1"),
                  lambda result: {node["id"] for rack in result["items"] for node in rack["nodes"]
                      if node.get("kv_server", {}).get("health") == "up"} == set(self.node_ids),
-                 "three live remote KV observations", seconds=10)
+                 "live remote KV observations", seconds=10)
         self.origins = [f"http://{address}:10000" for address in self.addresses]
         (self.artifacts / "native-endpoints.json").write_text(json.dumps({
             "nodes": self.node_ids, "addresses": self.addresses, "disk_gib": self.disk_gib,
