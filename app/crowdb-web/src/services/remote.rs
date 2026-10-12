@@ -58,6 +58,11 @@ pub(crate) async fn refresh(state: &AppState) -> crowdb_console_shared::error::R
         .write()
         .map_err(|error| crowdb_console_shared::error::Error::Config(error.to_string()))?;
     for intent in intents {
+        // KV endpoints come from admitted node bootstrap, not auxiliary
+        // service configuration. Its lifecycle intent must not erase them.
+        if intent.kind == "kv" {
+            continue;
+        }
         config.servers.retain(|entry| entry.id != intent.service_id);
         if matches!(intent.action, NodeServiceAction::Delete) {
             continue;

@@ -250,6 +250,17 @@ and the named run artifacts.
   Ordinary multipart finalization failures now log the underlying error before
   returning the unchanged 503 response. Access component gate passes 108 tests
   (one separately owned pinned SDK test ignored); workspace clippy passes.
+  The diagnostics-only image passes exact multipart/location assertions once
+  serially (`run-efc9f50cdd2b4bf3a7600fbcfccca592`) and once concurrently with
+  binding repair. Initial 503 is not explained; keep it under investigation.
+  `native_recovery.rs` adds exact 18-service inventory and namespace-owned PID
+  checks plus acknowledged bytes after each of six typed service restarts.
+  Its first attempt finds 17 registrations after KV restart
+  (`run-b99eac65eb7049b2b73c99f31922f6d0`): auxiliary intent refresh erases the
+  admitted KV endpoint, then cannot project the KV-only configuration. Refresh
+  now leaves KV descriptors with node bootstrap authority; a pinned component
+  proof retains KV while still projecting auxiliary services. Eight focused
+  component tests and clippy pass; rebuild and validate before acceptance.
 
 ## Final integration and closure
 
