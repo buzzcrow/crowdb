@@ -366,6 +366,12 @@ execution outcome. Group 0 commits the management intent/authorization; the
 target monitor performs the side effect and records its result. This is not
 an atomic transaction between a KV write and a runtime action.
 
+Explicit Restart requests each receive a new operation identity, even when
+the requested service configuration is unchanged. Replaying that same identity
+resumes its recorded execution; matching configuration cannot turn a later
+Restart into a no-op. Repeated desired Start/Stop/Delete states may resume
+the existing operation.
+
 Retries therefore use operation identity and local execution recovery. Crash
 after runtime success but before result publication must inspect runtime state
 and complete/reconcile the same operation, rather than blindly repeat it.

@@ -17,16 +17,17 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   `e2e-test/clients/console-ui/node_modules/` is local
   dependency state; never stage it.
 - Current formal image is built/imported from
-  `63608014b3cb51da68d770dfdb783c162f0ff438`, including S3 streaming,
+  `bdf298fe2fdf745120002efc13a4e79f3c2bfdc4`, including S3 streaming,
   replica voting/epoch fixes, explicit Web readonly, remote Access endpoints,
   monitor socket recovery, mounted node service logs, remote KV observations,
   configurable DDB heartbeat, restart intent/claim fixes, fenced disk failure
-  write-back, canonical KV labels and actual typed startup readiness. OCI
-  `sha256:80e8a6e4cc4f24849c9a523e3c021bae1aaf0395301c78a7695699ef8131d5fd`;
-  config `sha256:17fde89bdae5cb74cacd8fd78a4d45ab0906b7b6229d68e02090b6ec97a308c2`;
-  runtime `28ae7f9f906f670b957aa7c3857793488777737a9f83275d80260f17bda4efa0`.
+  write-back, canonical KV labels, actual typed startup readiness and validated stream
+  geometry in persisted deployment intents. OCI
+  `sha256:0fcf9fee4b7ddfcb919e5c1914852e0350b0b7bb1f691b068a9f68f4a23bda24`;
+  config `sha256:24e5e864369826e441e2b90ad9887338fea42252ab1afd45dd5a67a2f42ac3df`;
+  runtime `c029fe2d70f632e24822ecee3843ca9d426c9d6a850b57329f181f62ff198e61`.
   Receipt: `target/crowdb.oci.tar.json`; optimized with retained debug information.
-  Logs: `/tmp/crowdb-native-public-probe-release-{stage,build,import}.log`.
+  Logs: `/tmp/crowdb-journal-geometry-release-{stage,build,import}.log`.
   Last full S3 43/43 (1545.602 seconds) and Console 89/89 (644.632 seconds)
   used `b7b1247b`; backup `target/crowdb.oci-b7b1247b.tar[.json]` and tag
   `crowdb-node:b7b1247b` remain. These results are baselines, not full acceptance
@@ -287,6 +288,23 @@ and the named run artifacts.
   keeps eight actual 768-KiB writes, the sixty-second initial split, exact bytes,
   more than 100 real extent fences and the literal pagination/restart browser
   assertions. The original source owner remains until the formal image gate passes.
+  Scanner/recalc is also drafted as an independent short owner. The full ten-case
+  gate is running with two slots at 8 CPU / 16384 MiB:
+  `/tmp/crowdb-native-journal-scanner-all.log`. Sources remain frozen during this
+  gate; neither new owner is retired yet. Scanner passes in 19.84s (browser
+  3.6s). Journal fails its retained post-restart stale-cursor assertion: expected
+  409, actual 200. Trace shows manifest generation 17 and the same active Chunk
+  before/after; restart replies PID 513, which monitor logs show was already
+  created by the preparation restart. Only one restart occurred. Shared service
+  intent execution deduplicates two distinct Restart operations because it
+  normalizes the new operation ID before comparing inputs. Preserve operation
+  replay, but commit and execute a fresh explicit Restart even when configuration
+  and action match. This is the first root-cause repair for the large-Journal
+  failure. The complete gate ends 9 pass / 1 fail in 572.511s; inspection and all prior
+  owners pass. Redacted evidence is published under the run ID
+  `run-e8644a9c547e42f9a1f2afcf11503131`. The shared executor now distinguishes
+  a fresh explicit Restart from replaying its durable operation ID. Three
+  component tests cover replay, repeated desired state and changed inputs.
 
 ## Final integration and closure
 

@@ -9,6 +9,8 @@ use crowdb_kv_client::{CrowdbKvClient, GetOutcome, ReadMode};
 use crowdb_protocol::mgmt::node::{NodeControl, NodeServiceIntent};
 use serde_json::Value;
 
+mod identity;
+
 /// Commit a current service intent before asking its monitor to execute it.
 /// Identical retries retain the accepted operation identity.
 ///
@@ -22,12 +24,10 @@ pub async fn execute(kv: &CrowdbKvClient, node: &NodeEntry, mut intent: NodeServ
         GetOutcome::Found { value, revision, .. } => {
             let existing: NodeServiceIntent =
                 serde_json::from_slice(&value).map_err(|error| Error::Config(error.to_string()))?;
-            let operation = intent.operation_id.clone();
-            intent.operation_id.clone_from(&existing.operation_id);
-            if existing == intent {
+            if identity::replay(&existing, &intent) {
+                intent.operation_id = existing.operation_id;
                 return super::admission::remote_control(node, &NodeControl::Service { intent }).await;
             }
-            intent.operation_id = operation;
             revision
         }
         GetOutcome::NotFound => 0,
