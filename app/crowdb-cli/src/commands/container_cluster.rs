@@ -81,6 +81,7 @@ pub(crate) async fn start(
     image: Option<&str>,
     node_cpus: Option<f64>,
     memory_mib: Option<u64>,
+    diskdb_heartbeat_interval_secs: Option<u64>,
 ) -> Result<Status> {
     let root = resolve(target, true).await?;
     let mut state = if root.join(FILE).is_file() {
@@ -121,6 +122,8 @@ pub(crate) async fn start(
             phase: "allocated".into(),
             node_cpus: node_cpus.unwrap_or(2.0),
             memory_mib: memory_mib.unwrap_or(2048),
+            diskdb_heartbeat_interval_secs: diskdb_heartbeat_interval_secs
+                .unwrap_or(state::DEFAULT_DISKDB_HEARTBEAT_INTERVAL_SECS),
             addresses: Vec::new(),
         };
         state.save()?;
@@ -134,13 +137,7 @@ pub(crate) async fn start(
             return Err(Error::Config("existing cluster keeps its recorded release image; explicit upgrades require a separate operation".into()));
         }
     }
-    if node_cpus.is_some_and(|cpus| cpus.to_bits() != state.node_cpus.to_bits())
-        || memory_mib.is_some_and(|memory| memory != state.memory_mib)
-    {
-        return Err(Error::Config(
-            "existing cluster keeps its recorded resource limits".into(),
-        ));
-    }
+    validate_requested_settings(&state, node_cpus, memory_mib, diskdb_heartbeat_interval_secs)?;
     if target
         .container
         .as_ref()
@@ -163,6 +160,28 @@ pub(crate) async fn start(
         std::fs::remove_file(root.join(INITIALIZING))?;
     }
     status(target).await
+}
+
+fn validate_requested_settings(
+    state: &State,
+    node_cpus: Option<f64>,
+    memory_mib: Option<u64>,
+    diskdb_heartbeat_interval_secs: Option<u64>,
+) -> Result<()> {
+    if node_cpus.is_some_and(|cpus| cpus.to_bits() != state.node_cpus.to_bits())
+        || memory_mib.is_some_and(|memory| memory != state.memory_mib)
+    {
+        return Err(Error::Config(
+            "existing cluster keeps its recorded resource limits".into(),
+        ));
+    }
+    if diskdb_heartbeat_interval_secs.is_some_and(|interval| interval != state.diskdb_heartbeat_interval_secs)
+    {
+        return Err(Error::Config(
+            "existing cluster keeps its recorded Diskdb heartbeat configuration".into(),
+        ));
+    }
+    Ok(())
 }
 
 async fn verify_members(state: &State) -> Result<Vec<Option<Value>>> {
@@ -225,7 +244,7 @@ pub(crate) async fn stop(target: &Target) -> Result<Status> {
 
 pub(crate) async fn restart(target: &Target) -> Result<Status> {
     stop(target).await?;
-    start(target, None, None, None).await
+    start(target, None, None, None, None).await
 }
 
 pub(crate) async fn delete(target: &Target) -> Result<Status> {

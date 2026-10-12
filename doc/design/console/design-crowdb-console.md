@@ -588,6 +588,9 @@ ports. Docker must already be available. The CLI uses normal node admission,
 Group-0 bootstrap and service deployment; clients run outside the containers.
 `--image`, `--node-cpus` and `--memory-mib` select the initial image and per-node
 limits. Existing clusters keep their recorded immutable image and limits.
+`--diskdb-heartbeat-interval-secs` selects the ordinary DiskDB cadence at
+creation (default 10 seconds). The owner record retains it across resume and
+restart; an existing cluster rejects a different requested value.
 
 A root path selects the persistent data directory. `--container` (alias
 `--name`) can select any recorded member and resolves its owning cluster for
@@ -610,7 +613,7 @@ proxy endpoint, whose server-held credentials authenticate requests to Access.
 S3 errors are preserved without falling back to another mutation.
 
 The versioned owner record contains cluster/container identity, image, network,
-resource limits, fixed addresses and provisioning phase. Client records contain
+resource limits, DiskDB heartbeat cadence, fixed addresses and provisioning phase. Client records contain
 endpoints and Group-0 seeds, without rack, node or logical topology. Cluster
 credentials remain in the normal private node credential directories.
 

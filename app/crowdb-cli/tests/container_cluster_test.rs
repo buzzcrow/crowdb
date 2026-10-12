@@ -29,6 +29,30 @@ fn runtime(root: &Path, body: &str) -> std::path::PathBuf {
 }
 
 #[test]
+fn startup_preserves_recorded_heartbeat_configuration_without_runtime_mutation() {
+    let directory = TestDir::new("cli-container-heartbeat-config").unwrap();
+    let root = std::fs::canonicalize(directory.path()).unwrap();
+    state(&root);
+    let before = std::fs::read(root.join("container-cluster.json")).unwrap();
+    let script = runtime(&root, "echo 'unexpected runtime mutation' >&2; exit 77");
+    let output = Command::new(env!("CARGO_BIN_EXE_crowdb-cli"))
+        .args(["s3", "cluster", "start", "--root"])
+        .arg(&root)
+        .args(["--diskdb-heartbeat-interval-secs", "3"])
+        .env("CROWDB_CONTAINER_RUNTIME", script)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("recorded Diskdb heartbeat configuration"));
+    assert!(!error.contains("unexpected runtime mutation"));
+    assert_eq!(
+        std::fs::read(root.join("container-cluster.json")).unwrap(),
+        before
+    );
+}
+
+#[test]
 fn lifecycle_rejects_foreign_network_without_mutation() {
     let directory = TestDir::new("cli-container-foreign-network").unwrap();
     let root = std::fs::canonicalize(directory.path()).unwrap();

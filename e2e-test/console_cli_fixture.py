@@ -57,7 +57,8 @@ class CliContainerCluster(Cluster):
         relative = os.path.relpath(self.root, os.getcwd())
         arguments = self.arguments("cluster", "start", "--root", relative,
             "--container", self.run_id, "--image", self.image,
-            "--node-cpus", str(self.node_cpus), "--memory-mib", "2048")
+            "--node-cpus", str(self.node_cpus), "--memory-mib", "2048",
+            "--diskdb-heartbeat-interval-secs", "3")
         log = self.artifacts / "client-interrupted-start.log"
         interrupted_at = time.monotonic()
         with log.open("w") as output:

@@ -457,6 +457,9 @@ pixi run test-container-e2e --scope console.operations --concurrency 2 --node-cp
 Native full-service fixtures reserve 512 PIDs/threads per node and 2048 MiB,
 with a private network and fixed service ports. The six-node owner combines
 three storage and three diskless nodes; it reserves 6.5 CPU / 12800 MiB.
-Its normal DiskDB deployment requests a 3-second keepalive cadence. New disk
+Its normal DiskDB deployment requests a 3-second keepalive cadence. CLI replay
+also requests `--diskdb-heartbeat-interval-secs 3` through normal cluster creation;
+the setting persists across restart. CLI defaults retain the production 10-second
+cadence. New disk
 initialization and actual SDK data checks remain bounded, and all selected
 services must deploy without user retry.

@@ -41,6 +41,9 @@ pub enum S3ClusterVerb {
         node_cpus: Option<f64>,
         #[arg(long)]
         memory_mib: Option<u64>,
+        /// `DiskDB` discovery and heartbeat cadence, recorded for every restart.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        diskdb_heartbeat_interval_secs: Option<u64>,
     },
     Status {
         #[command(flatten)]
@@ -172,7 +175,17 @@ async fn run_cluster(_cli: &Cli, verb: S3ClusterVerb) -> ExitCode {
             image,
             node_cpus,
             memory_mib,
-        } => container_cluster::start(&target, image.as_deref(), node_cpus, memory_mib).await,
+            diskdb_heartbeat_interval_secs,
+        } => {
+            container_cluster::start(
+                &target,
+                image.as_deref(),
+                node_cpus,
+                memory_mib,
+                diskdb_heartbeat_interval_secs,
+            )
+            .await
+        }
         S3ClusterVerb::Status { target } => container_cluster::status(&target).await,
         S3ClusterVerb::Stop { target } => container_cluster::stop(&target).await,
         S3ClusterVerb::Restart { target } => container_cluster::restart(&target).await,
