@@ -50,7 +50,7 @@ class SelectionTest(unittest.TestCase):
 
     def test_console_operations_combines_host_client_scopes(self):
         cases = json.loads(self.invoke("--list", "--scope", "console.operations"))
-        self.assertEqual(len(cases), 117)
+        self.assertEqual(len(cases), 122)
         self.assertEqual(sum(case["scope"] == "console.managed" for case in cases), 2)
         exact = json.loads(self.invoke("--list", "--scope", "console.operations", "--case", cases[0]["case"]))
         self.assertEqual(exact, [cases[0]])
@@ -59,6 +59,15 @@ class SelectionTest(unittest.TestCase):
         from scenarios import CONSOLE_OPERATION_CASES, case_nodes, case_resources
         cases = [case for case in CONSOLE_OPERATION_CASES if case.cli_replay]
         self.assertEqual({case.cli_replay for case in cases}, {"bound", "storage"})
+        for case in cases:
+            self.assertEqual(case_nodes(case), 3)
+            self.assertEqual(case_resources(case, 0.25), (3.5, 6656))
+            self.assertEqual(case_resources(case, 2), (6.5, 6656))
+
+    def test_remote_browser_flows_reserve_each_server_node_and_host_client(self):
+        from scenarios import CONSOLE_OPERATION_CASES, case_nodes, case_resources
+        cases = [case for case in CONSOLE_OPERATION_CASES if case.native_browser]
+        self.assertEqual(len(cases), 4)
         for case in cases:
             self.assertEqual(case_nodes(case), 3)
             self.assertEqual(case_resources(case, 0.25), (3.5, 6656))
@@ -79,7 +88,7 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(len(dataset), 2)
         self.assertTrue(all(case["scope"] == "dataset.http" and case["nodes"] == 13 for case in dataset))
         console = json.loads(self.invoke("--list", "--layer", "console"))
-        self.assertEqual(len(console), 117)
+        self.assertEqual(len(console), 122)
         wal_nodes = {"remove_leader_from_five_node_group_elects_new_leader": 6,
                      "remove_unreachable_leader_retains_group0_membership": 6, "replica_add_remove_wires_peers_bidirectionally": 3, "restart_3node_1group": 4, "restart_5node_1group": 6,
                      "restart_5node_2group": 6, "restart_6node_2group_overlap": 7}

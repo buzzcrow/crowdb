@@ -56,6 +56,10 @@ export async function addGroup(baseURL: string, storeId: number, groupId: number
   await post(baseURL, `/api/stores/${storeId}/groups`, { group_id: groupId, replica_id: replicaId, nodes: nodeIds });
 }
 
+export async function addReplica(baseURL: string, storeId: number, groupId: number, nodeId: number, replicaId: number) {
+  await post(baseURL, `/api/stores/${storeId}/groups/${groupId}/replicas`, { node_id: nodeId, replica_id: replicaId });
+}
+
 export async function waitForLeader(baseURL: string, storeId: number, groupId: number, timeout = 3000) {
   const api = await apiContext(baseURL);
   try {

@@ -11,6 +11,8 @@
     "e2e/flows/30-kv-ops-basic.spec.ts",
     "e2e/flows/40-inspector-activity.spec.ts",
     "e2e/flows/41-canvas-fit-pan.spec.ts",
-    "e2e/fixtures/localSetup.ts"
+    "e2e/fixtures/localSetup.ts",
+    "e2e/flows/20-kv-store-group.spec.ts",
+    "e2e/flows/12-cluster-node-inspect.spec.ts"
   ]
 }

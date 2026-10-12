@@ -12,7 +12,8 @@ SECRET = re.compile(
     r'authorization|credential|signature)[\w.-]*["\']?\s*[:=](?!:)\s*["\']?)'
     r'(?:(?:Bearer|Basic)\s+)?([^\s,"\'}&{\[\]]+)')
 REPORTS = {"results.json", "timing.json", "identity.json", "client-identity.json",
-           "case.json", "endpoints.json", "mounts.json", "s3-node-endpoints.json"}
+           "case.json", "endpoints.json", "mounts.json", "s3-node-endpoints.json",
+           "native-endpoints.json"}
 PRIVATE = {"nodes", "client", "clients", "private", "node_modules", "source"}
 SECRET_KEY = re.compile(
     r'(?i)token|password|secret|access[_-]?key|master[_-]?key|authorization|credential|signature')

@@ -1,27 +1,15 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-// Baseline: 3.1s (2026-08-16)
+// Baseline measured against the original cases on 2026-10-12.
 
 import { test, expect } from '../fixtures/realBackend';
-import { apiContext, addGroup, clusterInit, createStore, deployNodeServer, freePort, resetAll, seedRackAndNode, stopNodeServer } from '../fixtures/consoleSetup';
+import { apiContext, addGroup, createStore } from '../fixtures/localSetup';
 import { step } from '../fixtures/stepTimer';
 
 test.describe('kv cluster · store + group CRUD', () => {
-  test.beforeEach(async ({ baseURL }) => {
-    await resetAll(baseURL!);
-  });
-
-  test.afterEach(async ({ baseURL }) => {
-    await Promise.all([5, 171, 172, 7, 8].map((id) => stopNodeServer(baseURL!, id)));
-  });
-
+  // Baseline: 7.790s (2026-10-12)
   test('creates stores, groups and replicas through the UI against a real deployed server', async ({ page, baseURL }) => {
-    await step('store-group: seed nodes', () => Promise.all([5, 171, 172].map(async (id) => {
-      await seedRackAndNode(baseURL!, id, id);
-    })));
-    await deployNodeServer(baseURL!, 5, freePort(), freePort());
-    await clusterInit(baseURL!, [5]);
-    await step('store-group: deploy remaining servers', () => Promise.all([171, 172].map((id) => deployNodeServer(baseURL!, id, freePort(), freePort()))));
+    // The fixture supplies three admitted release nodes and a ready Group 0.
 
     // --- store + group creation chain (store 57, groups 570 / 580) ---
     const chainApi = await apiContext(baseURL!);
@@ -34,7 +22,7 @@ test.describe('kv cluster · store + group CRUD', () => {
         await aside.getByRole('button', { name: 'Add Store' }).click();
         await expect(page.getByRole('dialog', { name: 'Add KV Store' })).toBeVisible();
         await page.getByLabel('KV Store ID (numeric)').fill('57');
-        await page.getByLabel(/^5\b/).check();
+        await page.getByLabel(/^1\b/).check();
         await page.getByRole('button', { name: /create kv store/i }).click();
 
         await expect(aside.getByText('S-57').first()).toBeVisible({ timeout: 3_000 });
@@ -49,9 +37,9 @@ test.describe('kv cluster · store + group CRUD', () => {
         await expect(page.getByRole('dialog', { name: 'Add Group' })).toBeVisible();
         await page.getByLabel('Group ID (numeric)').fill('570');
         await page.getByLabel('Starting Replica ID (numeric)').fill('5700');
-        await page.getByLabel(/^5\b/).check();
-        await page.getByLabel(/^171\b/).check();
-        await page.getByLabel(/^172\b/).check();
+        await page.getByLabel(/^1\b/).check();
+        await page.getByLabel(/^2\b/).check();
+        await page.getByLabel(/^3\b/).check();
         await page.getByRole('button', { name: /create group/i }).click();
 
         // Expand the freshly-created store row (created after tree mount, so it
@@ -72,7 +60,7 @@ test.describe('kv cluster · store + group CRUD', () => {
         await expect(page.getByRole('dialog', { name: 'Add Group' })).toBeVisible();
         await page.getByLabel('Group ID (numeric)').fill('570');
         await page.getByLabel('Starting Replica ID (numeric)').fill('5800');
-        await page.getByLabel(/^5\b/).check();
+        await page.getByLabel(/^1\b/).check();
         const rejected = page.waitForResponse(response => response.request().method() === 'POST' && response.url().endsWith('/api/stores/57/groups'));
         await page.getByRole('button', { name: /create group/i }).click();
         expect((await rejected).status()).toBe(409);
@@ -105,9 +93,9 @@ test.describe('kv cluster · store + group CRUD', () => {
     // --- add a replica to an existing group (store 177, group 1770) ---
     // Reuse deployed servers while the metadata node stays available.
     await step('store-group: setup replica', async () => {
-      // Seed a store with an initial group on n17a.
-      await createStore(baseURL!, 177, [171]);
-      await addGroup(baseURL!, 177, 1770, 17700, [171]);
+      // Seed a store with an initial group on node 2.
+      await createStore(baseURL!, 177, [2]);
+      await addGroup(baseURL!, 177, 1770, 17700, [2]);
     });
 
     const addReplicaApi = await apiContext(baseURL!);
@@ -124,7 +112,7 @@ test.describe('kv cluster · store + group CRUD', () => {
         await page.getByRole('menuitem', { name: /add replica/i }).click();
 
         await expect(page.getByRole('dialog', { name: 'Add Replica' })).toBeVisible();
-        await page.getByLabel('Node', { exact: true }).selectOption('172');
+        await page.getByLabel('Node', { exact: true }).selectOption('3');
         await page.getByRole('button', { name: /add replica/i }).click();
 
         // Verify the new replica appears in the logical tree.
@@ -138,8 +126,8 @@ test.describe('kv cluster · store + group CRUD', () => {
         const replicas = await response.json();
         expect(replicas).toEqual(
           expect.arrayContaining([
-            expect.objectContaining({ replica_id: 17700, node_id: 171 }),
-            expect.objectContaining({ replica_id: 17701, node_id: 172 }),
+            expect.objectContaining({ replica_id: 17700, node_id: 2 }),
+            expect.objectContaining({ replica_id: 17701, node_id: 3 }),
           ]),
         );
       });
@@ -148,19 +136,12 @@ test.describe('kv cluster · store + group CRUD', () => {
     }
   });
 
+  // Baseline: 4.450s (2026-10-12)
   test('deletes a replica and a group through the UI and verifies the real backend', async ({ page, baseURL }) => {
-    // Keep node 7, which bootstraps group 0, alive through both deletion scenarios.
-    await step('del-replica-group: seed nodes', () => Promise.all([7, 8].map(async (id) => {
-      await seedRackAndNode(baseURL!, id, id);
-    })));
-    await deployNodeServer(baseURL!, 7, freePort(), freePort());
-    await clusterInit(baseURL!, [7]);
-    await deployNodeServer(baseURL!, 8, freePort(), freePort());
-
     // --- delete a replica (store 77, group 770, replica 7700) ---
     await step('del-replica-group: setup replica', async () => {
-      await createStore(baseURL!, 77, [7]);
-      await addGroup(baseURL!, 77, 770, 7700, [7]);
+      await createStore(baseURL!, 77, [1]);
+      await addGroup(baseURL!, 77, 770, 7700, [1]);
     });
 
     const replicaApi = await apiContext(baseURL!);
@@ -194,8 +175,8 @@ test.describe('kv cluster · store + group CRUD', () => {
 
     // --- delete a group (store 88, group 880) ---
     await step('del-replica-group: setup group', async () => {
-      await createStore(baseURL!, 88, [8]);
-      await addGroup(baseURL!, 88, 880, 8800, [8]);
+      await createStore(baseURL!, 88, [2]);
+      await addGroup(baseURL!, 88, 880, 8800, [2]);
     });
 
     const groupApi = await apiContext(baseURL!);

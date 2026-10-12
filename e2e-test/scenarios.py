@@ -35,6 +35,7 @@ from console_web_fixture import ConsoleWebCluster
 from console_bootstrap_fixture import BootstrapWebCluster
 from console_shell_fixture import ShellBrowserCluster
 from console_cli_fixture import CliContainerCluster
+from console_native_fixture import NativeConsoleCluster
 from console_standalone_fixture import StandaloneWebCluster
 from console_registry_fixture import RegistryWebCluster
 from console_typed_fixture import TypedWebCluster
@@ -80,6 +81,7 @@ class Case:
     iceberg_deferred_access: bool = False
     console_web: bool = False
     preserve_network: bool = False
+    native_browser: str | None = None
     shell_browser: str | None = None
     console_browser: str | None = None
     cli_replay: str | None = None
@@ -347,6 +349,11 @@ ICEBERG_CASES = (
     Case("iceberg.namespace", "access_iceberg::namespace::namespace_functional_crud_survives_native_storage_and_listener_restart"),
 )
 CONSOLE_OPERATION_CASES = (
+    Case("console.browser.registry", "console::browser_registry::duplicate_ids", shell_browser="rejects duplicate rack and node IDs from the add dialogs"),
+    Case("console.browser.node", "console::browser_node::replica_navigation", native_browser="cross-jumps between views and shows local + remote replicas"),
+    Case("console.browser.node", "console::browser_node::store_navigation", native_browser="physical node with store shows cross-jump to logical store"),
+    Case("console.browser.logical", "console::browser_logical::create", native_browser="creates stores, groups and replicas through the UI against a real deployed server"),
+    Case("console.browser.logical", "console::browser_logical::delete", native_browser="deletes a replica and a group through the UI and verifies the real backend"),
     Case("console.browser.inspector", "console::browser_inspector::activity", shell_browser="records mutations and async operations, and clear empties the log"),
     Case("console.browser.inspector", "console::browser_inspector::selection", shell_browser="clears stale properties when the domain changes or the cluster resets"),
     Case("console.cli.container", "console::cli_container::confirmed_group_zero_replay", cli_replay="bound"),
@@ -491,7 +498,7 @@ def select_cases(layer="all", scope="all", case_name=None):
 
 
 def case_nodes(case):
-    if case.cli_replay:
+    if case.cli_replay or case.native_browser:
         return 3
     if case.shell_browser:
         return 1
@@ -538,7 +545,7 @@ def case_nodes(case):
     return 2 if case.scope.startswith(("diskdb.", "chunkdb.")) else len(case.stores_per_node or case.stores)
 
 def case_resources(case, node_cpus):
-    if case.cli_replay:
+    if case.cli_replay or case.native_browser:
         return max(1, node_cpus) * 3 + 0.5, 6656
     if case.shell_browser:
         return max(2, node_cpus) + 0.5, 2560
@@ -557,6 +564,8 @@ def case_resources(case, node_cpus):
 
 
 def allocate_cluster(case, image, artifacts, bundle, data_root):
+    if case.native_browser:
+        return NativeConsoleCluster(image, artifacts, bundle, data_root=data_root)
     if case.cli_replay:
         return CliContainerCluster(image, artifacts, bundle, data_root=data_root)
     if case.shell_browser:
@@ -656,7 +665,7 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
         cluster = allocate_cluster(case, image, artifacts, bundle, data_root)
         cluster.case_name = case.name
         cluster.client_timeout = case.client_timeout
-        cluster.node_cpus = (max(1, node_cpus) if case.cli_replay else
+        cluster.node_cpus = (max(1, node_cpus) if case.cli_replay or case.native_browser else
             max(2, node_cpus) if case.shell_browser or case.console_browser or len(case.service_selection) > 2 else node_cpus)
         (cluster.artifacts / "case.json").write_text(json.dumps({
             "scope": case.scope, "case": case.name}, indent=2))
@@ -667,6 +676,8 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
         with nullcontext(cluster) if owned is not None else cluster:
             if case.cli_replay:
                 cluster.replay(case.cli_replay)
+            elif case.native_browser:
+                cluster.browser(case.native_browser)
             elif case.shell_browser:
                 cluster.browser(case.shell_browser)
             elif case.scope == "deployment.browser":
@@ -693,7 +704,7 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
                 cluster.client(bundle, case.name.rsplit("::", 1)[-1], case.name)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=slots) as pool:
-        futures = [pool.submit(run, case) for case in selected if not (case.shell_browser or case.console_browser)]
+        futures = [pool.submit(run, case) for case in selected if not (case.native_browser or case.shell_browser or case.console_browser)]
         errors = []
         try:
             for future in concurrent.futures.as_completed(futures):
@@ -705,7 +716,7 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
             for future in futures:
                 future.cancel()
             raise
-        errors.extend(run_browser_batches([case for case in selected if case.shell_browser or case.console_browser],
+        errors.extend(run_browser_batches([case for case in selected if case.native_browser or case.shell_browser or case.console_browser],
                                           slots, prepare, run))
         if errors:
             for error in errors[1:]:

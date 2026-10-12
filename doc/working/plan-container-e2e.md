@@ -11,17 +11,19 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 
 - Branch `task-deploy`; latest accepted browser/CLI migration `62d5dec7`; native route migration `da0ab099`; runtime membership fix `cb159e7b`. R230 is unfinished. Do not delete the
   requirement/backlog entry until every remaining owner and required gate passes.
-- Working tree contains the unaccepted three-node native Console fixture exploration. Shared-image CI is committed. S3 node-fault migration and local-state component proofs are accepted.
-  Preserve these drafts. `e2e-test/clients/console-ui/node_modules/` is local
+- The three-node native Console fixture is accepted for logical/Inspector browser
+  owners. Its full storage/native migration remains pending. Shared-image CI,
+  S3 node-fault migration and local-state component proofs are accepted.
+  `e2e-test/clients/console-ui/node_modules/` is local
   dependency state; never stage it.
 - Current formal image is built/imported from
-  `6042739d47c29664af332b576c4c65f2b24d0766`, including S3 streaming,
+  `929f878477a72bdfc02d07f332578c30d8b5a602`, including S3 streaming,
   replica voting/epoch fixes, explicit Web readonly, remote Access endpoints,
-  monitor socket recovery and mounted node service logs. OCI `sha256:ed98931388baf3986dfa9d20c4a9d1201f2fd916f996550cbd07b0dbbc5501fd`;
-  config `sha256:32b7504d6fc5d5a5747adc84f30aa2df588f37e963ade875fd09519ab0f149cb`;
-  runtime `bfed4b1e887de4b2a0f747195232065bca0d3462c354fc5f52dda3d03ad822be`.
+  monitor socket recovery, mounted node service logs and remote KV observations. OCI `sha256:09765d1f335789614ce9e17e6b24a8eaa5734cf6f493110481b30bcdcad0be69`;
+  config `sha256:d4ebf58b564ad86b0d99c635a62add6ee7d5a1d5bb0ccdd130fc85b500747931`;
+  runtime `7ee465065b53dcbc62c935152abc62f3c3f6f325c17edc468ea8fe8e6e365f19`.
   Receipt: `target/crowdb.oci.tar.json`; optimized with retained debug information.
-  Logs: `/tmp/crowdb-monitor-restart-release-{stage,build,import}.log`.
+  Logs: `/tmp/crowdb-remote-observation-release-{stage,build,import}.log`.
   Last full S3 43/43 (1545.602 seconds) and Console 89/89 (644.632 seconds)
   used `b7b1247b`; backup `target/crowdb.oci-b7b1247b.tar[.json]` and tag
   `crowdb-node:b7b1247b` remain. These results are baselines, not full acceptance
@@ -34,7 +36,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 - Delete original real-server owners only after equivalent accepted assertions.
   Keep deterministic component UT. Run executable commands through `pixi run`;
   native server gates require `clean-env`, never during another server gate.
-- Accepted fixture gate: 95 pass, `/tmp/crowdb-cli-final-fixture.log`,
+- Accepted fixture gate: 96 pass, `/tmp/crowdb-remote-browser-final-fixture.log`,
   including managed browser and CLI ownership controls.
   S3 component UT passes 114/114; Access-server passes 108 plus its pinned
   SDK protocol test; Web/Console-shared/E2E all-target clippy
@@ -164,19 +166,25 @@ and the named run artifacts.
   workspace fmt/clippy and 28-package CI reachability pass.
 - `swagger_routes_are_removed` → component `swagger_routes_test.rs`: all three
   retired paths; no real server startup (`ff711b4c`).
+- Both original Store/Group UI cases → `console.browser.logical`: Store and
+  Group creation, exact duplicate 409, selectable/copyable error text, Replica
+  addition and authoritative API identity, Replica and Group deletion. Both
+  original Node Inspector cases → `console.browser.node`: logical-to-physical
+  and physical-to-logical jumps, local logical replicas, no remote-proxy rows,
+  logical members retained after an actual remote proxy deletion. The original
+  duplicate rack/node case → `console.browser.registry::duplicate_ids`: exact
+  409 responses and retained inline node error. Source names remain literal in
+  the root specs; fixture-owned node IDs replace arbitrary host IDs.
+  Original baselines pass in `/tmp/crowdb-{store-group,node-inspect,registry-duplicates}-original-baseline.log`.
+  The complete root browser selection passes 22/22 with two slots in 171.539s
+  (`run-bf68df629d534cd886532934d403168a`), including the five new owners.
+  Every UI action retains the original three-second timeout. Three actual
+  manual release nodes provide each logical/Inspector cluster; public admission,
+  bootstrap and live KV observation precede the host browser. No reset, host
+  launcher, port allocator or mutation retry remains in these owners. Both
+  original specs and the duplicate registry source case are removed.
 
 ## Remaining migrations
-
-- Store/Group browser migration is in progress. Exact original two cases pass
-  in `/tmp/crowdb-store-group-original-baseline.log` (13.998s browser stage).
-  The three-node container attempt exposed remote KV observations incorrectly
-  gated by host-local PIDs: node stores returned 404 and Add Store had no eligible
-  nodes. Physical reads now refresh admitted KV management endpoints, project
-  live remote health without recording remote PIDs, and mark failed probes down.
-  Twelve focused Web component tests and full clippy pass. Rebuild the formal
-  image and rerun the two root owners before removing the original spec;
-  registered draft cases are not yet counted in the accepted 117-case inventory.
-
 - User clarified: Docker Web is writable by default; only explicit readonly
   disables writes. The public single-container profile enables readonly;
   internal test profiles allow writes. Preserve Docker physical-mutation
@@ -189,8 +197,9 @@ and the named run artifacts.
 - [~] **Console browser migration**: audit and migrate the remaining specs using
   `app/crowdb-web/ui/e2e/realBackend.config.ts`. Host browsers consume owned
   container endpoints; signals validate container ownership and current service
-  PID. Current accepted Console operation inventory is 117 cases. Shell,
-  registry, KV data, canvas and both managed flows have accepted owners.
+  PID. Current accepted Console operation inventory is 122 cases. Shell,
+  registry, KV data, canvas, Inspector, logical/node navigation and both managed
+  flows have accepted owners.
   Normal three-node admission, Group 0 and all storage service deployment are
   prototyped in `/tmp/crowdb-native-release-probe.py`. Respect the original
   ten-second DiskIO ownership and Chunk-KV application readiness before consumers.
@@ -257,8 +266,8 @@ and the named run artifacts.
   case slot). Reports: `run-ab39e156c2c24da39a5db1bfbcba1a7c` and
   `run-5cfba02195364ce483aac4b5a3eaf1ee`; logs under
   `/tmp/crowdb-voting-epoch-final-{console,deployment}-ci.log`.
-  The seventeen newer shell/registry/KV/canvas/managed browser cases pass separately and are not
-  included in the complete 96-case measurement. Current accepted Console inventory is 117;
+  The twenty-four newer browser cases and two CLI replay cases pass separately and are not
+  included in the complete 96-case measurement. Current accepted Console inventory is 122;
   final full-domain measurement remains pending. Remote CI and macOS remain
   unmeasured. Files: `doc/working/test.md`, root runner reports.
 - [ ] **Close R230**: after inventory, assertion mapping, local gates and required

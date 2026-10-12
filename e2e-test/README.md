@@ -326,12 +326,18 @@ pixi run test-container-e2e --layer s3 --scope s3.recovery --concurrency 1 --cpu
   The proxy page must be ready before the embedding navigation is checked.
 - `console.browser.registry` covers the empty shell, datacenter rack menu,
   ownership-probe scope, persisted Access-only listener plan and fixed-slot
-  warning. It uses public HTTP setup and fixed Access ports 9000/9001/9002;
+  warning, plus duplicate rack/node rejection. It uses public HTTP setup and fixed Access ports 9000/9001/9002;
   dependencies remain unprovisioned and the Access service stays waiting.
 - `console.browser.kv` covers real KV pagination, binary representation and
   automatic scans. `console.browser.canvas` covers fit, pan, collapsed children
   and navigation state. These owned Web nodes deploy one ordinary KV server
   at fixed 7000/7001 using durable defaults.
+- `console.browser.logical` covers Store/Group/Replica creation, duplicate Group
+  rejection and deletion. `console.browser.node` covers physical/logical jumps
+  and remote-proxy removal without deleting the logical member. Each owns three
+  manual release containers, admitted through SSH and bootstrapped through the
+  public API. At least 1 CPU / 2048 MiB per node plus its host browser reserves
+  3.5 CPU / 6656 MiB per case. KV uses fixed 10000/10100 node ports.
 - Host shell/registry/KV/canvas clients run in batches bounded by the same case slots.
   All batch containers start before clients run concurrently; all clients finish
   before any batch network is removed. Other selected server cases finish first.
@@ -344,11 +350,12 @@ pixi run test-container-e2e --layer s3 --scope s3.recovery --concurrency 1 --cpu
   Both use the same image; physical capabilities remain restricted. The host
   control channel pauses/resumes only the current owned KV service PID.
 - These accepted cases are included once in `console.operations`; managed
-  browser migration and the other native UI flows remain pending.
+  browser owners are also migrated; the remaining native UI flows are pending.
 
 ```sh
 pixi run test-container-e2e --scope console.browser.shell --concurrency 2
 pixi run test-container-e2e --scope console.browser.registry --concurrency 2
+pixi run test-container-e2e --scope console.browser --concurrency 2 --cpus 8 --memory-mib 16384 --node-cpus 0.25
 ```
 
 ## Console WAL recovery

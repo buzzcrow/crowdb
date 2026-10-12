@@ -20,7 +20,7 @@ uses two slots with 16 CPU / 32768 MiB. KV includes both isolation pairs.
 ### Container domains
 
 Console's latest complete measurement covers 96 owners; the accepted inventory
-is now 117. Nineteen newer browser cases and two CLI recovery cases passed
+is now 122. Twenty-four newer browser cases and two CLI recovery cases passed
 separately. These batch
 results do not replace the complete-domain measurement.
 
@@ -42,9 +42,9 @@ results do not replace the complete-domain measurement.
 - KV/storage/Dataset/Iceberg rows use the coalescer image (`fca2b4fa`);
   S3 uses the streaming fix (`b7b1247b`); Console/Deployment use the voting/epoch
   fix (`cb159e7b`). Exact build identities remain in their artifacts.
-- Current image includes Web readonly, remote Access and monitor restart fixes
-  (`6042739d`), OCI
-  `sha256:ed98931388baf3986dfa9d20c4a9d1201f2fd916f996550cbd07b0dbbc5501fd`.
+- Current image includes Web readonly, remote Access, monitor restart and remote
+  KV observation fixes (`929f8784`), OCI
+  `sha256:09765d1f335789614ce9e17e6b24a8eaa5734cf6f493110481b30bcdcad0be69`.
   Optimized binaries retain debug info. Data/log/crash roots and host core policy
   are recorded per run; receipt: `target/crowdb.oci.tar.json`.
 - Special profiles: bridge SSH admission 148.191s; Linux host 7.310s;

@@ -1,22 +1,9 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-// Baseline: 2.3s (2026-08-16)
+// Baseline measured against the original cases on 2026-10-12.
 
 import { test, expect } from '../fixtures/realBackend';
-import {
-  apiContext,
-  addGroup,
-  addReplica,
-  createNode,
-  createRack,
-  createStore,
-  deployNodeServer,
-  freePort,
-  resetAll,
-  seedRackAndNode,
-  stopNodeServer,
-  waitForLeader,
-} from '../fixtures/consoleSetup';
+import { apiContext, addGroup, addReplica, createStore, waitForLeader } from '../fixtures/localSetup';
 import { step } from '../fixtures/stepTimer';
 
 /**
@@ -27,23 +14,15 @@ import { step } from '../fixtures/stepTimer';
  * move between the KV and cluster topologies.
  */
 test.describe('cluster · node inspect & cross-jump', () => {
+  // Baseline: 9.754s (2026-10-12)
   test('cross-jumps between views and shows local + remote replicas', async ({ page, baseURL }) => {
-    // resetAll first — clears stale kv_client seeds and cluster config
-    // left by prior tests. Without this, createStore in the third
-    // sub-section fails with "no known leader for group" because the
-    // kv_client's topology cache still points at stopped nodes from
-    // earlier sub-sections.
-    await step('xjump: resetAll', () => resetAll(baseURL!));
-
     // --- logical replica details -> hosting physical node ---
-    await step('xjump: setup 6', async () => {
-      await seedRackAndNode(baseURL!, 6, 6);
-      await deployNodeServer(baseURL!, 6, freePort(), freePort());
-      await createStore(baseURL!, 66, [6]);
-      await addGroup(baseURL!, 66, 660, 6600, [6]);
+    await step('xjump: setup 1', async () => {
+      await createStore(baseURL!, 66, [1]);
+      await addGroup(baseURL!, 66, 660, 6600, [1]);
     });
 
-    try {
+    {
       await step('xjump: logical→physical UI', async () => {
         await page.goto('/');
         await page.getByTestId('domain-kv').click();
@@ -55,32 +34,27 @@ test.describe('cluster · node inspect & cross-jump', () => {
         await expect(inspector).toBeVisible({ timeout: 3_000 });
 
         // Single cross-jump button: logical Replica -> hosting physical Node.
-        await inspector.getByRole('button', { name: /Show on node 6\b/ }).click();
+        await inspector.getByRole('button', { name: /Show on node 1\b/ }).click();
 
         await expect(page.getByRole('heading', { name: 'Cluster' })).toBeVisible({ timeout: 3_000 });
-        await expect(inspector.getByText('N-6', { exact: true })).toBeVisible({ timeout: 3_000 });
+        await expect(inspector.getByText('N-1', { exact: true })).toBeVisible({ timeout: 3_000 });
       });
-    } finally {
-      await step('xjump: teardown 6', () => stopNodeServer(baseURL!, 6));
     }
 
     // --- physical node details -> hosting logical store ---
-    await step('xjump: resetAll', () => resetAll(baseURL!));
-    await step('xjump: setup 62', async () => {
-      await seedRackAndNode(baseURL!, 62, 62);
-      await deployNodeServer(baseURL!, 62, freePort(), freePort());
-      await createStore(baseURL!, 67, [62]);
-      await addGroup(baseURL!, 67, 670, 6700, [62]);
+    await step('xjump: setup 2', async () => {
+      await createStore(baseURL!, 67, [2]);
+      await addGroup(baseURL!, 67, 670, 6700, [2]);
     });
 
-    try {
+    {
       await step('xjump: physical→logical UI', async () => {
         await page.goto('/');
         await page.getByTestId('domain-cluster').click();
 
-        const nodeItem = page.getByRole('treeitem').filter({ hasText: 'N-62' });
+        const nodeItem = page.getByRole('treeitem').filter({ hasText: 'N-2' });
         await expect(nodeItem).toBeVisible({ timeout: 3_000 });
-        await nodeItem.getByRole('button', { name: 'N-62' }).click();
+        await nodeItem.getByRole('button', { name: 'N-2' }).click();
 
         const inspector = page.locator('aside[aria-label="Entity inspector"]');
         await expect(inspector).toBeVisible({ timeout: 3_000 });
@@ -91,25 +65,14 @@ test.describe('cluster · node inspect & cross-jump', () => {
         await expect(page.getByRole('main').getByRole('heading', { name: 'PaxosKV', exact: true })).toBeVisible({ timeout: 3_000 });
         await expect(inspector.getByText('S-67', { exact: true }).first()).toBeVisible({ timeout: 3_000 });
       });
-    } finally {
-      await step('xjump: teardown 62', () => stopNodeServer(baseURL!, 62));
     }
 
     // --- node inspect: local + remote replicas, removed remote disappears ---
-    // Unique ids/ports: 20-ui-behaviors already uses r21*/n21*.
-    await step('xjump: resetAll', () => resetAll(baseURL!));
     await step('xjump: setup replicas', async () => {
-      await createRack(baseURL!, { id: 26, name: 'Rack TwentySix' });
-      await createNode(baseURL!, { id: 261, rack_id: 26 });
-      await createNode(baseURL!, { id: 262, rack_id: 26 });
-      await Promise.all([
-        deployNodeServer(baseURL!, 261, freePort(), freePort()),
-        deployNodeServer(baseURL!, 262, freePort(), freePort()),
-      ]);
       // store 266, then group 2660 / replica 26600 on n26a, then a peer on n26b.
-      await createStore(baseURL!, 266, [261]);
-      await addGroup(baseURL!, 266, 2660, 26600, [261]);
-      await addReplica(baseURL!, 266, 2660, 262, 26601);
+      await createStore(baseURL!, 266, [1]);
+      await addGroup(baseURL!, 266, 2660, 26600, [1]);
+      await addReplica(baseURL!, 266, 2660, 2, 26601);
     });
 
     const api = await apiContext(baseURL!);
@@ -140,12 +103,12 @@ test.describe('cluster · node inspect & cross-jump', () => {
 
       // Remove the remote on n26a out-of-band (simulated mis-wiring).
       await step('xjump: delete remote API', async () => {
-        const del = await api.delete('/api/nodes/261/stores/266/groups/2660/remotes/26601');
+        const del = await api.delete('/api/nodes/1/stores/266/groups/2660/remotes/26601');
         expect(del.ok(), await del.text()).toBeTruthy();
       });
 
       // In the logical tree, deleting a remote proxy doesn't remove the
-      // replica from the group — it still exists on its home node (262).
+      // replica from the group — it still exists on its home node (2).
       // Both replicas remain visible.
       await step('xjump: verify replicas still present', async () => {
         const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
@@ -154,34 +117,28 @@ test.describe('cluster · node inspect & cross-jump', () => {
       });
     } finally {
       await api.dispose();
-      await step('xjump: teardown replicas', () => Promise.all([
-        stopNodeServer(baseURL!, 261),
-        stopNodeServer(baseURL!, 262),
-      ]));
     }
   });
 
-  // Needs a truly empty backend so the store cross-jump target is unambiguous.
+  // Each case owns a fresh container cluster and its user stores.
+  // Baseline: 3.656s (2026-10-12)
   test('physical node with store shows cross-jump to logical store', async ({ page, baseURL }) => {
-    await step('xjump2: resetAll', () => resetAll(baseURL!));
     await step('xjump2: setup', async () => {
-      await seedRackAndNode(baseURL!, 33, 33);
-      await deployNodeServer(baseURL!, 33, freePort(), freePort());
-      await createStore(baseURL!, 330, [33]);
-      await addGroup(baseURL!, 330, 3300, 33000, [33]);
+      await createStore(baseURL!, 330, [1]);
+      await addGroup(baseURL!, 330, 3300, 33000, [1]);
       await waitForLeader(baseURL!, 330, 3300);
     });
 
-    try {
+    {
       await step('xjump2: cross-jump UI', async () => {
         await page.goto('/');
         await page.getByTestId('domain-cluster').click();
         const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
 
         // Select the physical node
-        const nodeItem = page.getByRole('treeitem').filter({ hasText: 'N-33' });
+        const nodeItem = page.getByRole('treeitem').filter({ hasText: 'N-1' });
         await expect(nodeItem).toBeVisible({ timeout: 3_000 });
-        await nodeItem.getByRole('button', { name: 'N-33' }).click();
+        await nodeItem.getByRole('button', { name: 'N-1' }).click();
 
         // Inspector should show Details tab with cross-jump button
         const inspector = page.locator('aside[aria-label="Entity inspector"]');
@@ -198,8 +155,6 @@ test.describe('cluster · node inspect & cross-jump', () => {
         // Store should be selected in the logical tree
         await expect(aside.getByText('S-330').first()).toBeVisible({ timeout: 3_000 });
       });
-    } finally {
-      await step('xjump2: teardown', () => stopNodeServer(baseURL!, 33));
     }
   });
 });
