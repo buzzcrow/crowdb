@@ -8,13 +8,13 @@ Finish canonical release-container acceptance and test classification.
 
 ## Current state
 
-- Branch `task-deploy`, client revision `9fac0454`. Migration/classification is
+- Branch `task-deploy`, client revision `7a94486c`. Migration/classification is
   implemented; old browser launchers are retired and important component UTs
   remain. Console has 153 canonical owners. Assertion audit:
   `/tmp/crowdb-r230-accepted-assertions.md`; implementation evidence is in Git.
-- Formal optimized release from `9225badd`, with debug info retained:
-  OCI `sha256:342f0376c3ee878a9f7c2779760e29e497458ad2681ea633a62f8950ba7b62f5`;
-  Docker `sha256:b3bd59255e79d66409089f85a44833797e17f8c3c949ae30c16cd33019447377`.
+- Formal optimized release from `7a94486c`, with debug info retained:
+  OCI `sha256:cb8e4d77314e1d38a9c24b8985d3b398da1265a9b4c72636077fadb70aa05666`;
+  Docker `sha256:5e59f9713d441fba837929ba9874882b3e892c28020b94a384aead34e2b01072`.
   Receipt: `target/crowdb.oci.tar.json`. Clients pin this image and their bundle.
 - Native complete nodes remain 1 CPU / 2048 MiB / 512 PIDs by user direction.
   Diagnose actual resource failures before changing limits. Host clients use
@@ -45,8 +45,11 @@ Finish canonical release-container acceptance and test classification.
   KV must include concurrent isolation proof. Queue:
   `/tmp/crowdb-r230-domain-gates.py`, log `/tmp/crowdb-r230-domain-gates.log`.
   Deployment passes 33 / 0 / 0 in 307.253 s on `9225badd`. Queue driver PID
-  642645 is temporarily stopped after that gate while a proven Group-0 repair
-  is packaged. Resume it after import so remaining domains pin the new image.
+  642645 is temporarily stopped after that gate until new-image Deployment, CLI and complete Console gates finish.
+  Driver `/tmp/crowdb-r230-catalog-final-gates.py` resumes it automatically after
+  these browser gates; log `/tmp/crowdb-r230-catalog-final-gates.log`. Complete
+  Console additionally records cgroup CPU/memory observations in
+  `/tmp/crowdb-r230-console-catalog-resource.log`.
   Keep production/client inputs stable during gates; do not mutate unrelated
   Docker bridges during browser tests.
 - [ ] **Classification and diagnostics**: verify final Pixi/CI selectors and
@@ -73,8 +76,8 @@ Finish canonical release-container acceptance and test classification.
   pass, while a changed owner epoch remains rejected. All 63 KV-server component
   tests, targeted clippy and workspace fmt pass. Logs:
   `/tmp/crowdb-r230-catalog-resume-{before,after,tests,clippy}.log`.
-- Build/import the formal debug release, then rerun CLI recovery, complete Console
-  and Deployment. This proven publication defect does not yet establish that
+- Formal debug release built/imported and digest verified. New-image Deployment,
+  CLI recovery and complete Console are running in the driver above. This proven publication defect does not yet establish that
   every intermittent failure has been resolved. Multipart remains under diagnosis.
 
 ## Verification
