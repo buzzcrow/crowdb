@@ -16,7 +16,8 @@ from console_native_browser import INSPECTION_CASES
 
 class NativeConsoleCluster(ShellBrowserCluster):
     def __init__(self, image, artifacts, bundle, *, disk_gib=(80, 8, 8),
-                 zone_gib=(1, 1, 1), spare_disk_gib=0, bootstrap=True, rack_ids=None, **kwargs):
+                 zone_gib=(1, 1, 1), spare_disk_gib=0, bootstrap=True, rack_ids=None,
+                 admission_count=None, diskless_nodes=(), **kwargs):
         if type(bootstrap) is not bool:
             raise ValueError("native bootstrap selection must be a boolean")
         count = len(disk_gib)
@@ -31,6 +32,11 @@ class NativeConsoleCluster(ShellBrowserCluster):
         racks = (1,) * count if rack_ids is None else tuple(rack_ids)
         if len(racks) != count or any(type(rack) is not int or not 1 <= rack <= 8 for rack in racks):
             raise ValueError("native rack IDs must match the node profile")
+        admitted = count if admission_count is None else admission_count
+        if type(admitted) is not int or not 3 <= admitted <= count:
+            raise ValueError("native initial admission must include three to all nodes")
+        if any(type(node) is not int or not 1 <= node <= count for node in diskless_nodes):
+            raise ValueError("diskless node is outside the native profile")
         Cluster.__init__(self, image, artifacts, node_count=count, wire_replicas=False,
                          advertise=True, **kwargs)
         self.bundle = bundle
@@ -41,6 +47,9 @@ class NativeConsoleCluster(ShellBrowserCluster):
         self.spare_disk_gib = spare_disk_gib
         self.bootstrap = bootstrap
         self.rack_ids = racks
+        self.admission_count = admitted
+        self.diskless_nodes = tuple(diskless_nodes)
+        self.pending_candidates = []
 
     def api(self, path, body=None, method=None, status=200):
         payload = None if body is None else json.dumps(body).encode()
@@ -63,8 +72,9 @@ class NativeConsoleCluster(ShellBrowserCluster):
         for index in range(self.node_count):
             data = node_data(self, index)
             disk = data / f"disk-{index + 1}.img"
-            with disk.open("wb") as file:
-                file.truncate(self.disk_gib[index] * 1024 ** 3)
+            if index + 1 not in self.diskless_nodes:
+                with disk.open("wb") as file:
+                    file.truncate(self.disk_gib[index] * 1024 ** 3)
             if index == 0 and self.spare_disk_gib:
                 with (data / "capacity-spare.img").open("wb") as file:
                     file.truncate(self.spare_disk_gib * 1024 ** 3)
@@ -88,6 +98,10 @@ class NativeConsoleCluster(ShellBrowserCluster):
             candidate = next(entry for entry in candidates if any(
                 urlparse(endpoint).hostname == address
                 for endpoint in entry["advertisement"]["monitor_endpoints"]))
+            if index >= self.admission_count:
+                self.pending_candidates.append({"node_id": index + 1,
+                    "discovery_id": candidate["advertisement"]["discovery_id"]})
+                continue
             record = self.api("/api/node/admit", {
                 "discovery_id": candidate["advertisement"]["discovery_id"],
                 "rack_id": self.rack_ids[index], "ssh_user": "crowdb", "ssh_port": 2222, "ssh_password": "crowdb"})
@@ -115,7 +129,8 @@ class NativeConsoleCluster(ShellBrowserCluster):
     def observed_browser(self, name, *, config):
         with Control(BrowserObservations(self)) as control:
             self.browser(name, config=config, extra_env={
-                "CROWDB_NATIVE_OBSERVATION_CONTROL": str(control.directory)})
+                "CROWDB_NATIVE_OBSERVATION_CONTROL": str(control.directory),
+                "CROWDB_NATIVE_PENDING_CANDIDATES": json.dumps(self.pending_candidates)})
 
     def control(self, body):
         if body.get("action") == "native-storage-profile":

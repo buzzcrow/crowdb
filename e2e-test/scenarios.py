@@ -86,6 +86,8 @@ class Case:
     native_disk_gib: tuple = (80, 8, 8)
     native_zone_gib: tuple = (1, 1, 1)
     native_rack_ids: tuple | None = None
+    native_admission_count: int | None = None
+    native_diskless_nodes: tuple = ()
     native_spare_disk_gib: int = 0
     native_bootstrap: bool = True
     native_observations: bool = False
@@ -358,6 +360,7 @@ ICEBERG_CASES = (
     Case("iceberg.namespace", "access_iceberg::namespace::namespace_functional_crud_survives_native_storage_and_listener_restart"),
 )
 CONSOLE_OPERATION_CASES = (
+    Case("console.native.browser.six-node", "console::browser_data::six_node_round_trips", native_browser="UI creates three storage nodes, adds three diskless nodes, then KV, S3 and Iceberg persist real data", native_disk_gib=(4096, 4096, 4096, 8, 8, 8), native_zone_gib=(32, 32, 32, 1, 1, 1), native_admission_count=3, native_diskless_nodes=(4, 5, 6), native_bootstrap=False, native_observations=True, client_timeout=300),
     Case("console.native.browser.topology", "console::browser_topology::multi_rack_leaders", native_browser="native topology: three racks grow one replica and retain three complete leaders", native_rack_ids=(1, 2, 3)),
     Case("console.native.browser.topology", "console::browser_topology::independent_subsets", native_browser="native topology: overlapping three-voter subsets retain independent keys and scans", native_disk_gib=(80, 8, 8, 8, 8), native_zone_gib=(1, 1, 1, 1, 1)),
     Case("console.native.browser.topology", "console::browser_topology::simple_and_complex", native_browser="native topology: SIMPLE and COMPLEX store layouts route every populated group"),
@@ -618,6 +621,8 @@ def allocate_cluster(case, image, artifacts, bundle, data_root):
                                     spare_disk_gib=case.native_spare_disk_gib,
                                     bootstrap=case.native_bootstrap,
                                     rack_ids=case.native_rack_ids,
+                                    admission_count=case.native_admission_count,
+                                    diskless_nodes=case.native_diskless_nodes,
                                     data_root=data_root)
     if case.cli_replay:
         return CliContainerCluster(image, artifacts, bundle, data_root=data_root)
@@ -718,6 +723,8 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
         cluster = allocate_cluster(case, image, artifacts, bundle, data_root)
         cluster.case_name = case.name
         cluster.client_timeout = case.client_timeout
+        if case.native_browser:
+            cluster.browser_timeout = case.client_timeout
         cluster.node_cpus = (max(1, node_cpus) if case.cli_replay or case.native_browser or case.native_client else
             max(2, node_cpus) if case.shell_browser or case.console_browser or len(case.service_selection) > 2 else node_cpus)
         (cluster.artifacts / "case.json").write_text(json.dumps({

@@ -327,16 +327,28 @@ and the named run artifacts.
   Every comparison group now receives and returns a distinct value, including
   both stores. Parallel three-case gate passes, 2.2 / 1.0 / 1.4 browser seconds;
   `/tmp/crowdb-native-topology.log`; fixture 105 and native TS pass.
-- [ ] **Six-node data flow**: migrate the last source
+- [~] **Six-node data flow**: migrate the last source
   `app/crowdb-web/ui/e2e/flows/92-three-node-data.spec.ts` and its diskless/SDK
   helpers. Preserve three storage + three diskless nodes, automatic selected
   service startup, actual KV/S3/Iceberg data, and six-way dynamic slot balance.
   Each physical node has its own release container. Extend/split CI resources
   before registering the larger owner. Retire old helpers/port allocator only
   after this final original browser flow passes.
+- Six-node draft is registered but not yet accepted (152 accepted, 153 selected).
+  Initial public admission prepares only nodes 1–3; nodes 4–6 retain their actual
+  discovery IDs for later UI admission and have no mounted user-data disk file.
+  Fixed-port full-service plans use dynamic ChunkDB ownership. CI reservation
+  is extended to 8 CPU / 16384 MiB for this 6.5 CPU / 12800 MiB owner.
+  Fixture 105, browser TypeScript and 28-package task reachability pass.
+  Early migration gates exposed serial deployment ordering and fresh-disk Init
+  state. Checkpoint deployment responses before inspecting dependent progress;
+  query actual DiskDB capacity directly and select each newly added disk group.
+  A mistaken query parameter and a 500/502 mismatch in draft readiness code were
+  corrected; neither is a production failure. Current gate:
+  `/tmp/crowdb-six-node-direct-capacity.log`. Original owner stays until accepted.
 - Current native fixture supports 3–8 actual nodes with matching disk/zone
   profiles and resource accounting. Console CI currently budgets 8 CPU /
-  12288 MiB; larger topology owners must update or split this budget coherently.
+  16384 MiB; larger topology owners must update or split this budget coherently.
 - An earlier single native KV-stop response timeout remains a final regression
   check. Four later lifecycle runs pass with the original 3-second response wait;
   no timeout increase or assertion retry remains. Current formal image fixes
@@ -390,3 +402,43 @@ and the named run artifacts.
   environment results are satisfied, remove R230 detail/backlog entry and this
   plan in the final cleanup commit. Requirement commits use coherent verified
   batches and single-line subjects without requirement numbers.
+
+## Blocked
+
+Six-node draft is not accepted. Original source and launcher remain. No complete
+153-owner Console measurement is claimed. Fixture 105, browser TypeScript and
+28-package CI reachability passed; no production code changed in this batch.
+
+Exact failing command:
+`pixi run test-container-e2e --scope console.native.browser.six-node --concurrency 1 --node-cpus 0.25 --cpus 8 --memory-mib 16384 --artifacts /tmp/crowdb-six-node-direct-capacity`.
+Final failure: Node 2 fresh disk never became allocatable within the new
+10-second initialization checkpoint. Original 3-second deployment waits remain.
+
+Migration attempts and first divergences:
+- `/tmp/crowdb-six-node-migration.log`: DiskIO pending while predecessor DiskDB
+  was still deploying. Added actual predecessor response checkpoints.
+- `/tmp/crowdb-six-node-checkpoints.log`: Chunk-KV startup stalled because newly
+  created disks remained Init and DiskDB returned no allocatable space.
+- `/tmp/crowdb-six-node-disk-ready.log`: draft used ignored query parameters and
+  accidentally observed DG1 for other nodes. Corrected to the documented `dg`.
+- `/tmp/crowdb-six-node-ready-groups.log`: owner route had not propagated;
+  exact usage query returned 502, not ready data.
+- `/tmp/crowdb-six-node-owner-ready.log`: hardware ownership in `/instances`
+  appeared before the client's routing cache observed that owner.
+- `/tmp/crowdb-six-node-runtime-owner.log`: draft expected 500 instead of 502.
+  Removed this provisional response special case rather than swallowing errors.
+- `/tmp/crowdb-six-node-direct-capacity.log`: direct instance capacity queries
+  bypass stale routing, but the node 2 initialization still exceeds 10 seconds.
+
+Confirmed production timing in final mounted logs: node 2 sync at
+13:09:59.133 UTC saw no disks; next sync at 13:10:09.150 discovered one disk;
+13:10:10.677 completed 128 baseline zone records and moved Init -> Up, after the
+browser assertion failed. Normal release sync interval is 10 seconds. Tests
+cannot treat registration or process startup as usable disk readiness.
+
+Next decision: either improve normal runtime disk-change synchronization (and
+verify the release image again), or explicitly budget fresh-disk initialization
+for the normal sync interval plus zone loading, keeping UI/deployment response
+assertions at their existing limits. Do not increase waits without recording
+which production initialization contract is being tested. Resume after user
+selection; remaining six-node admission/data/slot stages have not executed.
