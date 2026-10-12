@@ -305,10 +305,24 @@ and the named run artifacts.
   verified owners. Discovery's stale-on-loss assertion still needs explicit
   comparison with the root discovery/browser coverage. Files:
   `app/crowdb-web/ui/e2e/flows/{01,10,11,12,13}-*.spec.ts`.
-- [ ] **Capacity**: migrate five DiskGroup cases. Preserve CRUD,
+- [~] **Capacity**: migrate five DiskGroup cases. Preserve CRUD,
   owner/binding selection, maintenance state, capacity
   totals and unknown/error observations. Files:
   `app/crowdb-web/ui/e2e/flows/50-chunk-capacity-disk-group.spec.ts`.
+  The DiskDB lifecycle draft registers one additional owner (143 Console
+  selections, 142 accepted). Its original server source remains. First failure
+  was the specialized DDB tree ID; correcting the selector exposes a real
+  health projection bug. Trace proves the same DDB PID is alive and
+  `/api/servers` remains Up after KV stop, while the UI shows Failed. App
+  overwrites observed health with the stale per-node projection. It also joins
+  instances by port alone, aliasing three distinct fixed-port containers.
+  Prefer current service health and full RPC addresses; four focused component
+  proofs, all 180 UI components and the UI build pass. Logs:
+  `/tmp/crowdb-diskdb-observations-{components,ui-components,build}.log`.
+  Rebuild/import the formal image before rerunning lifecycle and the Inspector's
+  actual per-instance owned-group projection. Sources/HEAD freeze during
+  staging, build and import. Draft logs:
+  `/tmp/crowdb-diskdb-lifecycle{,-selector}.log`.
 - [ ] **Topology and cross-domain**: review three topology cases and the two
   full-chain/three-node-data flows. The old topology setup starts 23 nodes for
   disjoint tests; select each flow's actual node subset instead. Preserve the

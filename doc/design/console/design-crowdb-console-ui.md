@@ -189,6 +189,9 @@ provide observable capacity and bitmap fixtures.
   RPC probe remains Failed even when the process is alive.
   Access health probes its dedicated listener; missing retained health
   configuration is Unknown and requires reconciliation before restart.
+  Current service observations take precedence over persisted node projections.
+  DiskDB instances are associated by complete advertised RPC addresses; equal
+  ports in different node namespaces do not imply the same instance.
 - Cluster selections never display or request Chunk ownership.
 - **CLU-04:** Cluster readiness is reported by capability: KV quorum, storage,
   Chunk-KV, and Access protocols. A PID or registry entry alone is not Ready.

@@ -18,6 +18,7 @@ import { Sidebar } from './shell/Sidebar';
 import { useNodeServicePlans } from './services/useNodeServicePlans';
 import { NodeServicesDialog } from './services/NodeServicesDialog';
 import { DeployServiceDialog } from './services/DeployServiceDialog';
+import { diskdbHealthForNodes, diskdbInstancesForNodes } from './services/observations';
 import { ToastContainer } from './components/ToastContainer';
 import { TreeNode } from './components/Tree';
 import { ContextMenu, useContextMenu } from './components/ContextMenu';
@@ -43,7 +44,7 @@ import { useClusterMenus } from './menus/useClusterMenus';
 import { useCapacityMenus } from './menus/useCapacityMenus';
 import { setApiBase, resetCluster, compactDiskdbZones, rebuildDiskdbZoneBitmap, listServers } from './api';
 import { deployPortDefaultsForNode, diskdbPortDefaultsForNode, nextIdFromSuffix, nextNumericId } from './components/dialogs/defaults';
-import { buildCrowdbKVServers, crowdbKvServerNodeIds, extractPort } from './data/crowdbKvServers';
+import { buildCrowdbKVServers, crowdbKvServerNodeIds } from './data/crowdbKvServers';
 import { isCrowdbKVServerAvailable } from './data/crowdbKvServers';
 import { toUiHealth } from './utils/entityDisplay';
 import { ClusterView } from './views/ClusterView';
@@ -201,34 +202,9 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
     () => new Set([...allServers.filter((s) => s.service_type === 'diskdb' && s.node_id != null).map((s) => s.node_id!), ...nodes.filter(node => node.diskdb_server).map(node => node.id)]),
     [allServers, nodes],
   );
-  const diskdbHealthById = useMemo(() => {
-    const m = new Map<number, string>();
-    for (const s of allServers) {
-      if (s.service_type === 'diskdb' && s.node_id != null) m.set(s.node_id, s.health);
-    }
-    for (const node of nodes) if (node.diskdb_server) m.set(node.id, node.diskdb_server.health);
-    return m;
-  }, [allServers, nodes]);
-  const diskdbInstanceIdByNodeId = useMemo(() => {
-    const instanceByPort = new Map(
-      diskdbInstances
-        .map((instance) => [extractPort(instance.rpc_endpoint), instance.instance_id] as const)
-        .filter((entry): entry is readonly [number, string] => entry[0] != null),
-    );
-    const result = new Map<number, string>();
-    for (const node of nodes) {
-      const port = extractPort(node.diskdb_server?.endpoint);
-      const instanceId = port == null ? undefined : instanceByPort.get(port);
-      if (instanceId) result.set(node.id, instanceId);
-    }
-    for (const server of allServers) {
-      if (server.service_type !== 'diskdb' || server.node_id == null) continue;
-      const port = extractPort(server.endpoint || server.rpc_url);
-      const instanceId = port == null ? undefined : instanceByPort.get(port);
-      if (instanceId != null) result.set(server.node_id, instanceId);
-    }
-    return result;
-  }, [allServers, diskdbInstances, nodes]);
+  const diskdbHealthById = useMemo(() => diskdbHealthForNodes(allServers, nodes), [allServers, nodes]);
+  const diskdbInstanceIdByNodeId = useMemo(() => diskdbInstancesForNodes(allServers, nodes, diskdbInstances),
+    [allServers, diskdbInstances, nodes]);
   // Cluster is initialized once the system store (store 0) exists.
   const clusterInitialized = useMemo(
     () => stores.some((s) => String(s.store_id) === '0'),
