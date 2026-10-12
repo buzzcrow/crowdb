@@ -282,6 +282,12 @@ and the named run artifacts.
   gates pass. Split these two diagnostics into independent short scopes;
   the remaining inspection phase owns fourteen browser cases. Rebuild once and
   validate the two exact original cases before accepting the new owners.
+  Both short baselines then stop at Access deployment: its dedicated public
+  health probe inherited the template's Iceberg bearer-token requirement,
+  while the intent probe correctly uses an empty credential environment.
+  Clear that inherited requirement for per-intent public readiness probes.
+  Timeout errors now retain the last actual probe failure. Sixteen monitor
+  component tests and clippy pass; rebuild and validate without changing limits.
 
 ## Final integration and closure
 

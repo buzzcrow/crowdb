@@ -49,6 +49,9 @@ pub(super) fn for_intent(profile: &DeploymentProfile, intent: &NodeServiceIntent
     } else {
         ProbeKind::Http
     };
+    // Managed intents use public readiness surfaces, not the template's
+    // authenticated catalog probe.
+    service.probe.bearer_env = None;
     service.additional_probes.clear();
     Ok(service)
 }

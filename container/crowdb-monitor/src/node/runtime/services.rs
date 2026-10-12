@@ -125,18 +125,26 @@ async fn wait_ready(
     let service = super::probes::for_intent(profile, intent)?;
     let probes = crate::ProbeExecutor::new(intent.kind == "diskio")?;
     let environment = std::collections::BTreeMap::new();
+    let mut last_error = crate::ProbeError::Unavailable;
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if !processes.alive(&intent.service_id)? {
                 return Err("managed service exited before readiness".into());
             }
-            if probes.probe_service(&service, &environment).await.is_ok() {
-                return Ok(());
+            match probes.probe_service(&service, &environment).await {
+                Ok(()) => return Ok(()),
+                Err(error) => last_error = error,
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })
-    .await?
+    .await
+    .map_err(|_| {
+        format!(
+            "managed service {} readiness failed: {last_error}",
+            intent.service_id
+        )
+    })?
 }
 
 async fn verify_intent(binding: &NodeBinding, intent: &NodeServiceIntent) -> Result<()> {
