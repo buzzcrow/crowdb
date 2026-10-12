@@ -214,7 +214,15 @@ pub async fn http_restart_diskdb(
     State(state): State<AppState>,
     Path(node_id): Path<u64>,
 ) -> Result<Json<DiskdbDeployResult>, (StatusCode, Json<ErrorBody>)> {
-    let operation = crate::services::Operation::claim(&state, vec![format!("node/{node_id}")])?;
+    // Remote lifecycle claims both node and service in its shared executor.
+    let operation = if state.node_monitor_url.is_some() {
+        None
+    } else {
+        Some(crate::services::Operation::claim(
+            &state,
+            vec![format!("node/{node_id}")],
+        )?)
+    };
     tokio::spawn(async move {
         let _operation = operation;
         restart_diskdb(state, node_id).await

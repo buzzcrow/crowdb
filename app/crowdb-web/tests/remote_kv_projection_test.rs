@@ -17,6 +17,58 @@ use std::{collections::BTreeMap, sync::Arc};
 use tower::ServiceExt;
 
 #[tokio::test]
+async fn diskdb_restart_claims_the_remote_node_once_before_target_validation() {
+    let cluster = memory_kv::TestKvCluster::start().await;
+    let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
+        cluster.mgmt_endpoints.clone(),
+    )));
+    kv.seed_leader(0, 0, cluster.group0_leader_endpoint.clone());
+    let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("remote-diskdb-claim");
+    let binding = NodeBinding {
+        node_id: 1,
+        bootstrap: SystemBootstrapIdentity {
+            cluster_id: "projection-cluster".into(),
+            operation_id: "bootstrap".into(),
+            configuration_digest: "a".repeat(64),
+        },
+        management_seeds: cluster.mgmt_endpoints.clone(),
+    };
+    std::fs::write(
+        root.path().join("node-binding.json"),
+        serde_json::to_vec(&binding).unwrap(),
+    )
+    .unwrap();
+    let intent = NodeServiceIntent {
+        cluster_id: binding.bootstrap.cluster_id,
+        operation_id: "restart".into(),
+        node_id: 1,
+        service_id: "diskdb-1".into(),
+        kind: "diskdb".into(),
+        action: NodeServiceAction::Restart,
+        configuration: "[server]\ninstance_id = '1'\n".into(),
+        environment: BTreeMap::new(),
+    };
+    kv.put_cas(
+        0,
+        0,
+        b"/deployment/services/1/diskdb-1",
+        &serde_json::to_vec(&intent).unwrap(),
+        0,
+    )
+    .await
+    .unwrap();
+    let state = AppState::with_runtime_root(ConsoleConfig::default(), root.path().join("console"))
+        .with_node_monitor("http://127.0.0.1:12345")
+        .unwrap();
+    *state.kv_client.write().await = Some(kv);
+    let error = crowdb_web::diskdb::http_restart_diskdb(axum::extract::State(state), axum::extract::Path(1))
+        .await
+        .unwrap_err();
+    assert_eq!(error.0, axum::http::StatusCode::NOT_FOUND);
+    assert_eq!(error.1 .0.error, "Node not found");
+}
+
+#[tokio::test]
 async fn kv_lifecycle_intents_preserve_admitted_endpoints_while_auxiliary_services_refresh() {
     let cluster = memory_kv::TestKvCluster::start().await;
     let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(

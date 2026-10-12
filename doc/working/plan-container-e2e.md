@@ -261,6 +261,13 @@ and the named run artifacts.
   now leaves KV descriptors with node bootstrap authority; a pinned component
   proof retains KV while still projecting auxiliary services. Eight focused
   component tests and clippy pass; rebuild and validate before acceptance.
+  Next recovery attempt (`run-ea0854bad9814a4d8faad50490dde7bb`) passes KV
+  inventory/PID/data checks, then DiskDB restart returns 409 because its outer
+  handler and the remote executor claim the same node twice. Remote restart
+  now leaves the single claim with the executor and retains detached completion;
+  a component proof reaches target validation rather than self-conflict. Eight
+  focused components and clippy pass. Validate the rebuilt image without retrying
+  the restart or weakening its response contract.
 
 ## Final integration and closure
 
