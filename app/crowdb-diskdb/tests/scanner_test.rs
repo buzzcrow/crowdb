@@ -475,6 +475,7 @@ async fn scan_integrity_detects_corrupt_snapshot() {
 
     // Write a corrupt ZoneValue (wrong CRC) directly to KV.
     let corrupt_zv = crowdb_protocol::diskdb::rpc::ZoneValue {
+        bitmap_codec: 1,
         usage_bitmap: vec![0u8; 16],
         snapshot_slot: 1,
         crc32: 999, // wrong CRC

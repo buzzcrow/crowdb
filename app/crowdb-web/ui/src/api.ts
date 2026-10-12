@@ -843,6 +843,7 @@ export interface AddDisksBatchResult {
 
 export interface DeployDiskdbRequest {
   rpc_port: number;
+  keepalive_interval_secs?: number;
 }
 
 /** `GET /api/diskdb/instances` — list all diskdb instances. */

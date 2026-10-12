@@ -128,6 +128,8 @@ impl_enum_conversions!(
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct ZoneValue {
+    /// One identifies a size-prefixed LZ4 block; other codecs are rejected.
+    pub bitmap_codec: u8,
     pub usage_bitmap: Vec<u8>,
     pub snapshot_slot: u64,
     pub crc32: u32,

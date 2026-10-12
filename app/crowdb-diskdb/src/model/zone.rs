@@ -7,6 +7,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::RwLock;
 
+use super::zone_bitmap::ZoneBitmap;
 use crowdb_common::metrics::Counter;
 use crowdb_protocol::common::DiskId;
 use crowdb_protocol::diskdb::rpc::{ZoneAllocationState, ZoneValue};
@@ -55,7 +56,7 @@ pub struct DdbZone {
     pub(crate) zone_state: AtomicU8,
     /// Total block units, word-aligned (multiple of 64).
     pub unit_capacity: u32,
-    pub usage_bits: UsageBitmap,
+    pub usage_bits: ZoneBitmap,
     /// Rotating cursor over 64-bit words (word index).
     pub last_pos_64: AtomicU64,
     /// Count of set bits (allocated units).
@@ -100,7 +101,7 @@ impl DdbZone {
             disk_group_id,
             zone_state: AtomicU8::new(DdbZoneHealth::Healthy as u8),
             unit_capacity,
-            usage_bits: UsageBitmap::new(unit_capacity),
+            usage_bits: ZoneBitmap::new(unit_capacity),
             last_pos_64: AtomicU64::new(0),
             used_count: AtomicU32::new(0),
             snapshot_slot: AtomicU64::new(0),
@@ -485,7 +486,8 @@ impl DdbZone {
         free_records: &[crate::model::records::FreeRecord],
         scan_cutoff: u64,
     ) -> ZoneValue {
-        let usage_bits = UsageBitmap::restore(&self.usage_bits.snapshot());
+        let usage_bits =
+            UsageBitmap::restore_for_block_count(&self.usage_bits.snapshot(), self.unit_capacity);
         for free in free_records {
             #[allow(clippy::cast_possible_truncation)]
             let offset = free.key.unit_offset as u32;
@@ -497,12 +499,14 @@ impl DdbZone {
             .max()
             .unwrap_or(0);
         let mut value = ZoneValue {
+            bitmap_codec: 1,
             usage_bitmap: usage_bits.snapshot(),
             snapshot_slot: scan_cutoff,
             crc32: 0,
             compact_ts: self.compact_ts.load(Ordering::Acquire).max(max_free_ts),
             compact_slot: scan_cutoff,
         };
+        value.compress_bitmap();
         value.compute_checksum();
         value
     }
@@ -551,7 +555,8 @@ impl DdbZone {
     #[must_use]
     pub fn to_zone_value(&self) -> ZoneValue {
         let mut zv = ZoneValue {
-            usage_bitmap: self.usage_bits.snapshot(),
+            bitmap_codec: 1,
+            usage_bitmap: self.usage_bits.compressed_snapshot(),
             snapshot_slot: self.snapshot_slot.load(Ordering::Acquire),
             crc32: 0,
             compact_ts: self.compact_ts.load(Ordering::Acquire),
@@ -578,7 +583,7 @@ impl DdbZone {
         if !value.verify_checksum() {
             return None;
         }
-        let usage_bits = UsageBitmap::restore_for_block_count(&value.usage_bitmap, unit_capacity);
+        let usage_bits = ZoneBitmap::from_value(value, unit_capacity).ok()?;
         let used_count = usage_bits.count_set();
         Some(Self {
             disk_id,

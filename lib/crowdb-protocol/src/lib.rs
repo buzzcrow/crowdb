@@ -305,7 +305,7 @@ pub mod fb_wrappers;
 
 pub use crate::types::diskdb_util::{
     disk_id, effective_status, DiskIdExt, HwStatusExt, RecoveryScanProgressValueExt, ZoneAllocationStateExt,
-    ZoneValueExt,
+    ZoneValueExt, EMPTY_ZONE_BITMAP_LZ4,
 };
 
 pub mod common_type;

@@ -147,9 +147,17 @@ async fn concurrent_disk_initialization_persists_every_zone_under_one_owner() {
         let scoped = scoped.clone();
         async move {
             let disk = DiskId { high: id, low: 1 };
-            for zone_index in 0..32 {
-                let snapshot = DdbZone::new(disk, zone_index, 1, 128).to_zone_value();
-                scoped.put_zone((0, 1), &disk, zone_index, &snapshot).await?;
+            let records: Vec<_> = (0..129)
+                .map(|zone_index| {
+                    (
+                        zone_index,
+                        DdbZone::new(disk, zone_index, 1, 32768).to_zone_value(),
+                    )
+                })
+                .collect();
+            assert!(scoped.put_zone_batch((0, 1), &disk, &records).await.is_err());
+            for batch in records.chunks(crowdb_diskdb::ddb_kv_client::MAX_ZONE_INIT_BATCH) {
+                scoped.put_zone_batch((0, 1), &disk, batch).await?;
             }
             Ok::<_, crowdb_kv_client::Error>(disk)
         }
@@ -157,7 +165,7 @@ async fn concurrent_disk_initialization_persists_every_zone_under_one_owner() {
     .await;
     for result in results {
         let disk = result.expect("concurrent initialization must tolerate ownership guard contention");
-        for zone_index in 0..32 {
+        for zone_index in 0..129 {
             let key = ZoneKey {
                 disk_id: disk,
                 zone_index,
@@ -176,9 +184,9 @@ async fn concurrent_disk_initialization_persists_every_zone_under_one_owner() {
             let crowdb_kv_client::GetOutcome::Found { value, .. } = record else {
                 panic!("missing zone baseline")
             };
-            let snapshot: crowdb_protocol::diskdb::rpc::ZoneValue = bincode::deserialize(&value).unwrap();
+            let snapshot = crowdb_protocol::diskdb::rpc::ZoneValue::from_bytes(&value).unwrap();
             assert!(snapshot.verify_checksum());
-            assert_eq!(snapshot, DdbZone::new(disk, zone_index, 1, 128).to_zone_value());
+            assert_eq!(snapshot, DdbZone::new(disk, zone_index, 1, 32768).to_zone_value());
         }
     }
 }

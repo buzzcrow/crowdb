@@ -61,6 +61,8 @@ pub(super) struct Plan {
 #[serde(deny_unknown_fields)]
 struct ListenerOverrides {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    keepalive_interval_secs: Option<std::num::NonZeroU32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     dynamic_ownership: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "http_port")]
@@ -81,6 +83,7 @@ fn valid_overrides(overrides: &BTreeMap<String, ListenerOverrides>) -> bool {
     overrides.iter().all(|(kind, value)| {
         KINDS.contains(&kind.as_str())
             && (kind == "chunkdb" || value.dynamic_ownership.is_none())
+            && (kind == "diskdb" || value.keepalive_interval_secs.is_none())
             && (kind == "access-server" || (value.s3.is_none() && value.health.is_none()))
             && (kind != "access-server" || value.rpc.is_none())
             && (!matches!(kind.as_str(), "diskdb" | "diskio") || value.http.is_none())

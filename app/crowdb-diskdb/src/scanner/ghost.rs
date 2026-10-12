@@ -113,7 +113,11 @@ pub async fn scan_ghosts(
         let busy_offsets: HashSet<u64> = records.busy.iter().map(|r| r.key.unit_offset).collect();
         let free_offsets: HashSet<u64> = records.free.iter().map(|r| r.key.unit_offset).collect();
 
-        let diff = diff_bitmaps(&live_zone.usage_bits, &replayed.usage_bits, unit_capacity);
+        let diff = diff_words(
+            |index| live_zone.usage_bits.load_word(index),
+            |index| replayed.usage_bits.load_word(index),
+            unit_capacity,
+        );
         if diff.is_empty() {
             continue;
         }
@@ -275,11 +279,23 @@ type BitDiff = (u32, bool);
 /// Compute the bit-level diff between two bitmaps up to `unit_capacity`.
 #[cfg_attr(not(feature = "test-util"), allow(dead_code))]
 pub fn diff_bitmaps(live: &UsageBitmap, replayed: &UsageBitmap, unit_capacity: u32) -> Vec<BitDiff> {
+    diff_words(
+        |index| live.load_word(index),
+        |index| replayed.load_word(index),
+        unit_capacity,
+    )
+}
+
+fn diff_words(
+    live: impl Fn(usize) -> u64,
+    replayed: impl Fn(usize) -> u64,
+    unit_capacity: u32,
+) -> Vec<BitDiff> {
     let mut diffs = Vec::new();
-    let word_count = live.word_count().max(replayed.word_count());
+    let word_count = (unit_capacity as usize).div_ceil(64);
     for i in 0..word_count {
-        let live_word = live.load_word(i);
-        let rep_word = replayed.load_word(i);
+        let live_word = live(i);
+        let rep_word = replayed(i);
         let xor = live_word ^ rep_word;
         if xor == 0 {
             continue;
@@ -303,7 +319,7 @@ pub fn diff_bitmaps(live: &UsageBitmap, replayed: &UsageBitmap, unit_capacity: u
 }
 
 /// Snapshot all words of a live bitmap (for re-verify).
-fn snapshot_live_words(bits: &UsageBitmap) -> Vec<u64> {
+fn snapshot_live_words(bits: &crate::model::zone_bitmap::ZoneBitmap) -> Vec<u64> {
     let wc = bits.word_count();
     (0..wc).map(|i| bits.load_word(i)).collect()
 }

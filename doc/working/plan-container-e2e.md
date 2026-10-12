@@ -403,7 +403,7 @@ and the named run artifacts.
   plan in the final cleanup commit. Requirement commits use coherent verified
   batches and single-line subjects without requirement numbers.
 
-## Blocked
+## Six-node diagnosis and repair
 
 Six-node draft is not accepted. Original source and launcher remain. No complete
 153-owner Console measurement is claimed. Fixture 105, browser TypeScript and
@@ -436,9 +436,11 @@ Confirmed production timing in final mounted logs: node 2 sync at
 browser assertion failed. Normal release sync interval is 10 seconds. Tests
 cannot treat registration or process startup as usable disk readiness.
 
-Next decision: either improve normal runtime disk-change synchronization (and
-verify the release image again), or explicitly budget fresh-disk initialization
-for the normal sync interval plus zone loading, keeping UI/deployment response
-assertions at their existing limits. Do not increase waits without recording
-which production initialization contract is being tested. Resume after user
-selection; remaining six-node admission/data/slot stages have not executed.
+- User selected an explicit 3-second DiskDB test deployment cadence and requested
+  fresh-zone optimization. Durable plans now carry the existing normal deployment
+  setting to the API; shared release builds remain required. Fresh disks avoid
+  per-zone recovery reads, write at most 128 baselines per ownership-fenced batch,
+  and use lazy empty bitmaps. Zone snapshots uniformly use LZ4; the 4 KiB zero
+  bitmap is a 31-byte constant. User explicitly waived old-data compatibility.
+  Protocol/DiskDB component tests pass (397 total), deployment-plan tests 4, UI plan tests 21, UI TypeScript, Rust fmt and full workspace clippy pass. Release six-node gate remains.
+  Configuration profiles are tracked separately under R139, committed `fbbe80e4`.

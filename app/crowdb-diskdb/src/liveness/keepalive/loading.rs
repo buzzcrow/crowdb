@@ -114,52 +114,74 @@ impl KeepAlive {
         let zone_count = disk_value.zone_count;
         let zone_size_units = disk_value.zone_size_units;
         let mut all_ok = true;
-        // B.2: track zones without snapshots (fresh disk) for baseline
-        // ZoneValue writes.
-        let mut zones_needing_baseline: Vec<(u32, Arc<crate::model::zone::DdbZone>)> = Vec::new();
+        let fresh = match kv.disk_has_records(bind, &disk_id).await {
+            Ok(has_records) => !has_records,
+            Err(error) => {
+                warn!(disk = ?disk_id, error = %error, "disk record discovery failed; quarantining disk");
+                all_ok = false;
+                false
+            }
+        };
+        let baseline_slot = if fresh {
+            match kv.get_applied_slot(bind).await {
+                Ok(slot) => slot,
+                Err(error) => {
+                    warn!(disk = ?disk_id, error = %error, "fresh disk frontier discovery failed; quarantining disk");
+                    all_ok = false;
+                    0
+                }
+            }
+        } else {
+            0
+        };
+        let mut baselines = Vec::with_capacity(crate::ddb_kv_client::MAX_ZONE_INIT_BATCH);
+        let mut baseline_count = 0;
 
         for zi in 0..zone_count {
+            if !all_ok {
+                break;
+            }
             let unit_capacity = unit_capacity_for_zone(&disk_value, zi, zone_count, zone_size_units);
-            let (zone, _max_freed_ts, snapshot_found) = match journal_replay::load_zone_inner(
-                &kv,
-                bind,
-                disk_id,
-                zi,
-                dg.disk_group_id,
-                unit_capacity,
-            )
-            .await
-            {
-                Ok((zone, max_freed_ts, found)) => (zone, max_freed_ts, found),
-                Err(e) => {
-                    warn!(
-                        disk = ?disk_id,
-                        zone = zi,
-                        error = %e,
-                        "init-state load: strategy 2 failed; falling back to full scan"
-                    );
-                    match full_scan::rebuild_zone_bitmap_full_scan(
-                        &kv,
-                        bind,
-                        disk_id,
-                        zi,
-                        dg.disk_group_id,
-                        unit_capacity,
-                    )
+            let (zone, _max_freed_ts, snapshot_found) = if fresh {
+                let zone = crate::model::zone::DdbZone::new(disk_id, zi, dg.disk_group_id, unit_capacity);
+                zone.snapshot_slot
+                    .store(baseline_slot, std::sync::atomic::Ordering::Release);
+                (zone, 0, false)
+            } else {
+                match journal_replay::load_zone_inner(&kv, bind, disk_id, zi, dg.disk_group_id, unit_capacity)
                     .await
-                    {
-                        // Strategy 1 fallback — not a fresh disk
-                        // (it has records); no baseline needed.
-                        Ok((zone, _)) => (zone, 0, true),
-                        Err(e2) => {
-                            tracing::error!(
-                                disk = ?disk_id,
-                                zone = zi,
-                                error = %e2,
-                                "init-state load: strategy 1 also failed; quarantining disk"
-                            );
-                            all_ok = false;
-                            break;
+                {
+                    Ok((zone, max_freed_ts, found)) => (zone, max_freed_ts, found),
+                    Err(e) => {
+                        warn!(
+                            disk = ?disk_id,
+                            zone = zi,
+                            error = %e,
+                            "init-state load: strategy 2 failed; falling back to full scan"
+                        );
+                        match full_scan::rebuild_zone_bitmap_full_scan(
+                            &kv,
+                            bind,
+                            disk_id,
+                            zi,
+                            dg.disk_group_id,
+                            unit_capacity,
+                        )
+                        .await
+                        {
+                            // Strategy 1 fallback — not a fresh disk
+                            // (it has records); no baseline needed.
+                            Ok((zone, _)) => (zone, 0, true),
+                            Err(e2) => {
+                                tracing::error!(
+                                    disk = ?disk_id,
+                                    zone = zi,
+                                    error = %e2,
+                                    "init-state load: strategy 1 also failed; quarantining disk"
+                                );
+                                all_ok = false;
+                                break;
+                            }
                         }
                     }
                 }
@@ -176,40 +198,28 @@ impl KeepAlive {
             // for baseline write. Strategy 1 fallback zones have
             // records (snapshot_found = true) — no baseline needed.
             if !snapshot_found {
-                zones_needing_baseline.push((zi, Arc::clone(&zone)));
+                baselines.push((zi, zone.to_zone_value()));
+                baseline_count += 1;
+                if baselines.len() == crate::ddb_kv_client::MAX_ZONE_INIT_BATCH {
+                    if let Err(error) = kv.put_zone_batch(bind, &disk_id, &baselines).await {
+                        warn!(disk = ?disk_id, error = %error, "baseline zone batch failed; quarantining disk");
+                        all_ok = false;
+                        break;
+                    }
+                    baselines.clear();
+                }
             }
 
             disk.add_zone(&zone);
         }
 
-        // B.2: write baseline ZoneValue records for fresh-disk zones
-        // that had no snapshot. Chunked batch_write — the batch size
-        // depends on the operation size. Non-atomicity is harmless
-        // because background_zone_load retries missing baselines on
-        // next restart (strategy 2 finds no snapshot for the missing
-        // zones).
-        if !zones_needing_baseline.is_empty() {
-            let baseline_count = zones_needing_baseline.len();
-            let mut write_ok = true;
-            for (zi, zone) in &zones_needing_baseline {
-                let zv = zone.to_zone_value();
-                if let Err(e) = kv.put_zone(bind, &disk_id, *zi, &zv).await {
-                    warn!(
-                        disk = ?disk_id,
-                        zone = zi,
-                        error = %e,
-                        "baseline ZoneValue write failed; will retry on next restart"
-                    );
-                    write_ok = false;
-                }
-            }
-            if !write_ok {
-                // B.2: baseline write failed → transition to Offline
-                // (not Up). The disk has no/partial snapshots; on
-                // next restart background_zone_load retries the
-                // baseline write for the missing zones.
+        if all_ok && !baselines.is_empty() {
+            if let Err(error) = kv.put_zone_batch(bind, &disk_id, &baselines).await {
+                warn!(disk = ?disk_id, error = %error, "baseline zone batch failed; quarantining disk");
                 all_ok = false;
             }
+        }
+        if all_ok && baseline_count > 0 {
             info!(disk = ?disk_id, baseline_count, "baseline ZoneValue records written for fresh-disk zones");
         }
 

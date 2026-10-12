@@ -271,7 +271,7 @@ describe('node service plans', () => {
     vi.mocked(serviceRequest).mockImplementation(async path => path === '/service-plans' ? {} : path === '/deployment-defaults'
       ? { 'paxos-kv': { http_port: 19910, rpc_port: 19920 }, diskdb: { rpc_port: 29920 } } : { revision: 1, ready: true });
     const { result, rerender } = renderHook(({ value }) => useNodeServicePlans(value, {}, async () => {}, true), { initialProps: { value: [] as EnrichedStoreView[] } });
-    await act(async () => { await result.current.start(1, ['paxos-kv', 'diskdb'], { diskdb: { rpc_port: 29999 } }); });
+    await act(async () => { await result.current.start(1, ['paxos-kv', 'diskdb'], { diskdb: { rpc_port: 29999, keepalive_interval_secs: 3 } }); });
     expect(deployServer).toHaveBeenCalledTimes(1);
     expect(deployDiskdb).not.toHaveBeenCalled();
     expect(result.current.plans[1].diskdb.state).toBe('waiting');
@@ -279,7 +279,8 @@ describe('node service plans', () => {
     vi.mocked(listServers).mockResolvedValue([{ node_id: 1, service_type: 'paxos-kv', pid: 10 }] as Awaited<ReturnType<typeof listServers>>);
     rerender({ value: stores });
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-    expect(deployDiskdb).toHaveBeenCalledWith(1, { rpc_port: 29999 });
+    expect(deployDiskdb).toHaveBeenCalledWith(1, { rpc_port: 29999, keepalive_interval_secs: 3 });
+    expect(serviceRequest).toHaveBeenCalledWith('/nodes/1/service-plan', 'PUT', expect.objectContaining({ overrides: { diskdb: { rpc_port: 29999, keepalive_interval_secs: 3 } } }));
   });
   it('retains disabled services and saved listener overrides through recovery and retry', async () => {
     const steps = newPlan();

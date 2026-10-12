@@ -27,7 +27,9 @@ use crowdb_protocol::{RecoveryScanProgressValueExt, ZoneValueExt};
 use crate::model::records::{BusyRecord, FreeRecord, ZoneRecords};
 
 mod ownership;
+mod zone_init;
 pub use ownership::OwnershipFence;
+pub use zone_init::MAX_ZONE_INIT_BATCH;
 
 /// `(store_id, group_id)` identifying a bound paxos data group.
 pub type Bind = (u64, u64);
@@ -390,7 +392,7 @@ impl DdbKvClient {
             disk_id: *disk_id,
             zone_index,
         };
-        let bytes = bincode::serialize(value).expect("serialize ZoneValue");
+        let bytes = value.to_bytes();
         self.write_owned(
             bind,
             &[BatchOp::Put {
@@ -598,7 +600,7 @@ impl DdbKvClient {
             disk_id: *disk_id,
             zone_index,
         };
-        let zone_bytes = bincode::serialize(zone_value).expect("serialize ZoneValue");
+        let zone_bytes = zone_value.to_bytes();
         let mut ops = Vec::with_capacity(1 + busy_keys.len() + free_keys.len());
         ops.push(BatchOp::Put {
             key: Bytes::from(zone_key.to_bytes()),

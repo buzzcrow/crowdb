@@ -20,7 +20,7 @@ export const serviceLabels = {
 } as const;
 export type ServiceStep = { state: 'pending' | 'waiting' | 'deploying' | 'deployed' | 'failed' | 'warning' | 'disabled'; detail?: string };
 export type NodeServicePlan = Record<ServiceKind, ServiceStep>;
-export type ServiceOverrides = Partial<Record<ServiceKind, Partial<Omit<DeploymentDefaults, 'instance_id'>>>>;
+export type ServiceOverrides = Partial<Record<ServiceKind, Partial<Omit<DeploymentDefaults, 'instance_id'>> & { keepalive_interval_secs?: number }>>;
 export const newPlan = (): NodeServicePlan => Object.fromEntries(serviceOrder.map(kind => [kind, { state: 'pending' }])) as NodeServicePlan;
 
 /** Serializes default deployments across nodes so each step gets fresh port reservations.
@@ -174,7 +174,7 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
                 if (disposed || stopped.current) break;
                 const value = { ...defaults[kind], ...(overrides.current[id]?.[kind] ?? {}) };
                 if (kind === 'paxos-kv') await deployServer(id, { rest_port: value.http_port!, rpc_port: value.rpc_port! });
-                else if (kind === 'diskdb') await deployDiskdb(id, { rpc_port: value.rpc_port! });
+                else if (kind === 'diskdb') await deployDiskdb(id, { rpc_port: value.rpc_port!, ...(value.keepalive_interval_secs === undefined ? {} : { keepalive_interval_secs: value.keepalive_interval_secs }) });
                 else await serviceRequest(`/nodes/${id}/services/deploy`, 'POST', {
                   kind, ...value, test_single_node: false,
                   ...(kind === 'diskio' ? { disk_group_id: diskGroup?.id ?? 0 } : {}),
