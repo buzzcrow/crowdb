@@ -39,13 +39,14 @@ Finish canonical release-container acceptance and test classification.
   by expired serving grants and unavailable readiness. Exact isolated multipart
   and concurrent CLI reproduction with cgroup CPU/memory collection run in
   `/tmp/crowdb-r230-s3-reproduction.py`; logs use the same filename prefix. Multipart exact reproduction passes;
-  runtime resource samples have no OOM. Concurrent CLI reproduction is active.
+  runtime resource samples have no OOM. Concurrent CLI reproduction also passes. Full-domain failures remain recorded.
 - [ ] **Remaining domains**: run Deployment alone, then KV, DiskDB, DiskIO,
   ChunkDB, Chunk client, Chunk stream, Chunk-KV, S3, Iceberg and Dataset.
   KV must include concurrent isolation proof. Queue:
   `/tmp/crowdb-r230-domain-gates.py`, log `/tmp/crowdb-r230-domain-gates.log`.
-  It waits for the current Console and isolated multipart reproduction to end,
-  then proceeds with independent domains even if Console needs further repair.
+  Deployment passes 33 / 0 / 0 in 307.253 s on `9225badd`. Queue driver PID
+  642645 is temporarily stopped after that gate while a proven Group-0 repair
+  is packaged. Resume it after import so remaining domains pin the new image.
   Keep production/client inputs stable during gates; do not mutate unrelated
   Docker bridges during browser tests.
 - [ ] **Classification and diagnostics**: verify final Pixi/CI selectors and
@@ -56,6 +57,25 @@ Finish canonical release-container acceptance and test classification.
   and intel7960/amd5950/macm5pro environment sections. Once required gates pass,
   remove R230 detail, backlog entry and this plan in a gated cleanup commit.
   AMD/macOS and remote CI remain unmeasured; do not claim those gates passed.
+
+## Current repair
+
+- Group-0 publication can succeed before the separate transition status write.
+  Materialization then changes/removes overlays and markers; exact original
+  successor comparison incorrectly rejects its own already-published catalog.
+  The regression fails before the fix. Publication now recognizes only exact
+  stable successor identities with cleared overlays/markers, rejects changed
+  epochs and misplaced markers, and preserves the newer catalog.
+- Files: `app/crowdb-kv-server/src/background/domain_monitor/chunk_kv/catalog.rs`,
+  `app/crowdb-kv-server/tests/common/catalog_publication.rs`, shared fixtures in
+  `tests/domain_monitor_test.rs`, and the permanent Chunk-KV server design.
+- Split cases with retained/released markers and the transfer interruption case
+  pass, while a changed owner epoch remains rejected. All 63 KV-server component
+  tests, targeted clippy and workspace fmt pass. Logs:
+  `/tmp/crowdb-r230-catalog-resume-{before,after,tests,clippy}.log`.
+- Build/import the formal debug release, then rerun CLI recovery, complete Console
+  and Deployment. This proven publication defect does not yet establish that
+  every intermittent failure has been resolved. Multipart remains under diagnosis.
 
 ## Verification
 

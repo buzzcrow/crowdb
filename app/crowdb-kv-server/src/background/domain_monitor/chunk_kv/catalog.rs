@@ -72,8 +72,11 @@ pub async fn publish_transfer(
         .await?
         .ok_or_else(|| "range catalog is not published".to_string())?;
     let desired = transfer_entry(transition);
-    if exact_entries(&catalog.pages, |entry| entry == &desired) == 1 {
-        reject_reused_transition_id(&catalog.pages, transition.transition_id, 1)?;
+    if publication_complete(
+        &catalog.pages,
+        std::slice::from_ref(&desired),
+        transition.transition_id,
+    )? {
         return Ok(catalog.head.generation);
     }
     let advancing = matches!(
@@ -299,11 +302,7 @@ pub async fn publish_split(
         .await?
         .ok_or_else(|| "range catalog is not published".to_string())?;
     let desired = split_entries(transition);
-    if desired
-        .iter()
-        .all(|wanted| exact_entries(&catalog.pages, |entry| entry == wanted) == 1)
-    {
-        reject_reused_transition_id(&catalog.pages, transition.transition_id, 2)?;
+    if publication_complete(&catalog.pages, &desired, transition.transition_id)? {
         return Ok(catalog.head.generation);
     }
     reject_reused_transition_id(&catalog.pages, transition.transition_id, 0)?;
@@ -488,6 +487,55 @@ where
         .flat_map(|page| &page.entries)
         .filter(|entry| matches(entry))
         .count()
+}
+
+fn publication_complete(
+    pages: &[ChunkKvRangeCatalogPage],
+    desired: &[ChunkKvRangeCatalogEntry],
+    transition_id: crowdb_protocol::chunk_kv::Id128,
+) -> Result<bool, String> {
+    if !desired
+        .iter()
+        .all(|wanted| exact_entries(pages, |entry| published_assignment_matches(entry, wanted)) == 1)
+    {
+        return Ok(false);
+    }
+    let retained_markers = desired
+        .iter()
+        .map(|wanted| {
+            exact_entries(pages, |entry| {
+                entry.transition_id == Some(transition_id) && published_assignment_matches(entry, wanted)
+            })
+        })
+        .sum();
+    reject_reused_transition_id(pages, transition_id, retained_markers)?;
+    Ok(true)
+}
+
+fn published_assignment_matches(
+    current: &ChunkKvRangeCatalogEntry,
+    desired: &ChunkKvRangeCatalogEntry,
+) -> bool {
+    if current == desired {
+        return true;
+    }
+    // Materialization may advance the catalog after publication but before its
+    // separate durable transition-status write. Preserve that newer catalog.
+    if desired.state != ChunkKvRangeCatalogPartitionState::Serving
+        || current.artifact.tail_overlay.is_some()
+        || current
+            .transition_id
+            .is_some_and(|id| Some(id) != desired.transition_id)
+    {
+        return false;
+    }
+    let mut materialized = current.clone();
+    materialized
+        .artifact
+        .tail_overlay
+        .clone_from(&desired.artifact.tail_overlay);
+    materialized.transition_id = desired.transition_id;
+    materialized == *desired
 }
 
 fn reject_reused_transition_id(
