@@ -172,6 +172,9 @@ provide observable capacity and bitmap fixtures.
   registrations covering every configured disk group and selected DiskIO node.
 - Six-service progress is saved in each Node workspace, with a revision checked
   on every update. Saving progress must succeed before a deployment starts.
+  Explicit Start/Retry requests queue behind in-flight reconciliation in the
+  same session, then save against its latest completed revision. Timer wakes
+  cannot publish competing progress while that registration is being saved.
   A competing browser receives a conflict and must reload. Reload turns an
   interrupted Deploying step into an explicit failure; Retry first checks the
   registered instance and never repeats a successful deployment. Stopped

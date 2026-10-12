@@ -59,8 +59,7 @@ Temporary plans live under `doc/working/`; flow analyses live under
 | Doc                                                         | When to read                                          |
 | ----------------------------------------------------------- | ----------------------------------------------------- |
 | `app/crowdb-access-server/tests/README.md`                  | Access gates, SDK commands and latency observations.  |
-| `app/crowdb-web/ui/e2e/README.md`                           | Owned console/browser acceptance and timing.          |
-| `e2e-test/README.md`                                        | Layer fixtures, KV container acceptance and migration. |
+| `e2e-test/README.md`                                        | Container domains, browser/SDK ownership and timings.   |
 | `container/single-node-container/README.md`                 | Container build, publication and tested client setup. |
 | `e2e-test/clients/ecosystem/README.md`                       | Manual pinned client/engine matrix and exclusions.    |
 

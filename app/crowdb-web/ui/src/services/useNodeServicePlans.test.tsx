@@ -19,6 +19,39 @@ beforeEach(() => {
 });
 afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); });
 describe('node service plans', () => {
+  it('queues Retry behind an in-flight registration reconciliation', async () => {
+    const steps = newPlan();
+    steps['paxos-kv'] = { state: 'deployed' };
+    steps.chunkdb = { state: 'deploying' };
+    vi.mocked(listServers).mockResolvedValue(serviceOrder.map((service_type, index) =>
+      ({ node_id: 1, service_type, pid: 10 + index })) as Awaited<ReturnType<typeof listServers>>);
+    let revision = 7;
+    let writes = 0;
+    let release!: () => void;
+    const reply = new Promise<void>(resolve => { release = resolve; });
+    vi.mocked(serviceRequest).mockImplementation(async (path, method, body) => {
+      if (path === '/service-plans') return { 1: { revision: 7, steps } };
+      if (method !== 'PUT') return { ready: true };
+      if ((body as { revision: number }).revision !== revision) throw new Error('HTTP 409: Deployment plan changed');
+      const accepted = ++revision;
+      if (++writes === 1) await reply;
+      return { revision: accepted };
+    });
+    const { result } = renderHook(() => useNodeServicePlans(stores, {}, async () => {}, true));
+    await act(async () => {});
+    expect(writes).toBe(1);
+    let failure: unknown;
+    let retried!: Promise<void>;
+    await act(async () => {
+      retried = result.current.start(1).catch(error => { failure = error; });
+    });
+    await act(async () => { release(); await retried; });
+    expect(failure).toBeUndefined();
+    expect(serviceOrder.map(kind => result.current.plans[1][kind].state)).toEqual(serviceOrder.map(() => 'deployed'));
+    expect(deployServer).not.toHaveBeenCalled();
+    expect(deployDiskdb).not.toHaveBeenCalled();
+    expect(vi.mocked(serviceRequest).mock.calls.some(([path, method]) => path.endsWith('/services/deploy') && method === 'POST')).toBe(false);
+  });
   it('does not publish failed progress when page unload cancels an observation', async () => {
     const steps = newPlan();
     for (const kind of serviceOrder) steps[kind] = { state: 'disabled' };

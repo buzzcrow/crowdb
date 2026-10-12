@@ -41,6 +41,7 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
     Object.entries(groups).map(([id, value]) => [id, value.diskGroups.map(group => [group.id, value.disksByDg[group.id]?.map(disk => [disk.disk_id, disk.device_path])])])]);
   const stopped = useRef(false);
   const running = useRef<Promise<void>>(Promise.resolve());
+  const registrations = useRef<Promise<void>>(Promise.resolve());
   const overrides = useRef<Record<number, ServiceOverrides>>({});
   const update = useCallback((id: number, plan: NodeServicePlan) => {
     plansRef.current = { ...plansRef.current, [id]: plan };
@@ -81,22 +82,33 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
     void recovery.current.catch(() => {});
     return () => { disposed = true; };
   }, [enabled, update]);
-  const start = useCallback(async (id: number, selected?: ServiceKind[], serviceOverrides?: ServiceOverrides) => {
+  const start = useCallback((id: number, selected?: ServiceKind[], serviceOverrides?: ServiceOverrides) => {
     stopped.current = false;
-    let intended: NodeServicePlan | undefined;
-    try {
-      await recovery.current;
-      const previous = plansRef.current[id] ?? newPlan();
-      overrides.current[id] = serviceOverrides ?? overrides.current[id] ?? {};
-      const enabled = new Set(selected ?? serviceOrder.filter(kind => previous[kind].state !== 'disabled'));
-      intended = Object.fromEntries(serviceOrder.map(kind => [kind, !enabled.has(kind) ? { state: 'disabled' } : ['failed', 'warning', 'disabled'].includes(previous[kind].state) ? { state: 'pending' } : previous[kind]])) as NodeServicePlan;
-      await persist(id, intended);
-      wake.current();
-    } catch (error) { failProgress(id, String(error), intended); throw error; }
+    const registration = registrations.current.then(async () => {
+      await running.current;
+      if (stopped.current) return;
+      // Register against the latest completed reconciliation revision. Timer
+      // wakes cannot publish another progress write while this request runs.
+      busy.current = true;
+      let intended: NodeServicePlan | undefined;
+      try {
+        await recovery.current;
+        const previous = plansRef.current[id] ?? newPlan();
+        overrides.current[id] = serviceOverrides ?? overrides.current[id] ?? {};
+        const enabled = new Set(selected ?? serviceOrder.filter(kind => previous[kind].state !== 'disabled'));
+        intended = Object.fromEntries(serviceOrder.map(kind => [kind, !enabled.has(kind) ? { state: 'disabled' } : ['failed', 'warning', 'disabled'].includes(previous[kind].state) ? { state: 'pending' } : previous[kind]])) as NodeServicePlan;
+        await persist(id, intended);
+      } catch (error) { failProgress(id, String(error), intended); throw error; }
+      finally { busy.current = false; wake.current(); }
+    });
+    // The caller retains its failure; a later explicit Start can still run.
+    registrations.current = registration.then(() => {}, () => {});
+    return registration;
   }, [persist, failProgress]);
 
   const stop = useCallback(async () => {
     stopped.current = true;
+    await registrations.current;
     await running.current;
     plansRef.current = {};
     setPlans({});
