@@ -67,6 +67,8 @@ async fn inventory(context: &TestNativeContext) -> Value {
             )
             .await;
             assert!(alive(node - 1, observed).await);
+            assert_eq!(entries[0]["pid"], observed);
+            assert_eq!(entries[0]["pid_node_id"], node);
         }
     }
     servers

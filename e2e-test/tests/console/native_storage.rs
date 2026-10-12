@@ -10,9 +10,19 @@ use serde_json::{json, Value};
 use std::{collections::BTreeSet, time::Duration};
 
 pub(super) async fn start(context: &TestNativeContext) {
-    groups(context).await;
-    disks(context).await;
-    wait_diskdb(context).await;
+    start_with_geometry(context, None).await;
+}
+
+pub(super) async fn start_with_geometry(context: &TestNativeContext, geometry: Option<(u64, u32)>) {
+    start_through(context, geometry, "access-server").await;
+}
+
+pub(super) async fn start_prerequisites(context: &TestNativeContext) {
+    start_through(context, None, "chunkdb").await;
+}
+
+async fn start_through(context: &TestNativeContext, geometry: Option<(u64, u32)>, last: &str) {
+    start_diskdb(context, [128 * 1024; 3]).await;
     for (kind, http, rpc) in [
         ("diskio", None, Some(7200)),
         ("chunkdb", Some(7300), Some(7301)),
@@ -36,7 +46,7 @@ pub(super) async fn start(context: &TestNativeContext) {
             .expect("live DiskIO ownership before ChunkDB");
         }
         for node in 1..=3 {
-            deploy(context, node, kind, http, rpc).await;
+            deploy(context, node, kind, http, rpc, geometry).await;
             match kind {
                 "chunkdb" => ready(context, node, 7300, "/ready").await,
                 "chunk-kv" => ready(context, node, 7400, "/ready").await,
@@ -44,7 +54,16 @@ pub(super) async fn start(context: &TestNativeContext) {
                 _ => {}
             }
         }
+        if kind == last {
+            break;
+        }
     }
+}
+
+pub(super) async fn start_diskdb(context: &TestNativeContext, units: [u64; 3]) {
+    groups(context).await;
+    disks(context, units).await;
+    wait_diskdb(context).await;
 }
 
 async fn groups(context: &TestNativeContext) {
@@ -93,7 +112,7 @@ async fn disk_group(context: &TestNativeContext, node: u64) {
         .await;
 }
 
-async fn disks(context: &TestNativeContext) {
+async fn disks(context: &TestNativeContext, units: [u64; 3]) {
     let profile = crate::common::control::request(json!({"action":"native-storage-profile"})).await;
     let sizes = profile["disk_gib"].as_array().unwrap();
     assert_eq!(sizes.len(), 3);
@@ -104,7 +123,7 @@ async fn disks(context: &TestNativeContext) {
                 Method::POST,
                 &format!("/api/nodes/{node}/disk-groups/{node}/disks"),
                 json!({"disk_id":format!("{node:032x}"),"disk_type":"Hdd","capacity_bytes":capacity,
-                "zone_size_bytes":1024u64.pow(3),"unit_size_bytes":128*1024,
+                "zone_size_bytes":1024u64.pow(3),"unit_size_bytes":units[usize::try_from(node - 1).unwrap()],
                 "device_path":format!("/opt/crowdb/data/disk-{node}.img")}),
                 201,
             )
@@ -147,7 +166,14 @@ async fn wait_diskdb(context: &TestNativeContext) {
     .expect("actual loaded DiskDB groups are published before consumers");
 }
 
-async fn deploy(context: &TestNativeContext, node: usize, kind: &str, http: Option<u16>, rpc: Option<u16>) {
+async fn deploy(
+    context: &TestNativeContext,
+    node: usize,
+    kind: &str,
+    http: Option<u16>,
+    rpc: Option<u16>,
+    geometry: Option<(u64, u32)>,
+) {
     let mut body = context
         .api(
             Method::GET,
@@ -171,6 +197,10 @@ async fn deploy(context: &TestNativeContext, node: usize, kind: &str, http: Opti
         "chunk-kv" => {
             body["metadata_store_id"] = json!(0);
             body["bootstrap_group_id"] = json!(1);
+            if let Some((bytes, entries)) = geometry {
+                body["stream_chunk_capacity_bytes"] = json!(bytes);
+                body["stream_extent_page_entries"] = json!(entries);
+            }
         }
         "access-server" => {
             body["s3_port"] = json!(9001);

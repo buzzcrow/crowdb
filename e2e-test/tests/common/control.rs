@@ -26,6 +26,15 @@ pub(crate) async fn native_browser() -> Value {
     request_with_timeout(json!({"action": "run-native-browser"}), Duration::from_secs(305)).await
 }
 
+pub(crate) async fn native_transition() -> Value {
+    // Original production-policy browser budget plus host dependency preparation.
+    request_with_timeout(
+        json!({"action":"run-native-browser"}),
+        Duration::from_secs(12 * 60 + 125),
+    )
+    .await
+}
+
 pub(crate) async fn native_inspection(chunks: Value) -> Value {
     // Fourteen original native cases retain 180s each, plus host preparation.
     request_with_timeout(

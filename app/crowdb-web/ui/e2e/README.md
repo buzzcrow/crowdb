@@ -24,10 +24,10 @@ Behavior authority: [Console UI specification](../../../../doc/design/console/de
   runtime and one worker. Test-mode children live in a disposable namespace;
   global teardown and SIGTERM await stop before deleting their files. Cluster lifecycle, KV membership/CRUD, Capacity and
   cross-links use actual APIs.
-- Native service chain: `managedNative.config.ts` uses an explicitly supplied,
-  isolated populated deployment. It verifies shared UI against actual KV,
+- Native service chain: `e2e-test/clients/console-ui/native.config.ts` consumes an owned release
+  container deployment. It verifies shared UI against actual KV,
   Iceberg, S3 and Chunk services and backend hardware capability rejection.
-  `nativeS3.config.ts` separately covers large native multipart transfers.
+  `console.native.browser.s3` covers native multipart transfers.
 - Backend integration covers provisioning, authority/persistence, owner routing,
   parser byte limits and generation-safe inspection. Passing page mocks does not
   satisfy those contracts. SF=1 loader acceptance belongs outside routine UI runs.
@@ -69,70 +69,30 @@ Behavior authority: [Console UI specification](../../../../doc/design/console/de
   UI actions/assertions have a 3-second deadline; Group 0 election/init has an
   explicit 10-second deadline. Longer transfer deadlines require their own reason.
 - Changes run the exact affected native spec first. Full acceptance uses
-  `pixi run test-console-ui`. Use the owned native provisioning test for actual
+  `pixi run test-console-ui`. Use `pixi run test-container-e2e --scope console.native` for actual
   Chunk/Iceberg/S3 parsers and data. Do not use `pageBehavior.config.ts` as a
   passing acceptance gate.
 
-- Native acceptance requires `CROWDB_WEB_E2E_BASE_URL` for a disposable deployment:
-
-```sh
-pixi run bash -c 'cd app/crowdb-web/ui && npx playwright test --config=e2e/managedNative.config.ts'
-```
-
-- Multipart acceptance uses the same explicit disposable deployment:
-
-```sh
-pixi run bash -c 'cd app/crowdb-web/ui && npx playwright test --config=e2e/nativeS3.config.ts'
-```
-
 Do not point reset or destructive lifecycle suites at the user's persistent UI.
 
-## Owned native fixture
+## Container ownership
 
-The ignored Rust provisioning case creates one rack, three nodes and all six
-services per node, then stops every owned process on success or failure. Set
-an isolated `CROWDB_RUNTIME_ROOT`, clean that same root and run:
+Native storage/lifecycle, Journal, scanner and inspection flows now live under
+`e2e-test/clients/console-ui/`. Their host browsers consume fixed container IPs
+and ports from the common fixture; they do not start host servers.
 
 ```sh
-CROWDB_RUNTIME_ROOT=/tmp/crowdb-console-native pixi run clean-env
-pixi run env CROWDB_RUNTIME_ROOT=/tmp/crowdb-console-native \
-  CROWDB_NATIVE_UI_E2E=1 CROWDB_NATIVE_DATA_WINDOWS=1 \
-  cargo test -p crowdb-web --test native_cluster_provisioning_test \
-  one_rack_three_nodes_provision_all_services_without_metadata_repairs \
-  -- --ignored --nocapture
+pixi run test-container-e2e --scope console.native --concurrency 2
 ```
 
-- The main native selection collects 21 browser cases. Its prerequisite-arrival,
-  slow production split and small-geometry Journal cases select distinct fixtures;
-  three skips in this selection cannot count as three passes.
-- Prerequisite arrival remains covered by the ordinary real-backend lifecycle
-  spec. `CROWDB_NATIVE_JOURNAL_WINDOWS=1` with
-  `CROWDB_NATIVE_UI_E2E_GREP='large Journal replaces'` selects actual 100-extent
-  replacement and stale cursors without seeding an unrelated browser suite.
-- `CROWDB_NATIVE_WEIGHTED_ACCEPTANCE=1` observes the persisted one-minute
-  production cooldown, unequal retained bytes, actual ownership transfers and
-  all 512 exact values. Healthy movable data plus an idle healthy owner must
-  make actual placement progress within 40 seconds; request and lease budgets
-  retain their normal values.
-- Add `CROWDB_NATIVE_TRANSITION_ACCEPTANCE=1` and
-  `CROWDB_NATIVE_UI_E2E_GREP='production split displays'` to that weighted fixture
-  to inspect the real inherited/current streams and reject a stale generation.
-- `CROWDB_NATIVE_MIXED_UNITS=1` verifies incompatible allocation geometry fails
-  before partial Chunk service bootstrap.
-- Actual Docker capability and data CRUD acceptance is independently covered by
-  `pixi run test-single-node-container`; a managed host profile is insufficient.
+Individual scopes include `console.native.browser.lifecycle`,
+`console.native.browser.journal-windows`, `console.native.browser.scanner` and
+`console.native.browser.transition`. Required selection fails on missing
+prerequisites or skipped browser cases. The runner records image/client identity,
+per-case times and mounted diagnostics; `e2e-test/publish.py` exports redacted
+reports.
 
-## Verified acceptance
-
-- On 2026-10-05, the ordinary real-backend suite passed 57/57. The three-node
-  native chain passed 18 cases with three fixture-specific skips in 95.52 s;
-  owned teardown took 8.426 s. Dedicated prerequisite, Journal and production
-  split fixtures retain the skipped contracts.
-- The production split browser case passed in 29.1 s. The combined real
-  weighted fixture passed in 326.42 s with 4/4/4 final assignment, byte-weighted
-  transfer, 512 exact records and 5.762 s teardown. The Journal browser case
-  passed in 2.9 s, including actual 100-extent replacement and stale cursors.
-- Docker container acceptance separately passed UI capability/data operations,
-  interrupted bootstrap, all-service crash/hang recovery and volume restart.
-  Its 325 MB bound measures uncompressed image layers rather than the daemon's
-  compressed-content plus unpacked-snapshot cache accounting.
+The remaining legacy management and Capacity specs in this directory are still
+being migrated. Their temporary task is `pixi run test-console-ui`; completed
+owners must not run there again. Remaining work is tracked in
+[the execution plan](../../../../doc/working/plan-container-e2e.md).

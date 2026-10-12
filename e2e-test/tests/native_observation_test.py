@@ -7,7 +7,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock
 from allocation import LABEL
-from console_native_observation import services, process
+from console_native_observation import services, process, BrowserObservations
 from console_native_fixture import NativeConsoleCluster
 
 
@@ -56,3 +56,11 @@ class NativeObservationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not owned"):
             cluster.control({"action": "run-native-browser"})
         cluster.browser.assert_not_called()
+
+    def test_browser_observation_queue_rejects_mutating_actions(self):
+        proxy = BrowserObservations.__new__(BrowserObservations)
+        proxy.cluster = self.cluster()
+        for action in ("kill", "stop", "restart", "delete", "run-native-browser"):
+            with self.assertRaisesRegex(ValueError, "read-only"):
+                proxy.control({"action": action, "node": 0})
+        proxy.cluster.command.assert_not_called()

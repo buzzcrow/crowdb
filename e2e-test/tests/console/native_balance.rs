@@ -45,7 +45,10 @@ async fn seed_values(client: &ChunkKvClient) {
                 },
             })
             .collect();
-        let outcomes = client.batch_mutate(items).await.unwrap();
+        let outcomes = client
+            .batch_mutate(items)
+            .await
+            .unwrap_or_else(|error| panic!("native balance batch {batch}: {error:?}"));
         assert_eq!(outcomes.len(), 16);
         for outcome in outcomes {
             assert!(matches!(

@@ -118,12 +118,13 @@ class ImageIdentityTest(unittest.TestCase):
         spec=directory / "e2e/flows/12-cluster-discovery.spec.ts"
         shell=directory / "e2e/flows/00-shell-embedding.spec.ts"
         source=directory / "src/App.tsx"
+        build_inputs=[directory / "tsconfig.json", directory / "vite.config.ts"]
         registry=directory / "e2e/flows/10-cluster-rack-node.spec.ts"
         warning=directory / "e2e/flows/13-todo-ui-behavior.spec.ts"
         native=directory / "e2e/flows/71-s3-native.spec.ts"
         selectors=[directory / "e2e" / name for name in
-                   ("nativeS3.config.ts", "nativeDiagnostics.config.ts", "realBackend.config.ts")]
-        for path in (spec,shell,registry,warning,source,native,*selectors):
+                   ("nativeS3.config.ts", "nativeDiagnostics.config.ts", "managedNative.config.ts", "realBackend.config.ts")]
+        for path in (spec,shell,registry,warning,source,native,*selectors,*build_inputs):
             path.parent.mkdir(parents=True,exist_ok=True)
             path.write_text("original\n")
         self.commit()
@@ -139,6 +140,12 @@ class ImageIdentityTest(unittest.TestCase):
         source.write_text("changed deployed UI\n")
         with self.assertRaisesRegex(ValueError,"App.tsx"):
             verify_server_sources(self.root,revision)
+        source.write_text("original\n")
+        for path in build_inputs:
+            path.write_text("changed deployed UI build\n")
+            with self.assertRaisesRegex(ValueError,path.name):
+                verify_server_sources(self.root,revision)
+            path.write_text("original\n")
 
     def test_dirty_server_edit_cannot_use_stale_image(self):
         (self.root / "app/server/src/main.rs").write_text("changed server\n")
@@ -161,11 +168,11 @@ class ImageIdentityTest(unittest.TestCase):
     def test_host_sdk_delegates_do_not_exempt_release_build_tooling(self):
         directory = self.root / "tools/pixi-tasks"
         directory.mkdir(parents=True)
-        for name in ("test-core.sh", "test-storage.sh", "test-access.sh", "test-s3-e2e.sh", "test-s3-client.sh", "test-s3-sdk.sh", "test-iceberg-native.sh", "test-iceberg-e2e.sh", "test-iceberg-listing-native.sh", "test-pyiceberg-e2e.sh", "test-rust-iceberg-e2e.sh", "test-java-iceberg-fileio-e2e.sh", "build-cpp.sh"):
+        for name in ("test-core.sh", "test-storage.sh", "test-access.sh", "test-console.sh", "test-console-ui.sh", "test-s3-e2e.sh", "test-s3-client.sh", "test-s3-sdk.sh", "test-iceberg-native.sh", "test-iceberg-e2e.sh", "test-iceberg-listing-native.sh", "test-pyiceberg-e2e.sh", "test-rust-iceberg-e2e.sh", "test-java-iceberg-fileio-e2e.sh", "build-cpp.sh"):
             (directory / name).write_text("original\n")
         self.commit()
         revision = self.git("rev-parse", "HEAD")
-        for name in ("test-core.sh", "test-storage.sh", "test-access.sh", "test-s3-e2e.sh", "test-s3-client.sh", "test-s3-sdk.sh", "test-iceberg-native.sh", "test-iceberg-e2e.sh", "test-iceberg-listing-native.sh", "test-pyiceberg-e2e.sh", "test-rust-iceberg-e2e.sh", "test-java-iceberg-fileio-e2e.sh"):
+        for name in ("test-core.sh", "test-storage.sh", "test-access.sh", "test-console.sh", "test-console-ui.sh", "test-s3-e2e.sh", "test-s3-client.sh", "test-s3-sdk.sh", "test-iceberg-native.sh", "test-iceberg-e2e.sh", "test-iceberg-listing-native.sh", "test-pyiceberg-e2e.sh", "test-rust-iceberg-e2e.sh", "test-java-iceberg-fileio-e2e.sh"):
             (directory / name).write_text("changed host client delegate\n")
         self.assertTrue(verify_server_sources(self.root, revision)["server_sources_match"])
         (directory / "build-cpp.sh").write_text("changed release build input\n")

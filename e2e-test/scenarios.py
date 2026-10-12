@@ -351,6 +351,14 @@ ICEBERG_CASES = (
     Case("iceberg.namespace", "access_iceberg::namespace::namespace_functional_crud_survives_native_storage_and_listener_restart"),
 )
 CONSOLE_OPERATION_CASES = (
+    Case("console.native.geometry", "console::native_geometry::mixed_units_reject_consumers_without_starting_services", native_client=True),
+    Case("console.native.browser.transition", "console::native_browser::production_split_and_transfer_journals", native_client=True, native_disk_gib=(256, 256, 256), client_timeout=1020),
+    Case("console.native.browser.lifecycle", "console::native_browser::auxiliary_process_menus", native_client=True, client_timeout=360),
+    Case("console.native.browser.defaults", "console::native_browser::auxiliary_dialog_defaults", native_client=True, client_timeout=360),
+    Case("console.native.browser.plan", "console::native_browser::interrupted_plan_reconciliation", native_client=True, client_timeout=360),
+    Case("console.native.browser.prerequisites", "console::native_browser::waiting_plan_prerequisites", native_client=True, client_timeout=360),
+    Case("console.native.browser.scanner", "console::native_browser::scanner_and_scoped_recalc", native_client=True, client_timeout=360),
+    Case("console.native.browser.journal-windows", "console::native_browser::large_journal_pagination_and_restart", native_client=True, client_timeout=480),
     Case("console.native.recovery", "console::native_recovery::all_typed_restarts_preserve_objects_and_keep_one_live_process", native_client=True),
     Case("console.native.load", "console::native_load::production_load_keeps_heartbeats_and_durable_bytes_across_owner_restart", native_client=True),
     Case("console.native.inspection", "console::native_browser::page_layout_and_iceberg_inspection", native_client=True, native_disk_gib=(80, 256, 256), client_timeout=3840),
@@ -714,8 +722,11 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
             else:
                 cluster.client(bundle, case.name.rsplit("::", 1)[-1], case.name)
 
+    def stable_network(case):
+        return case.native_client or case.native_browser or case.shell_browser or case.console_browser
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=slots) as pool:
-        futures = [pool.submit(run, case) for case in selected if not (case.native_browser or case.shell_browser or case.console_browser)]
+        futures = [pool.submit(run, case) for case in selected if not stable_network(case)]
         errors = []
         try:
             for future in concurrent.futures.as_completed(futures):
@@ -727,7 +738,7 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
             for future in futures:
                 future.cancel()
             raise
-        errors.extend(run_browser_batches([case for case in selected if case.native_browser or case.shell_browser or case.console_browser],
+        errors.extend(run_browser_batches([case for case in selected if stable_network(case)],
                                           slots, prepare, run))
         if errors:
             for error in errors[1:]:

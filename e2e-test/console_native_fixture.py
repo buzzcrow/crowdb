@@ -9,7 +9,8 @@ from urllib.parse import urlparse
 from allocation import LABEL, create_network, node_data, start_node
 from fixture import Cluster, HTTP, wait
 from console_shell_fixture import ShellBrowserCluster
-from console_native_observation import services, process
+from console_native_observation import services, process, BrowserObservations
+from control import Control
 from console_native_browser import INSPECTION_CASES
 
 
@@ -104,7 +105,36 @@ class NativeConsoleCluster(ShellBrowserCluster):
                     extra_env={"CROWDB_NATIVE_CHUNK_FIXTURE": json.dumps(chunks)},
                     expected=len(INSPECTION_CASES))
                 return {"passed": True}
+            if self.case_name == "console::native_browser::production_split_and_transfer_journals":
+                self.browser_timeout = 12 * 60
+                self.browser("native diagnostics: production split displays actual inherited and current journals",
+                    config="native.config.ts", extra_env={"CROWDB_NATIVE_TRANSITION_ACCEPTANCE": "1"})
+                return {"passed": True}
+            if self.case_name == "console::native_browser::large_journal_pagination_and_restart":
+                self.browser_timeout = 180
+                self.browser("native diagnostics: large Journal replaces 100 extent fences with its remainder",
+                    config="native.config.ts", extra_env={"CROWDB_NATIVE_JOURNAL_WINDOWS": "1"})
+                return {"passed": True}
+            if self.case_name == "console::native_browser::auxiliary_process_menus":
+                observations = BrowserObservations(self)
+                with Control(observations) as control:
+                    self.browser_timeout = 180
+                    self.browser("native diagnostics: auxiliary menus stop and restart the actual typed process",
+                        config="native.config.ts", extra_env={
+                            "CROWDB_NATIVE_OBSERVATION_CONTROL": str(control.directory)})
+                return {"passed": True}
+            if self.case_name == "console::native_browser::waiting_plan_prerequisites":
+                self.browser_timeout = 180
+                self.browser("native diagnostics: waiting plan resumes when DiskIO prerequisites arrive",
+                    config="native.config.ts", extra_env={"CROWDB_NATIVE_PLAN_PREREQUISITES": "1"})
+                return {"passed": True}
             cases = {
+                "console::native_browser::auxiliary_dialog_defaults":
+                    "native diagnostics: auxiliary dialogs reopen with unused IDs ports and valid dependencies",
+                "console::native_browser::interrupted_plan_reconciliation":
+                    "native diagnostics: interrupted six-service plan reconciles without duplicate deployment",
+                "console::native_browser::scanner_and_scoped_recalc":
+                    "native diagnostics: scanner and scoped recalc show actual completed observations",
                 "console::native_browser::multipart_upload_and_physical_navigation":
                     "S3 native multipart upload, HEAD, bounded preview and full round trip",
                 "console::native_browser::chunk_ownership_scope":

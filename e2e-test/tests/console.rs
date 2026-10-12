@@ -69,3 +69,7 @@ mod native_s3;
 mod native_storage;
 mod web_diskio_discovery;
 mod web_leader_removal;
+
+mod native_journal;
+
+mod native_geometry;
