@@ -335,6 +335,11 @@ its normal heartbeat policy. Omitting it retains the server default; the
 committed remote service configuration preserves it across restart. This
 setting does not change ownership or deployment protection rules.
 
+Chunk-KV deployment optionally accepts `stream_chunk_capacity_bytes` (1–256 MiB)
+and positive `stream_extent_page_entries`. Omitted values retain server defaults.
+These storage parameters are restricted to Chunk-KV and become part of its
+committed service configuration, including subsequent container-owned restarts.
+
 `LaunchRuntime` uses the validated launch registry for local or SSH process
 start, restart, stop and readiness checks. It records PID plus process start
 time as local runtime identity and refuses to signal an unrelated process.

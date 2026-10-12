@@ -9,7 +9,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 
 ## Resume context
 
-- Branch `task-deploy`; latest accepted native migration `ac0ac718`; browser migration `2e0f9ac2`; CLI migration `62d5dec7`. R230 is unfinished. Do not delete the
+- Branch `task-deploy`; latest accepted native migration `2736c73c`; browser migration `2e0f9ac2`; CLI migration `62d5dec7`. R230 is unfinished. Do not delete the
   requirement/backlog entry until every remaining owner and required gate passes.
 - The three-node native Console fixture is accepted for logical/Inspector browser
   owners. Its full storage/native migration remains pending. Shared-image CI,
@@ -39,7 +39,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 - Delete original real-server owners only after equivalent accepted assertions.
   Keep deterministic component UT. Run executable commands through `pixi run`;
   native server gates require `clean-env`, never during another server gate.
-- Accepted fixture gate: 101 pass, `/tmp/crowdb-native-accepted-fixture.log`,
+- Accepted fixture gate: 102 pass, `/tmp/crowdb-native-inspection-final-fixture.log`,
   including managed browser and CLI ownership controls.
   S3 component UT passes 114/114; Access-server passes 108 plus its pinned
   SDK protocol test; Web/Console-shared/E2E all-target clippy
@@ -280,6 +280,13 @@ and the named run artifacts.
   public readiness probes. Original failing ownership/journal cases pass on the
   same formal image before migration; no deadline or assertion changed.
   Redacted diagnostics: `.crowdb-runtime/artifacts/container-e2e/run-c085e8e14025474db2be4f2ce41bf8d1`.
+  Large Journal migration is next: formal Chunk-KV deployment now validates
+  optional stream chunk capacity (1–256 MiB) and positive extent page entries,
+  preserving them in committed restart configuration. Two deployment validation
+  and six server config tests pass; fmt and full clippy pass. Draft host client
+  keeps eight actual 768-KiB writes, the sixty-second initial split, exact bytes,
+  more than 100 real extent fences and the literal pagination/restart browser
+  assertions. The original source owner remains until the formal image gate passes.
 
 ## Final integration and closure
 
