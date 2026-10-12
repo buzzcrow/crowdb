@@ -237,6 +237,19 @@ and the named run artifacts.
   alone does not execute them. Preserve their browser callbacks and existing
   deadlines. Formal writable deployment control is required for this migration;
   managed Docker readonly cannot silently replace provisioning assertions.
+  `native_storage.rs` and `native_s3.rs` now draft the complete normal
+  three-node storage prerequisites and the exact 9-MiB multipart/location
+  assertions, including real ChunkDB acknowledgement and stale cursor 409.
+  The registered `console.native.s3` owner is unaccepted: first 8-MiB part
+  returns 503 in `run-0e4befd609a043d5bacea2916fdea241` after all 18 services
+  start. Access logged a partial-chunk abort but suppressed its finalization
+  error. Preserve the request and deadlines; add ordinary server error logging,
+  rebuild the formal image and diagnose the exact failure before further edits.
+  DiskIO's default Docker seccomp denies io_uring and takes its existing blocking
+  fallback; this is observed environment state, not yet the confirmed cause.
+  Ordinary multipart finalization failures now log the underlying error before
+  returning the unchanged 503 response. Access component gate passes 108 tests
+  (one separately owned pinned SDK test ignored); workspace clippy passes.
 
 ## Final integration and closure
 
