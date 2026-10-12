@@ -86,6 +86,7 @@ class Case:
     native_zone_gib: tuple = (1, 1, 1)
     native_spare_disk_gib: int = 0
     native_bootstrap: bool = True
+    native_observations: bool = False
     native_browser: str | None = None
     shell_browser: str | None = None
     console_browser: str | None = None
@@ -359,6 +360,7 @@ CONSOLE_OPERATION_CASES = (
     Case("console.native.browser.maintenance", "console::native_browser::disk_maintenance_and_status_badges", native_client=True, client_timeout=360),
     Case("console.native.browser.disk", "console::native_browser::disk_inspector_and_selection", native_client=True, native_disk_gib=(4096, 8, 8), native_zone_gib=(32, 1, 1), native_spare_disk_gib=4096, client_timeout=360),
     Case("console.native.browser.binding", "console::browser_capacity::binding_recommendations", native_browser="KV binding recommends the least loaded group and initialization creates Group 1", native_bootstrap=False),
+    Case("console.native.browser.diskdb", "console::browser_lifecycle::diskdb_and_kv_independence", native_browser="full deploy flow: deploy diskdb via UI, restart, stop, delete via context menu", native_observations=True),
     Case("console.native.browser.transition", "console::native_browser::production_split_and_transfer_journals", native_client=True, native_disk_gib=(256, 256, 256), client_timeout=1020),
     Case("console.native.browser.lifecycle", "console::native_browser::auxiliary_process_menus", native_client=True, client_timeout=360),
     Case("console.native.browser.defaults", "console::native_browser::auxiliary_dialog_defaults", native_client=True, client_timeout=360),
@@ -707,7 +709,10 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
                 cluster.replay(case.cli_replay)
             elif case.native_browser:
                 config = "native.config.ts" if case.scope.startswith("console.native.") else "shell.config.ts"
-                cluster.browser(case.native_browser, config=config)
+                if case.native_observations:
+                    cluster.observed_browser(case.native_browser, config=config)
+                else:
+                    cluster.browser(case.native_browser, config=config)
             elif case.shell_browser:
                 cluster.browser(case.shell_browser)
             elif case.scope == "deployment.browser":

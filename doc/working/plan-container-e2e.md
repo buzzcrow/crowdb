@@ -17,18 +17,18 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   `e2e-test/clients/console-ui/node_modules/` is local
   dependency state; never stage it.
 - Current formal image is built/imported from
-  `71f61c4979e73925d6012e433a172f1bd25bde80`, including S3 streaming,
+  `a875f778621326f024fd7175c99f6941bd31766b`, including S3 streaming,
   replica voting/epoch fixes, explicit Web readonly, remote Access endpoints,
   monitor socket recovery, mounted node service logs, remote KV observations,
   configurable DDB heartbeat, restart intent/claim fixes, fenced disk failure
   write-back, canonical KV labels, actual typed startup readiness and validated stream
   geometry in persisted deployment intents, distinct restart execution and live
   per-node process observations. OCI
-  `sha256:5e2ba122c8e58047bc1c7c5610d1fba339452f80fa4817b4beee442b97744f15`;
-  config `sha256:0603800da1a9179137ff5ffd497eba37217cde33a3a2312657314eb4f3d615f1`;
-  runtime `affe80fd3cd6a6ff2a6c542e18d03f81b8959912460d8ba1df6240683d7219d1`.
+  `sha256:228471a7c3804319631ef691356c538c3180ece29fdc96bdf41b92326bd07a97`;
+  config `sha256:860011de1febc5bc9be6ded8bf81058b86436506f101d561d685757666d7d690`;
+  runtime `fd80a8b5d5248b2e797525a2a59ccee07bc53d108f041600efd1fec695c8a4cc`.
   Receipt: `target/crowdb.oci.tar.json`; optimized with retained debug information.
-  Logs: `/tmp/crowdb-lifecycle-release-{stage,build,import}.log`.
+  Logs: `/tmp/crowdb-diskdb-ui-release-{stage,build,import}.log`.
   Last full S3 43/43 (1545.602 seconds) and Console 89/89 (644.632 seconds)
   used `b7b1247b`; backup `target/crowdb.oci-b7b1247b.tar[.json]` and tag
   `crowdb-node:b7b1247b` remain. These results are baselines, not full acceptance
@@ -233,7 +233,7 @@ and the named run artifacts.
   `run-ae039e342c7c4326b353645b38068f55`. Five stable/shared runs have redacted
   evidence under `.crowdb-runtime/artifacts/container-e2e/`.
   Old native Rust cases, four private helpers, seven old native browser callbacks
-  and their selectors are removed. Accepted Console inventory is 142.
+  and their selectors are removed. Accepted Console inventory is 143.
   `test-console` now runs only shared/CLI/Web component proofs, with no native
   server build or launcher. Important local process/ownership UTs remain.
   Component 263/263, fixture 104/104, image-source guard, native TypeScript,
@@ -305,24 +305,19 @@ and the named run artifacts.
   verified owners. Discovery's stale-on-loss assertion still needs explicit
   comparison with the root discovery/browser coverage. Files:
   `app/crowdb-web/ui/e2e/flows/{01,10,11,12,13}-*.spec.ts`.
-- [~] **Capacity**: migrate five DiskGroup cases. Preserve CRUD,
-  owner/binding selection, maintenance state, capacity
-  totals and unknown/error observations. Files:
-  `app/crowdb-web/ui/e2e/flows/50-chunk-capacity-disk-group.spec.ts`.
-  The DiskDB lifecycle draft registers one additional owner (143 Console
-  selections, 142 accepted). Its original server source remains. First failure
-  was the specialized DDB tree ID; correcting the selector exposes a real
-  health projection bug. Trace proves the same DDB PID is alive and
-  `/api/servers` remains Up after KV stop, while the UI shows Failed. App
-  overwrites observed health with the stale per-node projection. It also joins
-  instances by port alone, aliasing three distinct fixed-port containers.
-  Prefer current service health and full RPC addresses; four focused component
-  proofs, all 180 UI components and the UI build pass. Logs:
-  `/tmp/crowdb-diskdb-observations-{components,ui-components,build}.log`.
-  Rebuild/import the formal image before rerunning lifecycle and the Inspector's
-  actual per-instance owned-group projection. Sources/HEAD freeze during
-  staging, build and import. Draft logs:
-  `/tmp/crowdb-diskdb-lifecycle{,-selector}.log`.
+- [~] **Capacity**: two source DiskGroup cases remain: UI CRUD and explicit
+  owner/binding assignment with nonzero observed capacity. The tree/menu/dialog
+  case and full DiskDB lifecycle are consolidated in the accepted native browser
+  lifecycle owner. Unassigned-DG projection is covered by the binding owner.
+  Accepted Console inventory: 143. Lifecycle passes twice with unchanged 3-second
+  response waits (15.4/15.9 browser seconds). Verify its earlier single KV-stop
+  response timeout in the final complete-domain run; no timeout increase or retry
+  remains in acceptance code. Diagnostic run returned 200 in 481 ms, with actual
+  PID and isolation checks. Logs: `/tmp/crowdb-diskdb-ui-original-budget{,-second}.log`.
+  The formal image includes current service-health precedence and full RPC address
+  joins. Inspector confirms three fixed-port instances retain distinct owned
+  groups; binding confirms unassigned groups remain Capacity-only. Logs:
+  `/tmp/crowdb-diskdb-ui-validated-{inspector,binding}.log`.
 - [ ] **Topology and cross-domain**: review three topology cases and the two
   full-chain/three-node-data flows. The old topology setup starts 23 nodes for
   disjoint tests; select each flow's actual node subset instead. Preserve the
@@ -372,7 +367,7 @@ and the named run artifacts.
   `run-5cfba02195364ce483aac4b5a3eaf1ee`; logs under
   `/tmp/crowdb-voting-epoch-final-{console,deployment}-ci.log`.
   The twenty-five newer browser cases, two CLI replay cases and nineteen native client cases pass separately and are not
-  included in the complete 96-case measurement. Current accepted Console inventory is 142;
+  included in the complete 96-case measurement. Current accepted Console inventory is 143;
   final full-domain measurement remains pending. Remote CI and macOS remain
   unmeasured. Files: `doc/working/test.md`, root runner reports.
 - [ ] **Close R230**: after inventory, assertion mapping, local gates and required

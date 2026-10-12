@@ -106,6 +106,11 @@ class NativeConsoleCluster(ShellBrowserCluster):
             wait(lambda: HTTP.open(f"http://{address}:9090/healthz", timeout=5).read(),
                  lambda body: body == b"ok", "native release Web listener", seconds=20)
 
+    def observed_browser(self, name, *, config):
+        with Control(BrowserObservations(self)) as control:
+            self.browser(name, config=config, extra_env={
+                "CROWDB_NATIVE_OBSERVATION_CONTROL": str(control.directory)})
+
     def control(self, body):
         if body.get("action") == "native-storage-profile":
             return {"disk_gib": self.disk_gib, "zone_gib": self.zone_gib,

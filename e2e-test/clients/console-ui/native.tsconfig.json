@@ -2,6 +2,7 @@
   "extends": "./bridge.tsconfig.json",
   "include": [
     "e2e/flows/11-cluster-server-lifecycle.spec.ts",
+    "e2e/flows/11-cluster-diskdb-lifecycle.spec.ts",
     "native.config.ts",
     "shell.config.ts",
     "e2e/flows/71-s3-native.spec.ts",

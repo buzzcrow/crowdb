@@ -2,6 +2,35 @@
 // Licensed under the Apache License, Version 2.0.
 import { test, expect } from '../fixtures/realBackend';
 import { diskBranch } from '../fixtures/capacity';
+import type { Page, APIRequestContext } from '@playwright/test';
+
+async function verifyOwnerProjection(page: Page, request: APIRequestContext, hardware: any) {
+  const servicesResponse = await request.get('/api/servers');
+  expect(servicesResponse.ok(), await servicesResponse.text()).toBe(true);
+  const services = (await servicesResponse.json()).filter((row: { service_type: string }) => row.service_type === 'diskdb');
+  const instancesResponse = await request.get('/api/diskdb/instances');
+  expect(instancesResponse.ok(), await instancesResponse.text()).toBe(true);
+  const instances = await instancesResponse.json();
+  expect(services).toHaveLength(3);
+  await page.goto('/?domain=Cluster');
+  const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
+  for (const server of services) {
+    const row = sidebar.getByTestId(`tree-node-DDB-${server.node_id}`).locator(':scope > [role="treeitem"]');
+    await expect(row.getByTitle('Healthy', { exact: true })).toBeVisible();
+    await row.getByRole('button', { name: 'Expand', exact: true }).click();
+  }
+  for (const server of services) {
+    const instance = instances.find((row: { rpc_endpoint: string }) => row.rpc_endpoint === (server.endpoint || server.rpc_url));
+    expect(instance).toBeDefined();
+    const tree = sidebar.getByTestId(`tree-node-DDB-${server.node_id}`);
+    await expect(tree.getByRole('treeitem')).toHaveCount(instance.owned_dg_ids.length + 1);
+    for (const id of instance.owned_dg_ids) {
+      const physical = hardware.disk_groups.find((row: { disk_group_id: number }) => row.disk_group_id === id);
+      expect(physical).toBeDefined();
+      await expect(tree.getByTestId(`tree-node-CL-DG-${physical.node_id}-${id}`)).toBeVisible();
+    }
+  }
+}
 
 // Baseline: 2.6s (2026-10-12).
 test('native diagnostics: disk Inspector and Capacity selection retain two actual groups', async ({ page, request }) => {
@@ -14,6 +43,7 @@ test('native diagnostics: disk Inspector and Capacity selection retain two actua
   expect(groups.every((group: { capacity_bytes: number; disk_count: number }) =>
     group.capacity_bytes === 4 * 1024 ** 4 && group.disk_count === 1)).toBe(true);
   const actual = groups.find((group: { disk_group_id: number }) => group.disk_group_id === 1).disks[0];
+  await verifyOwnerProjection(page, request, hardware);
   await page.goto('/?domain=Capacity');
   const panel = page.getByTestId('capacity-summary').locator('..');
   await expect(page.getByRole('heading', { name: 'Capacity — Cluster', exact: true })).toBeVisible();

@@ -66,4 +66,15 @@ test('KV binding recommends the least loaded group and initialization creates Gr
   await expect(binding).toHaveValue('0/2');
   await expect(binding.locator('option[value="0/2"]')).toHaveText('Store 0 / Group 2 · 1 disk groups · Recommended');
   await page.keyboard.press('Escape');
+  const servers = await request.get('/api/servers');
+  expect(servers.ok(), await servers.text()).toBe(true);
+  expect((await servers.json()).filter((row: { service_type: string }) => row.service_type === 'diskdb')).toHaveLength(0);
+  await page.goto('/?domain=Cluster');
+  await expect(sidebar.getByRole('button', { name: 'DG-593', exact: true })).toHaveCount(0);
+  await page.getByTestId('domain-capacity').click();
+  const physical = sidebar.getByTestId('tree-node-N-1').locator(':scope > [role="treeitem"]');
+  if (await physical.getAttribute('aria-expanded') !== 'true') {
+    await physical.getByRole('button', { name: 'Expand', exact: true }).click();
+  }
+  await expect(sidebar.getByRole('button', { name: 'DG-593', exact: true })).toBeVisible();
 });
