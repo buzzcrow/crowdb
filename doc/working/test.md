@@ -28,16 +28,17 @@ and Deployment use two case slots; complete native nodes retain 1 CPU /
 | Chunk stream | 2026-10-13 | 4 / 0 / 0                 | 42.558   | 69.960     |
 | Chunk-KV     | 2026-10-13 | 2 / 0 / 0                 | 30.160   | 37.811     |
 | S3           | 2026-10-13 | 43 / 0 / 0                | 877.167  | 1545.602   |
-| Iceberg      | 2026-10-12 | 32 / 0 / 0                | 1616.697 | 1633.442   |
+| Iceberg      | 2026-10-13 | 31 / 1 / 0                | 1762.795 | 1616.697   |
 | Dataset      | 2026-10-13 | 2 / 0 / 0                 | 23.609   | 35.568     |
 | Console      | 2026-10-13 | 153 / 0 / 0               | 2223.972 | 2075.462   |
 | Deployment   | 2026-10-13 | 33 / 0 / 0                | 310.503  | 314.358    |
 
-- All rows except Iceberg use the final `9c0f8805` debug release. Iceberg is
-  still running; its row remains the earlier baseline until the run finishes.
-- Special profiles have separate measurements: bridge SSH 148.191 s, Linux
-  host 7.310 s, containerd host/cluster 125.432 / 129.661 s, five-engine Iceberg
-  196.874 s, Python/DuckDB 29.099 s. Their final reruns remain pending.
+- All domain rows use the final `9c0f8805` debug release. Iceberg has one
+  concurrent PUT deadline failure; its complete run includes the original
+  approximately 20-minute retirement grace.
+- Special profiles pass on the final image: bridge SSH 139.542 s, Linux host
+  6.674 s, containerd host/cluster 123.491 / 110.872 s, five-engine Iceberg
+  191.523 s and Python/DuckDB 23.617 s.
 - Important component UTs remain. Latest focused gates: DiskDB 177, monitor 75,
   CLI 6, fixture 106, UI 183, KV-server 64; these are component repair checks,
   not another complete-domain baseline.
@@ -52,10 +53,11 @@ No container measurements. Linux VM routing remains unverified.
 
 ## Remaining issues
 
-- [ ] **Container acceptance**: Console and Deployment pass on the final
-  image. Finish remaining domain/profile runs and CI admission/export checks.
-  Keep resources and deadlines unchanged until measured failures require a
-  decision.
+- [ ] **Container acceptance**: all domains except one Iceberg concurrent PUT
+  case pass. Its Access role shows CPU quota throttling without memory/OOM
+  events; a 1-CPU Access-only comparison awaits the resource decision. Finish
+  special profiles and CI admission/export checks; the six-node case requires
+  at least 6.5 CPU / 12800 MiB and rejects a 4-CPU budget.
 - [ ] **macOS Iceberg SDK**: Maven `dependency:go-offline` stalled for more than
   eight minutes. Rerun with the pinned dependency cache available.
 - [ ] **WAL disk loss**: full fail-out and snapshot rejoin coverage awaits the
