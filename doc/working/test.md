@@ -39,7 +39,7 @@ and Deployment use two case slots; complete native nodes retain 1 CPU /
   host 7.310 s, containerd host/cluster 125.432 / 129.661 s, five-engine Iceberg
   196.874 s, Python/DuckDB 29.099 s. Their final reruns remain pending.
 - Important component UTs remain. Latest focused gates: DiskDB 177, monitor 75,
-  CLI 6, fixture 106, UI 183, KV-server 63; these are component repair checks,
+  CLI 6, fixture 106, UI 183, KV-server 64; these are component repair checks,
   not another complete-domain baseline.
 
 ## amd5950
@@ -52,11 +52,12 @@ No container measurements. Linux VM routing remains unverified.
 
 ## Remaining issues
 
-- [ ] **Container acceptance**: complete final-image domain gates and final
-  Pixi/CI admission/export checks. Latest failures are Access starting during unavailable DiskIO ownership,
-  native load batch deadline, and CLI cadence being sent under an ignored API
-  field. Canvas/multipart/publication recovery pass. Corrected CLI configuration
-  is now checked in actual running intents; remaining container gates are pending.
+- [ ] **Container acceptance**: finish final-image domain runs and CI
+  admission/export checks. Focused ownership and actual-config CLI replay pass.
+  Native load passes in the original concurrent pair after lease-excluded
+  transfer publication was corrected; complete Console and other domains remain
+  pending. Keep resources and deadlines unchanged until measured failures
+  require a decision.
 - [ ] **macOS Iceberg SDK**: Maven `dependency:go-offline` stalled for more than
   eight minutes. Rerun with the pinned dependency cache available.
 - [ ] **WAL disk loss**: full fail-out and snapshot rejoin coverage awaits the

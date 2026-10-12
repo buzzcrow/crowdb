@@ -12,9 +12,9 @@ Finish canonical release-container acceptance and test classification.
   launchers are retired, and important component UTs remain. Console has 153
   canonical owners. Assertion audit: `/tmp/crowdb-r230-accepted-assertions.md`;
   completed implementation/repair evidence remains in Git history.
-- Formal optimized debug release from `1fff5fb0`, built/imported and verified:
-  OCI `sha256:0ad53a329df28d5f5e45916975fc6af5d6f1e22bd0219026c5f45a59501d7bef`;
-  Docker `sha256:e7e13284dc8f166c68ee06445406146bb92cec74c1d05dbdcc57d5d9fab86332`.
+- Formal optimized debug release from `9c0f8805`, built/imported and verified:
+  OCI `sha256:4e34adf470ae00773bcf24b37c3c328e9707e5160346b5e24618b91d4558e853`;
+  Docker `sha256:15a8ceb58cc9a6928ccf89075de215856943eb1308b4b878c5e0ed86796031eb`.
   Receipt: `target/crowdb.oci.tar.json`. Each run pins image and client identities.
 - Complete native nodes remain 1 CPU / 2048 MiB / 512 PIDs. User direction:
   continue tests; discuss resources only when measured failures require it.
@@ -30,13 +30,16 @@ Finish canonical release-container acceptance and test classification.
 
 ## Remaining tasks
 
-- [~] **Final browser domains**: package the lease-excluded transfer repair,
-  rerun the original native load/inspection pair, then all 153 Console owners
+- [~] **Final browser domains**: finish the original native load/inspection pair,
+  then all 153 Console owners
   and complete Deployment on the final image. Deployment last passes 33 / 0 / 0
   in 314.358 s. Preserve deadlines, resources and distinct assertions.
   Drivers `/tmp/crowdb-r230-canvas-final-gates.py` (PID 1437674) and
   `/tmp/crowdb-r230-domain-gates.py` (PID 642645) remain stopped; do not resume
   independent network allocation during active browser/client batches.
+  Active driver: `/tmp/crowdb-r230-expired-final-gates.py`; log of the same name.
+  Native load now passes in the pair: 54845 ms mutation, 67.56 s client; restart,
+  retained-byte bounds and original data assertions pass. Inspection is active.
 - [ ] **Remaining domains**: finish KV, DiskDB, DiskIO, ChunkDB, Chunk client,
   Chunk stream, Chunk-KV, S3, Iceberg and Dataset with KV isolation proof.
   Queue `/tmp/crowdb-r230-domain-gates.py` (PID 642645) is stopped after early
@@ -88,6 +91,7 @@ Finish canonical release-container acceptance and test classification.
   Repair permits direct publication only with the lease-exclusion proof and
   exact source assignment; retained completed-split markers without overlays
   are accepted. Existing live-fence/catching-up publication remains unchanged.
-- Package the gated repair, rerun the original pair, then full Console and
+- Repair component gates pass: KV-server 64, domain monitor 12, clippy/fmt.
+  Finish the original pair, then full Console and
   Deployment. Resume remaining domains after stable browser batches finish.
   Do not close R230 while required gates remain pending.
