@@ -92,8 +92,8 @@ live in the linked document; implementation follows
 - **[R103](R103-chunkdb-range-migration.md)** — dynamic slot ownership and
   KV-group expansion/shrink. **Area:** chunkdb / KV. **Complexity:** High.
   **Status:** Deferred by user decision until dynamic ownership is requested.
-- **[R139](R139-group0-service-config.md)** — Group-0 distributed service
-  configuration. **Area:** configuration / control plane. **Complexity:** Medium.
+- **[R139](R139-group0-service-config.md)** — single-container and cluster
+  performance profiles, test tuning, and Group-0 distributed service configuration. **Area:** configuration / control plane. **Complexity:** Medium.
   **Status:** Deferred until the file-backed service configuration contract.
 - **[R144](R144-chunk-kv-partition-merge.md)** — adjacent partition merge.
   **Area:** chunk-kv / KV / group 0. **Complexity:** High. **Status:** Deferred
