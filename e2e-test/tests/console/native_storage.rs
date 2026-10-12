@@ -115,7 +115,9 @@ async fn disk_group(context: &TestNativeContext, node: u64) {
 async fn disks(context: &TestNativeContext, units: [u64; 3]) {
     let profile = crate::common::control::request(json!({"action":"native-storage-profile"})).await;
     let sizes = profile["disk_gib"].as_array().unwrap();
+    let zones = profile["zone_gib"].as_array().unwrap();
     assert_eq!(sizes.len(), 3);
+    assert_eq!(zones.len(), 3);
     for node in 1..=3 {
         let capacity = sizes[usize::try_from(node - 1).unwrap()].as_u64().unwrap() * 1024u64.pow(3);
         context
@@ -123,7 +125,8 @@ async fn disks(context: &TestNativeContext, units: [u64; 3]) {
                 Method::POST,
                 &format!("/api/nodes/{node}/disk-groups/{node}/disks"),
                 json!({"disk_id":format!("{node:032x}"),"disk_type":"Hdd","capacity_bytes":capacity,
-                "zone_size_bytes":1024u64.pow(3),"unit_size_bytes":units[usize::try_from(node - 1).unwrap()],
+                "zone_size_bytes":zones[usize::try_from(node - 1).unwrap()].as_u64().unwrap() * 1024u64.pow(3),
+                "unit_size_bytes":units[usize::try_from(node - 1).unwrap()],
                 "device_path":format!("/opt/crowdb/data/disk-{node}.img")}),
                 201,
             )

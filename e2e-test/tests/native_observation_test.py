@@ -13,9 +13,15 @@ from console_native_fixture import NativeConsoleCluster
 
 class NativeObservationTest(unittest.TestCase):
     def test_invalid_capacity_profile_rejects_before_allocating(self):
-        for sizes in ((80, 8), (80, 8, 0), (80, 8, True), (80, 8, 1025)):
+        for sizes in ((80, 8), (80, 8, 0), (80, 8, True), (80, 8, 4097)):
             with self.assertRaisesRegex(ValueError, "three bounded"):
                 NativeConsoleCluster("image", Path("/unused"), Path("/unused"), disk_gib=sizes)
+        for zones in ((1, 1), (1, 1, 0), (1, 1, True), (1, 1, 9)):
+            with self.assertRaisesRegex(ValueError, "zone sizes"):
+                NativeConsoleCluster("image", Path("/unused"), Path("/unused"), zone_gib=zones)
+        for spare in (-1, True, 4097):
+            with self.assertRaisesRegex(ValueError, "spare disk"):
+                NativeConsoleCluster("image", Path("/unused"), Path("/unused"), spare_disk_gib=spare)
 
     def cluster(self, owner="owned", image="image", mount="/owned/data"):
         info = {"Id": "immutable", "Image": image, "Config": {"Labels": {LABEL: owner}},

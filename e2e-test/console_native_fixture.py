@@ -15,16 +15,24 @@ from console_native_browser import INSPECTION_CASES
 
 
 class NativeConsoleCluster(ShellBrowserCluster):
-    def __init__(self, image, artifacts, bundle, *, disk_gib=(80, 8, 8), **kwargs):
-        if (len(disk_gib) != 3 or any(type(size) is not int or not 1 <= size <= 1024
+    def __init__(self, image, artifacts, bundle, *, disk_gib=(80, 8, 8),
+                 zone_gib=(1, 1, 1), spare_disk_gib=0, **kwargs):
+        if (len(disk_gib) != 3 or any(type(size) is not int or not 1 <= size <= 4096
                                      for size in disk_gib)):
             raise ValueError("native disk capacities require three bounded GiB values")
+        if (len(zone_gib) != 3 or any(type(size) is not int or not 1 <= size <= disk
+                                    for size, disk in zip(zone_gib, disk_gib))):
+            raise ValueError("native zone sizes require three bounded GiB values")
+        if type(spare_disk_gib) is not int or not 0 <= spare_disk_gib <= 4096:
+            raise ValueError("native spare disk requires a bounded GiB value")
         Cluster.__init__(self, image, artifacts, node_count=3, wire_replicas=False,
                          advertise=True, **kwargs)
         self.bundle = bundle
         self.node_ids = []
         self.rejected = False
         self.disk_gib = tuple(disk_gib)
+        self.zone_gib = tuple(zone_gib)
+        self.spare_disk_gib = spare_disk_gib
 
     def api(self, path, body=None, method=None, status=200):
         payload = None if body is None else json.dumps(body).encode()
@@ -49,6 +57,9 @@ class NativeConsoleCluster(ShellBrowserCluster):
             disk = data / f"disk-{index + 1}.img"
             with disk.open("wb") as file:
                 file.truncate(self.disk_gib[index] * 1024 ** 3)
+            if index == 0 and self.spare_disk_gib:
+                with (data / "capacity-spare.img").open("wb") as file:
+                    file.truncate(self.spare_disk_gib * 1024 ** 3)
             name = f"{self.run_id}-prepare{index}"
             self.containers.append(name)
             self.command("run", "--rm", "--name", name, "--label", f"{LABEL}={self.run_id}",
@@ -81,7 +92,8 @@ class NativeConsoleCluster(ShellBrowserCluster):
              "three live remote KV observations", seconds=10)
         self.origins = [f"http://{address}:10000" for address in self.addresses]
         (self.artifacts / "native-endpoints.json").write_text(json.dumps({
-            "nodes": self.node_ids, "addresses": self.addresses, "disk_gib": self.disk_gib, "ports": {
+            "nodes": self.node_ids, "addresses": self.addresses, "disk_gib": self.disk_gib,
+            "zone_gib": self.zone_gib, "spare_disk_gib": self.spare_disk_gib, "ports": {
                 "web": 9090, "ssh": 2222, "kv": 10000, "diskdb": 7100, "diskio": 7200}}, indent=2))
         return self
 
@@ -92,7 +104,8 @@ class NativeConsoleCluster(ShellBrowserCluster):
 
     def control(self, body):
         if body.get("action") == "native-storage-profile":
-            return {"disk_gib": self.disk_gib}
+            return {"disk_gib": self.disk_gib, "zone_gib": self.zone_gib,
+                    "spare_disk_gib": self.spare_disk_gib}
         if body.get("action") == "run-native-browser":
             if self.case_name == "console::native_browser::page_layout_and_iceberg_inspection":
                 chunks = body.get("chunks")
@@ -129,6 +142,8 @@ class NativeConsoleCluster(ShellBrowserCluster):
                     config="native.config.ts", extra_env={"CROWDB_NATIVE_PLAN_PREREQUISITES": "1"})
                 return {"passed": True}
             cases = {
+                "console::native_browser::disk_inspector_and_selection":
+                    "native diagnostics: disk Inspector and Capacity selection retain two actual groups",
                 "console::native_browser::disk_maintenance_and_status_badges":
                     "native diagnostics: disk maintenance menus route to owners and retain every hardware badge",
                 "console::native_browser::hardware_capacity_and_dashed_status":

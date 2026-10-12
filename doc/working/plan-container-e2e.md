@@ -233,7 +233,7 @@ and the named run artifacts.
   `run-ae039e342c7c4326b353645b38068f55`. Five stable/shared runs have redacted
   evidence under `.crowdb-runtime/artifacts/container-e2e/`.
   Old native Rust cases, four private helpers, seven old native browser callbacks
-  and their selectors are removed. Accepted Console inventory is 140.
+  and their selectors are removed. Accepted Console inventory is 141.
   `test-console` now runs only shared/CLI/Web component proofs, with no native
   server build or launcher. Important local process/ownership UTs remain.
   Component 263/263, fixture 104/104, image-source guard, native TypeScript,
@@ -255,8 +255,8 @@ and the named run artifacts.
   HTTP 204. Only KV/DiskDB prerequisites start; no unrelated consumers are
   needed for metadata contracts. Gate 1/1 at 4 CPU / 8192 MiB in
   24.193s (browser 1.2s); `run-7e1bbada099b4f85a0dd2401ff86b093`. Both old
-  source cases are removed. Accepted Console is 140; one ordinary Disk case
-  remains for selection/Inspector behavior. Fixture 104, native
+  source cases are removed. Accepted Console is 141; the last ordinary Disk case
+  is retired after its separate actual Inspector gate. Fixture 104, native
   TypeScript, fmt and full clippy pass; logs:
   `/tmp/crowdb-capacity-hardware-{fixture,types,fmt-check,lint}.log`.
 
@@ -271,6 +271,20 @@ and the named run artifacts.
   TypeScript, workspace fmt/clippy pass; logs:
   `/tmp/crowdb-capacity-maintenance-{fixture,types,fmt-check,lint}.log`.
 
+- Last ordinary Disk Inspector/selection source →
+  `console.native.browser.disk`: two mounted 4-TiB disks on node 1 with real
+  DiskDB observations, 8.0-TB presentation, two DiskGroups, exact capacity and
+  geometry, cluster/rack/node/DiskGroup/disk navigation, known usage, all six
+  action buttons, scoped Recalc/zone grid and retained Inspector parent fields.
+  Three real voters remain in separate containers; added healthy metadata nodes
+  are included in the exact rack/node totals. Gate 1/1 at 4 CPU / 8192 MiB in
+  25.066s (browser 2.6s); `run-cf5a3df33aeb4a9d885308989305ec7b`.
+  First attempt stopped at an incorrectly exact-matched title; actual DOM and
+  source include the zone count. Corrected to the complete observed title,
+  retaining the original three-second bound. Fixture 104, native TypeScript,
+  workspace fmt/clippy pass. The whole old Disk source/fixture/port allocator
+  is removed. Logs: `/tmp/crowdb-capacity-inspector-*.log`.
+
 ## Remaining browser migration
 
 - [ ] **Cluster and shell**: classify two shell behavior cases, three rack/node
@@ -280,10 +294,10 @@ and the named run artifacts.
   verified owners. Discovery's stale-on-loss assertion still needs explicit
   comparison with the root discovery/browser coverage. Files:
   `app/crowdb-web/ui/e2e/flows/{01,10,11,12,13}-*.spec.ts`.
-- [ ] **Capacity**: migrate six DiskGroup and one Disk case. Preserve CRUD,
+- [ ] **Capacity**: migrate six DiskGroup cases. Preserve CRUD,
   owner/binding selection, maintenance state, capacity
   totals and unknown/error observations. Files:
-  `app/crowdb-web/ui/e2e/flows/{50,51}-*.spec.ts`.
+  `app/crowdb-web/ui/e2e/flows/50-chunk-capacity-disk-group.spec.ts`.
 - [ ] **Topology and cross-domain**: review three topology cases and the two
   full-chain/three-node-data flows. The old topology setup starts 23 nodes for
   disjoint tests; select each flow's actual node subset instead. Preserve the
@@ -301,7 +315,7 @@ and the named run artifacts.
   Remove duplicate old owners only after verification. Unused native KV/storage
   harnesses are removed; shared `TestDir`/ownership UTs remain. Explicit production
   local-launch port allocation remains until its deployment callers are audited.
-  Current Rust client audit: 317 compiled tests = 304 registered required/manual
+  Current Rust client audit: 318 compiled tests = 305 registered required/manual
   owners + 13 preparation/isolation helpers; shell browser cases are separate
   host owners. Evidence: `/tmp/crowdb-r230-current-client-helper-audit.txt`.
   Refresh after further migration; remaining launch-site evidence is
@@ -332,8 +346,8 @@ and the named run artifacts.
   case slot). Reports: `run-ab39e156c2c24da39a5db1bfbcba1a7c` and
   `run-5cfba02195364ce483aac4b5a3eaf1ee`; logs under
   `/tmp/crowdb-voting-epoch-final-{console,deployment}-ci.log`.
-  The twenty-five newer browser cases, two CLI replay cases and seventeen native client cases pass separately and are not
-  included in the complete 96-case measurement. Current accepted Console inventory is 140;
+  The twenty-five newer browser cases, two CLI replay cases and eighteen native client cases pass separately and are not
+  included in the complete 96-case measurement. Current accepted Console inventory is 141;
   final full-domain measurement remains pending. Remote CI and macOS remain
   unmeasured. Files: `doc/working/test.md`, root runner reports.
 - [ ] **Close R230**: after inventory, assertion mapping, local gates and required

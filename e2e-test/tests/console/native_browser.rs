@@ -70,6 +70,15 @@ async fn disk_maintenance_and_status_badges() {
     browse_diskdb().await;
 }
 
+#[tokio::test]
+#[ignore = "requires two mounted native disks and host capacity selection"]
+async fn disk_inspector_and_selection() {
+    let context = TestNativeContext::connect().await;
+    super::native_capacity::prepare(&context).await;
+    let result = crate::common::control::native_browser().await;
+    assert_eq!(result["passed"], true);
+}
+
 async fn browse_diskdb() {
     let context = TestNativeContext::connect().await;
     super::native_storage::start_diskdb(&context, [128 * 1024; 3]).await;

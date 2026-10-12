@@ -83,6 +83,8 @@ class Case:
     preserve_network: bool = False
     native_client: bool = False
     native_disk_gib: tuple = (80, 8, 8)
+    native_zone_gib: tuple = (1, 1, 1)
+    native_spare_disk_gib: int = 0
     native_browser: str | None = None
     shell_browser: str | None = None
     console_browser: str | None = None
@@ -354,6 +356,7 @@ CONSOLE_OPERATION_CASES = (
     Case("console.native.geometry", "console::native_geometry::mixed_units_reject_consumers_without_starting_services", native_client=True),
     Case("console.native.browser.hardware", "console::native_browser::hardware_capacity_and_dashed_status", native_client=True, client_timeout=360),
     Case("console.native.browser.maintenance", "console::native_browser::disk_maintenance_and_status_badges", native_client=True, client_timeout=360),
+    Case("console.native.browser.disk", "console::native_browser::disk_inspector_and_selection", native_client=True, native_disk_gib=(4096, 8, 8), native_zone_gib=(32, 1, 1), native_spare_disk_gib=4096, client_timeout=360),
     Case("console.native.browser.transition", "console::native_browser::production_split_and_transfer_journals", native_client=True, native_disk_gib=(256, 256, 256), client_timeout=1020),
     Case("console.native.browser.lifecycle", "console::native_browser::auxiliary_process_menus", native_client=True, client_timeout=360),
     Case("console.native.browser.defaults", "console::native_browser::auxiliary_dialog_defaults", native_client=True, client_timeout=360),
@@ -586,6 +589,8 @@ def case_resources(case, node_cpus):
 def allocate_cluster(case, image, artifacts, bundle, data_root):
     if case.native_browser or case.native_client:
         return NativeConsoleCluster(image, artifacts, bundle, disk_gib=case.native_disk_gib,
+                                    zone_gib=case.native_zone_gib,
+                                    spare_disk_gib=case.native_spare_disk_gib,
                                     data_root=data_root)
     if case.cli_replay:
         return CliContainerCluster(image, artifacts, bundle, data_root=data_root)

@@ -61,6 +61,7 @@ mod web_voters;
 mod native_balance;
 mod native_binding;
 mod native_browser;
+mod native_capacity;
 mod native_chunks;
 mod native_context;
 mod native_load;
