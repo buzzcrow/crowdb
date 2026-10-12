@@ -625,7 +625,7 @@ def allocate_cluster(case, image, artifacts, bundle, data_root):
                                     diskless_nodes=case.native_diskless_nodes,
                                     data_root=data_root)
     if case.cli_replay:
-        return CliContainerCluster(image, artifacts, bundle, data_root=data_root)
+        return CliContainerCluster(image, artifacts, bundle, checkpoint=case.cli_replay, data_root=data_root)
     if case.shell_browser:
         return ShellBrowserCluster(image, artifacts, bundle, data_root=data_root)
     if case.scope == "console.web.bootstrap":
@@ -771,7 +771,7 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
                 cluster.client(bundle, case.name.rsplit("::", 1)[-1], case.name)
 
     def stable_network(case):
-        return case.native_client or case.native_browser or case.shell_browser or case.console_browser
+        return case.cli_replay or case.native_client or case.native_browser or case.shell_browser or case.console_browser
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=slots) as pool:
         futures = [pool.submit(run, case) for case in selected if not stable_network(case)]

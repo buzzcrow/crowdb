@@ -126,7 +126,9 @@ async fn has_service(api: &Api, node: usize, id: &str) -> Result<bool> {
     // Deployment ownership comes from committed intent, independently of
     // whether the monitor has finished restarting the retained process.
     let node = u64::try_from(node).map_err(|error| Error::Config(error.to_string()))?;
-    let intent = crowdb_console_shared::deployment::services::current(&api.kv, node, id).await?;
+    let intent = crowdb_console_shared::deployment::services::current(&api.kv, node, id)
+        .await
+        .map_err(|error| Error::Config(format!("read deployment intent {node}/{id}: {error:?}")))?;
     Ok(intent.is_some_and(|intent| intent.action != crowdb_protocol::mgmt::node::NodeServiceAction::Delete))
 }
 
@@ -230,10 +232,9 @@ async fn wait_http(api: &Api, addresses: &[String], port: u16, path: &str, descr
                     last = format!(
                         "{}: {}",
                         response.status(),
-                        response
-                            .text()
-                            .await
-                            .map_err(|error| Error::Config(error.to_string()))?
+                        response.text().await.map_err(|error| Error::Config(format!(
+                            "{description} readiness response from {address}:{port}{path}: {error:?}"
+                        )))?
                     );
                 }
                 Err(error) => last = error.to_string(),

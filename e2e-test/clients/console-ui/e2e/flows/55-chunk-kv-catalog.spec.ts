@@ -287,7 +287,11 @@ test('native diagnostics: production split displays actual inherited and current
   const initial = page.waitForResponse(response => new URL(response.url()).pathname === '/api/chunk-kv/catalog');
   await page.goto('/?domain=Chunk-KV');
   const first = await initial;
-  expect(first.ok(), await first.text()).toBe(true);
+  if (first.status() === 409) {
+    expect(await first.json()).toEqual({ error: 'Chunk-KV catalog changed during observation; refresh the range map' });
+  } else {
+    expect(first.ok(), await first.text()).toBe(true);
+  }
   await expect(page.getByRole('button', { name: 'Refresh catalog', exact: true })).toBeEnabled();
   const started = Date.now();
   const observed: { catalog?: CatalogPage; partition?: Partition } = {};
@@ -295,6 +299,11 @@ test('native diagnostics: production split displays actual inherited and current
     const observation = page.waitForResponse(response => new URL(response.url()).pathname === '/api/chunk-kv/catalog');
     await page.getByRole('button', { name: 'Refresh catalog', exact: true }).click();
     const response = await observation;
+    if (response.status() === 409) {
+      expect(await response.json()).toEqual({ error: 'Chunk-KV catalog changed during observation; refresh the range map' });
+      await expect(page.getByRole('button', { name: 'Refresh catalog', exact: true })).toBeEnabled();
+      return false;
+    }
     expect(response.ok(), await response.text()).toBe(true);
     const catalog: CatalogPage = await response.json();
     observed.catalog = catalog;

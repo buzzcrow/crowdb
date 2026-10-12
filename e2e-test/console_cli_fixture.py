@@ -15,14 +15,19 @@ ROOT_LABEL = "org.crowdb.cluster.root"
 
 
 class CliContainerCluster(Cluster):
-    def __init__(self, image, artifacts, bundle, **kwargs):
+    def __init__(self, image, artifacts, bundle, checkpoint=None, **kwargs):
         super().__init__(image, artifacts, node_count=3, wire_replicas=False, **kwargs)
         self.bundle = bundle
         self.root = (self.data_root / "cluster").resolve()
         self.phase_number = 0
+        self.checkpoint = checkpoint
+        self.delete_after_replay = False
 
     def start(self):
         self.root.mkdir(parents=True)
+        if self.checkpoint is not None:
+            self.interrupt(self.checkpoint)
+            self.refresh()
         return self
 
     def arguments(self, *arguments):
@@ -81,7 +86,8 @@ class CliContainerCluster(Cluster):
             "exit_code": process.returncode}, "seconds": time.monotonic() - interrupted_at}, indent=2))
 
     def replay(self, checkpoint):
-        self.interrupt(checkpoint)
+        if checkpoint != self.checkpoint:
+            raise ValueError("CLI recovery checkpoint was not prepared before client dispatch")
         assert (self.root / "s3-mini-cluster.initializing.json").is_file()
         assert (self.root / "s3-local-state.toml").is_file()
         assert not (self.root / "console.toml").exists()
@@ -107,14 +113,9 @@ class CliContainerCluster(Cluster):
         assert "Containers: 3/3" in self.invoke("cluster", "status", "--container", self.servers[2])
         if checkpoint == "bound":
             self.lifecycle()
-        self.diagnostics()
-        deleting = time.monotonic()
-        self.invoke("cluster", "delete", "--container", self.servers[2])
-        assert not self.root.exists()
-        self.closed = True
-        self.timings["stop"] = time.monotonic() - deleting
-        self.timings["total"] = time.monotonic() - self.started
-        self.write_timings()
+        # The batch retains peer networks until every client has ended.
+        # Teardown still verifies the ordinary CLI delete operation itself.
+        self.delete_after_replay = True
 
     def lifecycle(self):
         self.invoke("bucket", "put", "--container", self.run_id, "cli-replay")
@@ -168,6 +169,14 @@ class CliContainerCluster(Cluster):
         if self.closed:
             return
         started = time.monotonic()
+        if self.delete_after_replay:
+            self.invoke("cluster", "delete", "--container", self.servers[2])
+            assert not self.root.exists()
+            self.closed = True
+            self.timings["stop"] = time.monotonic() - started
+            self.timings["total"] = time.monotonic() - self.started
+            self.write_timings()
+            return
         if (self.root / "container-cluster.json").exists():
             state = self.state()
             for kind in ("container", "network"):

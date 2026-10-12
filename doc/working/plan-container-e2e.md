@@ -120,3 +120,28 @@ Upstream: [R230](../backlog/R230-test-container-layer-e2e.md).
   Exact badge (all three allocators paused) and plan reconciliation gates both
   pass (`/tmp/crowdb-r230-ui-repair-gates.log`). Badge TypeScript also passes.
   All original assertions and HTTP/DOM deadlines remain.
+
+- Latest complete-Console attempt (`/tmp/crowdb-r230-console-final.log`,
+  `run-767a9f05857947618b82354dc38cbaae`) exposes two further boundaries:
+  CLI restart response-body decode without endpoint context, and expected
+  catalog-observation HTTP 409 during active split publication. CLI now reports
+  endpoint/underlying decode errors without deadline/retry changes (5 component
+  tests pass). Catalog polling validates the exact documented 409 and obtains
+  the next coherent read within the original bounded poll; TypeScript passes.
+- CLI lifetime gap: its recovery cases ran outside stable batches and deleted
+  their networks while peers were restarting. Time stamps confirm the overlap.
+  Prepared interruptions now run before client dispatch; successful ordinary
+  CLI delete remains asserted in deferred teardown after every peer client ends.
+  CLI joins native/browser stable batches. Fixture 106, including shared native,
+  CLI and browser ordering, passes. Exact two-CLI concurrent gate is queued
+  after the current browser run (`/tmp/crowdb-r230-cli-stable-batch.log`).
+
+- Exact concurrent CLI batch passes after stable preparation/deferred ordinary
+  delete (`/tmp/crowdb-r230-cli-stable-batch.log`); both replay owners and all
+  original lifecycle/identity/data checks remain. CLI context diagnostics pass
+  5 component tests and clippy. Fixture 106 and revised browser types pass.
+- Corrected production split observation passes browser, full client convergence
+  and every data read: 347.578 s (`/tmp/crowdb-r230-catalog-conflict.log`). Expected
+  read-only catalog 409 is asserted exactly; poll deadlines and intervals remain.
+- Complete interim run remains 151 / 2 / 0, 1804.006 s; tracking records it as
+  failed. Final complete Console must rerun with these client/lifetime changes.

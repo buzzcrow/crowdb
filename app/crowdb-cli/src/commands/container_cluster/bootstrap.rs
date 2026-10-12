@@ -31,7 +31,10 @@ impl Api {
             .await
             .map_err(|e| Error::Config(format!("container cluster request {path}: {e}")))?;
         let status = response.status();
-        let text = response.text().await.map_err(|e| Error::Config(e.to_string()))?;
+        let text = response
+            .text()
+            .await
+            .map_err(|error| Error::Config(format!("container cluster response {path}: {error:?}")))?;
         if !status.is_success() {
             return Err(Error::Config(format!(
                 "container cluster {path}: {status}: {text}"

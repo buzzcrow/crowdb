@@ -21,9 +21,9 @@ uses two slots with 16 CPU / 32768 MiB. KV includes both isolation pairs.
 
 Console now tracks all 153 owners. The latest complete run uses the `c2745d61` release image with native nodes at
 1 CPU / 2048 MiB.
-Two concurrency failures remain under repair. This run uses two case slots
-and a 16 CPU / 32768 MiB admission budget; the previous 3259.845 s used one
-case slot with the same 153-owner inventory. Native node quotas are unchanged.
+Two failures remain under repair: CLI response decode and the catalog 409
+observation contract. The latest two complete runs use two case slots and a
+16 CPU / 32768 MiB admission budget. Native node quotas are unchanged.
 
 | Domain       | Date       | Passed / failed / skipped | Wall s   | Previous s |
 | ------------ | ---------- | ------------------------- | -------- | ---------- |
@@ -37,7 +37,7 @@ case slot with the same 153-owner inventory. Native node quotas are unchanged.
 | S3           | 2026-10-12 | 43 / 0 / 0                | 1545.602 | 1456.774   |
 | Iceberg      | 2026-10-12 | 32 / 0 / 0                | 1616.697 | 1633.442   |
 | Dataset      | 2026-10-12 | 2 / 0 / 0                 | 35.568   | 31.301     |
-| Console      | 2026-10-13 | 151 / 2 / 0               | 2167.298 | 3259.845   |
+| Console      | 2026-10-13 | 151 / 2 / 0               | 1804.006 | 2167.298   |
 | Deployment   | 2026-10-12 | 33 / 0 / 0                | 601.028  | 337.716    |
 
 - KV/storage/Dataset/Iceberg rows use the coalescer image (`fca2b4fa`);
