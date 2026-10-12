@@ -90,6 +90,7 @@ class Case:
     native_observations: bool = False
     native_browser: str | None = None
     shell_browser: str | None = None
+    shell_observations: bool = False
     console_browser: str | None = None
     cli_replay: str | None = None
     client_timeout: int = 120
@@ -356,6 +357,7 @@ ICEBERG_CASES = (
     Case("iceberg.namespace", "access_iceberg::namespace::namespace_functional_crud_survives_native_storage_and_listener_restart"),
 )
 CONSOLE_OPERATION_CASES = (
+    Case("console.browser.registry", "console::browser_registry::selected_services_before_group0", shell_browser="persists all six selected services but starts only PKV before Group 0", shell_observations=True),
     Case("console.browser.discovery", "console::browser_discovery::stale_provider_observations", shell_browser="discovery: release monitor observations remain visible and stale after provider loss"),
     Case("console.native.geometry", "console::native_geometry::mixed_units_reject_consumers_without_starting_services", native_client=True),
     Case("console.native.browser.hardware", "console::native_browser::hardware_capacity_and_dashed_status", native_client=True, client_timeout=360),
@@ -727,7 +729,10 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
                 else:
                     cluster.browser(case.native_browser, config=config)
             elif case.shell_browser:
-                cluster.browser(case.shell_browser)
+                if case.shell_observations:
+                    cluster.observed_browser(case.shell_browser)
+                else:
+                    cluster.browser(case.shell_browser)
             elif case.scope == "deployment.browser":
                 cluster.browser()
             elif case.console_browser:

@@ -10,12 +10,18 @@ import subprocess
 import time
 
 from console_standalone_fixture import StandaloneWebCluster
+from console_standalone_observation import StandaloneBrowserObservations
+from control import Control
 
 
 class ShellBrowserCluster(StandaloneWebCluster):
     def __init__(self, image, artifacts, bundle, **kwargs):
         super().__init__(image, artifacts, **kwargs)
         self.bundle = bundle
+
+    def observed_browser(self, name):
+        with Control(StandaloneBrowserObservations(self)) as control:
+            self.browser(name, extra_env={"CROWDB_NATIVE_OBSERVATION_CONTROL": str(control.directory)})
 
     def browser(self, name, *, config="shell.config.ts", extra_env=None, expected=1):
         project = self.artifacts / "browser-client"

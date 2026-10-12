@@ -4,6 +4,7 @@
 
 import { test, expect } from '../fixtures/realBackend';
 import { apiContext, createRack, createNode } from '../fixtures/registrySetup';
+import { nativeProcessAlive } from '../fixtures/nativeProcess';
 import { step } from '../fixtures/stepTimer';
 
 test.describe('cluster · registry browser', () => {
@@ -178,4 +179,49 @@ test.describe('cluster · registry browser', () => {
       });
     }
   });
+  // Baseline: 2.0s (2026-10-12).
+  test('persists all six selected services but starts only PKV before Group 0', async ({ page, baseURL }) => {
+    await createRack(baseURL!, { id: 383, name: 'Queued services' });
+    const deployments: string[] = [];
+    page.on('request', request => {
+      if (request.method() === 'POST' && /\/api\/nodes\/383\/.*\/deploy$/.test(new URL(request.url()).pathname)) deployments.push(new URL(request.url()).pathname);
+    });
+    await page.goto('/');
+    const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
+    await aside.getByText('R-383 (Queued services)', { exact: true }).click({ button: 'right' });
+    await page.getByRole('menuitem', { name: /add node/i }).click();
+    const dialog = page.getByRole('dialog', { name: 'Add Node' });
+    await dialog.getByLabel('Node ID', { exact: true }).fill('383');
+    for (const kind of ['access-server', 'chunk-kv', 'chunk-db', 'disk-db', 'disk-io', 'paxos-kv']) await expect(dialog.getByRole('checkbox', { name: `crowdb-${kind}`, exact: true })).toBeChecked();
+    await expect(dialog.getByRole('button', { name: 'Create Node', exact: true })).toBeEnabled();
+    await dialog.getByLabel('crowdb-paxos-kv RPC port', { exact: true }).fill('10100');
+    await dialog.getByRole('button', { name: 'Create Node', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    const api = await apiContext(baseURL!);
+    try {
+      await expect.poll(async () => {
+        const response = await api.get('/api/service-plans');
+        expect(response.ok()).toBeTruthy();
+        const plan = (await response.json())['383'];
+        return plan && Object.fromEntries(Object.entries(plan.steps).map(([kind, step]: [string, any]) => [kind, step.state]));
+      }, { timeout: 10_000, intervals: [100] }).toEqual({
+        'paxos-kv': 'deployed', 'access-server': 'waiting', 'chunk-kv': 'waiting',
+        chunkdb: 'waiting', diskdb: 'waiting', diskio: 'waiting',
+      });
+      const response = await api.get('/api/servers');
+      expect(response.ok()).toBeTruthy();
+      const servers = await response.json();
+      expect(servers.map((server: any) => server.service_type)).toEqual(['paxos-kv']);
+      expect(servers[0].pid).toBeGreaterThan(1);
+      expect(await nativeProcessAlive(0, servers[0].pid)).toBe(true);
+      expect(deployments).toEqual(['/api/nodes/383/server/deploy']);
+      await page.reload();
+      await expect(aside.getByText('N-383', { exact: true })).toBeVisible();
+      const persisted = await api.get('/api/service-plans');
+      expect(persisted.ok()).toBeTruthy();
+      const plan = (await persisted.json())['383'];
+      for (const kind of ['access-server', 'chunk-kv', 'chunkdb', 'diskdb', 'diskio']) expect(plan.steps[kind].state).toBe('waiting');
+    } finally { await api.dispose(); }
+  });
+
 });
