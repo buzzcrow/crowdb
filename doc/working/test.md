@@ -20,21 +20,21 @@ and Deployment use two case slots; complete native nodes retain 1 CPU /
 
 | Domain       | Date       | Passed / failed / skipped | Wall s   | Previous s |
 | ------------ | ---------- | ------------------------- | -------- | ---------- |
-| KV           | 2026-10-12 | 50 / 0 / 0                | 96.977   | 105.519    |
-| Diskdb       | 2026-10-12 | 5 / 0 / 0                 | 15.142   | 14.048     |
-| Diskio       | 2026-10-12 | 8 / 0 / 0                 | 21.935   | 21.507     |
-| Chunkdb      | 2026-10-12 | 11 / 0 / 0                | 148.686  | 159.207    |
-| Chunk client | 2026-10-12 | 40 / 0 / 0                | 642.098  | 628.765    |
-| Chunk stream | 2026-10-12 | 4 / 0 / 0                 | 69.960   | 75.707     |
-| Chunk-KV     | 2026-10-12 | 2 / 0 / 0                 | 37.811   | 41.265     |
-| S3           | 2026-10-12 | 43 / 0 / 0                | 1545.602 | 1456.774   |
+| KV           | 2026-10-13 | 50 / 0 / 0                | 126.685  | 96.977     |
+| Diskdb       | 2026-10-13 | 5 / 0 / 0                 | 17.637   | 15.142     |
+| Diskio       | 2026-10-13 | 8 / 0 / 0                 | 27.230   | 21.935     |
+| Chunkdb      | 2026-10-13 | 11 / 0 / 0                | 87.330   | 148.686    |
+| Chunk client | 2026-10-13 | 40 / 0 / 0                | 349.746  | 642.098    |
+| Chunk stream | 2026-10-13 | 4 / 0 / 0                 | 42.558   | 69.960     |
+| Chunk-KV     | 2026-10-13 | 2 / 0 / 0                 | 30.160   | 37.811     |
+| S3           | 2026-10-13 | 43 / 0 / 0                | 877.167  | 1545.602   |
 | Iceberg      | 2026-10-12 | 32 / 0 / 0                | 1616.697 | 1633.442   |
-| Dataset      | 2026-10-12 | 2 / 0 / 0                 | 35.568   | 31.301     |
+| Dataset      | 2026-10-13 | 2 / 0 / 0                 | 23.609   | 35.568     |
 | Console      | 2026-10-13 | 153 / 0 / 0               | 2223.972 | 2075.462   |
 | Deployment   | 2026-10-13 | 33 / 0 / 0                | 310.503  | 314.358    |
 
-- Console and Deployment above use the `9c0f8805` debug release.
-  The other domain rows are earlier baselines; final release gates are pending.
+- All rows except Iceberg use the final `9c0f8805` debug release. Iceberg is
+  still running; its row remains the earlier baseline until the run finishes.
 - Special profiles have separate measurements: bridge SSH 148.191 s, Linux
   host 7.310 s, containerd host/cluster 125.432 / 129.661 s, five-engine Iceberg
   196.874 s, Python/DuckDB 29.099 s. Their final reruns remain pending.

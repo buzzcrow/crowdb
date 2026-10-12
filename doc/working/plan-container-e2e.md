@@ -34,6 +34,17 @@ Finish canonical release-container acceptance and test classification.
   fixture tests pass after excluding that exact helper; runtime/build inputs
   remain guarded. Preserve the concurrent worktree edits to that helper/README.
   Two independent runners reserve 16 CPU / 24576 MiB each on this 32-CPU host.
+  Active driver: `/tmp/crowdb-r230-domains-final.py`; progress/results use the
+  same prefix. KV 50 (including isolation), DiskDB 5, DiskIO 8, ChunkDB 11,
+  Chunk client 40, Chunk stream 4 and Chunk-KV 2 pass; S3/Iceberg are active.
+- [~] **Iceberg concurrent PUT**: 32 direct 8-MiB PUTs all hit the 30-second
+  server deadline and return 503. Captured container states have no OOM;
+  Group-0 has coalescer watchdog warnings and DiskDB reports unknown CAS outcomes.
+  Do not infer a startup failure from the generic `Catalog is not ready` body.
+  After domains end, `/tmp/crowdb-r230-iceberg-concurrency-diagnostic.py` repeats
+  the exact case alone with unchanged 0.25 CPU / 512 MiB role containers and
+  captures CPU throttling, memory events and PIDs. Its artifacts/logs use
+  `/tmp/crowdb-r230-iceberg-concurrency-exact` and `...-resource.log`.
 - [ ] **Special profiles**: rerun bridge SSH admission, Linux host,
   containerd host/cluster, ecosystem and Python/DuckDB after all domain clients
   end. Keep browser/host networks stable within each batch.
