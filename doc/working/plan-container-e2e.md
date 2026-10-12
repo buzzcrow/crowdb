@@ -9,7 +9,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 
 ## Resume context
 
-- Branch `task-deploy`; latest accepted browser migration `7e84a1bf`; native route migration `da0ab099`; runtime membership fix `cb159e7b`. R230 is unfinished. Do not delete the
+- Branch `task-deploy`; latest accepted browser/CLI migration `62d5dec7`; native route migration `da0ab099`; runtime membership fix `cb159e7b`. R230 is unfinished. Do not delete the
   requirement/backlog entry until every remaining owner and required gate passes.
 - Working tree contains the unaccepted three-node native Console fixture exploration. Shared-image CI is committed. S3 node-fault migration and local-state component proofs are accepted.
   Preserve these drafts. `e2e-test/clients/console-ui/node_modules/` is local
@@ -166,6 +166,16 @@ and the named run artifacts.
   retired paths; no real server startup (`ff711b4c`).
 
 ## Remaining migrations
+
+- Store/Group browser migration is in progress. Exact original two cases pass
+  in `/tmp/crowdb-store-group-original-baseline.log` (13.998s browser stage).
+  The three-node container attempt exposed remote KV observations incorrectly
+  gated by host-local PIDs: node stores returned 404 and Add Store had no eligible
+  nodes. Physical reads now refresh admitted KV management endpoints, project
+  live remote health without recording remote PIDs, and mark failed probes down.
+  Twelve focused Web component tests and full clippy pass. Rebuild the formal
+  image and rerun the two root owners before removing the original spec;
+  registered draft cases are not yet counted in the accepted 117-case inventory.
 
 - User clarified: Docker Web is writable by default; only explicit readonly
   disables writes. The public single-container profile enables readonly;

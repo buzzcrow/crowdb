@@ -253,6 +253,11 @@ monitor status makes Docker runtime observation unavailable. The in-process
 Web test router keeps a monitor cache for fixture orchestration; that cache is
 not production topology authority.
 
+Manual node Web refreshes per-node KV topology through the admitted management
+endpoints before physical reads. Remote process health comes from this live
+observation; remote PIDs never enter Web's local process table. A failed probe
+marks the node down, while local launch observations still require a tracked PID.
+
 ### 4.3 Group 0 authority
 
 System group (store 0, group 0) replicates hardware and KV-cluster metadata.

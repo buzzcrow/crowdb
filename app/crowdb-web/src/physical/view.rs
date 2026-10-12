@@ -164,14 +164,24 @@ pub struct PhysicalBuilder<'a> {
     pub diskdb_pids: &'a HashMap<NodeId, u32>,
     truncation: Truncation,
     path: Vec<String>,
+    remote_nodes: bool,
 }
 
 impl<'a> PhysicalBuilder<'a> {
-    fn build_server_process(entry: &ServerEntry, rec: Option<&NodeRecord>, has_pid: bool) -> ServerProcess {
-        // Override health to Down if no PID is tracked — the process
-        // was stopped or the console restarted. The monitor cache may
-        // be stale (no background polling to update it).
-        let health = if has_pid {
+    pub(crate) fn with_remote_nodes(mut self, remote: bool) -> Self {
+        self.remote_nodes = remote;
+        self
+    }
+
+    fn build_server_process(
+        entry: &ServerEntry,
+        rec: Option<&NodeRecord>,
+        pid: Option<u32>,
+        remote: bool,
+    ) -> ServerProcess {
+        // Local processes need a tracked PID. Remote nodes are freshly
+        // observed before projection and never use the local PID namespace.
+        let health = if pid.is_some() || remote {
             rec.map_or(NodeHealth::Unknown, |node| node.health)
         } else {
             NodeHealth::Down
@@ -184,7 +194,7 @@ impl<'a> PhysicalBuilder<'a> {
         ServerProcess {
             mgmt_url: entry.url.clone(),
             rpc_url: entry.rpc_url.clone().unwrap_or_default(),
-            pid: if has_pid { Some(0) } else { None },
+            pid,
             state,
             health,
             last_seen_ms: rec.map_or(0, |node| node.last_seen_ms),
@@ -204,6 +214,7 @@ impl<'a> PhysicalBuilder<'a> {
             diskdb_pids: pids,
             truncation: Truncation::default(),
             path: Vec::new(),
+            remote_nodes: false,
         }
     }
 
@@ -221,6 +232,7 @@ impl<'a> PhysicalBuilder<'a> {
             diskdb_pids,
             truncation: Truncation::default(),
             path: Vec::new(),
+            remote_nodes: false,
         }
     }
 
@@ -269,8 +281,7 @@ impl<'a> PhysicalBuilder<'a> {
             .iter()
             .find(|entry| entry.node_id == Some(node.id) && entry.service_type == ServiceType::PaxosKv)
             .map(|entry| {
-                let has_pid = self.pids.contains_key(&node.id);
-                Self::build_server_process(entry, rec, has_pid)
+                Self::build_server_process(entry, rec, self.pids.get(&node.id).copied(), self.remote_nodes)
             });
         let diskdb_server = self
             .cfg

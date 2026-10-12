@@ -86,11 +86,10 @@ pub(crate) async fn cluster_initialized(state: &AppState) -> bool {
 }
 
 pub(crate) async fn refresh_node_cache(state: &AppState, node_id: NodeId) {
-    // Skip servers with no tracked runtime pid — they are stopped, and
-    // contacting them only wastes time (connection-refused) and spams
-    // logs. The stop handler already called mark_down, so the monitor
-    // cache reflects the correct Down state.
-    if state.runtime_pid(node_id).is_none() {
+    // Local servers without a tracked PID are stopped. Remote KV processes
+    // belong to their monitor's PID namespace; their management endpoint
+    // supplies liveness without a host-local PID.
+    if state.node_monitor_url.is_none() && state.runtime_pid(node_id).is_none() {
         return;
     }
     let url = {

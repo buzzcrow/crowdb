@@ -6,6 +6,7 @@
 pub(crate) mod disk;
 pub(crate) mod disk_group;
 pub mod node;
+pub(crate) mod observation;
 pub mod view;
 
 pub use node::*;
