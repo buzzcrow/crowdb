@@ -233,7 +233,7 @@ and the named run artifacts.
   `run-ae039e342c7c4326b353645b38068f55`. Five stable/shared runs have redacted
   evidence under `.crowdb-runtime/artifacts/container-e2e/`.
   Old native Rust cases, four private helpers, seven old native browser callbacks
-  and their selectors are removed. Accepted Console inventory is 145.
+  and their selectors are removed. Accepted Console inventory is 146.
   `test-console` now runs only shared/CLI/Web component proofs, with no native
   server build or launcher. Important local process/ownership UTs remain.
   Component 263/263, fixture 104/104, image-source guard, native TypeScript,
@@ -299,12 +299,15 @@ and the named run artifacts.
 ## Remaining browser migration
 
 - [ ] **Cluster and shell**: classify three rack/node
-  cases, four ordinary lifecycle cases, two Todo/service-progress cases, and
-  the standalone monitor-discovery case. Map cancel/default/tree/health,
+  cases, four ordinary lifecycle cases, two Todo/service-progress cases, only. Map cancel/default/tree/health,
   selected-service persistence, process shutdown and failed-plan retry to
-  verified owners. Discovery's stale-on-loss assertion still needs explicit
-  comparison with the root discovery/browser coverage. Files:
-  `app/crowdb-web/ui/e2e/flows/{10,11,12,13}-*.spec.ts`.
+  verified owners. Discovery now retains real stale-on-loss UI observations in two release
+  containers sharing one node network namespace. Web uses 9091 and the local
+  monitor provider uses 9095/9090. The old host-spawning source is deleted.
+  Browser 2.8 s; log `/tmp/crowdb-discovery-local-owned-provider.log`.
+  Shared control extraction passes the native PID/lifecycle gate; fixture gate
+  is now 105 pass. Files:
+  `app/crowdb-web/ui/e2e/flows/{10,11,13}-*.spec.ts`.
   Shell behavior source is retired: four normal containers preserve live/stopped
   eligibility, default Store/Group/Replica IDs, cancel, selection and Refresh.
   Empty registry preserves Unknown; three-node lifecycle preserves Healthy.
@@ -317,7 +320,7 @@ and the named run artifacts.
   assignment. The last owner adds an actual mounted 4 TiB disk through the UI,
   checks explicit owner/binding responses and persisted binding, observes exact
   capacity and proves group deletion removes its disk. Browser 12.4 s; log:
-  `/tmp/crowdb-capacity-crud-response.log`. Accepted Console inventory: 145.
+  `/tmp/crowdb-capacity-crud-response.log`. Accepted Console inventory: 146.
   Lifecycle passes twice with unchanged 3-second response waits (15.4/15.9 s).
   Verify its earlier single KV-stop response timeout in the final complete-domain
   run; no timeout increase or retry remains. Logs:
@@ -374,7 +377,7 @@ and the named run artifacts.
   `run-5cfba02195364ce483aac4b5a3eaf1ee`; logs under
   `/tmp/crowdb-voting-epoch-final-{console,deployment}-ci.log`.
   The twenty-five newer browser cases, two CLI replay cases and nineteen native client cases pass separately and are not
-  included in the complete 96-case measurement. Current accepted Console inventory is 145;
+  included in the complete 96-case measurement. Current accepted Console inventory is 146;
   final full-domain measurement remains pending. Remote CI and macOS remain
   unmeasured. Files: `doc/working/test.md`, root runner reports.
 - [ ] **Close R230**: after inventory, assertion mapping, local gates and required

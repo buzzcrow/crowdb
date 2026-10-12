@@ -34,6 +34,7 @@ from console_recovery_fixture import RecoveringWebCluster
 from console_web_fixture import ConsoleWebCluster
 from console_bootstrap_fixture import BootstrapWebCluster
 from console_shell_fixture import ShellBrowserCluster
+from console_discovery_browser_fixture import DiscoveryBrowserCluster
 from console_cli_fixture import CliContainerCluster
 from console_native_fixture import NativeConsoleCluster
 from console_standalone_fixture import StandaloneWebCluster
@@ -355,6 +356,7 @@ ICEBERG_CASES = (
     Case("iceberg.namespace", "access_iceberg::namespace::namespace_functional_crud_survives_native_storage_and_listener_restart"),
 )
 CONSOLE_OPERATION_CASES = (
+    Case("console.browser.discovery", "console::browser_discovery::stale_provider_observations", shell_browser="discovery: release monitor observations remain visible and stale after provider loss"),
     Case("console.native.geometry", "console::native_geometry::mixed_units_reject_consumers_without_starting_services", native_client=True),
     Case("console.native.browser.hardware", "console::native_browser::hardware_capacity_and_dashed_status", native_client=True, client_timeout=360),
     Case("console.native.browser.maintenance", "console::native_browser::disk_maintenance_and_status_badges", native_client=True, client_timeout=360),
@@ -527,6 +529,8 @@ def select_cases(layer="all", scope="all", case_name=None):
 
 
 def case_nodes(case):
+    if case.scope == "console.browser.discovery":
+        return 2
     if case.native_browser or case.native_client:
         return len(case.native_disk_gib)
     if case.cli_replay:
@@ -576,6 +580,8 @@ def case_nodes(case):
     return 2 if case.scope.startswith(("diskdb.", "chunkdb.")) else len(case.stores_per_node or case.stores)
 
 def case_resources(case, node_cpus):
+    if case.scope == "console.browser.discovery":
+        return max(2, node_cpus) * 2 + 0.5, 3072
     if case.cli_replay or case.native_browser or case.native_client:
         count = case_nodes(case)
         return max(1, node_cpus) * count + 0.5, 2048 * count + 512
@@ -596,6 +602,8 @@ def case_resources(case, node_cpus):
 
 
 def allocate_cluster(case, image, artifacts, bundle, data_root):
+    if case.scope == "console.browser.discovery":
+        return DiscoveryBrowserCluster(image, artifacts, bundle, data_root=data_root)
     if case.native_browser or case.native_client:
         return NativeConsoleCluster(image, artifacts, bundle, disk_gib=case.native_disk_gib,
                                     zone_gib=case.native_zone_gib,

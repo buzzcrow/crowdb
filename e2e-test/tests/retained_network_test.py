@@ -5,6 +5,7 @@
 import json
 import tempfile
 import unittest
+from unittest.mock import Mock
 
 from allocation import start_node
 from fixture import Cluster, LABEL
@@ -12,6 +13,21 @@ from scenarios import Case, case_resources
 
 
 class RetainedNetworkTest(unittest.TestCase):
+    def test_shared_namespace_rejects_foreign_owner_image_and_address_before_start(self):
+        for label, image, address in (("foreign", "release-image", "10.20.30.4"),
+                                      ("owned", "other-image", "10.20.30.4"),
+                                      ("owned", "release-image", "10.20.30.5")):
+            with tempfile.TemporaryDirectory() as directory:
+                cluster = Cluster("release-image", directory)
+                cluster.servers.append("existing")
+                info = {"Image": image, "Config": {"Labels": {LABEL: cluster.run_id if label == "owned" else label}},
+                        "NetworkSettings": {"Networks": {cluster.run_id: {"IPAddress": address}}}}
+                cluster.command = Mock(return_value=json.dumps([info]))
+                with self.assertRaisesRegex(ValueError, "shared namespace ownership"):
+                    start_node(cluster, 1, None, (), "10.20.30.4", network_container="existing")
+                cluster.command.assert_called_once_with("inspect", "existing")
+                self.assertEqual(cluster.servers, ["existing"])
+
     def test_storage_budget_includes_namespace_owners(self):
         self.assertEqual(case_resources(Case("chunk-client.reader", "reader", chunkdb_storage=True,
                                             diskio_process_exit=True), 0.5),

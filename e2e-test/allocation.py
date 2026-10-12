@@ -37,11 +37,20 @@ def node_data(cluster, index, prepare_logs=True):
 
 
 def start_node(cluster, index, data, arguments, address=None, environment=(), mounts=(),
-               cpus="0.5", memory="512m", running=True, preserve_network=False):
+               cpus="0.5", memory="512m", running=True, preserve_network=False,
+               network_container=None):
     if not running and address is None:
         raise ValueError("a deferred node needs an explicit advertised address")
     name = f"{cluster.run_id}-node{index}"
     network_owner = None
+    if network_container is not None:
+        if preserve_network or not running or address is None or network_container not in cluster.servers:
+            raise ValueError("shared namespace requires one existing owned server and an address")
+        owner = json.loads(cluster.command("inspect", network_container))[0]
+        if (owner["Config"]["Labels"].get(LABEL) != cluster.run_id or owner["Image"] != cluster.image
+                or owner["NetworkSettings"]["Networks"].get(cluster.run_id, {}).get("IPAddress") != address):
+            raise ValueError("shared namespace ownership, image or address changed")
+        network_owner = network_container
     if preserve_network:
         if address is None or not running:
             raise ValueError("a retained network needs a running node with an explicit address")
