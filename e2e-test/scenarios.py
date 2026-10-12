@@ -361,6 +361,7 @@ CONSOLE_OPERATION_CASES = (
     Case("console.native.browser.disk", "console::native_browser::disk_inspector_and_selection", native_client=True, native_disk_gib=(4096, 8, 8), native_zone_gib=(32, 1, 1), native_spare_disk_gib=4096, client_timeout=360),
     Case("console.native.browser.binding", "console::browser_capacity::binding_recommendations", native_browser="KV binding recommends the least loaded group and initialization creates Group 1", native_bootstrap=False),
     Case("console.native.browser.diskdb", "console::browser_lifecycle::diskdb_and_kv_independence", native_browser="full deploy flow: deploy diskdb via UI, restart, stop, delete via context menu", native_observations=True),
+    Case("console.native.browser.crud", "console::browser_capacity::mounted_crud_and_owner_binding", native_browser="native capacity: disk-group CRUD and explicit owner binding use mounted storage", native_spare_disk_gib=4096),
     Case("console.native.browser.transition", "console::native_browser::production_split_and_transfer_journals", native_client=True, native_disk_gib=(256, 256, 256), client_timeout=1020),
     Case("console.native.browser.lifecycle", "console::native_browser::auxiliary_process_menus", native_client=True, client_timeout=360),
     Case("console.native.browser.defaults", "console::native_browser::auxiliary_dialog_defaults", native_client=True, client_timeout=360),

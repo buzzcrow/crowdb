@@ -233,7 +233,7 @@ and the named run artifacts.
   `run-ae039e342c7c4326b353645b38068f55`. Five stable/shared runs have redacted
   evidence under `.crowdb-runtime/artifacts/container-e2e/`.
   Old native Rust cases, four private helpers, seven old native browser callbacks
-  and their selectors are removed. Accepted Console inventory is 143.
+  and their selectors are removed. Accepted Console inventory is 144.
   `test-console` now runs only shared/CLI/Web component proofs, with no native
   server build or launcher. Important local process/ownership UTs remain.
   Component 263/263, fixture 104/104, image-source guard, native TypeScript,
@@ -305,19 +305,19 @@ and the named run artifacts.
   verified owners. Discovery's stale-on-loss assertion still needs explicit
   comparison with the root discovery/browser coverage. Files:
   `app/crowdb-web/ui/e2e/flows/{01,10,11,12,13}-*.spec.ts`.
-- [~] **Capacity**: two source DiskGroup cases remain: UI CRUD and explicit
-  owner/binding assignment with nonzero observed capacity. The tree/menu/dialog
-  case and full DiskDB lifecycle are consolidated in the accepted native browser
-  lifecycle owner. Unassigned-DG projection is covered by the binding owner.
-  Accepted Console inventory: 143. Lifecycle passes twice with unchanged 3-second
-  response waits (15.4/15.9 browser seconds). Verify its earlier single KV-stop
-  response timeout in the final complete-domain run; no timeout increase or retry
-  remains in acceptance code. Diagnostic run returned 200 in 481 ms, with actual
-  PID and isolation checks. Logs: `/tmp/crowdb-diskdb-ui-original-budget{,-second}.log`.
-  The formal image includes current service-health precedence and full RPC address
-  joins. Inspector confirms three fixed-port instances retain distinct owned
-  groups; binding confirms unassigned groups remain Capacity-only. Logs:
-  `/tmp/crowdb-diskdb-ui-validated-{inspector,binding}.log`.
+- Capacity's five DiskGroup source cases are retired. Three native browser owners
+  preserve tree/dialog/lifecycle, unassigned projection, and combined CRUD/owner
+  assignment. The last owner adds an actual mounted 4 TiB disk through the UI,
+  checks explicit owner/binding responses and persisted binding, observes exact
+  capacity and proves group deletion removes its disk. Browser 12.4 s; log:
+  `/tmp/crowdb-capacity-crud-response.log`. Accepted Console inventory: 144.
+  Lifecycle passes twice with unchanged 3-second response waits (15.4/15.9 s).
+  Verify its earlier single KV-stop response timeout in the final complete-domain
+  run; no timeout increase or retry remains. Logs:
+  `/tmp/crowdb-diskdb-ui-original-budget{,-second}.log`.
+  Current formal image fixes live-health precedence/full RPC address joins;
+  Inspector verifies three fixed-port instances retain distinct owned groups.
+  Logs: `/tmp/crowdb-diskdb-ui-validated-{inspector,binding}.log`.
 - [ ] **Topology and cross-domain**: review three topology cases and the two
   full-chain/three-node-data flows. The old topology setup starts 23 nodes for
   disjoint tests; select each flow's actual node subset instead. Preserve the
@@ -367,7 +367,7 @@ and the named run artifacts.
   `run-5cfba02195364ce483aac4b5a3eaf1ee`; logs under
   `/tmp/crowdb-voting-epoch-final-{console,deployment}-ci.log`.
   The twenty-five newer browser cases, two CLI replay cases and nineteen native client cases pass separately and are not
-  included in the complete 96-case measurement. Current accepted Console inventory is 143;
+  included in the complete 96-case measurement. Current accepted Console inventory is 144;
   final full-domain measurement remains pending. Remote CI and macOS remain
   unmeasured. Files: `doc/working/test.md`, root runner reports.
 - [ ] **Close R230**: after inventory, assertion mapping, local gates and required
