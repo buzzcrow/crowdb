@@ -16,7 +16,9 @@ from console_native_browser import INSPECTION_CASES
 
 class NativeConsoleCluster(ShellBrowserCluster):
     def __init__(self, image, artifacts, bundle, *, disk_gib=(80, 8, 8),
-                 zone_gib=(1, 1, 1), spare_disk_gib=0, **kwargs):
+                 zone_gib=(1, 1, 1), spare_disk_gib=0, bootstrap=True, **kwargs):
+        if type(bootstrap) is not bool:
+            raise ValueError("native bootstrap selection must be a boolean")
         if (len(disk_gib) != 3 or any(type(size) is not int or not 1 <= size <= 4096
                                      for size in disk_gib)):
             raise ValueError("native disk capacities require three bounded GiB values")
@@ -33,6 +35,7 @@ class NativeConsoleCluster(ShellBrowserCluster):
         self.disk_gib = tuple(disk_gib)
         self.zone_gib = tuple(zone_gib)
         self.spare_disk_gib = spare_disk_gib
+        self.bootstrap = bootstrap
 
     def api(self, path, body=None, method=None, status=200):
         payload = None if body is None else json.dumps(body).encode()
@@ -83,13 +86,14 @@ class NativeConsoleCluster(ShellBrowserCluster):
                 "discovery_id": candidate["advertisement"]["discovery_id"],
                 "rack_id": 1, "ssh_user": "crowdb", "ssh_port": 2222, "ssh_password": "crowdb"})
             self.node_ids.append(record["node_id"])
-        self.api("/api/cluster/init", {"nodes": self.node_ids}, status=201)
-        wait(lambda: self.api("/api/node/status"), lambda result: result["phase"] == "active",
-             "public Group 0 bootstrap", seconds=10)
-        wait(lambda: self.api("/api/racks?recursive=1"),
-             lambda result: {node["id"] for rack in result["items"] for node in rack["nodes"]
-                 if node.get("kv_server", {}).get("health") == "up"} == set(self.node_ids),
-             "three live remote KV observations", seconds=10)
+        if self.bootstrap:
+            self.api("/api/cluster/init", {"nodes": self.node_ids}, status=201)
+            wait(lambda: self.api("/api/node/status"), lambda result: result["phase"] == "active",
+                 "public Group 0 bootstrap", seconds=10)
+            wait(lambda: self.api("/api/racks?recursive=1"),
+                 lambda result: {node["id"] for rack in result["items"] for node in rack["nodes"]
+                     if node.get("kv_server", {}).get("health") == "up"} == set(self.node_ids),
+                 "three live remote KV observations", seconds=10)
         self.origins = [f"http://{address}:10000" for address in self.addresses]
         (self.artifacts / "native-endpoints.json").write_text(json.dumps({
             "nodes": self.node_ids, "addresses": self.addresses, "disk_gib": self.disk_gib,

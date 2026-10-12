@@ -7,6 +7,7 @@
     "e2e/flows/71-s3-native.spec.ts",
     "e2e/flows/51-chunk-capacity-disk.spec.ts",
     "e2e/flows/51-chunk-capacity-inspector.spec.ts",
+    "e2e/flows/50-chunk-capacity-disk-group.spec.ts",
     "e2e/flows/52-chunk-capacity-zone.spec.ts",
     "e2e/flows/53-chunk-capacity-canvas.spec.ts",
     "e2e/flows/53-chunk-ownership.spec.ts",

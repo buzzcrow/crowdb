@@ -20,7 +20,7 @@ uses two slots with 16 CPU / 32768 MiB. KV includes both isolation pairs.
 ### Container domains
 
 Console's latest complete measurement covers 96 owners; the accepted inventory
-is now 141. Twenty-five newer browser cases, two CLI recovery cases and eighteen
+is now 142. Twenty-five newer browser cases, two CLI recovery cases and nineteen
 native client cases passed separately. These batch
 results do not replace the complete-domain measurement.
 

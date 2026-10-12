@@ -11,6 +11,7 @@ export default defineConfig({
     '**/11-cluster-server-lifecycle.spec.ts',
     '**/71-s3-native.spec.ts', '**/51-chunk-capacity-disk.spec.ts',
     '**/51-chunk-capacity-inspector.spec.ts',
+    '**/50-chunk-capacity-disk-group.spec.ts',
     '**/52-chunk-capacity-zone.spec.ts', '**/53-chunk-capacity-canvas.spec.ts',
     '**/53-chunk-ownership.spec.ts', '**/54-chunk-layout.spec.ts',
     '**/55-chunk-kv-catalog.spec.ts', '**/60-iceberg-catalog.spec.ts',

@@ -30,4 +30,3 @@ export async function diskMenu(page: Page, row: Locator, name: string) {
   await expect(item).toBeVisible();
   await item.dispatchEvent('click');
 }
-

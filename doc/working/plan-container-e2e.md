@@ -233,7 +233,7 @@ and the named run artifacts.
   `run-ae039e342c7c4326b353645b38068f55`. Five stable/shared runs have redacted
   evidence under `.crowdb-runtime/artifacts/container-e2e/`.
   Old native Rust cases, four private helpers, seven old native browser callbacks
-  and their selectors are removed. Accepted Console inventory is 141.
+  and their selectors are removed. Accepted Console inventory is 142.
   `test-console` now runs only shared/CLI/Web component proofs, with no native
   server build or launcher. Important local process/ownership UTs remain.
   Component 263/263, fixture 104/104, image-source guard, native TypeScript,
@@ -285,6 +285,17 @@ and the named run artifacts.
   workspace fmt/clippy pass. The whole old Disk source/fixture/port allocator
   is removed. Logs: `/tmp/crowdb-capacity-inspector-*.log`.
 
+- DiskGroup binding recommendation source → `console.native.browser.binding`:
+  a prepared three-container cluster is initialized through the browser with
+  `create_data_group=true`; actual Group 1 is then usable. Preserve missing
+  binding 422/no partial group, cross-node counts, least-loaded recommendation,
+  manual override, exact persisted binding and subsequent recommendation.
+  Gate 1/1 at 4 CPU / 8192 MiB in 24.867s (browser 5.8s);
+  `run-25275c49372341ca915ba0b29ff4f8a1`. Fixture 104 and native TypeScript pass. First
+  dispatch selected the old shell configuration and found no tests; the native
+  scope now selects its own configuration explicitly. The old case is removed.
+  Constructor defaults still bootstrap existing native owners as before.
+
 ## Remaining browser migration
 
 - [ ] **Cluster and shell**: classify two shell behavior cases, three rack/node
@@ -294,7 +305,7 @@ and the named run artifacts.
   verified owners. Discovery's stale-on-loss assertion still needs explicit
   comparison with the root discovery/browser coverage. Files:
   `app/crowdb-web/ui/e2e/flows/{01,10,11,12,13}-*.spec.ts`.
-- [ ] **Capacity**: migrate six DiskGroup cases. Preserve CRUD,
+- [ ] **Capacity**: migrate five DiskGroup cases. Preserve CRUD,
   owner/binding selection, maintenance state, capacity
   totals and unknown/error observations. Files:
   `app/crowdb-web/ui/e2e/flows/50-chunk-capacity-disk-group.spec.ts`.
@@ -346,8 +357,8 @@ and the named run artifacts.
   case slot). Reports: `run-ab39e156c2c24da39a5db1bfbcba1a7c` and
   `run-5cfba02195364ce483aac4b5a3eaf1ee`; logs under
   `/tmp/crowdb-voting-epoch-final-{console,deployment}-ci.log`.
-  The twenty-five newer browser cases, two CLI replay cases and eighteen native client cases pass separately and are not
-  included in the complete 96-case measurement. Current accepted Console inventory is 141;
+  The twenty-five newer browser cases, two CLI replay cases and nineteen native client cases pass separately and are not
+  included in the complete 96-case measurement. Current accepted Console inventory is 142;
   final full-domain measurement remains pending. Remote CI and macOS remain
   unmeasured. Files: `doc/working/test.md`, root runner reports.
 - [ ] **Close R230**: after inventory, assertion mapping, local gates and required
