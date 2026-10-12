@@ -240,6 +240,15 @@ and the named run artifacts.
   workspace fmt/clippy and CI task reachability pass. Logs:
   `/tmp/crowdb-native-retirement-{components,fixture,identity,types,fmt,lint,ci}.log`.
 
+- All three ordinary `53-chunk-capacity-canvas` cases → the existing
+  `console.native.browser.scanner` owner: cluster totals and three live
+  instances, Refresh, DiskGroup/disk boxes, geometry/Recalc results, datacenter
+  root/type/rack count and exact hardware aggregate. The old conditional branch
+  that skipped disk assertions is replaced by mandatory actual disk observations.
+  Native gate passes at 4 CPU / 8192 MiB in 35.127s
+  (browser 2.3s); `run-b79caccc085746698f63afbc3c8a661c`. TypeScript passes. The whole old
+  Canvas source/setup is removed; no additional overlapping E2E owner is added.
+
 ## Remaining browser migration
 
 - [ ] **Cluster and shell**: classify two shell behavior cases, three rack/node
@@ -249,11 +258,10 @@ and the named run artifacts.
   verified owners. Discovery's stale-on-loss assertion still needs explicit
   comparison with the root discovery/browser coverage. Files:
   `app/crowdb-web/ui/e2e/flows/{01,10,11,12,13}-*.spec.ts`.
-- [ ] **Capacity**: migrate six DiskGroup, four Disk and three ordinary Canvas
-  cases. Preserve CRUD, owner/binding selection, maintenance state, capacity
-  totals and unknown/error observations. Retire the separately verified native
-  scanner callback is retired; consolidate unique Canvas assertions next. Files:
-  `app/crowdb-web/ui/e2e/flows/{50,51,53}-*.spec.ts`.
+- [ ] **Capacity**: migrate six DiskGroup and four Disk cases. Preserve CRUD,
+  owner/binding selection, maintenance state, capacity
+  totals and unknown/error observations. Files:
+  `app/crowdb-web/ui/e2e/flows/{50,51}-*.spec.ts`.
 - [ ] **Topology and cross-domain**: review three topology cases and the two
   full-chain/three-node-data flows. The old topology setup starts 23 nodes for
   disjoint tests; select each flow's actual node subset instead. Preserve the

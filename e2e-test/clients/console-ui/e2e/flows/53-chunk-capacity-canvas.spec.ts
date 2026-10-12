@@ -33,10 +33,38 @@ test('native diagnostics: Capacity retains hardware and marks interrupted DDB us
   await expect(page.getByRole('heading', { name: /^Capacity — Disk/ })).toBeVisible();
 });
 
-// Baseline: new actual native scanner and scoped recalc (2026-10-04).
-test('native diagnostics: scanner and scoped recalc show actual completed observations', async ({ page }) => {
+// Baseline: 2.3s (2026-10-12).
+test('native diagnostics: scanner and scoped recalc show actual completed observations', async ({ page, request }) => {
   await page.goto('/?domain=Capacity');
   const panel = page.getByTestId('capacity-summary').locator('..');
+  await expect(page.getByRole('heading', { name: 'Capacity — Cluster', exact: true })).toBeVisible();
+  await expect(panel.getByText('3 instance(s)', { exact: true })).toBeVisible();
+  for (const label of ['Total Capacity', 'Busy', 'Free']) {
+    await expect(panel.getByText(label, { exact: true })).toBeVisible();
+  }
+  await expect(panel.getByRole('button', { name: 'Refresh', exact: true })).toBeVisible();
+  const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
+  const datacenter = sidebar.getByRole('treeitem').filter({ hasText: /^datacenter$/ });
+  await expect(datacenter).toBeVisible();
+  await expect(sidebar.getByRole('treeitem').first()).toHaveText(/datacenter/);
+  await datacenter.getByText('datacenter', { exact: true }).click();
+  const clusterInspector = page.getByRole('complementary', { name: 'Entity inspector' });
+  const field = (name: string) => clusterInspector.locator('dl > div')
+    .filter({ has: page.locator('dt', { hasText: new RegExp(`^${name}$`) }) }).locator('dd');
+  await expect(field('Type')).toHaveText('Datacenter');
+  await expect(field('Rack Count')).toHaveText('1');
+  for (const label of ['Total Capacity', 'Used', 'Free']) {
+    await expect(clusterInspector.getByText(label, { exact: true })).toBeVisible();
+  }
+  const response = await request.get('/api/hardware/capacity');
+  expect(response.ok(), await response.text()).toBe(true);
+  const hardware = await response.json();
+  expect(hardware.disk_groups.map((group: { disk_group_id: number }) => group.disk_group_id).sort()).toEqual([1, 2, 3]);
+  const bytes = hardware.datacenter_capacity_bytes;
+  expect(bytes).toBeGreaterThan(0);
+  const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+  const unit = Math.floor(Math.log(bytes) / Math.log(1024));
+  await expect(field('Total Capacity')).toHaveText(`${(bytes / 1024 ** unit).toFixed(1)} ${units[unit]}`);
   await expect(panel.getByText('No scan has been run yet.', { exact: true })).toBeVisible();
   const scanResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/diskdb/scan' && response.request().method() === 'POST');
   await panel.getByRole('button', { name: 'Run Scan', exact: true }).click();
@@ -48,8 +76,12 @@ test('native diagnostics: scanner and scoped recalc show actual completed observ
   await expect(panel.getByText('Scanner', { exact: true })).toHaveCount(0);
   await panel.getByRole('button', { name: /N-1 / }).click();
   await panel.getByRole('button', { name: /DG-1 / }).click();
+  await expect(page.getByRole('heading', { name: 'Capacity — DG-1', exact: true })).toBeVisible();
+  await expect(panel.getByRole('button', { name: /00000000…/ })).toBeVisible();
   await panel.getByRole('button', { name: /00000000…/ }).click();
   await expect(page.getByTestId('disk-geometry')).toContainText('80 zones');
+  await expect(page.getByRole('heading', { name: /^Capacity — Disk/ })).toBeVisible();
+  await expect(panel.getByText('Recalc (DG-1)', { exact: true })).toBeVisible();
   const recalcResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/diskdb/recalc' && response.request().method() === 'POST');
   await panel.getByRole('button', { name: 'Run Recalc', exact: true }).click();
   const recalc = await recalcResponse;
