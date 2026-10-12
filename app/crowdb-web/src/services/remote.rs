@@ -13,8 +13,53 @@ use crowdb_console_shared::{
     config::{ServerEntry, ServiceType},
     deployment::services,
 };
-use crowdb_protocol::mgmt::node::{NodeServiceAction, NodeServiceIntent};
+use crowdb_protocol::mgmt::node::{NodeControl, NodeServiceAction, NodeServiceIntent};
 use serde_json::{json, Value};
+
+pub(super) async fn processes(
+    state: &AppState,
+    config: &crowdb_console_shared::ConsoleConfig,
+) -> std::collections::BTreeMap<(u64, String), u32> {
+    let Some(binding) = crate::node::cluster_binding(state).ok().flatten() else {
+        return std::collections::BTreeMap::new();
+    };
+    let cluster = &binding.bootstrap.cluster_id;
+    let observations = futures::future::join_all(config.nodes.iter().map(|node| async move {
+        let mut target = node.clone();
+        target.ssh_key = Some(crate::node::node_key_path(state).to_string_lossy().into_owned());
+        let command = NodeControl::Processes {
+            cluster_id: cluster.clone(),
+            node_id: node.id,
+        };
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            crowdb_console_shared::deployment::admission::remote_control(&target, &command),
+        )
+        .await
+        .ok()?
+        .ok()?;
+        if result["node_id"] != node.id || result["cluster_id"] != *cluster {
+            return None;
+        }
+        Some((node.id, result))
+    }))
+    .await;
+    let mut pids = std::collections::BTreeMap::new();
+    for (node, observation) in observations.into_iter().flatten() {
+        if let Some(services) = observation["processes"].as_object() {
+            for (id, value) in services {
+                if let Some(pid) = value
+                    .as_u64()
+                    .and_then(|pid| u32::try_from(pid).ok())
+                    .filter(|pid| *pid > 0)
+                {
+                    pids.insert((node, id.clone()), pid);
+                }
+            }
+        }
+    }
+    pids
+}
 
 pub(crate) async fn act(
     state: &AppState,

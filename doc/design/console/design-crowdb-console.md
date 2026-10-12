@@ -255,7 +255,12 @@ not production topology authority.
 
 Manual node Web refreshes per-node KV topology through the admitted management
 endpoints before physical reads. Remote process health comes from this live
-observation; remote PIDs never enter Web's local process table. A failed probe
+observation; remote PIDs never enter Web's local process table. The service
+list separately queries admitted monitors over their authenticated control
+channels for actual live children, with `pid_node_id` identifying the process
+namespace. This observation verifies local cluster/node binding and remains
+available during Group-0 failure. The Web host neither probes these PIDs via
+its own `/proc` nor stores or signals them as local processes. A failed probe
 marks the node down, while local launch observations still require a tracked PID.
 
 ### 4.3 Group 0 authority

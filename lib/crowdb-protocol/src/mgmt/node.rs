@@ -61,6 +61,10 @@ pub struct CandidateSnapshot {
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NodeControl {
     Identity,
+    Processes {
+        cluster_id: String,
+        node_id: u64,
+    },
     InstallKey {
         operation_id: String,
         public_key: String,

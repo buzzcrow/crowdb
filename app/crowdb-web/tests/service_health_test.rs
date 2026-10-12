@@ -132,3 +132,24 @@ async fn prebootstrap_paxos_health_uses_liveness_only_until_a_store_exists() {
         });
     assert_eq!(servers(&app).await[0]["health"], "down");
 }
+
+#[tokio::test]
+async fn node_mode_never_interprets_a_cached_pid_in_the_web_host_namespace() {
+    let mut config = ConsoleConfig::default();
+    let mut entry = ServerEntry::new("chunk-kv-1", "http://127.0.0.1:1");
+    entry.node_id = Some(1);
+    entry.service_type = ServiceType::ChunkKv;
+    entry.pid = Some(std::process::id());
+    config.servers.push(entry);
+    let state = AppState::with_config(config, None)
+        .with_node_monitor("http://127.0.0.1:1")
+        .unwrap();
+    let app = router(state.clone());
+    let observed = servers(&app).await;
+    assert!(observed[0]["pid"].is_null());
+    assert!(observed[0]["pid_node_id"].is_null());
+    assert_eq!(
+        state.config.read().unwrap().servers[0].pid,
+        Some(std::process::id())
+    );
+}

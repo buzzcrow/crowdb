@@ -305,6 +305,15 @@ and the named run artifacts.
   `run-e8644a9c547e42f9a1f2afcf11503131`. The shared executor now distinguishes
   a fresh explicit Restart from replaying its durable operation ID. Three
   component tests cover replay, repeated desired state and changed inputs.
+  Remote lifecycle migration also requires actual process observations. The
+  authenticated node control query verifies persisted cluster/node binding,
+  returns only monitor-owned live children, and needs no Group-0 grant. Service
+  lists project these PIDs with `pid_node_id`; they never persist them or inspect
+  them in the Web-host process namespace. Five monitor and four Web components,
+  full clippy, fmt and the UI build pass. A separate fixture-owned read-only
+  browser queue will prove old/new PID liveness without blocking the lifecycle
+  worker or adding a server fault endpoint. Lifecycle, defaults, interrupted plan
+  and prerequisite plan literal callbacks are the next client migration batch.
 
 ## Final integration and closure
 

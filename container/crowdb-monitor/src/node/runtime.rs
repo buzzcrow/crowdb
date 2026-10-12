@@ -22,6 +22,7 @@ mod cleanup;
 mod health;
 mod ipc;
 mod kv;
+mod observation;
 mod probes;
 mod services;
 use kv::start_kv;
@@ -154,6 +155,9 @@ async fn execute(
 ) -> Result<Value> {
     let root = &profile.paths.data_root;
     match request {
+        NodeControl::Processes { cluster_id, node_id } => {
+            observation::processes(root, processes, &cluster_id, node_id)
+        }
         NodeControl::ProvisionServiceCredentials {
             bootstrap,
             credentials,

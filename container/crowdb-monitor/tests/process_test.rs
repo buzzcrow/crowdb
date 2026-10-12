@@ -72,6 +72,10 @@ async fn owned_child_is_reaped_before_replacement() {
     assert!(manager.start(&service, &BTreeMap::new()).await.is_err());
     assert_eq!(manager.pid("fake"), Some(first_pid));
     assert!(manager.alive("fake").unwrap());
+    assert_eq!(
+        manager.live_pids().unwrap(),
+        BTreeMap::from([("fake".into(), first_pid)])
+    );
     let log_path = logs.0.join("fake/service.log");
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
@@ -85,8 +89,13 @@ async fn owned_child_is_reaped_before_replacement() {
     .unwrap();
     manager.stop("fake", Duration::from_secs(2)).await.unwrap();
     assert_eq!(manager.pid("fake"), None);
+    assert!(manager.live_pids().unwrap().is_empty());
     let second_pid = manager.start(&service, &BTreeMap::new()).await.unwrap();
     assert_ne!(second_pid, first_pid);
+    assert_eq!(
+        manager.live_pids().unwrap(),
+        BTreeMap::from([("fake".into(), second_pid)])
+    );
     manager.stop("fake", Duration::from_secs(2)).await.unwrap();
     assert!(fs::read_to_string(log_path).unwrap().contains("started"));
     let events = fs::read_to_string(logs.0.join("monitor/monitor.log")).unwrap();

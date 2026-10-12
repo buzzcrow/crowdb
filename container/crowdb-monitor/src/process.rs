@@ -136,6 +136,23 @@ impl ProcessManager {
         self.processes.contains_key(id)
     }
 
+    /// Observe live children in this monitor's process namespace.
+    ///
+    /// # Errors
+    /// Returns an OS error if an owned child's exit state cannot be read.
+    pub fn live_pids(&mut self) -> Result<BTreeMap<String, u32>, ProcessError> {
+        let ids: Vec<_> = self.processes.keys().cloned().collect();
+        let mut pids = BTreeMap::new();
+        for id in ids {
+            if self.alive(&id)? {
+                if let Some(pid) = self.pid(&id) {
+                    pids.insert(id, pid);
+                }
+            }
+        }
+        Ok(pids)
+    }
+
     pub(crate) async fn maintain_logs(&self) -> Result<(), ProcessError> {
         for (id, process) in &self.processes {
             retention::prune(

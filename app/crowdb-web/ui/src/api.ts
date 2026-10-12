@@ -1144,6 +1144,7 @@ export interface ServerSummary {
   endpoint?: string;
   rpc_url?: string;
   pid?: number;
+  pid_node_id?: number;
   health: string;
   service_type: string;
 }

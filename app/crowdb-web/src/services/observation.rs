@@ -27,6 +27,9 @@ pub struct ServerSummary {
     /// Live pid if the console currently tracks the process.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
+    /// Node process namespace for a remote PID; never a Web-host PID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid_node_id: Option<u64>,
     /// Latest health from the monitor cache (`unknown` until probed).
     pub health: NodeHealth,
     /// Canonical service kind, including "paxos-kv" and "diskdb".
@@ -45,10 +48,17 @@ pub async fn http_list_servers(State(state): State<AppState>) -> Json<Vec<Server
     }
     let snap = state.monitor_cache.snapshot().await;
     let cfg = state.config.read().unwrap().clone();
+    let remote = state.node_monitor_url.is_some();
+    let remote_pids = if remote {
+        super::remote::processes(&state, &cfg).await
+    } else {
+        std::collections::BTreeMap::new()
+    };
     let rows = futures::future::join_all(cfg.servers.iter().map(|s| {
         let state = &state;
         let cfg = &cfg;
         let snap = &snap;
+        let remote_pids = &remote_pids;
         async move {
             let runtime_pid = match s.node_id {
                 Some(node_id) if s.service_type == ServiceType::Diskdb => {
@@ -59,60 +69,21 @@ pub async fn http_list_servers(State(state): State<AppState>) -> Json<Vec<Server
                 }
                 _ => None,
             };
-            let pid = runtime_pid.or_else(|| {
-                s.pid
-                    .filter(|pid| crowdb_console_shared::lifecycle::process_is_alive(*pid))
-            });
-            let health = if s.service_type == ServiceType::AccessServer {
-                if let Some(url) = cfg
-                    .local_launches
-                    .get(&s.id)
-                    .and_then(crowdb_console_shared::config::LocalLaunchSpec::access_health_url)
-                {
-                    let healthy = reqwest::Client::new()
-                        .get(url)
-                        .timeout(std::time::Duration::from_secs(1))
-                        .send()
-                        .await
-                        .is_ok_and(|response| response.status().is_success());
-                    if healthy {
-                        NodeHealth::Up
-                    } else {
-                        NodeHealth::Down
-                    }
+            let pid = if remote {
+                let process_id = if s.service_type == ServiceType::PaxosKv {
+                    "kv"
                 } else {
-                    NodeHealth::Unknown
-                }
-            } else if s.service_type == ServiceType::PaxosKv
-                && pid.is_some()
-                && s.node_id.is_some_and(|id| {
-                    !cfg.stores.iter().any(|store| store.nodes.contains(&id))
-                        && snap.get(&id).map_or(true, |record| record.stores.is_empty())
-                })
-            {
-                // Before the first store exists, PKV reserves its RPC port but
-                // does not bind it. Process liveness covers this startup phase.
-                NodeHealth::Up
-            } else if let Some(endpoint) = &s.rpc_url {
-                if state.rpc_health.probe(endpoint).await {
-                    NodeHealth::Up
-                } else {
-                    NodeHealth::Down
-                }
-            } else if s.service_type == ServiceType::PaxosKv {
-                s.node_id.and_then(|id| snap.get(&id)).map_or(
-                    if pid.is_some() {
-                        NodeHealth::Up
-                    } else {
-                        NodeHealth::Unknown
-                    },
-                    |record| record.health,
-                )
-            } else if pid.is_some() {
-                NodeHealth::Up
+                    &s.id
+                };
+                s.node_id
+                    .and_then(|node| remote_pids.get(&(node, process_id.to_owned())).copied())
             } else {
-                NodeHealth::Down
+                runtime_pid.or_else(|| {
+                    s.pid
+                        .filter(|pid| crowdb_console_shared::lifecycle::process_is_alive(*pid))
+                })
             };
+            let health = observe_health(state, cfg, s, pid, snap).await;
             ServerSummary {
                 id: s.id.clone(),
                 node_id: s.node_id,
@@ -122,6 +93,7 @@ pub async fn http_list_servers(State(state): State<AppState>) -> Json<Vec<Server
                     .then(|| s.rpc_url.clone().unwrap_or_else(|| s.url.clone())),
                 rpc_url: s.rpc_url.clone(),
                 pid,
+                pid_node_id: if remote && pid.is_some() { s.node_id } else { None },
                 health,
                 service_type: match s.service_type {
                     crowdb_console_shared::config::ServiceType::PaxosKv => "paxos-kv",
@@ -138,4 +110,63 @@ pub async fn http_list_servers(State(state): State<AppState>) -> Json<Vec<Server
     }))
     .await;
     Json(rows)
+}
+
+async fn observe_health(
+    state: &AppState,
+    cfg: &crowdb_console_shared::ConsoleConfig,
+    s: &crowdb_console_shared::config::ServerEntry,
+    pid: Option<u32>,
+    snap: &std::collections::BTreeMap<u64, crowdb_console_shared::monitor::NodeRecord>,
+) -> NodeHealth {
+    if s.service_type == ServiceType::AccessServer {
+        if let Some(url) = cfg
+            .local_launches
+            .get(&s.id)
+            .and_then(crowdb_console_shared::config::LocalLaunchSpec::access_health_url)
+        {
+            let healthy = reqwest::Client::new()
+                .get(url)
+                .timeout(std::time::Duration::from_secs(1))
+                .send()
+                .await
+                .is_ok_and(|response| response.status().is_success());
+            if healthy {
+                NodeHealth::Up
+            } else {
+                NodeHealth::Down
+            }
+        } else {
+            NodeHealth::Unknown
+        }
+    } else if s.service_type == ServiceType::PaxosKv
+        && pid.is_some()
+        && s.node_id.is_some_and(|id| {
+            !cfg.stores.iter().any(|store| store.nodes.contains(&id))
+                && snap.get(&id).map_or(true, |record| record.stores.is_empty())
+        })
+    {
+        // Before the first store exists, PKV reserves its RPC port but
+        // does not bind it. Process liveness covers this startup phase.
+        NodeHealth::Up
+    } else if let Some(endpoint) = &s.rpc_url {
+        if state.rpc_health.probe(endpoint).await {
+            NodeHealth::Up
+        } else {
+            NodeHealth::Down
+        }
+    } else if s.service_type == ServiceType::PaxosKv {
+        s.node_id.and_then(|id| snap.get(&id)).map_or(
+            if pid.is_some() {
+                NodeHealth::Up
+            } else {
+                NodeHealth::Unknown
+            },
+            |record| record.health,
+        )
+    } else if pid.is_some() {
+        NodeHealth::Up
+    } else {
+        NodeHealth::Down
+    }
 }
