@@ -9,6 +9,7 @@ use crate::{
 use axum::{http::StatusCode, Json};
 use crowdb_console_shared::deployment::services;
 use crowdb_protocol::mgmt::node::{NodeServiceAction, NodeServiceIntent};
+use std::fmt::Write as _;
 
 pub(super) async fn deploy(
     state: &AppState,
@@ -25,8 +26,12 @@ pub(super) async fn deploy(
         .cloned()
         .ok_or_else(|| err_404("Node not found"))?;
     node.ssh_key = Some(crate::node::node_key_path(state).to_string_lossy().into_owned());
-    let configuration = format!("[server]\nrpc_workers = 2\nlisten_addr = {:?}\nhttp_listen_addr = {:?}\nrpc_listen_addr = {:?}\ninstance_id = {:?}\nkv_server_mgmt_seeds = {:?}\n",
+    let mut configuration = format!("[server]\nrpc_workers = 2\nlisten_addr = {:?}\nhttp_listen_addr = {:?}\nrpc_listen_addr = {:?}\ninstance_id = {:?}\nkv_server_mgmt_seeds = {:?}\n",
         format!("{}:{listen}", node.host), format!("{}:{http}", node.host), format!("{}:{rpc}", node.host), node_id.to_string(), binding.management_seeds);
+    if let Some(interval) = body.keepalive_interval_secs {
+        writeln!(configuration, "\n[heartbeat]\ninterval_secs = {interval}")
+            .expect("writing configuration to a String cannot fail");
+    }
     let intent = NodeServiceIntent {
         cluster_id: binding.bootstrap.cluster_id,
         operation_id: uuid::Uuid::new_v4().to_string(),

@@ -26,6 +26,9 @@ pub struct DeployDiskdbBody {
     /// Internal HTTP health port. When omitted, derived from `rpc_port`.
     #[serde(default)]
     pub http_port: Option<u16>,
+    /// Normal `DiskDB` heartbeat cadence, retained across service restart.
+    #[serde(default)]
+    pub keepalive_interval_secs: Option<std::num::NonZeroU32>,
 }
 
 pub(super) fn validate_diskdb_ports(
@@ -140,7 +143,10 @@ async fn deploy_diskdb(
         rpc_workers: None,
         kv_connections: None,
         kv_client_rpc_workers: None,
-        keepalive_interval_secs: state.test_mode.then_some(1),
+        keepalive_interval_secs: body
+            .keepalive_interval_secs
+            .map(std::num::NonZeroU32::get)
+            .or_else(|| state.test_mode.then_some(1)),
         free_batch_enabled: None,
         free_flush_max_batch: None,
         server_id: format!("diskdb-{node_id}"),

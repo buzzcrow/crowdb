@@ -330,6 +330,11 @@ retry, while initialization passwords remain only in the submitted request.
 
 ### 5.3 Process lifecycle (deploy / start / stop)
 
+DiskDB deployment accepts an optional positive `keepalive_interval_secs` for
+its normal heartbeat policy. Omitting it retains the server default; the
+committed remote service configuration preserves it across restart. This
+setting does not change ownership or deployment protection rules.
+
 `LaunchRuntime` uses the validated launch registry for local or SSH process
 start, restart, stop and readiness checks. It records PID plus process start
 time as local runtime identity and refuses to signal an unrelated process.

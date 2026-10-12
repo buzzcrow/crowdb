@@ -226,6 +226,21 @@ and the named run artifacts.
   alone does not execute them. Preserve their browser callbacks and existing
   deadlines. Formal writable deployment control is required for this migration;
   managed Docker readonly cannot silently replace provisioning assertions.
+  The first extracted owner is `console.native.binding` / `native_binding.rs`:
+  Store 1 binding before DDB, lower Store preservation, real owner acquisition,
+  missing-binding 500 and explicit PUT repair, stable owner identities and
+  nondecreasing lease expiry. Its host context uses HTTP and the production KV
+  client, never an in-process Web router. It is registered but not yet accepted.
+  Initial adapter run reached the repair request (actual 204, corrected from
+  assumed 200); the next run exposed the original one-second heartbeat versus
+  release's ten-second default. Mounted DDB logs confirm the initial empty
+  sync and default cadence. Keep the original three-second owner bound.
+  Normal deploy now accepts validated `keepalive_interval_secs`; omitted keeps
+  production defaults, explicit 1 preserves the old test's cadence and remote
+  restart retains the committed configuration. Rebuild the formal artifact and
+  accept the extracted owner before increasing the accepted inventory.
+  Eleven focused DiskDB/Web component tests, workspace fmt and full clippy pass;
+  logs: `/tmp/crowdb-diskdb-cadence-{component,final-component,quality}.log`.
 
 ## Final integration and closure
 
