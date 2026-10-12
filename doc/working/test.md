@@ -10,20 +10,13 @@ redacted diagnostics stay under `.crowdb-runtime/artifacts/`.
 
 ## intel7960
 
-Linux Docker bridge; host clients use inspected IPs and fixed ports. Measurements
-include startup, clients and teardown, excluding shared image/client builds.
-Concurrency cap is 2. S3 uses 0.2 CPU/server with 4 CPU / 8192 MiB and one case
-slot. Console/Deployment use 0.25 CPU/server with the same total budget and one
-slot; the previous Deployment run used 0.5 CPU/server and two slots. Iceberg
-uses two slots with 16 CPU / 32768 MiB. KV includes both isolation pairs.
+Linux Docker bridge; clients run on the host and use inspected container IPs
+and fixed ports. Wall times include startup, clients and teardown, excluding
+shared builds. Record complete domain runs, including failures. Current Console
+and Deployment use two case slots; complete native nodes retain 1 CPU /
+2048 MiB / 512 PIDs. Exact image and resource settings stay in run artifacts.
 
 ### Container domains
-
-Console now tracks all 153 owners. The latest complete run uses the `c2745d61` release image with native nodes at
-1 CPU / 2048 MiB.
-Two failures remain under repair: CLI response decode and the catalog 409
-observation contract. The latest two complete runs use two case slots and a
-16 CPU / 32768 MiB admission budget. Native node quotas are unchanged.
 
 | Domain       | Date       | Passed / failed / skipped | Wall s   | Previous s |
 | ------------ | ---------- | ------------------------- | -------- | ---------- |
@@ -37,34 +30,17 @@ observation contract. The latest two complete runs use two case slots and a
 | S3           | 2026-10-12 | 43 / 0 / 0                | 1545.602 | 1456.774   |
 | Iceberg      | 2026-10-12 | 32 / 0 / 0                | 1616.697 | 1633.442   |
 | Dataset      | 2026-10-12 | 2 / 0 / 0                 | 35.568   | 31.301     |
-| Console      | 2026-10-13 | 151 / 2 / 0               | 1804.006 | 2167.298   |
-| Deployment   | 2026-10-12 | 33 / 0 / 0                | 601.028  | 337.716    |
+| Console      | 2026-10-13 | 151 / 2 / 0               | 2172.056 | 1804.006   |
+| Deployment   | 2026-10-13 | 33 / 0 / 0                | 307.253  | 601.028    |
 
-- KV/storage/Dataset/Iceberg rows use the coalescer image (`fca2b4fa`);
-  S3 uses the streaming fix (`b7b1247b`); Console/Deployment use the voting/epoch
-  fix (`cb159e7b`). Exact build identities remain in their artifacts.
-- Current release image (`ef7bc400`) includes bounded zone initialization and
-  LZ4 snapshots. OCI `sha256:10924427c066c192a94989d0cbd228f025053462f22476aa8df724e2d4631112`.
-  Optimized binaries retain debug info. Data/log/crash roots and host core policy
-  are recorded per run; receipt: `target/crowdb.oci.tar.json`.
-  Complete-domain measurements for this image remain pending.
-- Special profiles: bridge SSH admission 148.191s; Linux host 7.310s;
-  containerd host/cluster 125.432s / 129.661s; five-engine Iceberg ecosystem
-  196.874s; Python/DuckDB 29.099s. These are separate from domain counts.
-
-### Historical tasks before container classification
-
-| Test package       | Date       | Tests     | Seconds | Status                   |
-| ------------------ | ---------- | --------- | ------- | ------------------------ |
-| `test-cpp`         | 2026-10-09 | 942/942   | 131.26  | ✓                        |
-| `test-core`        | 2026-10-09 | 994/994   | ~140.23 | ✓                        |
-| `test-storage`     | 2026-10-09 | 841/841   | 916.53  | ✓                        |
-| `test-access`      | 2026-10-09 | 1036/1037 | 412.60  | Pending: coverage gap    |
-| `test-console`     | 2026-10-09 | 350/350   | ~1588.1 | ✓                        |
-| `test-console-ui`  | 2026-10-09 | 229/229   | 307.40  | ✓                        |
-| `test-boto3-e2e`   | 2026-10-09 | 255/255   | 428.89  | ✓                        |
-| `test-iceberg-e2e` | 2026-10-09 | 29/32     | 789.37  | Pending: coverage gap    |
-| `test-iceberg-sdk` | 2026-10-09 | 11/11     | 571.23  | ✓                        |
+- Console and Deployment measurements above use the `9225badd` debug release.
+  The other domain rows are earlier baselines; final release gates are pending.
+- Special profiles have separate measurements: bridge SSH 148.191 s, Linux
+  host 7.310 s, containerd host/cluster 125.432 / 129.661 s, five-engine Iceberg
+  196.874 s, Python/DuckDB 29.099 s. Their final reruns remain pending.
+- Important component UTs remain. Latest focused gates: DiskDB 177, monitor 75,
+  CLI 5, fixture 106, UI 181, KV-server 63; these are component repair checks,
+  not another complete-domain baseline.
 
 ## amd5950
 
@@ -74,28 +50,12 @@ No recorded measurements.
 
 No container measurements. Linux VM routing remains unverified.
 
-### Historical macOS tasks — machine model unrecorded
-
-These results are previous macOS baselines, not measured macm5pro acceptance.
-
-| Test package       | Date       | Tests   | Seconds | Status                                  |
-| ------------------ | ---------- | ------- | ------- | --------------------------------------- |
-| `test-cpp`         | 2026-10-07 | 860/860 | 55      | ✓                                       |
-| `test-core`        | 2026-10-07 | 977/978 | 368     | ✓ 1 ignored                             |
-| `test-storage`     | 2026-10-07 | 811/815 | 1064    | ✓ 4 ignored                             |
-| `test-access`      | 2026-10-07 | 906/906 | —       | ✓                                       |
-| `test-console`     | 2026-10-07 | 77/79   | 61      | ✓ 2 ignored                             |
-| `test-console-ui`  | 2026-10-07 | 63/63   | 192     | ✓                                       |
-| `test-boto3-e2e`   | 2026-10-07 | 32/32   | 295     | ✓                                       |
-| `test-iceberg-e2e` | 2026-10-07 | —       | 338     | ✓                                       |
-| `test-iceberg-sdk` | 2026-10-07 | —       | —       | X Maven dependency resolution stalled   |
-
 ## Remaining issues
 
-- [ ] **Migration closure**: remaining real-server Console lifecycle/cluster
-  flows need canonical container owners. Preserve old assertions and important component UTs until
-  equivalent owners pass. Final Pixi/CI taxonomy and complete-domain measurements remain pending.
-  KV/KV and KV/Web isolation acceptance passes.
+- [ ] **Container acceptance**: complete final-image domain gates and final
+  Pixi/CI admission/export checks. Console has intermittent multipart DiskIO
+  deadline and CLI restart failures. The publication recovery regression is
+  fixed in components; container verification is pending. See the execution plan.
 - [ ] **macOS Iceberg SDK**: Maven `dependency:go-offline` stalled for more than
   eight minutes. Rerun with the pinned dependency cache available.
 - [ ] **WAL disk loss**: full fail-out and snapshot rejoin coverage awaits the
