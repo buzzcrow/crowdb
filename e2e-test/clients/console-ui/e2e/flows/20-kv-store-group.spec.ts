@@ -5,10 +5,12 @@
 import { test, expect } from '../fixtures/realBackend';
 import { apiContext, addGroup, createStore } from '../fixtures/localSetup';
 import { step } from '../fixtures/stepTimer';
+import { javascriptErrors } from '../fixtures/javascriptErrors';
 
 test.describe('kv cluster · store + group CRUD', () => {
   // Baseline: 7.790s (2026-10-12)
   test('creates stores, groups and replicas through the UI against a real deployed server', async ({ page, baseURL }) => {
+    const noErrors = javascriptErrors(page);
     // The fixture supplies three admitted release nodes and a ready Group 0.
 
     // --- store + group creation chain (store 57, groups 570 / 580) ---
@@ -131,6 +133,7 @@ test.describe('kv cluster · store + group CRUD', () => {
           ]),
         );
       });
+      noErrors();
     } finally {
       await addReplicaApi.dispose();
     }

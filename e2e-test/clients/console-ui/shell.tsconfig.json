@@ -1,6 +1,7 @@
 {
   "extends": "./bridge.tsconfig.json",
   "include": [
+    "e2e/flows/11-cluster-standalone-lifecycle.spec.ts",
     "e2e/flows/12-cluster-discovery.spec.ts",
     "shell.config.ts",
     "e2e/flows/00-shell.spec.ts",

@@ -7,6 +7,7 @@ import { test, expect, consoleBaseURL } from '../fixtures/realBackend';
 import { addGroup, createStore, deployNodeServer, seedRackAndNode, stopNodeServer, waitForLeader } from '../fixtures/localSetup';
 import { step } from '../fixtures/stepTimer';
 import type { APIRequestContext } from '@playwright/test';
+import { javascriptErrors } from '../fixtures/javascriptErrors';
 
 const dataPath = '/api/stores/99/groups/990/kv';
 async function seedRows(request: APIRequestContext, rows: Array<{ key_hex: string; value_hex: string }>) {
@@ -56,6 +57,7 @@ test.describe('kv ops · put/get/scan/delete', () => {
   });
 
   test('Group selection opens data directly; pages replace rows and expose complete values', async ({ page, request }) => {
+    const noErrors = javascriptErrors(page);
     const records = Array.from({ length: 60 }, (_, i) => ({
       key_hex: Buffer.from(`key-${String(i).padStart(3, '0')}`).toString('hex'),
       value_hex: Buffer.from(`complete value ${i}`).toString('hex'),
@@ -84,6 +86,7 @@ test.describe('kv ops · put/get/scan/delete', () => {
       await expect(page.getByRole('region', { name: 'Selected key' })).toContainText('complete value 20');
       await pages.getByRole('button', { name: 'Previous', exact: true }).click();
       await expect(rows).toContainText(Array.from({ length: 20 }, (_, i) => `key-${String(i).padStart(3, '0')}`));
+      noErrors();
     } finally { await removeRows(request, records); }
   });
 

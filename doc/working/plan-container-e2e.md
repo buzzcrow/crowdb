@@ -233,7 +233,7 @@ and the named run artifacts.
   `run-ae039e342c7c4326b353645b38068f55`. Five stable/shared runs have redacted
   evidence under `.crowdb-runtime/artifacts/container-e2e/`.
   Old native Rust cases, four private helpers, seven old native browser callbacks
-  and their selectors are removed. Accepted Console inventory is 147.
+  and their selectors are removed. Accepted Console inventory is 148.
   `test-console` now runs only shared/CLI/Web component proofs, with no native
   server build or launcher. Important local process/ownership UTs remain.
   Component 263/263, fixture 104/104, image-source guard, native TypeScript,
@@ -296,50 +296,39 @@ and the named run artifacts.
   scope now selects its own configuration explicitly. The old case is removed.
   Constructor defaults still bootstrap existing native owners as before.
 
+- Four ordinary KV lifecycle source cases now share
+  `console::browser_lifecycle::standalone_kv_and_cascade`: Rack/Node creation
+  through UI with services disabled, fixed-port deployment, context menus, Ping,
+  PID-changing restart/stop, service deletion preserving its node, and node
+  deletion stopping its child. Node/Rack deletion Cancel also retains state.
+  The old full-chain source overlaps this owner, logical CRUD and actual KV value
+  browsing. Its JS error checks are shared by those owners; replica identities
+  and stored values remain verified. Sources `{11,90}-*.spec.ts` are retired.
+  Browser gates 10.8 / 7.2 / 3.0 s, logs
+  `/tmp/crowdb-{standalone,logical,kv}-ui-chain.log`. Fixture 105 and shell TS pass.
+
 ## Remaining browser migration
 
-- [ ] **Cluster and shell**: classify two rack/node
-  cases, four ordinary lifecycle cases, two Todo/service-progress cases, only. The six-service pre-Group-0 source case is retired: a release Web container
-  launches its actual PKV child, keeps the other five steps waiting and reloads
-  the durable plan. Owned namespace PID observation passes. Browser 2.0 s; log
-  `/tmp/crowdb-selected-plan-before-group0.log`; fixture gate 105 and shell TS pass.
-  Map cancel/default/tree/health,
-  selected-service persistence, process shutdown and failed-plan retry to
-  verified owners. Discovery now retains real stale-on-loss UI observations in two release
-  containers sharing one node network namespace. Web uses 9091 and the local
-  monitor provider uses 9095/9090. The old host-spawning source is deleted.
-  Browser 2.8 s; log `/tmp/crowdb-discovery-local-owned-provider.log`.
-  Shared control extraction passes the native PID/lifecycle gate; fixture gate
-  is now 105 pass. Files:
-  `app/crowdb-web/ui/e2e/flows/{10,11,13}-*.spec.ts`.
-  Shell behavior source is retired: four normal containers preserve live/stopped
-  eligibility, default Store/Group/Replica IDs, cancel, selection and Refresh.
-  Empty registry preserves Unknown; three-node lifecycle preserves Healthy.
-  Browser 4.3 s; fixture gate 104 pass; native TS and 28-package CI graph pass.
-  Logs: `/tmp/crowdb-shell-defaults-election.log`,
-  `/tmp/crowdb-shell-health-{unknown,healthy}.log`. Native profile/resource
-  accounting now supports 3–8 actual nodes; Console CI budget is 8 CPU / 12288 MiB.
-- Capacity's five DiskGroup source cases are retired. Three native browser owners
-  preserve tree/dialog/lifecycle, unassigned projection, and combined CRUD/owner
-  assignment. The last owner adds an actual mounted 4 TiB disk through the UI,
-  checks explicit owner/binding responses and persisted binding, observes exact
-  capacity and proves group deletion removes its disk. Browser 12.4 s; log:
-  `/tmp/crowdb-capacity-crud-response.log`. Accepted Console inventory: 147.
-  Lifecycle passes twice with unchanged 3-second response waits (15.4/15.9 s).
-  Verify its earlier single KV-stop response timeout in the final complete-domain
-  run; no timeout increase or retry remains. Logs:
-  `/tmp/crowdb-diskdb-ui-original-budget{,-second}.log`.
-  Current formal image fixes live-health precedence/full RPC address joins;
-  Inspector verifies three fixed-port instances retain distinct owned groups.
-  Logs: `/tmp/crowdb-diskdb-ui-validated-{inspector,binding}.log`.
-- [ ] **Topology and cross-domain**: review three topology cases and the two
-  full-chain/three-node-data flows. The old topology setup starts 23 nodes for
-  disjoint tests; select each flow's actual node subset instead. Preserve the
-  eight-node comparative topology, different group memberships, complete
-  leader/term/lease observations, exact bytes and cross-group scan isolation.
-  Retain the six-node storage-plus-diskless admission/data boundary in its
-  own container profile. Files:
-  `app/crowdb-web/ui/e2e/flows/{22,90,92}-*.spec.ts`.
+- [ ] **Cluster and service plans**: two Rack/Node cases and two Todo cases
+  remain. Review remaining defaults, Inspector type/raw-field filtering,
+  Store deletion confirmation, three-node plan/listener isolation, disk-group
+  ownership/tree projection and failed-plan retry assertions against accepted
+  owners. Retire only after the remaining distinct assertions pass. Sources:
+  `app/crowdb-web/ui/e2e/flows/{10,13}-*.spec.ts`.
+- [ ] **Topology and data flow**: three topology cases and the six-node data
+  case remain. Preserve independent groups on distinct node subsets, SIMPLE /
+  COMPLEX topology comparison, and three storage + three diskless nodes with
+  actual KV/S3/Iceberg data. Each physical node uses its own release container.
+  Remove the old 23-server shared topology setup and port allocator only after
+  equivalent flow coverage passes. Sources `{22,92}-*.spec.ts`.
+- Current native fixture supports 3–8 actual nodes with matching disk/zone
+  profiles and resource accounting. Console CI currently budgets 8 CPU /
+  12288 MiB; larger topology owners must update or split this budget coherently.
+- An earlier single native KV-stop response timeout remains a final regression
+  check. Four later lifecycle runs pass with the original 3-second response wait;
+  no timeout increase or assertion retry remains. Current formal image fixes
+  live-health precedence and full RPC address joins; Inspector proves distinct
+  fixed-port owners. Detailed redacted evidence is in run artifacts.
 
 ## Final integration and closure
 
@@ -381,7 +370,7 @@ and the named run artifacts.
   `run-5cfba02195364ce483aac4b5a3eaf1ee`; logs under
   `/tmp/crowdb-voting-epoch-final-{console,deployment}-ci.log`.
   The twenty-five newer browser cases, two CLI replay cases and nineteen native client cases pass separately and are not
-  included in the complete 96-case measurement. Current accepted Console inventory is 147;
+  included in the complete 96-case measurement. Current accepted Console inventory is 148;
   final full-domain measurement remains pending. Remote CI and macOS remain
   unmeasured. Files: `doc/working/test.md`, root runner reports.
 - [ ] **Close R230**: after inventory, assertion mapping, local gates and required
