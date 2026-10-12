@@ -39,7 +39,7 @@ pub(super) fn for_intent(profile: &DeploymentProfile, intent: &NodeServiceIntent
             "http://{address}{}",
             match intent.kind.as_str() {
                 "access" => "/_crowdb/health/ready",
-                "chunkdb" => "/ready",
+                "diskdb" | "chunkdb" | "chunk-kv" => "/ready",
                 _ => "/health",
             }
         )

@@ -262,6 +262,26 @@ and the named run artifacts.
   The first multipart finalization 503 (`run-0e4befd609a043d5bacea2916fdea241`)
   had no underlying error log and remains unexplained; later exact serial and
   concurrent runs pass. Keep normal failure logging and investigate if it recurs.
+  Draft `console.native.inspection` prepares the original 80/256/256-GiB disk
+  geometry, verifies 512 values across normal production balancing and allocates
+  the original 21 Mirror/EC chunks. Its host browser selects exactly sixteen
+  literal diagnostics, excluding the separately owned lifecycle, waiting-plan,
+  slow-transition and large-Journal phases. Original browser baseline is running
+  through `/tmp/crowdb-native-inspection-original-baseline.py`; no acceptance or
+  legacy deletion is claimed yet. Browser serializers/wire types are snapshotted
+  from the verified UI source into the host client before its digest is recorded.
+  Public storage setup now matches the original order: one prebound group,
+  all three DiskDB registrations, then the other two groups and all disks.
+  The original selection passes 14/16 in the second baseline. Chunk ownership
+  fails because admitted `kv-1` displays as `PKV-kv-1` instead of the canonical
+  `PKV-1`; its Store subtree is present. Journal recovery fails because remote
+  restart returns 200 before the Chunk-KV listener binds. Preserve both literal
+  assertions. Normalize the admitted KV label, and complete typed service
+  execution only after its actual ready probe succeeds within the existing
+  ten-second startup contract. Label UT and monitor probe/process/supervisor
+  gates pass. Split these two diagnostics into independent short scopes;
+  the remaining inspection phase owns fourteen browser cases. Rebuild once and
+  validate the two exact original cases before accepting the new owners.
 
 ## Final integration and closure
 
@@ -271,7 +291,7 @@ and the named run artifacts.
   Remove duplicate old owners only after verification. Unused native KV/storage
   harnesses are removed; shared `TestDir`/ownership UTs remain. Explicit production
   local-launch port allocation remains until its deployment callers are audited.
-  Latest Rust client audit: 299 compiled tests = 286 registered required/manual
+  Previous Rust client audit: 299 compiled tests = 286 registered required/manual
   owners + 13 preparation/isolation helpers; shell browser cases are separate
   host owners. Evidence: `/tmp/crowdb-r230-current-client-helper-audit.txt`.
   Refresh after further migration; remaining launch-site evidence is

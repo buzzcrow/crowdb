@@ -97,11 +97,11 @@ pub(super) async fn execute(
                     }
                 }
             }
-            Some(
-                processes
-                    .start(&service, &std::collections::BTreeMap::new())
-                    .await?,
-            )
+            let pid = processes
+                .start(&service, &std::collections::BTreeMap::new())
+                .await?;
+            wait_ready(profile, processes, &intent).await?;
+            Some(pid)
         }
     } else {
         None
@@ -115,6 +115,28 @@ pub(super) async fn execute(
         },
     )?;
     Ok(json!({"pid": pid, "operation_id": intent.operation_id}))
+}
+
+async fn wait_ready(
+    profile: &DeploymentProfile,
+    processes: &mut ProcessManager,
+    intent: &NodeServiceIntent,
+) -> Result<()> {
+    let service = super::probes::for_intent(profile, intent)?;
+    let probes = crate::ProbeExecutor::new(intent.kind == "diskio")?;
+    let environment = std::collections::BTreeMap::new();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if !processes.alive(&intent.service_id)? {
+                return Err("managed service exited before readiness".into());
+            }
+            if probes.probe_service(&service, &environment).await.is_ok() {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await?
 }
 
 async fn verify_intent(binding: &NodeBinding, intent: &NodeServiceIntent) -> Result<()> {
