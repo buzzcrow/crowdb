@@ -61,6 +61,12 @@ async function deployDiskDb(page: Page, request: APIRequestContext, kv: LiveServ
   }
   await expect(page.getByRole('menuitem', { name: 'Deploy DiskDB', exact: true })).toHaveCount(0);
   await page.keyboard.press('Escape');
+  await row.getByRole('button', { name: 'DDB-1', exact: true }).click();
+  const inspector = page.getByRole('complementary', { name: 'Entity inspector', exact: true });
+  await expect(inspector.getByText('Type', { exact: true }).locator('..').locator('dd')).toHaveText('DiskDB');
+  await expect(inspector.getByText(/service_type/)).toHaveCount(0);
+  await serviceRow(page, kv).getByRole('button').click();
+  await expect(inspector.getByText('Type', { exact: true }).locator('..').locator('dd')).toHaveText('KV');
   return ddb;
 }
 

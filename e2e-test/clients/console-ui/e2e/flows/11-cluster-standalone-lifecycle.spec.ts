@@ -77,7 +77,7 @@ test('standalone release KV lifecycle preserves node records and cascades owned 
   noErrors();
   await node.click({ button: 'right' });
   for (const name of ['Deploy DiskDB', 'Ping', 'Delete Node']) await expect(page.getByRole('menuitem', { name, exact: true })).toBeVisible();
-  for (const name of ['Deploy CrowDB Storage', 'Restart CrowDB Storage', 'Stop CrowDB Storage']) await expect(page.getByRole('menuitem', { name, exact: true })).toHaveCount(0);
+  for (const name of ['Deploy CrowDB Storage', 'Restart CrowDB Storage', 'Stop CrowDB Storage', 'Add Disk Group']) await expect(page.getByRole('menuitem', { name, exact: true })).toHaveCount(0);
   await page.keyboard.press('Escape');
   const ping = page.waitForResponse(response => new URL(response.url()).pathname === '/api/nodes/1/ping');
   await diskMenu(page, node, 'Ping');

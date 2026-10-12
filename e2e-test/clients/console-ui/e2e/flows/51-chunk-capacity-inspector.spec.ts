@@ -30,6 +30,21 @@ async function verifyOwnerProjection(page: Page, request: APIRequestContext, har
       await expect(tree.getByTestId(`tree-node-CL-DG-${physical.node_id}-${id}`)).toBeVisible();
     }
   }
+  for (const physical of hardware.disk_groups.filter((row: { node_id: number }) => row.node_id === 1)) {
+    const group = sidebar.getByTestId(`tree-node-CL-DG-1-${physical.disk_group_id}`).locator(':scope > [role="treeitem"]');
+    await group.getByRole('button', { name: 'Expand', exact: true }).click();
+    for (const disk of physical.disks) await expect(sidebar.getByTestId(`tree-node-CL-D-1-${physical.disk_group_id}-${disk.disk_id}`)).toBeVisible();
+  }
+  const expand = page.getByRole('button', { name: /^N-1 Expand children\b/ });
+  if (await expand.count()) await expand.click();
+  else await expect(page.getByRole('button', { name: /^N-1 Collapse children\b/ })).toBeVisible();
+  for (const physical of hardware.disk_groups.filter((row: { node_id: number }) => row.node_id === 1)) {
+    const graph = page.locator(`.react-flow__node[data-id="CL-DG-1-${physical.disk_group_id}"]`);
+    await expect(graph).toBeVisible();
+    for (const disk of physical.disks) await expect(graph.getByTestId('compact-disk-stack')).toContainText(disk.disk_id.slice(0, 12));
+  }
+  await expect(sidebar.getByTestId('tree-node-S-1-1')).toHaveCount(0);
+  await expect(page.locator('.react-flow__node[data-id="S-1-1"]')).toHaveCount(0);
 }
 
 // Baseline: 2.6s (2026-10-12).
@@ -56,6 +71,7 @@ test('native diagnostics: disk Inspector and Capacity selection retain two actua
   const first = await diskBranch(page, 1, 1);
   await diskBranch(page, 1, 581);
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
+  for (const node of [1, 2, 3]) await expect(sidebar.getByTestId(`tree-node-DDB-${node}`)).toHaveCount(0);
   await sidebar.getByTestId('tree-node-R-1').locator(':scope > [role="treeitem"]')
     .getByRole('button', { name: /^R-1 / }).click();
   await expect(page.getByRole('heading', { name: 'Capacity — Rack 1', exact: true })).toBeVisible();

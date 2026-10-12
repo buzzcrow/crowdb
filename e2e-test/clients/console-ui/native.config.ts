@@ -8,6 +8,7 @@ export default defineConfig({
   metadata: { fileBackedSync: true },
   timeout: 180_000,
   testMatch: [
+    '**/13-node-service-plans.spec.ts',
     '**/01-shell-ui-behaviors.spec.ts',
     '**/11-cluster-server-lifecycle.spec.ts',
     '**/11-cluster-diskdb-lifecycle.spec.ts',

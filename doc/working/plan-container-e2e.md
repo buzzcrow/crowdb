@@ -233,7 +233,7 @@ and the named run artifacts.
   `run-ae039e342c7c4326b353645b38068f55`. Five stable/shared runs have redacted
   evidence under `.crowdb-runtime/artifacts/container-e2e/`.
   Old native Rust cases, four private helpers, seven old native browser callbacks
-  and their selectors are removed. Accepted Console inventory is 148.
+  and their selectors are removed. Accepted Console inventory is 149.
   `test-console` now runs only shared/CLI/Web component proofs, with no native
   server build or launcher. Important local process/ownership UTs remain.
   Component 263/263, fixture 104/104, image-source guard, native TypeScript,
@@ -309,12 +309,16 @@ and the named run artifacts.
 
 ## Remaining browser migration
 
-- [ ] **Cluster and service plans**: two Rack/Node cases and two Todo cases
-  remain. Review remaining defaults, Inspector type/raw-field filtering,
-  Store deletion confirmation, three-node plan/listener isolation, disk-group
-  ownership/tree projection and failed-plan retry assertions against accepted
-  owners. Retire only after the remaining distinct assertions pass. Sources:
-  `app/crowdb-web/ui/e2e/flows/{10,13}-*.spec.ts`.
+- Rack/Node and Todo sources are retired. Fixed ports in three actual nodes
+  isolate DiskDB plans; a real DiskIO on 7102 causes only node 1 to fail. Removing
+  it and retrying through UI preserves all node IDs and the 7100 override.
+  Inspector owns real compact-disk canvas labels and excludes logical stores
+  from Cluster and services from Capacity. Existing native lifecycle checks
+  DiskDB/KV type labels and omission of raw service_type; logical deletion checks
+  Store Cancel/confirm; standalone lifecycle checks Node/Rack confirmation and
+  context menus. Logs `/tmp/crowdb-node-plan-{projection,retry}.log` and
+  `/tmp/crowdb-rack-node-{types,confirmation,node-menu}.log`; fixture 105 and
+  native/shell TypeScript pass. Accepted Console inventory is 149.
 - [ ] **Topology and data flow**: three topology cases and the six-node data
   case remain. Preserve independent groups on distinct node subsets, SIMPLE /
   COMPLEX topology comparison, and three storage + three diskless nodes with
@@ -370,7 +374,7 @@ and the named run artifacts.
   `run-5cfba02195364ce483aac4b5a3eaf1ee`; logs under
   `/tmp/crowdb-voting-epoch-final-{console,deployment}-ci.log`.
   The twenty-five newer browser cases, two CLI replay cases and nineteen native client cases pass separately and are not
-  included in the complete 96-case measurement. Current accepted Console inventory is 148;
+  included in the complete 96-case measurement. Current accepted Console inventory is 149;
   final full-domain measurement remains pending. Remote CI and macOS remain
   unmeasured. Files: `doc/working/test.md`, root runner reports.
 - [ ] **Close R230**: after inventory, assertion mapping, local gates and required

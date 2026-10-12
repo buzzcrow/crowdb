@@ -203,6 +203,20 @@ test.describe('kv cluster · store + group CRUD', () => {
         expect(response.ok(), await response.text()).toBeTruthy();
         expect(await response.json()).not.toEqual(expect.arrayContaining([expect.objectContaining({ group_id: 880 })]));
       });
+      const store = page.getByRole('complementary', { name: 'Cluster tree sidebar' })
+        .getByTestId('tree-node-S-88').locator(':scope > [role="treeitem"]');
+      await store.click({ button: 'right' });
+      await page.getByRole('menuitem', { name: 'Delete Store', exact: true }).click();
+      const remove = page.getByRole('dialog', { name: 'Delete Store', exact: true });
+      await remove.getByRole('button', { name: 'Cancel', exact: true }).click();
+      await expect(store).toBeVisible();
+      await store.click({ button: 'right' });
+      await page.getByRole('menuitem', { name: 'Delete Store', exact: true }).click();
+      await remove.getByRole('button', { name: 'Delete Store', exact: true }).click();
+      await expect(store).toHaveCount(0);
+      const stores = await groupApi.get('/api/stores');
+      expect(stores.ok(), await stores.text()).toBe(true);
+      expect(await stores.json()).not.toEqual(expect.arrayContaining([expect.objectContaining({ store_id: 88 })]));
     } finally {
       await groupApi.dispose();
     }
