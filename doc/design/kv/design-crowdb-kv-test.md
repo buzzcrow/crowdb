@@ -41,42 +41,42 @@ store      (PxKvStore: many groups, one node identity, routing)   <- lib/crowdb-
       election (PxLocalReplica election state machine, pure logic) <- lib/crowdb-kv/tests/election.rs
       wal    (WalEngine: durable log)   slot (PxSlotList)           <- lib/crowdb-kv/tests/wal.rs, slot.rs
         unit (pure modules: codec, classifier, kv engine, roles)   <- lib/crowdb-kv/tests/{paxos,kv}.rs + wal/slot codec tests
-deployment (crowdb-kv-server binary + HTTP mgmt API + multi-process)  <- app/crowdb-kv-server/tests/*
+deployment (release containers + host HTTP/RPC clients)          <- e2e-test/tests/{kv,deployment}/*
 console    (mgmt API server + CLI: Axum REST, CLI commands)        <- app/crowdb-{web,cli}/tests/*
-ui e2e     (Playwright browser: SPA + real backend)                <- app/crowdb-web/ui/e2e/*
+ui e2e     (host Playwright browser + release node containers)   <- e2e-test/clients/console-ui/e2e/*
 ```
 
 ## 3. Test Binary Map
 
-| Binary | Layer | Drives |
-| --- | --- | --- |
-| `lib/crowdb-kv/tests/paxos.rs` | unit | `acceptor`, `learner`, `error` classifier, `roles` in isolation |
-| `lib/crowdb-kv/tests/kv.rs` | unit | `InMemKV` / `KVEngine` / `CrowdbTreeEngine` apply semantics |
-| `lib/crowdb-kv/tests/election.rs` | unit | `PxLocalReplica` election state machine (role transitions, vote granting, heartbeat, lease, term fencing) |
-| `lib/crowdb-kv/tests/wal.rs` | subsystem | `WalEngine` append/replay/gc/segment + record codec + backends |
-| `lib/crowdb-kv/tests/slot.rs` | subsystem | `PxSlotList` / `PxSlotNode` |
-| `lib/crowdb-kv/tests/replica.rs` | replica | single `PxLocalReplica` (no peers) |
-| `lib/crowdb-kv/tests/group.rs` | group | `PxGroup` multi-node clusters (real loopback crowdb-rpc, no mocks) |
-| `lib/crowdb-kv/tests/store.rs` | store | `PxKvStore` routing / lifecycle / status / health |
-| `app/crowdb-kv-server/tests/*` | deployment | server binary + HTTP API, multi-process clusters, CLI, startup |
-| `lib/crowdb-kv-client/tests/*` | client e2e | `CrowdbClient` retry, topology cache, `NotLeaderHint` follow, `AnyReplica` read distribution + fallback against embedded crowdb-rpc servers |
-| `app/crowdb-web/tests/*` | console mgmt API | Axum REST API server: node management, OpenAPI proxy, API forwarding |
-| `lib/crowdb-console-shared/tests/*`, `app/crowdb-cli/tests/*` | console mgmt API | shared core (config, API client, health aggregation) + CLI commands |
-| `app/crowdb-cli/tests/bench_benchmark.rs` | benchmark | `bench benchmark` lifecycle (deploy → run → collect → report → cleanup) + `bench compare` |
-| `app/crowdb-web/ui/e2e/*` | UI E2E | Playwright browser tests: SPA interactions, context menus, dialogs, KV panel |
+| Binary                                                        | Layer            | Drives                                                                                                                                      |
+| ------------------------------------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lib/crowdb-kv/tests/paxos.rs`                                | unit             | `acceptor`, `learner`, `error` classifier, `roles` in isolation                                                                             |
+| `lib/crowdb-kv/tests/kv.rs`                                   | unit             | `InMemKV` / `KVEngine` / `CrowdbTreeEngine` apply semantics                                                                                 |
+| `lib/crowdb-kv/tests/election.rs`                             | unit             | `PxLocalReplica` election state machine (role transitions, vote granting, heartbeat, lease, term fencing)                                   |
+| `lib/crowdb-kv/tests/wal.rs`                                  | subsystem        | `WalEngine` append/replay/gc/segment + record codec + backends                                                                              |
+| `lib/crowdb-kv/tests/slot.rs`                                 | subsystem        | `PxSlotList` / `PxSlotNode`                                                                                                                 |
+| `lib/crowdb-kv/tests/replica.rs`                              | replica          | single `PxLocalReplica` (no peers)                                                                                                          |
+| `lib/crowdb-kv/tests/group.rs`                                | group            | `PxGroup` multi-node clusters (real loopback crowdb-rpc, no mocks)                                                                          |
+| `lib/crowdb-kv/tests/store.rs`                                | store            | `PxKvStore` routing / lifecycle / status / health                                                                                           |
+| `app/crowdb-kv-server/tests/*`                                | component        | management handlers, validation and deterministic local state                                                                               |
+| `e2e-test/tests/kv/*`, `e2e-test/tests/deployment/*`          | container E2E    | packaged server startup, public management/RPC, persistence and recovery                                                                    |
+| `lib/crowdb-kv-client/tests/*`                                | client component | `CrowdbClient` retry, topology cache, `NotLeaderHint` follow, `AnyReplica` read distribution + fallback against embedded crowdb-rpc servers |
+| `app/crowdb-web/tests/*`                                      | console mgmt API | Axum REST API server: node management, OpenAPI proxy, API forwarding                                                                        |
+| `lib/crowdb-console-shared/tests/*`, `app/crowdb-cli/tests/*` | console mgmt API | shared core (config, API client, health aggregation) + CLI commands                                                                         |
+| `app/crowdb-cli/tests/*`                                      | CLI component    | argument validation, protocol stubs and comparisons; real cluster lifecycle has a container owner                                           |
+| `e2e-test/clients/console-ui/e2e/*`                           | UI container E2E | host browser interactions against owned release nodes and fixed endpoints                                                                   |
+| `app/crowdb-web/ui/src/**/*.test.*`                           | UI component     | deterministic hooks, rendering and state transitions                                                                                        |
 
 ## 4. Cross-Cutting Coverage Rules
 
-**Placement rule:** a test that only needs the `crowdb-kv` library (even if it
-binds the embedded crowdb-rpc server via `PxKvStore::start`) lives in `crowdb-kv`. A
-test that boots the `crowdb-kv-server` binary / HTTP management API migrates
-to the centralized container E2E component. Its first KV profile runs packaged
-servers on isolated bridges and a network-local Rust RPC client, preserving
-protocol assertions, crash recovery and concurrent-fixture isolation. Remaining
-process suites keep their component owner until each migration retains its
-assertions; component-local logic tests remain in `crowdb-kv-server`. See the
-[container E2E component](../../../e2e-test/README.md) for current
-profiles and migration ownership.
+**Placement rule:** deterministic algorithms, pinned roles, injected failures and
+client/supervisor protocol stubs remain component-local, including embedded RPC
+used to verify these internal contracts. Scenarios that start production server
+binaries or exercise externally observable assembled service flows belong to the
+[container E2E component](../../../e2e-test/README.md). Each mutating owner uses
+its own release containers, network and data roots. Rust, SDK and browser clients
+run on the host using inspected IPs and fixed ports; there is one canonical owner
+per boundary flow. Component tests require neither Docker nor server binaries.
 
 **KV operation correctness rule:** every layer that applies KV mutations
 (replica, group, store) must test all operation types and orderings:

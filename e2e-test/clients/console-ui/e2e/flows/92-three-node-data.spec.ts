@@ -1,6 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-// Baseline: 49.6s (2026-10-06), three storage nodes, three diskless nodes and real data round trips.
+// Baseline: 68.0s (2026-10-12), six release nodes and real data round trips.
 import { test, expect } from '../fixtures/realBackend';
 import { waitForLeader } from '../fixtures/localSetup';
 import { queueFullPlans } from '../fixtures/fullServicePlans';

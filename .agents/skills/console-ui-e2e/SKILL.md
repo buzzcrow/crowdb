@@ -8,7 +8,7 @@ description: Change visible CROWDB console UI or work on its Playwright E2E test
 
 # Console UI E2E
 
-Apply to `app/crowdb-web/ui/src/**` and `app/crowdb-web/ui/e2e/**`, including
+Apply to `app/crowdb-web/ui/src/**` and `e2e-test/clients/console-ui/**`, including
 browser-test failures and runtime regressions. Run the affected spec for every
 visible change; add a regression assertion for every UI bug fix.
 
@@ -18,9 +18,11 @@ visible change; add a regression assertion for every UI bug fix.
   single-worker suite: `0x` shell, `1x` physical, `2x` KV cluster, `3x` KV
   data, `4x` inspector, `5x` capacity/DiskDB, `9x` cross-function.
 - Extend the existing page-function spec; add one only for a new function.
-- Share cluster setup with `beforeAll`, clean up in `afterAll`, and run
-  mutating cases last. Use unique IDs and `freePort()` per file.
-- Use `resetAll` only when an empty backend is required.
+- Register each mutating flow under the root runner with an owned release
+  fixture. Use inspected node IPs and fixed ports; host browser clients never
+  launch server binaries. Fresh fixtures provide empty-backend isolation.
+- Preserve original distinct assertions when coalescing flow owners. Important
+  deterministic UI logic remains in component tests.
 - Record `// Baseline: Xs (date)`; investigate runtime above 2x.
 - Measure the current exact test before changing it; saved timing reports may
   describe an earlier worktree. Compare Playwright's per-test time, not the
@@ -53,11 +55,11 @@ does not need that reference.
 ## Run
 
 ```sh
-pixi run cargo build -p crowdb-kv-server -p crowdb-diskdb -p crowdb-cli
-pixi run bash -c 'export CROWDB_KV_SERVER_BINARY=$(pwd)/target/debug/crowdb-kv-server \
-  && cd app/crowdb-web/ui \
-  && npx playwright test --config=e2e/realBackend.config.ts e2e/flows/NN-<area>-<fn>.spec.ts'
+pixi run clean-env
+pixi run test-container-e2e --scope console.operations --case <registered-owner> --concurrency 1 --node-cpus 0.25 --cpus 8 --memory-mib 16384
 ```
 
-Use `pixi run test-console-ui` for the full suite only when requested. If
-blocked, keep the regression assertion and report why.
+Use the root runner for the full Console container domain. `pixi run test-console-ui`
+runs UI component tests and types without servers or Docker. Browser tests use
+an installed system browser; do not install a private browser. If blocked,
+keep the regression assertion and report why.

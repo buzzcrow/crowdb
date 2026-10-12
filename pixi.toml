@@ -233,12 +233,12 @@ test-access = { cmd = "bash tools/pixi-tasks/test-access.sh" }
 # Build the debug binary explicitly so tests find it at target/debug/.
 test-console = { cmd = "bash tools/pixi-tasks/test-console.sh" }
 
-# ── UITests job: Playwright browser E2E + subprocess spawning ──
+# ── UITests job: deterministic UI component tests ──
 test-console-ui = { cmd = "bash tools/pixi-tasks/test-console-ui.sh", depends-on = ["install-ui-deps"] }
 
 # ── Full local suite (not a CI job; runs everything in one process) ──
 # Grouped by CI job order. Each group task owns its component list;
-# subprocess groups clean the environment before starting.
+# Component tasks run first; one root container aggregate follows.
 test-suite = { cmd = "bash tools/pixi-tasks/test-suite.sh", depends-on = ["build-cpp", "install-ui-deps"] }
 
 # ── Coverage & LOC ───────────────────────────────────────────────

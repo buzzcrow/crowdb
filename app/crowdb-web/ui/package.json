@@ -8,10 +8,10 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "lint": "tsc --noEmit --project tsconfig.e2e.json",
+    "lint": "tsc --noEmit --project tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test",
+    "test:e2e": "pixi run --manifest-path ../../../pixi.toml test-container-e2e --scope console.operations --concurrency 2 --node-cpus 0.25 --cpus 8 --memory-mib 16384",
     "audit:lighthouse": "node scripts/lighthouse.mjs"
   },
   "dependencies": {

@@ -8,10 +8,12 @@ pixi run test-cpp
 pixi run test-core
 pixi run test-storage
 pixi run test-access
-pixi run -e s3-e2e test-boto3-e2e
-pixi run -e iceberg-e2e test-iceberg-e2e
-pixi run -e iceberg-e2e test-iceberg-sdk
-pixi run -e iceberg-e2e test-rust-iceberg-e2e
+pixi run -e iceberg-e2e test-iceberg-sdk-component
 pixi run test-console
-pixi run clean-env
 pixi run test-console-ui
+pixi run clean-env
+# One canonical execution for required server domains and isolation pairs.
+pixi run test-container-e2e --layer all --require-isolation \
+    --concurrency "${CROWDB_E2E_CONCURRENCY:-2}" \
+    --node-cpus "${CROWDB_E2E_NODE_CPUS:-0.25}" \
+    --cpus "${CROWDB_E2E_CPUS:-16}" --memory-mib "${CROWDB_E2E_MEMORY_MIB:-32768}"

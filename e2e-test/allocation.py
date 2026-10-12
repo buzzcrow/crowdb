@@ -38,7 +38,9 @@ def node_data(cluster, index, prepare_logs=True):
 
 def start_node(cluster, index, data, arguments, address=None, environment=(), mounts=(),
                cpus="0.5", memory="512m", running=True, preserve_network=False,
-               network_container=None):
+               network_container=None, pids_limit=256):
+    if type(pids_limit) is not int or not 1 <= pids_limit <= 4096:
+        raise ValueError("node PID limit must be a bounded positive count")
     if not running and address is None:
         raise ValueError("a deferred node needs an explicit advertised address")
     name = f"{cluster.run_id}-node{index}"
@@ -75,7 +77,7 @@ def start_node(cluster, index, data, arguments, address=None, environment=(), mo
     cpus = str(getattr(cluster, "node_cpus", cpus))
     operation = ("run", "-d") if running else ("create",)
     cluster.command(*operation, "--name", name, "--label", f"{LABEL}={cluster.run_id}",
-                    *network_args, "--cpus", cpus, "--memory", memory, "--pids-limit", "256",
+                    *network_args, "--cpus", cpus, "--memory", memory, "--pids-limit", str(pids_limit),
                     *data_mount,
                     *mount_args, *environment_args, "--ulimit", "core=-1", cluster.image, *arguments)
     info = json.loads(cluster.command("inspect", name))[0]

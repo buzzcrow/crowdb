@@ -191,9 +191,11 @@ class Cluster:
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
                 (self.artifacts / f"topology-{index}.error").write_text(redact(str(error)))
         for name in self.containers:
-            for operation in ("logs", "inspect"):
+            for operation in ("logs", "inspect", "top"):
+                if operation == "top" and name not in self.servers:
+                    continue
                 try:
-                    output = self.command(operation, name)
+                    output = self.command(operation, name, "-eo", "pid,nlwp,comm") if operation == "top" else self.command(operation, name)
                     (self.artifacts / f"{name}-{operation}.log").write_text(redact(output))
                     if operation == "logs" and name in self.servers:
                         index = self.servers.index(name)

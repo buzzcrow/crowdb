@@ -50,8 +50,9 @@ class FixtureTest(unittest.TestCase):
                 return json.dumps(info) if args[0] == "inspect" else "created"
             cluster.command = command
             self.assertEqual(start_node(cluster, 2, Path(directory), ("server", "diskio"),
-                                        address, running=False), address)
+                                        address, running=False, pids_limit=512), address)
             self.assertEqual(calls[0][0], "create")
+            self.assertEqual(calls[0][calls[0].index("--pids-limit") + 1], "512")
             self.assertEqual(cluster.servers, cluster.containers)
             self.assertIn(f"{LABEL}={cluster.run_id}", calls[0])
             info[0]["NetworkSettings"]["Networks"][cluster.run_id]["IPAMConfig"]["IPv4Address"] = "other"
@@ -59,6 +60,16 @@ class FixtureTest(unittest.TestCase):
                 start_node(cluster, 3, Path(directory), (), address, running=False)
             with self.assertRaisesRegex(ValueError, "explicit advertised address"):
                 start_node(cluster, 4, Path(directory), (), running=False)
+
+    def test_invalid_pid_budget_fails_before_allocating_a_node(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cluster = Cluster("image", directory)
+            with patch.object(cluster, "command") as command:
+                for limit in (0, -1, 4097, True, "512"):
+                    with self.assertRaisesRegex(ValueError, "PID limit"):
+                        start_node(cluster, 0, None, (), pids_limit=limit)
+                command.assert_not_called()
+                self.assertEqual(cluster.containers, [])
 
     def test_logs_keep_stderr_and_inspection_keeps_machine_readable_stdout(self):
         completed = subprocess.CompletedProcess([], 0, '{"status":"ok"}', "fatal server error")

@@ -85,7 +85,7 @@ class NativeConsoleCluster(ShellBrowserCluster):
                 "--cpus", str(self.node_cpus), "--memory", "64m",
                 "--mount", f"type=bind,source={data},target=/opt/crowdb/data", self.image,
                 "-R", "crowdb:crowdb", "/opt/crowdb/data")
-            self.addresses.append(start_node(self, index, data, (), memory="2048m",
+            self.addresses.append(start_node(self, index, data, (), memory="2048m", pids_limit=512,
                 address=str(subnet.network_address + index + 2),
                 environment=("CROWDB_STARTUP_MODE=manual", f"CROWDB_PHYSICAL_HOST_ID={host}")))
         self.ready()

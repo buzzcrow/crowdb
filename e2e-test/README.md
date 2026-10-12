@@ -8,11 +8,11 @@ is `e2e-test`; server domains use separate test modules within this crate.
 The Python runner owns container lifecycle and scheduling. Browser and
 SDK clients with independent language dependencies live under `clients/<client>/`
 and consume the same fixture endpoints and ownership contract. They do not
-introduce separate server launchers. Domain profiles and migration scope are
-tracked in the [working plan](../doc/working/plan-container-e2e.md).
+introduce separate server launchers. Domain selection and measured remaining issues are tracked in
+[the test record](../doc/working/test.md).
 
 Test clients run on the host against inspected node-container IPs and fixed
-ports, with three node containers for a three-node cluster. Fresh one- through five-node profiles exercise management, membership,
+ports, with three node containers for a three-node cluster. Fresh one- through eight-node profiles exercise management, membership,
 async operations and multi-store routing. Host bridge IP reachability is
 required; remote Docker and Linux-VM routing are not implicitly supported.
 Containers supply server subsets or clusters from the formal release image;
@@ -441,3 +441,22 @@ resources and terminate the host browser children while retaining diagnostics.
   host SDK/JVM clients, optional Trino engine, fixed bridge endpoints, retained
   private data and public redacted reports. Both profiles recreate the formal
   server against its original mounted data and assert unchanged credentials.
+
+## Console browser ownership
+
+Browser flows live under `clients/console-ui/e2e/flows/`. The root runner owns
+normal release Web nodes and the actual service cluster; clients never launch
+host servers or allocate host ports. `test-console` and `test-console-ui` retain
+backend and UI component tests without Docker. The npm `test:e2e` entry delegates
+to the same required container domain:
+
+```sh
+pixi run test-container-e2e --scope console.operations --concurrency 2 --node-cpus 0.25 --cpus 8 --memory-mib 16384
+```
+
+Native full-service fixtures reserve 512 PIDs/threads per node and 2048 MiB,
+with a private network and fixed service ports. The six-node owner combines
+three storage and three diskless nodes; it reserves 6.5 CPU / 12800 MiB.
+Its normal DiskDB deployment requests a 3-second keepalive cadence. New disk
+initialization and actual SDK data checks remain bounded, and all selected
+services must deploy without user retry.

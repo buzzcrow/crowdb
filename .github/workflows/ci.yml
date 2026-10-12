@@ -463,7 +463,6 @@ jobs:
           .crowdb-runtime/**/*.md
           .crowdb-runtime/**/*.html
           .crowdb-runtime/**/trace.zip
-          app/crowdb-web/ui/e2e/test-results/
         include-hidden-files: true
         if-no-files-found: ignore
         retention-days: 7
@@ -489,15 +488,7 @@ jobs:
         pixi-version: latest
     - name: Cache cargo + target
       uses: Swatinem/rust-cache@v2
-    - name: Verify installed system browser
-      working-directory: app/crowdb-web/ui
-      run: |
-        for b in /snap/bin/chromium /usr/bin/chromium /usr/bin/chromium-browser /usr/bin/google-chrome /usr/bin/google-chrome-stable /usr/bin/microsoft-edge; do
-          [ -x "$b" ] && { echo "System browser found at $b."; exit 0; }
-        done
-        echo "::error::Console E2E requires an installed system Chromium, Chrome or Edge."
-        exit 1
-    - name: Run real-backend E2E suite
+    - name: Run UI component tests and types
       run: pixi run test-console-ui
     - name: Capture runner state on failure
       if: failure()
@@ -528,16 +519,6 @@ jobs:
           .crowdb-runtime/**/trace.zip
         include-hidden-files: true
         if-no-files-found: ignore
-        retention-days: 7
-    - name: Upload Playwright report on failure
-      if: failure()
-      uses: actions/upload-artifact@v4
-      with:
-        name: playwright-report
-        path: |
-          app/crowdb-web/ui/playwright-report
-          app/crowdb-web/ui/test-results
-          app/crowdb-web/ui/e2e/test-results
         retention-days: 7
     - name: Clean subprocesses
       if: always()
@@ -669,6 +650,13 @@ jobs:
         path: target
     - name: Import formal release image
       run: pixi run image-import target/crowdb.oci.tar --image crowdb-node:dev
+    - name: Verify installed system browser
+      run: |
+        for b in /snap/bin/chromium /usr/bin/chromium /usr/bin/chromium-browser /usr/bin/google-chrome /usr/bin/google-chrome-stable /usr/bin/microsoft-edge; do
+          [ -x "$b" ] && { echo "System browser found at $b."; exit 0; }
+        done
+        echo "::error::Console E2E requires an installed system Chromium, Chrome or Edge."
+        exit 1
     - name: Run Console, CLI and host browser flows
       run: pixi run test-container-e2e --scope console.operations --concurrency 2 --node-cpus 0.25 --cpus 8 --memory-mib 16384
     - name: Export redacted container diagnostics
