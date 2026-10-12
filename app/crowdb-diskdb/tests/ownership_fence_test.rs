@@ -13,6 +13,85 @@ use crowdb_protocol::{
 use std::sync::Arc;
 
 #[tokio::test]
+async fn stale_zone_loader_cannot_mark_a_successor_disk_offline() {
+    use crowdb_kv_client::ReadMode;
+    use crowdb_protocol::{
+        common::{HwStatus, OwnerMapValue},
+        diskdb::rpc::DiskValue,
+        key::{OwnerMapKey, TextKey},
+    };
+    let cluster = TestMetadata::start().await;
+    let kv = cluster.make_ddb_kv_client().with_ownership_fencing();
+    let hardware = cluster.make_hardware_client();
+    let owner_key = OwnerMapKey {
+        rack_id: 1,
+        node_id: 1,
+        disk_group_id: 1,
+    }
+    .to_path();
+    let owner = serde_json::to_vec(&OwnerMapValue {
+        instance_id: 1,
+        lease_expiry_ms: u64::MAX,
+    })
+    .unwrap();
+    let write = kv
+        .kv()
+        .put_cas(0, 0, owner_key.as_bytes(), &owner, 0)
+        .await
+        .unwrap();
+    let fence = OwnershipFence {
+        rack_id: 1,
+        node_id: 1,
+        disk_group_id: 1,
+        instance_id: 1,
+        generation: write.revision,
+    };
+    let group = DdbDiskGroup::new(1, 1, 1);
+    group.set_ownership_fence(Some(Arc::new(fence)));
+    let scoped = kv.for_group(&group);
+    let disk = DiskId { high: 0, low: 1 };
+    let online = DiskValue {
+        status: HwStatus::Up as i32,
+        ..Default::default()
+    };
+    hardware.add_disk(1, 1, 1, &disk, &online).await.unwrap();
+    scoped.mark_disk_offline_if_owned(&group, &disk).await.unwrap();
+    assert_eq!(
+        hardware.get_disk(1, 1, 1, &disk).await.unwrap().unwrap().status,
+        HwStatus::Offline as i32
+    );
+    hardware.add_disk(1, 1, 1, &disk, &online).await.unwrap();
+    let crowdb_kv_client::GetOutcome::Found { revision, .. } = kv
+        .kv()
+        .get(0, 0, owner_key.as_bytes(), ReadMode::Linearizable, None)
+        .await
+        .unwrap()
+    else {
+        panic!("owner must remain present")
+    };
+    assert!(scoped.mark_disk_offline_if_owned(&group, &disk).await.is_err());
+    group.set_ownership_fence(Some(Arc::new(OwnershipFence {
+        rack_id: 1,
+        node_id: 1,
+        disk_group_id: 1,
+        instance_id: 1,
+        generation: revision,
+    })));
+    let scoped = kv.for_group(&group);
+    let next = serde_json::to_vec(&OwnerMapValue {
+        instance_id: 2,
+        lease_expiry_ms: u64::MAX,
+    })
+    .unwrap();
+    kv.kv()
+        .put_cas(0, 0, owner_key.as_bytes(), &next, revision)
+        .await
+        .unwrap();
+    assert!(scoped.mark_disk_offline_if_owned(&group, &disk).await.is_err());
+    assert_eq!(hardware.get_disk(1, 1, 1, &disk).await.unwrap().unwrap(), online);
+}
+
+#[tokio::test]
 async fn handover_rejects_old_writes_and_cannot_reclaim_an_old_generation() {
     let cluster = TestMetadata::start().await;
     let kv = cluster.make_ddb_kv_client().with_ownership_fencing();

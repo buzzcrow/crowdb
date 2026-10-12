@@ -1,6 +1,6 @@
 use super::{
     full_scan, info, journal_replay, unit_capacity_for_zone, warn, Arc, Bind, Counter, DdbDisk, DdbDiskGroup,
-    DdbKvClient, DiskId, DiskMetrics, DiskValue, HardwareClient, HwStateMachine, HwStatus, KeepAlive,
+    DdbKvClient, DiskId, DiskMetrics, DiskValue, HwStateMachine, HwStatus, KeepAlive,
 };
 
 impl KeepAlive {
@@ -78,7 +78,6 @@ impl KeepAlive {
         let kv = Arc::new(kv.for_group(&dg));
         let cas_retry_metric = self.cas_retry_metric.clone();
         let disk_value_owned = disk_value.clone();
-        let hw = self.hw.clone();
         tokio::spawn(async move {
             Self::background_zone_load(
                 bind,
@@ -90,7 +89,6 @@ impl KeepAlive {
                 status_machine,
                 dg,
                 disk,
-                hw,
             )
             .await;
         });
@@ -112,7 +110,6 @@ impl KeepAlive {
         status_machine: HwStateMachine,
         dg: Arc<DdbDiskGroup>,
         disk: Arc<DdbDisk>,
-        hw: HardwareClient,
     ) {
         let zone_count = disk_value.zone_count;
         let zone_size_units = disk_value.zone_size_units;
@@ -236,10 +233,7 @@ impl KeepAlive {
         // transition so the next sync tick sees Offline (not Up) —
         // prevents the recover_disk_to_up loop on zone-load failure.
         if final_status == HwStatus::Offline {
-            if let Err(e) = hw
-                .set_disk_status(dg.rack_id, dg.node_id, dg.disk_group_id, &disk_id, final_status)
-                .await
-            {
+            if let Err(e) = kv.mark_disk_offline_if_owned(&dg, &disk_id).await {
                 warn!(
                     disk = ?disk_id,
                     status = ?final_status,

@@ -17,13 +17,15 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   `e2e-test/clients/console-ui/node_modules/` is local
   dependency state; never stage it.
 - Current formal image is built/imported from
-  `67d35ad0cb6242e4ea53d6f96cddd24883052618`, including S3 streaming,
+  `d3e35afe2ab1f2fc793f92699d26f051c2867993`, including S3 streaming,
   replica voting/epoch fixes, explicit Web readonly, remote Access endpoints,
-  monitor socket recovery, mounted node service logs, remote KV observations and configurable DDB heartbeat. OCI `sha256:1e79f90457ccf98eff4c254b1deb545605ca7a0f7900d37806e8a812a92cdc4a`;
-  config `sha256:1a6411a7582bd7d1c74ef8b4e0e25914341ec46afcd4638beaf22e0d48935081`;
-  runtime `3cce7d91cfc6d3006f0e2c13fde907df5f2b936a611b9a484d2e93b59bfb247b`.
+  monitor socket recovery, mounted node service logs, remote KV observations,
+  configurable DDB heartbeat and typed restart intent/claim fixes. OCI
+  `sha256:6689438c1bde1d596f55d055a650444c7573bb065f7fcdc2b1d2dcfa03e67e24`;
+  config `sha256:ad3e5c924e980b83589e0de4c0e70cd945337464e28fe9f0e26b5c39090a5a1a`;
+  runtime `1d9b35eaafba788c2a5157946d990af6ef5c5a9ce21096672682e07540fd5403`.
   Receipt: `target/crowdb.oci.tar.json`; optimized with retained debug information.
-  Logs: `/tmp/crowdb-diskdb-cadence-release-{stage,build,import}.log`.
+  Logs: `/tmp/crowdb-intent-before-stop-release-{stage,build,import}.log`.
   Last full S3 43/43 (1545.602 seconds) and Console 89/89 (644.632 seconds)
   used `b7b1247b`; backup `target/crowdb.oci-b7b1247b.tar[.json]` and tag
   `crowdb-node:b7b1247b` remain. These results are baselines, not full acceptance
@@ -36,7 +38,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 - Delete original real-server owners only after equivalent accepted assertions.
   Keep deterministic component UT. Run executable commands through `pixi run`;
   native server gates require `clean-env`, never during another server gate.
-- Accepted fixture gate: 96 pass, `/tmp/crowdb-remote-browser-final-fixture.log`,
+- Accepted fixture gate: 100 pass, `/tmp/crowdb-native-browser-final-fixture.log`,
   including managed browser and CLI ownership controls.
   S3 component UT passes 114/114; Access-server passes 108 plus its pinned
   SDK protocol test; Web/Console-shared/E2E all-target clippy
@@ -196,15 +198,6 @@ and the named run artifacts.
 
 ## Remaining migrations
 
-- User clarified: Docker Web is writable by default; only explicit readonly
-  disables writes. The public single-container profile enables readonly;
-  internal test profiles allow writes. Preserve Docker physical-mutation
-  restrictions. Implement process configuration, API mode and UI propagation,
-  component proofs and both release-container browser owners before closure.
-  Configuration 2/2, managed router 5/5 and UI production build pass; both
-  writable managed and public readonly release browser gates pass.
-
-
 - [~] **Console browser migration**: audit and migrate the remaining specs using
   `app/crowdb-web/ui/e2e/realBackend.config.ts`. Host browsers consume owned
   container endpoints; signals validate container ownership and current service
@@ -278,6 +271,20 @@ and the named run artifacts.
   deadlines. Recovery now explicitly includes the live authority leader as
   well as all six original Node-1 restart checks. Rebuild and verify before
   accepting either new owner.
+  The leader fence image completes those restart/PID/data checks but final
+  multipart allocation returns 503 (`run-6a96eaaf9f7e4ee5a4bd8eca01b57758`).
+  DiskDB diagnostics show an empty 80-GiB disk marked Offline, not exhausted
+  capacity. The former owner failed Zone baseline writes at ownership handover
+  then unconditionally published Offline after its successor completed loading.
+  Fence this failure write-back against the exact Group-0 owner revision; the
+  atomic owner/disk update must reject an intervening handover. Add a pinned
+  component proof and remove temporary host hardware sampling before final E2E.
+  A diagnostic repeat completes the whole recovery owner; this timing-sensitive
+  pass does not replace fixing the demonstrated stale-owner write.
+  The exact original S3 multipart browser passes in 10.596s command wall
+  (`/tmp/crowdb-s3-native-original-baseline.log`); its literal root copy passes
+  in `run-9ba19898aeb44582aa69e814048f6146`. Retire the original spec only after
+  the shared native batch is verified and committed.
 
 ## Final integration and closure
 
