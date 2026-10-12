@@ -81,6 +81,7 @@ class Case:
     iceberg_deferred_access: bool = False
     console_web: bool = False
     preserve_network: bool = False
+    native_client: bool = False
     native_browser: str | None = None
     shell_browser: str | None = None
     console_browser: str | None = None
@@ -349,6 +350,7 @@ ICEBERG_CASES = (
     Case("iceberg.namespace", "access_iceberg::namespace::namespace_functional_crud_survives_native_storage_and_listener_restart"),
 )
 CONSOLE_OPERATION_CASES = (
+    Case("console.native.binding", "console::native_binding::prebound_groups_acquire_live_owners_and_require_explicit_binding_repair", native_client=True),
     Case("console.browser.registry", "console::browser_registry::duplicate_ids", shell_browser="rejects duplicate rack and node IDs from the add dialogs"),
     Case("console.browser.node", "console::browser_node::replica_navigation", native_browser="cross-jumps between views and shows local + remote replicas"),
     Case("console.browser.node", "console::browser_node::store_navigation", native_browser="physical node with store shows cross-jump to logical store"),
@@ -498,7 +500,7 @@ def select_cases(layer="all", scope="all", case_name=None):
 
 
 def case_nodes(case):
-    if case.cli_replay or case.native_browser:
+    if case.cli_replay or case.native_browser or case.native_client:
         return 3
     if case.shell_browser:
         return 1
@@ -545,7 +547,7 @@ def case_nodes(case):
     return 2 if case.scope.startswith(("diskdb.", "chunkdb.")) else len(case.stores_per_node or case.stores)
 
 def case_resources(case, node_cpus):
-    if case.cli_replay or case.native_browser:
+    if case.cli_replay or case.native_browser or case.native_client:
         return max(1, node_cpus) * 3 + 0.5, 6656
     if case.shell_browser:
         return max(2, node_cpus) + 0.5, 2560
@@ -564,7 +566,7 @@ def case_resources(case, node_cpus):
 
 
 def allocate_cluster(case, image, artifacts, bundle, data_root):
-    if case.native_browser:
+    if case.native_browser or case.native_client:
         return NativeConsoleCluster(image, artifacts, bundle, data_root=data_root)
     if case.cli_replay:
         return CliContainerCluster(image, artifacts, bundle, data_root=data_root)
@@ -665,7 +667,7 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
         cluster = allocate_cluster(case, image, artifacts, bundle, data_root)
         cluster.case_name = case.name
         cluster.client_timeout = case.client_timeout
-        cluster.node_cpus = (max(1, node_cpus) if case.cli_replay or case.native_browser else
+        cluster.node_cpus = (max(1, node_cpus) if case.cli_replay or case.native_browser or case.native_client else
             max(2, node_cpus) if case.shell_browser or case.console_browser or len(case.service_selection) > 2 else node_cpus)
         (cluster.artifacts / "case.json").write_text(json.dumps({
             "scope": case.scope, "case": case.name}, indent=2))

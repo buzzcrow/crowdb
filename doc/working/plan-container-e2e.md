@@ -9,7 +9,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 
 ## Resume context
 
-- Branch `task-deploy`; latest accepted browser/CLI migration `62d5dec7`; native route migration `da0ab099`; runtime membership fix `cb159e7b`. R230 is unfinished. Do not delete the
+- Branch `task-deploy`; latest accepted browser migration `2e0f9ac2`; CLI migration `62d5dec7`; native route migration `da0ab099`; runtime membership fix `cb159e7b`. R230 is unfinished. Do not delete the
   requirement/backlog entry until every remaining owner and required gate passes.
 - The three-node native Console fixture is accepted for logical/Inspector browser
   owners. Its full storage/native migration remains pending. Shared-image CI,
@@ -17,13 +17,13 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   `e2e-test/clients/console-ui/node_modules/` is local
   dependency state; never stage it.
 - Current formal image is built/imported from
-  `929f878477a72bdfc02d07f332578c30d8b5a602`, including S3 streaming,
+  `67d35ad0cb6242e4ea53d6f96cddd24883052618`, including S3 streaming,
   replica voting/epoch fixes, explicit Web readonly, remote Access endpoints,
-  monitor socket recovery, mounted node service logs and remote KV observations. OCI `sha256:09765d1f335789614ce9e17e6b24a8eaa5734cf6f493110481b30bcdcad0be69`;
-  config `sha256:d4ebf58b564ad86b0d99c635a62add6ee7d5a1d5bb0ccdd130fc85b500747931`;
-  runtime `7ee465065b53dcbc62c935152abc62f3c3f6f325c17edc468ea8fe8e6e365f19`.
+  monitor socket recovery, mounted node service logs, remote KV observations and configurable DDB heartbeat. OCI `sha256:1e79f90457ccf98eff4c254b1deb545605ca7a0f7900d37806e8a812a92cdc4a`;
+  config `sha256:1a6411a7582bd7d1c74ef8b4e0e25914341ec46afcd4638beaf22e0d48935081`;
+  runtime `3cce7d91cfc6d3006f0e2c13fde907df5f2b936a611b9a484d2e93b59bfb247b`.
   Receipt: `target/crowdb.oci.tar.json`; optimized with retained debug information.
-  Logs: `/tmp/crowdb-remote-observation-release-{stage,build,import}.log`.
+  Logs: `/tmp/crowdb-diskdb-cadence-release-{stage,build,import}.log`.
   Last full S3 43/43 (1545.602 seconds) and Console 89/89 (644.632 seconds)
   used `b7b1247b`; backup `target/crowdb.oci-b7b1247b.tar[.json]` and tag
   `crowdb-node:b7b1247b` remain. These results are baselines, not full acceptance
@@ -184,7 +184,18 @@ and the named run artifacts.
   launcher, port allocator or mutation retry remains in these owners. Both
   original specs and the duplicate registry source case are removed.
 
+- The binding/owner portion of both native source cases now has one accepted
+  root owner: `console.native.binding` / `native_binding.rs`. It preserves
+  Store 1 pre-registration binding, lower Store preservation, acquisition within
+  three seconds, missing-binding 500 and explicit repair, stable owner identity
+  and nondecreasing lease expiry. The host uses public HTTP and the production
+  KV client; normal deployment selects a one-second heartbeat without test mode.
+  Acceptance: `run-da4f96d27d2c4e22b37a024f52611542`, 1/1 in 15.261s at
+  4 CPU / 8192 MiB. The two original native cases remain until all their other
+  assertions are migrated. Full storage and browser diagnostics are next.
+
 ## Remaining migrations
+
 - User clarified: Docker Web is writable by default; only explicit readonly
   disables writes. The public single-container profile enables readonly;
   internal test profiles allow writes. Preserve Docker physical-mutation
@@ -197,7 +208,7 @@ and the named run artifacts.
 - [~] **Console browser migration**: audit and migrate the remaining specs using
   `app/crowdb-web/ui/e2e/realBackend.config.ts`. Host browsers consume owned
   container endpoints; signals validate container ownership and current service
-  PID. Current accepted Console operation inventory is 122 cases. Shell,
+  PID. Current accepted Console operation inventory is 123 cases. Shell,
   registry, KV data, canvas, Inspector, logical/node navigation and both managed
   flows have accepted owners.
   Normal three-node admission, Group 0 and all storage service deployment are
@@ -226,21 +237,6 @@ and the named run artifacts.
   alone does not execute them. Preserve their browser callbacks and existing
   deadlines. Formal writable deployment control is required for this migration;
   managed Docker readonly cannot silently replace provisioning assertions.
-  The first extracted owner is `console.native.binding` / `native_binding.rs`:
-  Store 1 binding before DDB, lower Store preservation, real owner acquisition,
-  missing-binding 500 and explicit PUT repair, stable owner identities and
-  nondecreasing lease expiry. Its host context uses HTTP and the production KV
-  client, never an in-process Web router. It is registered but not yet accepted.
-  Initial adapter run reached the repair request (actual 204, corrected from
-  assumed 200); the next run exposed the original one-second heartbeat versus
-  release's ten-second default. Mounted DDB logs confirm the initial empty
-  sync and default cadence. Keep the original three-second owner bound.
-  Normal deploy now accepts validated `keepalive_interval_secs`; omitted keeps
-  production defaults, explicit 1 preserves the old test's cadence and remote
-  restart retains the committed configuration. Rebuild the formal artifact and
-  accept the extracted owner before increasing the accepted inventory.
-  Eleven focused DiskDB/Web component tests, workspace fmt and full clippy pass;
-  logs: `/tmp/crowdb-diskdb-cadence-{component,final-component,quality}.log`.
 
 ## Final integration and closure
 
@@ -281,8 +277,8 @@ and the named run artifacts.
   case slot). Reports: `run-ab39e156c2c24da39a5db1bfbcba1a7c` and
   `run-5cfba02195364ce483aac4b5a3eaf1ee`; logs under
   `/tmp/crowdb-voting-epoch-final-{console,deployment}-ci.log`.
-  The twenty-four newer browser cases and two CLI replay cases pass separately and are not
-  included in the complete 96-case measurement. Current accepted Console inventory is 122;
+  The twenty-four newer browser cases, two CLI replay cases and one native binding case pass separately and are not
+  included in the complete 96-case measurement. Current accepted Console inventory is 123;
   final full-domain measurement remains pending. Remote CI and macOS remain
   unmeasured. Files: `doc/working/test.md`, root runner reports.
 - [ ] **Close R230**: after inventory, assertion mapping, local gates and required

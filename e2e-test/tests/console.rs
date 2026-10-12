@@ -58,5 +58,7 @@ mod web_replicas;
 mod web_sealed_bootstrap;
 mod web_voters;
 
+mod native_binding;
+mod native_context;
 mod web_diskio_discovery;
 mod web_leader_removal;

@@ -318,6 +318,15 @@ pixi run test-container-e2e --layer s3 --scope s3.recovery --concurrency 1 --cpu
 
 ## Console browser flows
 
+`console.native.binding` uses three admitted release nodes and real DiskDB
+services to validate binding selection, owner acquisition and explicit repair
+of missing authoritative records. Its deployment selects a normal one-second
+heartbeat and retains the three-second acquisition assertion.
+
+```sh
+pixi run test-container-e2e --scope console.native.binding --cpus 4 --memory-mib 8192 --node-cpus 0.25
+```
+
 - `console.browser.shell` runs shell navigation and embedding checks with the
   pinned host browser against an ordinary release Web container. Each case has
   its own network, data mount and browser workspace; server ports stay fixed.
