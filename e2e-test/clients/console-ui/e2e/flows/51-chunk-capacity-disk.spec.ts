@@ -125,13 +125,22 @@ test('native diagnostics: disk maintenance menus route to owners and retain ever
   await page.getByRole('menuitem', { name: 'Offline', exact: true }).click();
   expect((await diskOffline).status()).toBe(204);
 
-  const paused = await request.post('/api/services/diskdb-1/stop', { data: {} });
-  expect(paused.ok(), await paused.text()).toBe(true);
+  const paused: string[] = [];
   try {
+    // Another allocator can take over after an owner stops. Keep every
+    // allocator paused while observing deliberately selected hardware states.
+    for (const node of [1, 2, 3]) {
+      const id = `diskdb-${node}`;
+      const response = await request.post(`/api/services/${id}/stop`, { data: {} });
+      expect(response.ok(), await response.text()).toBe(true);
+      paused.push(id);
+    }
     await hardwareBadges(page, request, first.id);
   } finally {
-    const resumed = await request.post('/api/services/diskdb-1/restart', { data: {} });
-    expect(resumed.ok(), await resumed.text()).toBe(true);
+    for (const id of paused) {
+      const resumed = await request.post(`/api/services/${id}/restart`, { data: {} });
+      expect(resumed.ok(), await resumed.text()).toBe(true);
+    }
   }
 });
 

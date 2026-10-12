@@ -59,8 +59,6 @@ Upstream: [R230](../backlog/R230-test-container-layer-e2e.md).
 
 ## Remaining tasks
 
-- [ ] Finish final quality gates and commit the accepted client/fixture repair
-  batch. Current logs: `/tmp/crowdb-r230-repair-final-{clippy,fmt,fixture}.log`.
 - [ ] Run complete Console and remaining affected container domains using the
   final debug release image. Each gate pins its image and client bundle.
   Record complete domain timings and only redacted diagnostics; AMD/macOS and
@@ -79,3 +77,46 @@ Upstream: [R230](../backlog/R230-test-container-layer-e2e.md).
   the standard 4-CPU runner, with constrained verification, or continue strict
   reservation and use a larger runner? Asked asynchronously while independent
   local tests continue. Memory remains a hard admission limit.
+
+## Running final gates
+
+- Accepted repair batch committed `57e680b6`; final workspace clippy, Rust fmt,
+  fixture 106 and browser TypeScript pass. No server CPU/memory quota changed.
+- Complete Console: `/tmp/crowdb-r230-console-acceptance.log`,
+  `run-1b64e21b7207408486f7c93831407c18`; concurrency cap 2, admission budget
+  16 CPU / 32768 MiB, native node 1 CPU / 2048 MiB. Image pinned to `c2745d61`.
+- Remaining domains are queued behind Console in
+  `/tmp/crowdb-r230-domain-gates.py` (running; log
+  `/tmp/crowdb-r230-domain-gates.log`). Deployment browser domain runs alone;
+  then two non-browser domain runners run concurrently, each with 16 CPU /
+  24576 MiB admission budgets. KV requires the concurrent isolation proof.
+  Keep production and E2E client inputs stable until their respective gates end.
+
+- Concurrency regression catches one remaining badge setup race: pausing only
+  DiskDB-1 lets DiskDB-2/3 take over new groups and replace deliberate Suspect
+  state during initialization. Real node logs confirm the takeover. Current
+  flow pauses all three actual allocators and resumes acknowledged stops in
+  finally; original six badge assertions remain. Exact gate pending.
+- Domain queue now waits for a passing complete run under
+  `/tmp/crowdb-r230-console-final`, so a failed interim Console run cannot
+  trigger unrelated network mutations during further browser repair gates.
+
+- Full concurrency regression additionally exposes a same-session deployment
+  progress race: Retry and automatic reconciliation send revision 4 concurrently
+  (PUTs 7 ms apart; one HTTP 409). A delayed-response regression UT reproduces
+  it before the fix. Start/Retry now queue behind the current reconciliation;
+  all 22 plan UTs and full UI 181/types pass, with cross-browser conflicts still
+  visible and no mutation retry added. New formal UI release and exact browser
+  gate are required before the next complete Console run.
+- The waiting badge recheck process was stopped before it allocated any fixture,
+  because the pending production UI repair requires a newly packaged image.
+
+- Completed concurrency run on `c2745d61`: 151 / 2 / 0, 2167.298 s,
+  excluding shared builds. Both newly exposed failures are reproduced and fixed.
+- Debug release from `9225badd` built/imported: OCI
+  `sha256:342f0376c3ee878a9f7c2779760e29e497458ad2681ea633a62f8950ba7b62f5`,
+  Docker `sha256:b3bd59255e79d66409089f85a44833797e17f8c3c949ae30c16cd33019447377`,
+  runtime `2f846afbf04c6146bd812f725dbd6eb4848e9cd591ccf5d1b73fc674282717ff`.
+  Exact badge (all three allocators paused) and plan reconciliation gates both
+  pass (`/tmp/crowdb-r230-ui-repair-gates.log`). Badge TypeScript also passes.
+  All original assertions and HTTP/DOM deadlines remain.
