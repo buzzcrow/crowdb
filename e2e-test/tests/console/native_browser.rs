@@ -59,6 +59,15 @@ async fn scanner_and_scoped_recalc() {
 }
 
 #[tokio::test]
+#[ignore = "requires normal DiskDB metadata and a host capacity browser"]
+async fn hardware_capacity_and_dashed_status() {
+    let context = TestNativeContext::connect().await;
+    super::native_storage::start_diskdb(&context, [128 * 1024; 3]).await;
+    let result = crate::common::control::native_browser().await;
+    assert_eq!(result["passed"], true);
+}
+
+#[tokio::test]
 #[ignore = "requires normal storage and owned container PID observations"]
 async fn auxiliary_process_menus() {
     browse_storage().await;

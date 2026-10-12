@@ -129,6 +129,8 @@ class NativeConsoleCluster(ShellBrowserCluster):
                     config="native.config.ts", extra_env={"CROWDB_NATIVE_PLAN_PREREQUISITES": "1"})
                 return {"passed": True}
             cases = {
+                "console::native_browser::hardware_capacity_and_dashed_status":
+                    "native diagnostics: hardware capacity aggregates disks and dashed status updates",
                 "console::native_browser::auxiliary_dialog_defaults":
                     "native diagnostics: auxiliary dialogs reopen with unused IDs ports and valid dependencies",
                 "console::native_browser::interrupted_plan_reconciliation":

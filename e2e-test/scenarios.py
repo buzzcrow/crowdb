@@ -352,6 +352,7 @@ ICEBERG_CASES = (
 )
 CONSOLE_OPERATION_CASES = (
     Case("console.native.geometry", "console::native_geometry::mixed_units_reject_consumers_without_starting_services", native_client=True),
+    Case("console.native.browser.hardware", "console::native_browser::hardware_capacity_and_dashed_status", native_client=True, client_timeout=360),
     Case("console.native.browser.transition", "console::native_browser::production_split_and_transfer_journals", native_client=True, native_disk_gib=(256, 256, 256), client_timeout=1020),
     Case("console.native.browser.lifecycle", "console::native_browser::auxiliary_process_menus", native_client=True, client_timeout=360),
     Case("console.native.browser.defaults", "console::native_browser::auxiliary_dialog_defaults", native_client=True, client_timeout=360),
