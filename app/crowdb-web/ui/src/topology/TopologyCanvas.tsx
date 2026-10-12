@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-import { useMemo, useCallback, useEffect, useRef, useState } from 'react';
+import { useMemo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import ReactFlow, {
   Background,
   ReactFlowProvider,
@@ -11,6 +11,7 @@ import ReactFlow, {
   Edge,
   useReactFlow,
   useNodesInitialized,
+  useStoreApi,
 } from 'reactflow';
 import { ScanSearch } from 'lucide-react';
 import 'reactflow/dist/style.css';
@@ -134,6 +135,7 @@ function TopologyCanvasInner({ active = true, scope, allServers, racks, nodes, s
   const { selectionForDomain, selectEntity } = useSelection();
   const selectedEntity = selectionForDomain(domain);
   const { fitView, setViewport, setCenter, getZoom, getNodes, getViewport } = useReactFlow();
+  const flowStore = useStoreApi();
   const canvasRef = useRef<HTMLDivElement>(null);
   const [canvasSizeKey, setCanvasSizeKey] = useState('');
   const nodesInitialized = useNodesInitialized();
@@ -153,6 +155,19 @@ function TopologyCanvasInner({ active = true, scope, allServers, racks, nodes, s
   // reference but the same action key) don't cancel an in-flight fit.
   const fitRafIdRef = useRef<number | undefined>(undefined);
   const lastCanvasSizeRef = useRef('');
+  useLayoutEffect(() => {
+    const stopMotion = () => {
+      // D3 computes zoom interpolation from the live panel extent. Interrupt
+      // before a hidden panel's zero extent can turn the viewport into NaN.
+      flowStore.getState().d3Selection?.interrupt();
+      if (fitRafIdRef.current != null) {
+        cancelAnimationFrame(fitRafIdRef.current);
+        fitRafIdRef.current = undefined;
+      }
+    };
+    if (!active) stopMotion();
+    return stopMotion;
+  }, [active, domain, flowStore]);
   const [collapsedByDomain, setCollapsedByDomain] = useState<Partial<Record<Domain, Set<string>>>>({});
   const hasUsableCanvas = useCallback(() => {
     const rect = canvasRef.current?.getBoundingClientRect();
@@ -308,6 +323,7 @@ function TopologyCanvasInner({ active = true, scope, allServers, racks, nodes, s
   useEffect(() => {
     if (!active || !nodesInitialized || positioned.nodes.length === 0 || !hasUsableCanvas()) return;
     const timer = window.setTimeout(() => {
+      if (!hasUsableCanvas()) return;
       viewportsRef.current[domain] = undefined;
       fittedOnceRef.current[domain] = false;
       void fitView({ padding: 0.1, duration: 250 });
@@ -339,7 +355,7 @@ function TopologyCanvasInner({ active = true, scope, allServers, racks, nodes, s
   );
 
   useEffect(() => {
-    if (!focusRequest || !nodesInitialized) return;
+    if (!active || !focusRequest || !nodesInitialized || !hasUsableCanvas()) return;
     if (focusRequest.nonce === lastFocusNonceRef.current) return;
 
     const target = positioned.nodes.find((node) => node.id === focusRequest.targetId);
@@ -368,7 +384,7 @@ function TopologyCanvasInner({ active = true, scope, allServers, racks, nodes, s
       fittedOnceRef.current[domain] = true;
     });
     return () => cancelAnimationFrame(frame);
-  }, [setCenter, getZoom, focusRequest, nodesInitialized, positioned.edges, positioned.nodes, domain]);
+  }, [active, hasUsableCanvas, setCenter, getZoom, focusRequest, nodesInitialized, positioned.edges, positioned.nodes, domain]);
 
   const handleFitAll = useCallback(() => {
     viewportsRef.current[domain] = undefined;

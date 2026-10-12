@@ -8,7 +8,7 @@ Finish canonical release-container acceptance and test classification.
 
 ## Current state
 
-- Branch `task-deploy`, client revision `7a94486c`. Migration/classification is
+- Branch `task-deploy`, Migration/classification is
   implemented; old browser launchers are retired and important component UTs
   remain. Console has 153 canonical owners. Assertion audit:
   `/tmp/crowdb-r230-accepted-assertions.md`; implementation evidence is in Git.
@@ -19,9 +19,9 @@ Finish canonical release-container acceptance and test classification.
 - Native complete nodes remain 1 CPU / 2048 MiB / 512 PIDs by user direction.
   Diagnose actual resource failures before changing limits. Host clients use
   inspected IPs and fixed ports; owned bridge lifetimes cover every batch peer.
-- Latest complete Console run: 151 / 2 / 0, 2172.056 s, with the same
-  resource limits. Catalog observation passes; multipart upload and CLI
-  Group-0 restart remain failing. The prior complete run took 1804.006 s.
+- Latest complete Console run: 151 / 2 / 0, 2160.528 s, with the same
+  resource limits. Catalog observation, multipart and Group-0 replay pass. Hidden-canvas NaN
+  and storage replay discovery remain failing; the prior run took 2172.056 s.
 - R139 owns performance/configuration profiles. Later CLI command/benchmark
   redesign remains a review item; preserve the chunk-KV benchmark script.
 
@@ -77,7 +77,9 @@ Finish canonical release-container acceptance and test classification.
   tests, targeted clippy and workspace fmt pass. Logs:
   `/tmp/crowdb-r230-catalog-resume-{before,after,tests,clippy}.log`.
 - Formal debug release built/imported and digest verified. New-image Deployment,
-  CLI recovery and complete Console are running in the driver above. This proven publication defect does not yet establish that
+  CLI recovery and complete Console are coordinated in the driver above.
+  New-image Deployment passes 33 / 0 / 0 in 310.999 s; concurrent CLI replay
+  passes both owners in 91.011 s. Complete Console is active. This proven publication defect does not yet establish that
   every intermittent failure has been resolved. Multipart remains under diagnosis.
 
 ## Verification
@@ -96,3 +98,25 @@ Finish canonical release-container acceptance and test classification.
   `/tmp/crowdb-r230-ci-capacity.log`. A previous question about sharing CPU or
   using a larger runner remains unanswered. Continue local tests; revisit
   resources when evidence requires it. No quotas or admission rules changed.
+
+## Active acceptance repairs
+
+- Complete Console `/tmp/crowdb-r230-console-catalog-final` finishes 151 / 2 / 0,
+  2160.528 s. Its data/load/inspection/multipart and Group-0 replay assertions
+  pass. Resource samples report no OOM; native limits remain unchanged.
+- Storage replay still deployed DiskDB at its production 10-second cadence.
+  Node 2's next sync only completed at 19:14:12.384 UTC, just before the
+  ownership check ended at 19:14:12.888. CLI now exposes a normal recorded
+  heartbeat setting; tests select 3 seconds. Production defaults remain 10.
+  CLI 6 components/clippy and exact concurrent replay pass; fixture 106 passes.
+  Logs: `/tmp/crowdb-r230-cli-cadence*.log`.
+- Browser trace first produces NaN after switching from Cluster to KV while a
+  zoom animation is pending. A real ReactFlow component test reproduces zero
+  extent before the first frame. Hidden/domain-changing canvases now interrupt
+  motion and cancel pending fits in layout cleanup. Component regression and
+  full UI 182/types pass. Exact logical and canvas browser gates remain pending.
+  Logs: `/tmp/crowdb-r230-canvas-hide-{before,after}.log`,
+  `/tmp/crowdb-r230-canvas-ui-gate.log`.
+- Domain queue PID 642645 is stopped again after KV/ChunkDB clients ended;
+  DiskDB and DiskIO passed. Resume after new-image browser gates finish, then
+  repeat early short domains if required to record the final shared image.

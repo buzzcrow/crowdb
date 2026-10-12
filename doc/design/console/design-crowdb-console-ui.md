@@ -118,6 +118,9 @@ provide observable capacity and bitmap fixtures.
   children on click while selecting the parent. Children retain their own
   expansion state. Sidebar focus reveals hidden ancestors. Right-click opens
   the entity menu without toggling expansion. Fit All fits visible cards.
+  Hiding a topology panel interrupts viewport motion before zero-size geometry
+  is observed. Rapid domain switches retain finite coordinates; centering runs
+  only in a visible, measured canvas.
   Cluster initially expands Datacenter/Rack and stops at visible Node cards;
   service descendants appear when a Node is explicitly expanded.
 

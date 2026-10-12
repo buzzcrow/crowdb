@@ -30,16 +30,16 @@ and Deployment use two case slots; complete native nodes retain 1 CPU /
 | S3           | 2026-10-12 | 43 / 0 / 0                | 1545.602 | 1456.774   |
 | Iceberg      | 2026-10-12 | 32 / 0 / 0                | 1616.697 | 1633.442   |
 | Dataset      | 2026-10-12 | 2 / 0 / 0                 | 35.568   | 31.301     |
-| Console      | 2026-10-13 | 151 / 2 / 0               | 2172.056 | 1804.006   |
-| Deployment   | 2026-10-13 | 33 / 0 / 0                | 307.253  | 601.028    |
+| Console      | 2026-10-13 | 151 / 2 / 0               | 2160.528 | 2172.056   |
+| Deployment   | 2026-10-13 | 33 / 0 / 0                | 310.999  | 307.253    |
 
-- Console and Deployment measurements above use the `9225badd` debug release.
+- Console and Deployment above use the `7a94486c` debug release.
   The other domain rows are earlier baselines; final release gates are pending.
 - Special profiles have separate measurements: bridge SSH 148.191 s, Linux
   host 7.310 s, containerd host/cluster 125.432 / 129.661 s, five-engine Iceberg
   196.874 s, Python/DuckDB 29.099 s. Their final reruns remain pending.
 - Important component UTs remain. Latest focused gates: DiskDB 177, monitor 75,
-  CLI 5, fixture 106, UI 181, KV-server 63; these are component repair checks,
+  CLI 6, fixture 106, UI 182, KV-server 63; these are component repair checks,
   not another complete-domain baseline.
 
 ## amd5950
@@ -53,9 +53,10 @@ No container measurements. Linux VM routing remains unverified.
 ## Remaining issues
 
 - [ ] **Container acceptance**: complete final-image domain gates and final
-  Pixi/CI admission/export checks. Console has intermittent multipart DiskIO
-  deadline and CLI restart failures. The publication recovery regression is
-  fixed in components; container verification is pending. See the execution plan.
+  Pixi/CI admission/export checks. Latest Console failures are hidden-canvas viewport NaN and CLI DiskDB discovery
+  at the production 10-second cadence. Multipart and publication recovery pass
+  in that complete run. Canvas and normal CLI cadence repairs need final-image
+  verification. See the execution plan.
 - [ ] **macOS Iceberg SDK**: Maven `dependency:go-offline` stalled for more than
   eight minutes. Rerun with the pinned dependency cache available.
 - [ ] **WAL disk loss**: full fail-out and snapshot rejoin coverage awaits the

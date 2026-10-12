@@ -5,6 +5,7 @@
 import { test, expect, consoleBaseURL } from '../fixtures/realBackend';
 import { createRack, createNode, deployNodeServer, stopNodeServer } from '../fixtures/localSetup';
 import { step } from '../fixtures/stepTimer';
+import { javascriptErrors } from '../fixtures/javascriptErrors';
 
 // One rack/node/server shared by every test in this file so the canvas
 // has content in Cluster and Capacity views (IDs reused from the former
@@ -23,6 +24,7 @@ test.describe('canvas · fit + pan', () => {
   });
 
   test('Fit All is available in every view and autofit centers nodes on load', async ({ page }) => {
+    const noErrors = javascriptErrors(page);
     // --- Fit All button visible/enabled in Cluster domain with content ---
     await step('canvas: goto', () => page.goto('/'));
     await page.getByTestId('domain-cluster').click();
@@ -34,6 +36,10 @@ test.describe('canvas · fit + pan', () => {
     // Wait for the canvas to render at least one react-flow node.
     await expect(page.locator('.react-flow__node[data-id="DC-datacenter"]')).toBeVisible();
     await expect(fitBtn).toBeVisible();
+    // Leave while the zoom is still moving; hidden panels have zero extent.
+    await fitBtn.click();
+    await page.getByTestId('domain-capacity').click();
+    await expect(page.locator('.react-flow')).toBeHidden();
 
     // Group 0 is not initialized: the KV panel must report unavailable.
     await page.getByTestId('domain-kv').click();
@@ -67,6 +73,7 @@ test.describe('canvas · fit + pan', () => {
       expect(nodeCenterY).toBeGreaterThan(canvasBox.y);
       expect(nodeCenterY).toBeLessThan(canvasBox.y + canvasBox.height);
     }
+    noErrors();
   });
 
   test('parent cards collapse children, retain nested state and keep context menus', async ({ page }) => {
