@@ -61,6 +61,16 @@ async fn scanner_and_scoped_recalc() {
 #[tokio::test]
 #[ignore = "requires normal DiskDB metadata and a host capacity browser"]
 async fn hardware_capacity_and_dashed_status() {
+    browse_diskdb().await;
+}
+
+#[tokio::test]
+#[ignore = "requires actual DiskDB owners and host maintenance menus"]
+async fn disk_maintenance_and_status_badges() {
+    browse_diskdb().await;
+}
+
+async fn browse_diskdb() {
     let context = TestNativeContext::connect().await;
     super::native_storage::start_diskdb(&context, [128 * 1024; 3]).await;
     let result = crate::common::control::native_browser().await;

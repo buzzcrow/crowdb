@@ -129,6 +129,8 @@ class NativeConsoleCluster(ShellBrowserCluster):
                     config="native.config.ts", extra_env={"CROWDB_NATIVE_PLAN_PREREQUISITES": "1"})
                 return {"passed": True}
             cases = {
+                "console::native_browser::disk_maintenance_and_status_badges":
+                    "native diagnostics: disk maintenance menus route to owners and retain every hardware badge",
                 "console::native_browser::hardware_capacity_and_dashed_status":
                     "native diagnostics: hardware capacity aggregates disks and dashed status updates",
                 "console::native_browser::auxiliary_dialog_defaults":

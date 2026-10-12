@@ -233,7 +233,7 @@ and the named run artifacts.
   `run-ae039e342c7c4326b353645b38068f55`. Five stable/shared runs have redacted
   evidence under `.crowdb-runtime/artifacts/container-e2e/`.
   Old native Rust cases, four private helpers, seven old native browser callbacks
-  and their selectors are removed. Accepted Console inventory is 139.
+  and their selectors are removed. Accepted Console inventory is 140.
   `test-console` now runs only shared/CLI/Web component proofs, with no native
   server build or launcher. Important local process/ownership UTs remain.
   Component 263/263, fixture 104/104, image-source guard, native TypeScript,
@@ -255,10 +255,21 @@ and the named run artifacts.
   HTTP 204. Only KV/DiskDB prerequisites start; no unrelated consumers are
   needed for metadata contracts. Gate 1/1 at 4 CPU / 8192 MiB in
   24.193s (browser 1.2s); `run-7e1bbada099b4f85a0dd2401ff86b093`. Both old
-  source cases are removed. Accepted Console is 139; two ordinary Disk cases
-  remain for maintenance and selection/Inspector behavior. Fixture 104, native
+  source cases are removed. Accepted Console is 140; one ordinary Disk case
+  remains for selection/Inspector behavior. Fixture 104, native
   TypeScript, fmt and full clippy pass; logs:
   `/tmp/crowdb-capacity-hardware-{fixture,types,fmt-check,lint}.log`.
+
+- Ordinary Disk maintenance source → `console.native.browser.maintenance`:
+  real Compact/Rebuild dialogs and zone-input validity; scoped Recalc through
+  owner 1 and Scan through owner 2; live disk-group/disk Offline menus plus the
+  empty DiskGroup status route; all seven hardware status badges after reload.
+  Actual disk observations use mounted files and ordinary DiskDB deployment.
+  Gate 1/1 at 4 CPU / 8192 MiB in 31.405s;
+  `run-54fbee1588bc46579b29aae2fc821784`. Old maintenance case is removed; no
+  assertion timeout, retry or fake response is introduced. Fixture 104, native
+  TypeScript, workspace fmt/clippy pass; logs:
+  `/tmp/crowdb-capacity-maintenance-{fixture,types,fmt-check,lint}.log`.
 
 ## Remaining browser migration
 
@@ -269,7 +280,7 @@ and the named run artifacts.
   verified owners. Discovery's stale-on-loss assertion still needs explicit
   comparison with the root discovery/browser coverage. Files:
   `app/crowdb-web/ui/e2e/flows/{01,10,11,12,13}-*.spec.ts`.
-- [ ] **Capacity**: migrate six DiskGroup and two Disk cases. Preserve CRUD,
+- [ ] **Capacity**: migrate six DiskGroup and one Disk case. Preserve CRUD,
   owner/binding selection, maintenance state, capacity
   totals and unknown/error observations. Files:
   `app/crowdb-web/ui/e2e/flows/{50,51}-*.spec.ts`.
@@ -290,7 +301,7 @@ and the named run artifacts.
   Remove duplicate old owners only after verification. Unused native KV/storage
   harnesses are removed; shared `TestDir`/ownership UTs remain. Explicit production
   local-launch port allocation remains until its deployment callers are audited.
-  Current Rust client audit: 316 compiled tests = 303 registered required/manual
+  Current Rust client audit: 317 compiled tests = 304 registered required/manual
   owners + 13 preparation/isolation helpers; shell browser cases are separate
   host owners. Evidence: `/tmp/crowdb-r230-current-client-helper-audit.txt`.
   Refresh after further migration; remaining launch-site evidence is
@@ -321,8 +332,8 @@ and the named run artifacts.
   case slot). Reports: `run-ab39e156c2c24da39a5db1bfbcba1a7c` and
   `run-5cfba02195364ce483aac4b5a3eaf1ee`; logs under
   `/tmp/crowdb-voting-epoch-final-{console,deployment}-ci.log`.
-  The twenty-five newer browser cases, two CLI replay cases and sixteen native client cases pass separately and are not
-  included in the complete 96-case measurement. Current accepted Console inventory is 139;
+  The twenty-five newer browser cases, two CLI replay cases and seventeen native client cases pass separately and are not
+  included in the complete 96-case measurement. Current accepted Console inventory is 140;
   final full-domain measurement remains pending. Remote CI and macOS remain
   unmeasured. Files: `doc/working/test.md`, root runner reports.
 - [ ] **Close R230**: after inventory, assertion mapping, local gates and required
