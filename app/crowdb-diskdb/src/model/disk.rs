@@ -178,6 +178,7 @@ impl DdbDisk {
         #[allow(clippy::cast_possible_truncation)]
         let start = self.pos_v_zone.load(Ordering::Relaxed) as usize % zone_num;
         let mut new_ctx: Vec<Arc<DdbZone>> = Vec::with_capacity(zone_rotate_count as usize);
+        let mut scanned = 0;
         // First pass: pick compacted_ready + allocatable zones (I5).
         for i in 0..zone_num {
             if new_ctx.len() >= zone_rotate_count as usize {
@@ -186,6 +187,7 @@ impl DdbDisk {
             let zone = &zones[(start + i) % zone_num];
             if zone.allocatable() && zone.compacted_ready.load(Ordering::Acquire) {
                 new_ctx.push(Arc::clone(zone));
+                scanned = scanned.max(i + 1);
             }
         }
         // Second pass (fallback): if not enough ready zones, pick any
@@ -199,11 +201,12 @@ impl DdbDisk {
                 let zone = &zones[(start + i) % zone_num];
                 if zone.allocatable() && !new_ctx.iter().any(|z| z.zone_index == zone.zone_index) {
                     new_ctx.push(Arc::clone(zone));
+                    scanned = scanned.max(i + 1);
                 }
             }
         }
         // Advance pos_v_zone past the scanned range.
-        self.pos_v_zone.fetch_add(zone_num as u64, Ordering::Relaxed);
+        self.pos_v_zone.fetch_add(scanned as u64, Ordering::Relaxed);
         let new_ctx = Arc::new(new_ctx);
         let populated = !new_ctx.is_empty();
         let previous = self

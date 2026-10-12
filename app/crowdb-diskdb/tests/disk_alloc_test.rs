@@ -156,6 +156,20 @@ fn disk_allocate_rotates_across_active_zones() {
 }
 
 #[test]
+fn disk_allocate_rotates_past_partial_zones_that_cannot_fit_a_block() {
+    let disk = make_disk(1, 12, 64);
+    for _ in 0..4 {
+        let (zone, _) = disk.disk_allocate(48, CAS_RETRY, ZONE_ROTATE).unwrap();
+        assert!(zone.zone_index < 4);
+    }
+    let (zone, range) = disk
+        .disk_allocate(32, CAS_RETRY, ZONE_ROTATE)
+        .expect("unused zones have space");
+    assert!(zone.zone_index >= 4);
+    assert_eq!(range.unit_count, 32);
+}
+
+#[test]
 fn disk_allocate_returns_none_when_all_zones_full() {
     let disk = make_disk(1, 1, 8);
     for _ in 0..8 {

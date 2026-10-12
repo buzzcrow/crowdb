@@ -254,10 +254,12 @@ Bitmap-scan with per-bit CAS (no zone-level lock):
 2. Round-robin over the active set via `pos_v_zone_ctx.fetch_add(1)`.
 3. Call `zone.allocate(unit_count)` on each zone. On success, return.
 4. If all zones in the active set fail, call `rotate_active_zones()`:
-   under a write lock, publish the next set of **ready** (pre-compacted)
-   zones as the new `ActiveZoneContext` (RCU publish). If no ready zones
-   are available, fall back to synchronous compaction of the next batch
-   (§5 Compaction-on-rotation), then publish.
+   publish the next set of **ready** (pre-compacted) zones using RCU
+   compare-and-swap. If too few ready zones exist, include other allocatable
+   zones; preparatory or periodic compaction handles their retained free facts.
+   Advance the scan cursor past the last selected position in either pass.
+   A failed large allocation can leave smaller free ranges in the current
+   zones; rotation must continue to later zones rather than repeat that set.
 5. Retry with the new context (up to `zone_num / zone_rotate_count + 2`
    loops).
 
