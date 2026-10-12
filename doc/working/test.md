@@ -20,7 +20,8 @@ uses two slots with 16 CPU / 32768 MiB. KV includes both isolation pairs.
 ### Container domains
 
 Console's latest complete measurement covers 96 owners; the accepted inventory
-is now 113. The seventeen newer browser cases passed separately. These batch
+is now 117. Nineteen newer browser cases and two CLI recovery cases passed
+separately. These batch
 results do not replace the complete-domain measurement.
 
 | Domain       | Date       | Passed / failed / skipped | Wall s   | Previous s |
@@ -41,8 +42,9 @@ results do not replace the complete-domain measurement.
 - KV/storage/Dataset/Iceberg rows use the coalescer image (`fca2b4fa`);
   S3 uses the streaming fix (`b7b1247b`); Console/Deployment use the voting/epoch
   fix (`cb159e7b`). Exact build identities remain in their artifacts.
-- Current image adds explicit Web readonly (`3923ffc5`), OCI
-  `sha256:0c1f070dca690adfac19e96c057806f7bd3ffd33b0c657812908f8b700144eee`.
+- Current image includes Web readonly, remote Access and monitor restart fixes
+  (`6042739d`), OCI
+  `sha256:ed98931388baf3986dfa9d20c4a9d1201f2fd916f996550cbd07b0dbbc5501fd`.
   Optimized binaries retain debug info. Data/log/crash roots and host core policy
   are recorded per run; receipt: `target/crowdb.oci.tar.json`.
 - Special profiles: bridge SSH admission 148.191s; Linux host 7.310s;
@@ -90,8 +92,7 @@ These results are previous macOS baselines, not measured macm5pro acceptance.
 ## Remaining issues
 
 - [ ] **Migration closure**: remaining real-server Console lifecycle/cluster
-  flows and CLI S3 bootstrap replay need canonical
-  container owners. Preserve old assertions and important component UTs until
+  flows need canonical container owners. Preserve old assertions and important component UTs until
   equivalent owners pass. Final Pixi/CI taxonomy and complete-domain measurements remain pending.
   KV/KV and KV/Web isolation acceptance passes.
 - [ ] **macOS Iceberg SDK**: Maven `dependency:go-offline` stalled for more than

@@ -19,6 +19,7 @@ SERVER_PATHS = (
     ":(exclude)app/crowdb-web/ui/e2e/flows/10-cluster-rack-node.spec.ts",
     ":(exclude)app/crowdb-web/ui/e2e/flows/13-todo-ui-behavior.spec.ts",
     ":(exclude)app/crowdb-web/ui/e2e/flows/30-kv-ops-basic.spec.ts",
+    ":(exclude)app/crowdb-web/ui/e2e/flows/40-inspector-activity.spec.ts",
     ":(exclude)app/crowdb-web/ui/e2e/flows/41-canvas-fit-pan.spec.ts",
     ":(exclude)app/crowdb-web/ui/e2e/flows/72-managed-native.spec.ts",
     ":(exclude)tools/pixi-tasks/test-console-managed-native.py",
@@ -51,6 +52,11 @@ SERVER_PATHS = (
     ":(exclude)tools/ci-checks/check-ci-test-tasks.py",
     # This host-only RPC benchmark is not a dependency or staged server binary.
     ":(exclude)app/crowdb-cli/src/commands/bench/rpc.rs",
+    # Host CLI lifecycle is not built or packaged by release staging.
+    ":(exclude)app/crowdb-cli/src/commands.rs",
+    ":(exclude)app/crowdb-cli/src/commands/s3.rs",
+    ":(exclude)app/crowdb-cli/src/commands/container_cluster.rs",
+    ":(glob,exclude)app/crowdb-cli/src/commands/container_cluster/**",
     # Audited host-only crate: every consumer uses a dev-dependency. A new
     # runtime/build dependency changes its owning manifest and rejects reuse.
     ":(exclude)lib/crowdb-test-harness/Cargo.toml",

@@ -34,6 +34,7 @@ from console_recovery_fixture import RecoveringWebCluster
 from console_web_fixture import ConsoleWebCluster
 from console_bootstrap_fixture import BootstrapWebCluster
 from console_shell_fixture import ShellBrowserCluster
+from console_cli_fixture import CliContainerCluster
 from console_standalone_fixture import StandaloneWebCluster
 from console_registry_fixture import RegistryWebCluster
 from console_typed_fixture import TypedWebCluster
@@ -81,6 +82,7 @@ class Case:
     preserve_network: bool = False
     shell_browser: str | None = None
     console_browser: str | None = None
+    cli_replay: str | None = None
     client_timeout: int = 120
 
 
@@ -345,6 +347,10 @@ ICEBERG_CASES = (
     Case("iceberg.namespace", "access_iceberg::namespace::namespace_functional_crud_survives_native_storage_and_listener_restart"),
 )
 CONSOLE_OPERATION_CASES = (
+    Case("console.browser.inspector", "console::browser_inspector::activity", shell_browser="records mutations and async operations, and clear empties the log"),
+    Case("console.browser.inspector", "console::browser_inspector::selection", shell_browser="clears stale properties when the domain changes or the cluster resets"),
+    Case("console.cli.container", "console::cli_container::confirmed_group_zero_replay", cli_replay="bound"),
+    Case("console.cli.container", "console::cli_container::confirmed_storage_replay", cli_replay="storage"),
     Case("console.managed", "console::managed::authority_outage", console_browser="Managed native authority outage hides stale topology and retains monitor observation"),
     Case("console.managed", "console::managed::hardware_and_user_flows", console_browser="Managed native KV, Iceberg, S3 and Chunk operations retain hardware boundaries"),
     Case("console.browser.kv", "console::browser_kv::pagination", shell_browser="Group selection opens data directly; pages replace rows and expose complete values"),
@@ -485,6 +491,8 @@ def select_cases(layer="all", scope="all", case_name=None):
 
 
 def case_nodes(case):
+    if case.cli_replay:
+        return 3
     if case.shell_browser:
         return 1
     if case.scope == "console.web.bootstrap":
@@ -530,6 +538,8 @@ def case_nodes(case):
     return 2 if case.scope.startswith(("diskdb.", "chunkdb.")) else len(case.stores_per_node or case.stores)
 
 def case_resources(case, node_cpus):
+    if case.cli_replay:
+        return max(1, node_cpus) * 3 + 0.5, 6656
     if case.shell_browser:
         return max(2, node_cpus) + 0.5, 2560
     if case.scope == "iceberg.manual.tpc":
@@ -547,6 +557,8 @@ def case_resources(case, node_cpus):
 
 
 def allocate_cluster(case, image, artifacts, bundle, data_root):
+    if case.cli_replay:
+        return CliContainerCluster(image, artifacts, bundle, data_root=data_root)
     if case.shell_browser:
         return ShellBrowserCluster(image, artifacts, bundle, data_root=data_root)
     if case.scope == "console.web.bootstrap":
@@ -644,7 +656,8 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
         cluster = allocate_cluster(case, image, artifacts, bundle, data_root)
         cluster.case_name = case.name
         cluster.client_timeout = case.client_timeout
-        cluster.node_cpus = max(2, node_cpus) if case.shell_browser or case.console_browser or len(case.service_selection) > 2 else node_cpus
+        cluster.node_cpus = (max(1, node_cpus) if case.cli_replay else
+            max(2, node_cpus) if case.shell_browser or case.console_browser or len(case.service_selection) > 2 else node_cpus)
         (cluster.artifacts / "case.json").write_text(json.dumps({
             "scope": case.scope, "case": case.name}, indent=2))
         return cluster
@@ -652,7 +665,9 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
     def run(case, owned=None):
         cluster = owned if owned is not None else prepare(case)
         with nullcontext(cluster) if owned is not None else cluster:
-            if case.shell_browser:
+            if case.cli_replay:
+                cluster.replay(case.cli_replay)
+            elif case.shell_browser:
                 cluster.browser(case.shell_browser)
             elif case.scope == "deployment.browser":
                 cluster.browser()

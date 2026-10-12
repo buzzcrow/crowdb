@@ -75,3 +75,7 @@ path = "tests/chunkdb_bench_test.rs"
 [[test]]
 name = "s3_cli_test"
 path = "tests/s3_cli_test.rs"
+
+[[test]]
+name = "container_cluster_test"
+path = "tests/container_cluster_test.rs"

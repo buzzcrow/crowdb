@@ -9,6 +9,7 @@
     "e2e/fixtures/realBackend.ts",
     "e2e/fixtures/stepTimer.ts",
     "e2e/flows/30-kv-ops-basic.spec.ts",
+    "e2e/flows/40-inspector-activity.spec.ts",
     "e2e/flows/41-canvas-fit-pan.spec.ts",
     "e2e/fixtures/localSetup.ts"
   ]

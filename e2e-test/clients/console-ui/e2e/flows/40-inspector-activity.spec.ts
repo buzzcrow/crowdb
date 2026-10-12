@@ -7,24 +7,18 @@ import {
   addGroup,
   createStore,
   deployNodeServer,
-  freePort,
-  resetAll,
   seedRackAndNode,
   stopNodeServer,
   waitForLeader,
-} from '../fixtures/consoleSetup';
+} from '../fixtures/localSetup';
 import { step } from '../fixtures/stepTimer';
 
 test.describe('inspector · activity log', () => {
-  test.beforeEach(async ({ baseURL }) => {
-    await step('inspector: resetAll', () => resetAll(baseURL!));
-  });
-
   test('records mutations and async operations, and clear empties the log', async ({ page, baseURL }) => {
     test.setTimeout(60_000);
     // --- Lifecycle mutations appear in the activity log and clear works ---
     await step('inspector: seed rack/node', () => seedRackAndNode(baseURL!, 32, 32));
-    await step('inspector: deploy server', () => deployNodeServer(baseURL!, 32, freePort(), freePort()));
+    await step('inspector: deploy server', () => deployNodeServer(baseURL!, 32));
     await step('inspector: create store', () => createStore(baseURL!, 320, [32]));
     await step('inspector: add group', () => addGroup(baseURL!, 320, 3200, 32000, [32]));
     await step('inspector: wait for leader', () => waitForLeader(baseURL!, 320, 3200));

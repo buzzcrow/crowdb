@@ -56,6 +56,20 @@ class ImageIdentityTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "server sources differ"):
             verify_server_sources(self.root, revision)
 
+    def test_host_container_cli_does_not_exempt_shared_deployment_or_runtime_inputs(self):
+        source = self.root / "app/crowdb-cli/src/commands/container_cluster/runtime.rs"
+        source.parent.mkdir(parents=True)
+        source.write_text("host lifecycle\n")
+        self.commit()
+        revision = self.git("rev-parse", "HEAD")
+        source.write_text("changed host lifecycle\n")
+        self.assertTrue(verify_server_sources(self.root, revision)["server_sources_match"])
+        shared = self.root / "lib/crowdb-console-shared/src/deployment.rs"
+        shared.parent.mkdir(parents=True)
+        shared.write_text("changed server dependency\n")
+        with self.assertRaisesRegex(ValueError, "server sources differ"):
+            verify_server_sources(self.root, revision)
+
     def test_component_task_edit_does_not_exempt_build_tasks_or_environment(self):
         manifest = self.root / "pixi.toml"
         original = '[dependencies]\npython = "3.14.*"\n[tasks]\ntest-storage = "old gate"\nbuild = "release build"\n'

@@ -213,6 +213,17 @@ Numbered work items:
    migration; eliminate duplicate E2E ownership at completion. Component-local
    logic tests remain fast and do not require a container runtime.
 
+9. **CLI container lifecycle**: S3 cluster `start/status/stop/restart/delete`
+   operate an owned three-node cluster using the formal release image, normal
+   admission/bootstrap and fixed node ports. A root selects mounted persistent
+   data; a recorded member container name selects its owning cluster. Starting
+   again resumes confirmed bootstrap/service state without host server launches,
+   local topology files or duplicate containers. Stop preserves mounted data;
+   restart preserves container identity and acknowledged object bytes; delete
+   validates cluster/image/mount ownership before removing resources. Existing
+   HTTP stubs and argument validation remain component tests. Command naming and
+   benchmark regression ownership receive a separate later review.
+
 ## Dependencies
 
 - Existing node image, monitor, shared console operations and container tests
@@ -291,6 +302,12 @@ Numbered work items:
   each required case executes once through its canonical task, all domains are
   reachable in CI, and documented counts/timings come from measured final tasks
   with pending platforms marked explicitly (**I4, I6, I7, I8**). Integration test.
+- **CLI interrupted startup**: given a three-container startup interrupted after
+  confirmed Group-0 or Diskdb deployment -> resume through a member container
+  name -> cluster/container identities and bootstrap results remain stable,
+  initialization markers disappear after success, no local topology is written,
+  and object bytes survive stop/restart. Owned deletion leaves unrelated
+  resources intact (**I1, I2, I4, I5**). E2E test.
 - **Native host profile**: given a supported Linux host with explicit resources
   -> run host-network acceptance -> network and actual CPU/memory limits are
   verified; missing required capabilities fail with diagnostics (**I3, I5**).
