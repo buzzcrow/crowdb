@@ -17,8 +17,9 @@ class BrowserBatchTest(unittest.TestCase):
                 owner.active.add(case)
                 return self
 
-            def __exit__(self, *args):
+            def __exit__(self, kind, error, traceback):
                 owner.events.append(('close', case))
+                owner.failures[case] = error
                 owner.active.remove(case)
 
         return Fixture()
@@ -27,6 +28,7 @@ class BrowserBatchTest(unittest.TestCase):
         self.events = []
         self.active = set()
         self.start_failure = None
+        self.failures = {}
 
     def test_clients_share_stable_bounded_batch_and_teardown_precedes_next_batch(self):
         def execute(case, fixture):
@@ -50,6 +52,8 @@ class BrowserBatchTest(unittest.TestCase):
         self.assertEqual([str(error) for error in errors], ['browser failed'])
         self.assertIn(('client', 1), self.events)
         self.assertEqual(self.active, set())
+        self.assertEqual(str(self.failures[0]), 'browser failed')
+        self.assertIsNone(self.failures[1])
 
     def test_partial_startup_closes_started_peer_without_dispatching_clients(self):
         self.start_failure = 1

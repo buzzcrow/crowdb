@@ -3,6 +3,7 @@
 
 use super::state::State;
 use crowdb_console_shared::error::{Error, Result};
+use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
 use reqwest::{Client, Method};
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
@@ -12,6 +13,7 @@ mod storage;
 struct Api {
     client: Client,
     web: String,
+    kv: CrowdbKvClient,
 }
 
 impl Api {
@@ -57,6 +59,13 @@ pub(super) async fn run(state: &mut State) -> Result<()> {
             .build()
             .map_err(|e| Error::Config(e.to_string()))?,
         web: state.web()?,
+        kv: CrowdbKvClient::new(ClientConfig::new(
+            state
+                .addresses
+                .iter()
+                .map(|address| format!("http://{address}:10000"))
+                .collect(),
+        )),
     };
     wait_web(&api, state).await?;
     let phase = api.get("/api/node/status").await?;

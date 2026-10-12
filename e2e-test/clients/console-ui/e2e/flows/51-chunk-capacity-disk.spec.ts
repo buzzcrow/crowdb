@@ -125,7 +125,14 @@ test('native diagnostics: disk maintenance menus route to owners and retain ever
   await page.getByRole('menuitem', { name: 'Offline', exact: true }).click();
   expect((await diskOffline).status()).toBe(204);
 
-  await hardwareBadges(page, request, first.id);
+  const paused = await request.post('/api/services/diskdb-1/stop', { data: {} });
+  expect(paused.ok(), await paused.text()).toBe(true);
+  try {
+    await hardwareBadges(page, request, first.id);
+  } finally {
+    const resumed = await request.post('/api/services/diskdb-1/restart', { data: {} });
+    expect(resumed.ok(), await resumed.text()).toBe(true);
+  }
 });
 
 

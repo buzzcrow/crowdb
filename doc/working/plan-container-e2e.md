@@ -4,60 +4,78 @@
 # Container E2E Plan
 
 Upstream: [R230](../backlog/R230-test-container-layer-e2e.md).
-Goal: finish final integration and measured regression, then close the requirement.
 
-## Resume context
+## Current state
 
-- Branch `task-deploy`; all original browser flows now have accepted root owners.
-  Console inventory is 153. Last owner `console::browser_data::six_node_round_trips`
-  passes on the formal release image from `b4625eb7`; image retains debug info.
-  OCI `sha256:85da4c8377a7ef0f96f8228b90a895d4606d5623412e11ee01ca224b757ed9a1`,
-  Docker ID `sha256:8a60f0750a4036a1213d020e8676c14257803c191dc9390ea53c6d0cb1418bb7`,
-  runtime `3768da5acd2cbb509b9d201dbb26a7ddc14d12fefcca535c061ea5d9f804c62d`.
-- Six-node proof keeps 3 storage + 3 diskless release containers, 36 actual
-  service processes, automatic plans without Retry, exact KV/S3 bytes, three
-  SDK Iceberg rows, and six-way dynamic service slots (170/171 each, 1024 total).
-  Mounted disks and ownership are checked before data operations. Original
-  defaults/cancel/tree assertions remain in their dedicated accepted owners.
-  Evidence: `/tmp/crowdb-six-node-thread-observation.log`,
-  `run-74b4ee8598c34dfca3e50f7be09eeed5`. Original browser ownership is retired.
-- Fixed ports repeat across owned networks. Native full-service nodes reserve
-  512 PIDs/threads (actual complete nodes about 300; the old 256 limit caused
-  Cannot fork). CPU/memory remain bounded; six-node reservation is 6.5 CPU /
-  12800 MiB, CI Console 8 CPU / 16384 MiB. Process diagnostics retain thread counts.
-- Normal DiskDB deployment supports a 3-second keepalive cadence, carried by
-  durable service plans. Fresh-disk initialization uses bounded 128-record batches
-  and lazy bitmap words. The 4 KiB zero bitmap uses a 31-byte LZ4 constant;
-  nonempty snapshots also use LZ4. Old-data compatibility is waived by user.
-  Native logs show fresh-disk sync/load rounds of 27–36 ms. Component verification:
-  protocol/DiskDB 397, deployment configuration/plans 4, UI plans 21, full UI 180,
-  fixture 106, TypeScript, Rust fmt, workspace clippy and 28-package CI graph pass.
-- Configuration profile requirements are tracked in R139 (`fbbe80e4`), including
-  single-container, cluster low/high performance, test tuning and resolved values.
-  CLI command and benchmark redesign are later review items; preserve the chunk-KV
-  benchmark regression script. Important deterministic component UTs remain.
-- Assertion references are retained in Git history and the prior accepted batches;
-  local audit copy `/tmp/crowdb-r230-accepted-assertions.md`. Latest complete Console
-  measurement still covers only the old 96-owner inventory; do not claim 153 yet.
-- New package/task classification changes require a final formal image receipt
-  before full-domain gates. Keep production sources and HEAD stable during build,
-  and all E2E inputs stable while acceptance clients run.
+- Branch `task-deploy`; migration/classification is implemented. All former
+  browser launchers are retired and important component UTs remain. Console
+  has 153 root owners; assertion mappings remain in Git history and the local
+  audit `/tmp/crowdb-r230-accepted-assertions.md`.
+- Complete pre-repair Console run: 148 passed / 5 failed / 0 skipped,
+  3259.845 s excluding client builds. `doc/working/test.md` records this complete
+  failed run. Original logs: `/tmp/crowdb-r230-final-console.log`; run
+  `run-38147325f7e14587addbca1072e8b79a`. Redacted export:
+  `/tmp/crowdb-r230-console-baseline-public` (3228 files).
+- Resource configuration stays unchanged by user direction. Native complete
+  nodes keep 1 CPU / 2048 MiB / 512 PIDs. Diagnose actual resource failures
+  before changing quotas; do not switch to CPU weights or lower quotas.
+- Formal image from `f053b9c0`: OCI
+  `sha256:66bf2a785032e26bafa4ac9bb1e06bf1a813eb9138b75b04058b344b3d0063b5`,
+  Docker `sha256:49d25046ce13a23a442f6a8f0f54776dc3faba0a2fd7339111c934f061e90cd5`,
+  debug retained. It includes the proven disk rotation correction (177 DiskDB
+  tests, workspace clippy). Exact repair gates:
+  `/tmp/crowdb-r230-repair-gates.log`.
+- `c2745d61` orders durable managed-service recovery and shutdown using the
+  release profile dependency order. Lexicographic recovery previously started
+  Access/Chunk-KV before DiskDB and spent the original readiness budget waiting
+  for unavailable prerequisites. All 75 monitor component tests, clippy and
+  Rust fmt pass. New release staging:
+  `/tmp/crowdb-r230-monitor-release-stage.log` (running).
+- R139 owns deployment performance/configuration profile requirements. CLI
+  command and benchmark redesign remain later review items; preserve the
+  chunk-KV benchmark regression script.
 
-- Ownership/classification audit passes: refresh production executable
-  and in-process launcher inventory, prove every distinct source assertion belongs
-  to accepted E2E or retained UT, preserve legitimate deployment callers of local
-  port allocation, and verify canonical Pixi aggregate delegates run each required
-  domain once. Check regular and special CI selectors, quotas, system browser and
-  redacted artifacts. Retired browser port allocator and all old UI launchers are
-  removed; `test-console-ui` is component-only; `test-suite` uses one required root
-  container aggregate plus distinct SDK component proofs.
+## Accepted repair gates
+
+- Disk rotation regression: focused UT fails before the correction, then all
+  177 DiskDB tests pass. The exact split/transfer browser, convergence and data
+  checks pass on `f053b9c0`: 351.705 s versus the 667.365 s failing baseline.
+- Final debug release from `c2745d61` built/imported: OCI
+  `sha256:67479dd0537f4bfa40fe603cd1fd51744dcafac8aa284067bd4b07e39ae67fda`,
+  Docker `sha256:adec413288450a686a7cfdfd3a11dea216552214fe0884b533f0c2dc77fbd5a5`,
+  runtime `2215f61456df7436da5295581ee5c1781a8c183ee9a20b077977295c64da7b55`.
+  Exact Group-0 replay, confirmed DiskDB replay and all hardware badge assertions
+  pass (`/tmp/crowdb-r230-final-repair-gates.log`). CLI checks durable service
+  intent instead of collecting live PIDs merely to decide deployment; deadlines
+  and acknowledged-object assertions remain unchanged. Badge observation pauses
+  and restores the actual DiskDB through normal management APIs.
+- Shell node stop and Journal owner recovery pass exactly on `f053b9c0`.
+  Journal Back returned HTTP 409 in 12 ms after normal catalog publication;
+  the flow now refreshes the map and reselects the same partition's current
+  owner before stopping it. No unavailable-owner/data assertion was removed.
+- Browser batches preserve each caught client's error until its own deferred
+  teardown. Successful peers keep their successful state and stable networks.
+  All 106 fixture tests and changed browser TypeScript checks pass.
 
 ## Remaining tasks
 
-- [ ] **Final release regression and measurements**: stage/import the final
-  release artifact with debug info; rerun complete affected domains at documented
-  quotas, including the expanded Console set and lifecycle response checks.
-  Update `doc/working/test.md` at domain granularity. Publish only redacted
-  measurements/diagnostics. Record remote CI, AMD and macOS as unmeasured.
-- [ ] **Close R230**: after all local acceptance and classification gates pass,
-  remove the requirement, backlog entry and this plan in a coherent cleanup commit.
+- [ ] Finish final quality gates and commit the accepted client/fixture repair
+  batch. Current logs: `/tmp/crowdb-r230-repair-final-{clippy,fmt,fixture}.log`.
+- [ ] Run complete Console and remaining affected container domains using the
+  final debug release image. Each gate pins its image and client bundle.
+  Record complete domain timings and only redacted diagnostics; AMD/macOS and
+  remote CI remain unmeasured.
+- [ ] Verify final Pixi/CI selectors, resource admission, artifact exports and
+  retained UT gates. The 4-CPU capacity preflight is confirmed to reject the
+  six-node profile before allocation: `selected cases require at least 6.5 CPU
+  / 12800 MiB` (`/tmp/crowdb-r230-ci-capacity.log`). No resource setting changed.
+- [ ] Once all required gates pass, simplify `test.md` to domain measurements
+  and remaining issues, then remove R230 detail/backlog entry and this plan in
+  the final cleanup commit. Do not close R230 while acceptance remains pending.
+
+## Open Questions
+
+- CI CPU admission: keep the 1 CPU/container ceilings and allow CPU sharing on
+  the standard 4-CPU runner, with constrained verification, or continue strict
+  reservation and use a larger runner? Asked asynchronously while independent
+  local tests continue. Memory remains a hard admission limit.

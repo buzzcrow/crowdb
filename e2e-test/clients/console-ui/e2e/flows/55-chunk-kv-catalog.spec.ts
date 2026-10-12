@@ -29,10 +29,18 @@ test('native diagnostics: journal identity survives Chunk navigation and owner i
     await expect(page.getByLabel('Exact Chunk ID')).toHaveValue(runtime.journal.active.chunk_id);
     await page.goBack();
     await expect(journal).toBeVisible();
-    // Back navigation mounts a fresh runtime observation. Complete it before
-    // stopping its owner so the unavailable refresh starts from an idle view.
+    // Back navigation preserves the selection, but normal placement may have
+    // superseded its catalog. Observe the same partition's current owner before
+    // stopping it; stale selections deliberately disable runtime operations.
+    const currentMap = page.waitForResponse(response => new URL(response.url()).pathname === '/api/chunk-kv/catalog');
+    await page.getByRole('button', { name: 'Refresh catalog', exact: true }).click();
+    const currentResponse = await currentMap;
+    expect(currentResponse.ok(), await currentResponse.text()).toBe(true);
+    const current = await selectActiveJournal(page, request, await currentResponse.json(), partition.id);
+    expect(current.partition.id).toBe(partition.id);
+    await page.getByRole('tab', { name: 'Journal', exact: true }).click();
     await expect(page.getByRole('region', { name: 'Partition runtime', exact: true }).getByRole('button', { name: 'Refresh runtime', exact: true })).toBeEnabled();
-    const owner = `chunk-kv-${partition.owner_id}`;
+    const owner = `chunk-kv-${current.partition.owner_id}`;
     expect((await request.post(`/api/services/${owner}/stop`, { data: {} })).ok()).toBe(true);
     try {
       const observation = page.getByRole('region', { name: 'Partition runtime', exact: true });

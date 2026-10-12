@@ -28,8 +28,7 @@ pub(super) async fn prepare(api: &Api, state: &mut State) -> Result<()> {
             )
             .await?;
         }
-        let servers = api.get("/api/servers").await?;
-        if !has_service(&servers, &format!("diskdb-{node}"))? {
+        if !has_service(api, node, &format!("diskdb-{node}")).await? {
             api.post(
                 &format!("/api/nodes/{node}/diskdb/deploy"),
                 json!({"rpc_port":7100}),
@@ -123,8 +122,12 @@ fn array<'a>(value: &'a Value, description: &str) -> Result<&'a Vec<Value>> {
         .ok_or_else(|| Error::Config(format!("{description} inventory is invalid")))
 }
 
-fn has_service(servers: &Value, id: &str) -> Result<bool> {
-    Ok(array(servers, "Service")?.iter().any(|entry| entry["id"] == id))
+async fn has_service(api: &Api, node: usize, id: &str) -> Result<bool> {
+    // Deployment ownership comes from committed intent, independently of
+    // whether the monitor has finished restarting the retained process.
+    let node = u64::try_from(node).map_err(|error| Error::Config(error.to_string()))?;
+    let intent = crowdb_console_shared::deployment::services::current(&api.kv, node, id).await?;
+    Ok(intent.is_some_and(|intent| intent.action != crowdb_protocol::mgmt::node::NodeServiceAction::Delete))
 }
 
 pub(super) async fn services(api: &Api, state: &mut State) -> Result<()> {
@@ -141,8 +144,7 @@ pub(super) async fn services(api: &Api, state: &mut State) -> Result<()> {
             wait_chunk_kv(api, state).await?;
         }
         for node in 1..=3 {
-            let servers = api.get("/api/servers").await?;
-            if !has_service(&servers, &format!("{kind}-{node}"))? {
+            if !has_service(api, node, &format!("{kind}-{node}")).await? {
                 let defaults = api
                     .get(&format!("/api/deployment-defaults?node_id={node}"))
                     .await?;

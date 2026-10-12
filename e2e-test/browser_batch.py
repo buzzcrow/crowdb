@@ -6,6 +6,22 @@ import concurrent.futures
 from contextlib import ExitStack
 
 
+class BatchFixture:
+    """Retain each client's failure until its own deferred lifecycle teardown."""
+    def __init__(self, cluster):
+        self.cluster = cluster
+        self.failure = None
+
+    def __enter__(self):
+        return self.cluster.__enter__()
+
+    def __exit__(self, kind, error, traceback):
+        if error is None and self.failure is not None:
+            error = self.failure
+            kind, traceback = type(error), error.__traceback__
+        return self.cluster.__exit__(kind, error, traceback)
+
+
 def run_browser_batches(cases, slots, prepare, execute):
     errors = []
     for offset in range(0, len(cases), slots):
@@ -14,14 +30,16 @@ def run_browser_batches(cases, slots, prepare, execute):
         # Keep all fixtures in this bounded batch until every client has ended.
         try:
             with ExitStack() as stack:
-                clusters = [stack.enter_context(prepare(case)) for case in batch]
+                owners = [BatchFixture(prepare(case)) for case in batch]
+                clusters = [stack.enter_context(owner) for owner in owners]
                 with concurrent.futures.ThreadPoolExecutor(max_workers=slots) as pool:
-                    futures = [pool.submit(execute, case, cluster)
-                               for case, cluster in zip(batch, clusters)]
+                    futures = {pool.submit(execute, case, cluster): owner
+                               for case, cluster, owner in zip(batch, clusters, owners)}
                     for future in concurrent.futures.as_completed(futures):
                         try:
                             future.result()
                         except Exception as error:
+                            futures[future].failure = error
                             errors.append(error)
         except Exception as error:
             errors.append(error)
