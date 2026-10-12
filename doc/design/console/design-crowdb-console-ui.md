@@ -247,6 +247,10 @@ provide observable capacity and bitmap fixtures.
 - **DATA-04:** Cancel or ignore obsolete responses after scope/selection changes.
   A late response cannot overwrite the current selection. Polling cannot stack
   overlapping requests for the same resource or grow retry work indefinitely.
+- Automatic Access deployment checks live DiskIO ownership before provisioning
+  credentials or catalog state, including when an existing Chunk-KV process is
+  available. A transient ownership gap keeps the plan waiting and resumes
+  without another Submit when the prerequisite is confirmed.
 - Active views refresh at a bounded cadence; hidden views suspend observation
   polling. Accepted deployment work is independent of observation polling.
 - **DATA-05:** Preserve partial successes, identify failed sources, and show

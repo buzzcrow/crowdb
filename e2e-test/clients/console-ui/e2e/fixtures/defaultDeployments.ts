@@ -22,10 +22,16 @@ export function observeDefaultDeployments(page: Page) {
   return {
     async nextCompleted(nodes: number[], kind: string) {
       const pending = new Set(nodes.map(node => `${node}:${kind}`));
+      const expectedWait = (response: Response) => response.status() === 409 && ['chunkdb', 'chunk-kv'].includes(kind);
+      const rejected = nodes.flatMap(node => replies.get(`${node}:${kind}`) ?? [])
+        .find(response => response.status() !== 201 && !expectedWait(response));
+      if (rejected) expect(rejected.status(), await rejected.text()).toBe(201);
       const completed = nodes.find(node => replies.get(`${node}:${kind}`)?.some(response => response.status() === 201));
       if (completed !== undefined) return completed;
       const timeout = process.platform === 'darwin' ? 30_000 : 3_000;
-      const response = await page.waitForResponse(response => pending.has(key(response) ?? '') && response.status() === 201, { timeout });
+      const response = await page.waitForResponse(response => pending.has(key(response) ?? '')
+        && (response.status() === 201 || !expectedWait(response)), { timeout });
+      expect(response.status(), await response.text()).toBe(201);
       return Number(key(response)!.split(':')[0]);
     },
     async verify(node: number, kind: string) {

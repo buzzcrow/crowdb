@@ -35,7 +35,12 @@ async fn verify(context: &TestNativeContext) {
                 },
             })
             .collect();
-        let outcomes = client.batch_mutate(items).await.unwrap();
+        let outcomes = client.batch_mutate(items).await.unwrap_or_else(|error| {
+            panic!(
+                "native load batch {batch} failed after {} ms: {error:?}",
+                started.elapsed().as_millis()
+            )
+        });
         assert_eq!(outcomes.len(), 16);
         for outcome in outcomes {
             assert!(matches!(

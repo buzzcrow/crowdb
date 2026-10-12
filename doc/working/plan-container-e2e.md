@@ -18,7 +18,7 @@ Finish canonical release-container acceptance and test classification.
   Receipt: `target/crowdb.oci.tar.json`. Each run pins image and client identities.
 - Complete native nodes remain 1 CPU / 2048 MiB / 512 PIDs. User direction:
   continue tests, diagnose actual resource failures before changing limits.
-  Original complete-run cgroup samples show no OOM; peak memory 1884.1 MiB.
+  Original complete-run cgroup samples show no OOM; peak memory 1940.1 MiB.
 - Latest complete Console run on `7a94486c`: 151 / 2 / 0, 2160.528 s. Multipart,
   split/transfer, Journal, load and Group-0 replay pass. The two remaining failures
   were zero-extent viewport animation and default 10-second DiskDB discovery.
@@ -35,7 +35,8 @@ Finish canonical release-container acceptance and test classification.
 - [~] **Final browser domains**: finish new-image Deployment and all 153 Console
   owners. Driver: `/tmp/crowdb-r230-canvas-final-gates.py`; log:
   `/tmp/crowdb-r230-canvas-final-gates.log`. It runs exact logical/canvas scopes
-  first (both passed), then complete Deployment and Console. Keep production and
+  first (both passed), then complete Deployment and Console. New-image Deployment
+  passes 33 / 0 / 0 in 314.358 s; complete Console is active. Keep production and
   E2E client inputs stable. Files: `e2e-test/`, affected modules only if a new
   failure identifies an upstream defect.
 - [ ] **Remaining domains**: finish KV, DiskDB, DiskIO, ChunkDB, Chunk client,
@@ -74,3 +75,31 @@ Finish canonical release-container acceptance and test classification.
   `/tmp/crowdb-r230-ci-capacity.log`. The previous CPU-sharing/larger-runner
   question remains unanswered. Continue local tests; revisit resources when
   required. No quotas or admission rules changed.
+
+## Current gate failures and next repair
+
+- Latest full Console on `de0fe0eb`: 149 / 4 / 0, 2075.462 s; run
+  `/tmp/crowdb-r230-console-canvas-final/run-b8d86500506947be95039699e75f2031`.
+  Canvas, multipart and prior publication repairs pass. Current gate driver
+  PID 1437674 is stopped after its child ended, so it cannot resume domain
+  queue PID 642645 during the next browser repair gate.
+- Access Node 3 POST starts at 20:02:01.874 UTC; 72 ms earlier the actual
+  `/chunk-storage-readiness` reply is false (missing live DiskIO ownership).
+  The controller omitted Access from this prerequisite. A valid-state component
+  regression fails before adding Access to the same ownership gate; existing
+  external Chunk-KV behavior remains intact. All 183 UI/types pass.
+- CLI mistakenly sent `heartbeat_interval_secs`; the normal DiskDB deployment
+  endpoint accepts `keepalive_interval_secs`. Corrected payload uses that API
+  field and u32 bounds. Concurrent replay now asserts all three running intent
+  configurations have `[heartbeat].interval_secs = 3`, before and after restart.
+  Both owners pass; CLI 6/clippy and fixture 106 pass. Production default is 10.
+  Logs: `/tmp/crowdb-r230-cli-real-cadence*.log`.
+- Native load failed before owner restart at `batch_mutate` with Deadline.
+  NoSpace logs start several minutes after that first divergence while the
+  failed fixture is retained for its peer; they do not explain the first error.
+  Add batch/elapsed context, run exact original native load with resource samples,
+  then the same load/inspection pair if it passes alone. Keep deadlines and
+  CPU/memory limits unchanged until measured evidence warrants another choice.
+- Commit/package the ownership fix; exact six-node browser, native load and
+  CLI must pass before another complete Console. Then resume the independent
+  domain queue. Do not close R230 while these gates remain pending.

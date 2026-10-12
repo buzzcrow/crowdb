@@ -172,7 +172,7 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
               else if (kind === 'chunk-kv' && existing.some(server => server.service_type === 'diskio' && !server.pid)) waiting = 'Waiting: restart registered DiskIO services before connecting chunk storage';
               else if (kind === 'chunk-kv' && new Set(existing.filter(server => server.service_type === 'diskio' && server.pid).map(server => server.node_id)).size < 2) waiting = 'Waiting: deploy DiskIO on at least two nodes for journal mirrors';
               else if (kind === 'access-server' && plan['chunk-kv'].state !== 'deployed' && !existing.some(server => server.service_type === 'chunk-kv' && server.pid)) waiting = 'Waiting: deploy Chunk-KV and initialize its catalog';
-              if (!waiting && (kind === 'chunkdb' || kind === 'chunk-kv')) {
+              if (!waiting && (kind === 'chunkdb' || kind === 'chunk-kv' || kind === 'access-server')) {
                 try {
                   const ownership = await serviceRequest('/chunk-storage-readiness', 'GET') as { ready: boolean; reason?: string };
                   if (!ownership.ready) waiting = ownership.reason ?? 'Waiting: publish live DiskIO disk-group ownership';

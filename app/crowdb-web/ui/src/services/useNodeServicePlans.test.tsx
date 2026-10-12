@@ -19,6 +19,37 @@ beforeEach(() => {
 });
 afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); });
 describe('node service plans', () => {
+  it('keeps Access queued while DiskIO ownership is unavailable and resumes without Retry', async () => {
+    const first = newPlan();
+    for (const kind of serviceOrder) first[kind] = { state: 'deployed' };
+    const second = newPlan();
+    for (const kind of serviceOrder) second[kind] = { state: 'disabled' };
+    second['chunk-kv'] = { state: 'waiting', detail: 'Waiting: storage' };
+    second['access-server'] = { state: 'pending' };
+    const existing = serviceOrder.map((service_type, index) => ({ node_id: 1, service_type, pid: 10 + index }));
+    existing.push({ node_id: 3, service_type: 'diskio', pid: 20 });
+    vi.mocked(listServers).mockResolvedValue(existing as Awaited<ReturnType<typeof listServers>>);
+    let ownershipReady = false;
+    vi.mocked(serviceRequest).mockImplementation(async path => {
+      if (path === '/service-plans') return { 1: { revision: 7, steps: first }, 2: { revision: 7, steps: second } };
+      if (path === '/chunk-storage-readiness') return { ready: ownershipReady, reason: ownershipReady ? undefined : 'Waiting: storage' };
+      if (path === '/deployment-defaults') return { 'access-server': { instance_id: '2', http_port: 9092, s3_port: 9091 } };
+      return { revision: 8, ready: true };
+    });
+    const { result } = renderHook(() => useNodeServicePlans(stores, {}, async () => {}, true));
+    await act(async () => {});
+    const deployments = () => vi.mocked(serviceRequest).mock.calls.filter(([path, method, body]) =>
+      path === '/nodes/2/services/deploy' && method === 'POST' && (body as { kind: string }).kind === 'access-server');
+    expect(deployments()).toHaveLength(0);
+    expect(result.current.plans[2]['access-server'].state).toBe('waiting');
+    ownershipReady = true;
+    vi.mocked(listServers).mockResolvedValue([...existing, { node_id: 2, service_type: 'chunk-kv', pid: 30 }] as Awaited<ReturnType<typeof listServers>>);
+    await act(async () => { await vi.advanceTimersByTimeAsync(600); });
+    expect(deployments()).toHaveLength(1);
+    expect(result.current.plans[2]['access-server'].state).toBe('deployed');
+  });
+
+
   it('queues Retry behind an in-flight registration reconciliation', async () => {
     const steps = newPlan();
     steps['paxos-kv'] = { state: 'deployed' };
