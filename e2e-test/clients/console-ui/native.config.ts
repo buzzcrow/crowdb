@@ -8,6 +8,7 @@ export default defineConfig({
   metadata: { fileBackedSync: true },
   timeout: 180_000,
   testMatch: [
+    '**/22-kv-topology.spec.ts',
     '**/13-node-service-plans.spec.ts',
     '**/01-shell-ui-behaviors.spec.ts',
     '**/11-cluster-server-lifecycle.spec.ts',

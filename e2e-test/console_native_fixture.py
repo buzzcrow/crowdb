@@ -16,7 +16,7 @@ from console_native_browser import INSPECTION_CASES
 
 class NativeConsoleCluster(ShellBrowserCluster):
     def __init__(self, image, artifacts, bundle, *, disk_gib=(80, 8, 8),
-                 zone_gib=(1, 1, 1), spare_disk_gib=0, bootstrap=True, **kwargs):
+                 zone_gib=(1, 1, 1), spare_disk_gib=0, bootstrap=True, rack_ids=None, **kwargs):
         if type(bootstrap) is not bool:
             raise ValueError("native bootstrap selection must be a boolean")
         count = len(disk_gib)
@@ -28,6 +28,9 @@ class NativeConsoleCluster(ShellBrowserCluster):
             raise ValueError("native zone sizes must match the bounded disk capacities")
         if type(spare_disk_gib) is not int or not 0 <= spare_disk_gib <= 4096:
             raise ValueError("native spare disk requires a bounded GiB value")
+        racks = (1,) * count if rack_ids is None else tuple(rack_ids)
+        if len(racks) != count or any(type(rack) is not int or not 1 <= rack <= 8 for rack in racks):
+            raise ValueError("native rack IDs must match the node profile")
         Cluster.__init__(self, image, artifacts, node_count=count, wire_replicas=False,
                          advertise=True, **kwargs)
         self.bundle = bundle
@@ -37,6 +40,7 @@ class NativeConsoleCluster(ShellBrowserCluster):
         self.zone_gib = tuple(zone_gib)
         self.spare_disk_gib = spare_disk_gib
         self.bootstrap = bootstrap
+        self.rack_ids = racks
 
     def api(self, path, body=None, method=None, status=200):
         payload = None if body is None else json.dumps(body).encode()
@@ -75,17 +79,18 @@ class NativeConsoleCluster(ShellBrowserCluster):
                 address=str(subnet.network_address + index + 2),
                 environment=("CROWDB_STARTUP_MODE=manual", f"CROWDB_PHYSICAL_HOST_ID={host}")))
         self.ready()
-        self.api("/api/racks", {"id": 1, "name": "native acceptance"}, status=201)
+        for rack in sorted(set(self.rack_ids)):
+            self.api("/api/racks", {"id": rack, "name": "native acceptance"}, status=201)
         candidates = wait(lambda: self.api("/api/node/candidates"),
                           lambda result: len(result["candidates"]) == self.node_count,
                           "isolated manual node candidates", seconds=10)["candidates"]
-        for address in self.addresses:
+        for index, address in enumerate(self.addresses):
             candidate = next(entry for entry in candidates if any(
                 urlparse(endpoint).hostname == address
                 for endpoint in entry["advertisement"]["monitor_endpoints"]))
             record = self.api("/api/node/admit", {
                 "discovery_id": candidate["advertisement"]["discovery_id"],
-                "rack_id": 1, "ssh_user": "crowdb", "ssh_port": 2222, "ssh_password": "crowdb"})
+                "rack_id": self.rack_ids[index], "ssh_user": "crowdb", "ssh_port": 2222, "ssh_password": "crowdb"})
             self.node_ids.append(record["node_id"])
         if self.bootstrap:
             self.api("/api/cluster/init", {"nodes": self.node_ids}, status=201)
@@ -98,7 +103,7 @@ class NativeConsoleCluster(ShellBrowserCluster):
         self.origins = [f"http://{address}:10000" for address in self.addresses]
         (self.artifacts / "native-endpoints.json").write_text(json.dumps({
             "nodes": self.node_ids, "addresses": self.addresses, "disk_gib": self.disk_gib,
-            "zone_gib": self.zone_gib, "spare_disk_gib": self.spare_disk_gib, "ports": {
+            "zone_gib": self.zone_gib, "spare_disk_gib": self.spare_disk_gib, "racks": self.rack_ids, "ports": {
                 "web": 9090, "ssh": 2222, "kv": 10000, "diskdb": 7100, "diskio": 7200}}, indent=2))
         return self
 

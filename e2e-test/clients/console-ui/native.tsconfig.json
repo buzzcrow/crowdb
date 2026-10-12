@@ -1,6 +1,7 @@
 {
   "extends": "./bridge.tsconfig.json",
   "include": [
+    "e2e/flows/22-kv-topology.spec.ts",
     "e2e/flows/13-node-service-plans.spec.ts",
     "e2e/flows/01-shell-ui-behaviors.spec.ts",
     "e2e/flows/11-cluster-server-lifecycle.spec.ts",

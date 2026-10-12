@@ -233,7 +233,7 @@ and the named run artifacts.
   `run-ae039e342c7c4326b353645b38068f55`. Five stable/shared runs have redacted
   evidence under `.crowdb-runtime/artifacts/container-e2e/`.
   Old native Rust cases, four private helpers, seven old native browser callbacks
-  and their selectors are removed. Accepted Console inventory is 149.
+  and their selectors are removed. Accepted Console inventory is 152.
   `test-console` now runs only shared/CLI/Web component proofs, with no native
   server build or launcher. Important local process/ownership UTs remain.
   Component 263/263, fixture 104/104, image-source guard, native TypeScript,
@@ -318,13 +318,22 @@ and the named run artifacts.
   Store Cancel/confirm; standalone lifecycle checks Node/Rack confirmation and
   context menus. Logs `/tmp/crowdb-node-plan-{projection,retry}.log` and
   `/tmp/crowdb-rack-node-{types,confirmation,node-menu}.log`; fixture 105 and
-  native/shell TypeScript pass. Accepted Console inventory is 149.
-- [ ] **Topology and data flow**: three topology cases and the six-node data
-  case remain. Preserve independent groups on distinct node subsets, SIMPLE /
-  COMPLEX topology comparison, and three storage + three diskless nodes with
-  actual KV/S3/Iceberg data. Each physical node uses its own release container.
-  Remove the old 23-server shared topology setup and port allocator only after
-  equivalent flow coverage passes. Sources `{22,92}-*.spec.ts`.
+  native/shell TypeScript pass. Accepted Console inventory is 152.
+- Topology's three source cases are retired. Three fresh release owners retain
+  multi-rack replica growth and complete lease/term/engine observations, five
+  real nodes with overlapping three-voter subsets and key/scan isolation, and
+  SIMPLE/COMPLEX store layouts. COMPLEX's five idle nodes and unrelated shared
+  setup are removed: all original groups used only its first three voters.
+  Every comparison group now receives and returns a distinct value, including
+  both stores. Parallel three-case gate passes, 2.2 / 1.0 / 1.4 browser seconds;
+  `/tmp/crowdb-native-topology.log`; fixture 105 and native TS pass.
+- [ ] **Six-node data flow**: migrate the last source
+  `app/crowdb-web/ui/e2e/flows/92-three-node-data.spec.ts` and its diskless/SDK
+  helpers. Preserve three storage + three diskless nodes, automatic selected
+  service startup, actual KV/S3/Iceberg data, and six-way dynamic slot balance.
+  Each physical node has its own release container. Extend/split CI resources
+  before registering the larger owner. Retire old helpers/port allocator only
+  after this final original browser flow passes.
 - Current native fixture supports 3–8 actual nodes with matching disk/zone
   profiles and resource accounting. Console CI currently budgets 8 CPU /
   12288 MiB; larger topology owners must update or split this budget coherently.
@@ -374,7 +383,7 @@ and the named run artifacts.
   `run-5cfba02195364ce483aac4b5a3eaf1ee`; logs under
   `/tmp/crowdb-voting-epoch-final-{console,deployment}-ci.log`.
   The twenty-five newer browser cases, two CLI replay cases and nineteen native client cases pass separately and are not
-  included in the complete 96-case measurement. Current accepted Console inventory is 149;
+  included in the complete 96-case measurement. Current accepted Console inventory is 152;
   final full-domain measurement remains pending. Remote CI and macOS remain
   unmeasured. Files: `doc/working/test.md`, root runner reports.
 - [ ] **Close R230**: after inventory, assertion mapping, local gates and required

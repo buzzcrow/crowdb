@@ -85,6 +85,7 @@ class Case:
     native_client: bool = False
     native_disk_gib: tuple = (80, 8, 8)
     native_zone_gib: tuple = (1, 1, 1)
+    native_rack_ids: tuple | None = None
     native_spare_disk_gib: int = 0
     native_bootstrap: bool = True
     native_observations: bool = False
@@ -357,6 +358,9 @@ ICEBERG_CASES = (
     Case("iceberg.namespace", "access_iceberg::namespace::namespace_functional_crud_survives_native_storage_and_listener_restart"),
 )
 CONSOLE_OPERATION_CASES = (
+    Case("console.native.browser.topology", "console::browser_topology::multi_rack_leaders", native_browser="native topology: three racks grow one replica and retain three complete leaders", native_rack_ids=(1, 2, 3)),
+    Case("console.native.browser.topology", "console::browser_topology::independent_subsets", native_browser="native topology: overlapping three-voter subsets retain independent keys and scans", native_disk_gib=(80, 8, 8, 8, 8), native_zone_gib=(1, 1, 1, 1, 1)),
+    Case("console.native.browser.topology", "console::browser_topology::simple_and_complex", native_browser="native topology: SIMPLE and COMPLEX store layouts route every populated group"),
     Case("console.native.browser.retry", "console::browser_plan::fixed_ports_and_failed_retry", native_browser="native plans: fixed ports isolate three nodes and failed DiskDB retries preserve identity", native_observations=True),
     Case("console.browser.lifecycle", "console::browser_lifecycle::standalone_kv_and_cascade", shell_browser="standalone release KV lifecycle preserves node records and cascades owned processes", shell_observations=True),
     Case("console.browser.registry", "console::browser_registry::selected_services_before_group0", shell_browser="persists all six selected services but starts only PKV before Group 0", shell_observations=True),
@@ -613,6 +617,7 @@ def allocate_cluster(case, image, artifacts, bundle, data_root):
                                     zone_gib=case.native_zone_gib,
                                     spare_disk_gib=case.native_spare_disk_gib,
                                     bootstrap=case.native_bootstrap,
+                                    rack_ids=case.native_rack_ids,
                                     data_root=data_root)
     if case.cli_replay:
         return CliContainerCluster(image, artifacts, bundle, data_root=data_root)
