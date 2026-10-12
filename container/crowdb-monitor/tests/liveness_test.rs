@@ -53,3 +53,22 @@ async fn liveness_requires_responsive_monitor_not_status_file() {
     drop(server);
     assert!(probe_liveness(&root.0).await.is_err());
 }
+
+#[tokio::test]
+async fn liveness_reclaims_only_a_disconnected_socket() {
+    use std::os::unix::fs::DirBuilderExt;
+    let root = TestRunRoot::new();
+    let directory = root.0.join("health");
+    fs::DirBuilder::new().mode(0o700).create(&directory).unwrap();
+    let path = directory.join("monitor.sock");
+    let stale = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    drop(stale);
+    let server = LivenessServer::start(&root.0).unwrap();
+    assert!(probe_liveness(&root.0).await.is_ok());
+    assert!(LivenessServer::start(&root.0).is_err());
+    assert!(probe_liveness(&root.0).await.is_ok());
+    drop(server);
+    fs::write(&path, "operator file").unwrap();
+    assert!(LivenessServer::start(&root.0).is_err());
+    assert_eq!(fs::read_to_string(path).unwrap(), "operator file");
+}

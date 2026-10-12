@@ -77,7 +77,17 @@ pub(super) async fn execute(
             durable::write_bytes(&config, intent.configuration.as_bytes())?;
             service.args = vec!["--config".into(), config.to_string_lossy().into_owned()];
             service.env = intent.environment.clone();
+            let logs = profile.paths.log_root.join(&intent.service_id);
+            if matches!(intent.kind.as_str(), "diskdb" | "chunkdb" | "chunk-kv") {
+                service
+                    .args
+                    .extend(["--log-dir".into(), logs.to_string_lossy().into_owned()]);
+            }
             if intent.kind == "access" {
+                service.env.insert(
+                    "CROWDB_ACCESS_LOG_DIR".into(),
+                    logs.to_string_lossy().into_owned(),
+                );
                 let credentials = crate::ServerCredentials::load_existing(&profile.paths.data_root)?;
                 for line in credentials.server_env().lines() {
                     if let Some((name, value)) = line.split_once('=') {
