@@ -189,7 +189,7 @@ pub(super) async fn ensure_nodes(state: &State) -> Result<()> {
             "--memory".into(),
             format!("{}m", state.memory_mib),
             "--pids-limit".into(),
-            "256".into(),
+            "512".into(),
             "--ulimit".into(),
             "core=-1".into(),
             "--mount".into(),
