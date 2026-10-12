@@ -40,7 +40,7 @@ pub(super) async fn deploy(
         }
     }
     if matches!(body.kind, Kind::AccessServer) {
-        prepare_credentials(state, &binding).await?;
+        prepare_credentials(state, &binding, &node, body).await?;
     }
     let configuration = configuration(state, &node, &id, &binding.management_seeds, body).await?;
     let intent = NodeServiceIntent {
@@ -94,6 +94,8 @@ pub(super) async fn deploy(
 async fn prepare_credentials(
     state: &AppState,
     binding: &crowdb_protocol::mgmt::node::NodeBinding,
+    node: &NodeEntry,
+    body: &Deploy,
 ) -> Result<(), Failure> {
     let value = crowdb_console_shared::deployment::admission::local_control(
         &crate::node::control_socket(),
@@ -103,16 +105,16 @@ async fn prepare_credentials(
     )
     .await
     .map_err(map_config_err)?;
-    let environment = value["environment"]
+    let credential_environment = value["environment"]
         .as_str()
         .ok_or_else(|| err_502("Cluster service credentials unavailable"))?;
-    crowdb_monitor::ServerCredentials::import(state.runtime_root.as_ref(), environment)
+    crowdb_monitor::ServerCredentials::import(state.runtime_root.as_ref(), credential_environment)
         .map_err(|error| err_502(error.to_string()))?;
     let spec = crowdb_console_shared::config::LocalLaunchSpec {
         program: "/opt/crowdb/bin/crowdb-access-server".into(),
         args: Vec::new(),
         workdir: state.runtime_root.to_string_lossy().into_owned(),
-        env: BTreeMap::new(),
+        env: environment(body, node),
         env_file: None,
         readiness_url: None,
     };
