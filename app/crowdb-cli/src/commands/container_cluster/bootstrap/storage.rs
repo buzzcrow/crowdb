@@ -31,7 +31,7 @@ pub(super) async fn prepare(api: &Api, state: &mut State) -> Result<()> {
         if !has_service(api, node, &format!("diskdb-{node}")).await? {
             api.post(
                 &format!("/api/nodes/{node}/diskdb/deploy"),
-                json!({"rpc_port":7100,"heartbeat_interval_secs":state.diskdb_heartbeat_interval_secs}),
+                json!({"rpc_port":7100,"keepalive_interval_secs":state.diskdb_heartbeat_interval_secs}),
             )
             .await?;
             state.phase = "storage".into();

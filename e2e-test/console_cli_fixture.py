@@ -3,6 +3,7 @@
 """Host CLI recovery against three owned formal release containers."""
 
 import json
+import tomllib
 import os
 import signal
 import subprocess
@@ -103,6 +104,8 @@ class CliContainerCluster(Cluster):
         self.invoke("cluster", "start", "--container", self.servers[1])
         after = self.state()
         assert before["id"] == after["id"] and before["addresses"] == after["addresses"]
+        assert before["diskdb_heartbeat_interval_secs"] == after["diskdb_heartbeat_interval_secs"] == 3
+        self.assert_diskdb_cadence()
         assert binding == self.read_owned("node-binding.json")
         if diskdb is not None:
             assert diskdb == self.read_owned("services/diskdb-1/execution.json"), "confirmed Diskdb execution must survive resume"
@@ -124,8 +127,16 @@ class CliContainerCluster(Cluster):
         self.invoke("cluster", "stop", "--container", self.servers[1])
         assert "Containers: 0/3" in self.invoke("cluster", "status", "--root", str(self.root))
         self.invoke("cluster", "restart", "--container", self.run_id)
+        self.assert_diskdb_cadence()
         assert self.invoke("object", "get", "--container", self.servers[2], "cli-replay", "witness") == "durable-container-witness"
 
+
+    def assert_diskdb_cadence(self):
+        for index in range(3):
+            execution = self.read_owned(f"services/diskdb-{index + 1}/execution.json", index)
+            assert execution["complete"] and execution["pid"] > 1
+            configuration = tomllib.loads(execution["intent"]["configuration"])
+            assert configuration["heartbeat"]["interval_secs"] == 3, "running DiskDB must use the recorded cadence"
 
     def refresh(self):
         state = self.state()
@@ -143,9 +154,11 @@ class CliContainerCluster(Cluster):
             "access_ports": [9000, 9001, 9002]}, indent=2))
 
     def read_owned(self, path, index=0):
-        if path not in ("node-binding.json", "services/diskdb-1/execution.json"):
+        if type(index) is not int or index < 0:
+            raise ValueError("CLI recovery node is outside the owned cluster")
+        if path != "node-binding.json" and path != f"services/diskdb-{index + 1}/execution.json":
             raise ValueError("unsupported CLI recovery observation")
-        if type(index) is not int or index < 0 or index >= len(self.servers):
+        if index >= len(getattr(self, "servers", ())):
             raise ValueError("CLI recovery node is outside the owned cluster")
         info = json.loads(self.command("inspect", self.servers[index]))[0]
         labels = info["Config"]["Labels"]

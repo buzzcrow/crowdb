@@ -81,7 +81,7 @@ pub(crate) async fn start(
     image: Option<&str>,
     node_cpus: Option<f64>,
     memory_mib: Option<u64>,
-    diskdb_heartbeat_interval_secs: Option<u64>,
+    diskdb_heartbeat_interval_secs: Option<u32>,
 ) -> Result<Status> {
     let root = resolve(target, true).await?;
     let mut state = if root.join(FILE).is_file() {
@@ -166,7 +166,7 @@ fn validate_requested_settings(
     state: &State,
     node_cpus: Option<f64>,
     memory_mib: Option<u64>,
-    diskdb_heartbeat_interval_secs: Option<u64>,
+    diskdb_heartbeat_interval_secs: Option<u32>,
 ) -> Result<()> {
     if node_cpus.is_some_and(|cpus| cpus.to_bits() != state.node_cpus.to_bits())
         || memory_mib.is_some_and(|memory| memory != state.memory_mib)

@@ -42,8 +42,8 @@ pub enum S3ClusterVerb {
         #[arg(long)]
         memory_mib: Option<u64>,
         /// `DiskDB` discovery and heartbeat cadence, recorded for every restart.
-        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
-        diskdb_heartbeat_interval_secs: Option<u64>,
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+        diskdb_heartbeat_interval_secs: Option<u32>,
     },
     Status {
         #[command(flatten)]

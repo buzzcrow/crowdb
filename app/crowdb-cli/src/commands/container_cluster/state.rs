@@ -15,9 +15,9 @@ pub(super) const FILE: &str = "container-cluster.json";
 pub(super) const INITIALIZING: &str = "s3-mini-cluster.initializing.json";
 pub(super) const LABEL: &str = "org.crowdb.cluster.id";
 pub(super) const ROOT_LABEL: &str = "org.crowdb.cluster.root";
-pub(super) const DEFAULT_DISKDB_HEARTBEAT_INTERVAL_SECS: u64 = 10;
+pub(super) const DEFAULT_DISKDB_HEARTBEAT_INTERVAL_SECS: u32 = 10;
 
-fn default_diskdb_heartbeat_interval_secs() -> u64 {
+fn default_diskdb_heartbeat_interval_secs() -> u32 {
     DEFAULT_DISKDB_HEARTBEAT_INTERVAL_SECS
 }
 
@@ -34,7 +34,7 @@ pub(super) struct State {
     pub node_cpus: f64,
     pub memory_mib: u64,
     #[serde(default = "default_diskdb_heartbeat_interval_secs")]
-    pub diskdb_heartbeat_interval_secs: u64,
+    pub diskdb_heartbeat_interval_secs: u32,
     pub addresses: Vec<String>,
 }
 
