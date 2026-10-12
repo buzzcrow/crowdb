@@ -11,6 +11,85 @@ struct TestPublication {
 }
 
 #[tokio::test]
+async fn expired_lease_transfer_publishes_directly_from_serving_source() {
+    for prior_marker in [None, Some(Id128 { high: 88, low: 99 })] {
+        let (control, mut ready) = assert_ready_transfer_publication().await;
+        ready.release_proof = Some(AuthorityReleaseProof::LeaseExpired {
+            activation_not_before_ms: 2,
+        });
+        ready.target_artifact = ready.artifact.clone();
+        ready.readiness_proof.as_mut().unwrap().artifact = ready.artifact.clone();
+        ready.catchup_proof.as_mut().unwrap().artifact = ready.artifact.clone();
+        ready.validate().unwrap();
+        let mut head: ChunkKvRangeCatalogHead =
+            get_json(&control, &ChunkKvRangeCatalogHeadKey.to_path()).await;
+        let mut page: ChunkKvRangeCatalogPage = get_json(
+            &control,
+            &ChunkKvRangeCatalogPageKey {
+                generation: head.pages[0].page_generation,
+                page_index: 0,
+            }
+            .to_path(),
+        )
+        .await;
+        page.entries[0].owner = ready.source.clone();
+        page.entries[0].owner_epoch = ready.source_epoch;
+        page.entries[0].artifact = ready.artifact.clone();
+        page.entries[0].transition_id = prior_marker;
+        page.generation += 1;
+        page.seal().unwrap();
+        head.previous_generation = Some(head.generation);
+        head.generation = page.generation;
+        head.pages[0].page_generation = page.generation;
+        head.pages[0].page_checksum = page.checksum;
+        head.seal().unwrap();
+        put_json(
+            &control,
+            ChunkKvRangeCatalogPageKey {
+                generation: page.generation,
+                page_index: 0,
+            }
+            .to_path(),
+            &page,
+        )
+        .await;
+        replace_json(&control, ChunkKvRangeCatalogHeadKey.to_path(), &head).await;
+        replace_json(
+            &control,
+            ChunkKvTransferKey {
+                transition_id: ready.transition_id,
+            }
+            .to_path(),
+            &ready,
+        )
+        .await;
+        tick(&control).await.unwrap();
+        let committed: TransferTransition = get_json(
+            &control,
+            &ChunkKvTransferKey {
+                transition_id: ready.transition_id,
+            }
+            .to_path(),
+        )
+        .await;
+        assert_eq!(committed.phase, TransferPhase::CatalogCommitted);
+        let published: ChunkKvRangeCatalogHead =
+            get_json(&control, &ChunkKvRangeCatalogHeadKey.to_path()).await;
+        assert_eq!(published.generation, head.generation + 1);
+        let grant: ServingGrant = get_json(
+            &control,
+            &ServingGrantKey {
+                instance_id: ready.target.instance_id,
+            }
+            .to_path(),
+        )
+        .await;
+        assert_eq!(grant.catalog_generation, published.generation);
+        assert_eq!(grant.assignments[0].owner_epoch, ready.target_epoch);
+    }
+}
+
+#[tokio::test]
 async fn published_split_resumes_after_materialization_before_transition_commit() {
     for retain_markers in [true, false] {
         let fixture = prepare_materialized_split(retain_markers, false).await;

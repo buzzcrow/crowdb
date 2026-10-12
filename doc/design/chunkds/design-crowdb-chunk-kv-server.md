@@ -436,7 +436,11 @@ failure. The live-source phases and actions are:
 An owner-loss transfer created after lease exclusion may adopt the original
 tree and stream under the higher epoch instead of constructing a live overlay.
 This path is valid only after old lease expiry plus skew; writer-epoch adoption
-then fences any lower-epoch stream handle.
+then fences any lower-epoch stream handle. Its `TargetReady` proof publishes
+directly from the exact source Serving assignment; no catching-up generation
+is required. A retained marker from a previous completed split does not block
+this publication when the source has no inherited overlay. A conflicting
+range, owner, epoch, artifact or reused operation identity still fails closed.
 
 Recovery uses persisted evidence only. Before source release, a target failure
 leaves the source serving and target preparation is repeatable. After release,

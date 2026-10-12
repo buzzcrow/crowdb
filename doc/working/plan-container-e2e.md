@@ -12,33 +12,31 @@ Finish canonical release-container acceptance and test classification.
   launchers are retired, and important component UTs remain. Console has 153
   canonical owners. Assertion audit: `/tmp/crowdb-r230-accepted-assertions.md`;
   completed implementation/repair evidence remains in Git history.
-- Formal optimized debug release from `de0fe0eb`, built/imported and verified:
-  OCI `sha256:a3c632c64a8d8d846b7886c19e33f0e24b9cb9d78d2effc1007bd086c27ca7c6`;
-  Docker `sha256:128142f43b7978684e653ebcd5661fffcd1c1798d69e902cee6ad391cd3e0a13`.
+- Formal optimized debug release from `1fff5fb0`, built/imported and verified:
+  OCI `sha256:0ad53a329df28d5f5e45916975fc6af5d6f1e22bd0219026c5f45a59501d7bef`;
+  Docker `sha256:e7e13284dc8f166c68ee06445406146bb92cec74c1d05dbdcc57d5d9fab86332`.
   Receipt: `target/crowdb.oci.tar.json`. Each run pins image and client identities.
 - Complete native nodes remain 1 CPU / 2048 MiB / 512 PIDs. User direction:
-  continue tests, diagnose actual resource failures before changing limits.
-  Original complete-run cgroup samples show no OOM; peak memory 1940.1 MiB.
-- Latest complete Console run on `7a94486c`: 151 / 2 / 0, 2160.528 s. Multipart,
-  split/transfer, Journal, load and Group-0 replay pass. The two remaining failures
-  were zero-extent viewport animation and default 10-second DiskDB discovery.
-- CLI exposes a normal recorded heartbeat cadence (default 10 seconds); test
-  creation requests 3 seconds. Exact concurrent CLI replay passes. A real
-  ReactFlow component test fails before hidden-panel motion cancellation and
-  passes afterward. New-image logical and canvas scopes pass in 34.013 s and
-  24.335 s. All 182 UI/types, 6 CLI/clippy and 106 fixture checks pass.
+  continue tests; discuss resources only when measured failures require it.
+- Latest complete Console: 149 / 4 / 0, 2075.462 s. On the current image,
+  focused six-node ownership and CLI replay pass. CLI verifies all three actual
+  running DiskDB intent configurations use 3 seconds before and after restart.
+- Native load passes alone: 32 MiB mutation 42396 ms, complete test 60.38 s,
+  retained bytes 57379752 before and after restart. Original load/inspection
+  pair still fails: mutation passes in 56551 ms, then owner restart HTTP exceeds
+  20 seconds. Load nodes peak at 892.8 MiB, OOM/max-limit events are zero.
 - R139 owns complete configuration/performance profiles. CLI command/benchmark
   redesign remains later review; preserve the chunk-KV benchmark script.
 
 ## Remaining tasks
 
-- [~] **Final browser domains**: finish new-image Deployment and all 153 Console
-  owners. Driver: `/tmp/crowdb-r230-canvas-final-gates.py`; log:
-  `/tmp/crowdb-r230-canvas-final-gates.log`. It runs exact logical/canvas scopes
-  first (both passed), then complete Deployment and Console. New-image Deployment
-  passes 33 / 0 / 0 in 314.358 s; complete Console is active. Keep production and
-  E2E client inputs stable. Files: `e2e-test/`, affected modules only if a new
-  failure identifies an upstream defect.
+- [~] **Final browser domains**: package the lease-excluded transfer repair,
+  rerun the original native load/inspection pair, then all 153 Console owners
+  and complete Deployment on the final image. Deployment last passes 33 / 0 / 0
+  in 314.358 s. Preserve deadlines, resources and distinct assertions.
+  Drivers `/tmp/crowdb-r230-canvas-final-gates.py` (PID 1437674) and
+  `/tmp/crowdb-r230-domain-gates.py` (PID 642645) remain stopped; do not resume
+  independent network allocation during active browser/client batches.
 - [ ] **Remaining domains**: finish KV, DiskDB, DiskIO, ChunkDB, Chunk client,
   Chunk stream, Chunk-KV, S3, Iceberg and Dataset with KV isolation proof.
   Queue `/tmp/crowdb-r230-domain-gates.py` (PID 642645) is stopped after early
@@ -76,30 +74,20 @@ Finish canonical release-container acceptance and test classification.
   question remains unanswered. Continue local tests; revisit resources when
   required. No quotas or admission rules changed.
 
-## Current gate failures and next repair
+## Current gate failure and next repair
 
-- Latest full Console on `de0fe0eb`: 149 / 4 / 0, 2075.462 s; run
-  `/tmp/crowdb-r230-console-canvas-final/run-b8d86500506947be95039699e75f2031`.
-  Canvas, multipart and prior publication repairs pass. Current gate driver
-  PID 1437674 is stopped after its child ended, so it cannot resume domain
-  queue PID 642645 during the next browser repair gate.
-- Access Node 3 POST starts at 20:02:01.874 UTC; 72 ms earlier the actual
-  `/chunk-storage-readiness` reply is false (missing live DiskIO ownership).
-  The controller omitted Access from this prerequisite. A valid-state component
-  regression fails before adding Access to the same ownership gate; existing
-  external Chunk-KV behavior remains intact. All 183 UI/types pass.
-- CLI mistakenly sent `heartbeat_interval_secs`; the normal DiskDB deployment
-  endpoint accepts `keepalive_interval_secs`. Corrected payload uses that API
-  field and u32 bounds. Concurrent replay now asserts all three running intent
-  configurations have `[heartbeat].interval_secs = 3`, before and after restart.
-  Both owners pass; CLI 6/clippy and fixture 106 pass. Production default is 10.
-  Logs: `/tmp/crowdb-r230-cli-real-cadence*.log`.
-- Native load failed before owner restart at `batch_mutate` with Deadline.
-  NoSpace logs start several minutes after that first divergence while the
-  failed fixture is retained for its peer; they do not explain the first error.
-  Add batch/elapsed context, run exact original native load with resource samples,
-  then the same load/inspection pair if it passes alone. Keep deadlines and
-  CPU/memory limits unchanged until measured evidence warrants another choice.
-- Commit/package the ownership fix; exact six-node browser, native load and
-  CLI must pass before another complete Console. Then resume the independent
-  domain queue. Do not close R230 while these gates remain pending.
+- Focused current-image results: six-node ownership, isolated native load and
+  actual-config CLI replay pass. Pair artifacts:
+  `/tmp/crowdb-r230-native-focused-pair/run-2e681f7ec7764850aea55d997f4cee2c`.
+- Persisted evidence: split is committed at catalog generation 2; lease-expired
+  transfer is TargetReady at epoch 3, while catalog still names source epoch 2.
+  Publication incorrectly requires the catching-up marker. Tick fails with
+  `range catalog transition identity was reused`, so epoch-2 recovery is fenced
+  and monitor repeats the unready restart approximately every 11 seconds.
+- Exact regression reproduces that publication failure before the repair.
+  Repair permits direct publication only with the lease-exclusion proof and
+  exact source assignment; retained completed-split markers without overlays
+  are accepted. Existing live-fence/catching-up publication remains unchanged.
+- Package the gated repair, rerun the original pair, then full Console and
+  Deployment. Resume remaining domains after stable browser batches finish.
+  Do not close R230 while required gates remain pending.

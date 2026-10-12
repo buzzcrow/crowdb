@@ -6,8 +6,9 @@
 use bytes::Bytes;
 use crowdb_kv::cluster::group_operations::KvGroupOperationError;
 use crowdb_protocol::chunk_kv::{
-    ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPageRef,
-    ChunkKvRangeCatalogPartitionState, SplitPhase, SplitTransition, TransferPhase, TransferTransition,
+    AuthorityReleaseProof, ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage,
+    ChunkKvRangeCatalogPageRef, ChunkKvRangeCatalogPartitionState, SplitPhase, SplitTransition,
+    TransferPhase, TransferTransition,
 };
 use crowdb_protocol::key::{ChunkKvRangeCatalogHeadKey, ChunkKvRangeCatalogPageKey, TextKey};
 
@@ -83,13 +84,21 @@ pub async fn publish_transfer(
         transition.phase,
         TransferPhase::TargetReady | TransferPhase::CatalogCommitted
     );
-    reject_reused_transition_id(&catalog.pages, transition.transition_id, usize::from(advancing))?;
+    // Lease-excluded recovery reopens the original artifacts and moves directly
+    // to TargetReady. It does not publish a catching-up assignment first.
+    let direct_recovery = advancing
+        && matches!(
+            transition.release_proof,
+            Some(AuthorityReleaseProof::LeaseExpired { .. })
+        )
+        && exact_entries(&catalog.pages, |entry| transfer_source_matches(entry, transition)) == 1;
+    reject_reused_transition_id(
+        &catalog.pages,
+        transition.transition_id,
+        usize::from(advancing && !direct_recovery),
+    )?;
     let source = |entry: &ChunkKvRangeCatalogEntry| {
-        let source_serving = entry.owner == transition.source
-            && entry.owner_epoch == transition.source_epoch
-            && entry.state == ChunkKvRangeCatalogPartitionState::Serving
-            && entry.artifact == transition.artifact
-            && entry.transition_id.is_none();
+        let source_serving = transfer_source_matches(entry, transition);
         let target_catching_up = entry.owner == transition.target
             && entry.owner_epoch == transition.target_epoch
             && entry.state == ChunkKvRangeCatalogPartitionState::TargetCatchingUp
@@ -97,7 +106,7 @@ pub async fn publish_transfer(
             && entry.transition_id == Some(transition.transition_id);
         entry.partition_id == transition.partition_id
             && entry.range == transition.range
-            && if advancing {
+            && if advancing && !direct_recovery {
                 target_catching_up
             } else {
                 source_serving
@@ -105,6 +114,17 @@ pub async fn publish_transfer(
     };
     let (head, pages) = replace_one(catalog.head, catalog.pages, source, vec![desired])?;
     publish(control, head, pages, catalog.head_revision).await
+}
+
+fn transfer_source_matches(entry: &ChunkKvRangeCatalogEntry, transition: &TransferTransition) -> bool {
+    entry.partition_id == transition.partition_id
+        && entry.range == transition.range
+        && entry.owner == transition.source
+        && entry.owner_epoch == transition.source_epoch
+        && entry.state == ChunkKvRangeCatalogPartitionState::Serving
+        && entry.artifact == transition.artifact
+        && (entry.transition_id.is_none() || entry.artifact.tail_overlay.is_none())
+        && entry.transition_id != Some(transition.transition_id)
 }
 
 pub async fn publish_materialized_partition(
