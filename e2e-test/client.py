@@ -84,6 +84,14 @@ def bundle_client(output):
     shutil.copy2(binaries[0], output / "domain-test")
     shutil.copytree(Path(__file__).parent / "clients", output / "clients",
                     ignore=shutil.ignore_patterns(*CLIENT_BUILD_DIRS))
+    # These browser assertions consume the same serializers and wire types as
+    # the deployed UI. Snapshot them with the host client before recording its
+    # digest, without copying UI launchers or maintaining a second source.
+    ui = Path(__file__).resolve().parents[1] / "app/crowdb-web/ui/src"
+    for relative in ("chunk-kv/catalog.ts", "iceberg/json.ts", "iceberg/types.ts"):
+        target = output / "clients/console-ui/src" / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ui / relative, target)
     result = subprocess.run(["ldd", "-r", str(output / "domain-test")], capture_output=True, text=True, check=True)
     if "not found" in result.stdout or "undefined symbol" in result.stdout:
         raise RuntimeError(result.stdout)

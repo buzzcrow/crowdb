@@ -10,6 +10,7 @@ from allocation import LABEL, create_network, node_data, start_node
 from fixture import Cluster, HTTP, wait
 from console_shell_fixture import ShellBrowserCluster
 from console_native_observation import services, process
+from console_native_browser import INSPECTION_CASES
 
 
 class NativeConsoleCluster(ShellBrowserCluster):
@@ -92,9 +93,24 @@ class NativeConsoleCluster(ShellBrowserCluster):
         if body.get("action") == "native-storage-profile":
             return {"disk_gib": self.disk_gib}
         if body.get("action") == "run-native-browser":
+            if self.case_name == "console::native_browser::page_layout_and_iceberg_inspection":
+                chunks = body.get("chunks")
+                if (not isinstance(chunks, dict) or len(chunks.get("ids", [])) != 21
+                        or chunks.get("mirror") != chunks["ids"][0]
+                        or chunks.get("ec") != chunks["ids"][1]):
+                    raise ValueError("inspection requires its actual 21 allocated chunks")
+                self.browser_timeout = len(INSPECTION_CASES) * 180
+                self.browser(INSPECTION_CASES, config="native.config.ts",
+                    extra_env={"CROWDB_NATIVE_CHUNK_FIXTURE": json.dumps(chunks)},
+                    expected=len(INSPECTION_CASES))
+                return {"passed": True}
             cases = {
                 "console::native_browser::multipart_upload_and_physical_navigation":
                     "S3 native multipart upload, HEAD, bounded preview and full round trip",
+                "console::native_browser::chunk_ownership_scope":
+                    "native diagnostics: Chunk ownership matches both durable maps and node scopes",
+                "console::native_browser::journal_identity_and_owner_recovery":
+                    "native diagnostics: journal identity survives Chunk navigation and owner interruption",
             }
             name = cases.get(self.case_name)
             if name is None:

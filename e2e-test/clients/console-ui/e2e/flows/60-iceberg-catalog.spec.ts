@@ -15,7 +15,7 @@ test('native diagnostics: Iceberg empty Catalog omits the first-success guide', 
 });
 
 // Baseline: 12.3s (2026-10-04), including 101 real files and owned teardown.
-test('native diagnostics: Iceberg committed references and Parquet footer', async ({ page, request, baseURL }) => {
+test('native diagnostics: Iceberg committed references and Parquet footer', async ({ page, request, baseURL }, testInfo) => {
   const namespace = `console_files_${process.pid}_${Date.now()}`;
   const tablePath = `/api/access/iceberg/v1/namespaces/${namespace}/tables/events`;
   try {
@@ -78,7 +78,7 @@ test('native diagnostics: Iceberg committed references and Parquet footer', asyn
     await expect(inspection.getByRole('button', { name: 'Footer', exact: true })).toHaveAttribute('aria-pressed', 'true');
     await inspection.getByRole('button', { name: 'Row group layout', exact: true }).click();
     await expect(page.getByRole('region', { name: 'Column chunk details' })).toContainText(footer.groups[0].columns[0].compressed);
-    await page.screenshot({ path: '/tmp/crowdb-iceberg-inspector.png', fullPage: true });
+    await page.screenshot({ path: testInfo.outputPath('iceberg-inspector.png'), fullPage: true });
     const changed = await request.post(tablePath, { data: { requirements: [], updates: [{ action: 'set-properties', updates: { inspection: 'new-generation' } }] } });
     expect(changed.ok(), await changed.text()).toBeTruthy();
     const stale = await request.get(`${tablePath}/inspect?${query}`); expect(stale.status()).toBe(409);

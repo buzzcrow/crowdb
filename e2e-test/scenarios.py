@@ -353,6 +353,9 @@ ICEBERG_CASES = (
 CONSOLE_OPERATION_CASES = (
     Case("console.native.recovery", "console::native_recovery::all_typed_restarts_preserve_objects_and_keep_one_live_process", native_client=True),
     Case("console.native.load", "console::native_load::production_load_keeps_heartbeats_and_durable_bytes_across_owner_restart", native_client=True),
+    Case("console.native.inspection", "console::native_browser::page_layout_and_iceberg_inspection", native_client=True, native_disk_gib=(80, 256, 256), client_timeout=3840),
+    Case("console.native.browser.ownership", "console::native_browser::chunk_ownership_scope", native_client=True, client_timeout=360),
+    Case("console.native.browser.journal", "console::native_browser::journal_identity_and_owner_recovery", native_client=True, client_timeout=360),
     Case("console.native.browser.s3", "console::native_browser::multipart_upload_and_physical_navigation", native_client=True, client_timeout=360),
     Case("console.native.s3", "console::native_s3::multipart_locations_bind_actual_chunks_and_reject_stale_cursors", native_client=True),
     Case("console.native.binding", "console::native_binding::prebound_groups_acquire_live_owners_and_require_explicit_binding_repair", native_client=True),

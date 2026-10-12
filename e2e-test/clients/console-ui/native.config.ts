@@ -7,5 +7,11 @@ export default defineConfig({
   ...shell,
   metadata: { fileBackedSync: true },
   timeout: 180_000,
-  testMatch: ['**/71-s3-native.spec.ts'],
+  testMatch: [
+    '**/71-s3-native.spec.ts', '**/51-chunk-capacity-disk.spec.ts',
+    '**/52-chunk-capacity-zone.spec.ts', '**/53-chunk-capacity-canvas.spec.ts',
+    '**/53-chunk-ownership.spec.ts', '**/54-chunk-layout.spec.ts',
+    '**/55-chunk-kv-catalog.spec.ts', '**/60-iceberg-catalog.spec.ts',
+    '**/70-s3-object.spec.ts', '**/91-navigation-state.spec.ts',
+  ],
 });

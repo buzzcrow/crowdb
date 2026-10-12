@@ -66,15 +66,8 @@ async fn groups(context: &TestNativeContext) {
             )
             .await;
     }
+    disk_group(context, 1).await;
     for node in 1..=3 {
-        context
-            .api(
-                Method::POST,
-                &format!("/api/nodes/{node}/disk-groups"),
-                json!({"id":node,"store_id":u64::from(node == 1),"group_id":1,"name":"storage"}),
-                201,
-            )
-            .await;
         context
             .api(
                 Method::POST,
@@ -84,6 +77,20 @@ async fn groups(context: &TestNativeContext) {
             )
             .await;
     }
+    for node in 2..=3 {
+        disk_group(context, node).await;
+    }
+}
+
+async fn disk_group(context: &TestNativeContext, node: u64) {
+    context
+        .api(
+            Method::POST,
+            &format!("/api/nodes/{node}/disk-groups"),
+            json!({"id":node,"store_id":u64::from(node == 1),"group_id":1,"name":"storage"}),
+            201,
+        )
+        .await;
 }
 
 async fn disks(context: &TestNativeContext) {

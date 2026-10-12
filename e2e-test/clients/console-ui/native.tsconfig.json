@@ -4,6 +4,15 @@
     "native.config.ts",
     "shell.config.ts",
     "e2e/flows/71-s3-native.spec.ts",
+    "e2e/flows/51-chunk-capacity-disk.spec.ts",
+    "e2e/flows/52-chunk-capacity-zone.spec.ts",
+    "e2e/flows/53-chunk-capacity-canvas.spec.ts",
+    "e2e/flows/53-chunk-ownership.spec.ts",
+    "e2e/flows/54-chunk-layout.spec.ts",
+    "e2e/flows/55-chunk-kv-catalog.spec.ts",
+    "e2e/flows/60-iceberg-catalog.spec.ts",
+    "e2e/flows/70-s3-object.spec.ts",
+    "e2e/flows/91-navigation-state.spec.ts",
     "e2e/fixtures/realBackend.ts",
     "e2e/fixtures/stepTimer.ts"
   ]

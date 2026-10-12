@@ -58,8 +58,10 @@ mod web_replicas;
 mod web_sealed_bootstrap;
 mod web_voters;
 
+mod native_balance;
 mod native_binding;
 mod native_browser;
+mod native_chunks;
 mod native_context;
 mod native_load;
 mod native_recovery;

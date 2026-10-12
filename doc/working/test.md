@@ -20,7 +20,7 @@ uses two slots with 16 CPU / 32768 MiB. KV includes both isolation pairs.
 ### Container domains
 
 Console's latest complete measurement covers 96 owners; the accepted inventory
-is now 127. Twenty-five newer browser cases, two CLI recovery cases and four
+is now 130. Twenty-five newer browser cases, two CLI recovery cases and seven
 native client cases passed separately. These batch
 results do not replace the complete-domain measurement.
 
@@ -44,8 +44,8 @@ results do not replace the complete-domain measurement.
   fix (`cb159e7b`). Exact build identities remain in their artifacts.
 - Current image includes Web readonly, remote Access, monitor restart and remote
   KV observation, configurable DiskDB heartbeat, typed restart and stale-owner
-  disk status fixes (`946ba3fd`), OCI
-  `sha256:af2e69168712208b8262bcf269b877e59fa2754ab9849eba99b8ffb2336be09b`.
+  disk status fixes, canonical KV labels and typed startup readiness (`63608014`),
+  OCI `sha256:80e8a6e4cc4f24849c9a523e3c021bae1aaf0395301c78a7695699ef8131d5fd`.
   Optimized binaries retain debug info. Data/log/crash roots and host core policy
   are recorded per run; receipt: `target/crowdb.oci.tar.json`.
 - Special profiles: bridge SSH admission 148.191s; Linux host 7.310s;
