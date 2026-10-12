@@ -82,6 +82,7 @@ class Case:
     console_web: bool = False
     preserve_network: bool = False
     native_client: bool = False
+    native_disk_gib: tuple = (80, 8, 8)
     native_browser: str | None = None
     shell_browser: str | None = None
     console_browser: str | None = None
@@ -350,6 +351,10 @@ ICEBERG_CASES = (
     Case("iceberg.namespace", "access_iceberg::namespace::namespace_functional_crud_survives_native_storage_and_listener_restart"),
 )
 CONSOLE_OPERATION_CASES = (
+    Case("console.native.recovery", "console::native_recovery::all_typed_restarts_preserve_objects_and_keep_one_live_process", native_client=True),
+    Case("console.native.load", "console::native_load::production_load_keeps_heartbeats_and_durable_bytes_across_owner_restart", native_client=True),
+    Case("console.native.browser.s3", "console::native_browser::multipart_upload_and_physical_navigation", native_client=True, client_timeout=360),
+    Case("console.native.s3", "console::native_s3::multipart_locations_bind_actual_chunks_and_reject_stale_cursors", native_client=True),
     Case("console.native.binding", "console::native_binding::prebound_groups_acquire_live_owners_and_require_explicit_binding_repair", native_client=True),
     Case("console.browser.registry", "console::browser_registry::duplicate_ids", shell_browser="rejects duplicate rack and node IDs from the add dialogs"),
     Case("console.browser.node", "console::browser_node::replica_navigation", native_browser="cross-jumps between views and shows local + remote replicas"),
@@ -567,7 +572,8 @@ def case_resources(case, node_cpus):
 
 def allocate_cluster(case, image, artifacts, bundle, data_root):
     if case.native_browser or case.native_client:
-        return NativeConsoleCluster(image, artifacts, bundle, data_root=data_root)
+        return NativeConsoleCluster(image, artifacts, bundle, disk_gib=case.native_disk_gib,
+                                    data_root=data_root)
     if case.cli_replay:
         return CliContainerCluster(image, artifacts, bundle, data_root=data_root)
     if case.shell_browser:

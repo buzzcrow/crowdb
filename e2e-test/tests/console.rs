@@ -59,6 +59,11 @@ mod web_sealed_bootstrap;
 mod web_voters;
 
 mod native_binding;
+mod native_browser;
 mod native_context;
+mod native_load;
+mod native_recovery;
+mod native_s3;
+mod native_storage;
 mod web_diskio_discovery;
 mod web_leader_removal;

@@ -20,6 +20,12 @@ pub(crate) async fn request(body: Value) -> Value {
     request_with_timeout(body, Duration::from_secs(65)).await
 }
 
+pub(crate) async fn native_browser() -> Value {
+    // Host dependency preparation (120s) plus the original native browser
+    // scenario budget (180s). DOM and request assertion deadlines stay intact.
+    request_with_timeout(json!({"action": "run-native-browser"}), Duration::from_secs(305)).await
+}
+
 pub(crate) async fn recover_service(service: &str, signal: &str) -> Value {
     request_with_timeout(
         json!({"action": "recover-service", "node": 0, "service": service, "signal": signal}),

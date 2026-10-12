@@ -15,8 +15,8 @@ mod native_balance;
 mod native_chunks;
 #[path = "common/native_journal.rs"]
 mod native_journal;
-#[path = "common/native_load.rs"]
-mod native_load;
+#[path = "common/native_values.rs"]
+mod native_values;
 
 struct TestServices(AppState);
 
@@ -520,10 +520,6 @@ async fn native_cluster(inspection_only: bool) {
     }
     if std::env::var_os("CROWDB_NATIVE_COUNT_ACCEPTANCE").is_some() {
         assert_native_balance(&app, &state).await;
-        return;
-    }
-    if std::env::var_os("CROWDB_NATIVE_LOAD_ACCEPTANCE").is_some() {
-        native_load::TestNativeLoad::verify(&app, &state).await;
         return;
     }
     assert_native_access(&app).await;

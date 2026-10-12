@@ -62,8 +62,8 @@ async fn seed_values(client: &ChunkKvClient) {
             .map(|index| BatchItem {
                 request_id: None,
                 operation: PointOperation::Put {
-                    key: super::native_load::key(index),
-                    value: super::native_load::value(index),
+                    key: super::native_values::key(index),
+                    value: super::native_values::value(index),
                 },
             })
             .collect();
@@ -80,12 +80,12 @@ async fn seed_values(client: &ChunkKvClient) {
 
 async fn verify_values(client: &ChunkKvClient) {
     for index in 0..512 {
-        let result = client.get(super::native_load::key(index), None).await.unwrap();
+        let result = client.get(super::native_values::key(index), None).await.unwrap();
         let operation = result.result.unwrap();
         let crowdb_protocol::chunk_kv::OperationResult::Value(Some(record)) = operation else {
             panic!("native balance lost record {index}: {operation:?}");
         };
-        let expected = super::native_load::value(index);
+        let expected = super::native_values::value(index);
         assert_eq!(record.value, expected, "native balance record {index}");
     }
 }

@@ -9,15 +9,20 @@ from urllib.parse import urlparse
 from allocation import LABEL, create_network, node_data, start_node
 from fixture import Cluster, HTTP, wait
 from console_shell_fixture import ShellBrowserCluster
+from console_native_observation import services, process
 
 
 class NativeConsoleCluster(ShellBrowserCluster):
-    def __init__(self, image, artifacts, bundle, **kwargs):
+    def __init__(self, image, artifacts, bundle, *, disk_gib=(80, 8, 8), **kwargs):
+        if (len(disk_gib) != 3 or any(type(size) is not int or not 1 <= size <= 1024
+                                     for size in disk_gib)):
+            raise ValueError("native disk capacities require three bounded GiB values")
         Cluster.__init__(self, image, artifacts, node_count=3, wire_replicas=False,
                          advertise=True, **kwargs)
         self.bundle = bundle
         self.node_ids = []
         self.rejected = False
+        self.disk_gib = tuple(disk_gib)
 
     def api(self, path, body=None, method=None, status=200):
         payload = None if body is None else json.dumps(body).encode()
@@ -41,7 +46,7 @@ class NativeConsoleCluster(ShellBrowserCluster):
             data = node_data(self, index)
             disk = data / f"disk-{index + 1}.img"
             with disk.open("wb") as file:
-                file.truncate((80 if index == 0 else 8) * 1024 ** 3)
+                file.truncate(self.disk_gib[index] * 1024 ** 3)
             name = f"{self.run_id}-prepare{index}"
             self.containers.append(name)
             self.command("run", "--rm", "--name", name, "--label", f"{LABEL}={self.run_id}",
@@ -74,7 +79,7 @@ class NativeConsoleCluster(ShellBrowserCluster):
              "three live remote KV observations", seconds=10)
         self.origins = [f"http://{address}:10000" for address in self.addresses]
         (self.artifacts / "native-endpoints.json").write_text(json.dumps({
-            "nodes": self.node_ids, "addresses": self.addresses, "ports": {
+            "nodes": self.node_ids, "addresses": self.addresses, "disk_gib": self.disk_gib, "ports": {
                 "web": 9090, "ssh": 2222, "kv": 10000, "diskdb": 7100, "diskio": 7200}}, indent=2))
         return self
 
@@ -82,3 +87,23 @@ class NativeConsoleCluster(ShellBrowserCluster):
         for address in self.addresses:
             wait(lambda: HTTP.open(f"http://{address}:9090/healthz", timeout=5).read(),
                  lambda body: body == b"ok", "native release Web listener", seconds=20)
+
+    def control(self, body):
+        if body.get("action") == "native-storage-profile":
+            return {"disk_gib": self.disk_gib}
+        if body.get("action") == "run-native-browser":
+            cases = {
+                "console::native_browser::multipart_upload_and_physical_navigation":
+                    "S3 native multipart upload, HEAD, bounded preview and full round trip",
+            }
+            name = cases.get(self.case_name)
+            if name is None:
+                raise ValueError("native browser is not owned by this case")
+            self.browser_timeout = 180
+            self.browser(name, config="native.config.ts")
+            return {"passed": True}
+        if body.get("action") == "observe-native-services":
+            return services(self, body.get("node"))
+        if body.get("action") == "observe-native-process":
+            return process(self, body.get("node"), body.get("pid"))
+        return super().control(body)

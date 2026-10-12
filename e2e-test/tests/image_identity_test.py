@@ -120,7 +120,10 @@ class ImageIdentityTest(unittest.TestCase):
         source=directory / "src/App.tsx"
         registry=directory / "e2e/flows/10-cluster-rack-node.spec.ts"
         warning=directory / "e2e/flows/13-todo-ui-behavior.spec.ts"
-        for path in (spec,shell,registry,warning,source):
+        native=directory / "e2e/flows/71-s3-native.spec.ts"
+        selectors=[directory / "e2e" / name for name in
+                   ("nativeS3.config.ts", "nativeDiagnostics.config.ts", "realBackend.config.ts")]
+        for path in (spec,shell,registry,warning,source,native,*selectors):
             path.parent.mkdir(parents=True,exist_ok=True)
             path.write_text("original\n")
         self.commit()
@@ -129,6 +132,9 @@ class ImageIdentityTest(unittest.TestCase):
         shell.unlink()
         registry.write_text("remaining native registry cases\n")
         warning.write_text("remaining native service deployment cases\n")
+        native.unlink()
+        for selector in selectors:
+            selector.write_text("migrated host selection\n")
         self.assertTrue(verify_server_sources(self.root,revision)["server_sources_match"])
         source.write_text("changed deployed UI\n")
         with self.assertRaisesRegex(ValueError,"App.tsx"):

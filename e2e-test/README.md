@@ -79,8 +79,8 @@ node image. Private data/log/crash mounts survive teardown. The host profile
 retains its original 2 CPU / 1024 MiB node resource proof; the cluster profile
 reserves each configurable node quota plus 0.25 CPU of host overhead and a
 shared 0.5 CPU client. Artifact and image identities are verified before startup.
-Writable managed Console migration remains unresolved; complete migration and
-the all-domain gate are pending. DiskIO process-exit faults retain their network
+The remaining native Console migrations and all-domain gate are pending.
+DiskIO process-exit faults retain their network
 namespace, so the original 15-second stream/reader/repair bounds still apply.
 
 Chunkdb lifecycle, placement and recovery use five owned containers: three KV
@@ -323,8 +323,24 @@ services to validate binding selection, owner acquisition and explicit repair
 of missing authoritative records. Its deployment selects a normal one-second
 heartbeat and retains the three-second acquisition assertion.
 
+The other native scopes reuse three formal nodes with all 18 typed services:
+
+- `console.native.s3`: multipart bytes, actual Chunk acknowledgement, physical
+  locations and stale continuation rejection.
+- `console.native.recovery`: every typed service restart, the live authority
+  leader, old/new container PIDs, exact inventory and durable object bytes.
+- `console.native.browser.s3`: host-browser multipart upload, HEAD, preview,
+  physical placement/navigation and deletion.
+- `console.native.load`: production 32-MiB Chunk-KV load, heartbeat/lease bounds,
+  retained-byte scale and exact data after owner restart.
+
+Disk capacities are declared per fixture and recorded with endpoints; mounted
+sparse files and public deployment use the same values. No image rebuild or
+server test mode is needed for a capacity profile.
+
 ```sh
 pixi run test-container-e2e --scope console.native.binding --cpus 4 --memory-mib 8192 --node-cpus 0.25
+pixi run test-container-e2e --scope console.native --cpus 8 --memory-mib 16384 --node-cpus 0.25 --concurrency 2
 ```
 
 - `console.browser.shell` runs shell navigation and embedding checks with the

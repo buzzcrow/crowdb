@@ -55,7 +55,7 @@ export default defineConfig({
   outputDir: process.env.CROWDB_WEB_E2E_OUTPUT ?? 'test-results',
   // These cases require the isolated six-service native fixture.
   grepInvert: /native diagnostics/,
-  testIgnore: ['**/fixtures/**', '**/71-s3-native.spec.ts', '**/72-managed-native.spec.ts'],
+  testIgnore: ['**/fixtures/**'],
   globalSetup: nodeURL ? undefined : './globalSetup.ts',
   globalTeardown: nodeURL ? undefined : './globalTeardown.ts',
   fullyParallel: false,

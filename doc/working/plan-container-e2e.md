@@ -17,15 +17,15 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
   `e2e-test/clients/console-ui/node_modules/` is local
   dependency state; never stage it.
 - Current formal image is built/imported from
-  `d3e35afe2ab1f2fc793f92699d26f051c2867993`, including S3 streaming,
+  `946ba3fd3bfab7b7d2e7b8009edd0a11e9fc18ed`, including S3 streaming,
   replica voting/epoch fixes, explicit Web readonly, remote Access endpoints,
   monitor socket recovery, mounted node service logs, remote KV observations,
-  configurable DDB heartbeat and typed restart intent/claim fixes. OCI
-  `sha256:6689438c1bde1d596f55d055a650444c7573bb065f7fcdc2b1d2dcfa03e67e24`;
-  config `sha256:ad3e5c924e980b83589e0de4c0e70cd945337464e28fe9f0e26b5c39090a5a1a`;
-  runtime `1d9b35eaafba788c2a5157946d990af6ef5c5a9ce21096672682e07540fd5403`.
+  configurable DDB heartbeat, typed restart intent/claim fixes and fenced disk failure write-back. OCI
+  `sha256:af2e69168712208b8262bcf269b877e59fa2754ab9849eba99b8ffb2336be09b`;
+  config `sha256:556a648f9346e2bb6fcc3c45dafa9ba2ce07f09beaf728729e1dea6866f23092`;
+  runtime `04db460cea623c10c547c12a9a741e10383da3c28faec0d84794ef8bf8a3208a`.
   Receipt: `target/crowdb.oci.tar.json`; optimized with retained debug information.
-  Logs: `/tmp/crowdb-intent-before-stop-release-{stage,build,import}.log`.
+  Logs: `/tmp/crowdb-zone-loader-fence-release-{stage,build,import}.log`.
   Last full S3 43/43 (1545.602 seconds) and Console 89/89 (644.632 seconds)
   used `b7b1247b`; backup `target/crowdb.oci-b7b1247b.tar[.json]` and tag
   `crowdb-node:b7b1247b` remain. These results are baselines, not full acceptance
@@ -38,7 +38,7 @@ and close the Pixi/CI/measurement audit. This handoff lists unfinished work only
 - Delete original real-server owners only after equivalent accepted assertions.
   Keep deterministic component UT. Run executable commands through `pixi run`;
   native server gates require `clean-env`, never during another server gate.
-- Accepted fixture gate: 100 pass, `/tmp/crowdb-native-browser-final-fixture.log`,
+- Accepted fixture gate: 101 pass, `/tmp/crowdb-native-accepted-fixture.log`,
   including managed browser and CLI ownership controls.
   S3 component UT passes 114/114; Access-server passes 108 plus its pinned
   SDK protocol test; Web/Console-shared/E2E all-target clippy
@@ -196,12 +196,33 @@ and the named run artifacts.
   4 CPU / 8192 MiB. The two original native cases remain until all their other
   assertions are migrated. Full storage and browser diagnostics are next.
 
+
+- Native source multipart/location and restart assertions → `console.native.s3`
+  and `console.native.recovery`: exact 9-MiB bytes, two physical locations,
+  real ChunkDB acknowledged cursor, stale replacement cursor 409, all six typed
+  Node-1 restarts, actual live Group-0 leader restart, namespace-owned old/new
+  PIDs, exact 18-service inventory and retained object bytes. Stale-owner disk
+  failure publication is fenced, with a deterministic component proof.
+- Original `71-s3-native.spec.ts` → `console.native.browser.s3`: identical UI
+  upload, HEAD, 4-KiB preview, complete-byte verification, physical placement,
+  browser history and deletion assertions. Exact original per-test baseline is
+  7.934s; the root copy passes separately and in the shared native gate. The
+  original spec and selector are removed; host browser selectors never enter
+  the src-only production UI build.
+- `CROWDB_NATIVE_LOAD_ACCEPTANCE` branch → `console.native.load`: actual 512
+  incompressible values, normal heartbeat/serving-lease bounds, retained bytes
+  within 4–256 MiB, owner restart and exact sampled recovery bytes/scale.
+  The shared native gate passes 5/5 with two slots in 105.632s at 8 CPU /
+  16384 MiB (`run-624a60c4ad494c519b80938bfa8459bc`). The same formal image
+  supports all cases and explicit mounted sparse-disk capacity profiles.
+  The two original native source cases remain until their other branches migrate.
+
 ## Remaining migrations
 
 - [~] **Console browser migration**: audit and migrate the remaining specs using
   `app/crowdb-web/ui/e2e/realBackend.config.ts`. Host browsers consume owned
   container endpoints; signals validate container ownership and current service
-  PID. Current accepted Console operation inventory is 123 cases. Shell,
+  PID. Current accepted Console operation inventory is 127 cases. Shell,
   registry, KV data, canvas, Inspector, logical/node navigation and both managed
   flows have accepted owners.
   Normal three-node admission, Group 0 and all storage service deployment are
@@ -214,9 +235,9 @@ and the named run artifacts.
   replace the remaining native assertion mapping or accepted root owners.
   Also migrate the server-owning `app/crowdb-web/tests/native_cluster_provisioning_test.rs`
   and its `nativeDiagnostics.config.ts` browser callbacks; they are outside the
-  default realBackend selection and remain in `test-console.sh`. Audit
-  `71-s3-native.spec.ts` / `nativeS3.config.ts` and `72-managed-native.spec.ts` /
-  `managedNative.config.ts` separately; no accepted root replacement is claimed.
+  default realBackend selection and remain in `test-console.sh`.
+  Remaining diagnostics use `nativeDiagnostics.config.ts`. S3 multipart and
+  managed browser flows now have accepted root owners.
 - [ ] **Native Console assertion mapping**: classify the two remaining original cases
   before removal: `one_rack_three_nodes_provision_all_services_without_metadata_repairs`, and
   `native_page_and_iceberg_inspection`. Retain Group-0 initialization hint budget;
@@ -230,61 +251,17 @@ and the named run artifacts.
   alone does not execute them. Preserve their browser callbacks and existing
   deadlines. Formal writable deployment control is required for this migration;
   managed Docker readonly cannot silently replace provisioning assertions.
-  `native_storage.rs` and `native_s3.rs` now draft the complete normal
-  three-node storage prerequisites and the exact 9-MiB multipart/location
-  assertions, including real ChunkDB acknowledgement and stale cursor 409.
-  The registered `console.native.s3` owner is unaccepted: first 8-MiB part
-  returns 503 in `run-0e4befd609a043d5bacea2916fdea241` after all 18 services
-  start. Access logged a partial-chunk abort but suppressed its finalization
-  error. Preserve the request and deadlines; add ordinary server error logging,
-  rebuild the formal image and diagnose the exact failure before further edits.
-  DiskIO's default Docker seccomp denies io_uring and takes its existing blocking
-  fallback; this is observed environment state, not yet the confirmed cause.
-  Ordinary multipart finalization failures now log the underlying error before
-  returning the unchanged 503 response. Access component gate passes 108 tests
-  (one separately owned pinned SDK test ignored); workspace clippy passes.
-  The diagnostics-only image passes exact multipart/location assertions once
-  serially (`run-efc9f50cdd2b4bf3a7600fbcfccca592`) and once concurrently with
-  binding repair. Initial 503 is not explained; keep it under investigation.
-  `native_recovery.rs` adds exact 18-service inventory and namespace-owned PID
-  checks plus acknowledged bytes after each of six typed service restarts.
-  Its first attempt finds 17 registrations after KV restart
-  (`run-b99eac65eb7049b2b73c99f31922f6d0`): auxiliary intent refresh erases the
-  admitted KV endpoint, then cannot project the KV-only configuration. Refresh
-  now leaves KV descriptors with node bootstrap authority; a pinned component
-  proof retains KV while still projecting auxiliary services. Eight focused
-  component tests and clippy pass; rebuild and validate before acceptance.
-  Next recovery attempt (`run-ea0854bad9814a4d8faad50490dde7bb`) passes KV
-  inventory/PID/data checks, then DiskDB restart returns 409 because its outer
-  handler and the remote executor claim the same node twice. Remote restart
-  now leaves the single claim with the executor and retains detached completion;
-  a component proof reaches target validation rather than self-conflict. Eight
-  focused components and clippy pass. Validate the rebuilt image without retrying
-  the restart or weakening its response contract.
-  The rebuilt image passes all six typed restarts serially
-  (`run-e896a71885634e10ae84637b6e9fe194`, 45.700s). A concurrent three-owner
-  gate passes binding and multipart but restarting the actual Group-0 leader
-  fails: monitor verifies the committed intent after stopping its authority,
-  crossing the unchanged three-second read budget
-  (`run-7cf060c4a6f44ad68efb928d9be3206a`). Move the final intent fence immediately
-  before process disruption, retaining superseded-intent rejection and all
-  deadlines. Recovery now explicitly includes the live authority leader as
-  well as all six original Node-1 restart checks. Rebuild and verify before
-  accepting either new owner.
-  The leader fence image completes those restart/PID/data checks but final
-  multipart allocation returns 503 (`run-6a96eaaf9f7e4ee5a4bd8eca01b57758`).
-  DiskDB diagnostics show an empty 80-GiB disk marked Offline, not exhausted
-  capacity. The former owner failed Zone baseline writes at ownership handover
-  then unconditionally published Offline after its successor completed loading.
-  Fence this failure write-back against the exact Group-0 owner revision; the
-  atomic owner/disk update must reject an intervening handover. Add a pinned
-  component proof and remove temporary host hardware sampling before final E2E.
-  A diagnostic repeat completes the whole recovery owner; this timing-sensitive
-  pass does not replace fixing the demonstrated stale-owner write.
-  The exact original S3 multipart browser passes in 10.596s command wall
-  (`/tmp/crowdb-s3-native-original-baseline.log`); its literal root copy passes
-  in `run-9ba19898aeb44582aa69e814048f6146`. Retire the original spec only after
-  the shared native batch is verified and committed.
+  Binding, multipart/locations, exact inventory and typed restart recovery,
+  native S3 browser and the production load branch now have accepted owners.
+  Remaining native work is page/Iceberg inspection, Journal geometry/windows,
+  production split/count/transfer, mixed units and plan-prerequisite callbacks.
+  Internal initialization hint budgeting remains covered by the four passing
+  `conditional_retry_test.rs` components; the public cold bootstrap retains
+  its original ten-second readiness bound. Do not assert zero hints from an
+  already-seeded host client.
+  The first multipart finalization 503 (`run-0e4befd609a043d5bacea2916fdea241`)
+  had no underlying error log and remains unexplained; later exact serial and
+  concurrent runs pass. Keep normal failure logging and investigate if it recurs.
 
 ## Final integration and closure
 
@@ -325,8 +302,8 @@ and the named run artifacts.
   case slot). Reports: `run-ab39e156c2c24da39a5db1bfbcba1a7c` and
   `run-5cfba02195364ce483aac4b5a3eaf1ee`; logs under
   `/tmp/crowdb-voting-epoch-final-{console,deployment}-ci.log`.
-  The twenty-four newer browser cases, two CLI replay cases and one native binding case pass separately and are not
-  included in the complete 96-case measurement. Current accepted Console inventory is 123;
+  The twenty-five newer browser cases, two CLI replay cases and four native client cases pass separately and are not
+  included in the complete 96-case measurement. Current accepted Console inventory is 127;
   final full-domain measurement remains pending. Remote CI and macOS remain
   unmeasured. Files: `doc/working/test.md`, root runner reports.
 - [ ] **Close R230**: after inventory, assertion mapping, local gates and required

@@ -27,7 +27,7 @@ impl TestNativeJournal {
         .unwrap();
         wait_initial_split(&source).await;
         let key = b"native-journal-window".to_vec();
-        let value: Vec<_> = (0..12).flat_map(super::native_load::value).collect();
+        let value: Vec<_> = (0..12).flat_map(super::native_values::value).collect();
         // Each 768-KiB mutation produces thirteen bounded stream frames.
         for _ in 0..8 {
             assert!(client

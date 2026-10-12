@@ -24,6 +24,11 @@ SERVER_PATHS = (
     ":(exclude)app/crowdb-web/ui/e2e/flows/40-inspector-activity.spec.ts",
     ":(exclude)app/crowdb-web/ui/e2e/flows/41-canvas-fit-pan.spec.ts",
     ":(exclude)app/crowdb-web/ui/e2e/flows/72-managed-native.spec.ts",
+    ":(exclude)app/crowdb-web/ui/e2e/flows/71-s3-native.spec.ts",
+    # These host browser selectors never enter the src-only UI build.
+    ":(exclude)app/crowdb-web/ui/e2e/nativeS3.config.ts",
+    ":(exclude)app/crowdb-web/ui/e2e/nativeDiagnostics.config.ts",
+    ":(exclude)app/crowdb-web/ui/e2e/realBackend.config.ts",
     ":(exclude)tools/pixi-tasks/test-console-managed-native.py",
     # The staging script does not package this operator documentation.
     ":(exclude)container/single-node-container/README.md",

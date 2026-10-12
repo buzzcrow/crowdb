@@ -12,6 +12,7 @@ pub(super) struct TestNativeContext {
     pub(super) http: Client,
     pub(super) base: String,
     pub(super) kv: Arc<CrowdbKvClient>,
+    pub(super) addresses: Vec<String>,
 }
 
 impl TestNativeContext {
@@ -49,7 +50,12 @@ impl TestNativeContext {
                 .collect(),
         )));
         kv.seed_leader(0, 0, format!("{}:10100", addresses[index]));
-        Self { http, base, kv }
+        Self {
+            http,
+            base,
+            kv,
+            addresses,
+        }
     }
 
     pub(super) async fn api(&self, method: Method, path: &str, body: Value, status: u16) -> Value {

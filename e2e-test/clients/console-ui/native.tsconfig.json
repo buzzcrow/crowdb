@@ -1,0 +1,10 @@
+{
+  "extends": "./bridge.tsconfig.json",
+  "include": [
+    "native.config.ts",
+    "shell.config.ts",
+    "e2e/flows/71-s3-native.spec.ts",
+    "e2e/fixtures/realBackend.ts",
+    "e2e/fixtures/stepTimer.ts"
+  ]
+}
