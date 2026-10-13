@@ -28,6 +28,43 @@ mod replica_rollback;
 
 use replica_rollback::ReplicaRollback;
 
+#[cfg(feature = "test-util")]
+/// Exercise interrupted local-group creation against a management endpoint.
+///
+/// # Errors
+/// Returns replica identity conflicts, transport errors, or invalid responses.
+pub async fn create_local_group_for_tests(
+    endpoint: &str,
+    store_id: u64,
+    request: &AddGroupRequest,
+) -> Result<bool> {
+    group_wiring::create_local(&ServerClient::new(endpoint)?, store_id, request).await
+}
+
+/// Exercise exact initial-membership replay against Group 0.
+///
+/// # Errors
+/// Returns conflicts for other members or epochs and propagates storage errors.
+#[cfg(feature = "test-util")]
+pub async fn initial_membership_for_tests(
+    authority: &crowdb_kv_client::GroupMembershipClient,
+    members: Vec<GroupMember>,
+) -> Result<crowdb_kv_client::GroupMembershipSnapshot> {
+    publication::initial_membership(authority, 0, 1, members).await
+}
+
+/// Complete an exact initial-membership replay.
+///
+/// # Errors
+/// Returns conflicts for superseded membership and propagates storage errors.
+#[cfg(feature = "test-util")]
+pub async fn complete_initial_membership_for_tests(
+    authority: &crowdb_kv_client::GroupMembershipClient,
+    snapshot: &crowdb_kv_client::GroupMembershipSnapshot,
+) -> Result<()> {
+    publication::complete_initial(authority, snapshot).await
+}
+
 /// Build a client from a node's live management registration.
 async fn server_client(ctx: &OpContext, node_id: u64) -> Result<ServerClient> {
     let url = if ctx.is_test_scenario() {
@@ -261,7 +298,7 @@ pub async fn add_group(
     }
 
     // Phase 1: create the group on each node concurrently.
-    let results: Vec<Result<(u64, u64)>> =
+    let results: Vec<Result<(u64, u64, bool)>> =
         futures::future::join_all(nodes.iter().enumerate().map(|(i, nid)| {
             let nid = *nid;
             let rid = replica_id + i as u64;
@@ -278,10 +315,9 @@ pub async fn add_group(
                     }),
                     start_election: Some(single),
                 };
-                client
-                    .add_group(store_id, &req)
+                group_wiring::create_local(&client, store_id, &req)
                     .await
-                    .map(|()| (nid, rid))
+                    .map(|created| (nid, rid, created))
                     .map_err(|e| Error::UpstreamRpc {
                         node_id: nid.to_string(),
                         status: format!("group create failed: {e}"),
@@ -291,10 +327,16 @@ pub async fn add_group(
         .await;
 
     let mut succeeded: Vec<(u64, u64)> = Vec::new();
+    let mut created: Vec<(u64, u64)> = Vec::new();
     let mut first_err: Option<Error> = None;
     for res in results {
         match res {
-            Ok(entry) => succeeded.push(entry),
+            Ok((node, replica, fresh)) => {
+                succeeded.push((node, replica));
+                if fresh {
+                    created.push((node, replica));
+                }
+            }
             Err(e) => {
                 if first_err.is_none() {
                     first_err = Some(e);
@@ -303,12 +345,12 @@ pub async fn add_group(
         }
     }
     if let Some(e) = first_err {
-        return Err(group_wiring::rollback(ctx, store_id, group_id, &succeeded, e).await);
+        return Err(group_wiring::rollback(ctx, store_id, group_id, &created, e).await);
     }
 
     // Every peer must be wired before membership becomes authoritative.
     if let Err(error) = group_wiring::wire(ctx, store_id, group_id, &succeeded).await {
-        return Err(group_wiring::rollback(ctx, store_id, group_id, &succeeded, error).await);
+        return Err(group_wiring::rollback(ctx, store_id, group_id, &created, error).await);
     }
 
     // Record in group-0 sysdata. The sysdata write must

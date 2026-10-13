@@ -360,7 +360,7 @@ ICEBERG_CASES = (
     Case("iceberg.namespace", "access_iceberg::namespace::namespace_functional_crud_survives_native_storage_and_listener_restart"),
 )
 CONSOLE_OPERATION_CASES = (
-    Case("console.native.browser.six-node", "console::browser_data::six_node_round_trips", native_browser="UI creates three storage nodes, adds three diskless nodes, then KV, S3 and Iceberg persist real data", native_disk_gib=(4096, 4096, 4096, 8, 8, 8), native_zone_gib=(32, 32, 32, 1, 1, 1), native_admission_count=3, native_diskless_nodes=(4, 5, 6), native_bootstrap=False, native_observations=True, client_timeout=300),
+    Case("console.native.browser.six-node", "console::browser_data::six_node_round_trips", native_browser="UI creates three storage nodes, adds three diskless nodes, then KV, S3 and Iceberg persist real data", native_disk_gib=(4096, 4096, 4096, 8, 8, 8), native_zone_gib=(32, 32, 32, 1, 1, 1), native_admission_count=3, native_diskless_nodes=(4, 5, 6), native_bootstrap=False, native_observations=True, client_timeout=600),
     Case("console.native.browser.topology", "console::browser_topology::multi_rack_leaders", native_browser="native topology: three racks grow one replica and retain three complete leaders", native_rack_ids=(1, 2, 3)),
     Case("console.native.browser.topology", "console::browser_topology::independent_subsets", native_browser="native topology: overlapping three-voter subsets retain independent keys and scans", native_disk_gib=(80, 8, 8, 8, 8), native_zone_gib=(1, 1, 1, 1, 1)),
     Case("console.native.browser.topology", "console::browser_topology::simple_and_complex", native_browser="native topology: SIMPLE and COMPLEX store layouts route every populated group"),

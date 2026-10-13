@@ -3,10 +3,12 @@
 
 //! Publish logical membership without overwriting a concurrent winner.
 
-use crowdb_kv_client::{BatchOp, Error as KvError, GetOutcome, ReadMode};
+use crowdb_kv_client::{
+    BatchOp, Error as KvError, GetOutcome, GroupMembershipClient, GroupMembershipSnapshot, ReadMode,
+};
 use crowdb_protocol::common::{GroupValue, ReplicaValue, StoreValue};
 use crowdb_protocol::key::{KvGroupKey, KvReplicaKey, KvStoreKey, TextKey};
-use crowdb_protocol::kv_membership::GroupMember;
+use crowdb_protocol::kv_membership::{canonical_members, GroupMember, GroupMembershipState};
 
 use crate::error::{Error, Result};
 use crate::ops::OpContext;
@@ -65,10 +67,7 @@ pub(super) async fn group(
     // Publish Installing before the materialized topology projection. The
     // projection remains useful to existing readers, but the complete record
     // is the authority and is only marked Ready after all records commit.
-    let installing = authority
-        .create(store_id, group_id, complete_members)
-        .await
-        .map_err(Error::from)?;
+    let installing = initial_membership(&authority, store_id, group_id, complete_members).await?;
     let key = KvGroupKey { store_id, group_id }.to_path();
     let value = GroupValue { store_id, group_id };
     let mut replicas: Vec<_> = members
@@ -88,7 +87,7 @@ pub(super) async fn group(
     }
     match ctx.kv().batch_write_cas(0, 0, &batch, key.as_bytes(), 0).await {
         Ok(_) => {
-            authority.complete(&installing).await.map_err(Error::from)?;
+            complete_initial(&authority, &installing).await?;
             Ok(())
         }
         Err(error @ (KvError::CasFailed { .. } | KvError::OutcomeUnknown)) => {
@@ -96,7 +95,7 @@ pub(super) async fn group(
             let mut actual_replicas = ctx.sysmd().list_replicas_in_group(store_id, group_id).await?;
             actual_replicas.sort_unstable_by_key(|replica| replica.replica_id);
             if actual == Some(value) && actual_replicas == replicas {
-                authority.complete(&installing).await.map_err(Error::from)?;
+                complete_initial(&authority, &installing).await?;
                 Ok(())
             } else if actual.is_some() {
                 Err(Error::Conflict {
@@ -109,6 +108,52 @@ pub(super) async fn group(
         }
         Err(error) => Err(error.into()),
     }
+}
+
+pub(super) async fn initial_membership(
+    authority: &GroupMembershipClient,
+    store_id: u64,
+    group_id: u64,
+    members: Vec<GroupMember>,
+) -> Result<GroupMembershipSnapshot> {
+    let members = canonical_members(members).map_err(Error::Config)?;
+    match authority.create(store_id, group_id, members.clone()).await {
+        Ok(snapshot) => Ok(snapshot),
+        Err(error @ (KvError::MembershipConflict { .. } | KvError::OutcomeUnknown)) => {
+            if let Some(snapshot) = authority.read(store_id, group_id).await? {
+                let initial = match &snapshot.record().installation {
+                    GroupMembershipState::Ready => true,
+                    GroupMembershipState::Installing { previous_members } => previous_members.is_empty(),
+                };
+                if snapshot.record().epoch == 1 && initial && snapshot.record().members == members {
+                    return Ok(snapshot);
+                }
+            }
+            Err(error.into())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+pub(super) async fn complete_initial(
+    authority: &GroupMembershipClient,
+    snapshot: &GroupMembershipSnapshot,
+) -> Result<()> {
+    if snapshot.record().installation == GroupMembershipState::Ready {
+        if authority
+            .read(snapshot.record().store_id, snapshot.record().group_id)
+            .await?
+            .is_some_and(|current| current.record() == snapshot.record())
+        {
+            return Ok(());
+        }
+        return Err(Error::Conflict {
+            kind: "logical membership".into(),
+            id: format!("{}/{}", snapshot.record().store_id, snapshot.record().group_id),
+        });
+    }
+    authority.complete(snapshot).await?;
+    Ok(())
 }
 
 fn put<T: serde::Serialize>(key: &str, value: &T) -> Result<BatchOp> {

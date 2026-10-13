@@ -6,7 +6,7 @@ import shell from './shell.config';
 export default defineConfig({
   ...shell,
   metadata: { fileBackedSync: true },
-  timeout: 180_000,
+  timeout: Number(process.env.CROWDB_WEB_E2E_TEST_TIMEOUT_MS || 180_000),
   testMatch: [
     '**/92-three-node-data.spec.ts',
     '**/22-kv-topology.spec.ts',

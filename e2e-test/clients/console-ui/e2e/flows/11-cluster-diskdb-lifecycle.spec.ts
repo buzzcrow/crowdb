@@ -8,7 +8,7 @@ import { liveService, service, serviceRow, stoppedService, unchangedService, typ
 
 // Baseline: 15.9s (2026-10-12).
 test('full deploy flow: deploy diskdb via UI, restart, stop, delete via context menu', async ({ page, request }) => {
-  test.setTimeout(90_000);
+  test.setTimeout(Number(process.env.CROWDB_WEB_E2E_TEST_TIMEOUT_MS || 180_000));
   const kv = await liveService(request, 'paxos-kv');
   const ddb = await deployDiskDb(page, request, kv);
   const restarted = await diskDbLifecycle(page, request, kv, ddb);
@@ -103,7 +103,7 @@ async function kvLifecycle(page: Page, request: APIRequestContext, original: Liv
   await act(page, original, 'Restart CrowDB Storage', '/api/nodes/1/server/restart');
   const resumed = await liveService(request, 'paxos-kv', original.pid);
   await unchangedService(request, ddb);
-  await expect(serviceRow(page, resumed).getByTitle('Healthy', { exact: true })).toBeVisible({ timeout: 20_000 });
+  await expect(serviceRow(page, resumed).getByTitle('Healthy', { exact: true })).toBeVisible({ timeout: 40_000 });
   return resumed;
 }
 

@@ -12,6 +12,7 @@ import time
 from console_standalone_fixture import StandaloneWebCluster
 from console_standalone_observation import StandaloneBrowserObservations
 from control import Control
+from timeout_budget import scaled_timeout
 
 
 class ShellBrowserCluster(StandaloneWebCluster):
@@ -34,12 +35,15 @@ class ShellBrowserCluster(StandaloneWebCluster):
                    CROWDB_WEB_E2E_BASE_URL=f"http://{address}:9090",
                    CROWDB_WEB_E2E_OUTPUT=str(self.artifacts / "browser"))
         env.update(extra_env or {})
+        test_budget = scaled_timeout(max(getattr(self, "browser_timeout", 120),
+                                         180 if config == "native.config.ts" else 60))
+        env["CROWDB_WEB_E2E_TEST_TIMEOUT_MS"] = str(round(test_budget * 1000))
         self.invoke(["pixi", "run", "npm", "ci", "--ignore-scripts"], project, env, "browser-prepare")
         pattern = ("|".join(re.escape(title) for title in name)
                    if isinstance(name, tuple) else re.escape(name))
         self.invoke(["pixi", "run", "npx", "--no-install", "playwright", "test",
                      f"--config={config}", "--grep", pattern], project, env, "browser",
-                    timeout=getattr(self, "browser_timeout", 120))
+                    timeout=test_budget + 60)
         stats = json.loads((self.artifacts / "browser/results.json").read_text())["stats"]
         if stats["expected"] != expected or any(stats[key] for key in ("unexpected", "skipped", "flaky")):
             raise AssertionError(f"host browser did not complete exactly {expected} cases: {stats}")
@@ -58,4 +62,4 @@ class ShellBrowserCluster(StandaloneWebCluster):
         print(output, end="", flush=True)
         if result.returncode:
             raise RuntimeError(f"host browser {self.case_name} {phase} failed with exit code {result.returncode}; "
-                               f"log: {self.artifacts / f'client-{phase}.log'}")
+                               f"log: {self.artifacts / f'client-{phase}.log'}\n{output}")

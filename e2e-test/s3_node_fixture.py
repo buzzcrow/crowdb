@@ -8,6 +8,7 @@ import socket
 
 from allocation import node_data, start_node
 from fixture import Cluster, HTTP, wait
+from timeout_budget import scaled_timeout
 
 
 class S3NodeCluster(Cluster):
@@ -64,7 +65,7 @@ interval_secs = 1
                                    "--log-dir", "/opt/crowdb/data/log/diskdb", "--log"), config,
                             preserve_network=True)
         wait(lambda: HTTP.open(f"http://{address}:7101/ready", timeout=5).status, lambda code: code == 200,
-             "three-node Diskdb readiness")
+             "three-node Diskdb readiness", seconds=scaled_timeout(90))
 
     def chunkdb(self, logical):
         index = logical + 6
@@ -92,7 +93,7 @@ allow_degraded_failure_domains = false
                                    "--log-dir", "/opt/crowdb/data/log/chunkdb", "--log"), config,
                             preserve_network=True)
         wait(lambda: HTTP.open(f"http://{address}:7301/ready", timeout=5).status, lambda code: code == 200,
-             "three-node dynamic Chunkdb readiness")
+             "three-node dynamic Chunkdb readiness", seconds=scaled_timeout(90))
 
     def diskio(self, logical):
         index = logical + 9
@@ -111,7 +112,7 @@ allow_degraded_failure_domains = false
             "--dg-id", str(logical + 1), "--sync-interval-ms", "200", "--auto-discover-disks",
             "--log-dir", "/opt/crowdb/data/log/diskio"), preserve_network=True, data=data)
         wait(lambda: socket.create_connection((address, 7200), timeout=1).close() or True,
-             bool, "three-node DiskIO endpoint")
+             bool, "three-node DiskIO endpoint", seconds=scaled_timeout(90))
 
     def chunk_kv(self):
         address = str(ipaddress.ip_address(self.addresses[0]) + 12)
@@ -147,7 +148,7 @@ metadata_group_id = 1
         self.launch_service(12, ("server", "chunk-kv", "--config", "/opt/crowdb/etc/e2e-service.toml",
                                 "--log-dir", "/opt/crowdb/data/log/chunk-kv", "--log"), config)
         wait(lambda: HTTP.open(f"http://{address}:7401/ready", timeout=5).status, lambda code: code == 200,
-             "three-node catalog readiness")
+             "three-node catalog readiness", seconds=scaled_timeout(90))
 
     def access(self):
         address = str(ipaddress.ip_address(self.addresses[0]) + 13)
@@ -157,4 +158,4 @@ metadata_group_id = 1
                        "CROWDB_ACCESS_LOG_DIR=/opt/crowdb/data/log/access")
         self.launch_service(13, ("server", "access", "s3"), environment=environment)
         wait(lambda: HTTP.open(f"http://{address}:7501/_crowdb/health/ready", timeout=5).status,
-             lambda code: code == 200, "three-node S3 readiness")
+             lambda code: code == 200, "three-node S3 readiness", seconds=scaled_timeout(90))

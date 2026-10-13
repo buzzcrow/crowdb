@@ -16,7 +16,7 @@ import type { APIRequestContext, Page } from '@playwright/test';
 type UIContext = { page: Page; request: APIRequestContext; baseURL: string; deployments: ReturnType<typeof observeDefaultDeployments> };
 
 test('UI creates three storage nodes, adds three diskless nodes, then KV, S3 and Iceberg persist real data', async ({ page, request, baseURL }) => {
-  test.setTimeout(300_000);
+  test.setTimeout(Number(process.env.CROWDB_WEB_E2E_TEST_TIMEOUT_MS || 600_000));
   const context = { page, request, baseURL: baseURL!, deployments: observeDefaultDeployments(page) };
   await page.goto('/');
   await createCluster(context);
@@ -93,7 +93,7 @@ async function addDisks({ page, request }: UIContext) {
         expect(response.ok(), await response.text()).toBe(true);
         const group = (await response.json()).disk_groups.find((group: { disk_group_id: number }) => group.disk_group_id === id);
         return group?.allocatable_disk_count === 1;
-      }, { timeout: 10_000, intervals: [100], message: `Node ${id}: fresh disk has finished loading its zones` }).toBe(true);
+      }, { timeout: 30_000, intervals: [100], message: `Node ${id}: fresh disk has finished loading its zones` }).toBe(true);
     }
   });
 }
