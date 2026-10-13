@@ -6,7 +6,7 @@ import re
 import tomllib
 from pathlib import Path
 
-CALL = re.compile(r"\bpixi\s+run\s+(?:-e\s+([\w-]+)\s+)?(?!-)([\w-]+)")
+CALL = re.compile(r"\bpixi\s+run\s+(?:--skip-deps\s+)?(?:-e\s+([\w-]+)\s+)?(?!-)([\w-]+)")
 SCRIPT = re.compile(r"(?:bash|source)\s+(tools/[\w/.-]+\.sh)")
 
 
@@ -27,6 +27,15 @@ class TaskGraph:
             if path not in seen:
                 seen.add(path)
                 result += "\n" + self.expand((self.root / path).read_text(), seen)
+        # The unified host dispatcher owns these explicit task delegations.
+        if "python tools/pixi-tasks/test.py unit access" in text:
+            result += "\npixi run -e s3-e2e test-boto3-copy-error"
+        if re.search(r"python tools/pixi-tasks/test.py (?:e2e|profile) ", text):
+            result += "\npixi run test-container-e2e"
+        if "python tools/pixi-tasks/test.py all" in text:
+            result += "\n" + "\n".join(f"pixi run {task}" for task in (
+                "test-cpp", "test-core", "test-storage", "test-access", "test-access-sdk",
+                "test-console", "test-console-ui", "test-container-e2e"))
         return result
 
     def command(self, key) -> str:

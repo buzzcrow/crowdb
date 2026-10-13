@@ -156,7 +156,7 @@ async fn native(
     })
 }
 
-async fn chunk_kv_config(
+pub(super) async fn chunk_kv_config(
     body: &Deploy,
     seeds: &[String],
     node: &NodeEntry,
@@ -169,6 +169,12 @@ async fn chunk_kv_config(
         "http_advertise_addr":format!("{}:{}",node.host,body.http_port.unwrap()),
         "group0_mgmt_seeds":seeds, "storage":{"metadata_store_id":store,"stream_mirror_copies":if body.test_single_node {1} else {2}},
     });
+    if let Some(bytes) = body.stream_chunk_capacity_bytes {
+        config["storage"]["stream_chunk_capacity_bytes"] = json!(bytes);
+    }
+    if let Some(entries) = body.stream_extent_page_entries {
+        config["storage"]["stream_extent_page_entries"] = json!(entries);
+    }
     if let Some(group) = body.bootstrap_group_id {
         let client =
             crowdb_kv_client::CrowdbKvClient::new(crowdb_kv_client::ClientConfig::new(seeds.to_vec()));
@@ -194,7 +200,7 @@ async fn chunk_kv_config(
     Ok(config)
 }
 
-fn access_config(body: &Deploy, seeds: &[String], node: &NodeEntry) -> serde_json::Value {
+pub(super) fn access_config(body: &Deploy, seeds: &[String], node: &NodeEntry) -> serde_json::Value {
     let mut config = json!({ "common":{"management_seeds":seeds},
         "health":{"listen":format!("{}:{}",node.host,body.health_port.unwrap())},
         "s3":{"listen":format!("{}:{}",node.host,body.s3_port.unwrap()),"tenant":"default","region":"us-east-1"},

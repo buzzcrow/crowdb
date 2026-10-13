@@ -6,7 +6,7 @@ use std::sync::{
 
 use async_trait::async_trait;
 use crowdb_access_iceberg::{
-    catalog::{CasOutcome, CatalogStore, RoutedCatalogStore, StoreError, StoredValue},
+    catalog::{CasOutcome, CatalogStore, StoreError, StoredValue},
     file::{ChunkRoot, FileBlockStore, FileIdentity, FileIoError, MultipartPartScan, MultipartPartStore},
     gc::{GcScan, GcStore, GcSystemScan},
     key::{CatalogScope, IcebergKey},
@@ -50,20 +50,20 @@ impl TestBoundary {
     }
 }
 
-pub struct TestCommitStore {
-    pub inner: Arc<RoutedCatalogStore>,
+pub struct TestCommitStore<Store> {
+    pub inner: Arc<Store>,
     pub boundary: Arc<TestBoundary>,
 }
 
 #[async_trait]
-impl MultipartPartStore for TestCommitStore {
+impl<Store: NamespaceStore + GcStore + MultipartPartStore> MultipartPartStore for TestCommitStore<Store> {
     async fn scan_multipart_parts(&self, scan: MultipartPartScan) -> Result<MultiScanPage, StoreError> {
         self.inner.scan_multipart_parts(scan).await
     }
 }
 
 #[async_trait]
-impl GcStore for TestCommitStore {
+impl<Store: NamespaceStore + GcStore + MultipartPartStore> GcStore for TestCommitStore<Store> {
     async fn scan_gc(&self, scan: GcScan) -> Result<MultiScanPage, StoreError> {
         self.inner.scan_gc(scan).await
     }
@@ -83,7 +83,7 @@ impl GcStore for TestCommitStore {
 }
 
 #[async_trait]
-impl NamespaceStore for TestCommitStore {
+impl<Store: NamespaceStore + GcStore + MultipartPartStore> NamespaceStore for TestCommitStore<Store> {
     async fn scan_children(&self, request: ChildScan) -> Result<MultiScanPage, StoreError> {
         self.inner.scan_children(request).await
     }
@@ -102,7 +102,7 @@ impl NamespaceStore for TestCommitStore {
 }
 
 #[async_trait]
-impl CatalogStore for TestCommitStore {
+impl<Store: NamespaceStore + GcStore + MultipartPartStore> CatalogStore for TestCommitStore<Store> {
     async fn get(&self, key: &[u8]) -> Result<Option<StoredValue>, StoreError> {
         self.inner.get(key).await
     }

@@ -158,10 +158,14 @@ fn descendant_launchers_record_processes_in_the_parent_namespace() {
     };
     assert_eq!(value["processes"][0]["pid"], pid);
     let cluster = RuntimeNamespace::persistent(namespace.data_dir(), "descendant-cluster").unwrap();
-    let claims: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(crowdb_protocol::port::namespace::runtime_root().join("ports/claims.json")).unwrap(),
-    )
-    .unwrap();
+    let claims: serde_json::Value = {
+        let mut registry =
+            std::fs::File::open(crowdb_protocol::port::namespace::runtime_root().join("ports/claims.json"))
+                .unwrap();
+        // Writers truncate and replace the registry while holding this file lock.
+        fs2::FileExt::lock_shared(&registry).unwrap();
+        serde_json::from_reader(&mut registry).unwrap()
+    };
     let claim = claims
         .as_array()
         .unwrap()

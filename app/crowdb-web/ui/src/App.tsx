@@ -8,14 +8,17 @@ import { DomainProvider, useDomain } from './contexts/DomainContext';
 import { SelectionProvider, useSelection, type SelectedEntity } from './contexts/SelectionContext';
 import { ToastProvider, useToast } from './contexts/ToastContext';
 import { ActivityProvider, useActivity } from './contexts/ActivityContext';
+import { useNodeAuthority } from './data/useNodeAuthority';
 import { useClusterTree } from './data/useClusterTree';
 import { useLogicalTree } from './data/useLogicalTree';
 import { useCapacityTree } from './data/useCapacityTree';
+import { MonitorSummary } from './managed/MonitorSummary';
 import { Header, ClusterHealth } from './shell/Header';
 import { Sidebar } from './shell/Sidebar';
 import { useNodeServicePlans } from './services/useNodeServicePlans';
 import { NodeServicesDialog } from './services/NodeServicesDialog';
 import { DeployServiceDialog } from './services/DeployServiceDialog';
+import { diskdbHealthForNodes, diskdbInstancesForNodes } from './services/observations';
 import { ToastContainer } from './components/ToastContainer';
 import { TreeNode } from './components/Tree';
 import { ContextMenu, useContextMenu } from './components/ContextMenu';
@@ -41,7 +44,7 @@ import { useClusterMenus } from './menus/useClusterMenus';
 import { useCapacityMenus } from './menus/useCapacityMenus';
 import { setApiBase, resetCluster, compactDiskdbZones, rebuildDiskdbZoneBitmap, listServers } from './api';
 import { deployPortDefaultsForNode, diskdbPortDefaultsForNode, nextIdFromSuffix, nextNumericId } from './components/dialogs/defaults';
-import { buildCrowdbKVServers, crowdbKvServerNodeIds, extractPort } from './data/crowdbKvServers';
+import { buildCrowdbKVServers, crowdbKvServerNodeIds } from './data/crowdbKvServers';
 import { isCrowdbKVServerAvailable } from './data/crowdbKvServers';
 import { toUiHealth } from './utils/entityDisplay';
 import { ClusterView } from './views/ClusterView';
@@ -67,11 +70,12 @@ export interface CrowdbConsoleProps {
   initialDomain?: Domain;
   /** Container topology is immutable; native data credentials remain independent. */
   managed?: boolean;
+  nodeManagement?: boolean;
   /** Structured event callback for host integration. */
   onEvent?: (event: { type: string; payload?: unknown }) => void;
 }
 
-function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, managed = false }: CrowdbConsoleProps) {
+function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, managed = false, nodeManagement = false }: CrowdbConsoleProps) {
   const { domain, setDomain } = useDomain();
   const { selectedEntity, selectionForDomain, selectEntity, clearSelection } = useSelection();
   const { success, error } = useToast();
@@ -110,8 +114,10 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
 
   const { menuState, openMenu, closeMenu } = useContextMenu();
 
-  const managementAuthorized = true;
-  const topologyReadonly = readonly || managed;
+  const nodeAuthority = useNodeAuthority(nodeManagement);
+  const managementAuthorized = !nodeManagement || nodeAuthority?.available === true;
+  const draftEditable = nodeAuthority?.phase === 'unbound_draft';
+  const topologyReadonly = readonly || managed || (nodeManagement && !managementAuthorized && !draftEditable);
   const logicalReadonly = readonly;
   const ownsSidebar = domain === Domain.Iceberg || domain === Domain.S3 || (domain === Domain.Chunk || domain === Domain.ChunkKV);
   const physicalActive = domain === Domain.Cluster;
@@ -196,34 +202,9 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
     () => new Set([...allServers.filter((s) => s.service_type === 'diskdb' && s.node_id != null).map((s) => s.node_id!), ...nodes.filter(node => node.diskdb_server).map(node => node.id)]),
     [allServers, nodes],
   );
-  const diskdbHealthById = useMemo(() => {
-    const m = new Map<number, string>();
-    for (const s of allServers) {
-      if (s.service_type === 'diskdb' && s.node_id != null) m.set(s.node_id, s.health);
-    }
-    for (const node of nodes) if (node.diskdb_server) m.set(node.id, node.diskdb_server.health);
-    return m;
-  }, [allServers, nodes]);
-  const diskdbInstanceIdByNodeId = useMemo(() => {
-    const instanceByPort = new Map(
-      diskdbInstances
-        .map((instance) => [extractPort(instance.rpc_endpoint), instance.instance_id] as const)
-        .filter((entry): entry is readonly [number, string] => entry[0] != null),
-    );
-    const result = new Map<number, string>();
-    for (const node of nodes) {
-      const port = extractPort(node.diskdb_server?.endpoint);
-      const instanceId = port == null ? undefined : instanceByPort.get(port);
-      if (instanceId) result.set(node.id, instanceId);
-    }
-    for (const server of allServers) {
-      if (server.service_type !== 'diskdb' || server.node_id == null) continue;
-      const port = extractPort(server.endpoint || server.rpc_url);
-      const instanceId = port == null ? undefined : instanceByPort.get(port);
-      if (instanceId != null) result.set(server.node_id, instanceId);
-    }
-    return result;
-  }, [allServers, diskdbInstances, nodes]);
+  const diskdbHealthById = useMemo(() => diskdbHealthForNodes(allServers, nodes), [allServers, nodes]);
+  const diskdbInstanceIdByNodeId = useMemo(() => diskdbInstancesForNodes(allServers, nodes, diskdbInstances),
+    [allServers, diskdbInstances, nodes]);
   // Cluster is initialized once the system store (store 0) exists.
   const clusterInitialized = useMemo(
     () => stores.some((s) => String(s.store_id) === '0'),
@@ -242,7 +223,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
     }
   }, [managed, refreshPhysical, refreshLogical, refreshCapacity, refreshAllServers]);
 
-  const servicePlans = useNodeServicePlans(stores, nodeDiskGroups, handleRefresh, !topologyReadonly);
+  const servicePlans = useNodeServicePlans(stores, nodeDiskGroups, handleRefresh, !topologyReadonly && managementAuthorized);
   const clusterHealth: ClusterHealth = useMemo(() => {
     if (dataError) return domain === Domain.Capacity ? 'Degraded' : 'Failed';
     const statuses = [
@@ -354,11 +335,11 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
   }, []);
 
   const handleAdd = useCallback(() => {
-    if (readonly) return;
+    if (readonly || (nodeManagement && !managementAuthorized && !draftEditable)) return;
     if (physicalActive || capacityActive) setDialog((d) => ({ ...d, addRack: true }));
     else if (!clusterInitialized) setDialog((d) => ({ ...d, initCluster: true }));
-    else setDialog((d) => ({ ...d, addStore: true }));
-  }, [readonly, physicalActive, capacityActive, clusterInitialized]);
+    else if (managementAuthorized) setDialog((d) => ({ ...d, addStore: true }));
+  }, [readonly, physicalActive, capacityActive, clusterInitialized, nodeManagement, managementAuthorized, draftEditable]);
 
   const closeDialogs = useCallback(() => setDialog({}), []);
 
@@ -496,8 +477,10 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
         refreshing={refreshing}
         onShowTopology={() => {}}
         onShowCapacity={() => { if (centerPanel !== 'chunk') setCenterPanel('capacity'); }}
-        onResetCluster={topologyReadonly ? undefined : handleResetCluster}
+        onResetCluster={topologyReadonly || nodeManagement ? undefined : handleResetCluster}
       />
+
+      {managed && <MonitorSummary apiPrefix={apiPrefix} />}
 
       {dataError && (
         <div
@@ -509,6 +492,8 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
       )}
 
       <div hidden={ownsSidebar}><Sidebar
+        onCandidatesChanged={handleRefresh}
+        nodeManagement={nodeManagement}
         allServers={allServers}
         racks={racks}
         servers={servers}
@@ -516,6 +501,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
         nodeStores={nodeStores}
         nodeHealthById={nodeHealthById}
         loading={loading}
+        candidateReadonly={readonly}
         readonly={domain === Domain.KV ? logicalReadonly : topologyReadonly}
         width={sidebarWidth}
         clusterInitialized={clusterInitialized}
@@ -545,7 +531,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
       >
         {(
           <div hidden={domain !== Domain.Cluster} style={{ display: domain === Domain.Cluster ? 'flex' : 'none' }} className="tw-flex-1 tw-min-h-0 tw-flex-col">{!managed && <div className="tw-px-4 tw-py-2 tw-text-xs tw-bg-panel tw-border-b tw-border-border">Physical topology · Rack → Node → Service · Deploy and manage services here</div>}
-          {!clusterInitialized && !loading && !logError && <p className="tw-px-4 tw-py-2 tw-text-xs tw-text-muted" data-testid="bootstrap-state">Bootstrap: add racks and nodes, deploy KV servers, then initialize Group 0 in KV. Changes are saved in the default workspace.</p>}
+          {!clusterInitialized && !loading && !logError && <p className="tw-px-4 tw-py-2 tw-text-xs tw-text-muted" data-testid="bootstrap-state">{nodeManagement ? 'Bootstrap: create a rack, move discovered candidates, then initialize Group 0 in KV. This draft is local until publication.' : 'Bootstrap: add racks and nodes, deploy KV servers, then initialize Group 0 in KV. Changes are saved in the default workspace.'}</p>}
           <div className="tw-flex-1 tw-min-h-0"><ClusterView
             active={domain === Domain.Cluster}
             scope={Domain.Cluster}
@@ -624,11 +610,12 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
         />
       )}
       <InitClusterDialog
+        preparedNodes={nodeManagement && draftEditable}
         isOpen={!!dialog.initCluster}
         onClose={closeDialogs}
         nodes={nodes}
         servers={servers}
-        defaultNodeIds={storeDialogDefaults.nodeIds}
+        defaultNodeIds={nodeManagement && draftEditable ? [] : storeDialogDefaults.nodeIds}
         onSuccess={handleInitSuccess}
       />
       <AddStoreDialog
@@ -785,7 +772,8 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
 
 export default function App(props: CrowdbConsoleProps = {}) {
   const apiPrefix = props.apiPrefix ?? '/api';
-  const [mode, setMode] = useState<'loading' | 'legacy' | 'docker' | 'bare-metal-pending' | 'unavailable'>('loading');
+  const [serverReadonly, setServerReadonly] = useState(false);
+  const [mode, setMode] = useState<'loading' | 'legacy' | 'docker' | 'node' | 'bare-metal-pending' | 'unavailable'>('loading');
   useEffect(() => {
     let active = true;
     fetch(`${apiPrefix}/mode`)
@@ -794,7 +782,10 @@ export default function App(props: CrowdbConsoleProps = {}) {
         return response.json();
       })
       .then((body) => {
-        if (active) setMode(body?.mode === 'docker' || body?.mode === 'bare-metal-pending' || body?.mode === 'legacy' ? body.mode : 'unavailable');
+        if (active) {
+          setMode(body?.mode === 'docker' || body?.mode === 'node' || body?.mode === 'bare-metal-pending' || body?.mode === 'legacy' ? body.mode : 'unavailable');
+          setServerReadonly(body?.readonly === true);
+        }
       })
       .catch(() => {
         if (active) setMode('unavailable');
@@ -810,7 +801,7 @@ export default function App(props: CrowdbConsoleProps = {}) {
       <SelectionProvider>
         <ToastProvider>
           <ActivityProvider>
-            <AppContent {...props} managed={mode === 'docker'} />
+            <AppContent {...props} readonly={props.readonly || serverReadonly} managed={mode === 'docker'} nodeManagement={mode === 'node' || mode === 'docker'} />
           </ActivityProvider>
         </ToastProvider>
       </SelectionProvider>

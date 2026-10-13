@@ -362,10 +362,12 @@ async fn dependency_restart_stops_dependents_before_replacement() {
     let root_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let dependent_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let marker = roots.0.join("first-exit");
+    let exit_signal = roots.0.join("exit-signal");
     let script = format!(
-        "if [ ! -e '{}' ]; then : > '{}'; /bin/sleep 0.2; exit 0; fi; exec /bin/sleep 30",
+        "if [ ! -e '{}' ]; then : > '{}'; while [ ! -e '{}' ]; do /bin/sleep 0.01; done; exit 0; fi; exec /bin/sleep 30",
         marker.display(),
-        marker.display()
+        marker.display(),
+        exit_signal.display()
     );
     let mut profile = roots.profile(script, root_listener.local_addr().unwrap().port(), 2);
     let mut dependent = profile.services[0].clone();
@@ -386,6 +388,7 @@ async fn dependency_restart_stops_dependents_before_replacement() {
     supervisor.start_service("kv", BTreeMap::new()).await.unwrap();
     supervisor.start_service("web", BTreeMap::new()).await.unwrap();
     supervisor.mark_ready().await.unwrap();
+    fs::write(exit_signal, b"exit").unwrap();
     tokio::time::sleep(Duration::from_millis(350)).await;
     supervisor.poll_once().await.unwrap();
     assert_eq!(supervisor.status().phase, MonitorPhase::Ready);

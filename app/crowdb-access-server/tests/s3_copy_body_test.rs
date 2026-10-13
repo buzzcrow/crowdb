@@ -40,7 +40,10 @@ async fn official_boto3_recognizes_a_copy_error_after_http_200_and_keepalives() 
     ));
     let status = tokio::task::spawn_blocking(move || {
         let python = std::env::var_os("CROWDB_S3_E2E_PYTHON").expect("run the pinned boto3 task");
-        let script = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/s3_e2e/embedded_copy_error.py");
+        let script = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../e2e-test/clients/s3/embedded_copy_error.py"
+        );
         let mut command = if cfg!(target_os = "macos") {
             let mut command = std::process::Command::new(python);
             command.arg(script);

@@ -13,6 +13,7 @@ export interface InitClusterDialogProps {
   onClose: () => void;
   nodes: Node[];
   servers?: CrowdbKVServerView[];
+  preparedNodes?: boolean;
   defaultNodeIds?: number[];
   onSuccess?: () => void | Promise<void>;
 }
@@ -25,10 +26,11 @@ export function InitClusterDialog({
   onClose,
   nodes,
   servers = [],
+  preparedNodes = false,
   defaultNodeIds = [],
   onSuccess,
 }: InitClusterDialogProps) {
-  const availableNodes = nodes.filter((node) =>
+  const availableNodes = preparedNodes ? nodes : nodes.filter((node) =>
     servers.some((server) => server.node_id === node.id && isCrowdbKVServerAvailable(server)),
   );
   const defaultSelectedNodeIds = defaultNodeIds.filter((id) => availableNodes.some((n) => n.id === id));

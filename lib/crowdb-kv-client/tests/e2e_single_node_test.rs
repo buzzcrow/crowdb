@@ -1,15 +1,10 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! End-to-end test against a real single-node `PxKvStore` + `KvService`
-//! (no mocks): topology discovery over a small `/topology` HTTP server
-//! backed by the store's real `status`, then `put`/`get`/`delete`/
-//! `batch_write`/`scan` through [`crowdb_kv_client::CrowdbKvClient`], covering
-//! `ReadMode` routing and the `MinSlot` watermark
-//! (C1-C3).
+//! Deterministic client watermark, push handler and scan pagination checks.
+//! Public CRUD, CAS, counting and deadlines are owned by container acceptance.
 
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::extract::State;
 use axum::routing::get;
@@ -21,11 +16,7 @@ use crowdb_kv::cluster::local_replica::{PxLocalReplica, PxLocalReplicaRole};
 use crowdb_kv::cluster::px_kv_store::PxKvStore;
 use crowdb_kv::metrics::MetricsRegistry;
 
-use bytes::Bytes;
-use crowdb_kv_client::{BatchOp, ClientConfig, CrowdbKvClient, DomainMonitorClient, GetOutcome, ReadMode};
-use crowdb_protocol::chunk_kv::{
-    DomainFailurePolicy, DomainMonitorDescriptor, EnsureDomainMonitorOutcome, EnsureDomainMonitorRequest,
-};
+use crowdb_kv_client::{ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
 
 const STORE_ID: u64 = 1;
 const GROUP_ID: u64 = 1;
@@ -77,16 +68,6 @@ async fn concurrent_watch_subscriptions_keep_independent_push_handlers() {
     store.join().await;
 }
 
-fn now_ms() -> u64 {
-    u64::try_from(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis(),
-    )
-    .unwrap_or(0)
-}
-
 /// Starts a single-node, single-replica group already believing itself
 /// leader (mirrors `crowdb_kv/tests/testkit/cluster.rs::start_cluster_inner`
 /// for a 1-node cluster — no election driver needed).
@@ -99,14 +80,6 @@ async fn start_single_node_store() -> Arc<PxKvStore> {
     server.add_group(group);
     server.start().await.expect("failed to start KvStore");
     server
-}
-
-async fn start_group_zero_store() -> Arc<PxKvStore> {
-    let replica = PxLocalReplica::new(1, PxLocalReplicaRole::Leader);
-    let store = Arc::new(PxKvStore::new(0, "127.0.0.1:0".parse().unwrap()));
-    store.add_group(PxGroup::new(0, replica));
-    store.start().await.expect("failed to start group-0 store");
-    store
 }
 
 /// Serves `GET /topology` returning the live `store.status` each time,
@@ -122,188 +95,6 @@ async fn spawn_topology_server(store: Arc<PxKvStore>) -> String {
         axum::serve(listener, app).await.unwrap();
     });
     format!("http://{addr}")
-}
-
-#[tokio::test]
-async fn put_get_delete_round_trip_via_topology_discovery() {
-    let store = start_single_node_store().await;
-    let seed = spawn_topology_server(store.clone()).await;
-    let client = CrowdbKvClient::new(ClientConfig::new(vec![seed]));
-
-    // No leader cached yet -- `put` must discover it via `/topology`.
-    let outcome = client
-        .put(STORE_ID, GROUP_ID, b"k1", b"v1", None)
-        .await
-        .expect("put");
-    assert!(outcome.revision > 0);
-
-    match client
-        .get(STORE_ID, GROUP_ID, b"k1", ReadMode::Linearizable, None)
-        .await
-        .unwrap()
-    {
-        GetOutcome::Found { value, .. } => assert_eq!(value.as_ref(), b"v1"),
-        GetOutcome::NotFound => panic!("expected k1 to be found"),
-    }
-
-    let del = client
-        .delete(STORE_ID, GROUP_ID, b"k1", None)
-        .await
-        .expect("delete");
-    assert!(
-        del.revision > outcome.revision,
-        "delete of an existing key gets a fresh, higher revision"
-    );
-
-    match client
-        .get(STORE_ID, GROUP_ID, b"k1", ReadMode::MinSlot, None)
-        .await
-        .unwrap()
-    {
-        GetOutcome::NotFound => {}
-        GetOutcome::Found { .. } => panic!("k1 should have been deleted"),
-    }
-
-    store.stop();
-    store.join().await;
-}
-
-#[tokio::test]
-async fn revision_cas_and_conditional_batch_round_trip() {
-    let store = start_single_node_store().await;
-    let seed = spawn_topology_server(store.clone()).await;
-    let client = CrowdbKvClient::new(ClientConfig::new(vec![seed]));
-
-    let created = client
-        .put_cas(STORE_ID, GROUP_ID, b"guard", b"one", 0)
-        .await
-        .expect("create-if-absent CAS");
-    assert!(matches!(
-        client.put_cas(STORE_ID, GROUP_ID, b"guard", b"stale", 0).await,
-        Err(crowdb_kv_client::Error::CasFailed {
-            current_revision
-        }) if current_revision == created.revision
-    ));
-
-    let batch = [
-        BatchOp::Delete {
-            key: Bytes::from_static(b"guard"),
-        },
-        BatchOp::Put {
-            key: Bytes::from_static(b"related"),
-            value: Bytes::from_static(b"value"),
-        },
-    ];
-    client
-        .batch_write_cas(STORE_ID, GROUP_ID, &batch, b"guard", created.revision)
-        .await
-        .expect("matching conditional batch");
-    assert!(matches!(
-        client
-            .get(STORE_ID, GROUP_ID, b"guard", ReadMode::Linearizable, None)
-            .await
-            .unwrap(),
-        GetOutcome::NotFound
-    ));
-    assert!(matches!(
-        client
-            .get(STORE_ID, GROUP_ID, b"related", ReadMode::Linearizable, None)
-            .await
-            .unwrap(),
-        GetOutcome::Found { value, .. } if value.as_ref() == b"value"
-    ));
-
-    store.stop();
-    store.join().await;
-}
-
-#[tokio::test]
-async fn concurrent_domain_monitor_ensure_reconciles_cas_busy() {
-    let store = start_group_zero_store().await;
-    let seed = spawn_topology_server(Arc::clone(&store)).await;
-    let client = Arc::new(CrowdbKvClient::new(ClientConfig::new(vec![seed])));
-    let request = Arc::new(EnsureDomainMonitorRequest {
-        descriptor: DomainMonitorDescriptor {
-            domain: "chunkdb".into(),
-            service_registry_name: "chunkdb".into(),
-            driver_version: 1,
-            capability_version: 1,
-            heartbeat_interval_ms: 5_000,
-            suspect_after_ms: 10_000,
-            dead_after_ms: 15_000,
-            lease_duration_ms: 20_000,
-            max_clock_skew_ms: 1_000,
-            self_fence_margin_ms: 1_000,
-            failure_policy: DomainFailurePolicy::AutomaticSharedStorage,
-            balance_policy: "uniform-12-v1".into(),
-            chunk_kv_range_balance: None,
-        },
-    });
-
-    let mut tasks = tokio::task::JoinSet::new();
-    for _ in 0..32 {
-        let monitor = DomainMonitorClient::from_shared(Arc::clone(&client));
-        let request = Arc::clone(&request);
-        tasks.spawn(async move { monitor.ensure(&request).await });
-    }
-    let mut created = 0;
-    while let Some(result) = tasks.join_next().await {
-        match result.unwrap().unwrap() {
-            EnsureDomainMonitorOutcome::Created => created += 1,
-            EnsureDomainMonitorOutcome::AlreadyExists => {}
-            outcome => panic!("unexpected ensure outcome: {outcome:?}"),
-        }
-    }
-    assert_eq!(created, 1);
-
-    store.stop();
-    store.join().await;
-}
-
-#[tokio::test]
-async fn batch_write_and_scan() {
-    let store = start_single_node_store().await;
-    let seed = spawn_topology_server(store.clone()).await;
-    let client = CrowdbKvClient::new(ClientConfig::new(vec![seed]));
-
-    client
-        .batch_write(
-            STORE_ID,
-            GROUP_ID,
-            &[
-                BatchOp::Put {
-                    key: Bytes::from_static(b"a1"),
-                    value: Bytes::from_static(b"1"),
-                },
-                BatchOp::Put {
-                    key: Bytes::from_static(b"a2"),
-                    value: Bytes::from_static(b"2"),
-                },
-            ],
-        )
-        .await
-        .expect("batch_write");
-
-    let scanned = client
-        .scan(
-            STORE_ID,
-            GROUP_ID,
-            b"a",
-            &[],
-            &[],
-            0,
-            ReadMode::MinSlot,
-            None,
-            false,
-            None,
-        )
-        .await
-        .expect("scan");
-    assert_eq!(scanned.items.len(), 2);
-    assert!(!scanned.truncated);
-
-    store.stop();
-    store.join().await;
 }
 
 #[tokio::test]
@@ -452,162 +243,4 @@ async fn linearizable_multi_page_scan_pays_barrier_once() {
 
     server.stop();
     server.join().await;
-}
-
-#[tokio::test]
-async fn scan_keys_only_and_scan_count() {
-    let store = start_single_node_store().await;
-    let seed = spawn_topology_server(store.clone()).await;
-    let client = CrowdbKvClient::new(ClientConfig::new(vec![seed]));
-
-    for i in 0..12u32 {
-        client
-            .put(STORE_ID, GROUP_ID, format!("k{i:02}").as_bytes(), b"v", None)
-            .await
-            .expect("put");
-    }
-
-    // keys_only: same keys as a full scan, all values empty.
-    let keys_out = client
-        .scan(
-            STORE_ID,
-            GROUP_ID,
-            b"k",
-            &[],
-            &[],
-            0,
-            ReadMode::Linearizable,
-            None,
-            true,
-            None,
-        )
-        .await
-        .expect("keys_only scan");
-    assert_eq!(keys_out.items.len(), 12, "all 12 keys returned");
-    assert!(
-        keys_out.items.iter().all(|(_, v)| v.is_empty()),
-        "keys_only values empty"
-    );
-    for (i, (key, _)) in keys_out.items.iter().enumerate() {
-        assert_eq!(key.as_ref(), format!("k{i:02}").as_bytes(), "key {i} in order");
-    }
-
-    // scan_count: returns the total count, no items shipped.
-    let count = client
-        .scan_count(
-            STORE_ID,
-            GROUP_ID,
-            b"k",
-            &[],
-            &[],
-            0,
-            ReadMode::Linearizable,
-            None,
-            None,
-        )
-        .await
-        .expect("scan_count");
-    assert_eq!(count, 12, "scan_count returns the live matching key count");
-
-    // scan_count with prefix that matches nothing.
-    let count = client
-        .scan_count(
-            STORE_ID,
-            GROUP_ID,
-            b"nonexistent",
-            &[],
-            &[],
-            0,
-            ReadMode::Linearizable,
-            None,
-            None,
-        )
-        .await
-        .expect("scan_count empty");
-    assert_eq!(count, 0, "scan_count returns 0 for no matches");
-
-    // scan_count with limit caps the count.
-    let count = client
-        .scan_count(
-            STORE_ID,
-            GROUP_ID,
-            b"k",
-            &[],
-            &[],
-            5,
-            ReadMode::Linearizable,
-            None,
-            None,
-        )
-        .await
-        .expect("scan_count limit");
-    assert_eq!(count, 5, "scan_count respects limit");
-
-    store.stop();
-    store.join().await;
-}
-
-#[tokio::test]
-async fn scan_deadline_returns_partial_result() {
-    let store = start_single_node_store().await;
-    let seed = spawn_topology_server(store.clone()).await;
-    let client = CrowdbKvClient::new(ClientConfig::new(vec![seed]));
-
-    // Populate enough keys that the engine merge loop's periodic deadline
-    // check (every 1024 entries) fires mid-scan.
-    for i in 0..3000u64 {
-        client
-            .put(STORE_ID, GROUP_ID, format!("k{i:05}").as_bytes(), b"v", None)
-            .await
-            .expect("put");
-    }
-
-    // No deadline: full scan returns all 3000 entries.
-    let full = client
-        .scan(
-            STORE_ID,
-            GROUP_ID,
-            b"",
-            &[],
-            &[],
-            0,
-            ReadMode::Linearizable,
-            None,
-            false,
-            None,
-        )
-        .await
-        .expect("full scan");
-    assert_eq!(full.items.len(), 3000);
-    assert!(!full.truncated);
-    assert!(!full.timed_out);
-
-    // Tight deadline (already expired): the scan returns a partial result
-    // with truncated = true and timed_out = true.
-    let deadline = now_ms();
-    let partial = client
-        .scan(
-            STORE_ID,
-            GROUP_ID,
-            b"",
-            &[],
-            &[],
-            0,
-            ReadMode::Linearizable,
-            None,
-            false,
-            Some(deadline),
-        )
-        .await
-        .expect("deadline scan");
-    assert!(partial.truncated);
-    assert!(partial.timed_out);
-    assert!(partial.items.len() < full.items.len());
-    // The partial result is a correctly-ordered prefix of the full scan.
-    for (i, (k, _)) in partial.items.iter().enumerate() {
-        assert_eq!(k, &full.items[i].0, "partial result must be a prefix");
-    }
-
-    store.stop();
-    store.join().await;
 }

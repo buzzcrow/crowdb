@@ -118,6 +118,9 @@ impl PxRpcTransport {
                 Ok(conn)
             })
             .map_err(|error| match error {
+                ConnectionPoolError::Closed => {
+                    PxReplicaError::Internal("connection closed during acquisition".into())
+                }
                 ConnectionPoolError::Connect(error) => error,
                 ConnectionPoolError::Capacity { max_endpoints } => {
                     PxReplicaError::Internal(format!("endpoint connection limit {max_endpoints} reached"))

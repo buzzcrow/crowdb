@@ -19,13 +19,29 @@ pub async fn mode(
     let mode = match state.web_mode {
         Some(crowdb_console_shared::config::web::WebMode::Docker) => "docker",
         Some(crowdb_console_shared::config::web::WebMode::BareMetal) => "bare-metal-pending",
+        None if state.node_monitor_url.is_some() => "node",
         None => "legacy",
     };
-    axum::Json(serde_json::json!({"mode": mode}))
+    axum::Json(serde_json::json!({"mode": mode, "readonly": state.readonly}))
 }
 
 pub async fn managed_api_unavailable() -> axum::http::StatusCode {
     axum::http::StatusCode::SERVICE_UNAVAILABLE
+}
+
+pub(crate) async fn require_editable(
+    axum::extract::State(state): axum::extract::State<crate::state::AppState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Result<axum::response::Response, axum::http::StatusCode> {
+    let observe = matches!(
+        *request.method(),
+        axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
+    );
+    if state.readonly && !observe {
+        return Err(axum::http::StatusCode::FORBIDDEN);
+    }
+    Ok(next.run(request).await)
 }
 
 /// Container deployments expose disk observation but never disk management.

@@ -1,0 +1,23 @@
+package:
+  name: crowdb-runtime-tools
+  version: 2.4.1
+source:
+  - url: https://github.com/containerd/containerd/releases/download/v2.4.1/containerd-static-2.4.1-linux-amd64.tar.gz
+    sha256: 02ad3a7e80d7d2c018c7134d5eca7e301283db6895f100b957fb52ad8e5a30fd
+    target_directory: containerd
+  - url: https://github.com/containerd/nerdctl/releases/download/v2.4.1/nerdctl-2.4.1-linux-amd64.tar.gz
+    sha256: f6bbf02fd8a299cbcbc71a0bad113c1b63b3f33689bbb7d51b0fa98c6d361d5e
+    target_directory: nerdctl
+build:
+  number: 0
+  script:
+    - mkdir -p "$PREFIX/bin"
+    - install -m 0755 containerd/containerd containerd/containerd-shim-runc-v2 containerd/ctr "$PREFIX/bin/"
+    - install -m 0755 nerdctl/nerdctl "$PREFIX/bin/"
+requirements:
+  run:
+    - __linux
+about:
+  license: Apache-2.0
+  summary: Pinned containerd and nerdctl for CROWDB host deployment
+  homepage: https://github.com/containerd/containerd

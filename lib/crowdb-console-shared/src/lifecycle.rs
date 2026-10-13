@@ -1310,7 +1310,9 @@ pub async fn deploy_chunkdb_local(
     })
 }
 
-fn chunkdb_config(req: &ChunkdbDeployRequest, node: &NodeEntry) -> String {
+/// Render the node-specific `ChunkDB` configuration after deployment input validation.
+#[must_use]
+pub fn chunkdb_config(req: &ChunkdbDeployRequest, node: &NodeEntry) -> String {
     let seeds = req
         .kv_server_mgmt_seeds
         .iter()
@@ -1446,7 +1448,9 @@ pub async fn deploy_diskio_local(
     })
 }
 
-fn diskio_config(req: &DiskioDeployRequest, node: &NodeEntry, log_dir: &Path) -> String {
+/// Render the node-specific `DiskIO` configuration.
+#[must_use]
+pub fn diskio_config(req: &DiskioDeployRequest, node: &NodeEntry, log_dir: &Path) -> String {
     let seeds = req
         .kv_server_mgmt_seeds
         .iter()

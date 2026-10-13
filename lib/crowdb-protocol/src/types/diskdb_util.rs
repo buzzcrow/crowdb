@@ -116,7 +116,22 @@ impl ZoneAllocationStateExt for ZoneAllocationState {
 /// `compact_ts = 0`, `snapshot_slot = 0`. A corrupted `compact_ts`
 /// would break the watermark logic, so it is integrity-protected
 /// alongside the bitmap.
+/// LZ4 block with a little-endian decoded length of 4096 bytes.
+pub const EMPTY_ZONE_BITMAP_LZ4: &[u8] = &[
+    0, 16, 0, 0, 31, 0, 1, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 245,
+    96, 0, 0, 0, 0, 0, 0,
+];
+const ZONE_RECORD_PREFIX: [u8; 8] = u64::MAX.to_le_bytes();
+
 pub trait ZoneValueExt {
+    /// Decode a bitmap with the disk geometry as its allocation bound.
+    ///
+    /// # Errors
+    /// Rejects unsupported codecs, malformed LZ4 and lengths outside the disk geometry.
+    fn bitmap_bytes(&self, block_count: u32) -> Result<Vec<u8>, String>;
+    /// Store the supplied raw bitmap as LZ4, reusing the standard empty value.
+    fn compress_bitmap(&mut self);
+
     /// Compute and set `crc32` from `usage_bitmap` + `compact_ts`.
     fn compute_checksum(&mut self);
 
@@ -139,8 +154,35 @@ pub trait ZoneValueExt {
 }
 
 impl ZoneValueExt for ZoneValue {
+    fn compress_bitmap(&mut self) {
+        if self.usage_bitmap.len() == 4096 && self.usage_bitmap.iter().all(|byte| *byte == 0) {
+            self.usage_bitmap = EMPTY_ZONE_BITMAP_LZ4.to_vec();
+        } else {
+            self.usage_bitmap = lz4_flex::compress_prepend_size(&self.usage_bitmap);
+        }
+        self.bitmap_codec = 1;
+    }
+
+    fn bitmap_bytes(&self, block_count: u32) -> Result<Vec<u8>, String> {
+        if self.bitmap_codec != 1 {
+            return Err("unsupported zone bitmap codec".into());
+        }
+        let header: [u8; 4] = self
+            .usage_bitmap
+            .get(..4)
+            .ok_or("truncated LZ4 bitmap")?
+            .try_into()
+            .map_err(|_| "truncated LZ4 bitmap")?;
+        let size = (block_count as usize).div_ceil(64) * 8;
+        if u32::from_le_bytes(header) as usize != size {
+            return Err("LZ4 bitmap length does not match disk geometry".into());
+        }
+        lz4_flex::decompress_size_prepended(&self.usage_bitmap).map_err(|error| error.to_string())
+    }
+
     fn compute_checksum(&mut self) {
         let mut hasher = crc32fast::Hasher::new();
+        hasher.update(&[self.bitmap_codec]);
         hasher.update(&self.usage_bitmap);
         hasher.update(&self.compact_slot.to_le_bytes());
         self.crc32 = hasher.finalize();
@@ -148,17 +190,27 @@ impl ZoneValueExt for ZoneValue {
 
     fn verify_checksum(&self) -> bool {
         let mut hasher = crc32fast::Hasher::new();
+        hasher.update(&[self.bitmap_codec]);
         hasher.update(&self.usage_bitmap);
         hasher.update(&self.compact_slot.to_le_bytes());
         self.crc32 == hasher.finalize()
     }
 
     fn to_bytes(&self) -> Vec<u8> {
-        bincode::serialize(self).expect("serialize ZoneValue")
+        let mut bytes = ZONE_RECORD_PREFIX.to_vec();
+        bytes.extend_from_slice(&bincode::serialize(self).expect("serialize ZoneValue"));
+        bytes
     }
 
     fn from_bytes(bytes: &[u8]) -> Result<ZoneValue, String> {
-        bincode::deserialize(bytes).map_err(|e| e.to_string())
+        let record = bytes
+            .strip_prefix(&ZONE_RECORD_PREFIX)
+            .ok_or("unsupported zone record format")?;
+        let value: Self = bincode::deserialize(record).map_err(|error| error.to_string())?;
+        if value.bitmap_codec != 1 {
+            return Err("unsupported zone bitmap codec".into());
+        }
+        Ok(value)
     }
 }
 

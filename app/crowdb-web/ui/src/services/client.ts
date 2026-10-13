@@ -13,7 +13,9 @@ export function isTopologyServiceKind(value?: string): value is keyof typeof ser
 export function serviceInstanceLabel(kind: string | undefined, id: string): string {
   const prefix = { 'paxos-kv': 'PKV', diskdb: 'DDB', chunkdb: 'CDB', diskio: 'DIO', 'chunk-kv': 'CKV', 'access-server': 'AS', web: 'WEB' }[kind ?? ''];
   if (!prefix) return id;
-  const suffix = id.startsWith(`${kind}-`) ? id.slice(kind!.length + 1) : id;
+  const suffix = kind === 'paxos-kv' && id.startsWith('kv-')
+    ? id.slice(3)
+    : id.startsWith(`${kind}-`) ? id.slice(kind!.length + 1) : id;
   return `${prefix}-${suffix}`;
 }
 export async function serviceRequest(path: string, method: string, body?: object): Promise<unknown> {

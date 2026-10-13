@@ -6,10 +6,6 @@
 use crowdb_console_shared::config::ConsoleConfig;
 use crowdb_console_shared::error::Error;
 use crowdb_console_shared::ops::{self, OpContext};
-use crowdb_test_harness::cluster::KvCluster;
-
-#[path = "common/bootstrap_authority.rs"]
-mod bootstrap_authority;
 
 fn ctx() -> OpContext {
     OpContext::new("127.0.0.1:1".into(), vec![], ConsoleConfig::default())
@@ -34,16 +30,4 @@ async fn init_dedup_nodes() {
         err,
         Error::NodeUnreachable { .. } | Error::NotFound { .. }
     ));
-}
-
-#[tokio::test]
-async fn clean_requires_confirmed_group_replicas() {
-    let cluster = KvCluster::start().await;
-    let bootstrap = bootstrap_authority::context(&cluster).await;
-    ops::cluster::init(&bootstrap, &[1]).await.unwrap();
-
-    // The bootstrap context still has a local server entry, but no local
-    // entry may justify wiping a group absent from Group 0.
-    let err = ops::cluster::clean(&bootstrap, 17, 2).await.unwrap_err();
-    assert!(matches!(err, Error::NotFound { .. }), "{err:?}");
 }

@@ -34,6 +34,7 @@ tower-http = { version = "0.6", features = ["fs"] }
 tracing = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+toml = "0.8"
 hmac = "0.12"
 sha2 = "0.10"
 percent-encoding = "2"
@@ -52,4 +53,4 @@ serde_json = "1"
 tower = { version = "0.5", features = ["util"] }
 crowdb-kv = { path = "../../lib/crowdb-kv" }
 crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi", features = ["test-util"] }
-crowdb-test-harness = { path = "../../lib/crowdb-test-harness", features = ["diskdb"] }
+crowdb-test-harness = { path = "../../lib/crowdb-test-harness" }

@@ -29,6 +29,5 @@ name = "crowdb-chunk-kv-cli"
 path = "src/bin/crowdb-chunk-kv-cli.rs"
 
 [dev-dependencies]
-crowdb-chunk-kv-server = { path = "../../app/crowdb-chunk-kv-server" }
 crowdb-rpc-ffi = { path = "../crowdb-rpc/ffi", features = ["test-util"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "test-util"] }

@@ -22,6 +22,7 @@ base does the actual I/O and parsing via `on_readable` and `on_writable`.
 - [4. EpollEngine (Linux)](#4-epollengine-linux)
 - [5. KqueueEngine (macOS)](#5-kqueueengine-macos)
 - [6. Multi-Engine Scaling](#6-multi-engine-scaling)
+- [7. Listener ownership and restart](#7-listener-ownership-and-restart)
 
 ---
 
@@ -158,3 +159,31 @@ send would stall.
   kernels with `io_uring` support (future), the engine abstraction
   allows swapping epoll for io_uring without changing the worker
   model.
+
+## 7. Listener ownership and restart
+
+- **L1 — Stable endpoint**: a logical service retains its configured listening
+  address and port across stop/start and crash recovery. Container-local service
+  ports use fixed four-digit assignments; independent network namespaces reuse
+  the same assignments. Host-published test ports are assigned by the runtime.
+- **L2 — Restart address reuse**: TCP listeners enable `SO_REUSEADDR` before
+  `bind`, on the first start and every restart. Reuse permits rebinding after
+  the old listener closes while old connections remain in `TIME_WAIT`. This
+  applies to RPC and HTTP management/health listeners; wrappers and async
+  frameworks must preserve equivalent socket behavior. Failure to configure
+  the option or bind the endpoint is a startup error with address/port context.
+- **L3 — One serving instance**: an endpoint in one network namespace has one
+  live service owner. Restart waits for the previous process/listener to exit.
+  `EADDRINUSE` identifies an unresolved ownership conflict; do not hide it by
+  incrementing ports, probing an alternative range, or changing the advertised
+  endpoint. `SO_REUSEPORT` is not a default restart option: multiple accepting
+  listeners require an explicitly designed ownership/handoff protocol.
+- **L4 — Bounded verification**: recovery acceptance retains the endpoint,
+  establishes client connections before stopping the service, restarts within
+  a bounded deadline and verifies exact persisted data. A second live service
+  attempting the same endpoint must fail without disrupting the first one.
+
+These are CrowDB listener contracts. The operating-system meanings of
+`SO_REUSEADDR`, active listeners and `SO_REUSEPORT` follow the
+[Linux socket manual](https://man7.org/linux/man-pages/man7/socket.7.html);
+namespace isolation and logical service ownership are CrowDB responsibilities.

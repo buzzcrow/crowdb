@@ -130,8 +130,9 @@ impl RpcClient {
     /// share a slab slot). The `user_data` is opaque to C++; typically
     /// a pointer to a pre-allocated Rust slot (not a per-call Box).
     /// The callback must be non-blocking (it runs on the I/O thread).
-    /// Returns `Ok(())` on success, `Err` on submit error (callback NOT
-    /// invoked — caller must handle the error).
+    /// `Ok(())` transfers callback ownership, including when disconnect
+    /// completes a call before transport rejection returns. `Err` guarantees
+    /// the callback was not invoked; the caller retains `user_data`.
     /// Flow: doc/design/rpc/rpc-flow-analysis.md § "Flow".
     ///
     /// # Safety

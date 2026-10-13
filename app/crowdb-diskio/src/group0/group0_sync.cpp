@@ -9,6 +9,7 @@
 #include "disk/null_disk.h"
 #include "engine/uring/uring_engine.h"
 #include "group0/disk_identity.h"
+#include "group0/ffi_result.h"
 
 #include <folly/dynamic.h>
 #include <folly/json.h>
@@ -24,28 +25,11 @@ namespace crowdb::diskio
 
 // ── Callback context for async FFI ops ────────────────────────────
 
-struct SyncCallbackCtx
-{
-    std::atomic<int>  status{-1};
-    std::string       json_result;
-    std::atomic<bool> done{false};
-};
-
-static void on_ffi_complete(int status, const char *result_json, void *user_data)
-{
-    auto *ctx = static_cast<SyncCallbackCtx *>(user_data);
-    ctx->status.store(status, std::memory_order_relaxed);
-    if (result_json != nullptr) {
-        ctx->json_result = result_json;
-    }
-    ctx->done.store(true, std::memory_order_release);
-}
-
-static bool wait_for_ctx(SyncCallbackCtx &ctx, uint32_t timeout_ms = 10000)
+static bool wait_for_ctx(FfiResult &ctx, uint32_t timeout_ms = 10000)
 {
     for (uint32_t i = 0; i < timeout_ms / 10; ++i) {
         if (ctx.done.load(std::memory_order_acquire)) {
-            return ctx.status.load(std::memory_order_relaxed) == 0;
+            return true;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
@@ -131,23 +115,25 @@ void Group0Sync::fetch_disks_from_group0()
         return;
     }
 
-    SyncCallbackCtx ctx;
+    auto ctx = std::make_shared<FfiResult>();
     if (cfg_.dg_id == 0) {
-        crowdb_hw_list_disks_on_node(hw_client_, cfg_.rack_id, cfg_.node_id, on_ffi_complete, &ctx);
+        crowdb_hw_list_disks_on_node(hw_client_, cfg_.rack_id, cfg_.node_id, complete_ffi_result,
+                                     retain_ffi_result(ctx));
     }
     else {
-        crowdb_hw_list_disks_in_group(hw_client_, cfg_.rack_id, cfg_.node_id, cfg_.dg_id, on_ffi_complete, &ctx);
+        crowdb_hw_list_disks_in_group(hw_client_, cfg_.rack_id, cfg_.node_id, cfg_.dg_id, complete_ffi_result,
+                                      retain_ffi_result(ctx));
     }
-    if (!wait_for_ctx(ctx)) {
+    if (!wait_for_ctx(*ctx)) {
         std::fprintf(stderr, "warning: group-0 list_disks timed out\n");
         return;
     }
-    if (ctx.status.load() != 0) {
+    if (ctx->status.load() != 0) {
         std::fprintf(stderr, "warning: group-0 list_disks failed\n");
         return;
     }
 
-    reconcile_disks(ctx.json_result);
+    reconcile_disks(ctx->json_result);
 }
 
 void Group0Sync::reconcile_disks(const std::string &json)
@@ -284,14 +270,14 @@ void Group0Sync::heartbeat()
     }
     const std::string dg_ids_json = folly::toJson(groups);
 
-    SyncCallbackCtx ctx;
+    auto ctx = std::make_shared<FfiResult>();
     crowdb_svc_heartbeat_diskio_at(svc_client_, cfg_.instance_id, cfg_.rpc_endpoint.c_str(), cfg_.rack_id, cfg_.node_id,
-                                   dg_ids_json.c_str(), "[]", on_ffi_complete, &ctx);
-    if (!wait_for_ctx(ctx)) {
+                                   dg_ids_json.c_str(), "[]", complete_ffi_result, retain_ffi_result(ctx));
+    if (!wait_for_ctx(*ctx)) {
         std::fprintf(stderr, "warning: group-0 heartbeat timed out\n");
         return;
     }
-    if (ctx.status.load() != 0) {
+    if (ctx->status.load() != 0) {
         std::fprintf(stderr, "warning: group-0 heartbeat failed\n");
     }
 }

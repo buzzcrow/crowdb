@@ -251,3 +251,43 @@ fn zone_cas_retry_metric_matches_atomic() {
         "crowdb-common counter ({counter_value}) must match atomic retries ({atomic_retries})"
     );
 }
+
+#[test]
+fn empty_zone_reuses_compressed_constant_without_materializing_bitmap() {
+    use crowdb_protocol::ZoneValueExt;
+    let zone = make_zone(32768);
+    assert!(!zone.usage_bits.is_materialized_for_tests());
+    assert_eq!(zone.usage_bits.load_word(511), 0);
+    let value = zone.to_zone_value();
+    assert_eq!(value.bitmap_codec, 1);
+    assert_eq!(value.usage_bitmap, crowdb_protocol::EMPTY_ZONE_BITMAP_LZ4);
+    assert_eq!(value.bitmap_bytes(32768).unwrap(), vec![0; 4096]);
+    assert!(!zone.usage_bits.is_materialized_for_tests());
+    let restored = DdbZone::from_zone_value(disk_id(1), 0, DG, 32768, &value).unwrap();
+    assert!(!restored.usage_bits.is_materialized_for_tests());
+    assert!(restored.allocate(1, CAS_RETRY).is_some());
+    assert!(restored.usage_bits.is_materialized_for_tests());
+    let persisted = restored.to_zone_value();
+    let recovered = DdbZone::from_zone_value(disk_id(1), 0, DG, 32768, &persisted).unwrap();
+    assert_eq!(recovered.used_count.load(Ordering::Acquire), 1);
+}
+
+#[test]
+fn concurrent_first_allocations_share_one_lazy_bitmap() {
+    let zone = Arc::new(make_zone(32768));
+    let workers: Vec<_> = (0..16)
+        .map(|_| {
+            let zone = Arc::clone(&zone);
+            std::thread::spawn(move || {
+                for _ in 0..64 {
+                    assert!(zone.allocate(1, CAS_RETRY).is_some());
+                }
+            })
+        })
+        .collect();
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    assert_eq!(zone.usage_bits.count_set(), 1024);
+    assert_eq!(zone.used_count.load(Ordering::Acquire), 1024);
+}

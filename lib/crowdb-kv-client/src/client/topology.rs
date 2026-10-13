@@ -18,6 +18,8 @@ use crowdb_protocol::mgmt::TopologyResponse;
 use crate::error::{Error, Result};
 use crate::ReadEndpointPolicy;
 
+mod address;
+
 type GroupKey = (u64, u64);
 
 /// Per-endpoint read statistics owned by one published route generation.
@@ -232,23 +234,71 @@ impl TopologyCache {
     }
 
     async fn fetch_and_merge(&self, base_generation: u64) -> Result<()> {
+        self.fetch_group_and_merge(base_generation, None)
+            .await
+            .map(|_| ())
+    }
+
+    pub(super) async fn refresh_leader(&self, store_id: u64, group_id: u64) -> Result<Option<String>> {
+        let mut last = self.refresh_gate.lock().await;
+        if let Some(endpoint) = self.leader(store_id, group_id) {
+            return Ok(Some(endpoint));
+        }
+        // A recent unrelated snapshot cannot answer a missing group's query.
+        let generation = self.snapshot.load().generation;
+        let result = self
+            .fetch_group_and_merge(generation, Some((store_id, group_id)))
+            .await;
+        *last = Instant::now();
+        result
+    }
+
+    async fn fetch_group_and_merge(
+        &self,
+        base_generation: u64,
+        required_group: Option<GroupKey>,
+    ) -> Result<Option<String>> {
         let seeds = self.seeds.read().unwrap().clone();
         if seeds.is_empty() {
             return Err(Error::NoSeeds);
         }
         let mut last_err = None;
+        let mut valid_response = false;
         for seed in &seeds {
             let url = format!("{}/topology", seed.trim_end_matches('/'));
             match self.http.get(&url).send().await {
                 Ok(resp) => match resp.json::<TopologyResponse>().await {
-                    Ok(body) => {
+                    Ok(mut body) => {
+                        valid_response = true;
+                        address::resolve_local_endpoints(&mut body, seed);
+                        let endpoint = required_group.and_then(|(store_id, group_id)| {
+                            let store = body.stores.iter().find(|store| store.store_id == store_id)?;
+                            let group = store.groups.iter().find(|group| group.group_id == group_id)?;
+                            if group.leader_id == 0 {
+                                None
+                            } else if group.local_replica.id == group.leader_id {
+                                store.listen_addr.clone()
+                            } else {
+                                group
+                                    .remotes
+                                    .iter()
+                                    .find(|remote| remote.id == group.leader_id)
+                                    .map(|remote| remote.endpoint.clone())
+                            }
+                        });
+                        if required_group.is_some() && endpoint.is_none() {
+                            continue;
+                        }
                         self.merge_from_generation(body, base_generation);
-                        return Ok(());
+                        return Ok(endpoint);
                     }
                     Err(e) => last_err = Some(format!("{seed}: decode error: {e}")),
                 },
                 Err(e) => last_err = Some(format!("{seed}: request error: {e}")),
             }
+        }
+        if required_group.is_some() && valid_response {
+            return Ok(None);
         }
         Err(Error::Topology(
             last_err.unwrap_or_else(|| "all seeds returned errors".to_string()),

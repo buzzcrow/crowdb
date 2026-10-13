@@ -15,10 +15,7 @@ async fn rpc_endpoint_for_store(ctx: &OpContext, node_id: u64, store_id: u64) ->
                     .strip_prefix("http://")
                     .or_else(|| addr.strip_prefix("https://"))
                     .unwrap_or(addr);
-                let remapped = stripped
-                    .strip_prefix("0.0.0.0:")
-                    .map_or_else(|| stripped.to_string(), |port| format!("127.0.0.1:{port}"));
-                return Some(remapped);
+                return client.resolve_rpc_endpoint(stripped).ok();
             }
         }
     }
@@ -70,11 +67,9 @@ pub(super) async fn seed_leader_after_init(
                                         .strip_prefix("http://")
                                         .or_else(|| ep.strip_prefix("https://"))
                                         .unwrap_or(&ep);
-                                    let remapped = stripped.strip_prefix("0.0.0.0:").map_or_else(
-                                        || stripped.to_string(),
-                                        |port| format!("127.0.0.1:{port}"),
-                                    );
-                                    ctx.kv().seed_leader(0, 0, remapped);
+                                    if let Ok(endpoint) = sc.resolve_rpc_endpoint(stripped) {
+                                        ctx.kv().seed_leader(0, 0, endpoint);
+                                    }
                                 }
                                 break;
                             }

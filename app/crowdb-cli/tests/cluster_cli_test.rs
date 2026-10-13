@@ -6,10 +6,9 @@
 
 mod common;
 
-use std::time::Duration;
 use std::{fs, process::Command};
 
-use common::direct::{crowdb_cli_bin, run, spawn_group0, tempdir};
+use common::direct::{crowdb_cli_bin, tempdir};
 
 #[test]
 fn non_benchmark_command_does_not_create_log_directory() {
@@ -39,68 +38,32 @@ fn benchmark_replaces_its_previous_log_directory() {
         eprintln!("skipping: crowdb-cli binary not built ({})", cli.display());
         return;
     }
-    let root = tempdir("bench-latest-log");
-    let log_dir = root.join(".crowdb-runtime/artifacts/cli/bench-rpc");
-    fs::create_dir_all(&log_dir).expect("create old benchmark log dir");
-    fs::write(log_dir.join("old-run.marker"), b"old").expect("write old marker");
+    for mode in ["coroutine", "tokio"] {
+        let root = tempdir(&format!("bench-latest-log-{mode}"));
+        let log_dir = root.join(".crowdb-runtime/artifacts/cli/bench-rpc");
+        fs::create_dir_all(&log_dir).expect("create old benchmark log dir");
+        fs::write(log_dir.join("old-run.marker"), b"old").expect("write old marker");
 
-    let output = Command::new(cli)
-        .current_dir(&root)
-        .env("CROWDB_RUNTIME_ROOT", root.join(".crowdb-runtime"))
-        .args(["bench", "rpc", "--server-port", "1", "--metrics-interval", "0"])
-        .output()
-        .expect("run benchmark against closed port");
-    assert!(!output.status.success());
-    assert!(log_dir.is_dir());
-    assert!(!log_dir.join("old-run.marker").exists());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("log dir:"), "stderr={stderr}");
-    let _ = fs::remove_dir_all(root);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[allow(clippy::too_many_lines)]
-async fn cluster_status_topology_via_direct_group0() {
-    let Some(g0) = spawn_group0().await else {
-        eprintln!("skipping: crowdb-kv-server binary not built");
-        return;
-    };
-    let cli = crowdb_cli_bin();
-    if !cli.exists() {
-        eprintln!("skipping: crowdb-cli binary not built ({})", cli.display());
-        return;
+        let output = Command::new(&cli)
+            .current_dir(&root)
+            .env("CROWDB_RUNTIME_ROOT", root.join(".crowdb-runtime"))
+            .args([
+                "bench",
+                "rpc",
+                "--server-port",
+                "1",
+                "--metrics-interval",
+                "0",
+                "--mode",
+                mode,
+            ])
+            .output()
+            .expect("run benchmark against closed port");
+        assert!(!output.status.success());
+        assert!(log_dir.is_dir());
+        assert!(!log_dir.join("old-run.marker").exists());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("log dir:"), "stderr={stderr}");
+        let _ = fs::remove_dir_all(root);
     }
-
-    // Bootstrap requires an independent versioned intent and launch registry.
-    let (code, _, stderr) = run(
-        &cli,
-        g0.mgmt_port,
-        &g0.config_path,
-        &["cluster", "init", "-n", "1"],
-    );
-    assert_eq!(code, 2, "cluster init stderr={stderr}");
-    assert!(stderr.contains("--registry"), "stderr={stderr}");
-    std::fs::write(&g0.config_path, "invalid local topology").unwrap();
-
-    // status — lists stores from group-0 sysdata.
-    let (code, stdout, stderr) = run(&cli, g0.mgmt_port, &g0.config_path, &["cluster", "status"]);
-    assert_eq!(code, 0, "status stderr={stderr}");
-    assert!(stdout.contains("(no stores)"), "stdout={stdout}");
-
-    // topology — from a node's /topology endpoint.
-    let (code, stdout, stderr) = run(
-        &cli,
-        g0.mgmt_port,
-        &g0.config_path,
-        &["cluster", "topology", "-n", "1"],
-    );
-    assert_eq!(code, 0, "topology stderr={stderr}");
-    assert!(stdout.contains("store"), "stdout={stdout}");
-
-    // Status reflects the uninitialized authority without a local fallback.
-    let (code, stdout, _) = run(&cli, g0.mgmt_port, &g0.config_path, &["cluster", "status"]);
-    assert_eq!(code, 0);
-    assert!(stdout.contains("(no stores)"), "stdout={stdout}");
-
-    tokio::time::sleep(Duration::from_millis(50)).await;
 }

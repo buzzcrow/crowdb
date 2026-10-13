@@ -5,6 +5,7 @@
 #include "crowdb-rpc/pool.h"
 #include "crowdb-rpc/transport/socket_transport.h"
 
+#include <arpa/inet.h>
 #include <fcntl.h>
 #include <gtest/gtest.h>
 #include <sys/socket.h>
@@ -12,6 +13,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <future>
 #include <thread>
 
 namespace
@@ -143,4 +145,82 @@ TEST(ClientDisconnectTest, AttachedConnectionOutlivesFfiClientHandle)
     crowdb_rpc_conn_destroy(connection);
     crowdb_rpc_server_stop(server);
     crowdb_rpc_server_destroy(server);
+}
+
+TEST(ClientDisconnectTest, ReplacingCloseCallbackRetainsAnActiveInvocation)
+{
+    using crowdb::rpc::Connection;
+    using crowdb::rpc::SystemBufferPool;
+    SystemBufferPool   pool;
+    auto               connection = std::make_shared<Connection>(1, "callback-lifetime", &pool);
+    auto               owner      = std::make_shared<int>(42);
+    std::weak_ptr<int> observed   = owner;
+    std::promise<void> entered;
+    std::promise<void> release;
+    auto               released = release.get_future().share();
+    connection->set_on_rpc_close([owner, &entered, &released](Connection *) {
+        (void)owner;
+        entered.set_value();
+        released.wait();
+    });
+    owner.reset();
+    std::thread worker([&] { connection->close(); });
+    const auto  ready = entered.get_future().wait_for(std::chrono::seconds(1));
+    EXPECT_EQ(ready, std::future_status::ready);
+    connection->set_on_rpc_close([](Connection *) {});
+    EXPECT_FALSE(observed.expired()) << "an active callback must retain its client owner";
+    release.set_value();
+    worker.join();
+    connection.reset();
+    EXPECT_TRUE(observed.expired());
+}
+
+TEST(ClientDisconnectTest, RefusedConnectIsDistinguishedFromAcceptedPeerLoss)
+{
+    using namespace crowdb::rpc;
+    const int reserved = ::socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_GE(reserved, 0);
+    sockaddr_in address{};
+    address.sin_family      = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    ASSERT_EQ(::bind(reserved, reinterpret_cast<sockaddr *>(&address), sizeof(address)), 0);
+    socklen_t size = sizeof(address);
+    ASSERT_EQ(::getsockname(reserved, reinterpret_cast<sockaddr *>(&address), &size), 0);
+    SocketTransport transport(1, 2);
+    transport.start();
+    for (int index = 0; index < 100; ++index) {
+        auto refused = transport.connect("127.0.0.1", ntohs(address.sin_port));
+        if (!refused) {
+            EXPECT_EQ(errno, ECONNREFUSED);
+            continue;
+        }
+        // Exercise both worker-reported refusal and the caller's queued write.
+        if (index % 2 == 0) {
+            auto *frame    = new OutFrame{};
+            frame->control = transport.pool()->alloc(1);
+            frame->control->write("x", 1);
+            if (!transport.submit(refused.get(), frame)) {
+                frame->control->release();
+                delete frame;
+            }
+        }
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        while (refused->is_open() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        ASSERT_FALSE(refused->is_open());
+        EXPECT_TRUE(refused->connect_refused());
+    }
+    int sockets[2]{};
+    ASSERT_EQ(socketpair_nonblocking(sockets), 0);
+    auto accepted = transport.create_connection(sockets[0], "accepted");
+    ::close(sockets[1]);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (accepted->is_open() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_FALSE(accepted->is_open());
+    EXPECT_FALSE(accepted->connect_refused());
+    transport.stop();
+    ::close(reserved);
 }

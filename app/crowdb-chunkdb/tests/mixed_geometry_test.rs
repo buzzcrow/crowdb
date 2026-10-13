@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 #[tokio::test]
 async fn changed_disk_geometry_is_rejected_before_allocating_any_fragment() {
-    let cluster = common::cluster::KvCluster::start().await;
+    let cluster = common::cluster::KvCluster::start_pinned().await;
     let hardware = cluster.make_hardware_client();
     common::cluster::seed_hardware(&hardware).await;
     let disks = hardware.list_all_disks().await.unwrap();

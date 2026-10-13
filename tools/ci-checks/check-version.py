@@ -46,9 +46,9 @@ for name in sorted(workspace_names):
 pixi = load_toml(ROOT / "pixi.toml")
 require("pixi.toml workspace version", pixi["workspace"]["version"], EXPECTED)
 
-fixture = load_toml(ROOT / "app/crowdb-access-server/tests/common/iceberg_rust/Cargo.toml")
+fixture = load_toml(ROOT / "e2e-test/clients/iceberg-rust/Cargo.toml")
 require("Iceberg Rust fixture version", fixture["package"]["version"], EXPECTED)
-fixture_lock = load_toml(ROOT / "app/crowdb-access-server/tests/common/iceberg_rust/Cargo.lock")
+fixture_lock = load_toml(ROOT / "e2e-test/clients/iceberg-rust/Cargo.lock")
 fixture_versions = [
     package["version"]
     for package in fixture_lock["package"]

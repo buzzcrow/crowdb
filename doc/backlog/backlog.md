@@ -9,7 +9,7 @@ requirements and their temporary execution plans are removed during the final
 live in the linked document; implementation follows
 [`implement-requirement`](../../.agents/skills/implement-requirement/SKILL.md).
 
-**Next R number: R230** — R221 is reserved by another workstream.
+**Next R number: R231** — R221 is reserved by another workstream.
 
 ## Dataset and access
 
@@ -19,19 +19,6 @@ live in the linked document; implementation follows
 
 ## Console and service control
 
-- **[R227](R227-console-multi-node-deployment.md)** — multi-node discovery,
-  Group-0 bootstrap, shared UI authority and light-container deployment.
-  **Area:** monitor / console / deployment. **Complexity:** High.
-  **Dependencies:** existing Group 0; bootstrap and authorization decisions.
-- **[R210](R210-console-service-configuration-health.md)** — unified node service
-  configuration and health. **Area:** console / deployment / FlatBuffer RPC.
-  **Complexity:** High. **Dependencies:** none recorded.
-- **[R211](R211-console-access-health-listener.md)** — independent Access Server
-  health listener. **Area:** console / access server / deployment.
-  **Complexity:** Medium. **Dependencies:** R210.
-- **[R212](R212-console-node-create-and-cluster-scope.md)** — reliable node
-  creation and Cluster scope. **Area:** console / node lifecycle / UI.
-  **Complexity:** High. **Dependencies:** R210, R211.
 
 ## Access server and external data
 
@@ -97,8 +84,8 @@ live in the linked document; implementation follows
 - **[R103](R103-chunkdb-range-migration.md)** — dynamic slot ownership and
   KV-group expansion/shrink. **Area:** chunkdb / KV. **Complexity:** High.
   **Status:** Deferred by user decision until dynamic ownership is requested.
-- **[R139](R139-group0-service-config.md)** — Group-0 distributed service
-  configuration. **Area:** configuration / control plane. **Complexity:** Medium.
+- **[R139](R139-group0-service-config.md)** — single-container and cluster
+  performance profiles, test tuning, and Group-0 distributed service configuration. **Area:** configuration / control plane. **Complexity:** Medium.
   **Status:** Deferred until the file-backed service configuration contract.
 - **[R144](R144-chunk-kv-partition-merge.md)** — adjacent partition merge.
   **Area:** chunk-kv / KV / group 0. **Complexity:** High. **Status:** Deferred

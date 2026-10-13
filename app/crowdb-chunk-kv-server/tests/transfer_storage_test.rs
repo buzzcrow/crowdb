@@ -5,14 +5,16 @@ use std::sync::Arc;
 
 use crowdb_chunk_kv_server::storage::open_root_catalog_for_tests;
 use crowdb_chunk_kv_server::{ChunkKvRangeCatalogPublisher, Group0ControlStore};
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+use crowdb_kv_client::CrowdbKvClient;
 use crowdb_protocol::chunk_kv::{
     ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPageRef,
     ChunkKvRangeCatalogPartitionState, Id128, KeyRange, OwnerDescriptor, PartitionArtifact,
 };
 use crowdb_protocol::chunk_stream::StreamName;
-use crowdb_test_harness::cluster::KvCluster;
 use crowdb_tree_ffi::{CtError, RootCatalogObject};
+
+#[path = "common/metadata.rs"]
+mod metadata;
 
 fn source() -> ChunkKvRangeCatalogEntry {
     ChunkKvRangeCatalogEntry {
@@ -38,10 +40,8 @@ fn source() -> ChunkKvRangeCatalogEntry {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn preparing_target_does_not_fence_source_or_mutate_shared_root() {
-    let cluster = KvCluster::start().await;
-    let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
-        cluster.mgmt_endpoints.clone(),
-    )));
+    let metadata = metadata::TestMetadata::start().await;
+    let kv = metadata.client.clone();
     let source_entry = source();
     let source = open_root_catalog_for_tests(kv.clone(), 0, 1, &source_entry)
         .await
@@ -116,10 +116,8 @@ async fn publish_assignment(kv: Arc<CrowdbKvClient>, entry: ChunkKvRangeCatalogE
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn only_published_matching_target_can_claim_mutable_root() {
-    let cluster = KvCluster::start().await;
-    let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
-        cluster.mgmt_endpoints.clone(),
-    )));
+    let metadata = metadata::TestMetadata::start().await;
+    let kv = metadata.client.clone();
     let source_entry = source();
     let source = open_root_catalog_for_tests(kv.clone(), 0, 1, &source_entry)
         .await

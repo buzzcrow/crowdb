@@ -15,6 +15,7 @@ import type { ServerSummary } from '../api';
 import { isAuxiliaryKind, serviceInstanceLabel } from '../services/client';
 import { serviceOrder, type NodeServicePlan, type ServiceKind } from '../services/useNodeServicePlans';
 import { domainTabs } from './domainTabs';
+import { CandidateNodes } from './CandidateNodes';
 
 /** Fixed UI-only datacenter root wrapping the rack/store children. */
 function datacenterRoot(children: TreeNode[]): TreeNode {
@@ -29,6 +30,8 @@ function datacenterRoot(children: TreeNode[]): TreeNode {
 }
 
 interface SidebarProps {
+  onCandidatesChanged?: () => void;
+  nodeManagement?: boolean;
   allServers?: ServerSummary[];
   racks?: Rack[];
   servers?: CrowdbKVServerView[];
@@ -37,6 +40,7 @@ interface SidebarProps {
   nodeHealthById?: Record<string, NodeHealth>;
   loading?: boolean;
   readonly?: boolean;
+  candidateReadonly?: boolean;
   width?: number;
   clusterInitialized?: boolean;
   onNodeClick?: (node: TreeNode) => void;
@@ -57,6 +61,8 @@ interface SidebarProps {
 }
 
 export function Sidebar({
+  onCandidatesChanged,
+  nodeManagement = false,
   allServers = [],
   racks = [],
   servers = [],
@@ -65,6 +71,7 @@ export function Sidebar({
   nodeHealthById = {},
   loading,
   readonly,
+  candidateReadonly,
   width = 280,
   clusterInitialized = true,
   onNodeClick,
@@ -393,7 +400,7 @@ export function Sidebar({
         </div>
       </div>
 
-      {loading && treeNodes.length === 0 ? (
+      <div className="tw-min-h-0 tw-flex-1 tw-overflow-y-auto">{loading && treeNodes.length === 0 ? (
         <div className="tw-p-4 tw-animate-pulse tw-space-y-2">
           <div className="tw-h-6 tw-bg-panel tw-rounded-md" />
           <div className="tw-h-6 tw-bg-panel tw-rounded-md tw-w-3/4" />
@@ -427,7 +434,8 @@ export function Sidebar({
                   </div>
                 )}
         </div>
-      )}
+      )}</div>
+      {nodeManagement && domain === Domain.Cluster && <CandidateNodes racks={racks} readonly={candidateReadonly} onChange={onCandidatesChanged} />}
     </aside>
   );
 }

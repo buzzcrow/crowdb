@@ -11,8 +11,8 @@ use clap::Parser;
 use crowdb_chunk_kv_server::{
     management_router, BootstrapPartitionConfig, ChunkKvRangeCatalogPublisher,
     ChunkKvRangeCatalogReconcileError, ChunkKvRpcService, ChunkKvServerConfig, ChunkKvService,
-    ChunkKvStorage, DomainMonitorRegistry, Group0ControlStore, ManagementState, TransitionExecutor,
-    TransitionProcessor,
+    ChunkKvStorage, DomainMonitorRegistry, Group0ControlStore, ManagementState, StorageRuntimeError,
+    TransitionExecutor, TransitionProcessor,
 };
 use crowdb_kv_client::{ServiceRegistryClient, WatchNotifyClient, WatchSubscription};
 use crowdb_protocol::chunk_kv::{
@@ -142,7 +142,7 @@ async fn main() -> std::process::ExitCode {
         "crowdb-chunk-kv-server starting"
     );
 
-    let storage = match ChunkKvStorage::connect(&config).await {
+    let storage = match connect_storage_with_transient_topology_retry(&config).await {
         Ok(storage) => Arc::new(storage),
         Err(error) => {
             error!(%error, "failed to connect production chunk storage");
@@ -528,6 +528,31 @@ async fn main() -> std::process::ExitCode {
         std::process::ExitCode::SUCCESS
     } else {
         std::process::ExitCode::FAILURE
+    }
+}
+
+async fn connect_storage_with_transient_topology_retry(
+    config: &ChunkKvServerConfig,
+) -> Result<ChunkKvStorage, StorageRuntimeError> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        match ChunkKvStorage::connect(config).await {
+            Ok(storage) => return Ok(storage),
+            Err(error)
+                if std::time::Instant::now() < deadline
+                    && matches!(
+                        error,
+                        StorageRuntimeError::ChunkIo(ref detail)
+                            if detail.contains("inconsistent DiskIO topology")
+                                || detail.contains("placement failed")
+                                || detail.contains("chunk allocation failed")
+                    ) =>
+            {
+                warn!(%error, "chunk KV storage topology is still converging; retrying startup");
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+            Err(error) => return Err(error),
+        }
     }
 }
 

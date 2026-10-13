@@ -118,6 +118,9 @@ provide observable capacity and bitmap fixtures.
   children on click while selecting the parent. Children retain their own
   expansion state. Sidebar focus reveals hidden ancestors. Right-click opens
   the entity menu without toggling expansion. Fit All fits visible cards.
+  Hiding a topology panel interrupts viewport motion before zero-size geometry
+  is observed. Rapid domain switches retain finite coordinates; centering runs
+  only in a visible, measured canvas.
   Cluster initially expands Datacenter/Rack and stops at visible Node cards;
   service descendants appear when a Node is explicitly expanded.
 
@@ -172,6 +175,9 @@ provide observable capacity and bitmap fixtures.
   registrations covering every configured disk group and selected DiskIO node.
 - Six-service progress is saved in each Node workspace, with a revision checked
   on every update. Saving progress must succeed before a deployment starts.
+  Explicit Start/Retry requests queue behind in-flight reconciliation in the
+  same session, then save against its latest completed revision. Timer wakes
+  cannot publish competing progress while that registration is being saved.
   A competing browser receives a conflict and must reload. Reload turns an
   interrupted Deploying step into an explicit failure; Retry first checks the
   registered instance and never repeats a successful deployment. Stopped
@@ -189,6 +195,9 @@ provide observable capacity and bitmap fixtures.
   RPC probe remains Failed even when the process is alive.
   Access health probes its dedicated listener; missing retained health
   configuration is Unknown and requires reconciliation before restart.
+  Current service observations take precedence over persisted node projections.
+  DiskDB instances are associated by complete advertised RPC addresses; equal
+  ports in different node namespaces do not imply the same instance.
 - Cluster selections never display or request Chunk ownership.
 - **CLU-04:** Cluster readiness is reported by capability: KV quorum, storage,
   Chunk-KV, and Access protocols. A PID or registry entry alone is not Ready.
@@ -238,6 +247,10 @@ provide observable capacity and bitmap fixtures.
 - **DATA-04:** Cancel or ignore obsolete responses after scope/selection changes.
   A late response cannot overwrite the current selection. Polling cannot stack
   overlapping requests for the same resource or grow retry work indefinitely.
+- Automatic Access deployment checks live DiskIO ownership before provisioning
+  credentials or catalog state, including when an existing Chunk-KV process is
+  available. A transient ownership gap keeps the plan waiting and resumes
+  without another Submit when the prerequisite is confirmed.
 - Active views refresh at a bounded cadence; hidden views suspend observation
   polling. Accepted deployment work is independent of observation polling.
 - **DATA-05:** Preserve partial successes, identify failed sources, and show

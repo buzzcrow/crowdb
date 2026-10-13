@@ -76,7 +76,7 @@ async fn durable_plan_survives_state_recreation_and_rejects_competing_writers() 
         .iter()
         .map(|kind| ((*kind).to_string(), json!({"state":"waiting"})))
         .collect();
-    let body = json!({"revision":0,"steps":steps,"overrides":{"access-server":{"http_port":9092,"s3_port":9091,"health_port":9094},"paxos-kv":{"http_port":19910,"rpc_port":19920}}});
+    let body = json!({"revision":0,"steps":steps,"overrides":{"access-server":{"http_port":9092,"s3_port":9091,"health_port":9094},"paxos-kv":{"http_port":19910,"rpc_port":19920},"diskdb":{"keepalive_interval_secs":3}}});
     let (status, saved) = request(&app, "PUT", "/api/nodes/1/service-plan", body.clone()).await;
     assert_eq!(status, StatusCode::OK, "{saved}");
     assert_eq!(saved["revision"], 1);
@@ -127,6 +127,8 @@ async fn plan_rejects_legacy_kinds_and_invalid_listener_configuration() {
     .map(|kind| (kind.into(), json!({"state":"disabled"})))
     .collect();
     for overrides in [
+        json!({"diskdb":{"keepalive_interval_secs":0}}),
+        json!({"chunkdb":{"keepalive_interval_secs":3}}),
         json!({"access-server":{"s3_port":9091,"health_port":9091}}),
         json!({"access-server":{"health_port":0}}),
         json!({"diskio":{"http_port":13010}}),

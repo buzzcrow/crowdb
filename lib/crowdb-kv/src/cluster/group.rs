@@ -278,6 +278,8 @@ pub struct PxGroup {
     /// pending batch. Consumed by the first round that runs after this call.
     #[cfg(feature = "test-util")]
     pub(crate) coalesce_round_gate: parking_lot::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    #[cfg(feature = "test-util")]
+    pub(crate) coalesce_empty_drain_gate: std::sync::atomic::AtomicU8,
     /// R36 self-weak back-reference, set once the group is wrapped in an
     /// [`Arc`] via [`Self::set_self_weak`]. The coalescer's per-batch timer
     /// task upgrades this to spawn a flush without the group holding a
@@ -435,6 +437,8 @@ impl PxGroup {
             readindex_round_gate: parking_lot::Mutex::new(None),
             #[cfg(feature = "test-util")]
             coalesce_round_gate: parking_lot::Mutex::new(None),
+            #[cfg(feature = "test-util")]
+            coalesce_empty_drain_gate: std::sync::atomic::AtomicU8::new(0),
             self_weak: OnceLock::new(),
             coalescer: parking_lot::Mutex::new(None),
             coalesced_rounds_inflight: std::sync::atomic::AtomicU64::new(0),

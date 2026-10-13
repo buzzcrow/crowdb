@@ -253,6 +253,16 @@ monitor status makes Docker runtime observation unavailable. The in-process
 Web test router keeps a monitor cache for fixture orchestration; that cache is
 not production topology authority.
 
+Manual node Web refreshes per-node KV topology through the admitted management
+endpoints before physical reads. Remote process health comes from this live
+observation; remote PIDs never enter Web's local process table. The service
+list separately queries admitted monitors over their authenticated control
+channels for actual live children, with `pid_node_id` identifying the process
+namespace. This observation verifies local cluster/node binding and remains
+available during Group-0 failure. The Web host neither probes these PIDs via
+its own `/proc` nor stores or signals them as local processes. A failed probe
+marks the node down, while local launch observations still require a tracked PID.
+
 ### 4.3 Group 0 authority
 
 System group (store 0, group 0) replicates hardware and KV-cluster metadata.
@@ -316,7 +326,24 @@ credential reference associated with a node. Each bare-metal console resolves
 the reference in its own local secret store. Bootstrap intent rejects inline
 private keys and passwords; the launch registry accepts references only.
 
+Node admission installs each node's public Ed25519 key and proves access in
+both directions with strict host-key checking. Preparation reuses one
+key-authenticated candidate session and one session per existing peer; the
+two directional proofs run concurrently. Ordered preparation commands reuse
+their authenticated connection. A failed stage preserves durable progress for
+retry, while initialization passwords remain only in the submitted request.
+
 ### 5.3 Process lifecycle (deploy / start / stop)
+
+DiskDB deployment accepts an optional positive `keepalive_interval_secs` for
+its normal heartbeat policy. Omitting it retains the server default; the
+committed remote service configuration preserves it across restart. This
+setting does not change ownership or deployment protection rules.
+
+Chunk-KV deployment optionally accepts `stream_chunk_capacity_bytes` (1–256 MiB)
+and positive `stream_extent_page_entries`. Omitted values retain server defaults.
+These storage parameters are restricted to Chunk-KV and become part of its
+committed service configuration, including subsequent container-owned restarts.
 
 `LaunchRuntime` uses the validated launch registry for local or SSH process
 start, restart, stop and readiness checks. It records PID plus process start
@@ -334,14 +361,22 @@ Configured managed Web uses the managed router and a versioned process configura
 mode-specific process view. `/api/stores/...` provides authenticated logical
 mutations through shared operations in both modes. Bare-metal Web additionally
 exposes rack, node, disk-group and disk reads and authenticated mutations, plus
-registry-backed launch controls and bootstrap. Docker Web does not expose
-hardware or process mutation routes. Unknown managed API routes report
+registry-backed launch controls and bootstrap. Automatic single-node Docker Web does not expose
+hardware or process mutation routes. Manual node Web exposes candidate/rack
+preparation before bootstrap and routes subsequent shared management through
+Group 0 and authenticated monitor execution. Unknown managed API routes report
 unavailable rather than entering an in-memory topology path.
 
 A mutation is accepted only after the required node-side steps and Group 0
-publication are confirmed. The Console assumes a root operator until UI login is introduced. Container
-mode still rejects topology, deployment, and disk-management writes at the
+publication are confirmed. The Console assumes a root operator until UI login is introduced. Automatic single-node container
+mode rejects topology, deployment, and disk-management writes at the
 backend; logical and Access operations use server-held protocol credentials.
+Docker Web is writable by default. The process configuration explicitly sets
+`readonly = true` to reject every non-read request with 403; `/api/mode` exposes
+this flag and the SPA disables write controls accordingly. The public
+single-container profile enables readonly, while internal writable profiles
+select the same release image with readonly disabled. Docker physical-management
+restrictions apply independently of readonly.
 The SPA calls the Axum backend; it does not talk directly to KV management
 endpoints.
 
@@ -546,49 +581,41 @@ single `.crowdb-runtime/` root is gitignored. The
 
 ### 7.8 S3 mini-clusters and benchmarks
 
-`crowdb-cli s3 cluster start --root <path>` is the simple local operator
-path. The location, rather than the caller's global console configuration, is
-the cluster identity and recovery boundary:
+`crowdb-cli s3 cluster start --root <path> --container <name>` creates or
+resumes three formal release containers. The named first container and its
+`-node2` / `-node3` members share a cluster-owned Docker bridge and fixed service
+ports. Docker must already be available. The CLI uses normal node admission,
+Group-0 bootstrap and service deployment; clients run outside the containers.
+`--image`, `--node-cpus` and `--memory-mib` select the initial image and per-node
+limits. Existing clusters keep their recorded immutable image and limits.
+`--diskdb-heartbeat-interval-secs` selects the ordinary DiskDB cadence at
+creation (default 10 seconds). The owner record retains it across resume and
+restart; an existing cluster rejects a different requested value.
 
-- a missing or empty location is initialized as a three-node cluster;
-- a location containing `s3-mini-cluster.json` and versioned local launch state is restarted
-  with the same service identities, endpoints, launch commands, KV/WAL/tree
-  directories, and DiskIO files;
-- a non-empty location without the marker is rejected without modification.
+A root path selects the persistent data directory. `--container` (alias
+`--name`) can select any recorded member and resolves its owning cluster for
+lifecycle, bucket and object commands. Conflicting root/name selections or
+foreign container, image, network or mount ownership fail before mutation.
+Each node mounts its own data, logs and crash directory below the cluster root.
 
-The initial dependency order is KV, DiskDB, DiskIO, ChunkDB, chunk-KV, then
-access-server. Every service must become ready before its dependent starts.
-Each node owns one sparse, file-backed DiskIO file below the cluster root;
-normal S3 bucket metadata, object metadata, streams, and object bytes therefore
-survive a complete stop and restart. `stop` terminates recorded processes but
-does not remove configuration or storage. `delete` stops the cluster, releases
-its persistent port claims, and removes the named location. `status` is
-read-only.
+The dependency order is KV, DiskDB, DiskIO, ChunkDB, Chunk-KV, then Access.
+Readiness waits for usable dependencies before starting their consumers.
+`start` resumes confirmed Group-0 and service state after a client interruption;
+completed services keep their identities and no local topology is reconstructed.
+The initializing marker disappears after successful provisioning.
 
-First start seals bootstrap intent before publishing Group 0 and publishes the
-complete marker only after the access endpoint is ready. Interrupted launch
-steps replay from retained process and seed inputs; committed Group 0 content
-is verified before a missing step is retried. A non-empty foreign directory is
-rejected. Local state cannot reconstruct topology during a Group 0 outage.
+`status` reports running containers and endpoints. `stop` stops all members and
+preserves containers, network and data. `restart` starts those same containers
+with fixed addresses and retained data. `delete` validates ownership, stops and
+removes members and their network, then removes the owned data root. Unknown
+files and resources are preserved. Host data clients use the persisted Web S3
+proxy endpoint, whose server-held credentials authenticate requests to Access.
+S3 errors are preserved without falling back to another mutation.
 
-The mini topology is intentionally loopback and places its simulated nodes in
-one rack, so ChunkDB explicitly permits colocated fragments. This is not the
-production capacity contract: a production planner must reject a requested
-copy or EC scheme unless distinct healthy failure domains satisfy it.
-
-The local access-server binds only to `127.0.0.1` and explicitly enables its
-trusted-network authentication mode. This keeps the local CRUD path small: the
-shared `ops::s3` client sends ordinary S3 HTTP operations directly and returns
-structured exchange metadata; the CLI renders the console transcript and
-streams the result. It is not a production authentication mode and must never
-be used for a non-loopback listener. Bucket and object
-commands take the same `--root`, discover the persisted endpoint, preserve
-S3 errors, and do not fall back to another mutation.
-
-The durable local record holds only versioned launch inputs, process
-identities, bootstrap seeds, the storage profile, loopback endpoint and
-nonsecret tenant name. It does not contain rack, node or logical topology. The
-access master key is injected into a child only while it starts.
+The versioned owner record contains cluster/container identity, image, network,
+resource limits, DiskDB heartbeat cadence, fixed addresses and provisioning phase. Client records contain
+endpoints and Group-0 seeds, without rack, node or logical topology. Cluster
+credentials remain in the normal private node credential directories.
 
 `crowdb-cli bench s3` owns a separate, invocation-scoped memory profile. KV and
 WAL blocks use memory backing, DiskIO uses memory disks, and chunk-KV keeps its
@@ -616,8 +643,9 @@ throughput.
 
 The following invariants apply:
 
-- **S3-C1 — Recovery boundary:** only a complete marker identifies a
-  restartable file-backed cluster, and stop never removes its stored data.
+- **S3-C1 — Recovery boundary:** a validated owner record identifies a resumable
+  container cluster; the ready phase marks completed provisioning. Stop never
+  removes its stored data.
 - **S3-C2 — Real request path:** every benchmark operation traverses the normal
   S3 endpoint and validates the response property relevant to its workload.
 - **S3-C3 — Bounded execution:** duration, operation count, concurrency, and
@@ -660,8 +688,9 @@ The following invariants apply:
 CLI and bare-metal Web use the shared Group 0 hardware operations. Rack,
 node, disk-group and disk changes update parent and child records in one
 conditional batch where membership changes. Matching retries are confirmed;
-conflicting concurrent writes preserve the existing record. Docker Web does
-not expose hardware or process mutations.
+conflicting concurrent writes preserve the existing record. Automatic single-node Docker Web does
+not expose hardware or process mutations. Manual Docker nodes use the same
+shared hardware operations after confirmed Group 0 publication.
 
 ## 11. Cluster teardown and verification
 
@@ -675,3 +704,13 @@ There is no orphan-guessing reset command. A stopped or unreachable node does
 not imply its membership should be deleted. `cluster clean` derives its
 replica targets from Group 0, wipes each live target, and waits for a new
 leader while preserving topology.
+
+Manual node discovery and bootstrap follow the
+[deployment architecture](../deploy/design-crowdb-deploy.md). The Cluster sidebar
+retains a separate candidate list and explicit draft, fixed bootstrap, publication,
+active, stale authority and cleanup states. Each UI reads its local monitor's
+observations and the shared Group 0 registry. Discovery filtering selects another
+cluster for inspection without merging its membership. Authenticated node updates
+retain UUID/numeric allocations and physical failure domains. Loss of Group 0
+blocks management; existing data groups use their own Paxos authority and confirmed
+endpoint hints for data operations.

@@ -100,6 +100,7 @@ fn zone_allocation_state_from_u8_unknown_defaults_to_full() {
 
 fn sample_zone_value() -> ZoneValue {
     ZoneValue {
+        bitmap_codec: 1,
         usage_bitmap: vec![0xFF; 16],
         snapshot_slot: 42,
         crc32: 0,
@@ -133,6 +134,7 @@ fn zone_value_empty_bitmap_baseline_is_valid() {
     // snapshot_slot = 0, compact_slot = 0. CRC covers usage_bitmap +
     // compact_slot; both empty/zero.
     let mut val = ZoneValue {
+        bitmap_codec: 1,
         usage_bitmap: vec![],
         snapshot_slot: 0,
         crc32: 0,
@@ -241,4 +243,29 @@ fn bitmap_cas_bit_cross_word_boundary() {
     assert!(bm.cas_bit(64, true));
     assert_ne!(bm.load_word(0) & (1u64 << 63), 0);
     assert_ne!(bm.load_word(1) & 1, 0);
+}
+
+#[test]
+fn compressed_zone_roundtrip_rejects_damage_and_oversized_decode() {
+    let mut value = sample_zone_value();
+    value.compress_bitmap();
+    value.compute_checksum();
+    assert!(value.verify_checksum());
+    assert_eq!(value.bitmap_bytes(128).unwrap(), vec![0xff; 16]);
+    assert_eq!(ZoneValue::from_bytes(&value.to_bytes()).unwrap(), value);
+    assert!(value.bitmap_bytes(64).is_err());
+    value.usage_bitmap[4] ^= 0xff;
+    assert!(!value.verify_checksum());
+    value.compute_checksum();
+    assert!(value.bitmap_bytes(128).is_err());
+}
+
+#[test]
+fn unsupported_zone_record_is_rejected() {
+    let mut value = sample_zone_value();
+    value.compress_bitmap();
+    value.compute_checksum();
+    assert!(ZoneValue::from_bytes(&bincode::serialize(&value).unwrap()).is_err());
+    value.bitmap_codec = 2;
+    assert!(ZoneValue::from_bytes(&value.to_bytes()).is_err());
 }

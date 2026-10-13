@@ -6,14 +6,17 @@
 use crowdb_access_s3::delete::{DeleteSelection, MAX_DELETE_BODY};
 use crowdb_access_s3::error::S3ErrorCode;
 use crowdb_access_s3::{object, route::S3Route, wire};
+use futures::{stream, StreamExt};
 use http_body_util::BodyExt as _;
+use http_body_util::StreamBody;
 use hyper::{
-    body::{Bytes, Incoming},
-    Request, Response,
+    body::{Bytes, Frame, Incoming},
+    header::CONTENT_TYPE,
+    Request, Response, StatusCode,
 };
 
 use super::{
-    map_object_error, required_bucket, strict_header, xml_response, ProductionS3Operations, ResponseBody,
+    map_object_error, required_bucket, strict_header, BoxError, ProductionS3Operations, ResponseBody,
 };
 
 impl ProductionS3Operations {
@@ -55,14 +58,42 @@ impl ProductionS3Operations {
         let bytes = Bytes::from(bytes);
         crowdb_access_s3::delete::validate_integrity(&headers, &bytes)?;
         let selection = DeleteSelection::parse(&bytes)?;
-        // Sequential work bounds concurrency and preserves duplicate-key order.
-        let results = selection
-            .execute(|key| async move {
-                object::delete(&self.storage.metadata, &self.config.tenant, bucket, &key)
+        let metadata = self.storage.metadata.clone();
+        let tenant = self.config.tenant.clone();
+        let quiet = selection.quiet;
+        let results = selection.stream(move |key| {
+            let metadata = metadata.clone();
+            let tenant = tenant.clone();
+            async move {
+                object::delete(&metadata, &tenant, bucket, &key)
                     .await
                     .map_err(|error| map_object_error(&error))
-            })
-            .await?;
-        xml_response(wire::delete_objects(&results, selection.quiet))
+            }
+        })?;
+        // Send progress while preserving one ordered mutation at a time.
+        // Quiet successes emit XML whitespace so idle-read deadlines still see progress.
+        let results = results.map(move |(key, result)| {
+            let xml = wire::delete_object_result(&key, &result, quiet);
+            let bytes = if xml.is_empty() {
+                Bytes::from_static(b"\n")
+            } else {
+                Bytes::from(xml)
+            };
+            Ok::<_, BoxError>(Frame::data(bytes))
+        });
+        let frames = stream::once(std::future::ready(Ok::<_, BoxError>(Frame::data(Bytes::from(
+            wire::delete_objects_start(),
+        )))))
+        .chain(results)
+        .chain(stream::once(std::future::ready(Ok::<_, BoxError>(Frame::data(
+            Bytes::from_static(b"</DeleteResult>"),
+        )))));
+        Response::builder()
+            .status(StatusCode::OK)
+            .header(CONTENT_TYPE, "application/xml")
+            .body(http_body_util::BodyExt::boxed(StreamBody::new(
+                sync_wrapper::SyncStream::new(frames),
+            )))
+            .map_err(|_| S3ErrorCode::InternalError)
     }
 }

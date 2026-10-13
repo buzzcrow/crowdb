@@ -11,7 +11,7 @@ Client recipes: [container development](../../../container/single-node-container
 - The [manual ecosystem fixture](../../../container/single-node-container/tests/ecosystem/README.md)
   uses a separate locked environment and workflow dispatch. Its matrix records
   only actual pinned client operations against the container and a volume restart.
-- [S3 language SDKs](common/s3_sdks/README.md) and the Rust Iceberg SDK retain
+- [S3 language SDKs](../../../e2e-test/clients/S3-SDK.md) and the Rust Iceberg SDK retain
   independent manual workflows. They are not default test dependencies.
 - Selected ORC and optional caches remain independent backlog ownership under
   [ORC validation](../../../doc/backlog/R186-access-iceberg-orc-validation.md)
@@ -75,10 +75,12 @@ Client recipes: [container development](../../../container/single-node-container
   Set `CROWDB_ICEBERG_E2E_PYTHON=$PWD/.pixi/envs/iceberg-e2e/bin/python` and the
   Java environment below. The pinned PyIceberg method requests complete lists;
   Java RESTCatalog implements token continuation. Neither client is patched.
-- Native namespace: `pixi run -- cargo test -p crowdb-access-server --features iceberg-e2e --test iceberg_full_stack_test -- --nocapture`.
-  Use the same Python variable and an isolated cleaned runtime root as below.
-- Native SDK: `pixi run -- cargo test -p crowdb-access-server --features iceberg-e2e --test iceberg_file_http_test official_java_ -- --ignored --nocapture --test-threads=1`.
-- Native FileIO faults/lifecycle: `pixi run -- cargo test -p crowdb-access-server --features iceberg-e2e --test iceberg_file_http_test native_file_ -- --ignored --nocapture --test-threads=1`.
+- Native storage namespace: `pixi run test-container-e2e --scope iceberg.namespace --cpus 16 --memory-mib 16384`.
+- Native SDK: `pixi run test-container-e2e --scope iceberg.sdk.java --cpus 16 --memory-mib 16384`.
+- Native FileIO faults/lifecycle: `pixi run test-container-e2e --scope iceberg.files --cpus 16 --memory-mib 16384`.
+- Keep component crash-cut matrices: `pixi run cargo test -p crowdb-access-server --test iceberg_commit_recovery_test --test iceberg_file_recovery_test`.
+- Manual concurrent SF1 loaders use the [locked host TPC client](../../../e2e-test/clients/tpc-loader/README.md)
+  and explicit `iceberg.manual.tpc` scope. They are excluded from ordinary CI.
 - For Java tests, use default Pixi for Cargo; set
   `JAVA_HOME=$PWD/.pixi/envs/iceberg-e2e/lib/jvm` and
   `CROWDB_ICEBERG_E2E_MVN=$PWD/.pixi/envs/iceberg-e2e/bin/mvn`.

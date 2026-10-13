@@ -6,7 +6,7 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::cluster::KvCluster;
+use common::metadata::TestMetadata;
 use crowdb_diskdb::ddb_config::KeepAliveConfig;
 use crowdb_diskdb::liveness::keepalive::KeepAlive;
 use crowdb_diskdb::model::disk_group_container::DdbDiskGroupContainer;
@@ -18,7 +18,7 @@ const INSTANCE_ID: u64 = 999;
 
 #[tokio::test]
 async fn owner_without_bind_does_not_publish_disk_group() {
-    let cluster = KvCluster::start().await;
+    let cluster = TestMetadata::start().await;
     let hardware = cluster.make_hardware_client();
     hardware
         .set_owner(RACK_ID, NODE_ID, DG_ID, INSTANCE_ID, u64::MAX)

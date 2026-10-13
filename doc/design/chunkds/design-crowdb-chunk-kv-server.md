@@ -187,6 +187,11 @@ epoch or a process-local dispatcher cannot substitute for this status.
   entries. This head is the external split commit point. On an ambiguous result,
   reread the authoritative head and accept only the exact intended successors;
   an unrelated newer generation is not proof that this split committed.
+  Materialization may remove overlays and transition markers before the separate
+  `CatalogCommitted` status write. Recovery also accepts these materialized
+  successors only when partition, range, owner, epoch, tree and stream identities
+  still match exactly; it preserves the newer head instead of restoring overlays.
+  A transition marker on another assignment remains an identity conflict.
 - **S5 — Reconcile:** persist `CatalogCommitted` after proving publication.
   Install the matching catalog and grants; preserve old-route dispatch without
   allowing a retired writer to append. Restart must use the published assignment
@@ -424,12 +429,18 @@ failure. The live-source phases and actions are:
 6. `TargetReady`: group 0 replaces the catching-up entry with `Serving` in a
    second generation. Only a heartbeat advertising the exact prepared target
    allows a matching serving grant. The transition then becomes
-   `CatalogCommitted`.
+   `CatalogCommitted`. If materialization advances the catalog before this
+   separate status write, recovery proves the same target range, owner, epoch,
+   tree and stream, preserves the newer head and finishes the status write.
 
 An owner-loss transfer created after lease exclusion may adopt the original
 tree and stream under the higher epoch instead of constructing a live overlay.
 This path is valid only after old lease expiry plus skew; writer-epoch adoption
-then fences any lower-epoch stream handle.
+then fences any lower-epoch stream handle. Its `TargetReady` proof publishes
+directly from the exact source Serving assignment; no catching-up generation
+is required. A retained marker from a previous completed split does not block
+this publication when the source has no inherited overlay. A conflicting
+range, owner, epoch, artifact or reused operation identity still fails closed.
 
 Recovery uses persisted evidence only. Before source release, a target failure
 leaves the source serving and target preparation is repeatable. After release,

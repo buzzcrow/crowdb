@@ -397,6 +397,13 @@ impl Connection {
         unsafe { sys::crowdb_rpc_conn_is_open(self.inner.handle) != 0 }
     }
 
+    /// Whether TCP was refused before the peer accepted this connection.
+    /// Established connection loss and timeouts do not prove an unsent request.
+    #[must_use]
+    pub fn connect_refused(&self) -> bool {
+        unsafe { sys::crowdb_rpc_conn_connect_refused(self.inner.handle) != 0 }
+    }
+
     /// Close the underlying transport connection.
     ///
     /// Existing wrappers remain valid handles but subsequent sends fail.

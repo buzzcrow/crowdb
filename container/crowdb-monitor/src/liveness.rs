@@ -1,6 +1,8 @@
 use std::fs;
 use std::io;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, PermissionsExt};
+use std::os::unix::net::UnixStream as BlockingUnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -43,8 +45,20 @@ impl LivenessServer {
             Err(error) => return Err(error.into()),
         }
         let path = directory.join(SOCKET);
-        if fs::symlink_metadata(&path).is_ok() {
-            return Err(LivenessError::Invalid);
+        if let Ok(metadata) = fs::symlink_metadata(&path) {
+            if !metadata.file_type().is_socket() {
+                return Err(LivenessError::Invalid);
+            }
+            match BlockingUnixStream::connect(&path) {
+                Ok(_) => return Err(LivenessError::Invalid),
+                Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {}
+                Err(error) => return Err(error.into()),
+            }
+            let current = fs::symlink_metadata(&path)?;
+            if current.ino() != metadata.ino() || current.dev() != metadata.dev() {
+                return Err(LivenessError::Invalid);
+            }
+            fs::remove_file(&path)?;
         }
         let listener = UnixListener::bind(&path)?;
         let task = tokio::spawn(async move {

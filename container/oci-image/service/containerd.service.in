@@ -1,0 +1,21 @@
+# Copyright 2026-present Gian <crow.db@outlook.com>
+# Licensed under the Apache License, Version 2.0.
+# Install after replacing @RUNTIME_PREFIX@ with an administrator-owned,
+# versioned Pixi runtime environment. Upgrade by selecting a new prefix.
+[Unit]
+Description=CROWDB dedicated containerd
+After=network.target
+
+[Service]
+Type=notify
+Environment=PATH=@RUNTIME_PREFIX@/bin:/usr/bin:/bin
+ExecStart=@RUNTIME_PREFIX@/bin/containerd --config /etc/crowdb-containerd.toml
+Restart=always
+RestartSec=5
+Delegate=yes
+KillMode=process
+TasksMax=infinity
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target

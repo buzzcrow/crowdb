@@ -20,6 +20,7 @@ use crowdb_protocol::{DiskGroupId, ZoneValueExt};
 
 use crate::ddb_kv_client::{Bind, DdbKvClient};
 use crate::model::zone::{DdbZone, DdbZoneHealth};
+use crate::model::zone_bitmap::ZoneBitmap;
 use crate::recovery::ZoneLoadError;
 
 /// Inner zone load — strategy 2 (journal scan replay).
@@ -45,7 +46,7 @@ pub async fn load_zone_inner(
             Some(zv) if zv.verify_checksum() => {
                 // Valid snapshot — restore bitmap + snapshot_slot + compact_ts.
                 let bits =
-                    crowdb_protocol::UsageBitmap::restore_for_block_count(&zv.usage_bitmap, unit_capacity);
+                    ZoneBitmap::from_value(zv, unit_capacity).map_err(|_| ZoneLoadError::SnapshotCrcFail)?;
                 (bits, zv.snapshot_slot, zv.compact_ts, zv.compact_slot, true)
             }
             Some(_zv) => {
@@ -54,7 +55,7 @@ pub async fn load_zone_inner(
             }
             None => {
                 // No snapshot — empty bitmap, replay from slot 0.
-                (crowdb_protocol::UsageBitmap::new(unit_capacity), 0, 0, 0, false)
+                (ZoneBitmap::new(unit_capacity), 0, 0, 0, false)
             }
         };
 

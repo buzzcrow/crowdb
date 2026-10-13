@@ -41,7 +41,7 @@ fn prospective_compaction_snapshot_does_not_publish_live_state() {
     assert_eq!(prospective.snapshot_slot, 12);
     assert_eq!(prospective.compact_slot, 12);
     assert_eq!(prospective.compact_ts, 30);
-    assert_eq!(prospective.usage_bitmap, vec![0; 8]);
+    assert_eq!(prospective.bitmap_bytes(64).unwrap(), vec![0; 8]);
     assert_eq!(zone.used_count.load(Ordering::Acquire), 4);
     assert_eq!(zone.snapshot_slot.load(Ordering::Acquire), 11);
     assert_eq!(zone.compact_slot.load(Ordering::Acquire), 11);

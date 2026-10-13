@@ -4,6 +4,10 @@
 //! Data-group fencing for `DiskGroup` management handovers.
 
 use crowdb_kv_client::{BatchOp, Error, GetOutcome, ReadMode, Result};
+use crowdb_protocol::{
+    common::{DiskId, HwStatus, OwnerMapValue},
+    key::{DiskKey, OwnerMapKey, TextKey},
+};
 use serde::{Deserialize, Serialize};
 
 use super::{Bind, DdbKvClient};
@@ -32,6 +36,84 @@ fn fenced() -> Error {
 }
 
 impl DdbKvClient {
+    /// Publish a failed disk load only while its captured owner still holds
+    /// the exact Group-0 generation. Advancing that generation atomically
+    /// fences concurrent handover and makes the next observation reclaim it.
+    pub async fn mark_disk_offline_if_owned(
+        &self,
+        group: &crate::model::disk_group::DdbDiskGroup,
+        disk: &DiskId,
+    ) -> Result<()> {
+        let hardware = crowdb_kv_client::HardwareClient::from_shared(self.kv.clone());
+        let Some(fence) = &self.fence else {
+            if self.require_fence {
+                return Err(fenced());
+            }
+            return hardware
+                .set_disk_status(
+                    group.rack_id,
+                    group.node_id,
+                    group.disk_group_id,
+                    disk,
+                    HwStatus::Offline,
+                )
+                .await;
+        };
+        let owner_key = OwnerMapKey {
+            rack_id: fence.rack_id,
+            node_id: fence.node_id,
+            disk_group_id: fence.disk_group_id,
+        }
+        .to_path();
+        let GetOutcome::Found {
+            value: owner,
+            revision,
+        } = self
+            .kv
+            .get(0, 0, owner_key.as_bytes(), ReadMode::Linearizable, None)
+            .await?
+        else {
+            return Err(fenced());
+        };
+        let current: OwnerMapValue =
+            serde_json::from_slice(&owner).map_err(|error| Error::Server(error.to_string()))?;
+        if current.instance_id != fence.instance_id || revision != fence.generation {
+            return Err(fenced());
+        }
+        let disk_key = DiskKey {
+            rack_id: fence.rack_id,
+            node_id: fence.node_id,
+            disk_group_id: fence.disk_group_id,
+            disk_id: *disk,
+        }
+        .to_path();
+        let mut value = hardware
+            .get_disk(fence.rack_id, fence.node_id, fence.disk_group_id, disk)
+            .await?
+            .ok_or_else(fenced)?;
+        value.status = HwStatus::Offline as i32;
+        let value = serde_json::to_vec(&value).map_err(|error| Error::Server(error.to_string()))?;
+        self.kv
+            .batch_write_cas(
+                0,
+                0,
+                &[
+                    BatchOp::Put {
+                        key: owner_key.as_bytes().to_vec().into(),
+                        value: owner,
+                    },
+                    BatchOp::Put {
+                        key: disk_key.into_bytes().into(),
+                        value: value.into(),
+                    },
+                ],
+                owner_key.as_bytes(),
+                revision,
+            )
+            .await
+            .map(|_| ())
+    }
+
     pub fn ownership_fence(&self) -> Option<std::sync::Arc<OwnershipFence>> {
         self.fence.clone()
     }

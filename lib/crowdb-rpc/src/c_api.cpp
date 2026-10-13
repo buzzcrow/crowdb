@@ -811,6 +811,16 @@ int crowdb_rpc_conn_is_open(crowdb_rpc_conn_t conn)
     }
 }
 
+int crowdb_rpc_conn_connect_refused(crowdb_rpc_conn_t conn)
+{
+    try {
+        return conn != nullptr && conn->conn != nullptr && conn->conn->connect_refused() ? 1 : 0;
+    }
+    catch (...) {
+        return 0;
+    }
+}
+
 void crowdb_rpc_conn_close(crowdb_rpc_conn_t conn)
 {
     try {

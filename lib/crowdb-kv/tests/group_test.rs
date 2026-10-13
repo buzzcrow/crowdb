@@ -56,6 +56,9 @@ mod kv_forward;
 #[path = "group_test/election_test.rs"]
 mod election;
 
+#[path = "group_test/learner_heartbeat_test.rs"]
+mod learner_heartbeat;
+
 #[path = "group_test/remote_error_test.rs"]
 mod remote_error;
 

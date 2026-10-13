@@ -109,6 +109,60 @@ fn configured(origin: &str) -> axum::Router {
 }
 
 #[tokio::test]
+async fn remote_deployment_resolves_persisted_origins_without_local_launches() {
+    let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("remote-access-origin");
+    let credentials = crowdb_monitor::ServerCredentials::load_or_create(root.path()).unwrap();
+    credentials
+        .persist_client(&crowdb_monitor::ClientCredentials {
+            s3_endpoint: "http://192.0.2.10:9001".into(),
+            iceberg_endpoint: "http://192.0.2.10:9000".into(),
+            region: "us-east-1".into(),
+            access_key_id: "test-client".into(),
+            secret_access_key: "private-test-secret".into(),
+        })
+        .unwrap();
+    let mut config = ConsoleConfig::default();
+    let mut entry = ServerEntry::new("access-server-1", "http://192.0.2.10:9000");
+    entry.service_type = ServiceType::AccessServer;
+    entry.node_id = Some(1);
+    config.servers.push(entry);
+    assert!(config.local_launches.is_empty());
+    let state = AppState::with_runtime_root(config, root.path().to_owned());
+    let app = router(state.clone());
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/access/connections")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+    let metadata: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(metadata["s3"], "http://192.0.2.10:9001");
+    assert_eq!(metadata["iceberg"], "http://192.0.2.10:9000");
+    assert_eq!(metadata["iceberg_ready"], true);
+    assert!(!String::from_utf8_lossy(&bytes).contains("private-test-secret"));
+    state.config.write().unwrap().servers.clear();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/access/connections")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+    let metadata: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(metadata["s3"].is_null());
+    assert!(metadata["iceberg"].is_null());
+}
+
+#[tokio::test]
 async fn root_catalog_uses_server_held_read_and_write_credentials() {
     let upstream = axum::Router::new().route(
         "/*path",

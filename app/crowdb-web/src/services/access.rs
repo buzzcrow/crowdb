@@ -11,11 +11,33 @@ pub(crate) fn origin(state: &AppState, protocol: &str) -> Option<String> {
         _ => return None,
     };
     let config = state.config.read().unwrap();
-    config
+    let local = config
         .servers
         .iter()
         .filter(|service| service.service_type == ServiceType::AccessServer)
-        .find_map(|service| config.local_launches.get(&service.id)?.env.get(name).cloned())
+        .find_map(|service| config.local_launches.get(&service.id)?.env.get(name).cloned());
+    if local.is_some() {
+        return local;
+    }
+    // Remote node launches have no local process specification. Their normal
+    // provisioning persists the client origins alongside cluster credentials.
+    if !config
+        .servers
+        .iter()
+        .any(|service| service.service_type == ServiceType::AccessServer && service.node_id.is_some())
+    {
+        return None;
+    }
+    drop(config);
+    let key = if protocol == "s3" {
+        "AWS_ENDPOINT_URL="
+    } else {
+        "ICEBERG_URI="
+    };
+    crowdb_monitor::show_client_credentials(state.runtime_root.as_ref())
+        .ok()?
+        .lines()
+        .find_map(|line| line.strip_prefix(key).map(str::to_owned))
 }
 
 pub(crate) fn reader(state: &AppState, target: Option<&str>) -> Result<Option<String>, String> {

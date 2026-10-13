@@ -23,9 +23,47 @@ use crate::ops::OpContext;
 
 mod group_wiring;
 mod publication;
+mod replica_join;
 mod replica_rollback;
 
 use replica_rollback::ReplicaRollback;
+
+#[cfg(feature = "test-util")]
+/// Exercise interrupted local-group creation against a management endpoint.
+///
+/// # Errors
+/// Returns replica identity conflicts, transport errors, or invalid responses.
+pub async fn create_local_group_for_tests(
+    endpoint: &str,
+    store_id: u64,
+    request: &AddGroupRequest,
+) -> Result<bool> {
+    group_wiring::create_local(&ServerClient::new(endpoint)?, store_id, request).await
+}
+
+/// Exercise exact initial-membership replay against Group 0.
+///
+/// # Errors
+/// Returns conflicts for other members or epochs and propagates storage errors.
+#[cfg(feature = "test-util")]
+pub async fn initial_membership_for_tests(
+    authority: &crowdb_kv_client::GroupMembershipClient,
+    members: Vec<GroupMember>,
+) -> Result<crowdb_kv_client::GroupMembershipSnapshot> {
+    publication::initial_membership(authority, 0, 1, members).await
+}
+
+/// Complete an exact initial-membership replay.
+///
+/// # Errors
+/// Returns conflicts for superseded membership and propagates storage errors.
+#[cfg(feature = "test-util")]
+pub async fn complete_initial_membership_for_tests(
+    authority: &crowdb_kv_client::GroupMembershipClient,
+    snapshot: &crowdb_kv_client::GroupMembershipSnapshot,
+) -> Result<()> {
+    publication::complete_initial(authority, snapshot).await
+}
 
 /// Build a client from a node's live management registration.
 async fn server_client(ctx: &OpContext, node_id: u64) -> Result<ServerClient> {
@@ -53,23 +91,11 @@ async fn rpc_endpoint_for_store(ctx: &OpContext, node_id: u64, store_id: u64) ->
     for s in &stores {
         if s.store_id == store_id {
             if let Some(addr) = &s.listen_addr {
-                return Some(strip_scheme(&remap_zero_host(addr)));
+                return client.resolve_rpc_endpoint(addr).ok();
             }
         }
     }
     None
-}
-
-fn strip_scheme(s: &str) -> String {
-    s.strip_prefix("http://")
-        .or_else(|| s.strip_prefix("https://"))
-        .unwrap_or(s)
-        .to_string()
-}
-
-fn remap_zero_host(addr: &str) -> String {
-    addr.strip_prefix("0.0.0.0:")
-        .map_or_else(|| addr.to_string(), |port| format!("127.0.0.1:{port}"))
 }
 
 // ── store ───────────────────────────────────────────────────────
@@ -272,7 +298,7 @@ pub async fn add_group(
     }
 
     // Phase 1: create the group on each node concurrently.
-    let results: Vec<Result<(u64, u64)>> =
+    let results: Vec<Result<(u64, u64, bool)>> =
         futures::future::join_all(nodes.iter().enumerate().map(|(i, nid)| {
             let nid = *nid;
             let rid = replica_id + i as u64;
@@ -289,10 +315,9 @@ pub async fn add_group(
                     }),
                     start_election: Some(single),
                 };
-                client
-                    .add_group(store_id, &req)
+                group_wiring::create_local(&client, store_id, &req)
                     .await
-                    .map(|()| (nid, rid))
+                    .map(|created| (nid, rid, created))
                     .map_err(|e| Error::UpstreamRpc {
                         node_id: nid.to_string(),
                         status: format!("group create failed: {e}"),
@@ -302,10 +327,16 @@ pub async fn add_group(
         .await;
 
     let mut succeeded: Vec<(u64, u64)> = Vec::new();
+    let mut created: Vec<(u64, u64)> = Vec::new();
     let mut first_err: Option<Error> = None;
     for res in results {
         match res {
-            Ok(entry) => succeeded.push(entry),
+            Ok((node, replica, fresh)) => {
+                succeeded.push((node, replica));
+                if fresh {
+                    created.push((node, replica));
+                }
+            }
             Err(e) => {
                 if first_err.is_none() {
                     first_err = Some(e);
@@ -314,12 +345,12 @@ pub async fn add_group(
         }
     }
     if let Some(e) = first_err {
-        return Err(group_wiring::rollback(ctx, store_id, group_id, &succeeded, e).await);
+        return Err(group_wiring::rollback(ctx, store_id, group_id, &created, e).await);
     }
 
     // Every peer must be wired before membership becomes authoritative.
     if let Err(error) = group_wiring::wire(ctx, store_id, group_id, &succeeded).await {
-        return Err(group_wiring::rollback(ctx, store_id, group_id, &succeeded, error).await);
+        return Err(group_wiring::rollback(ctx, store_id, group_id, &created, error).await);
     }
 
     // Record in group-0 sysdata. The sysdata write must
@@ -388,6 +419,44 @@ pub async fn list_groups(ctx: &OpContext, store_id: u64) -> Result<Vec<crowdb_pr
 }
 
 // ── replica ─────────────────────────────────────────────────────
+
+/// Refresh transport addresses without changing replica IDs or voting flags.
+///
+/// # Errors
+/// Fails when current membership or a peer endpoint is unavailable.
+pub async fn refresh_node_endpoints(ctx: &OpContext, node_id: u64) -> Result<()> {
+    let groups: std::collections::BTreeSet<_> = ctx
+        .sysmd()
+        .list_all_replicas()
+        .await?
+        .into_iter()
+        .filter(|replica| replica.node_id == node_id)
+        .map(|replica| (replica.store_id, replica.group_id))
+        .collect();
+    for (sid, gid) in groups {
+        let replicas = ctx.sysmd().list_replicas_in_group(sid, gid).await?;
+        let members: Vec<_> = replicas
+            .iter()
+            .map(|replica| (replica.node_id, replica.replica_id))
+            .collect();
+        let resolved = group_wiring::resolve(ctx, sid, &members).await?;
+        for (index, (client, _)) in resolved.iter().enumerate() {
+            let remotes: Vec<_> = replicas
+                .iter()
+                .zip(&resolved)
+                .enumerate()
+                .filter(|(peer, _)| *peer != index)
+                .map(|(_, (replica, (_, endpoint)))| RemoteReplicaInfo {
+                    replica_id: replica.replica_id,
+                    endpoint: endpoint.clone(),
+                    voting: replica.voting,
+                })
+                .collect();
+            client.add_remote_replicas(sid, gid, &remotes).await?;
+        }
+    }
+    Ok(())
+}
 
 async fn ensure_replica_store(ctx: &OpContext, store_id: u64, node_id: u64) -> Result<(ServerClient, bool)> {
     let client = server_client(ctx, node_id).await?;
@@ -477,8 +546,14 @@ pub async fn add_replica(
     // Resolve every existing peer before changing the target's local state.
     let members: Vec<_> = existing.iter().map(|r| (r.node_id, r.replica_id)).collect();
     let peers = group_wiring::resolve(ctx, store_id, &members).await?;
+    let source = replica_join::source(&peers, store_id, group_id).await?;
 
-    let (client, created_store_on_target) = ensure_replica_store(ctx, store_id, node_id).await?;
+    let system_join = store_id == 0 && group_id == 0;
+    let (client, created_store_on_target) = if system_join {
+        (server_client(ctx, node_id).await?, false)
+    } else {
+        ensure_replica_store(ctx, store_id, node_id).await?
+    };
 
     let mut rollback = ReplicaRollback {
         ctx,
@@ -489,13 +564,16 @@ pub async fn add_replica(
         remove_store: created_store_on_target,
         wired_peers: Vec::new(),
     };
-    let req = AddGroupRequest {
-        group_id,
+    let req = crowdb_protocol::mgmt::JoinGroupRequest {
         replica_id: new_rid,
-        initial_role: Some(AddGroupInitialRole::Follower),
-        start_election: Some(false),
+        peer_endpoint: source,
+        bootstrap: if system_join {
+            replica_join::bootstrap(ctx).await?
+        } else {
+            None
+        },
     };
-    if let Err(error) = client.add_group(store_id, &req).await {
+    if let Err(error) = client.join_group(store_id, group_id, &req).await {
         let original = Error::UpstreamRpc {
             node_id: node_id.to_string(),
             status: format!("create local group: {error}"),
@@ -521,7 +599,7 @@ pub async fn add_replica(
     let new_remote = RemoteReplicaInfo {
         replica_id: new_rid,
         endpoint: new_endpoint,
-        voting: true,
+        voting: false,
     };
     let mut requested_members = existing
         .iter()
@@ -536,7 +614,9 @@ pub async fn add_replica(
         replica_id: new_rid,
         node_id,
         endpoint: new_remote.endpoint.clone(),
-        voting: new_remote.voting,
+        // Installing describes the completed target membership. Physical
+        // wiring remains non-voting until catch-up and promotion below.
+        voting: true,
     });
     let installing = begin_membership_change(ctx, store_id, group_id, &existing, requested_members).await?;
     let expected_epoch = installing.record().epoch;
@@ -544,12 +624,9 @@ pub async fn add_replica(
         // A lost response may still have applied the remote on this peer.
         rollback.wired_peers.push(existing_replica.node_id);
         if let Err(e) = peer_client
-            .add_remote_replicas_at_epoch(
-                store_id,
-                group_id,
-                std::slice::from_ref(&new_remote),
-                expected_epoch,
-            )
+            // A learner does not change quorum. Keep the current physical
+            // epoch until the caught-up member is promoted to the successor.
+            .add_remote_replicas(store_id, group_id, std::slice::from_ref(&new_remote))
             .await
         {
             return Err(rollback
@@ -585,7 +662,13 @@ pub async fn add_replica(
         }
     }
 
-    // Record only after every existing peer and the new replica are wired.
+    if let Err(error) = replica_join::catch_up(&client, &peers, store_id, group_id).await {
+        return Err(rollback.fail(error).await);
+    }
+    // Once promotion starts, a lost response may already have changed quorum.
+    // Preserve the caught-up replica and retry; deleting it would break voters.
+    replica_join::promote(&peers, store_id, group_id, &new_remote, expected_epoch).await?;
+    // Record only after snapshot/WAL catch-up and voting promotion.
     record_replica(ctx, store_id, group_id, new_rid, node_id).await?;
     ctx.membership()
         .complete(&installing)

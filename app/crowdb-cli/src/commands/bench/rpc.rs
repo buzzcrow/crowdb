@@ -139,7 +139,12 @@ pub async fn run(cli: &Cli, args: RpcArgs) -> ExitCode {
     let json = serde_json::to_value(&result).unwrap_or_default();
     tracing::info!(report = %json, "bench_report");
     println!("{result}");
-    ExitCode::SUCCESS
+    if result.total_ops > 0 && result.total_errors == 0 {
+        ExitCode::SUCCESS
+    } else {
+        eprintln!("error: RPC benchmark did not complete an error-free workload");
+        ExitCode::FAILURE
+    }
 }
 
 /// Build a `ConnectionPingRequest` control flatbuffer with `id=request_id`.

@@ -10,6 +10,16 @@ use crate::{error::err_502, services::Failure};
 
 /// Provision before Access starts so its initial credential snapshot includes Console.
 pub(super) async fn prepare(root: &Path, spec: &LocalLaunchSpec, seeds: &[String]) -> Result<(), Failure> {
+    let s3_endpoint = spec
+        .env
+        .get("CROWDB_S3_PUBLIC_URI")
+        .ok_or_else(|| err_502("Console S3 public endpoint is missing"))?
+        .clone();
+    let iceberg_endpoint = spec
+        .env
+        .get("CROWDB_ICEBERG_PUBLIC_URI")
+        .ok_or_else(|| err_502("Console Iceberg public endpoint is missing"))?
+        .clone();
     let server =
         ServerCredentials::load_existing(root).map_err(|_| err_502("Cluster credentials are unavailable"))?;
     crowdb_monitor::IcebergBootstrap::ensure_console_catalog(
@@ -59,8 +69,8 @@ pub(super) async fn prepare(root: &Path, spec: &LocalLaunchSpec, seeds: &[String
     };
     server
         .persist_client(&ClientCredentials {
-            s3_endpoint: spec.env["CROWDB_S3_PUBLIC_URI"].clone(),
-            iceberg_endpoint: spec.env["CROWDB_ICEBERG_PUBLIC_URI"].clone(),
+            s3_endpoint,
+            iceberg_endpoint,
             region: "us-east-1".into(),
             access_key_id: get("AWS_ACCESS_KEY_ID=")?,
             secret_access_key: get("AWS_SECRET_ACCESS_KEY=")?,

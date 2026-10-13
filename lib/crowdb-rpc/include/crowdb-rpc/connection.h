@@ -5,6 +5,7 @@
 
 #include "crowdb-common/mpsc_queue.h"
 #include "crowdb-rpc/buffer.h"
+#include "crowdb-rpc/connection_callback.h"
 #include "crowdb-rpc/framing.h"
 #include "crowdb-rpc/transport.h"
 
@@ -62,6 +63,23 @@ class Connection : public std::enable_shared_from_this<Connection>
         return open_.load(std::memory_order_relaxed);
     }
 
+    // Exactly one worker owns descriptor teardown, including duplicate events.
+    bool claim_socket_cleanup()
+    {
+        return !socket_cleanup_claimed_.exchange(true, std::memory_order_acq_rel);
+    }
+
+    // TCP ECONNREFUSED proves the peer never accepted this connection.
+    void mark_connect_refused()
+    {
+        connect_refused_.store(true, std::memory_order_release);
+    }
+
+    [[nodiscard]] bool connect_refused() const
+    {
+        return connect_refused_.load(std::memory_order_acquire);
+    }
+
     // Push a frame to the send queue (called by Transport::submit).
     // Returns true on success, false if the queue is full (backpressure).
     bool enqueue_send(OutFrame *frame);
@@ -111,18 +129,18 @@ class Connection : public std::enable_shared_from_this<Connection>
     // Callbacks (set by RpcClient / RpcServer).
     void set_on_frame(OnFrameCallback cb)
     {
-        on_frame_callback_ = std::move(cb);
+        on_frame_callback_.set(std::move(cb));
     }
 
     void set_on_close(OnCloseCallback cb)
     {
-        on_close_callback_ = std::move(cb);
+        on_close_callback_.set(std::move(cb));
     }
 
     // RPC completion is separate from the transport's connection cleanup.
     void set_on_rpc_close(OnCloseCallback cb)
     {
-        on_rpc_close_callback_ = std::move(cb);
+        on_rpc_close_callback_.set(std::move(cb));
     }
 
     // Send queue capacity (backpressure bound, fixed at construction).
@@ -181,6 +199,8 @@ class Connection : public std::enable_shared_from_this<Connection>
     FrameParser parser_;
 
     std::atomic<bool> open_{true};
+    std::atomic<bool> connect_refused_{false};
+    std::atomic<bool> socket_cleanup_claimed_{false};
 
     // Lock-free bounded MPSC ring buffer (crowdb::common::MpscQueue). Multiple
     // producer threads push via enqueue_send (Transport::submit); the I/O
@@ -203,9 +223,9 @@ class Connection : public std::enable_shared_from_this<Connection>
     OutFrame *pending_frames_[BATCH_MAX];
     int       pending_count_{0};
 
-    OnFrameCallback on_frame_callback_;
-    OnCloseCallback on_close_callback_;
-    OnCloseCallback on_rpc_close_callback_;
+    ConnectionCallback<OnFrameCallback> on_frame_callback_;
+    ConnectionCallback<OnCloseCallback> on_close_callback_;
+    ConnectionCallback<OnCloseCallback> on_rpc_close_callback_;
 };
 
 } // namespace crowdb::rpc

@@ -24,6 +24,7 @@ mod managed;
 mod managed_hardware;
 mod managed_logical;
 pub mod mgmt;
+mod node;
 pub mod owner_assignment;
 pub mod physical;
 mod services;
@@ -44,6 +45,9 @@ pub fn router(state: AppState) -> axum::Router {
         let managed = axum::Router::new()
             .route("/healthz", get(health::healthz))
             .route("/api/mode", get(health::mode))
+            .route("/api/node/candidates", get(node::candidates))
+            .route("/api/node/admissions", get(node::admissions))
+            .route("/api/node/status", get(node::status))
             .route("/api/authority", get(managed::authority))
             .route("/api/preview", get(managed::snapshot))
             .route("/api/chunk-kv/catalog", get(chunk_kv::catalog))
@@ -156,6 +160,10 @@ pub fn router(state: AppState) -> axum::Router {
             managed
         };
         return managed
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                health::require_editable,
+            ))
             .with_state(state)
             .layer(axum::middleware::from_fn(corr_id::corr_id_layer));
     }
@@ -172,6 +180,13 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/api/access/connections", post(access::configure))
         .route("/healthz", get(health::healthz))
         .route("/api/mode", get(health::mode))
+        .route("/api/node/candidates", get(node::candidates))
+        .route("/api/node/admissions", get(node::admissions))
+        .route("/api/node/admit", post(node::admit))
+        .route("/api/node/update", post(node::update))
+        .route("/api/node/cleanup", post(node::cleanup))
+        .route("/api/node/cancel", post(node::cancel))
+        .route("/api/node/status", get(node::status))
         // ── Physical tree (A3): rack + node lifecycle ────────────────
         .route(
             "/api/racks",
@@ -348,6 +363,7 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/internal/reset", post(lifecycle::http_internal_reset))
         // React SPA fallback.
         .fallback(spa::spa_fallback)
+        .layer(axum::middleware::from_fn_with_state(state.clone(), node::guard))
         .with_state(state)
         // Propagate `x-crowdb-kv-corr-id` through every request: read it
         // (or mint one), open a task-local scope so outbound clients

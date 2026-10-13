@@ -182,6 +182,7 @@ async fn scan_zone_records(
             // Bincode failure — synthesize a corrupt snapshot so
             // the CRC check below reports it.
             zone_value = Some(crowdb_protocol::diskdb::rpc::ZoneValue {
+                bitmap_codec: 1,
                 usage_bitmap: Vec::new(),
                 snapshot_slot: 0,
                 crc32: 1, // intentionally wrong so verify_checksum fails

@@ -3,13 +3,45 @@
 
 //! Complete peer wiring before publishing a newly created group.
 
-use crowdb_protocol::mgmt::RemoteReplicaInfo;
+use crowdb_protocol::mgmt::{AddGroupRequest, RemoteReplicaInfo};
 
 use crate::clients::http::ServerClient;
 use crate::error::{Error, Result};
 use crate::ops::OpContext;
 
-use super::{remap_zero_host, server_client, strip_scheme};
+use super::server_client;
+
+pub(super) async fn create_local(
+    client: &ServerClient,
+    store_id: u64,
+    request: &AddGroupRequest,
+) -> Result<bool> {
+    let groups = client.list_groups(store_id).await?;
+    if let Some(group) = groups.iter().find(|group| group.group_id == request.group_id) {
+        return if group.local_replica_id == request.replica_id {
+            Ok(false)
+        } else {
+            Err(Error::Conflict {
+                kind: "local group replica".into(),
+                id: format!("{store_id}/{}", request.group_id),
+            })
+        };
+    }
+    match client.add_group(store_id, request).await {
+        Ok(()) => Ok(true),
+        Err(error) => {
+            if matches!(&error, Error::UpstreamRpc { status, .. } if status.contains("HTTP 409")) {
+                let groups = client.list_groups(store_id).await?;
+                if groups.iter().any(|group| {
+                    group.group_id == request.group_id && group.local_replica_id == request.replica_id
+                }) {
+                    return Ok(false);
+                }
+            }
+            Err(error)
+        }
+    }
+}
 
 pub(super) async fn resolve(
     ctx: &OpContext,
@@ -27,7 +59,8 @@ pub(super) async fn resolve(
                 node_id: node_id.to_string(),
                 reason: format!("store {store_id} has no peer RPC endpoint"),
             })?;
-        Ok((client, strip_scheme(&remap_zero_host(endpoint))))
+        let endpoint = client.resolve_rpc_endpoint(endpoint)?;
+        Ok((client, endpoint))
     }))
     .await
     .into_iter()

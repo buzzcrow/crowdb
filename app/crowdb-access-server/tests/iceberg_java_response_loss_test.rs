@@ -53,7 +53,7 @@ async fn official_java_client_observes_lost_create_reply_on_another_listener() {
             .args(["-o", "--batch-mode", "--no-transfer-progress", "-f"])
             .arg(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/tests/common/iceberg_java/pom.xml"
+                "/../../e2e-test/clients/iceberg-java/pom.xml"
             ))
             .args(["compile", "exec:java", "-Dexec.mainClass=TestIcebergResponseLoss"])
             .arg(format!("-Dexec.args={origin} {second_origin}"))

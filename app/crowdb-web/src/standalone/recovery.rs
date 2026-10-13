@@ -190,7 +190,7 @@ impl AppState {
         Ok(())
     }
 
-    async fn reload_group0(&self) -> Result<()> {
+    pub(crate) async fn reload_group0(&self) -> Result<()> {
         let ctx = self.op_context().await?;
         let racks = hardware::list_racks_from_group0(&ctx).await?;
         let mut nodes = hardware::list_nodes_from_group0(&ctx, None).await?;
@@ -237,6 +237,9 @@ impl AppState {
                 disks.extend(hardware::list_disks_from_group0(&ctx, node.id, group.id).await?);
                 disk_groups.push(group);
             }
+        }
+        if self.node_monitor_url.is_some() {
+            crate::services::remote::refresh(self).await?;
         }
         let mut config = self
             .config

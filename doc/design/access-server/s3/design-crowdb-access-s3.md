@@ -159,7 +159,10 @@ rejected. Neither missing integrity nor malformed XML can delete any key.
 A valid batch uses the same logical deletion as DeleteObject, sequentially in
 input order. Each occurrence of a duplicate key gets its own result, and absent
 keys are successes. Failures do not undo preceding successes; Quiet omits only
-success entries. Dropping the request cancels remaining work. Batch deletion is
+success entries. After validation, the response streams the XML opening, each
+ordered result, and the closing tag. Quiet successes send XML whitespace to
+maintain read progress. The response body owns the deletion stream; dropping
+it cancels remaining work. Batch deletion is
 not a transaction or an exactly-once operation: retries converge for keys with
 no intervening writes, but can delete a new unversioned PUT after response loss.
 Physical reclamation remains independent of this request.

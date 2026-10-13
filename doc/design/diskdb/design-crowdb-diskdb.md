@@ -1019,21 +1019,17 @@ Edge cases:
 
 ## 18. Group-0 Status Write-Back: Init → Offline
 
-`background_zone_load` transitions `Init → Offline` when zone loading
-fails for all strategies (`all_ok = false`) without writing back to
-group 0. The function is a `tokio::spawn`'d background task that does
-not receive `HardwareClient`. Consequence: group 0 still says `Up`,
-the next sync tick reads `Up` → `recover_disk_to_up` → the disk
-becomes `Up` with broken zones.
+`background_zone_load` publishes `Offline` before its local `Init → Offline`
+transition when zone loading or baseline persistence fails. This keeps a
+failed disk unavailable across sync ticks.
 
-The fix:
-- `HardwareClient` is `Clone` (it wraps `Arc<CrowdbClient>`).
-- `hw` is passed into `background_zone_load`; on `all_ok = false`,
-  `write_back_disk_status(rack_id, node_id, dg_id, &disk_id, Offline)`
-  is called before the `Init → Offline` transition.
-- A disk whose zone load fails ends up `Offline` in both group 0 and
-  the runtime state machine, and stays `Offline` across sync ticks
-  (no flip-flop to `Up`).
+- The task retains its exact `OwnershipFence`. Group-0 write-back requires
+  the same owner instance and owner-record revision.
+- A conditional batch preserves the owner value and writes the disk status
+  atomically. Advancing the owner revision makes the next observation reclaim
+  the data-group fence. A concurrent handover rejects the whole batch.
+- A stale loader cannot mark its successor's healthy disk Offline. Rejected
+  write-back is reported; its retired in-memory disk cannot allocate.
 
 ## 19. Init-state zone load
 

@@ -48,6 +48,9 @@ pub async fn http_list_node_stores(
     Path(node_id): Path<u64>,
     Recursive(_depth): Recursive,
 ) -> Result<Json<Vec<NodeStore>>, (StatusCode, Json<ErrorBody>)> {
+    if state.node_monitor_url.is_some() {
+        crate::mgmt::refresh_node_cache(&state, node_id).await;
+    }
     let snap = state.monitor_cache.snapshot().await;
     let rec = snap.get(&node_id).ok_or_else(|| {
         (
@@ -69,6 +72,9 @@ pub async fn http_get_node_store(
     Path((node_id, store_id)): Path<(u64, u64)>,
     Recursive(_depth): Recursive,
 ) -> Result<Json<NodeStore>, (StatusCode, Json<ErrorBody>)> {
+    if state.node_monitor_url.is_some() {
+        crate::mgmt::refresh_node_cache(&state, node_id).await;
+    }
     let snap = state.monitor_cache.snapshot().await;
     let rec = snap.get(&node_id).ok_or_else(|| {
         (
@@ -98,6 +104,9 @@ pub async fn http_list_node_groups(
     Path((node_id, store_id)): Path<(u64, u64)>,
     Recursive(_depth): Recursive,
 ) -> Result<Json<Vec<NodeGroup>>, (StatusCode, Json<ErrorBody>)> {
+    if state.node_monitor_url.is_some() {
+        crate::mgmt::refresh_node_cache(&state, node_id).await;
+    }
     let snap = state.monitor_cache.snapshot().await;
     let rec = snap.get(&node_id).ok_or_else(|| {
         (
@@ -128,6 +137,9 @@ pub async fn http_get_node_group(
     Path((node_id, store_id, group_id)): Path<(u64, u64, u64)>,
     Recursive(_depth): Recursive,
 ) -> Result<Json<NodeGroup>, (StatusCode, Json<ErrorBody>)> {
+    if state.node_monitor_url.is_some() {
+        crate::mgmt::refresh_node_cache(&state, node_id).await;
+    }
     let snap = state.monitor_cache.snapshot().await;
     let rec = snap.get(&node_id).ok_or_else(|| {
         (

@@ -110,22 +110,15 @@ async fn journal_cas_retains_future_revision_through_flush_and_reopen() {
     let payload = encode_puts(&[(&chunk_key(), &metadata(61, 24643)), (b"journal", &journal)]);
     let cas_group = Arc::clone(&group);
     let cas = tokio::spawn(async move { cas_group.propose_cas(payload, chunk_key(), 853, 7, 1).await });
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            let revision = engine.get_versioned(&chunk_key()).await.unwrap().unwrap().0;
-            if revision == 854 {
-                break;
-            }
-            assert!(!cas.is_finished(), "CAS rejected the visible future revision");
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("CAS must apply before waiting for the contiguous apply fence");
-    handle.flush().unwrap();
-    assert_eq!(handle.snapshot().unwrap(), 851);
-    assert_metadata(engine, 854, 61, 24643).await;
-    assert!(!cas.is_finished(), "the apply fence must not cross the gap");
+    // Conditional writes fence preceding chosen entries before checking their
+    // revisions. The future value must survive maintenance while admission waits.
+    for _ in 0..3 {
+        tokio::task::yield_now().await;
+        handle.flush().unwrap();
+        assert_eq!(handle.snapshot().unwrap(), 851);
+        assert_metadata(engine, 853, 60, 24040).await;
+        assert!(!cas.is_finished(), "the apply fence must not cross the gap");
+    }
     learn(&group, 852, Vec::new()).await;
     let result = tokio::time::timeout(Duration::from_secs(5), cas)
         .await

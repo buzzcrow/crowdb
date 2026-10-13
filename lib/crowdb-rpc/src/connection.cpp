@@ -272,6 +272,9 @@ retry:
                 all_sent = false;
                 break;
             }
+            if (errno == ECONNREFUSED) {
+                mark_connect_refused();
+            }
             cnt_write_error().inc();
             CRB_LOG_WARN("try_send: writev hard error fd={} conn_id={} name={} errno={} ({})", fd,
                          static_cast<long long>(id_), name_, errno, std::strerror(errno));
@@ -385,18 +388,18 @@ void Connection::close()
         }
         in_send_.store(false, std::memory_order_release);
     }
-    if (on_rpc_close_callback_) {
-        on_rpc_close_callback_(this);
+    if (const auto *callback = on_rpc_close_callback_.get(); callback != nullptr && *callback) {
+        (*callback)(this);
     }
-    if (on_close_callback_) {
-        on_close_callback_(this);
+    if (const auto *callback = on_close_callback_.get(); callback != nullptr && *callback) {
+        (*callback)(this);
     }
 }
 
 void Connection::on_frame(Frame *frame)
 {
-    if (on_frame_callback_) {
-        on_frame_callback_(frame, this);
+    if (const auto *callback = on_frame_callback_.get(); callback != nullptr && *callback) {
+        (*callback)(frame, this);
     }
 }
 

@@ -4,8 +4,6 @@
 set -euo pipefail
 cd "${PIXI_PROJECT_ROOT:?}"
 if (( $# == 0 )); then
-    set -- test-cpp test-core test-storage test-access test-console test-console-ui \
-        test-boto3-e2e test-pyiceberg-e2e test-iceberg-native \
-        test-java-iceberg-e2e test-rust-iceberg-e2e test-iceberg-rck
+    set -- test-cpp test-core test-storage test-access test-access-sdk test-console test-console-ui
 fi
 exec python3 tools/test-metrics/measure.py "$@"

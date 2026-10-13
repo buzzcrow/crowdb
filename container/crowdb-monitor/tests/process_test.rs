@@ -64,6 +64,28 @@ fn service(script: &str) -> ServiceProfile {
 }
 
 #[tokio::test]
+async fn failed_child_retains_its_exit_status_until_cleanup() {
+    let logs = TestLogs::new();
+    let mut manager = ProcessManager::new(logs.0.clone(), policy(2)).await.unwrap();
+    manager.start(&service("exit 7"), &BTreeMap::new()).await.unwrap();
+    let status = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(status) = manager.exit_status("fake").unwrap() {
+                break status;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(status.code(), Some(7));
+    assert!(!manager.alive("fake").unwrap());
+    assert_eq!(manager.exit_status("fake").unwrap().unwrap().code(), Some(7));
+    manager.stop("fake", Duration::from_secs(2)).await.unwrap();
+    assert!(manager.exit_status("fake").is_err());
+}
+
+#[tokio::test]
 async fn owned_child_is_reaped_before_replacement() {
     let logs = TestLogs::new();
     let mut manager = ProcessManager::new(logs.0.clone(), policy(2)).await.unwrap();
@@ -72,6 +94,10 @@ async fn owned_child_is_reaped_before_replacement() {
     assert!(manager.start(&service, &BTreeMap::new()).await.is_err());
     assert_eq!(manager.pid("fake"), Some(first_pid));
     assert!(manager.alive("fake").unwrap());
+    assert_eq!(
+        manager.live_pids().unwrap(),
+        BTreeMap::from([("fake".into(), first_pid)])
+    );
     let log_path = logs.0.join("fake/service.log");
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
@@ -85,8 +111,13 @@ async fn owned_child_is_reaped_before_replacement() {
     .unwrap();
     manager.stop("fake", Duration::from_secs(2)).await.unwrap();
     assert_eq!(manager.pid("fake"), None);
+    assert!(manager.live_pids().unwrap().is_empty());
     let second_pid = manager.start(&service, &BTreeMap::new()).await.unwrap();
     assert_ne!(second_pid, first_pid);
+    assert_eq!(
+        manager.live_pids().unwrap(),
+        BTreeMap::from([("fake".into(), second_pid)])
+    );
     manager.stop("fake", Duration::from_secs(2)).await.unwrap();
     assert!(fs::read_to_string(log_path).unwrap().contains("started"));
     let events = fs::read_to_string(logs.0.join("monitor/monitor.log")).unwrap();

@@ -109,3 +109,70 @@ async fn nonempty_uninitialized_root_is_not_adopted() {
     assert!(!root.0.join("data/bootstrap").exists());
     assert!(!root.0.join("data/secrets").exists());
 }
+
+#[tokio::test]
+async fn invalid_release_selection_fails_before_writing_bootstrap_state() {
+    for unknown in [true, false] {
+        let root = TestRoot::new();
+        let path = root.profile_path();
+        let mut profile = DeploymentProfile::load(&path).unwrap();
+        if unknown {
+            profile.services.last_mut().unwrap().id = "unknown".into();
+        } else {
+            profile
+                .services
+                .iter_mut()
+                .find(|service| service.id == "diskdb")
+                .unwrap()
+                .dependencies
+                .clear();
+        }
+        profile.validate().unwrap();
+        fs::write(&path, toml::to_string(&profile).unwrap()).unwrap();
+        assert!(run_preview(&path).await.is_err());
+        let result = crowdb_monitor::run_single_node(crowdb_monitor::NodeRuntimeConfig {
+            profile: path.clone(),
+            bind: "127.0.0.1:0".parse().unwrap(),
+            discovery: crowdb_monitor::DiscoveryConfig {
+                seeds: Vec::new(),
+                interfaces: vec!["lo".into()],
+                addresses: vec!["127.0.0.1".parse().unwrap()],
+                monitor_port: 9095,
+                cluster_id: None,
+            },
+            physical_host_id: "selection-test".into(),
+        })
+        .await;
+        assert!(result.is_err());
+        assert!(!root.0.join("data/node-identity").exists());
+        assert!(!root.0.join("data/bootstrap").exists());
+        assert!(!root.0.join("data/secrets").exists());
+        assert!(!root.0.join("run/config").exists());
+    }
+}
+
+#[tokio::test]
+async fn kv_subset_supervises_only_kv_and_does_not_render_or_create_storage() {
+    let root = TestRoot::new();
+    let path = root.profile_path();
+    let mut profile = DeploymentProfile::load(&path).unwrap();
+    profile.services.retain(|service| service.id == "kv");
+    fs::write(&path, toml::to_string(&profile).unwrap()).unwrap();
+    assert!(run_preview(&path).await.is_err());
+    let status = StatusStore::open(&root.0.join("run"))
+        .unwrap()
+        .read(std::time::Duration::from_secs(10))
+        .unwrap();
+    assert_eq!(status.phase, MonitorPhase::Draining);
+    let events = fs::read_to_string(root.0.join("data/log/monitor/monitor.log")).unwrap();
+    let started: Vec<_> = events
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|event| event["kind"] == "child_started")
+        .map(|event| event["service"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(started, vec!["kv"]);
+    assert!(root.0.join("run/config/kv.toml").exists());
+    assert!(!root.0.join("run/config/diskdb.toml").exists());
+    assert!(!root.0.join("data/disks").exists());
+}

@@ -26,7 +26,9 @@ COMPONENT_PACKAGES = {
     "test-console": {"crowdb-console-shared", "crowdb-cli", "crowdb-web"},
 }
 
-SUPPORT_PACKAGES = {}
+SUPPORT_PACKAGES = {
+    "e2e-test": "Host acceptance client, built and executed by test-container-e2e",
+}
 
 
 def workspace_packages() -> set[str]:
@@ -80,17 +82,32 @@ def main() -> int:
             print(f"  {task}")
         return 1
     workflows = root / ".github/workflows"
-    reachable = graph.reachable((workflows / "ci.yml").read_text())
+    from e2e_coverage import check_coverage, expand_matrix
+
+    workflow = (workflows / "ci.yml").read_text()
+    try:
+        owners = check_coverage(workflow, graph)
+        sys.path.insert(0, str(root / "e2e-test"))
+        from scenarios import ALL_CASES, select_cases
+
+        selected = {domain: select_cases(layer=domain) for domain in owners}
+        for case in ALL_CASES:
+            matches = [domain for domain, cases in selected.items() if case in cases]
+            if len(matches) != 1:
+                raise ValueError(f"named flow {case.scope}::{case.name} has CI domains {matches}")
+    except ValueError as error:
+        print(error)
+        return 1
+    reachable = graph.reachable(expand_matrix(workflow))
     required = {("default", task) for task in COMPONENT_PACKAGES}
     required.update({
+        ("default", "test-container-e2e"),
+        ("default", "test-container-e2e-fixture"),
         ("default", "test-console-ui"),
-        ("s3-e2e", "test-boto3-e2e"),
-        ("iceberg-e2e", "test-pyiceberg-e2e"),
-        ("iceberg-e2e", "test-iceberg-native"),
-        ("iceberg-e2e", "test-java-iceberg-e2e"),
-        ("iceberg-e2e", "test-java-iceberg-fileio-e2e"),
-        ("iceberg-e2e", "test-iceberg-rck"),
+        ("s3-e2e", "test-boto3-copy-error"),
+        ("default", "test-access-sdk"),
     })
+    # Component protocol peers and complete container domains have distinct owners.
     unreachable = sorted(required - reachable)
     if unreachable:
         print("Test tasks not reachable from regular CI:")
@@ -100,7 +117,6 @@ def main() -> int:
 
     manual_tasks = {
         "docker-preview.yml": {("default", "test-single-node-container")},
-        "iceberg-rust-sdk.yml": {("iceberg-e2e", "test-rust-iceberg-e2e")},
     }
     for workflow, tasks in manual_tasks.items():
         manual_reachable = graph.reachable((workflows / workflow).read_text())
@@ -118,6 +134,8 @@ def main() -> int:
             return 1
 
     print(f"CI component tasks verified for {len(packages)} workspace packages")
+    print(f"Complete container domains verified: {owners}")
+    print(f"Named container flows verified: {len(ALL_CASES)}")
     for package in sorted(assignments):
         print(f"  {package}: {assignments[package]}")
     for package, reason in sorted(SUPPORT_PACKAGES.items()):

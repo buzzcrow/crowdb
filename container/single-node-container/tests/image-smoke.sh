@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-image=${CROWDB_CONTAINER_IMAGE:-crowdb-iceberg-single-node:dev}
+image=${CROWDB_CONTAINER_IMAGE:-crowdb-node:dev}
 docker image inspect "$image" >/dev/null
 # Containerd includes both compressed content and unpacked snapshots in Size.
 # Keep the same layer-size bound on either Docker storage backend.
@@ -11,13 +11,13 @@ if ((image_bytes > 325000000)); then
     exit 1
 fi
 test "$(docker image inspect --format '{{.Architecture}}' "$image")" = amd64
-test "$(docker image inspect --format '{{.Config.User}}' "$image")" = crowdb:crowdb
+test "$(docker image inspect --format '{{.Config.User}}' "$image")" = root
 test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$image")" = "$(cat VERSION)"
 test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")" = "$(git rev-parse HEAD)"
 volumes=$(docker image inspect --format '{{json .Config.Volumes}}' "$image")
 jq -e 'has("/opt/crowdb/data")' <<<"$volumes" >/dev/null
 exposed=$(docker image inspect --format '{{json .Config.ExposedPorts}}' "$image")
-for port in 9092 9091 9090; do
+for port in 9092 9091 9090 9095 2222; do
     jq -e --arg port "$port/tcp" 'has($port)' <<<"$exposed" >/dev/null
 done
 for port in 10000 13000 15200; do
@@ -42,10 +42,3 @@ docker run --rm --network none --entrypoint /bin/sh "$image" -ec '
         fi
     done
 '
-
-iceberg_output=$(docker run --rm --network none --entrypoint /opt/crowdb/bin/crowdb-access-server "$image" iceberg 2>&1) && {
-    echo "Iceberg started without required configuration" >&2
-    exit 1
-}
-printf '%s\n' "$iceberg_output"
-[[ "$iceberg_output" == *'Error: NotPresent'* ]]

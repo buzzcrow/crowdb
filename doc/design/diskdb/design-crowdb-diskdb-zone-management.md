@@ -159,17 +159,22 @@ are in `diskdb_type.fbs`.
   - `free_ts: u64` — diagnostic time at which free was submitted. It is useful
     for logs and age metrics but never controls correctness or compaction.
 - **`ZoneValue`**:
-  - `usage_bitmap: bytes` — the full zone bitmap (one bit per unit;
-    bit set = busy, bit clear = free). Sized to the zone's
-    `unit_capacity` (multiple of 64 bits per §2).
+  - `bitmap_codec: u8` — `1` identifies a size-prefixed LZ4 block. Unsupported
+    codecs and unversioned records are rejected; old records are not supported.
+  - `usage_bitmap: bytes` — LZ4-compressed zone bitmap (one bit per unit;
+    bit set = busy, bit clear = free). Decoded length must match the zone's
+    `unit_capacity`, rounded to complete 64-bit words. The decoded length is
+    checked before allocating a decompression buffer. A 4 KiB all-zero bitmap
+    uses a shared 31-byte compressed constant.
   - `snapshot_slot: u64` — the slot at which this snapshot was written.
     Strategy 2 (journal scan replay) replays operations after this slot.
   - `compact_slot: u64` — the last successfully persisted fixed
     contiguous-applied scan cutoff. It records scan progress, but does not
     exclude a surviving immutable free fact at or below an earlier cutoff;
     such a fact must still be reconciled. Initialized to zero for a baseline
-    or legacy snapshot.
-  - `crc32: u32` — CRC32 checksum over `usage_bitmap` + `compact_slot`
+    snapshot.
+  - `crc32: u32` — CRC32 checksum over `bitmap_codec` + compressed
+    `usage_bitmap` + `compact_slot`
     for integrity verification (§9 scanner coordination).
 
 ### Record model
@@ -249,10 +254,12 @@ Bitmap-scan with per-bit CAS (no zone-level lock):
 2. Round-robin over the active set via `pos_v_zone_ctx.fetch_add(1)`.
 3. Call `zone.allocate(unit_count)` on each zone. On success, return.
 4. If all zones in the active set fail, call `rotate_active_zones()`:
-   under a write lock, publish the next set of **ready** (pre-compacted)
-   zones as the new `ActiveZoneContext` (RCU publish). If no ready zones
-   are available, fall back to synchronous compaction of the next batch
-   (§5 Compaction-on-rotation), then publish.
+   publish the next set of **ready** (pre-compacted) zones using RCU
+   compare-and-swap. If too few ready zones exist, include other allocatable
+   zones; preparatory or periodic compaction handles their retained free facts.
+   Advance the scan cursor past the last selected position in either pass.
+   A failed large allocation can leave smaller free ranges in the current
+   zones; rotation must continue to later zones rather than repeat that set.
 5. Retry with the new context (up to `zone_num / zone_rotate_count + 2`
    loops).
 
@@ -577,9 +584,17 @@ The bitmap is never persisted on the allocate/free hot path. Only the
 `ZoneValue` snapshot (written by compaction) carries a serialized
 bitmap, with `snapshot_slot` (replay start point), `compact_slot`
 (compaction watermark), and `crc32` (integrity check over
-`usage_bitmap` + `compact_slot`). The baseline `ZoneValue` (empty bitmap,
-`snapshot_slot = 0`, `compact_slot = 0`) is written during disk-add init
-(root §8); all subsequent state changes are `BusyBlockValue` /
+`bitmap_codec` + compressed `usage_bitmap` + `compact_slot`). The baseline
+`ZoneValue` is written during disk-add initialization (root §8). A disk without
+snapshot, busy or free records uses three bounded prefix reads to prove it is
+fresh, then publishes initial zone records in batches of at most 128 through
+its ownership fence. Its baseline `snapshot_slot` captures the applied frontier
+before the disk becomes allocatable. Existing records use ordinary recovery.
+Empty zones keep only geometry and allocation counters; bitmap words are
+materialized by atomic publication on first allocation. The standard empty
+snapshot is copied directly from its compressed constant. Baseline write failure
+keeps the disk unavailable; restart loads already published records and fills
+missing baselines. all subsequent state changes are `BusyBlockValue` /
 `FreeBlockValue` records until compaction merges them into a fresh
 snapshot.
 

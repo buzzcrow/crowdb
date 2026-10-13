@@ -18,6 +18,7 @@ pub mod cluster;
 pub mod cluster_deployer;
 pub mod config;
 pub mod corr_id;
+pub mod deployment;
 pub mod diskdb;
 pub mod error;
 pub mod expand;

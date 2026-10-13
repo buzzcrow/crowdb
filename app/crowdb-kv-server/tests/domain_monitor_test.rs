@@ -29,6 +29,9 @@ use crowdb_protocol::key::{
     DomainMonitorKey, InstanceKey, ServingGrantKey, TextKey,
 };
 
+#[path = "common/catalog_publication.rs"]
+mod catalog_publication;
+
 struct CountingDriver {
     ticks: Arc<AtomicUsize>,
 }
@@ -188,8 +191,12 @@ async fn diskdb_operator_only_driver_observes_expired_instances_without_reassign
 }
 
 #[tokio::test]
-#[allow(clippy::too_many_lines)]
 async fn chunk_kv_driver_publishes_ready_transfer_then_issues_matching_grant() {
+    assert_ready_transfer_publication().await;
+}
+
+#[allow(clippy::too_many_lines)]
+async fn assert_ready_transfer_publication() -> (Group0ControlPlane, TransferTransition) {
     use crowdb_kv_server::background::domain_monitor::ChunkKvRangeMonitorDriver;
 
     let (_, store) = registry_with_group_zero(PxLocalReplicaRole::Leader);
@@ -428,6 +435,7 @@ async fn chunk_kv_driver_publishes_ready_transfer_then_issues_matching_grant() {
     grant.validate().unwrap();
     assert_eq!(grant.catalog_generation, 3);
     assert_eq!(grant.assignments[0].owner_epoch, 2);
+    (control, ready)
 }
 
 #[tokio::test]
@@ -536,7 +544,10 @@ async fn chunk_kv_driver_plans_dead_owner_recovery_once_and_waits_for_target() {
 }
 
 #[allow(clippy::too_many_lines)]
-async fn assert_chunk_kv_split_plan(target_partitions_per_owner: u32, target_partition_bytes: u64) {
+async fn assert_chunk_kv_split_plan(
+    target_partitions_per_owner: u32,
+    target_partition_bytes: u64,
+) -> (Group0ControlPlane, SplitTransition) {
     use crowdb_kv_server::background::domain_monitor::ChunkKvRangeMonitorDriver;
 
     let (_, store) = registry_with_group_zero(PxLocalReplicaRole::Leader);
@@ -718,6 +729,7 @@ async fn assert_chunk_kv_split_plan(target_partitions_per_owner: u32, target_par
         .find(|entry| entry.partition_id == prepared.parent_id)
         .unwrap();
     assert_eq!(retained.artifact, prepared.retained_parent_artifact);
+    (control, prepared)
 }
 
 #[tokio::test]

@@ -1,7 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Real child ownership when a management request is cancelled before readiness.
+//! Child ownership when a management request is cancelled before readiness.
+//! Deterministic fake children isolate readiness and ownership from server startup.
 
 use std::{collections::BTreeSet, path::Path, time::Duration};
 
@@ -10,6 +11,14 @@ use crowdb_console_shared::{lifecycle, ConsoleConfig};
 use crowdb_web::{router, AppState};
 use serde_json::{json, Value};
 use tower::ServiceExt;
+
+#[path = "common/child_stub.rs"]
+mod child_stub;
+
+#[path = "common/memory_kv.rs"]
+mod memory_kv;
+
+use child_stub::TestChild;
 
 struct TestChildren(BTreeSet<u32>);
 impl Drop for TestChildren {
@@ -26,14 +35,9 @@ async fn reset_stops_a_persisted_kv_child_without_a_runtime_pid_or_launch_record
     let state =
         AppState::with_runtime_root(ConsoleConfig::default(), root.path().to_owned()).with_test_mode(true);
     let app = router(state.clone());
-    success(&app, "/api/racks", json!({"id": 1})).await;
-    success(
-        &app,
-        "/api/nodes",
-        json!({"id": 1, "rack_id": 1, "host": "127.0.0.1", "ssh_user": ""}),
-    )
-    .await;
-    let binary = lifecycle::crowdb_kv_server_bin().expect("build the actual KV server");
+    prepare_node(&app).await;
+    let stub = TestChild::new(root.path());
+    let binary = &stub.binary;
     let deployed = success(
         &app,
         "/api/nodes/1/server/deploy",
@@ -43,7 +47,7 @@ async fn reset_stops_a_persisted_kv_child_without_a_runtime_pid_or_launch_record
     let pid = u32::try_from(deployed["pid"].as_u64().unwrap()).unwrap();
     let mut children = TestChildren(BTreeSet::from([pid]));
     // Stop clears the runtime PID before background shutdown finishes.
-    // Keep the real child alive to exercise this window deterministically.
+    // Keep the child alive to exercise this window deterministically.
     state.clear_runtime_pid(1);
     {
         let config = state.config.read().unwrap();
@@ -84,6 +88,16 @@ async fn success(app: &axum::Router, path: &str, body: Value) -> Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
+async fn prepare_node(app: &axum::Router) {
+    success(app, "/api/racks", json!({"id": 1})).await;
+    success(
+        app,
+        "/api/nodes",
+        json!({"id": 1, "rack_id": 1, "host": "127.0.0.1", "ssh_user": ""}),
+    )
+    .await;
+}
+
 fn spawned_pid(root: &Path, service: &str, excluded: &BTreeSet<u32>) -> Option<u32> {
     std::fs::read_dir(root.join("N-1/log"))
         .ok()?
@@ -107,21 +121,18 @@ async fn cancel_and_reset(kind: &str, restart: bool) {
         AppState::with_runtime_root(ConsoleConfig::default(), root.path().to_owned()).with_test_mode(true);
     let app = router(state.clone());
     let mut children = TestChildren(BTreeSet::new());
-    success(&app, "/api/racks", json!({"id": 1})).await;
-    success(
-        &app,
-        "/api/nodes",
-        json!({"id": 1, "rack_id": 1, "host": "127.0.0.1", "ssh_user": ""}),
-    )
-    .await;
-    let binary = lifecycle::crowdb_kv_server_bin().expect("build the actual KV server");
-    let kv = json!({"rest_port": free_port(), "rpc_port": free_port(), "binary": binary, "election_profile": "test"});
+    prepare_node(&app).await;
+    let metadata = if kind == "diskdb" {
+        Some(prepare_diskdb_authority(&state).await)
+    } else {
+        None
+    };
+    let stub = if kind == "diskdb" {
+        TestChild::diskdb(root.path())
+    } else {
+        TestChild::new(root.path())
+    };
     let (mut path, mut body, service) = if kind == "diskdb" {
-        let deployed = success(&app, "/api/nodes/1/server/deploy", kv).await;
-        children
-            .0
-            .insert(u32::try_from(deployed["pid"].as_u64().unwrap()).unwrap());
-        success(&app, "/api/cluster/init", json!({"nodes": [1]})).await;
         let port = crowdb_protocol::port::alloc::alloc_test_port_range(
             crowdb_protocol::ServicePort::DiskdbListen,
             3,
@@ -132,7 +143,11 @@ async fn cancel_and_reset(kind: &str, restart: bool) {
             "crowdb-diskdb",
         )
     } else {
-        ("/api/nodes/1/server/deploy", kv, "crowdb-kv-server")
+        (
+            "/api/nodes/1/server/deploy",
+            json!({"rest_port": free_port(), "rpc_port": free_port(), "binary": stub.binary, "election_profile": "test"}),
+            "crowdb-kv-server",
+        )
     };
     if restart {
         let deployed = success(&app, path, body).await;
@@ -146,6 +161,7 @@ async fn cancel_and_reset(kind: &str, restart: bool) {
         };
         body = json!({});
     }
+    stub.block_readiness();
     let started = std::time::Instant::now();
     let deployment = tokio::spawn(request(app.clone(), path, body));
     let pid = tokio::time::timeout(Duration::from_secs(3), async {
@@ -157,7 +173,7 @@ async fn cancel_and_reset(kind: &str, restart: bool) {
         }
     })
     .await
-    .expect("actual child starts before cancellation");
+    .expect("owned child starts before cancellation");
     children.0.insert(pid);
     assert!(
         !deployment.is_finished(),
@@ -175,11 +191,31 @@ async fn cancel_and_reset(kind: &str, restart: bool) {
     );
     deployment.abort();
     assert!(deployment.await.unwrap_err().is_cancelled());
+    stub.release_readiness();
     success(&app, "/internal/reset", json!({})).await;
     eprintln!(
         "[PHASE] {kind} cancelled deployment and Reset: {}ms",
         started.elapsed().as_millis()
     );
+    assert_reset(root.path(), &state, &mut children);
+    drop(metadata);
+}
+
+async fn prepare_diskdb_authority(state: &AppState) -> memory_kv::TestKvCluster {
+    let metadata = memory_kv::TestKvCluster::start().await;
+    let kv = std::sync::Arc::new(crowdb_kv_client::CrowdbKvClient::new(
+        crowdb_kv_client::ClientConfig::new(metadata.mgmt_endpoints.clone()),
+    ));
+    kv.seed_leader(0, 0, metadata.group0_leader_endpoint.clone());
+    crowdb_kv_client::CrowdbSysmdClient::from_shared(kv.clone())
+        .add_group(0, 0)
+        .await
+        .unwrap();
+    *state.kv_client.write().await = Some(kv);
+    metadata
+}
+
+fn assert_reset(root: &Path, state: &AppState, children: &mut TestChildren) {
     for pid in &children.0 {
         assert!(!lifecycle::process_is_alive(*pid), "Reset left child {pid} alive");
     }
@@ -188,7 +224,7 @@ async fn cancel_and_reset(kind: &str, restart: bool) {
     assert!(config.nodes.is_empty());
     assert!(config.racks.is_empty());
     assert!(
-        !root.path().join("N-1").exists(),
+        !root.join("N-1").exists(),
         "Reset must remove the workspace after child exit"
     );
     children.0.clear();

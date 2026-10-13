@@ -70,6 +70,19 @@ impl ServerClient {
         self.post_empty(&format!("/stores/{sid}/groups"), req).await
     }
 
+    /// Import a new replica's snapshot before it participates in voting.
+    ///
+    /// # Errors
+    /// Returns transport or snapshot import failures.
+    pub async fn join_group(&self, sid: u64, gid: u64, req: &JoinGroupRequest) -> Result<()> {
+        let path = if sid == 0 && gid == 0 {
+            "/system/join".to_owned()
+        } else {
+            format!("/stores/{sid}/groups/{gid}/join")
+        };
+        self.post_empty(&path, req).await
+    }
+
     /// `DELETE /stores/{sid}/groups/{gid}`.
     ///
     /// # Errors
@@ -181,10 +194,18 @@ impl ServerClient {
             .await
     }
 
-    /// `POST /system/init` — bootstrap the system group (store 0, group 0).
+    /// Reserve the selected bootstrap operation before system-store creation.
     ///
     /// # Errors
-    /// Transport / non-2xx status codes surface as `Error::UpstreamRpc`.
+    /// Returns persistence, transport or conflicting-ownership errors.
+    pub async fn system_prepare(&self, req: &SystemPrepareRequest) -> Result<SystemPrepareRequest> {
+        self.post_json("/system/prepare", req).await
+    }
+
+    /// Bootstrap the system group (store 0, group 0).
+    ///
+    /// # Errors
+    /// Returns transport, persistence or conflicting-ownership errors.
     pub async fn system_init(&self, req: &SystemInitRequest) -> Result<SystemInitResponse> {
         self.post_json("/system/init", req).await
     }

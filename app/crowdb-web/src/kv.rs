@@ -143,12 +143,19 @@ fn host_of(rpc_url: &str) -> String {
 
 /// Build an `OpContext` for a KV data-plane request on `(sid, gid)`.
 ///
-/// Uses Group 0 membership and live service registrations for discovery.
+/// Node-mode data groups discover their own quorum through confirmed endpoint
+/// hints. Their data authority remains independent of Group 0 availability.
 async fn kv_op_context(
     state: &AppState,
     sid: u64,
     gid: u64,
 ) -> Result<crowdb_console_shared::ops::OpContext, (StatusCode, Json<ErrorBody>)> {
+    if state.node_monitor_url.is_some() && (sid != 0 || gid != 0) {
+        return state
+            .op_context()
+            .await
+            .map_err(|error| err_502(format!("{error}")));
+    }
     let (ctx, nodes, registered) = group_discovery(state, sid, gid).await?;
     if let Some(endpoint) = authoritative_leader_hint(state, sid, gid, &nodes, &registered).await {
         ctx.kv().seed_leader(sid, gid, endpoint);

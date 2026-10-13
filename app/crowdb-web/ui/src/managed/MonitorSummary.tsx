@@ -20,6 +20,7 @@ export function MonitorSummary({ apiPrefix }: { apiPrefix: string }) {
   }, [apiPrefix]);
   const monitor = snapshot?.monitor;
   return <section className="tw-px-4 tw-py-2 tw-text-xs tw-bg-panel tw-border-b tw-border-border" aria-label="Monitor status">
+    {snapshot?.source === 'group0' && <p data-testid="managed-source">Source: Group 0</p>}
     {error && <p role="alert" data-testid="managed-unavailable">{error}</p>}
     {monitor && <><p data-testid="managed-monitor-phase">Monitor service health · phase: {monitor.phase} · revision {monitor.revision}</p><div className="tw-flex tw-gap-3 tw-flex-wrap">{Object.entries(monitor.services).map(([name, service]: [string, any]) => <span key={name} data-testid={`managed-process-${name}`}>{name} · PID {service.pid ?? '—'} · generation {service.generation} · restarts {service.restart_attempts} · {service.healthy ? 'healthy' : 'unhealthy'}</span>)}</div></>}
   </section>;

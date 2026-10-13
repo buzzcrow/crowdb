@@ -17,6 +17,8 @@ use crate::ops::OpContext;
 
 mod authority;
 mod authority_storage;
+mod relocation;
+pub use relocation::relocate_node;
 
 pub use authority_storage::{
     add_disk_group_bound_to_group0, add_disk_group_to_group0, add_disk_to_group0,

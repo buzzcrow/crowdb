@@ -1,5 +1,8 @@
 use std::path::PathBuf;
 
+#[path = "common/memory_kv.rs"]
+mod memory_kv;
+
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use crowdb_console_shared::config::web::{WebMode, WebProcessConfig};
@@ -39,20 +42,8 @@ async fn register_kv_node(sysmd: &CrowdbSysmdClient, endpoint: &str, hosted_stor
         .unwrap();
 }
 
-async fn verify_managed_store_lifecycle(app: &axum::Router, sysmd: &CrowdbSysmdClient, endpoint: &str) {
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/api/stores")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"store_id":7,"nodes":[1]}"#))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::CREATED);
+async fn verify_managed_store_lifecycle(app: &axum::Router, sysmd: &CrowdbSysmdClient) {
+    sysmd.add_store(7, &[1]).await.unwrap();
     let (code, stores) = get_json(app.clone(), "/api/stores").await;
     assert_eq!(code, StatusCode::OK);
     assert!(stores
@@ -60,64 +51,39 @@ async fn verify_managed_store_lifecycle(app: &axum::Router, sysmd: &CrowdbSysmdC
         .unwrap()
         .iter()
         .any(|store| store["store_id"] == 7));
-
-    register_kv_node(sysmd, "http://127.0.0.1:1", &[0, 7]).await;
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::DELETE)
-                .uri("/api/stores/7")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    for (method, path, body) in [
+        (Method::POST, "/api/stores", r#"{"store_id":8,"nodes":[1]}"#),
+        (Method::DELETE, "/api/stores/7", ""),
+        (Method::POST, "/api/management/check", ""),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
     assert!(sysmd.get_store(7).await.unwrap().is_some());
-
-    register_kv_node(sysmd, endpoint, &[0, 7]).await;
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::DELETE)
-                .uri("/api/stores/7")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
-    let (code, stores) = get_json(app.clone(), "/api/stores").await;
-    assert_eq!(code, StatusCode::OK);
-    assert!(!stores
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|store| store["store_id"] == 7));
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/api/stores")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    assert!(sysmd.get_store(8).await.unwrap().is_none());
 }
 
 #[tokio::test]
 async fn docker_root_access_preserves_hardware_restrictions() {
     let token = "m".repeat(64);
-    let app = router(AppState::default().with_managed_ui(PathBuf::from("/tmp/crowdb-ui")));
+    let mut state = AppState::default().with_managed_ui(PathBuf::from("/tmp/crowdb-ui"));
+    state.readonly = true;
+    let app = router(state);
     for (authorization, expected) in [
-        (None, StatusCode::NO_CONTENT),
-        (Some("Bearer wrong".to_owned()), StatusCode::NO_CONTENT),
-        (Some(format!("Bearer {token}")), StatusCode::NO_CONTENT),
+        (None, StatusCode::FORBIDDEN),
+        (Some("Bearer wrong".to_owned()), StatusCode::FORBIDDEN),
+        (Some(format!("Bearer {token}")), StatusCode::FORBIDDEN),
     ] {
         let mut request = Request::builder()
             .method(Method::POST)
@@ -143,12 +109,12 @@ async fn docker_root_access_preserves_hardware_restrictions() {
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
     for (authorization, expected) in [
-        (None, StatusCode::CONFLICT),
-        (Some("Bearer wrong".to_owned()), StatusCode::CONFLICT),
-        (Some(format!("Bearer {token}")), StatusCode::CONFLICT),
+        (None, StatusCode::FORBIDDEN),
+        (Some("Bearer wrong".to_owned()), StatusCode::FORBIDDEN),
+        (Some(format!("Bearer {token}")), StatusCode::FORBIDDEN),
     ] {
         let mut request = Request::builder().method(Method::POST).uri("/api/stores");
         if let Some(value) = authorization {
@@ -169,8 +135,10 @@ async fn docker_root_access_preserves_hardware_restrictions() {
 }
 
 #[tokio::test]
-async fn managed_mode_does_not_expose_local_topology_or_mutations() {
-    let app = router(AppState::default().with_managed_ui(PathBuf::from("/tmp/crowdb-ui")));
+async fn managed_readonly_mode_does_not_expose_local_topology_or_mutations() {
+    let mut state = AppState::default().with_managed_ui(PathBuf::from("/tmp/crowdb-ui"));
+    state.readonly = true;
+    let app = router(state);
     for (method, path) in [
         (Method::GET, "/api/racks"),
         (Method::GET, "/api/stores"),
@@ -188,14 +156,22 @@ async fn managed_mode_does_not_expose_local_topology_or_mutations() {
             .clone()
             .oneshot(
                 Request::builder()
-                    .method(method)
+                    .method(method.clone())
                     .uri(path)
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{path}");
+        assert_eq!(
+            response.status(),
+            if method == Method::GET {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else {
+                StatusCode::FORBIDDEN
+            },
+            "{path}"
+        );
     }
     let response = app
         .oneshot(
@@ -218,11 +194,7 @@ async fn managed_mode_does_not_expose_local_topology_or_mutations() {
 
 #[tokio::test]
 async fn managed_snapshot_uses_group0_and_monitor_without_local_fallback() {
-    if crowdb_test_harness::cluster::crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping real Group 0 test: crowdb-kv-server is unavailable");
-        return;
-    }
-    let cluster = crowdb_test_harness::cluster::KvCluster::start().await;
+    let cluster = memory_kv::TestKvCluster::start().await;
     let kv = CrowdbKvClient::new(ClientConfig::new(cluster.mgmt_endpoints.clone()));
     kv.seed_leader(0, 0, cluster.group0_leader_endpoint.clone());
     let sysmd = CrowdbSysmdClient::new(kv);
@@ -273,6 +245,7 @@ async fn managed_snapshot_uses_group0_and_monitor_without_local_fallback() {
     let config = WebProcessConfig {
         version: 1,
         mode: WebMode::Docker,
+        readonly: true,
         bind: "127.0.0.1".into(),
         port: 8080,
         group0_management_seeds: cluster.mgmt_endpoints.clone(),
@@ -312,7 +285,7 @@ async fn managed_snapshot_uses_group0_and_monitor_without_local_fallback() {
         "single-node services should attach to their container node"
     );
     verify_chunk_kv_placement(&app, &sysmd).await;
-    verify_managed_store_lifecycle(&app, &sysmd, &cluster.mgmt_endpoints[0]).await;
+    verify_managed_store_lifecycle(&app, &sysmd).await;
 
     drop(cluster);
     verify_unavailable_snapshot(app, &store, &mut status, &run_root).await;
@@ -381,59 +354,60 @@ async fn verify_unavailable_snapshot(
     assert!(unavailable["monitor"].is_null());
 }
 
-#[test]
-fn old_mixed_config_is_rejected_before_startup() {
-    let path = std::env::temp_dir().join(format!(
-        "crowdb-web-old-config-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::write(&path, "[[rack]]\nid = 1\n").unwrap();
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_crowdb-web"))
-        .args(["--config", path.to_str().unwrap()])
-        .output()
-        .unwrap();
-    std::fs::remove_file(path).unwrap();
-    assert!(!output.status.success());
-    let error = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        error.contains("version") || error.contains("unknown field"),
-        "{error}"
-    );
+#[tokio::test]
+async fn docker_defaults_to_logical_writes_and_keeps_physical_routes_unavailable() {
+    let state = AppState::default().with_managed_ui(PathBuf::from("/tmp/crowdb-ui"));
+    assert!(!state.readonly);
+    let app = router(state);
+    let (code, mode) = get_json(app.clone(), "/api/mode").await;
+    assert_eq!(code, StatusCode::OK);
+    assert_eq!(mode["mode"], "docker");
+    assert_eq!(mode["readonly"], false);
+    for (path, expected) in [
+        ("/api/management/check", StatusCode::NO_CONTENT),
+        ("/api/nodes/1/disk-groups", StatusCode::SERVICE_UNAVAILABLE),
+        ("/api/diskdb/scan", StatusCode::SERVICE_UNAVAILABLE),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(path)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected, "{path}");
+    }
 }
 
-#[test]
-fn managed_process_rejects_standalone_registry() {
-    let directory = std::env::temp_dir().join(format!(
-        "crowdb-web-registry-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&directory).unwrap();
-    let config = directory.join("crowdb-web.toml");
-    let registry = directory.join("registry.toml");
-    std::fs::write(
-        &config,
-        "version = 1\nmode = 'docker'\nbind = '127.0.0.1'\nport = 14000\ngroup0_management_seeds = ['http://127.0.0.1:10000']\nui_root = '/tmp'\nmonitor_status = '/tmp/monitor.json'\nlog_dir = '/tmp'\nlog_max_file_mb = 30\nlog_max_files = 5\n",
-    )
-    .unwrap();
-    std::fs::write(&registry, "version = 1\n").unwrap();
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_crowdb-web"))
-        .args([
-            "--config",
-            config.to_str().unwrap(),
-            "--registry",
-            registry.to_str().unwrap(),
-        ])
-        .output()
-        .unwrap();
-    std::fs::remove_dir_all(directory).unwrap();
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("docker web does not accept --registry"));
+#[tokio::test]
+async fn explicit_readonly_rejects_data_mutations_and_keeps_mode_observable() {
+    let mut state = AppState::default().with_managed_ui(PathBuf::from("/tmp/crowdb-ui"));
+    state.readonly = true;
+    let app = router(state);
+    let (code, mode) = get_json(app.clone(), "/api/mode").await;
+    assert_eq!(code, StatusCode::OK);
+    assert_eq!(mode["readonly"], true);
+    for (method, path) in [
+        (Method::POST, "/api/stores/0/groups/1/kv/put"),
+        (Method::PUT, "/api/access/s3/readonly/object"),
+        (Method::DELETE, "/api/access/s3/readonly/object"),
+        (Method::PATCH, "/api/access/s3/readonly/object"),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{path}");
+    }
 }

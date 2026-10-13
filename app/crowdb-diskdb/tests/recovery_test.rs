@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
-// Licensed under the Apache License, Version 0.0.
+// Licensed under the Apache License, Version 2.0.
 
-//! R73 recovery integration tests.
+//! Deterministic recovery integration tests with pinned memory metadata.
 //!
 //! Verifies that:
 //! - `ZoneLoader::rebuild_zone_bitmap_full_scan` (strategy 1)
@@ -17,7 +17,7 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::cluster::{wait_for_disks_ready, KvCluster};
+use common::metadata::{wait_for_disks_ready, TestMetadata};
 use crowdb_diskdb::ddb_config::{CompactionConfig, KeepAliveConfig};
 use crowdb_diskdb::liveness::keepalive::KeepAlive;
 use crowdb_diskdb::model::alloc;
@@ -123,38 +123,14 @@ async fn seed_hardware(hw: &HardwareClient) {
         .expect("set bind");
 }
 
-/// Find the crowdb-kv-server binary (mirrors the cluster module's logic).
-fn crowdb_kv_server_bin() -> Option<std::path::PathBuf> {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let mut p = dir.to_path_buf();
-            for _ in 0..3 {
-                let candidate = p.join("crowdb-kv-server");
-                if candidate.exists() {
-                    return Some(candidate);
-                }
-                if !p.pop() {
-                    break;
-                }
-            }
-        }
-    }
-    None
-}
-
 /// Strategy 1 (full scan) recovery: allocate + free blocks, simulate a
 /// restart by dropping in-memory state, then recover via
 /// `rebuild_zone_bitmap_full_scan` and verify the bitmap matches.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn recovery_strategy1_full_scan_rebuilds_bitmap() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
-        return;
-    }
-
     // 1. Start cluster + seed hardware.
-    let cluster = KvCluster::start().await;
+    let cluster = TestMetadata::start().await;
     let hw = cluster.make_hardware_client();
     seed_hardware(&hw).await;
 
@@ -387,12 +363,7 @@ fn zone_from_zone_value_rejects_bad_crc() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn recovery_strategy2_journal_replay() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
-        return;
-    }
-
-    let cluster = KvCluster::start().await;
+    let cluster = TestMetadata::start().await;
     let hw = cluster.make_hardware_client();
     seed_hardware(&hw).await;
 
@@ -599,12 +570,7 @@ async fn recovery_strategy2_journal_replay() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn compaction_compact_zone_writes_snapshot_and_deletes_free_records() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
-        return;
-    }
-
-    let cluster = KvCluster::start().await;
+    let cluster = TestMetadata::start().await;
     let hw = cluster.make_hardware_client();
     seed_hardware(&hw).await;
 
@@ -740,12 +706,7 @@ async fn compaction_compact_zone_writes_snapshot_and_deletes_free_records() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn compaction_watermark_prevents_double_free_after_crashed_compaction() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
-        return;
-    }
-
-    let cluster = KvCluster::start().await;
+    let cluster = TestMetadata::start().await;
     let hw = cluster.make_hardware_client();
     seed_hardware(&hw).await;
 
@@ -944,12 +905,7 @@ async fn compaction_watermark_prevents_double_free_after_crashed_compaction() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn recovery_persist_only_is_idempotent() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
-        return;
-    }
-
-    let cluster = KvCluster::start().await;
+    let cluster = TestMetadata::start().await;
     let hw = cluster.make_hardware_client();
     seed_hardware(&hw).await;
 
@@ -1093,12 +1049,7 @@ async fn recovery_persist_only_is_idempotent() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn preparatory_thread_produces_ready_zones() {
-    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && crowdb_kv_server_bin().is_none() {
-        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
-        return;
-    }
-
-    let cluster = KvCluster::start().await;
+    let cluster = TestMetadata::start().await;
     let hw = cluster.make_hardware_client();
     seed_hardware(&hw).await;
 

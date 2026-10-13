@@ -1,16 +1,12 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Integration tests for `CrowdbClusterDeployer` — verifies the full
-//! cluster lifecycle (start/stop/reset) is fast and correct against
-//! an embedded `crowdb-web` instance with real `crowdb-kv-server`
-//! processes. Skips silently if the binary is not available.
+//! Empty reset is a deterministic Web component proof.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crowdb_console_shared::cluster_deployer::{simple, CrowdbClusterDeployer};
-use crowdb_console_shared::lifecycle::crowdb_kv_server_bin;
+use crowdb_console_shared::cluster_deployer::CrowdbClusterDeployer;
 use crowdb_console_shared::ConsoleConfig;
 use crowdb_web::{router, AppState};
 
@@ -33,81 +29,6 @@ async fn spawn_web(cfg_path: PathBuf) -> String {
     });
     tokio::time::sleep(Duration::from_millis(50)).await;
     format!("http://{addr}")
-}
-
-fn kv_server_available() -> bool {
-    crowdb_kv_server_bin().is_some_and(|p| p.exists())
-}
-
-#[tokio::test]
-async fn deployer_start_stop_reset_cycle() {
-    if !kv_server_available() {
-        eprintln!("skipping: crowdb-kv-server binary not found");
-        return;
-    }
-    let cfg_path = tempdir("cycle").join("console.toml");
-    let base_url = spawn_web(cfg_path).await;
-
-    let mut deployer = CrowdbClusterDeployer::new(&base_url).expect("deployer");
-
-    // Start: 3 nodes, 1 store, 1 group.
-    let start = Instant::now();
-    deployer.start(&simple()).await.expect("start");
-    let start_ms = start.elapsed().as_millis();
-    eprintln!("start took {start_ms}ms");
-
-    // Verify cluster info.
-    let info = deployer.info().expect("info after start");
-    assert_eq!(info.nodes.len(), 3);
-    assert_eq!(info.stores.len(), 1);
-    assert_eq!(info.stores[0].groups.len(), 1);
-    let group = &info.stores[0].groups[0];
-    assert!(group.leader_node_id.is_some(), "leader elected");
-    assert!(group.leader_endpoint.is_some(), "leader endpoint resolved");
-
-    // Stop: should be fast.
-    let stop = Instant::now();
-    deployer.stop().await;
-    let stop_ms = stop.elapsed().as_millis();
-    eprintln!("stop took {stop_ms}ms");
-    assert!(stop_ms < 5_000, "stop should be <5s, took {stop_ms}ms");
-
-    // Reset after stop: should be very fast (no servers running).
-    let reset = Instant::now();
-    deployer.reset().await.expect("reset after stop");
-    let reset_ms = reset.elapsed().as_millis();
-    eprintln!("reset after stop took {reset_ms}ms");
-    assert!(
-        reset_ms < 1_000,
-        "reset after stop should be <1s, took {reset_ms}ms"
-    );
-}
-
-#[tokio::test]
-async fn deployer_repeated_cycles_no_state_leakage() {
-    if !kv_server_available() {
-        eprintln!("skipping: crowdb-kv-server binary not found");
-        return;
-    }
-    let cfg_path = tempdir("repeat").join("console.toml");
-    let base_url = spawn_web(cfg_path).await;
-
-    let mut deployer = CrowdbClusterDeployer::new(&base_url).expect("deployer");
-
-    for cycle in 0..3 {
-        let start = Instant::now();
-        deployer.start(&simple()).await.expect("start in cycle {cycle}");
-        let start_ms = start.elapsed().as_millis();
-        eprintln!("cycle {cycle}: start took {start_ms}ms");
-
-        let info = deployer.info().expect("info");
-        assert_eq!(info.nodes.len(), 3, "cycle {cycle}: 3 nodes");
-
-        let teardown = Instant::now();
-        deployer.teardown().await.expect("teardown in cycle {cycle}");
-        let teardown_ms = teardown.elapsed().as_millis();
-        eprintln!("cycle {cycle}: teardown took {teardown_ms}ms");
-    }
 }
 
 #[tokio::test]

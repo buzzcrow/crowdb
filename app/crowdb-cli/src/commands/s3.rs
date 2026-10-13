@@ -31,24 +31,38 @@ pub enum S3Verb {
 
 #[derive(Subcommand, Debug)]
 pub enum S3ClusterVerb {
-    /// Create an empty location or restart an existing mini-cluster.
+    /// Create or resume an owned three-node release-container cluster.
     Start {
-        #[arg(long, alias = "data-dir")]
-        root: PathBuf,
+        #[command(flatten)]
+        target: super::container_cluster::Target,
+        #[arg(long, env = "CROWDB_CONTAINER_IMAGE")]
+        image: Option<String>,
+        /// Relative CPU weight per container (1 CPU = 1024 shares), without a hard quota.
+        #[arg(long)]
+        node_cpus: Option<f64>,
+        #[arg(long)]
+        memory_mib: Option<u64>,
+        /// `DiskDB` discovery and heartbeat cadence, recorded for every restart.
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+        diskdb_heartbeat_interval_secs: Option<u32>,
     },
     Status {
-        #[arg(long, alias = "data-dir")]
-        root: PathBuf,
+        #[command(flatten)]
+        target: super::container_cluster::Target,
     },
-    /// Stop processes while preserving all data and cluster metadata.
+    /// Stop the cluster containers and preserve their mounted data.
     Stop {
-        #[arg(long, alias = "data-dir")]
-        root: PathBuf,
+        #[command(flatten)]
+        target: super::container_cluster::Target,
     },
-    /// Stop processes, release ports, and permanently remove the cluster.
+    Restart {
+        #[command(flatten)]
+        target: super::container_cluster::Target,
+    },
+    /// Remove only this cluster's containers, network and data.
     Delete {
-        #[arg(long, alias = "data-dir")]
-        root: PathBuf,
+        #[command(flatten)]
+        target: super::container_cluster::Target,
     },
 }
 
@@ -56,24 +70,24 @@ pub enum S3ClusterVerb {
 pub enum S3BucketVerb {
     #[command(alias = "add")]
     Put {
-        #[arg(long, alias = "data-dir")]
-        root: PathBuf,
+        #[command(flatten)]
+        target: super::container_cluster::Target,
         bucket: String,
     },
     #[command(alias = "remove")]
     Delete {
-        #[arg(long, alias = "data-dir")]
-        root: PathBuf,
+        #[command(flatten)]
+        target: super::container_cluster::Target,
         bucket: String,
     },
     List {
-        #[arg(long, alias = "data-dir")]
-        root: PathBuf,
+        #[command(flatten)]
+        target: super::container_cluster::Target,
     },
     #[command(alias = "inspect")]
     Get {
-        #[arg(long, alias = "data-dir")]
-        root: PathBuf,
+        #[command(flatten)]
+        target: super::container_cluster::Target,
         bucket: String,
     },
 }
@@ -81,8 +95,8 @@ pub enum S3BucketVerb {
 #[derive(Subcommand, Debug)]
 pub enum S3ObjectVerb {
     Put {
-        #[arg(long, alias = "data-dir")]
-        root: PathBuf,
+        #[command(flatten)]
+        target: super::container_cluster::Target,
         bucket: String,
         key: String,
         /// Read object content from a file. Reads stdin when no source is set.
@@ -96,8 +110,8 @@ pub enum S3ObjectVerb {
         random_size: Option<usize>,
     },
     Get {
-        #[arg(long, alias = "data-dir")]
-        root: PathBuf,
+        #[command(flatten)]
+        target: super::container_cluster::Target,
         bucket: String,
         key: String,
         #[arg(long)]
@@ -107,21 +121,21 @@ pub enum S3ObjectVerb {
         range: Option<(u64, u64)>,
     },
     Delete {
-        #[arg(long, alias = "data-dir")]
-        root: PathBuf,
+        #[command(flatten)]
+        target: super::container_cluster::Target,
         bucket: String,
         key: String,
     },
     #[command(alias = "inspect")]
     Head {
-        #[arg(long, alias = "data-dir")]
-        root: PathBuf,
+        #[command(flatten)]
+        target: super::container_cluster::Target,
         bucket: String,
         key: String,
     },
     List {
-        #[arg(long, alias = "data-dir")]
-        root: PathBuf,
+        #[command(flatten)]
+        target: super::container_cluster::Target,
         bucket: String,
         #[arg(long)]
         prefix: Option<String>,
@@ -155,22 +169,37 @@ pub async fn run_s3_verb(cli: &Cli, verb: S3Verb) -> ExitCode {
 }
 
 async fn run_cluster(_cli: &Cli, verb: S3ClusterVerb) -> ExitCode {
+    use super::container_cluster;
     let result = match verb {
-        S3ClusterVerb::Start { root } => crowdb_console_shared::ops::s3::start(&root).await,
-        S3ClusterVerb::Status { root } => crowdb_console_shared::ops::s3::status(&root),
-        S3ClusterVerb::Stop { root } => crowdb_console_shared::ops::s3::stop(&root),
-        S3ClusterVerb::Delete { root } => crowdb_console_shared::ops::s3::delete(&root),
+        S3ClusterVerb::Start {
+            target,
+            image,
+            node_cpus,
+            memory_mib,
+            diskdb_heartbeat_interval_secs,
+        } => {
+            container_cluster::start(
+                &target,
+                image.as_deref(),
+                node_cpus,
+                memory_mib,
+                diskdb_heartbeat_interval_secs,
+            )
+            .await
+        }
+        S3ClusterVerb::Status { target } => container_cluster::status(&target).await,
+        S3ClusterVerb::Stop { target } => container_cluster::stop(&target).await,
+        S3ClusterVerb::Restart { target } => container_cluster::restart(&target).await,
+        S3ClusterVerb::Delete { target } => container_cluster::delete(&target).await,
     };
     match result {
         Ok(status) => {
-            println!("S3 mini-cluster{}:", if status.created { " created" } else { "" });
+            println!("Container cluster: {}", status.container);
             println!("  S3 endpoint: {}", status.endpoint);
-            println!("  Web console: {}", status.web_endpoint);
-            println!(
-                "  Services: {}/{}",
-                status.running_services, status.total_services
-            );
-            println!("  Root: {}", status.data_dir.display());
+            println!("  Web console: {}", status.web);
+            println!("  Containers: {}/{}", status.running, status.total);
+            println!("  Image: {}", status.image);
+            println!("  Root: {}", status.root.display());
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -181,48 +210,61 @@ async fn run_cluster(_cli: &Cli, verb: S3ClusterVerb) -> ExitCode {
 }
 
 async fn run_bucket(verb: S3BucketVerb) -> crowdb_console_shared::error::Result<Option<Vec<u8>>> {
-    let (root, method, bucket) = match verb {
-        S3BucketVerb::Put { root, bucket } => (root, Method::PUT, Some(bucket)),
-        S3BucketVerb::Delete { root, bucket } => (root, Method::DELETE, Some(bucket)),
-        S3BucketVerb::List { root } => (root, Method::GET, None),
-        S3BucketVerb::Get { root, bucket } => (root, Method::GET, Some(bucket)),
+    let (target, method, bucket) = match verb {
+        S3BucketVerb::Put { target, bucket } => (target, Method::PUT, Some(bucket)),
+        S3BucketVerb::Delete { target, bucket } => (target, Method::DELETE, Some(bucket)),
+        S3BucketVerb::List { target } => (target, Method::GET, None),
+        S3BucketVerb::Get { target, bucket } => (target, Method::GET, Some(bucket)),
     };
+    let root = super::container_cluster::resolve(&target, false).await?;
     let body = send_request(&root, method, bucket.as_deref(), None, &[], None, None).await?;
     Ok((!body.is_empty()).then_some(body))
 }
 
 async fn run_object(verb: S3ObjectVerb) -> crowdb_console_shared::error::Result<Option<Vec<u8>>> {
+    use super::container_cluster::resolve;
     match verb {
         S3ObjectVerb::Put {
-            root,
+            target,
             bucket,
             key,
             file,
             text,
             random_size,
-        } => put_object(&root, &bucket, &key, file, text, random_size).await,
+        } => {
+            let root = resolve(&target, false).await?;
+            put_object(&root, &bucket, &key, file, text, random_size).await
+        }
         S3ObjectVerb::Get {
-            root,
+            target,
             bucket,
             key,
             output,
             range,
-        } => get_object(&root, &bucket, &key, output, range).await,
-        S3ObjectVerb::Delete { root, bucket, key } => {
+        } => {
+            let root = resolve(&target, false).await?;
+            get_object(&root, &bucket, &key, output, range).await
+        }
+        S3ObjectVerb::Delete { target, bucket, key } => {
+            let root = resolve(&target, false).await?;
             send_request(&root, Method::DELETE, Some(&bucket), Some(&key), &[], None, None).await?;
             Ok(None)
         }
-        S3ObjectVerb::Head { root, bucket, key } => {
+        S3ObjectVerb::Head { target, bucket, key } => {
+            let root = resolve(&target, false).await?;
             send_request(&root, Method::HEAD, Some(&bucket), Some(&key), &[], None, None).await?;
             Ok(None)
         }
         S3ObjectVerb::List {
-            root,
+            target,
             bucket,
             prefix,
             limit,
             continuation,
-        } => list_objects(&root, &bucket, prefix, limit, continuation).await,
+        } => {
+            let root = resolve(&target, false).await?;
+            list_objects(&root, &bucket, prefix, limit, continuation).await
+        }
     }
 }
 

@@ -20,7 +20,7 @@ export const serviceLabels = {
 } as const;
 export type ServiceStep = { state: 'pending' | 'waiting' | 'deploying' | 'deployed' | 'failed' | 'warning' | 'disabled'; detail?: string };
 export type NodeServicePlan = Record<ServiceKind, ServiceStep>;
-export type ServiceOverrides = Partial<Record<ServiceKind, Partial<Omit<DeploymentDefaults, 'instance_id'>>>>;
+export type ServiceOverrides = Partial<Record<ServiceKind, Partial<Omit<DeploymentDefaults, 'instance_id'>> & { keepalive_interval_secs?: number }>>;
 export const newPlan = (): NodeServicePlan => Object.fromEntries(serviceOrder.map(kind => [kind, { state: 'pending' }])) as NodeServicePlan;
 
 /** Serializes default deployments across nodes so each step gets fresh port reservations.
@@ -41,6 +41,7 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
     Object.entries(groups).map(([id, value]) => [id, value.diskGroups.map(group => [group.id, value.disksByDg[group.id]?.map(disk => [disk.disk_id, disk.device_path])])])]);
   const stopped = useRef(false);
   const running = useRef<Promise<void>>(Promise.resolve());
+  const registrations = useRef<Promise<void>>(Promise.resolve());
   const overrides = useRef<Record<number, ServiceOverrides>>({});
   const update = useCallback((id: number, plan: NodeServicePlan) => {
     plansRef.current = { ...plansRef.current, [id]: plan };
@@ -81,22 +82,33 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
     void recovery.current.catch(() => {});
     return () => { disposed = true; };
   }, [enabled, update]);
-  const start = useCallback(async (id: number, selected?: ServiceKind[], serviceOverrides?: ServiceOverrides) => {
+  const start = useCallback((id: number, selected?: ServiceKind[], serviceOverrides?: ServiceOverrides) => {
     stopped.current = false;
-    let intended: NodeServicePlan | undefined;
-    try {
-      await recovery.current;
-      const previous = plansRef.current[id] ?? newPlan();
-      overrides.current[id] = serviceOverrides ?? overrides.current[id] ?? {};
-      const enabled = new Set(selected ?? serviceOrder.filter(kind => previous[kind].state !== 'disabled'));
-      intended = Object.fromEntries(serviceOrder.map(kind => [kind, !enabled.has(kind) ? { state: 'disabled' } : ['failed', 'warning', 'disabled'].includes(previous[kind].state) ? { state: 'pending' } : previous[kind]])) as NodeServicePlan;
-      await persist(id, intended);
-      wake.current();
-    } catch (error) { failProgress(id, String(error), intended); throw error; }
+    const registration = registrations.current.then(async () => {
+      await running.current;
+      if (stopped.current) return;
+      // Register against the latest completed reconciliation revision. Timer
+      // wakes cannot publish another progress write while this request runs.
+      busy.current = true;
+      let intended: NodeServicePlan | undefined;
+      try {
+        await recovery.current;
+        const previous = plansRef.current[id] ?? newPlan();
+        overrides.current[id] = serviceOverrides ?? overrides.current[id] ?? {};
+        const enabled = new Set(selected ?? serviceOrder.filter(kind => previous[kind].state !== 'disabled'));
+        intended = Object.fromEntries(serviceOrder.map(kind => [kind, !enabled.has(kind) ? { state: 'disabled' } : ['failed', 'warning', 'disabled'].includes(previous[kind].state) ? { state: 'pending' } : previous[kind]])) as NodeServicePlan;
+        await persist(id, intended);
+      } catch (error) { failProgress(id, String(error), intended); throw error; }
+      finally { busy.current = false; wake.current(); }
+    });
+    // The caller retains its failure; a later explicit Start can still run.
+    registrations.current = registration.then(() => {}, () => {});
+    return registration;
   }, [persist, failProgress]);
 
   const stop = useCallback(async () => {
     stopped.current = true;
+    await registrations.current;
     await running.current;
     plansRef.current = {};
     setPlans({});
@@ -160,7 +172,7 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
               else if (kind === 'chunk-kv' && existing.some(server => server.service_type === 'diskio' && !server.pid)) waiting = 'Waiting: restart registered DiskIO services before connecting chunk storage';
               else if (kind === 'chunk-kv' && new Set(existing.filter(server => server.service_type === 'diskio' && server.pid).map(server => server.node_id)).size < 2) waiting = 'Waiting: deploy DiskIO on at least two nodes for journal mirrors';
               else if (kind === 'access-server' && plan['chunk-kv'].state !== 'deployed' && !existing.some(server => server.service_type === 'chunk-kv' && server.pid)) waiting = 'Waiting: deploy Chunk-KV and initialize its catalog';
-              if (!waiting && (kind === 'chunkdb' || kind === 'chunk-kv')) {
+              if (!waiting && (kind === 'chunkdb' || kind === 'chunk-kv' || kind === 'access-server')) {
                 try {
                   const ownership = await serviceRequest('/chunk-storage-readiness', 'GET') as { ready: boolean; reason?: string };
                   if (!ownership.ready) waiting = ownership.reason ?? 'Waiting: publish live DiskIO disk-group ownership';
@@ -174,7 +186,7 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
                 if (disposed || stopped.current) break;
                 const value = { ...defaults[kind], ...(overrides.current[id]?.[kind] ?? {}) };
                 if (kind === 'paxos-kv') await deployServer(id, { rest_port: value.http_port!, rpc_port: value.rpc_port! });
-                else if (kind === 'diskdb') await deployDiskdb(id, { rpc_port: value.rpc_port! });
+                else if (kind === 'diskdb') await deployDiskdb(id, { rpc_port: value.rpc_port!, ...(value.keepalive_interval_secs === undefined ? {} : { keepalive_interval_secs: value.keepalive_interval_secs }) });
                 else await serviceRequest(`/nodes/${id}/services/deploy`, 'POST', {
                   kind, ...value, test_single_node: false,
                   ...(kind === 'diskio' ? { disk_group_id: diskGroup?.id ?? 0 } : {}),

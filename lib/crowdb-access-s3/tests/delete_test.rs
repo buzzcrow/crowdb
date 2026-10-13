@@ -3,9 +3,49 @@
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use crowdb_access_s3::delete::{validate_integrity, DeleteSelection, MAX_DELETE_BODY};
+
 use crowdb_access_s3::route::{classify_request, S3Operation};
 use crowdb_access_s3::{wire, S3ErrorCode};
 use hyper::{body::Bytes, header::HeaderValue};
+
+#[tokio::test]
+async fn ordered_results_arrive_before_later_deletions_and_drop_cancels_the_tail() {
+    use futures::StreamExt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::task::Poll;
+    let started = AtomicUsize::new(0);
+    let selection = DeleteSelection {
+        keys: vec![b"first".to_vec(), b"pending".to_vec(), b"tail".to_vec()],
+        quiet: false,
+    };
+    let results = selection
+        .stream(|key| {
+            let started = &started;
+            async move {
+                started.fetch_add(1, Ordering::Relaxed);
+                if key == b"pending" {
+                    return std::future::pending().await;
+                }
+                Ok(())
+            }
+        })
+        .unwrap();
+    assert_eq!(started.load(Ordering::Relaxed), 0, "validation cannot mutate");
+    let mut results = Box::pin(results);
+    let Poll::Ready(Some((key, result))) = futures::poll!(results.next()) else {
+        panic!("first result must not wait for the later pending deletion");
+    };
+    assert_eq!(key, b"first");
+    assert!(result.is_ok());
+    assert_eq!(started.load(Ordering::Relaxed), 1);
+    assert!(futures::poll!(results.next()).is_pending());
+    drop(results);
+    assert_eq!(
+        started.load(Ordering::Relaxed),
+        2,
+        "dropped streams cannot start the tail"
+    );
+}
 use hyper::{HeaderMap, Method};
 
 #[test]

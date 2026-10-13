@@ -64,10 +64,10 @@ void KqueueEngine::add_connection(int read_fd, int write_fd, Connection *conn)
     }
     // kqueue uses separate filters (EVFILT_READ, EVFILT_WRITE) on the
     // same fd, so read and write are already independent — no dup needed.
-    // Register read with udata = Connection* for zero-lock dispatch.
+    // Register read with a connection ID token for safe event resolution.
     int           flags = EV_ADD | (oneshot_ ? EV_ONESHOT : 0);
     struct kevent change;
-    EV_SET(&change, read_fd, EVFILT_READ, flags, 0, 0, conn);
+    EV_SET(&change, read_fd, EVFILT_READ, flags, 0, 0, reinterpret_cast<void *>(static_cast<uintptr_t>(conn->id())));
     ::kevent(kq_, &change, 1, nullptr, 0, nullptr);
 }
 
@@ -89,7 +89,7 @@ void KqueueEngine::arm_read(int read_fd, Connection *conn)
 {
     int           flags = EV_ADD | (oneshot_ ? EV_ONESHOT : 0);
     struct kevent change;
-    EV_SET(&change, read_fd, EVFILT_READ, flags, 0, 0, conn);
+    EV_SET(&change, read_fd, EVFILT_READ, flags, 0, 0, reinterpret_cast<void *>(static_cast<uintptr_t>(conn->id())));
     ::kevent(kq_, &change, 1, nullptr, 0, nullptr);
 }
 
@@ -98,7 +98,7 @@ void KqueueEngine::arm_write(int write_fd, Connection *conn)
     // kqueue uses EVFILT_WRITE on the same fd — independent from EVFILT_READ.
     int           flags = EV_ADD | (oneshot_ ? EV_ONESHOT : 0);
     struct kevent change;
-    EV_SET(&change, write_fd, EVFILT_WRITE, flags, 0, 0, conn);
+    EV_SET(&change, write_fd, EVFILT_WRITE, flags, 0, 0, reinterpret_cast<void *>(static_cast<uintptr_t>(conn->id())));
     ::kevent(kq_, &change, 1, nullptr, 0, nullptr);
 }
 
@@ -178,11 +178,10 @@ int KqueueEngine::wait(EngineEvent *out_events, int max_events, int timeout_ms)
             out_events[out++] = {SocketEvent::Timer, -1, nullptr};
         }
         else if (ev.filter == EVFILT_READ) {
-            // udata holds the Connection* (set in add_connection/arm_read).
-            // No mutex needed — the kernel passes it back directly.
-            auto *conn = static_cast<Connection *>(ev.udata);
-            if (conn != nullptr) {
-                out_events[out++] = {SocketEvent::Readable, static_cast<int>(ev.ident), conn};
+            // udata carries identity; the worker resolves and pins it.
+            const auto id = static_cast<int64_t>(reinterpret_cast<uintptr_t>(ev.udata));
+            if (id != 0) {
+                out_events[out++] = {SocketEvent::Readable, static_cast<int>(ev.ident), nullptr, id, false};
             }
             else {
                 // No udata — must be the listen socket.
@@ -190,8 +189,8 @@ int KqueueEngine::wait(EngineEvent *out_events, int max_events, int timeout_ms)
             }
         }
         else if (ev.filter == EVFILT_WRITE) {
-            auto *conn        = static_cast<Connection *>(ev.udata);
-            out_events[out++] = {SocketEvent::Writable, static_cast<int>(ev.ident), conn};
+            const auto id     = static_cast<int64_t>(reinterpret_cast<uintptr_t>(ev.udata));
+            out_events[out++] = {SocketEvent::Writable, static_cast<int>(ev.ident), nullptr, id, true};
         }
         // Check for error flags.
         if (ev.flags & EV_ERROR) {

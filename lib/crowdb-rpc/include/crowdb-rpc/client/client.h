@@ -39,57 +39,43 @@ enum class RpcError : uint8_t {
 // the response frame (nullptr on error) and the error code.
 using CompletionCallback = std::function<void(Frame *response, RpcError err)>;
 
-// Slab slot states for the callback-based completion pool.
-// FREE → PENDING_CLAIMED (submitter CAS — slot reserved, fields not yet written)
-// PENDING_CLAIMED → PENDING_READY (submitter store-release — fields published)
-// PENDING_READY → DONE (on_response CAS — fields read before CAS) or
-//   FREE (reaper/fail_all CAS — fields read before CAS)
-// DONE → PENDING_CLAIMED (next send() reuses the slot)
-// The two-phase PENDING split eliminates the write-before-CAS race: the
-// loser of the CAS falls to the map before touching any slot fields, so
-// the winner's fields are never corrupted. PENDING_CLAIMED is invisible
-// to on_response and the reaper (they only act on PENDING_READY), so a
-// slot whose fields are still being written is never timed out or
-// dispatched prematurely. on_response/reaper read fields BEFORE the CAS
-// (while the slot is PENDING_READY, no concurrent writer can touch it),
-// then CAS directly to DONE/FREE — claim + release in one op, no extra
-// store. The callback uses locals, so a rapid DONE→PENDING_CLAIMED cycle
-// by the callback's send() cannot corrupt the already-read fields.
-constexpr uint8_t SLOT_FREE            = 0;
-constexpr uint8_t SLOT_PENDING_READY   = 1;
-constexpr uint8_t SLOT_DONE            = 2;
-constexpr uint8_t SLOT_PENDING_CLAIMED = 3;
+// The low byte is the lifecycle state; upper bits identify a reuse generation.
+// READY -> PROCESSING claims exclusive field access before completion. Only
+// FREE/DONE can be reused, so delayed cancellation cannot retire a newer call.
+constexpr uint64_t SLOT_FREE            = 0;
+constexpr uint64_t SLOT_PENDING_READY   = 1;
+constexpr uint64_t SLOT_DONE            = 2;
+constexpr uint64_t SLOT_PENDING_CLAIMED = 3;
+constexpr uint64_t SLOT_PROCESSING      = 4;
+constexpr uint64_t SLOT_STATE_MASK      = 255;
 
-// A pre-allocated completion slot for the callback-based call path.
-// Indexed by request_id & pool_mask (pool size = power of two). This
-// replaces the folly map + per-call heap allocation for high-throughput
-// callers (bench). The slot is written by the submitter thread and read
-// by the I/O worker thread; the atomic state serializes access.
-// deadline_ns: 0 = no timeout (bench mode); >0 = steady-clock nanoseconds
-// at which the reaper should fail this slot. Written by the submitter
-// before state.store(PENDING, release); read by the reaper after
-// state.load(acquire) == PENDING — the release-acquire pair on state
-// provides visibility without atomics on deadline_ns itself (but the
-// atomic wrapper avoids TSan false positives).
 struct CompletionSlot
 {
-    std::atomic<uint8_t>   state{SLOT_FREE};
-    uint64_t               request_id{0}; // set when PENDING
-    crowdb_rpc_on_complete cb{nullptr};   // C ABI callback
-    void                  *user_data{nullptr};
-    std::atomic<uint64_t>  deadline_ns{0};
-    Connection            *conn{nullptr}; // for per-connection fail_all
+    std::atomic<uint64_t>     state{SLOT_FREE};
+    std::atomic<uint64_t>     request_id{0};
+    crowdb_rpc_on_complete    cb{nullptr};
+    void                     *user_data{nullptr};
+    std::atomic<uint64_t>     deadline_ns{0};
+    std::atomic<Connection *> conn{nullptr};
 };
 
-// Map entry for the pending map (oneshot call() path + slab fallback).
-// deadline_ns = 0 means no timeout (oneshot path — Rust handles its own
-// timeout via oneshot channels). deadline_ns > 0 means the C++ reaper
-// should fail this entry (slab fallback path).
-struct PendingEntry
+// Map fallback entries share an immutable callback and one atomic ownership
+// claim. Iterators can outlive erasure without racing callback moves.
+struct PendingCompletion
 {
     CompletionCallback cb;
-    uint64_t           deadline_ns{0};
-    Connection        *conn{nullptr}; // for per-connection fail_all
+    std::atomic<bool>  claimed{false};
+
+    explicit PendingCompletion(CompletionCallback callback) : cb(std::move(callback))
+    {
+    }
+};
+
+struct PendingEntry
+{
+    std::shared_ptr<PendingCompletion> completion;
+    uint64_t                           deadline_ns{0};
+    Connection                        *conn{nullptr};
 };
 
 // RpcClient manages request/response correlation. Each call allocates
@@ -118,7 +104,8 @@ class RpcClient
     // must be sized (set_completion_pool_size) before use. If the reaper
     // is active (start_reaper), each call gets a deadline = now +
     // timeout_ns; timed-out entries are failed with Timeout. Returns
-    // true on success, false on submit error (callback NOT invoked).
+    // true when completion owns user_data, including a disconnect racing
+    // submit rejection; false guarantees the callback was not invoked.
     bool send(Transport *transport, Connection *conn, uint64_t request_id, Buffer *control, Buffer *data,
               uint16_t msg_type, crowdb_rpc_on_complete cb, void *user_data);
 

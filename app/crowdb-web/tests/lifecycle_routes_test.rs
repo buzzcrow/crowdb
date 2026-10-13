@@ -4,14 +4,14 @@
 //! Integration coverage for the physical tree (A3) routes: rack + node
 //! CRUD, rack detail, rack-scoped node add, node detail, node-addressed
 //! server lifecycle. The CRUD path runs without any upstream server.
-//! The deploy path requires the `crowdb-kv-server` binary and skips
-//! silently otherwise.
+//! Workspace/reset tests use a fake child exposing only a health stub. Packaged KV
+//! deployment/restart/stop acceptance belongs to the release container tests.
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use crowdb_console_shared::lifecycle::{crowdb_kv_server_bin, stop_pid_with_timeout};
+use crowdb_console_shared::lifecycle::stop_pid_with_timeout;
 use crowdb_console_shared::ConsoleConfig;
 use crowdb_web::{router, AppState};
 use serde_json::{json, Value};
@@ -225,19 +225,13 @@ async fn rack_node_crud_through_web_routes() {
 
 #[tokio::test]
 async fn multiple_racks_and_nodes_create_expected_workspaces() {
-    let bin = match crowdb_kv_server_bin() {
-        Some(p) if p.exists() => p,
-        _ => {
-            eprintln!("skipping: crowdb-kv-server binary not built");
-            return;
-        }
-    };
-
     let dir = tempdir("multi-workspace");
     let cfg_path = dir.join("console.toml");
     let addr = spawn_web_with_path(cfg_path.clone()).await;
     let base = format!("http://{addr}");
     let client = reqwest::Client::new();
+    let stub = TestChildStub::new(&dir);
+    let bin = &stub.binary;
 
     let (s, _) = json_post(
         &client,
@@ -327,167 +321,10 @@ async fn multiple_racks_and_nodes_create_expected_workspaces() {
 }
 
 #[tokio::test]
-async fn deploy_then_stop_local_server() {
-    let bin = match crowdb_kv_server_bin() {
-        Some(p) if p.exists() => p,
-        _ => {
-            eprintln!("skipping: crowdb-kv-server binary not built");
-            return;
-        }
-    };
-
-    let dir = tempdir("deploy");
-    let cfg_path = dir.join("console.toml");
-    let addr = spawn_web_with_path(cfg_path.clone()).await;
-    let base = format!("http://{addr}");
-    let client = reqwest::Client::new();
-    let mut guard = ProcessGuard {
-        pids: BTreeMap::new(),
-    };
-
-    // Bootstrap a rack + local-fork node via the API.
-    let (s, _) = json_post(&client, &format!("{base}/api/racks"), json!({ "id": 1 })).await;
-    assert_eq!(s.as_u16(), 201);
-    let (s, _) = json_post(
-        &client,
-        &format!("{base}/api/nodes"),
-        json!({ "id": 1, "rack_id": 1, "host": "127.0.0.1", "ssh_user": "" }),
-    )
-    .await;
-    assert_eq!(s.as_u16(), 201);
-
-    // Deploy a server via node-addressed route.
-    let rest_port = pick_free_port();
-    let rpc_port = pick_free_port();
-    let (s, v) = json_post(
-        &client,
-        &format!("{base}/api/nodes/1/server/deploy"),
-        json!({
-            "rest_port": rest_port,
-            "rpc_port": rpc_port,
-            "binary": bin.to_string_lossy().to_string(),
-            "election_profile": "test",
-        }),
-    )
-    .await;
-    assert!(s.is_success(), "deploy: {s} {v}");
-    assert_eq!(v["node_id"], 1);
-    assert!(v["pid"].as_u64().unwrap() > 0);
-    let pid = u32::try_from(v["pid"].as_u64().unwrap()).unwrap();
-    guard.pids.insert("n1".into(), pid);
-    assert!(dir.join("N-1/bin").is_dir());
-    assert!(dir.join("N-1/log").is_dir());
-    assert!(std::fs::read_dir(dir.join("N-1/bin")).unwrap().next().is_some());
-    assert!(dir
-        .join(format!("N-1/log/crowdb-kv-server-{pid}.out.log"))
-        .exists());
-
-    // GET /api/nodes/:id/server confirms deployment.
-    let (s, v) = json_get(&client, &format!("{base}/api/nodes/1/server")).await;
-    assert!(s.is_success(), "get server: {s} {v}");
-    assert_eq!(v["url"], format!("http://127.0.0.1:{rest_port}"));
-
-    // GET /api/nodes/:id — node detail shows has_server=true.
-    let (_, v) = json_get(&client, &format!("{base}/api/nodes/1")).await;
-    assert_eq!(v["has_server"], true);
-
-    // A second deploy onto the same node fails with 409.
-    let (s2, _) = json_post(
-        &client,
-        &format!("{base}/api/nodes/1/server/deploy"),
-        json!({
-            "rest_port": pick_free_port(),
-            "rpc_port": pick_free_port(),
-            "binary": bin.to_string_lossy().to_string(),
-            "election_profile": "test",
-        }),
-    )
-    .await;
-    assert_eq!(s2.as_u16(), 409);
-
-    // Stop via node-addressed route.
-    let (s, v) = json_post(&client, &format!("{base}/api/nodes/1/server/stop"), json!({})).await;
-    assert!(s.is_success(), "stop: {s} {v}");
-
-    // GET /api/nodes/:id/server — declaration remains, but runtime pid is gone.
-    let (s, v) = json_get(&client, &format!("{base}/api/nodes/1/server")).await;
-    assert_eq!(s.as_u16(), 200);
-    assert!(
-        v.get("pid").is_none() || v["pid"].is_null(),
-        "pid should be cleared after stop: {v}"
-    );
-}
-
-#[tokio::test]
-async fn deploy_then_restart_local_server() {
-    let bin = match crowdb_kv_server_bin() {
-        Some(p) if p.exists() => p,
-        _ => {
-            eprintln!("skipping: crowdb-kv-server binary not built");
-            return;
-        }
-    };
-
-    let dir = tempdir("restart");
-    let cfg_path = dir.join("console.toml");
-    let addr = spawn_web_with_path(cfg_path.clone()).await;
-    let base = format!("http://{addr}");
-    let client = reqwest::Client::new();
-    let mut guard = ProcessGuard {
-        pids: BTreeMap::new(),
-    };
-
-    let (s, _) = json_post(&client, &format!("{base}/api/racks"), json!({ "id": 1 })).await;
-    assert_eq!(s.as_u16(), 201);
-    let (s, _) = json_post(
-        &client,
-        &format!("{base}/api/nodes"),
-        json!({ "id": 1, "rack_id": 1, "host": "127.0.0.1", "ssh_user": "" }),
-    )
-    .await;
-    assert_eq!(s.as_u16(), 201);
-
-    let rest_port = pick_free_port();
-    let rpc_port = pick_free_port();
-    let (s, v) = json_post(
-        &client,
-        &format!("{base}/api/nodes/1/server/deploy"),
-        json!({
-            "rest_port": rest_port,
-            "rpc_port": rpc_port,
-            "binary": bin.to_string_lossy().to_string(),
-            "election_profile": "test",
-        }),
-    )
-    .await;
-    assert!(s.is_success(), "deploy: {s} {v}");
-    let old_pid = u32::try_from(v["pid"].as_u64().unwrap()).unwrap();
-    guard.pids.insert("n1-old".into(), old_pid);
-
-    let (s, v) = json_post(&client, &format!("{base}/api/nodes/1/server/restart"), json!({})).await;
-    assert!(s.is_success(), "restart: {s} {v}");
-    let new_pid = u32::try_from(v["pid"].as_u64().unwrap()).unwrap();
-    guard.pids.insert("n1-new".into(), new_pid);
-    assert_ne!(new_pid, old_pid, "restart should replace the process");
-    assert_eq!(
-        v["mgmt_url"],
-        format!("http://127.0.0.1:{rest_port}"),
-        "restart reuses recorded ports"
-    );
-
-    // Server entry now reflects the new pid.
-    let (_, v) = json_get(&client, &format!("{base}/api/nodes/1/server")).await;
-    assert_eq!(v["pid"].as_u64().unwrap(), u64::from(new_pid));
-
-    // Cleanup via API, then guard handles any survivors.
-    let _ = json_post(&client, &format!("{base}/api/nodes/1/server/stop"), json!({})).await;
-}
-
-#[tokio::test]
 async fn reset_waits_for_owned_children_before_removing_workspaces() {
-    let bin = crowdb_kv_server_bin().expect("build crowdb-kv-server before acceptance");
-    assert!(bin.exists());
     let dir = tempdir("reset-waits");
+    let stub = TestChildStub::new(&dir);
+    let bin = &stub.binary;
     let addr = spawn_web_with_path(dir.join("console.toml")).await;
     let base = format!("http://{addr}");
     let client = reqwest::Client::new();
@@ -533,4 +370,35 @@ async fn reset_waits_for_owned_children_before_removing_workspaces() {
         );
     }
     guard.pids.clear();
+}
+
+struct TestChildStub {
+    binary: std::path::PathBuf,
+}
+
+impl TestChildStub {
+    fn new(dir: &std::path::Path) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let binary = dir.join("fake-child");
+        std::fs::write(
+            &binary,
+            r#"#!/usr/bin/env python3
+import http.server
+import sys
+port = int(sys.argv[sys.argv.index("--management-port") + 1])
+class Health(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b'{"status":"ok"}'
+        self.send_response(200 if self.path == "/health" else 404)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        Self { binary }
+    }
 }

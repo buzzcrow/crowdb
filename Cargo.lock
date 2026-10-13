@@ -688,6 +688,7 @@ dependencies = [
  "crowdb-kv-client",
  "crowdb-protocol",
  "flatbuffers",
+ "futures",
  "hmac",
  "httpdate",
  "hyper",
@@ -806,7 +807,6 @@ dependencies = [
  "async-trait",
  "bytes",
  "clap",
- "crowdb-chunk-kv-server",
  "crowdb-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
@@ -831,10 +831,10 @@ dependencies = [
  "crowdb-chunk-kv-server",
  "crowdb-chunk-stream",
  "crowdb-common",
+ "crowdb-kv",
  "crowdb-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
- "crowdb-test-harness",
  "crowdb-tree-ffi",
  "serde",
  "serde_json",
@@ -976,6 +976,8 @@ dependencies = [
  "async-trait",
  "axum",
  "crowdb-chunkdb-client",
+ "crowdb-console-shared",
+ "crowdb-kv",
  "crowdb-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
@@ -988,10 +990,12 @@ dependencies = [
  "russh",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 1.0.69",
  "tokio",
  "toml",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -1011,6 +1015,7 @@ dependencies = [
  "crowdb-diskdb",
  "crowdb-diskdb-client",
  "crowdb-diskio-client",
+ "crowdb-kv",
  "crowdb-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
@@ -1019,7 +1024,6 @@ dependencies = [
  "flatbuffers",
  "futures",
  "rand 0.9.5",
- "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -1060,11 +1064,8 @@ dependencies = [
  "crowdb-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
- "crowdb-test-harness",
  "flatbuffers",
  "futures",
- "reqwest",
- "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -1156,19 +1157,24 @@ dependencies = [
 name = "crowdb-monitor"
 version = "0.3.0"
 dependencies = [
+ "axum",
  "clap",
+ "crowdb-console-shared",
  "crowdb-diskio-client",
  "crowdb-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
  "crowdb-test-harness",
  "flatbuffers",
+ "if-addrs 0.13.4",
+ "mdns-sd",
  "rand 0.8.6",
  "reqwest",
  "rustix",
  "serde",
  "serde_json",
  "sha2",
+ "ssh-key",
  "thiserror 2.0.18",
  "tokio",
  "toml",
@@ -1186,6 +1192,7 @@ dependencies = [
  "flatbuffers",
  "fs2",
  "getrandom 0.2.17",
+ "lz4_flex",
  "serde",
  "serde_json",
  "sha2",
@@ -1213,17 +1220,8 @@ dependencies = [
 name = "crowdb-test-harness"
 version = "0.3.0"
 dependencies = [
- "crowdb-chunkdb-client",
- "crowdb-diskdb-client",
- "crowdb-diskio-client",
- "crowdb-kv-client",
  "crowdb-protocol",
- "crowdb-rpc-ffi",
- "crowdb-tree-ffi",
- "ctor",
- "reqwest",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -1271,6 +1269,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tokio",
+ "toml",
  "tower",
  "tower-http",
  "tracing",
@@ -1446,6 +1445,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "e2e-test"
+version = "0.3.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "base64",
+ "bincode",
+ "bytes",
+ "chrono",
+ "crowdb-access-dataset",
+ "crowdb-access-iceberg",
+ "crowdb-access-s3",
+ "crowdb-access-server",
+ "crowdb-chunk-client",
+ "crowdb-chunk-kv-client",
+ "crowdb-chunk-stream",
+ "crowdb-chunkdb",
+ "crowdb-chunkdb-client",
+ "crowdb-common",
+ "crowdb-console-shared",
+ "crowdb-diskdb-client",
+ "crowdb-diskio-client",
+ "crowdb-kv",
+ "crowdb-kv-client",
+ "crowdb-monitor",
+ "crowdb-protocol",
+ "crowdb-rpc-ffi",
+ "flatbuffers",
+ "futures",
+ "hmac",
+ "md-5",
+ "percent-encoding",
+ "reqwest",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "ecdsa"
 version = "0.16.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1582,6 +1621,17 @@ checksum = "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
 dependencies = [
  "crc32fast",
  "miniz_oxide",
+]
+
+[[package]]
+name = "flume"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e139bc46ca777eb5efaf62df0ab8cc5fd400866427e56c68b22e414e53bd3be"
+dependencies = [
+ "futures-core",
+ "futures-sink",
+ "spin",
 ]
 
 [[package]]
@@ -2164,6 +2214,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "if-addrs"
+version = "0.13.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69b2eeee38fef3aa9b4cc5f1beea8a2444fc00e7377cafae396de3f5c2065e24"
+dependencies = [
+ "libc",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "if-addrs"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0a05c691e1fae256cf7013d99dad472dc52d5543322761f83ec8d47eab40d2b"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "indexmap"
 version = "2.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2393,6 +2463,21 @@ name = "md5"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "490cc448043f947bae3cbee9c203358d62dbee0db12107a74be5c30ccfd09771"
+
+[[package]]
+name = "mdns-sd"
+version = "0.21.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "127d3355da0615643c88c885e29a1ccb29ca4b1ca1f2e44b3caed2e728a796aa"
+dependencies = [
+ "fastrand",
+ "flume",
+ "if-addrs 0.15.0",
+ "log",
+ "mio",
+ "socket-pktinfo",
+ "socket2",
+]
 
 [[package]]
 name = "memchr"
@@ -3662,6 +3747,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "199905e6153d6405f9728fe44daace35f8f837bbf830bb6e85fbd5828709a886"
 
 [[package]]
+name = "socket-pktinfo"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "612942246d0cc239cfd83af1dfd39be47f649208a3524e5e9da651910128e0ac"
+dependencies = [
+ "libc",
+ "socket2",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "socket2"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3676,6 +3772,9 @@ name = "spin"
 version = "0.9.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
+dependencies = [
+ "lock_api",
+]
 
 [[package]]
 name = "spki"
@@ -4603,6 +4702,15 @@ name = "windows-sys"
 version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
+dependencies = [
+ "windows-targets 0.52.6",
+]
+
+[[package]]
+name = "windows-sys"
+version = "0.59.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
 dependencies = [
  "windows-targets 0.52.6",
 ]

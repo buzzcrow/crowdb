@@ -1,0 +1,9 @@
+# Copyright 2026-present Gian <crow.db@outlook.com>
+# Licensed under the Apache License, Version 2.0.
+version = 4
+root = "/var/lib/crowdb-containerd"
+state = "/run/crowdb-containerd"
+disabled_plugins = ["io.containerd.cri.v1.images", "io.containerd.cri.v1.runtime", "io.containerd.grpc.v1.cri", "io.containerd.podsandbox.controller.v1.podsandbox"]
+
+[grpc]
+address = "/run/crowdb-containerd/containerd.sock"

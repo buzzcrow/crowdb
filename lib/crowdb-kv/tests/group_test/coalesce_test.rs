@@ -69,6 +69,50 @@ async fn coalesce_first_op_starts_immediately() {
     assert!(matches!(r, ProposeResult::Chosen { .. }), "got {r:?}");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn enqueue_during_empty_drain_is_never_discarded() {
+    struct TestReleaseDrain(Arc<PxGroup>);
+    impl Drop for TestReleaseDrain {
+        fn drop(&mut self) {
+            self.0.release_coalesce_empty_drain_for_tests();
+        }
+    }
+    let group = coalesce_group(32);
+    group.arm_coalesce_empty_drain_for_tests();
+    let release = TestReleaseDrain(Arc::clone(&group));
+    let first = group
+        .propose(encode_put(b"drain-first", b"v1"), Some(1), Some(1))
+        .await;
+    assert!(matches!(first, ProposeResult::Chosen { .. }));
+    tokio::time::timeout(std::time::Duration::from_millis(500), async {
+        while !group.coalesce_empty_drain_paused_for_tests() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("empty drain did not pause");
+    let other = Arc::clone(&group);
+    let pending = tokio::spawn(async move {
+        other
+            .propose(encode_put(b"drain-second", b"v2"), Some(2), Some(1))
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_millis(500), async {
+        while !pending.is_finished() && group.coalesce_pending_count_for_tests() == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("second enqueue did not reach the queue");
+    drop(release);
+    let result = tokio::time::timeout(std::time::Duration::from_millis(500), pending)
+        .await
+        .expect("enqueue waited for the watchdog")
+        .unwrap();
+    assert!(matches!(result, ProposeResult::Chosen { .. }), "got {result:?}");
+    assert!(group.local_replica().learner.dedup_lookup(2, 1).is_some());
+}
+
 #[tokio::test]
 async fn coalesce_ops_during_round_share_next_slot() {
     let group = coalesce_group(32);

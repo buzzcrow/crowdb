@@ -1,5 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
+#[path = "common/memory_kv.rs"]
+mod memory_kv;
+
 use axum::{body::Body, http::Request};
 use crowdb_console_shared::{
     config::{ServerEntry, ServiceType},
@@ -29,7 +32,7 @@ async fn readiness(app: &axum::Router) -> Value {
 
 #[tokio::test]
 async fn chunk_storage_requires_live_complete_ownership_even_when_diskio_pid_is_alive() {
-    let cluster = crowdb_test_harness::cluster::KvCluster::start().await;
+    let cluster = memory_kv::TestKvCluster::start().await;
     let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
         cluster.mgmt_endpoints.clone(),
     )));

@@ -36,17 +36,16 @@ static void on_readable_impl(Connection *conn, int fd, uint8_t *recv_buf, size_t
                              std::vector<Connection *> &pending_writes);
 static bool on_writable_impl(Connection *conn, int fd, TransportStats *stats);
 
-static void close_connection_fds(SocketEngine *engine, Connection *conn)
+static void close_connection_fds(SocketEngine *engine, Connection *conn, SocketTransport *transport)
 {
     int read_fd  = static_cast<int>(conn->transport_handle);
     int write_fd = conn->write_fd;
-    if (read_fd < 0) {
+    if (read_fd < 0 || !conn->claim_socket_cleanup()) {
         return;
     }
 
     engine->remove_connection(read_fd, write_fd);
-    conn->transport_handle = static_cast<uint64_t>(-1);
-    conn->write_fd         = -1;
+    transport->unregister_conn(conn);
     ::close(read_fd);
     if (write_fd >= 0 && write_fd != read_fd) {
         ::close(write_fd);
@@ -80,7 +79,7 @@ void Worker::close_connections()
     for (auto &[fd, conn] : connections_) {
         (void)fd;
         conn->close();
-        close_connection_fds(engine_, conn.get());
+        close_connection_fds(engine_, conn.get(), transport_);
     }
     connections_.clear();
 }
@@ -133,9 +132,9 @@ void Worker::add_connection(int read_fd, int write_fd, std::shared_ptr<Connectio
     conn->io_worker = this;
     {
         std::scoped_lock lock(conns_mu_);
-        connections_[read_fd] = std::move(conn);
+        connections_[read_fd] = conn;
     }
-    engine_->add_connection(read_fd, write_fd, connections_.at(read_fd).get());
+    engine_->add_connection(read_fd, write_fd, conn.get());
     // arm_read is called by add_connection (EPOLLIN armed at ADD time).
     // In ONESHOT mode, the read fd is already armed.
 }
@@ -153,7 +152,7 @@ void Worker::run_loop()
     // fds closed during this iteration — collected for map erase after
     // the pending-write flush (erasing sooner would free the Connection
     // while raw pointers in pending_write_conns_ still reference it).
-    std::vector<int> closed_fds;
+    ClosedConnections closed_fds;
 
     // Wrap the entire event loop in try/catch to prevent C++ exceptions
     // from propagating through the thread boundary (which would call
@@ -164,141 +163,196 @@ void Worker::run_loop()
             int n = engine_->wait(events, MAX_EVENTS, 1000); // 1s timeout
             closed_fds.clear();
 
+            // Pin each kernel event by its non-reused connection identity. Another
+            // worker may close and unregister it while this batch is in flight.
+            std::array<std::shared_ptr<Connection>, MAX_EVENTS> retained;
             for (int i = 0; i < n; i++) {
-                const auto &ev = events[i];
+                auto &ev = events[i];
+                if (ev.connection_id != 0) {
+                    retained[i] = transport_->lookup_connection_id(ev.connection_id);
+                    if (!retained[i]) {
+                        continue;
+                    }
+                    ev.conn = retained[i].get();
+                    ev.fd   = ev.write_side ? ev.conn->write_fd : static_cast<int>(ev.conn->transport_handle);
+                    if (!ev.conn->is_open()) {
+                        int fd = static_cast<int>(ev.conn->transport_handle);
+                        close_connection_fds(engine_, ev.conn, transport_);
+                        closed_fds.emplace_back(fd, ev.connection_id);
+                        continue;
+                    }
+                }
                 switch (ev.type) {
                 case SocketEvent::Notify:
-                    // Cross-thread submit: drain the shared pending list
-                    // and batch writev. Any worker that picks up the
-                    // Notify can drain all pending sends.
-                    {
-                        std::vector<Connection *> pending;
-                        {
-                            std::scoped_lock lock(transport_->cross_thread_mu_);
-                            pending.swap(transport_->cross_thread_pending_);
-                            transport_->cross_thread_notified_.store(false, std::memory_order_release);
-                        }
-                        for (Connection *c : pending) {
-                            if (!c->is_open()) {
-                                continue;
-                            }
-                            int wfd = c->write_fd >= 0 ? c->write_fd : static_cast<int>(c->transport_handle);
-                            if (!c->try_send(wfd, stats_)) {
-                                // Partial/EAGAIN — arm write for retry.
-                                engine_->arm_write(wfd, c);
-                            }
-                        }
-                    }
+                    drain_notified();
                     break;
                 case SocketEvent::Timer:
-                    // Scheduled tasks fire here (Phase 3).
                     break;
                 case SocketEvent::Readable:
-                    if (ev.conn != nullptr && ev.conn->is_open()) {
-                        on_readable_impl(ev.conn, ev.fd, recv_buf_.data(), recv_buf_.size(), pending_write_conns_);
-                        if (!ev.conn->is_open()) {
-                            // Connection closed (EOF or fatal read error).
-                            // Remove from epoll and close the fd to stop
-                            // level-triggered re-firing on the dead fd.
-                            // Map erase is deferred to after the pending-write
-                            // flush to avoid dangling raw pointers.
-                            CRB_LOG_INFO("rpc transport: connection closed (read) fd={} conn_id={} peer={}", ev.fd,
-                                         static_cast<long long>(ev.conn->id()), ev.conn->name());
-                            close_connection_fds(engine_, ev.conn);
-                            closed_fds.push_back(ev.fd);
-                        }
-                        else if (engine_->oneshot()) {
-                            // In one-shot mode, re-arm read after processing
-                            // (EV_ONESHOT consumed the event). Without this, the
-                            // connection goes silent — no more read events fire.
-                            engine_->arm_read(ev.fd, ev.conn);
-                        }
-                    }
+                    process_readable(ev, closed_fds);
                     break;
                 case SocketEvent::Writable:
-                    if (ev.conn != nullptr && ev.conn->is_open()) {
-                        // ev.fd is the write fd (dup'd). try_send uses it.
-                        bool all_sent = on_writable_impl(ev.conn, ev.fd, stats_);
-                        if (!ev.conn->is_open()) {
-                            // Connection closed during write (hard error).
-                            CRB_LOG_INFO("rpc transport: connection closed (write) fd={} conn_id={} peer={}", ev.fd,
-                                         static_cast<long long>(ev.conn->id()), ev.conn->name());
-                            int rfd = static_cast<int>(ev.conn->transport_handle);
-                            close_connection_fds(engine_, ev.conn);
-                            closed_fds.push_back(rfd);
-                        }
-                        else if (all_sent) {
-                            // Queue empty — disarm write (MOD with 0 events).
-                            // Read fd is independent — no need to re-arm read.
-                            engine_->disarm_write(ev.fd, ev.conn);
-                        }
-                        else {
-                            // EAGAIN/partial — re-arm write for retry.
-                            // Non-oneshot: level-triggered EPOLLOUT stays
-                            // armed, no MOD needed (kernel only fires when
-                            // socket becomes writable again).
-                            if (engine_->oneshot()) {
-                                engine_->arm_write(ev.fd, ev.conn);
-                            }
-                        }
-                    }
+                    process_writable(ev, closed_fds);
                     break;
                 case SocketEvent::Error:
-                    if (ev.conn != nullptr && ev.conn->is_open()) {
-                        CRB_LOG_WARN("worker: socket error event fd={} conn_id={} name={}", ev.fd,
-                                     static_cast<long long>(ev.conn->id()), ev.conn->name());
-                        int rfd = static_cast<int>(ev.conn->transport_handle);
-                        ev.conn->close();
-                        close_connection_fds(engine_, ev.conn);
-                        closed_fds.push_back(rfd);
-                    }
+                    process_error(ev, closed_fds);
                     break;
                 case SocketEvent::Accept:
-                    // Listen socket readable — accept new connections.
-                    // The server's accept handler loops accept() until
-                    // EAGAIN, creating connections and registering them.
                     transport_->on_accept(ev.fd);
                     break;
                 }
             }
 
-            // Send aggregation: after processing all events, batch writev
-            // pending responses collected during on_readable. This coalesces
-            // multiple responses (from multiple frames read in one read())
-            // into a single writev per connection.
-            if (!pending_write_conns_.empty()) {
-                for (Connection *conn : pending_write_conns_) {
-                    if (!conn->is_open()) {
-                        continue;
-                    }
-                    int rfd = static_cast<int>(conn->transport_handle);
-                    int wfd = conn->write_fd >= 0 ? conn->write_fd : rfd;
-                    if (!conn->try_send(wfd, stats_)) {
-                        // Partial write or EAGAIN — arm write for remaining.
-                        engine_->arm_write(wfd, conn);
-                    }
-                    if (!conn->is_open()) {
-                        close_connection_fds(engine_, conn);
-                        closed_fds.push_back(rfd);
-                    }
-                }
-                pending_write_conns_.clear();
-            }
-
-            // Now safe to release closed connections — pending_write_conns_
-            // has been flushed and won't access the raw pointers.
-            if (!closed_fds.empty()) {
-                std::scoped_lock lock(conns_mu_);
-                for (int fd : closed_fds) {
-                    connections_.erase(fd);
-                }
-            }
+            flush_responses(closed_fds);
+            retire_closed(closed_fds);
         }
         CRB_LOG_INFO("worker {} event loop exited", id_);
     }
     catch (const std::exception &e) {
     }
     catch (...) {
+    }
+}
+
+void Worker::drain_notified()
+{
+    // Cross-thread submit: drain the shared pending list
+    // and batch writev. Any worker that picks up the
+    // Notify can drain all pending sends.
+    {
+        std::vector<Connection *> pending;
+        {
+            std::scoped_lock lock(transport_->cross_thread_mu_);
+            pending.swap(transport_->cross_thread_pending_);
+            transport_->cross_thread_notified_.store(false, std::memory_order_release);
+        }
+        for (Connection *c : pending) {
+            auto pinned = transport_->lookup_conn(c);
+            if (!pinned || !*pinned) {
+                continue;
+            }
+            c = pinned->get();
+            if (!c->is_open()) {
+                continue;
+            }
+            int wfd = c->write_fd >= 0 ? c->write_fd : static_cast<int>(c->transport_handle);
+            if (!c->try_send(wfd, stats_)) {
+                // Partial/EAGAIN — arm write for retry.
+                engine_->arm_write(wfd, c);
+            }
+        }
+    }
+}
+
+void Worker::process_readable(const EngineEvent &ev, ClosedConnections &closed_fds)
+{
+    if (ev.conn != nullptr && ev.conn->is_open()) {
+        on_readable_impl(ev.conn, ev.fd, recv_buf_.data(), recv_buf_.size(), pending_write_conns_);
+        if (!ev.conn->is_open()) {
+            // Connection closed (EOF or fatal read error).
+            // Remove from epoll and close the fd to stop
+            // level-triggered re-firing on the dead fd.
+            // Map erase is deferred to after the pending-write
+            // flush to avoid dangling raw pointers.
+            CRB_LOG_INFO("rpc transport: connection closed (read) fd={} conn_id={} peer={}", ev.fd,
+                         static_cast<long long>(ev.conn->id()), ev.conn->name());
+            close_connection_fds(engine_, ev.conn, transport_);
+            closed_fds.emplace_back(ev.fd, ev.conn->id());
+        }
+        else if (engine_->oneshot()) {
+            // In one-shot mode, re-arm read after processing
+            // (EV_ONESHOT consumed the event). Without this, the
+            // connection goes silent — no more read events fire.
+            engine_->arm_read(ev.fd, ev.conn);
+        }
+    }
+}
+
+void Worker::process_writable(const EngineEvent &ev, ClosedConnections &closed_fds)
+{
+    if (ev.conn != nullptr && ev.conn->is_open()) {
+        // ev.fd is the write fd (dup'd). try_send uses it.
+        bool all_sent = on_writable_impl(ev.conn, ev.fd, stats_);
+        if (!ev.conn->is_open()) {
+            // Connection closed during write (hard error).
+            CRB_LOG_INFO("rpc transport: connection closed (write) fd={} conn_id={} peer={}", ev.fd,
+                         static_cast<long long>(ev.conn->id()), ev.conn->name());
+            int rfd = static_cast<int>(ev.conn->transport_handle);
+            close_connection_fds(engine_, ev.conn, transport_);
+            closed_fds.emplace_back(rfd, ev.conn->id());
+        }
+        else if (all_sent) {
+            // Queue empty — disarm write (MOD with 0 events).
+            // Read fd is independent — no need to re-arm read.
+            engine_->disarm_write(ev.fd, ev.conn);
+        }
+        else {
+            // EAGAIN/partial — re-arm write for retry.
+            // Non-oneshot: level-triggered EPOLLOUT stays
+            // armed, no MOD needed (kernel only fires when
+            // socket becomes writable again).
+            if (engine_->oneshot()) {
+                engine_->arm_write(ev.fd, ev.conn);
+            }
+        }
+    }
+}
+
+void Worker::process_error(const EngineEvent &ev, ClosedConnections &closed_fds)
+{
+    if (ev.conn != nullptr && ev.conn->is_open()) {
+        CRB_LOG_WARN("worker: socket error event fd={} conn_id={} name={}", ev.fd,
+                     static_cast<long long>(ev.conn->id()), ev.conn->name());
+        int       rfd          = static_cast<int>(ev.conn->transport_handle);
+        int       socket_error = 0;
+        socklen_t error_size   = sizeof(socket_error);
+        if (::getsockopt(rfd, SOL_SOCKET, SO_ERROR, &socket_error, &error_size) == 0 && socket_error == ECONNREFUSED) {
+            ev.conn->mark_connect_refused();
+        }
+        ev.conn->close();
+        close_connection_fds(engine_, ev.conn, transport_);
+        closed_fds.emplace_back(rfd, ev.conn->id());
+    }
+}
+
+void Worker::flush_responses(ClosedConnections &closed_fds)
+{
+    // Send aggregation: after processing all events, batch writev
+    // pending responses collected during on_readable. This coalesces
+    // multiple responses (from multiple frames read in one read())
+    // into a single writev per connection.
+    if (!pending_write_conns_.empty()) {
+        for (Connection *conn : pending_write_conns_) {
+            if (!conn->is_open()) {
+                continue;
+            }
+            int rfd = static_cast<int>(conn->transport_handle);
+            int wfd = conn->write_fd >= 0 ? conn->write_fd : rfd;
+            if (!conn->try_send(wfd, stats_)) {
+                // Partial write or EAGAIN — arm write for remaining.
+                engine_->arm_write(wfd, conn);
+            }
+            if (!conn->is_open()) {
+                close_connection_fds(engine_, conn, transport_);
+                closed_fds.emplace_back(rfd, conn->id());
+            }
+        }
+        pending_write_conns_.clear();
+    }
+}
+
+void Worker::retire_closed(const ClosedConnections &closed_fds)
+{
+    // Now safe to release closed connections — pending_write_conns_
+    // has been flushed and won't access the raw pointers.
+    if (!closed_fds.empty()) {
+        std::scoped_lock lock(conns_mu_);
+        for (const auto &[fd, id] : closed_fds) {
+            auto entry = connections_.find(fd);
+            if (entry != connections_.end() && entry->second->id() == id) {
+                connections_.erase(entry);
+            }
+        }
     }
 }
 
@@ -363,6 +417,9 @@ static void on_readable_impl(Connection *conn, int fd, uint8_t *recv_buf, size_t
         ssize_t n = ::read(fd, recv_buf, recv_buf_size);
         if (n <= 0) {
             if (n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
+                if (n < 0 && errno == ECONNREFUSED) {
+                    conn->mark_connect_refused();
+                }
                 cnt_read_error().inc();
                 conn->close();
             }
@@ -517,7 +574,7 @@ bool SocketTransport::submit(Connection *conn, OutFrame *frame)
     std::shared_ptr<Connection> live_conn;
     // Worker-thread fast path: if we're on an I/O worker thread, the
     // connection is guaranteed alive (held by this worker's connections_
-    // map). Skip lookup_conn and its global mutex entirely.
+    // event batch). Skip the registry lookup on this pinned worker path.
     if (tl_current_worker != nullptr) {
         if (!conn->is_open()) {
             CRB_LOG_WARN("submit: closed conn on worker thread conn_id={}", static_cast<long long>(conn->id()));
@@ -653,15 +710,13 @@ std::shared_ptr<Connection> SocketTransport::create_connection(int fd, const std
         write_fd = fd; // fallback: same fd for read and write
     }
     conn->write_fd = write_fd;
-    // Set the on_close callback to unregister from the live-conn
-    // registry. This ensures submit() on a stale handle returns false
-    // instead of crashing (use-after-free).
+    // Keep the identity registry until descriptor cleanup; a worker must
+    // safely resolve an event even after an explicit caller-side close.
     conn->set_on_frame(std::move(on_frame));
     conn->set_on_close([this, on_close = std::move(on_close)](Connection *c) {
         if (on_close) {
             on_close(c);
         }
-        unregister_conn(c);
     });
     register_conn(conn);
     Worker *w = get_worker();
@@ -673,29 +728,34 @@ std::shared_ptr<Connection> SocketTransport::create_connection(int fd, const std
 
 void SocketTransport::register_conn(const std::shared_ptr<Connection> &conn)
 {
-    std::scoped_lock lock(live_conns_mu_);
-    live_conns_[conn.get()] = conn;
+    live_conns_.insert_or_assign(conn.get(), conn);
+    event_conns_.insert_or_assign(conn->id(), conn);
 }
 
 void SocketTransport::unregister_conn(Connection *conn)
 {
-    std::scoped_lock lock(live_conns_mu_);
     live_conns_.erase(conn);
+    event_conns_.erase(conn->id());
 }
 
 std::optional<std::shared_ptr<Connection>> SocketTransport::lookup_conn(Connection *conn)
 {
-    std::scoped_lock lock(live_conns_mu_);
-    auto             it = live_conns_.find(conn);
+    auto it = live_conns_.find(conn);
     if (it == live_conns_.end()) {
         return std::nullopt; // absent or already unregistered
     }
-    return it->second.lock(); // null if expired (stale), non-null if alive
+    auto pinned = it->second.lock();
+    return pinned && pinned->is_open() ? pinned : std::shared_ptr<Connection>{};
+}
+
+std::shared_ptr<Connection> SocketTransport::lookup_connection_id(int64_t id) const
+{
+    auto entry = event_conns_.find(id);
+    return entry == event_conns_.end() ? nullptr : entry->second.lock();
 }
 
 size_t SocketTransport::connection_count() const
 {
-    std::scoped_lock lock(live_conns_mu_);
     return live_conns_.size();
 }
 
@@ -717,15 +777,23 @@ std::shared_ptr<Connection> SocketTransport::connect(const std::string &addr, in
         return nullptr;
     }
 
-    if (::connect(fd, reinterpret_cast<struct sockaddr *>(&sa), sizeof(sa)) < 0) {
-        CRB_LOG_WARN("connect: connect() failed addr={} port={} errno={} ({})", addr, port, errno,
+    const int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        CRB_LOG_WARN("connect: nonblocking setup failed addr={} port={} errno={} ({})", addr, port, errno,
                      std::strerror(errno));
         ::close(fd);
         return nullptr;
     }
 
-    int flags = fcntl(fd, F_GETFL, 0);
-    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    // A missing peer must not block the caller's executor while TCP retries
+    // its handshake. Queued writes wait for writability in the worker;
+    // handshake failures use the same error/close path as established peers.
+    if (::connect(fd, reinterpret_cast<struct sockaddr *>(&sa), sizeof(sa)) < 0 && errno != EINPROGRESS) {
+        CRB_LOG_WARN("connect: connect() failed addr={} port={} errno={} ({})", addr, port, errno,
+                     std::strerror(errno));
+        ::close(fd);
+        return nullptr;
+    }
 
     int nodelay = tcp_nodelay_ ? 1 : 0;
     ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
@@ -737,7 +805,7 @@ std::shared_ptr<Connection> SocketTransport::connect(const std::string &addr, in
 #endif
 
     auto conn = create_connection(fd, addr + ":" + std::to_string(port));
-    CRB_LOG_INFO("rpc transport: connection established -> {}:{} conn_id={}", addr, port,
+    CRB_LOG_INFO("rpc transport: connection initiated -> {}:{} conn_id={}", addr, port,
                  static_cast<long long>(conn->id()));
     return conn;
 }

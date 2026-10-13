@@ -207,10 +207,10 @@ impl ProductionS3Operations {
                     .map_or_else(|| map_put_outcome(&outcome), super::encoding_error));
             }
         };
-        let locations = writer
-            .on_finish()
-            .await
-            .map_err(|_| S3ErrorCode::ServiceUnavailable)?;
+        let locations = writer.on_finish().await.map_err(|error| {
+            tracing::error!(%error, "multipart part finalization failed; returning ServiceUnavailable");
+            S3ErrorCode::ServiceUnavailable
+        })?;
         let actual: u64 = locations.iter().map(|location| location.logical_length).sum();
         if actual != length {
             return Err(S3ErrorCode::InvalidRequest);

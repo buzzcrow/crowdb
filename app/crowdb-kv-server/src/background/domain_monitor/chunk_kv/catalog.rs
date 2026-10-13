@@ -6,8 +6,9 @@
 use bytes::Bytes;
 use crowdb_kv::cluster::group_operations::KvGroupOperationError;
 use crowdb_protocol::chunk_kv::{
-    ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPageRef,
-    ChunkKvRangeCatalogPartitionState, SplitPhase, SplitTransition, TransferPhase, TransferTransition,
+    AuthorityReleaseProof, ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage,
+    ChunkKvRangeCatalogPageRef, ChunkKvRangeCatalogPartitionState, SplitPhase, SplitTransition,
+    TransferPhase, TransferTransition,
 };
 use crowdb_protocol::key::{ChunkKvRangeCatalogHeadKey, ChunkKvRangeCatalogPageKey, TextKey};
 
@@ -72,21 +73,32 @@ pub async fn publish_transfer(
         .await?
         .ok_or_else(|| "range catalog is not published".to_string())?;
     let desired = transfer_entry(transition);
-    if exact_entries(&catalog.pages, |entry| entry == &desired) == 1 {
-        reject_reused_transition_id(&catalog.pages, transition.transition_id, 1)?;
+    if publication_complete(
+        &catalog.pages,
+        std::slice::from_ref(&desired),
+        transition.transition_id,
+    )? {
         return Ok(catalog.head.generation);
     }
     let advancing = matches!(
         transition.phase,
         TransferPhase::TargetReady | TransferPhase::CatalogCommitted
     );
-    reject_reused_transition_id(&catalog.pages, transition.transition_id, usize::from(advancing))?;
+    // Lease-excluded recovery reopens the original artifacts and moves directly
+    // to TargetReady. It does not publish a catching-up assignment first.
+    let direct_recovery = advancing
+        && matches!(
+            transition.release_proof,
+            Some(AuthorityReleaseProof::LeaseExpired { .. })
+        )
+        && exact_entries(&catalog.pages, |entry| transfer_source_matches(entry, transition)) == 1;
+    reject_reused_transition_id(
+        &catalog.pages,
+        transition.transition_id,
+        usize::from(advancing && !direct_recovery),
+    )?;
     let source = |entry: &ChunkKvRangeCatalogEntry| {
-        let source_serving = entry.owner == transition.source
-            && entry.owner_epoch == transition.source_epoch
-            && entry.state == ChunkKvRangeCatalogPartitionState::Serving
-            && entry.artifact == transition.artifact
-            && entry.transition_id.is_none();
+        let source_serving = transfer_source_matches(entry, transition);
         let target_catching_up = entry.owner == transition.target
             && entry.owner_epoch == transition.target_epoch
             && entry.state == ChunkKvRangeCatalogPartitionState::TargetCatchingUp
@@ -94,7 +106,7 @@ pub async fn publish_transfer(
             && entry.transition_id == Some(transition.transition_id);
         entry.partition_id == transition.partition_id
             && entry.range == transition.range
-            && if advancing {
+            && if advancing && !direct_recovery {
                 target_catching_up
             } else {
                 source_serving
@@ -102,6 +114,17 @@ pub async fn publish_transfer(
     };
     let (head, pages) = replace_one(catalog.head, catalog.pages, source, vec![desired])?;
     publish(control, head, pages, catalog.head_revision).await
+}
+
+fn transfer_source_matches(entry: &ChunkKvRangeCatalogEntry, transition: &TransferTransition) -> bool {
+    entry.partition_id == transition.partition_id
+        && entry.range == transition.range
+        && entry.owner == transition.source
+        && entry.owner_epoch == transition.source_epoch
+        && entry.state == ChunkKvRangeCatalogPartitionState::Serving
+        && entry.artifact == transition.artifact
+        && (entry.transition_id.is_none() || entry.artifact.tail_overlay.is_none())
+        && entry.transition_id != Some(transition.transition_id)
 }
 
 pub async fn publish_materialized_partition(
@@ -299,11 +322,7 @@ pub async fn publish_split(
         .await?
         .ok_or_else(|| "range catalog is not published".to_string())?;
     let desired = split_entries(transition);
-    if desired
-        .iter()
-        .all(|wanted| exact_entries(&catalog.pages, |entry| entry == wanted) == 1)
-    {
-        reject_reused_transition_id(&catalog.pages, transition.transition_id, 2)?;
+    if publication_complete(&catalog.pages, &desired, transition.transition_id)? {
         return Ok(catalog.head.generation);
     }
     reject_reused_transition_id(&catalog.pages, transition.transition_id, 0)?;
@@ -488,6 +507,55 @@ where
         .flat_map(|page| &page.entries)
         .filter(|entry| matches(entry))
         .count()
+}
+
+fn publication_complete(
+    pages: &[ChunkKvRangeCatalogPage],
+    desired: &[ChunkKvRangeCatalogEntry],
+    transition_id: crowdb_protocol::chunk_kv::Id128,
+) -> Result<bool, String> {
+    if !desired
+        .iter()
+        .all(|wanted| exact_entries(pages, |entry| published_assignment_matches(entry, wanted)) == 1)
+    {
+        return Ok(false);
+    }
+    let retained_markers = desired
+        .iter()
+        .map(|wanted| {
+            exact_entries(pages, |entry| {
+                entry.transition_id == Some(transition_id) && published_assignment_matches(entry, wanted)
+            })
+        })
+        .sum();
+    reject_reused_transition_id(pages, transition_id, retained_markers)?;
+    Ok(true)
+}
+
+fn published_assignment_matches(
+    current: &ChunkKvRangeCatalogEntry,
+    desired: &ChunkKvRangeCatalogEntry,
+) -> bool {
+    if current == desired {
+        return true;
+    }
+    // Materialization may advance the catalog after publication but before its
+    // separate durable transition-status write. Preserve that newer catalog.
+    if desired.state != ChunkKvRangeCatalogPartitionState::Serving
+        || current.artifact.tail_overlay.is_some()
+        || current
+            .transition_id
+            .is_some_and(|id| Some(id) != desired.transition_id)
+    {
+        return false;
+    }
+    let mut materialized = current.clone();
+    materialized
+        .artifact
+        .tail_overlay
+        .clone_from(&desired.artifact.tail_overlay);
+    materialized.transition_id = desired.transition_id;
+    materialized == *desired
 }
 
 fn reject_reused_transition_id(

@@ -55,11 +55,13 @@ pub async fn http_list_racks(
         let cfg = state.config.read().unwrap();
         return Json(serde_json::to_value(&cfg.racks).expect("serialize racks"));
     }
+    crate::physical::observation::refresh(&state).await;
     let snap = state.monitor_cache.snapshot().await;
     let cfg = state.config.read().unwrap();
     let pids = state.kv_pid_snapshot();
     let diskdb_pids = state.diskdb_pid_snapshot();
-    let mut builder = PhysicalBuilder::new_with_diskdb_pids(&cfg, &snap, &pids, &diskdb_pids);
+    let mut builder = PhysicalBuilder::new_with_diskdb_pids(&cfg, &snap, &pids, &diskdb_pids)
+        .with_remote_nodes(state.node_monitor_url.is_some());
     let limit = depth.effective();
     let racks: Vec<_> = cfg.racks.iter().map(|r| builder.build_rack(r, limit)).collect();
     let trunc = builder.into_truncation();
@@ -355,6 +357,7 @@ pub async fn http_get_rack(
             "nodes": node_ids,
         })));
     }
+    crate::physical::observation::refresh(&state).await;
     let snap = state.monitor_cache.snapshot().await;
     let cfg = state.config.read().unwrap();
     let rack = cfg
@@ -372,7 +375,8 @@ pub async fn http_get_rack(
         .clone();
     let pids = state.kv_pid_snapshot();
     let diskdb_pids = state.diskdb_pid_snapshot();
-    let mut builder = PhysicalBuilder::new_with_diskdb_pids(&cfg, &snap, &pids, &diskdb_pids);
+    let mut builder = PhysicalBuilder::new_with_diskdb_pids(&cfg, &snap, &pids, &diskdb_pids)
+        .with_remote_nodes(state.node_monitor_url.is_some());
     let view = builder.build_rack(&rack, depth.effective());
     let trunc = builder.into_truncation();
     let mut body = serde_json::to_value(&view).expect("serialize rack view");
@@ -415,6 +419,7 @@ pub async fn http_list_rack_nodes(
             .collect();
         return Ok(Json(serde_json::to_value(&nodes).expect("serialize nodes")));
     }
+    crate::physical::observation::refresh(&state).await;
     let snap = state.monitor_cache.snapshot().await;
     let cfg = state.config.read().unwrap();
     if !cfg.racks.iter().any(|r| r.id == rack_id_num) {
@@ -433,7 +438,8 @@ pub async fn http_list_rack_nodes(
         .collect();
     let pids = state.kv_pid_snapshot();
     let diskdb_pids = state.diskdb_pid_snapshot();
-    let mut builder = PhysicalBuilder::new_with_diskdb_pids(&cfg, &snap, &pids, &diskdb_pids);
+    let mut builder = PhysicalBuilder::new_with_diskdb_pids(&cfg, &snap, &pids, &diskdb_pids)
+        .with_remote_nodes(state.node_monitor_url.is_some());
     let limit = depth.effective();
     let views: Vec<_> = nodes.iter().map(|n| builder.build_node(n, limit)).collect();
     let trunc = builder.into_truncation();
@@ -499,6 +505,7 @@ pub async fn http_get_node(
     Recursive(_depth): Recursive,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
     let node_id_num = id;
+    crate::physical::observation::refresh(&state).await;
     let snap = state.monitor_cache.snapshot().await;
     let cfg = state.config.read().unwrap();
     let node = cfg.node(node_id_num).ok_or_else(|| {
@@ -511,7 +518,8 @@ pub async fn http_get_node(
     })?;
     let pids = state.kv_pid_snapshot();
     let diskdb_pids = state.diskdb_pid_snapshot();
-    let mut builder = PhysicalBuilder::new_with_diskdb_pids(&cfg, &snap, &pids, &diskdb_pids);
+    let mut builder = PhysicalBuilder::new_with_diskdb_pids(&cfg, &snap, &pids, &diskdb_pids)
+        .with_remote_nodes(state.node_monitor_url.is_some());
     let view = builder.build_node(node, 0);
     Ok(Json(serde_json::to_value(view).expect("serialize node view")))
 }
@@ -543,6 +551,15 @@ pub async fn http_stop_node_server(
     State(state): State<AppState>,
     Path(node_id): Path<u64>,
 ) -> Result<Json<StopResult>, (StatusCode, Json<ErrorBody>)> {
+    if state.node_monitor_url.is_some() {
+        crate::services::remote::kv_action(
+            &state,
+            node_id,
+            crowdb_protocol::mgmt::node::NodeServiceAction::Stop,
+        )
+        .await?;
+        return Ok(Json(StopResult { sent: true }));
+    }
     let pid = state.runtime_pid(node_id);
     let node = {
         let cfg = state.config.read().unwrap();
@@ -670,6 +687,11 @@ pub async fn http_delete_node_server(
     State(state): State<AppState>,
     Path(node_id): Path<u64>,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorBody>)> {
+    if state.node_monitor_url.is_some() {
+        return Err(crate::error::err_409(
+            "Managed KV removal requires explicit node/Group 0 cleanup",
+        ));
+    }
     // Require-empty: refuse if the node still hosts replicas in
     // group-0 sysdata. Best-effort — if sysdata is unreachable, the
     // check is skipped (cluster may not be initialized). Skip entirely

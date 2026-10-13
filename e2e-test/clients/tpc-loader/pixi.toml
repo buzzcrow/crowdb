@@ -1,0 +1,16 @@
+# Copyright 2026-present Gian <crow.db@outlook.com>
+# Licensed under the Apache License, Version 2.0.
+
+[workspace]
+name = "crowdb-e2e-tpc-loader"
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[dependencies]
+python = "3.12.*"
+
+[pypi-dependencies]
+crowdb-tpc-loader = "==0.1.1"
+
+[tasks]
+prepare = "python prepare.py"

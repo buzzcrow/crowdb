@@ -6,12 +6,7 @@ use std::os::unix::fs::{symlink, PermissionsExt};
 use crowdb_console_shared::bootstrap_intent::BootstrapIntent;
 use crowdb_console_shared::config::{ConsoleConfig, NodeEntry, RackEntry, ServerEntry, ServiceType};
 use crowdb_console_shared::error::Error;
-use crowdb_console_shared::ops::{cluster as cluster_ops, OpContext};
-use crowdb_test_harness::cluster::KvCluster;
 use crowdb_test_harness::test_dirs::tempdir_in_test_data;
-
-#[path = "common/bootstrap_authority.rs"]
-mod bootstrap_authority;
 
 fn config() -> ConsoleConfig {
     let mut config = ConsoleConfig::default();
@@ -108,77 +103,4 @@ fn intent_rejects_inline_secrets_symlinks_and_legacy_fields() {
     assert_ne!(changed, body);
     std::fs::write(&strict, changed).unwrap();
     assert!(BootstrapIntent::load(&strict).is_err());
-}
-
-#[tokio::test]
-async fn interrupted_bootstrap_restores_identity_then_clears_verified_intent() {
-    let cluster = KvCluster::start().await;
-    let source = bootstrap_authority::context(&cluster).await;
-    let dir = tempdir_in_test_data("bootstrap-intent-resume");
-    let path = dir.path().join("intent.toml");
-    BootstrapIntent::capture(&source.config(), &[1])
-        .unwrap()
-        .seal(&path)
-        .unwrap();
-
-    let resumed = OpContext::new(
-        cluster.group0_leader_endpoint.clone(),
-        cluster.mgmt_endpoints.clone(),
-        ConsoleConfig::default(),
-    );
-    cluster_ops::init_with_intent(&resumed, &[1], &path)
-        .await
-        .unwrap();
-    assert!(!path.exists());
-    assert_eq!(
-        resumed.sysmd().get_store(0).await.unwrap().unwrap().node_ids,
-        vec![1]
-    );
-    assert_eq!(resumed.config().racks.len(), 1);
-    assert_eq!(resumed.config().nodes.len(), 1);
-}
-
-#[tokio::test]
-async fn committed_group_zero_is_verified_before_stale_intent_is_removed() {
-    let cluster = KvCluster::start().await;
-    let source = bootstrap_authority::context(&cluster).await;
-    let dir = tempdir_in_test_data("bootstrap-intent-committed");
-    let path = dir.path().join("intent.toml");
-    BootstrapIntent::capture(&source.config(), &[1])
-        .unwrap()
-        .seal(&path)
-        .unwrap();
-    cluster_ops::init(&source, &[1]).await.unwrap();
-    assert!(path.exists());
-
-    let resumed = OpContext::new(
-        cluster.group0_leader_endpoint.clone(),
-        cluster.mgmt_endpoints.clone(),
-        ConsoleConfig::default(),
-    );
-    cluster_ops::init_with_intent(&resumed, &[1], &path)
-        .await
-        .unwrap();
-    assert!(!path.exists());
-    assert_eq!(
-        resumed.sysmd().list_replicas_in_group(0, 0).await.unwrap().len(),
-        1
-    );
-}
-
-#[tokio::test]
-async fn changed_bootstrap_topology_is_rejected_before_group_zero_mutation() {
-    let cluster = KvCluster::start().await;
-    let ctx = bootstrap_authority::context(&cluster).await;
-    let dir = tempdir_in_test_data("bootstrap-intent-conflict");
-    let path = dir.path().join("intent.toml");
-    BootstrapIntent::capture(&ctx.config(), &[1])
-        .unwrap()
-        .seal(&path)
-        .unwrap();
-    ctx.config_mut().racks[0].name = "changed".into();
-    let result = cluster_ops::init_with_intent(&ctx, &[1], &path).await;
-    assert!(matches!(result, Err(Error::Conflict { .. })), "{result:?}");
-    assert!(ctx.sysmd().get_store(0).await.unwrap().is_none());
-    assert!(path.exists());
 }

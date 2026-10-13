@@ -18,6 +18,8 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod node;
+
 /// Local connection hints for a KV process; these do not grant group membership.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
@@ -136,6 +138,17 @@ pub struct RemoteListResponse {
     pub remotes: Vec<RemoteReplicaInfo>,
 }
 
+/// `POST /stores/{sid}/groups/{gid}/join` body.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct JoinGroupRequest {
+    pub replica_id: u64,
+    /// RPC endpoint of a caught-up member supplying the snapshot.
+    pub peer_endpoint: String,
+    #[serde(default)]
+    pub bootstrap: Option<SystemBootstrapIdentity>,
+}
+
 // ── Step-down ───────────────────────────────────────────────────
 
 /// `POST /stores/{sid}/groups/{gid}/step-down` body.
@@ -183,6 +196,26 @@ pub struct SystemInitRequest {
     pub replica_id: u64,
     #[serde(default = "default_start_election_true")]
     pub start_election: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bootstrap: Option<SystemBootstrapIdentity>,
+}
+
+/// Shared identity of a selected initial membership, checked before store creation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct SystemBootstrapIdentity {
+    pub cluster_id: String,
+    pub operation_id: String,
+    pub configuration_digest: String,
+}
+
+/// Reserve bootstrap ownership without creating stores or starting elections.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct SystemPrepareRequest {
+    pub replica_id: u64,
+    pub bootstrap: SystemBootstrapIdentity,
 }
 
 fn default_replica_id() -> u64 {

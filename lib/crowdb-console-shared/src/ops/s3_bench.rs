@@ -208,7 +208,17 @@ struct OperationAccumulator {
 /// # Errors
 /// Returns validation, cluster startup, request-path, or cleanup errors.
 pub async fn run(config: S3BenchConfig) -> Result<S3BenchResult> {
-    validate_config(&config)?;
+    let estimated_dataset_bytes = validate_workload(&config)?;
+    s3::start_memory(&config.work_dir, config.memory_budget_bytes).await?;
+    let outcome = run_attached(&config, estimated_dataset_bytes).await;
+    let stop_result = s3::stop(&config.work_dir);
+    let result = outcome?;
+    stop_result?;
+    Ok(result)
+}
+
+fn validate_workload(config: &S3BenchConfig) -> Result<u64> {
+    validate_config(config)?;
     let estimated_dataset_bytes = u64::try_from(config.object_size)
         .ok()
         .and_then(|size| size.checked_mul(u64::try_from(config.dataset_objects).ok()?))
@@ -219,16 +229,29 @@ pub async fn run(config: S3BenchConfig) -> Result<S3BenchResult> {
             "prepared dataset exceeds half of the memory budget",
         ));
     }
-    s3::start_memory(&config.work_dir, config.memory_budget_bytes).await?;
-    let outcome = run_attached(&config, estimated_dataset_bytes).await;
-    let stop_result = s3::stop(&config.work_dir);
-    let result = outcome?;
-    stop_result?;
-    Ok(result)
+    Ok(estimated_dataset_bytes)
 }
 
 async fn run_attached(config: &S3BenchConfig, estimated_dataset_bytes: u64) -> Result<S3BenchResult> {
     let client = S3HttpClient::from_data_dir(&config.work_dir)?;
+    run_requests(config, estimated_dataset_bytes, client).await
+}
+
+/// Exercise the workload driver against a deterministic HTTP protocol peer.
+///
+/// # Errors
+/// Returns configuration, HTTP or workload validation errors.
+#[cfg(feature = "test-util")]
+pub async fn run_workload_for_tests(config: S3BenchConfig, endpoint: String) -> Result<S3BenchResult> {
+    let estimated_dataset_bytes = validate_workload(&config)?;
+    run_requests(&config, estimated_dataset_bytes, S3HttpClient::new(endpoint)?).await
+}
+
+async fn run_requests(
+    config: &S3BenchConfig,
+    estimated_dataset_bytes: u64,
+    client: S3HttpClient,
+) -> Result<S3BenchResult> {
     client
         .request(Method::PUT, Some(BENCH_BUCKET), None, &[], None, None)
         .await?;

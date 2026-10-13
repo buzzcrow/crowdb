@@ -20,6 +20,7 @@ mod chunk_slots;
 mod credentials;
 mod geometry;
 mod launch;
+mod remote;
 
 #[derive(Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -72,6 +73,10 @@ pub(super) struct Deploy {
     #[serde(default)]
     bootstrap_group_id: Option<u64>,
     #[serde(default)]
+    stream_chunk_capacity_bytes: Option<u64>,
+    #[serde(default)]
+    stream_extent_page_entries: Option<std::num::NonZeroU32>,
+    #[serde(default)]
     test_single_node: bool,
 }
 
@@ -106,6 +111,9 @@ async fn deploy_inner(
     body: Deploy,
 ) -> Result<(StatusCode, Json<Value>), Failure> {
     validate(&body)?;
+    if state.node_monitor_url.is_some() {
+        return remote::deploy(&state, node_id, &body).await;
+    }
     if !super::dependencies::group0_ready(&state).await {
         return Err(err_409(
             "Group 0 is not ready; deploy Paxos-KV and initialize Group 0 before starting this service",
@@ -126,6 +134,11 @@ async fn deploy_inner(
     if matches!(body.kind, Kind::Chunkdb | Kind::ChunkKv) && !body.test_single_node {
         if let Some(reason) = super::dependencies::storage_wait_reason(&state).await {
             return Err(err_409(reason));
+        }
+        if matches!(body.kind, Kind::ChunkKv) {
+            if let Some(reason) = super::dependencies::chunk_kv_wait_reason(&state).await {
+                return Err(err_409(reason));
+            }
         }
         geometry::validate(&state).await?;
     }
@@ -159,9 +172,18 @@ fn validate(body: &Deploy) -> Result<(), Failure> {
     if body.bootstrap_group_id == Some(0) {
         return Err(err_400("Partition journal metadata must use a non-system group"));
     }
+    if body
+        .stream_chunk_capacity_bytes
+        .is_some_and(|bytes| !(1024 * 1024..=256 * 1024 * 1024).contains(&bytes))
+    {
+        return Err(err_400("Stream chunk capacity must be between 1 MiB and 256 MiB"));
+    }
     if (!matches!(body.kind, Kind::Diskio) && body.disk_group_id.is_some())
         || (!matches!(body.kind, Kind::ChunkKv)
-            && (body.metadata_store_id.is_some() || body.bootstrap_group_id.is_some()))
+            && (body.metadata_store_id.is_some()
+                || body.bootstrap_group_id.is_some()
+                || body.stream_chunk_capacity_bytes.is_some()
+                || body.stream_extent_page_entries.is_some()))
         || (!matches!(body.kind, Kind::AccessServer) && body.s3_port.is_some())
         || (!matches!(body.kind, Kind::AccessServer) && body.health_port.is_some())
         || (matches!(body.kind, Kind::AccessServer) && body.rpc_port.is_some())

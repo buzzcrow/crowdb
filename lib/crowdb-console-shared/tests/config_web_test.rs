@@ -22,6 +22,10 @@ fn monitor_web_process_config_accepts_only_process_fields() {
     let config: WebProcessConfig = toml::from_str(WEB).unwrap();
     config.validate().unwrap();
     assert_eq!(config.mode, WebMode::Docker);
+    assert!(!config.readonly, "Docker is writable unless readonly is explicit");
+    let readonly: WebProcessConfig = toml::from_str(&format!("{WEB}\nreadonly = true\n")).unwrap();
+    assert!(readonly.readonly);
+    assert!(toml::from_str::<WebProcessConfig>(&format!("{WEB}\nreadonly = 'true'\n")).is_err());
     for injected in [
         "rack = []",
         "token = 'secret'",
@@ -39,6 +43,10 @@ fn monitor_web_process_config_accepts_only_process_fields() {
         .replace("{{log_root}}", "/opt/crowdb/data/log");
     let parsed: WebProcessConfig = toml::from_str(&rendered).unwrap();
     parsed.validate().unwrap();
+    assert!(
+        parsed.readonly,
+        "public single-container template must remain readonly"
+    );
 
     let bare_metal = WEB
         .replace("mode = \"docker\"", "mode = \"bare-metal\"")

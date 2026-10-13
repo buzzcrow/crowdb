@@ -19,6 +19,70 @@ beforeEach(() => {
 });
 afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); });
 describe('node service plans', () => {
+  it('keeps Access queued while DiskIO ownership is unavailable and resumes without Retry', async () => {
+    const first = newPlan();
+    for (const kind of serviceOrder) first[kind] = { state: 'deployed' };
+    const second = newPlan();
+    for (const kind of serviceOrder) second[kind] = { state: 'disabled' };
+    second['chunk-kv'] = { state: 'waiting', detail: 'Waiting: storage' };
+    second['access-server'] = { state: 'pending' };
+    const existing = serviceOrder.map((service_type, index) => ({ node_id: 1, service_type, pid: 10 + index }));
+    existing.push({ node_id: 3, service_type: 'diskio', pid: 20 });
+    vi.mocked(listServers).mockResolvedValue(existing as Awaited<ReturnType<typeof listServers>>);
+    let ownershipReady = false;
+    vi.mocked(serviceRequest).mockImplementation(async path => {
+      if (path === '/service-plans') return { 1: { revision: 7, steps: first }, 2: { revision: 7, steps: second } };
+      if (path === '/chunk-storage-readiness') return { ready: ownershipReady, reason: ownershipReady ? undefined : 'Waiting: storage' };
+      if (path === '/deployment-defaults') return { 'access-server': { instance_id: '2', http_port: 9092, s3_port: 9091 } };
+      return { revision: 8, ready: true };
+    });
+    const { result } = renderHook(() => useNodeServicePlans(stores, {}, async () => {}, true));
+    await act(async () => {});
+    const deployments = () => vi.mocked(serviceRequest).mock.calls.filter(([path, method, body]) =>
+      path === '/nodes/2/services/deploy' && method === 'POST' && (body as { kind: string }).kind === 'access-server');
+    expect(deployments()).toHaveLength(0);
+    expect(result.current.plans[2]['access-server'].state).toBe('waiting');
+    ownershipReady = true;
+    vi.mocked(listServers).mockResolvedValue([...existing, { node_id: 2, service_type: 'chunk-kv', pid: 30 }] as Awaited<ReturnType<typeof listServers>>);
+    await act(async () => { await vi.advanceTimersByTimeAsync(600); });
+    expect(deployments()).toHaveLength(1);
+    expect(result.current.plans[2]['access-server'].state).toBe('deployed');
+  });
+
+
+  it('queues Retry behind an in-flight registration reconciliation', async () => {
+    const steps = newPlan();
+    steps['paxos-kv'] = { state: 'deployed' };
+    steps.chunkdb = { state: 'deploying' };
+    vi.mocked(listServers).mockResolvedValue(serviceOrder.map((service_type, index) =>
+      ({ node_id: 1, service_type, pid: 10 + index })) as Awaited<ReturnType<typeof listServers>>);
+    let revision = 7;
+    let writes = 0;
+    let release!: () => void;
+    const reply = new Promise<void>(resolve => { release = resolve; });
+    vi.mocked(serviceRequest).mockImplementation(async (path, method, body) => {
+      if (path === '/service-plans') return { 1: { revision: 7, steps } };
+      if (method !== 'PUT') return { ready: true };
+      if ((body as { revision: number }).revision !== revision) throw new Error('HTTP 409: Deployment plan changed');
+      const accepted = ++revision;
+      if (++writes === 1) await reply;
+      return { revision: accepted };
+    });
+    const { result } = renderHook(() => useNodeServicePlans(stores, {}, async () => {}, true));
+    await act(async () => {});
+    expect(writes).toBe(1);
+    let failure: unknown;
+    let retried!: Promise<void>;
+    await act(async () => {
+      retried = result.current.start(1).catch(error => { failure = error; });
+    });
+    await act(async () => { release(); await retried; });
+    expect(failure).toBeUndefined();
+    expect(serviceOrder.map(kind => result.current.plans[1][kind].state)).toEqual(serviceOrder.map(() => 'deployed'));
+    expect(deployServer).not.toHaveBeenCalled();
+    expect(deployDiskdb).not.toHaveBeenCalled();
+    expect(vi.mocked(serviceRequest).mock.calls.some(([path, method]) => path.endsWith('/services/deploy') && method === 'POST')).toBe(false);
+  });
   it('does not publish failed progress when page unload cancels an observation', async () => {
     const steps = newPlan();
     for (const kind of serviceOrder) steps[kind] = { state: 'disabled' };
@@ -271,7 +335,7 @@ describe('node service plans', () => {
     vi.mocked(serviceRequest).mockImplementation(async path => path === '/service-plans' ? {} : path === '/deployment-defaults'
       ? { 'paxos-kv': { http_port: 19910, rpc_port: 19920 }, diskdb: { rpc_port: 29920 } } : { revision: 1, ready: true });
     const { result, rerender } = renderHook(({ value }) => useNodeServicePlans(value, {}, async () => {}, true), { initialProps: { value: [] as EnrichedStoreView[] } });
-    await act(async () => { await result.current.start(1, ['paxos-kv', 'diskdb'], { diskdb: { rpc_port: 29999 } }); });
+    await act(async () => { await result.current.start(1, ['paxos-kv', 'diskdb'], { diskdb: { rpc_port: 29999, keepalive_interval_secs: 3 } }); });
     expect(deployServer).toHaveBeenCalledTimes(1);
     expect(deployDiskdb).not.toHaveBeenCalled();
     expect(result.current.plans[1].diskdb.state).toBe('waiting');
@@ -279,7 +343,8 @@ describe('node service plans', () => {
     vi.mocked(listServers).mockResolvedValue([{ node_id: 1, service_type: 'paxos-kv', pid: 10 }] as Awaited<ReturnType<typeof listServers>>);
     rerender({ value: stores });
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-    expect(deployDiskdb).toHaveBeenCalledWith(1, { rpc_port: 29999 });
+    expect(deployDiskdb).toHaveBeenCalledWith(1, { rpc_port: 29999, keepalive_interval_secs: 3 });
+    expect(serviceRequest).toHaveBeenCalledWith('/nodes/1/service-plan', 'PUT', expect.objectContaining({ overrides: { diskdb: { rpc_port: 29999, keepalive_interval_secs: 3 } } }));
   });
   it('retains disabled services and saved listener overrides through recovery and retry', async () => {
     const steps = newPlan();

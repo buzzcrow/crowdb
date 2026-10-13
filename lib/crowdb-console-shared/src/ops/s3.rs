@@ -790,6 +790,7 @@ async fn spawn_web(data_dir: &Path) -> Result<(String, u32)> {
     let config = WebProcessConfig {
         version: 1,
         mode: WebMode::BareMetal,
+        readonly: false,
         bind: "127.0.0.1".into(),
         port,
         group0_management_seeds: seeds,

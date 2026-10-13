@@ -52,14 +52,7 @@ impl PxGroup {
                         // Atomically swap the batch for a fresh empty one so
                         // no op can sneak in and start a 1-op round during
                         // the swap.
-                        let batch = {
-                            let mut guard = group.coalescer.lock();
-                            let taken = guard.take();
-                            if taken.is_some() {
-                                *guard = Some(PendingBatch::default());
-                            }
-                            taken
-                        };
+                        let batch = group.coalesce_take_pending();
                         let Some(batch) = batch else { continue };
                         if batch.op_count > 0 {
                             tracing::error!(
@@ -244,26 +237,33 @@ impl PxGroup {
         {
             return;
         }
-        let batch = {
-            let mut guard = self.coalescer.lock();
-            let taken = guard.take();
-            if taken.is_some() {
-                *guard = Some(PendingBatch::default());
-            }
-            taken
-        };
+        let batch = self.coalesce_take_pending();
         let Some(batch) = batch else { return };
         if batch.op_count == 0 {
-            // No ops arrived during the round — go idle. Reset the
-            // coalescer to None so the next op takes the idle path
-            // (starts a 1-op round) instead of joining an empty batch
-            // and waiting for the watchdog.
-            let mut guard = self.coalescer.lock();
-            *guard = None;
+            #[cfg(feature = "test-util")]
+            self.coalesce_pause_empty_drain_for_tests();
+            // The queue became idle atomically while taking this empty batch.
+            // A subsequent enqueue owns the new queue and must never be reset
+            // by this finisher. Other active rounds retain their empty batch.
             return;
         }
         // Flush the accumulated batch as the next round immediately.
         self.coalesce_spawn_round(batch);
+    }
+
+    /// Remove pending work and choose the next queue state under one guard.
+    fn coalesce_take_pending(&self) -> Option<PendingBatch> {
+        let mut guard = self.coalescer.lock();
+        let batch = guard.take()?;
+        if batch.op_count > 0
+            || self
+                .coalesced_rounds_inflight
+                .load(std::sync::atomic::Ordering::Acquire)
+                > 0
+        {
+            *guard = Some(PendingBatch::default());
+        }
+        Some(batch)
     }
 
     /// Test-only: await the coalesce round gate if set. Consumed by the
@@ -273,6 +273,20 @@ impl PxGroup {
         let gate = self.coalesce_round_gate.lock().take();
         if let Some(gate) = gate {
             let _ = gate.await;
+        }
+    }
+
+    #[cfg(feature = "test-util")]
+    fn coalesce_pause_empty_drain_for_tests(&self) {
+        use std::sync::atomic::Ordering;
+        if self
+            .coalesce_empty_drain_gate
+            .compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            while self.coalesce_empty_drain_gate.load(Ordering::Acquire) == 2 {
+                std::thread::yield_now();
+            }
         }
     }
 }

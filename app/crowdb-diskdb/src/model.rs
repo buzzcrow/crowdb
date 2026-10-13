@@ -12,6 +12,7 @@ pub mod disk_group;
 pub mod disk_group_container;
 pub mod records;
 pub mod zone;
+pub mod zone_bitmap;
 
 pub use alloc::FreeError;
 pub use disk::{ActiveZoneContext, DdbDisk, DiskUsage};

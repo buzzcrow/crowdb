@@ -1,22 +1,17 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Full-stack cluster harness for chunkdb integration tests.
+//! Metadata and internal service fixtures for Chunkdb component proofs.
 //!
-//! Starts a real 3-node `crowdb-kv-server` cluster (store 0, groups 0
-//! and 1), seeds hardware metadata, starts diskdb in-process as a
-//! crowdb-rpc server, registers it in the service registry, and wires the
-//! chunkdb lifecycle handler. Tests call the handler directly.
+//! Direct handler tests select pinned in-memory metadata.
+//! Internal Diskdb service wiring supplies component allocation dependencies;
+//! public packaged-server flows belong to the container acceptance crate.
 
 #![allow(dead_code)]
 
 use std::future::Future;
-use std::io as std_io;
-use std::path::PathBuf;
 use std::pin::Pin;
-use std::process::{Child, Command, Stdio};
-use std::sync::{mpsc, Arc, Mutex, OnceLock};
-use std::thread;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crowdb_chunkdb::allocator::{ChunkAllocator, DiskdbClientPool};
@@ -38,276 +33,41 @@ use crowdb_diskdb::recovery::ZoneLoader;
 use crowdb_diskdb::scanner::ScanState;
 use crowdb_diskdb::service::DiskdbRpcService;
 use crowdb_diskdb_client::DiskdbRpcTransport;
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient, RetryConfig, ServiceRegistryClient};
+use crowdb_kv::cluster::KvServer;
+use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient, ServiceRegistryClient};
 use crowdb_protocol::chunkdb::rpc::{RelocateSegmentHandoffRequest, RelocationHandoffDisposition};
 use crowdb_protocol::common::{DiskId, HwStatus, NodeValue, RackValue};
 use crowdb_protocol::diskdb::rpc::{DiskGroupValue, DiskType, DiskValue, Segment};
-use crowdb_protocol::port::alloc as port_alloc;
-use crowdb_protocol::ServicePort;
-use serde_json::Value;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-static FULL_STACK_PERMITS: OnceLock<Arc<Semaphore>> = OnceLock::new();
-
-// ── process management ──────────────────────────────────────────
-
-struct ServerHandle {
-    child: Child,
-    base_url: String,
-    _root: crowdb_test_harness::test_dirs::TestDir,
-}
-
-impl ServerHandle {
-    fn base_url(&self) -> &str {
-        &self.base_url
-    }
-
-    async fn wait_for_ready(&self, timeout: Duration) -> std_io::Result<()> {
-        let client = reqwest::Client::new();
-        let deadline = Instant::now() + timeout;
-        while Instant::now() < deadline {
-            if let Ok(resp) = client.get(format!("{}/health", self.base_url)).send().await {
-                if resp.status().is_success() || resp.status().as_u16() == 503 {
-                    return Ok(());
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        Err(std_io::Error::new(
-            std_io::ErrorKind::TimedOut,
-            "server was not ready before timeout",
-        ))
-    }
-}
-
-impl Drop for ServerHandle {
-    fn drop(&mut self) {
-        if matches!(self.child.try_wait(), Ok(Some(_))) {
-            return;
-        }
-        let pid = self.child.id();
-        let _ = std::process::Command::new("kill")
-            .arg("-TERM")
-            .arg(pid.to_string())
-            .status();
-        let start = Instant::now();
-        loop {
-            match self.child.try_wait() {
-                Ok(Some(_)) | Err(_) => break,
-                Ok(None) => {
-                    if start.elapsed() >= Duration::from_secs(2) {
-                        let _ = std::process::Command::new("kill")
-                            .arg("-KILL")
-                            .arg(pid.to_string())
-                            .status();
-                        break;
-                    }
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-            }
-        }
-    }
-}
-
-#[allow(dead_code)]
-pub struct KvNode {
-    handle: ServerHandle,
-    pub node_id: u64,
-    pub replica_id: u64,
-}
-
-impl KvNode {
-    pub fn base_url(&self) -> &str {
-        self.handle.base_url()
-    }
-
-    pub fn stop(&mut self) {
-        self.handle.child.kill().expect("stop KV node");
-        self.handle.child.wait().expect("wait for stopped KV node");
-    }
-}
-
-pub fn crowdb_kv_server_bin() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("CROWDB_KV_SERVER_BIN") {
-        let path = PathBuf::from(p);
-        if path.exists() {
-            return Some(path);
-        }
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let mut p = dir.to_path_buf();
-            for _ in 0..3 {
-                let candidate = p.join("crowdb-kv-server");
-                if candidate.exists() {
-                    return Some(candidate);
-                }
-                if !p.pop() {
-                    break;
-                }
-            }
-        }
-    }
-    None
-}
-
-// ── topology helpers ────────────────────────────────────────────
-
-fn client() -> reqwest::Client {
-    reqwest::Client::new()
-}
-
-async fn topology(node: &KvNode) -> Value {
-    client()
-        .get(format!("{}/topology", node.base_url()))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap()
-}
-
-fn normalize_endpoint(endpoint: &str) -> String {
-    endpoint
-        .strip_prefix("0.0.0.0:")
-        .map_or_else(|| endpoint.to_string(), |port| format!("127.0.0.1:{port}"))
-}
-
-fn node_endpoint(topo: &Value) -> String {
-    normalize_endpoint(
-        topo["stores"][0]["listen_addr"]
-            .as_str()
-            .expect("store listen_addr"),
-    )
-}
-
-async fn combined_topology(nodes: &[KvNode]) -> Value {
-    let mut stores = Vec::new();
-    for node in nodes {
-        let topo = topology(node).await;
-        if let Some(arr) = topo["stores"].as_array() {
-            for s in arr {
-                let mut s = s.clone();
-                if let Some(addr) = s["listen_addr"].as_str() {
-                    s["listen_addr"] = Value::String(normalize_endpoint(addr));
-                }
-                stores.push(s);
-            }
-        }
-    }
-    serde_json::json!({ "stores": stores })
-}
-
-async fn wire_topology(nodes: &[KvNode], group_id: u64) {
-    let combined = combined_topology(nodes).await;
-    for node in nodes {
-        let resp = client()
-            .post(format!(
-                "{}/stores/{}/groups/{group_id}/remotes/batch",
-                node.base_url(),
-                node.node_id
-            ))
-            .json(&combined)
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(
-            resp.status(),
-            200,
-            "batch wiring failed for node {}",
-            node.node_id
-        );
-    }
-}
-
-pub async fn wait_for_leader(nodes: &[KvNode], group_id: u64, timeout: Duration) -> usize {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        let mut leaders = Vec::new();
-        for (idx, node) in nodes.iter().enumerate() {
-            let topo = topology(node).await;
-            let role = topo["stores"][0]["groups"]
-                .as_array()
-                .and_then(|g| g.iter().find(|gg| gg["group_id"].as_u64() == Some(group_id)))
-                .and_then(|gg| gg["local_replica"]["role"].as_str())
-                .unwrap_or("");
-            if role == "leader" {
-                leaders.push(idx);
-            }
-        }
-        if leaders.len() == 1 {
-            return leaders[0];
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    panic!("no unique leader for group {group_id} within {timeout:?}");
-}
-
-#[allow(dead_code)]
-pub async fn leader_endpoint(nodes: &[KvNode], group_id: u64) -> String {
-    let idx = wait_for_leader(nodes, group_id, Duration::from_secs(30)).await;
-    node_endpoint(&topology(&nodes[idx]).await)
-}
-
-// ── kv cluster ──────────────────────────────────────────────────
-
-#[allow(dead_code)]
 pub struct KvCluster {
-    _permit: OwnedSemaphorePermit,
-    pub nodes: Vec<KvNode>,
-    pub group0_leader_endpoint: String,
-    pub group1_leader_endpoint: String,
-    pub mgmt_endpoints: Vec<String>,
+    memory_store: Arc<crowdb_kv::cluster::PxKvStore>,
+    endpoint: String,
 }
 
 impl KvCluster {
-    pub async fn start() -> Self {
-        Self::start_with_groups(&[0, 1]).await
-    }
-
-    pub async fn start_with_groups(groups: &[u64]) -> Self {
-        let permit = FULL_STACK_PERMITS
-            .get_or_init(|| Arc::new(Semaphore::new(1)))
-            .clone()
-            .acquire_owned()
-            .await
-            .expect("full-stack semaphore is never closed");
-        let mut nodes = Vec::new();
-        for (idx, nid) in [0u64, 1, 2].iter().enumerate() {
-            let replica_id = u64::try_from(idx + 1).unwrap();
-            let node = start_kv_node_with_groups(*nid, groups, replica_id)
-                .await
-                .unwrap_or_else(|e| panic!("start kv node {nid}: {e}"));
-            nodes.push(node);
+    /// Pinned memory dependency for component handler tests.
+    pub async fn start_pinned() -> Self {
+        use crowdb_kv::cluster::group::PxGroup;
+        use crowdb_kv::cluster::{PxKvStore, PxLocalReplica, PxLocalReplicaRole};
+        let store = Arc::new(PxKvStore::new(0, "127.0.0.1:0".parse().unwrap()));
+        for id in [0, 1] {
+            store.add_group(PxGroup::new(
+                id,
+                PxLocalReplica::new(1, PxLocalReplicaRole::Leader),
+            ));
         }
-
-        for group in groups {
-            wire_topology(&nodes, *group).await;
-            wait_for_leader(&nodes, *group, Duration::from_secs(30)).await;
-        }
-
-        // Wait for leaders.
-        let g0_idx = wait_for_leader(&nodes, 0, Duration::from_secs(30)).await;
-        let g1_idx = wait_for_leader(&nodes, 1, Duration::from_secs(30)).await;
-
-        let group0_leader_endpoint = node_endpoint(&topology(&nodes[g0_idx]).await);
-        let group1_leader_endpoint = node_endpoint(&topology(&nodes[g1_idx]).await);
-        let mgmt_endpoints: Vec<String> = nodes.iter().map(|n| n.base_url().to_string()).collect();
-
+        store.start().await.expect("start pinned memory dependency");
+        let endpoint = store.listen_addr().unwrap().to_string();
         Self {
-            _permit: permit,
-            nodes,
-            group0_leader_endpoint,
-            group1_leader_endpoint,
-            mgmt_endpoints,
+            memory_store: store,
+            endpoint,
         }
     }
 
     pub fn make_crowdb_client(&self) -> Arc<CrowdbKvClient> {
-        let kv = CrowdbKvClient::new(test_client_config(self.mgmt_endpoints.clone()));
-        kv.seed_leader(0, 0, self.group0_leader_endpoint.clone());
-        kv.seed_leader(0, 1, self.group1_leader_endpoint.clone());
+        let kv = CrowdbKvClient::new(ClientConfig::new(vec![]));
+        kv.seed_leader(0, 0, self.endpoint.clone());
+        kv.seed_leader(0, 1, self.endpoint.clone());
         Arc::new(kv)
     }
 
@@ -324,105 +84,10 @@ impl KvCluster {
     }
 }
 
-/// Build a `ClientConfig` with a generous retry budget for E2E tests,
-/// where leader election may still be converging right after cluster
-/// startup. The production default (`max_retries: 3`, 100ms wait) gives
-/// only ~300ms of patience; tests need ~2s to ride out re-elections.
-fn test_client_config(mgmt_seeds: Vec<String>) -> ClientConfig {
-    let mut cfg = ClientConfig::new(mgmt_seeds);
-    cfg.retry = RetryConfig {
-        max_retries: 10,
-        unknown_leader_wait: Duration::from_millis(200),
-        backoff_base: Duration::from_millis(100),
-        backoff_max: Duration::from_secs(5),
-    };
-    cfg
-}
-
-async fn start_kv_node_with_groups(
-    _node_id: u64,
-    group_ids: &[u64],
-    replica_id: u64,
-) -> std_io::Result<KvNode> {
-    let group_str = group_ids.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
-    let root = crowdb_test_harness::test_dirs::TestDir::new("chunkdb-node")?;
-    let bin = crowdb_kv_server_bin().ok_or_else(|| {
-        std_io::Error::new(std_io::ErrorKind::NotFound, "crowdb-kv-server binary not found")
-    })?;
-    let mgmt_port = port_alloc::alloc_test_port(ServicePort::KvServerMgmt);
-    let listen_port = port_alloc::alloc_test_port(ServicePort::KvServerListen);
-    let mut cmd = Command::new(bin);
-    cmd.args([
-        "--root",
-        root.path().to_str().unwrap(),
-        "--stores",
-        "0",
-        "--groups",
-        &group_str,
-        "--replica",
-        &replica_id.to_string(),
-        "--management-addr",
-        "127.0.0.1",
-        "--management-port",
-        &mgmt_port.to_string(),
-        "--ports",
-        &listen_port.to_string(),
-        "--election-profile",
-        "e2e",
-        "--kv-backend",
-        "block",
-        "--wal-backend",
-        "block-device",
-    ])
-    .stdout(Stdio::piped())
-    .stderr(Stdio::piped());
-    let mut child = cmd.spawn()?;
-    let stdout = child.stdout.take().expect("stdout captured");
-    let stderr = child.stderr.take().expect("stderr captured");
-    let (tx, rx) = mpsc::channel();
-    let stderr_buf = Arc::new(Mutex::new(Vec::<String>::new()));
-    let stderr_buf_clone = Arc::clone(&stderr_buf);
-    thread::spawn(move || {
-        use std::io::{BufRead, BufReader};
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if let Some(idx) = line.find("management_addr=") {
-                let after = &line[idx + "management_addr=".len()..];
-                let _ = tx.send(after.trim().to_string());
-                break;
-            }
-        }
-    });
-    thread::spawn(move || {
-        use std::io::{BufRead, BufReader};
-        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-            stderr_buf_clone.lock().unwrap().push(line);
-        }
-    });
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let addr = match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-        Ok(addr) => addr,
-        Err(e) => {
-            let _ = child.wait();
-            let stderr_lines = stderr_buf.lock().unwrap();
-            let msg = format!(
-                "no management_addr in stdout: {e}; stderr:\n{}",
-                stderr_lines.join("\n")
-            );
-            drop(stderr_lines);
-            return Err(std_io::Error::new(std_io::ErrorKind::BrokenPipe, msg));
-        }
-    };
-    let handle = ServerHandle {
-        child,
-        base_url: format!("http://{addr}"),
-        _root: root,
-    };
-    handle.wait_for_ready(Duration::from_secs(10)).await?;
-    Ok(KvNode {
-        handle,
-        node_id: 0,
-        replica_id,
-    })
+impl Drop for KvCluster {
+    fn drop(&mut self) {
+        self.memory_store.stop();
+    }
 }
 
 // ── hardware seeding ────────────────────────────────────────────
@@ -671,10 +336,6 @@ impl DiskdbServer {
             wait_for_disks_ready(&container, *dg_id, 3, zone_count).await;
         }
 
-        // Pick a free port before binding so we know the endpoint.
-        let port = pick_free_port();
-        let listen_addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
-
         let mut registry = MetricsRegistry::new();
         let metrics = Arc::new(DiskdbMetrics::register(&mut registry));
         let rt_handle = tokio::runtime::Handle::current();
@@ -702,12 +363,8 @@ impl DiskdbServer {
             ))),
         );
         let rpc_server = Arc::new(crowdb_rpc_ffi::RpcServer::new(None));
-        rpc_server
-            .listen(
-                listen_addr.ip().to_string().as_str(),
-                i32::from(listen_addr.port()),
-            )
-            .expect("rpc server listen");
+        rpc_server.listen("127.0.0.1", 0).expect("rpc server listen");
+        let port = rpc_server.port();
         rpc_service.register_handlers(&rpc_server);
         rpc_server.start();
 
@@ -770,10 +427,6 @@ impl DiskdbServer {
             .await
             .expect("refresh DiskDB ownership");
     }
-}
-
-fn pick_free_port() -> u16 {
-    port_alloc::alloc_test_port(ServicePort::DiskdbRpc)
 }
 
 /// Probe the diskdb RPC server until it responds. The worker threads

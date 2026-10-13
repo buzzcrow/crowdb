@@ -30,6 +30,26 @@ pub struct ServerCredentials {
 }
 
 impl ServerCredentials {
+    /// Import authenticated cluster secrets without replacing a different key set.
+    ///
+    /// # Errors
+    /// Rejects malformed, exposed or conflicting secret state.
+    pub fn import(data_root: &Path, body: &str) -> Result<Self, CredentialError> {
+        let directory = data_root.join("secrets");
+        let parsed = Self::parse(directory.clone(), body)?;
+        if directory.exists() {
+            let actual = Self::load_existing(data_root)?;
+            if actual.server_env() != parsed.server_env() {
+                return Err(CredentialError::Invalid("cluster service credentials differ"));
+            }
+            return Ok(actual);
+        }
+        fs::DirBuilder::new().mode(0o700).create(&directory)?;
+        atomic_private_write(&directory.join(SERVER_FILE), parsed.server_env().as_bytes())?;
+        File::open(data_root)?.sync_all()?;
+        Ok(parsed)
+    }
+
     /// # Errors
     /// Rejects missing or incompatible credentials without creating new secrets.
     pub fn load_existing(data_root: &Path) -> Result<Self, CredentialError> {
