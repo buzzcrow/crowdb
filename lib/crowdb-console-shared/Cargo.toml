@@ -9,6 +9,9 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[features]
+test-util = []
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -29,6 +32,7 @@ crowdb-protocol = { path = "../crowdb-protocol" }
 crowdb-kv-client = { path = "../crowdb-kv-client" }
 
 [dev-dependencies]
+crowdb-console-shared = { path = ".", features = ["test-util"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "net"] }
 axum = "0.7"
 # KV data-plane crowdb-rpc client for `tests/kv_e2e_test.rs` (C6's own crowdb-rpc

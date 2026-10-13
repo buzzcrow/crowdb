@@ -17,17 +17,24 @@
   package-lock.json, Go modules in go.mod/go.sum, Java dependencies in pom.xml.
 
 ```sh
-pixi run test-s3-java-sdk
-pixi run test-s3-js-sdk
-pixi run test-s3-go-sdk
+pixi run test-e2e-s3 --scope s3.sdk --case s3.sdk::java
+pixi run test-e2e-s3 --scope s3.sdk --case s3.sdk::js
+pixi run test-e2e-s3 --scope s3.sdk --case s3.sdk::go
 # Explicit sequential aggregate:
-pixi run test-s3-sdks
+pixi run test-e2e-s3 --scope s3.sdk
 ```
 
 ## Existing test endpoint
 
 Set CROWDB_S3_E2E_ENDPOINT, CROWDB_S3_E2E_ACCESS_KEY and
-CROWDB_S3_E2E_SECRET_KEY in the environment, then run the same task. The access
+CROWDB_S3_E2E_SECRET_KEY in the environment, then prepare and verify the host client directly:
+
+```sh
+pixi run -e s3-java-sdk bash e2e-test/clients/s3-sdk.sh java prepare
+pixi run -e s3-java-sdk bash e2e-test/clients/s3-sdk.sh java verify
+```
+
+Use `s3-js-sdk` / `js` or `s3-go-sdk` / `go` for the other clients. The access
 and secret keys also accept AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.
 Use an endpoint whose credentials allow bucket creation and deletion.
 Do not put credentials in commands or commit them to client configuration.
@@ -72,14 +79,12 @@ GitHub Actions workflow has not been dispatched by this local verification.
   HTTP transports and browser JavaScript are outside this recipe.
 
 The accumulated general S3 gate covers storage visibility, interrupted uploads
-and service restart recovery. AWS CLI's separate concurrency-10 gate covers its
+and service restart recovery. The canonical AWS CLI concurrency-10 case covers its
 configured classic transfer recipe. These fresh SDK scenarios cover the
 sequential low-level operations above; they do not establish unrestricted
 concurrent behavior across other client transports or transfer managers.
 
-## Manual GitHub Actions
+## CI ownership
 
-Dispatch `.github/workflows/s3-sdk-verification.yml` and select java, js, go or
-all. It invokes the same tasks above, with all running sequentially. It has no
-push, pull-request, schedule or reusable-workflow trigger. GitHub execution
-requires a manual dispatch; local verification does not imply a remote CI run.
+The regular S3 container job runs all three SDK clients once, as part of the
+complete S3 domain. Focused selectors use the same release-container runner.

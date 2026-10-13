@@ -6,8 +6,10 @@
 Start with the task name in [`pixi.toml`](../pixi.toml), then read its script.
 Run commands through `pixi run`. Read only the directory relevant to the task.
 
-- **`pixi-tasks/`** — build, install, clean, component test and Iceberg client
-  commands extracted from Pixi.
+- **`pixi-tasks/`** — build, install and clean commands extracted from Pixi. `test.py` is the single host test dispatcher:
+  `unit GROUP`, `e2e DOMAIN`, `profile NAME`, or `all`. Container lifecycle
+  remains owned by `e2e-test/run.py`. Component runs retain phase logs and wall
+  times under `.crowdb-runtime/artifacts/unit/`.
   `clean` stops all CROWDB services owned by the current user, then removes
   the complete runtime tree and build output. `clean-env` stops only recorded
   ephemeral processes and preserves persistent clusters.
@@ -35,10 +37,27 @@ pixi run bash tools/test-metrics/measure.sh test-access test-console
 
 For test ownership and timings, read
 [`doc/working/test.md`](../doc/working/test.md). CI calls component tasks;
-update the component script when adding a package, then run
+update the package groups in `pixi-tasks/test.py` and the checked CI map, then run
 `check-ci-test-tasks`.
 Feature-gated or ignored client tests need explicit task selection.
 
 Container packaging and its acceptance scripts live under
 [`container/single-node-container/`](../container/single-node-container/README.md).
 Generated artifacts belong under `target/` or `.crowdb-runtime/`, not here.
+
+Regular CI groups component tests into C++, Core, Storage, Access (including
+SDK protocol peers), Console and UI. Container gates share one release image:
+KV, S3, Iceberg and Console are independent jobs; the storage matrix groups
+disk (DiskDB/DiskIO), chunk (ChunkDB/Chunk-KV/Chunk stream/Chunk client) and
+platform (Dataset/Deployment). Every complete domain has exactly one owner.
+Special runtime profiles remain explicit.
+
+```sh
+pixi run test unit core
+pixi run test e2e s3 --case s3.sdk::java
+pixi run test profile containerd-cluster
+pixi run test-e2e-iceberg
+```
+
+On a fresh checkout, use `test-cpp` and `test-console-ui`; their Pixi
+dependencies build C++ and install UI packages before dispatch.

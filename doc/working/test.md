@@ -20,7 +20,7 @@ container without a CPU quota; complete native nodes retain 2048 MiB / 512 PIDs.
 | Domain       | Date       | Passed / failed / skipped | Wall s   | Previous s |
 | ------------ | ---------- | ------------------------- | -------- | ---------- |
 | KV           | 2026-10-13 | 50 / 0 / 0                | 126.685  | 96.977     |
-| Diskdb       | 2026-10-13 | 5 / 0 / 0                 | 17.637   | 15.142     |
+| Diskdb       | 2026-10-13 | 5 / 0 / 0                 | 12.679   | 17.637     |
 | Diskio       | 2026-10-13 | 8 / 0 / 0                 | 27.230   | 21.935     |
 | Chunkdb      | 2026-10-13 | 11 / 0 / 0                | 87.330   | 148.686    |
 | Chunk client | 2026-10-13 | 40 / 0 / 0                | 349.746  | 642.098    |
@@ -43,9 +43,45 @@ container without a CPU quota; complete native nodes retain 2048 MiB / 512 PIDs.
   7.759 s, containerd host/cluster 111.815 / 112.784 s, five-engine Iceberg
   127.531 s and Python/DuckDB 20.458 s. New runs use CPU shares and one Tokio
   worker per service.
-- Important component UTs remain. Latest focused gates: DiskDB 177, monitor 75,
-  CLI 6, fixture 106, UI 183, KV-server 64; these are component repair checks,
-  not another complete-domain baseline.
+
+### Component tests
+
+One row per owning domain, combining its Rust/C++ packages and SDK protocol
+peers. Wall times include compilation inside each component command; the shared
+C++ prerequisite build is excluded. Cache state affects comparisons. All gates
+pass without skipped cases; UI also passes its lint/type checks.
+
+| Domain              | Date       | Passed / failed / skipped | Wall s  | Previous s |
+| ------------------- | ---------- | ------------------------- | ------- | ---------- |
+| access              | 2026-10-13 | 117 / 0 / 0               | 125.050 | —          |
+| chunk-client        | 2026-10-13 | 125 / 0 / 0               | 41.324  | —          |
+| chunk-kv            | 2026-10-13 | 148 / 0 / 0               | 213.867 | —          |
+| chunk-stream        | 2026-10-13 | 50 / 0 / 0                | 26.958  | —          |
+| chunkdb             | 2026-10-13 | 158 / 0 / 0               | 113.006 | —          |
+| common              | 2026-10-13 | 112 / 0 / 0               | 12.033  | —          |
+| console             | 2026-10-13 | 264 / 0 / 0               | 190.015 | —          |
+| console-ui          | 2026-10-13 | 183 / 0 / 0               | 17.968  | —          |
+| dataset             | 2026-10-13 | 37 / 0 / 0                | 7.199   | —          |
+| deployment          | 2026-10-13 | 75 / 0 / 0                | 45.902  | —          |
+| diskdb              | 2026-10-13 | 183 / 0 / 0               | 40.249  | —          |
+| diskio              | 2026-10-13 | 58 / 0 / 0                | 20.891  | —          |
+| iceberg             | 2026-10-13 | 716 / 0 / 0               | 359.299 | —          |
+| kv                  | 2026-10-13 | 738 / 0 / 0               | 144.680 | —          |
+| protocol            | 2026-10-13 | 221 / 0 / 0               | 23.567  | —          |
+| rpc                 | 2026-10-13 | 81 / 0 / 0                | 4.793   | —          |
+| s3                  | 2026-10-13 | 114 / 0 / 0               | 13.606  | —          |
+| test-infrastructure | 2026-10-13 | 134 / 0 / 0               | 5.052   | —          |
+| tree                | 2026-10-13 | 598 / 0 / 0               | 70.605  | —          |
+
+- The C++ gate retains 765 cases and removes 205 repeated Common/RPC executions
+  inherited through nested CTest projects. S3 benchmark workload accounting now
+  uses a deterministic protocol peer; its 200-operation and result assertions
+  remain, without a host production-server launcher.
+- Test infrastructure includes Rust, fixture/dispatch and OCI checks.
+  CI ownership covers 28 packages and 379 named flows.
+- Measurements: `.crowdb-runtime/artifacts/unit/` and
+  `.crowdb-runtime/artifacts/measure-tests/`. The earlier Access whole-task
+  baseline was 481.483 s; the unified task now passes 1051 cases in 378.41 s.
 
 ## amd5950
 

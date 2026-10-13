@@ -79,17 +79,35 @@ def main():
         environment, _ = matches[0]
         subprocess.run(["pixi", "run", "clean-env"], cwd=ROOT, check=True)
         log = archive / f"measure-{suite}.out"
+        command = ["pixi", "run", "-e", environment, suite]
+        container_root = archive / f"container-{suite}"
+        is_container = suite.startswith("test-e2e-") or suite == "test-container-e2e"
+        if is_container:
+            command += ["--artifacts", str(container_root)]
         started = time.monotonic()
         with log.open("w") as stream:
-            result = subprocess.run(["pixi", "run", "-e", environment, suite], cwd=ROOT,
+            result = subprocess.run(command, cwd=ROOT,
                                     stdout=stream, stderr=subprocess.STDOUT)
         elapsed = round(time.monotonic() - started, 2)
         text = re.sub(r"\x1b\[[0-9;]*m", "", log.read_text(errors="replace"))
         passed, ignored, ignored_cases, failed = test_counts(text)
+        # Setup Rust clients are helpers, not the SDK/browser acceptance cases.
+        reports = [json.loads(path.read_text()) for path in container_root.glob("run-*/results.json")]
+        if is_container:
+            cases = [case for report in reports for case in report["cases"]]
+            if result.returncode == 0 and not cases:
+                print(text, flush=True)
+                raise SystemExit(f"{suite} succeeded without canonical container results")
+            passed = sum(case["status"] == "pass" for case in cases)
+            failed = sum(case["status"] != "pass" for case in cases)
+            ignored, ignored_cases = 0, []
         record = dict(suite=suite, environment=environment, passed=passed, ignored=ignored,
                       ignored_cases=ignored_cases, failed=failed,
                       seconds=elapsed, exit_code=result.returncode, log=str(log),
                       run_started_at=run_date.isoformat())
+        if is_container:
+            record["scenario_seconds"] = sum(report["timings"].get("scenarios_wall", 0) for report in reports)
+            record["container_artifacts"] = str(container_root)
         results.append(record)
         encoded = json.dumps(results, indent=2) + "\n"
         (archive / "results.json").write_text(encoded)

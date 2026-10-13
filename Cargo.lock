@@ -976,6 +976,7 @@ dependencies = [
  "async-trait",
  "axum",
  "crowdb-chunkdb-client",
+ "crowdb-console-shared",
  "crowdb-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",

@@ -19,8 +19,8 @@ Containers supply server subsets or clusters from the formal release image;
 they are not test execution environments. Domain profiles configure that same
 server artifact rather than introducing separate test-server builds.
 
-This component owns progressively migrated real-server acceptance. The first
-profile is KV: three packaged `crowdb-kv-server` processes with block tree storage,
+This component owns real-server acceptance. The KV
+profile uses three packaged `crowdb-kv-server` processes with block tree storage,
 block-device WAL and the existing `e2e` election preset. It consumes the shared
 `crowdb-node` OCI runtime image; it never starts a host server substitute.
 
@@ -28,26 +28,22 @@ block-device WAL and the existing `e2e` election preset. It consumes the shared
 
 ```sh
 pixi run test-container-e2e-fixture
-pixi run clean-env
-pixi run test-container-e2e --layer kv --concurrency 2 --cpus 4 --memory-mib 4096
-# Diskdb public allocation/ownership/exact reuse flows:
-pixi run test-container-e2e --layer diskdb --concurrency 2
-# Diskio file/direct durability, Mem/Null I/O, discovery and client faults:
-pixi run test-container-e2e --layer diskio --concurrency 2 --cpus 6 --memory-mib 6144
-# Chunkdb lifecycle/recovery, multislot failover and real Diskio conversion/repair:
-pixi run test-container-e2e --layer chunkdb --concurrency 2 --cpus 12 --memory-mib 12288
-# Host object/stream clients against the same protected storage profile:
-pixi run test-container-e2e --layer chunk-client --concurrency 2 --cpus 12 --memory-mib 12288
-pixi run test-container-e2e --layer chunk-stream --scope chunk-stream.recovery --cpus 6 --memory-mib 6144
-# S3 protocol/SDK, persisted restart and joint storage-node faults:
-pixi run test-container-e2e --layer s3 --concurrency 2 --cpus 20 --memory-mib 24576
-# Normal release monitor full set, service subsets and persisted restart:
-pixi run test-container-e2e --layer deployment --concurrency 2 --cpus 6 --memory-mib 6144
-# Run one domain scope (other migrated scopes: kv.membership, kv.routing,
-# kv.recovery, kv.isolation, kv.group0, kv.client, kv.metadata):
-pixi run test-container-e2e --scope kv.management --concurrency 2
-# KV/KV and KV/Web crash-and-retirement isolation with exact survivor data:
-pixi run test-container-e2e --layer kv --scope kv.isolation --require-isolation --concurrency 2
+pixi run test-e2e-kv
+pixi run test-e2e-diskdb
+pixi run test-e2e-diskio
+pixi run test-e2e-chunkdb
+pixi run test-e2e-chunk-client
+pixi run test-e2e-chunk-stream
+pixi run test-e2e-chunk-kv
+pixi run test-e2e-s3
+pixi run test-e2e-iceberg
+pixi run test-e2e-dataset
+pixi run test-e2e-console
+pixi run test-e2e-deployment
+# The shared host dispatcher also accepts subcommands:
+pixi run test unit core
+pixi run test e2e s3 --case s3.sdk::java
+pixi run test profile containerd-cluster
 # Explicit Linux host-network admission/recovery; run on an exclusive host:
 pixi run test-container-e2e --profile host --concurrency 1 --cpus 4 --memory-mib 4096
 # Explicit native containerd in isolated privileged Linux hosts:
@@ -79,7 +75,6 @@ node image. Private data/log/crash mounts survive teardown. The host profile
 uses 1024 CPU shares per host/node container and retains its 1024 MiB node
 memory limit. Cluster admission uses a shared CPU allowance and sums hard
 memory limits, including its host containers and client. Artifact and image identities are verified before startup.
-The remaining native Console migrations and all-domain gate are pending.
 DiskIO process-exit faults retain their network
 namespace, so the original 15-second stream/reader/repair bounds still apply.
 
@@ -112,8 +107,7 @@ bound. A separate protected restart case checks stable endpoints and range
 reads. Local state/secret/owned-directory checks remain component UT, while
 Web health and Group-0 preview have their Console owner.
 
-Other domain migrations remain tracked in the working plan. Image and client
-revisions are recorded independently. Client/documentation/test-registration
+Image and client revisions are recorded independently. Client/documentation/test-registration
 commits reuse an image after verifying the release server inputs still match;
 production source, dependency, runtime configuration and build changes require
 a rebuild. A missing/unverifiable image source label fails this verification.
@@ -132,8 +126,7 @@ host capacity further limits the declared budget. Two slots run isolated fixture
 at once; one slot does not claim concurrent isolation.
 Recovery/isolation acceptance uses at most two slots; independent named flows
 use the effective cap. CI sets `--require-isolation` and
-fails if two slots are unavailable, so the required isolation check cannot skip. Host/hardware and containerd test
-profiles remain pending.
+fails if two slots are unavailable, so the required isolation check cannot skip. Host/hardware and containerd profiles are explicit gates.
 
 ## Lifecycle and endpoints
 
@@ -152,8 +145,8 @@ profiles remain pending.
 - KV scopes separately test user-data groups and Group-0 initialization,
   discovery, membership CAS and metadata authority through public APIs. Bare
   profiles start no initial store; Group-0 ownership tests explicitly initialize
-  through management. SSH, monitor and console coverage belongs to deployment
-  profiles until their migration.
+  through management. SSH, monitor and console coverage belongs to deployment and Console
+  profiles.
 - SIGKILL/restart retains the same mounted data, network identities and internal
   endpoints. Inspection rejects a changed peer IP rather than masking stale
   topology by choosing another endpoint.
@@ -177,7 +170,7 @@ profiles remain pending.
   per-case client, start/restart/collect/stop and complete wall durations, sorts
   the slowest flows, and preserves failure status after cleanup errors.
 
-Listener implementations and later migrations follow the
+Listener implementations follow the
 [TCP restart/ownership contract](../doc/design/rpc/design-crowdb-rpc-tcp.md#7-listener-ownership-and-restart):
 `SO_REUSEADDR` before bind, stable four-digit endpoints and one live owner;
 no default `SO_REUSEPORT` or conflict-driven port hopping.
@@ -207,54 +200,26 @@ remain in the original host directories; they are excluded from upload. JSON
 measurements retain their original status/count/timing values. Local raw logs
 and crash data remain available for investigation.
 
-## First-batch ownership inventory
+## Component ownership
 
-- Moved: the three-voter CRUD/batch/delete scenario from kv-server's
-  `cluster_e2e_test`. Its former host-launch owner was removed.
-- Migrated: remaining `cluster_e2e_test` cases cover follower hints, topology,
-  dynamic groups, multiple-group isolation and five-node replica reconfiguration
-  in three named flows. `snapshot_join_e2e_test` maps to the snapshot import
-  before wiring and WAL-tail flow. Both old files and registrations are removed.
-- Migrated: all `server_api_test`, `async_ops_test` and `multi_store_test`
-  cases consolidate into eight named KV flow cases. The old files and explicit
-  Cargo test registrations were removed after container acceptance. Multi-store
-  coverage additionally checks different values for identical keys and restart.
-- Group-0 initialization, persisted ownership and discovery now use named
-  container cases. `system_init_test` is removed; `restore_test`, `reconcile_test`
-  and `group0_discovery_test` retain their disk/identity/planning UT portions.
-  All deployment failover flows pass together; `deployment_reconfig_test` and
-  its final process launcher are removed.
-- KV client public CRUD/CAS/scan/deadline, domain monitor ensure, authority
-  and membership CAS flows have container owners. Deterministic watcher
-  admission, forced pagination, internal barrier metrics, watermark and
-  cancelled owner-handover tests remain component-local. Slot-map, handoff and
-  epoch-publication flows pass; their old embedded-server sources are removed.
-- Retain component logic tests: CLI parsing; placement/balance planning;
-  monitor state/domain reconciliation tests using embedded stores or mocked
-  dependencies. Mixed tests require per-case classification before moving.
-- Shared harness follow-up: `cluster`, `diskdb`, `diskio`, `chunkdb`, `chunk_kv`
-  launch service chains. Migrate the real-server portions to their layer profiles;
-  retain deterministic hardware/simulation and internal logic checks locally.
-- Other layers and existing deployment/browser acceptance keep their current
-  owner. This inventory covers the initial KV batch, not full migration closure.
+- Public server flows have one owner in the domain registry. Retired host
+  launchers and overlapping acceptance files are removed.
+- Component tests retain internal invariants, planning, protocol peers and
+  injected hardware/storage behavior. They do not duplicate the full server flow.
+- Current complete-run results and remaining coverage gaps live only in
+  `doc/working/test.md`.
 
 The cluster flows also cover exact follower hints, nontrivial topology identities,
 dynamic group creation/removal with isolated same-key values, and a five-node
 3→5→3 membership transition with acknowledged data and subsequent writes. The
 former KV server `cluster_e2e_test.rs` is fully migrated. Selected-case resource
-budgets reserve 0.5 CPU/512 MiB per node plus the host client; default 4 CPU/4096
-MiB permits two three-node isolation fixtures or one five-node fixture.
+budgets reserve a shared 1.5 CPU allowance and the summed hard memory limits
+per fixture; the default KV budget permits two three-node isolation fixtures.
 
 Snapshot join uses two voting nodes and a third bare store from the same release
 image. Direct local reads prove imported old values before remote wiring, then
 verify WAL-tail catch-up on the non-voting member. Node profiles can omit initial
 groups; the management API owns join/bootstrap.
-
-Latest complete KV acceptance: 48 independent fixtures, 47 distinct Rust cases,
-54 client phases and three invalid release-startup checks pass in 85.987 seconds
-with two slots and a 6 CPU/6144 MiB budget. See `doc/working/test.md` for measured
-flow timings. Other service domains and final task/job classification remain
-pending.
 
 ## Storage and normal monitor batches
 
@@ -270,12 +235,7 @@ pending.
   selected readiness, acknowledged host-client writes, abrupt node loss and
   recreation with preserved data. Unknown/missing-dependency selections fail
   before partial startup. Single-mode browser/runtime failures now belong to
-  the deployment layer; manual UI/SSH admission remains pending.
-- Latest Diskdb client batch: 5 flows/12 host phases, 12.726 s scenario wall at two
-  slots. Normal monitor selection batch: 3 flows/6 host phases and five startup
-  rejection checks, 20.153 s. Detailed measurements and image/source identities
-  are in `doc/working/test.md`; other domains remain pending.
-
+  the deployment layer; manual UI/SSH admission has its explicit bridge profile.
 ## Diskio profiles
 
 - `diskio.durability` uses an owned 16 MiB regular data file with buffered file I/O;
@@ -382,7 +342,7 @@ pixi run test-container-e2e --scope console.native --cpus 8 --memory-mib 16384 -
   Both use the same image; physical capabilities remain restricted. The host
   control channel pauses/resumes only the current owned KV service PID.
 - These accepted cases are included once in `console.operations`; managed
-  browser owners are also migrated; the remaining native UI flows are pending.
+  browser and native UI owners are included in the complete Console domain.
 
 ```sh
 pixi run test-container-e2e --scope console.browser.shell --concurrency 2

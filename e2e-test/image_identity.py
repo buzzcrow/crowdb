@@ -27,6 +27,17 @@ SERVER_PATHS = (
     ":(exclude)container/oci-image/runtime.py",
     ":(exclude)container/oci-image/run-node.py",
     # Host SDK client delegates are not read by staging or the OCI builder.
+    ":(exclude)tools/pixi-tasks/test.py",
+    ":(exclude)tools/test-metrics/measure.sh",
+    ":(exclude)tools/test-metrics/measure.py",
+    ":(exclude)tools/README.md",
+    ":(exclude)tools/pixi-tasks/test-cpp.sh",
+    ":(exclude)tools/pixi-tasks/test-boto3-copy-error.sh",
+    ":(exclude)tools/pixi-tasks/test-s3-sdks.sh",
+    ":(exclude)tools/pixi-tasks/test-iceberg-sdk.sh",
+    ":(exclude)tools/pixi-tasks/test-iceberg-listing-client.sh",
+    ":(exclude)tools/ci-checks/task_graph.py",
+    ":(exclude)tools/ci-checks/e2e_coverage.py",
     ":(exclude)tools/pixi-tasks/test-storage.sh",
     ":(exclude)tools/pixi-tasks/test-suite.sh",
     ":(exclude)tools/pixi-tasks/test-core.sh",
@@ -55,6 +66,9 @@ SERVER_PATHS = (
     ":(exclude)tools/ci-checks/check-ci-test-tasks.py",
     # This host-only RPC benchmark is not a dependency or staged server binary.
     ":(exclude)app/crowdb-cli/src/commands/bench/rpc.rs",
+    # This workload driver has only CLI consumers; server consumer changes
+    # remain guarded. Its test hook does not enter a release build.
+    ":(exclude)lib/crowdb-console-shared/src/ops/s3_bench.rs",
     # Host CLI lifecycle is not built or packaged by release staging.
     ":(exclude)app/crowdb-cli/src/commands.rs",
     ":(exclude)app/crowdb-cli/src/commands/s3.rs",
@@ -76,10 +90,53 @@ SERVER_PATHS = (
 
 
 
+def production_pixi_manifest(manifest):
+    # Explicit host task allowlist: release build tasks and dependencies
+    # remain guarded. stage.sh never reads these test commands.
+    host_tasks = {
+        "test", "test-core", "test-storage", "test-access", "test-console",
+        "test-console-ui", "test-cpp", "test-suite", "test-access-sdk",
+        "test-s3-java-sdk", "test-s3-js-sdk", "test-s3-go-sdk", "test-s3-sdks",
+        *("test-e2e-" + domain for domain in (
+            "kv", "diskdb", "diskio", "chunkdb", "chunk-stream", "chunk-client",
+            "chunk-kv", "s3", "iceberg", "dataset", "console", "deployment")),
+    }
+    feature_tasks = {
+        "s3-e2e": {"test-boto3-e2e", "test-boto3-copy-error", "test-aws-cli-e2e",
+                   "test-aws-cli-concurrent", "test-rclone-e2e"},
+        "iceberg-e2e": {"test-iceberg-listing-client", "test-iceberg-listing-native",
+            "test-iceberg-native", "test-java-iceberg-e2e", "test-rust-iceberg-e2e",
+            "test-iceberg-rck", "test-iceberg-e2e", "test-iceberg-sdk",
+            "test-iceberg-sdk-component", "test-java-iceberg-fileio-e2e", "test-pyiceberg-e2e"},
+        "iceberg-ecosystem": {"test-iceberg-container-ecosystem"},
+    }
+    for task in host_tasks:
+        manifest.get("tasks", {}).pop(task, None)
+    for feature, tasks in feature_tasks.items():
+        table = manifest.get("feature", {}).get(feature, {}).get("tasks", {})
+        for task in tasks:
+            table.pop(task, None)
+        if not table:
+            manifest.get("feature", {}).get(feature, {}).pop("tasks", None)
+        if not manifest.get("feature", {}).get(feature, {}):
+            manifest.get("feature", {}).pop(feature, None)
+    if not manifest.get("feature", {}):
+        manifest.pop("feature", None)
+    return manifest
+
+
 def production_manifest(manifest):
     result = dict(manifest)
     result.pop("test", None)
     result.pop("dev-dependencies", None)
+    if result.get("package", {}).get("name") == "crowdb-console-shared":
+        features = dict(result.get("features", {}))
+        if features.get("test-util") == []:
+            features.pop("test-util")
+        if features:
+            result["features"] = features
+        else:
+            result.pop("features", None)
     return result
 
 
@@ -144,13 +201,8 @@ def verify_server_sources(root, revision):
         if path == "pixi.toml" and current.is_file():
             before = tomllib.loads(git("show", f"{revision}:{path}"))
             after = tomllib.loads(current.read_text())
-            # This component gate is never called by release staging/building.
-            for manifest in (before, after):
-                manifest.get("tasks", {}).pop("test-storage", None)
-                manifest.get("feature", {}).get("iceberg-e2e", {}).get("tasks", {}).pop(
-                    "test-iceberg-sdk-component", None)
-                manifest.get("feature", {}).get("iceberg-ecosystem", {}).get("tasks", {}).pop(
-                    "test-iceberg-container-ecosystem", None)
+            before = production_pixi_manifest(before)
+            after = production_pixi_manifest(after)
             if before == after:
                 continue
         if path == "Cargo.lock" and current.is_file():

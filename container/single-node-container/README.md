@@ -257,7 +257,7 @@ automatic initialization; the default is manual cluster setup.
 - AWS CLI uses the configured recipe below for discovery, ordinary and multipart
   transfers, prefix listing, server copy, sync with deletion, and recursive
   cleanup. One concurrent request matches the bounded development fixture.
-  The separate `pixi run -e s3-e2e test-aws-cli-concurrent` gate verifies ten
+  The canonical `pixi run test-e2e-s3 --case s3.protocol::test_aws_cli_workflow` case verifies ten
   concurrent requests with the same classic transfer and path-style setup on
   the real-storage fixture, including exact bytes and cleanup. The container
   recipe retains one worker. Copy explicitly requests COPY metadata; the CLI's broader
@@ -277,7 +277,7 @@ s3 =
 Use that profile in `AWS_CONFIG_FILE`, export the generated credentials, then
 run `aws --endpoint-url http://127.0.0.1:9091 ...`. For server copy, supply
 `--metadata-directive COPY` to `aws s3 cp`. The repeatable repository gate is
-`pixi run -e s3-e2e test-aws-cli-e2e`; container acceptance runs the same recipe
+`pixi run test-e2e-s3 --case s3.protocol::test_aws_cli_workflow`; container acceptance runs the same recipe
 and checks persisted bytes after recovery before publication credentials become
 available.
 
@@ -286,7 +286,7 @@ available.
   Other provider, path-style addressing, ListObjectsV2, no system metadata,
   one transfer/checker/upload worker, an 8 MiB multipart cutoff and 5 MiB parts.
   User metadata preserves file modification times; checksum metadata remains
-  enabled. Run `pixi run -e s3-e2e test-rclone-e2e`. Container acceptance runs
+  enabled. Run `pixi run test-e2e-s3 --case s3.protocol::test_rclone_workflow`. Container acceptance runs
   this recipe alongside AWS CLI and verifies both after recovery/restart.
 - Mounting the endpoint as a filesystem with s3fs-fuse is unsupported.
 - Optional [Java, JavaScript and Go SDK recipes](../../e2e-test/clients/S3-SDK.md)

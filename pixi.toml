@@ -75,11 +75,7 @@ awscli = "==2.36.47"
 rclone = "==1.75.1"
 
 [feature.s3-e2e.tasks]
-test-boto3-e2e = { cmd = "bash tools/pixi-tasks/test-s3-e2e.sh" }
-test-boto3-copy-error = { cmd = "bash tools/pixi-tasks/test-boto3-copy-error.sh" }
-test-aws-cli-e2e = "bash tools/pixi-tasks/test-s3-client.sh aws"
-test-aws-cli-concurrent = "CROWDB_S3_CLIENT_CONCURRENCY=10 bash tools/pixi-tasks/test-s3-client.sh aws"
-test-rclone-e2e = "bash tools/pixi-tasks/test-s3-client.sh rclone"
+test-boto3-copy-error = { cmd = "python tools/pixi-tasks/test.py unit boto3" }
 
 [environments]
 s3-e2e = { features = ["s3-e2e"], no-default-feature = true }
@@ -112,19 +108,6 @@ s3fs = "*"
 openjdk = "21.*"
 maven = "3.9.*"
 
-[feature.iceberg-e2e.tasks]
-test-iceberg-listing-client = "bash tools/pixi-tasks/test-iceberg-listing-client.sh"
-test-iceberg-listing-native = "bash tools/pixi-tasks/test-iceberg-listing-native.sh"
-test-iceberg-native = "bash tools/pixi-tasks/test-iceberg-native.sh"
-test-java-iceberg-e2e = "bash tools/pixi-tasks/test-java-iceberg-e2e.sh"
-test-rust-iceberg-e2e = "bash tools/pixi-tasks/test-rust-iceberg-e2e.sh"
-test-iceberg-rck = "bash tools/pixi-tasks/test-iceberg-rck.sh"
-test-iceberg-e2e = "bash tools/pixi-tasks/test-iceberg-e2e.sh"
-test-iceberg-sdk = "bash tools/pixi-tasks/test-iceberg-sdk.sh"
-test-iceberg-sdk-component = "bash tools/pixi-tasks/test-iceberg-sdk-component.sh"
-test-java-iceberg-fileio-e2e = { cmd = "bash tools/pixi-tasks/test-java-iceberg-fileio-e2e.sh" }
-test-pyiceberg-e2e = { cmd = "bash tools/pixi-tasks/test-pyiceberg-e2e.sh" }
-
 # Explicit manual client/engine acceptance; never a default test dependency.
 [feature.iceberg-ecosystem.dependencies]
 python = "3.12.*"
@@ -146,12 +129,22 @@ image-import = "pixi run --manifest-path container/oci-image/pixi.toml import"
 image-ctl = "pixi run --manifest-path container/oci-image/pixi.toml -e runtime control"
 image-run = "pixi run --manifest-path container/oci-image/pixi.toml -e runtime run"
 test-container-e2e = "python e2e-test/run.py"
+test = "python tools/pixi-tasks/test.py"
+test-access-sdk = "python tools/pixi-tasks/test.py unit sdk"
+test-e2e-kv = "python tools/pixi-tasks/test.py e2e kv"
+test-e2e-diskdb = "python tools/pixi-tasks/test.py e2e diskdb"
+test-e2e-diskio = "python tools/pixi-tasks/test.py e2e diskio"
+test-e2e-chunkdb = "python tools/pixi-tasks/test.py e2e chunkdb"
+test-e2e-chunk-stream = "python tools/pixi-tasks/test.py e2e chunk-stream"
+test-e2e-chunk-client = "python tools/pixi-tasks/test.py e2e chunk-client"
+test-e2e-chunk-kv = "python tools/pixi-tasks/test.py e2e chunk-kv"
+test-e2e-s3 = "python tools/pixi-tasks/test.py e2e s3"
+test-e2e-iceberg = "python tools/pixi-tasks/test.py e2e iceberg"
+test-e2e-dataset = "python tools/pixi-tasks/test.py e2e dataset"
+test-e2e-console = "python tools/pixi-tasks/test.py e2e console"
+test-e2e-deployment = "python tools/pixi-tasks/test.py e2e deployment"
 test-container-e2e-fixture = "env PYTHONPATH=e2e-test python -m unittest discover -s e2e-test/tests -p '*_test.py' -v"
 test-oci-image = "pixi run --manifest-path container/oci-image/pixi.toml test"
-test-s3-java-sdk = "bash tools/pixi-tasks/test-s3-sdk.sh java"
-test-s3-js-sdk = "bash tools/pixi-tasks/test-s3-sdk.sh js"
-test-s3-go-sdk = "bash tools/pixi-tasks/test-s3-sdk.sh go"
-test-s3-sdks = "bash tools/pixi-tasks/test-s3-sdks.sh"
 
 # ── Build ────────────────────────────────────────────────────────
 # C++ libraries only (crowdb-tree, crowdb-rpc, crowdb-diskio). Needed by C++
@@ -222,24 +215,23 @@ check-ci-test-tasks = "python tools/ci-checks/check-ci-test-tasks.py"
 # ── Lint job ──
 # (uses rs-fmt / rs-lint / tree-lint defined above, no separate test-* tasks)
 
-test-cpp = { cmd = "bash tools/pixi-tasks/test-cpp.sh", depends-on = ["build-cpp"] }
+test-cpp = { cmd = "python tools/pixi-tasks/test.py unit cpp", depends-on = ["build-cpp"] }
 
 # ── Component tests ─────────────────────────────────────────────
-test-core = { cmd = "bash tools/pixi-tasks/test-core.sh" }
-test-storage = { cmd = "bash tools/pixi-tasks/test-storage.sh" }
-test-access = { cmd = "bash tools/pixi-tasks/test-access.sh" }
+test-core = { cmd = "python tools/pixi-tasks/test.py unit core" }
+test-storage = { cmd = "python tools/pixi-tasks/test.py unit storage" }
+test-access = { cmd = "python tools/pixi-tasks/test.py unit access" }
 
-# ── ConsoleTests job: spawns crowdb-kv-server via lifecycle::deploy_local ──
-# Build the debug binary explicitly so tests find it at target/debug/.
-test-console = { cmd = "bash tools/pixi-tasks/test-console.sh" }
+# ── ConsoleTests job: deterministic component tests ──
+test-console = { cmd = "python tools/pixi-tasks/test.py unit console" }
 
 # ── UITests job: deterministic UI component tests ──
-test-console-ui = { cmd = "bash tools/pixi-tasks/test-console-ui.sh", depends-on = ["install-ui-deps"] }
+test-console-ui = { cmd = "python tools/pixi-tasks/test.py unit ui", depends-on = ["install-ui-deps"] }
 
-# ── Full local suite (not a CI job; runs everything in one process) ──
+# ── Full local suite (not a CI job; runs everything in one invocation) ──
 # Grouped by CI job order. Each group task owns its component list;
 # Component tasks run first; one root container aggregate follows.
-test-suite = { cmd = "bash tools/pixi-tasks/test-suite.sh", depends-on = ["build-cpp", "install-ui-deps"] }
+test-suite = { cmd = "python tools/pixi-tasks/test.py all", depends-on = ["build-cpp", "install-ui-deps"] }
 
 # ── Coverage & LOC ───────────────────────────────────────────────
 coverage = { cmd = "cargo tarpaulin --workspace --out Html --output-dir target/coverage --exclude-files '*/tests/*'", depends-on = ["install-deps"] }

@@ -98,6 +98,43 @@ class ImageIdentityTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "pixi.toml"):
             verify_server_sources(self.root, revision)
 
+    def test_unified_host_tasks_do_not_exempt_image_build_inputs(self):
+        manifest = self.root / "pixi.toml"
+        original = ('[tasks]\nbuild = "stage release"\n'
+                    '[feature.iceberg-e2e.tasks]\ntest-iceberg-e2e = "old host gate"\n')
+        manifest.write_text(original)
+        self.commit()
+        revision = self.git("rev-parse", "HEAD")
+        updated = '[tasks]\nbuild = "stage release"\ntest-e2e-iceberg = "host dispatcher"\n'
+        manifest.write_text(updated)
+        self.assertTrue(verify_server_sources(self.root, revision)["server_sources_match"])
+        manifest.write_text(updated.replace("stage release", "different image build"))
+        with self.assertRaisesRegex(ValueError, "pixi.toml"):
+            verify_server_sources(self.root, revision)
+
+    def test_host_benchmark_hook_does_not_exempt_shared_runtime_or_default_features(self):
+        directory = self.root / "lib/crowdb-console-shared"
+        driver = directory / "src/ops/s3_bench.rs"
+        driver.parent.mkdir(parents=True)
+        driver.write_text("host benchmark driver\n")
+        runtime = driver.with_name("s3.rs")
+        runtime.write_text("shared runtime\n")
+        manifest = directory / "Cargo.toml"
+        original = '[package]\nname = "crowdb-console-shared"\nversion = "0.1.0"\n'
+        manifest.write_text(original)
+        self.commit()
+        revision = self.git("rev-parse", "HEAD")
+        driver.write_text("host benchmark protocol hook\n")
+        manifest.write_text(original + '[features]\ntest-util = []\n')
+        self.assertTrue(verify_server_sources(self.root, revision)["server_sources_match"])
+        manifest.write_text(original + '[features]\ntest-util = []\ndefault = ["test-util"]\n')
+        with self.assertRaisesRegex(ValueError, "Cargo.toml"):
+            verify_server_sources(self.root, revision)
+        manifest.write_text(original + '[features]\ntest-util = []\n')
+        runtime.write_text("changed shared runtime\n")
+        with self.assertRaisesRegex(ValueError, "s3.rs"):
+            verify_server_sources(self.root, revision)
+
     def test_manual_engine_delegate_preserves_dependency_and_build_guards(self):
         manifest = self.root / "pixi.toml"
         original = ('[feature.iceberg-ecosystem.dependencies]\npython = "3.12.*"\n'

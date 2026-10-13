@@ -45,7 +45,7 @@ def aws_workflow(endpoint, phase="all"):
     with tempfile.TemporaryDirectory(prefix="crowdb-cli-") as directory:
         root = Path(directory)
         config = root / "config"
-        concurrency = int(os.environ.get("CROWDB_S3_CLIENT_CONCURRENCY", "1"))
+        concurrency = int(os.environ.get("CROWDB_S3_CLIENT_CONCURRENCY", "10"))
         config.write_text("[default]\nregion = us-east-1\ns3 =\n    addressing_style = path\n    preferred_transfer_client = classic\n    multipart_threshold = 8MB\n    multipart_chunksize = 5MB\n"
                           + f"    max_concurrent_requests = {concurrency}\n")
         env["AWS_CONFIG_FILE"] = str(config)
