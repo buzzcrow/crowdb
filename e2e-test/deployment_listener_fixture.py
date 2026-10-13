@@ -30,7 +30,7 @@ class OccupiedAccessCluster(ManagedCluster):
         name = self.run_id + "-occupied-access"
         self.containers.append(name)
         self.command("run", "-d", "--name", name, "--label", f"org.crowdb.e2e.run={self.run_id}",
-            "--network", "container:" + self.servers[0], "--cpus", "0.5", "--memory", "512m",
+            "--network", "container:" + self.servers[0], "--cpu-shares", "1024", "--env", "TOKIO_WORKER_THREADS=1", "--memory", "512m",
             "--pids-limit", "256", "--ulimit", "core=-1", "--env-file", str(private),
             "--env", "CROWDB_ACCESS_LOG_DIR=/opt/crowdb/data/log/access",
             "--env", "CROWDB_ACCESS_HEALTH_LISTEN=127.0.0.1:19094",

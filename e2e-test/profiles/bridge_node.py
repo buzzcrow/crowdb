@@ -33,12 +33,12 @@ def start_node(name):
     data.mkdir(mode=0o755)
     docker("run", "--rm", "--name", PREFIX + "-prepare", "--network", "none",
            "--label", f"org.crowdb.e2e.run={PREFIX}", "--user", "0",
-           "--cpus", "0.25", "--memory", "32m", "--entrypoint", "/bin/chown",
+           "--cpu-shares", "1024", "--env", "TOKIO_WORKER_THREADS=1", "--memory", "32m", "--entrypoint", "/bin/chown",
            "--mount", f"type=bind,source={data},target=/opt/crowdb/data",
            IMAGE, "10001:10001", "/opt/crowdb/data")
     docker("run", "-d", "--name", name, "--network", PREFIX,
            "--label", f"org.crowdb.e2e.run={PREFIX}",
-           "--cpus", os.environ["CROWDB_E2E_NODE_CPUS"], "--memory", "1g",
+           "--cpu-shares", "1024", "--env", "TOKIO_WORKER_THREADS=1", "--memory", "1g",
            "--ulimit", "core=-1", "--pids-limit", "256",
            "--mount", f"type=bind,source={data},target=/opt/crowdb/data",
            "-e", "CROWDB_STARTUP_MODE=manual",

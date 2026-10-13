@@ -37,6 +37,7 @@ pub enum S3ClusterVerb {
         target: super::container_cluster::Target,
         #[arg(long, env = "CROWDB_CONTAINER_IMAGE")]
         image: Option<String>,
+        /// Relative CPU weight per container (1 CPU = 1024 shares), without a hard quota.
         #[arg(long)]
         node_cpus: Option<f64>,
         #[arg(long)]

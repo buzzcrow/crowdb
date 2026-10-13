@@ -27,44 +27,24 @@ Upstream: [R230](../backlog/R230-test-container-layer-e2e.md).
 
 ## Remaining tasks
 
-- [ ] **Iceberg concurrent PUT**: resolve
-  `access_iceberg::file_http::concurrency::thirty_two_concurrent_direct_puts`,
-  preserve all 32 direct 8-MiB PUT successes, and rerun the affected domain.
-  Complete-run artifact:
-  `/tmp/crowdb-r230-domain-final-iceberg/run-08f1edcfd2274d2ca669f25d48ef8329`.
-  Same-resource single-case reproduction:
-  `/tmp/crowdb-r230-iceberg-concurrency-exact/run-ba80e3320873495781ddb21dc76058bb`.
-  Full run exhausts request deadlines; reproduction has 2 successful uploads
-  and 30 deadline failures in 10023 ms. Generic `Catalog is not ready` does not
-  prove initialization failure. The remaining grace cluster was idle while
-  this one-case reproduction ran; no other operation clients were active.
-- [ ] **Resource comparison**: capture CPU/phase evidence and choose the fix.
-  `/tmp/crowdb-r230-iceberg-concurrency-resource.log` samples Access memory at
-  up to 126.2 MiB, no OOM/max events, and 38 additional throttled periods over
-  the approximately 10-second window from 5.7 s before the barrier to 4.3 s
-  afterward. Throttled usec are aggregated across threads, not wall time.
-  This supports a CPU comparison, not a conclusion that quota is the only cause.
-  Temporary phase instrumentation has been removed; original assertions remain.
-- [ ] **CI capacity**: make the six-node gate reachable under an approved CPU
-  policy/runner budget. Final-source 4-CPU preflight rejects the case before
-  allocation: at least 6.5 CPU / 12800 MiB. Evidence:
-  `/tmp/crowdb-r230-ci-final-admission.log`. Do not invent hardware capacity.
-- [ ] **Closure**: finish the remaining case and CI admission, export final
-  redacted diagnostics, update measured rows and remaining issues, then delete
-  R230 detail, backlog entry and this plan in a gated cleanup commit. Keep the
-  benchmark script and CLI/benchmark redesign as later review. R139 owns full
-  configuration/performance profiles. AMD/macOS and remote CI remain unmeasured.
-
-## Open Questions
-
-- User previously requested no resource changes. Permission is pending for the
-  prepared Access-only diagnostic `/tmp/crowdb-r230-iceberg-access-cpu1.py`:
-  only node 12 CPU changes from 0.25 to 1; other role quotas, 512-MiB memory,
-  image, request count/size and deadline remain unchanged. Do not execute until
-  the user answers the asynchronous question.
-- CI needs a decision between sufficient runner capacity and a separately
-  verified CPU-sharing policy. Current `--cpus` is a hard quota, not cpuset or
-  relative CPU shares; no resource/admission semantics have been changed.
+- [ ] **Iceberg domain**: finish the complete domain rerun under CPU sharing.
+  Original 32 × 8-MiB direct PUT now passes, including the final one-worker
+  configuration (client 26.40 s, fixture 41.912 s). Full run retains the original
+  retirement grace: `/tmp/crowdb-r230-iceberg-shares-full`.
+- [x] **Resource gates**: all six special profiles pass under 1024 CPU shares
+  per container and `TOKIO_WORKER_THREADS=1`, retaining memory/PID limits.
+  Fixture 106, OCI 13, CLI tests/clippy/fmt, two-cluster isolation, final CLI
+  lifecycle and six-node browser pass. Six-node fixture 94.473 s with a declared
+  4-CPU budget and 12800 MiB reserved; remote four-core performance is unmeasured.
+  Bridge cleanup timed out once under overlapping profiles; isolated diagnosis
+  and the final uninstrumented run pass. Retain evidence as a timing issue,
+  without assertions/deadline changes. Public diagnostics:
+  `/tmp/crowdb-r230-shares-public`. Temporary instrumentation is removed.
+- [ ] **Closure**: export final redacted diagnostics, update domain measurements
+  and remaining issues, then delete the requirement, backlog entry and this plan
+  in a gated cleanup commit. Keep benchmark/CLI redesign for later review and
+  R139 configuration profiles deferred. Preserve concurrent development-helper
+  and README edits. AMD/macOS and remote CI remain unmeasured.
 
 ## Verification
 
@@ -76,20 +56,3 @@ Upstream: [R230](../backlog/R230-test-container-layer-e2e.md).
 - Redacted exports: `/tmp/crowdb-r230-console-final-public`,
   `/tmp/crowdb-r230-deployment-final-public`,
   `/tmp/crowdb-r230-domain-final-public`; private originals remain for diagnosis.
-
-## Blocked
-
-- All independently executable acceptance/profile work is finished. Resource
-  changes wait on the user's earlier instruction to leave them unchanged.
-  The prepared Access-only 1-CPU comparison has not been executed; its question
-  remains pending. This is a resource decision, not the five-attempt rule.
-- Failed command: `pixi run test-container-e2e --layer iceberg --case
-  access_iceberg::file_http::concurrency::thirty_two_concurrent_direct_puts
-  --concurrency 1 --node-cpus 0.25 --cpus 16 --memory-mib 24576`.
-  Complete-domain run and focused reproduction both fail with HTTP 503 request
-  deadlines. CPU throttling is observed; causality still requires comparison.
-- Choices: approve the isolated 1-CPU comparison and apply the measured fix;
-  retain quotas and investigate CPU work in code; or define a separately
-  verified CPU-sharing profile. CI separately needs enough actual capacity or
-  an approved sharing/admission contract. Never declare R230 complete while
-  the case and CI budget remain unresolved.

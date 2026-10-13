@@ -32,16 +32,16 @@ def run_host(args, parser):
         parser.error("host profile has one deployment acceptance; domain selectors do not apply")
     if args.concurrency != 1:
         parser.error("host fixed ports require --concurrency 1 and an exclusive host")
-    if args.cpus < 2.5 or args.memory_mib < 1536:
-        parser.error("host profile reserves 2 CPU / 1024 MiB for the node plus 0.5 CPU / 512 MiB for its client")
+    if args.cpus < 1.5 or args.memory_mib < 1536:
+        parser.error("host profile requires a shared 1.5-CPU scheduling allowance and 1536 MiB including the node and host client")
     if args.list:
         print(json.dumps([{"scope":"deployment.host", "case":"host_network_admission_and_recovery", "nodes":1}]))
         return
     if sys.platform != "linux":
         parser.error("host deployment acceptance requires Linux")
     info = json.loads(docker("info", "--format", "{{json .}}"))
-    if info["OSType"] != "linux" or info["NCPU"] < 2.5 or info["MemTotal"] < 1536 * 1048576:
-        parser.error("host deployment requires a Linux daemon with 2.5 CPU / 1536 MiB capacity")
+    if info["OSType"] != "linux" or info["NCPU"] < 1.5 or info["MemTotal"] < 1536 * 1048576:
+        parser.error("host deployment requires a Linux daemon with 1.5 CPU / 1536 MiB capacity")
     identity = json.loads(docker("image", "inspect", args.image))[0]
     labels = identity["Config"].get("Labels") or {}
     try:
@@ -53,7 +53,7 @@ def run_host(args, parser):
     data = (args.data_root / run_root.name / "host" if args.data_root else ROOT / ".crowdb-runtime/test-data/container-e2e" / run_root.name / "host").resolve()
     data.mkdir(parents=True, mode=0o700)
     (run_root / "identity.json").write_text(json.dumps({"profile":"host", "id":identity["Id"],
-        "labels":labels, "sources":source, "concurrency":1, "cpus":2.5, "memory_mib":1536,
+        "labels":labels, "sources":source, "concurrency":1, "cpus":1.5, "memory_mib":1536,
         "host_data":str(data), "container_data":"/opt/crowdb/data",
         "core_policy":Path("/proc/sys/kernel/core_pattern").read_text().strip()}, indent=2))
     env = os.environ.copy()

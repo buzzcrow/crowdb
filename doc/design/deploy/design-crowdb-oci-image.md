@@ -35,8 +35,8 @@ macOS implementation and Kubernetes deployment automation are deferred.
   multi-node admission are startup policies, not separate image builds.
 - **I3 — External state**: UUIDs, SSH keys, cluster bindings, server data and logs
   remain outside image layers. Replacing a runtime retains persistent state.
-- **I4 — Enforced resources**: production startup fails if requested CPU/memory
-  limits or host networking cannot be applied and verified.
+- **I4 — Enforced resources**: production startup fails if requested CPU
+  policy, memory limits or host networking cannot be applied and verified.
 - **I5 — Verified publication**: publication copies the verified image without
   rebuilding its root filesystem or converting its manifest media types.
 - **I6 — Bounded lifecycle**: build processes have isolated sockets, owned state
@@ -167,7 +167,7 @@ artifact available for retry; credentials never enter layers, logs or receipts.
 
 Use the host's Docker installation. Pull the OCI image from the registry by
 digest, then start it with the existing entrypoint/environment/mount contract.
-Production uses `--network host`, explicit `--cpus` and `--memory`, a persistent
+Production uses `--network host`, explicit CPU policy and `--memory`, a persistent
 data directory, physical host identity, management interface and credential
 mounts. Bridge-mode single-host simulation remains available for tests.
 Ordinary one-node usage needs only the usual ports/persistent data mount and UI
@@ -207,7 +207,15 @@ A shared launcher validates digest, platform, data ownership, credentials,
 physical host identity, management interface and allowed devices before choosing
 Docker or nerdctl. It verifies applied cgroup `cpu.max` and `memory.max`, actual
 host network namespace and device access after startup. Requested limits cannot
-silently degrade into advisory values. It records runtime/container identity
+silently degrade into advisory values. The explicit sharing policy instead
+verifies unlimited `cpu.max` and the requested `cpu.weight`: 1024 shares
+represent one CPU of relative weight, not a ceiling or exclusive core.
+Container E2E and CLI clusters default to this weight per container; fixture
+scheduling bounds concurrent clients and hard memory totals without summing
+node weights into required physical cores. Node services inherit one Tokio
+worker per process in these profiles, so an unconstrained host CPU count does
+not multiply idle worker pools beyond PID/memory limits. Idle CPU can be borrowed.
+It records runtime/container identity
 for explicit stop, restart and cleanup. Host limits are upper bounds, not
 guaranteed CPU reservations. Block-device access stays explicit; no blanket
 privileged container is needed.

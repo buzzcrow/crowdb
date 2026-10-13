@@ -22,7 +22,7 @@ class RejectedBootstrapCluster(ManagedCluster):
             self.containers.append(preparer)
             self.command("run", "--rm", "--name", preparer, "--label",
                 f"org.crowdb.e2e.run={self.run_id}", "--network", "none", "--user", "root",
-                "--cpus", "0.5", "--memory", "128m", "--pids-limit", "32",
+                "--cpu-shares", "1024", "--env", "TOKIO_WORKER_THREADS=1", "--memory", "128m", "--pids-limit", "32",
                 "--mount", f"type=bind,source={data},target=/opt/crowdb/data",
                 "--entrypoint", "/bin/sh", self.image, "-ec",
                 "mkdir /opt/crowdb/data/bootstrap; printf 'invalid manifest' > /opt/crowdb/data/bootstrap/manifest.json; chown -R crowdb:crowdb /opt/crowdb/data/bootstrap; chmod 0600 /opt/crowdb/data/bootstrap/manifest.json")

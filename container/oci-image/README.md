@@ -83,6 +83,13 @@ Prepare a persistent directory owned by UID/GID 10001 and a private password fil
 (mode 0600), or preinstall `ssh/authorized_keys` in that directory. Passwords are
 only used for admission; each node persists its own Ed25519 keys. Production
 requires an explicit stable physical host ID, management interface and resources.
+CPU policy is explicit: `--cpus` sets a hard ceiling; `--cpu-shares 1024`
+sets one CPU of relative weight and allows use of idle host CPU. These options
+are mutually exclusive. Memory remains a verified hard limit in both modes.
+Container E2E and CLI clusters default to the shares policy and one Tokio
+worker per service. The host launcher accepts `--worker-threads 1` for this
+explicit configuration, inherited by services as `TOKIO_WORKER_THREADS`.
+
 
 ```bash
 pixi run image-run --runtime docker \
@@ -165,9 +172,9 @@ Workflow execution and live registry signing require a release dispatch.
 ```bash
 pixi run test-oci-image
 pixi run --skip-deps test-single-node-container
-pixi run test-container-e2e --profile bridge-admission --concurrency 1 --node-cpus 0.5 --cpus 4 --memory-mib 6144
+pixi run test-container-e2e --profile bridge-admission --concurrency 1 --node-cpus 1 --cpus 4 --memory-mib 6144
 pixi run test-container-e2e --profile host --concurrency 1 --cpus 4 --memory-mib 4096
-pixi run test-container-e2e --profile containerd-cluster --concurrency 1 --node-cpus 0.75 --cpus 4 --memory-mib 6144
+pixi run test-container-e2e --profile containerd-cluster --concurrency 1 --node-cpus 1 --cpus 4 --memory-mib 6144
 # One disposable privileged Linux host, with native containerd and no Docker socket inside:
 pixi run test-container-e2e --profile containerd-host --concurrency 1 --cpus 3 --memory-mib 2048 \
   --archive "$PWD/target/crowdb.oci.tar"

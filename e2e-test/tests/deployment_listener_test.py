@@ -11,5 +11,5 @@ class OccupiedListenerBudgetTest(unittest.TestCase):
         self.assertEqual(len(cases), 2)
         for case in cases:
             self.assertEqual(case_nodes(case), 2)
-            self.assertEqual(case_resources(case, 0.25), (3, 3072))
-            self.assertEqual(case_resources(case, 3), (4, 3072))
+            self.assertEqual(case_resources(case, 0.25), (1.5, 3072))
+            self.assertEqual(case_resources(case, 3), (1.5, 3072))

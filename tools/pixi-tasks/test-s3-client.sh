@@ -14,4 +14,4 @@ if [[ -n "${CROWDB_S3_E2E_ENDPOINT:-}" ]]; then
 fi
 exec pixi run -e default -- python e2e-test/run.py --layer s3 --scope s3.protocol \
     --case "s3.protocol::$method" --image "${CROWDB_E2E_IMAGE:-crowdb-node:dev}" \
-    --concurrency 1 --node-cpus "${CROWDB_E2E_NODE_CPUS:-0.5}" --cpus "${CROWDB_E2E_CPUS:-8}" --memory-mib "${CROWDB_E2E_MEMORY_MIB:-8192}"
+    --concurrency 1 --node-cpus "${CROWDB_E2E_NODE_CPUS:-1}" --cpus "${CROWDB_E2E_CPUS:-8}" --memory-mib "${CROWDB_E2E_MEMORY_MIB:-8192}"

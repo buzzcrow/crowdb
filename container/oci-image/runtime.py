@@ -3,6 +3,7 @@
 """Host Docker/containerd commands and verified container resource boundaries."""
 
 import json
+import math
 import os
 import subprocess
 import uuid
@@ -42,10 +43,19 @@ class Runtime:
             self.invoke("pull", reference)
             return self.inspect(identity, image=True)
 
-    def verify(self, name, cpus, memory_mib, host_network):
+    def verify(self, name, cpus, memory_mib, host_network, cpu_shares=None):
         cpu = self.invoke("exec", name, "cat", "/sys/fs/cgroup/cpu.max").split()
         memory = self.invoke("exec", name, "cat", "/sys/fs/cgroup/memory.max").strip()
-        if cpu[0] == "max" or abs(int(cpu[0]) / int(cpu[1]) - cpus) > 0.00001:
+        if cpu_shares is not None:
+            # runc supports the legacy linear and current default-preserving mapping.
+            # https://github.com/opencontainers/cgroups/blob/v0.0.6/utils.go
+            logarithm = math.log2(cpu_shares)
+            expected = {1 + (cpu_shares - 2) * 9999 // 262142,
+                        math.ceil(10 ** ((logarithm ** 2 + 125 * logarithm) / 612 - 7 / 34))}
+            weight = self.invoke("exec", name, "cat", "/sys/fs/cgroup/cpu.weight").strip()
+            if cpu[0] != "max" or int(weight) not in expected:
+                raise RuntimeError(f"applied CPU shares differ: cpu.max={cpu}, weight={weight}, expected={sorted(expected)}")
+        elif cpu[0] == "max" or abs(int(cpu[0]) / int(cpu[1]) - cpus) > 0.00001:
             raise RuntimeError("applied CPU quota differs from request")
         if memory == "max" or int(memory) != memory_mib * 1024 * 1024:
             raise RuntimeError("applied memory limit differs from request")
@@ -56,14 +66,19 @@ class Runtime:
 
     def create(self, args):
         token = str(uuid.uuid4())
+        shares = getattr(args, "cpu_shares", None)
+        cpu_args = ["--cpu-shares", str(shares)] if shares is not None else ["--cpus", str(args.cpus)]
         command = ["run", "-d", "--name", args.name, "--label", f"{OWNER}={token}",
-                   "--network", args.network, "--cpus", str(args.cpus), "--memory", f"{args.memory_mib}m",
+                   "--network", args.network, *cpu_args, "--memory", f"{args.memory_mib}m",
                    "--restart", "unless-stopped", "--cgroupns", "private",
                    "--mount", f"type=bind,source={args.data_root},target=/opt/crowdb/data",
                    "-e", f"CROWDB_STARTUP_MODE={args.startup_mode}",
                    "-e", "CROWDB_DEPLOYMENT_MODE=production",
                    "-e", f"CROWDB_PHYSICAL_HOST_ID={args.physical_host_id}",
                    "-e", f"CROWDB_MANAGEMENT_INTERFACE={args.interface}"]
+        workers = getattr(args, "worker_threads", None)
+        if workers is not None:
+            command += ["-e", f"TOKIO_WORKER_THREADS={workers}"]
         if args.password_file:
             command += ["--mount", f"type=bind,source={args.password_file},target=/run/crowdb-ssh-password,readonly",
                         "-e", "CROWDB_SSH_PASSWORD_FILE=/run/crowdb-ssh-password"]
@@ -75,7 +90,7 @@ class Runtime:
             command += ["-p", f"127.0.0.1:{args.ui_port}:9090"]
         try:
             container = self.invoke(*command, args.image).strip()
-            self.verify(container, args.cpus, args.memory_mib, args.network == "host")
+            self.verify(container, args.cpus, args.memory_mib, args.network == "host", shares)
             for device in args.device:
                 self.invoke("exec", "--user", "10001:10001", container, "sh", "-c",
                             'test -b "$1" && test -r "$1" && test -w "$1"', "sh", device)

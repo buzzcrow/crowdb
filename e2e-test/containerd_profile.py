@@ -40,7 +40,7 @@ def cleanup(prefix):
 
 def run_profile(args, parser):
     cluster = args.profile == "containerd-cluster"
-    needed_cpu = 3 * (args.node_cpus + 0.25) + 0.5 if cluster else 3
+    needed_cpu = 2 if cluster else 1.5
     needed_memory = 5120 if cluster else 2048
     if args.layer != "all" or args.scope != "all" or args.case or args.require_isolation:
         parser.error("containerd cluster is an explicit deployment profile; domain selectors do not apply")
@@ -66,7 +66,7 @@ def run_profile(args, parser):
     prefix = "crowdb-e2e-containerd-" + run_root.name.removeprefix("run-")
     (run_root / "identity.json").write_text(json.dumps({"profile":args.profile, "artifact":verified,
         "sources":source,"concurrency":1,"cpus":needed_cpu,"memory_mib":needed_memory,
-        "node_cpus":args.node_cpus if cluster else 2,"host_data":str(data)}, indent=2))
+        "node_cpus":args.node_cpus,"host_data":str(data)}, indent=2))
     env = os.environ.copy()
     env.update(CROWDB_CONTAINERD_DATA=str(data), CROWDB_CONTAINERD_PREFIX=prefix,
                CROWDB_CONTAINERD_ARCHIVE=str(archive), CROWDB_CONTAINERD_HOST_IMAGE=verified["base_image"],

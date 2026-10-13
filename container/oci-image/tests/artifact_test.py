@@ -96,6 +96,17 @@ class ResourceTest(unittest.TestCase):
         with patch.object(runtime, "invoke", side_effect=["200000 100000", "max"]), self.assertRaisesRegex(RuntimeError, "memory limit"):
             runtime.verify("node", 2, 1024, False)
 
+    def test_shares_require_weight_without_quota_and_preserve_memory_limit(self):
+        runtime = Runtime("docker")
+        for weight in ("39", "100"):
+            with patch.object(runtime, "invoke", side_effect=["max 100000", "1073741824", weight]):
+                runtime.verify("node", 1, 1024, False, cpu_shares=1024)
+        for values in (["100000 100000", "1073741824", "39"],
+                       ["max 100000", "1073741824", "99"],
+                       ["max 100000", "max", "39"]):
+            with patch.object(runtime, "invoke", side_effect=values), self.assertRaises(RuntimeError):
+                runtime.verify("node", 1, 1024, False, cpu_shares=1024)
+
     def test_nonhost_namespace_is_rejected(self):
         runtime = Runtime("docker")
         with patch.object(runtime, "invoke", side_effect=["200000 100000", "1073741824", "net:[wrong]"]), self.assertRaisesRegex(RuntimeError, "network namespace"):

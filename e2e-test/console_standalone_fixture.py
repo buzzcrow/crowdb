@@ -18,7 +18,7 @@ def prepare_config(cluster, index, config):
     cluster.containers.append(preparation)
     cluster.command("run", "--rm", "--name", preparation, "--label",
         f"org.crowdb.e2e.run={cluster.run_id}", "--network", "none", "--user", "0",
-        "--entrypoint", "/bin/chown", "--cpus", str(cluster.node_cpus), "--memory", "64m",
+        "--entrypoint", "/bin/chown", "--cpu-shares", "1024", "--env", "TOKIO_WORKER_THREADS=1", "--memory", "64m",
         "--mount", f"type=bind,source={data},target=/opt/crowdb/data", cluster.image,
         "-R", "crowdb:crowdb", "/opt/crowdb/data/persistent/console/default")
     return data

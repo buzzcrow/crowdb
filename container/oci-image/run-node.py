@@ -27,6 +27,10 @@ def validate(args, parser):
     controllers = Path("/sys/fs/cgroup/cgroup.controllers").read_text().split()
     if not {"cpu", "memory"}.issubset(controllers):
         parser.error("CPU/memory cgroup controllers are unavailable")
+    if args.cpu_shares is not None and not 2 <= args.cpu_shares <= 262144:
+        parser.error("CPU shares must be between 2 and 262144")
+    if args.worker_threads is not None and args.worker_threads < 1:
+        parser.error("worker thread count must be positive")
     available = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") // (1024 * 1024)
     if not (0 < args.cpus <= (os.cpu_count() or 1)) or not 512 <= args.memory_mib <= available:
         parser.error("CPU and memory boundaries must fit the host; memory must be at least 512 MiB")
@@ -70,7 +74,10 @@ def main():
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--physical-host-id", required=True)
     parser.add_argument("--interface", required=True)
-    parser.add_argument("--cpus", type=float, required=True)
+    cpu = parser.add_mutually_exclusive_group(required=True)
+    cpu.add_argument("--cpus", type=float, default=1)
+    cpu.add_argument("--cpu-shares", type=int, help="Relative CPU weight instead of a hard quota")
+    parser.add_argument("--worker-threads", type=int, help="Explicit Tokio worker count inherited by node services")
     parser.add_argument("--memory-mib", type=int, required=True)
     parser.add_argument("--ui-port", type=int)
     parser.add_argument("--password-file", type=Path)

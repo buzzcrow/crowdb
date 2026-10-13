@@ -33,7 +33,7 @@ class AdmissionProfileTest(unittest.TestCase):
                     bridge.browser("http://owned:9090","Docker candidates","prepare")
 
     def test_profile_reserves_every_node_and_host_browser_before_runtime_access(self):
-        for arguments in (("--concurrency","2"), ("--concurrency","1","--cpus","3.49"),
+        for arguments in (("--concurrency","2"), ("--concurrency","1","--cpus","1.49"),
                           ("--concurrency","1","--memory-mib","6143"), ("--concurrency","1","--layer","kv")):
             with patch.object(sys,"argv",["run.py","--profile","bridge-admission",*arguments]), \
                     patch("admission_profile.docker") as docker, contextlib.redirect_stderr(io.StringIO()):

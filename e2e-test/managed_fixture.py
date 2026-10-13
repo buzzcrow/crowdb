@@ -35,7 +35,7 @@ class ManagedCluster(Cluster):
         self.containers.append(preparer)
         self.command("run", "--rm", "--name", preparer, "--label",
                      f"org.crowdb.e2e.run={self.run_id}", "--network", "none",
-                     "--cpus", "0.5", "--memory", "128m", "--pids-limit", "32",
+                     "--cpu-shares", "1024", "--env", "TOKIO_WORKER_THREADS=1", "--memory", "128m", "--pids-limit", "32",
                      "--mount", f"type=bind,source={data},target=/opt/crowdb/data",
                      "--entrypoint", "/bin/chown", self.image, "crowdb:crowdb",
                      "/opt/crowdb/data")
@@ -56,7 +56,6 @@ class ManagedCluster(Cluster):
 
     def launch(self, data, profile):
         return start_node(self, 0, data, (), address=self.address,
-            cpus="2" if len(self.services) > 2 else "0.5",
             memory="2048m" if len(self.services) > 2 else "512m",
             environment=("CROWDB_STARTUP_MODE=single", "CROWDB_PROFILE_PATH=/opt/crowdb/etc/e2e-profile.toml"),
             mounts=(f"type=bind,source={profile},target=/opt/crowdb/etc/e2e-profile.toml,readonly",))

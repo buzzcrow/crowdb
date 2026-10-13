@@ -12,7 +12,7 @@ from fixture import Cluster
 WEB_CASE = "console::web_isolation::survives_peer_fixture_retirement"
 
 
-def run_mixed(image, artifacts, bundle, data_root=None, node_cpus=0.5):
+def run_mixed(image, artifacts, bundle, data_root=None, node_cpus=1.0):
     ready = threading.Barrier(2, timeout=180)
     retired, failed = threading.Event(), threading.Event()
 

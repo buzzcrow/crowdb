@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def run_profile(args, parser):
     all_engines = args.profile == "ecosystem"
-    cpus, memory = args.node_cpus + 2 + int(all_engines), 10240 if all_engines else 6144
+    cpus, memory = 3 + int(all_engines), 10240 if all_engines else 6144
     if args.layer != "all" or args.scope != "all" or args.case or args.require_isolation:
         parser.error("ecosystem is an explicit manual profile; domain selectors do not apply")
     if args.node_cpus <= 0 or args.concurrency != 1 or args.cpus < cpus or args.memory_mib < memory:

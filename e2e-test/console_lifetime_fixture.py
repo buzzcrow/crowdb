@@ -29,7 +29,7 @@ class DisposableWebCluster(Cluster):
         # Only the namespace holder survives; the packaged entrypoint launches
         # the actual Web server, and all requests/assertions stay on the host.
         self.command("run", "-d", "--name", name, "--label", f"{LABEL}={self.run_id}",
-            "--network", self.run_id, "--ip", address, "--cpus", str(self.node_cpus),
+            "--network", self.run_id, "--ip", address, "--cpu-shares", "1024", "--env", "TOKIO_WORKER_THREADS=1",
             "--memory", "512m", "--pids-limit", "256", "--ulimit", "core=-1",
             "--mount", f"type=bind,source={data},target=/opt/crowdb/data",
             "--entrypoint", "/bin/sleep", self.image, "infinity")

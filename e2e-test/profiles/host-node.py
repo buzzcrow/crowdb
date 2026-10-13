@@ -30,7 +30,7 @@ def main():
         image = json.loads(docker("image", "inspect", IMAGE))[0]["Id"]
         command = [sys.executable, "container/single-node-container/run-node.py", "--image", image,
                    "--name", name, "--network", "host", "--data-root", str(data), "--physical-host-id", os.uname().nodename,
-                   "--interface", "lo", "--cpus", "2", "--memory-mib", "1024", "--password-file", str(secret)]
+                   "--interface", "lo", "--cpu-shares", "1024", "--worker-threads", "1", "--memory-mib", "1024", "--password-file", str(secret)]
         try:
             oversized = command.copy()
             oversized[oversized.index("--memory-mib") + 1] = str(os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") // (1024 * 1024) + 1)
@@ -41,7 +41,7 @@ def main():
             snapshot = wait(lambda: request(origin, "/api/node/candidates"), lambda result: bool(result["local"]), "host-network discovery")
             discovery_id = snapshot["local"]["advertisement"]["discovery_id"]
             assert snapshot["local"]["hardware"]["memory_bytes"] <= 1024 * 1024 * 1024
-            assert snapshot["local"]["hardware"]["logical_cpus"] <= 2
+            assert snapshot["local"]["hardware"]["logical_cpus"] > 0
             request(origin, "/api/racks", {"id":1,"name":"host-rack"})
             record = request(origin, "/api/node/admit", {"discovery_id":discovery_id,"rack_id":1,
                              "ssh_user":"crowdb","ssh_port":2222,"ssh_password":"host-ssh-acceptance"})

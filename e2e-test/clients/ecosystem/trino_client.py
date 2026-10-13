@@ -57,7 +57,7 @@ def main():
     command = ["docker", "run", "-d", "--name", name, "--platform", "linux/amd64",
                "--network", os.environ["CROWDB_ECOSYSTEM_NETWORK"], "--ip", address,
                "--label", "org.crowdb.e2e.run=" + os.environ["CROWDB_ECOSYSTEM_NETWORK"],
-               "--cpus", "1", "--memory", "4g"]
+               "--cpu-shares", "1024", "--env", "TOKIO_WORKER_THREADS=1", "--memory", "4g"]
     for entry in ["config.properties", "node.properties", "catalog"]:
         command.extend(["--mount", f"type=bind,source={config.absolute() / entry},target=/etc/trino/{entry},readonly"])
     subprocess.run([*command, IMAGE], check=True)

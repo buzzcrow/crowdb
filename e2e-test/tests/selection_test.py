@@ -61,8 +61,8 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual({case.cli_replay for case in cases}, {"bound", "storage"})
         for case in cases:
             self.assertEqual(case_nodes(case), 3)
-            self.assertEqual(case_resources(case, 0.25), (3.5, 6656))
-            self.assertEqual(case_resources(case, 2), (6.5, 6656))
+            self.assertEqual(case_resources(case, 0.25), (1.5, 6656))
+            self.assertEqual(case_resources(case, 2), (1.5, 6656))
 
     def test_remote_browser_flows_reserve_each_server_node_and_host_client(self):
         from scenarios import CONSOLE_OPERATION_CASES, case_nodes, case_resources
@@ -71,8 +71,8 @@ class SelectionTest(unittest.TestCase):
         for case in cases:
             count = 6 if case.scope == "console.native.browser.six-node" else 4 if case.scope == "console.native.browser.shell" else 5 if case.name.endswith("independent_subsets") else 3
             self.assertEqual(case_nodes(case), count)
-            self.assertEqual(case_resources(case, 0.25), (count + 0.5, count * 2048 + 512))
-            self.assertEqual(case_resources(case, 2), (count * 2 + 0.5, count * 2048 + 512))
+            self.assertEqual(case_resources(case, 0.25), (1.5, count * 2048 + 512))
+            self.assertEqual(case_resources(case, 2), (1.5, count * 2048 + 512))
 
     def test_client_and_metadata_scopes_expose_their_named_flows(self):
         for scope, count in (("kv.client", 6), ("kv.metadata", 14)):
@@ -124,5 +124,5 @@ class CaseResourcesTest(unittest.TestCase):
         from scenarios import CONSOLE_OPERATION_CASES, case_nodes, case_resources
         for case in (case for case in CONSOLE_OPERATION_CASES if case.console_browser):
             self.assertEqual(case_nodes(case), 1)
-            self.assertEqual(case_resources(case, 0.25), (2.5, 2560))
-            self.assertEqual(case_resources(case, 3), (3.5, 2560))
+            self.assertEqual(case_resources(case, 0.25), (1.5, 2560))
+            self.assertEqual(case_resources(case, 3), (1.5, 2560))

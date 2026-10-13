@@ -23,8 +23,12 @@ SERVER_PATHS = (
     # Host development/cleanup commands are not read or packaged by staging.
     ":(exclude)container/single-node-container/dev-container.sh",
     ":(exclude)container/oci-image/README.md",
+    # Host launch resource flags do not enter the release artifact (stage.sh).
+    ":(exclude)container/oci-image/runtime.py",
+    ":(exclude)container/oci-image/run-node.py",
     # Host SDK client delegates are not read by staging or the OCI builder.
     ":(exclude)tools/pixi-tasks/test-storage.sh",
+    ":(exclude)tools/pixi-tasks/test-suite.sh",
     ":(exclude)tools/pixi-tasks/test-core.sh",
     ":(exclude)tools/pixi-tasks/test-access.sh",
     ":(exclude)tools/pixi-tasks/test-console.sh",

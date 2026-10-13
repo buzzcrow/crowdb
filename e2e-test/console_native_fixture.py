@@ -82,7 +82,7 @@ class NativeConsoleCluster(ShellBrowserCluster):
             self.containers.append(name)
             self.command("run", "--rm", "--name", name, "--label", f"{LABEL}={self.run_id}",
                 "--network", "none", "--user", "0", "--entrypoint", "/bin/chown",
-                "--cpus", str(self.node_cpus), "--memory", "64m",
+                "--cpu-shares", "1024", "--env", "TOKIO_WORKER_THREADS=1", "--memory", "64m",
                 "--mount", f"type=bind,source={data},target=/opt/crowdb/data", self.image,
                 "-R", "crowdb:crowdb", "/opt/crowdb/data")
             self.addresses.append(start_node(self, index, data, (), memory="2048m", pids_limit=512,

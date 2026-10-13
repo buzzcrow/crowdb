@@ -591,25 +591,26 @@ def case_nodes(case):
     return 2 if case.scope.startswith(("diskdb.", "chunkdb.")) else len(case.stores_per_node or case.stores)
 
 def case_resources(case, node_cpus):
+    # CPU shares allow nodes to borrow idle capacity; memory remains a hard bound.
     if case.scope == "console.browser.discovery":
-        return max(2, node_cpus) * 2 + 0.5, 3072
+        return 1.5, 3072
     if case.cli_replay or case.native_browser or case.native_client:
         count = case_nodes(case)
-        return max(1, node_cpus) * count + 0.5, 2048 * count + 512
+        return 1.5, 2048 * count + 512
     if case.shell_browser:
-        return max(2, node_cpus) + 0.5, 2560
+        return 1.5, 2560
     if case.scope == "iceberg.manual.tpc":
-        return case_nodes(case) * node_cpus + 4.5, (case_nodes(case) + 1) * 512 + 8192
+        return 1.5, (case_nodes(case) + 1) * 512 + 8192
     if case.scope == "deployment.listeners":
-        return max(2, node_cpus) + 1, 3072
+        return 1.5, 3072
     if case.scope == "iceberg.sdk.rck":
-        return case_nodes(case) * node_cpus + 0.5, case_nodes(case) * 512 + 4096
+        return 1.5, case_nodes(case) * 512 + 4096
     if case.console_browser or len(case.service_selection) > 2:
-        return max(2, node_cpus) + 0.5, 2560
+        return 1.5, 2560
     nodes = case_nodes(case)
     retained_networks = (len(case.stores) if case.preserve_network else
                          12 if case.s3_node_fault else 6 if case.diskio_process_exit else 0)
-    return nodes * node_cpus + 0.5 + retained_networks * 0.05, (nodes + 1) * 512 + retained_networks * 16
+    return 1.5, (nodes + 1) * 512 + retained_networks * 16
 
 
 def allocate_cluster(case, image, artifacts, bundle, data_root):
@@ -714,7 +715,7 @@ def allocate_cluster(case, image, artifacts, bundle, data_root):
                    advertise=case.advertise)
 
 
-def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case_name=None, layer="all", node_cpus=0.5):
+def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case_name=None, layer="all", node_cpus=1.0):
     selected = select_cases(layer, scope, case_name)
     if not selected:
         raise ValueError(f"no migrated cases for scope {scope}")
@@ -725,8 +726,7 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
         cluster.client_timeout = case.client_timeout
         if case.native_browser:
             cluster.browser_timeout = case.client_timeout
-        cluster.node_cpus = (max(1, node_cpus) if case.cli_replay or case.native_browser or case.native_client else
-            max(2, node_cpus) if case.shell_browser or case.console_browser or len(case.service_selection) > 2 else node_cpus)
+        cluster.node_cpus = node_cpus
         (cluster.artifacts / "case.json").write_text(json.dumps({
             "scope": case.scope, "case": case.name}, indent=2))
         return cluster

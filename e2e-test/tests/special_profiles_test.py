@@ -14,7 +14,7 @@ from special_profiles import cleanup_owned_host
 
 class HostProfileTest(unittest.TestCase):
     def test_selection_and_resource_validation_precede_docker(self):
-        for args in (("--concurrency","2"),("--concurrency","1","--cpus","2"),
+        for args in (("--concurrency","2"),("--concurrency","1","--cpus","1"),
                      ("--concurrency","1","--memory-mib","1024"),
                      ("--concurrency","1","--layer","kv")):
             with patch.object(sys,"argv",["run.py","--profile","host",*args]), \

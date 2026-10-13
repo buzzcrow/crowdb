@@ -52,10 +52,10 @@ pixi run test-container-e2e --layer kv --scope kv.isolation --require-isolation 
 pixi run test-container-e2e --profile host --concurrency 1 --cpus 4 --memory-mib 4096
 # Explicit native containerd in isolated privileged Linux hosts:
 pixi run test-container-e2e --profile containerd-host --concurrency 1 --cpus 3 --memory-mib 2048
-pixi run test-container-e2e --profile containerd-cluster --concurrency 1 --node-cpus 0.75 --cpus 4 --memory-mib 6144
+pixi run test-container-e2e --profile containerd-cluster --concurrency 1 --node-cpus 1 --cpus 4 --memory-mib 6144
 # Manual discovery/SSH/bootstrap and four host browser acceptance flows:
 pixi run bash -c 'cd e2e-test/clients/console-ui && npm ci --ignore-scripts'
-pixi run test-container-e2e --profile bridge-admission --concurrency 1 --node-cpus 0.5 --cpus 4 --memory-mib 6144
+pixi run test-container-e2e --profile bridge-admission --concurrency 1 --node-cpus 1 --cpus 4 --memory-mib 6144
 # Select one exact client case or list available profiles without Docker:
 pixi run test-container-e2e --case kv::bootstrap::custom_replica
 pixi run test-container-e2e --list --scope kv.group0
@@ -76,9 +76,9 @@ environment and a verified OCI archive/receipt. They create one or three
 privileged Linux host containers, with no Docker socket inside them. Each host
 runs native containerd and a formal node; clients execute outside the formal
 node image. Private data/log/crash mounts survive teardown. The host profile
-retains its original 2 CPU / 1024 MiB node resource proof; the cluster profile
-reserves each configurable node quota plus 0.25 CPU of host overhead and a
-shared 0.5 CPU client. Artifact and image identities are verified before startup.
+uses 1024 CPU shares per host/node container and retains its 1024 MiB node
+memory limit. Cluster admission uses a shared CPU allowance and sums hard
+memory limits, including its host containers and client. Artifact and image identities are verified before startup.
 The remaining native Console migrations and all-domain gate are pending.
 DiskIO process-exit faults retain their network
 namespace, so the original 15-second stream/reader/repair bounds still apply.
@@ -105,7 +105,7 @@ S3 joint-node faults use three actual KV voters and three independent
 Diskdb/Chunkdb/DiskIO failure domains, plus the catalog and Access service.
 Fourteen server containers consume the same image; twelve namespace owners
 retain fixed endpoints while those storage processes exit. At the default
-0.5 CPU quota this profile reserves 8.1 CPU / 7872 MiB, including its host
+CPU sharing this profile reserves 1.5 CPU / 7872 MiB, including its host
 client. The three outage cases preserve old/new exact bytes; node two also
 checks persisted degraded EC placement, full restart and the 25-second repair
 bound. A separate protected restart case checks stable endpoints and range
@@ -118,11 +118,18 @@ commits reuse an image after verifying the release server inputs still match;
 production source, dependency, runtime configuration and build changes require
 a rebuild. A missing/unverifiable image source label fails this verification.
 
-`--concurrency` is a cap. Three-node isolation slots reserve 2 CPUs and 2048 MiB for three
-0.5-CPU/512-MiB servers plus a host-client resource allowance. Named-flow slots
-reserve the largest selected node count plus its host-client allowance. The effective cap also
-accounts for Docker daemon capacity. Two slots run two isolated fixtures at once;
-one slot runs the CRUD/recovery scenario without claiming concurrent isolation.
+`--concurrency` is a cap. Each server container defaults to one CPU of relative
+weight (`--cpu-shares 1024`), with no CPU quota or cpuset. Idle CPU can be used
+by any container; weights govern contention. `--node-cpus` scales this weight,
+not a hard ceiling. Node services inherit `TOKIO_WORKER_THREADS=1` to avoid
+automatically creating a host-sized pool for every process and exhausting the
+existing PID/memory limits. RPC and blocking workers retain their normal
+configuration. Named-flow admission reserves a shared 1.5-CPU scheduling
+allowance per fixture (servers plus host client), rather than adding node weights.
+This bounds concurrent client work, not guaranteed server throughput. Memory
+limits and per-profile memory sums remain hard admission bounds. Actual Docker
+host capacity further limits the declared budget. Two slots run isolated fixtures
+at once; one slot does not claim concurrent isolation.
 Recovery/isolation acceptance uses at most two slots; independent named flows
 use the effective cap. CI sets `--require-isolation` and
 fails if two slots are unavailable, so the required isolation check cannot skip. Host/hardware and containerd test
@@ -339,8 +346,8 @@ sparse files and public deployment use the same values. No image rebuild or
 server test mode is needed for a capacity profile.
 
 ```sh
-pixi run test-container-e2e --scope console.native.binding --cpus 4 --memory-mib 8192 --node-cpus 0.25
-pixi run test-container-e2e --scope console.native --cpus 8 --memory-mib 16384 --node-cpus 0.25 --concurrency 2
+pixi run test-container-e2e --scope console.native.binding --cpus 4 --memory-mib 8192 --node-cpus 1
+pixi run test-container-e2e --scope console.native --cpus 8 --memory-mib 16384 --node-cpus 1 --concurrency 2
 ```
 
 - `console.browser.shell` runs shell navigation and embedding checks with the
@@ -380,7 +387,7 @@ pixi run test-container-e2e --scope console.native --cpus 8 --memory-mib 16384 -
 ```sh
 pixi run test-container-e2e --scope console.browser.shell --concurrency 2
 pixi run test-container-e2e --scope console.browser.registry --concurrency 2
-pixi run test-container-e2e --scope console.browser --concurrency 2 --cpus 8 --memory-mib 16384 --node-cpus 0.25
+pixi run test-container-e2e --scope console.browser --concurrency 2 --cpus 8 --memory-mib 16384 --node-cpus 1
 ```
 
 ## Console WAL recovery
@@ -451,7 +458,7 @@ backend and UI component tests without Docker. The npm `test:e2e` entry delegate
 to the same required container domain:
 
 ```sh
-pixi run test-container-e2e --scope console.operations --concurrency 2 --node-cpus 0.25 --cpus 8 --memory-mib 16384
+pixi run test-container-e2e --scope console.operations --concurrency 2 --node-cpus 1 --cpus 4 --memory-mib 16384
 ```
 
 Native full-service fixtures reserve 512 PIDs/threads per node and 2048 MiB,

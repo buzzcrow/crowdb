@@ -23,7 +23,7 @@ def main():
     name = prefix + "-host"
     try:
         docker("run","-d","--name",name,"--label",f"org.crowdb.e2e.run={prefix}",
-            "--cpus","2.5","--memory","1536m","--privileged","--cgroupns","host",
+            "--cpu-shares", "1024", "--env", "TOKIO_WORKER_THREADS=1","--memory","1536m","--privileged","--cgroupns","host",
             "--mount",f"type=bind,source={ROOT},target={ROOT},readonly",
             "--mount",f"type=bind,source={pixi},target=/usr/local/bin/pixi,readonly",
             "--mount","type=bind,source=/etc/ssl/certs,target=/etc/ssl/certs,readonly",

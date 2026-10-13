@@ -49,7 +49,7 @@ def cleanup(prefix, data=None, image=None):
 
 
 def run_profile(args, parser):
-    cpus, memory = 5 * args.node_cpus + 1, 6144
+    cpus, memory = 2, 6144
     if args.layer != "all" or args.scope != "all" or args.case or args.require_isolation:
         parser.error("bridge admission is an explicit deployment profile; domain selectors do not apply")
     if args.node_cpus <= 0 or args.concurrency != 1 or args.cpus < cpus or args.memory_mib < memory:

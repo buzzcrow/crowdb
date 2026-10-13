@@ -23,7 +23,7 @@ def check_startup(image, artifacts):
         if case == "managed-root":
             (data / "accepted-node.json").write_text("{}")
         command = ["docker", "run", "--name", name, "--label", f"{LABEL}={name}",
-                   "--network", "none", "--cpus", "0.5", "--memory", "512m",
+                   "--network", "none", "--cpu-shares", "1024", "--env", "TOKIO_WORKER_THREADS=1", "--memory", "512m",
                    "--pids-limit", "256", "--mount",
                    f"type=bind,source={data.resolve()},target=/opt/crowdb/data"]
         for mount in mounts:

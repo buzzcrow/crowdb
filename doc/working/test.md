@@ -13,8 +13,8 @@ redacted diagnostics stay under `.crowdb-runtime/artifacts/`.
 Linux Docker bridge; clients run on the host and use inspected container IPs
 and fixed ports. Wall times include startup, clients and teardown, excluding
 shared builds. Record complete domain runs, including failures. Current Console
-and Deployment use two case slots; complete native nodes retain 1 CPU /
-2048 MiB / 512 PIDs. Exact image and resource settings stay in run artifacts.
+and Deployment baselines use two case slots. New runs use 1024 CPU shares per
+container without a CPU quota; complete native nodes retain 2048 MiB / 512 PIDs. Exact image and resource settings stay in run artifacts.
 
 ### Container domains
 
@@ -36,9 +36,10 @@ and Deployment use two case slots; complete native nodes retain 1 CPU /
 - All domain rows use the final `9c0f8805` debug release. Iceberg has one
   concurrent PUT deadline failure; its complete run includes the original
   approximately 20-minute retirement grace.
-- Special profiles pass on the final image: bridge SSH 139.542 s, Linux host
-  6.674 s, containerd host/cluster 123.491 / 110.872 s, five-engine Iceberg
-  191.523 s and Python/DuckDB 23.617 s.
+- Special profiles pass on the final image: bridge SSH 148.600 s, Linux host
+  7.759 s, containerd host/cluster 111.815 / 112.784 s, five-engine Iceberg
+  127.531 s and Python/DuckDB 20.458 s. New runs use CPU shares and one Tokio
+  worker per service; bridge SSH completes in 148.600 s.
 - Important component UTs remain. Latest focused gates: DiskDB 177, monitor 75,
   CLI 6, fixture 106, UI 183, KV-server 64; these are component repair checks,
   not another complete-domain baseline.
@@ -53,11 +54,14 @@ No container measurements. Linux VM routing remains unverified.
 
 ## Remaining issues
 
-- [ ] **Container acceptance**: all domains except one Iceberg concurrent PUT
-  case pass. Its Access role shows CPU quota throttling without memory/OOM
-  events; a 1-CPU Access-only comparison awaits the resource decision. Finish
-  special profiles and CI admission/export checks; the six-node case requires
-  at least 6.5 CPU / 12800 MiB and rejects a 4-CPU budget.
+- [ ] **Container acceptance**: CPU sharing fixes the focused 32 × 8-MiB
+  Iceberg direct PUT case with original assertions/deadline. Access has unlimited
+  CPU quota, 1024 shares, no throttling or OOM; memory stays 512 MiB. Full Iceberg
+  rerun is in progress; retain the previous complete-domain row. Four-CPU
+  six-node browser flow passes in 94.473 s with 12800 MiB reserved and unchanged
+  assertions/deadlines. One Tokio worker per process avoids exhausting PID
+  limits from host-sized automatic pools. Two-fixture isolation and CLI pass;
+  all six special profiles pass. Remote four-core CI remains unmeasured.
 - [ ] **macOS Iceberg SDK**: Maven `dependency:go-offline` stalled for more than
   eight minutes. Rerun with the pinned dependency cache available.
 - [ ] **WAL disk loss**: full fail-out and snapshot rejoin coverage awaits the

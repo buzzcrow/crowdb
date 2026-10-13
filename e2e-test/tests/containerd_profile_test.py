@@ -13,7 +13,7 @@ from containerd_profile import cleanup
 
 class ContainerdProfileTest(unittest.TestCase):
     def test_profile_budget_and_selection_fail_before_runtime_access(self):
-        for args in (("--concurrency","2"),("--concurrency","1","--node-cpus",".75","--cpus","3.49"),
+        for args in (("--concurrency","2"),("--concurrency","1","--node-cpus",".75","--cpus","1.49"),
                      ("--concurrency","1","--memory-mib","4096"),("--concurrency","1","--layer","kv")):
             with patch.object(sys,"argv",["run.py","--profile","containerd-cluster",*args]), \
                     patch("containerd_profile.docker") as docker, contextlib.redirect_stderr(io.StringIO()):

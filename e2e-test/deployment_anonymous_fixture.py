@@ -14,7 +14,7 @@ class AnonymousReleaseCluster(ManagedCluster):
         subnet = create_network(self)
         address = str(subnet.network_address + 2)
         self.addresses.append(start_node(self, 0, None, (), address=address,
-            cpus="2", memory="2048m", environment=("CROWDB_STARTUP_MODE=single",)))
+            memory="2048m", environment=("CROWDB_STARTUP_MODE=single",)))
         deadline = time.monotonic() + 240
         while time.monotonic() < deadline:
             state = json.loads(self.command("inspect", self.servers[0]))[0]["State"]

@@ -4,4 +4,4 @@
 set -euo pipefail
 cd "${PIXI_PROJECT_ROOT:?}"
 pixi run -e default -- python e2e-test/run.py --layer iceberg --scope iceberg.sdk.rck \
-    --concurrency 1 --node-cpus "${CROWDB_E2E_NODE_CPUS:-0.5}" --cpus "${CROWDB_E2E_CPUS:-8}" --memory-mib "${CROWDB_E2E_MEMORY_MIB:-12288}"
+    --concurrency 1 --node-cpus "${CROWDB_E2E_NODE_CPUS:-1}" --cpus "${CROWDB_E2E_CPUS:-8}" --memory-mib "${CROWDB_E2E_MEMORY_MIB:-12288}"

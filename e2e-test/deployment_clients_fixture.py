@@ -30,7 +30,7 @@ class DeploymentClientsCluster(ManagedCluster):
         template = self.artifacts / "chunkdb-template.toml"
         template.write_text((SOURCE / "templates/chunkdb.toml").read_text().replace(
             'rpc_listen_addr = "127.0.0.1:12200"', 'rpc_listen_addr = "0.0.0.0:12200"'))
-        return start_node(self, 0, data, (), address=self.address, cpus="2", memory="2048m",
+        return start_node(self, 0, data, (), address=self.address, memory="2048m",
             environment=("CROWDB_STARTUP_MODE=single", "CROWDB_PROFILE_PATH=/opt/crowdb/etc/e2e-profile.toml"),
             mounts=(f"type=bind,source={profile},target=/opt/crowdb/etc/e2e-profile.toml,readonly",
                     f"type=bind,source={template},target=/opt/crowdb/etc/templates/chunkdb.toml,readonly"))

@@ -32,7 +32,7 @@ class DiscoveryBrowserCluster(ShellBrowserCluster):
         self.containers.append(preparation)
         self.command("run", "--rm", "--name", preparation, "--label", f"{LABEL}={self.run_id}",
             "--network", "none", "--user", "0", "--entrypoint", "/bin/chown",
-            "--cpus", str(self.node_cpus), "--memory", "64m",
+            "--cpu-shares", "1024", "--env", "TOKIO_WORKER_THREADS=1", "--memory", "64m",
             "--mount", f"type=bind,source={data},target=/opt/crowdb/data", self.image,
             "-R", "crowdb:crowdb", "/opt/crowdb/data")
         self.addresses.append(start_node(self, 1, data, (), address=provider,

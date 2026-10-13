@@ -67,7 +67,7 @@ def main():
             data = data_root / f"host{index}"
             data.mkdir(parents=True)
             docker("run", "-d", "--label", f"org.crowdb.e2e.run={prefix}",
-                   "--cpus", str(float(os.environ.get("CROWDB_CONTAINERD_NODE_CPUS", "2")) + 0.25), "--memory", "1536m", "--privileged", "--cgroupns", "host", "--network", prefix, "--name", host,
+                   "--cpu-shares", "1024", "--env", "TOKIO_WORKER_THREADS=1", "--memory", "1536m", "--privileged", "--cgroupns", "host", "--network", prefix, "--name", host,
                    "--mount", f"type=bind,source={ROOT},target={ROOT},readonly",
                    "--mount", f"type=bind,source={data},target=/opt/crowdb-e2e/data",
                    "--mount", f"type=bind,source={archive},target=/opt/crowdb-e2e/archive.tar,readonly",

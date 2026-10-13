@@ -120,7 +120,7 @@ pub(crate) async fn start(
             network: format!("{name}-network"),
             name,
             phase: "allocated".into(),
-            node_cpus: node_cpus.unwrap_or(2.0),
+            node_cpus: node_cpus.unwrap_or(1.0),
             memory_mib: memory_mib.unwrap_or(2048),
             diskdb_heartbeat_interval_secs: diskdb_heartbeat_interval_secs
                 .unwrap_or(state::DEFAULT_DISKDB_HEARTBEAT_INTERVAL_SECS),

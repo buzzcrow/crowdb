@@ -37,7 +37,7 @@ def node_data(cluster, index, prepare_logs=True):
 
 
 def start_node(cluster, index, data, arguments, address=None, environment=(), mounts=(),
-               cpus="0.5", memory="512m", running=True, preserve_network=False,
+               memory="512m", running=True, preserve_network=False,
                network_container=None, pids_limit=256):
     if type(pids_limit) is not int or not 1 <= pids_limit <= 4096:
         raise ValueError("node PID limit must be a bounded positive count")
@@ -59,7 +59,7 @@ def start_node(cluster, index, data, arguments, address=None, environment=(), mo
         network_owner = name + "-network"
         cluster.containers.append(network_owner)
         cluster.command("run", "-d", "--name", network_owner, "--label", f"{LABEL}={cluster.run_id}",
-                        "--network", cluster.run_id, "--ip", address, "--cpus", "0.05",
+                        "--network", cluster.run_id, "--ip", address, "--cpu-shares", "1024", "--env", "TOKIO_WORKER_THREADS=1",
                         "--memory", "16m", "--pids-limit", "8", "--entrypoint", "/bin/sleep",
                         cluster.image, "infinity")
         owner = json.loads(cluster.command("inspect", network_owner))[0]
@@ -74,10 +74,10 @@ def start_node(cluster, index, data, arguments, address=None, environment=(), mo
     environment_args = tuple(item for value in environment for item in ("--env", value))
     mount_args = tuple(item for value in mounts for item in ("--mount", value))
     data_mount = ("--mount", f"type=bind,source={data},target=/opt/crowdb/data") if data is not None else ()
-    cpus = str(getattr(cluster, "node_cpus", cpus))
+    cpu_shares = str(round(float(getattr(cluster, "node_cpus", 1)) * 1024))
     operation = ("run", "-d") if running else ("create",)
     cluster.command(*operation, "--name", name, "--label", f"{LABEL}={cluster.run_id}",
-                    *network_args, "--cpus", cpus, "--memory", memory, "--pids-limit", str(pids_limit),
+                    *network_args, "--cpu-shares", cpu_shares, "--env", "TOKIO_WORKER_THREADS=1", "--memory", memory, "--pids-limit", str(pids_limit),
                     *data_mount,
                     *mount_args, *environment_args, "--ulimit", "core=-1", cluster.image, *arguments)
     info = json.loads(cluster.command("inspect", name))[0]

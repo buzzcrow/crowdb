@@ -6,6 +6,7 @@ import argparse
 import concurrent.futures
 import hashlib
 import json
+import math
 import os
 import signal
 import subprocess
@@ -25,10 +26,10 @@ from mixed_isolation import run_mixed
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def capacity(concurrency, cpus, memory_mib, nodes=3, node_cpus=0.5):
+def capacity(concurrency, cpus, memory_mib, nodes=3, node_cpus=1.0):
     if node_cpus <= 0:
-        raise ValueError("node CPU quota must be positive")
-    fixture_cpus, fixture_memory = nodes * node_cpus + 0.5, (nodes + 1) * 512
+        raise ValueError("node CPU weight must be positive")
+    fixture_cpus, fixture_memory = 1.5, (nodes + 1) * 512
     if concurrency < 1 or nodes < 1 or cpus < fixture_cpus or memory_mib < fixture_memory:
         raise ValueError(f"KV needs at least one {fixture_cpus:g}-CPU / {fixture_memory}-MiB fixture slot")
     return min(concurrency, int(cpus // fixture_cpus), memory_mib // fixture_memory)
@@ -38,7 +39,7 @@ def interrupt(_signal, _frame):
     raise KeyboardInterrupt("container E2E interrupted")
 
 
-def run_pair(image, artifacts, bundle, count, data_root=None, node_cpus=0.5):
+def run_pair(image, artifacts, bundle, count, data_root=None, node_cpus=1.0):
     ready = threading.Barrier(count, timeout=180)
     retired, failed = threading.Event(), threading.Event()
 
@@ -94,7 +95,7 @@ def main():
     parser.add_argument("--list", action="store_true", help="list implemented named flows without starting servers")
     parser.add_argument("--require-isolation", action="store_true")
     parser.add_argument("--cpus", type=float, default=4)
-    parser.add_argument("--node-cpus", type=float, default=os.environ.get("CROWDB_E2E_NODE_CPUS", "0.5"), help="Docker CPU quota per server; host client reserves 0.5 CPU")
+    parser.add_argument("--node-cpus", type=float, default=os.environ.get("CROWDB_E2E_NODE_CPUS", "1"), help="Relative CPU weight per server (1 CPU = 1024 shares); no hard quota")
     parser.add_argument("--memory-mib", type=int, default=4096)
     parser.add_argument("--image", default="crowdb-node:dev")
     parser.add_argument("--data-root", type=Path, help="host parent for independent per-run/node data mounts")
@@ -102,6 +103,8 @@ def main():
     parser.add_argument("--archive", type=Path, default=ROOT / "target/crowdb.oci.tar",
                         help="verified OCI archive for the explicit containerd profile")
     args = parser.parse_args()
+    if not math.isfinite(args.node_cpus) or not 2 <= round(args.node_cpus * 1024) <= 262144:
+        parser.error("node CPU weight must map to 2..262144 shares")
     if args.profile in ("ecosystem", "ecosystem-python"):
         signal.signal(signal.SIGTERM, interrupt)
         from ecosystem_profile import run_profile
@@ -171,7 +174,7 @@ def main():
         "layer": args.layer, "scope": args.scope, "slots": slots, "case_slots": case_slots,
         "largest_case_nodes": largest, "case_cpu_reservation": needed_cpu,
         "case_memory_reservation_mib": needed_memory, "selected_cases": [case.name for case in selected],
-        "node_cpus": args.node_cpus,
+        "node_cpus": args.node_cpus, "cpu_policy": "shares", "tokio_worker_threads": 1, "node_cpu_shares": round(args.node_cpus * 1024),
         "source_identity": source_identity}, indent=2))
     print(f"KV isolation slots: {slots}; case slots: {case_slots}; exact image {identity['Id']}; artifacts {run_root}", flush=True)
     started = time.monotonic()

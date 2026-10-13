@@ -31,15 +31,15 @@ class RetainedNetworkTest(unittest.TestCase):
     def test_storage_budget_includes_namespace_owners(self):
         self.assertEqual(case_resources(Case("chunk-client.reader", "reader", chunkdb_storage=True,
                                             diskio_process_exit=True), 0.5),
-                         (6.3, 6240))
-        self.assertEqual(case_resources(Case("iceberg.files", "files"), 0.5), (7.5, 7680))
-        self.assertEqual(case_resources(Case("kv.management", "kv"), 0.5), (1.0, 1024))
+                         (1.5, 6240))
+        self.assertEqual(case_resources(Case("iceberg.files", "files"), 0.5), (1.5, 7680))
+        self.assertEqual(case_resources(Case("kv.management", "kv"), 0.5), (1.5, 1024))
         cpu, memory = case_resources(Case("s3.nodes", "joint", s3_node_fault=True), 0.2)
-        self.assertAlmostEqual(cpu, 3.9)
+        self.assertAlmostEqual(cpu, 1.5)
         self.assertEqual(memory, 7872)
         cpu, memory = case_resources(Case("console.web.wal", "unreachable",
                                          stores=(0,) * 5, preserve_network=True), 0.25)
-        self.assertAlmostEqual(cpu, 2.25)
+        self.assertAlmostEqual(cpu, 1.5)
         self.assertEqual(memory, 3664)
 
     def test_server_uses_retained_namespace_and_cleanup_removes_it_last(self):
@@ -72,6 +72,10 @@ class RetainedNetworkTest(unittest.TestCase):
             self.assertEqual(start_node(cluster, 5, None, ("server", "diskio"), address,
                                         preserve_network=True), address)
             self.assertEqual(cluster.servers, [server])
+            for call in (calls[0], calls[2]):
+                self.assertNotIn("--cpus", call)
+                self.assertEqual(call[call.index("--cpu-shares") + 1], "1024")
+                self.assertIn("TOKIO_WORKER_THREADS=1", call)
             self.assertIn("release-image", calls[0])
             self.assertIn("container:" + owner, calls[2])
             self.assertNotIn("--ip", calls[2])

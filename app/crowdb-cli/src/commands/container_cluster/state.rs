@@ -76,7 +76,7 @@ impl State {
             || !self.image[7..].bytes().all(|b| b.is_ascii_hexdigit())
             || self.network != format!("{}-network", self.name)
             || !self.node_cpus.is_finite()
-            || self.node_cpus <= 0.0
+            || !(2.0..=262_144.0).contains(&(self.node_cpus * 1024.0).round())
             || self.memory_mib < 512
             || self.diskdb_heartbeat_interval_secs == 0
             || (!self.addresses.is_empty()

@@ -353,7 +353,7 @@ jobs:
     - name: Import shared release image
       run: pixi run image-import "$PWD/target/crowdb.oci.tar" --image crowdb-node:dev
     - name: Run Iceberg acceptance
-      run: pixi run test-container-e2e --layer iceberg --concurrency 2 --node-cpus 0.25 --cpus 4 --memory-mib 12288
+      run: pixi run test-container-e2e --layer iceberg --concurrency 2 --node-cpus 1 --cpus 4 --memory-mib 12288
     - name: Export redacted container diagnostics
       if: always()
       run: pixi run python e2e-test/publish.py --source .crowdb-runtime/artifacts/container-e2e --output target/container-e2e-public
@@ -658,7 +658,7 @@ jobs:
         echo "::error::Console E2E requires an installed system Chromium, Chrome or Edge."
         exit 1
     - name: Run Console, CLI and host browser flows
-      run: pixi run test-container-e2e --scope console.operations --concurrency 2 --node-cpus 0.25 --cpus 8 --memory-mib 16384
+      run: pixi run test-container-e2e --scope console.operations --concurrency 2 --node-cpus 1 --cpus 4 --memory-mib 16384
     - name: Export redacted container diagnostics
       if: always()
       run: pixi run python e2e-test/publish.py --source .crowdb-runtime/artifacts/container-e2e --output target/container-e2e-public
@@ -702,7 +702,7 @@ jobs:
     - name: Import shared release image
       run: pixi run image-import "$PWD/target/crowdb.oci.tar" --image crowdb-node:dev
     - name: Verify container domain
-      run: pixi run test-container-e2e --layer "${{ matrix.layer }}" --concurrency 2 --node-cpus 0.25 --cpus 4 --memory-mib 8192
+      run: pixi run test-container-e2e --layer "${{ matrix.layer }}" --concurrency 2 --node-cpus 1 --cpus 4 --memory-mib 8192
     - name: Export redacted container diagnostics
       if: always()
       run: pixi run python e2e-test/publish.py --source .crowdb-runtime/artifacts/container-e2e --output target/container-e2e-public

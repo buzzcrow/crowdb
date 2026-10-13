@@ -47,7 +47,7 @@ def scenario(runtime, image, data, secret, mode):
                "--runtime", "containerd", "--address", runtime.command[2], "--snapshotter", "native", "--image", image,
                "--name", "crowdb-node", "--network", "host", "--data-root", str(data),
                "--physical-host-id", "containerd-acceptance-host", "--interface", "eth0",
-               "--cpus", "2", "--memory-mib", "1024", "--password-file", str(secret), "--startup-mode", mode]
+               "--cpu-shares", "1024", "--worker-threads", "1", "--memory-mib", "1024", "--password-file", str(secret), "--startup-mode", mode]
     subprocess.run(command, check=True, timeout=90)
     try:
         if mode == "manual":
@@ -81,7 +81,7 @@ def scenario(runtime, image, data, secret, mode):
         else:
             wait(lambda: runtime.invoke("exec", "crowdb-node", "crowdb-monitor", "readiness"), lambda _: True, "persisted single-node readiness", 240)
         assert runtime.invoke("exec", "crowdb-node", "cat", "/opt/crowdb/data/ssh/id_ed25519.pub") == key
-        runtime.verify("crowdb-node", 2, 1024, True)
+        runtime.verify("crowdb-node", 1, 1024, True, cpu_shares=1024)
         print(f"containerd {mode}: host network, resource limits, initialization and persisted identity passed", flush=True)
     finally:
         try:
@@ -128,7 +128,7 @@ def main():
                                     "--runtime", "containerd", "--address", socket, "--snapshotter", "native",
                                     "--image", image, "--name", "crowdb-node", "--network", "host",
                                     "--data-root", str(data), "--physical-host-id", os.uname().nodename,
-                                    "--interface", "eth0", "--cpus", os.environ.get("CROWDB_CONTAINERD_NODE_CPUS", "2"), "--memory-mib", "1024",
+                                    "--interface", "eth0", "--cpu-shares", "1024", "--worker-threads", "1", "--memory-mib", "1024",
                                     "--password-file", str(secret)], check=True, timeout=90)
                     while daemon.poll() is None:
                         time.sleep(1)

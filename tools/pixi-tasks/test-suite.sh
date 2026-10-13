@@ -15,5 +15,5 @@ pixi run clean-env
 # One canonical execution for required server domains and isolation pairs.
 pixi run test-container-e2e --layer all --require-isolation \
     --concurrency "${CROWDB_E2E_CONCURRENCY:-2}" \
-    --node-cpus "${CROWDB_E2E_NODE_CPUS:-0.25}" \
+    --node-cpus "${CROWDB_E2E_NODE_CPUS:-1}" \
     --cpus "${CROWDB_E2E_CPUS:-16}" --memory-mib "${CROWDB_E2E_MEMORY_MIB:-32768}"
