@@ -509,10 +509,15 @@ impl Partition {
                 "tree identity and ownership epoch must be nonzero".into(),
             ));
         }
-        let replay_offset = page_store.wal_replay_offset().map_err(|error| match error {
-            crowdb_tree_ffi::CtError::Corruption => ChunkKvError::TreeCorruption(error.to_string()),
-            _ => ChunkKvError::TreeUnavailable(error.to_string()),
-        })?;
+        let replay_offset = if page_store.is_chunk_backed() && tree::chunk_root_generation(&page_store)? == 0
+        {
+            0
+        } else {
+            page_store.wal_replay_offset().map_err(|error| match error {
+                crowdb_tree_ffi::CtError::Corruption => ChunkKvError::TreeCorruption(error.to_string()),
+                _ => ChunkKvError::TreeUnavailable(error.to_string()),
+            })?
+        };
         let stream_name = stream.stream_name();
         let stream_manifest_generation = stream.manifest_generation();
         let (tree, journal) = native_storage_parts(tree_id, &range, tree_config, page_store, stream)?;

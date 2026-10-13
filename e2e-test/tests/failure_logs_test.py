@@ -5,6 +5,7 @@
 import contextlib
 import gzip
 import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -28,7 +29,7 @@ class FailureLogsTest(unittest.TestCase):
                 "2026-10-13T07:00:01Z ERROR startup failed password=private-value\n"
                 "stack frame: bootstrap_catalog\n"
                 "2026-10-13T07:00:02Z INFO stopped\n")
-            (logs / "service.log").write_text("Killed\n")
+            (logs / "service.log").write_text("Killed exit_code=137\n")
             with gzip.open(logs / "server-old.log.gz", "wt") as stream:
                 stream.write("2026-10-13T06:00:00Z ERROR old crash\n")
             private = root / "private.log"
@@ -45,6 +46,13 @@ class FailureLogsTest(unittest.TestCase):
             for excluded in ("private-value", "unrelated secret", "INFO started", "INFO stopped"):
                 self.assertNotIn(excluded, text)
             self.assertIn("private-value", (logs / "server.log").read_text())
+            summaries = [json.loads(line.split("[FAILURE SUMMARY] ", 1)[1])
+                         for line in text.splitlines() if line.startswith("[FAILURE SUMMARY] ")]
+            killed = next(summary for summary in summaries if summary["log"].endswith("service.log"))
+            self.assertEqual(killed["case"], "six-node")
+            self.assertEqual(killed["container_node"], "node3")
+            self.assertEqual(killed["service"], "chunk-kv-3")
+            self.assertEqual(killed["service_exit_code"], 137)
 
     def test_service_output_defaults_off_and_disabled_mode_does_not_read_logs(self):
         with tempfile.TemporaryDirectory() as directory:

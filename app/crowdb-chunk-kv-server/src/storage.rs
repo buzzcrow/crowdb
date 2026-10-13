@@ -7,9 +7,9 @@ use std::sync::Arc;
 
 use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, ChunkReadPolicy, SmallWritePolicy};
 use crowdb_chunk_kv::{
-    MutationOperation, Partition, PartitionConfig, PartitionId, PartitionJournal, PartitionRange,
-    PartitionTree, PreparedSplit, PreparedSplitWriterArtifact, RequestId, SplitArtifact, SplitChild,
-    SplitPlan, SplitWriterTarget, StreamPartitionJournal, TransitionId,
+    Partition, PartitionConfig, PartitionId, PartitionJournal, PartitionRange, PartitionTree, PreparedSplit,
+    PreparedSplitWriterArtifact, SplitArtifact, SplitChild, SplitPlan, SplitWriterTarget,
+    StreamPartitionJournal, TransitionId,
 };
 use crowdb_chunk_stream::{ChunkStream, ProductionStreamRuntime, StreamConfig, StreamName, StreamRegistry};
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
@@ -25,7 +25,9 @@ use thiserror::Error;
 
 use crate::{BootstrapPartitionConfig, ChunkKvServerConfig};
 
+mod bootstrap;
 mod root_catalog;
+use bootstrap::{initialize_bootstrap_root, recover_bootstrap_partition};
 mod split_handoff;
 mod split_recovery;
 use root_catalog::KvRootCatalogStore;
@@ -505,18 +507,7 @@ impl ChunkKvStorage {
             end: None,
         };
         if !fresh {
-            return Partition::recover_native_latest_prepared_assignment(
-                partition_id,
-                range,
-                config.owner_epoch,
-                config.tree_id,
-                PartitionConfig::default(),
-                crowdb_tree_ffi::Config::default(),
-                page_store,
-                stream,
-            )
-            .await
-            .map_err(|error| StorageRuntimeError::Partition(error.to_string()));
+            return recover_bootstrap_partition(config, page_store, stream).await;
         }
         let partition = Partition::open_native(
             partition_id,
@@ -792,43 +783,6 @@ fn prepared_overlay_artifact(
         applied_seq: overlay.cutover_seq,
         child_stream_start_seq: overlay.target_stream_start_seq,
     }
-}
-
-async fn initialize_bootstrap_root(
-    partition: &Partition,
-    config: &BootstrapPartitionConfig,
-) -> Result<(), StorageRuntimeError> {
-    // An empty native tree has no root generation to recover. Apply and remove
-    // one deterministic bootstrap value before catalog visibility so the
-    // first checkpoint has a durable root but exposes no reserved user key.
-    for (client_sequence, operation) in [
-        (
-            1,
-            MutationOperation::Put {
-                key: Vec::new(),
-                value: b"crowdb-bootstrap".to_vec(),
-            },
-        ),
-        (2, MutationOperation::Delete { key: Vec::new() }),
-    ] {
-        partition
-            .mutate(
-                config.owner_epoch,
-                RequestId {
-                    client_high: config.partition_id.high,
-                    client_low: config.partition_id.low,
-                    client_sequence,
-                },
-                operation,
-            )
-            .await
-            .map_err(|error| StorageRuntimeError::Partition(format!("bootstrap mutation: {error}")))?;
-    }
-    partition
-        .checkpoint(config.owner_epoch)
-        .await
-        .map(|_| ())
-        .map_err(|error| StorageRuntimeError::Partition(format!("bootstrap checkpoint: {error}")))
 }
 
 fn split_plan(transition: &SplitTransition) -> SplitPlan {

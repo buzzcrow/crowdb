@@ -3,6 +3,7 @@
 """Export bounded failure diagnostics and small reports without mounted data."""
 
 import argparse
+from collections import Counter
 import gzip
 import json
 from pathlib import Path
@@ -117,10 +118,14 @@ def publish(source, destination, *, total_limit=TOTAL_LIMIT, text_limit=TEXT_LIM
             record.update(status="read_failed", error=str(error))
             print(f"[DIAGNOSTIC READ FAILED] {relative}: {error}", flush=True)
         records.append(record)
+    counts = Counter(record["status"] for record in records)
     summary = {"exported_bytes": used, "total_limit": total_limit, "text_limit": text_limit,
-               "trace_limit": trace_limit, "report_limit": REPORT_LIMIT, "files": records}
+               "trace_limit": trace_limit, "report_limit": REPORT_LIMIT,
+               "counts": dict(counts), "files": records}
     (destination / "export-summary.json").write_text(json.dumps(summary, indent=2))
     print(f"Diagnostics: {copied} files, {used} bytes; limits and omissions in export-summary.json", flush=True)
+    print(f"Diagnostic omissions: truncated={counts['truncated']} skipped={counts['skipped']} "
+          f"read_failed={counts['read_failed']}", flush=True)
     return copied
 
 

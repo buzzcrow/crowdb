@@ -178,6 +178,19 @@ impl ProcessManager {
         Ok(process.child.try_wait()?.is_none())
     }
 
+    /// Observe an owned child's exit status without releasing its process record.
+    ///
+    /// # Errors
+    /// Returns an error for an unowned service or a failed process observation.
+    pub fn exit_status(&mut self, id: &str) -> Result<Option<std::process::ExitStatus>, ProcessError> {
+        self.processes
+            .get_mut(id)
+            .ok_or(ProcessError::Invalid("service is not owned"))?
+            .child
+            .try_wait()
+            .map_err(ProcessError::from)
+    }
+
     /// # Errors
     /// Sends TERM, waits for the owned PID, escalates to KILL after the deadline, and joins logs.
     pub async fn stop(&mut self, id: &str, grace: Duration) -> Result<(), ProcessError> {

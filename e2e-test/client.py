@@ -61,8 +61,12 @@ def run_client(bundle, addresses, token, phase, artifacts,
     Path(artifacts, f"client-{phase}.json").write_text(json.dumps({
         "phase": phase, "case": test_name, "seconds": time.monotonic() - started,
         "exit_code": result.returncode, "execution": "host"}, indent=2))
+    failed = result.returncode or "test result: ok. 1 passed; 0 failed;" not in output
+    if failed:
+        print(f"[FAILED CLIENT] case={test_name} phase={phase} exit_code={result.returncode} "
+              f"log={Path(artifacts, f'client-{phase}.log')}", flush=True)
     print(output, end="", flush=True)
-    if result.returncode or "test result: ok. 1 passed; 0 failed;" not in output:
+    if failed:
         raise RuntimeError(f"host client {phase} did not complete exactly one passing case; "
                            f"exit code {result.returncode}\n{output}")
 

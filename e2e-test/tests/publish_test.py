@@ -3,6 +3,8 @@
 """Failure exports retain evidence within a bounded upload budget."""
 
 import gzip
+import contextlib
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -61,13 +63,17 @@ class PublishTest(unittest.TestCase):
             (source / "browser").mkdir(parents=True)
             (source / "client-browser.log").write_bytes(b"irrelevant prefix LAST ERROR")
             (source / "browser/trace.zip").write_bytes(b"x" * 20)
-            publish(source, root / "public", text_limit=10, trace_limit=10)
+            console = io.StringIO()
+            with contextlib.redirect_stdout(console):
+                publish(source, root / "public", text_limit=10, trace_limit=10)
             self.assertEqual((root / "public/client-browser.log").read_bytes(), b"LAST ERROR")
             self.assertFalse((root / "public/browser/trace.zip").exists())
             summary = json.loads((root / "public/export-summary.json").read_text())
             statuses = {row["path"]: row["status"] for row in summary["files"]}
             self.assertEqual(statuses["client-browser.log"], "truncated")
             self.assertEqual(statuses["browser/trace.zip"], "skipped")
+            self.assertEqual(summary["counts"]["truncated"], 1)
+            self.assertIn("truncated=1 skipped=1 read_failed=0", console.getvalue())
 
     def test_job_budget_prioritizes_the_client_error_before_service_logs(self):
         with tempfile.TemporaryDirectory() as directory:

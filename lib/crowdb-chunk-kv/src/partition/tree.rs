@@ -540,7 +540,22 @@ impl PartitionTree for CrowdbPartitionTree {
     }
 
     fn checkpoint_state(&self) -> Result<(u64, u64)> {
-        self.tree.snapshot_state().map_err(map_tree_read_error)
+        match self.tree.snapshot_state() {
+            Err(error @ crowdb_tree_ffi::CtError::NotFound) => {
+                if let Some(store) = self
+                    .config
+                    .as_ref()
+                    .and_then(|config| config.page_store.as_ref())
+                    .filter(|store| store.is_chunk_backed())
+                {
+                    if chunk_root_generation(store)? == 0 {
+                        return Ok((0, 0));
+                    }
+                }
+                Err(map_tree_read_error(error))
+            }
+            result => result.map_err(map_tree_read_error),
+        }
     }
 
     fn root_manifest_generation(&self) -> Result<u64> {
@@ -550,7 +565,7 @@ impl PartitionTree for CrowdbPartitionTree {
             .filter(|store| store.is_chunk_backed())
             .map_or_else(
                 || self.checkpoint_state().map(|checkpoint| checkpoint.0),
-                |store| store.chunk_manifest_generation().map_err(map_tree_read_error),
+                |store| chunk_root_generation(store),
             )
     }
 
@@ -622,6 +637,15 @@ impl PartitionTree for CrowdbPartitionTree {
             crowdb_tree_ffi::CtError::Corruption => ChunkKvError::TreeCorruption(error.to_string()),
             _ => ChunkKvError::MaintenanceDegraded(error.to_string()),
         })
+    }
+}
+
+pub(super) fn chunk_root_generation(store: &crowdb_tree_ffi::PageStore) -> Result<u64> {
+    // A missing current manifest is an empty catalog, not an existing checkpoint.
+    // Durable catalog stores reject a missing manifest at a nonzero authority generation.
+    match store.chunk_manifest_generation() {
+        Err(crowdb_tree_ffi::CtError::NotFound) => Ok(0),
+        result => result.map_err(map_tree_read_error),
     }
 }
 

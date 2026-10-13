@@ -129,7 +129,16 @@ async fn wait_ready(
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if !processes.alive(&intent.service_id)? {
-                return Err("managed service exited before readiness".into());
+                let status = processes.exit_status(&intent.service_id)?;
+                let code = status.and_then(|status| status.code());
+                return Err(format!(
+                    "managed service exited before readiness: node={} service={} exit_code={} exit_status={}",
+                    intent.node_id,
+                    intent.service_id,
+                    code.map_or_else(|| "unknown".into(), |code| code.to_string()),
+                    status.map_or_else(|| "unknown".into(), |status| status.to_string())
+                )
+                .into());
             }
             match probes.probe_service(&service, &environment).await {
                 Ok(()) => return Ok(()),

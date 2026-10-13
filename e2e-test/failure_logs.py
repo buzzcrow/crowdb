@@ -3,6 +3,7 @@
 """Surface owned container errors alongside the failing host case."""
 
 import gzip
+import json
 import os
 import re
 
@@ -46,6 +47,18 @@ def print_failure(artifacts, data_paths, case_name, error, redact):
             raw = path.name == "service.log" or path.suffix == ".error"
             records = text.splitlines() if raw else error_records(text)
             if records:
+                node, service = "unknown", "unknown"
+                for data in data_paths:
+                    if (data / "log") in path.parents:
+                        node = data.parent.name if data.name == "data" else data.name
+                        service = path.relative_to(data / "log").parts[0]
+                        break
+                code = re.search(r"\bexit_code=(\d+)\b", text)
+                first_error = next((line for line in records if ERROR.search(line)), records[0])
+                summary = {"case": case_name, "container_node": node, "service": service,
+                           "service_exit_code": int(code[1]) if code else None,
+                           "log": str(path), "first_error": first_error}
+                print(redact("[FAILURE SUMMARY] " + json.dumps(summary, ensure_ascii=False)), flush=True)
                 print(redact(f"[CONTAINER ERROR LOG] {path}\n" + "\n".join(records)), flush=True)
         except (OSError, EOFError) as log_error:
             print(redact(f"[LOG READ FAILED] {path}: {log_error}"), flush=True)
