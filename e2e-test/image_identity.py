@@ -26,6 +26,7 @@ SERVER_PATHS = (
     # Host launch resource flags do not enter the release artifact (stage.sh).
     ":(exclude)container/oci-image/runtime.py",
     ":(exclude)container/oci-image/run-node.py",
+    ":(exclude)container/oci-image/prepare-ci-host.py",
     # Host SDK client delegates are not read by staging or the OCI builder.
     ":(exclude)tools/pixi-tasks/test.py",
     ":(exclude)tools/test-metrics/measure.sh",

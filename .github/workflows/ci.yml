@@ -511,12 +511,7 @@ jobs:
           printf "version=%s\nrevision=%s\n" "$version" "$revision" >> "$GITHUB_OUTPUT"
         '
     - name: Install compilation prerequisites and remove Docker
-      run: |
-        pixi run sudo apt-get update
-        pixi run sudo apt-get install -y protobuf-compiler
-        pixi run sudo systemctl stop docker.service docker.socket containerd.service
-        pixi run sudo apt-get purge -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-        pixi run bash -euc '! command -v docker; test ! -S /var/run/docker.sock'
+      run: pixi run python container/oci-image/prepare-ci-host.py
     - name: Free disk space
       run: |
         pixi run sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache

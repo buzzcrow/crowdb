@@ -93,6 +93,10 @@ No container measurements. Linux VM routing remains unverified.
 
 ## Remaining issues
 
+- [ ] **Remote CI acceptance**: CI #213 fails during ContainerImage host
+  preparation before image construction; downstream E2E jobs cannot run.
+  Prerequisite failures now expose their command/output as CI annotations.
+  Require a complete successful remote run before merge.
 - [ ] **Bridge cleanup timing**: a run overlapping special profiles exceeded
   the unchanged 45-second cleanup response bound. Independent diagnosis and
   final uninstrumented acceptance pass, including all cleanup assertions.
