@@ -70,7 +70,7 @@ pass without skipped cases; UI also passes its lint/type checks.
 | protocol            | 2026-10-13 | 221 / 0 / 0               | 23.567  | —          |
 | rpc                 | 2026-10-13 | 81 / 0 / 0                | 4.793   | —          |
 | s3                  | 2026-10-13 | 114 / 0 / 0               | 13.606  | —          |
-| test-infrastructure | 2026-10-13 | 134 / 0 / 0               | 5.052   | —          |
+| test-infrastructure | 2026-10-13 | 138 / 0 / 0               | 5.041   | —          |
 | tree                | 2026-10-13 | 598 / 0 / 0               | 70.605  | —          |
 
 - The C++ gate retains 765 cases and removes 205 repeated Common/RPC executions
@@ -93,9 +93,9 @@ No container measurements. Linux VM routing remains unverified.
 
 ## Remaining issues
 
-- [ ] **Remote CI acceptance**: CI #213 fails during ContainerImage host
-  preparation before image construction; downstream E2E jobs cannot run.
-  Prerequisite failures now expose their command/output as CI annotations.
+- [ ] **Remote CI acceptance**: CI #214 identifies a stale Docker socket after
+  daemon shutdown/package removal. Cleanup now verifies connection refusal
+  before removing that inode; active listeners and non-socket files fail safely.
   Require a complete successful remote run before merge.
 - [ ] **Bridge cleanup timing**: a run overlapping special profiles exceeded
   the unchanged 45-second cleanup response bound. Independent diagnosis and
