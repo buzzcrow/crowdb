@@ -61,6 +61,13 @@ class ClientTest(unittest.TestCase):
                 run_client(root, ["172.18.0.2"], "owned", "write", root)
             self.assertTrue(Path(root, "client-write.log").is_file())
 
+    def test_failed_case_retains_original_assertion_in_final_summary(self):
+        failure = "panic: group creation returned HTTP 405"
+        result = subprocess.CompletedProcess([], 101, "", failure)
+        with tempfile.TemporaryDirectory() as root, patch("client.subprocess.run", return_value=result):
+            with self.assertRaisesRegex(RuntimeError, failure):
+                run_client(root, ["172.18.0.2"], "owned", "create-group", root)
+
     def test_endpoints_are_per_invocation_without_mutating_host_environment(self):
         result = subprocess.CompletedProcess([], 0, "test result: ok. 1 passed; 0 failed;", "")
         original = os.environ.copy()

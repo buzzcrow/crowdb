@@ -63,7 +63,8 @@ def run_client(bundle, addresses, token, phase, artifacts,
         "exit_code": result.returncode, "execution": "host"}, indent=2))
     print(output, end="", flush=True)
     if result.returncode or "test result: ok. 1 passed; 0 failed;" not in output:
-        raise RuntimeError(f"host client {phase} did not complete exactly one passing case")
+        raise RuntimeError(f"host client {phase} did not complete exactly one passing case; "
+                           f"exit code {result.returncode}\n{output}")
 
 
 def bundle_client(output):

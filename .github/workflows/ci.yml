@@ -312,7 +312,7 @@ jobs:
         df -h
         echo "=== CROWDB runtime files ==="
         find .crowdb-runtime -maxdepth 4 -type f -print 2>/dev/null || true
-    - name: Export redacted container diagnostics
+    - name: Export bounded failure diagnostics
       if: always()
       run: pixi run python e2e-test/publish.py --source .crowdb-runtime/artifacts/container-e2e --output "${{ runner.temp }}/container-e2e-public-${{ github.run_id }}-${{ github.run_attempt }}"
     - name: Upload S3 measurements and diagnostics
@@ -372,7 +372,7 @@ jobs:
       env:
         E2E_PARTITION: ${{ matrix.partition }}
       run: pixi run test-e2e-iceberg --partition "$E2E_PARTITION"
-    - name: Export redacted container diagnostics
+    - name: Export bounded failure diagnostics
       if: always()
       run: pixi run python e2e-test/publish.py --source .crowdb-runtime/artifacts/container-e2e --output "${{ runner.temp }}/container-e2e-public-${{ github.run_id }}-${{ github.run_attempt }}"
     - name: Upload Iceberg measurements and diagnostics
@@ -599,7 +599,7 @@ jobs:
     - name: Record KV verified digest
       id: artifact
       run: pixi run python container/oci-image/ci-receipt.py target/crowdb.oci.tar
-    - name: Export redacted container diagnostics
+    - name: Export bounded failure diagnostics
       if: always()
       run: pixi run python e2e-test/publish.py --source .crowdb-runtime/artifacts/container-e2e --output "${{ runner.temp }}/container-e2e-public-${{ github.run_id }}-${{ github.run_attempt }}"
     - uses: actions/upload-artifact@v4
@@ -655,7 +655,7 @@ jobs:
       env:
         E2E_PARTITION: ${{ matrix.partition }}
       run: pixi run test-e2e-console --partition "$E2E_PARTITION"
-    - name: Export redacted container diagnostics
+    - name: Export bounded failure diagnostics
       if: always()
       run: pixi run python e2e-test/publish.py --source .crowdb-runtime/artifacts/container-e2e --output "${{ runner.temp }}/container-e2e-public-${{ github.run_id }}-${{ github.run_attempt }}"
     - name: Upload measured flows and diagnostics
@@ -713,7 +713,7 @@ jobs:
         for domain in $E2E_DOMAINS; do
           pixi run "test-e2e-$domain"
         done
-    - name: Export redacted container diagnostics
+    - name: Export bounded failure diagnostics
       if: always()
       run: pixi run python e2e-test/publish.py --source .crowdb-runtime/artifacts/container-e2e --output "${{ runner.temp }}/container-e2e-public-${{ github.run_id }}-${{ github.run_attempt }}"
     - uses: actions/upload-artifact@v4

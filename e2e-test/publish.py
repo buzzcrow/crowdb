@@ -1,70 +1,126 @@
 # Copyright 2026-present Gian <crow.db@outlook.com>
 # Licensed under the Apache License, Version 2.0.
-"""Export measured reports and redacted text diagnostics without mounted data."""
+"""Export bounded failure diagnostics and small reports without mounted data."""
 
 import argparse
+import gzip
 import json
 from pathlib import Path
-import re
 
-SECRET = re.compile(
-    r'(?i)([\w.-]*(?:token|password|secret|access[_-]?key|master[_-]?key|'
-    r'authorization|credential|signature)[\w.-]*["\']?\s*[:=](?!:)\s*["\']?)'
-    r'(?:(?:Bearer|Basic)\s+)?([^\s,"\'}&{\[\]]+)')
 REPORTS = {"results.json", "timing.json", "identity.json", "client-identity.json",
            "case.json", "endpoints.json", "mounts.json", "s3-node-endpoints.json",
            "native-endpoints.json"}
 PRIVATE = {"nodes", "client", "clients", "private", "node_modules", "source"}
-SECRET_KEY = re.compile(
-    r'(?i)token|password|secret|access[_-]?key|master[_-]?key|authorization|credential|signature')
+TOTAL_LIMIT = 64 * 1024 * 1024
+TEXT_LIMIT = 256 * 1024
+TRACE_LIMIT = 16 * 1024 * 1024
+REPORT_LIMIT = 1024 * 1024
 
 
-def redact(text, secrets):
-    for value in sorted(secrets, key=len, reverse=True):
-        text = text.replace(value, "<redacted>")
-    return SECRET.sub(r'\1<redacted>', text)
+def service_log(relative):
+    parts = relative.parts
+    return any(parts[index] == "nodes" and parts[index + 2:index + 4] == ("data", "log")
+               for index in range(len(parts) - 3)) and (
+                   relative.suffix == ".log" or relative.name.endswith(".log.gz"))
 
 
-def redact_json(value, secrets):
-    if isinstance(value, dict):
-        return {key: ("<redacted>" if isinstance(item, str) and SECRET_KEY.search(key)
-                      else redact_json(item, secrets)) for key, item in value.items()}
-    if isinstance(value, list):
-        return [redact_json(item, secrets) for item in value]
-    return redact(value, secrets) if isinstance(value, str) else value
+def failed_cases(source):
+    cases = {}
+    for path in source.rglob("case.json"):
+        if path.is_symlink() or not path.resolve().is_relative_to(source):
+            continue
+        try:
+            timing = json.loads((path.parent / "timing.json").read_text())
+            cases[path.parent] = not isinstance(timing, dict) or timing.get("status") != "pass"
+        except (OSError, ValueError):
+            cases[path.parent] = True
+    return cases
 
 
-def publish(source, destination):
+def read_tail(path, limit):
+    opener = gzip.open if path.name.endswith(".log.gz") else open
+    with opener(path, "rb") as stream:
+        if not path.name.endswith(".log.gz"):
+            size = path.stat().st_size
+            stream.seek(max(0, size - limit))
+            return stream.read(limit), size
+        tail, size = b"", 0
+        for chunk in iter(lambda: stream.read(65536), b""):
+            size += len(chunk)
+            tail = (tail + chunk)[-limit:]
+        return tail, size
+
+
+def publish(source, destination, *, total_limit=TOTAL_LIMIT, text_limit=TEXT_LIMIT,
+            trace_limit=TRACE_LIMIT):
     source, destination = source.resolve(), destination.resolve()
     if destination == source or source in destination.parents or destination in source.parents:
-        raise ValueError("public export and original run directories must be separate")
+        raise ValueError("export and original run directories must be separate")
     if destination.exists() and any(destination.iterdir()):
-        raise ValueError("public export needs a fresh directory to avoid stale reports")
-    files = [p for p in source.rglob("*") if p.is_file() and not p.is_symlink()
-             and not any(part in PRIVATE for part in p.relative_to(source).parts[:-1])]
-    secrets = set()
-    for path in files:
-        if path.suffix in {".toml", ".env", ".log", ".json"}:
-            for match in SECRET.finditer(path.read_text(errors="replace")):
-                value = match[2]
-                if len(value) >= 8 and value not in {"<redacted>", "[REDACTED]"}:
-                    secrets.add(value)
-    copied = 0
-    for path in files:
-        relative = path.relative_to(source)
-        selected = path.name in REPORTS or path.name.startswith(("client-", "topology-"))
-        if path.suffix not in {".json", ".log", ".error"} or not (selected or path.suffix in {".log", ".error"}):
+        raise ValueError("export needs a fresh directory to avoid stale reports")
+    if min(total_limit, text_limit, trace_limit) < 1:
+        raise ValueError("diagnostic size limits must be positive")
+    cases = failed_cases(source)
+    candidates = []
+    for path in source.rglob("*"):
+        if not path.is_file() or path.is_symlink() or not path.resolve().is_relative_to(source):
             continue
-        text = path.read_text(errors="replace")
-        # Preserve machine-readable report structure after replacing strings.
-        if path.suffix == ".json":
-            text = json.dumps(redact_json(json.loads(text), secrets), indent=2)
-        else:
-            text = redact(text, secrets)
-        output = destination / relative
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(text)
-        copied += 1
+        relative = path.relative_to(source)
+        mounted_log = service_log(relative)
+        if any(part in PRIVATE for part in relative.parts[:-1]) and not mounted_log:
+            continue
+        owner = next((parent for parent in path.parents if parent in cases), None)
+        failed = cases.get(owner, not cases)
+        report = (path.name in REPORTS or path.name.startswith("client-")) and path.suffix == ".json"
+        trace = path.name == "trace.zip" and "browser" in relative.parts
+        text = path.suffix in {".log", ".error"} or mounted_log or path.name == "error-context.md"
+        if not report and not (failed and (trace or text)):
+            continue
+        priority = (0 if path.suffix == ".error" or path.name.startswith("client-") and not report
+                    else 1 if report or path.name == "error-context.md" else 2 if trace else 3)
+        candidates.append((priority, relative.as_posix(), path, report, trace))
+    records, used, copied = [], 0, 0
+    destination.mkdir(parents=True, exist_ok=True)
+    for _, relative, path, report, trace in sorted(candidates):
+        record = {"path": relative}
+        try:
+            record["original_bytes"] = path.stat().st_size
+            remaining = total_limit - used
+            if remaining < 1 or (trace and path.stat().st_size > trace_limit):
+                record["status"] = "skipped"
+                record["reason"] = "job budget exhausted" if remaining < 1 else "trace size limit"
+            elif report or trace:
+                if report and path.stat().st_size > REPORT_LIMIT:
+                    record.update(status="skipped", reason="report size limit")
+                elif path.stat().st_size > remaining:
+                    record.update(status="skipped", reason="file exceeds remaining job budget")
+                else:
+                    payload = path.read_bytes()
+                    output = destination / relative
+                    output.parent.mkdir(parents=True, exist_ok=True)
+                    output.write_bytes(payload)
+                    record.update(status="copied", exported_bytes=len(payload))
+            else:
+                payload, size = read_tail(path, min(text_limit, remaining))
+                output = destination / relative
+                if path.name.endswith(".log.gz"):
+                    output = output.with_suffix("")
+                    record["exported_path"] = output.relative_to(destination).as_posix()
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_bytes(payload)
+                record.update(status="truncated" if len(payload) < size else "copied",
+                              original_text_bytes=size, exported_bytes=len(payload))
+            if "exported_bytes" in record:
+                used += record["exported_bytes"]
+                copied += 1
+        except (OSError, EOFError) as error:
+            record.update(status="read_failed", error=str(error))
+            print(f"[DIAGNOSTIC READ FAILED] {relative}: {error}", flush=True)
+        records.append(record)
+    summary = {"exported_bytes": used, "total_limit": total_limit, "text_limit": text_limit,
+               "trace_limit": trace_limit, "report_limit": REPORT_LIMIT, "files": records}
+    (destination / "export-summary.json").write_text(json.dumps(summary, indent=2))
+    print(f"Diagnostics: {copied} files, {used} bytes; limits and omissions in export-summary.json", flush=True)
     return copied
 
 
@@ -73,4 +129,4 @@ if __name__ == "__main__":
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    print(f"Exported {publish(args.source, args.output)} redacted diagnostic files")
+    publish(args.source, args.output)

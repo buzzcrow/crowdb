@@ -69,13 +69,14 @@ pub(super) async fn restart() {
         crate::common::control::node("start", index).await;
         ready(&http, &format!("http://{address}:7101/ready")).await;
     }
-    for (index, address) in addresses.iter().enumerate().take(12).skip(6) {
+    for index in 9..12 {
         crate::common::control::node("start", index).await;
-        if index < 9 {
-            ready(&http, &format!("http://{address}:7301/ready")).await;
-        }
     }
     storage_ready().await;
+    for (index, address) in addresses.iter().enumerate().take(9).skip(6) {
+        crate::common::control::node("start", index).await;
+        ready(&http, &format!("http://{address}:7301/ready")).await;
+    }
     crate::common::control::node("start", 12).await;
     ready(&http, &format!("http://{}:7401/ready", addresses[12])).await;
     crate::common::control::node("start", 13).await;
@@ -104,7 +105,7 @@ async fn ready(http: &reqwest::Client, endpoint: &str) {
     .unwrap_or_else(|_| panic!("restarted dependency readiness: {endpoint}"));
 }
 
-async fn storage_ready() {
+pub(super) async fn storage_ready() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     loop {
         let result = crowdb_diskio_client::DiskioClient::connect_with_clients(

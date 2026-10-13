@@ -71,10 +71,14 @@ async function deployDiskDb(page: Page, request: APIRequestContext, kv: LiveServ
 }
 
 async function act(page: Page, row: LiveService, label: string, path: string) {
-  const response = page.waitForResponse(response => new URL(response.url()).pathname === path
-    && response.request().method() === 'POST');
-  await diskMenu(page, serviceRow(page, row), label);
-  const completed = await response;
+  await serviceRow(page, row).click({ button: 'right' });
+  const item = page.getByRole('menuitem', { name: label, exact: true });
+  await expect(item).toBeVisible();
+  const [completed] = await Promise.all([
+    page.waitForResponse(response => new URL(response.url()).pathname === path
+      && response.request().method() === 'POST'),
+    item.dispatchEvent('click'),
+  ]);
   expect(completed.ok(), await completed.text()).toBe(true);
 }
 

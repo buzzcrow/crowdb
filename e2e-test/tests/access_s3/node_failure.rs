@@ -86,6 +86,10 @@ fn kv_client() -> crowdb_kv_client::CrowdbKvClient {
 #[tokio::test]
 #[ignore = "requires three owned production storage nodes"]
 async fn seed() {
+    if std::env::var("CROWDB_E2E_PHASE").as_deref() == Ok("storage-ready") {
+        recovery::storage_ready().await;
+        return;
+    }
     crate::chunkdb::voting::register_actual_voters().await;
     let maps =
         crowdb_kv_client::ChunkSlotMapClient::new(std::sync::Arc::new(crate::common::hardware::kv_client()));

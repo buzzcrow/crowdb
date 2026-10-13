@@ -26,6 +26,7 @@ class S3NodeCluster(Cluster):
             self.chunkdb(logical)
         for logical in range(3):
             self.diskio(logical)
+        self.client(self.bundle, "storage-ready", "access_s3::node_failure::seed")
         self.chunk_kv()
         self.access()
         (self.artifacts / "s3-node-endpoints.json").write_text(json.dumps({

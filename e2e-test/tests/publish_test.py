@@ -1,79 +1,117 @@
 # Copyright 2026-present Gian <crow.db@outlook.com>
 # Licensed under the Apache License, Version 2.0.
-"""Public diagnostics retain measured failures while private evidence stays local."""
+"""Failure exports retain evidence within a bounded upload budget."""
 
+import gzip
 import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from publish import publish
 
 
 class PublishTest(unittest.TestCase):
-    def test_credential_domain_names_are_not_secret_assignments(self):
+    def test_failed_browser_keeps_raw_trace_and_context_but_success_keeps_only_reports(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "original"
-            source.mkdir()
-            case = "s3.credentials::credential_refresh_keeps_old_signed_streams_valid"
-            report = {"cases": [{"case": case, "status": "pass", "seconds": 2.0}]}
-            (source / "results.json").write_text(json.dumps(report))
-            (source / "runtime.log").write_text(case + '\nwriter_token="private-value-123"\n')
+            for name, status in (("failed", "failed"), ("passed", "pass")):
+                case = source / name
+                (case / "browser").mkdir(parents=True)
+                (case / "case.json").write_text(json.dumps({"case": name}))
+                (case / "timing.json").write_text(json.dumps({"status": status}))
+                (case / "browser/trace.zip").write_bytes(b"complete binary trace")
+                (case / "browser/error-context.md").write_text('password="test-value"')
+                (case / "client-browser.log").write_text("original assertion")
             publish(source, root / "public")
-            self.assertEqual(json.loads((root / "public/results.json").read_text()), report)
-            log = (root / "public/runtime.log").read_text()
-            self.assertIn(case, log)
-            self.assertNotIn("private-value-123", log)
+            output = root / "public"
+            self.assertEqual((output / "failed/browser/trace.zip").read_bytes(), b"complete binary trace")
+            self.assertEqual((output / "failed/browser/error-context.md").read_text(), 'password="test-value"')
+            self.assertTrue((output / "passed/timing.json").is_file())
+            self.assertFalse((output / "passed/browser").exists())
+            self.assertFalse((output / "passed/client-browser.log").exists())
 
-    def test_export_preserves_originals_and_excludes_private_data_and_symlinks(self):
+    def test_service_logs_are_kept_without_mounted_data_builds_or_symlinks(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            source, output = root / "original", root / "public"
-            source.mkdir()
-            (source / "nodes").mkdir()
-            (source / "nodes/config.toml").write_text('writer_token = "private-value-123"\n')
-            (source / "nodes/raw.log").write_text("private node log")
+            source = root / "original"
+            logs = source / "run/case/nodes/node0/data/log/kv"
+            logs.mkdir(parents=True)
+            (logs / "server.log").write_text("startup failure")
+            with gzip.open(logs / "previous.log.gz", "wt") as stream:
+                stream.write("previous failure")
+            (logs.parent.parent / "disk.dat").write_bytes(b"mounted data")
             (source / "client").mkdir()
-            (source / "client/build.log").write_text("private host client build")
-            (source / "runtime.log").write_text(
-                "failure private-value-123\nAuthorization: Bearer other-secret-123\n"
-                'CROWDB_S3_MASTER_KEY=1111111111111111\n'
-                'Authorization: Basic encoded-user-password\n'
-                'Credential=access-id-123/20261012/region/s3/aws4_request, Signature=signed-value-123\n')
-            (source / "results.json").write_text(json.dumps({"status": "failed", "seconds": 12.5}))
-            (source / "copied.log").symlink_to(source / "nodes/raw.log")
-            (source / "service.toml").write_text('writer_token = "private-value-123"')
-            self.assertEqual(publish(source, output), 2)
-            self.assertEqual(json.loads((output / "results.json").read_text()),
-                             {"status": "failed", "seconds": 12.5})
-            text = (output / "runtime.log").read_text()
-            for secret in ("private-value-123", "other-secret-123", "1111111111111111",
-                           "encoded-user-password", "access-id-123", "signed-value-123"):
-                self.assertNotIn(secret, text)
-            self.assertIn("private-value-123", (source / "runtime.log").read_text())
-            self.assertFalse((output / "nodes").exists())
-            self.assertFalse((output / "client").exists())
-            self.assertFalse((output / "copied.log").exists())
-            self.assertFalse((output / "service.toml").exists())
+            (source / "client/build.log").write_text("build output")
+            (source / "copied.log").symlink_to(logs / "server.log")
+            self.assertEqual(publish(source, root / "public"), 2)
+            output = root / "public/run/case/nodes/node0/data/log/kv"
+            self.assertEqual((output / "server.log").read_text(), "startup failure")
+            self.assertEqual((output / "previous.log").read_text(), "previous failure")
+            self.assertFalse((output.parent.parent / "disk.dat").exists())
+            self.assertFalse((root / "public/client").exists())
+            self.assertFalse((root / "public/copied.log").exists())
 
-    def test_export_cannot_rewrite_or_recurse_into_original_runs(self):
+    def test_large_logs_keep_the_tail_and_oversized_trace_is_not_corrupted(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for output in (root, root / "public", root.parent):
-                with self.assertRaises(ValueError):
-                    publish(root, output)
+            source = root / "original"
+            (source / "browser").mkdir(parents=True)
+            (source / "client-browser.log").write_bytes(b"irrelevant prefix LAST ERROR")
+            (source / "browser/trace.zip").write_bytes(b"x" * 20)
+            publish(source, root / "public", text_limit=10, trace_limit=10)
+            self.assertEqual((root / "public/client-browser.log").read_bytes(), b"LAST ERROR")
+            self.assertFalse((root / "public/browser/trace.zip").exists())
+            summary = json.loads((root / "public/export-summary.json").read_text())
+            statuses = {row["path"]: row["status"] for row in summary["files"]}
+            self.assertEqual(statuses["client-browser.log"], "truncated")
+            self.assertEqual(statuses["browser/trace.zip"], "skipped")
 
-    def test_json_redaction_preserves_boolean_measurements_and_nested_structure(self):
+    def test_job_budget_prioritizes_the_client_error_before_service_logs(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "original"
             source.mkdir()
-            (source / "results.json").write_text(json.dumps({
-                "token_registered": False, "config": {"writer_token": "secret-value"},
-                "cases": [{"status": "failed", "seconds": 1.0}]}))
-            publish(source, root / "public")
-            result = json.loads((root / "public/results.json").read_text())
-            self.assertFalse(result["token_registered"])
-            self.assertEqual(result["config"]["writer_token"], "<redacted>")
-            self.assertEqual(result["cases"], [{"status": "failed", "seconds": 1.0}])
+            (source / "aaa-service.log").write_bytes(b"s" * 40)
+            (source / "client-failure.log").write_bytes(b"important assertion")
+            publish(source, root / "public", total_limit=24)
+            self.assertEqual((root / "public/client-failure.log").read_bytes(), b"important assertion")
+            summary = json.loads((root / "public/export-summary.json").read_text())
+            self.assertLessEqual(summary["exported_bytes"], 24)
+            self.assertEqual(summary["exported_bytes"], sum(
+                path.stat().st_size for path in (root / "public").rglob("*")
+                if path.is_file() and path.name != "export-summary.json"))
+
+    def test_unreadable_log_does_not_drop_other_diagnostics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "original"
+            source.mkdir()
+            (source / "blocked.log").write_text("unreadable")
+            (source / "results.json").write_text('{"status":"failed"}')
+            original = Path.open
+            def opened(path, *args, **kwargs):
+                if path.name == "blocked.log":
+                    raise PermissionError("Permission denied")
+                return original(path, *args, **kwargs)
+            with patch.object(Path, "open", opened):
+                self.assertEqual(publish(source, root / "public"), 1)
+            summary = json.loads((root / "public/export-summary.json").read_text())
+            self.assertIn("read_failed", [row["status"] for row in summary["files"]])
+            self.assertTrue((root / "public/results.json").is_file())
+
+    def test_export_cannot_rewrite_originals_or_reuse_a_stale_destination(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "original"
+            source.mkdir()
+            for output in (source, source / "public", root):
+                with self.assertRaises(ValueError):
+                    publish(source, output)
+            output = root / "public"
+            output.mkdir()
+            (output / "stale.log").write_text("old run")
+            with self.assertRaises(ValueError):
+                publish(source, output)

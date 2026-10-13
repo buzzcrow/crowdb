@@ -7,7 +7,7 @@ use super::rpc_response_proxy;
 
 use super::fixture::TestKvCluster as KvCluster;
 use axum::http::StatusCode;
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::Router;
 use crowdb_console_shared::ops::{kv_logical, OpContext};
 use crowdb_console_shared::ConsoleConfig;
@@ -45,7 +45,7 @@ async fn verify_group_publication(drop_reply: bool, target_has_store: bool) {
         )
         .route(
             "/stores/:sid/groups",
-            post(move || {
+            get(|| async { axum::Json(Vec::<crowdb_protocol::mgmt::GroupSummary>::new()) }).post(move || {
                 assert!(
                     group_state.load(Ordering::SeqCst),
                     "local store must exist before creating its group"
