@@ -20,6 +20,7 @@ from fixture import Cluster, docker
 from release import check_startup
 from scenarios import case_nodes, case_resources, run_cases, select_cases
 from image_identity import verify_server_sources
+from ci_partitions import PARTITIONS
 from report import write_report
 from mixed_isolation import run_mixed
 
@@ -92,6 +93,8 @@ def main():
     parser.add_argument("--profile", choices=("bridge", "bridge-admission", "host", "containerd-host", "containerd-cluster", "ecosystem", "ecosystem-python"), default="bridge")
     parser.add_argument("--concurrency", type=int, default=2)
     parser.add_argument("--case", help="fully qualified named flow within the selected scope")
+    parser.add_argument("--partition", choices=sum(PARTITIONS.values(), ()),
+                        help="complete CI partition within Console or Iceberg")
     parser.add_argument("--list", action="store_true", help="list implemented named flows without starting servers")
     parser.add_argument("--require-isolation", action="store_true")
     parser.add_argument("--cpus", type=float, default=4)
@@ -105,6 +108,10 @@ def main():
     args = parser.parse_args()
     if not math.isfinite(args.node_cpus) or not 2 <= round(args.node_cpus * 1024) <= 262144:
         parser.error("node CPU weight must map to 2..262144 shares")
+    if args.partition and (args.profile != "bridge" or args.layer not in PARTITIONS
+                           or args.partition not in PARTITIONS[args.layer]
+                           or args.scope != "all" or args.case or args.require_isolation):
+        parser.error("CI partitions require their complete domain and the bridge profile")
     if args.profile in ("ecosystem", "ecosystem-python"):
         signal.signal(signal.SIGTERM, interrupt)
         from ecosystem_profile import run_profile
@@ -125,7 +132,7 @@ def main():
         from containerd_profile import run_profile
         run_profile(args, parser)
         return
-    selected = select_cases(args.layer, args.scope, args.case)
+    selected = select_cases(args.layer, args.scope, args.case, args.partition)
     if not selected and not (args.layer in ("kv", "all") and args.scope in ("kv.recovery", "kv.isolation")):
         parser.error("the selected case is not implemented in this scope")
     if args.case and args.require_isolation:
@@ -171,7 +178,7 @@ def main():
     run_root.mkdir()
     (run_root / "identity.json").write_text(json.dumps({"image": args.image, "id": identity["Id"],
         "repo_digests": identity.get("RepoDigests", []), "labels": labels, "client_revision": revision,
-        "layer": args.layer, "scope": args.scope, "slots": slots, "case_slots": case_slots,
+        "layer": args.layer, "scope": args.scope, "partition": args.partition, "slots": slots, "case_slots": case_slots,
         "largest_case_nodes": largest, "case_cpu_reservation": needed_cpu,
         "case_memory_reservation_mib": needed_memory, "selected_cases": [case.name for case in selected],
         "node_cpus": args.node_cpus, "cpu_policy": "shares", "tokio_worker_threads": 1, "node_cpu_shares": round(args.node_cpus * 1024),
@@ -222,7 +229,7 @@ def main():
             if slots >= 2:
                 run_mixed(identity["Id"], run_root, bundle, args.data_root, args.node_cpus)
         if selected:
-            run_cases(identity["Id"], run_root, bundle, case_slots, args.data_root, args.scope, args.case, args.layer, args.node_cpus)
+            run_cases(identity["Id"], run_root, bundle, case_slots, args.data_root, args.scope, args.case, args.layer, args.node_cpus, args.partition)
         if args.layer in ("kv", "deployment", "all") and args.scope == "all" and not args.case:
             check_startup(identity["Id"], run_root)
         timings["status"] = "pass"

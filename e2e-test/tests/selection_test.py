@@ -55,6 +55,24 @@ class SelectionTest(unittest.TestCase):
         exact = json.loads(self.invoke("--list", "--scope", "console.operations", "--case", cases[0]["case"]))
         self.assertEqual(exact, [cases[0]])
 
+    def test_partition_cli_covers_complete_domains_and_rejects_narrowing(self):
+        from ci_partitions import PARTITIONS
+        for domain, partitions in PARTITIONS.items():
+            expected = json.loads(self.invoke("--list", "--layer", domain))
+            actual = []
+            for partition in partitions:
+                actual.extend(json.loads(self.invoke("--list", "--layer", domain,
+                                                     "--partition", partition)))
+            self.assertEqual(sorted(actual, key=lambda case: case["case"]),
+                             sorted(expected, key=lambda case: case["case"]))
+        for arguments in (("--layer", "s3"), ("--profile", "host"),
+                          ("--layer", "console", "--scope", "console.cli"),
+                          ("--layer", "console", "--case", "missing"),
+                          ("--layer", "iceberg")):
+            with self.assertRaises(SystemExit) as raised:
+                self.invoke("--partition", "console-api", *arguments)
+            self.assertEqual(raised.exception.code, 2)
+
     def test_cli_container_replay_reserves_three_complete_nodes(self):
         from scenarios import CONSOLE_OPERATION_CASES, case_nodes, case_resources
         cases = [case for case in CONSOLE_OPERATION_CASES if case.cli_replay]

@@ -53,6 +53,9 @@ class ShellBrowserCluster(StandaloneWebCluster):
         (self.artifacts / f"client-{phase}.json").write_text(json.dumps({
             "case": self.case_name, "phase": phase, "seconds": time.monotonic() - started,
             "exit_code": result.returncode, "execution": "host"}, indent=2))
+        if result.returncode:
+            print(f"[FAILED CLIENT] case={self.case_name} phase={phase} exit_code={result.returncode}", flush=True)
         print(output, end="", flush=True)
         if result.returncode:
-            raise RuntimeError(f"host shell browser {phase} failed")
+            raise RuntimeError(f"host browser {self.case_name} {phase} failed with exit code {result.returncode}; "
+                               f"log: {self.artifacts / f'client-{phase}.log'}")

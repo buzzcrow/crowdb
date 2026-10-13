@@ -35,6 +35,16 @@ class TestDispatchTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "container CI coverage"):
                 check_coverage(workflow, self.graph)
 
+    def test_incomplete_duplicate_or_undispatched_partition_is_rejected(self):
+        for workflow in (
+            self.workflow.replace("iceberg-core, iceberg-sdk, iceberg-grace", "iceberg-core, iceberg-sdk"),
+            self.workflow.replace("iceberg-core, iceberg-sdk, iceberg-grace", "iceberg-core, iceberg-sdk, iceberg-sdk"),
+            self.workflow.replace(' --partition "$E2E_PARTITION"', ''),
+            self.workflow.replace(' --partition "$E2E_PARTITION"', ' --partition iceberg-core'),
+        ):
+            with self.assertRaisesRegex(ValueError, "partition"):
+                check_coverage(workflow, self.graph)
+
     def test_narrowed_task_is_rejected(self):
         self.graph.tasks["default", "test-e2e-s3"] += " --scope s3.protocol"
         with self.assertRaisesRegex(ValueError, "without narrowing"):

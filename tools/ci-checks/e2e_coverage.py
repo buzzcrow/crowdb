@@ -4,9 +4,33 @@
 
 import re
 import shlex
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "e2e-test"))
+from ci_partitions import PARTITIONS
 
 DOMAINS = {"kv", "diskdb", "diskio", "chunkdb", "chunk-stream", "chunk-client",
            "chunk-kv", "s3", "iceberg", "dataset", "console", "deployment"}
+
+
+def check_partitions(block, domain):
+    if "--partition" not in block:
+        if re.search(r"^\s+partition:", block, re.M):
+            raise ValueError("partition matrix must dispatch its selected partition")
+        return
+    expected = PARTITIONS.get(domain)
+    matrix = re.search(r"^\s+partition: \[([^\]]+)\]$", block, re.M)
+    actual = tuple(item.strip() for item in matrix[1].split(",")) if matrix else ()
+    if not expected or len(actual) != len(expected) or set(actual) != set(expected):
+        raise ValueError(f"container CI coverage: {domain} partition matrix must cover each partition exactly once")
+    if "E2E_PARTITION: ${{ matrix.partition }}" not in block:
+        raise ValueError("partition matrix must dispatch through E2E_PARTITION")
+    invocation = f'pixi run test-e2e-{domain} --partition "$E2E_PARTITION"'
+    lines = [line.strip().removeprefix("run: ") for line in block.splitlines()
+             if f"pixi run test-e2e-{domain}" in line]
+    if lines != [invocation]:
+        raise ValueError("partition invocation must use the complete matrix selection")
 
 
 def expand_matrix(workflow):
@@ -42,6 +66,7 @@ def check_coverage(workflow, graph):
             domain = key[1].removeprefix("test-e2e-")
             if domain not in DOMAINS:
                 raise ValueError(f"unknown CI domain {domain}")
+            check_partitions(block, domain)
             command = shlex.split(graph.command(key).splitlines()[0])
             if command != ["python", "tools/pixi-tasks/test.py", "e2e", domain]:
                 raise ValueError(f"{key[1]} must run its complete domain without narrowing selectors")

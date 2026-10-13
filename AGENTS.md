@@ -38,6 +38,10 @@ and transport exposed through FFI.
 - Playwright uses an installed system browser. Do not install one locally.
 - Use 60-second shell timeouts by default. Start hang-prone commands in the
   background and poll. Show complete output; do not hide errors with filters.
+- On test or CI failure, print the failing case and test error to the console.
+  Enable `CROWDB_E2E_PRINT_SERVICE_ERRORS=1` in CI or when debugging to also print
+  container service file errors. This extra output defaults off locally;
+  artifacts retain complete logs in either mode.
 - Markdown is primarily read raw. Prefer bullets; use tables for real
   comparisons only. `doc/doc_index.md` always uses tables. When a table is
   used, pad columns with spaces so the raw markdown aligns visually.

@@ -13,6 +13,7 @@ env:
   CARGO_PROFILE_TEST_DEBUG: line-tables-only
   RUST_BACKTRACE: 1
   RUST_LIB_BACKTRACE: 1
+  CROWDB_E2E_PRINT_SERVICE_ERRORS: "1"
 
 # Component gates and independent container domains share one release image.
 jobs:
@@ -328,6 +329,10 @@ jobs:
       run: pixi run clean-env
 
   IcebergE2E:
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [iceberg-core, iceberg-sdk, iceberg-grace]
     env:
       CROWDB_E2E_NODE_CPUS: "1"
       CROWDB_E2E_CPUS: "4"
@@ -349,6 +354,13 @@ jobs:
       with:
         pixi-version: latest
     - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: container-e2e-client
+        key: ${{ hashFiles('pixi.lock') }}
+        cmd-format: "pixi run {0}"
+        cache-workspace-crates: true
+        cache-on-failure: true
+        save-if: ${{ matrix.partition == 'iceberg-core' }}
     - uses: actions/download-artifact@v4
       with:
         name: verified-oci-image
@@ -356,7 +368,9 @@ jobs:
     - name: Import shared release image
       run: pixi run image-import "$PWD/target/crowdb.oci.tar" --image crowdb-node:dev
     - name: Run Iceberg acceptance
-      run: pixi run test-e2e-iceberg
+      env:
+        E2E_PARTITION: ${{ matrix.partition }}
+      run: pixi run test-e2e-iceberg --partition "$E2E_PARTITION"
     - name: Export redacted container diagnostics
       if: always()
       run: pixi run python e2e-test/publish.py --source .crowdb-runtime/artifacts/container-e2e --output target/container-e2e-public
@@ -364,7 +378,7 @@ jobs:
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: runtime-iceberge2e-${{ github.run_attempt }}
+        name: runtime-${{ matrix.partition }}-${{ github.run_attempt }}
         path: target/container-e2e-public/
         include-hidden-files: true
         if-no-files-found: ignore
@@ -484,6 +498,8 @@ jobs:
       run: pixi run clean-env
 
   ContainerImage:
+    env:
+      CROWDB_KEEP_DEBUG_INFO: ${{ vars.CROWDB_KEEP_DEBUG_INFO || '0' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -517,8 +533,16 @@ jobs:
         pixi run sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache
         pixi run sudo apt-get clean
         pixi run df -h /
+    - name: Cache release compilation
+      uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: container-release
+        key: ${{ hashFiles('pixi.lock', 'container/oci-image/stage.sh') }}
+        cmd-format: "pixi run {0}"
+        cache-workspace-crates: true
+        env-vars: "CARGO CC CXX CFLAGS CXXFLAGS CMAKE RUST CROWDB_KEEP_DEBUG_INFO"
     - name: Stage runtime without a container daemon
-      run: pixi run env CROWDB_KEEP_DEBUG_INFO=1 bash container/oci-image/stage.sh
+      run: pixi run bash container/oci-image/stage.sh
     - name: Install locked standalone builder
       run: pixi install --locked --manifest-path container/oci-image/pixi.toml
     - name: Build OCI without Docker
@@ -582,6 +606,10 @@ jobs:
         if-no-files-found: error
 
   ContainerConsole:
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [console-api, console-browser, console-native, console-transition, console-inspection]
     needs: ContainerImage
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -598,6 +626,13 @@ jobs:
         pixi run sudo apt-get update
         pixi run sudo apt-get install -y protobuf-compiler
     - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: container-e2e-client
+        key: ${{ hashFiles('pixi.lock') }}
+        cmd-format: "pixi run {0}"
+        cache-workspace-crates: true
+        cache-on-failure: true
+        save-if: ${{ matrix.partition == 'console-api' }}
     - uses: actions/download-artifact@v4
       with:
         name: verified-oci-image
@@ -612,7 +647,9 @@ jobs:
         echo "::error::Console E2E requires an installed system Chromium, Chrome or Edge."
         exit 1
     - name: Run Console, CLI and host browser flows
-      run: pixi run test-e2e-console
+      env:
+        E2E_PARTITION: ${{ matrix.partition }}
+      run: pixi run test-e2e-console --partition "$E2E_PARTITION"
     - name: Export redacted container diagnostics
       if: always()
       run: pixi run python e2e-test/publish.py --source .crowdb-runtime/artifacts/container-e2e --output target/container-e2e-public
@@ -620,7 +657,7 @@ jobs:
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: container-console-operations-${{ github.run_attempt }}
+        name: container-${{ matrix.partition }}-${{ github.run_attempt }}
         path: target/container-e2e-public/
         include-hidden-files: true
         if-no-files-found: error

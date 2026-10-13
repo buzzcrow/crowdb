@@ -530,13 +530,15 @@ MANUAL_CASES = (
     Case("iceberg.manual.tpc", "access_iceberg::tpc::parallel_loader_stress", client_timeout=3600),
 )
 
-def select_cases(layer="all", scope="all", case_name=None):
+def select_cases(layer="all", scope="all", case_name=None, partition=None):
+    from ci_partitions import partition_for
     candidates = MANUAL_CASES if scope == "iceberg.manual.tpc" else ALL_CASES
     return tuple(case for case in candidates
                  if (layer == "all" or case.scope.startswith(layer + "."))
                  and (scope == "all" or case.scope == scope or case.scope.startswith(scope + ".")
                       or (scope == "console.operations" and case in CONSOLE_OPERATION_CASES))
-                 and (not case_name or case.name == case_name))
+                 and (not case_name or case.name == case_name)
+                 and (not partition or partition_for(case) == partition))
 
 
 def case_nodes(case):
@@ -715,8 +717,8 @@ def allocate_cluster(case, image, artifacts, bundle, data_root):
                    advertise=case.advertise)
 
 
-def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case_name=None, layer="all", node_cpus=1.0):
-    selected = select_cases(layer, scope, case_name)
+def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case_name=None, layer="all", node_cpus=1.0, partition=None):
+    selected = select_cases(layer, scope, case_name, partition)
     if not selected:
         raise ValueError(f"no migrated cases for scope {scope}")
 

@@ -249,6 +249,7 @@ class Cluster:
             raise
 
     def __exit__(self, _kind, error, _traceback):
+        from failure_logs import print_failure
         if self.closed:
             self.timings["status"] = "pass" if error is None else "failed"
             self.write_timings()
@@ -260,6 +261,9 @@ class Cluster:
             collection_error = diagnostic_error
             if error is not None:
                 error.add_note(str(diagnostic_error))
+        if error is not None or collection_error is not None:
+            print_failure(self.artifacts, self.data_paths, getattr(self, "case_name", self.run_id),
+                          error if error is not None else collection_error, redact)
         try:
             self.timings["status"] = "pass" if error is None and collection_error is None else "failed"
             self.close()
