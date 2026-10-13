@@ -85,7 +85,80 @@ pass without skipped cases; UI also passes its lint/type checks.
 
 ## amd5950
 
-No recorded measurements.
+AMD Ryzen 9 5950X, Linux Docker bridge; same component tasks and container
+domains as Intel. Image revision `2529950f`; release binaries are optimized
+and stripped, while the Intel container baseline used a debug release.
+Timing comparisons therefore include a build-profile difference.
+
+### Container domains
+
+| Domain       | Date       | Passed / failed / skipped | Wall s   | Previous s |
+| ------------ | ---------- | ------------------------- | -------- | ---------- |
+| kv           | 2026-10-13 | 50 / 0 / 0                | 174.310 | —          |
+| diskdb       | 2026-10-13 | 5 / 0 / 0                 | 9.290 | —          |
+| diskio       | 2026-10-13 | 8 / 0 / 0                 | 15.500 | —          |
+| chunkdb      | 2026-10-13 | 11 / 0 / 0                | 86.940 | —          |
+| chunk-client | 2026-10-13 | 40 / 0 / 0                | 274.390 | —          |
+| chunk-stream | 2026-10-13 | 4 / 0 / 0                 | 31.490 | —          |
+| chunk-kv     | 2026-10-13 | 2 / 0 / 0                 |   19.140 | —          |
+| iceberg      | 2026-10-13 | 31 / 1 / 0                | 1965.300 | —          |
+| dataset      | 2026-10-13 | 2 / 0 / 0                 | 16.200 | —          |
+| console      | 2026-10-13 | 148 / 5 / 0               | 1955.340 | —          |
+| deployment   | 2026-10-13 | 33 / 0 / 0                | 328.790 | —          |
+| s3           | 2026-10-13 | 43 / 0 / 0                | 1053.930 | —          |
+
+- Wall times are the complete suite elapsed times, including startup, clients and teardown; shared builds are excluded.
+- 1024 CPU shares per container, no CPU quota, one Tokio worker per service;
+  4-CPU budget, two requested case slots; actual capacity is recorded per run.
+- The first matrix stopped after Iceberg; Dataset and Deployment were rerun separately and passed. Console recorded five failures; the single-case retry reproduced the `io_uring_queue_init: Operation not permitted` / missing DiskIO owner failure under the host Docker seccomp profile.
+  Iceberg failed one case (`apache_rest_compatibility_kit_supported_catalog_surface`);
+  31 cases passed. The first failure was Gradle distribution download timeout; after the cache
+  was populated, the unchanged case built successfully but exceeded its existing 960-second
+  client budget during the cold RCK build. The complete traces are in the recorded logs.
+- Stability fix: native Console fixtures now launch their node containers with
+  `seccomp=unconfined`, allowing the required `io_uring_setup` path; the generic
+  bridge fixture remains unchanged. The focused fixture regression tests pass; the
+  The rebuilt-image six-node rerun reached service startup; the original missing-root race now
+  publishes the initial partition, but a later retry still sees a transient `disk group 3 has no
+  live DiskIO owner` while Chunk-KV connects. The remaining trace is in
+  `.crowdb-runtime/artifacts/console-retry-six-bootstrap-fix/`; the DiskIO ownership race remains
+  to be fixed before marking Console stable.
+- Container artifacts: `.crowdb-runtime/artifacts/measure-tests/20261013T092119.686610Z/`, `.crowdb-runtime/artifacts/measure-tests/20261013T102929.186483Z/`, `.crowdb-runtime/artifacts/measure-tests/20261013T113259.109082Z/`, and `.crowdb-runtime/artifacts/console-retry-six/`.
+
+### Component tests
+
+| Domain              | Date       | Passed / failed / skipped | Wall s   | Previous s |
+| ------------------- | ---------- | ------------------------- | -------- | ---------- |
+| access              | 2026-10-13 | 117 / 0 / 0               |   95.677 | —          |
+| chunk-client        | 2026-10-13 | 125 / 0 / 0               |   27.105 | —          |
+| chunk-kv            | 2026-10-13 | 148 / 0 / 0               |  180.001 | —          |
+| chunk-stream        | 2026-10-13 | 50 / 0 / 0                |   19.845 | —          |
+| chunkdb             | 2026-10-13 | 158 / 0 / 0               |  146.525 | —          |
+| common              | 2026-10-13 | 112 / 0 / 0               |   22.158 | —          |
+| console             | 2026-10-13 | 264 / 0 / 0               |  196.454 | —          |
+| console-ui          | 2026-10-13 | 183 / 0 / 0               |    9.391 | —          |
+| dataset             | 2026-10-13 | 37 / 0 / 0                |   23.330 | —          |
+| deployment          | 2026-10-13 | 75 / 0 / 0                |   55.542 | —          |
+| diskdb              | 2026-10-13 | 183 / 0 / 0               |   39.004 | —          |
+| diskio              | 2026-10-13 | 58 / 0 / 0                |   14.720 | —          |
+| iceberg             | 2026-10-13 | 716 / 0 / 0               |  427.969 | —          |
+| kv                  | 2026-10-13 | 738 / 0 / 0               |  250.138 | —          |
+| protocol            | 2026-10-13 | 221 / 0 / 0               |   12.738 | —          |
+| rpc                 | 2026-10-13 | 81 / 0 / 0                |   63.609 | —          |
+| s3                  | 2026-10-13 | 114 / 0 / 0               |   31.354 | —          |
+| test-infrastructure | 2026-10-13 | 4 / 0 / 0                 |    1.130 | —          |
+| tree                | 2026-10-13 | 598 / 0 / 0               |  127.933 | —          |
+
+- All seven component tasks pass; UI lint/type checks also pass.
+  The explicitly rerun boto3 case is counted once. Shared C++ prerequisite
+  build time is excluded; SDK dependency preparation is included.
+- Test infrastructure currently records its 4 Rust cases; fixture/dispatch
+  and OCI checks are pending to match the Intel row.
+- Component artifacts: `.crowdb-runtime/artifacts/measure-tests/20261013T073206.432338Z/`
+  and `.crowdb-runtime/artifacts/unit/`.
+- Image construction succeeds after installing host `uidmap`; Docker import
+  loads the image but reports a config-digest mismatch. The container runner
+  validates source identity and uses the loaded image; retain this limitation.
 
 ## macm5pro
 

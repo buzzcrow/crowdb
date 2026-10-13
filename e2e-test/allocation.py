@@ -75,10 +75,12 @@ def start_node(cluster, index, data, arguments, address=None, environment=(), mo
     mount_args = tuple(item for value in mounts for item in ("--mount", value))
     data_mount = ("--mount", f"type=bind,source={data},target=/opt/crowdb/data") if data is not None else ()
     cpu_shares = str(round(float(getattr(cluster, "node_cpus", 1)) * 1024))
+    security_options = tuple(getattr(cluster, "security_options", ()))
+    security_args = tuple(item for value in security_options for item in ("--security-opt", value))
     operation = ("run", "-d") if running else ("create",)
     cluster.command(*operation, "--name", name, "--label", f"{LABEL}={cluster.run_id}",
                     *network_args, "--cpu-shares", cpu_shares, "--env", "TOKIO_WORKER_THREADS=1", "--memory", memory, "--pids-limit", str(pids_limit),
-                    *data_mount,
+                    *security_args, *data_mount,
                     *mount_args, *environment_args, "--ulimit", "core=-1", cluster.image, *arguments)
     info = json.loads(cluster.command("inspect", name))[0]
     if network_owner:

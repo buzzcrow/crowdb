@@ -39,6 +39,9 @@ class NativeConsoleCluster(ShellBrowserCluster):
             raise ValueError("diskless node is outside the native profile")
         Cluster.__init__(self, image, artifacts, node_count=count, wire_replicas=False,
                          advertise=True, **kwargs)
+        # Native storage exercises the real io_uring-backed DiskIO path. Docker's
+        # default seccomp profile blocks io_uring_setup even when the host supports it.
+        self.security_options = ("seccomp=unconfined",)
         self.bundle = bundle
         self.node_ids = []
         self.rejected = False

@@ -61,6 +61,22 @@ class FixtureTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "explicit advertised address"):
                 start_node(cluster, 4, Path(directory), (), running=False)
 
+    def test_node_applies_explicit_security_options(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cluster = Cluster("image", directory)
+            cluster.security_options = ("seccomp=unconfined",)
+            calls = []
+            info = [{"NetworkSettings": {"Networks": {cluster.run_id: {"IPAddress": "10.20.30.4"}}}}]
+
+            def command(*args):
+                calls.append(args)
+                return json.dumps(info) if args[0] == "inspect" else "created"
+
+            cluster.command = command
+            start_node(cluster, 0, Path(directory), (), "10.20.30.4")
+            self.assertIn(("--security-opt", "seccomp=unconfined"),
+                          tuple(zip(calls[0], calls[0][1:])))
+
     def test_invalid_pid_budget_fails_before_allocating_a_node(self):
         with tempfile.TemporaryDirectory() as directory:
             cluster = Cluster("image", directory)
