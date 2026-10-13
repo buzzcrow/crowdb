@@ -11,14 +11,6 @@ live in the linked document; implementation follows
 
 **Next R number: R231** — R221 is reserved by another workstream.
 
-## Test infrastructure and deployment acceptance
-
-- **[R230](R230-test-container-layer-e2e.md)** — shared container cluster fixtures,
-  isolated concurrent layer E2E, CI gates and gradual real-server test migration.
-  **Area:** test / container / CI. **Complexity:** High.
-  **Status:** In progress; Docker KV CRUD, recovery/isolation fixtures and CI gates
-  implemented. Other scenarios/layers and allocator retirement remain pending.
-
 ## Dataset and access
 
 - **[R220](R220-dataset-fat-client-plan.md)** — Dataset SDK fat-client direct
