@@ -38,6 +38,11 @@ pub(super) async fn deploy(
         if let Some(reason) = crate::services::dependencies::storage_wait_reason(state).await {
             return Err(err_409(reason));
         }
+        if matches!(body.kind, Kind::ChunkKv) {
+            if let Some(reason) = crate::services::dependencies::chunk_kv_wait_reason(state).await {
+                return Err(err_409(reason));
+            }
+        }
     }
     if matches!(body.kind, Kind::AccessServer) {
         prepare_credentials(state, &binding, &node, body).await?;

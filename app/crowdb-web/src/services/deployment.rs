@@ -135,6 +135,11 @@ async fn deploy_inner(
         if let Some(reason) = super::dependencies::storage_wait_reason(&state).await {
             return Err(err_409(reason));
         }
+        if matches!(body.kind, Kind::ChunkKv) {
+            if let Some(reason) = super::dependencies::chunk_kv_wait_reason(&state).await {
+                return Err(err_409(reason));
+            }
+        }
         geometry::validate(&state).await?;
     }
     // Request cancellation cannot abandon a spawned process before its registration.

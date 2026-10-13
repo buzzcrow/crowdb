@@ -80,6 +80,20 @@ pub(super) async fn storage_wait_reason(state: &AppState) -> Option<String> {
     None
 }
 
+pub(super) async fn chunk_kv_wait_reason(state: &AppState) -> Option<String> {
+    let Ok(selected) = super::plans::selected_nodes(state, "chunkdb") else {
+        return Some("Waiting: ChunkDB service plans could not be read".into());
+    };
+    let registry = ServiceRegistryClient::from_shared(state.kv_client().await);
+    let Ok(instances) = registry.read_all_chunkdb_instances().await else {
+        return Some("Waiting: live ChunkDB registry is unavailable".into());
+    };
+    if instances.len() < selected.len() {
+        return Some("Waiting: every selected ChunkDB must register before starting Chunk-KV".into());
+    }
+    None
+}
+
 fn rpc_address(endpoint: &str) -> Option<(String, u16)> {
     let url = reqwest::Url::parse(&if endpoint.contains("://") {
         endpoint.to_owned()
