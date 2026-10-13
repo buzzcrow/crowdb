@@ -143,6 +143,8 @@ clean_container() {
     # Dangling images have no tags to identify their original project.
     # Docker preserves images referenced by any container.
     docker image prune --force
+    # Docker preserves volumes referenced by running or stopped containers.
+    docker volume prune --all --force
 }
 
 case "${1:-}" in

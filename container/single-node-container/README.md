@@ -92,7 +92,9 @@ otherwise. `inject-container` loads TPC-H SF1 into Iceberg and copies its
 Parquet files to the container's S3 endpoint. The loader retains its data and
 reports under `.crowdb-runtime/artifacts/tpc-loader/`. `clean-container`
 removes the named container, other exited containers created from the selected
-image, and all untagged images that are not referenced by any container. Set
+image, all untagged images that are not referenced by any container, and all
+unused local Docker volumes (anonymous and named, across all projects). Volumes
+referenced by any remaining running or stopped container are preserved. Set
 `CROWDB_CONTAINER_IMAGE` or `CROWDB_CONTAINER_NAME` to select another image or
 container name.
 
