@@ -57,10 +57,23 @@ pub(super) async fn deploy(
         configuration,
         environment: environment(body, &node),
     };
-    let result =
-        crowdb_console_shared::deployment::services::execute(state.kv_client().await.as_ref(), &node, intent)
-            .await
-            .map_err(map_config_err)?;
+    let result = match crowdb_console_shared::deployment::services::execute(
+        state.kv_client().await.as_ref(),
+        &node,
+        intent,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(error)
+            if error
+                .to_string()
+                .contains("managed service exited before readiness") =>
+        {
+            return Err(err_409(format!("Waiting: {error}")));
+        }
+        Err(error) => return Err(map_config_err(error)),
+    };
     let host = if node.host.contains(':') {
         format!("[{}]", node.host)
     } else {
