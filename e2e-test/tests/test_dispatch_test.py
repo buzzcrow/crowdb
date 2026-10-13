@@ -28,6 +28,29 @@ class TestDispatchTest(unittest.TestCase):
     def test_regular_ci_has_one_owner_per_complete_domain(self):
         self.assertEqual(set(dispatch.DOMAINS), set(check_coverage(self.workflow, self.graph)))
 
+    def test_diagnostic_exports_and_uploads_are_outside_compilation_cache(self):
+        export = '${{ runner.temp }}/container-e2e-public-${{ github.run_id }}-${{ github.run_attempt }}'
+        lines = self.workflow.splitlines()
+        commands = [line for line in lines if 'python e2e-test/publish.py' in line]
+        uploads = [line.strip().removeprefix('path: ') for line in lines
+                   if 'path:' in line and 'container-e2e-public' in line]
+        self.assertTrue(commands)
+        self.assertEqual(len(commands), len(uploads))
+        for command in commands:
+            self.assertIn(f'--output "{export}"', command)
+        self.assertEqual(set(uploads), {export + '/'})
+
+    def test_compilation_cache_excludes_rootful_oci_state_and_runtime_artifacts(self):
+        image = self.workflow.split('  ContainerImage:', 1)[1].split('  ContainerKV:', 1)[0]
+        self.assertIn('cache-targets: false', image)
+        self.assertIn('cache-directories: |\n          target/release\n          app/crowdb-diskio/build', image)
+        self.assertIn("shared-key: container-release-v2-${{ hashFiles('pixi.lock', 'container/oci-image/stage.sh') }}", image)
+        for job, following in (('IcebergE2E', 'ConsoleTests'), ('ContainerConsole', 'ContainerStorage')):
+            block = self.workflow.split(f'  {job}:', 1)[1].split(f'  {following}:', 1)[0]
+            self.assertIn('cache-targets: false', block)
+            self.assertIn('cache-directories: target/debug', block)
+            self.assertIn("shared-key: container-e2e-client-v2-${{ hashFiles('pixi.lock') }}", block)
+
     def test_missing_and_duplicate_domains_are_rejected(self):
         for workflow in (
                 self.workflow.replace("pixi run test-e2e-s3", "echo removed"),

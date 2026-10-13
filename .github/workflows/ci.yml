@@ -314,13 +314,13 @@ jobs:
         find .crowdb-runtime -maxdepth 4 -type f -print 2>/dev/null || true
     - name: Export redacted container diagnostics
       if: always()
-      run: pixi run python e2e-test/publish.py --source .crowdb-runtime/artifacts/container-e2e --output target/container-e2e-public
+      run: pixi run python e2e-test/publish.py --source .crowdb-runtime/artifacts/container-e2e --output "${{ runner.temp }}/container-e2e-public-${{ github.run_id }}-${{ github.run_attempt }}"
     - name: Upload S3 measurements and diagnostics
       if: always()
       uses: actions/upload-artifact@v4
       with:
         name: runtime-s3-e2e-${{ github.run_attempt }}
-        path: target/container-e2e-public/
+        path: ${{ runner.temp }}/container-e2e-public-${{ github.run_id }}-${{ github.run_attempt }}/
         include-hidden-files: true
         if-no-files-found: ignore
         retention-days: 7
@@ -355,8 +355,9 @@ jobs:
         pixi-version: latest
     - uses: Swatinem/rust-cache@v2
       with:
-        shared-key: container-e2e-client
-        key: ${{ hashFiles('pixi.lock') }}
+        shared-key: container-e2e-client-v2-${{ hashFiles('pixi.lock') }}
+        cache-targets: false
+        cache-directories: target/debug
         cmd-format: "pixi run {0}"
         cache-workspace-crates: true
         cache-on-failure: true
@@ -373,13 +374,13 @@ jobs:
       run: pixi run test-e2e-iceberg --partition "$E2E_PARTITION"
     - name: Export redacted container diagnostics
       if: always()
-      run: pixi run python e2e-test/publish.py --source .crowdb-runtime/artifacts/container-e2e --output target/container-e2e-public
+      run: pixi run python e2e-test/publish.py --source .crowdb-runtime/artifacts/container-e2e --output "${{ runner.temp }}/container-e2e-public-${{ github.run_id }}-${{ github.run_attempt }}"
     - name: Upload Iceberg measurements and diagnostics
       if: always()
       uses: actions/upload-artifact@v4
       with:
         name: runtime-${{ matrix.partition }}-${{ github.run_attempt }}
-        path: target/container-e2e-public/
+        path: ${{ runner.temp }}/container-e2e-public-${{ github.run_id }}-${{ github.run_attempt }}/
         include-hidden-files: true
         if-no-files-found: ignore
         retention-days: 7
@@ -536,8 +537,11 @@ jobs:
     - name: Cache release compilation
       uses: Swatinem/rust-cache@v2
       with:
-        shared-key: container-release
-        key: ${{ hashFiles('pixi.lock', 'container/oci-image/stage.sh') }}
+        shared-key: container-release-v2-${{ hashFiles('pixi.lock', 'container/oci-image/stage.sh') }}
+        cache-targets: false
+        cache-directories: |
+          target/release
+          app/crowdb-diskio/build
         cmd-format: "pixi run {0}"
         cache-workspace-crates: true
         env-vars: "CARGO CC CXX CFLAGS CXXFLAGS CMAKE RUST CROWDB_KEEP_DEBUG_INFO"
@@ -597,12 +601,12 @@ jobs:
       run: pixi run python container/oci-image/ci-receipt.py target/crowdb.oci.tar
     - name: Export redacted container diagnostics
       if: always()
-      run: pixi run python e2e-test/publish.py --source .crowdb-runtime/artifacts/container-e2e --output target/container-e2e-public
+      run: pixi run python e2e-test/publish.py --source .crowdb-runtime/artifacts/container-e2e --output "${{ runner.temp }}/container-e2e-public-${{ github.run_id }}-${{ github.run_attempt }}"
     - uses: actions/upload-artifact@v4
       if: always()
       with:
         name: kv-container-e2e-diagnostics
-        path: target/container-e2e-public/
+        path: ${{ runner.temp }}/container-e2e-public-${{ github.run_id }}-${{ github.run_attempt }}/
         if-no-files-found: error
 
   ContainerConsole:
@@ -627,8 +631,9 @@ jobs:
         pixi run sudo apt-get install -y protobuf-compiler
     - uses: Swatinem/rust-cache@v2
       with:
-        shared-key: container-e2e-client
-        key: ${{ hashFiles('pixi.lock') }}
+        shared-key: container-e2e-client-v2-${{ hashFiles('pixi.lock') }}
+        cache-targets: false
+        cache-directories: target/debug
         cmd-format: "pixi run {0}"
         cache-workspace-crates: true
         cache-on-failure: true
@@ -652,13 +657,13 @@ jobs:
       run: pixi run test-e2e-console --partition "$E2E_PARTITION"
     - name: Export redacted container diagnostics
       if: always()
-      run: pixi run python e2e-test/publish.py --source .crowdb-runtime/artifacts/container-e2e --output target/container-e2e-public
+      run: pixi run python e2e-test/publish.py --source .crowdb-runtime/artifacts/container-e2e --output "${{ runner.temp }}/container-e2e-public-${{ github.run_id }}-${{ github.run_attempt }}"
     - name: Upload measured flows and diagnostics
       if: always()
       uses: actions/upload-artifact@v4
       with:
         name: container-${{ matrix.partition }}-${{ github.run_attempt }}
-        path: target/container-e2e-public/
+        path: ${{ runner.temp }}/container-e2e-public-${{ github.run_id }}-${{ github.run_attempt }}/
         include-hidden-files: true
         if-no-files-found: error
         retention-days: 7
@@ -710,12 +715,12 @@ jobs:
         done
     - name: Export redacted container diagnostics
       if: always()
-      run: pixi run python e2e-test/publish.py --source .crowdb-runtime/artifacts/container-e2e --output target/container-e2e-public
+      run: pixi run python e2e-test/publish.py --source .crowdb-runtime/artifacts/container-e2e --output "${{ runner.temp }}/container-e2e-public-${{ github.run_id }}-${{ github.run_attempt }}"
     - uses: actions/upload-artifact@v4
       if: always()
       with:
         name: container-${{ matrix.group }}-${{ github.run_attempt }}
-        path: target/container-e2e-public/
+        path: ${{ runner.temp }}/container-e2e-public-${{ github.run_id }}-${{ github.run_attempt }}/
         include-hidden-files: true
         if-no-files-found: error
         retention-days: 7
