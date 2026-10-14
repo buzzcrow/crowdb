@@ -74,3 +74,8 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
 - Shared disk input validation now rejects capacities that truncate allocation
   units or overflow the protocol zone count. The new geometry regression and
   existing hardware tests pass (nine cases); affected all-target Clippy passes.
+- Explicit OCI inputs now carry host-observed backing identity; discovery rejects
+  an unverified or different inode/device at the same target path. Five inventory
+  tests and 22 OCI tests pass, as does affected all-target Clippy. A disposable
+  Docker bind-mount probe verified host/container identity equality on this host;
+  real block-device and containerd identity acceptance remains pending.

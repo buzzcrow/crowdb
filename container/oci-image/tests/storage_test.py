@@ -78,7 +78,8 @@ class StorageTest(unittest.TestCase):
                 self.assertIn(f"type=bind,source={source},target=/opt/crowdb/data/disks/disk.img", launch)
                 declaration = next(value for value in launch if value.startswith("CROWDB_DISK_INPUTS="))
                 self.assertEqual(json.loads(declaration.split("=", 1)[1]),
-                                 [{"backend": "file", "path": "/opt/crowdb/data/disks/disk.img"}])
+                                 [{"backend": "file", "path": "/opt/crowdb/data/disks/disk.img",
+                                   "backing_identity": f"file:{source.stat().st_dev}:{source.stat().st_ino}"}])
                 recorded = json.loads((root / "container-storage.json").read_text())
                 self.assertEqual(recorded["disks"][0]["source"], str(source))
                 self.assertEqual(source.read_bytes(), b"preserved")

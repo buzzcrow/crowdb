@@ -36,7 +36,10 @@ def inputs(args):
                 raise ValueError(f"{source}: duplicate disk target or underlying resource")
             targets.add(target)
             identities.add(identity)
-            result.append({"backend": backend, "source": str(source), "path": target})
+            backing_identity = (f"file:{metadata.st_dev}:{metadata.st_ino}" if backend == "file"
+                                else f"device:{metadata.st_rdev}")
+            result.append({"backend": backend, "source": str(source), "path": target,
+                           "backing_identity": backing_identity})
     return result
 
 
@@ -47,7 +50,7 @@ def runtime_arguments(disks):
             result += ["--mount", f'type=bind,source={disk["source"]},target={disk["path"]}']
         else:
             result += ["--device", f'{disk["source"]}:{disk["path"]}:rw']
-    declaration = [{"backend": disk["backend"], "path": disk["path"]} for disk in disks]
+    declaration = [{key: disk[key] for key in ("backend", "path", "backing_identity")} for disk in disks]
     return [*result, "-e", "CROWDB_DISK_INPUTS=" + json.dumps(declaration, separators=(",", ":"))]
 
 

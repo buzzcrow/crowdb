@@ -33,6 +33,7 @@ fn absent_inventory_does_not_create_default_disks_or_hide_missing_inputs() {
     let input = DiskInput {
         backend: DiskBackend::BlockDevice,
         path: root.0.join("disks/missing").to_string_lossy().into_owned(),
+        backing_identity: None,
     };
     let inventory = discover_disks(&root.0, &[input]).unwrap();
     assert_eq!(inventory.disks.len(), 1);
@@ -68,6 +69,7 @@ fn aliases_symlinks_and_changed_mapping_types_remain_ineligible() {
     let input = DiskInput {
         backend: DiskBackend::BlockDevice,
         path: disks.join("a.img").to_string_lossy().into_owned(),
+        backing_identity: None,
     };
     let inventory = discover_disks(&root.0, &[input]).unwrap();
     assert_eq!(inventory.disks.len(), 3);
@@ -75,6 +77,7 @@ fn aliases_symlinks_and_changed_mapping_types_remain_ineligible() {
     let input = DiskInput {
         backend: DiskBackend::File,
         path: root.0.join("outside").to_string_lossy().into_owned(),
+        backing_identity: None,
     };
     assert!(discover_disks(&root.0, &[input]).is_err());
 }
@@ -85,6 +88,7 @@ fn oversized_inventory_returns_an_explicit_error_instead_of_a_truncated_reply() 
     let supplied = (0..512)
         .map(|index| DiskInput {
             backend: DiskBackend::File,
+            backing_identity: None,
             path: root
                 .0
                 .join(format!("disks/disk-{index}.img"))
@@ -95,4 +99,30 @@ fn oversized_inventory_returns_an_explicit_error_instead_of_a_truncated_reply() 
     let error = discover_disks(&root.0, &supplied).unwrap_err();
     assert!(error.to_string().contains("control response limit"));
     assert!(!root.0.join("disks").exists());
+}
+
+#[test]
+fn supplied_file_requires_the_launchers_observed_identity() {
+    let root = TestRoot::new();
+    fs::create_dir(root.0.join("disks")).unwrap();
+    let path = root.0.join("disks/external.img");
+    fs::write(&path, b"existing data").unwrap();
+    let observed = discover_disks(&root.0, &[]).unwrap().disks.remove(0);
+    let mut input = DiskInput {
+        backend: DiskBackend::File,
+        path: path.to_string_lossy().into_owned(),
+        backing_identity: observed.backing_identity,
+    };
+    assert!(discover_disks(&root.0, &[input.clone()]).unwrap().disks[0]
+        .error
+        .is_none());
+    input.backing_identity = Some("file:0:0".into());
+    assert!(discover_disks(&root.0, &[input.clone()]).unwrap().disks[0]
+        .error
+        .is_some());
+    input.backing_identity = None;
+    assert!(discover_disks(&root.0, &[input]).unwrap().disks[0]
+        .error
+        .is_some());
+    assert_eq!(fs::read(path).unwrap(), b"existing data");
 }

@@ -54,6 +54,13 @@ pub fn discover_disks(root: &Path, supplied: &[DiskInput]) -> io::Result<DiskInv
                 if observation.error.is_none() && observation.backend != Some(input.backend) {
                     observation.error = Some("disk type differs from supplied mapping".into());
                 }
+                if observation.error.is_none()
+                    && (input.backing_identity.is_none()
+                        || observation.backing_identity != input.backing_identity)
+                {
+                    observation.error =
+                        Some("disk identity differs from supplied mapping or is unverified".into());
+                }
             }
             if let Some(identity) = &observation.backing_identity {
                 *identities.entry(identity.clone()).or_default() += 1;

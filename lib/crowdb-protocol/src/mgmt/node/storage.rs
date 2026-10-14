@@ -17,6 +17,9 @@ pub enum DiskBackend {
 pub struct DiskInput {
     pub backend: DiskBackend,
     pub path: String,
+    /// Identity observed by the launcher before mapping the host resource.
+    #[serde(default)]
+    pub backing_identity: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
