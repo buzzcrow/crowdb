@@ -16,7 +16,7 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
 - [x] **Disk observations**: expose bounded monitor inventory, reject duplicate
   resources and mismatched launcher identities. Inventory tests and Clippy pass;
   real raw-device/containerd acceptance remains in integration verification.
-- [ ] **Effective admission**: add Group-0-gated registration, default file
+- [~] **Effective admission**: add Group-0-gated registration, default file
   creation and geometry validation; merge observations with authority records.
   Files: `container/crowdb-monitor/src/node`, `bootstrap/disk_files.rs`,
   `lib/crowdb-protocol/src/mgmt.rs`, `lib/crowdb-console-shared/src/ops/hardware`,
@@ -33,7 +33,7 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
 - [x] **UI baseline**: measure affected current root-runner browser flow before
   visible edits; record exact per-test timings here. Inspect tree/view/history,
   managed candidate components and existing physical/capacity flow registrations.
-- [~] **Unified workspace**: consolidate navigation and selection, common center
+- [ ] **Unified workspace**: consolidate navigation and selection, common center
   scope, candidates and status actions, responsive properties drawer, init policy
   and progress. Files: `app/crowdb-web/ui/src/{shell,views,menus,managed}` and
   associated hooks/styles/tests. Acceptance A14-A18.
@@ -334,3 +334,14 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   rows and totals survive failed reads, source timestamps explicitly become stale,
   and refreshing after reconnect clears the error without losing rows. Playwright
   2.9 s versus fresh 2.1 s; run-8706ac7e1d4c4d4eb4638612e636896f.
+- Effective admission next uses a versioned Group-0 backing record separate from
+  `DiskValue`: backend, backing identity, provisioning operation, media (including
+  unknown), placement and retained geometry. Existing DiskType numeric meanings
+  stay unchanged. Publication must be atomic with membership, and duplicate
+  backing checks must share the hierarchy mutation fence. Do not wire creation
+  into the UI until publication, retry reconciliation and deletion guards exist.
+- The backing-record schema now passes two protocol regressions and all-target
+  protocol Clippy: round-trip retains unknown media separately from legacy type;
+  unsupported version, missing identity, sparse block device and inconsistent
+  geometry reject. Records use the original rack/node/group/disk placement key.
+  This is schema groundwork only; no admission path publishes it yet.
