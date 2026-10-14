@@ -65,7 +65,10 @@ impl DiskStorageRecord {
             return Err("invalid disk storage media type");
         }
         let geometry = &self.geometry;
-        if geometry.device_path.is_empty()
+        if crate::diskdb::rpc::DiskType::try_from(geometry.disk_type).is_err()
+            || crate::common::HwStatus::try_from(geometry.status).is_err()
+            || self.media_type.is_some_and(|media| media != geometry.disk_type)
+            || geometry.device_path.is_empty()
             || geometry.unit_size_bytes == 0
             || geometry.zone_size_units == 0
             || geometry.zone_count == 0

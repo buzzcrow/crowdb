@@ -345,3 +345,10 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   unsupported version, missing identity, sparse block device and inconsistent
   geometry reject. Records use the original rack/node/group/disk placement key.
   This is schema groundwork only; no admission path publishes it yet.
+- `HardwareClient::admit_disk_storage` now atomically publishes Init disk,
+  DiskGroup membership and versioned backing record under the existing rack
+  revision fence. Same-intent replay preserves live status; removed/inconsistent
+  identities require recovery. Node-scoped bounded duplicate scans reject aliases,
+  duplicate IDs and legacy occupied paths. Four live Group-0 regressions pass,
+  including concurrent aliases; protocol regressions and both crates' all-target,
+  all-feature Clippy pass. Monitor/API wiring remains pending deletion guards.

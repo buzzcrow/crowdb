@@ -16,6 +16,7 @@
 
 mod disk_status;
 mod ownership;
+mod storage_admission;
 
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
