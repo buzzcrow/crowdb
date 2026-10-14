@@ -54,6 +54,29 @@ def runtime_arguments(disks):
     return [*result, "-e", "CROWDB_DISK_INPUTS=" + json.dumps(declaration, separators=(",", ":"))]
 
 
+def validate_retained_inputs(root, disks):
+    """Replacement may add mappings, but must retain each recorded medium."""
+    path = Path(root) / "container-storage.json"
+    if not path.exists():
+        return
+    retained = json.loads(path.read_text())
+    if not isinstance(retained, dict) or retained.get("version") != 1 or not isinstance(retained.get("disks"), list):
+        raise ValueError("invalid retained container storage declaration")
+    current = {disk["path"]: disk for disk in disks}
+    seen = set()
+    for previous in retained["disks"]:
+        if not isinstance(previous, dict) or not all(
+                isinstance(previous.get(key), str) and previous[key]
+                for key in ("backend", "source", "path", "backing_identity")):
+            raise ValueError("retained disk mapping has no verified backing identity")
+        target = previous["path"]
+        if target in seen:
+            raise ValueError("duplicate retained disk mapping")
+        seen.add(target)
+        if current.get(target) != previous:
+            raise ValueError(f"{target}: missing or changed retained disk mapping; restore the original input")
+
+
 def record_inputs(root, disks):
     """Keep the non-secret host mapping beside node state for container replacement."""
     path = Path(root) / "container-storage.json"

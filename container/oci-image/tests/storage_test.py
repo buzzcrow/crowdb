@@ -14,10 +14,33 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from runtime import Runtime
-from storage import inputs, record_inputs, runtime_arguments
+from storage import inputs, record_inputs, runtime_arguments, validate_retained_inputs
 
 
 class StorageTest(unittest.TestCase):
+    def test_replacement_preserves_original_mappings_before_runtime_launch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "disk.img"
+            source.write_bytes(b"preserved")
+            disks = inputs(SimpleNamespace(disk_file=[source]))
+            record_inputs(root, disks)
+            validate_retained_inputs(root, disks)
+            record = (root / "container-storage.json").read_bytes()
+            runtime = Runtime("docker")
+            with patch.object(runtime, "invoke") as invoke:
+                with self.assertRaisesRegex(ValueError, "missing or changed"):
+                    runtime.create(SimpleNamespace(data_root=root, disk_file=[]))
+                invoke.assert_not_called()
+            changed = [dict(disks[0], backing_identity="file:other:inode")]
+            with self.assertRaisesRegex(ValueError, "missing or changed"):
+                validate_retained_inputs(root, changed)
+            added = root / "new.img"
+            added.write_bytes(b"new")
+            validate_retained_inputs(root, inputs(SimpleNamespace(disk_file=[added, source])))
+            self.assertEqual((root / "container-storage.json").read_bytes(), record)
+            self.assertEqual(source.read_bytes(), b"preserved")
+
     def test_devices_are_mapped_without_mknod_permission(self):
         metadata = SimpleNamespace(st_mode=stat.S_IFBLK | 0o660, st_rdev=123)
         with patch.object(Path, "is_symlink", return_value=False), patch.object(Path, "stat", return_value=metadata):

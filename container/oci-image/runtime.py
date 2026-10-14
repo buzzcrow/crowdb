@@ -9,7 +9,7 @@ import subprocess
 import uuid
 
 from builder import tool
-from storage import inputs, record_inputs, runtime_arguments
+from storage import inputs, record_inputs, runtime_arguments, validate_retained_inputs
 
 OWNER = "org.crowdb.launcher"
 
@@ -67,6 +67,7 @@ class Runtime:
 
     def create(self, args):
         disks = inputs(args)
+        validate_retained_inputs(args.data_root, disks)
         token = str(uuid.uuid4())
         shares = getattr(args, "cpu_shares", None)
         cpu_args = ["--cpu-shares", str(shares)] if shares is not None else ["--cpus", str(args.cpus)]
