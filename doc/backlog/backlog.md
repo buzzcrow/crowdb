@@ -41,14 +41,6 @@ live in the linked document; implementation follows
 - **[R196](R196-access-upload-benchmark-regression.md)** — S3 and Iceberg HTTP
   upload benchmark regression. **Area:** access server / CLI / benchmarks.
   **Complexity:** Medium. **Dependencies:** completed upload correctness paths.
-- **[R234](R234-access-iceberg-native-storage-layout.md)** — native Iceberg
-  ID directory, single file record, injection direct URL, large metadata objects
-  and bounded table/metadata prefix listing.
-  **Area:** access server / Iceberg / Chunk-KV. **Complexity:** High.
-  **Status:** Implementation in progress; codecs, native logical file publication
-  and bounded prefix listing verified. Catalog activation, lifecycle keys and
-  direct reads pending. Direct reads skip Iceberg file metadata KV and retain
-  native chunk layout resolution.
 
 ## Chunk, Chunk-KV, and recovery
 
