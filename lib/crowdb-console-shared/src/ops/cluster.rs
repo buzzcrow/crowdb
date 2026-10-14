@@ -29,6 +29,8 @@ use crate::ops::OpContext;
 
 mod bootstrap;
 mod storage_readiness;
+#[cfg(feature = "test-util")]
+pub use bootstrap::publish_topology_for_tests;
 pub use bootstrap::{init, init_prepared, init_with_intent, initialize_system_replicas, InitSummary};
 use storage_readiness::wait_for_diskdb_registration;
 

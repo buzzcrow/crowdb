@@ -15,6 +15,19 @@ mod leader;
 mod nodes;
 mod publication;
 
+#[cfg(feature = "test-util")]
+/// Publish the real bootstrap topology into an injected test authority.
+///
+/// # Errors
+/// Propagates missing or conflicting bootstrap records.
+pub async fn publish_topology_for_tests(
+    ctx: &OpContext,
+    nodes: &[u64],
+    members: &[(u64, u64)],
+) -> Result<()> {
+    publication::write_topology_to_sysdata(ctx, nodes, members).await
+}
+
 /// Summary of a completed cluster init.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct InitSummary {

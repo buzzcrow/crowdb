@@ -377,3 +377,17 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   five affected crates' all-target Clippy, workspace fmt and eight Python
   observation tests pass. Native queued/restart/DiskIO acceptance is added and
   awaits a committed-source OCI rebuild; UI creation remains unwired.
+- First native file admission acceptance failed before browser execution on
+  `e051440a` (run-2c3708098ede4691ab5a2258cea758c8): bootstrap wrote Node
+  records but left Rack.node_ids empty. The strict admission fence correctly
+  rejected the inconsistent parent and retained the prepared file. Fix the
+  bootstrap publisher to include sorted per-rack node membership; do not weaken
+  admission validation. Live-authority bootstrap regression plus existing
+  prepare/replay tests pass (six cases).
+- DiskIO now receives the retained backing record and exact disk revision through
+  one rack-fenced bounded inventory observation. Open and refresh compare actual
+  descriptor/path type, inode/device identity and capacity; symlinks, replacement,
+  truncation and changed geometry fail closed. Eight admission/observation and
+  three status tests pass, including exact wire revisions and corrupt geometry;
+  affected all-target/all-feature Rust Clippy passes. All 61 DiskIO tests pass;
+  full C++ and tree-lint gates are running before the next release build.
