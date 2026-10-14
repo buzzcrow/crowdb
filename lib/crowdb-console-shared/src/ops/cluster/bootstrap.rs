@@ -88,8 +88,34 @@ pub async fn init_prepared(
             message: "bootstrap members must be nonempty and distinct".into(),
         });
     }
-    nodes::prepare(ctx, nodes, identity).await?;
     init_internal(ctx, nodes, Some(identity)).await
+}
+
+/// Prepare every member before creating or wiring the system-group replicas.
+/// Both profile startup and node admission use this execution path. The caller
+/// supplies durable, validated membership and publishes its metadata afterward.
+///
+/// # Errors
+/// Rejects invalid membership, conflicting acceptance or failed peer operations.
+pub async fn initialize_system_replicas(
+    ctx: &OpContext,
+    members: &[u64],
+    identity: &crowdb_protocol::mgmt::SystemBootstrapIdentity,
+) -> Result<InitSummary> {
+    if members.is_empty() || members.iter().collect::<HashSet<_>>().len() != members.len() {
+        return Err(Error::Validation {
+            field: "nodes".into(),
+            message: "bootstrap members must be nonempty and distinct".into(),
+        });
+    }
+    nodes::prepare(ctx, members, identity).await?;
+    let initialized = nodes::initialize(ctx, members, members.len() == 1, Some(identity)).await?;
+    nodes::wire(ctx, &initialized).await?;
+    Ok(InitSummary {
+        store_id: 0,
+        group_id: 0,
+        nodes: initialized,
+    })
 }
 
 async fn init_internal(
@@ -109,8 +135,15 @@ async fn init_internal(
     target_nodes.retain(|nid| seen.insert(*nid));
     let single_node = target_nodes.len() == 1;
 
-    let succeeded = nodes::initialize(ctx, &target_nodes, single_node, identity).await?;
-    nodes::wire(ctx, &succeeded).await?;
+    let succeeded = if let Some(identity) = identity {
+        initialize_system_replicas(ctx, &target_nodes, identity)
+            .await?
+            .nodes
+    } else {
+        let initialized = nodes::initialize(ctx, &target_nodes, single_node, None).await?;
+        nodes::wire(ctx, &initialized).await?;
+        initialized
+    };
 
     let store_nodes: Vec<u64> = succeeded.iter().map(|(n, _)| *n).collect();
 
