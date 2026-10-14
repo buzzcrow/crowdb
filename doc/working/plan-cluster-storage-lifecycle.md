@@ -391,3 +391,16 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   three status tests pass, including exact wire revisions and corrupt geometry;
   affected all-target/all-feature Rust Clippy passes. All 61 DiskIO tests pass;
   full C++ and tree-lint gates are running before the next release build.
+- Retained scopes now reject compatibility replacement of Rack/Node/DiskGroup/
+  Disk records. First metadata binding remains allowed, but replacement or
+  deletion of binding/owner is blocked; idempotent writes preserve the record.
+  Owner renewal/publication shares the Rack revision fence and cannot overwrite
+  retained group membership. The full KV client suite passes, as do affected
+  Console hardware/bootstrap and DiskDB metadata/ownership tests. Ten focused
+  admission tests include all-page duplicate detection over 320 retained records.
+- Full C++ gate passes: 543 tree, 56 RPC, 61 DiskIO, 31 common, 55 tree-FFI and
+  25 RPC-FFI tests. Full tree-lint exits 0 with existing warnings; new comparison
+  warnings were fixed and touched-file lint exits 0. Rust fmt and affected
+  all-target/all-feature Clippy pass. A cleanup command initially overlapped C++
+  test runtime creation and exited before running the new pagination test; after
+  the C++ gate completed, serialized cleanup/test execution passes.

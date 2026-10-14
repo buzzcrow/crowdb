@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Legacy deletion cannot bypass retained-media lifecycle records.
+//! Compatibility mutations cannot replace retained-media lifecycle records.
 
 use crowdb_protocol::key::{RackKey, TextKey};
 
@@ -9,6 +9,61 @@ use super::{mutation, HardwareClient};
 use crate::{BatchOp, Error, ReadMode, Result};
 
 impl HardwareClient {
+    pub(super) async fn legacy_put<T: serde::Serialize>(
+        &self,
+        rack_id: u64,
+        scope: (Option<u64>, Option<u64>),
+        target: &str,
+        value: &T,
+        allow_initial: bool,
+    ) -> Result<()> {
+        let rack_path = RackKey { rack_id }.to_path();
+        let rack = mutation::read(&self.kv, &rack_path).await?;
+        let current = mutation::read(&self.kv, target).await?;
+        let operation = mutation::put(target, value)?;
+        if self.has_retained_disk_storage(rack_id, scope.0, scope.1).await? {
+            let expected = serde_json::to_value(value).map_err(|error| Error::Server(error.to_string()))?;
+            if let Some((bytes, _)) = &current {
+                if serde_json::from_slice::<serde_json::Value>(bytes)
+                    .map_err(|error| Error::Server(error.to_string()))?
+                    == expected
+                {
+                    return Ok(());
+                }
+            }
+            if current.is_some() || !allow_initial {
+                return Err(Error::Server(
+                    "retained storage cannot be replaced through a compatibility write".into(),
+                ));
+            }
+        }
+        if let Some((bytes, revision)) = rack {
+            let mut operations = vec![operation];
+            if target != rack_path {
+                operations.push(BatchOp::Put {
+                    key: rack_path.as_bytes().to_vec().into(),
+                    value: bytes,
+                });
+            }
+            self.kv
+                .batch_write_cas(0, 0, &operations, rack_path.as_bytes(), revision)
+                .await?;
+        } else {
+            // Legacy fixtures may construct children before their rack. These
+            // records cannot participate in managed admission without a rack.
+            self.kv
+                .batch_write_cas(
+                    0,
+                    0,
+                    &[operation],
+                    target.as_bytes(),
+                    current.map_or(0, |(_, revision)| revision),
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
     /// Check whether a scope contains retained backing records, including Removed.
     ///
     /// # Errors

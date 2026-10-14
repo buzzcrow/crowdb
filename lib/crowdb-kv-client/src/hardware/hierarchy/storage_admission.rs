@@ -129,27 +129,8 @@ impl HardwareClient {
 
     async fn check_storage_duplicates(&self, record: &DiskStorageRecord) -> Result<()> {
         let prefix = DiskStorageRecord::node_prefix(record.rack_id, record.node_id);
-        let rows = self
-            .kv
-            .scan(
-                0,
-                0,
-                prefix.as_bytes(),
-                &[],
-                &[],
-                4097,
-                ReadMode::Linearizable,
-                None,
-                false,
-                None,
-            )
-            .await?;
-        if rows.truncated || rows.items.len() > 4096 {
-            return Err(Error::Server(
-                "disk storage inventory exceeds admission bound".into(),
-            ));
-        }
-        for (key, value) in rows.items {
+        let rows = super::storage_observation::bounded_inventory(&self.kv, &prefix).await?;
+        for (key, value) in rows {
             let existing: DiskStorageRecord = decode(&String::from_utf8_lossy(&key), &value)?;
             existing.validate().map_err(|error| Error::Server(error.into()))?;
             if existing.key().as_bytes() != key.as_ref() {
@@ -167,25 +148,8 @@ impl HardwareClient {
             }
         }
         let prefix = format!("/hw/disk/{}/{}/", record.rack_id, record.node_id);
-        let rows = self
-            .kv
-            .scan(
-                0,
-                0,
-                prefix.as_bytes(),
-                &[],
-                &[],
-                4097,
-                ReadMode::Linearizable,
-                None,
-                false,
-                None,
-            )
-            .await?;
-        if rows.truncated || rows.items.len() > 4096 {
-            return Err(Error::Server("disk inventory exceeds admission bound".into()));
-        }
-        for (key, value) in rows.items {
+        let rows = super::storage_observation::bounded_inventory(&self.kv, &prefix).await?;
+        for (key, value) in rows {
             let disk: DiskValue = decode(&String::from_utf8_lossy(&key), &value)?;
             let key = DiskKey::from_path(&String::from_utf8_lossy(&key))
                 .map_err(|error| Error::SysdataKeyParse(error.to_string()))?;

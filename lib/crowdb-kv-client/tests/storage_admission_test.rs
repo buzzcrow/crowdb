@@ -11,7 +11,7 @@ use crowdb_protocol::{
     common::{DiskId, HwStatus, NodeValue, RackValue},
     disk_storage::DiskStorageRecord,
     diskdb::rpc::{DiskGroupValue, DiskValue},
-    key::DiskKey,
+    key::{DiskKey, TextKey},
     mgmt::node::storage::DiskBackend,
 };
 
@@ -314,4 +314,101 @@ async fn initial_activation_requires_the_original_receipt_and_never_overrides_of
             .status,
         HwStatus::Offline as i32
     );
+}
+
+#[tokio::test]
+async fn diskio_observations_retain_exact_revisions_and_reject_changed_geometry() {
+    let fixture = TestStorage::start().await;
+    let hw = &fixture.hardware;
+    let original = record(5);
+    hw.admit_disk_storage(&original).await.unwrap();
+    let before = hw.disk_io_inventory(1, 2, None).await.unwrap();
+    assert_eq!(before.len(), 1);
+    assert_eq!(before[0].storage, Some(original.clone()));
+    let wire = serde_json::to_value(&before).unwrap();
+    assert_eq!(wire[0]["disk_id"]["high"], "4");
+    assert_eq!(wire[0]["revision"], before[0].revision.to_string());
+    hw.set_disk_status(1, 2, 3, &original.disk_id, HwStatus::Offline)
+        .await
+        .unwrap();
+    let after = hw.disk_io_inventory(1, 2, Some(3)).await.unwrap();
+    assert!(after[0].revision > before[0].revision);
+    assert_eq!(after[0].value.status, HwStatus::Offline as i32);
+    assert_eq!(after[0].storage, Some(original.clone()));
+    let mut changed = original.geometry.clone();
+    changed.capacity_units += 1;
+    assert!(hw.add_disk(1, 2, 3, &original.disk_id, &changed).await.is_err());
+    hw.kv()
+        .put(
+            0,
+            0,
+            key(&original).to_path().as_bytes(),
+            &serde_json::to_vec(&changed).unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(hw.disk_io_inventory(1, 2, None).await.is_err());
+}
+
+#[tokio::test]
+async fn compatibility_writes_cannot_replace_retained_placement_or_erase_interpretation_metadata() {
+    let fixture = TestStorage::start().await;
+    let hw = &fixture.hardware;
+    let original = record(5);
+    hw.admit_disk_storage(&original).await.unwrap();
+    let rack = hw.get_rack(1).await.unwrap().unwrap();
+    let node = hw.get_node(1, 2).await.unwrap().unwrap();
+    let group = hw.get_disk_group(1, 2, 3).await.unwrap().unwrap().value;
+    hw.add_rack(1, &rack).await.unwrap();
+    hw.add_node(1, 2, &node).await.unwrap();
+    hw.add_disk_group(1, 2, 3, &group).await.unwrap();
+    assert!(hw.add_rack(1, &RackValue::default()).await.is_err());
+    assert!(hw.add_node(1, 2, &NodeValue::default()).await.is_err());
+    assert!(hw
+        .add_disk_group(1, 2, 3, &DiskGroupValue::default())
+        .await
+        .is_err());
+    assert!(hw
+        .add_disk_group_with_owner(1, 2, 3, &DiskGroupValue::default(), 8, 100)
+        .await
+        .is_err());
+    hw.add_disk_group_with_owner(1, 2, 3, &group, 8, 100)
+        .await
+        .unwrap();
+    hw.set_bind(1, 2, 3, 1, 1).await.unwrap();
+    hw.set_bind(1, 2, 3, 1, 1).await.unwrap();
+    assert!(hw.set_bind(1, 2, 3, 1, 2).await.is_err());
+    assert!(hw.remove_bind(1, 2, 3).await.is_err());
+    assert!(hw.remove_owner(1, 2, 3).await.is_err());
+    assert_eq!(hw.get_disk_group(1, 2, 3).await.unwrap().unwrap().value, group);
+    assert_eq!(hw.get_node(1, 2).await.unwrap().unwrap(), node);
+    assert_eq!(hw.disk_storage(&key(&original)).await.unwrap(), Some(original));
+}
+
+#[tokio::test]
+async fn duplicate_checks_cover_every_inventory_page() {
+    let fixture = TestStorage::start().await;
+    let hw = &fixture.hardware;
+    for page in 0..20_u64 {
+        let mut operations = Vec::new();
+        for offset in 0..16_u64 {
+            let id = 1000 + page * 16 + offset;
+            let mut retained = record(id);
+            retained.backing_identity = format!("file:10:{id}");
+            retained.geometry.device_path = format!("/opt/crowdb/data/disks/{id}.img");
+            retained.removed = true;
+            operations.push(crowdb_kv_client::BatchOp::Put {
+                key: retained.key().into_bytes().into(),
+                value: serde_json::to_vec(&retained).unwrap().into(),
+            });
+        }
+        hw.kv().batch_write(0, 0, &operations).await.unwrap();
+    }
+    hw.admit_disk_storage(&record(5)).await.unwrap();
+    let mut alias = record(6);
+    alias.backing_identity = "file:10:1319".into();
+    alias.geometry.device_path = "/opt/crowdb/data/disks/alias.img".into();
+    assert!(hw.admit_disk_storage(&alias).await.is_err());
+    assert!(hw.get_disk_with_revision(&key(&alias)).await.unwrap().is_none());
 }

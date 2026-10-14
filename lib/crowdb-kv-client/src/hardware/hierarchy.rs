@@ -21,6 +21,8 @@ mod ownership;
 mod storage_activation;
 mod storage_admission;
 mod storage_guard;
+mod storage_observation;
+pub use storage_observation::DiskIoObservation;
 
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -133,16 +135,6 @@ fn now_ms() -> u64 {
 
 // ── helpers ─────────────────────────────────────────────────────
 
-async fn put_json<T: serde::Serialize>(kv: &CrowdbKvClient, key: &str, value: &T) -> Result<()> {
-    let payload = serde_json::to_vec(value).map_err(|e| Error::SysdataDecode {
-        key: key.to_string(),
-        reason: e.to_string(),
-    })?;
-    kv.put(G0_STORE, G0_GROUP, key.as_bytes(), &payload, None)
-        .await
-        .map(|_| ())
-}
-
 async fn get_json<T: serde::de::DeserializeOwned>(kv: &CrowdbKvClient, key: &str) -> Result<Option<T>> {
     match kv
         .get(
@@ -242,7 +234,8 @@ impl HardwareClient {
     /// Add or replace a rack record.
     pub async fn add_rack(&self, rack_id: RackId, value: &RackValue) -> Result<()> {
         let key = RackKey { rack_id };
-        put_json(&self.kv, &key.to_path(), value).await
+        self.legacy_put(rack_id, (None, None), &key.to_path(), value, false)
+            .await
     }
 
     /// Read a rack record.
@@ -286,7 +279,8 @@ impl HardwareClient {
     /// Add or replace a node record.
     pub async fn add_node(&self, rack_id: RackId, node_id: NodeId, value: &NodeValue) -> Result<()> {
         let key = NodeKey { rack_id, node_id };
-        put_json(&self.kv, &key.to_path(), value).await
+        self.legacy_put(rack_id, (Some(node_id), None), &key.to_path(), value, false)
+            .await
     }
 
     /// Read a node record.
@@ -359,7 +353,14 @@ impl HardwareClient {
             node_id,
             disk_group_id: dg_id,
         };
-        put_json(&self.kv, &key.to_path(), value).await
+        self.legacy_put(
+            rack_id,
+            (Some(node_id), Some(dg_id)),
+            &key.to_path(),
+            value,
+            false,
+        )
+        .await
     }
 
     /// Read a disk-group record. Returns a [`DiskGroupEntry`] with the
@@ -483,7 +484,14 @@ impl HardwareClient {
             disk_group_id: dg_id,
             disk_id: *disk_id,
         };
-        put_json(&self.kv, &key.to_path(), value).await
+        self.legacy_put(
+            rack_id,
+            (Some(node_id), Some(dg_id)),
+            &key.to_path(),
+            value,
+            false,
+        )
+        .await
     }
 
     /// Read a disk record.
@@ -681,7 +689,14 @@ impl HardwareClient {
             disk_group_id: dg_id,
         };
         let value = crowdb_protocol::common::BindMapValue { store_id, group_id };
-        put_json(&self.kv, &key.to_path(), &value).await
+        self.legacy_put(
+            rack_id,
+            (Some(node_id), Some(dg_id)),
+            &key.to_path(),
+            &value,
+            true,
+        )
+        .await
     }
 
     /// Read the bind-map entry for a disk-group.
@@ -734,10 +749,12 @@ impl HardwareClient {
             node_id,
             disk_group_id: dg_id,
         };
-        self.kv
-            .delete(G0_STORE, G0_GROUP, key.to_path().as_bytes(), None)
-            .await
-            .map(|_| ())
+        self.legacy_delete(
+            rack_id,
+            &key.to_path(),
+            &format!("/hw/disk-storage/{rack_id}/{node_id}/{dg_id}/"),
+        )
+        .await
     }
 }
 

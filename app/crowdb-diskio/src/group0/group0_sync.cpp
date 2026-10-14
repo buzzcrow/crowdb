@@ -8,6 +8,7 @@
 #include "disk/mem_disk.h"
 #include "disk/null_disk.h"
 #include "engine/uring/uring_engine.h"
+#include "group0/backing_identity.h"
 #include "group0/disk_identity.h"
 #include "group0/disk_membership.h"
 #include "group0/ffi_result.h"
@@ -202,6 +203,11 @@ void Group0Sync::reconcile_disks(const std::string &json)
         // Check if this disk already exists in the DiskSet.
         auto existing = disk_set_->find_disk(did);
         if (existing != nullptr) {
+            if (entry.contains("storage") && !entry.at("storage").isNull() &&
+                !matches_backing_identity(existing->fd(), val_obj.at("device_path").asString(), entry.at("storage"))) {
+                retired_disks_.retire(*disk_set_, did);
+                std::fprintf(stderr, "warning: group-0 disk backing changed; excluding opened disk\n");
+            }
             // Disk already present — no update needed (disks are immutable
             // once opened; zone layout doesn't change at runtime).
             continue;
@@ -237,6 +243,11 @@ void Group0Sync::reconcile_disks(const std::string &json)
         else {
             // Real block device.
             disk = std::make_shared<BlockDisk>(did, device_path, engine_, std::move(zones), true);
+            if (disk->fd() < 0 || (entry.contains("storage") && !entry.at("storage").isNull() &&
+                                   !matches_backing_identity(disk->fd(), device_path, entry.at("storage")))) {
+                std::fprintf(stderr, "warning: group-0 disk open or retained backing validation failed\n");
+                continue;
+            }
         }
 #ifdef CROWDB_HAVE_LIBURING
         // Register the disk's fd with the uring for fd→pipeline routing.

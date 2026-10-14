@@ -1,11 +1,11 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 //! Revision-checked initial owner publication and renewal.
-use super::{get_json, scan_prefix, HardwareClient, G0_GROUP, G0_STORE};
+use super::{get_json, mutation, scan_prefix, HardwareClient, G0_GROUP, G0_STORE};
 use crate::{BatchOp, Error, GetOutcome, Result};
 use crowdb_protocol::common_type::{DiskGroupId, NodeId, RackId};
 use crowdb_protocol::diskdb::rpc::DiskGroupValue;
-use crowdb_protocol::key::{DiskGroupKey, OwnerMapKey, TextKey};
+use crowdb_protocol::key::{DiskGroupKey, OwnerMapKey, RackKey, TextKey};
 use crowdb_protocol::sysdata::DiskdbOwnerEntry;
 // ── ownership map ───────────────────────────────────────────────
 
@@ -21,6 +21,8 @@ impl HardwareClient {
         instance_id: u64,
         lease_expiry_ms: u64,
     ) -> Result<()> {
+        let rack_path = RackKey { rack_id }.to_path();
+        let rack = mutation::read(&self.kv, &rack_path).await?;
         let revision = self.owner_revision(rack_id, node_id, dg_id, instance_id).await?;
         let group_key = DiskGroupKey {
             rack_id,
@@ -28,6 +30,18 @@ impl HardwareClient {
             disk_group_id: dg_id,
         }
         .to_path();
+        if self
+            .has_retained_disk_storage(rack_id, Some(node_id), Some(dg_id))
+            .await?
+            && self
+                .get_disk_group(rack_id, node_id, dg_id)
+                .await?
+                .map_or(true, |current| current.value != *disk_group)
+        {
+            return Err(Error::Server(
+                "owner publication cannot replace retained disk-group membership".into(),
+            ));
+        }
         let owner_key = OwnerMapKey {
             rack_id,
             node_id,
@@ -46,23 +60,27 @@ impl HardwareClient {
             key: owner_key.clone(),
             reason: error.to_string(),
         })?;
+        let mut operations = vec![
+            BatchOp::Put {
+                key: bytes::Bytes::from(group_key),
+                value: bytes::Bytes::from(group_value),
+            },
+            BatchOp::Put {
+                key: bytes::Bytes::from(owner_key.clone()),
+                value: bytes::Bytes::from(owner_value),
+            },
+        ];
+        let (condition, revision) = if let Some((bytes, generation)) = rack {
+            operations.push(BatchOp::Put {
+                key: rack_path.as_bytes().to_vec().into(),
+                value: bytes,
+            });
+            (rack_path.as_str(), generation)
+        } else {
+            (owner_key.as_str(), revision)
+        };
         self.kv
-            .batch_write_cas(
-                G0_STORE,
-                G0_GROUP,
-                &[
-                    BatchOp::Put {
-                        key: bytes::Bytes::from(group_key),
-                        value: bytes::Bytes::from(group_value),
-                    },
-                    BatchOp::Put {
-                        key: bytes::Bytes::from(owner_key.clone()),
-                        value: bytes::Bytes::from(owner_value),
-                    },
-                ],
-                owner_key.as_bytes(),
-                revision,
-            )
+            .batch_write_cas(G0_STORE, G0_GROUP, &operations, condition.as_bytes(), revision)
             .await
             .map(|_| ())
     }
@@ -77,6 +95,8 @@ impl HardwareClient {
         instance_id: u64,
         lease_expiry_ms: u64,
     ) -> Result<()> {
+        let rack_path = RackKey { rack_id }.to_path();
+        let rack = mutation::read(&self.kv, &rack_path).await?;
         let revision = self.owner_revision(rack_id, node_id, dg_id, instance_id).await?;
         let key = OwnerMapKey {
             rack_id,
@@ -88,10 +108,33 @@ impl HardwareClient {
             lease_expiry_ms,
         };
         let value = serde_json::to_vec(&value).map_err(|error| Error::Server(error.to_string()))?;
-        self.kv
-            .put_cas(G0_STORE, G0_GROUP, key.to_path().as_bytes(), &value, revision)
-            .await
-            .map(|_| ())
+        let path = key.to_path();
+        if let Some((bytes, generation)) = rack {
+            self.kv
+                .batch_write_cas(
+                    0,
+                    0,
+                    &[
+                        BatchOp::Put {
+                            key: path.as_bytes().to_vec().into(),
+                            value: value.into(),
+                        },
+                        BatchOp::Put {
+                            key: rack_path.as_bytes().to_vec().into(),
+                            value: bytes,
+                        },
+                    ],
+                    rack_path.as_bytes(),
+                    generation,
+                )
+                .await
+                .map(|_| ())
+        } else {
+            self.kv
+                .put_cas(G0_STORE, G0_GROUP, path.as_bytes(), &value, revision)
+                .await
+                .map(|_| ())
+        }
     }
 
     /// Read the ownership-map entry for a disk-group.
@@ -144,10 +187,12 @@ impl HardwareClient {
             node_id,
             disk_group_id: dg_id,
         };
-        self.kv
-            .delete(G0_STORE, G0_GROUP, key.to_path().as_bytes(), None)
-            .await
-            .map(|_| ())
+        self.legacy_delete(
+            rack_id,
+            &key.to_path(),
+            &format!("/hw/disk-storage/{rack_id}/{node_id}/{dg_id}/"),
+        )
+        .await
     }
 }
 

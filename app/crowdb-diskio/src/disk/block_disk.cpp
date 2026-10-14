@@ -36,7 +36,7 @@ BlockDisk::BlockDisk(DiskId id, const std::string &path, std::shared_ptr<IoEngin
       o_direct_(o_direct),
       engine_(std::move(engine))
 {
-    int flags = O_RDWR;
+    int flags = O_RDWR | O_NOFOLLOW;
     if (o_direct) {
 #ifdef O_DIRECT
         flags |= O_DIRECT;
