@@ -3,7 +3,10 @@
 """Native injection followed by unmodified PyIceberg and Arrow reads."""
 
 import hashlib
+import os
+from pathlib import Path
 import secrets
+import tempfile
 import time
 import uuid
 
@@ -19,6 +22,17 @@ import requests
 
 
 def upload(table, data):
+    if os.environ.get("CROWDB_E2E_NATIVE_LOADER") == "1":
+        from crowdb_tpc_loader.native_upload import new_upload_id, upload as native_upload
+
+        uri = table.location() + f"/data/selected-{new_upload_id()}.parquet"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "selected.parquet"
+            path.write_bytes(data)
+            first = native_upload(table.io.properties, uri, path, len(data), 4096, lambda _: None)
+            second = native_upload(table.io.properties, uri, path, len(data), 4096, lambda _: None)
+        assert first[0] == second[0]
+        return first[0]
     properties = table.io.properties
     random = secrets.randbits(74)
     identity = uuid.UUID(int=(int(time.time() * 1000) << 80) | (7 << 76)
@@ -62,7 +76,14 @@ def verify(config):
         catalog.create_namespace("default")
         table = catalog.load_table(identifier)
         assert table.scan().plan_files()[0].file.file_path == original
-    assert table.scan().to_arrow().column("id").to_pylist() == [1, 2, 3]
+    selected = table.scan().to_arrow()
+    assert selected.column("id").to_pylist() == [1, 2, 3]
+    if os.environ.get("CROWDB_E2E_NATIVE_LOADER") == "1":
+        import duckdb
+
+        with duckdb.connect() as connection:
+            connection.register("selected", selected)
+            assert connection.execute("SELECT count(*), sum(id) FROM selected").fetchone() == (3, 6)
     assert "/f/v1/" in table.scan().plan_files()[0].file.file_path
     # PyIceberg's Arrow FileIO opens the returned URL and performs Parquet footer
     # range reads. No additional location field is supplied to either SDK.

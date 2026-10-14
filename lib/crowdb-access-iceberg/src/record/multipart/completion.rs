@@ -65,7 +65,7 @@ pub(super) fn decode(value: FBMultipartCompletion<'_>) -> Result<MultipartComple
     let part_digest = value
         .part_digest()
         .map(|bytes| {
-            if bytes.len() != 189 {
+            if !matches!(bytes.len(), 189 | 205) {
                 return Err(ValidationError::Record);
             }
             Ok(bytes.bytes().to_vec())

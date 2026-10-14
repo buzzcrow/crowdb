@@ -69,7 +69,7 @@ retain that filename and resolve the single file record for reads. They do
 not require a pre-upload reservation API, a second SDK location field, or
 post-upload rewriting of manifests and path-based delete references.
 
-The TPC loader hashes each local Parquet file through bounded reads, checks
+For a catalog without native injection, the TPC loader hashes each local Parquet file through bounded reads, checks
 that its unique target is absent, then sends a known-size S3 request using the
 vended native credentials. Below 256 MiB it uses a single PUT; larger files
 use bounded multipart parts aligned to complete frame payloads. The upload

@@ -18,8 +18,8 @@ and preserve file locations across table rename and cross-namespace move.
 Status: implementation in progress. Native catalog layout selection, default
 namespace creation, table/file/projection paths, direct URL reads, upload
 selection/replay and the loader's returned-location handoff are implemented.
-Remaining work is the auxiliary-key/recovery audit, complete native SDK/container
-acceptance, and final design/backlog cleanup. Direct reads skip Iceberg
+The auxiliary-key/recovery audit is complete. Remaining work is native
+SDK/container acceptance and final design/backlog cleanup. Direct reads skip Iceberg
 file-location/state KV and retain the chunk layer's normal layout resolution,
 as confirmed in the chat.
 
@@ -82,7 +82,8 @@ Verified runtime work:
   descriptor directly; tests cover multi-extent ranges, tampering, old-key
   retention, publication response loss, logical deletion and physical removal
   with no Iceberg file KV reads. `finalize_native_parquet` requires the caller's
-  durably selected owner/tree; an upload recovery journal/HTTP entry is pending.
+  durably selected owner/tree; injection now selects a durable receipt before
+  publishing the filename authority.
 - `FileGrantIssuer` retains at most 64 validated credentials in an ArcSwap
   cache, rechecking context and time on hits. Expired grants and changed catalog
   epochs fail closed. Requests still verify SigV4 and file scope individually.
@@ -91,8 +92,8 @@ Verified runtime work:
 - Iceberg all-target tests, focused snapshot/multipart/mapping/direct tests,
   HTTP request/admission tests, workspace Clippy and fmt passed. Credential
   issuance now derives namespace from selected table/draft metadata. Fixed
-  bucket HeadBucket/region probes are wired; bucket parser tests pass. Native
-  catalog activation and full native lifecycle/GC/SDK flows remain unverified.
+  bucket HeadBucket/region probes are wired; bucket parser tests pass. Native catalog activation, lifecycle and GC unit/integration tests pass;
+  native container SDK flows are being verified.
 
 ## Target structure
 
@@ -494,14 +495,14 @@ three-ID prefix and a matching grant.
   and `key_test.rs`.
   Files: `lib/crowdb-access-iceberg/src/key/storage_path.rs`,
   `lib/crowdb-access-iceberg/src/file/native_location.rs`.
-- [~] **Carry immutable storage identity through runtime records**: use
+- [x] **Carry immutable storage identity through runtime records**: use
   `StorageTablePath` in table heads/mappings, chunk-directory owners,
   credentials and creation metadata; add layout dispatch without changing the
   v1 catalog contract. The standalone codec does not activate new catalogs.
   Files: `lib/crowdb-access-iceberg/src/file/location.rs`,
   `lib/crowdb-access-iceberg/src/file/directory.rs`,
   `lib/crowdb-access-iceberg/src/table/record.rs`.
-- [ ] **Define canonical URI encoding and validation**: encode IDs in fixed
+- [x] **Define canonical URI encoding and validation**: encode IDs in fixed
   lower-case forms, reserve `f/` for server-issued locators, preserve relative
   UTF-8 keys, and reject aliases, traversal, authority changes, and malformed
   prefixes. Round trips must recover all three IDs and the relative file key.
@@ -517,7 +518,7 @@ three-ID prefix and a matching grant.
 
 ## Phase 2: KV key directory redesign
 
-- [ ] **Remove redundant planned indexes**: name lookup returns the complete
+- [x] **Remove redundant planned indexes**: name lookup returns the complete
   storage identity; carry it through callers, multipart, GC and recovery so
   no table-ID reverse index is introduced. Store metadata JSON, Avro manifests
   and parquet through the same single file record. Keep existing bounded
@@ -570,7 +571,7 @@ three-ID prefix and a matching grant.
   `lib/crowdb-access-iceberg/src/key/storage.rs`,
   `lib/crowdb-access-iceberg/src/catalog/storage.rs`,
   `lib/crowdb-access-iceberg/tests/native_storage_path_test.rs`.
-- [ ] **Dispatch catalogs and recovery by persisted layout**: bind the selected
+- [x] **Dispatch catalogs and recovery by persisted layout**: bind the selected
   layout in catalog authority before creating new native paths. Retain v1
   reads/writes/grants for v1 catalogs; reject relabeling and never merge layouts
   in recovery scans. Repository and lifecycle wiring must use the selected
@@ -582,7 +583,7 @@ three-ID prefix and a matching grant.
 
 ## Phase 3: FileIO and S3-compatible access
 
-- [ ] **Implement native injection finalization**: the internal ingestion entry
+- [x] **Implement native injection finalization**: the internal ingestion entry
   accepts the full storage identity, readable stem, upload identity and bytes;
   finish durable native writes, bind the exact filename to a signed descriptor,
   CAS one file record, then return its one canonical URL. Persist/reuse the
@@ -591,7 +592,7 @@ three-ID prefix and a matching grant.
   response and does not pretend to rename the client's path.
   Files: `lib/crowdb-access-iceberg/src/file/`,
   `app/crowdb-access-server/src/iceberg/`, `tools/load-tpch.py`.
-- [ ] **Enforce the direct chunk boundary**: introduce/extend the native range
+- [x] **Enforce the direct chunk boundary**: introduce/extend the native range
   read interface accepting the authenticated full descriptor/root; instrument
   Iceberg file-location, file-state and chunk layout queries separately.
   Retain `query_chunk` for native layout resolution, including cache misses.
@@ -608,20 +609,20 @@ three-ID prefix and a matching grant.
   Files: `lib/crowdb-access-iceberg/src/file/credentials.rs`,
   `app/crowdb-access-server/src/iceberg/file_admission.rs`.
 
-- [ ] **Bind grants and credential prefixes to the full storage path** so a
+- [x] **Bind grants and credential prefixes to the full storage path** so a
   credential issued for one table cannot address another namespace/table path.
   Update refresh responses and staged-table credentials consistently.
   Files: `lib/crowdb-access-iceberg/src/file/credentials.rs`,
   `lib/crowdb-access-iceberg/src/wire/credentials.rs`,
   `app/crowdb-access-server/src/iceberg/table_credentials.rs`.
-- [ ] **Parse and route the new URI prefix** in exact object, list, multipart,
+- [x] **Parse and route the new URI prefix** in exact object, list, multipart,
   cleanup, and continuation-token flows. A table rename must continue to use
   the same URI and file records after the new name is loaded from the catalog.
   Files: `app/crowdb-access-server/src/iceberg/file_request.rs`,
   `app/crowdb-access-server/src/iceberg/file_http.rs`,
   `app/crowdb-access-server/src/iceberg/file_list_request.rs`,
   `app/crowdb-access-server/src/iceberg/file_admission.rs`.
-- [ ] **Keep physical bytes native**: no filesystem or general S3 object
+- [x] **Keep physical bytes native**: no filesystem or general S3 object
   authority is introduced. Uploads continue through native chunk writes and
   publication remains a KV authority CAS. A direct read receives a complete
   validated chunk locator without `FileRepository::resolve`; a
@@ -630,12 +631,12 @@ three-ID prefix and a matching grant.
   `lib/crowdb-access-iceberg/src/file/blocks.rs`,
   `lib/crowdb-access-iceberg/src/file/repository.rs`,
   `lib/crowdb-chunk-client/src/chunk/chunk_reader.rs`.
-- [ ] **Constrain catalog location-provider output**: reject a provider result
+- [x] **Constrain catalog location-provider output**: reject a provider result
   outside the canonical table prefix before upload. This prevents the loader
   from recording a URI that the native grant cannot serve.
   Files: `/cjdata/cpp/crowdb-tpc-loader/src/crowdb_tpc_loader/backend.py`,
   `/cjdata/cpp/crowdb-tpc-loader/src/crowdb_tpc_loader/loader.py`.
-- [ ] **Use one SDK-visible file URL**: use its public filename as the single
+- [x] **Use one SDK-visible file URL**: use its public filename as the single
   native KV file key, retain the native chunk descriptor and read
   mode in its value, and make the single URL written to Iceberg manifests the
   bound location. Implement native injection finalization before manifest
@@ -655,7 +656,7 @@ three-ID prefix and a matching grant.
 
 ## Phase 4: metadata, rename, and lifecycle invariants
 
-- [ ] **Keep large metadata as native objects**: preserve the inline threshold,
+- [x] **Keep large metadata as native objects**: preserve the inline threshold,
   route larger metadata JSON/Avro into native chunk storage, bound descriptors
   with directory roots and keep snapshot arrays out of TableHead. Exercise
   canonical bytes through FileIO and ALL/REFS, including missing/corrupt
@@ -671,7 +672,7 @@ three-ID prefix and a matching grant.
   zero max-keys without payload reads, table-wide sorting or unrelated scans.
   Files: `lib/crowdb-access-iceberg/src/file/listing/`,
   `app/crowdb-access-server/src/iceberg/file_list_request.rs`.
-- [ ] **Preserve standard metadata semantics**: cover snapshots/refs/logs and
+- [x] **Preserve standard metadata semantics**: cover snapshots/refs/logs and
   v1 direct manifests, v2/v3 sequence inheritance and existing v3 lineage;
   preserve exact delete-file references and immutable manifest bytes. Commit
   retries may write new manifest lists; atomic head selection and retained
@@ -681,7 +682,7 @@ three-ID prefix and a matching grant.
   `lib/crowdb-access-iceberg/src/gc/`,
   `app/crowdb-access-server/tests/iceberg_table_lifecycle_test.rs`.
 
-- [ ] **Validate table metadata location against the immutable storage path**;
+- [x] **Validate table metadata location against the immutable storage path**;
   `set-location` may normalize a trailing slash but cannot change the path
   identity. Metadata generations and manifest references remain below that
   path.
@@ -689,21 +690,21 @@ three-ID prefix and a matching grant.
   `lib/crowdb-access-iceberg/src/commit/evaluator/initial.rs`,
   `lib/crowdb-access-iceberg/src/commit/evaluator/scalar.rs`,
   `lib/crowdb-access-iceberg/src/commit/files.rs`.
-- [ ] **Preserve rename behavior**: same-namespace rename and cross-namespace
+- [x] **Preserve rename behavior**: same-namespace rename and cross-namespace
   move update only name/mapping authority; old names disappear, the storage
   path remains readable through the new table identity, and a recreated name
   receives a new path.
   Files: `lib/crowdb-access-iceberg/src/table/lifecycle/`,
   `app/crowdb-access-server/tests/iceberg_table_lifecycle_test.rs`,
   `e2e-test/clients/iceberg-java/src/main/java/TestIcebergCatalogWrites.java`.
-- [ ] **Define grant and URL behavior across moves**: existing immutable URLs
+- [x] **Define grant and URL behavior across moves**: existing immutable URLs
   continue to bind to the storage namespace ID while the table is live; new
   credentials resolve the current name mapping and old-name resolution fails.
   Drop/recreate receives a new table ID, and direct and fallback locators reject
   the old table after purge.
   Files: `lib/crowdb-access-iceberg/src/file/credentials.rs`,
   `app/crowdb-access-server/src/iceberg/file_admission.rs`.
-- [ ] **Recheck GC and recovery ownership** against the immutable storage path
+- [x] **Recheck GC and recovery ownership** against the immutable storage path
   before reclaiming files or chunk roots. Logical drop and physical purge must
   not confuse a recreated table with a retained old path.
   Files: `lib/crowdb-access-iceberg/src/gc/`,
@@ -712,14 +713,14 @@ three-ID prefix and a matching grant.
 
 ## Phase 5: loader and container injection
 
-- [ ] **Align the TPC loader with the canonical table path**: use stable data
+- [x] **Align the TPC loader with the canonical table path**: use stable data
   names below the provider's `data/` directory, verify the returned URI is
   table-scoped, and keep the run ID in recovery/report metadata rather than in
   the object path.
   Files: `/cjdata/cpp/crowdb-tpc-loader/src/crowdb_tpc_loader/backend.py`,
   `/cjdata/cpp/crowdb-tpc-loader/src/crowdb_tpc_loader/loader.py`,
   `/cjdata/cpp/crowdb-tpc-loader/tests/unit/test_commits.py`.
-- [ ] **Separate or remove the optional S3 mirror** in
+- [x] **Separate or remove the optional S3 mirror** in
   `tools/load-tpch.py`. If retained for the container demo, document its
   bucket/key as an independent S3 object copy and do not treat it as the
   Iceberg table file layout.
