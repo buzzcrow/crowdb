@@ -62,6 +62,7 @@ pub(super) struct AcceptedNode {
 pub async fn run_node(config: NodeRuntimeConfig) -> Result<()> {
     let profile = kv::node_profile(&config)?;
     let root = profile.paths.data_root.clone();
+    super::startup::accept(&root, super::startup::Mode::Standard)?;
     NodeIdentity::load_or_create(&root)?;
     std::fs::create_dir_all(&profile.paths.run_root)?;
     std::fs::create_dir_all(&profile.paths.log_root)?;

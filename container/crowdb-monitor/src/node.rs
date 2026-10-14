@@ -10,6 +10,7 @@ mod identity;
 mod management;
 mod runtime;
 mod single;
+pub(crate) mod startup;
 mod storage;
 pub use storage::discover_disks;
 mod trust;
@@ -18,6 +19,8 @@ pub use single::run_single_node;
 #[cfg(feature = "test-util")]
 pub use runtime::InitializationForTests;
 pub use runtime::{control_node, run_node, NodeRuntimeConfig};
+#[cfg(feature = "test-util")]
+pub use startup::accept_startup_mode_for_tests;
 
 pub use management::{serve_node_management, NodeManagementError};
 

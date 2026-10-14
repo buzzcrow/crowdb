@@ -298,6 +298,13 @@ them separately and do not automatically merge their logs or topology.
 
 ### 6.3 Recovery and subsequent admission
 
+Startup mode is durable node policy. Standard and explicit single mode cannot
+replace one another by changing an environment variable, including before the
+first successful bootstrap. Concurrent first starts publish only one mode.
+Existing single-profile manifests retain their identity and profile/configuration
+validation. A single discovered node does not imply single mode, and an accepted
+standard bootstrap cannot be reinterpreted as single-profile state.
+
 Restart resumes accepted identity and replica WAL state. Lost multicast does
 not erase stored Group-0 contacts. An interrupted bootstrap reuses its operation
 identity/manifest; partial metadata publication resumes without admitting

@@ -123,3 +123,9 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   rather than successful. All 189 UI tests and TypeScript pass. Rebuilt-image
   browser regression passes in 1.6 s versus the 1.3 s baseline, preserving all
   hardware/capacity assertions and checking monitor completion in the center.
+- Startup mode is persisted with atomic first-writer publication. Conflicting
+  standard/single starts reject without rewriting policy or bootstrapping data.
+  Existing single-profile manifests retain identity and validated profile/config
+  checks; legacy standard acceptance cannot be reinterpreted as single mode.
+  Full monitor tests pass, including concurrent mode publication. Shared execution
+  convergence and automatic admission remain separate unfinished work.
