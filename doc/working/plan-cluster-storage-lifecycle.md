@@ -183,3 +183,13 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
 - Auto join target selection now permits an explicit initial local draft. A pinned
   target can be cleared only in an unbound workspace with a matching completed
   cleanup record; loss of binding alone is insufficient. Six backend tests pass.
+- Rebuilt `e733a2d0` release reaches single-mode readiness. Its existing host
+  regression incorrectly creates an unrelated random manifest after the monitor
+  has initialized; strict acceptance now correctly rejects it. Update the fixture
+  to export actual acceptance and assert unchanged identity across restart, one
+  voter per group, foreign-manifest rejection and acknowledged data preservation.
+- Browser auto-join regression exposed a controlled-checkbox race: the POST
+  succeeds (200, 9.8 ms) but React restores the old check before the reply. Keep
+  the pending choice disabled with explicit Saving status; restore authoritative
+  state on failure. All 194 UI component tests and TypeScript pass, including
+  delayed failure and intervening poll coverage. Release browser rerun pending.

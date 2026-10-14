@@ -16,7 +16,8 @@ const phases: Record<string, string> = {
 export function AutoJoin({ readonly = false }: { readonly?: boolean }) {
   const [status, setStatus] = useState<AutoJoinStatus>();
   const [unavailable, setUnavailable] = useState(false);
-  const [saving, setSaving] = useState(false);
+  const [pendingEnabled, setPendingEnabled] = useState<boolean>();
+  const saving = pendingEnabled !== undefined;
   const [error, setError] = useState('');
   const revision = useRef(0);
   useEffect(() => {
@@ -38,20 +39,20 @@ export function AutoJoin({ readonly = false }: { readonly?: boolean }) {
   }, []);
   const update = async (enabled: boolean, target?: 'local-draft') => {
     revision.current += 1;
-    setSaving(true); setError('');
+    setPendingEnabled(enabled); setError('');
     try { setStatus(await (target ? setNodeAutoJoin(enabled, target) : setNodeAutoJoin(enabled))); }
     catch (error) { setError(error instanceof Error ? error.message : String(error)); }
-    finally { revision.current += 1; setSaving(false); }
+    finally { revision.current += 1; setPendingEnabled(undefined); }
   };
   const observation = status?.observation;
   const phase = observation?.phase;
   return <section aria-label="Automatic node admission" className="tw-border-b tw-border-border tw-px-4 tw-py-3 tw-text-sm">
     <label className="tw-flex tw-items-center tw-gap-2">
-      <input type="checkbox" checked={status?.enabled ?? false} disabled={readonly || !status || unavailable || saving}
+      <input type="checkbox" checked={pendingEnabled ?? status?.enabled ?? false} disabled={readonly || !status || unavailable || saving}
         onChange={event => void update(event.target.checked)} />Auto join
     </label>
     {status && <p className="tw-text-xs tw-text-muted">Standard mode · Target: {status.target_cluster_id ?? (phase === 'needs-target' ? 'Unselected' : 'Initial local draft')} · {status.required_voters} initial voters</p>}
-    <p role="status">{!status ? unavailable ? 'Auto join status unavailable' : 'Loading Auto join…'
+    <p role="status">{saving ? 'Saving Auto join…' : !status ? unavailable ? 'Auto join status unavailable' : 'Loading Auto join…'
       : !status.enabled ? phases.disabled
       : phase === 'waiting' ? `Waiting (${observation?.members?.length ?? 0}/${status.required_voters})`
       : phases[phase ?? ''] ?? phase}</p>

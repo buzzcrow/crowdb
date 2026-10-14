@@ -45,6 +45,24 @@ describe('AutoJoin', () => {
     expect(screen.getByRole('checkbox')).toBeDisabled();
   });
 
+  it('keeps the requested choice while saving and restores authority on failure', async () => {
+    vi.mocked(nodeAutoJoin).mockResolvedValue(status);
+    let reject!: (error: Error) => void;
+    vi.mocked(setNodeAutoJoin).mockReturnValue(new Promise((_, fail) => { reject = fail; }));
+    render(<AutoJoin />);
+    await act(async () => {});
+    fireEvent.click(screen.getByRole('checkbox'));
+    expect(screen.getByRole('checkbox')).not.toBeChecked();
+    expect(screen.getByRole('checkbox')).toBeDisabled();
+    expect(screen.getByRole('status')).toHaveTextContent('Saving Auto join…');
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(screen.getByRole('checkbox')).not.toBeChecked();
+    await act(async () => { reject(new Error('policy write failed')); });
+    expect(screen.getByRole('checkbox')).toBeChecked();
+    expect(screen.getByRole('checkbox')).toBeEnabled();
+    expect(screen.getByRole('alert')).toHaveTextContent('policy write failed');
+  });
+
   it('requires an explicit local draft choice when targets are ambiguous', async () => {
     vi.mocked(nodeAutoJoin).mockResolvedValue({ ...status, observation: { phase: 'needs-target' } });
     vi.mocked(setNodeAutoJoin).mockResolvedValue(status);
