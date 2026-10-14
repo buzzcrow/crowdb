@@ -10,6 +10,7 @@ import stat
 from pathlib import Path
 
 from runtime import Runtime
+from storage import inputs
 
 
 def digest_reference(reference):
@@ -48,9 +49,10 @@ def validate(args, parser):
             parser.error("password file must contain one nonempty password")
     elif not (args.data_root / "ssh/authorized_keys").is_file():
         parser.error("production requires a password file or preinstalled authorized_keys")
-    for device in args.device:
-        if not device.is_absolute() or device.is_symlink() or not stat.S_ISBLK(device.stat().st_mode):
-            parser.error("each permitted device must be an explicit absolute block-device path")
+    try:
+        inputs(args)
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
     if not args.interface or not args.physical_host_id:
         parser.error("management interface and physical host identity are required")
     if args.network == "host":
@@ -82,6 +84,8 @@ def main():
     parser.add_argument("--ui-port", type=int)
     parser.add_argument("--password-file", type=Path)
     parser.add_argument("--device", type=Path, action="append", default=[])
+    parser.add_argument("--disk-file", type=Path, action="append", default=[],
+                        help="Existing disk file, mapped beneath /opt/crowdb/data/disks by filename")
     parser.add_argument("--seed", action="append", default=[])
     parser.add_argument("--startup-mode", choices=["manual", "single"], default="manual")
     args = parser.parse_args()

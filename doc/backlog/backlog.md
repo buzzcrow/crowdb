@@ -9,7 +9,7 @@ requirements and their temporary execution plans are removed during the final
 live in the linked document; implementation follows
 [`implement-requirement`](../../.agents/skills/implement-requirement/SKILL.md).
 
-**Next R number: R235** — R231 through R233 are reserved by other workstreams.
+**Next R number: R236** — R221 and R234 are reserved by other workstreams.
 
 ## Dataset and access
 
@@ -22,6 +22,11 @@ live in the linked document; implementation follows
 
 ## Console and service control
 
+- **[R235](R235-console-cluster-storage-lifecycle.md)** — unified Cluster hardware
+  workspace, automatic node admission and three-voter Group-0 bootstrap, OCI
+  file/block disk admission, monitor-owned initialization, and Offline/remove flow.
+  **Area:** Console / deployment / monitor / DiskIO / DiskDB / ChunkDB.
+  **Complexity:** High.
 
 ## Access server and external data
 

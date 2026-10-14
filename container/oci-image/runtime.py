@@ -9,6 +9,7 @@ import subprocess
 import uuid
 
 from builder import tool
+from storage import inputs, record_inputs, runtime_arguments
 
 OWNER = "org.crowdb.launcher"
 
@@ -65,6 +66,7 @@ class Runtime:
                 raise RuntimeError("container does not share this host network namespace")
 
     def create(self, args):
+        disks = inputs(args)
         token = str(uuid.uuid4())
         shares = getattr(args, "cpu_shares", None)
         cpu_args = ["--cpu-shares", str(shares)] if shares is not None else ["--cpus", str(args.cpus)]
@@ -82,8 +84,7 @@ class Runtime:
         if args.password_file:
             command += ["--mount", f"type=bind,source={args.password_file},target=/run/crowdb-ssh-password,readonly",
                         "-e", "CROWDB_SSH_PASSWORD_FILE=/run/crowdb-ssh-password"]
-        for device in args.device:
-            command += ["--device", f"{device}:{device}:rwm"]
+        command += runtime_arguments(disks)
         if args.seed:
             command += ["-e", "CROWDB_DISCOVERY_SEEDS=" + ",".join(args.seed)]
         if args.ui_port:
@@ -91,9 +92,11 @@ class Runtime:
         try:
             container = self.invoke(*command, args.image).strip()
             self.verify(container, args.cpus, args.memory_mib, args.network == "host", shares)
-            for device in args.device:
+            for disk in disks:
+                kind = "-f" if disk["backend"] == "file" else "-b"
                 self.invoke("exec", "--user", "10001:10001", container, "sh", "-c",
-                            'test -b "$1" && test -r "$1" && test -w "$1"', "sh", device)
+                            'test "$1" "$2" && test -r "$2" && test -w "$2"', "sh", kind, disk["path"])
+            record_inputs(args.data_root, disks)
             return container
         except BaseException:
             # A failed create can leave a container; only this operation owns it.
