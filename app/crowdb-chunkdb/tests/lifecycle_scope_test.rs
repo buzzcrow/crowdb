@@ -39,7 +39,7 @@ async fn lifecycle_metadata_and_reservations_cannot_escape_domain_authority() {
     let system =
         ChunkStore::new(Arc::clone(&test.kv), bindings).with_scope(Arc::clone(&guard), ChunkDomain::System);
     let mut expected = Vec::new();
-    for (purpose, count) in [(1_u64, 300), (5, 10)] {
+    for (purpose, count) in [(1_u64, 300), (5, 10), (7, 10)] {
         for low in 1..=count {
             let id = ChunkId {
                 high: purpose << 56,
@@ -62,7 +62,7 @@ async fn lifecycle_metadata_and_reservations_cannot_escape_domain_authority() {
                 ..Default::default()
             };
             writer.put_reservation_group(&group).await.unwrap();
-            if purpose == 5 && guard.check(&id).is_ok() {
+            if purpose >= 4 && guard.check(&id).is_ok() {
                 expected.push(id);
                 assert_eq!(user.get_chunk(&id).await.unwrap(), chunk);
             } else {
