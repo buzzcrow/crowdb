@@ -120,5 +120,6 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
 - Cluster center now observes monitor initialization phases, fixed voters and
   operation errors, retains stale observations, and retries the same members.
   Closing the component only stops polling. Node-mode submission says accepted
-  rather than successful. All 189 UI tests and TypeScript pass; the browser
-  regression for the completed operation is pending the next image build.
+  rather than successful. All 189 UI tests and TypeScript pass. Rebuilt-image
+  browser regression passes in 1.6 s versus the 1.3 s baseline, preserving all
+  hardware/capacity assertions and checking monitor completion in the center.

@@ -252,13 +252,28 @@ requires an explicit recovery/decommission procedure, not an automatic timeout.
 1. Any UI collects compatible candidates and the operator's rack assignments.
 2. The operator explicitly selects initial Group-0 voting members. Candidate
    count is not voting-member count; application nodes need not all vote.
-3. Submit a bootstrap identity and immutable initial manifest to selected
-   monitors. Persist compatible preparation before starting replicas.
+3. Submit the bootstrap identity, immutable initial manifest and initial data
+   group choice to the selected member with the smallest discovery UUID. Its
+   monitor durably accepts the request before the UI receives acceptance.
 4. Start the minimum Group-0 services with the fixed manifest. Use existing
    Paxos election and WAL durability, not discovery-cache membership.
 5. Wait for quorum-backed readiness and publish initial metadata idempotently.
 6. Persist/refresh cluster contact information for member UIs. Enable general
    deployment only after initial topology is confirmed.
+
+The accepting monitor executes preparation, initialization, binding and optional
+initial data-group creation independently of the browser and Web request.
+It exposes the operation identity, fixed members, current phase and failure.
+Closing a page or losing its connection does not cancel accepted work. Monitor
+restart resumes interrupted work; a recorded failure requires explicit retry.
+Retry preserves the accepted data-group choice when that option is omitted and
+rejects changed inputs. There is no automatic initiator takeover. Cleanup rejects
+an actively executing initialization.
+
+Monitor peer commands use the node's durable SSH key and the strict host-key
+pins established during mutual admission. Console's separate TOFU store does
+not substitute for those peer pins. Initialization completion is observed from
+the monitor and quorum-backed publication, not inferred from HTTP acceptance.
 
 Bootstrap exclusion is enforced by each target KV server before creating
 store 0 and covers the complete store-0/group-0 initialization sequence. The
