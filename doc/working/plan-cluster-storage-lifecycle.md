@@ -143,3 +143,9 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   immediate connection refusal instead of a stopped container's ARP timeout. The
   original partial-preparation/recovery assertions remain; rerun is pending the
   next committed release image. Native fixture observation tests pass (eight).
+- Real three-node automatic bootstrap reached active authority and verified the
+  minimum-UUID monitor's accepted operation. The downstream hardware case then
+  failed at ordinary Group 1 creation (`409 group 0/1 already exists`): the new
+  worker unnecessarily requested a data group. Automatic initialization now
+  requests only Store 0 / Group 0; the release fixture asserts that accepted
+  choice. Rebuilt-image rerun is pending; no assertion was weakened.

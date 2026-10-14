@@ -186,7 +186,7 @@ async fn finish(
     }
     let _operation =
         crate::services::Operation::claim(state, vec!["cluster/init".into(), "node/admission".into()])?;
-    let progress = node::initialization::trigger(state, &eligible, Some(true)).await?;
+    let progress = node::initialization::trigger(state, &eligible, Some(false)).await?;
     Ok(json!({"phase": "initializing", "members": eligible, "operation": progress}))
 }
 

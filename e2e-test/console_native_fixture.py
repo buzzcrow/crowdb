@@ -17,7 +17,7 @@ from console_native_browser import INSPECTION_CASES
 class NativeConsoleCluster(ShellBrowserCluster):
     def __init__(self, image, artifacts, bundle, *, disk_gib=(80, 8, 8),
                  zone_gib=(1, 1, 1), spare_disk_gib=0, bootstrap=True, rack_ids=None,
-                 admission_count=None, diskless_nodes=(), **kwargs):
+                 admission_count=None, diskless_nodes=(), auto_bootstrap=False, **kwargs):
         if type(bootstrap) is not bool:
             raise ValueError("native bootstrap selection must be a boolean")
         count = len(disk_gib)
@@ -49,6 +49,7 @@ class NativeConsoleCluster(ShellBrowserCluster):
         self.zone_gib = tuple(zone_gib)
         self.spare_disk_gib = spare_disk_gib
         self.bootstrap = bootstrap
+        self.auto_bootstrap = auto_bootstrap
         self.rack_ids = racks
         self.admission_count = admitted
         self.diskless_nodes = tuple(diskless_nodes)
@@ -93,6 +94,8 @@ class NativeConsoleCluster(ShellBrowserCluster):
                 environment=("CROWDB_STARTUP_MODE=manual", f"CROWDB_PHYSICAL_HOST_ID={host}")))
         self.ready()
         for address in self.addresses:
+            with HTTP.open(f"http://{address}:9090/api/node/auto-join", timeout=5) as response:
+                assert json.load(response)["enabled"] is True
             request = urllib.request.Request(f"http://{address}:9090/api/node/auto-join",
                 data=json.dumps({"enabled": False}).encode(),
                 headers={"Content-Type": "application/json"})
@@ -116,7 +119,10 @@ class NativeConsoleCluster(ShellBrowserCluster):
                 "rack_id": self.rack_ids[index], "ssh_user": "crowdb", "ssh_port": 2222, "ssh_password": "crowdb"})
             self.node_ids.append(record["node_id"])
         if self.bootstrap:
-            self.api("/api/cluster/init", {"nodes": self.node_ids}, status=202)
+            if self.auto_bootstrap:
+                self.api("/api/node/auto-join", {"enabled": True})
+            else:
+                self.api("/api/cluster/init", {"nodes": self.node_ids}, status=202)
             wait(self.initialization_status, lambda result: result["node"]["phase"] == "active"
                  and result["operation"]["phase"] == "active",
                  "public Group 0 bootstrap", seconds=10)
@@ -124,12 +130,27 @@ class NativeConsoleCluster(ShellBrowserCluster):
                  lambda result: {node["id"] for rack in result["items"] for node in rack["nodes"]
                      if node.get("kv_server", {}).get("health") == "up"} == set(self.node_ids),
                  "live remote KV observations", seconds=10)
+            if self.auto_bootstrap:
+                self.verify_auto_bootstrap()
         self.origins = [f"http://{address}:10000" for address in self.addresses]
         (self.artifacts / "native-endpoints.json").write_text(json.dumps({
             "nodes": self.node_ids, "addresses": self.addresses, "disk_gib": self.disk_gib,
             "zone_gib": self.zone_gib, "spare_disk_gib": self.spare_disk_gib, "racks": self.rack_ids, "ports": {
                 "web": 9090, "ssh": 2222, "kv": 10000, "diskdb": 7100, "diskio": 7200}}, indent=2))
         return self
+
+    def verify_auto_bootstrap(self):
+        admissions = self.api("/api/node/admissions")
+        ordered = sorted(admissions, key=lambda node: node["discovery_id"])
+        operation = self.api("/api/cluster/initialization")
+        assert operation["members"] == [node["node_id"] for node in ordered[:3]], operation
+        initiator_address = ordered[0]["host"]
+        initiator = self.servers[self.addresses.index(initiator_address)]
+        accepted = json.loads(self.command("exec", initiator, "cat", "/opt/crowdb/data/initialization.json"))
+        assert accepted["operation"]["identity"]["operation_id"] == operation["operation_id"]
+        assert accepted["create_data_group"] is False, accepted
+        self.api("/api/node/auto-join", {"enabled": False})
+        assert self.api("/api/cluster/initialization")["operation_id"] == operation["operation_id"]
 
     def initialization_status(self):
         operation = self.api("/api/cluster/initialization")
