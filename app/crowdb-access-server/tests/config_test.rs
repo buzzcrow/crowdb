@@ -36,7 +36,7 @@ fn tracked_access_configs_load_and_set_bounded_read_resources() {
         assert_eq!(config.small_write.policy().max_pipelines, 32);
         assert!(config.s3.listen.is_some());
         assert!(config.iceberg.listen.is_some());
-        assert_eq!(config.dataset.max_in_flight, 3);
+        assert_eq!(config.dataset.max_in_flight, 8);
         assert_eq!(config.dataset.max_batch_size, 10_000);
         assert_eq!(config.iceberg.native_budget_bytes, Some(256 * 1024 * 1024));
         assert_eq!(config.s3.list_scan_bytes, Some(4 * 1024 * 1024));

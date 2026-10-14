@@ -38,11 +38,18 @@ impl DatasetHttpService {
         let request_id = OperationId::random().to_string();
         request.extensions_mut().insert(RequestId(request_id.clone()));
         if !self.authorized(&request) {
-            return ApiError::unauthorized().response(&request_id);
+            return admission::reject(
+                request,
+                ApiError::unauthorized().response(&request_id),
+                self.request_timeout,
+            )
+            .await;
         }
         let permit = match self.api_admission.acquire() {
             Ok(permit) => permit,
-            Err(error) => return error.response(&request_id),
+            Err(error) => {
+                return admission::reject(request, error.response(&request_id), self.request_timeout).await
+            }
         };
         // Completing a large upload includes a bounded-buffer integrity pass.
         let deadline =

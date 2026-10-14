@@ -22,13 +22,17 @@ pub struct TestDatasetHttp {
 impl TestDatasetHttp {
     #[allow(dead_code)]
     pub async fn start(store: Arc<TestStore>) -> Self {
-        Self::start_inner(store, false).await
+        Self::start_inner(store, false, 8).await
     }
     #[allow(dead_code)]
     pub async fn start_payload(store: Arc<TestStore>) -> Self {
-        Self::start_inner(store, true).await
+        Self::start_inner(store, true, 8).await
     }
-    async fn start_inner(store: Arc<TestStore>, payload: bool) -> Self {
+    #[allow(dead_code)]
+    pub async fn start_with_capacity(store: Arc<TestStore>, capacity: usize) -> Self {
+        Self::start_inner(store, false, capacity).await
+    }
+    async fn start_inner(store: Arc<TestStore>, payload: bool, capacity: usize) -> Self {
         let uploads = Arc::new(DatasetUploads::new(
             store.clone(),
             Arc::new(upload::TestPayload::default()),
@@ -47,7 +51,9 @@ impl TestDatasetHttp {
             u64::MAX - 1000,
         )
         .unwrap();
-        let service = DatasetHttpService::new(Arc::new(reads), Duration::from_secs(30)).with_bearer("secret");
+        let service = DatasetHttpService::new(Arc::new(reads), Duration::from_secs(30))
+            .with_bearer("secret")
+            .with_api_capacity(capacity);
         let service = Arc::new(if payload {
             service.with_uploads(uploads)
         } else {

@@ -46,3 +46,28 @@ impl AsRef<[u8]> for ResponseOwner {
         &self.bytes
     }
 }
+
+/// Consume a bounded rejected body so HTTP can deliver the logical error instead
+/// of closing a connection while its client is still writing a valid part.
+pub(super) async fn reject(
+    request: hyper::Request<hyper::body::Incoming>,
+    mut response: hyper::Response<crate::dataset::DatasetBody>,
+    timeout: std::time::Duration,
+) -> hyper::Response<crate::dataset::DatasetBody> {
+    use http_body_util::BodyExt;
+    let mut body = http_body_util::Limited::new(request.into_body(), crate::dataset::MAX_REQUEST_BYTES);
+    let drained = tokio::time::timeout(timeout.min(std::time::Duration::from_secs(5)), async {
+        while let Some(frame) = body.frame().await {
+            frame.map_err(|_| ())?;
+        }
+        Ok::<_, ()>(())
+    })
+    .await;
+    if !matches!(drained, Ok(Ok(()))) {
+        response.headers_mut().insert(
+            hyper::header::CONNECTION,
+            hyper::header::HeaderValue::from_static("close"),
+        );
+    }
+    response
+}

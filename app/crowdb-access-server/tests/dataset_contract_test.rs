@@ -247,3 +247,32 @@ async fn scope_auth_versions_and_malformed_contract_reject_without_mutation() {
     drop(client);
     test.stop().await;
 }
+
+#[tokio::test]
+async fn exhausted_admission_returns_structured_error_for_a_streamed_part() {
+    let test = TestDatasetHttp::start_with_capacity(Arc::new(TestStore::default()), 0).await;
+    let client = Client::new();
+    let chunk = bytes::Bytes::from(vec![0; 128 * 1024]);
+    for _ in 0..2 {
+        let chunk = chunk.clone();
+        let chunks = futures::stream::iter((0..32).map(move |_| Ok::<_, std::io::Error>(chunk.clone())));
+        let response = client
+            .put(format!(
+                "{}{ROOT}/uploads/{}/parts/0",
+                test.origin,
+                "a".repeat(32)
+            ))
+            .bearer_auth("secret")
+            .header("content-type", "application/octet-stream")
+            .body(reqwest::Body::wrap_stream(chunks))
+            .send()
+            .await
+            .expect("capacity rejection must remain an HTTP response");
+        assert_eq!(response.status(), 429);
+        let error: Value = response.json().await.unwrap();
+        assert_eq!(error["code"], "capacity");
+        assert_eq!(error["retryable"], true);
+    }
+    drop(client);
+    test.stop().await;
+}
