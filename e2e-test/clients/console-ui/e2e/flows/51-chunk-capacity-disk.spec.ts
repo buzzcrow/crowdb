@@ -64,7 +64,10 @@ test('native diagnostics: hardware capacity aggregates disks and dashed status u
   expect(sum(summary.nodes.filter((row: { rack_id: number }) => row.rack_id === 1))).toBe(rack.capacity_bytes);
   expect(sum(summary.disk_groups.filter((row: { node_id: number }) => row.node_id === 1))).toBe(node.capacity_bytes);
 
-  await page.goto('/?domain=Capacity');
+  await page.goto('/?domain=Cluster');
+  await expect(page.getByRole('region', { name: 'Cluster initialization' }).getByRole('status'))
+    .toHaveText('Initialization complete');
+  await page.getByTestId('domain-capacity').click();
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
   await sidebar.getByTestId('tree-node-N-1').getByRole('button', { name: 'Expand', exact: true }).click();
   const item = sidebar.getByRole('button', { name: 'test-dg-hwcap (DG-591)', exact: true });

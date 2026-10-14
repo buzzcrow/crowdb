@@ -117,3 +117,8 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   rebuilt release image; Playwright baseline is 1.3 s (2026-10-14), root case
   12.22 s. The fixture observes both monitor completion and published authority,
   and reports monitor failure immediately. Seven fixture observation tests pass.
+- Cluster center now observes monitor initialization phases, fixed voters and
+  operation errors, retains stale observations, and retries the same members.
+  Closing the component only stops polling. Node-mode submission says accepted
+  rather than successful. All 189 UI tests and TypeScript pass; the browser
+  regression for the completed operation is pending the next image build.

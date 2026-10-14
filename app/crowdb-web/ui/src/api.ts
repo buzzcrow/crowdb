@@ -610,6 +610,17 @@ export interface InitClusterRequest {
   create_data_group?: boolean;
 }
 
+export interface InitializationStatus {
+  phase: 'idle' | 'preparing' | 'initializing' | 'binding' | 'data-group' | 'active' | 'failed';
+  operation_id?: string;
+  members?: number[];
+  error?: string | null;
+}
+
+export async function clusterInitialization(options?: RequestOptions): Promise<InitializationStatus> {
+  return jsonOrThrow(await fetchWithOptions('/api/cluster/initialization', options));
+}
+
 /**
  * Initialize the cluster by bootstrapping the system group
  * (store 0, group 0) on the selected nodes.

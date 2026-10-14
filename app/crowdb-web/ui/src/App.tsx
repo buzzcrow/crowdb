@@ -48,6 +48,7 @@ import { buildCrowdbKVServers, crowdbKvServerNodeIds } from './data/crowdbKvServ
 import { isCrowdbKVServerAvailable } from './data/crowdbKvServers';
 import { toUiHealth } from './utils/entityDisplay';
 import { ClusterView } from './views/ClusterView';
+import { InitializationProgress } from './shell/InitializationProgress';
 import { KvView } from './views/KvView';
 import { CapacityView } from './views/CapacityView';
 import { ChunkBrowser } from './chunk/ChunkBrowser';
@@ -535,6 +536,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
       >
         {(
           <div hidden={domain !== Domain.Cluster} style={{ display: domain === Domain.Cluster ? 'flex' : 'none' }} className="tw-flex-1 tw-min-h-0 tw-flex-col">{!managed && <div className="tw-px-4 tw-py-2 tw-text-xs tw-bg-panel tw-border-b tw-border-border">Physical topology · Rack → Node → Service · Deploy and manage services here</div>}
+          {nodeManagement && <InitializationProgress readonly={readonly} />}
           {!clusterInitialized && !loading && !logError && <p className="tw-px-4 tw-py-2 tw-text-xs tw-text-muted" data-testid="bootstrap-state">{nodeManagement ? 'Bootstrap: create a rack, move discovered candidates, then initialize Group 0 in KV. This draft is local until publication.' : 'Bootstrap: add racks and nodes, deploy KV servers, then initialize Group 0 in KV. Changes are saved in the default workspace.'}</p>}
           <div className="tw-flex-1 tw-min-h-0"><ClusterView
             active={domain === Domain.Cluster}
