@@ -71,3 +71,6 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
 - Rootless build prerequisite resolved after the operator installed `uidmap`;
   the existing subordinate ID ranges work and the rootless namespace probe
   passes. OCI build has reached BuildKit; browser baseline remains pending.
+- Shared disk input validation now rejects capacities that truncate allocation
+  units or overflow the protocol zone count. The new geometry regression and
+  existing hardware tests pass (nine cases); affected all-target Clippy passes.
