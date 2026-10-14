@@ -128,3 +128,111 @@ fn invalid_credentials_and_endpoints_never_echo_secrets() {
         assert!(!format!("{error:?}").contains("secret"));
     }
 }
+
+#[tokio::test]
+async fn safe_retry_preserves_body_and_refreshes_credentials_per_attempt() {
+    struct TestCredential(std::sync::atomic::AtomicUsize);
+    impl crowdb_sdk_core::CredentialProvider for TestCredential {
+        fn bearer(&self) -> Result<Option<String>, Error> {
+            Ok(Some(
+                if self.0.fetch_add(1, Ordering::AcqRel) < 2 {
+                    "old"
+                } else {
+                    "new"
+                }
+                .into(),
+            ))
+        }
+    }
+    let mut peer = TestPeer::start_statuses(
+        "{\"code\":\"unavailable\",\"message\":\"busy\",\"request_id\":\"fixture\",\"retryable\":true}",
+        false,
+        vec![503, 200],
+    )
+    .await;
+    let client = HttpClient::with_provider(
+        &peer.endpoint,
+        std::sync::Arc::new(TestCredential(std::sync::atomic::AtomicUsize::new(0))),
+        HttpConfig {
+            retry_backoff: std::time::Duration::ZERO,
+            ..config()
+        },
+    )
+    .unwrap();
+    let body = serde_json::json!({"operation":"same-token"});
+    let _: serde_json::Value = client
+        .json_idempotent("POST", &["publish"], Some(&body))
+        .await
+        .unwrap();
+    let first = peer.requests.recv().await.unwrap();
+    let second = peer.requests.recv().await.unwrap();
+    assert!(first.ends_with("{\"operation\":\"same-token\"}"));
+    assert!(second.ends_with("{\"operation\":\"same-token\"}"));
+    assert!(first.to_lowercase().contains("authorization: bearer old"));
+    assert!(second.to_lowercase().contains("authorization: bearer new"));
+}
+#[tokio::test]
+async fn auth_is_not_retried_and_retry_sleep_obeys_the_overall_deadline() {
+    let mut denied = TestPeer::start_statuses(
+        "{\"code\":\"unauthorized\",\"message\":\"denied\",\"request_id\":\"fixture\",\"retryable\":true}",
+        false,
+        vec![401],
+    )
+    .await;
+    let client = HttpClient::with_config(&denied.endpoint, None, config()).unwrap();
+    assert!(matches!(
+        client
+            .json_idempotent::<(), serde_json::Value>("GET", &["read"], None)
+            .await,
+        Err(Error::Service { status: 401, .. })
+    ));
+    denied.requests.recv().await.unwrap();
+    assert!(denied.requests.try_recv().is_err());
+    let mut busy = TestPeer::start_statuses(
+        "{\"code\":\"unavailable\",\"message\":\"busy\",\"request_id\":\"fixture\",\"retryable\":true}",
+        false,
+        vec![503, 200],
+    )
+    .await;
+    let client = HttpClient::with_config(
+        &busy.endpoint,
+        None,
+        HttpConfig {
+            overall_timeout: std::time::Duration::from_millis(20),
+            retry_backoff: std::time::Duration::from_secs(1),
+            ..config()
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        client
+            .json_idempotent::<(), serde_json::Value>("GET", &["read"], None)
+            .await,
+        Err(Error::Deadline)
+    ));
+    busy.requests.recv().await.unwrap();
+    assert!(busy.requests.try_recv().is_err());
+    let _: serde_json::Value = client.json::<(), _>("GET", &["after"], None).await.unwrap();
+}
+#[test]
+fn provider_errors_and_oversize_endpoint_diagnostics_do_not_echo_sensitive_input() {
+    struct TestBadCredential;
+    impl crowdb_sdk_core::CredentialProvider for TestBadCredential {
+        fn bearer(&self) -> Result<Option<String>, Error> {
+            Err(Error::Invalid("PRIVATE-CREDENTIAL".into()))
+        }
+    }
+    let result = HttpClient::with_provider(
+        "http://localhost",
+        std::sync::Arc::new(TestBadCredential),
+        config(),
+    );
+    let error = result.err().unwrap();
+    assert!(!format!("{error:?}").contains("PRIVATE-CREDENTIAL"));
+    let endpoint = format!("http://localhost/{}", "PRIVATE-CREDENTIAL".repeat(1000));
+    assert!(!format!(
+        "{:?}",
+        HttpClient::with_config(&endpoint, None, config()).err().unwrap()
+    )
+    .contains("PRIVATE-CREDENTIAL"));
+}

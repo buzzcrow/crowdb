@@ -21,6 +21,11 @@ pub struct TestPeer {
 }
 impl TestPeer {
     pub async fn start(body: &'static str, gated: bool) -> Self {
+        Self::start_statuses(body, gated, vec![200]).await
+    }
+    pub async fn start_statuses(body: &'static str, gated: bool, statuses: Vec<u16>) -> Self {
+        let statuses = Arc::new(statuses);
+        let calls = Arc::new(AtomicUsize::new(0));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let connections = Arc::new(AtomicUsize::new(0));
@@ -33,7 +38,7 @@ impl TestPeer {
                 tokio::select! {
                     accepted=listener.accept()=> {
                         let (socket,_)=accepted.unwrap(); counter.fetch_add(1,Ordering::AcqRel);
-                        clients.spawn(serve(socket,tx.clone(),gate.clone(),body));
+                        clients.spawn(serve(socket,tx.clone(),gate.clone(),body,statuses.clone(),calls.clone()));
                     },
                     Some(_)=clients.join_next(),if !clients.is_empty()=>{},
                 }
@@ -54,7 +59,14 @@ impl Drop for TestPeer {
     }
 }
 
-async fn serve(mut socket: TcpStream, tx: mpsc::Sender<String>, mut gate: watch::Receiver<bool>, body: &str) {
+async fn serve(
+    mut socket: TcpStream,
+    tx: mpsc::Sender<String>,
+    mut gate: watch::Receiver<bool>,
+    body: &str,
+    statuses: Arc<Vec<u16>>,
+    calls: Arc<AtomicUsize>,
+) {
     loop {
         let mut header = Vec::new();
         while !header.ends_with(b"\r\n\r\n") {
@@ -63,14 +75,28 @@ async fn serve(mut socket: TcpStream, tx: mpsc::Sender<String>, mut gate: watch:
             assert!(header.len() <= 4096);
         }
         let header = String::from_utf8(header).unwrap();
-        tx.send(header).await.unwrap();
+        let length = header
+            .lines()
+            .find_map(|line| {
+                line.to_ascii_lowercase()
+                    .strip_prefix("content-length: ")
+                    .map(|value| value.parse::<usize>().unwrap())
+            })
+            .unwrap_or(0);
+        let mut data = vec![0; length];
+        socket.read_exact(&mut data).await.unwrap();
+        tx.send(format!("{header}{}", String::from_utf8_lossy(&data)))
+            .await
+            .unwrap();
         while !*gate.borrow() {
             if gate.changed().await.is_err() {
                 return;
             }
         }
+        let index = calls.fetch_add(1, Ordering::AcqRel);
+        let status = statuses[index.min(statuses.len() - 1)];
         let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            "HTTP/1.1 {status} Result\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
             body.len()
         );
         if socket.write_all(response.as_bytes()).await.is_err() {

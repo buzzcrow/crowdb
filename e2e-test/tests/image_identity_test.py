@@ -56,6 +56,18 @@ class ImageIdentityTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "server sources differ"):
             verify_server_sources(self.root, revision)
 
+    def test_sdk_packaging_does_not_exempt_server_inputs(self):
+        helper = self.root / "tools/sdk/package.py"
+        helper.parent.mkdir(parents=True)
+        helper.write_text("host SDK packaging\n")
+        self.commit()
+        revision = self.git("rev-parse", "HEAD")
+        helper.write_text("changed source-package gate\n")
+        self.assertTrue(verify_server_sources(self.root, revision)["server_sources_match"])
+        (self.root / "app/server/src/main.rs").write_text("changed Dataset service\n")
+        with self.assertRaisesRegex(ValueError, "server sources differ"):
+            verify_server_sources(self.root, revision)
+
     def test_host_container_cli_does_not_exempt_shared_deployment_or_runtime_inputs(self):
         source = self.root / "app/crowdb-cli/src/commands/container_cluster/runtime.rs"
         source.parent.mkdir(parents=True)

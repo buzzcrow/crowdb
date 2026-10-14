@@ -43,7 +43,16 @@ impl Default for HttpConfig {
 
 impl HttpConfig {
     pub(crate) fn valid(&self) -> bool {
-        !self.connect_timeout.is_zero()
+        [
+            self.connect_timeout,
+            self.request_timeout,
+            self.overall_timeout,
+            self.stream_timeout,
+            self.pool_idle_timeout,
+        ]
+        .iter()
+        .all(|duration| std::time::Instant::now().checked_add(*duration).is_some())
+            && !self.connect_timeout.is_zero()
             && !self.request_timeout.is_zero()
             && !self.overall_timeout.is_zero()
             && !self.stream_timeout.is_zero()

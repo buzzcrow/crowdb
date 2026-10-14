@@ -30,6 +30,8 @@ def package(destination):
             stream.extractall(source / "unpacked", filter="data")
         project, = (source / "unpacked").iterdir()
         run(["cargo", "metadata", "--manifest-path", str(project / "Cargo.toml"), "--locked", "--no-deps", "--format-version", "1"], stdout=subprocess.DEVNULL)
+        run(["cargo", "test", "--manifest-path", str(project / "Cargo.toml"), "--workspace", "--locked"],
+            cwd=project, env=dict(os.environ, PYO3_PYTHON=sys.executable))
         run(["maturin", "build", "--locked", "--interpreter", sys.executable, "--out", str(destination)], cwd=project)
     wheel, = destination.glob("*.whl")
     environment = destination / "consumer"

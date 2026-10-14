@@ -107,6 +107,7 @@ impl DatasetClient {
         file.rewind().await?;
         let mut remaining = length;
         let mut index = 0;
+        let concurrency = options.concurrency.min(self.http.request_capacity());
         let mut tasks = tokio::task::JoinSet::new();
         while remaining > 0 {
             let size = usize::try_from(remaining.min(options.part_size as u64)).map_err(|_| Error::Limit)?;
@@ -119,7 +120,7 @@ impl DatasetClient {
                     return Err(Error::Integrity);
                 }
             } else {
-                if tasks.len() == options.concurrency {
+                if tasks.len() == concurrency {
                     tasks
                         .join_next()
                         .await
@@ -227,13 +228,7 @@ struct TemporaryPath(Option<std::path::PathBuf>);
 impl Drop for TemporaryPath {
     fn drop(&mut self) {
         if let Some(path) = self.0.take() {
-            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-                runtime.spawn(async move {
-                    let _ = tokio::fs::remove_file(path).await;
-                });
-            } else {
-                let _ = std::fs::remove_file(path);
-            }
+            let _ = std::fs::remove_file(path);
         }
     }
 }

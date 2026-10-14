@@ -8,7 +8,7 @@ use crowdb_sdk_core::{Error, HttpConfig};
 use crowdb_sdk_dataset::DatasetClient;
 use pyo3::{exceptions::PyRuntimeError, prelude::*};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,
 };
 use tokio::runtime::Runtime;
@@ -25,6 +25,8 @@ struct Resources {
     pid: u32,
     closed: AtomicBool,
     credentials: Arc<Credentials>,
+    operations: AtomicUsize,
+    max_operations: usize,
 }
 impl Resources {
     fn check(&self) -> PyResult<()> {
@@ -38,6 +40,19 @@ impl Resources {
         }
         Ok(())
     }
+    fn budget(self: &Arc<Self>, bytes: usize) -> Result<InputBudget, Error> {
+        self.operations
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < self.max_operations).then_some(count + 1)
+            })
+            .map_err(|_| Error::Capacity)?;
+        let operation = OperationPermit(self.clone());
+        let bytes = self.client().reserve_transfer(bytes)?;
+        Ok(InputBudget {
+            _bytes: bytes,
+            _operation: operation,
+        })
+    }
     fn runtime(&self) -> &Runtime {
         self.runtime
             .as_ref()
@@ -49,6 +64,16 @@ impl Resources {
             .expect("client owned until final resource release")
             .clone()
     }
+}
+struct OperationPermit(Arc<Resources>);
+impl Drop for OperationPermit {
+    fn drop(&mut self) {
+        self.0.operations.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+struct InputBudget {
+    _bytes: crowdb_sdk_core::BufferPermit,
+    _operation: OperationPermit,
 }
 impl Drop for Resources {
     fn drop(&mut self) {
@@ -69,19 +94,59 @@ impl Drop for Resources {
 struct Options {
     max_requests: usize,
     max_in_flight_bytes: usize,
+    max_request_bytes: usize,
+    max_response_bytes: usize,
+    max_idle_connections_per_host: usize,
+    connect_timeout: f64,
     request_timeout: f64,
+    overall_timeout: f64,
     stream_timeout: f64,
-    ca_pem: Option<Vec<u8>>,
+    pool_idle_timeout: f64,
+    max_attempts: usize,
+    retry_backoff: f64,
+    ca_pem: Option<String>,
 }
 impl Default for Options {
     fn default() -> Self {
+        let config = HttpConfig::default();
         Self {
-            max_requests: 8,
-            max_in_flight_bytes: 134_217_728,
-            request_timeout: 60.0,
-            stream_timeout: 1800.0,
+            max_requests: config.max_requests,
+            max_in_flight_bytes: config.max_in_flight_bytes,
+            max_request_bytes: config.max_request_bytes,
+            max_response_bytes: config.max_response_bytes,
+            max_idle_connections_per_host: config.max_idle_connections_per_host,
+            connect_timeout: config.connect_timeout.as_secs_f64(),
+            request_timeout: config.request_timeout.as_secs_f64(),
+            overall_timeout: config.overall_timeout.as_secs_f64(),
+            stream_timeout: config.stream_timeout.as_secs_f64(),
+            pool_idle_timeout: config.pool_idle_timeout.as_secs_f64(),
+            max_attempts: config.max_attempts,
+            retry_backoff: config.retry_backoff.as_secs_f64(),
             ca_pem: None,
         }
+    }
+}
+impl Options {
+    fn config(self) -> PyResult<HttpConfig> {
+        let duration = |value| {
+            std::time::Duration::try_from_secs_f64(value)
+                .map_err(|_| PyRuntimeError::new_err("invalid SDK duration"))
+        };
+        Ok(HttpConfig {
+            max_requests: self.max_requests,
+            max_in_flight_bytes: self.max_in_flight_bytes,
+            max_request_bytes: self.max_request_bytes,
+            max_response_bytes: self.max_response_bytes,
+            max_idle_connections_per_host: self.max_idle_connections_per_host,
+            connect_timeout: duration(self.connect_timeout)?,
+            request_timeout: duration(self.request_timeout)?,
+            overall_timeout: duration(self.overall_timeout)?,
+            stream_timeout: duration(self.stream_timeout)?,
+            pool_idle_timeout: duration(self.pool_idle_timeout)?,
+            max_attempts: self.max_attempts,
+            retry_backoff: duration(self.retry_backoff)?,
+            ca_pem: self.ca_pem.map(String::into_bytes),
+        })
     }
 }
 #[pyclass(frozen)]
@@ -99,25 +164,12 @@ impl NativeClient {
         bearer: Option<String>,
         options: &str,
     ) -> PyResult<Self> {
-        if options.len() > 8192 {
+        if options.len() > 128 * 1024 {
             return Err(PyRuntimeError::new_err("SDK configuration limit"));
         }
         let options: Options =
             serde_json::from_str(options).map_err(|_| PyRuntimeError::new_err("invalid SDK options"))?;
-        let Options {
-            max_requests,
-            max_in_flight_bytes,
-            request_timeout,
-            stream_timeout,
-            ca_pem,
-        } = options;
-        if !request_timeout.is_finite()
-            || !stream_timeout.is_finite()
-            || request_timeout <= 0.0
-            || stream_timeout <= 0.0
-        {
-            return Err(PyRuntimeError::new_err("invalid deadlines"));
-        }
+        let config = options.config()?;
         py.detach(move || {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(2)
@@ -125,14 +177,7 @@ impl NativeClient {
                 .build()
                 .map_err(|_| PyRuntimeError::new_err("cannot create SDK runtime"))?;
             let entered = runtime.enter();
-            let config = HttpConfig {
-                max_requests,
-                max_in_flight_bytes,
-                request_timeout: std::time::Duration::from_secs_f64(request_timeout),
-                stream_timeout: std::time::Duration::from_secs_f64(stream_timeout),
-                ca_pem,
-                ..HttpConfig::default()
-            };
+            let max_operations = config.max_requests;
             let credentials = Arc::new(Credentials(arc_swap::ArcSwapOption::from(bearer.map(Arc::new))));
             let client =
                 DatasetClient::with_credential_provider(&endpoint, &name, credentials.clone(), config)
@@ -145,34 +190,55 @@ impl NativeClient {
                     pid: std::process::id(),
                     closed: AtomicBool::new(false),
                     credentials,
+                    operations: AtomicUsize::new(0),
+                    max_operations,
                 }),
             })
         })
     }
-    fn start(&self, operation: String, arguments: String) -> PyResult<operation::NativeOperation> {
+    fn start(&self, operation: &str, arguments: &str) -> PyResult<operation::NativeOperation> {
         self.resources.check()?;
-        if arguments.len() > 8 * 1024 * 1024 {
-            return Err(PyRuntimeError::new_err("metadata exceeds SDK limit"));
+        if arguments.len() > 8 * 1024 * 1024 || operation.len() > 64 {
+            return Ok(operation::NativeOperation::failed(
+                self.resources.clone(),
+                &Error::Limit,
+            ));
         }
+        let budget = match self.resources.budget(arguments.len() * 8 + 4096) {
+            Ok(b) => b,
+            Err(error) => return Ok(operation::NativeOperation::failed(self.resources.clone(), &error)),
+        };
         Ok(operation::NativeOperation::spawn(
             self.resources.clone(),
-            operation,
-            arguments,
+            operation.to_owned(),
+            arguments.to_owned(),
+            budget,
         ))
     }
-    fn part(&self, id: String, index: u32, data: &[u8]) -> PyResult<operation::NativeOperation> {
+    fn part(&self, id: &str, index: u32, data: &[u8]) -> PyResult<operation::NativeOperation> {
         self.resources.check()?;
         if data.is_empty() || data.len() > 4 * 1024 * 1024 {
-            return Err(PyRuntimeError::new_err("upload part must contain 1..4 MiB"));
+            return Err(PyRuntimeError::new_err(
+                "upload part must contain 1 byte through 4 MiB",
+            ));
         }
+        if id.len() != 32
+            || !id
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            || id.bytes().all(|b| b == b'0')
+        {
+            return Ok(operation::NativeOperation::failed(
+                self.resources.clone(),
+                &Error::Invalid("upload identity".into()),
+            ));
+        }
+        let id = id.to_owned();
         let client = self.resources.client();
-        let credit = match client.reserve_transfer(data.len()) {
+        let credit = match self.resources.budget(data.len()) {
             Ok(credit) => credit,
             Err(error) => {
-                return Ok(operation::NativeOperation::spawn_future(
-                    self.resources.clone(),
-                    async move { Err(error) },
-                ))
+                return Ok(operation::NativeOperation::failed(self.resources.clone(), &error));
             }
         };
         let data = bytes::Bytes::copy_from_slice(data);
@@ -186,15 +252,23 @@ impl NativeClient {
             },
         ))
     }
-    fn stream(&self, kind: String, arguments: String) -> PyResult<stream::NativeStream> {
+    fn stream(&self, kind: &str, arguments: &str) -> PyResult<stream::NativeStream> {
         self.resources.check()?;
-        if arguments.len() > 8 * 1024 * 1024 {
-            return Err(PyRuntimeError::new_err("metadata exceeds SDK limit"));
+        if arguments.len() > 8 * 1024 * 1024 || kind.len() > 64 {
+            return Ok(stream::NativeStream::failed(
+                self.resources.clone(),
+                &Error::Limit,
+            ));
         }
+        let budget = match self.resources.budget(arguments.len() * 8 + 4096) {
+            Ok(b) => b,
+            Err(error) => return Ok(stream::NativeStream::failed(self.resources.clone(), &error)),
+        };
         Ok(stream::NativeStream::spawn(
             self.resources.clone(),
-            kind,
-            arguments,
+            kind.to_owned(),
+            arguments.to_owned(),
+            budget,
         ))
     }
     fn refresh_bearer(&self, bearer: Option<String>) -> PyResult<()> {

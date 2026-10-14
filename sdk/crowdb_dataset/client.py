@@ -147,7 +147,7 @@ class DatasetClient:
     def __init__(self, endpoint, name, bearer=None, **options):
         from ._native import NativeClient
         if isinstance(options.get("ca_pem"), bytes):
-            options["ca_pem"] = list(options["ca_pem"])
+            options["ca_pem"] = options["ca_pem"].decode("ascii")
         self._native = NativeClient(endpoint, name, bearer, json.dumps(options))
         self._pid = os.getpid()
 
@@ -183,7 +183,8 @@ class DatasetClient:
     def upload_status(self, id): return self._call("upload_status", {"id": id})
     def complete_upload(self, id): return self._call("complete_upload", {"id": id})
     def abort_upload(self, id): return self._call("abort_upload", {"id": id})
-    def upload_file(self, path, id): return self._call("upload_file", {"path": os.fspath(path), "id": id})
+    def upload_file(self, path, id, *, part_size=1024 * 1024, concurrency=4):
+        return self._call("upload_file", {"path": os.fspath(path), "id": id, "part_size": part_size, "concurrency": concurrency})
     def download_to_path(self, snapshot, sample, field, path):
         return self._call("download_to_path", {"snapshot": snapshot, "sample": sample, "field": field, "path": os.fspath(path)})
     def start_read(self, plan): return self._call("start_read", plan)
@@ -264,6 +265,7 @@ class AsyncDatasetClient:
                 return await asyncio.to_thread(_result, pending, identity)
             except asyncio.CancelledError:
                 pending.cancel()
+                await asyncio.to_thread(pending.result)
                 raise
         return call
 
@@ -275,6 +277,7 @@ class AsyncDatasetClient:
         try: return await asyncio.to_thread(_result, pending, id)
         except asyncio.CancelledError:
             pending.cancel()
+            await asyncio.to_thread(pending.result)
             raise
 
     def stream_batch(self, request): return AsyncBatchStream(self._client.stream_batch(request))

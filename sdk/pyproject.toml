@@ -8,6 +8,7 @@ build-backend = "maturin"
 name = "crowdb-dataset"
 version = "0.1.0"
 description = "CrowDB Dataset HTTP SDK with a Rust core"
+readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 
@@ -15,4 +16,13 @@ license = "Apache-2.0"
 manifest-path = "crates/crowdb-sdk-python/Cargo.toml"
 python-source = "."
 module-name = "crowdb_dataset._native"
-include = ["README.md", "crates/crowdb-sdk-core/**", "crates/crowdb-sdk-dataset/**", "Cargo.toml", "Cargo.lock", ".cargo/config.toml"]
+include = [
+    { path = "contract-fixtures/**/*", format = "sdist" },
+    { path = "README.md", format = "sdist" },
+    { path = "CHANGELOG.md", format = "sdist" },
+    { path = "crates/crowdb-sdk-core/**/*", format = "sdist" },
+    { path = "crates/crowdb-sdk-dataset/**/*", format = "sdist" },
+    { path = "Cargo.toml", format = "sdist" },
+    { path = "Cargo.lock", format = "sdist" },
+    { path = ".cargo/config.toml", format = "sdist" },
+]

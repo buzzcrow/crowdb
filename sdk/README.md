@@ -1,64 +1,177 @@
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
 <!-- Licensed under the Apache License, Version 2.0. -->
 
-# CrowDB SDK
+# CrowDB Dataset SDK
 
-The SDK is an independent Rust workspace inside the CrowDB repository. The
-HTTP client uses reqwest, Tokio and rustls. Applications supply their Tokio
-runtime; client clones reuse the connection pool and admission budgets.
+The independent `sdk/` Rust workspace provides a Dataset HTTP client and the
+`crowdb-dataset` Python package. Rust owns HTTP, retries, integrity, transfers and
+read progress. Python uses the same implementation through PyO3; applications
+can use synchronous or asynchronous methods. Rust and installed Python clients
+pass real storage/container acceptance, including service restart, payload
+integrity, worker partition and explicit progress replay.
 
-Implementation is in progress. The current service supports JSON Dataset
-creation/open, inline Manifest preparation/publication, operation and Snapshot
-inspection, Manifest retrieval, stable selection and retain/release. The new
-routes start at `/api/dataset/v1/namespaces/dataset-ns/datasets/{name}`; names
-are encoded as one path segment. The existing bincode routes remain available.
+- Rust packages: `crowdb-sdk-core`, `crowdb-sdk-dataset`, version 0.1.0.
+- Python: `crowdb_dataset.DatasetClient`, `AsyncDatasetClient`, `DatasetIterable`.
+- HTTP: reqwest/Tokio/rustls, pooled HTTP/1.1, API v1. Rust callers supply Tokio.
+  Python owns one two-worker Rust runtime per client and releases the GIL while
+  waiting. Create clients inside workers; inherited live handles are rejected.
+- The server uses real Dataset chunks (`Dataset = 7`) through Chunk-KV and normal
+  chunk placement/durability. SDK packages have no server/storage-FFI dependency.
+- Public [OpenAPI](../doc/design/access-server/dataset/openapi-crowdb-dataset-v1.yaml)
+  defines JSON and binary framing. Legacy bincode routes remain internal
+  compatibility interfaces. S3/Iceberg standard access uses ecosystem SDKs.
 
-The complete public contract is in
-[Dataset OpenAPI](../doc/design/access-server/dataset/openapi-crowdb-dataset-v1.yaml).
-Not every route is implemented yet. Chunk-backed uploads and reclamation,
-streaming batch delivery, independent read sessions, acknowledged progress,
-safe retry policy, Python native bindings and installable wheels remain in the
-[REST plan](../doc/working/plan-dataset-rest-api.md) and
-[SDK plan](../doc/working/plan-dataset-sdk.md). File transfer integration with batch streams and resource admission remains
-pending. The existing Python
-iterable package is still the earlier adapter, not the native SDK wrapper.
+## Python
 
-The binary batch decoder consumes data incrementally. Frame digest checks
-protect emitted bytes; whole-field integrity is established only at field end,
-and batch success requires the final frame and HTTP EOF. Bounded convenience
-reads transfer result ownership to callers, who budget any retained results.
-
-`HttpConfig` controls connection/request deadlines, idle pooling, request and
-response bounds, maximum active requests and active bytes. Admission uses
-atomics and fails explicitly when full. There is no unbounded waiting queue.
-JSON is serialized under an admitted byte limit. Dropping a request future
-cancels its transport work and returns its capacity. Mutations currently use
-one attempt; callers retain the supplied operation/upload token for recovery.
-The credential is static at this stage; provider refresh and bounded retry
-policy are pending. TLS verification uses rustls defaults.
-
-Run from the repository root:
+Build a wheel with the interpreter it will be installed into:
 
 ```sh
-pixi run test-dataset-sdk
-pixi run sdk-fmt-check
-pixi run sdk-lint
+pixi run -- maturin build --release --manifest-path sdk/crates/crowdb-sdk-python/Cargo.toml --interpreter python --out sdk/target/dist
+pixi run -- python -m pip install sdk/target/dist/<matching-wheel>.whl
 ```
 
-The SDK has its own lockfile, package version and dependency resolver. It does
-not inherit the server's Hyper fork, storage FFI, C++ toolchain or RDMA clients.
-Its Python extension will use PyO3/maturin. Wheel/platform support will be
-published only after package installation and actual Dataset service acceptance.
-No benchmark driver or performance measurement is part of this implementation.
+Wheels require no Rust compiler at installation. A source build requires Rust
+and the selected interpreter. Current installation verification covers Linux
+x86_64, CPython 3.14 with and without the GIL; wheels are interpreter-specific.
+Other platforms/interpreters need their own build and acceptance. Dependencies
+resolve for Rust 1.85; the current build environment uses Rust 1.98.
 
-The control example creates/opens a Dataset, prepares and publishes an inline
-Manifest, checks latest and reads it back. Against a configured service, set
-`CROWDB_DATASET_ENDPOINT`, `CROWDB_DATASET_NAME` and the optional
-`CROWDB_DATASET_READ_TOKEN`, then run:
+```python
+from crowdb_dataset import DatasetClient, new_id, sample_id
+
+with DatasetClient("http://localhost:9093", "training", "token") as client:
+    # Create once; open an existing Dataset on later runs.
+    info = client.create()
+    upload_id = new_id()  # Keep this ID to resume the same file after interruption.
+    upload = client.upload_file("weights.bin", upload_id, concurrency=4)
+    publication = {
+        "operation": new_id(),  # Keep the operation and identical manifest for retries.
+        "parent": info["latest"],
+        "manifest": {
+            "schema": [{"name": "weights", "required": True}],
+            "samples": [{"id": sample_id(b"checkpoint"), "fields": {
+                "weights": {"kind": "payload", "upload": upload["id"]}
+            }}],
+        },
+    }
+    prepared = client.prepare(publication)  # Latest is unchanged.
+    snapshot = client.publish(publication)  # Remote publication completes here.
+    client.download_to_path(snapshot["id"], sample_id(b"checkpoint"),
+                            "weights", "restored.bin")
+```
+
+Async methods use `AsyncDatasetClient` with the same arguments. Metadata/file
+methods are awaited; `stream_batch` and `next_batch` return async context managers
+and iterators. Cancellation aborts the Rust operation. Closing a stream waits
+for producer cancellation and releases its admission; completed Python bytes
+remain valid. `refresh_bearer` updates the credential used by subsequent attempts.
+
+For training, send a ReadPlan with `id`, `snapshot` (`latest`, `stable`, or an
+immutable ID), selection, projected fields, batch size, partition and nullable
+shuffle. Selection supports explicit IDs, prefix, range, keyword, field match
+and composition. Predicates evaluate inline manifest metadata; payloads are
+fetched only after server selection/shuffle/partition.
+
+```python
+from crowdb_dataset import DatasetIterable, WorkerPartition
+
+plan = {
+    "id": new_id(), "snapshot": "latest",
+    "selection": {"kind": "prefix", "value": sample_id(b"sample-")},
+    "fields": ["label"], "batch_size": 64, "shuffle": None,
+}
+with DatasetClient("http://localhost:9093", "training", "token") as client:
+    for batch in DatasetIterable(client, plan, partition=WorkerPartition(worker=0, workers=2)):
+        consume(batch.header, batch.fields)
+        batch.acknowledge()
+```
+
+The iterable preserves its import name but now yields acknowledged batches.
+Continuing without acknowledgement fails. It never downloads another worker's
+samples and discards them. Save the read ID for resume; restarting with that
+same plan restores acknowledged progress. Fetch alone never advances progress.
+An expired connection can resume while its snapshot remains available; explicit
+`close_read` permanently closes that handle. At most one batch is issued per
+session; use independent sessions for concurrent workers. `next_batch` streams
+are the interface for fields exceeding the convenience batch limit.
+
+## Rust
+
+`DatasetClient` is cloneable; clones share the pool and atomic admission. It
+exposes create/open, upload parts/status/complete/abort, file transfer,
+prepare/publish/status, snapshot/manifest/listing, stable, retain/release,
+reclaim/status, batch streams, read plans and explicit progress/resume/close.
+`UploadOptions` controls part size and concurrency. File convenience defaults
+to 1-MiB parts and four transfers, bounded by the configured request capacity.
+Use 4-MiB parts for uploads up to the v1 limit of 10000 parts (39.0625 GiB).
 
 ```sh
 pixi run -- cargo run --manifest-path sdk/Cargo.toml --example control
 ```
 
-This is an inline control check. Chunk payload and installed Python acceptance
-remain pending.
+Set `CROWDB_DATASET_ENDPOINT`, `CROWDB_DATASET_NAME` and optional
+`CROWDB_DATASET_READ_TOKEN`. `examples/payload.rs` is a functional multi-part
+consumer with write/verify phases; the Dataset container fixture runs it.
+It contains no benchmark driver or timing threshold.
+
+## Bounds, completion and recovery
+
+- `HttpConfig` configures connect/request/overall/transfer deadlines, idle pool,
+  request/response windows, active requests/bytes, retry attempts/backoff and TLS
+  roots. Python exposes the same configuration names with durations in seconds.
+  The Dataset response window admits the v1 8-MiB header. Capacity exhaustion is
+  explicit; there is no unbounded request waiting queue.
+- File upload makes a bounded digest pass and bounded transfer pass. Completion
+  independently verifies durable parts and the whole digest. The completion
+  request uses the transfer deadline (default 30 minutes), matching the server's
+  longer integrity deadline. Retry an interrupted file with its original ID,
+  part configuration and bytes. Accepted parts are reused.
+- A lost storage reply is recovered only after confirmed durable chunk cursor
+  coverage, followed by integrity validation. Readable unconfirmed bytes are not
+  accepted. A fenced abandoned range is reclaimed before replacing its physical
+  allocation; the logical part identity stays unchanged.
+- Binary batches use one response for all selected fields. Frames carry MD5;
+  whole-field verification happens at field end. Success requires batch end and
+  HTTP EOF with no trailing bytes. Caller-owned writers may contain a verified
+  prefix on failure; discard it. `download_to_path` publishes a temporary file
+  only after verification and preserves the old destination on transfer error.
+- `get_batch`/`BatchStream.batch()` deliberately bound materialization (8 MiB
+  by default). Use streams/files for larger values. Python copies each bounded
+  native frame once. Retained Python bytes and completed Rust results belong to
+  callers; budget caller-retained data separately from SDK producer windows.
+- Only documented idempotent operations retry; bodies/tokens remain unchanged
+  within one overall deadline. Authentication, integrity and semantic conflicts
+  are not blanket-retried. Rust ambiguous errors and Python exceptions retain
+  recovery identity. Inspect status and retry the identical publication after
+  response loss; the operation's Published record can precede head advancement.
+  A successful publish call establishes publication, rather than part completion
+  or preparation. Later latest changes preserve historical publish retries.
+- Manifests declare the complete current sample membership. Omitted samples
+  disappear; surviving samples may inherit omitted optional fields through
+  parents. Explicit tombstones hide inherited fields, including required fields
+  that are explicitly removed. Required field names remain in the schema.
+- JSON/manifest metadata is bounded to 8 MiB; inline values to 64 KiB. Read plans
+  admit at most 100000 selected IDs and keep immutable 1024-ID pages separately
+  from the small acknowledged cursor. Close/cancel is scoped; leases expire
+  after 60 seconds without activity and renew during active streaming.
+- Prepared candidates persist until publication or explicit reclaim. Reclaim
+  preserves head/stable/retained/ancestor/live-read data. Deferred cleanup reports
+  pending; shared ranges do not count as reclaimed whole chunks.
+
+Local disk cache/checkpoint staging, direct chunk access, RDMA, storage-side
+Parquet pushdown and benchmark implementation/measurement remain future work.
+
+## Verification
+
+```sh
+pixi run test-dataset-sdk
+pixi run test-dataset-sdk-python
+pixi run sdk-fmt-check
+pixi run sdk-lint
+pixi run check-dataset-sdk-boundary
+pixi run clean-env && pixi run test-e2e-dataset
+```
+
+The packaging gate builds an sdist outside the repository and installs its wheel
+in a compiler-free consumer PATH. Root Cargo gates do not cover this workspace;
+SDK and wheel tasks are registered explicitly in CI.

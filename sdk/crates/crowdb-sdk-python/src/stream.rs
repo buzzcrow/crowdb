@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{failure, Resources};
+use super::{failure, InputBudget, Resources};
 use arc_swap::ArcSwapOption;
 use bytes::Bytes;
 use crowdb_sdk_dataset::{wire::BatchEvent, Error};
@@ -12,8 +12,12 @@ use std::sync::{
 };
 use tokio::{sync::Notify, task::AbortHandle};
 
+struct HeaderText {
+    text: String,
+    _credit: crowdb_sdk_core::BufferPermit,
+}
 enum Event {
-    Header(String),
+    Header(HeaderText),
     Data(Bytes),
     FieldEnd,
     End,
@@ -110,15 +114,27 @@ impl Drop for ReadingGuard<'_> {
 pub struct NativeStream {
     resources: Arc<Resources>,
     queue: Arc<Queue>,
-    abort: AbortHandle,
+    abort: Option<AbortHandle>,
 }
 impl NativeStream {
-    pub(super) fn spawn(resources: Arc<Resources>, kind: String, args: String) -> Self {
+    pub(super) fn failed(resources: Arc<Resources>, error: &Error) -> Self {
+        let queue = Arc::new(Queue::new());
+        queue.slots[0].store(Some(Arc::new(Event::Failure(failure(error)))));
+        queue.tail.store(1, Ordering::Release);
+        queue.closed.store(true, Ordering::Release);
+        Self {
+            resources,
+            queue,
+            abort: None,
+        }
+    }
+    pub(super) fn spawn(resources: Arc<Resources>, kind: String, args: String, budget: InputBudget) -> Self {
         let queue = Arc::new(Queue::new());
         let producer = ProducerGuard(queue.clone());
         let client = resources.client();
         let task = resources.runtime().spawn(async move {
             let guard = producer;
+            let _budget = budget;
             let result = async {
                 let mut stream = match kind.as_str() {
                     "batch" => client.stream_batch(&serde_json::from_str(&args)?).await?,
@@ -127,7 +143,14 @@ impl NativeStream {
                 };
                 while let Some(event) = stream.next_event().await? {
                     let event = match event {
-                        BatchEvent::Header(h) => Event::Header(serde_json::to_string(h.as_ref())?),
+                        BatchEvent::Header(h) => {
+                            let credit =
+                                client.reserve_transfer(crowdb_sdk_dataset::wire::MAX_HEADER_FRAME)?;
+                            Event::Header(HeaderText {
+                                text: serde_json::to_string(h.as_ref())?,
+                                _credit: credit,
+                            })
+                        }
                         BatchEvent::Data(b) => Event::Data(b),
                         BatchEvent::FieldEnd => Event::FieldEnd,
                         BatchEvent::End => Event::End,
@@ -146,7 +169,7 @@ impl NativeStream {
         Self {
             resources,
             queue,
-            abort: task.abort_handle(),
+            abort: Some(task.abort_handle()),
         }
     }
 }
@@ -169,7 +192,10 @@ impl NativeStream {
         let _reading = ReadingGuard(&self.queue.reading);
         let event = py.detach(|| self.resources.runtime().block_on(self.queue.pop()));
         Ok(match event.as_deref() {
-            Some(Event::Header(h)) => Some(("header".into(), h.into_pyobject(py)?.into_any().unbind())),
+            Some(Event::Header(h)) => Some((
+                "header".into(),
+                h.text.as_str().into_pyobject(py)?.into_any().unbind(),
+            )),
             Some(Event::Data(b)) => Some(("data".into(), PyBytes::new(py, b).into_any().unbind())),
             Some(Event::FieldEnd) => Some(("field_end".into(), py.None())),
             Some(Event::End) => Some(("end".into(), py.None())),
@@ -180,18 +206,39 @@ impl NativeStream {
     fn cancel(&self) {
         if self.resources.pid == std::process::id() {
             self.queue.cancel();
-            self.abort.abort();
+            if let Some(abort) = &self.abort {
+                abort.abort();
+            }
         }
     }
-    fn close(&self) {
+    fn close(&self, py: Python<'_>) -> PyResult<()> {
+        if self.resources.pid != std::process::id() {
+            return Err(PyRuntimeError::new_err("inherited stream cannot be used"));
+        }
         self.cancel();
+        py.detach(|| {
+            self.resources.runtime().block_on(async {
+                loop {
+                    let closed = self.queue.available.notified();
+                    tokio::pin!(closed);
+                    closed.as_mut().enable();
+                    if self.queue.closed.load(Ordering::Acquire) {
+                        break;
+                    }
+                    closed.await;
+                }
+            });
+        });
+        Ok(())
     }
 }
 impl Drop for NativeStream {
     fn drop(&mut self) {
         if self.resources.pid == std::process::id() {
             self.queue.cancel();
-            self.abort.abort();
+            if let Some(abort) = &self.abort {
+                abort.abort();
+            }
         }
     }
 }

@@ -13,13 +13,32 @@ pub struct ServiceError {
 
 /// Transport details deliberately omit request URLs and credentials.
 #[derive(Debug, thiserror::Error)]
-#[error("HTTP transport failed")]
+#[error("HTTP transport failed ({})", self.kind())]
 pub struct TransportError {
     #[source]
     inner: reqwest::Error,
 }
 
 impl TransportError {
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        if self.inner.is_timeout() {
+            "timeout"
+        } else if self.inner.is_connect() {
+            "connect"
+        } else if self.inner.is_builder() {
+            "builder"
+        } else if self.inner.is_body() {
+            "body"
+        } else if self.inner.is_decode() {
+            "decode"
+        } else if self.inner.is_request() {
+            "request"
+        } else {
+            "other"
+        }
+    }
+
     pub(crate) fn retryable(&self) -> bool {
         self.inner.is_timeout() || (self.inner.is_request() && !self.inner.is_connect())
     }
@@ -72,7 +91,15 @@ impl From<reqwest::Error> for Error {
 impl Error {
     #[must_use]
     pub fn with_identity(self, identity: &str) -> Self {
-        if matches!(self, Self::Transport(_) | Self::Deadline) {
+        if matches!(
+            &self,
+            Self::Transport(_)
+                | Self::Deadline
+                | Self::Service {
+                    status: 503 | 504,
+                    ..
+                }
+        ) {
             Self::Ambiguous {
                 identity: identity.into(),
                 source: Box::new(self),

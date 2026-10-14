@@ -38,7 +38,17 @@ def write():
         assert client.open()["latest"] == info["latest"]
         published = client.publish(publication)
         assert published["id"] == prepared["id"]
-        state_file.write_text(json.dumps({"publication": publication, "snapshot": published["id"], "upload": upload_id}))
+        plan = {"id": new_id(), "snapshot": "latest",
+                "selection": {"kind": "prefix", "value": sample_id(b"python-")},
+                "fields": ["label"], "batch_size": 1, "shuffle": None,
+                "partition": WorkerPartition().as_dict()}
+        session = client.start_read(plan)
+        with client.next_batch(plan["id"]) as stream:
+            issued = stream.batch().header
+        assert client.progress(plan["id"])["cursor"] == session["acknowledged"]
+        state_file.write_text(json.dumps({"publication": publication,
+            "snapshot": published["id"], "upload": upload_id,
+            "read": plan["id"], "acknowledged": session["acknowledged"], "issued": issued}))
         print("installed Python SDK uploaded and published real Dataset bytes", flush=True)
 
 
@@ -60,6 +70,15 @@ def verify():
         assert client.publish(state["publication"])["id"] == snapshot
         assert client.operation(state["publication"]["operation"])["id"] == snapshot
         assert client.upload_status(state["upload"])["state"] == "claimed"
+        resumed = client.resume_read(state["read"])
+        assert resumed["snapshot"] == snapshot and resumed["acknowledged"] == state["acknowledged"]
+        with client.next_batch(state["read"]) as stream:
+            replay = stream.batch().header
+        assert replay["sample_ids"] == state["issued"]["sample_ids"]
+        assert replay["next"] == state["issued"]["next"]
+        progress = client.acknowledge(state["read"], state["acknowledged"], replay["next"])
+        assert client.resume_read(state["read"])["acknowledged"] == progress["cursor"]
+        client.close_read(state["read"])
         destination = root / "python-output.bin"
         client.download_to_path(snapshot, sample_id(b"python-0"), "value", destination)
         with destination.open("rb") as stream: actual = hashlib.file_digest(stream, "md5").digest()

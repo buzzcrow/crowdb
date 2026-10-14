@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{failure, Resources};
+use super::{failure, InputBudget, Resources};
 use arc_swap::ArcSwapOption;
 use crowdb_sdk_dataset::{DatasetClient, Error};
 use pyo3::{exceptions::PyRuntimeError, prelude::*};
@@ -25,12 +25,25 @@ impl Drop for CompletionGuard {
 pub struct NativeOperation {
     resources: Arc<Resources>,
     completion: Arc<Completion>,
-    abort: AbortHandle,
+    abort: Option<AbortHandle>,
 }
 impl NativeOperation {
-    pub(super) fn spawn(resources: Arc<Resources>, name: String, args: String) -> Self {
+    pub(super) fn failed(resources: Arc<Resources>, error: &Error) -> Self {
+        Self {
+            resources,
+            completion: Arc::new(Completion {
+                result: ArcSwapOption::from(Some(Arc::new(Err(failure(error))))),
+                ready: Notify::new(),
+            }),
+            abort: None,
+        }
+    }
+    pub(super) fn spawn(resources: Arc<Resources>, name: String, args: String, budget: InputBudget) -> Self {
         let client = resources.client();
-        Self::spawn_future(resources, async move { dispatch(client, &name, &args).await })
+        Self::spawn_future(resources, async move {
+            let _budget = budget;
+            dispatch(client, &name, &args).await
+        })
     }
     pub(super) fn spawn_future(
         resources: Arc<Resources>,
@@ -50,7 +63,7 @@ impl NativeOperation {
         Self {
             resources,
             completion,
-            abort: task.abort_handle(),
+            abort: Some(task.abort_handle()),
         }
     }
 }
@@ -80,18 +93,48 @@ impl NativeOperation {
     }
     fn cancel(&self) {
         if self.resources.pid == std::process::id() {
-            self.abort.abort();
+            if let Some(abort) = &self.abort {
+                abort.abort();
+            }
         }
     }
 }
 impl Drop for NativeOperation {
     fn drop(&mut self) {
         if self.resources.pid == std::process::id() {
-            self.abort.abort();
+            if let Some(abort) = &self.abort {
+                abort.abort();
+            }
         }
     }
 }
 async fn dispatch(c: DatasetClient, name: &str, args: &str) -> Result<String, Error> {
+    match name {
+        "prepare" => {
+            return Ok(serde_json::to_string(
+                &c.prepare(&serde_json::from_str(args)?).await?,
+            )?)
+        }
+        "publish" => {
+            return Ok(serde_json::to_string(
+                &c.publish(&serde_json::from_str(args)?).await?,
+            )?)
+        }
+        "create_upload" => {
+            return Ok(serde_json::to_string(
+                &c.create_upload(&serde_json::from_str(args)?).await?,
+            )?)
+        }
+        "start_read" => {
+            return Ok(serde_json::to_string(
+                &c.start_read(&serde_json::from_str(args)?).await?,
+            )?)
+        }
+        _ => {}
+    }
+    if args.len() > 128 * 1024 {
+        return Err(Error::Limit);
+    }
     let v: serde_json::Value = serde_json::from_str(args)?;
     let id = || {
         v.get("id")
@@ -106,44 +149,34 @@ async fn dispatch(c: DatasetClient, name: &str, args: &str) -> Result<String, Er
     match name {
         "create" => output!(c.create().await),
         "open" => output!(c.open().await),
-        "prepare" => output!(c.prepare(&serde_json::from_value(v)?).await),
-        "publish" => output!(c.publish(&serde_json::from_value(v)?).await),
         "operation" => output!(c.operation(id()?).await),
         "snapshot" => output!(c.snapshot(id()?).await),
         "manifest" => output!(c.manifest(id()?).await),
         "retain" => output!(c.retain(id()?).await),
         "release" => output!(c.release(id()?).await),
         "set_stable" => output!(c.set_stable(id()?).await),
-        "create_upload" => output!(c.create_upload(&serde_json::from_value(v)?).await),
         "upload_status" => output!(c.upload_status(id()?).await),
         "complete_upload" => output!(c.complete_upload(id()?).await),
         "abort_upload" => output!(c.abort_upload(id()?).await),
-        "upload_file" => output!(
-            c.upload_file(
-                v["path"]
-                    .as_str()
-                    .ok_or_else(|| Error::Invalid("file path".into()))?,
-                id()?
+        "upload_file" => {
+            let options = crowdb_sdk_dataset::UploadOptions {
+                part_size: usize::try_from(v["part_size"].as_u64().unwrap_or(1024 * 1024))
+                    .map_err(|_| Error::Limit)?,
+                concurrency: usize::try_from(v["concurrency"].as_u64().unwrap_or(4))
+                    .map_err(|_| Error::Limit)?,
+            };
+            output!(
+                c.upload_file_with_options(
+                    v["path"]
+                        .as_str()
+                        .ok_or_else(|| Error::Invalid("file path".into()))?,
+                    id()?,
+                    options
+                )
+                .await
             )
-            .await
-        ),
-        "download_to_path" => {
-            c.download_to_path(
-                v["snapshot"]
-                    .as_str()
-                    .ok_or_else(|| Error::Invalid("snapshot".into()))?,
-                v["sample"]
-                    .as_str()
-                    .ok_or_else(|| Error::Invalid("sample".into()))?,
-                v["field"]
-                    .as_str()
-                    .ok_or_else(|| Error::Invalid("field".into()))?,
-                v["path"].as_str().ok_or_else(|| Error::Invalid("path".into()))?,
-            )
-            .await?;
-            Ok("null".into())
         }
-        "start_read" => output!(c.start_read(&serde_json::from_value(v)?).await),
+        "download_to_path" => download(&c, &v).await,
         "resume_read" => output!(c.resume_read(id()?).await),
         "close_read" => output!(c.close_read(id()?).await),
         "acknowledge" => output!(
@@ -162,4 +195,21 @@ async fn dispatch(c: DatasetClient, name: &str, args: &str) -> Result<String, Er
         ),
         _ => Err(Error::Invalid("unknown SDK operation".into())),
     }
+}
+
+async fn download(c: &DatasetClient, v: &serde_json::Value) -> Result<String, Error> {
+    c.download_to_path(
+        v["snapshot"]
+            .as_str()
+            .ok_or_else(|| Error::Invalid("snapshot".into()))?,
+        v["sample"]
+            .as_str()
+            .ok_or_else(|| Error::Invalid("sample".into()))?,
+        v["field"]
+            .as_str()
+            .ok_or_else(|| Error::Invalid("field".into()))?,
+        v["path"].as_str().ok_or_else(|| Error::Invalid("path".into()))?,
+    )
+    .await?;
+    Ok("null".into())
 }

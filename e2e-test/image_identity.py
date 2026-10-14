@@ -65,6 +65,9 @@ SERVER_PATHS = (
     ":(exclude)tools/ci-checks/check-version.py",
     # CI task reachability inspects host test delegates, never release inputs.
     ":(exclude)tools/ci-checks/check-ci-test-tasks.py",
+    # Independent SDK packaging builds host test consumers only; release staging
+    # neither reads this helper nor packages its output.
+    ":(exclude)tools/sdk/package.py",
     # This host-only RPC benchmark is not a dependency or staged server binary.
     ":(exclude)app/crowdb-cli/src/commands/bench/rpc.rs",
     # This workload driver has only CLI consumers; server consumer changes

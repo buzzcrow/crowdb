@@ -1,11 +1,14 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+mod attempt;
+mod stream;
+
 use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
-use reqwest::{Client, Method, Url};
+use reqwest::{Client, Url};
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::{
@@ -57,6 +60,9 @@ impl HttpClient {
         credentials: Arc<dyn crate::CredentialProvider>,
         config: HttpConfig,
     ) -> Result<Self, Error> {
+        if endpoint.len() > 8192 {
+            return Err(Error::Invalid("endpoint size".into()));
+        }
         let endpoint = Url::parse(endpoint).map_err(|_| Error::Invalid("endpoint URL".into()))?;
         if !matches!(endpoint.scheme(), "http" | "https")
             || endpoint.host_str().is_none()
@@ -68,7 +74,10 @@ impl HttpClient {
         {
             return Err(Error::Invalid("endpoint or resource limits".into()));
         }
-        if let Some(token) = &credentials.bearer()? {
+        if let Some(token) = &credentials
+            .bearer()
+            .map_err(|_| Error::Invalid("credential provider unavailable".into()))?
+        {
             if token.is_empty() || !token.bytes().all(|byte| byte.is_ascii_graphic()) {
                 return Err(Error::Invalid("bearer credential".into()));
             }
@@ -94,10 +103,14 @@ impl HttpClient {
         })
     }
 
+    #[must_use]
+    pub fn request_capacity(&self) -> usize {
+        self.config.max_requests
+    }
     /// # Errors
     /// Returns byte capacity exhaustion before a transfer buffer is allocated.
     pub fn reserve_buffer(&self, size: usize) -> Result<crate::BufferPermit, Error> {
-        if size > self.config.max_request_bytes {
+        if size > self.config.max_in_flight_bytes {
             return Err(Error::Limit);
         }
         Ok(crate::BufferPermit {
@@ -298,177 +311,6 @@ impl HttpClient {
             });
         }
         Ok(bytes.freeze())
-    }
-    async fn headers(
-        &self,
-        method: &str,
-        path: &[&str],
-        body: Bytes,
-        content_type: &str,
-        mode: (bool, bool),
-        query: &[(&str, &str)],
-    ) -> Result<reqwest::Response, Error> {
-        let (retry, streaming) = mode;
-        let mut url = self.endpoint.clone();
-        if path.iter().any(|segment| matches!(*segment, "" | "." | "..")) {
-            return Err(Error::Invalid("empty or dot path segment".into()));
-        }
-        url.path_segments_mut()
-            .map_err(|()| Error::Invalid("base URL".into()))?
-            .pop_if_empty()
-            .extend(path);
-        if !query.is_empty() {
-            url.query_pairs_mut().extend_pairs(query.iter().copied());
-        }
-        let method = Method::from_bytes(method.as_bytes()).map_err(|_| Error::Invalid("method".into()))?;
-        let total = if streaming {
-            self.config.stream_timeout
-        } else {
-            self.config.overall_timeout
-        };
-        let deadline = tokio::time::Instant::now() + total;
-        let attempts = if retry { self.config.max_attempts } else { 1 };
-        for attempt in 0..attempts {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                return Err(Error::Deadline);
-            }
-            let mut request = self
-                .inner
-                .request(method.clone(), url.clone())
-                .header("content-type", content_type)
-                .body(body.clone())
-                .timeout(if streaming {
-                    remaining
-                } else {
-                    self.config.request_timeout.min(remaining)
-                });
-            if let Some(token) = self.credentials.bearer()? {
-                if token.is_empty() || !token.bytes().all(|b| b.is_ascii_graphic()) {
-                    return Err(Error::Invalid("bearer credential".into()));
-                }
-                request = request.bearer_auth(token);
-            }
-            let outcome = tokio::time::timeout_at(deadline, request.send())
-                .await
-                .map_err(|_| Error::Deadline)?;
-            let error = match outcome {
-                Ok(response) if response.status().is_success() => return Ok(response),
-                Ok(mut response) => {
-                    let status = response.status().as_u16();
-                    let mut bytes = BytesMut::new();
-                    while let Some(chunk) = tokio::time::timeout_at(deadline, response.chunk())
-                        .await
-                        .map_err(|_| Error::Deadline)??
-                    {
-                        if bytes.len().saturating_add(chunk.len()) > 64 * 1024 {
-                            return Err(Error::Limit);
-                        }
-                        bytes.extend_from_slice(&chunk);
-                    }
-                    let error = serde_json::from_slice(&bytes).unwrap_or(ServiceError {
-                        code: "invalid_error_response".into(),
-                        message: "invalid error response".into(),
-                        request_id: String::new(),
-                        retryable: false,
-                    });
-                    Error::Service { status, error }
-                }
-                Err(error) => Error::from(error),
-            };
-            let transient = match &error {
-                Error::Transport(error) => error.retryable(),
-                Error::Service { status, error } => error.retryable && matches!(status, 429 | 503 | 504),
-                _ => false,
-            };
-            if !transient || attempt + 1 == attempts {
-                return Err(error);
-            }
-            let factor = 1u32 << attempt.min(10);
-            tokio::time::timeout_at(
-                deadline,
-                tokio::time::sleep(self.config.retry_backoff.saturating_mul(factor)),
-            )
-            .await
-            .map_err(|_| Error::Deadline)?;
-        }
-        Err(Error::Deadline)
-    }
-
-    /// Opens a bounded-window response without imposing a whole-body size cap.
-    /// # Errors
-    /// Returns admission, JSON, service, transport or version errors.
-    pub async fn stream<T: Serialize + ?Sized>(
-        &self,
-        method: &str,
-        path: &[&str],
-        value: Option<&T>,
-    ) -> Result<crate::ResponseStream, Error> {
-        let deadline = tokio::time::Instant::now() + self.config.stream_timeout;
-        let reserve = self
-            .config
-            .max_response_bytes
-            .checked_mul(5)
-            .and_then(|n| n.checked_add(self.config.max_request_bytes))
-            .ok_or(Error::Limit)?;
-        let permit = self.admission.acquire(reserve)?;
-        let mut body = LimitedJson {
-            bytes: Vec::new(),
-            limit: self.config.max_request_bytes,
-        };
-        if let Some(value) = value {
-            serde_json::to_writer(&mut body, value).map_err(|error| {
-                if error.is_io() {
-                    Error::Limit
-                } else {
-                    Error::Codec(error)
-                }
-            })?;
-        }
-        let mut response = self
-            .headers(
-                method,
-                path,
-                Bytes::from(body.bytes),
-                "application/json",
-                (true, true),
-                &[],
-            )
-            .await?;
-        let status = response.status();
-        if !status.is_success() {
-            let mut body = BytesMut::new();
-            while let Some(chunk) = response.chunk().await? {
-                if body.len().saturating_add(chunk.len()) > 64 * 1024 {
-                    return Err(Error::Limit);
-                }
-                body.extend_from_slice(&chunk);
-            }
-            let error = serde_json::from_slice(&body).unwrap_or(ServiceError {
-                code: "invalid_error_response".into(),
-                message: "invalid error response".into(),
-                request_id: String::new(),
-                retryable: false,
-            });
-            return Err(Error::Service {
-                status: status.as_u16(),
-                error,
-            });
-        }
-        if response
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            != Some("application/vnd.crowdb.dataset-batch.v1")
-        {
-            return Err(Error::Integrity);
-        }
-        Ok(crate::ResponseStream::new(
-            response,
-            permit,
-            self.config.max_response_bytes,
-            deadline,
-        ))
     }
 }
 
