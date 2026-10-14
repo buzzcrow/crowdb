@@ -64,6 +64,13 @@ pub struct CandidateSnapshot {
 pub enum NodeControl {
     Identity,
     DiskInventory,
+    Initialize {
+        manifest: serde_json::Value,
+        credentials: NodeServiceCredentials,
+        #[serde(default)]
+        create_data_group: Option<bool>,
+    },
+    Initialization,
     Processes {
         cluster_id: String,
         node_id: u64,

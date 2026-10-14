@@ -15,6 +15,8 @@ pub use storage::discover_disks;
 mod trust;
 pub use single::run_single_node;
 
+#[cfg(feature = "test-util")]
+pub use runtime::InitializationForTests;
 pub use runtime::{control_node, run_node, NodeRuntimeConfig};
 
 pub use management::{serve_node_management, NodeManagementError};

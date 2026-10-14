@@ -13,12 +13,15 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   `run-node.py`; map permitted file/device inputs into the common disk directory,
   validate duplicates/types, retain startup inputs, and scope local cleanup.
   Tests: `container/oci-image/tests`, container helper tests. Acceptance A01-A02.
-- [~] **Discovery and effective admission**: add monitor disk inventory and
-  Group-0-gated registration, default file creation and geometry validation.
+- [x] **Disk observations**: expose bounded monitor inventory, reject duplicate
+  resources and mismatched launcher identities. Inventory tests and Clippy pass;
+  real raw-device/containerd acceptance remains in integration verification.
+- [ ] **Effective admission**: add Group-0-gated registration, default file
+  creation and geometry validation; merge observations with authority records.
   Files: `container/crowdb-monitor/src/node`, `bootstrap/disk_files.rs`,
   `lib/crowdb-protocol/src/mgmt.rs`, `lib/crowdb-console-shared/src/ops/hardware`,
   `app/crowdb-web/src/physical`. Acceptance A03-A05.
-- [ ] **Backend initialization**: inspect existing single/bootstrap ownership,
+- [~] **Backend initialization**: inspect existing single/bootstrap ownership,
   reuse monitor execution for UI trigger, UUID-min automatic initiation and
   three-/one-voter policy. Persist policy and reuse accepted manifests.
   Files: monitor node runtime, console bootstrap/admission, web managed routes.
@@ -79,3 +82,16 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   tests and 22 OCI tests pass, as does affected all-target Clippy. A disposable
   Docker bind-mount probe verified host/container identity equality on this host;
   real block-device and containerd identity acceptance remains pending.
+- Monitor initialization now durably accepts one fixed bootstrap request, owns
+  execution outside the request connection, resumes interrupted work, records
+  failures and rejects changed inputs. Existing peer preparation, bootstrap
+  publication and binding remain the authority. Cleanup rejects an active task.
+  Two lifecycle tests and affected all-target Clippy pass; HTTP/native container
+  verification is in progress. Auto join and single-mode convergence remain open
+  implementation tasks, not completed acceptance.
+- Node-mode init now responds with accepted progress and exposes
+  `/api/cluster/initialization`; callers must observe completion. Existing UI
+  success wording and recovery progress still need updating after the baseline.
+- Existing Web node-candidate and management-route tests pass (four cases),
+  as do the six native fixture observation tests. Native fixture now asserts
+  `202` acceptance before observing actual Group-0 publication.

@@ -28,6 +28,9 @@ mod services;
 use kv::start_kv;
 mod admission;
 mod credentials;
+mod initialization;
+#[cfg(feature = "test-util")]
+pub use initialization::InitializationForTests;
 mod preparation;
 pub use ipc::control_node;
 use ipc::read_request;
@@ -105,6 +108,8 @@ pub async fn run_node(config: NodeRuntimeConfig) -> Result<()> {
         .await
     });
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let mut initialization = initialization::Initialization::default();
+    initialization.resume(&profile)?;
     let mut heartbeat = tokio::time::interval(Duration::from_secs(1));
     let result = async {
         loop {
@@ -115,7 +120,7 @@ pub async fn run_node(config: NodeRuntimeConfig) -> Result<()> {
                 connection = listener.accept() => {
                     let (mut stream, _) = connection?;
                     let reply = match read_request(&mut stream).await {
-                        Ok(request) => match execute(&profile, &mut processes, request).await {
+                        Ok(request) => match execute(&profile, &mut processes, &mut initialization, request).await {
                             Ok(value) => json!({"ok": true, "value": value}),
                             Err(error) => json!({"ok": false, "error": error.to_string()}),
                         },
@@ -133,6 +138,7 @@ pub async fn run_node(config: NodeRuntimeConfig) -> Result<()> {
         }
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     }.await;
+    initialization.stop().await;
     let _ = stop.send(());
     if !discovery.is_finished() {
         discovery.await??;
@@ -151,10 +157,20 @@ pub async fn run_node(config: NodeRuntimeConfig) -> Result<()> {
 async fn execute(
     profile: &DeploymentProfile,
     processes: &mut ProcessManager,
+    initialization: &mut initialization::Initialization,
     request: NodeControl,
 ) -> Result<Value> {
     let root = &profile.paths.data_root;
     match request {
+        NodeControl::Initialize {
+            manifest,
+            credentials,
+            create_data_group,
+        } => {
+            authorize_bound(root).await?;
+            initialization.accept(profile, manifest, credentials, create_data_group)
+        }
+        NodeControl::Initialization => initialization::Initialization::status(root),
         NodeControl::DiskInventory => {
             let inputs = std::env::var("CROWDB_DISK_INPUTS").unwrap_or_else(|_| "[]".into());
             let inputs: Vec<crowdb_protocol::mgmt::node::storage::DiskInput> = serde_json::from_str(&inputs)?;
@@ -229,7 +245,12 @@ async fn execute(
         NodeControl::Cleanup {
             bootstrap,
             confirm_delete_system_store,
-        } => cleanup::execute(profile, processes, bootstrap, confirm_delete_system_store).await,
+        } => {
+            if initialization.running() {
+                return Err("initialization is still running".into());
+            }
+            cleanup::execute(profile, processes, bootstrap, confirm_delete_system_store).await
+        }
     }
 }
 

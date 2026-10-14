@@ -110,7 +110,7 @@ class NativeConsoleCluster(ShellBrowserCluster):
                 "rack_id": self.rack_ids[index], "ssh_user": "crowdb", "ssh_port": 2222, "ssh_password": "crowdb"})
             self.node_ids.append(record["node_id"])
         if self.bootstrap:
-            self.api("/api/cluster/init", {"nodes": self.node_ids}, status=201)
+            self.api("/api/cluster/init", {"nodes": self.node_ids}, status=202)
             wait(lambda: self.api("/api/node/status"), lambda result: result["phase"] == "active",
                  "public Group 0 bootstrap", seconds=10)
             wait(lambda: self.api("/api/racks?recursive=1"),

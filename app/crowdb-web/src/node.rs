@@ -7,6 +7,7 @@ mod admission;
 mod update;
 pub(crate) use update::update;
 mod authority;
+pub(crate) mod initialization;
 mod preparation;
 pub(crate) mod storage;
 pub(crate) use admission::binding as cluster_binding;
