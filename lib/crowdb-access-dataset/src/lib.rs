@@ -28,7 +28,7 @@ mod transport;
 mod upload;
 mod wire;
 
-pub use payload::{ChunkPayloadStorage, PayloadStorage, UploadedChunkReader};
+pub use payload::{ChunkPayloadStorage, PayloadDurability, PayloadStorage, UploadedChunkReader};
 pub use upload::{DatasetUploads, UploadError, UploadPart, UploadRecord, UploadState, MAX_UPLOAD_PART_BYTES};
 
 pub use cursor::ReadCursor;

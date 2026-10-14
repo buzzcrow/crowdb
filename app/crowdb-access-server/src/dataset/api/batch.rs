@@ -46,8 +46,14 @@ impl DatasetHttpService {
         identity: &DatasetIdentity,
         request: Request<Incoming>,
     ) -> ApiResult {
+        let request_id = request
+            .extensions()
+            .get::<super::RequestId>()
+            .ok_or_else(ApiError::integrity)?
+            .0
+            .clone();
         let request: BatchRequest = read_json(request).await?;
-        self.batch(identity, request, None, true, None).await
+        self.batch(identity, request, None, true, None, request_id).await
     }
     pub(super) async fn batch(
         &self,
@@ -56,6 +62,7 @@ impl DatasetHttpService {
         next: Option<String>,
         end: bool,
         session: Option<crowdb_access_dataset::OperationId>,
+        request_id: String,
     ) -> ApiResult {
         let id = snapshot(&request.snapshot)?;
         let ids = request
@@ -133,6 +140,7 @@ impl DatasetHttpService {
             .collect();
         let state = BatchState {
             uploads: self.uploads.clone(),
+            request_id,
             locators,
             index: 0,
             part: 0,
@@ -205,6 +213,7 @@ impl Drop for Lease {
 }
 struct BatchState {
     uploads: Option<Arc<crowdb_access_dataset::DatasetUploads>>,
+    request_id: String,
     locators: Vec<FieldLocator>,
     index: usize,
     part: u32,
@@ -222,7 +231,7 @@ fn stream_body(state: BatchState) -> DatasetBody {
             Ok(bytes) => bytes,
             Err(error) => {
                 state.finished = true;
-                let record = serde_json::json!({"code":error.code(),"message":error.code(),"request_id":crowdb_access_dataset::OperationId::random().to_string(),"retryable":error.retryable()});
+                let record = serde_json::json!({"code":error.code(),"message":error.code(),"request_id":state.request_id,"retryable":error.retryable()});
                 frame(4, &Bytes::from(record.to_string())).expect("bounded error frame")
             }
         };

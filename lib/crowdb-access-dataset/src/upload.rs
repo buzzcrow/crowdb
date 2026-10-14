@@ -68,6 +68,10 @@ pub struct UploadRecord {
     pub parts: Vec<UploadPart>,
     owners: Vec<OperationId>,
     registry_page: Option<u64>,
+    #[serde(default)]
+    registry_generation: Option<OperationId>,
+    #[serde(default)]
+    registry_fence: Option<OperationId>,
     pub cleanup_complete: bool,
 }
 
@@ -135,6 +139,8 @@ impl DatasetUploads {
             parts: Vec::new(),
             owners: Vec::new(),
             registry_page: None,
+            registry_generation: None,
+            registry_fence: None,
             cleanup_complete: false,
         };
         let created = match self

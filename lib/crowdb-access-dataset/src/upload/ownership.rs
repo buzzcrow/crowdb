@@ -55,6 +55,9 @@ impl DatasetUploads {
             let stored = self.store.get(location).await?.ok_or(UploadError::NotFound)?;
             let mut record = decode_session(&stored.bytes)?;
             if !record.owners.contains(&owner) {
+                if record.state == UploadState::Claimed || record.cleanup_complete {
+                    self.untrack(location).await?;
+                }
                 return Ok(());
             }
             record.owners.retain(|v| *v != owner);
@@ -67,6 +70,9 @@ impl DatasetUploads {
                     .await?,
                 CasOutcome::Applied(_)
             ) {
+                if !record.owners.is_empty() {
+                    self.untrack(location).await?;
+                }
                 return Ok(());
             }
         }

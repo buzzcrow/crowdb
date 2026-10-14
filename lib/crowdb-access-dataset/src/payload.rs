@@ -12,6 +12,13 @@ pub use reader::UploadedChunkReader;
 
 use crate::{UploadError, MAX_UPLOAD_PART_BYTES};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PayloadDurability {
+    Durable,
+    Pending,
+    Abandoned,
+}
+
 /// Storage boundary for bounded, immutable upload parts.
 #[async_trait]
 pub trait PayloadStorage: Send + Sync {
@@ -22,6 +29,7 @@ pub trait PayloadStorage: Send + Sync {
         intent: Arc<dyn SmallWriteIntent>,
     ) -> Result<Vec<Location>, UploadError>;
     async fn read(&self, locations: &[Location]) -> Result<Bytes, UploadError>;
+    async fn durability(&self, locations: &[Location]) -> Result<PayloadDurability, UploadError>;
     async fn discard(&self, locations: &[Location]) -> Result<bool, UploadError>;
 }
 
@@ -77,6 +85,54 @@ impl PayloadStorage for ChunkPayloadStorage {
             output.extend_from_slice(&data);
         }
         Ok(output.freeze())
+    }
+
+    async fn durability(&self, locations: &[Location]) -> Result<PayloadDurability, UploadError> {
+        use crowdb_protocol::chunkdb::rpc::{ChunkState, ChunkType, QueryChunkRequest};
+        let (allocator, _) = self.chunks.storage_parts();
+        let mut abandoned = false;
+        let mut pending = false;
+        for location in locations {
+            let id = location.chunk_id.ok_or(UploadError::Integrity)?;
+            let end = location
+                .offset
+                .checked_add(location.length)
+                .ok_or(UploadError::Integrity)?;
+            let result = allocator
+                .query_chunk(QueryChunkRequest { chunk_id: Some(id) })
+                .await;
+            let chunk = match result {
+                Ok(result) => result.chunk.ok_or(UploadError::Integrity)?,
+                Err(crowdb_chunk_client::IoError::ChunkNotFound(_)) => {
+                    abandoned = true;
+                    continue;
+                }
+                Err(error) => return Err(UploadError::Storage(error.to_string())),
+            };
+            if chunk.id != Some(id)
+                || chunk.chunk_type != ChunkType::Dataset as i32
+                || chunk.writer_epoch == 0
+            {
+                return Err(UploadError::Integrity);
+            }
+            let state = ChunkState::try_from(chunk.state).map_err(|()| UploadError::Integrity)?;
+            if state == ChunkState::Deleted {
+                abandoned = true;
+            } else if chunk.acknowledged_cursor < end {
+                if state == ChunkState::Sealed {
+                    abandoned = true;
+                } else {
+                    pending = true;
+                }
+            }
+        }
+        Ok(if pending {
+            PayloadDurability::Pending
+        } else if abandoned {
+            PayloadDurability::Abandoned
+        } else {
+            PayloadDurability::Durable
+        })
     }
 
     async fn discard(&self, locations: &[Location]) -> Result<bool, UploadError> {

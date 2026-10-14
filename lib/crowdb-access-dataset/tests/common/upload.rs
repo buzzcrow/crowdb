@@ -67,6 +67,8 @@ pub struct TestPayload {
     pub writes: AtomicU64,
     pub lose_reply: AtomicBool,
     pub defer_reclaim: AtomicBool,
+    pub unconfirmed: AtomicBool,
+    pub abandoned: AtomicBool,
 }
 #[async_trait]
 impl PayloadStorage for TestPayload {
@@ -112,6 +114,18 @@ impl PayloadStorage for TestPayload {
             .get(&index)
             .cloned()
             .ok_or(UploadError::Storage("missing bytes".into()))
+    }
+    async fn durability(
+        &self,
+        _locations: &[Location],
+    ) -> Result<crowdb_access_dataset::PayloadDurability, UploadError> {
+        Ok(if self.abandoned.load(Ordering::Acquire) {
+            crowdb_access_dataset::PayloadDurability::Abandoned
+        } else if self.unconfirmed.load(Ordering::Acquire) {
+            crowdb_access_dataset::PayloadDurability::Pending
+        } else {
+            crowdb_access_dataset::PayloadDurability::Durable
+        })
     }
     async fn discard(&self, locations: &[Location]) -> Result<bool, UploadError> {
         if self.defer_reclaim.load(Ordering::Acquire) {

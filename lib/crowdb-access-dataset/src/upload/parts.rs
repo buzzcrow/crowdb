@@ -55,7 +55,18 @@ impl DatasetUploads {
                         }
                         return Ok(existing.part);
                     }
-                    PartState::Intent => return self.accept_existing(location, &key, &existing).await,
+                    PartState::Intent => match self.payloads.durability(&existing.part.locations).await? {
+                        crate::PayloadDurability::Durable => {
+                            return self.accept_existing(location, &key, &existing).await
+                        }
+                        crate::PayloadDurability::Pending => return Err(UploadError::Pending),
+                        crate::PayloadDurability::Abandoned => {
+                            if !self.payloads.discard(&existing.part.locations).await? {
+                                return Err(UploadError::Pending);
+                            }
+                            Some(value.bytes)
+                        }
+                    },
                     PartState::Reserved if now >= existing.deadline => Some(value.bytes),
                     PartState::Reserved => return Err(UploadError::Pending),
                     PartState::Reclaimed => return Err(UploadError::Conflict),

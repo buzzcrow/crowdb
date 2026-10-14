@@ -107,3 +107,70 @@ async fn invalid_length_digest_and_expiry_do_not_publish() {
     uploads.expire(11).await.unwrap();
     assert_eq!(uploads.get(&key).await.unwrap().state, UploadState::Aborted);
 }
+
+#[tokio::test]
+async fn readable_unconfirmed_bytes_cannot_be_accepted_as_durable() {
+    let store = Arc::new(TestStore::default());
+    let payloads = Arc::new(TestPayload::default());
+    let uploads = DatasetUploads::new(store.clone(), payloads.clone());
+    let key = location("durability");
+    uploads
+        .create(&key, 4, 4, Md5::digest(b"data").into(), 100)
+        .await
+        .unwrap();
+    payloads.lose_reply.store(true, Ordering::Release);
+    payloads.unconfirmed.store(true, Ordering::Release);
+    assert!(uploads
+        .put_part(&key, 0, Bytes::from_static(b"data"), 1)
+        .await
+        .is_err());
+    let restarted = DatasetUploads::new(store, payloads.clone());
+    assert!(matches!(
+        restarted.put_part(&key, 0, Bytes::from_static(b"data"), 2).await,
+        Err(UploadError::Pending)
+    ));
+    assert!(restarted.get(&key).await.unwrap().parts.is_empty());
+    payloads.unconfirmed.store(false, Ordering::Release);
+    restarted
+        .put_part(&key, 0, Bytes::from_static(b"data"), 3)
+        .await
+        .unwrap();
+    restarted.complete(&key, 4).await.unwrap();
+    restarted
+        .put_part(&key, 0, Bytes::from_static(b"data"), 5)
+        .await
+        .unwrap();
+    assert_eq!(payloads.writes.load(Ordering::Acquire), 1);
+}
+
+#[tokio::test]
+async fn fenced_abandoned_range_is_retired_before_retrying_the_same_logical_part() {
+    let payloads = Arc::new(TestPayload::default());
+    let uploads = DatasetUploads::new(Arc::new(TestStore::default()), payloads.clone());
+    let key = location("abandoned");
+    uploads
+        .create(&key, 4, 4, Md5::digest(b"data").into(), 100)
+        .await
+        .unwrap();
+    payloads.lose_reply.store(true, Ordering::Release);
+    assert!(uploads
+        .put_part(&key, 0, Bytes::from_static(b"data"), 1)
+        .await
+        .is_err());
+    payloads.abandoned.store(true, Ordering::Release);
+    payloads.defer_reclaim.store(true, Ordering::Release);
+    assert!(matches!(
+        uploads.put_part(&key, 0, Bytes::from_static(b"data"), 2).await,
+        Err(UploadError::Pending)
+    ));
+    assert_eq!(payloads.writes.load(Ordering::Acquire), 1);
+    payloads.defer_reclaim.store(false, Ordering::Release);
+    uploads
+        .put_part(&key, 0, Bytes::from_static(b"data"), 3)
+        .await
+        .unwrap();
+    let result = uploads.complete(&key, 4).await.unwrap();
+    assert_eq!(result.parts.len(), 1);
+    assert_eq!(payloads.writes.load(Ordering::Acquire), 2);
+    assert_eq!(uploads.read_part(&key, 0).await.unwrap(), b"data".as_slice());
+}

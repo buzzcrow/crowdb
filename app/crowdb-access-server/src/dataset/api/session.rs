@@ -94,6 +94,12 @@ impl DatasetHttpService {
         tail: &[&str],
         request: Request<Incoming>,
     ) -> ApiResult {
+        let request_id = request
+            .extensions()
+            .get::<super::RequestId>()
+            .ok_or_else(ApiError::integrity)?
+            .0
+            .clone();
         let sessions = DatasetSessions::new(self.reads.authority());
         let now = unix_seconds();
         match (request.method().clone(), tail) {
@@ -128,6 +134,7 @@ impl DatasetHttpService {
                     Some(batch.next),
                     batch.end,
                     Some(operation(id)?),
+                    request_id,
                 )
                 .await
             }

@@ -28,11 +28,15 @@ use std::sync::Arc;
 use super::{body, models, DatasetBody, DatasetHttpService, MAX_REQUEST_BYTES};
 use error::ApiError;
 
+#[derive(Clone)]
+struct RequestId(String);
+
 type ApiResult = Result<Response<DatasetBody>, ApiError>;
 
 impl DatasetHttpService {
-    pub(super) async fn handle_api(&self, request: Request<Incoming>) -> Response<DatasetBody> {
+    pub(super) async fn handle_api(&self, mut request: Request<Incoming>) -> Response<DatasetBody> {
         let request_id = OperationId::random().to_string();
+        request.extensions_mut().insert(RequestId(request_id.clone()));
         if !self.authorized(&request) {
             return ApiError::unauthorized().response(&request_id);
         }
