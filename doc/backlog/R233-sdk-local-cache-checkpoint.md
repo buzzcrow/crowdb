@@ -3,7 +3,9 @@
 
 ### R233: SDK — Local disk cache and checkpoint staging
 
-Status: Deferred until R231/R232 provide measured HTTP upload and read baselines.
+Status: Deferred until dedicated HTTP upload/read workload measurements.
+The public Rust/Python HTTP SDK and real-service functional acceptance are
+available; their delivery did not include performance baselines.
 
 Problem:
 
@@ -49,7 +51,8 @@ Solution:
 
 Dependencies:
 
-- R231 upload sessions and publication recovery; R232 HTTP SDK and metrics.
+- Existing upload sessions, publication recovery and the public HTTP SDK;
+  dedicated workload metrics remain a prerequisite.
   HTTP streaming remains the fallback without local storage or when caching is
   disabled. No RDMA or fat client is required for this feature.
 - R220 may reuse these components after proving the same visibility contract.
@@ -76,7 +79,7 @@ Acceptance:
    the Python wrapper -> assert identical journal identity, durability states,
    quota errors and remote completion. Shared implementation invariant. Integration test.
 
-Verification commands (SDK workspace supplied by R232):
+Verification commands:
 
 - `pixi run -- cargo test --manifest-path sdk/Cargo.toml --workspace`
 - `pixi run -- python -m unittest discover -s sdk -p 'test_*.py'`

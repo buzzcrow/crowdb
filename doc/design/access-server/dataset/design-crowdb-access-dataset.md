@@ -31,8 +31,9 @@ selection, or reclamation authority.
 ## 1. Scope and boundary
 
 Dataset provides a stable logical model for samples and heterogeneous fields. It
-supports HTTP access and a separately maintained SDK with thin and fat client
-modes, with equivalent selection and integrity semantics. It does not own disk placement, replication,
+supports HTTP access through an independently packaged Rust SDK and Python
+native wrapper. Direct storage access is a future client mode with the same
+selection and integrity semantics. It does not own disk placement, replication,
 erasure coding, repair, or physical chunk layout. It does not become a query
 engine or a training-framework-specific storage protocol.
 
@@ -108,9 +109,10 @@ would be exceeded. Shuffle never moves or rewrites published payload.
 
 ## 6. Access surfaces and bounded delivery
 
-HTTP is the portable Dataset surface. The native client loads the same authority
-and a bounded versioned routing view, then connects directly to responsible
-metadata and data services. Neither surface may change snapshot semantics.
+HTTP is the portable Dataset surface used by the public Rust SDK and its
+Python native wrapper. In-process typed authority calls preserve the same
+Snapshot semantics. A future direct client uses a bounded versioned routing
+view to reach responsible metadata/data services; it cannot replace authority.
 
 `GetSample`, `GetBatch`, and bounded Scan resolve metadata first, apply field
 projection, and then read inline values or chunk ranges/streams. Batch size,
@@ -141,7 +143,7 @@ are provenance unless an explicit cross-model retention contract says otherwise.
 Dataset metadata uses KV authority and can use chunk-backed range state for
 large manifests or indexes. Chunk I/O owns location validation, range/stream
 reads, checksums, and physical recovery. Access Server exposes HTTP and health
-boundaries; the native client observes topology but never publishes placement.
+boundaries; a direct client observes topology but never publishes placement.
 Framework adapters map Read Plans to PyTorch `IterableDataset`, TensorFlow/JAX
 iterators, Hugging Face streaming examples, or Ray blocks without adding storage
 objects.
@@ -152,10 +154,14 @@ overwrite their objects, or reclaim their owned bytes.
 
 The Dataset library owns these semantics and storage clients. The existing Access
 Server may expose Dataset HTTP on its own configured listener, alongside S3 and
-Iceberg. A separate Dataset SDK project, maintained by this team, provides both a
-thin HTTP client and a fat client that connects directly to internal Chunk-KV and
-DiskIO. The same SDK owns the PyTorch `IterableDataset` adapter. These are two
-client modes, not two Dataset authorities or a separate Dataset server product.
+Iceberg. The Dataset SDK has an independent Rust workspace and release version
+in the CrowDB repository. Its HTTP client uses reqwest, Tokio and rustls; the
+Python package calls that implementation through PyO3. Clients share pooled
+connections, atomic request/byte admission and process-owned runtime resources.
+Blocking native waits release the GIL; live handles inherited across fork are
+rejected. File transfers and batched iteration bound memory independently of
+file size. Tensor decoding and collation stay above the SDK. Direct Chunk-KV,
+chunk access, local staging and RDMA remain extensions.
 
 ## 9. Correctness invariants
 
@@ -192,71 +198,103 @@ shutdown, and health wiring. `ChunkKvDatasetStore` adapts Dataset metadata and
 payload access to the chunk-backed KV client without exposing physical layout
 to the authority.
 
-### 10.1 Publication flow
+### 10.1 Upload and publication flow
 
-The HTTP or native client serializes a publication request and sends it to the
-listener or authority. The authority validates the Dataset, parent, operation
-token, and Manifest before any head mutation. It CAS-writes the operation
-record, writes a `Prepared` Snapshot record, partitions and persists the
-Manifest, then CAS-transitions the Snapshot to `Published` and advances the
-head. A retry reads the operation record and resumes the same Snapshot. A
-failure before the published transition leaves `latest` unchanged. Manifest
-partitions and the head are never read through the HTTP listener directly;
-all reads go through the authority's complete-snapshot checks.
+`DatasetUploads` persists bounded upload sessions, immutable numbered parts,
+accepted receipt pages and Dataset-scoped ownership in `DatasetStore`.
+`ChunkPayloadStorage` writes parts through the shared small-object pipeline with
+Dataset chunk type 7. Each part is at most 4 MiB; 10000 parts bound an upload to
+39.0625 GiB. A write intent records the exact physical location before payload I/O.
+Successful durable completion accepts the receipt. Recovery accepts an intent
+only after the chunk's acknowledged cursor covers the location and the bytes
+pass integrity checks. Readable but unconfirmed bytes remain pending. A fenced
+abandoned allocation is reclaimed before replacing it under the same part ID.
+Completion verifies every part and the whole declared MD5 with bounded buffers.
+
+Prepare validates the complete current sample membership, schema, parent and
+operation token, then persists an invisible candidate and claims completed
+uploads. Omitted samples disappear; surviving samples inherit omitted optional
+fields through explicit ancestry. Tombstones remove inherited values. Required
+field names cannot be removed from a child schema.
+
+Publish reuses the prepared Snapshot ID, marks its complete record Published,
+and CAS-advances the head. A Published operation record can precede head
+advancement; a successful publish response establishes the completed operation.
+Lost responses are resolved by inspecting status and retrying identical content
+with the same operation token. Historical retries cannot rewind a newer head.
+Divergent retries conflict. Prepared candidates remain until publication or
+explicit reclaim; upload expiry does not reclaim claimed candidate payloads.
 
 ### 10.2 Read flow
 
-`DatasetReadService` validates the request and acquires a delivery-window
-permit before admitting work. It then records the Dataset/Snapshot read lease,
-loads the Manifest and inherited ancestry through `DatasetAuthority`, computes
-bounded sample groups and projection, and resolves each field. Inline values
-are verified locally; chunk locators are passed unchanged to the chunk store,
-which performs range/stream I/O and integrity checks. The service releases the
-lease and delivery permit after the batch result is formed, then persists the
-next cursor when the operation is a Scan. Errors release lifecycle state before
-being mapped to the native or HTTP error class.
+`DatasetSessions` resolves latest/stable once, binds the request to that
+immutable Snapshot, and persists immutable pages of selected IDs separately
+from a small progress record. Selection, deterministic shuffle and rank/worker
+partition execute before fetching payloads. Projection walks explicit ancestry
+only until all requested fields are resolved. Plans admit at most 100000 IDs;
+metadata is capped at 8 MiB and selection pages contain at most 1024 IDs.
+
+Fetching issues a plan-bound opaque next cursor without advancing acknowledged
+progress. Repeated fetches replay that batch. Acknowledgement CAS-advances only
+its issued cursor and is idempotent; progress inspection performs no payload
+read. Resume restores acknowledged progress. Explicit close affects only that
+handle; a disconnected handle expires after 60 seconds and can resume while its
+Snapshot remains available.
+
+The public binary response streams a bounded JSON header, integrity-checked
+payload frames, field terminators and a batch terminator. Success also requires
+HTTP EOF with no trailing bytes. Each active transfer owns a unique scoped read
+lease and admission credits through transport delivery/drop. Heartbeats renew
+leases during active streaming. Cancellation stops the producer and returns
+credits; retained SDK-owned buffers keep their byte credits until released.
+The internal legacy scan adapter retains its compatibility behavior; public
+fetch never implies application acknowledgement.
 
 ### 10.3 Retention and reclaim flow
 
-Retention mutations update Snapshot-scoped records through the authority.
-Reclaim first walks the published head's explicit parent chain and checks
-latest, stable, retained, and active-read protections. It then computes
-Dataset-owned metadata and payload candidates, leaves shared or externally
-owned locators untouched, deletes only eligible state, and persists completed
-reclaim progress. Repeated reclaim and authority restart read the same durable
-progress record and remain idempotent.
+Reclaim atomically fences new reads, invalidates stale head publishers with a
+head nonce, and rechecks latest, stable, explicit retention and parent ancestry.
+An Aborted Snapshot tombstone preserves the original Manifest while payload
+cleanup is pending and prevents publication retry resurrection. Upload ownership
+is released for that operation only; other Snapshot owners preserve shared
+bytes. Deferred physical cleanup remains pending. Shared range retirement does
+not count as a reclaimed whole chunk.
 
-### 10.4 Restart and parity flow
+Upload expiry scans one bounded registry page per background sweep. Registration
+and removal use generation nonces and session CAS fences so stale cleanup cannot
+remove a newer registration. Restart restores sessions, accepted parts, progress
+and pending cleanup from the durable store; in-memory state is not authoritative.
 
-The authority reconstructs its view from DatasetStore records on startup; no
-in-memory head or lease registry is authoritative. HTTP and native entry
-points call the same authority and read service, so parity tests compare
-Snapshot IDs, manifests, sample ordering, checksums, cursors, leases, and
-logical error classes. Restart tests reopen the same store and verify published
-heads, Manifest partitions, cursors, retention state, and reclaim progress.
+### 10.4 Transport and compatibility
 
-Metadata mutations use the smallest possible authority operation. A single-key
-CAS is reserved for a publication head, an operation phase, or an admission
-fence whose conflict is the correctness decision. Do not CAS every sample,
-field, payload block, or read cursor. Immutable payloads are written once and
-referenced by the manifest; retry identity and persisted journals handle
-recovery without a global CAS loop.
+The public versioned HTTP surface uses JSON control records, binary payload
+streams and bearer authentication. Legacy bincode routes remain an internal
+compatibility interface. HTTP/1.1 keep-alive has separate bounded idle connection
+and executing request admission, header deadlines and graceful shutdown.
+Default executing admission is eight requests. Early authentication/capacity
+rejection drains a bounded body without materializing it so valid part writers
+receive the structured error. Oversized or stalled rejected bodies close their
+connection after a bounded drain; they cannot consume unbounded resources.
+Uploads and downloads stream with bounded concurrency and backpressure. The SDK
+retries only documented idempotent requests, preserving replayable bytes and
+operation IDs under one overall deadline. Authentication, integrity and semantic
+conflicts are not blanket retried. File downloads use a private temporary file
+and rename only after successful integrity verification.
 
-Hot reads and planning use immutable snapshots, atomics, or `ArcSwap`-style
-published views. Do not add a mutex or async lock to point reads, manifest
-lookups, chunk reads, or stream delivery. Lifecycle-only coordination may use a
-bounded lock when an existing owner requires it, with contention measured before
-acceptance.
+Head and lease envelopes decode legacy version 1 but write version 2 with
+publication/reclaim fencing and scoped leases. This metadata upgrade is one-way:
+do not downgrade an upgraded authority or run old and new authority writers
+against the same Dataset store. Immutable Dataset/Snapshot/Manifest encodings
+remain compatible. Upload registry pages also decode the initial array form and
+write generation-tagged entries. Private read-session progress is version 2;
+public API versions do not expose these private persistence formats.
 
-Small values follow the existing small-object path and remain inline only when
-the configured threshold admits them. Large fields use the large-write pipeline
-with bounded blocks, backpressure, and chunk-native range/stream reads. Readers
-fetch bounded frames and verify chunk/block integrity. The record contract may
-require MD5 for compatibility or SHA-256 for canonical object identity; the
-algorithm is selected by correctness requirements, never omitted to optimize a
-benchmark. Digest cost, placement, and whether a full-object pass is needed are
-measured in the relevant backlog item. Dataset does not add whole-object
-buffering to the hot path.
+Hot-path synchronization uses atomics, immutable owned views, CAS and bounded
+notification channels. No application-wide request lock serializes independent
+operations. Producer admission includes queued native buffers and metadata
+parsing, while caller-retained completed results belong to the application.
+Functional resource checks verify these ownership rules. Benchmark drivers,
+measurements and performance thresholds are outside this implementation.
 
 ## 11. Risks and open questions
 

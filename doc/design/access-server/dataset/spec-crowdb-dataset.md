@@ -5,7 +5,7 @@
 
 This document is the normative Dataset contract. It defines the objects,
 identities, state transitions, observable behavior, and compatibility rules
-shared by Dataset authorities, HTTP clients, native clients, and future SDKs.
+shared by Dataset authorities, HTTP clients, native clients, and SDKs.
 The implementation design is described in
 [Design: Dataset](design-crowdb-access-dataset.md); when the two documents
 appear to disagree, this specification is authoritative.
@@ -130,9 +130,11 @@ fields, invalid checksums, invalid parent references, and incomplete or
 inconsistent partition metadata.
 
 Within one Snapshot, `(sample_id, field_name)` has at most one value. A Schema
-field can be required or optional. A required field removed by a child must be
-represented by a tombstone or an explicitly compatible schema transition;
-readers never silently combine incompatible schemas.
+field can be required or optional. Required field names MUST remain in a child schema. Removing an inherited
+value requires an explicit tombstone; readers never silently combine
+incompatible schemas. A Manifest declares the complete current sample
+membership: omitted samples disappear, while surviving samples may inherit
+omitted optional fields through their declared parent.
 
 A Field value is exactly one of:
 
@@ -141,7 +143,9 @@ A Field value is exactly one of:
   chunk subsystem, and the declared digest.
 - **Tombstone**: an explicit deletion marker with no payload.
 
-Readers verify the declared digest before returning bytes. External S3 or
+Materialized reads verify the declared field digest before success. Streaming
+reads return verified frames; whole-field integrity is established at field end
+and partial output must be discarded if completion fails. External S3 or
 Iceberg references are provenance and input metadata; they do not transfer
 ownership of those systems' objects to Dataset.
 
@@ -160,8 +164,12 @@ The authority MUST perform publication in this order:
 5. Persist the published Snapshot record.
 6. Advance `latest` atomically to the complete Snapshot.
 
-A failure before step 5 leaves the candidate invisible and recoverable by the
-same operation token. A reader of `latest` MUST see either the previous
+Prepare completes the durable candidate without advancing latest. A failure
+before step 5 leaves the candidate invisible and recoverable by the same
+operation token. The Published record may exist before step 6 succeeds; an
+operation status alone is not proof that the head advanced. A successful Publish
+completes the head transition. Retry identical content to finish an ambiguous
+outcome; retries of historical publication MUST NOT rewind a newer head. A reader of `latest` MUST see either the previous
 complete Snapshot or the new complete Snapshot, never a prepared or partial
 Manifest.
 
@@ -198,9 +206,11 @@ Requested sample and projection order is preserved unless the plan explicitly
 requests another ordering. Unknown samples, invalid projections, checksum
 mismatches, and malformed cursors are errors.
 
-Each admitted read increments the active-read lease for its Dataset and
-Snapshot. Normal completion, cancellation, and explicit close release the
-lease. A bounded inactivity TTL expires a disconnected lease; the expiry is a
+Each admitted transfer owns a unique scoped active-read lease for its Dataset
+and Snapshot. Normal completion, cancellation, and explicit close release that
+lease without releasing another reader's lease. Streaming renews its lease
+while bytes are in flight. Transport-owned buffers retain protection and
+admission through delivery or drop. A bounded inactivity TTL expires a disconnected lease; the expiry is a
 GC safety policy, not a publication or cursor transition.
 
 HTTP and native reads use the same authority semantics. Transport framing,
@@ -239,6 +249,32 @@ plans, progress, resume, and cancellation.
 The native surface exposes the same operations through typed calls. Every
 operation identifies the Dataset explicitly or through a bound service and
 carries a Snapshot ID where the operation is Snapshot-scoped.
+
+HTTP uploads MUST use a Dataset-scoped opaque session ID, declared length,
+part size and MD5. Numbered parts are immutable: identical retries reuse the
+receipt; divergent bytes conflict. Declared part sizes are 1 byte through 4 MiB;
+the final part may be shorter. At most 10000 parts are accepted. Completion
+independently verifies part lengths/digests and the whole digest before producing a completed reference.
+Preparation rejects incomplete, aborted or foreign references. Claimed payloads
+remain protected until every candidate/Snapshot owner is released. Unowned
+sessions expire; physical cleanup may remain pending and MUST report that state.
+
+Public read handles bind the resolved immutable Snapshot, selection, projection,
+shuffle and worker partition. Fetch MUST NOT acknowledge consumption. The caller
+explicitly acknowledges an issued next cursor; repeating that acknowledgement
+is idempotent. Progress inspection MUST NOT fetch another batch. Resume restores
+acknowledged progress. Closing one handle MUST NOT cancel another. Worker
+partitioning executes before payload fetching. A v1 plan selects at most 100000
+IDs; JSON metadata and binary headers are capped at 8 MiB. Large fields stream
+rather than being materialized as a whole batch.
+
+Binary frame integrity is established at each frame, field integrity at field
+end, and successful batch completion requires the batch terminator followed by
+HTTP EOF. A caller-owned writer may contain a verified prefix on failure and
+MUST discard partial output. File convenience downloads expose their destination
+only after successful verification. SDK cancellation propagates to the same
+Rust operation and returns producer resources; caller-retained completed data
+has its own application lifetime.
 
 A configured HTTP bearer credential protects all Dataset routes. Deployments
 that need separate management and data policies may enforce that distinction at

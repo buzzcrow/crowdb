@@ -165,7 +165,9 @@ and attaches SPDX SBOM and SLSA provenance before updating `latest`. The canonic
 `crowdb/crowdb-iceberg`, `crowdb/crowdb-s3` and `crowdb/crowdb-dataset` repositories
 are single-node usage aliases of that image. Their examples explicitly set
 `CROWDB_STARTUP_MODE=single`; image names alone do not select startup mode.
-The Dataset alias reserves its usage name; Dataset access is not yet available. No second Docker image is published.
+The Dataset alias uses the same image. Dataset access runs through the
+`server access dataset serve` entry point with the versioned REST API and
+Dataset-specific chunk storage. No second Docker image is published.
 Preview has the same construction/runtime gates without publication authority.
 Workflow execution and live registry signing require a release dispatch.
 

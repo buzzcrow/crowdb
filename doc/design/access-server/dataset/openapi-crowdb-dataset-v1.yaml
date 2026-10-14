@@ -5,7 +5,7 @@
   "info": {
     "title": "CrowDB Dataset HTTP API",
     "version": "1.0.0",
-    "description": "Public wire contract; implementation progress is tracked by the Dataset REST execution plan. Unknown optional JSON properties are ignored. Missing required properties and unknown variants are rejected. This document does not expose persisted bincode records."
+    "description": "Public Dataset REST v1 wire contract. Unknown optional JSON properties are ignored. Missing required properties and unknown variants are rejected. This document does not expose persisted bincode records."
   },
   "security": [
     {

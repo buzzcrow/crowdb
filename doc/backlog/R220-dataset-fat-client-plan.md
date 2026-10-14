@@ -3,9 +3,10 @@
 
 ### R220: Dataset — Fat-client direct access plan
 
-Status: Deferred until R231/R232 deliver the public HTTP SDK and measured CPU
-HTTP latency, throughput, memory, and digest costs. The SDK project lives under
-`sdk/` in this repository with independent packages, as defined by R232.
+Status: Deferred until dedicated CPU HTTP workload measurements establish
+latency, throughput, memory and digest costs. The public Rust HTTP SDK and
+Python wrapper are available under `sdk/` as independent packages; functional
+container acceptance is complete. Performance measurements remain future work.
 
 Problem: The SDK fat client can avoid HTTP routing and payload relay by connecting
 directly to internal Chunk-KV and DiskIO, but it also takes responsibility for
@@ -17,7 +18,7 @@ The root contract is [Dataset design](../design/access-server/dataset/design-cro
 Solution:
 
 - Implement direct access in the Rust SDK core and expose it through the same
-  Python wrapper established by R232. Routing, buffers, retries and optional
+  Python wrapper used by the HTTP client. Routing, buffers, retries and optional
   RDMA stay in Rust; Python does not implement another data plane. Additional
   C/C++ bindings can be added later without making a C ABI a prerequisite.
 - Document the SDK direct-client protocol over the same Dataset authority and Read
@@ -37,7 +38,7 @@ Solution:
   Keep HTTP available for unsupported capabilities; choose transport before
   starting an operation and never replay an ambiguous mutation on a new path.
 
-Dependencies: R231 public REST and R232 packaged HTTP SDK baseline, existing CPU
+Dependencies: the existing public REST API and packaged HTTP SDK, CPU
 E2E/container acceptance, and measured Chunk-KV/DiskIO read flows. R233 caching
 is optional. Unlanded direct access does not block the first HTTP SDK release.
 
