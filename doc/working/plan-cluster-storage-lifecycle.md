@@ -326,3 +326,11 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   Runtime observations are scoped by group/disk; another scope never inherits
   stale usage. All 199 UI tests and TypeScript pass, including failed refresh,
   recovery and scope isolation. Browser failure-injection verification follows.
+- First observation browser regression stopped at the fixture's explicit ban on
+  response interception (run-af494b4809bf4f2f908265555da0ed87). Replace route abort
+  with actual browser offline/online transitions; retain all row/totals/error
+  assertions and the existing real hardware lifecycle checks.
+- Real browser offline/online regression passes on `d030e11e`: hardware disk
+  rows and totals survive failed reads, source timestamps explicitly become stale,
+  and refreshing after reconnect clears the error without losing rows. Playwright
+  2.9 s versus fresh 2.1 s; run-8706ac7e1d4c4d4eb4638612e636896f.
