@@ -316,3 +316,7 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   Escape restores prior focus. Navigation can collapse and overlays below 720 px.
   All 198 UI component tests and TypeScript pass. Exact inspector selection
   baseline is 1.6 s; expanded resize/focus browser regression awaits release build.
+- Responsive browser acceptance passes on `428c2d0d` in 2.4 s versus 1.6 s:
+  keyboard resize, panel-to-drawer transition, retained center, Escape/focus
+  restoration, navigation collapse/reopen and reset all pass. Artifact:
+  run-e809432a6db340c39d98c28a339daf98. Rootless build/import remains successful.
