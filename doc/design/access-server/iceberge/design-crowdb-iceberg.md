@@ -62,6 +62,82 @@ head publication. No cross-generation cache or deduplication is implied.
 Iceberg metadata stores bounded logical records and opaque data references.
 Physical chunk placement and storage topology remain below the access boundary.
 
+### Identity directory and file authority
+
+The Iceberg key codec carries its storage family and layout version separately
+from the directory payload. A table-owned payload begins with
+`<catalog-id>/<storage-namespace-id>/<table-id>/`; it has no redundant
+`iceberg`, `namespace` or `table` labels before those IDs. The storage namespace
+is frozen at table creation, including staged creation. The default namespace
+has a durable ID under the same rules as named namespaces.
+
+```text
+<catalog-id>/
+├── head
+├── namespace/name/<encoded-namespace> -> namespace-id
+└── <namespace-id>/
+    ├── head
+    ├── name/<encoded-table-name> -> (storage-namespace-id, table-id)
+    └── <table-id>/
+        ├── head
+        ├── file/<public-relative-filename>
+        ├── projection/<metadata-generation>/<page-or-receipt>
+        ├── operation/<operation-id>/...
+        ├── multipart/<upload-id>/...
+        └── gc/<task-id>/...
+```
+
+Catalog and namespace control records have their own typed scopes. Namespace
+names use the existing unambiguous multipart-name encoding. Table-name lookup
+returns the complete storage identity; internal tasks carry it as well, so no
+table-ID reverse index is needed. A move updates live name mappings and the
+head's live identity/epoch while retaining the storage path. Deleting the old
+namespace cannot cascade into moved tables, and IDs are never reassigned.
+
+Each file has one `file/<public-relative-filename>` record. The suffix is also
+its public object-key suffix. Its value contains FileId, canonical length,
+format, integrity metadata, native descriptor/root and lifecycle state. FileId
+is a value/locator binding, not another file index. One create-only CAS publishes
+the complete record after durable bytes; exact-key conflicts cannot overwrite
+selected content. Retries preserve the selected file identity and URL. Workflow
+records exist only where recovery or multipart/GC progress requires them, not
+as three mandatory records for every file.
+
+### Standard metadata and bounded scale
+
+TableHead selects an immutable standard metadata JSON file. Its `snapshots`
+array contains snapshot records and its `refs` map selects branches/tags;
+snapshot-log and metadata-log retain their standard meanings. Snapshot records
+reference manifest-list files, which reference manifest files, which describe
+data/delete files. Reading v1 also supports its direct `manifests` alternative.
+The backed-up v1/v2/v3 specification determines fields, sequence inheritance,
+schema/partition evolution, delete matching and row lineage. No authoritative
+snapshot or manifest KV index substitutes for those standard file contents.
+
+All of these file kinds use the same single file-record model. Large metadata
+JSON, manifests and manifest lists are native chunk-backed objects. KV values
+and TableHead never embed an unbounded metadata document or snapshot array.
+Small eligible metadata may use the bounded inline representation; larger
+objects and large extent sets use chunk payloads and bounded directory roots.
+Changing storage representation preserves the canonical bytes returned by
+FileIO. Table publication selects a completely durable metadata generation by
+CAS; a losing commit cannot expose a partially written generation.
+
+Metadata files use useful public relative prefixes such as
+`metadata/<name>.metadata.json`, `metadata/<name>.avro` and
+`statistics/<name>.puffin`. These are defaults, not restrictions on safe
+client-chosen paths. The optional generation-bound projections described above
+accelerate metadata reads; they are not duplicate file authorities. Parser,
+collection and response budgets remain explicit even for chunk-backed JSON.
+An unsupported oversize request fails clearly rather than silently truncating
+snapshots. ALL and REFS keep their standard response semantics; internal
+projection paging does not introduce private REST pagination fields.
+
+New catalogs use the identity-directory layout version. Existing legacy
+catalogs retain their own decoder, keys, URLs and read/write behavior. Layout
+selection is catalog-bound; relabeling or mixing key versions in one scan is
+rejected. In-place migration is not implicit in decoding.
+
 ### Catalog foundation
 
 One active root selects a random stable CatalogId and activation epoch. Display
@@ -254,19 +330,31 @@ Iceberg FileIO uses reserved S3-shaped locations so existing Iceberg clients can
 address immutable metadata and data files. The shape is a compatibility
 contract, not delegation to the general S3 authority. File publication,
 immutability, authorization, and deletion remain under Iceberg control.
+Public URIs use the fixed virtual bucket `iceberg`:
+`s3://iceberg/<catalog-id>/<storage-namespace-id>/<table-id>/<filename>`.
 Typed locations use lower-case unpadded base32 catalog IDs and lower-case hex
-table IDs. Relative UTF-8 object keys preserve case, literal percent signs, plus
+namespace and table IDs. Relative UTF-8 object keys preserve case, literal percent signs, plus
 signs and repeated internal slashes; the whole object key is bounded to 1,024
 bytes. Dot traversal, leading slash, backslash, controls, query and fragment
 delimiters are rejected rather than normalized. HTTP percent decoding belongs
 only at the transport boundary, not in stored S3-shaped locations.
 
 Native `ListObjectsV2` retains this address model. A list request must specify
-an explicit `t/<table-id>/` prefix and a table-bound delegated list capability;
+the complete `<catalog-id>/<storage-namespace-id>/<table-id>/` prefix or a
+descendant prefix and a table-bound delegated list capability;
 catalog-wide discovery and general S3 credentials are rejected. Reader and
 writer FileIO credentials include listing; cleanup-only credentials do not.
 Exact-object HEAD/GET/PUT remain independently usable. PyArrow missing-file
 probes may issue listing to distinguish a missing object from a directory.
+
+Empty, catalog-only, namespace-only and foreign-table prefixes fail before a
+scan. HeadBucket/GetBucketLocation expose only the configured virtual bucket
+and region to a valid grant; ListBuckets returns AccessDenied, and bucket
+creation/deletion is unsupported. The URI host determines the bucket. Arrow
+FileSelector adds a trailing slash to its key prefix and uses `/` as delimiter
+for nonrecursive listing; an exact HEAD miss may probe `<object-key>/` without
+widening scope. These behaviors follow the
+[Arrow S3 implementation](https://raw.githubusercontent.com/apache/arrow/apache-arrow-25.0.0/cpp/src/arrow/filesystem/s3fs.cc).
 
 Listing enumerates selected, fully published immutable file-location records,
 including files awaiting a table commit or later reclamation. It excludes
@@ -289,6 +377,15 @@ Authenticated continuation tokens bind the principal, credential nonce,
 catalog epoch, table, prefix, delimiter and encoding. Their fixed expiry is
 no later than the originating grant, and invalid or foreign tokens fail before
 storage access. A credential refresh requires starting a new traversal.
+
+List operates directly on `file/` records in public-key order. For example,
+the public prefix `<table-path>/metadata/` maps to the KV prefix
+`<table-path>/file/metadata/`; filename prefixes narrow that same range.
+Pagination uses encoded prefix bounds and the last examined key, including
+filtered tombstones and sparse pages. It never materializes or sorts the whole
+table, opens metadata objects, scans unrelated file prefixes or enumerates
+snapshots inside JSON. Returned keys omit the internal `file/` component.
+The same limits apply whether a table has ten or millions of metadata files.
 
 Native file records bind FileId to exact location, kind, format and canonical length.
 Legacy tree and inline records also bind a whole-file SHA-256 digest; streamed
@@ -314,6 +411,45 @@ that explicitly construct or examine those files.
 The isolated native HTTP surface exposes signed immutable object reads/writes,
 multipart operations and separately authorized single/batch cleanup, without
 a general S3 bucket authority.
+
+### Native injection and direct reads
+
+Native injection finishes chunk writes and its bounded descriptor, publishes
+one file record, then returns one canonical URL before constructing manifests.
+For parquet, the public filename is
+`f/v1/<readable-stem>.<locator>.parquet`. The URL-safe, dot-free locator carries
+a unique FileId, length, integrity information and complete stable native
+location or chunk-resident directory root. Its versioned signature binds the
+full table identity, readable stem and unsigned locator fields; the signature
+bytes are excluded from that signing input. Repeated readable stems are harmless;
+an identical upload retry returns the original selected filename. Locator and
+stem together must fit the object-key limit.
+
+Ordinary SDK writers choose logical filenames before S3 PUT and keep those
+URLs. A PUT-time allocation does not change a client's chosen path. These
+files resolve their one file record; no response field or manifest rewrite
+converts them into direct locators. Metadata/Avro files may retain useful
+logical prefixes regardless of their native object size. Position-delete and
+deletion-vector path references always use the original canonical URL.
+
+Direct HEAD/GET/Range GET validate request permissions and locator authenticity
+and read the native descriptor without file-location, file-tombstone or
+chunk-KV resolution queries. A KV-resolved opaque token is not a direct
+locator. Large files use bounded chunk-resident directory traversal, not an
+unbounded URL. Native chunk routing preserves repair/failover without embedding
+transient replica addresses in URLs. Reclaimed identities and reused extents
+must never make an old locator return a different file's bytes.
+
+Authorization uses bounded validated grant/context caches and signature,
+scope and expiry checks. An authorization cache miss may load authority; it
+must not become a per-file location/state lookup. Expired entries are not
+accepted during refresh failure. Cache entries bind principal, catalog epoch,
+full storage identity and operation rights, with validity bounded by the grant
+and applicable authority lease. Fresh credential issuance still checks live
+authority. Persistent locators have no credential expiry; retain signing-key
+verification material for their files' lifetime. A locator is not a bearer
+permission. Cold/warm authorization costs and storage resolution counts are
+measured separately.
 
 Legacy chunk-backed files use bounded leaf blocks and immutable chunk-resident directory
 pages, with at most 256 children per page and eight directory levels. Each page
@@ -503,7 +639,9 @@ Delegation tokens carry catalog activation epoch, table, principal fingerprint,
 nonce, exact operation set, issue/expiry times and independent request/file byte
 limits. Domain-separated HMAC authenticates bounded claims and derives per-grant
 S3 credential material without a mutable credential registry. Verification requires
-a freshly checked Ready context. Ordinary FileIO grants exclude DELETE;
+the operation's authorized context: writes and credential issuance check Ready
+authority, while direct reads may reuse the bounded validated permission cache
+described above. Ordinary FileIO grants exclude DELETE;
 explicit cleanup grants include the separate delete operation. These token
 primitives feed native request-signature verification through a request-local
 credential provider. Only the shared SigV4 algorithm is reused; general S3
@@ -513,7 +651,7 @@ expiry remains exact even when signature timestamps allow clock skew. Table
 credential issuance requires a matching Ready catalog authority and rejects
 lifetimes above its persisted delegated-access bound, independently of the
 signer's configured maximum. A zero persisted delegation bound disables issuance.
-Callers still must freshly authorize the root and exact live table or draft;
+Credential-issuance callers must freshly authorize the root and exact live table or draft;
 the serialization primitive does not perform those reads. The credential endpoint
 checks the current namespace and published table or exact unbound draft. Draft
 vending requires its original writer principal and a table-ID query selector;
@@ -653,20 +791,24 @@ authorizes deletion. Committed files remain readable when new chunk allocation
 fails. Progress resumes after capacity is restored through the normal storage
 flow. Shared-chunk ranges remain pending while range deletion is unsupported.
 
-Request entry checks catalog and table or draft authority without request-level
-pins. Selected context and records flow through normal publication and reads;
-PUT and GET do not perform deletion-fence or GC-claim GETs. Physical reclamation observes a
-minimum retention interval that covers admitted request lifetimes. Once a file's canonical
-logical deletion has started, its location-key tombstone rejects resolution
-until cleanup state permits reuse, even if physical range reclamation is deferred. Legacy live tasks are retired without
+Publication and logical-URL resolution check catalog and table or draft
+authority without request-level pins. Direct reads instead use the validated
+permission cache and authenticated locator. Physical reclamation observes the
+configured retention interval. Logical deletion hides the file from listing;
+its tombstone rejects logical-URL resolution but is not consulted by direct
+HEAD/GET/Range GET. With a valid grant, an already known direct URL can still
+read retained bytes until physical reclamation. Logical deletion is not an
+instantaneous direct-URL revocation guarantee. Legacy live tasks are retired without
 further deletion, releasing an owned table fence. Retained and deferred
 candidates remain durable work for later inactive passes.
 
 An already authorized FileIO GET or HEAD can continue within the configured
-retention interval after a logical deletion. A concurrent transition to
-`Reclaiming` rejects new admission. Uploads and new table credentials require
-a Ready table. Logical drop preserves admitted file reads until their bounded
-response lifetime ends.
+retention interval after logical deletion. Native storage arbitrates direct
+read/reclamation races, returning the original bytes or a storage error, never
+bytes from a reused allocation. Logical-URL admission rejects a reclaiming
+record. Uploads and new credentials require a Ready table. After logical drop,
+direct URLs remain readable under still-valid grants while bytes are retained;
+physical purge and grant expiry bound that access.
 
 Retired catalog recovery scans system retry and management ledgers before file
 deletion and after the final file rescan. Pending or retained bindings stop the
@@ -788,9 +930,11 @@ The native file endpoint exposes separately authorized S3 `DeleteObject` and
 credentials endpoint with `cleanup=true`; ordinary FileIO credentials cannot
 delete objects. The server scans retained table metadata and refuses a path
 that is referenced or whose reference status is uncertain. Successful deletion
-records a logical tombstone, then queues bounded physical reclamation after
-20 minutes. A new PUT may reuse the path only after the old file's GC candidate
-is durable. Batch deletion returns individual errors inside HTTP 200, so callers
+records a logical tombstone and removes list visibility, then queues bounded
+physical reclamation after 20 minutes. Direct URLs remain readable until their
+bytes are reclaimed, subject to grant validity. Their FileIds/locators are never
+reused. A new logical-path PUT may reuse its path only after the old file's GC
+candidate is durable. Batch deletion returns individual errors inside HTTP 200, so callers
 must inspect every item.
 
 > **Warning:** Before deleting, the client must stop and resolve every writer
@@ -821,3 +965,13 @@ must inspect every item.
   reclaimed solely because no retained snapshot refers to it; active cleanup
   handles expired multipart remnants and explicitly deleted files with durable
   owner checks.
+- **ICE-I10 — Stable identity directory:** rename and cross-namespace move
+  preserve storage namespace, table path and every published file URL.
+- **ICE-I11 — Single file authority:** one filename-keyed record selects each
+  published file; list and lifecycle use that record without secondary file indexes.
+- **ICE-I12 — Direct native read:** a direct URL supplies its immutable native
+  descriptor without file-location, file-state or chunk-KV resolution queries.
+  Logical deletion removes list visibility; physical GC ends byte availability.
+- **ICE-I13 — Bounded metadata scale:** large metadata bytes live in native
+  objects, descriptors/head remain bounded, prefix listing reads bounded KV
+  pages, and optional projections cannot replace standard metadata authority.

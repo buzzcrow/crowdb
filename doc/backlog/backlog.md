@@ -9,7 +9,7 @@ requirements and their temporary execution plans are removed during the final
 live in the linked document; implementation follows
 [`implement-requirement`](../../.agents/skills/implement-requirement/SKILL.md).
 
-**Next R number: R231** — R221 is reserved by another workstream.
+**Next R number: R235** — R231 through R233 are reserved by other workstreams.
 
 ## Dataset and access
 
@@ -41,6 +41,12 @@ live in the linked document; implementation follows
 - **[R196](R196-access-upload-benchmark-regression.md)** — S3 and Iceberg HTTP
   upload benchmark regression. **Area:** access server / CLI / benchmarks.
   **Complexity:** Medium. **Dependencies:** completed upload correctness paths.
+- **[R234](R234-access-iceberg-native-storage-layout.md)** — native Iceberg
+  ID directory, single file record, injection direct URL, large metadata objects
+  and bounded table/metadata prefix listing.
+  **Area:** access server / Iceberg / Chunk-KV. **Complexity:** High.
+  **Status:** Implementation started; native identity/URI/key codecs and storage
+  envelope dispatch verified. Runtime publication and direct reads pending.
 
 ## Chunk, Chunk-KV, and recovery
 

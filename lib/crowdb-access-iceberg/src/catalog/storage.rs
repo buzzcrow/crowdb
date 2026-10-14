@@ -11,7 +11,7 @@ use crowdb_protocol::chunk_kv::{
 };
 
 use crate::error::ValidationError;
-use crate::key::{CatalogScope, IcebergKey, MAX_KEY_BYTES};
+use crate::key::{CatalogScope, IcebergKey, StorageKey};
 use crate::record::MAX_RECORD_BYTES;
 
 #[derive(Debug, thiserror::Error)]
@@ -155,11 +155,11 @@ impl RoutedCatalogStore {
         identity: ClientRequestId,
     ) -> Result<CasOutcome, StoreError> {
         if matches!(
-            IcebergKey::decode(key)?,
-            IcebergKey::System {
+            StorageKey::decode(key)?,
+            StorageKey::Legacy(IcebergKey::System {
                 scope: crate::key::SystemScope::ActiveRoot,
                 ..
-            }
+            })
         ) {
             return Err(ValidationError::Key.into());
         }
@@ -200,14 +200,8 @@ impl RoutedCatalogStore {
         let (Some(start), Some(end)) = (&request.start, &request.end) else {
             return Err(ValidationError::Key.into());
         };
-        if start.as_slice() < b"ICE\0\x01".as_slice()
-            || end.as_slice() > b"ICE\0\x02".as_slice()
-            || start >= end
-            || start.len() > MAX_KEY_BYTES
-            || end.len() > MAX_KEY_BYTES
-        {
-            return Err(ValidationError::Key.into());
-        }
+        let range = start.clone()..end.clone();
+        StorageKey::validate_range(&range)?;
         if request.max_items == 0
             || request.max_items > 256
             || request.max_bytes == 0
@@ -226,7 +220,10 @@ impl RoutedCatalogStore {
             if value.revision == 0 {
                 return Err(StoreError::Response);
             }
-            IcebergKey::decode(&value.key)?;
+            StorageKey::decode(&value.key)?;
+            if !range.contains(&value.key) {
+                return Err(StoreError::Response);
+            }
             validate_value(&value.value)?;
         }
         Ok(page)
@@ -246,7 +243,7 @@ impl CatalogStore for RoutedCatalogStore {
     }
 
     async fn get(&self, key: &[u8]) -> Result<Option<StoredValue>, StoreError> {
-        IcebergKey::decode(key)?;
+        StorageKey::decode(key)?;
         self.counters.get.fetch_add(1, Ordering::Relaxed);
         count_request(|counters| &counters.get);
         let response = self.client.get(key.to_vec(), None).await?;
@@ -263,7 +260,7 @@ impl CatalogStore for RoutedCatalogStore {
         value: &[u8],
         identity: ClientRequestId,
     ) -> Result<CasOutcome, StoreError> {
-        IcebergKey::decode(key)?;
+        StorageKey::decode(key)?;
         validate_value(value)?;
         let operation = match expected {
             Some(expected) => {

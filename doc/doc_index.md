@@ -42,7 +42,7 @@ Temporary plans live under `doc/working/`; flow analyses live under
 | `doc/design/kv/kv-write-flow-analysis.md`                                | KV write flow and optimization evidence.                |
 | `doc/design/chunkio/chunkio-write-flow-analysis.md`                      | Chunk I/O large-write flow and benchmarks.              |
 | `doc/design/chunkio/chunkio-small-io-flow-analysis.md`                   | Chunk I/O small-I/O flow and benchmarks.                |
-| `doc/design/access-server/iceberge/design-crowdb-iceberg-upload-flow.md` | Iceberg FileIO upload path and container measurements.  |
+| `doc/design/access-server/iceberge/design-crowdb-iceberg-upload-flow.md` | Native injection, SDK upload and container measurements. |
 | `doc/design/rpc/rpc-flow-analysis.md`                                    | RPC flow, benchmarks, and performance history.          |
 
 ## Dev Environment (`doc/dev/`)
@@ -119,7 +119,7 @@ Temporary plans live under `doc/working/`; flow analyses live under
 | `doc/design/rpc/design-crowdb-rpc-diskdb-migration.md`                        | Diskdb RPC migration, rollout, connection lifetime.     |
 | `doc/design/access-server/s3/design-crowdb-access-s3.md`                      | S3 namespace, publication, integrity, list, delete.     |
 | `doc/design/access-server/s3/design-crowdb-access-s3-rdma.md`                 | Optional RDMA and direct-to-GPU data planes.            |
-| `doc/design/access-server/iceberge/design-crowdb-iceberg.md`                  | Native Iceberg authority, commits, files, and recovery. |
+| `doc/design/access-server/iceberge/design-crowdb-iceberg.md`                  | Iceberg ID paths, direct files and metadata scale.     |
 | `doc/design/access-server/iceberge/iceberg-table-spec-1.11.0.md`              | Backed-up normative Iceberg table format specification. |
 | `doc/design/access-server/iceberge/iceberg-rest-catalog-open-api-1.11.0.yaml` | Backed-up normative Iceberg REST Catalog OpenAPI.       |
 | `doc/design/access-server/dataset/design-crowdb-access-dataset.md`            | Dataset HTTP, native topology access, and GPU delivery. |

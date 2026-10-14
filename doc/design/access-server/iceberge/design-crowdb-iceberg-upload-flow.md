@@ -3,7 +3,7 @@
 
 # CROWDB - Design: Iceberg File Upload Flow
 
-This document defines the FileIO upload path used by Iceberg clients and records
+This document defines native injection and the FileIO upload path used by Iceberg clients and records
 measurements from the single-node profile. It covers file publication, not table
 snapshot publication.
 
@@ -18,6 +18,38 @@ Depends on: [Native Iceberg Storage](design-crowdb-iceberg.md) and
 4. [Measured costs](#4-measured-costs)
 
 ## 1. Client and server flow
+
+### Native injection
+
+Native injection owns both byte ingestion and the subsequent construction of
+Iceberg file references:
+
+1. Finish durable IcebergTable chunk writes and seal a complete native
+   descriptor or bounded chunk-resident directory root.
+2. Form `f/v1/<readable-stem>.<locator>.parquet` under the immutable
+   `<catalog-id>/<storage-namespace-id>/<table-id>/` prefix. Bind the locator's
+   unique file identity, length, descriptor and exact filename by signature.
+3. Publish one `file/<filename>` record with create-only CAS. Return the one
+   `s3://iceberg/<table-path>/<filename>` URL after publication. A retry uses
+   the same operation/file identity and returns the selected URL; conflicts
+   never overwrite published content.
+4. Construct standard manifests using that URL, write manifest lists and
+   metadata JSON, then publish the table head by its normal atomic commit.
+   Failed table commits leave unreferenced durable files for the existing
+   safe cleanup flow; they do not change a previously returned URL.
+
+Direct HEAD/GET/range requests validate cached permissions and the locator,
+then read native storage without file-record or chunk-KV location lookup.
+List and cleanup still use the single file record. Logical deletion removes
+the file from list; its known direct URL may read retained bytes until physical
+GC. Reclaimed identities cannot alias newly allocated bytes.
+
+### Standard SDK uploads
+
+SDK location providers choose logical filenames before PUT. These uploads
+retain that filename and resolve the single file record for reads. They do
+not require a pre-upload reservation API, a second SDK location field, or
+post-upload rewriting of manifests and path-based delete references.
 
 The TPC loader hashes each local Parquet file through bounded reads, checks
 that its unique target is absent, then sends a known-size S3 request using the
@@ -120,6 +152,13 @@ The native allocator exports current and peak retained bytes. The chunk client
 also counts repair-driven rotations, replayed bytes, and rotation time.
 
 ## 3. Integrity and durable publication
+
+Large metadata JSON, manifest lists and manifests follow the same native
+object durability rules. Each keeps one bounded file descriptor; complete
+snapshot arrays and file bytes are not copied into TableHead or an unbounded
+KV value. Public `metadata/` and `statistics/` prefixes remain available for
+bounded listing without opening object payloads. Small inline metadata and
+large chunk-backed metadata return identical canonical FileIO bytes.
 
 The per-object OpenSSL digest state computes MD5 over ordered logical payload
 views. Small objects update it synchronously in the receive task; large objects
