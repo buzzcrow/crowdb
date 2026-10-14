@@ -49,8 +49,9 @@ does not establish that a native service operation succeeds.
 - **UI-01:** One Console serves one configured cluster. Opening the UI enters
   that cluster directly; no Connect dialog, endpoint input, or access-key form
   precedes ordinary browsing.
-- **UI-02:** The seven top-level tabs are Cluster, KV, Capacity, Chunk, Chunk-KV,
-  Iceberg, and S3. Each has an independent selected resource and query window.
+- **UI-02:** The six top-level tabs are Cluster, KV, Chunk, Chunk-KV, Iceberg,
+  and S3. Each has an independent selected resource and query window. Cluster
+  contains Topology and Capacity views sharing selection and tree expansion.
 - **UI-03:** Assume an administrator/root session until UI authentication is
   introduced. Available backend operations remain authoritative; capability
   restrictions are not inferred from a missing login screen.
@@ -80,7 +81,7 @@ provide observable capacity and bitmap fixtures.
 
 ## 3. Navigation and layout
 
-- **NAV-01:** The header keeps the seven domains in a stable order. Domain
+- **NAV-01:** The header keeps the six domains in a stable order. Domain
   changes preserve that domain's bounded query state and selected identity.
 - **NAV-02:** The left panel selects hierarchy/scope; the center presents the
   selected resource or overview; the right panel presents selected properties.
@@ -149,8 +150,12 @@ provide observable capacity and bitmap fixtures.
 ## 5. Cluster
 
 - **CLU-01:** The hierarchy is Datacenter → Rack → Node → service instances. The center
-  topology uses the same hierarchy, identities, and selection as the left tree.
-  Logical Paxos groups are managed in KV; physical storage is managed in Capacity.
+  topology uses physical identities and shares selection with the left tree.
+  The left tree separates each Node into Services and Storage. Physical groups
+  and disks belong under Storage regardless of their DiskDB owner; service
+  instances remain under Services. Logical Paxos groups are managed in KV.
+  Capacity is a Cluster view; legacy Capacity links resolve to Cluster with the
+  Capacity view selected. History retains the view alongside the resource.
 - **CLU-02:** Rack actions include Add Node. A Node context menu independently
   manages each service type and each existing instance, using the same lifecycle
   pattern as KV/DiskDB. It must not route other service types through KV APIs.
@@ -415,7 +420,7 @@ provide observable capacity and bitmap fixtures.
 - **CAP-06:** Opening Cluster does not issue DiskDB runtime usage or scan
   requests. Capacity usage is scoped to the selected DiskGroup/Disk when that
   scope is known; cluster totals explicitly request aggregate observation.
-  Disk inventory belongs to one shared source. Expanding a Node loads its
+  Disk inventory belongs to one shared source. Expanding a Node's Storage branch loads its
   DiskGroups; expanding/selecting a DiskGroup loads its disks. Selecting a
   linked Disk loads the required ancestor inventory directly. Four workers
   serve opened branches, merging duplicate requests for the same branch.
@@ -423,7 +428,8 @@ provide observable capacity and bitmap fixtures.
   Failed branch refresh retains its known inventory and reports failure.
 - **CAP-07:** The physical tree reads Node health from the service projection;
   it does not ping every Node or fetch a second per-node KV catalog. Capacity
-  Nodes and DiskGroups begin collapsed; Datacenter/Racks remain visible.
+  Storage branches and DiskGroups begin collapsed; Datacenter/Racks/Nodes and
+  Services remain visible.
   Default-service prerequisite inspection is explicit for its selected Node.
 
 ## 16. Loading, failures, and recovery
@@ -447,9 +453,9 @@ provide observable capacity and bitmap fixtures.
 1. Open Cluster directly. Inspect/create Rack and Nodes; add each Node through
    one dialog with six default services and explicit waiting dependencies.
 2. In KV, initialize three-replica Group 0 and create ordinary data groups.
-3. In Capacity, register DiskGroups/disks with owners and bindings; DiskIO becomes
+3. In Cluster’s Capacity view, register DiskGroups/disks with owners and bindings; DiskIO becomes
    ready. Observe capacity and inspect a zone bitmap.
-4. Return to Cluster to verify each service's deployment/readiness and resolve
+4. Select Cluster’s Topology view to verify each service's deployment/readiness and resolve
    dependencies. Inspect logical groups in KV and physical storage in Capacity.
 
 This is a dependency guide, not a blocking wizard. A working capability remains

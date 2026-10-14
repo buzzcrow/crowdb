@@ -20,7 +20,7 @@ test('native diagnostics: Capacity navigation fetches only opened storage branch
   await page.getByTestId('domain-capacity').click();
   await expect(page.getByTestId('capacity-summary')).toBeVisible();
   expect(groups).toEqual([]); expect(disks).toEqual([]);
-  await sidebar.getByTestId('tree-node-N-1').getByRole('button', { name: 'Expand', exact: true }).click();
+  await sidebar.getByTestId('tree-node-STORAGE-1').getByRole('button', { name: 'Expand', exact: true }).click();
   await expect(sidebar.getByRole('button', { name: 'storage (DG-1)', exact: true })).toBeVisible();
   expect(groups).toEqual([1]); expect(disks).toEqual([]);
   await sidebar.getByRole('button', { name: 'storage (DG-1)', exact: true }).click();
@@ -79,7 +79,7 @@ test('native diagnostics: hardware capacity aggregates disks and dashed status u
   await expect(autoJoin).toBeEnabled();
   await page.getByTestId('domain-capacity').click();
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
-  await sidebar.getByTestId('tree-node-N-1').getByRole('button', { name: 'Expand', exact: true }).click();
+  await sidebar.getByTestId('tree-node-STORAGE-1').getByRole('button', { name: 'Expand', exact: true }).click();
   const item = sidebar.getByRole('button', { name: 'test-dg-hwcap (DG-591)', exact: true });
   await expect(item).toBeVisible();
   await item.click();

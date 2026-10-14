@@ -268,3 +268,8 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   196 UI component tests and application TypeScript pass. Release browser
   regression is pending; lifecycle dialogs and independent center/inspection
   selection remain unfinished.
+- First consolidated shell run: embedding 2.8 s and unavailable-backend 0.452 s
+  pass; domain toggle fails because the existing fixed error banner covers the
+  new center Topology button. Trace confirms pointer interception, not failed
+  navigation. Move the error into normal center layout; keep the actual browser
+  click as the regression assertion. Artifact run-39995fe2eeef4f4c9aa2916831e12c69.

@@ -490,15 +490,6 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
 
       {managed && <MonitorSummary apiPrefix={apiPrefix} />}
 
-      {dataError && (
-        <div
-          role="alert"
-          className="tw-fixed tw-top-16 tw-left-1/2 -tw-translate-x-1/2 tw-z-50 tw-bg-failed/10 tw-border tw-border-failed/30 tw-text-failed tw-px-4 tw-py-2 tw-rounded-md tw-text-sm tw-shadow-lg"
-        >
-          {domain === Domain.Capacity ? `${dataError.message} — retrying` : 'Backend unreachable — retrying'}
-        </div>
-      )}
-
       <div hidden={ownsSidebar}><Sidebar
         onCandidatesChanged={handleRefresh}
         nodeManagement={nodeManagement}
@@ -537,6 +528,9 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
           marginRight: selectedEntity && !ownsSidebar ? inspectorWidth : 0,
         }}
       >
+        {dataError && <div role="alert" className="tw-shrink-0 tw-border-b tw-border-failed/30 tw-bg-failed/10 tw-px-4 tw-py-2 tw-text-sm tw-text-failed">
+          {domain === Domain.Capacity ? `${dataError.message} — retrying` : 'Backend unreachable — retrying'}
+        </div>}
         {activeDomain === Domain.Cluster && <>
           {!storageDetail && <ClusterViewSwitch />}
           {nodeManagement && !managed && <AutoJoin readonly={readonly} />}
