@@ -225,6 +225,15 @@ pub(crate) async fn build_hardware_client(state: &AppState) -> Option<crowdb_kv_
         kv.refresh_topology().await.ok()?;
         return Some(crowdb_kv_client::HardwareClient::from_shared(kv));
     }
+    if state.node_monitor_url.is_some() {
+        let binding = crate::node::cluster_binding(state).ok()??;
+        let kv = state.kv_client().await;
+        kv.set_mgmt_seeds(binding.management_seeds);
+        // Admitted remote services have no PID in this console's namespace.
+        // A persisted binding supplies discovery before any browser warms the
+        // process/topology observation cache, including after a web restart.
+        return Some(crowdb_kv_client::HardwareClient::from_shared(kv));
+    }
     let snap = state.monitor_cache.snapshot().await;
     if snap.is_empty() {
         return None;

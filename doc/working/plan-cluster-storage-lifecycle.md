@@ -424,3 +424,12 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   as decimal strings at the same FFI boundary. Group-0 serialization is unchanged.
   Regression now exercises u64::MAX in both words and both nested/outer identities;
   all ten focused tests, all-feature Clippy and fmt pass. No timeout increases.
+- Fourth native run (a6627fa6, run-4e14e9fc58334ec7b6d76133980fe8ff) passes
+  the complete file-admission fixture, including actual DiskIO reads and replay;
+  `file-admission.json` records both Registered operations and retained identities.
+  Browser starts but its first capacity read fails: `build_hardware_client`
+  requires a warmed monitor cache and local PIDs, unavailable after node restart.
+  Bound manual mode now resolves through persisted binding seeds and the shared
+  KV client, independent of browser/cache warmup. The empty-cache component
+  regression verifies hardware capacity directly; affected Web suites (14 cases),
+  Clippy and fmt pass. Full browser rerun remains required before visible changes.

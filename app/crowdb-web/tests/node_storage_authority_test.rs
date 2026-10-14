@@ -84,6 +84,7 @@ async fn bound_storage_reads_observe_monitor_publication_without_console_cache_r
         .unwrap();
     *state.kv_client.write().await = Some(kv);
     let app = router(state.clone());
+    assert!(state.monitor_cache.snapshot().await.is_empty());
     assert_eq!(read(&app, "/api/nodes/2/disk-groups").await[0]["id"], 7);
     assert_eq!(
         read(&app, "/api/nodes/2/disk-groups/7/disks")
@@ -110,6 +111,8 @@ async fn bound_storage_reads_observe_monitor_publication_without_console_cache_r
             .len(),
         2
     );
+    let capacity = read(&app, "/api/hardware/capacity").await;
+    assert_eq!(capacity["disk_groups"][0]["disks"].as_array().unwrap().len(), 2);
     assert_eq!(read(&app, "/api/nodes/2/disk-groups/7").await["id"], 7);
     assert_eq!(
         read(
