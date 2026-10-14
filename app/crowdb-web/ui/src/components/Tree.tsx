@@ -6,6 +6,7 @@ import { ChevronRight, ChevronDown } from 'lucide-react';
 import { cn } from '../utils/cn';
 import { useSelection } from '../contexts/SelectionContext';
 import { useDomain } from '../contexts/DomainContext';
+import { Domain } from '../types';
 import { HealthBadge, RoleBadge, HwStatusBadge } from './ui/Badge';
 
 export interface TreeNode {
@@ -60,8 +61,9 @@ function TreeNodeComponent({
   onNodeClick,
   onNodeContextMenu,
 }: TreeNodeProps) {
-  const { selectedEntity, selectEntity } = useSelection();
+  const { selectedEntity: inspectedEntity, scopeEntity, selectEntity, inspectEntity } = useSelection();
   const { domain } = useDomain();
+  const selectedEntity = domain === Domain.Cluster ? scopeEntity : inspectedEntity;
   const hasChildren = node.expandable || (!!node.children && node.children.length > 0);
   const isExpanded = expandedIds.has(node.id);
   const entityId = node.rawId ?? node.id;
@@ -83,10 +85,11 @@ function TreeNodeComponent({
   const handleContextMenu = useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault();
-      select();
+      if (domain === Domain.Cluster) inspectEntity({ type: node.type, id: String(entityId), name: node.label, parentIds: node.parentIds, domain, section: node.section, serviceType: node.serviceType });
+      else select();
       onNodeContextMenu?.(node, e);
     },
-    [select, node, onNodeContextMenu],
+    [select, node, domain, entityId, inspectEntity, onNodeContextMenu],
   );
 
   const handleChevron = useCallback(

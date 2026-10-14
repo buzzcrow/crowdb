@@ -293,3 +293,12 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   and disk-load costs. Artifact run-b3989028aadf41d6a01618796094652a. Navigation
   consolidation is verified; center/inspection separation and responsive layout
   are the next UI task.
+- Cluster now distinguishes the center navigation scope from property selection.
+  Capacity row/card bodies inspect in place; names enter, tree/breadcrumbs follow
+  the scope, and closing properties preserves the work area. Topology names and
+  expand/collapse controls are separate from card inspection. History captures
+  both identities. All 198 component tests and TypeScript pass before the final
+  selection-highlight change; release browser verification follows.
+- Final component/type gate for independent inspection passes (198 tests),
+  including scope retention on Close and distinct row Inspect/Open callbacks.
+  Property selection has a separate visible/accessible indicator from tree scope.

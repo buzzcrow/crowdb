@@ -8,6 +8,7 @@ import type {
   HardwareCapacitySummary,
 } from '../../types';
 import { CapacityBar } from './CapacityBar';
+import { CapacityRow } from './CapacityRow';
 import { observeCapacity } from './observation';
 
 interface NodeViewProps {
@@ -15,6 +16,8 @@ interface NodeViewProps {
   usage: CapacityUsageResponse | null;
   hardwareCapacity: HardwareCapacitySummary | null;
   onSelectDg: (dgId: number) => void;
+  selectedId?: string;
+  onInspectDg?: (dgId: number) => void;
 }
 
 interface DgAgg {
@@ -22,7 +25,7 @@ interface DgAgg {
   diskCount: number;
 }
 
-export function NodeView({ nodeId, usage, hardwareCapacity, onSelectDg }: NodeViewProps) {
+export function NodeView({ nodeId, usage, hardwareCapacity, onSelectDg, onInspectDg, selectedId }: NodeViewProps) {
   const dgs = useMemo<DgAgg[]>(() => {
     const hardware = (hardwareCapacity?.disk_groups ?? []).filter(group => group.node_id === nodeId);
     const reports = (usage?.disk_groups ?? []).filter(group => group.node_id === nodeId);
@@ -40,10 +43,9 @@ export function NodeView({ nodeId, usage, hardwareCapacity, onSelectDg }: NodeVi
     <div className="tw-space-y-2">
       <div className="tw-text-xs tw-text-muted tw-uppercase">Disk-groups on N-{nodeId} ({dgs.length})</div>
       {dgs.map((d) => (
-        <button
-          key={d.dgId}
-          onClick={() => onSelectDg(d.dgId)}
-          className="tw-w-full tw-flex tw-items-center tw-justify-between tw-p-3 tw-bg-panel tw-rounded-lg hover:tw-bg-bg/50 tw-text-left"
+        <CapacityRow selected={selectedId === String(d.dgId)} key={d.dgId} label={`DG-${d.dgId}`}
+          onOpen={() => onSelectDg(d.dgId)} onInspect={() => onInspectDg?.(d.dgId)}
+          details={<CapacityBar {...observeCapacity(hardwareCapacity, usage, { dgId: d.dgId })} barWidth="tw-w-32" />}
         >
           <div className="tw-flex tw-items-center tw-gap-2 tw-flex-1 tw-min-w-0">
             <Boxes className="tw-h-4 tw-w-4 tw-text-muted tw-shrink-0" />
@@ -52,8 +54,7 @@ export function NodeView({ nodeId, usage, hardwareCapacity, onSelectDg }: NodeVi
               <div className="tw-text-xs tw-text-muted">{d.diskCount} disk(s)</div>
             </div>
           </div>
-          <CapacityBar {...observeCapacity(hardwareCapacity, usage, { dgId: d.dgId })} barWidth="tw-w-32" />
-        </button>
+        </CapacityRow>
       ))}
     </div>
   );

@@ -1,5 +1,6 @@
 import { PanelDivider } from './components/PanelDivider';
 import { ClusterViewSwitch } from './shell/ClusterViewSwitch';
+import { ClusterBreadcrumb } from './shell/ClusterBreadcrumb';
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
@@ -79,8 +80,8 @@ export interface CrowdbConsoleProps {
 
 function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, managed = false, nodeManagement = false }: CrowdbConsoleProps) {
   const { domain: activeDomain, clusterView, setClusterView, setDomain } = useDomain();
-  const { selectedEntity, selectionForDomain, selectEntity, clearSelection } = useSelection();
-  const storageDetail = selectedEntity?.type === 'Disk' || selectedEntity?.type === 'DiskGroup';
+  const { selectedEntity, scopeEntity, scopeForDomain, selectionForDomain, selectEntity, clearSelection } = useSelection();
+  const storageDetail = scopeEntity?.type === 'Disk' || scopeEntity?.type === 'DiskGroup';
   const domain = activeDomain === Domain.Cluster && (clusterView === 'capacity' || storageDetail)
     ? Domain.Capacity : activeDomain;
   const { success, error } = useToast();
@@ -143,17 +144,17 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
   const { instances: diskdbInstances, usage: capacityUsage, hardwareCapacity, scanStatus: capacityScanStatus, loading: capLoading, error: capError, refresh: refreshCapacity,  } = useCapacityTree({
     enabled: domain === Domain.Capacity || domain === Domain.Cluster,
     observeRuntime: capacityActive,
-    diskGroupId: selectionForDomain(Domain.Capacity)?.parentIds?.disk_group_id !== undefined
-      ? Number(selectionForDomain(Domain.Capacity)!.parentIds!.disk_group_id)
-      : selectionForDomain(Domain.Capacity)?.type === 'DiskGroup' ? Number(selectionForDomain(Domain.Capacity)!.id) : undefined,
-    diskId: selectionForDomain(Domain.Capacity)?.type === 'Disk' ? selectionForDomain(Domain.Capacity)!.id : undefined,
+    diskGroupId: scopeForDomain(Domain.Cluster)?.parentIds?.disk_group_id !== undefined
+      ? Number(scopeForDomain(Domain.Cluster)!.parentIds!.disk_group_id)
+      : scopeForDomain(Domain.Cluster)?.type === 'DiskGroup' ? Number(scopeForDomain(Domain.Cluster)!.id) : undefined,
+    diskId: scopeForDomain(Domain.Cluster)?.type === 'Disk' ? scopeForDomain(Domain.Cluster)!.id : undefined,
     pollIntervalActive: 5000,
     pollIntervalInactive: 30000,
   });
 
   const nodeDiskGroups = clusterDiskGroups;
-  const diskSelection = selectionForDomain(Domain.Capacity);
-  const clusterSelection = selectionForDomain(Domain.Cluster);
+  const diskSelection = scopeForDomain(Domain.Cluster);
+  const clusterSelection = scopeForDomain(Domain.Cluster);
   useEffect(() => {
     if (managed) return;
     const selected = capacityActive ? diskSelection : physicalActive ? clusterSelection : null;
@@ -532,6 +533,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
           {domain === Domain.Capacity ? `${dataError.message} — retrying` : 'Backend unreachable — retrying'}
         </div>}
         {activeDomain === Domain.Cluster && <>
+          <ClusterBreadcrumb />
           {!storageDetail && <ClusterViewSwitch />}
           {nodeManagement && !managed && <AutoJoin readonly={readonly} />}
           {nodeManagement && <InitializationProgress readonly={readonly} />}
@@ -567,7 +569,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
             active={domain === Domain.Capacity}
             instances={diskdbInstances} usage={capacityUsage} hardwareCapacity={hardwareCapacity}
             scanStatus={capacityScanStatus} loading={capLoading} readonly={topologyReadonly}
-            onRefresh={refreshCapacity} selectedEntity={selectionForDomain(Domain.Capacity)}
+            onRefresh={refreshCapacity} selectedEntity={scopeForDomain(Domain.Cluster)}
           /></div>
         <div data-testid="chunk-page" hidden={domain !== Domain.Chunk} className="tw-flex-1 tw-min-h-0"><ChunkBrowser stores={stores} racks={racks} nodes={nodes} servers={allServers} active={domain === Domain.Chunk} openRequest={chunkRequest}
           onPlacement={entity => { pendingSelectionRef.current = entity; setDomain(entity.domain); }}

@@ -61,7 +61,7 @@ export function CapacityPanel({
   onRefresh,
   selectedEntity,
 }: CapacityPanelProps) {
-  const { selectEntity } = useSelection();
+  const { selectEntity, inspectEntity, selectedEntity: inspectedEntity } = useSelection();
   const { success, error } = useToast();
   const { log } = useActivity();
   const [actionLoading, setActionLoading] = useState<string | null>(null);
@@ -128,26 +128,29 @@ export function CapacityPanel({
       .finally(() => setActionLoading(null));
   }, [readonly, success, error, log, onRefresh]);
 
-  const selectRack = useCallback((id: number) => {
-    selectEntity({ type: 'Rack', id: String(id), domain: Domain.Capacity });
-  }, [selectEntity]);
+  const selectRack = useCallback((id: number, inspect = false) => {
+    (inspect ? inspectEntity : selectEntity)({ type: 'Rack', id: String(id), domain: Domain.Cluster });
+  }, [selectEntity, inspectEntity]);
 
-  const selectNode = useCallback((id: number) => {
-    selectEntity({ type: 'Node', id: String(id), domain: Domain.Capacity });
-  }, [selectEntity]);
+  const selectNode = useCallback((id: number, inspect = false) => {
+    const node = hardwareCapacity?.nodes.find(node => node.node_id === id);
+    (inspect ? inspectEntity : selectEntity)({ type: 'Node', id: String(id), domain: Domain.Cluster,
+      parentIds: node ? { rack_id: node.rack_id } : undefined });
+  }, [selectEntity, inspectEntity, hardwareCapacity]);
 
-  const selectDg = useCallback((id: number) => {
-    selectEntity({ type: 'DiskGroup', id: String(id), parentIds: { disk_group_id: id }, domain: Domain.Capacity });
-  }, [selectEntity]);
+  const selectDg = useCallback((id: number, inspect = false) => {
+    const group = (hardwareCapacity?.disk_groups ?? usage?.disk_groups)?.find(group => group.disk_group_id === id);
+    (inspect ? inspectEntity : selectEntity)({ type: 'DiskGroup', id: String(id), domain: Domain.Cluster,
+      parentIds: group ? { rack_id: group.rack_id, node_id: group.node_id, disk_group_id: id } : { disk_group_id: id } });
+  }, [selectEntity, inspectEntity, hardwareCapacity, usage]);
 
-  const selectDisk = useCallback((dId: string, dgIdVal: number, rackIdVal: number, nodeIdVal: number) => {
-    selectEntity({
-      type: 'Disk',
-      id: dId,
+  const selectDisk = useCallback((dId: string, dgIdVal: number, rackIdVal: number, nodeIdVal: number, inspect = false) => {
+    (inspect ? inspectEntity : selectEntity)({
+      type: 'Disk', id: dId,
       parentIds: { rack_id: rackIdVal, node_id: nodeIdVal, disk_group_id: dgIdVal, disk_id: dId },
-      domain: Domain.Capacity,
+      domain: Domain.Cluster,
     });
-  }, [selectEntity]);
+  }, [selectEntity, inspectEntity]);
 
   if (loading && instances.length === 0) {
     return (
@@ -217,33 +220,41 @@ export function CapacityPanel({
       {/* Scope-specific body */}
       {scope === 'Cluster' && (
         <ClusterView
+          selectedId={inspectedEntity?.type === 'Rack' ? inspectedEntity.id : undefined}
           usage={usage}
           hardwareCapacity={hardwareCapacity ?? null}
           onSelectRack={selectRack}
+          onInspectRack={id => selectRack(id, true)}
         />
       )}
       {scope === 'Rack' && rackId !== undefined && (
         <RackView
+          selectedId={inspectedEntity?.type === 'Node' ? inspectedEntity.id : undefined}
           rackId={rackId}
           usage={usage}
           hardwareCapacity={hardwareCapacity ?? null}
           onSelectNode={selectNode}
+          onInspectNode={id => selectNode(id, true)}
         />
       )}
       {scope === 'Node' && nodeId !== undefined && (
         <NodeView
+          selectedId={inspectedEntity?.type === 'DiskGroup' ? inspectedEntity.id : undefined}
           nodeId={nodeId}
           usage={usage}
           hardwareCapacity={hardwareCapacity ?? null}
           onSelectDg={selectDg}
+          onInspectDg={id => selectDg(id, true)}
         />
       )}
       {scope === 'DiskGroup' && dgId !== undefined && (
         <DiskGroupView
+          selectedId={inspectedEntity?.type === 'Disk' ? inspectedEntity.id : undefined}
           dgId={dgId}
           usage={usage}
           hardwareCapacity={hardwareCapacity ?? null}
           onSelectDisk={selectDisk}
+          onInspectDisk={(disk, group, rack, node) => selectDisk(disk, group, rack, node, true)}
         />
       )}
       {scope === 'Disk' && dgId !== undefined && diskId !== undefined && (

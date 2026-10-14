@@ -1,6 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-// Baseline: fit 1.6s, collapse 4.6s, pan 0.962s, navigation 2.0s (2026-10-15)
+// Baseline: fit 1.6s, collapse 4.9s, pan 1.0s, navigation 2.0s (2026-10-15)
 
 import { test, expect, consoleBaseURL } from '../fixtures/realBackend';
 import { createRack, createNode, deployNodeServer, stopNodeServer } from '../fixtures/localSetup';
@@ -85,15 +85,23 @@ test.describe('canvas · fit + pan', () => {
     await expect(rack).toBeVisible();
     await expect(node).toBeVisible();
     await expect(server).toHaveCount(0);
+    const scope = page.getByRole('navigation', { name: 'Cluster scope' });
+    await node.click({ position: { x: 5, y: 5 } });
+    await expect(scope.getByRole('button', { name: 'Cluster', exact: true })).toHaveAttribute('aria-current', 'page');
+    await expect(page.getByRole('complementary', { name: 'Entity inspector' })).toBeVisible();
+    await node.getByRole('button', { name: 'Open N-480', exact: true }).click();
+    await expect(scope.getByRole('button', { name: 'N-480', exact: true })).toHaveAttribute('aria-current', 'page');
+    await page.getByRole('button', { name: 'Close inspector', exact: true }).click();
+    await expect(scope.getByRole('button', { name: 'N-480', exact: true })).toHaveAttribute('aria-current', 'page');
     await page.getByTestId('fit-all-btn').click();
     await expect(server).toHaveCount(0);
-    await node.click();
+    await node.getByRole('button', { name: 'Expand N-480 children', exact: true }).click();
     await expect(server).toBeVisible();
-    await node.click();
+    await node.getByRole('button', { name: 'Collapse N-480 children', exact: true }).click();
     await expect(server).toHaveCount(0);
-    await rack.click();
+    await rack.getByRole('button', { name: 'Collapse R-480 children', exact: true }).click();
     await expect(node).toHaveCount(0);
-    await rack.click();
+    await rack.getByRole('button', { name: 'Expand R-480 children', exact: true }).click();
     await expect(node).toBeVisible();
     await expect(server).toHaveCount(0);
     await page.getByTestId('domain-kv').click();
@@ -105,7 +113,7 @@ test.describe('canvas · fit + pan', () => {
     await expect(page.getByRole('menu')).toBeVisible();
     await expect(server).toHaveCount(0);
     await page.keyboard.press('Escape');
-    await node.click();
+    await node.getByRole('button', { name: 'Expand N-480 children', exact: true }).click();
     await expect(server).toBeVisible();
   });
 

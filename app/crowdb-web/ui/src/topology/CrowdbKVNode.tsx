@@ -23,6 +23,8 @@ interface CrowdbKVNodeData {
   childCount?: number;
   collapsed?: boolean;
   onActivate?: () => void;
+  onInspect?: () => void;
+  onToggle?: () => void;
 }
 
 const iconForKind: Record<CrowdbKVNodeData['kind'], typeof FolderTree> = {
@@ -82,11 +84,11 @@ function CrowdbKVNodeBase({ data }: NodeProps<CrowdbKVNodeData>) {
 
   return (
     <div
-      title={data.childCount ? `${data.collapsed ? 'Expand' : 'Collapse'} ${data.label} · ${data.childCount} children` : data.label}
+      title={data.label}
       onClick={(event) => {
-        if (!data.onActivate) return;
+        if (!data.onInspect) return;
         event.stopPropagation();
-        data.onActivate();
+        data.onInspect();
       }}
       className={cn(
         'tw-border tw-rounded-lg tw-px-3 tw-py-2 tw-min-w-[160px] tw-shadow-sm tw-transition-all',
@@ -102,10 +104,12 @@ function CrowdbKVNodeBase({ data }: NodeProps<CrowdbKVNodeData>) {
         <Icon className={cn('tw-h-4 tw-w-4 tw-flex-shrink-0', accent)} />
         <div className="tw-flex-1 tw-min-w-0">
           <div className="tw-flex tw-items-center tw-gap-1">
-            <span className="tw-text-sm tw-font-medium tw-text-text tw-truncate">{data.label}</span>
-            {!!data.childCount && (data.collapsed
-              ? <ChevronRight aria-label="Expand children" className="tw-h-3.5 tw-w-3.5 tw-text-muted" />
-              : <ChevronDown aria-label="Collapse children" className="tw-h-3.5 tw-w-3.5 tw-text-muted" />)}
+            <button aria-label={`Open ${data.label}`} onClick={event => { event.stopPropagation(); data.onActivate?.(); }}
+              className="nodrag nopan tw-text-sm tw-font-medium tw-text-text tw-truncate hover:tw-text-accent">{data.label}</button>
+            {!!data.childCount && <button aria-label={`${data.collapsed ? 'Expand' : 'Collapse'} ${data.label} children`}
+              className="nodrag nopan" onClick={event => { event.stopPropagation(); data.onToggle?.(); }}>
+              {data.collapsed ? <ChevronRight className="tw-h-3.5 tw-w-3.5 tw-text-muted" /> : <ChevronDown className="tw-h-3.5 tw-w-3.5 tw-text-muted" />}
+            </button>}
             {data.leader && <Crown className="tw-h-3.5 tw-w-3.5 tw-text-yellow-400 tw-flex-shrink-0" />}
           </div>
           {data.sublabel && (

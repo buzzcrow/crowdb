@@ -70,7 +70,7 @@ export function useCapacityMenus({ readonly, managed, managementAuthorized, disk
           }),
         });
       } else if (t.type === 'DiskGroup') {
-        const dgId = Number(t.rawId);
+        const dgId = Number(t.rawId ?? t.id);
         const dgNodeId = Number(p.node_id);
         const dgRackId = Number(p.rack_id);
         items.push({

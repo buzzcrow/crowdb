@@ -85,8 +85,9 @@ provide observable capacity and bitmap fixtures.
   changes preserve that domain's bounded query state and selected identity.
 - **NAV-02:** The left panel selects hierarchy/scope; the center presents the
   selected resource or overview; the right panel presents selected properties.
-- **NAV-03:** Resource selection updates the center without replacing the whole
-  application. Breadcrumbs identify scope; they are navigation, not duplicate
+- **NAV-03:** Cluster row/card selection updates properties without replacing the center
+  scope. Names enter that resource; closing properties retains the work area.
+  Cluster breadcrumbs identify the current physical scope; they are navigation, not duplicate
   Back links for inline details.
 - **NAV-04:** Cross-links identify the exact destination resource. Returning
   restores the originating selection and page. A stale/deleted destination has
@@ -115,8 +116,9 @@ provide observable capacity and bitmap fixtures.
   panel dividers. Left default width is 280 px; properties default is 320 px.
   Each divider supports pointer and keyboard resizing between 220 and 600 px.
   Switching domains introduces no panel replacement/slide animation.
-- **NAV-08:** Parent cards in center topology diagrams collapse or expand their
-  children on click while selecting the parent. Children retain their own
+- **NAV-08:** Parent cards in center topology diagrams have separate named controls for
+  opening the resource and collapsing or expanding children. Card bodies inspect
+  without navigating. Children retain their own
   expansion state. Sidebar focus reveals hidden ancestors. Right-click opens
   the entity menu without toggling expansion. Fit All fits visible cards.
   Hiding a topology panel interrupts viewport motion before zero-size geometry

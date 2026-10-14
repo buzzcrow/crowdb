@@ -8,6 +8,7 @@ import type {
   HardwareCapacitySummary,
 } from '../../types';
 import { CapacityBar } from './CapacityBar';
+import { CapacityRow } from './CapacityRow';
 import { observeCapacity } from './observation';
 
 interface RackViewProps {
@@ -15,6 +16,8 @@ interface RackViewProps {
   usage: CapacityUsageResponse | null;
   hardwareCapacity: HardwareCapacitySummary | null;
   onSelectNode: (nodeId: number) => void;
+  selectedId?: string;
+  onInspectNode?: (nodeId: number) => void;
 }
 
 interface NodeAgg {
@@ -22,7 +25,7 @@ interface NodeAgg {
   dgCount: number;
 }
 
-export function RackView({ rackId, usage, hardwareCapacity, onSelectNode }: RackViewProps) {
+export function RackView({ rackId, usage, hardwareCapacity, onSelectNode, onInspectNode, selectedId }: RackViewProps) {
   const nodes = useMemo<NodeAgg[]>(() => {
     const hwNodes = (hardwareCapacity?.nodes ?? []).filter(node => node.rack_id === rackId);
     const groups = (hardwareCapacity ? hardwareCapacity.disk_groups : (usage?.disk_groups ?? [])).filter(group => group.rack_id === rackId);
@@ -40,10 +43,9 @@ export function RackView({ rackId, usage, hardwareCapacity, onSelectNode }: Rack
     <div className="tw-space-y-2">
       <div className="tw-text-xs tw-text-muted tw-uppercase">Nodes in R-{rackId} ({nodes.length})</div>
       {nodes.map((n) => (
-        <button
-          key={n.nodeId}
-          onClick={() => onSelectNode(n.nodeId)}
-          className="tw-w-full tw-flex tw-items-center tw-justify-between tw-p-3 tw-bg-panel tw-rounded-lg hover:tw-bg-bg/50 tw-text-left"
+        <CapacityRow selected={selectedId === String(n.nodeId)} key={n.nodeId} label={`N-${n.nodeId}`}
+          onOpen={() => onSelectNode(n.nodeId)} onInspect={() => onInspectNode?.(n.nodeId)}
+          details={<CapacityBar {...observeCapacity(hardwareCapacity, usage, { nodeId: n.nodeId })} barWidth="tw-w-32" />}
         >
           <div className="tw-flex tw-items-center tw-gap-2 tw-flex-1 tw-min-w-0">
             <Server className="tw-h-4 tw-w-4 tw-text-muted tw-shrink-0" />
@@ -55,8 +57,7 @@ export function RackView({ rackId, usage, hardwareCapacity, onSelectNode }: Rack
               </div>
             </div>
           </div>
-          <CapacityBar {...observeCapacity(hardwareCapacity, usage, { nodeId: n.nodeId })} barWidth="tw-w-32" />
-        </button>
+        </CapacityRow>
       ))}
     </div>
   );
