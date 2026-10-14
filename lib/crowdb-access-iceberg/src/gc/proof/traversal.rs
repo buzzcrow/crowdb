@@ -49,7 +49,10 @@ impl GcRepository {
         head: &TableHead,
     ) -> Result<(), CatalogError> {
         if head.catalog != task.context.catalog
-            || task.head.as_ref().map_or(true, |root| root.table != head.table)
+            || task
+                .head
+                .as_ref()
+                .map_or(true, |root| root.storage_location() != head.storage_location())
         {
             return Err(ValidationError::IdentityMismatch.into());
         }

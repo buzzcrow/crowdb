@@ -82,9 +82,7 @@ has a durable ID under the same rules as named namespaces.
         ├── head
         ├── file/<public-relative-filename>
         ├── projection/<metadata-generation>/<page-or-receipt>
-        ├── operation/<operation-id>/...
-        ├── multipart/<upload-id>/...
-        └── gc/<task-id>/...
+        └── operation/<operation-id>/injection
 ```
 
 Catalog and namespace control records have their own typed scopes. Namespace
@@ -102,6 +100,33 @@ the complete record after durable bytes; exact-key conflicts cannot overwrite
 selected content. Retries preserve the selected file identity and URL. Workflow
 records exist only where recovery or multipart/GC progress requires them, not
 as three mandatory records for every file.
+
+Service recovery journals are separate from that directory. Their existing
+catalog control scopes remain explicitly versioned binary keys, even in a
+native catalog. They are not file lookup indexes and cannot produce an object
+listing. The service must discover abandoned work before a table head exists
+and after a table has disappeared, without a table-ID reverse index:
+
+- Create, commit and lifecycle journals and payload pages are keyed by operation
+  identity; creation can precede name/head publication and rename spans two live
+  namespaces. Their selected heads carry the frozen storage identity.
+- Multipart sessions and parts are keyed by upload identity/part number. Catalog
+  admission accounts for all sessions, including unpublished and expired uploads.
+  Every session and part carries and validates the full storage identity.
+- Write intents/fences track allocated but potentially unpublished native
+  extents, including failed creation. Catalog maintenance scans their bounded
+  control scopes; the value binds the full table/file owner and exact chunk root.
+- GC tasks, candidates, claims, proof nodes and pages belong to the recovery
+  worker. A retirement task can cover several tables and adopts interrupted
+  purge work. Claims coordinate physical deletion across tasks/generations;
+  candidate values retain the canonical filename and full storage identity.
+
+These records are retained only for retry, fencing and reclamation. They do not
+add another published file authority or participate in direct GET/HEAD. GC data
+discovery chooses v1 or v2 from the persisted catalog layout; independent
+service-control scans never merge the two file namespaces. Head, file and
+projection records use the native table directory. The native injection receipt
+already knows its selected table and is stored under that directory.
 
 ### Standard metadata and bounded scale
 

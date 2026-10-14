@@ -107,7 +107,7 @@ async fn native_file_tree_publication_and_ranges_survive_catalog_storage_restart
     let context = seed_root(&stack).await;
     let owner = FileIdentity {
         table: TableLocation {
-            storage_namespace: None,
+            storage_namespace: Some(crowdb_access_iceberg::key::NamespaceId::random()),
             catalog: context.catalog,
             table: TableId::random(),
         },

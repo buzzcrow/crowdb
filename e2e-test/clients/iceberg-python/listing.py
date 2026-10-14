@@ -9,10 +9,14 @@ import pyarrow
 import pyarrow.fs as fs
 import pyiceberg
 from pyiceberg.io.pyarrow import PyArrowFile
+from injection import verify
 
 
 def main():
     config = json.load(sys.stdin)
+    if config.get("verify_restart"):
+        verify(config)
+        return
     endpoint = urlsplit(config["endpoint"])
     filesystem = fs.S3FileSystem(
         access_key=config["access_key"], secret_key=config["secret_key"],
@@ -33,6 +37,7 @@ def main():
     names = sorted(file.path for file in selected if file.type == fs.FileType.File)
     assert names == sorted(prefix + suffix for suffix in ["a.json", "nested/b.json", "雪&<>+%.json"]), names
     print(f"PyIceberg {pyiceberg.__version__} / PyArrow {pyarrow.__version__}: exact creation, HEAD/GET and prefix discovery passed")
+    verify(config)
 
 
 if __name__ == "__main__":

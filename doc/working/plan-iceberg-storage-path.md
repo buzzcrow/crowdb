@@ -155,9 +155,7 @@ the serialized key must still version and validate each fixed ID segment:
         ├── head
         ├── file/<public-relative-filename>
         ├── projection/<metadata-generation>/<page-or-receipt>
-        ├── operation/<operation-id>
-        ├── multipart/<operation-data>
-        └── gc/<operation-data>
+        └── operation/<operation-id>/injection
 ```
 
 The namespace ID in a table's directory is always its storage namespace ID.
@@ -543,7 +541,7 @@ three-ID prefix and a matching grant.
   `lib/crowdb-access-iceberg/src/file/listing.rs`,
   `lib/crowdb-access-iceberg/src/file/listing/repository.rs`,
   `lib/crowdb-access-iceberg/src/catalog/storage.rs`.
-- [~] **Audit every table-owned auxiliary key**: multipart records, write
+- [x] **Audit every table-owned auxiliary key**: multipart records, write
   intents/fences, GC candidates/nodes/pending state, and recovery scans must
   either carry the same table-path prefix or explicitly document why an
   operation-scoped key is independent. Update range bounds and foreign-record
@@ -552,6 +550,14 @@ three-ID prefix and a matching grant.
   `lib/crowdb-access-iceberg/src/gc/`,
   `lib/crowdb-access-iceberg/src/record/`,
   `lib/crowdb-access-iceberg/src/key/codec.rs`.
+  Head/file/projection/injection records use the frozen native prefix. The
+  permanent design explicitly lists independent catalog service journals:
+  unpublished write intents/fences, upload sessions/parts, catalog admission,
+  operation/payload journals and GC task/claim/proof workspace. They recover
+  work without a published table and coordinate catalog-wide reclamation;
+  they never resolve or list a published file. Their values bind full storage
+  identity. GC layout dispatch and claim adoption, inactive protection and
+  proof traversal now compare full identity rather than only table ID.
 - [x] **Version the table key envelope and routed-store dispatch**:
   `TableStorageKey` uses a v2 envelope followed by the
   slash-separated immutable table path and scope. File keys contain only the

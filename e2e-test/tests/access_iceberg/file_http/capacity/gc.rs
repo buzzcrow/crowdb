@@ -14,7 +14,7 @@ pub(super) async fn seed_gc_workspace_task(
 ) {
     let store = stack.store().await;
     let table = TableLocation {
-        storage_namespace: None,
+        storage_namespace: Some(crowdb_access_iceberg::key::NamespaceId::random()),
         catalog: context.catalog,
         table: TableId::random(),
     };
@@ -50,7 +50,7 @@ pub(super) async fn seed_gc_workspace_task(
         operation_fence: 2,
         pending_operation: Some(OperationId::random()),
     };
-    let key = head_key(context.catalog, table.table).encode().unwrap();
+    let key = storage_head_key(table).encode().unwrap();
     let bytes = StorageRecord::TableHead(Box::new(head.clone())).encode().unwrap();
     store
         .compare_exchange(&key, None, &bytes, mutation_identity(&key, None, &bytes))
@@ -128,7 +128,7 @@ pub(super) async fn assert_gc_workspace_stall(
     assert!(stack
         .store()
         .await
-        .get(&location_key(file).encode().unwrap())
+        .get(&canonical_file_key(file).encode().unwrap())
         .await
         .unwrap()
         .is_some());
@@ -159,7 +159,7 @@ pub(super) async fn assert_gc_workspace_recovered(
     assert!(stack
         .store()
         .await
-        .get(&location_key(file).encode().unwrap())
+        .get(&canonical_file_key(file).encode().unwrap())
         .await
         .unwrap()
         .is_none());

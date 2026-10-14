@@ -122,7 +122,11 @@ impl GcWorker {
 }
 
 pub(super) fn protects(task: &GcTask, record: &StorageRecord, now_ms: u64, grace_ms: u64) -> bool {
-    let owns = |table| task.head.as_ref().map_or(true, |head| head.table == table);
+    let owns = |table| {
+        task.head
+            .as_ref()
+            .map_or(true, |head| head.storage_location() == table)
+    };
     let retained = |issued: u64| {
         now_ms
             < issued
@@ -131,7 +135,7 @@ pub(super) fn protects(task: &GcTask, record: &StorageRecord, now_ms: u64, grace
     };
     match record {
         StorageRecord::TableCommitOperation(operation) => {
-            owns(operation.before.table)
+            owns(operation.before.storage_location())
                 && ((task.kind == GcTaskKind::RetiredCatalog && retained(operation.identity.issued_ms))
                     || !matches!(
                         operation.phase,
@@ -139,7 +143,7 @@ pub(super) fn protects(task: &GcTask, record: &StorageRecord, now_ms: u64, grace
                     ))
         }
         StorageRecord::TableCreateOperation(operation) => {
-            owns(operation.candidate.table)
+            owns(operation.candidate.storage_location())
                 && ((task.kind == GcTaskKind::RetiredCatalog && retained(operation.identity.issued_ms))
                     || !matches!(
                         operation.phase,
@@ -147,7 +151,7 @@ pub(super) fn protects(task: &GcTask, record: &StorageRecord, now_ms: u64, grace
                     ))
         }
         StorageRecord::TableLifecycleOperation(operation) => {
-            owns(operation.before.table)
+            owns(operation.before.storage_location())
                 && ((task.kind == GcTaskKind::RetiredCatalog && retained(operation.identity.issued_ms))
                     || !matches!(
                         operation.phase,
@@ -162,7 +166,7 @@ pub(super) fn protects(task: &GcTask, record: &StorageRecord, now_ms: u64, grace
                     | crate::file::MultipartPhase::Aborted
                     | crate::file::MultipartPhase::Conflicted
             );
-            owns(session.owner.table.table)
+            owns(session.owner.table)
                 && (!terminal
                     || (task.kind == GcTaskKind::RetiredCatalog
                         && now_ms < session.expires_ms.saturating_add(grace_ms)))

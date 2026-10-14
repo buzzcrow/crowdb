@@ -118,20 +118,7 @@ impl GcRepository {
             bytes: (crate::record::MAX_RECORD_BYTES + crate::key::MAX_KEY_BYTES)
                 .min(limits.step_bytes as usize),
         };
-        let layout = self.catalog_layout(task.context.catalog).await?;
-        if task.head.as_ref().is_some_and(|head| {
-            head.storage_location().storage_namespace.is_some() != (layout == CatalogStorageLayout::Native)
-        }) {
-            return Err(ValidationError::IdentityMismatch.into());
-        }
-        let data_scope = task.discovery_scope == 0
-            || (task.kind != GcTaskKind::MultipartCleanup && task.discovery_scope == 1);
-        let allowed = if native {
-            layout == CatalogStorageLayout::Native
-        } else {
-            !data_scope || layout == CatalogStorageLayout::Legacy
-        };
-        let page = if allowed {
+        let page = if self.discovery_layout_allows(task, native).await? {
             self.store.scan_gc(scan.clone()).await?
         } else {
             crowdb_chunk_kv_client::MultiScanPage {
@@ -180,6 +167,22 @@ impl GcRepository {
         }
         self.update(task, &next).await?;
         Ok(next)
+    }
+
+    async fn discovery_layout_allows(&self, task: &GcTask, native: bool) -> Result<bool, CatalogError> {
+        let layout = self.catalog_layout(task.context.catalog).await?;
+        if task.head.as_ref().is_some_and(|head| {
+            head.storage_location().storage_namespace.is_some() != (layout == CatalogStorageLayout::Native)
+        }) {
+            return Err(ValidationError::IdentityMismatch.into());
+        }
+        let data_scope = task.discovery_scope == 0
+            || (task.kind != GcTaskKind::MultipartCleanup && task.discovery_scope == 1);
+        Ok(if native {
+            layout == CatalogStorageLayout::Native
+        } else {
+            !data_scope || layout == CatalogStorageLayout::Legacy
+        })
     }
 
     async fn discovery_candidate(
