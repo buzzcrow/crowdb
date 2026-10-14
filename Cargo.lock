@@ -1069,6 +1069,7 @@ dependencies = [
  "bytes",
  "crowdb-common",
  "crowdb-diskio-client",
+ "crowdb-kv",
  "crowdb-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",

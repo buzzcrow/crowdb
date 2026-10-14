@@ -105,6 +105,12 @@ impl KeepAlive {
                 self.reconcile_existing_disk(dg, disk_id, disk_value, node_status, group_status, outcome)
                     .await;
             } else {
+                // Provisional admission is not an Online request. Loading an
+                // Init record would otherwise try Init -> Init and quarantine
+                // it before the monitor has verified DiskIO availability.
+                if disk_value.status == HwStatus::Init as i32 {
+                    continue;
+                }
                 // New disk — disk-add init flow (R81: Init-state).
                 self.disk_add_init(dg, *disk_id, disk_value);
                 outcome.disks_added += 1;

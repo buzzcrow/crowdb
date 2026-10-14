@@ -27,11 +27,25 @@ fn state_path(root: &Path, id: &str) -> io::Result<PathBuf> {
 pub(crate) fn status(root: &Path, id: &str) -> io::Result<FilePreparation> {
     let state: FilePreparation = durable::read(&state_path(root, id)?)?
         .ok_or_else(|| io::Error::other("file preparation does not exist"))?;
+    let publication = matches!(
+        state.phase,
+        FilePreparationPhase::Publishing
+            | FilePreparationPhase::WaitingForDiskIO
+            | FilePreparationPhase::Registered
+            | FilePreparationPhase::Unknown
+    );
     if state.version != 1
         || state.request.operation_id != id
         || Path::new(&state.path) != disk_path(root, id)?
         || (state.preparation_complete && state.backing_identity.is_none())
-        || (state.phase == FilePreparationPhase::Prepared && !state.preparation_complete)
+        || (publication && (state.request.admission.is_none() || !state.preparation_complete))
+        || (matches!(
+            state.phase,
+            FilePreparationPhase::Prepared
+                | FilePreparationPhase::Publishing
+                | FilePreparationPhase::WaitingForDiskIO
+                | FilePreparationPhase::Registered
+        ) && !state.preparation_complete)
     {
         return Err(io::Error::other("invalid file preparation record"));
     }
@@ -53,6 +67,21 @@ fn validate(request: &PrepareDiskFile) -> io::Result<()> {
         || request.capacity_bytes % 4096 != 0
     {
         return Err(io::Error::other("invalid file preparation identity or capacity"));
+    }
+    if let Some(admission) = &request.admission {
+        if admission.unit_size_bytes < 4096
+            || !admission.unit_size_bytes.is_power_of_two()
+            || admission.zone_size_bytes == 0
+            || admission.zone_size_bytes % u64::from(admission.unit_size_bytes) != 0
+            || request.capacity_bytes % u64::from(admission.unit_size_bytes) != 0
+            || request.capacity_bytes < admission.zone_size_bytes
+            || request.capacity_bytes / admission.zone_size_bytes > u64::from(u32::MAX)
+            || admission
+                .media_type
+                .is_some_and(|media| crowdb_protocol::diskdb::rpc::DiskType::try_from(media).is_err())
+        {
+            return Err(io::Error::other("invalid file admission geometry"));
+        }
     }
     Ok(())
 }
@@ -110,10 +139,15 @@ pub(crate) fn pending(root: &Path, id: &str) -> io::Result<FilePreparation> {
     Ok(state)
 }
 
-pub(crate) fn failed(root: &Path, id: &str, error: String) -> io::Result<()> {
+pub(crate) fn outcome(
+    root: &Path,
+    id: &str,
+    phase: FilePreparationPhase,
+    error: Option<String>,
+) -> io::Result<()> {
     let mut state = status(root, id)?;
-    state.phase = FilePreparationPhase::Failed;
-    state.error = Some(error);
+    state.phase = phase;
+    state.error = error;
     durable::write(&state_path(root, id)?, &state)
 }
 

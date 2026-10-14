@@ -8,6 +8,7 @@ pub(crate) mod auto_join;
 mod update;
 pub(crate) use update::update;
 mod authority;
+mod hardware;
 pub(crate) mod initialization;
 mod preparation;
 pub(crate) mod storage;

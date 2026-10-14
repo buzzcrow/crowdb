@@ -5,8 +5,8 @@ use std::fs;
 use std::os::unix::fs::{symlink, FileExt, MetadataExt};
 use std::path::PathBuf;
 
-use crowdb_monitor::{accept_file_for_tests, prepare_file_for_tests};
-use crowdb_protocol::mgmt::node::storage::{FilePreparationPhase, PrepareDiskFile};
+use crowdb_monitor::{accept_file_for_tests, file_operations_for_tests, prepare_file_for_tests};
+use crowdb_protocol::mgmt::node::storage::{FileDiskAdmission, FilePreparationPhase, PrepareDiskFile};
 
 struct TestRoot(PathBuf);
 impl TestRoot {
@@ -31,7 +31,88 @@ fn request() -> PrepareDiskFile {
         capacity_bytes: 1024 * 1024,
         sparse: false,
         reserve_bytes: 1024 * 1024,
+        admission: None,
     }
+}
+
+#[test]
+fn admission_geometry_is_immutable_and_invalid_geometry_creates_no_file() {
+    let root = TestRoot::new();
+    let mut request = request();
+    request.admission = Some(FileDiskAdmission {
+        rack_id: 1,
+        disk_group_id: 2,
+        unit_size_bytes: 4096,
+        zone_size_bytes: 1024 * 1024,
+        media_type: None,
+    });
+    let original = accept_file_for_tests(&root.0, &request).unwrap();
+    assert!(!PathBuf::from(&original.path).exists());
+    let mut changed = request.clone();
+    changed.admission.as_mut().unwrap().disk_group_id = 3;
+    assert!(accept_file_for_tests(&root.0, &changed).is_err());
+    assert_eq!(accept_file_for_tests(&root.0, &request).unwrap(), original);
+    for (unit, zone, media) in [
+        (0, 1024 * 1024, None),
+        (4096, 1, None),
+        (4096, 2 * 1024 * 1024, None),
+        (4096, 1024 * 1024, Some(99)),
+    ] {
+        changed.operation_id = uuid::Uuid::new_v4().to_string();
+        changed.admission = Some(FileDiskAdmission {
+            rack_id: 1,
+            disk_group_id: 2,
+            unit_size_bytes: unit,
+            zone_size_bytes: zone,
+            media_type: media,
+        });
+        assert!(accept_file_for_tests(&root.0, &changed).is_err());
+    }
+    assert!(!root.0.join("disks").exists());
+}
+
+#[test]
+fn durable_pages_include_failed_creation_without_requiring_a_disk_file() {
+    let root = TestRoot::new();
+    let mut requests = Vec::new();
+    for _ in 0..3 {
+        let request = request();
+        accept_file_for_tests(&root.0, &request).unwrap();
+        requests.push(request);
+    }
+    let mut failed_request = request();
+    failed_request.reserve_bytes = u64::MAX;
+    let failed = accept_file_for_tests(&root.0, &failed_request).unwrap();
+    assert_eq!(
+        prepare_file_for_tests(&root.0, &failed_request.operation_id)
+            .unwrap()
+            .phase,
+        FilePreparationPhase::Failed
+    );
+    assert!(!PathBuf::from(failed.path).exists());
+    requests.push(failed_request);
+    let first = file_operations_for_tests(&root.0, None, 2).unwrap();
+    assert_eq!(first.items.len(), 2);
+    let second = file_operations_for_tests(&root.0, first.next.as_deref(), 2).unwrap();
+    assert_eq!(second.items.len(), 2);
+    assert!(second.next.is_none());
+    let rows: Vec<_> = first.items.into_iter().chain(second.items).collect();
+    let mut expected: Vec<_> = requests.into_iter().map(|request| request.operation_id).collect();
+    expected.sort_unstable();
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.request.operation_id.clone())
+            .collect::<Vec<_>>(),
+        expected
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.phase == FilePreparationPhase::Failed)
+            .count(),
+        1
+    );
+    assert!(file_operations_for_tests(&root.0, Some("../escape"), 2).is_err());
+    assert!(file_operations_for_tests(&root.0, None, 33).is_err());
 }
 
 #[test]

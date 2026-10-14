@@ -275,3 +275,43 @@ async fn concurrent_parent_cleanup_cannot_orphan_a_successful_admission() {
             .is_none());
     }
 }
+
+#[tokio::test]
+async fn initial_activation_requires_the_original_receipt_and_never_overrides_offline() {
+    let fixture = TestStorage::start().await;
+    let hw = &fixture.hardware;
+    let original = record(5);
+    hw.admit_disk_storage(&original).await.unwrap();
+    let mut changed = original.clone();
+    changed.backing_identity = "file:10:99".into();
+    assert!(hw.activate_disk_storage(&changed).await.is_err());
+    assert_eq!(
+        hw.get_disk(1, 2, 3, &original.disk_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        HwStatus::Init as i32
+    );
+    hw.activate_disk_storage(&original).await.unwrap();
+    assert_eq!(
+        hw.get_disk(1, 2, 3, &original.disk_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        HwStatus::Up as i32
+    );
+    hw.set_disk_status(1, 2, 3, &original.disk_id, HwStatus::Offline)
+        .await
+        .unwrap();
+    assert!(hw.activate_disk_storage(&original).await.is_err());
+    assert_eq!(
+        hw.get_disk(1, 2, 3, &original.disk_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        HwStatus::Offline as i32
+    );
+}

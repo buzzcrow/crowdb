@@ -18,6 +18,7 @@ mod disk_status;
 mod legacy_cascade;
 mod mutation;
 mod ownership;
+mod storage_activation;
 mod storage_admission;
 mod storage_guard;
 

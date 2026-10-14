@@ -128,6 +128,11 @@ pub(crate) async fn guard(State(state): State<AppState>, request: Request, next:
                 return error.into_response();
             }
         }
+        if *request.method() == Method::DELETE {
+            if let Some(response) = super::hardware::delete(&state, &path).await {
+                return response;
+            }
+        }
         if mutation
             && path == "/api/cluster/init"
             && !state.runtime_root.join("prepared-bootstrap.json").exists()

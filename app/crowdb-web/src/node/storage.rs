@@ -3,6 +3,8 @@
 
 //! Authenticated monitor storage observations, independent of disk registration.
 
+pub(crate) mod files;
+
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -34,6 +36,22 @@ pub(crate) async fn remote(
     State(state): State<AppState>,
     Path(id): Path<u64>,
 ) -> Result<Json<DiskInventory>, Failure> {
+    let node = remote_node(&state, id)?;
+    let value = remote_control(&node, &NodeControl::DiskInventory)
+        .await
+        .map_err(map_config_err)?;
+    serde_json::from_value(value)
+        .map(Json)
+        .map_err(|error| err_502(error.to_string()))
+}
+
+pub(super) fn remote_node(
+    state: &AppState,
+    id: u64,
+) -> Result<crowdb_console_shared::config::NodeEntry, Failure> {
+    if state.node_monitor_url.is_none() {
+        return Err(err_404("Node monitor is not configured"));
+    }
     let mut node = state
         .config
         .read()
@@ -41,11 +59,6 @@ pub(crate) async fn remote(
         .node(id)
         .cloned()
         .ok_or_else(|| err_404("Node not found"))?;
-    node.ssh_key = Some(super::node_key_path(&state).to_string_lossy().into_owned());
-    let value = remote_control(&node, &NodeControl::DiskInventory)
-        .await
-        .map_err(map_config_err)?;
-    serde_json::from_value(value)
-        .map(Json)
-        .map_err(|error| err_502(error.to_string()))
+    node.ssh_key = Some(super::node_key_path(state).to_string_lossy().into_owned());
+    Ok(node)
 }

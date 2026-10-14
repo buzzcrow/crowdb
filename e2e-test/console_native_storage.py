@@ -60,3 +60,57 @@ def verify_file_preparation(cluster):
     else:
         raise AssertionError("monitor replaced an accepted file allocation mode")
     (cluster.artifacts / "file-preparation.json").write_text(json.dumps(ready, indent=2))
+
+
+def file_operation(cluster, node, operation_id):
+    state = cluster.api(f"/api/nodes/{node}/disk-files/{operation_id}")
+    if state["phase"] in ("failed", "unknown"):
+        raise AssertionError(f"file admission did not complete: {state}")
+    return state
+
+
+def verify_file_admission(cluster):
+    """Real queued creation, monitor restart, DiskIO read and protected membership."""
+    node = cluster.node_ids[0]
+    group = 592
+    cluster.api(f"/api/nodes/{node}/disk-groups", {
+        "id": group, "name": "managed-file-acceptance", "store_id": 1, "group_id": 1}, status=201)
+    requests = [{"operation_id": str(uuid.uuid4()), "disk_group_id": group,
+        "capacity_bytes": 16 * 1024 ** 2, "sparse": False} for _ in range(2)]
+    for request in requests:
+        accepted = cluster.api(f"/api/nodes/{node}/disk-files", request, status=202)
+        assert accepted["phase"] == "accepted", accepted
+        assert accepted["request"]["operation_id"] == request["operation_id"], accepted
+        wait(lambda: file_operation(cluster, node, request["operation_id"]),
+            lambda result: result["phase"] == "waiting-for-diskio", "registered file waits for DiskIO", seconds=10)
+    disks = cluster.api(f"/api/nodes/{node}/disk-groups/{group}/disks")
+    assert len(disks) == 2, disks
+    original = {disk["disk_id"]: disk for disk in disks}
+    for disk in disks:
+        assert disk["capacity_bytes"] == 16 * 1024 ** 2, disk
+        try:
+            cluster.api(f"/api/nodes/{node}/disk-groups/{group}/disks/{disk['disk_id']}", method="DELETE", status=204)
+        except AssertionError as error:
+            assert ": 409:" in str(error), error
+        else:
+            raise AssertionError("legacy deletion bypassed retained disk lifecycle")
+    cluster.command("restart", cluster.servers[0])
+    cluster.ready()
+    for request in requests:
+        resumed = wait(lambda: file_operation(cluster, node, request["operation_id"]),
+            lambda result: result["phase"] == "waiting-for-diskio", "monitor resumes original file admission", seconds=10)
+        assert resumed["request"]["operation_id"] == request["operation_id"], resumed
+    page = cluster.api(f"/api/nodes/{node}/disk-files?limit=32")
+    assert {request["operation_id"] for request in requests} <= {row["request"]["operation_id"] for row in page["items"]}, page
+    deployment = cluster.api(f"/api/deployment-defaults?node_id={node}")["diskio"]
+    deployment.update({"kind": "diskio", "instance_id": str(node), "rpc_port": 7200,
+        "disk_group_id": 0, "test_single_node": False})
+    cluster.api(f"/api/nodes/{node}/services/deploy", deployment, status=201)
+    completed = [wait(lambda request=request: file_operation(cluster, node, request["operation_id"]),
+        lambda result: result["phase"] == "registered", "DiskIO-verified file admission", seconds=10) for request in requests]
+    for request in requests:
+        cluster.api(f"/api/nodes/{node}/disk-files", request, status=202)
+        wait(lambda request=request: file_operation(cluster, node, request["operation_id"]),
+            lambda result: result["phase"] == "registered", "same-intent file replay", seconds=10)
+    assert {disk["disk_id"]: disk for disk in cluster.api(f"/api/nodes/{node}/disk-groups/{group}/disks")} == original
+    (cluster.artifacts / "file-admission.json").write_text(json.dumps(completed, indent=2))

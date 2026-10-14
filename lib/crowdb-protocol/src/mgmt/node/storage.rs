@@ -18,6 +18,19 @@ pub struct PrepareDiskFile {
     pub capacity_bytes: u64,
     pub sparse: bool,
     pub reserve_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admission: Option<FileDiskAdmission>,
+}
+
+/// Physical placement and existing allocation geometry chosen at acceptance.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileDiskAdmission {
+    pub rack_id: u64,
+    pub disk_group_id: u64,
+    pub unit_size_bytes: u32,
+    pub zone_size_bytes: u64,
+    pub media_type: Option<i32>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -26,6 +39,11 @@ pub enum FilePreparationPhase {
     Accepted,
     Creating,
     Prepared,
+    Publishing,
+    #[serde(rename = "waiting-for-diskio")]
+    WaitingForDiskIO,
+    Registered,
+    Unknown,
     Failed,
 }
 
@@ -39,6 +57,12 @@ pub struct FilePreparation {
     /// Once complete, retries validate only; they never resize or recreate.
     pub preparation_complete: bool,
     pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct FilePreparationPage {
+    pub items: Vec<FilePreparation>,
+    pub next: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

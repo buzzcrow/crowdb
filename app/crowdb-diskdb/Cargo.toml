@@ -151,3 +151,7 @@ path = "tests/relocation_journal_test.rs"
 [[test]]
 name = "ownership_fence_test"
 path = "tests/ownership_fence_test.rs"
+
+[[test]]
+name = "disk_initialization_test"
+path = "tests/disk_initialization_test.rs"

@@ -12,7 +12,7 @@ from console_shell_fixture import ShellBrowserCluster
 from console_native_observation import services, process, BrowserObservations
 from control import Control
 from console_native_browser import INSPECTION_CASES
-from console_native_storage import unbound_file_rejected, verify_file_preparation
+from console_native_storage import unbound_file_rejected, verify_file_preparation, verify_file_admission
 
 
 class NativeConsoleCluster(ShellBrowserCluster):
@@ -239,6 +239,8 @@ class NativeConsoleCluster(ShellBrowserCluster):
             name = cases.get(self.case_name)
             if name is None:
                 raise ValueError("native browser is not owned by this case")
+            if self.case_name == "console::native_browser::hardware_capacity_and_dashed_status":
+                verify_file_admission(self)
             self.browser_timeout = 180
             self.browser(name, config="native.config.ts")
             return {"passed": True}

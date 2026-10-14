@@ -363,3 +363,17 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   derived from canonical DiskKey. Six admission/removal regressions, three status
   regressions, nine Console hardware/geometry tests and affected all-feature
   Clippy pass. These are deletion guards, not completed exclusion acknowledgements.
+- Managed file admission now accepts immutable placement/geometry and queues up to
+  four monitor-owned workers. Completed preparation publishes Init membership and
+  backing identity together; an actual scoped DiskIO read gates initial Up.
+  Waiting operations resume from paged durable receipts after monitor restart.
+  New administrative DiskIO discovery is scoped to one disk; normal routing
+  ignores provisional Init and excluded Offline disks.
+- DiskDB defers authoritative Init until verified activation. Current focused
+  verification passes: seven storage admission/activation tests, three status
+  tests, two scoped DiskIO discovery tests plus existing topology test, eight file
+  preparation tests, two Web file capability tests and three candidate tests.
+  Full monitor suite, DiskDB keepalive/metadata/initialization (seven cases),
+  five affected crates' all-target Clippy, workspace fmt and eight Python
+  observation tests pass. Native queued/restart/DiskIO acceptance is added and
+  awaits a committed-source OCI rebuild; UI creation remains unwired.

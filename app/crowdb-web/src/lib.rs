@@ -193,6 +193,14 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/api/node/disks", get(node::storage::local))
         .route("/api/cluster/initialization", get(node::initialization::status))
         .route("/api/nodes/:id/disk-inventory", get(node::storage::remote))
+        .route(
+            "/api/nodes/:id/disk-files",
+            get(node::storage::files::list).post(node::storage::files::create),
+        )
+        .route(
+            "/api/nodes/:id/disk-files/:operation_id",
+            get(node::storage::files::status),
+        )
         .route("/api/node/admissions", get(node::admissions))
         .route("/api/node/admit", post(node::admit))
         .route("/api/node/update", post(node::update))
@@ -380,6 +388,10 @@ pub fn router(state: AppState) -> axum::Router {
         // React SPA fallback.
         .fallback(spa::spa_fallback)
         .layer(axum::middleware::from_fn_with_state(state.clone(), node::guard))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            health::require_editable,
+        ))
         .with_state(state)
         // Propagate `x-crowdb-kv-corr-id` through every request: read it
         // (or mint one), open a task-local scope so outbound clients

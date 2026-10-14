@@ -70,6 +70,10 @@ pub enum NodeControl {
     DiskFilePreparation {
         operation_id: String,
     },
+    DiskFilePreparations {
+        after: Option<String>,
+        limit: u32,
+    },
     Initialize {
         manifest: serde_json::Value,
         credentials: NodeServiceCredentials,

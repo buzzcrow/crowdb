@@ -29,6 +29,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+crowdb-kv = { path = "../crowdb-kv" }
 crowdb-diskio-client = { path = ".", features = ["test-util"] }
 crowdb-rpc-ffi = { path = "../crowdb-rpc/ffi", features = ["test-util"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

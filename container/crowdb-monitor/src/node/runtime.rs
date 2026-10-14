@@ -28,6 +28,8 @@ mod services;
 use kv::start_kv;
 mod admission;
 mod credentials;
+mod file_activation;
+mod file_admission;
 mod file_preparation;
 mod initialization;
 #[cfg(feature = "test-util")]
@@ -119,6 +121,7 @@ pub async fn run_node(config: NodeRuntimeConfig) -> Result<()> {
         loop {
             tokio::select! {
                 _ = heartbeat.tick() => {
+                    file_allocator.tick(&root)?;
                     health.tick(&profile, &web, &mut processes).await?;
                 }
                 connection = listener.accept() => {
@@ -173,6 +176,9 @@ async fn execute(
         }
         NodeControl::DiskFilePreparation { operation_id } => Ok(serde_json::to_value(
             super::storage::file_preparation::status(root, &operation_id)?,
+        )?),
+        NodeControl::DiskFilePreparations { after, limit } => Ok(serde_json::to_value(
+            super::storage::file_operations::list(root, after.as_deref(), limit)?,
         )?),
         NodeControl::Initialize {
             manifest,
