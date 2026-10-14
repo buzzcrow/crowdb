@@ -203,3 +203,6 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   replacement (run-d276efeb561848638aa9b975ab657f09): original ready manifest
   preserved, system acceptance matches it, each group has one voter and its
   configured leader, foreign acceptance rejected, acknowledged KV value retained.
+- Rebuilt auto-join browser acceptance passes in 2.4 s with explicit save-complete
+  observation before reload/navigation. Automatic three-node bootstrap and all
+  existing capacity/status assertions pass (run-352f07693d664ab1a11a15133decfa0e).
