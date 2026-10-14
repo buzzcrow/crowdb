@@ -30,7 +30,7 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   identity, prove status application before remove, gate cascades, support explicit
   rejoin without blank initialization. Files: hardware ops, protocol hardware
   records, DiskDB/DiskIO status observation, web routes. Acceptance A11-A13.
-- [ ] **UI baseline**: measure affected current root-runner browser flow before
+- [x] **UI baseline**: measure affected current root-runner browser flow before
   visible edits; record exact per-test timings here. Inspect tree/view/history,
   managed candidate components and existing physical/capacity flow registrations.
 - [ ] **Unified workspace**: consolidate navigation and selection, common center
@@ -112,3 +112,8 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
 - Container replacement now rejects omitted or changed retained mappings before
   launching a runtime. Additive mappings remain allowed; all 23 OCI helper tests
   pass and preserved mapping records/bytes are checked by regression coverage.
+- Strict admitted-peer control fixes the native bootstrap failure. Exact
+  `console::native_browser::hardware_capacity_and_dashed_status` passes with the
+  rebuilt release image; Playwright baseline is 1.3 s (2026-10-14), root case
+  12.22 s. The fixture observes both monitor completion and published authority,
+  and reports monitor failure immediately. Seven fixture observation tests pass.

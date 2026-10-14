@@ -111,7 +111,8 @@ class NativeConsoleCluster(ShellBrowserCluster):
             self.node_ids.append(record["node_id"])
         if self.bootstrap:
             self.api("/api/cluster/init", {"nodes": self.node_ids}, status=202)
-            wait(lambda: self.api("/api/node/status"), lambda result: result["phase"] == "active",
+            wait(self.initialization_status, lambda result: result["node"]["phase"] == "active"
+                 and result["operation"]["phase"] == "active",
                  "public Group 0 bootstrap", seconds=10)
             wait(lambda: self.api("/api/racks?recursive=1"),
                  lambda result: {node["id"] for rack in result["items"] for node in rack["nodes"]
@@ -123,6 +124,12 @@ class NativeConsoleCluster(ShellBrowserCluster):
             "zone_gib": self.zone_gib, "spare_disk_gib": self.spare_disk_gib, "racks": self.rack_ids, "ports": {
                 "web": 9090, "ssh": 2222, "kv": 10000, "diskdb": 7100, "diskio": 7200}}, indent=2))
         return self
+
+    def initialization_status(self):
+        operation = self.api("/api/cluster/initialization")
+        if operation["phase"] == "failed":
+            raise AssertionError(f"monitor initialization failed: {operation}")
+        return {"operation": operation, "node": self.api("/api/node/status")}
 
     def ready(self):
         for address in self.addresses:

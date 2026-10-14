@@ -30,7 +30,7 @@ test('native diagnostics: Capacity navigation fetches only opened storage branch
   expect(groups.every(node => node === 1)).toBe(true);
 });
 
-// Baseline: 1.2s (2026-10-12).
+// Baseline: 1.3s (2026-10-14).
 test('native diagnostics: hardware capacity aggregates disks and dashed status updates', async ({ page, request }) => {
   const group = await request.post('/api/nodes/1/disk-groups', {
     data: { id: 591, name: 'test-dg-hwcap', store_id: 1, group_id: 1 },

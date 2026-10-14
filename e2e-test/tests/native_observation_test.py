@@ -12,6 +12,13 @@ from console_native_fixture import NativeConsoleCluster
 
 
 class NativeObservationTest(unittest.TestCase):
+    def test_bootstrap_observation_reports_monitor_failure_without_waiting(self):
+        cluster = NativeConsoleCluster.__new__(NativeConsoleCluster)
+        cluster.api = Mock(return_value={"phase": "failed", "error": "peer host key rejected"})
+        with self.assertRaisesRegex(AssertionError, "peer host key rejected"):
+            cluster.initialization_status()
+        cluster.api.assert_called_once_with("/api/cluster/initialization")
+
     def test_invalid_capacity_profile_rejects_before_allocating(self):
         for sizes in ((80, 8), (80, 8, 0), (80, 8, True), (80, 8, 4097), (8,) * 9):
             with self.assertRaisesRegex(ValueError, "three to eight bounded"):
