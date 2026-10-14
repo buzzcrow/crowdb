@@ -133,6 +133,11 @@ pub(crate) async fn guard(State(state): State<AppState>, request: Request, next:
                 return response;
             }
         }
+        if *request.method() == Method::GET {
+            if let Some(response) = super::hardware::read(&state, &path).await {
+                return response;
+            }
+        }
         if mutation
             && path == "/api/cluster/init"
             && !state.runtime_root.join("prepared-bootstrap.json").exists()

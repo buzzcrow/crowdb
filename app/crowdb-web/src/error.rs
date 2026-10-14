@@ -15,6 +15,10 @@ pub fn err_400(msg: impl Into<String>) -> (StatusCode, Json<ErrorBody>) {
     (StatusCode::BAD_REQUEST, Json(ErrorBody { error: msg.into() }))
 }
 
+pub fn err_403(msg: impl Into<String>) -> (StatusCode, Json<ErrorBody>) {
+    (StatusCode::FORBIDDEN, Json(ErrorBody { error: msg.into() }))
+}
+
 pub fn err_404(msg: impl Into<String>) -> (StatusCode, Json<ErrorBody>) {
     (StatusCode::NOT_FOUND, Json(ErrorBody { error: msg.into() }))
 }

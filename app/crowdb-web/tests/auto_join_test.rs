@@ -79,8 +79,9 @@ async fn readonly_rejects_policy_mutation_and_invalid_policy_never_reenables_def
     let workspace = TestWorkspace::new();
     let mut state = workspace.state();
     state.readonly = true;
-    let (status, _) = request(router(state), Some(json!({"enabled": false}))).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, body) = request(router(state), Some(json!({"enabled": false}))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"], "Workspace is readonly");
     assert!(!workspace.0.join("console/auto-join.json").exists());
     std::fs::write(
         workspace.0.join("console/auto-join.json"),

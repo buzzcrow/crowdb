@@ -404,3 +404,15 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   all-target/all-feature Clippy pass. A cleanup command initially overlapped C++
   test runtime creation and exited before running the new pagination test; after
   the C++ gate completed, serialized cleanup/test execution passes.
+- Second native run (5ff67405, run-b1f9de57dde5486ebff23b439acef200) proves
+  both file operations reach waiting-for-diskio, but immediately reading the
+  legacy disk list returns one cached entry. Bound storage GET routes now use
+  Group-0 hardware authority directly. A component test publishes a second disk
+  with no Console cache refresh and verifies both group/disk list and exact
+  resource routes. Native restart and DiskIO activation still await rerun.
+- Broader Web verification exposed the newly shared readonly middleware's empty
+  error body. Return a JSON 403 with the readonly reason before handler execution;
+  Auto join's old handler-specific 400 expectation is updated to this shared
+  authorization contract. Four affected Web suites (14 cases), Clippy and fmt
+  pass. Scratch Node storage UI is prepared outside the repository while waiting
+  for the unchanged browser baseline; no unverified UI has entered a release.
