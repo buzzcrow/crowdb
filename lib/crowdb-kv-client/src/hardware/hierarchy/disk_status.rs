@@ -9,7 +9,7 @@ use crowdb_protocol::{
     key::{DiskKey, TextKey},
 };
 
-use super::{HardwareClient, G0_GROUP, G0_STORE};
+use super::{mutation, HardwareClient, G0_GROUP, G0_STORE};
 use crate::{Error, GetOutcome, ReadMode, Result};
 
 impl HardwareClient {
@@ -54,22 +54,15 @@ impl HardwareClient {
             disk_group_id: dg_id,
             disk_id: *disk_id,
         };
-        let path = key.to_path();
-        let (mut value, revision) = self
-            .get_disk_with_revision(&key)
-            .await?
-            .ok_or_else(|| Error::Server(format!("disk record does not exist: {path}")))?;
-        if value.status == status as i32 {
-            return Ok(());
-        }
-        value.status = status as i32;
-        let bytes = serde_json::to_vec(&value).map_err(|error| Error::SysdataDecode {
-            key: path.clone(),
-            reason: error.to_string(),
-        })?;
-        self.kv
-            .put_cas(G0_STORE, G0_GROUP, path.as_bytes(), &bytes, revision)
-            .await?;
-        Ok(())
+        mutation::update::<DiskValue, _>(&self.kv, rack_id, &key.to_path(), |value| {
+            if value.status == HwStatus::Offline as i32 && status != HwStatus::Offline {
+                return Err(Error::Server(
+                    "Offline disks require validated recovery before status changes".into(),
+                ));
+            }
+            value.status = status as i32;
+            Ok(())
+        })
+        .await
     }
 }

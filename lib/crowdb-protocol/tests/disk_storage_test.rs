@@ -45,7 +45,7 @@ fn retained_identity_round_trip_keeps_unknown_media_distinct_from_legacy_type() 
     assert_eq!(decoded.geometry.disk_type, 0);
     assert_eq!(
         record.key(),
-        "/hw/disk-storage/1/2/3/0000000000000004-0000000000000005"
+        "/hw/disk-storage/1/2/3/00000000000000040000000000000005"
     );
 }
 

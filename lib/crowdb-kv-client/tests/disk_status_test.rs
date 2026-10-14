@@ -6,16 +6,57 @@ use std::sync::Arc;
 use crowdb_kv::cluster::{
     group::PxGroup, kv_server::KvServer, PxKvStore, PxLocalReplica, PxLocalReplicaRole,
 };
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient};
+use crowdb_kv_client::{BatchOp, ClientConfig, CrowdbKvClient, GetOutcome, HardwareClient, ReadMode};
 use crowdb_protocol::{
-    common::{DiskId, HwStatus},
+    common::{DiskId, HwStatus, RackValue},
     diskdb::rpc::DiskValue,
-    key::{DiskKey, TextKey},
+    key::{DiskKey, RackKey, TextKey},
 };
 
 struct TestHardware {
     store: Arc<PxKvStore>,
     hardware: HardwareClient,
+}
+
+#[tokio::test]
+async fn status_change_invalidates_an_already_prepared_hierarchy_removal() {
+    let fixture = TestHardware::start().await;
+    let hw = &fixture.hardware;
+    let key = key();
+    hw.add_disk(1, 2, 3, &key.disk_id, &DiskValue::default())
+        .await
+        .unwrap();
+    let rack = RackKey { rack_id: 1 }.to_path();
+    let GetOutcome::Found { value, revision } = hw
+        .kv()
+        .get(0, 0, rack.as_bytes(), ReadMode::Linearizable, None)
+        .await
+        .unwrap()
+    else {
+        panic!("test rack is missing");
+    };
+    hw.set_disk_status(1, 2, 3, &key.disk_id, HwStatus::Offline)
+        .await
+        .unwrap();
+    let stale_remove = [
+        BatchOp::Put {
+            key: rack.as_bytes().to_vec().into(),
+            value,
+        },
+        BatchOp::Delete {
+            key: key.to_path().into_bytes().into(),
+        },
+    ];
+    assert!(matches!(
+        hw.kv()
+            .batch_write_cas(0, 0, &stale_remove, rack.as_bytes(), revision)
+            .await,
+        Err(crowdb_kv_client::Error::CasFailed { .. })
+    ));
+    assert_eq!(
+        hw.get_disk_with_revision(&key).await.unwrap().unwrap().0.status,
+        HwStatus::Offline as i32
+    );
 }
 
 impl TestHardware {
@@ -28,10 +69,9 @@ impl TestHardware {
         store.start().await.unwrap();
         let client = CrowdbKvClient::new(ClientConfig::new(vec![]));
         client.seed_leader(0, 0, store.listen_addr().unwrap().to_string());
-        Self {
-            store,
-            hardware: HardwareClient::new(client),
-        }
+        let hardware = HardwareClient::new(client);
+        hardware.add_rack(1, &RackValue::default()).await.unwrap();
+        Self { store, hardware }
     }
 }
 
@@ -108,6 +148,14 @@ async fn status_transition_preserves_geometry_and_noop_preserves_revision() {
     hw.set_disk_status(1, 2, 3, &key.disk_id, HwStatus::Offline)
         .await
         .unwrap();
+    assert_eq!(
+        hw.get_disk_with_revision(&key).await.unwrap().unwrap().1,
+        changed_revision
+    );
+    assert!(hw
+        .set_disk_status(1, 2, 3, &key.disk_id, HwStatus::Up)
+        .await
+        .is_err());
     assert_eq!(
         hw.get_disk_with_revision(&key).await.unwrap().unwrap().1,
         changed_revision

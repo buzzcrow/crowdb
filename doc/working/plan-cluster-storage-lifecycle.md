@@ -352,3 +352,14 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   duplicate IDs and legacy occupied paths. Four live Group-0 regressions pass,
   including concurrent aliases; protocol regressions and both crates' all-target,
   all-feature Clippy pass. Monitor/API wiring remains pending deletion guards.
+- Rack-fenced status setters now invalidate stale membership deletion, require
+  present records, and keep Offline sticky until validated recovery. Direct and
+  cascade compatibility deletion reject retained backing records; legacy cascades
+  commit once under the rack fence rather than deleting children incrementally.
+  Console authoritative disk/group routes apply the same retained-record guard.
+- New direct-delete regression initially exposed mismatched disk-ID key encoding:
+  backing keys used display hyphens while DiskKey uses 32 hex digits. Exact replay
+  reproduced it; all backing lookup/deletion now use `DiskStorageRecord::key_for`
+  derived from canonical DiskKey. Six admission/removal regressions, three status
+  regressions, nine Console hardware/geometry tests and affected all-feature
+  Clippy pass. These are deletion guards, not completed exclusion acknowledgements.

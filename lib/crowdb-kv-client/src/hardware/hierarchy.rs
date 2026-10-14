@@ -15,8 +15,11 @@
 //! See `doc/design/kv/design-crowdb-kv-group0.md` §2.1, §3.
 
 mod disk_status;
+mod legacy_cascade;
+mod mutation;
 mod ownership;
 mod storage_admission;
+mod storage_guard;
 
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -250,10 +253,8 @@ impl HardwareClient {
     /// Remove a rack record.
     pub async fn remove_rack(&self, rack_id: RackId) -> Result<()> {
         let key = RackKey { rack_id };
-        self.kv
-            .delete(G0_STORE, G0_GROUP, key.to_path().as_bytes(), None)
+        self.legacy_delete(rack_id, &key.to_path(), &format!("/hw/disk-storage/{rack_id}/"))
             .await
-            .map(|_| ())
     }
 
     /// List all rack records (prefix scan `/hw/rack/`).
@@ -267,16 +268,14 @@ impl HardwareClient {
         Ok(out)
     }
 
-    /// Set a rack's status (read-modify-write, bumps
-    /// `status_changed_at_ms` on the rack value — `RackValue` has no
-    /// such field, so this is a blind put of the new status).
+    /// Change a present rack's status without overwriting concurrent membership.
     pub async fn set_rack_status(&self, rack_id: RackId, status: HwStatus) -> Result<()> {
         let key = RackKey { rack_id };
-        let mut value = get_json::<RackValue>(&self.kv, &key.to_path())
-            .await?
-            .unwrap_or_default();
-        value.status = status as i32;
-        put_json(&self.kv, &key.to_path(), &value).await
+        mutation::update::<RackValue, _>(&self.kv, rack_id, &key.to_path(), |value| {
+            value.status = status as i32;
+            Ok(())
+        })
+        .await
     }
 }
 
@@ -298,10 +297,12 @@ impl HardwareClient {
     /// Remove a node record.
     pub async fn remove_node(&self, rack_id: RackId, node_id: NodeId) -> Result<()> {
         let key = NodeKey { rack_id, node_id };
-        self.kv
-            .delete(G0_STORE, G0_GROUP, key.to_path().as_bytes(), None)
-            .await
-            .map(|_| ())
+        self.legacy_delete(
+            rack_id,
+            &key.to_path(),
+            &format!("/hw/disk-storage/{rack_id}/{node_id}/"),
+        )
+        .await
     }
 
     /// List all node records (prefix scan `/hw/node/`).
@@ -330,12 +331,14 @@ impl HardwareClient {
     /// `status_changed_at_ms`).
     pub async fn set_node_status(&self, rack_id: RackId, node_id: NodeId, status: HwStatus) -> Result<()> {
         let key = NodeKey { rack_id, node_id };
-        let mut value = get_json::<NodeValue>(&self.kv, &key.to_path())
-            .await?
-            .unwrap_or_default();
-        value.status = status as i32;
-        value.status_changed_at_ms = now_ms();
-        put_json(&self.kv, &key.to_path(), &value).await
+        mutation::update::<NodeValue, _>(&self.kv, rack_id, &key.to_path(), |value| {
+            if value.status != status as i32 {
+                value.status = status as i32;
+                value.status_changed_at_ms = now_ms();
+            }
+            Ok(())
+        })
+        .await
     }
 }
 
@@ -392,10 +395,12 @@ impl HardwareClient {
             node_id,
             disk_group_id: dg_id,
         };
-        self.kv
-            .delete(G0_STORE, G0_GROUP, key.to_path().as_bytes(), None)
-            .await
-            .map(|_| ())
+        self.legacy_delete(
+            rack_id,
+            &key.to_path(),
+            &format!("/hw/disk-storage/{rack_id}/{node_id}/{dg_id}/"),
+        )
+        .await
     }
 
     /// List all disk-group records (prefix scan `/hw/dg/`).
@@ -451,11 +456,11 @@ impl HardwareClient {
             node_id,
             disk_group_id: dg_id,
         };
-        let mut value = get_json::<DiskGroupValue>(&self.kv, &key.to_path())
-            .await?
-            .unwrap_or_default();
-        value.status = status as i32;
-        put_json(&self.kv, &key.to_path(), &value).await
+        mutation::update::<DiskGroupValue, _>(&self.kv, rack_id, &key.to_path(), |value| {
+            value.status = status as i32;
+            Ok(())
+        })
+        .await
     }
 }
 
@@ -511,10 +516,12 @@ impl HardwareClient {
             disk_group_id: dg_id,
             disk_id: *disk_id,
         };
-        self.kv
-            .delete(G0_STORE, G0_GROUP, key.to_path().as_bytes(), None)
-            .await
-            .map(|_| ())
+        self.legacy_delete(
+            rack_id,
+            &key.to_path(),
+            &crowdb_protocol::disk_storage::DiskStorageRecord::key_for(&key),
+        )
+        .await
     }
 
     /// List all disks in a disk-group (prefix scan
@@ -771,39 +778,21 @@ impl HardwareClient {
         node_id: NodeId,
         dg_id: DiskGroupId,
     ) -> Result<()> {
-        // Remove child disks.
-        let disks = self.list_disks_in_group(rack_id, node_id, dg_id).await?;
-        for (disk_id, _) in &disks {
-            self.remove_disk(rack_id, node_id, dg_id, disk_id).await?;
-        }
-        // Remove owner map entry.
-        self.remove_owner(rack_id, node_id, dg_id).await?;
-        // Remove bind map entry.
-        self.remove_bind(rack_id, node_id, dg_id).await?;
-        // Remove usage summary.
-        self.remove_disk_group_usage(dg_id).await?;
-        // Remove the disk-group record itself.
-        self.remove_disk_group(rack_id, node_id, dg_id).await
+        self.legacy_cascade(rack_id, legacy_cascade::Scope::Group(node_id, dg_id))
+            .await
     }
 
     /// Remove a node record + all derived records: child disk-groups
     /// (with their disks, owner, bind, usage), then the node itself.
     pub async fn remove_node_cascade(&self, rack_id: RackId, node_id: NodeId) -> Result<()> {
-        let dgs = self.list_disk_groups_on_node(rack_id, node_id).await?;
-        for dg in &dgs {
-            self.remove_disk_group_cascade(rack_id, node_id, dg.dg_id).await?;
-        }
-        self.remove_node(rack_id, node_id).await
+        self.legacy_cascade(rack_id, legacy_cascade::Scope::Node(node_id))
+            .await
     }
 
     /// Remove a rack record + all derived records: child nodes (with
     /// their disk-groups, disks, owner, bind, usage), then the rack itself.
     pub async fn remove_rack_cascade(&self, rack_id: RackId) -> Result<()> {
-        let nodes = self.list_nodes_in_rack(rack_id).await?;
-        for (node_id, _) in &nodes {
-            self.remove_node_cascade(rack_id, *node_id).await?;
-        }
-        self.remove_rack(rack_id).await
+        self.legacy_cascade(rack_id, legacy_cascade::Scope::Rack).await
     }
 }
 

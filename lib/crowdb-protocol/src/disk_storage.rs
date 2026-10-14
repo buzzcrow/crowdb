@@ -5,7 +5,12 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{common::DiskId, diskdb::rpc::DiskValue, mgmt::node::storage::DiskBackend, DiskIdExt};
+use crate::{
+    common::DiskId,
+    diskdb::rpc::DiskValue,
+    key::{DiskKey, TextKey},
+    mgmt::node::storage::DiskBackend,
+};
 
 /// Retained backing information is not evidence of current I/O availability.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -30,12 +35,18 @@ impl DiskStorageRecord {
     /// One retained identity survives removal from active disk membership.
     #[must_use]
     pub fn key(&self) -> String {
-        format!(
-            "{}{}/{}",
-            Self::node_prefix(self.rack_id, self.node_id),
-            self.disk_group_id,
-            self.disk_id.to_display_string()
-        )
+        Self::key_for(&DiskKey {
+            rack_id: self.rack_id,
+            node_id: self.node_id,
+            disk_group_id: self.disk_group_id,
+            disk_id: self.disk_id,
+        })
+    }
+
+    /// Use the existing disk key's canonical identity encoding.
+    #[must_use]
+    pub fn key_for(key: &DiskKey) -> String {
+        key.to_path().replacen("/hw/disk/", "/hw/disk-storage/", 1)
     }
 
     /// Limit duplicate backing checks to one physical node.

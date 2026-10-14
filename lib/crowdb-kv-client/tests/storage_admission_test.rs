@@ -216,3 +216,62 @@ async fn legacy_path_cannot_be_adopted_as_a_blank_medium() {
         .unwrap()
         .is_none());
 }
+
+#[tokio::test]
+async fn direct_and_cascade_deletion_preserve_retained_disks_and_legacy_siblings() {
+    let fixture = TestStorage::start().await;
+    let hw = &fixture.hardware;
+    let original = record(5);
+    let sibling = DiskId { high: 9, low: 9 };
+    let mut legacy = original.geometry.clone();
+    legacy.device_path = "/data/legacy.img".into();
+    hw.add_disk(1, 2, 3, &sibling, &legacy).await.unwrap();
+    hw.admit_disk_storage(&original).await.unwrap();
+    assert!(hw.remove_disk(1, 2, 3, &original.disk_id).await.is_err());
+    assert!(hw.remove_disk_group(1, 2, 3).await.is_err());
+    assert!(hw.remove_node(1, 2).await.is_err());
+    assert!(hw.remove_rack(1).await.is_err());
+    assert!(hw.remove_disk_group_cascade(1, 2, 3).await.is_err());
+    assert!(hw.remove_node_cascade(1, 2).await.is_err());
+    assert!(hw.remove_rack_cascade(1).await.is_err());
+    assert_eq!(hw.get_disk(1, 2, 3, &sibling).await.unwrap(), Some(legacy));
+    assert_eq!(
+        hw.get_disk(1, 2, 3, &original.disk_id).await.unwrap(),
+        Some(original.geometry.clone())
+    );
+    assert_eq!(hw.disk_storage(&key(&original)).await.unwrap(), Some(original));
+}
+
+#[tokio::test]
+async fn concurrent_parent_cleanup_cannot_orphan_a_successful_admission() {
+    let fixture = TestStorage::start().await;
+    let hw = &fixture.hardware;
+    let original = record(5);
+    let (admitted, deleted) = tokio::join!(
+        hw.admit_disk_storage(&original),
+        hw.remove_disk_group_cascade(1, 2, 3)
+    );
+    assert!(
+        !(admitted.is_ok() && deleted.is_ok()),
+        "conflicting mutations both committed"
+    );
+    if admitted.is_ok() {
+        assert!(hw.get_disk_group(1, 2, 3).await.unwrap().is_some());
+        assert_eq!(
+            hw.disk_storage(&key(&original)).await.unwrap(),
+            Some(original.clone())
+        );
+        assert!(hw
+            .get_disk_with_revision(&key(&original))
+            .await
+            .unwrap()
+            .is_some());
+    } else {
+        assert!(hw.disk_storage(&key(&original)).await.unwrap().is_none());
+        assert!(hw
+            .get_disk_with_revision(&key(&original))
+            .await
+            .unwrap()
+            .is_none());
+    }
+}

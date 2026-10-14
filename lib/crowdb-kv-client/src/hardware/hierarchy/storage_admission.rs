@@ -65,12 +65,7 @@ impl HardwareClient {
     /// # Errors
     /// Propagates authority, decoding and unsupported-schema errors.
     pub async fn disk_storage(&self, key: &DiskKey) -> Result<Option<DiskStorageRecord>> {
-        let path = format!(
-            "{}{}/{}",
-            DiskStorageRecord::node_prefix(key.rack_id, key.node_id),
-            key.disk_group_id,
-            crowdb_protocol::DiskIdExt::to_display_string(&key.disk_id)
-        );
+        let path = DiskStorageRecord::key_for(key);
         let value: Option<DiskStorageRecord> = get_json(&self.kv, &path).await?;
         if let Some(record) = &value {
             record.validate().map_err(|error| Error::Server(error.into()))?;

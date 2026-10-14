@@ -254,6 +254,10 @@ pub async fn remove_disk_group_from_group0(ctx: &OpContext, node_id: u64, dg_id:
             id: dg_id.to_string(),
         })?;
         if !group.disk_ids.is_empty()
+            || ctx
+                .sysmd()
+                .has_retained_disk_storage(rack_id, Some(node_id), Some(dg_id))
+                .await?
             || !ctx
                 .sysmd()
                 .list_disks_in_group(rack_id, node_id, dg_id)
@@ -321,6 +325,22 @@ pub async fn add_disk_to_group0(
         let (rack_path, rack, revision) = rack_revision(ctx, rack_id).await?;
         let (mut group, _) =
             required::<DiskGroupValue>(ctx, &group_path, "disk_group", dg_id.to_string()).await?;
+        if ctx
+            .sysmd()
+            .disk_storage(&DiskKey {
+                rack_id,
+                node_id,
+                disk_group_id: dg_id,
+                disk_id,
+            })
+            .await?
+            .is_some()
+        {
+            return Err(Error::Conflict {
+                kind: "retained disk requires storage admission or recovery".into(),
+                id: input.disk_id.clone(),
+            });
+        }
         if let Some(actual) = optional::<DiskValue>(ctx, &disk_path).await? {
             if actual == value && group.disk_ids.contains(&disk_id) {
                 return Ok(entry);
@@ -401,6 +421,22 @@ pub async fn remove_disk_from_group0(
     let mut removed = None;
     for attempt in 0..RETRIES {
         let (rack_path, rack, revision) = rack_revision(ctx, rack_id).await?;
+        if ctx
+            .sysmd()
+            .disk_storage(&DiskKey {
+                rack_id,
+                node_id,
+                disk_group_id: dg_id,
+                disk_id: id,
+            })
+            .await?
+            .is_some()
+        {
+            return Err(Error::Conflict {
+                kind: "retained disk requires Offline/Remove lifecycle".into(),
+                id: disk_id.into(),
+            });
+        }
         let (mut group, _) =
             required::<DiskGroupValue>(ctx, &group_path, "disk_group", dg_id.to_string()).await?;
         let current = optional::<DiskValue>(ctx, &disk_path).await?;
