@@ -40,6 +40,7 @@ async fn full_simulated_disk_preserves_file_authority_then_recovers_after_compac
     let context = seed_catalog(&stack).await;
     let owner = FileIdentity {
         table: TableLocation {
+            storage_namespace: None,
             catalog: context.catalog,
             table: TableId::random(),
         },

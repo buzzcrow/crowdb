@@ -6,7 +6,7 @@ use crate::gc::GcCandidate;
 use crate::operation::mutation_identity;
 use crate::record::StorageRecord;
 
-use super::{file_key, location_key, DeletedFile, FileLocation, FileRecord};
+use super::{canonical_file_key, file_key, DeletedFile, FileLocation, FileRecord};
 
 #[derive(Clone)]
 pub struct FileRepository {
@@ -17,6 +17,27 @@ impl FileRepository {
     #[must_use]
     pub fn new(store: Arc<dyn CatalogStore>) -> Self {
         Self { store }
+    }
+
+    /// Finalizes an injection using its durably selected upload tree.
+    /// The caller retains that same owner/tree in its upload recovery state.
+    ///
+    /// # Errors
+    /// Rejects legacy scope, corrupt trees and conflicting filename publication.
+    pub async fn finalize_native_parquet(
+        &self,
+        context: CatalogContext,
+        owner: super::FileIdentity,
+        stem: &str,
+        tree: super::FileTree,
+        locations: &super::DirectFileLocations,
+    ) -> Result<FileRecord, CatalogError> {
+        if context.catalog != owner.table.catalog {
+            return Err(ValidationError::IdentityMismatch.into());
+        }
+        let root = tree.root.ok_or(ValidationError::Record)?;
+        let candidate = locations.parquet(owner.table, stem, owner.file, tree.length, tree.digest, root)?;
+        self.publish(context, &candidate).await
     }
 
     /// # Errors
@@ -53,12 +74,12 @@ impl FileRepository {
     ) -> Result<DeletedFile, CatalogError> {
         let location = &expected.location;
         self.check_context(context, location).await?;
-        let key = location_key(location);
+        let key = canonical_file_key(location);
         let encoded = key.encode()?;
         let Some(current) = self.store.get(&encoded).await? else {
             return Err(CatalogError::Conflict);
         };
-        if let StorageRecord::DeletedFile(deleted) = StorageRecord::decode(&key, &current.bytes)? {
+        if let StorageRecord::DeletedFile(deleted) = StorageRecord::decode_storage(&key, &current.bytes)? {
             return if deleted.file == *expected {
                 Ok(*deleted)
             } else {
@@ -87,11 +108,12 @@ impl FileRepository {
             CasOutcome::Applied(_) => Ok(deleted),
             CasOutcome::Conflict(Some(value))
                 if matches!(
-                    StorageRecord::decode(&key, &value.bytes)?,
+                    StorageRecord::decode_storage(&key, &value.bytes)?,
                     StorageRecord::DeletedFile(_)
                 ) =>
             {
-                let StorageRecord::DeletedFile(current) = StorageRecord::decode(&key, &value.bytes)? else {
+                let StorageRecord::DeletedFile(current) = StorageRecord::decode_storage(&key, &value.bytes)?
+                else {
                     unreachable!()
                 };
                 if current.file == *expected {
@@ -113,11 +135,11 @@ impl FileRepository {
         location: &FileLocation,
     ) -> Result<Option<DeletedFile>, CatalogError> {
         self.check_context(context, location).await?;
-        let key = location_key(location);
+        let key = canonical_file_key(location);
         let Some(value) = self.store.get(&key.encode()?).await? else {
             return Ok(None);
         };
-        match StorageRecord::decode(&key, &value.bytes)? {
+        match StorageRecord::decode_storage(&key, &value.bytes)? {
             StorageRecord::DeletedFile(deleted) => Ok(Some(*deleted)),
             _ => Ok(None),
         }
@@ -130,7 +152,7 @@ impl FileRepository {
     ) -> Result<FileRecord, CatalogError> {
         candidate.validate()?;
         self.check_context(context, &candidate.location).await?;
-        let key = location_key(&candidate.location).encode()?;
+        let key = canonical_file_key(&candidate.location).encode()?;
         let bytes = StorageRecord::File(Box::new(candidate.clone())).encode()?;
         let result = self
             .store
@@ -139,8 +161,9 @@ impl FileRepository {
         let published = match result {
             CasOutcome::Applied(_) => candidate.clone(),
             CasOutcome::Conflict(Some(value)) => {
-                let record_key = location_key(&candidate.location);
-                if let StorageRecord::DeletedFile(deleted) = StorageRecord::decode(&record_key, &value.bytes)?
+                let record_key = canonical_file_key(&candidate.location);
+                if let StorageRecord::DeletedFile(deleted) =
+                    StorageRecord::decode_storage(&record_key, &value.bytes)?
                 {
                     if candidate.file == deleted.file.file {
                         return Err(CatalogError::Conflict);
@@ -179,12 +202,12 @@ impl FileRepository {
     }
 
     async fn resolve(&self, location: &FileLocation) -> Result<Option<FileRecord>, CatalogError> {
-        let key = location_key(location);
+        let key = canonical_file_key(location);
         let Some(value) = self.store.get(&key.encode()?).await? else {
             return Ok(None);
         };
         if matches!(
-            StorageRecord::decode(&key, &value.bytes)?,
+            StorageRecord::decode_storage(&key, &value.bytes)?,
             StorageRecord::DeletedFile(_)
         ) {
             return Ok(None);
@@ -197,8 +220,8 @@ impl FileRepository {
         location: &FileLocation,
         bytes: &[u8],
     ) -> Result<FileRecord, CatalogError> {
-        let key = location_key(location);
-        let record = match StorageRecord::decode(&key, bytes)? {
+        let key = canonical_file_key(location);
+        let record = match StorageRecord::decode_storage(&key, bytes)? {
             StorageRecord::File(record) => record,
             StorageRecord::FileMapping(mapping) => {
                 let key = file_key(location.table().catalog, mapping.file);

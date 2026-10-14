@@ -33,6 +33,7 @@ fn authority(context: CatalogContext) -> CatalogAuthority {
 
 fn target(table: TableId) -> FileDelegationTarget {
     FileDelegationTarget {
+        storage_namespace: None,
         table,
         format_version: 2,
         staged: false,
@@ -46,6 +47,7 @@ fn only_independent_writer_receives_file_mutations() {
     let context = context();
     let table = TableId::random();
     let location = TableLocation {
+        storage_namespace: None,
         catalog: context.catalog,
         table,
     }
@@ -99,6 +101,7 @@ fn only_independent_writer_receives_file_mutations() {
             Err(FileGrantError::Bounds)
         );
         let other = TableLocation {
+            storage_namespace: None,
             catalog: context.catalog,
             table: TableId::random(),
         }
@@ -136,6 +139,7 @@ fn delegated_file_operations_follow_selected_version_and_draft_stage() {
             context,
             &authority,
             FileDelegationTarget {
+                storage_namespace: None,
                 table,
                 format_version: 2,
                 staged: true,
@@ -151,6 +155,7 @@ fn delegated_file_operations_follow_selected_version_and_draft_stage() {
             context,
             &authority,
             FileDelegationTarget {
+                storage_namespace: None,
                 table,
                 format_version: 3,
                 staged: false,
@@ -201,6 +206,7 @@ fn refresh_rotates_credentials_and_serializes_official_sdk_properties() {
     assert_eq!(
         credentials[0]["prefix"],
         TableLocation {
+            storage_namespace: None,
             catalog: context.catalog,
             table
         }

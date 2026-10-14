@@ -31,6 +31,10 @@ pub struct TableHead {
 }
 
 impl TableHead {
+    #[must_use]
+    pub fn storage_location(&self) -> crate::file::TableLocation {
+        self.metadata_location.table()
+    }
     /// # Errors
     /// Rejects invalid revisions, identity, version and unfenced tombstones.
     pub fn validate(&self) -> Result<(), ValidationError> {
@@ -58,6 +62,7 @@ pub enum TableMappingState {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TableMapping {
+    pub storage_namespace: Option<NamespaceId>,
     pub catalog: CatalogId,
     pub namespace: NamespaceId,
     pub name: String,
@@ -68,6 +73,14 @@ pub struct TableMapping {
 }
 
 impl TableMapping {
+    #[must_use]
+    pub const fn storage_location(&self) -> crate::file::TableLocation {
+        crate::file::TableLocation {
+            catalog: self.catalog,
+            table: self.table,
+            storage_namespace: self.storage_namespace,
+        }
+    }
     /// # Errors
     /// Rejects invalid names and zero name epochs.
     pub fn validate(&self) -> Result<(), ValidationError> {
@@ -85,6 +98,7 @@ impl TableMapping {
             && self.catalog == head.catalog
             && self.namespace == head.namespace
             && self.table == head.table
+            && self.storage_namespace == head.metadata_location.table().storage_namespace
             && self.name == head.name
             && self.name_epoch == head.name_epoch
     }

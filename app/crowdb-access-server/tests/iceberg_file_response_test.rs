@@ -15,6 +15,7 @@ use sha2::{Digest, Sha256};
 
 fn session() -> MultipartSession {
     let table = TableLocation {
+        storage_namespace: None,
         catalog: CatalogId::random(),
         table: TableId::random(),
     };

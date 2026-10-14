@@ -18,6 +18,7 @@ fn credentials() -> (FileGrantIssuer, FileCredentials) {
     let issuer = FileGrantIssuer::new([42; 32], 60_000).unwrap();
     let credentials = issuer
         .issue(FileGrant {
+            storage_namespace: None,
             context: CatalogContext {
                 catalog: CatalogId::random(),
                 activation_epoch: 1,

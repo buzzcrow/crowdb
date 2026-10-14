@@ -34,6 +34,7 @@ async fn official_java_v1_v2_nullable_scalar_files_decode_with_and_without_dicti
         let (store, record) = fixture::stored_content(
             &bytes,
             crowdb_access_iceberg::file::TableLocation {
+                storage_namespace: None,
                 catalog: crowdb_access_iceberg::key::CatalogId::from_bytes(&[1; 16]).unwrap(),
                 table: crowdb_access_iceberg::key::TableId::from_bytes(&[2; 16]).unwrap(),
             },

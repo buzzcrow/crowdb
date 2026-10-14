@@ -5,7 +5,7 @@ use crate::{
     key::{NamespaceId, OperationId},
     operation::mutation_identity,
     record::StorageRecord,
-    table::{head_key, name_key, TableMapping, TableMappingState},
+    table::{name_key, storage_head_key, TableMapping, TableMappingState},
 };
 
 impl TableLifecycles {
@@ -50,7 +50,7 @@ impl TableLifecycles {
             .await?;
             return Ok(());
         }
-        let head_key = head_key(existing.catalog, existing.table);
+        let head_key = storage_head_key(existing.storage_location());
         let head = self
             .store
             .get(&head_key.encode()?)

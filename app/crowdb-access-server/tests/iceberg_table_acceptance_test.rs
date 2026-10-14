@@ -95,6 +95,7 @@ fn mapping(test: &TestTableHttp, head: &TableHead, name: &str, state: TableMappi
     test.put(
         &name_key(head.catalog, head.namespace, name).unwrap(),
         &StorageRecord::TableMapping(TableMapping {
+            storage_namespace: None,
             catalog: head.catalog,
             namespace: head.namespace,
             name: name.into(),

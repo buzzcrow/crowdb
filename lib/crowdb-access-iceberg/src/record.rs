@@ -14,6 +14,7 @@ mod namespace_operation;
 mod payload;
 mod retry;
 mod root;
+mod storage_key;
 mod table;
 mod table_commit;
 mod table_create;
@@ -21,3 +22,4 @@ mod table_lifecycle;
 mod write_intent;
 
 pub use envelope::{StorageRecord, MAX_RECORD_BYTES};
+pub use storage_key::StorageRecordKey;

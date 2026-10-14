@@ -1,7 +1,7 @@
 use crate::{
     catalog::check_context,
     file::{AvroDatumLimits, AvroLimits},
-    table::{head_key, TableMetadataLimits},
+    table::{storage_head_key, TableMetadataLimits},
 };
 
 use super::{
@@ -21,7 +21,7 @@ impl GcWorker {
         };
         if !changed_context {
             let head = task.head.as_ref().ok_or(ValidationError::Record)?;
-            let key = head_key(head.catalog, head.table);
+            let key = storage_head_key(head.storage_location());
             if let Some(value) = self.repository.store.get(&key.encode()?).await? {
                 let StorageRecord::TableHead(current) = StorageRecord::decode(&key, &value.bytes)? else {
                     return Err(ValidationError::Record.into());
@@ -168,7 +168,7 @@ impl GcWorker {
             return Ok(self.repository.verify_table_fence(task).await?);
         }
         let head = task.head.as_ref().ok_or(ValidationError::Record)?;
-        let key = head_key(head.catalog, head.table);
+        let key = storage_head_key(head.storage_location());
         let value = self
             .repository
             .store

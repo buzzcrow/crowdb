@@ -60,6 +60,7 @@ pub(super) async fn seed_table(
 pub(super) async fn seed_head(store: &RoutedCatalogStore, context: CatalogContext) -> TableId {
     let table = TableId::random();
     let location = TableLocation {
+        storage_namespace: None,
         catalog: context.catalog,
         table,
     };
@@ -122,6 +123,7 @@ pub(super) async fn seed_files(
         let file = FileRecord {
             file: FileId::random(),
             location: TableLocation {
+                storage_namespace: None,
                 catalog: context.catalog,
                 table,
             }

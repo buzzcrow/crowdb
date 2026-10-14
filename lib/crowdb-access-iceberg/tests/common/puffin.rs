@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 pub fn referenced() -> crowdb_access_iceberg::file::FileLocation {
     TableLocation {
+        storage_namespace: None,
         catalog: CatalogId::random(),
         table: TableId::random(),
     }

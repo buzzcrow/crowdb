@@ -12,6 +12,20 @@ use crowdb_access_iceberg::record::StorageRecord;
 use std::sync::Arc;
 
 #[tokio::test]
+async fn native_multipart_identity_round_trips_the_full_storage_path() {
+    let mut session = fixtures::session();
+    session.owner.table.storage_namespace = Some(crowdb_access_iceberg::key::NamespaceId::random());
+    session.location = session.owner.table.file(session.location.relative_key()).unwrap();
+    let record = StorageRecord::MultipartSession(Box::new(session.clone()));
+    assert_eq!(
+        StorageRecord::decode(&session.key(), &record.encode().unwrap()).unwrap(),
+        record
+    );
+    session.owner.table.storage_namespace = Some(crowdb_access_iceberg::key::NamespaceId::random());
+    assert!(session.validate().is_err());
+}
+
+#[tokio::test]
 async fn multipart_records_round_trip_open_partial_publishing_published_and_aborted_states() {
     let store = Arc::new(TestBlocks::default());
     let mut session = fixtures::session();

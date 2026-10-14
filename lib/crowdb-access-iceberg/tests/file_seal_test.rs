@@ -14,6 +14,7 @@ use crowdb_access_iceberg::record::StorageRecord;
 fn owner() -> FileIdentity {
     FileIdentity {
         table: TableLocation {
+            storage_namespace: None,
             catalog: CatalogId::random(),
             table: TableId::random(),
         },

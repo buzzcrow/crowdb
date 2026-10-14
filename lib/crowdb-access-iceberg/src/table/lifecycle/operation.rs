@@ -126,6 +126,7 @@ impl TableLifecycleOperation {
 
     pub(super) fn destination(&self, state: TableMappingState) -> TableMapping {
         TableMapping {
+            storage_namespace: self.candidate.metadata_location.table().storage_namespace,
             catalog: self.context.catalog,
             namespace: self.candidate.namespace,
             name: self.candidate.name.clone(),

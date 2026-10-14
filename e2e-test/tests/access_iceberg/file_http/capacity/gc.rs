@@ -14,6 +14,7 @@ pub(super) async fn seed_gc_workspace_task(
 ) {
     let store = stack.store().await;
     let table = TableLocation {
+        storage_namespace: None,
         catalog: context.catalog,
         table: TableId::random(),
     };

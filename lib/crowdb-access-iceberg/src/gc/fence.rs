@@ -2,7 +2,7 @@ use crate::{
     catalog::CatalogError,
     error::ValidationError,
     record::StorageRecord,
-    table::{head_key, TableHead, TableLifecycle},
+    table::{storage_head_key, TableHead, TableLifecycle},
 };
 
 use super::{GcPhase, GcRepository, GcStalledReason, GcTask, GcTaskKind};
@@ -23,7 +23,7 @@ impl GcRepository {
             return Ok(task.clone());
         }
         let expected = fenced_head(task)?;
-        let key = head_key(expected.catalog, expected.table);
+        let key = storage_head_key(expected.storage_location());
         if let Some(value) = self.store.get(&key.encode()?).await? {
             let StorageRecord::TableHead(current) = StorageRecord::decode(&key, &value.bytes)? else {
                 return Err(ValidationError::Record.into());
@@ -55,7 +55,7 @@ impl GcRepository {
             .operation_fence
             .checked_add(2)
             .ok_or(ValidationError::GenerationExhausted)?;
-        let key = head_key(released.catalog, released.table);
+        let key = storage_head_key(released.storage_location());
         let Some(value) = self.store.get(&key.encode()?).await? else {
             return Ok(false);
         };
@@ -76,8 +76,8 @@ impl GcRepository {
             return Err(CatalogError::Busy);
         }
         let fenced = fenced_head(task)?;
-        self.change(
-            &head_key(before.catalog, before.table),
+        self.change_storage(
+            &storage_head_key(before.storage_location()),
             Some(&StorageRecord::TableHead(Box::new(before.clone()))),
             &StorageRecord::TableHead(Box::new(fenced.clone())),
         )
@@ -89,7 +89,7 @@ impl GcRepository {
     /// Rejects lost ownership; no deletion may follow a failed verification.
     pub async fn verify_table_fence(&self, task: &GcTask) -> Result<(), CatalogError> {
         let expected = fenced_head(task)?;
-        let key = head_key(expected.catalog, expected.table);
+        let key = storage_head_key(expected.storage_location());
         let value = self
             .store
             .get(&key.encode()?)
@@ -110,8 +110,8 @@ impl GcRepository {
             .operation_fence
             .checked_add(1)
             .ok_or(ValidationError::GenerationExhausted)?;
-        self.change(
-            &head_key(before.catalog, before.table),
+        self.change_storage(
+            &storage_head_key(before.storage_location()),
             Some(&StorageRecord::TableHead(Box::new(before))),
             &StorageRecord::TableHead(Box::new(released)),
         )

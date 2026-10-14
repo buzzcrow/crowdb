@@ -4,7 +4,7 @@ use crate::{
     catalog::{CatalogContext, CatalogError, CatalogStore},
     commit::{PriorManifestSource, TableCreateJournal, TableCreateOperation},
     record::StorageRecord,
-    table::{head_key, name_key, TableMappingState, TableRepository},
+    table::{name_key, storage_head_key, TableMappingState, TableRepository},
 };
 
 pub(super) enum CandidateFence {
@@ -47,7 +47,7 @@ impl CandidateFence {
                 if StorageRecord::decode(&key, &value.bytes)? != StorageRecord::TableMapping(mapping) {
                     return Err(CatalogError::Conflict);
                 }
-                let head = head_key(context.catalog, operation.candidate.table).encode()?;
+                let head = storage_head_key(operation.candidate.storage_location()).encode()?;
                 if store.get(&head).await?.is_some()
                     || journal
                         .load(context, operation.identity.operation)

@@ -3,6 +3,7 @@ use crowdb_access_iceberg::key::{CatalogId, TableId};
 
 fn table() -> TableLocation {
     TableLocation {
+        storage_namespace: None,
         catalog: CatalogId::from_bytes(&[0xff; 16]).unwrap(),
         table: TableId::from_bytes(&[0xab; 16]).unwrap(),
     }

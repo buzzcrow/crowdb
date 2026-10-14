@@ -8,6 +8,7 @@ fn directory(count: usize) -> ChunkDirectory {
     ChunkDirectory {
         owner: FileIdentity {
             table: TableLocation {
+                storage_namespace: None,
                 catalog: CatalogId::random(),
                 table: TableId::random(),
             },
@@ -32,6 +33,23 @@ fn directory(count: usize) -> ChunkDirectory {
             })
             .collect(),
     }
+}
+
+#[test]
+fn native_directories_preserve_storage_namespace_and_reject_foreign_owners() {
+    let mut node = directory(2);
+    node.owner.table.storage_namespace = Some(crowdb_access_iceberg::key::NamespaceId::random());
+    let bytes = node.encode().unwrap();
+    assert_eq!(&bytes[..5], b"ICEN\x02");
+    assert_eq!(
+        ChunkDirectory::decode(&bytes, node.owner, node.height, node.length().unwrap()).unwrap(),
+        node
+    );
+    let mut foreign = node.owner;
+    foreign.table.storage_namespace = Some(crowdb_access_iceberg::key::NamespaceId::random());
+    assert!(ChunkDirectory::decode(&bytes, foreign, node.height, node.length().unwrap()).is_err());
+    foreign.table.storage_namespace = None;
+    assert!(ChunkDirectory::decode(&bytes, foreign, node.height, node.length().unwrap()).is_err());
 }
 
 #[test]

@@ -4,7 +4,7 @@ use crowdb_chunk_kv_client::MultiScanRequest;
 use crowdb_protocol::chunk_kv::ScanDirection;
 
 use crate::error::ValidationError;
-use crate::key::{CatalogScope, IcebergKey};
+use crate::key::{CatalogScope, IcebergKey, TableStorageKey};
 
 use super::{TableLocation, MAX_OBJECT_KEY_BYTES};
 
@@ -66,6 +66,10 @@ impl FileListRequest {
             .prefix
             .strip_prefix(&self.table.object_prefix())
             .ok_or(ValidationError::Key)?;
+        if let Some(table) = self.table.storage_path() {
+            let range = TableStorageKey::file_range(table, relative)?;
+            return Ok((range.start, range.end));
+        }
         let mut start = IcebergKey::catalog_range(self.table.catalog).start;
         start.push(CatalogScope::FileLocation as u8);
         start.extend_from_slice(self.table.table.as_bytes());
@@ -78,6 +82,9 @@ impl FileListRequest {
         let relative = object_key
             .strip_prefix(&self.table.object_prefix())
             .ok_or(ValidationError::Key)?;
+        if let Some(table) = self.table.storage_path() {
+            return Ok(TableStorageKey::file_range(table, relative)?.start);
+        }
         let mut key = IcebergKey::catalog_range(self.table.catalog).start;
         key.push(CatalogScope::FileLocation as u8);
         key.extend_from_slice(self.table.table.as_bytes());

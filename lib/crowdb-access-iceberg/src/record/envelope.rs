@@ -7,7 +7,7 @@ use crate::file::{
     file_key, location_key, DeletedFile, FileMapping, FileRecord, MultipartAdmissionRecord, MultipartPart,
     MultipartSession,
 };
-use crate::key::{CatalogScope, IcebergKey, SystemScope};
+use crate::key::{CatalogScope, IcebergKey, StorageKey, SystemScope};
 use crate::namespace::{authority_key, name_key, NamespaceAuthority, NamespaceMapping, NamespaceOperation};
 use crate::operation::{ledger_key_matches, ManagementOperation, PayloadPage, RetryRecord, RetryResult};
 
@@ -196,7 +196,35 @@ impl StorageRecord {
 
     /// # Errors
     /// Rejects malformed envelopes, unknown schemas, invalid fields or mismatched keys.
-    pub fn decode(key: &IcebergKey, bytes: &[u8]) -> Result<Self, ValidationError> {
+    pub fn decode<Key: super::StorageRecordKey>(key: &Key, bytes: &[u8]) -> Result<Self, ValidationError> {
+        let record = Self::decode_bytes(bytes)?;
+        key.validate_record(&record)?;
+        Ok(record)
+    }
+
+    /// # Errors
+    /// Rejects foreign storage identities, record kinds and key layouts.
+    pub fn decode_storage(key: &StorageKey, bytes: &[u8]) -> Result<Self, ValidationError> {
+        Self::decode(key, bytes)
+    }
+
+    pub(super) fn validate_storage_key(&self, key: &StorageKey) -> Result<(), ValidationError> {
+        if let StorageKey::Legacy(key) = key {
+            return self.validate_key(key);
+        }
+        let expected = match self {
+            Self::File(file) => crate::file::canonical_file_key(&file.location),
+            Self::DeletedFile(file) => crate::file::canonical_file_key(&file.file.location),
+            Self::TableHead(head) => crate::table::storage_head_key(head.storage_location()),
+            _ => return Err(ValidationError::Record),
+        };
+        if expected != *key {
+            return Err(ValidationError::IdentityMismatch);
+        }
+        Ok(())
+    }
+
+    fn decode_bytes(bytes: &[u8]) -> Result<Self, ValidationError> {
         if bytes.len() > MAX_RECORD_BYTES {
             return Err(ValidationError::RecordTooLarge);
         }
@@ -207,9 +235,7 @@ impl StorageRecord {
         if envelope.schema_version() != SCHEMA_VERSION {
             return Err(ValidationError::RecordVersion(envelope.schema_version()));
         }
-        let record = Self::decode_value(envelope)?;
-        record.validate_key(key)?;
-        Ok(record)
+        Self::decode_value(envelope)
     }
 
     fn decode_value(envelope: FBIcebergRecord<'_>) -> Result<Self, ValidationError> {
@@ -390,7 +416,7 @@ impl StorageRecord {
         Ok(record)
     }
 
-    fn validate_key(&self, key: &IcebergKey) -> Result<(), ValidationError> {
+    pub(super) fn validate_key(&self, key: &IcebergKey) -> Result<(), ValidationError> {
         if let Some(result) = self.validate_gc_key(key) {
             return result;
         }

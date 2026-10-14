@@ -121,6 +121,7 @@ pub async fn stored(footer: &[u8], body_bytes: usize) -> (Arc<TestBlocks>, FileR
     stored_content(
         &bytes,
         TableLocation {
+            storage_namespace: None,
             catalog: CatalogId::random(),
             table: TableId::random(),
         },

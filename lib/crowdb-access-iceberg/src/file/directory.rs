@@ -1,7 +1,7 @@
 use crowdb_protocol::common::ChunkId;
 
 use crate::error::ValidationError;
-use crate::key::{CatalogId, FileId, TableId};
+use crate::key::{CatalogId, FileId, NamespaceId, TableId};
 
 use super::content::{MAX_CHUNK_DIRECTORY_BYTES, MAX_CHUNK_TREE_HEIGHT};
 use super::{ChunkRoot, TableLocation};
@@ -72,8 +72,15 @@ impl ChunkDirectory {
     pub(crate) fn encode_frontier(&self) -> Result<Vec<u8>, ValidationError> {
         self.frontier_length()?;
         let mut bytes = Vec::with_capacity(HEADER_BYTES + ENTRY_BYTES * self.entries.len());
-        bytes.extend_from_slice(b"ICEN\x01");
+        bytes.extend_from_slice(if self.owner.table.storage_namespace.is_some() {
+            b"ICEN\x02"
+        } else {
+            b"ICEN\x01"
+        });
         bytes.extend_from_slice(self.owner.table.catalog.as_bytes());
+        if let Some(namespace) = self.owner.table.storage_namespace {
+            bytes.extend_from_slice(namespace.as_bytes());
+        }
         bytes.extend_from_slice(self.owner.table.table.as_bytes());
         bytes.extend_from_slice(self.owner.file.as_bytes());
         bytes.push(self.height);
@@ -121,12 +128,20 @@ impl ChunkDirectory {
             return Err(ValidationError::RecordTooLarge);
         }
         let mut cursor = Cursor(bytes);
-        if cursor.take::<5>()? != *b"ICEN\x01" {
+        let version = cursor.take::<5>()?;
+        if version != *b"ICEN\x01" && version != *b"ICEN\x02" {
             return Err(ValidationError::Record);
         }
+        let catalog = CatalogId::from_bytes(&cursor.take::<16>()?)?;
+        let storage_namespace = if version == *b"ICEN\x02" {
+            Some(NamespaceId::from_bytes(&cursor.take::<16>()?)?)
+        } else {
+            None
+        };
         let actual_owner = FileIdentity {
             table: TableLocation {
-                catalog: CatalogId::from_bytes(&cursor.take::<16>()?)?,
+                storage_namespace,
+                catalog,
                 table: TableId::from_bytes(&cursor.take::<16>()?)?,
             },
             file: FileId::from_bytes(&cursor.take::<16>()?)?,

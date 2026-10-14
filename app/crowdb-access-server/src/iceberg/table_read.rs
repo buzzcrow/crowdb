@@ -207,6 +207,7 @@ impl TableHttp {
                     config.append(
                         &mut bytes,
                         super::table_credentials::TableFileTarget {
+                            storage_namespace: head.metadata_location.table().storage_namespace,
                             namespace,
                             name,
                             table: head.table,

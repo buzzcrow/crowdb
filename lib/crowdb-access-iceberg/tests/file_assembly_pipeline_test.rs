@@ -57,6 +57,7 @@ async fn setup() -> (Arc<TestPipelineBlocks>, FileAssembly, AssemblyPart, FileId
     let store = Arc::new(TestPipelineBlocks::default());
     let owner = FileIdentity {
         table: TableLocation {
+            storage_namespace: None,
             catalog: CatalogId::random(),
             table: TableId::random(),
         },

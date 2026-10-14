@@ -13,6 +13,14 @@ pub enum StorageKey {
 
 impl StorageKey {
     /// # Errors
+    /// Rejects invalid keys in the explicitly selected layout.
+    pub fn encode(&self) -> Result<Vec<u8>, ValidationError> {
+        match self {
+            Self::Legacy(key) => key.encode(),
+            Self::NativeTable(key) => key.encode(),
+        }
+    }
+    /// # Errors
     /// Rejects unsupported versions and malformed keys in their selected layout.
     pub fn decode(bytes: &[u8]) -> Result<Self, ValidationError> {
         if bytes.len() > MAX_KEY_BYTES {

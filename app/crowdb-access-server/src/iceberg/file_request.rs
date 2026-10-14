@@ -50,7 +50,7 @@ impl FileRequest {
         }
         let path = decode(uri.path())?;
         let path = path.strip_prefix('/').ok_or(FileRequestError::Invalid)?;
-        let location = format!("s3://{path}")
+        let location: FileLocation = format!("s3://{path}")
             .parse()
             .map_err(|_| FileRequestError::Invalid)?;
         let mut query = query(uri.query())?;
@@ -70,6 +70,12 @@ impl FileRequest {
             None if method == Method::DELETE => FileOperation::DeleteObject,
             None => return Err(FileRequestError::Unsupported),
         };
+        if location.table().storage_namespace.is_some()
+            && matches!(operation, FileOperation::Put | FileOperation::CreateMultipart)
+            && (location.relative_key() == "f" || location.relative_key().starts_with("f/"))
+        {
+            return Err(FileRequestError::Invalid);
+        }
         Ok(Self {
             location,
             operation,

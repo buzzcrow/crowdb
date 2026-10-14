@@ -99,6 +99,7 @@ async fn write_iceberg(iceberg_addr: SocketAddr, seeds: &[String]) {
     let context = repository.status().await.unwrap().0.context;
     let credentials = issuer
         .issue(FileGrant {
+            storage_namespace: None,
             context,
             table: table.table,
             principal: [7; 32],

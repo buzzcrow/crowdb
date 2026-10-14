@@ -168,6 +168,7 @@ async fn lifecycle_request(
         .put(
             name_key(head.catalog, head.namespace, &head.name).unwrap(),
             StorageRecord::TableMapping(TableMapping {
+                storage_namespace: None,
                 catalog: head.catalog,
                 namespace: head.namespace,
                 name: head.name.clone(),

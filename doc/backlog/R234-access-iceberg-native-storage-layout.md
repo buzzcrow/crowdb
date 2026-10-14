@@ -197,8 +197,9 @@ Defined edge behavior:
   Existing logical-URL resolution may still reject its tombstone. Direct GET,
   HEAD and Range GET must not use that resolver or add per-file state queries.
   Grant signature/scope/expiry validation remains independent of file lookup.
-  The native read API must avoid chunk-KV location resolution on the direct
-  path; GC and storage reads must prevent reclaimed extents from aliasing new
+  The direct path skips Iceberg file-location/lifecycle KV queries and retains
+  native chunk-layer layout resolution for cold reads, repair and migration.
+  GC and storage reads must prevent reclaimed extents from aliasing new
   data, including after restart and physical space reuse.
 - Uses the standard Iceberg URI requirement and Arrow S3 behavior as
   compatibility references, not as a requirement to introduce an external S3
@@ -286,8 +287,9 @@ Defined edge behavior:
   and recreated, assert live lookup still returns the frozen storage path and
   the files survive. Invariant: ICEBERG-PATH-1. E2E test.
 - Given files with multiple extents, when reading footer and boundary ranges,
-  assert correct bytes, bounded URLs and zero file-location, deletion-state
-  and chunk-KV resolution RPCs on the direct path. Invariants: ICEBERG-PATH-3 and
+  assert correct bytes, bounded URLs and zero Iceberg file-location and
+  file-deletion-state KV RPCs. Chunk layout resolution remains supported.
+  Invariants: ICEBERG-PATH-3 and
   ICEBERG-PATH-8. Integration test.
 - Given concurrent multipart completion/abort, same-length conflicting PUTs
   and conditional/range reads, when requests retry after response loss, assert

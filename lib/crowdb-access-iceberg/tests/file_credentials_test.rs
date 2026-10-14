@@ -6,6 +6,7 @@ use crowdb_access_iceberg::key::{CatalogId, OperationId, TableId};
 
 fn grant() -> FileGrant {
     FileGrant {
+        storage_namespace: None,
         context: CatalogContext {
             catalog: CatalogId::random(),
             activation_epoch: 1,
@@ -49,9 +50,38 @@ fn delegated_credentials_verify_across_servers_without_storing_secret_material()
 }
 
 #[test]
+fn cached_validation_still_checks_expiry_and_catalog_epoch() {
+    let issuer = FileGrantIssuer::new([2; 32], 10_000).unwrap();
+    let grant = grant();
+    let credentials = issuer.issue(grant.clone()).unwrap();
+    for _ in 0..2 {
+        assert_eq!(
+            issuer
+                .verify_token(credentials.session_token(), grant.context, grant.issued_ms)
+                .unwrap()
+                .grant(),
+            &grant
+        );
+    }
+    assert!(matches!(
+        issuer.verify_token(credentials.session_token(), grant.context, grant.expires_ms),
+        Err(FileGrantError::Expired)
+    ));
+    let changed = CatalogContext {
+        activation_epoch: grant.context.activation_epoch + 1,
+        ..grant.context
+    };
+    assert!(matches!(
+        issuer.verify_token(credentials.session_token(), changed, grant.issued_ms),
+        Err(FileGrantError::Forbidden)
+    ));
+}
+
+#[test]
 fn grants_bind_exact_table_operations_and_independent_byte_limits() {
     let grant = grant();
     let location = TableLocation {
+        storage_namespace: None,
         catalog: grant.context.catalog,
         table: grant.table,
     }
@@ -72,10 +102,12 @@ fn grants_bind_exact_table_operations_and_independent_byte_limits() {
     );
     for table in [
         TableLocation {
+            storage_namespace: None,
             catalog: CatalogId::random(),
             table: grant.table,
         },
         TableLocation {
+            storage_namespace: None,
             catalog: grant.context.catalog,
             table: TableId::random(),
         },

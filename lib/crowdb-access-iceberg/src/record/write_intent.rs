@@ -4,7 +4,7 @@ use flatbuffers::{FlatBufferBuilder, WIPOffset};
 use crate::{
     error::ValidationError,
     file::{FileIdentity, FileWriteIntent, TableLocation},
-    key::{CatalogId, FileId, OperationId, TableId},
+    key::{CatalogId, FileId, NamespaceId, OperationId, TableId},
 };
 
 pub(super) fn encode<'buffer>(
@@ -16,6 +16,11 @@ pub(super) fn encode<'buffer>(
     let table_id = builder.create_vector(intent.owner.table.table.as_bytes());
     let file_id = builder.create_vector(intent.owner.file.as_bytes());
     let identity = builder.create_vector(intent.identity.as_bytes());
+    let storage_namespace = intent
+        .owner
+        .table
+        .storage_namespace
+        .map(|id| builder.create_vector(id.as_bytes()));
     let root = super::file::encode_root(builder, &intent.root);
     Ok(FBFileWriteIntent::create(
         builder,
@@ -28,6 +33,7 @@ pub(super) fn encode<'buffer>(
             created_ms: intent.created_ms,
             not_before_ms: intent.not_before_ms,
             deleting: intent.deleting,
+            storage_namespace,
         },
     ))
 }
@@ -37,6 +43,10 @@ pub(super) fn decode(value: FBFileWriteIntent<'_>) -> Result<FileWriteIntent, Va
         identity: OperationId::from_bytes(value.identity().bytes())?,
         owner: FileIdentity {
             table: TableLocation {
+                storage_namespace: value
+                    .storage_namespace()
+                    .map(|id| NamespaceId::from_bytes(id.bytes()))
+                    .transpose()?,
                 catalog: CatalogId::from_bytes(value.catalog().bytes())?,
                 table: TableId::from_bytes(value.table_id().bytes())?,
             },

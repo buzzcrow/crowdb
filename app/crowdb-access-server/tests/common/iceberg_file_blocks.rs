@@ -25,6 +25,7 @@ impl TestFileBlocks {
         FileRecord {
             file: FileId::random(),
             location: TableLocation {
+                storage_namespace: None,
                 catalog: CatalogId::random(),
                 table: TableId::random(),
             }

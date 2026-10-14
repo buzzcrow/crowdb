@@ -14,6 +14,7 @@ use fixture::TestFile;
 
 fn grant(fixture: &TestFile) -> FileGrant {
     FileGrant {
+        storage_namespace: None,
         context: fixture.context,
         table: fixture.table.table,
         principal: [7; 32],
@@ -80,6 +81,7 @@ async fn two_table_principals_cannot_discover_each_others_published_names() {
     let selected = fixture.record("data/own.json", b"{}");
     repository.publish(fixture.context, &selected).await.unwrap();
     let other_table = crowdb_access_iceberg::file::TableLocation {
+        storage_namespace: None,
         catalog: fixture.context.catalog,
         table: TableId::random(),
     };

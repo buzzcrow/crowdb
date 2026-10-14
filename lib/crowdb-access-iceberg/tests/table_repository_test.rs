@@ -36,6 +36,7 @@ fn head(record: &FileRecord) -> TableHead {
 
 fn mapping(head: &TableHead) -> TableMapping {
     TableMapping {
+        storage_namespace: None,
         catalog: head.catalog,
         namespace: head.namespace,
         name: head.name.clone(),
@@ -73,6 +74,101 @@ async fn new_fixture() -> fixture::TestFile {
     )
     .await;
     fixture
+}
+
+#[tokio::test]
+async fn name_mappings_preserve_storage_namespace_across_live_namespace_moves() {
+    let fixture = new_fixture().await;
+    let mut file = fixture.record("metadata/one.json", b"{}");
+    let mut location = file.location.table();
+    let storage_namespace = NamespaceId::random();
+    location.storage_namespace = Some(storage_namespace);
+    file.location = location.file("metadata/one.json").unwrap();
+    let mut head = head(&file);
+    let mut mapping = mapping(&head);
+    mapping.storage_namespace = Some(storage_namespace);
+    assert!(mapping.resolves(&head));
+    FileRepository::new(fixture.store.clone())
+        .publish(fixture.context, &file)
+        .await
+        .unwrap();
+    let canonical = crowdb_access_iceberg::table::storage_head_key(head.storage_location());
+    let encoded = canonical.encode().unwrap();
+    let initial = StorageRecord::TableHead(Box::new(head.clone())).encode().unwrap();
+    fixture
+        .store
+        .compare_exchange(
+            &encoded,
+            None,
+            &initial,
+            mutation_identity(&encoded, None, &initial),
+        )
+        .await
+        .unwrap();
+    put(
+        &fixture.store,
+        name_key(head.catalog, head.namespace, &head.name).unwrap(),
+        StorageRecord::TableMapping(mapping.clone()),
+    )
+    .await;
+    let repository = TableRepository::new(fixture.store.clone());
+    assert_eq!(
+        repository
+            .select(fixture.context, head.namespace, &head.name)
+            .await
+            .unwrap()
+            .unwrap()
+            .head,
+        head
+    );
+    let original = head.metadata_location.clone();
+    head.namespace = NamespaceId::random();
+    head.name = "moved".into();
+    head.name_epoch += 1;
+    mapping.namespace = head.namespace;
+    mapping.name.clone_from(&head.name);
+    mapping.name_epoch = head.name_epoch;
+    assert!(mapping.resolves(&head));
+    assert_eq!(head.metadata_location, original);
+    assert_eq!(
+        crowdb_access_iceberg::table::storage_head_key(head.storage_location()),
+        canonical
+    );
+    let moved = StorageRecord::TableHead(Box::new(head.clone())).encode().unwrap();
+    fixture
+        .store
+        .compare_exchange(
+            &encoded,
+            Some(&initial),
+            &moved,
+            mutation_identity(&encoded, Some(&initial), &moved),
+        )
+        .await
+        .unwrap();
+    put(
+        &fixture.store,
+        name_key(head.catalog, head.namespace, &head.name).unwrap(),
+        StorageRecord::TableMapping(mapping.clone()),
+    )
+    .await;
+    let selected = repository
+        .select(fixture.context, head.namespace, &head.name)
+        .await
+        .unwrap()
+        .unwrap();
+    repository
+        .ensure_current(fixture.context, &selected)
+        .await
+        .unwrap();
+    assert_eq!(selected.metadata.location, original);
+    let key = name_key(head.catalog, head.namespace, &head.name).unwrap();
+    let record = StorageRecord::TableMapping(mapping.clone());
+    assert_eq!(
+        StorageRecord::decode(&key, &record.encode().unwrap()).unwrap(),
+        record
+    );
+    mapping.storage_namespace = Some(NamespaceId::random());
+    assert!(!mapping.resolves(&head));
 }
 
 #[tokio::test]

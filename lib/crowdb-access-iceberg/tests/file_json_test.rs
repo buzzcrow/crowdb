@@ -14,6 +14,7 @@ use crowdb_access_iceberg::key::{CatalogId, FileId, TableId};
 async fn record(store: Arc<TestBlocks>, bytes: &[u8], block_bytes: usize) -> FileRecord {
     let owner = FileIdentity {
         table: TableLocation {
+            storage_namespace: None,
             catalog: CatalogId::random(),
             table: TableId::random(),
         },

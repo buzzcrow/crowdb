@@ -8,6 +8,7 @@ use crowdb_access_iceberg::operation::PayloadReference;
 
 pub fn session() -> MultipartSession {
     let table = TableLocation {
+        storage_namespace: None,
         catalog: CatalogId::random(),
         table: TableId::random(),
     };

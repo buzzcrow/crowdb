@@ -158,6 +158,7 @@ impl TestTableHttp {
 
     pub async fn install_with_location(&self, name: &str, trailing_slash: bool) -> (TableHead, Vec<u8>) {
         let location = TableLocation {
+            storage_namespace: None,
             catalog: self.context.catalog,
             table: TableId::random(),
         };
@@ -218,6 +219,7 @@ impl TestTableHttp {
         self.put(
             &name_key(head.catalog, head.namespace, name).unwrap(),
             &StorageRecord::TableMapping(TableMapping {
+                storage_namespace: None,
                 catalog: head.catalog,
                 namespace: head.namespace,
                 name: name.into(),

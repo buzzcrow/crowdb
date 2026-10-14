@@ -34,6 +34,7 @@ async fn official_iceberg_java_zstd_v1_and_v2_delete_files_decode() {
     use crowdb_access_iceberg::file::TableLocation;
     use crowdb_access_iceberg::key::{CatalogId, TableId};
     let table = TableLocation {
+        storage_namespace: None,
         catalog: CatalogId::from_bytes(&[1; 16]).unwrap(),
         table: TableId::from_bytes(&[2; 16]).unwrap(),
     };
@@ -56,6 +57,7 @@ async fn canonical_storage_does_not_make_corrupted_sdk_pages_valid() {
     use crowdb_access_iceberg::file::TableLocation;
     use crowdb_access_iceberg::key::{CatalogId, TableId};
     let table = TableLocation {
+        storage_namespace: None,
         catalog: CatalogId::from_bytes(&[1; 16]).unwrap(),
         table: TableId::from_bytes(&[2; 16]).unwrap(),
     };

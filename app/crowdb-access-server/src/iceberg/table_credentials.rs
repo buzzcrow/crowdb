@@ -38,6 +38,7 @@ pub(super) struct TableFileConfig {
 
 #[derive(Clone, Copy)]
 pub(super) struct TableFileTarget<'a> {
+    pub(super) storage_namespace: Option<crowdb_access_iceberg::key::NamespaceId>,
     pub(super) namespace: &'a NamespaceIdentifier,
     pub(super) name: &'a str,
     pub(super) table: TableId,
@@ -74,6 +75,7 @@ impl TableFileConfig {
             access.context,
             access.authority,
             FileDelegationTarget {
+                storage_namespace: target.storage_namespace,
                 table: target.table,
                 format_version: target.version,
                 staged: target.staged,
@@ -205,14 +207,19 @@ impl TableCredentials {
             .await
             .map_err(|_| service_unavailable())?;
         let mut ttl_ms = 900_000;
-        let (table, version, staged) = if let Some(selected) =
+        let (table, version, staged, storage_namespace) = if let Some(selected) =
             selected.filter(|selected| selector.map_or(true, |table| table == selected.head.table))
         {
             self.tables
                 .ensure_current(context, &selected)
                 .await
                 .map_err(|_| service_unavailable())?;
-            (selected.head.table, selected.head.format_version, false)
+            (
+                selected.head.table,
+                selected.head.format_version,
+                false,
+                selected.head.metadata_location.table().storage_namespace,
+            )
         } else {
             let table = selector.ok_or_else(missing_table)?;
             let identity = OperationId::from_bytes(table.as_bytes()).map_err(|_| bad_request())?;
@@ -249,13 +256,19 @@ impl TableCredentials {
             {
                 return Err(service_unavailable());
             }
-            (table, operation.candidate.format_version, true)
+            (
+                table,
+                operation.candidate.format_version,
+                true,
+                operation.candidate.metadata_location.table().storage_namespace,
+            )
         };
         self.issue_response(
             repository,
             context,
             principal,
             FileDelegationTarget {
+                storage_namespace,
                 table,
                 format_version: version,
                 staged,

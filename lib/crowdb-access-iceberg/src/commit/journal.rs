@@ -7,7 +7,7 @@ use crate::{
     key::{CatalogScope, IcebergKey, OperationId},
     operation::{mutation_identity, PayloadStore},
     record::StorageRecord,
-    table::head_key,
+    table::storage_head_key,
 };
 
 /// CAS journal for update intents; it neither validates files nor mutates table heads.
@@ -147,7 +147,7 @@ impl TableCommitJournal {
         operation: &TableCommitOperation,
         next: TableCommitPhase,
     ) -> Result<(), CatalogError> {
-        let key = head_key(operation.before.catalog, operation.before.table);
+        let key = storage_head_key(operation.before.storage_location());
         let value = self.store.get(&key.encode()?).await?.ok_or(CatalogError::Busy)?;
         let StorageRecord::TableHead(head) = StorageRecord::decode(&key, &value.bytes)? else {
             return Err(ValidationError::Record.into());

@@ -8,7 +8,8 @@ use crate::{
     operation::{mutation_identity, RequestIdentity},
     record::StorageRecord,
     table::{
-        head_key, read_table_metadata_document, SelectedTable, TableHead, TableLifecycle, TableMetadataError,
+        read_table_metadata_document, storage_head_key, SelectedTable, TableHead, TableLifecycle,
+        TableMetadataError,
     },
 };
 
@@ -115,7 +116,7 @@ pub async fn publish_direct_commit(
         }
         Err(error) => return Err(error.into()),
     }
-    let key = head_key(before.catalog, before.table).encode()?;
+    let key = storage_head_key(before.storage_location()).encode()?;
     let expected = StorageRecord::TableHead(Box::new(before.clone())).encode()?;
     let value = StorageRecord::TableHead(Box::new(candidate.clone())).encode()?;
     let outcome = store
@@ -132,7 +133,7 @@ pub async fn publish_direct_commit(
         CasOutcome::Conflict(Some(observed)) if observed.bytes == value => Ok(body),
         CasOutcome::Conflict(Some(observed)) => {
             let StorageRecord::TableHead(current) =
-                StorageRecord::decode(&head_key(before.catalog, before.table), &observed.bytes)?
+                StorageRecord::decode(&storage_head_key(before.storage_location()), &observed.bytes)?
             else {
                 return Err(ValidationError::Record.into());
             };

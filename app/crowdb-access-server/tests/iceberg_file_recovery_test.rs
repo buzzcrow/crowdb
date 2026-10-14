@@ -112,6 +112,7 @@ async fn setup_with_bounds_and_file_limit(
     let started = now_ms();
     let credentials = issuer
         .issue(FileGrant {
+            storage_namespace: None,
             context,
             table: table.table,
             principal: [7; 32],

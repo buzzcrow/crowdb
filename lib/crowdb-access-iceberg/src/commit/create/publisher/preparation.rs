@@ -98,6 +98,7 @@ fn target(
     staged: bool,
 ) -> Result<TableHead, ValidationError> {
     let table = TableLocation {
+        storage_namespace: None,
         catalog: request.context.catalog,
         table: if staged {
             TableId::from_bytes(request.identity.operation.as_bytes())?

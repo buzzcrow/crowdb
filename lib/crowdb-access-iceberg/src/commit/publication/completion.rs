@@ -6,7 +6,7 @@ use crate::{
     file::FileRepository,
     operation::{mutation_identity, PayloadStore, MAX_PAYLOAD_BYTES},
     record::StorageRecord,
-    table::{head_key, read_table_metadata_document, SelectedTable, TableMetadataLimits},
+    table::{read_table_metadata_document, storage_head_key, SelectedTable, TableMetadataLimits},
 };
 
 impl Publisher {
@@ -14,7 +14,7 @@ impl Publisher {
         &self,
         operation: &TableCommitOperation,
     ) -> Result<Option<TableCommitOperation>, Error> {
-        let key = head_key(operation.before.catalog, operation.before.table);
+        let key = storage_head_key(operation.before.storage_location());
         let value = self
             .store
             .get(&key.encode()?)
@@ -85,7 +85,7 @@ impl Publisher {
         let candidate = operation.candidate.as_ref().ok_or(ValidationError::Record)?;
         let prepared_body = self.success_body(operation).await?;
         self.current(operation).await?;
-        let key = head_key(candidate.catalog, candidate.table).encode()?;
+        let key = storage_head_key(candidate.storage_location()).encode()?;
         let before = StorageRecord::TableHead(Box::new(operation.before.clone())).encode()?;
         let after = StorageRecord::TableHead(Box::new(candidate.clone())).encode()?;
         let result = self
@@ -155,7 +155,7 @@ impl Publisher {
         let candidate = operation.candidate.as_ref().ok_or(ValidationError::Record)?;
         let mut settled = candidate.clone();
         settled.pending_operation = None;
-        let key = head_key(candidate.catalog, candidate.table).encode()?;
+        let key = storage_head_key(candidate.storage_location()).encode()?;
         let before = StorageRecord::TableHead(Box::new(candidate.clone())).encode()?;
         let after = StorageRecord::TableHead(Box::new(settled)).encode()?;
         self.store

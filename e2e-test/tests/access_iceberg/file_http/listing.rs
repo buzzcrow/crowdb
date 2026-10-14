@@ -51,6 +51,7 @@ async fn native_list_objects_v2_serves_selected_files_and_rejects_foreign_scope(
     assert!(xml.contains("<CommonPrefixes>"), "{xml}");
     assert!(xml.contains("data%2Fnested%2F"), "{xml}");
     let foreign = crowdb_access_iceberg::file::TableLocation {
+        storage_namespace: None,
         catalog: table.catalog,
         table: crowdb_access_iceberg::key::TableId::random(),
     };

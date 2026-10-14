@@ -433,8 +433,9 @@ logical prefixes regardless of their native object size. Position-delete and
 deletion-vector path references always use the original canonical URL.
 
 Direct HEAD/GET/Range GET validate request permissions and locator authenticity
-and read the native descriptor without file-location, file-tombstone or
-chunk-KV resolution queries. A KV-resolved opaque token is not a direct
+and read the native descriptor without Iceberg file-location or file-tombstone
+KV queries. Chunk-layer layout resolution remains available for replica/EC
+routing, cold reads, repair and migration. A KV-resolved opaque file token is not a direct
 locator. Large files use bounded chunk-resident directory traversal, not an
 unbounded URL. Native chunk routing preserves repair/failover without embedding
 transient replica addresses in URLs. Reclaimed identities and reused extents
@@ -970,7 +971,8 @@ must inspect every item.
 - **ICE-I11 — Single file authority:** one filename-keyed record selects each
   published file; list and lifecycle use that record without secondary file indexes.
 - **ICE-I12 — Direct native read:** a direct URL supplies its immutable native
-  descriptor without file-location, file-state or chunk-KV resolution queries.
+  descriptor without Iceberg file-location or file-state KV queries; native
+  chunk layout resolution and repair retain their normal behavior.
   Logical deletion removes list visibility; physical GC ends byte availability.
 - **ICE-I13 — Bounded metadata scale:** large metadata bytes live in native
   objects, descriptors/head remain bounded, prefix listing reads bounded KV

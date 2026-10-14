@@ -89,7 +89,11 @@ impl FileDigest {
     #[must_use]
     pub fn checkpoint(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(CHECKPOINT_BYTES);
-        bytes.extend_from_slice(b"ICHS\x01");
+        bytes.extend_from_slice(if self.owner.table.storage_namespace.is_some() {
+            b"ICHS\x02"
+        } else {
+            b"ICHS\x01"
+        });
         bytes.extend_from_slice(self.owner.table.catalog.as_bytes());
         bytes.extend_from_slice(self.owner.table.table.as_bytes());
         bytes.extend_from_slice(self.owner.file.as_bytes());
@@ -98,6 +102,9 @@ impl FileDigest {
             bytes.extend_from_slice(&word.to_be_bytes());
         }
         bytes.extend_from_slice(&self.tail);
+        if let Some(namespace) = self.owner.table.storage_namespace {
+            bytes.extend_from_slice(namespace.as_bytes());
+        }
         let checksum = Sha256::digest(&bytes);
         bytes.extend_from_slice(&checksum);
         bytes
@@ -108,12 +115,23 @@ impl FileDigest {
     /// # Errors
     /// Rejects wrong versions, identities, lengths, checksums and noncanonical tails.
     pub fn restore(owner: FileIdentity, bytes: &[u8]) -> Result<Self, FileIoError> {
-        if bytes.len() != CHECKPOINT_BYTES
-            || &bytes[..5] != b"ICHS\x01"
+        let extra = if owner.table.storage_namespace.is_some() {
+            16
+        } else {
+            0
+        };
+        let version = if extra == 0 { b"ICHS\x01" } else { b"ICHS\x02" };
+        let checksum_offset = CHECKSUM_OFFSET + extra;
+        if bytes.len() != CHECKPOINT_BYTES + extra
+            || &bytes[..5] != version
             || &bytes[5..21] != owner.table.catalog.as_bytes()
             || &bytes[21..37] != owner.table.table.as_bytes()
             || &bytes[37..53] != owner.file.as_bytes()
-            || Sha256::digest(&bytes[..CHECKSUM_OFFSET]).as_slice() != &bytes[CHECKSUM_OFFSET..]
+            || owner
+                .table
+                .storage_namespace
+                .is_some_and(|id| &bytes[CHECKSUM_OFFSET..checksum_offset] != id.as_bytes())
+            || Sha256::digest(&bytes[..checksum_offset]).as_slice() != &bytes[checksum_offset..]
         {
             return Err(FileIoError::Bounds);
         }

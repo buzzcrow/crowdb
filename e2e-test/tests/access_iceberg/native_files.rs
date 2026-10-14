@@ -106,6 +106,7 @@ async fn native_file_tree_publication_and_ranges_survive_catalog_storage_restart
     let context = seed_root(&stack).await;
     let owner = FileIdentity {
         table: TableLocation {
+            storage_namespace: None,
             catalog: context.catalog,
             table: TableId::random(),
         },

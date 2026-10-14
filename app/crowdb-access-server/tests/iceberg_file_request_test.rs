@@ -6,9 +6,65 @@ use hyper::Method;
 
 fn table() -> TableLocation {
     TableLocation {
+        storage_namespace: None,
         catalog: CatalogId::random(),
         table: TableId::random(),
     }
+}
+
+#[test]
+fn bucket_probes_are_distinct_from_unscoped_object_lists() {
+    use crowdb_access_server::iceberg::{parse_file_bucket, FileBucketRequest};
+    assert_eq!(
+        parse_file_bucket(&Method::HEAD, &"/iceberg".parse().unwrap()).unwrap(),
+        Some(FileBucketRequest::Head("iceberg".into()))
+    );
+    assert_eq!(
+        parse_file_bucket(&Method::GET, &"/iceberg?location".parse().unwrap()).unwrap(),
+        Some(FileBucketRequest::Location("iceberg".into()))
+    );
+    assert!(
+        parse_file_bucket(&Method::GET, &"/iceberg?list-type=2".parse().unwrap())
+            .unwrap()
+            .is_none()
+    );
+    assert!(parse_file_bucket(&Method::GET, &"/".parse().unwrap())
+        .unwrap()
+        .is_none());
+    assert!(parse_file_bucket(&Method::GET, &"/iceberg?location&prefix=".parse().unwrap()).is_err());
+}
+
+#[test]
+fn three_id_http_paths_and_list_prefixes_use_the_fixed_bucket() {
+    let table = TableLocation {
+        storage_namespace: Some(crowdb_access_iceberg::key::NamespaceId::random()),
+        ..table()
+    };
+    let object = format!("/iceberg/{}metadata/v1.json", table.object_prefix());
+    let request = FileRequest::parse(&Method::GET, &object.parse().unwrap()).unwrap();
+    assert_eq!(request.location.table(), table);
+    let list = format!("/iceberg?list-type=2&prefix={}metadata%2F", table.object_prefix());
+    assert_eq!(
+        parse_file_list(&Method::GET, &list.parse().unwrap())
+            .unwrap()
+            .unwrap()
+            .table,
+        table
+    );
+    for prefix in [
+        String::new(),
+        format!("{}/", table.catalog),
+        format!("{}/{}/", table.catalog, table.storage_namespace.unwrap()),
+    ] {
+        assert!(parse_file_list(
+            &Method::GET,
+            &format!("/iceberg?list-type=2&prefix={prefix}").parse().unwrap()
+        )
+        .is_err());
+    }
+    let reserved = format!("/iceberg/{}f/v1/name.token.parquet", table.object_prefix());
+    assert!(FileRequest::parse(&Method::PUT, &reserved.parse().unwrap()).is_err());
+    assert!(FileRequest::parse(&Method::GET, &reserved.parse().unwrap()).is_ok());
 }
 
 #[test]

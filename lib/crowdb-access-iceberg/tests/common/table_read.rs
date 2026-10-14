@@ -37,6 +37,7 @@ impl TestTable {
         head.catalog = fixture.context.catalog;
         head.namespace = parent.namespace;
         let location = TableLocation {
+            storage_namespace: None,
             catalog: head.catalog,
             table: head.table,
         };
@@ -85,6 +86,7 @@ impl TestTable {
             .await
             .unwrap();
         let mapping = TableMapping {
+            storage_namespace: None,
             catalog: head.catalog,
             namespace: head.namespace,
             name: head.name.clone(),

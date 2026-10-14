@@ -178,7 +178,7 @@ impl TableLister {
             if mapping.state != super::TableMappingState::Published {
                 continue;
             }
-            let key = super::head_key(context.catalog, mapping.table);
+            let key = super::storage_head_key(mapping.storage_location());
             let Some(stored) = self.store.get(&key.encode()?).await? else {
                 continue;
             };

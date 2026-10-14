@@ -8,7 +8,7 @@ mod metadata;
 mod record;
 mod repository;
 
-pub use key::{head_key, name_key};
+pub use key::{head_key, name_key, storage_head_key};
 pub use lifecycle::{
     TableLifecycleAction, TableLifecycleOperation, TableLifecyclePhase, TableLifecycleRequest,
     TableLifecycles, TablePurgeTask,

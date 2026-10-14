@@ -15,9 +15,14 @@ Goal: make catalog, namespace, and table identities explicit in the Iceberg
 KV and FileIO path model, keep file bytes in the native CROWDB Iceberg storage,
 and preserve file locations across table rename and cross-namespace move.
 
-Status: implementation started. Immutable storage identity, native URI codec and
-version-isolated table-key codec and routed-store dispatch are implemented; runtime publication and direct
-reads are not switched to the new layout yet. Verification is tracked below.
+Status: implementation in progress. Native identity/URI/key codecs, storage
+dispatch, logical file publication/resolution and bounded prefix listing are
+implemented. File/directory/grant/name-mapping records preserve storage namespace.
+Native head lookup/publication/rename/drop/GC fences and direct URL reads are
+implemented. Catalog v2 activation, remaining workflow/GC/projection keys and
+injection HTTP/loader/recovery integration remain pending. Direct reads skip
+Iceberg file-location/state KV and preserve
+the chunk layer's normal layout resolution, as confirmed in the chat.
 
 Verified foundation gates:
 
@@ -25,6 +30,36 @@ Verified foundation gates:
   including seven native storage-path cases and existing legacy/lifecycle tests.
 - `pixi run -- cargo fmt --all -- --check` passed.
 - `pixi run rs-lint` passed, including workspace all-target Clippy.
+
+Verified runtime work:
+
+- `TableLocation`/`FileLocation` preserve native and legacy URLs; one native
+  `canonical_file_key` binds a record to the full path and filename.
+- `FileRepository` publishes/resolves one native record and recovers publication
+  response loss. Prefix listing uses scanned records without per-file GETs;
+  a 1,200-object mixed-prefix fixture verifies ordered bounded pages.
+- Grant v2, directory v2, digest checkpoint v2, multipart/write-intent owner
+  codecs and name mappings preserve storage namespace. Mapping/head bindings
+  retain it when the live namespace changes.
+- `storage_head_key` is used by table selection, commits, creation publication,
+  rename/drop, namespace drop probes and GC fences. A native lookup/move test
+  verifies the head key and metadata URL remain unchanged across a live move.
+- `DirectFileLocations` supplies authenticated, bounded versioned parquet
+  locators with a verification key ring. HTTP reads reconstruct their file
+  descriptor directly; tests cover multi-extent ranges, tampering, old-key
+  retention, publication response loss, logical deletion and physical removal
+  with no Iceberg file KV reads. `finalize_native_parquet` requires the caller's
+  durably selected owner/tree; an upload recovery journal/HTTP entry is pending.
+- `FileGrantIssuer` retains at most 64 validated credentials in an ArcSwap
+  cache, rechecking context and time on hits. Expired grants and changed catalog
+  epochs fail closed. Requests still verify SigV4 and file scope individually.
+- HTTP exact/list parsing supports three IDs and rejects broad list prefixes;
+  ordinary SDK PUT/multipart creation cannot occupy the reserved `f/` directory.
+- Iceberg all-target tests, focused snapshot/multipart/mapping/direct tests,
+  HTTP request/admission tests, workspace Clippy and fmt passed. Credential
+  issuance now derives namespace from selected table/draft metadata. Fixed
+  bucket HeadBucket/region probes are wired; bucket parser tests pass. Native
+  catalog activation and full native lifecycle/GC/SDK flows remain unverified.
 
 ## Target structure
 
@@ -248,9 +283,10 @@ may use the logical path; direct mode requires random-readable native bytes.
 
 The current chunk reader calls `query_layout`/`query_chunk`; removing
 `FileRepository::resolve` does not by itself remove chunk metadata RPCs.
-Measure file-location resolution, file-state checks, chunk-layout resolution
-and data reads separately, including cold cache. The first three must cause
-zero KV RPCs on the direct path; adding a hidden lookup fails acceptance.
+Measure Iceberg file-location resolution, file-state checks, chunk-layout
+resolution and data reads separately, including cold cache. The first two
+must cause zero KV RPCs on the direct path. Native chunk layout resolution is
+retained for cold routing, repair and migration.
 Stable chunk IDs/offsets do
 not imply immutable replica addresses. A direct chunk API must preserve normal
 repair/failover behavior and never embed transient host placement in file URLs.
@@ -261,7 +297,7 @@ grant and locator can read retained bytes until GC. GET/HEAD/Range GET perform
 no file tombstone lookup, and need no per-file revocation cache. List, deletion,
 GC and recovery may use KV normally. Physical storage must reject reclaimed
 chunk identities/extents and prevent old locators reading newly allocated data;
-check this at the storage boundary without a per-read chunk-KV query.
+check this at the storage boundary without an Iceberg file-record lookup.
 
 The upload state machine is `Staging -> Published -> Deleted -> Reclaimed`,
 or `Staging -> Aborted -> Reclaimed`. Incomplete or aborted records never
@@ -517,8 +553,8 @@ three-ID prefix and a matching grant.
   `app/crowdb-access-server/src/iceberg/`, `tools/load-tpch.py`.
 - [ ] **Enforce the direct chunk boundary**: introduce/extend the native range
   read interface accepting the authenticated full descriptor/root; instrument
-  file-location, file-state and chunk-KV queries separately. Implement the
-  missing path rather than falling back to `query_chunk` on a cache miss.
+  Iceberg file-location, file-state and chunk layout queries separately.
+  Retain `query_chunk` for native layout resolution, including cache misses.
   Exercise cold routing, multi-extent reads, repair, GC races and offset reuse.
   Files: `lib/crowdb-access-iceberg/src/file/blocks.rs`,
   `lib/crowdb-chunk-client/src/chunk/chunk_reader.rs`,
@@ -689,7 +725,8 @@ Integration:
   cold/warm HEAD and footer ranges. Include multi-location files, directory-root
   boundary reads, chunk repair/failover and URI size limits. No zero-KV claim
   may be inferred from merely skipping `FileRepository::resolve`; assert zero
-  file-location, file-state and chunk-KV resolution RPCs for direct reads.
+  Iceberg file-location and file-state KV RPCs for direct reads. Normal chunk
+  layout resolution remains supported and is measured independently.
 - [ ] Test public-key order and delimiter grouping when internal logical names
   sort differently; test max-keys zero, empty pages and credential refresh.
 - [ ] Test suffix/open-ended/out-of-bounds ranges, ETag conditions, unknown

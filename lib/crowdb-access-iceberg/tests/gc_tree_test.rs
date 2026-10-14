@@ -18,6 +18,7 @@ async fn directory_deletion_resumes_without_rereading_deleted_children() {
     let blocks = Arc::new(blocks::TestBlocks::default());
     let owner = FileIdentity {
         table: TableLocation {
+            storage_namespace: None,
             catalog: CatalogId::random(),
             table: TableId::random(),
         },
@@ -97,6 +98,7 @@ async fn corrupt_directory_never_authorizes_a_child_deletion() {
     let blocks = blocks::TestBlocks::default();
     let owner = FileIdentity {
         table: TableLocation {
+            storage_namespace: None,
             catalog: CatalogId::random(),
             table: TableId::random(),
         },

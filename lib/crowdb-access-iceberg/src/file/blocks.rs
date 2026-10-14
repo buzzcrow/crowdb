@@ -187,6 +187,9 @@ impl FileBlockStore for NativeFileBlocks {
         }
         let mut key = b"iceberg-file-block-v1".to_vec();
         key.extend_from_slice(owner.table.catalog.as_bytes());
+        if let Some(namespace) = owner.table.storage_namespace {
+            key.extend_from_slice(namespace.as_bytes());
+        }
         key.extend_from_slice(owner.table.table.as_bytes());
         key.extend_from_slice(owner.file.as_bytes());
         let mut writer = self.client.prepare_small_write_for_key(bytes.len(), &key).await?;

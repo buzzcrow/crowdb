@@ -124,6 +124,7 @@ fn block(bytes: &mut Vec<u8>, count: i64, encoded: &[u8]) {
 async fn record(store: Arc<TestBlocks>, bytes: &[u8]) -> FileRecord {
     let owner = FileIdentity {
         table: TableLocation {
+            storage_namespace: None,
             catalog: CatalogId::random(),
             table: TableId::random(),
         },

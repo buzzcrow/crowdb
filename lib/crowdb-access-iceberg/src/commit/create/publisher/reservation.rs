@@ -5,7 +5,7 @@ use crate::{
     error::ValidationError,
     operation::mutation_identity,
     record::StorageRecord,
-    table::{head_key, name_key, TableMappingState},
+    table::{name_key, storage_head_key, TableMappingState},
 };
 
 impl TableCreator {
@@ -59,7 +59,7 @@ impl TableCreator {
             Box::pin(self.resume_with_budget(operation.context, existing.operation, budget)).await?;
             return Ok(());
         }
-        let head_key = head_key(existing.catalog, existing.table);
+        let head_key = storage_head_key(existing.storage_location());
         let value_head = self
             .store
             .get(&head_key.encode()?)

@@ -5,7 +5,7 @@ use crate::{
     error::ValidationError,
     operation::mutation_identity,
     record::StorageRecord,
-    table::{head_key, name_key, TableMapping, TableMappingState},
+    table::{name_key, storage_head_key, TableMapping, TableMappingState},
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -15,7 +15,7 @@ impl TableLifecycles {
         if operation.is_rename() {
             self.check_admission(operation).await?;
         }
-        let key = head_key(operation.context.catalog, operation.before.table);
+        let key = storage_head_key(operation.before.storage_location());
         let before = StorageRecord::TableHead(Box::new(operation.before.clone())).encode()?;
         let after = StorageRecord::TableHead(Box::new(operation.candidate.clone())).encode()?;
         let encoded = key.encode()?;
@@ -49,7 +49,7 @@ impl TableLifecycles {
 
     pub(super) async fn complete(&self, operation: &TableLifecycleOperation) -> Result<(), CatalogError> {
         self.current(operation).await?;
-        let head_key = head_key(operation.context.catalog, operation.before.table);
+        let head_key = storage_head_key(operation.before.storage_location());
         let value = self
             .store
             .get(&head_key.encode()?)
@@ -139,7 +139,7 @@ impl TableLifecycles {
         } else if operation.phase == Phase::Complete {
             self.remove_mapping(&operation.source).await?;
             if operation.is_rename() {
-                let key = head_key(operation.context.catalog, operation.before.table).encode()?;
+                let key = storage_head_key(operation.before.storage_location()).encode()?;
                 let before = StorageRecord::TableHead(Box::new(operation.candidate.clone())).encode()?;
                 let mut settled = operation.candidate.clone();
                 settled.pending_operation = None;

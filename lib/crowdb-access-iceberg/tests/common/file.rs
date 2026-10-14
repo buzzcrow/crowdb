@@ -25,6 +25,7 @@ impl TestFile {
                 activation_epoch: 1,
             },
             table: TableLocation {
+                storage_namespace: None,
                 catalog,
                 table: TableId::random(),
             },

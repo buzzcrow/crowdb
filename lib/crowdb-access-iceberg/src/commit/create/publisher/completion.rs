@@ -6,7 +6,7 @@ use crate::{
     namespace::authority_key,
     operation::mutation_identity,
     record::StorageRecord,
-    table::{head_key, name_key, TableMappingState},
+    table::{name_key, storage_head_key, TableMappingState},
 };
 
 impl TableCreator {
@@ -16,7 +16,7 @@ impl TableCreator {
             self.check_admission(operation).await?;
         }
         let head = &operation.candidate;
-        let key = head_key(head.catalog, head.table).encode()?;
+        let key = storage_head_key(head.storage_location()).encode()?;
         let bytes = StorageRecord::TableHead(Box::new(head.clone())).encode()?;
         let result = self
             .store
@@ -98,7 +98,7 @@ impl TableCreator {
                 .map_err(CatalogError::from)?;
         } else if operation.phase == Phase::Complete {
             let head = &operation.candidate;
-            let key = head_key(head.catalog, head.table).encode()?;
+            let key = storage_head_key(head.storage_location()).encode()?;
             let before = StorageRecord::TableHead(Box::new(head.clone())).encode()?;
             let mut settled = head.clone();
             settled.pending_operation = None;

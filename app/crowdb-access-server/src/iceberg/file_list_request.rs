@@ -2,6 +2,7 @@
 
 use super::file_request::{decode, query, FileRequestError};
 use crowdb_access_iceberg::file::{FileListRequest, TableLocation};
+use crowdb_access_iceberg::key::StorageTablePath;
 use hyper::{Method, Uri};
 
 /// Parses `ListObjectsV2` independently of exact-object `FileIO`.
@@ -28,7 +29,12 @@ pub fn parse_file_list(method: &Method, uri: &Uri) -> Result<Option<FileListRequ
         return Err(FileRequestError::Invalid);
     }
     let prefix = fields.remove("prefix").ok_or(FileRequestError::Invalid)?;
-    let table_prefix = prefix.get(..35).ok_or(FileRequestError::Invalid)?;
+    let prefix_bytes = if bucket == crowdb_access_iceberg::file::NATIVE_ICEBERG_BUCKET {
+        StorageTablePath::PREFIX_BYTES
+    } else {
+        35
+    };
+    let table_prefix = prefix.get(..prefix_bytes).ok_or(FileRequestError::Invalid)?;
     let table: TableLocation = format!("s3://{bucket}/{table_prefix}")
         .parse()
         .map_err(|_| FileRequestError::Invalid)?;

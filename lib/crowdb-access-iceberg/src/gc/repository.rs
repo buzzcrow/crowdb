@@ -173,7 +173,24 @@ impl GcRepository {
         before: Option<&StorageRecord>,
         after: &StorageRecord,
     ) -> Result<(), CatalogError> {
-        self.check_retirement_mutation(key, after).await?;
+        self.change_storage(&crate::key::StorageKey::Legacy(key.clone()), before, after)
+            .await
+    }
+
+    pub(super) async fn change_storage(
+        &self,
+        key: &crate::key::StorageKey,
+        before: Option<&StorageRecord>,
+        after: &StorageRecord,
+    ) -> Result<(), CatalogError> {
+        match key {
+            crate::key::StorageKey::Legacy(key) => self.check_retirement_mutation(key, after).await?,
+            crate::key::StorageKey::NativeTable(key) => {
+                if self.retirement(key.table.catalog).await?.is_some() {
+                    return Err(CatalogError::Busy);
+                }
+            }
+        }
         let key = key.encode()?;
         let after = after.encode()?;
         let before = before.map(StorageRecord::encode).transpose()?;

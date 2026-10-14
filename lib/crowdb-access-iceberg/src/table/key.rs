@@ -4,6 +4,18 @@ use crate::{
 };
 
 #[must_use]
+pub fn storage_head_key(location: crate::file::TableLocation) -> crate::key::StorageKey {
+    match location.storage_path() {
+        Some(table) => crate::key::StorageKey::NativeTable(crate::key::TableStorageKey {
+            table,
+            scope: crate::key::TableStorageScope::Head,
+            suffix: String::new(),
+        }),
+        None => crate::key::StorageKey::Legacy(head_key(location.catalog, location.table)),
+    }
+}
+
+#[must_use]
 pub fn head_key(catalog: CatalogId, table: TableId) -> IcebergKey {
     IcebergKey::Catalog {
         catalog,

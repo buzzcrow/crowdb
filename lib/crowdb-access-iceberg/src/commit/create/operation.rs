@@ -80,6 +80,7 @@ impl TableCreateOperation {
     #[must_use]
     pub fn mapping(&self, state: TableMappingState) -> TableMapping {
         TableMapping {
+            storage_namespace: self.candidate.metadata_location.table().storage_namespace,
             catalog: self.context.catalog,
             namespace: self.candidate.namespace,
             name: self.candidate.name.clone(),

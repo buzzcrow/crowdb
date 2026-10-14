@@ -7,6 +7,7 @@ use std::sync::{
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use crowdb_access_iceberg::catalog::{CasOutcome, CatalogStore, StoreError, StoredValue};
+use crowdb_access_iceberg::key::{CatalogScope, IcebergKey, StorageKey, TableStorageKey, TableStorageScope};
 use crowdb_protocol::chunk_kv::ClientRequestId;
 
 #[derive(Default)]
@@ -65,11 +66,14 @@ impl TestStore {
 
     fn lose_file_reply(&self, key: &[u8]) -> bool {
         matches!(
-            crowdb_access_iceberg::key::IcebergKey::decode(key),
-            Ok(crowdb_access_iceberg::key::IcebergKey::Catalog {
-                scope: crowdb_access_iceberg::key::CatalogScope::FileLocation,
+            StorageKey::decode(key),
+            Ok(StorageKey::Legacy(IcebergKey::Catalog {
+                scope: CatalogScope::FileLocation,
                 ..
-            })
+            }) | StorageKey::NativeTable(TableStorageKey {
+                scope: TableStorageScope::File,
+                ..
+            }))
         ) && self.file_record_reply_loss.swap(false, Ordering::SeqCst)
     }
 
