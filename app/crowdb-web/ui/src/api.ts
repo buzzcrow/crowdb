@@ -621,6 +621,31 @@ export async function clusterInitialization(options?: RequestOptions): Promise<I
   return jsonOrThrow(await fetchWithOptions('/api/cluster/initialization', options));
 }
 
+export interface AutoJoinStatus {
+  enabled: boolean;
+  target_cluster_id: string | null;
+  mode: 'standard';
+  required_voters: number;
+  observation: {
+    phase: string;
+    members?: number[];
+    operation_id?: string;
+    error?: string;
+    needs_access?: { discovery_id: string; error?: string }[];
+  };
+}
+
+export async function nodeAutoJoin(options?: RequestOptions): Promise<AutoJoinStatus> {
+  return jsonOrThrow(await fetchWithOptions('/api/node/auto-join', options));
+}
+
+export async function setNodeAutoJoin(enabled: boolean): Promise<AutoJoinStatus> {
+  return jsonOrThrow(await fetchWithOptions('/api/node/auto-join', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }), skipDeduplication: true,
+  }));
+}
+
 /**
  * Initialize the cluster by bootstrapping the system group
  * (store 0, group 0) on the selected nodes.

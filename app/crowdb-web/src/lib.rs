@@ -34,6 +34,12 @@ pub mod state;
 
 pub use state::AppState;
 
+/// Run standard-node automatic admission independently of browser connections.
+#[must_use]
+pub fn start_node_auto_join(state: AppState) -> tokio::task::JoinHandle<()> {
+    node::auto_join::start(state)
+}
+
 /// Build the Axum router used by both the binary and integration tests.
 #[allow(clippy::too_many_lines)]
 pub fn router(state: AppState) -> axum::Router {
@@ -193,6 +199,10 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/api/node/cleanup", post(node::cleanup))
         .route("/api/node/cancel", post(node::cancel))
         .route("/api/node/status", get(node::status))
+        .route(
+            "/api/node/auto-join",
+            get(node::auto_join::status).post(node::auto_join::update),
+        )
         // ── Physical tree (A3): rack + node lifecycle ────────────────
         .route(
             "/api/racks",

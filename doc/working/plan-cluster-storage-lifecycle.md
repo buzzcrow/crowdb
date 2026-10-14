@@ -129,3 +129,17 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   checks; legacy standard acceptance cannot be reinterpreted as single mode.
   Full monitor tests pass, including concurrent mode publication. Shared execution
   convergence and automatic admission remain separate unfinished work.
+- Auto join now persists an enabled-by-default standard-node policy, gates work on
+  authenticated admission and Group-0 availability, selects at most three initial
+  candidates in UUID order, and dispatches accepted execution to the minimum-UUID
+  monitor. Later admission uses the existing nonvoting path. A pinned target with
+  no binding blocks replacement bootstrap. The Cluster panel exposes the setting,
+  target, waiting count and authentication failures; stale observations disable
+  policy mutation. Five backend regression tests and 192 UI tests pass; focused
+  all-target Clippy passes. Browser policy persistence and automatic bootstrap
+  acceptance remain pending; target selection and shared single execution remain
+  unfinished. Manual acceptance fixtures explicitly disable automatic scheduling.
+- Bridge recovery fault injection now stops only the peer SSH listener, producing
+  immediate connection refusal instead of a stopped container's ARP timeout. The
+  original partial-preparation/recovery assertions remain; rerun is pending the
+  next committed release image. Native fixture observation tests pass (eight).

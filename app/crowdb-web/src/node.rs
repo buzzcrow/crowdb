@@ -4,6 +4,7 @@
 //! Local monitor observations, separate from confirmed cluster topology.
 
 mod admission;
+pub(crate) mod auto_join;
 mod update;
 pub(crate) use update::update;
 mod authority;

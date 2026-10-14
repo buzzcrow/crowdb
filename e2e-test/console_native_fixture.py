@@ -92,6 +92,12 @@ class NativeConsoleCluster(ShellBrowserCluster):
                 address=str(subnet.network_address + index + 2),
                 environment=("CROWDB_STARTUP_MODE=manual", f"CROWDB_PHYSICAL_HOST_ID={host}")))
         self.ready()
+        for address in self.addresses:
+            request = urllib.request.Request(f"http://{address}:9090/api/node/auto-join",
+                data=json.dumps({"enabled": False}).encode(),
+                headers={"Content-Type": "application/json"})
+            with HTTP.open(request, timeout=5) as response:
+                assert json.load(response)["enabled"] is False
         for rack in sorted(set(self.rack_ids)):
             self.api("/api/racks", {"id": rack, "name": "native acceptance"}, status=201)
         candidates = wait(lambda: self.api("/api/node/candidates"),

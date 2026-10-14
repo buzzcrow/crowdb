@@ -67,6 +67,14 @@ test('native diagnostics: hardware capacity aggregates disks and dashed status u
   await page.goto('/?domain=Cluster');
   await expect(page.getByRole('region', { name: 'Cluster initialization' }).getByRole('status'))
     .toHaveText('Initialization complete');
+  const autoJoin = page.getByRole('checkbox', { name: 'Auto join', exact: true });
+  await expect(autoJoin).not.toBeChecked();
+  await autoJoin.check();
+  await expect(autoJoin).toBeChecked();
+  await page.reload();
+  await expect(autoJoin).toBeChecked();
+  await autoJoin.uncheck();
+  await expect(autoJoin).not.toBeChecked();
   await page.getByTestId('domain-capacity').click();
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
   await sidebar.getByTestId('tree-node-N-1').getByRole('button', { name: 'Expand', exact: true }).click();
