@@ -31,7 +31,9 @@ public final class TestIcebergFileOperations {
     reject(403, "AccessDenied", () -> client.deleteObject(request -> request.bucket(bucket).key(key)));
     reject(400, "InvalidRequest", () -> client.putObject(request -> request.bucket(bucket)
         .key(root + "../escape.json"), RequestBody.fromBytes(bytes)));
-    String foreign = "t/" + (root.charAt(2) == '0' ? '1' : '0') + root.substring(3) + "metadata/foreign.json";
+    int tableOffset = root.startsWith("t/") ? 2 : root.lastIndexOf('/', root.length() - 2) + 1;
+    String foreign = root.substring(0, tableOffset) + (root.charAt(tableOffset) == '0' ? '1' : '0')
+        + root.substring(tableOffset + 1) + "metadata/foreign.json";
     reject(403, "AccessDenied", () -> client.putObject(request -> request.bucket(bucket).key(foreign),
         RequestBody.fromBytes(bytes)));
     if (!etag.equals(client.headObject(request -> request.bucket(bucket).key(key)).eTag())

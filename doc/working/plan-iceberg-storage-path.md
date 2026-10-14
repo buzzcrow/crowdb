@@ -19,7 +19,8 @@ Status: implementation in progress. Native catalog layout selection, default
 namespace creation, table/file/projection paths, direct URL reads, upload
 selection/replay and the loader's returned-location handoff are implemented.
 The auxiliary-key/recovery audit is complete. Remaining work is native
-SDK/container acceptance and final design/backlog cleanup. Direct reads skip Iceberg
+SDK/container acceptance and final design/backlog cleanup. Direct reads skip
+Iceberg
 file-location/state KV and retain the chunk layer's normal layout resolution,
 as confirmed in the chat.
 
@@ -52,7 +53,7 @@ Latest verified behavior:
   Moving a table, dropping/recreating its default namespace and refreshing through
   the old endpoint retains its old prefix without any table-ID reverse index.
 - The TPC loader journals its UUIDv7 upload URI before transfer and the selected
-  returned URL before manifest registration. Python verification: 222 passed,
+  returned URL before manifest registration. Python verification: 226 passed,
   7 explicitly skipped integrations; Ruff check/format passed. Existing unrelated
   loader edits are preserved. A pre-existing region-only assertion was corrected
   to validate the actual table name for the nation case as well.
@@ -92,7 +93,8 @@ Verified runtime work:
 - Iceberg all-target tests, focused snapshot/multipart/mapping/direct tests,
   HTTP request/admission tests, workspace Clippy and fmt passed. Credential
   issuance now derives namespace from selected table/draft metadata. Fixed
-  bucket HeadBucket/region probes are wired; bucket parser tests pass. Native catalog activation, lifecycle and GC unit/integration tests pass;
+  bucket HeadBucket/region probes are wired; bucket parser tests pass. Native
+  catalog activation, lifecycle and GC unit/integration tests pass;
   native container SDK flows are being verified.
 
 ## Target structure
@@ -726,6 +728,35 @@ three-ID prefix and a matching grant.
   Iceberg table file layout.
   Files: `tools/load-tpch.py`,
   `container/single-node-container/README.md`.
+
+## Native container verification
+
+- Fresh image source verification and the two scoped listing cases pass with
+  PyIceberg 0.11.1 and Arrow 25.0.1. The production loader upload helper selects
+  one URL on retry; standard manifest registration, Arrow read and SQL aggregate
+  pass before/after a cross-namespace move and catalog storage restart.
+- First complete core partition: 23 passed, two failures. The GC CLI fixture
+  still supplied a table ID; it now supplies the complete frozen path. Tree
+  multipart found a real decoder gap: native digest checkpoints are 205 bytes,
+  but completion decoding only accepted legacy 189-byte checkpoints. Both bounded
+  shapes now decode, with full owner/checksum validation unchanged; the new
+  partial native checkpoint round-trip and existing recovery/completion tests pass.
+- Core partition rerun: all 25 cases pass, including native tree multipart
+  reload, real chunk-KV restart, GC controls and large streamed/multipart IO.
+- Apache Iceberg 1.11.0 Java catalog snapshot/staged creation and opaque
+  data/delete reads pass. S3FileIO also passes after its foreign-table fixture
+  was corrected to mutate a table ID within the valid three-ID prefix, retaining
+  the 403 AccessDenied assertion.
+- Official Rust lifecycle and lost-response/native restart cases pass. The
+  retirement test is waiting through its full delegated-access grace period.
+- PyIceberg 0.10.0 matches the loader adapter's declared range. Its complete
+  production dataflow creates a fixture table, uploads through native injection,
+  persists the selected URL in a real load report, commits the standard manifest,
+  then reloads the report/table and executes SQL over native reads after restart.
+  This focused fixture verifies ingestion; it does not claim an SF1 benchmark.
+- The loader feature is committed separately with its 226-test/Ruff gate and
+  fresh native container read/SQL verification. Pre-existing version, docs and
+  ordinary filename edits remain unstaged in that repository.
 
 ## Acceptance tests
 

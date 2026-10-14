@@ -90,7 +90,8 @@ async fn official_pyarrow_native_fileio_creates_exact_files_and_lists_table_pref
     let config = serde_json::json!({ "endpoint": format!("http://{}", client.address),
         "bucket": table.bucket(), "prefix": table.object_prefix(),
         "access_key": client.credentials.access_key_id(), "secret_key": client.credentials.secret_access_key(),
-        "session_token": client.credentials.session_token() });
+        "session_token": client.credentials.session_token(),
+        "report_dir": std::env::var("CROWDB_E2E_ARTIFACTS").unwrap() });
     run_python(config.clone()).await;
     process.stop().await;
     stack.restart_catalog().await;
