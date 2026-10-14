@@ -38,7 +38,18 @@ async function createCluster({ page, request, baseURL, deployments }: UIContext)
     const initialized = page.waitForResponse(response => response.url().endsWith('/api/cluster/init') && response.request().method() === 'POST', { timeout: 10_000 });
     await dialog.getByRole('button', { name: 'Initialize Cluster', exact: true }).click();
     const response = await initialized;
-    expect(response.status(), await response.text()).toBe(201);
+    expect(response.status(), await response.text()).toBe(202);
+    const accepted = await response.json();
+    expect(accepted.operation_id).toEqual(expect.any(String));
+    expect(accepted.members).toEqual([1, 2, 3]);
+    await expect.poll(async () => {
+      const status = await request.get('/api/cluster/initialization');
+      expect(status.ok(), await status.text()).toBe(true);
+      const progress = await status.json();
+      expect(progress.operation_id).toBe(accepted.operation_id);
+      if (progress.phase === 'failed') throw new Error(`Initialization failed: ${progress.error}`);
+      return progress.phase;
+    }, { timeout: 10_000, intervals: [100] }).toBe('active');
     await waitForLeader(baseURL!, 0, 1, 10_000);
     await expect(dialog).toHaveCount(0);
   });
@@ -65,6 +76,7 @@ async function createCluster({ page, request, baseURL, deployments }: UIContext)
 async function addDisks({ page, request }: UIContext) {
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
   await step('three-node: disk groups and disks through UI', async () => {
+    await page.getByTestId('domain-cluster').click();
     await page.getByTestId('domain-capacity').click();
     for (const id of [1, 2, 3]) {
       const node = sidebar.getByRole('button', { name: `N-${id}`, exact: true });
@@ -75,7 +87,7 @@ async function addDisks({ page, request }: UIContext) {
       await group.getByLabel('KV group', { exact: true }).selectOption('0/1');
       await group.getByRole('button', { name: 'Create Disk Group', exact: true }).click();
       await expect(group).toHaveCount(0);
-      const branch = sidebar.getByTestId(`tree-node-N-${id}`);
+      const branch = sidebar.getByTestId(`tree-node-STORAGE-${id}`);
       const expand = branch.getByRole('button', { name: 'Expand', exact: true });
       if (await expand.count()) await expand.click();
       await expect.poll(

@@ -1,6 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-// Baseline: 3.2s / 0.8s / 4.2s (2026-09-28)
+// Baseline: fit 1.6s, collapse 4.6s, pan 0.962s, navigation 2.0s (2026-10-15)
 
 import { test, expect, consoleBaseURL } from '../fixtures/realBackend';
 import { createRack, createNode, deployNodeServer, stopNodeServer } from '../fixtures/localSetup';
@@ -46,6 +46,7 @@ test.describe('canvas · fit + pan', () => {
     await expect(page.getByRole('treeitem').filter({ hasText: /^datacenter$/i })).toBeVisible({ timeout: 3_000 });
 
     // --- Capacity view shows the CapacityPanel (no canvas) ---
+    await page.getByTestId('domain-cluster').click();
     await page.getByTestId('domain-capacity').click();
     // CapacityPanel renders either the overview header or the empty state.
     await expect(page.getByText(/Capacity Overview|No diskdb instances registered/)).toBeVisible({ timeout: 5_000 });
@@ -200,9 +201,8 @@ test.describe('canvas · fit + pan', () => {
     await page.getByTestId('domain-capacity').click();
     await expect(page.getByText(/Capacity Overview|No diskdb instances registered/)).toBeVisible({ timeout: 5_000 });
 
-    // Switch back to Cluster — should fit to window, NOT restore the
-    // panned Cluster viewport from the first visit.
-    await page.getByTestId('domain-cluster').click();
+    // Switch back to Topology and fit the visible canvas.
+    await page.getByTestId('cluster-topology').click();
     await expect(page.locator('.react-flow__node[data-id="DC-datacenter"]')).toBeVisible({ timeout: 5_000 });
 
     await step('canvas: fit after Capacity switch', () => expect.poll(async () => {

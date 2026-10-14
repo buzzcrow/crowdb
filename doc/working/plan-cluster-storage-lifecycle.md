@@ -273,3 +273,23 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   new center Topology button. Trace confirms pointer interception, not failed
   navigation. Move the error into normal center layout; keep the actual browser
   click as the regression assertion. Artifact run-39995fe2eeef4f4c9aa2916831e12c69.
+- Rebuilt `e466c5ab` passes the exact failed toggle in 1.3 s (baseline 1.1 s),
+  artifact run-c1cfcc86c13a4cbc8f114a791f33da81. Native tree/shared selection and
+  expansion pass in 5.1 s (baseline 6.0 s), run-c694ae8637fc4fa4a4e9094aa9b383f2.
+  Automatic bootstrap/hardware capacity passes in 2.1 s, with file preparation
+  checks retained (run-ddb03e2bc84940eb9d1149e34729db2b). Disk Inspector/physical
+  ownership and both groups pass in 5.0 s (run-ad2da3869fef4d0a8c0a790f56672611).
+  Four canvas regressions pass: Fit All 1.6 s, nested collapse/menu 4.9 s,
+  pan 1.0 s, view switching 2.0 s (run-99e2109a829e474db8ebb5423e5793ec).
+  Six-node service/storage/data flow is running before the next UI stage.
+- Six-node flow stopped at an outdated synchronous-init assertion: expected 201,
+  received durable 202 with operation ID and preparing phase. Update it to assert
+  accepted identity/members, observe that same operation through active (fail fast
+  on failed), then verify the ordinary group leader. Preserve every data assertion.
+  First attempt: run-2cb131295a9f43c8928bf530675baa2b.
+- Six-node flow now passes, including fixed accepted initialization, three storage
+  nodes, three later diskless nodes, all services, and real KV/S3/Iceberg round
+  trips. Browser about 1.2 min against prior 68.0 s; step timings retain deployment
+  and disk-load costs. Artifact run-b3989028aadf41d6a01618796094652a. Navigation
+  consolidation is verified; center/inspection separation and responsive layout
+  are the next UI task.
