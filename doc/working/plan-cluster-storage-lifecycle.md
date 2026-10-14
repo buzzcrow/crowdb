@@ -61,3 +61,13 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   integration phase; these unit tests mock runtime invocation.
 - Local helper now uses a named data volume, restarts existing stopped containers
   with original mounts and cleans only the selected container, retaining volumes.
+- Monitor now exposes read-only direct-child disk observations through private
+  control and authenticated local/remote Console endpoints. Missing supplied
+  inputs, mismatched types, aliases and symlinks remain ineligible; discovery
+  neither creates files nor registers disks. Oversized inventories return a
+  bounded explicit error. Group-0 merging and effective admission remain pending.
+- `cargo test -p crowdb-monitor --test disk_inventory_test`: four cases pass.
+  Affected monitor/protocol/web formatting and all-target Clippy pass.
+- Rootless build prerequisite resolved after the operator installed `uidmap`;
+  the existing subordinate ID ranges work and the rootless namespace probe
+  passes. OCI build has reached BuildKit; browser baseline remains pending.

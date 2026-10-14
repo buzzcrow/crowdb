@@ -8,6 +8,7 @@ mod update;
 pub(crate) use update::update;
 mod authority;
 mod preparation;
+pub(crate) mod storage;
 pub(crate) use admission::binding as cluster_binding;
 pub(crate) use admission::{admissions, admit, control_socket, node_key_path, records, save};
 pub(crate) use authority::{guard, status};

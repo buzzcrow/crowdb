@@ -5,6 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod storage;
+
 pub const NODE_PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -61,6 +63,7 @@ pub struct CandidateSnapshot {
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NodeControl {
     Identity,
+    DiskInventory,
     Processes {
         cluster_id: String,
         node_id: u64,

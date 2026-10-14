@@ -10,6 +10,8 @@ mod identity;
 mod management;
 mod runtime;
 mod single;
+mod storage;
+pub use storage::discover_disks;
 mod trust;
 pub use single::run_single_node;
 

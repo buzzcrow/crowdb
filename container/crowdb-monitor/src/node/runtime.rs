@@ -155,6 +155,11 @@ async fn execute(
 ) -> Result<Value> {
     let root = &profile.paths.data_root;
     match request {
+        NodeControl::DiskInventory => {
+            let inputs = std::env::var("CROWDB_DISK_INPUTS").unwrap_or_else(|_| "[]".into());
+            let inputs: Vec<crowdb_protocol::mgmt::node::storage::DiskInput> = serde_json::from_str(&inputs)?;
+            Ok(serde_json::to_value(super::discover_disks(root, &inputs)?)?)
+        }
         NodeControl::Processes { cluster_id, node_id } => {
             observation::processes(root, processes, &cluster_id, node_id)
         }
