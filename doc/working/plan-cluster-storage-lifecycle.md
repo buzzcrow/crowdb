@@ -320,3 +320,9 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   keyboard resize, panel-to-drawer transition, retained center, Escape/focus
   restoration, navigation collapse/reopen and reset all pass. Artifact:
   run-e809432a6db340c39d98c28a339daf98. Rootless build/import remains successful.
+- Fresh hardware browser baseline before observation retention passes in 2.1 s
+  (run-ded1f9031e0b4e4bb775be7ffdafc2b1). Capacity now retains each successful
+  source independently on refresh failure and exposes source timestamps/errors.
+  Runtime observations are scoped by group/disk; another scope never inherits
+  stale usage. All 199 UI tests and TypeScript pass, including failed refresh,
+  recovery and scope isolation. Browser failure-injection verification follows.

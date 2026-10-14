@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { retainObservation, unobserved, type CapacityObservationStatus } from './capacityObservation';
 import {
   listDiskdbInstances,
   getDiskdbUsage,
@@ -33,6 +34,7 @@ interface UseCapacityTreeResult {
   scanStatus: ScanStatusResponse | null;
   loading: boolean;
   error: Error | null;
+  observations: CapacityObservationStatus[];
   refresh: () => Promise<void>;
 }
 
@@ -43,11 +45,14 @@ export function useCapacityTree({
   diskGroupId,
   diskId,
 }: UseCapacityTreeOptions = {}): UseCapacityTreeResult {
-  const [instances, setInstances] = useState<DiskdbInstanceInfo[]>([]);
-  const [usage, setUsage] = useState<CapacityUsageResponse | null>(null);
-  const [hardwareCapacity, setHardwareCapacity] =
-    useState<HardwareCapacitySummary | null>(null);
-  const [scanStatus, setScanStatus] = useState<ScanStatusResponse | null>(null);
+  const scope = JSON.stringify([diskGroupId ?? null, diskId ?? null]);
+  const [observed, setObserved] = useState(() => ({
+    instances: unobserved<DiskdbInstanceInfo[]>(),
+    hardware: unobserved<HardwareCapacitySummary>(),
+    usage: unobserved<CapacityUsageResponse | null>(),
+    scan: unobserved<ScanStatusResponse | null>(),
+    scope,
+  }));
   const [loading, setLoading] = useState(enabled);
   const [error, setError] = useState<Error | null>(null);
   const requestRef = useRef<AbortController | null>(null);
@@ -67,10 +72,13 @@ export function useCapacityTree({
       observeRuntime ? getDiskdbScanStatus(diskGroupId, options) : Promise.resolve(null),
     ]);
     if (controller.signal.aborted) return;
-    setInstances(instancesResult.status === 'fulfilled' ? instancesResult.value : []);
-    setUsage(usageResult.status === 'fulfilled' ? usageResult.value : null);
-    setHardwareCapacity(hwCapResult.status === 'fulfilled' ? hwCapResult.value : null);
-    setScanStatus(scanResult.status === 'fulfilled' ? scanResult.value : null);
+    setObserved(previous => ({
+      instances: retainObservation(previous.instances, instancesResult),
+      hardware: retainObservation(previous.hardware, hwCapResult),
+      usage: observeRuntime ? retainObservation(previous.scope === scope ? previous.usage : unobserved(), usageResult) : previous.usage,
+      scan: observeRuntime ? retainObservation(previous.scope === scope ? previous.scan : unobserved(), scanResult) : previous.scan,
+      scope: observeRuntime ? scope : previous.scope,
+    }));
     const missing = [
       instancesResult.status === 'rejected' && 'DiskDB instances',
       usageResult.status === 'rejected' && 'usage',
@@ -80,7 +88,7 @@ export function useCapacityTree({
     setError(missing.length ? new Error(`Capacity observation unavailable: ${missing.join(', ')}`) : null);
     hasLoadedRef.current = true;
     setLoading(false);
-  }, [enabled, observeRuntime, diskGroupId, diskId]);
+  }, [enabled, observeRuntime, diskGroupId, diskId, scope]);
 
   useEffect(() => {
     let stopped = false;
@@ -107,11 +115,20 @@ export function useCapacityTree({
     };
   }, [enabled, pollIntervalActive, fetchData]);
 
+  const usage = observed.scope === scope ? observed.usage : unobserved<CapacityUsageResponse>();
+  const scan = observed.scope === scope ? observed.scan : unobserved<ScanStatusResponse>();
+  const observations = [
+    { source: 'DiskDB instances', ...observed.instances, cached: !enabled },
+    { source: 'Hardware inventory', ...observed.hardware, cached: !enabled },
+    { source: 'Usage', ...usage, cached: !enabled || !observeRuntime },
+    { source: 'Scan status', ...scan, cached: !enabled || !observeRuntime },
+  ];
   return {
-    instances,
-    usage,
-    hardwareCapacity,
-    scanStatus,
+    instances: observed.instances.value ?? [],
+    usage: usage.value,
+    hardwareCapacity: observed.hardware.value,
+    scanStatus: scan.value,
+    observations,
     loading,
     error,
     refresh: fetchData,

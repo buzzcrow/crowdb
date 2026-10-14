@@ -47,9 +47,34 @@ it('suspends hidden-tab polling and reports partial observation failures', async
   vi.mocked(api.getDiskdbUsage).mockRejectedValueOnce(new Error('DiskDB offline'));
   visibility.mockReturnValue('visible');
   await act(async () => { document.dispatchEvent(new Event('visibilitychange')); await vi.advanceTimersByTimeAsync(0); });
-  expect(result.current.usage).toBeNull();
+  expect(result.current.usage).toEqual({ disk_groups: [] });
+  expect(result.current.observations.find(row => row.source === 'Usage')).toMatchObject({ error: 'DiskDB offline', observedAt: expect.any(Number) });
   expect(result.current.hardwareCapacity).not.toBeNull();
   expect(result.current.error?.message).toContain('usage');
+  unmount();
+});
+
+it('retains failed inventory, clears errors after recovery and never reuses another scope usage', async () => {
+  setup();
+  const { result, rerender, unmount } = renderHook(({ diskGroupId }) => useCapacityTree({ diskGroupId }), { initialProps: { diskGroupId: 7 } });
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  const hardware = result.current.hardwareCapacity;
+  vi.mocked(api.getHardwareCapacity).mockRejectedValue(new Error('inventory offline'));
+  vi.mocked(api.getDiskdbUsage).mockRejectedValue(new Error('usage offline'));
+  await act(async () => { await result.current.refresh(); });
+  expect(result.current.hardwareCapacity).toBe(hardware);
+  expect(result.current.usage).toEqual({ disk_groups: [] });
+  rerender({ diskGroupId: 8 });
+  expect(result.current.usage).toBeNull();
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  expect(result.current.usage).toBeNull();
+  expect(result.current.observations.find(row => row.source === 'Usage')).toMatchObject({ error: 'usage offline', observedAt: null });
+  vi.mocked(api.getHardwareCapacity).mockResolvedValue(hardware!);
+  vi.mocked(api.getDiskdbUsage).mockResolvedValue({ disk_groups: [] });
+  await act(async () => { await result.current.refresh(); });
+  expect(result.current.error).toBeNull();
+  expect(result.current.usage).toEqual({ disk_groups: [] });
+  expect(result.current.observations.every(row => row.error === null)).toBe(true);
   unmount();
 });
 

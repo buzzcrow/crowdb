@@ -112,6 +112,10 @@ provide observable capacity and bitmap fixtures.
 - **NAV-06:** The center remains usable with the right panel open. Tables and
   diagrams scroll within their work area; action bars and pagination remain
   reachable. Resizing does not reset selection or trigger unbounded refetches.
+  Capacity observations retain the last successful inventory, usage and scan
+  independently after a failed refresh. The shared header exposes each source's
+  observation time, cached state and error. Runtime usage is keyed by group/disk
+  scope; an unobserved scope remains unknown instead of borrowing other totals.
 - **NAV-07:** Every domain uses the shared Tree appearance and draggable
   panel dividers. Left default width is 240 px; properties default is 320 px.
   Cluster navigation resizes between 200 and 360 px, properties between 280

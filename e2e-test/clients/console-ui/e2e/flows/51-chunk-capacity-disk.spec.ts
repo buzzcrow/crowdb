@@ -90,6 +90,21 @@ test('native diagnostics: hardware capacity aggregates disks and dashed status u
     const updated = await request.put(`/api/disks/${ids[0]}/status`, { data: { status } });
     expect(updated.status(), await updated.text()).toBe(204);
   }
+  const disks = page.getByRole('main').getByRole('article', { name: `Disk ${ids[0]}`, exact: true });
+  await expect(disks).toBeVisible();
+  const capacitySummary = page.getByTestId('capacity-summary');
+  const beforeFailure = await capacitySummary.innerText();
+  await page.route('**/api/hardware/capacity', route => route.abort('failed'));
+  await page.getByRole('main').getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(page.getByRole('alert').filter({ hasText: 'hardware inventory' })).toBeVisible();
+  await expect(disks).toBeVisible();
+  await expect(capacitySummary).toHaveText(beforeFailure.replace(/\s+/g, ' '), { useInnerText: true });
+  await page.getByLabel('Capacity observation freshness').click();
+  await expect(page.getByRole('list', { name: 'Capacity observations' })).toContainText('Hardware inventory: Stale at');
+  await page.unroute('**/api/hardware/capacity');
+  await page.getByRole('main').getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(page.getByRole('alert').filter({ hasText: 'hardware inventory' })).toHaveCount(0);
+  await expect(disks).toBeVisible();
 });
 
 // Baseline: 6.8s (2026-10-12).

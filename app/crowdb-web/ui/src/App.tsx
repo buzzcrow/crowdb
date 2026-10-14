@@ -2,6 +2,7 @@ import { PanelDivider } from './components/PanelDivider';
 import { ClusterViewSwitch } from './shell/ClusterViewSwitch';
 import { ClusterBreadcrumb } from './shell/ClusterBreadcrumb';
 import { useClusterLayout } from './shell/useClusterLayout';
+import { CapacityObservations } from './shell/CapacityObservations';
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
@@ -142,7 +143,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
     pollIntervalActive: 1000,
     pollIntervalInactive: 30000,
   });
-  const { instances: diskdbInstances, usage: capacityUsage, hardwareCapacity, scanStatus: capacityScanStatus, loading: capLoading, error: capError, refresh: refreshCapacity,  } = useCapacityTree({
+  const { instances: diskdbInstances, usage: capacityUsage, hardwareCapacity, scanStatus: capacityScanStatus, loading: capLoading, error: capError, refresh: refreshCapacity, observations: capacityObservations } = useCapacityTree({
     enabled: domain === Domain.Capacity || domain === Domain.Cluster,
     observeRuntime: capacityActive,
     diskGroupId: scopeForDomain(Domain.Cluster)?.parentIds?.disk_group_id !== undefined
@@ -541,6 +542,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
             {clusterLayout.hidden ? 'Show navigation' : 'Hide navigation'}
           </button>
           <ClusterBreadcrumb />
+          <CapacityObservations observations={capacityObservations} />
           {!storageDetail && <ClusterViewSwitch />}
           {nodeManagement && !managed && <AutoJoin readonly={readonly} />}
           {nodeManagement && <InitializationProgress readonly={readonly} />}
