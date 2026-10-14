@@ -95,3 +95,20 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
 - Existing Web node-candidate and management-route tests pass (four cases),
   as do the six native fixture observation tests. Native fixture now asserts
   `202` acceptance before observing actual Group-0 publication.
+- Full `cargo test -p crowdb-monitor` passes. Current UI component baseline:
+  35 files / 186 tests pass in 18.13 s; TypeScript check passes. Existing ReactFlow
+  `act(...)` warning is present before visible edits. Browser baseline is separate
+  and remains pending the OCI build.
+- Offline implementation must keep the disk alive through fsync completion:
+  `DiskioServer::handle_fsync` currently does not capture its shared disk handle.
+  `Group0Sync` also unregisters the fd before outstanding references drain.
+  Preserve fd registration until quiescence, then expose applied exclusion;
+  do not infer it solely from absence in the active disk map or heartbeat loss.
+- Rootless OCI build and import now succeed. Exact three-node browser baseline
+  reached fixture bootstrap but failed before browser execution: monitor SSH used
+  Console's process-default trust store instead of admission's pinned peer keys
+  (`ssh: Unknown server key`). Use strict OpenSSH peer control with the existing
+  node key and pinned `ssh/known_hosts`; re-run the same acceptance after rebuild.
+- Container replacement now rejects omitted or changed retained mappings before
+  launching a runtime. Additive mappings remain allowed; all 23 OCI helper tests
+  pass and preserved mapping records/bytes are checked by regression coverage.

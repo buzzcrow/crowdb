@@ -3,6 +3,8 @@
 
 //! One monitor-owned bootstrap, independent of a control connection's lifetime.
 
+mod peer_control;
+
 use std::path::Path;
 
 use crowdb_console_shared::{deployment::PreparedBootstrap, ops::OpContext};
@@ -140,21 +142,13 @@ async fn control(
     if member == local {
         super::control_node(&profile.paths.run_root.join("node-control.sock"), &request).await?;
     } else {
-        let mut node = operation
+        let node = operation
             .intent
             .to_config()
             .node(member)
             .cloned()
             .ok_or("missing bootstrap member")?;
-        node.ssh_key = Some(
-            profile
-                .paths
-                .data_root
-                .join("ssh/id_ed25519")
-                .to_string_lossy()
-                .into_owned(),
-        );
-        crowdb_console_shared::deployment::admission::remote_control(&node, &request).await?;
+        peer_control::execute(&profile.paths.data_root, &node, &request).await?;
     }
     Ok(())
 }
