@@ -107,6 +107,7 @@ def main() -> int:
         ("s3-e2e", "test-boto3-copy-error"),
         ("default", "test-access-sdk"),
         ("default", "test-dataset-sdk"),
+        ("default", "test-dataset-sdk-python"),
         ("default", "sdk-fmt-check"),
         ("default", "sdk-lint"),
         ("default", "check-dataset-sdk-boundary"),

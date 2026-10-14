@@ -29,13 +29,7 @@ impl DatasetClient {
         bearer: Option<String>,
         config: HttpConfig,
     ) -> Result<Self, Error> {
-        if name.is_empty()
-            || name.len() > 255
-            || matches!(name, "." | "..")
-            || name.bytes().any(|byte| byte == 0 || byte == 0x1f)
-        {
-            return Err(Error::Invalid("Dataset name".into()));
-        }
+        validate(name, &config)?;
         Ok(Self {
             http: HttpClient::with_config(endpoint, bearer, config)?,
             namespace: "dataset-ns".into(),
@@ -43,6 +37,21 @@ impl DatasetClient {
         })
     }
 
+    /// # Errors
+    /// Rejects invalid identities, budgets, endpoint, TLS roots or credentials.
+    pub fn with_credential_provider(
+        endpoint: &str,
+        name: &str,
+        credentials: std::sync::Arc<dyn crowdb_sdk_core::CredentialProvider>,
+        config: HttpConfig,
+    ) -> Result<Self, Error> {
+        validate(name, &config)?;
+        Ok(Self {
+            http: HttpClient::with_provider(endpoint, credentials, config)?,
+            namespace: "dataset-ns".into(),
+            name: name.into(),
+        })
+    }
     pub(crate) fn path<'a>(&'a self, suffix: &[&'a str]) -> Vec<&'a str> {
         let mut path = vec![
             "api",
@@ -63,13 +72,13 @@ impl DatasetClient {
         path: &[&str],
         value: Option<&T>,
     ) -> Result<R, Error> {
-        self.http.json(method, &self.path(path), value).await
+        self.http.json_idempotent(method, &self.path(path), value).await
     }
 
     /// # Errors
     /// Returns a duplicate Dataset conflict or service/transport error.
     pub async fn create(&self) -> Result<DatasetInfo, Error> {
-        self.call("PUT", &[], Some(&())).await
+        self.http.json("PUT", &self.path(&[]), Some(&())).await
     }
     /// # Errors
     /// Returns not-found or service/transport errors.
@@ -79,12 +88,16 @@ impl DatasetClient {
     /// # Errors
     /// Returns invalid input, conflict or service/transport errors.
     pub async fn prepare(&self, request: &Publication) -> Result<Snapshot, Error> {
-        self.call("POST", &["snapshots", "prepare"], Some(request)).await
+        self.call("POST", &["snapshots", "prepare"], Some(request))
+            .await
+            .map_err(|e| e.with_identity(&request.operation))
     }
     /// # Errors
     /// Returns invalid input, conflict or an ambiguous transport outcome.
     pub async fn publish(&self, request: &Publication) -> Result<Snapshot, Error> {
-        self.call("POST", &["snapshots", "publish"], Some(request)).await
+        self.call("POST", &["snapshots", "publish"], Some(request))
+            .await
+            .map_err(|e| e.with_identity(&request.operation))
     }
     /// # Errors
     /// Returns not-found or service/transport errors.
@@ -125,7 +138,9 @@ impl DatasetClient {
     /// # Errors
     /// Returns invalid input, conflict or service/transport errors.
     pub async fn create_upload(&self, request: &UploadRequest) -> Result<Upload, Error> {
-        self.call("POST", &["uploads"], Some(request)).await
+        self.call("POST", &["uploads"], Some(request))
+            .await
+            .map_err(|e| e.with_identity(&request.id))
     }
     /// # Errors
     /// Returns not-found or service/transport errors.
@@ -135,7 +150,10 @@ impl DatasetClient {
     /// # Errors
     /// Returns incomplete, integrity or service/transport errors.
     pub async fn complete_upload(&self, id: &str) -> Result<Upload, Error> {
-        self.call("POST", &["uploads", id, "complete"], Some(&())).await
+        self.http
+            .json_long_idempotent("POST", &self.path(&["uploads", id, "complete"]), Some(&()))
+            .await
+            .map_err(|e| e.with_identity(id))
     }
     /// # Errors
     /// Returns ownership conflict or service/transport errors.
@@ -152,4 +170,20 @@ impl DatasetClient {
             .await?;
         crate::wire::decode_batch(bytes)
     }
+}
+
+fn validate(name: &str, config: &HttpConfig) -> Result<(), Error> {
+    if config.max_response_bytes < crate::wire::MAX_HEADER_FRAME {
+        return Err(Error::Invalid(
+            "Dataset streaming window must admit an 8 MiB header".into(),
+        ));
+    }
+    if name.is_empty()
+        || name.len() > 255
+        || matches!(name, "." | "..")
+        || name.bytes().any(|byte| byte == 0 || byte == 0x1f)
+    {
+        return Err(Error::Invalid("Dataset name".into()));
+    }
+    Ok(())
 }

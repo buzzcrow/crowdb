@@ -238,6 +238,7 @@ jobs:
         pixi run sdk-fmt-check
         pixi run sdk-lint
         pixi run test-dataset-sdk
+        pixi run test-dataset-sdk-python
     - name: Capture runner state on failure
       if: failure()
       run: |

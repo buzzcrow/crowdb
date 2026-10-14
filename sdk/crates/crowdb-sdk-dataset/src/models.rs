@@ -107,6 +107,8 @@ pub struct Upload {
     pub state: UploadState,
     pub expires_at: u64,
     pub parts: Vec<Part>,
+    #[serde(default)]
+    pub cleanup_complete: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -118,4 +120,86 @@ pub struct BatchRequest {
 
 fn required_option<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
     Option::<String>::deserialize(d)
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WorkerPartition {
+    pub worker: u16,
+    pub workers: u16,
+    pub rank: u16,
+    pub world_size: u16,
+}
+impl Default for WorkerPartition {
+    fn default() -> Self {
+        Self {
+            worker: 0,
+            workers: 1,
+            rank: 0,
+            world_size: 1,
+        }
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Shuffle {
+    pub seed: u64,
+    pub group_size: usize,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Selection {
+    Explicit { ids: Vec<String> },
+    Prefix { value: String },
+    Keyword { value: String },
+    Range { start: String, end: String },
+    FieldMatch { field: String, value: String },
+    And { items: Vec<Selection> },
+    Or { items: Vec<Selection> },
+    Not { item: Box<Selection> },
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReadPlan {
+    pub id: String,
+    pub snapshot: String,
+    pub selection: Selection,
+    pub fields: Vec<String>,
+    pub batch_size: usize,
+    pub partition: WorkerPartition,
+    pub shuffle: Option<Shuffle>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReadSession {
+    pub id: String,
+    pub snapshot: String,
+    pub plan: String,
+    pub acknowledged: String,
+    pub expires_at: u64,
+    pub closed: bool,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Acknowledge {
+    pub expected: String,
+    pub next: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Progress {
+    pub plan: String,
+    pub cursor: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SnapshotPage {
+    pub snapshots: Vec<Snapshot>,
+    #[serde(deserialize_with = "required_option")]
+    pub next: Option<String>,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReclaimState {
+    Pending,
+    Completed,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Reclaim {
+    pub snapshot: String,
+    pub state: ReclaimState,
+    pub chunks_reclaimed: u64,
 }

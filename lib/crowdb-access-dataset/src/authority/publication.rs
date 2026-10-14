@@ -3,7 +3,7 @@
 
 mod opaque;
 
-use super::{decode, decode_manifest, encode, DatasetAuthority};
+use super::{decode, decode_head, decode_manifest, encode, encode_head, DatasetAuthority};
 use crate::{
     key, AuthorityError, CasOutcome, DatasetError, DatasetIdentity, HeadRecord, ManifestBinding,
     ManifestRecord, OperationId, PublicationState, SnapshotId, SnapshotPublication, SnapshotRecord,
@@ -106,6 +106,19 @@ impl DatasetAuthority {
             return Err(DatasetError::InvalidManifest.into());
         }
         manifest.validate()?;
+        if let Some(parent) = parent {
+            if let Some(schema) = self.manifest_schema(identity, parent).await? {
+                if schema.fields.iter().filter(|f| f.required).any(|required| {
+                    !manifest
+                        .schema
+                        .fields
+                        .iter()
+                        .any(|field| field.name == required.name && field.required)
+                }) {
+                    return Err(DatasetError::InvalidManifest.into());
+                }
+            }
+        }
         let operation_key = key::operation(identity, operation)?;
         let snapshot = if let Some(value) = self.store.get(&operation_key).await? {
             SnapshotId::from_bytes(&value.bytes)?
@@ -150,6 +163,11 @@ impl DatasetAuthority {
                     || existing.publication.manifest != manifest_bytes
                 {
                     return Err(AuthorityError::AlreadyExists);
+                }
+                if existing.publication.state == PublicationState::Published
+                    && self.snapshot_reachable_from_head(identity, snapshot).await?
+                {
+                    return Ok(snapshot);
                 }
                 if existing.publication.state == PublicationState::Aborted {
                     return Err(AuthorityError::Invalid(DatasetError::InvalidPublicationState));
@@ -205,7 +223,7 @@ impl DatasetAuthority {
             .store
             .get(&key::head(identity)?)
             .await?
-            .map(|value| decode::<HeadRecord>(&value.bytes))
+            .map(|value| decode_head(&value.bytes))
             .transpose()?
             .and_then(|head| head.latest))
     }
@@ -279,7 +297,7 @@ impl DatasetAuthority {
         let current_head = self.store.get(&key::head(identity)?).await?;
         let current_latest = current_head
             .as_ref()
-            .map(|value| decode::<HeadRecord>(&value.bytes))
+            .map(|value| decode_head(&value.bytes))
             .transpose()?
             .and_then(|head| head.latest);
         if current_latest == Some(snapshot) {
@@ -289,13 +307,12 @@ impl DatasetAuthority {
             return Err(AuthorityError::ParentConflict);
         }
         let stable = stable.or_else(|| {
-            current_head.as_ref().and_then(|value| {
-                decode::<HeadRecord>(&value.bytes)
-                    .ok()
-                    .and_then(|head| head.stable)
-            })
+            current_head
+                .as_ref()
+                .and_then(|value| decode_head(&value.bytes).ok().and_then(|head| head.stable))
         });
-        let new_head = encode(&HeadRecord {
+        self.ensure_snapshot_live(identity, snapshot).await?;
+        let new_head = encode_head(HeadRecord {
             latest: Some(snapshot),
             stable,
         })?;

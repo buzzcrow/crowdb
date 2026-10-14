@@ -19,6 +19,12 @@ pub struct TransportError {
     inner: reqwest::Error,
 }
 
+impl TransportError {
+    pub(crate) fn retryable(&self) -> bool {
+        self.inner.is_timeout() || (self.inner.is_request() && !self.inner.is_connect())
+    }
+}
+
 impl From<reqwest::Error> for TransportError {
     fn from(error: reqwest::Error) -> Self {
         Self {
@@ -45,6 +51,14 @@ pub enum Error {
     Codec(#[from] serde_json::Error),
     #[error("local I/O failed")]
     Io(#[from] std::io::Error),
+    #[error("mutation outcome is unknown; recover using identity {identity}: {source}")]
+    Ambiguous {
+        identity: String,
+        #[source]
+        source: Box<Error>,
+    },
+    #[error("operation deadline expired")]
+    Deadline,
     #[error("payload integrity check failed")]
     Integrity,
 }
@@ -52,5 +66,19 @@ pub enum Error {
 impl From<reqwest::Error> for Error {
     fn from(error: reqwest::Error) -> Self {
         Self::Transport(error.into())
+    }
+}
+
+impl Error {
+    #[must_use]
+    pub fn with_identity(self, identity: &str) -> Self {
+        if matches!(self, Self::Transport(_) | Self::Deadline) {
+            Self::Ambiguous {
+                identity: identity.into(),
+                source: Box::new(self),
+            }
+        } else {
+            self
+        }
     }
 }

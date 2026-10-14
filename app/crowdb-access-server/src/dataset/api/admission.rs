@@ -38,7 +38,7 @@ impl Drop for ApiPermit {
 }
 pub(super) struct ResponseOwner {
     pub bytes: Bytes,
-    pub permit: ApiPermit,
+    pub permit: Arc<ApiPermit>,
 }
 impl AsRef<[u8]> for ResponseOwner {
     fn as_ref(&self) -> &[u8] {

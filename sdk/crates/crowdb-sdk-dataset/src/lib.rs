@@ -5,8 +5,15 @@
 
 mod client;
 mod models;
+mod read;
+mod transfer;
 pub mod wire;
 
 pub use client::DatasetClient;
 pub use crowdb_sdk_core::Error;
 pub use models::*;
+pub use read::BatchStream;
+
+mod session;
+
+pub use transfer::UploadOptions;

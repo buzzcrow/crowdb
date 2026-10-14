@@ -611,13 +611,18 @@ checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 name = "crowdb-access-dataset"
 version = "0.3.0"
 dependencies = [
+ "arc-swap",
  "async-trait",
  "bincode",
+ "bytes",
+ "crowdb-chunk-client",
  "crowdb-chunk-kv-client",
  "crowdb-protocol",
+ "futures",
  "md-5",
  "reqwest",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "uuid",
@@ -716,6 +721,7 @@ dependencies = [
  "async-trait",
  "base64",
  "bincode",
+ "bytes",
  "chrono",
  "crc",
  "crowdb-access-dataset",
@@ -749,10 +755,12 @@ dependencies = [
  "sha1",
  "sha2",
  "sync_wrapper",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

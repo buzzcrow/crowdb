@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,
 };
 
@@ -23,6 +23,14 @@ impl Admission {
         }
     }
 
+    pub(crate) fn acquire_bytes(self: &Arc<Self>, bytes: usize) -> Result<Permit, Error> {
+        take(&self.bytes, bytes, self.config.max_in_flight_bytes)?;
+        Ok(Permit {
+            admission: self.clone(),
+            bytes,
+            request_released: AtomicBool::new(true),
+        })
+    }
     pub(crate) fn acquire(self: &Arc<Self>, bytes: usize) -> Result<Permit, Error> {
         take(&self.requests, 1, self.config.max_requests)?;
         if let Err(error) = take(&self.bytes, bytes, self.config.max_in_flight_bytes) {
@@ -32,6 +40,7 @@ impl Admission {
         Ok(Permit {
             admission: Arc::clone(self),
             bytes,
+            request_released: AtomicBool::new(false),
         })
     }
 }
@@ -48,11 +57,25 @@ fn take(counter: &AtomicUsize, amount: usize, limit: usize) -> Result<(), Error>
 pub(crate) struct Permit {
     admission: Arc<Admission>,
     bytes: usize,
+    request_released: AtomicBool,
+}
+
+impl Permit {
+    pub(crate) fn release_request(&self) {
+        if !self.request_released.swap(true, Ordering::AcqRel) {
+            self.admission.requests.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
 }
 
 impl Drop for Permit {
     fn drop(&mut self) {
         self.admission.bytes.fetch_sub(self.bytes, Ordering::AcqRel);
-        self.admission.requests.fetch_sub(1, Ordering::AcqRel);
+        self.release_request();
     }
+}
+
+/// Reserves SDK-owned input bytes before allocation; it does not occupy a request slot.
+pub struct BufferPermit {
+    pub(crate) _permit: Permit,
 }

@@ -1307,7 +1307,7 @@
     "/api/dataset/v1/namespaces/{namespace}/datasets/{dataset}/uploads/{upload}/parts/{index}": {
       "put": {
         "operationId": "PutUploadPart",
-        "description": "Exactly the declared part length. Immutable index/digest: identical retry succeeds, divergent content conflicts. Allocation intents and storage acknowledgements survive crash.",
+        "description": "Exactly the declared part length. Immutable index/digest: identical retry succeeds, divergent content conflicts. Allocation intents and storage acknowledgements survive crash. Returns one bounded part receipt, never a growing upload list.",
         "parameters": [
           {
             "in": "path",
@@ -1354,7 +1354,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Upload"
+                  "$ref": "#/components/schemas/Part"
                 }
               }
             }
@@ -2435,6 +2435,10 @@
               "$ref": "#/components/schemas/Part"
             },
             "maxItems": 10000
+          },
+          "cleanup_complete": {
+            "type": "boolean",
+            "description": "True only after all unowned physical ranges have been reclaimed. Deferred cleanup remains false."
           }
         },
         "required": [
@@ -2890,10 +2894,10 @@
   },
   "x-crowdb-wire": {
     "identity": "IDs are lowercase 32-hex nonzero 16-byte identities. MD5 is lowercase 32 hex; MD5 is an integrity check, not authentication. Dataset names are UTF-8, percent-encoded as one path segment, compared without Unicode normalization. Only dataset-ns exists in v1. Sample IDs are canonical padded base64, never interpreted as paths.",
-    "bounds": "JSON request/response at most 8 MiB before allocation; inline decoded values at most 64 KiB, schema/projection 256 fields, sample IDs at most 1024 bytes. Resource credits cover active request bodies and actual response delivery. Request/stream deadlines and deployment admission budgets are explicit configuration.",
+    "bounds": "JSON request/response at most 8 MiB before allocation; inline decoded values at most 64 KiB, schema/projection 256 fields, sample IDs at most 1024 bytes. Resource credits cover active request bodies and actual response delivery. Request/stream deadlines and deployment admission budgets are explicit configuration. V1 reads admit 100000 selected IDs and immutable 1024-ID pages; progress is a separate CAS record. Manifest membership is the complete current sample set; omitted samples are removed, while omitted optional fields on surviving samples inherit by ancestry. Required fields must be present in each sample; explicit tombstones hide parent fields.",
     "batch": "Content-Type application/vnd.crowdb.dataset-batch.v1. Magic is 8 ASCII bytes CDBDS001. Each frame: type u8, body length u32 big endian, then body. Types: 1 JSON BatchHeader (at most 8 MiB); 2 data (16-byte MD5 followed by 1..4 MiB bytes); 3 field end (zero length); 0 batch end (zero length); 4 terminal JSON Error (at most 64 KiB, only after the header). Header declares every sample/field in requested order. Value fields are delivered sequentially with one or more type-2 frames and one type-3; empty values have just type-3. Missing/tombstone have no data frames. Validate each frame MD5, exact whole-field length/MD5, field ends, batch end and HTTP EOF with no trailing bytes. A batch is successful only after completion. A streaming destination may contain verified partial data on error and must be discarded; download-to-path publishes only a verified temporary file. A type-4 frame reports a failed operation, may follow verified partial data, and never permits successful completion. It carries the same structured error model as control responses. The SDK must report the error and discard partial output.",
     "retry": "SDK uses one overall deadline and stable logical tokens; bounded attempts/backoff only on documented idempotent operations with replayable bodies. Do not retry authorization, integrity or semantic conflicts. Ambiguous mutation errors retain operation/upload identity for status recovery. Never invent new tokens on retry.",
     "integrity": "Seekable file convenience upload makes a bounded digest pass then a bounded transfer pass. Upload complete independently verifies durable parts and whole MD5. These are deliberate integrity passes, not whole-file buffering. Nonseekable uploads require known length/digest or later explicit streaming-session design.",
-    "lifecycle": "Remote durability is guaranteed after successful snapshot publication; local staging/checkpoint flush semantics are future SDK work. Read leases and byte credits survive until streaming completes/drops, with periodic renewal during slow active transfers. Keep-alive uses bounded idle/header timeouts and shutdown drain. Upload ownership and reclaim are durable authority state, never client authority."
+    "lifecycle": "Remote durability is guaranteed after successful snapshot publication; local staging/checkpoint flush semantics are future SDK work. Read leases and byte credits survive until streaming completes/drops, with periodic renewal during slow active transfers. Keep-alive uses bounded idle/header timeouts and shutdown drain. Upload ownership and reclaim are durable authority state, never client authority. Whole-file integrity completion has a 30-minute server deadline; clients use their configurable transfer deadline. Candidate reclamation retains an aborted operation tombstone; publication retry cannot resurrect it. chunks_reclaimed counts whole chunks, not retired shared ranges."
   }
 }

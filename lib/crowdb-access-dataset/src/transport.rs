@@ -102,15 +102,24 @@ impl DatasetReadService {
         if !self.window.try_acquire() {
             return Err(ReadTransportError::WindowFull);
         }
+        let permit = WindowPermit(Arc::clone(&self.window));
+        let handle = crate::OperationId::random();
         self.authority
-            .acquire_snapshot_read(
+            .touch_read_handle(
                 &self.identity,
                 request.snapshot,
+                handle,
                 now_seconds,
                 crate::DEFAULT_READ_LEASE_SECONDS,
             )
             .await?;
-        let permit = WindowPermit(Arc::clone(&self.window));
+        let mut read = ReadGuard {
+            authority: self.authority.clone(),
+            identity: self.identity.clone(),
+            snapshot: request.snapshot,
+            handle,
+            released: false,
+        };
         self.lease.touch(now_seconds);
         let fields: Vec<&str> = request.fields.iter().map(String::as_str).collect();
         let samples = self
@@ -124,8 +133,9 @@ impl DatasetReadService {
             )
             .await;
         self.authority
-            .release_snapshot_read(&self.identity, request.snapshot)
+            .release_read_handle(&self.identity, request.snapshot, handle)
             .await?;
+        read.released = true;
         drop(permit);
         self.lease.touch(now_seconds);
         Ok(DatasetReadResponse::from_batch(request.snapshot, samples?))
@@ -160,15 +170,24 @@ impl DatasetReadService {
         if !self.window.try_acquire() {
             return Err(ReadTransportError::WindowFull);
         }
+        let permit = WindowPermit(Arc::clone(&self.window));
+        let handle = crate::OperationId::random();
         self.authority
-            .acquire_snapshot_read(
+            .touch_read_handle(
                 &self.identity,
                 request.plan.snapshot,
+                handle,
                 now_seconds,
                 crate::DEFAULT_READ_LEASE_SECONDS,
             )
             .await?;
-        let permit = WindowPermit(Arc::clone(&self.window));
+        let mut read = ReadGuard {
+            authority: self.authority.clone(),
+            identity: self.identity.clone(),
+            snapshot: request.plan.snapshot,
+            handle,
+            released: false,
+        };
         let windows = match request.shuffle.as_ref() {
             Some(spec) => {
                 let manifest = self
@@ -221,8 +240,9 @@ impl DatasetReadService {
                 .await?
         };
         self.authority
-            .release_snapshot_read(&self.identity, request.plan.snapshot)
+            .release_read_handle(&self.identity, request.plan.snapshot, handle)
             .await?;
+        read.released = true;
         let next_group = group
             .checked_add(usize::from(!ids.is_empty()))
             .and_then(|value| u32::try_from(value).ok())
@@ -279,5 +299,29 @@ struct WindowPermit(Arc<DeliveryWindow>);
 impl Drop for WindowPermit {
     fn drop(&mut self) {
         self.0.release();
+    }
+}
+
+struct ReadGuard {
+    authority: Arc<DatasetAuthority>,
+    identity: DatasetIdentity,
+    snapshot: crate::SnapshotId,
+    handle: crate::OperationId,
+    released: bool,
+}
+impl Drop for ReadGuard {
+    fn drop(&mut self) {
+        if self.released {
+            return;
+        }
+        let authority = self.authority.clone();
+        let identity = self.identity.clone();
+        let snapshot = self.snapshot;
+        let handle = self.handle;
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                let _ = authority.release_read_handle(&identity, snapshot, handle).await;
+            });
+        }
     }
 }

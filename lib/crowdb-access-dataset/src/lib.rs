@@ -16,6 +16,7 @@ mod key;
 mod lease;
 mod manifest;
 mod namespace;
+mod payload;
 mod planner;
 mod publication;
 mod record;
@@ -24,7 +25,11 @@ mod shuffle;
 mod store;
 mod surface;
 mod transport;
+mod upload;
 mod wire;
+
+pub use payload::{ChunkPayloadStorage, PayloadStorage, UploadedChunkReader};
+pub use upload::{DatasetUploads, UploadError, UploadPart, UploadRecord, UploadState, MAX_UPLOAD_PART_BYTES};
 
 pub use cursor::ReadCursor;
 pub use delivery::DeliveryWindow;
@@ -63,3 +68,8 @@ pub use retention::{
     RetentionLease, RetentionLeaseHandle, RetentionLeaseRegistry, RetentionPlan, RetentionPlanner,
 };
 pub use store::{CasOutcome, DatasetStore, StoreError, StoredValue};
+
+mod read_session;
+pub use read_session::{
+    DatasetSessions, ReadSession, SessionBatch, SessionPartition, SessionShuffle, SessionSpec,
+};

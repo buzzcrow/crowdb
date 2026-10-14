@@ -1,3 +1,8 @@
+mod access;
+mod head;
+mod projection;
+
+use head::{decode_head, encode_head};
 mod publication;
 
 use std::collections::{BTreeMap, HashSet};
@@ -56,7 +61,7 @@ pub enum AuthorityError {
 }
 
 pub struct DatasetAuthority {
-    store: Arc<dyn DatasetStore>,
+    pub(crate) store: Arc<dyn DatasetStore>,
     chunk_reader: Arc<dyn ChunkReader>,
 }
 
@@ -120,7 +125,7 @@ impl DatasetAuthority {
             .ok_or(AuthorityError::NotFound)?;
         let mut dataset: DatasetRecord = decode(&value.bytes)?;
         if let Some(head) = self.store.get(&key::head(identity)?).await? {
-            let head: HeadRecord = decode(&head.bytes)?;
+            let head = decode_head(&head.bytes)?;
             dataset.latest = head.latest;
             dataset.stable = head.stable;
         }
@@ -134,7 +139,7 @@ impl DatasetAuthority {
             self.get_dataset(identity).await?;
             return Ok(None);
         };
-        Ok(decode::<HeadRecord>(&value.bytes)?.latest)
+        Ok(decode_head(&value.bytes)?.latest)
     }
 
     /// Retains a published snapshot until the matching release operation.
@@ -156,13 +161,16 @@ impl DatasetAuthority {
         if record.publication.state != PublicationState::Published {
             return Err(AuthorityError::SnapshotNotFound);
         }
+        self.ensure_snapshot_live(identity, snapshot).await?;
         let marker = encode(&snapshot)?;
         match self
             .store
             .compare_exchange(&key::retention(identity, snapshot)?, None, &marker)
             .await?
         {
-            CasOutcome::Applied(_) | CasOutcome::Conflict(Some(_)) => Ok(()),
+            CasOutcome::Applied(_) | CasOutcome::Conflict(Some(_)) => {
+                self.ensure_snapshot_live(identity, snapshot).await
+            }
             CasOutcome::Conflict(None) => Err(AuthorityError::Corrupt),
         }
     }
@@ -194,7 +202,7 @@ impl DatasetAuthority {
         let current = self.store.get(&key).await?;
         let mut head = current
             .as_ref()
-            .map(|value| decode::<HeadRecord>(&value.bytes))
+            .map(|value| decode_head(&value.bytes))
             .transpose()?
             .unwrap_or(HeadRecord {
                 latest: None,
@@ -203,90 +211,13 @@ impl DatasetAuthority {
         if head.stable == Some(snapshot) {
             return Ok(());
         }
+        self.ensure_snapshot_live(identity, snapshot).await?;
         head.stable = Some(snapshot);
-        let bytes = encode(&head)?;
+        let bytes = encode_head(head)?;
         let expected = current.as_ref().map(|value| value.bytes.as_slice());
         match self.store.compare_exchange(&key, expected, &bytes).await? {
             CasOutcome::Applied(_) => Ok(()),
             CasOutcome::Conflict(_) => Err(AuthorityError::HeadConflict),
-        }
-    }
-
-    /// Increments the active-read count for one Dataset/Snapshot lease using
-    /// a CAS record. Expired records are treated as zero.
-    ///
-    /// # Errors
-    /// Returns invalid lease configuration, storage, or malformed lease data.
-    pub async fn acquire_snapshot_read(
-        &self,
-        identity: &DatasetIdentity,
-        snapshot: SnapshotId,
-        now_seconds: u64,
-        ttl_seconds: u64,
-    ) -> Result<(), AuthorityError> {
-        if ttl_seconds == 0 {
-            return Err(DatasetError::InvalidManifest.into());
-        }
-        let key = key::read_lease(identity, snapshot)?;
-        loop {
-            let current = self.store.get(&key).await?;
-            let (active, expected) = match current.as_ref() {
-                Some(value) => {
-                    let record: crate::ActiveReadLease = decode(&value.bytes)?;
-                    if now_seconds >= record.deadline {
-                        (0, Some(value.bytes.as_slice()))
-                    } else {
-                        (record.active, Some(value.bytes.as_slice()))
-                    }
-                }
-                None => (0, None),
-            };
-            let record = crate::ActiveReadLease {
-                snapshot,
-                active: active.saturating_add(1),
-                deadline: now_seconds.saturating_add(ttl_seconds),
-            };
-            match self
-                .store
-                .compare_exchange(&key, expected, &encode(&record)?)
-                .await?
-            {
-                CasOutcome::Applied(_) => return Ok(()),
-                CasOutcome::Conflict(_) => {}
-            }
-        }
-    }
-
-    /// Decrements one active-read lease. Releasing a missing/expired record is idempotent.
-    ///
-    /// # Errors
-    /// Returns storage or malformed lease data errors.
-    pub async fn release_snapshot_read(
-        &self,
-        identity: &DatasetIdentity,
-        snapshot: SnapshotId,
-    ) -> Result<(), AuthorityError> {
-        let key = key::read_lease(identity, snapshot)?;
-        loop {
-            let Some(current) = self.store.get(&key).await? else {
-                return Ok(());
-            };
-            let mut record: crate::ActiveReadLease = decode(&current.bytes)?;
-            if record.active == 0 {
-                return Ok(());
-            }
-            record.active -= 1;
-            let result = if record.active == 0 {
-                self.store.delete(&key).await.map(|()| CasOutcome::Applied(0))
-            } else {
-                self.store
-                    .compare_exchange(&key, Some(&current.bytes), &encode(&record)?)
-                    .await
-            };
-            match result? {
-                CasOutcome::Applied(_) => return Ok(()),
-                CasOutcome::Conflict(_) => {}
-            }
         }
     }
 
@@ -589,27 +520,7 @@ impl DatasetAuthority {
         identity: &DatasetIdentity,
         snapshot: SnapshotId,
     ) -> Result<(), AuthorityError> {
-        if self.has_active_snapshot_read(identity, snapshot).await? {
-            return Err(AuthorityError::SnapshotProtected);
-        }
-        let head = self.store.get(&key::head(identity)?).await?;
-        if let Some(head) = head {
-            let head: HeadRecord = decode(&head.bytes)?;
-            if head.latest == Some(snapshot) || head.stable == Some(snapshot) {
-                return Err(AuthorityError::SnapshotProtected);
-            }
-        }
-        if self
-            .store
-            .get(&key::retention(identity, snapshot)?)
-            .await?
-            .is_some()
-        {
-            return Err(AuthorityError::SnapshotProtected);
-        }
-        if self.snapshot_reachable_from_head(identity, snapshot).await? {
-            return Err(AuthorityError::SnapshotProtected);
-        }
+        self.begin_reclaim(identity, snapshot).await?;
         if let Some(binding) = self
             .store
             .get(&key::manifest_binding(identity, snapshot)?)
@@ -625,7 +536,7 @@ impl DatasetAuthority {
                 .delete(&key::manifest_binding(identity, snapshot)?)
                 .await?;
         }
-        self.store.delete(&key::snapshot(identity, snapshot)?).await?;
+        // Keep the aborted operation tombstone: retry must never resurrect a reclaimed candidate.
         let progress = crate::ReclaimProgress {
             snapshot,
             state: crate::ReclaimState::Completed,
@@ -671,7 +582,7 @@ impl DatasetAuthority {
         let Some(head) = self.store.get(&key::head(identity)?).await? else {
             return Ok(false);
         };
-        let head: HeadRecord = decode(&head.bytes)?;
+        let head = decode_head(&head.bytes)?;
         let mut current = head.latest;
         let mut seen = HashSet::new();
         while let Some(snapshot) = current {
@@ -687,18 +598,6 @@ impl DatasetAuthority {
             current = decode::<SnapshotRecord>(&value.bytes)?.publication.parent;
         }
         Ok(false)
-    }
-
-    async fn has_active_snapshot_read(
-        &self,
-        identity: &DatasetIdentity,
-        snapshot: SnapshotId,
-    ) -> Result<bool, AuthorityError> {
-        let Some(value) = self.store.get(&key::read_lease(identity, snapshot)?).await? else {
-            return Ok(false);
-        };
-        let record: crate::ActiveReadLease = decode(&value.bytes)?;
-        Ok(record.active != 0)
     }
 
     /// Resolves one field using copy-on-write snapshot ancestry. The first

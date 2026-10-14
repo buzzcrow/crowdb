@@ -69,6 +69,7 @@ class Case:
     storage_backend: str = "mem"
     chunk_kv_empty_catalog: bool = False
     sdk_client: bool = False
+    dataset_sdk: bool = False
     s3_recovery: str | None = None
     s3_script: str | None = None
     s3_language: str | None = None
@@ -520,6 +521,7 @@ CONSOLE_OPERATION_CASES = (
 )
 
 DATASET_CASES = (
+    Case("dataset.sdk", "dataset::sdk_real_payload_restart",dataset_sdk=True,client_timeout=600),
     Case("dataset.http", "access_dataset::listener_authenticates_and_serves_create_open"),
     Case("dataset.http", "access_dataset::publish_persist_restart_and_scan_round_trip"),
 )
@@ -759,6 +761,8 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
                 cluster.language_client(case.s3_language)
             elif case.s3_script:
                 cluster.script_client(case.s3_script)
+            elif case.dataset_sdk:
+                cluster.sdk_roundtrip()
             elif case.sdk_client:
                 cluster.sdk_client(case.name.rsplit("::", 1)[-1])
             elif case.restart:

@@ -196,3 +196,12 @@ def bundle_iceberg_rck(output):
     (destination.parent / "source.json").write_text(json.dumps({
         "upstream": "https://github.com/apache/iceberg.git", "revision": revision,
         "version": "1.11.0"}, indent=2))
+
+
+def bundle_dataset_sdk(output):
+    """Independent Rust consumer plus externally built and installed Python wheel."""
+    root=Path(__file__).resolve().parents[1]
+    subprocess.run(["cargo","build","--locked","--manifest-path",str(root/"sdk/Cargo.toml"),"-p","crowdb-sdk-dataset","--example","payload"],check=True,timeout=600)
+    shutil.copy2(root/"sdk/target/debug/examples/payload",Path(output)/"dataset-rust-client")
+    subprocess.run(["python",str(root/"tools/sdk/package.py"),"--destination",str(Path(output)/"dataset-sdk")],check=True,timeout=600)
+    shutil.copy2(root/"sdk/tests/real_consumer.py",Path(output)/"dataset-sdk/real_consumer.py")

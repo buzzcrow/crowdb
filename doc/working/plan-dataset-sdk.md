@@ -48,7 +48,7 @@ section below supersedes their compilation, contract and route status.
   clippy and test tasks do not cover this independent workspace. Use existing
   fixture deployment for real-server acceptance, never a mock-only substitute.
 
-## Verified implementation — 2026-10-14
+## First milestone verification — 2026-10-14
 
 - Independent workspace has a lockfile and Rust 1.85-compatible dependency
   resolution (`resolver = "3"`); root gates do not discover it implicitly.
@@ -72,6 +72,29 @@ section below supersedes their compilation, contract and route status.
   the CI reachability checker requires them. SDK tests currently include five
   HTTP/resource cases and four control/framing cases. Python bindings, wheels,
   worker iteration changes and package installation have not been implemented.
+
+## Current implementation — continued verification
+
+- Real Dataset chunk adapters, durable per-part intents, paged part receipts and
+  ownership recovery are implemented. JSON upload/publication, bounded binary
+  delivery, scoped read plans and management routes compile and pass focused
+  component tests. Real container acceptance is pending.
+- Read selection IDs are immutable 1024-ID pages; cursor/acknowledgement is a
+  separate small CAS record. HTTP streams retain scoped leases and byte credits,
+  refresh activity, and cancel independently. Reclaim fences read/publication
+  admission and retains aborted operation metadata for crash-safe cleanup.
+- Rust file transfer uses bounded configurable concurrent parts and one batch
+  stream for download. HTTP pooling, explicit safe retries, refreshable credentials,
+  TLS roots, transfer deadlines and recoverable mutation identities are implemented.
+- PyO3/maturin source and wheels build independently outside the repo. An installed
+  Linux CPython 3.14t wheel passed five Python lifecycle/iteration checks without a
+  Rust compiler in its consumer PATH. Real-service Python acceptance is pending.
+- Dataset component tests: 43 passed; production HTTP/control/payload consumer
+  tests: 4 passed. Root and SDK lint/fmt verification remains active after changes.
+- The default rootless OCI builder is missing host newuidmap/newgidmap; sudo is
+  unavailable. Use the same staged release Dockerfile through the available Docker
+  builder, retaining source/runtime labels and the existing fixture source checks.
+  This is a build prerequisite workaround, not a replacement Dataset service.
 
 ## Required interface and performance constraints
 

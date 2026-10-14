@@ -131,6 +131,7 @@ image-run = "pixi run --manifest-path container/oci-image/pixi.toml -e runtime r
 test-container-e2e = "python e2e-test/run.py"
 test = "python tools/pixi-tasks/test.py"
 test-access-sdk = "python tools/pixi-tasks/test.py unit sdk"
+test-dataset-sdk-python = "python tools/sdk/package.py"
 test-dataset-sdk = "cargo test --manifest-path sdk/Cargo.toml --workspace --locked"
 sdk-fmt-check = "cargo fmt --manifest-path sdk/Cargo.toml --all -- --check"
 sdk-lint = "cargo clippy --manifest-path sdk/Cargo.toml --workspace --all-targets --locked -- -D warnings"
@@ -256,3 +257,7 @@ tree-tsan = { cmd = "bash tools/pixi-tasks/tree-tsan.sh" }
 
 # UndefinedBehaviorSanitizer build + tests.
 tree-ubsan = { cmd = "bash tools/pixi-tasks/tree-ubsan.sh" }
+
+[pypi-dependencies]
+maturin = ">=1.15, <2"
+pip = ">=25, <27"

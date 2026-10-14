@@ -8,6 +8,11 @@ use std::time::Duration;
 pub struct HttpConfig {
     pub connect_timeout: Duration,
     pub request_timeout: Duration,
+    pub overall_timeout: Duration,
+    pub stream_timeout: Duration,
+    pub max_attempts: usize,
+    pub retry_backoff: Duration,
+    pub ca_pem: Option<Vec<u8>>,
     pub pool_idle_timeout: Duration,
     pub max_idle_connections_per_host: usize,
     pub max_requests: usize,
@@ -21,6 +26,11 @@ impl Default for HttpConfig {
         Self {
             connect_timeout: Duration::from_secs(10),
             request_timeout: Duration::from_secs(60),
+            overall_timeout: Duration::from_secs(90),
+            stream_timeout: Duration::from_secs(1800),
+            max_attempts: 3,
+            retry_backoff: Duration::from_millis(100),
+            ca_pem: None,
             pool_idle_timeout: Duration::from_secs(30),
             max_idle_connections_per_host: 8,
             max_requests: 8,
@@ -35,6 +45,10 @@ impl HttpConfig {
     pub(crate) fn valid(&self) -> bool {
         !self.connect_timeout.is_zero()
             && !self.request_timeout.is_zero()
+            && !self.overall_timeout.is_zero()
+            && !self.stream_timeout.is_zero()
+            && self.max_attempts > 0
+            && self.max_attempts <= 16
             && !self.pool_idle_timeout.is_zero()
             && self.max_requests > 0
             && self.max_request_bytes > 0

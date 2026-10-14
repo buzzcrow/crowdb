@@ -15,7 +15,7 @@ import time
 import uuid
 from pathlib import Path
 
-from client import bundle_cli, bundle_client, bundle_iceberg_rust, bundle_iceberg_java, bundle_iceberg_rck, client_sources
+from client import bundle_dataset_sdk, bundle_cli, bundle_client, bundle_iceberg_rust, bundle_iceberg_java, bundle_iceberg_rck, client_sources
 from fixture import Cluster, docker
 from release import check_startup
 from scenarios import case_nodes, case_resources, run_cases, select_cases
@@ -187,6 +187,10 @@ def main():
     started = time.monotonic()
     bundle = bundle_client(run_root / "client")
     timings = {"client_build": time.monotonic() - started}
+    if any(case.dataset_sdk for case in selected):
+        started=time.monotonic()
+        bundle_dataset_sdk(bundle)
+        timings["dataset_sdk_build"]=time.monotonic()-started
     if any(case.name.startswith("access_iceberg::rust_") for case in selected):
         started = time.monotonic()
         bundle_iceberg_rust(bundle)

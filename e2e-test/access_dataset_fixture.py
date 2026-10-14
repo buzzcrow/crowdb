@@ -3,6 +3,8 @@
 """Normal Dataset listener over persistent protected Chunk-KV storage."""
 
 import ipaddress
+import os
+import subprocess
 import urllib.error
 import urllib.request
 
@@ -49,3 +51,25 @@ class AccessDatasetCluster(ChunkKvCluster):
             elif body["node"] == self.chunk_kv_index:
                 self.ready_chunk_kv()
         return result
+
+    def sdk_roundtrip(self):
+        endpoint=f"http://{self.addresses[12]}:7503"
+        for language in ("rust","python"):
+            root=self.artifacts / ("sdk-"+language)
+            environment=dict(os.environ,CROWDB_DATASET_ENDPOINT=endpoint,CROWDB_DATASET_NAME="sdk-"+language,CROWDB_DATASET_READ_TOKEN="token",CROWDB_DATASET_CONSUMER_ROOT=str(root))
+            bypass=",".join(filter(None,[environment.get("NO_PROXY",""),environment.get("no_proxy",""),*self.addresses]))
+            environment.update(NO_PROXY=bypass,no_proxy=bypass)
+            if language=="rust":
+                command=[str(self.bundle/"dataset-rust-client")]
+            else:
+                command=[str(self.bundle/"dataset-sdk/consumer/bin/python"),str(self.bundle/"dataset-sdk/real_consumer.py")]
+            for phase in ("write","verify"):
+                environment["CROWDB_DATASET_PHASE"]=phase
+                result=subprocess.run(command,env=environment,cwd=self.artifacts,text=True,capture_output=True,timeout=600)
+                output=result.stdout+result.stderr
+                (self.artifacts/f"sdk-{language}-{phase}.log").write_text(output)
+                print(output,end="",flush=True)
+                if result.returncode:raise RuntimeError(f"Dataset {language} SDK {phase} failed: {output}")
+                if phase=="write":
+                    for node in (12,11):self.control({"action":"kill","node":node})
+                    for node in (11,12):self.control({"action":"start","node":node})

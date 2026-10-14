@@ -89,6 +89,7 @@ pub enum ChunkType {
     Stream = 4,
     S3 = 5,
     IcebergTable = 6,
+    Dataset = 7,
 }
 impl_enum_conversions!(
     ChunkType,
@@ -97,7 +98,8 @@ impl_enum_conversions!(
     PageIndex = 3,
     Stream = 4,
     S3 = 5,
-    IcebergTable = 6
+    IcebergTable = 6,
+    Dataset = 7
 );
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]

@@ -10,7 +10,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crowdb_access_dataset::{
-    AuthorityError, ChunkKvDatasetStore, DatasetAuthority, DatasetReadService, DatasetSnapshotRequest,
+    AuthorityError, ChunkKvDatasetStore, ChunkPayloadStorage, DatasetAuthority, DatasetReadService,
+    DatasetSnapshotRequest, DatasetUploads, UploadedChunkReader,
 };
 use crowdb_chunk_kv_client::{
     ChunkKvClient, ChunkKvRpcTransport, ClientConfig as ChunkKvConfig, Group0ChunkKvRangeCatalogSource,
@@ -28,15 +29,30 @@ use tokio::task::JoinSet;
 const MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
+type DatasetBody = http_body_util::combinators::UnsyncBoxBody<Bytes, BoxError>;
+
+fn body(bytes: Bytes) -> DatasetBody {
+    Full::new(bytes).map_err(|never| match never {}).boxed_unsync()
+}
 
 pub struct DatasetHttpService {
     reads: Arc<DatasetReadService>,
     bearer: Option<Arc<str>>,
     request_timeout: Duration,
     api_admission: Arc<api::ApiAdmission>,
+    uploads: Option<Arc<DatasetUploads>>,
 }
 
 impl DatasetHttpService {
+    async fn handle(&self, request: Request<Incoming>) -> Response<DatasetBody> {
+        if request.uri().path().starts_with("/api/dataset/") {
+            self.handle_api(request).await
+        } else {
+            self.handle_legacy(request)
+                .await
+                .map(|full| full.map_err(|never| match never {}).boxed_unsync())
+        }
+    }
     #[must_use]
     pub fn new(reads: Arc<DatasetReadService>, request_timeout: Duration) -> Self {
         Self {
@@ -44,6 +60,7 @@ impl DatasetHttpService {
             bearer: None,
             request_timeout,
             api_admission: Arc::new(api::ApiAdmission::new(3)),
+            uploads: None,
         }
     }
 
@@ -60,6 +77,12 @@ impl DatasetHttpService {
     #[must_use]
     pub fn with_api_capacity(mut self, max_in_flight: usize) -> Self {
         self.api_admission = Arc::new(api::ApiAdmission::new(max_in_flight));
+        self
+    }
+
+    #[must_use]
+    pub fn with_uploads(mut self, uploads: Arc<DatasetUploads>) -> Self {
+        self.uploads = Some(uploads);
         self
     }
 }
@@ -136,14 +159,22 @@ pub async fn run_with_shutdown(
     if seeds.is_empty() {
         return Err("one or more management seeds are required".into());
     }
-    let control = Arc::new(CrowdbKvClient::new(KvConfig::new(seeds)));
+    let control = Arc::new(CrowdbKvClient::new(KvConfig::new(seeds.clone())));
     let source = Arc::new(Group0ChunkKvRangeCatalogSource::from_shared(Arc::clone(&control)));
     let chunk_config = ChunkKvConfig::default();
     let transport = Arc::new(ChunkKvRpcTransport::new(chunk_config.max_owner_connections, 1, 2));
     let client = Arc::new(ChunkKvClient::new(chunk_config, source, transport)?);
     client.refresh_catalog().await?;
     let store = Arc::new(ChunkKvDatasetStore::new(client));
-    let authority = Arc::new(DatasetAuthority::new(store));
+    let chunks = connect_payloads(seeds, control, access.dataset.max_in_flight).await?;
+    let uploads = Arc::new(DatasetUploads::new(
+        store.clone(),
+        Arc::new(ChunkPayloadStorage::new(chunks.clone())),
+    ));
+    let authority = Arc::new(DatasetAuthority::with_chunk_reader(
+        store,
+        Arc::new(UploadedChunkReader::new((*uploads).clone())),
+    ));
     let identity = crowdb_access_dataset::DatasetIdentity::new(
         crowdb_access_dataset::NamespacePath::root(),
         std::env::var("CROWDB_DATASET_NAME").unwrap_or_else(|_| "default".into()),
@@ -157,7 +188,8 @@ pub async fn run_with_shutdown(
     )?);
     let mut service =
         DatasetHttpService::new(reads, Duration::from_secs(access.dataset.request_timeout_seconds))
-            .with_api_capacity(access.dataset.max_in_flight);
+            .with_api_capacity(access.dataset.max_in_flight)
+            .with_uploads(Arc::clone(&uploads));
     if let Ok(token) = std::env::var("CROWDB_DATASET_READ_TOKEN") {
         if token.is_empty() {
             return Err("CROWDB_DATASET_READ_TOKEN must not be empty".into());
@@ -165,8 +197,44 @@ pub async fn run_with_shutdown(
         service = service.with_bearer(Arc::<str>::from(token));
     }
     let listener = TcpListener::bind(address).await?;
-    serve(listener, Arc::new(service), shutdown).await?;
+    let expiry = tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(15));
+        loop {
+            tick.tick().await;
+            if let Err(error) = uploads.expire(unix_seconds()).await {
+                tracing::error!(%error, "Dataset upload cleanup failed; retaining cleanup records for retry");
+            }
+        }
+    });
+    let result = serve(listener, Arc::new(service), shutdown).await;
+    expiry.abort();
+    let _ = expiry.await;
+    chunks.shutdown_small_writes().await?;
+    result?;
     Ok(())
+}
+
+async fn connect_payloads(
+    seeds: Vec<String>,
+    control: Arc<CrowdbKvClient>,
+    capacity: usize,
+) -> Result<crowdb_chunk_client::ChunkIoClient, BoxError> {
+    use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, SmallWritePolicy};
+    let mut small_write = SmallWritePolicy::new(crowdb_protocol::chunkdb::rpc::ChunkType::Dataset);
+    small_write.object_limit = 4 * 1024 * 1024;
+    small_write.max_batch_bytes = 4 * 1024 * 1024;
+    small_write.max_pipelines = capacity.clamp(1, 8);
+    small_write.memory_budget = 128 * 1024 * 1024;
+    Ok(ChunkIoClient::connect_with_kv(
+        ChunkIoClientConfig {
+            management_seeds: seeds,
+            diskio_connections_per_endpoint: 4,
+            diskio_rpc_workers: 2,
+            small_write,
+        },
+        control,
+    )
+    .await?)
 }
 
 /// Runs the Dataset listener until shutdown resolves.

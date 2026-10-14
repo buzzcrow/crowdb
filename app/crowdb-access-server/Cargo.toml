@@ -15,9 +15,7 @@ default = ["s3"]
 test-util = ["crowdb-chunk-client/test-util"]
 s3-e2e = ["s3"]
 iceberg-e2e = []
-s3 = [
-    "dep:futures",
-]
+s3 = []
 
 [dependencies]
 arc-swap = "1.9"
@@ -35,11 +33,12 @@ crowdb-common = { path = "../../lib/crowdb-common/rust" }
 crowdb-kv-client = { path = "../../lib/crowdb-kv-client" }
 crowdb-protocol = { path = "../../lib/crowdb-protocol" }
 crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi" }
-futures = { version = "0.3", optional = true }
+futures = "0.3"
 http-body-util = "0.1"
 hyper = { workspace = true, features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 percent-encoding = "2"
+url = "2"
 quick-xml = { version = "0.38", features = ["serialize"] }
 base64 = "0.22"
 md-5 = "0.10"
@@ -56,6 +55,8 @@ thiserror = { workspace = true }
 sync_wrapper = { version = "1", features = ["futures"] }
 
 [dev-dependencies]
+bytes = "1"
+tempfile = "3"
 bincode = "1"
 crowdb-access-server = { path = ".", default-features = false, features = ["test-util"] }
 futures = "0.3"

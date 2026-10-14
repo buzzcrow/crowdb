@@ -19,10 +19,7 @@ use hyper::{
 };
 
 impl DatasetHttpService {
-    pub(super) async fn handle(&self, request: Request<Incoming>) -> Response<Full<Bytes>> {
-        if request.uri().path().starts_with("/api/dataset/") {
-            return self.handle_api(request).await;
-        }
+    pub(super) async fn handle_legacy(&self, request: Request<Incoming>) -> Response<Full<Bytes>> {
         if !self.authorized(&request) {
             return response(StatusCode::UNAUTHORIZED, b"unauthorized".to_vec());
         }

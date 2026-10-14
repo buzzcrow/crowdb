@@ -34,7 +34,10 @@ pub(super) fn snapshot(value: SnapshotRecord, latest: Option<SnapshotId>) -> mod
         is_latest: latest == Some(value.snapshot),
     }
 }
-pub(super) fn manifest(value: models::Manifest) -> Result<ManifestRecord, ApiError> {
+pub(super) fn manifest(
+    value: models::Manifest,
+    identity: &crowdb_access_dataset::DatasetIdentity,
+) -> Result<ManifestRecord, ApiError> {
     if value.schema.len() > 256 || value.samples.is_empty() || value.samples.len() > 1_000_000 {
         return Err(ApiError::invalid());
     }
@@ -78,10 +81,14 @@ pub(super) fn manifest(value: models::Manifest) -> Result<ManifestRecord, ApiErr
                             }
                         }
                         models::FieldValue::Tombstone => FieldLocator::Tombstone,
-                        models::FieldValue::Payload { upload } => {
-                            super::operation(&upload)?;
-                            return Err(ApiError::unsupported());
-                        }
+                        models::FieldValue::Payload { upload } => FieldLocator::Chunk {
+                            location: crowdb_access_dataset::DatasetUploads::location(
+                                identity,
+                                super::operation(&upload)?,
+                            )?,
+                            length: 1,
+                            md5: [0; 16],
+                        },
                     };
                     Ok(FieldRecord { name, value })
                 })
@@ -105,7 +112,10 @@ pub(super) fn manifest(value: models::Manifest) -> Result<ManifestRecord, ApiErr
     manifest.validate().map_err(|_| ApiError::invalid())?;
     Ok(manifest)
 }
-pub(super) fn public_manifest(value: ManifestRecord) -> Result<models::Manifest, ApiError> {
+pub(super) fn public_manifest(
+    value: ManifestRecord,
+    identity: &crowdb_access_dataset::DatasetIdentity,
+) -> Result<models::Manifest, ApiError> {
     let samples = value
         .samples
         .into_iter()
@@ -119,11 +129,14 @@ pub(super) fn public_manifest(value: ManifestRecord) -> Result<models::Manifest,
                             data: STANDARD.encode(value),
                         },
                         FieldLocator::Tombstone => models::FieldValue::Tombstone,
-                        FieldLocator::Chunk { .. } => return Err(ApiError::unsupported()),
+                        FieldLocator::Chunk { location, .. } => models::FieldValue::Payload {
+                            upload: crowdb_access_dataset::DatasetUploads::upload_id(identity, &location)?
+                                .to_string(),
+                        },
                     };
                     Ok((field.name, value))
                 })
-                .collect::<Result<BTreeMap<_, _>, _>>()?;
+                .collect::<Result<BTreeMap<_, _>, ApiError>>()?;
             Ok(models::Sample {
                 id: STANDARD.encode(sample.sample_id),
                 fields,
