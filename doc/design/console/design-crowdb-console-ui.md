@@ -112,9 +112,13 @@ provide observable capacity and bitmap fixtures.
 - **NAV-06:** The center remains usable with the right panel open. Tables and
   diagrams scroll within their work area; action bars and pagination remain
   reachable. Resizing does not reset selection or trigger unbounded refetches.
-- **NAV-07:** Every domain uses the shared Tree appearance and two draggable
-  panel dividers. Left default width is 280 px; properties default is 320 px.
-  Each divider supports pointer and keyboard resizing between 220 and 600 px.
+- **NAV-07:** Every domain uses the shared Tree appearance and draggable
+  panel dividers. Left default width is 240 px; properties default is 320 px.
+  Cluster navigation resizes between 200 and 360 px, properties between 280
+  and 480 px, preserving 480 px for the center when space permits. Below
+  1100 px, properties overlays the work area as a dismissible drawer; Escape
+  closes it and restores focus. Navigation can collapse and overlays the work
+  area below 720 px. Other domain dividers retain their 220–600 px bounds.
   Switching domains introduces no panel replacement/slide animation.
 - **NAV-08:** Parent cards in center topology diagrams have separate named controls for
   opening the resource and collapsing or expanding children. Card bodies inspect

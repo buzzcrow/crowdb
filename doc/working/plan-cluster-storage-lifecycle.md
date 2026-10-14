@@ -311,3 +311,8 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   trip and Chunk-to-Cluster disk navigation pass in 8.2 s against recorded 5.3 s
   baseline (run-836840b7f7534834af3fee1d76abb225). The physical cross-link now
   asserts canonical Cluster scope and the actual DiskGroup breadcrumb.
+- Responsive Cluster panel constraints and dismissible properties drawer are
+  implemented. Below 1100 px properties no longer consume center width; keyboard
+  Escape restores prior focus. Navigation can collapse and overlays below 720 px.
+  All 198 UI component tests and TypeScript pass. Exact inspector selection
+  baseline is 1.6 s; expanded resize/focus browser regression awaits release build.

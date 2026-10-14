@@ -136,6 +136,32 @@ test.describe('inspector · activity log', () => {
       await expect(page.getByRole('complementary', { name: 'Entity inspector' })).toBeVisible();
     });
 
+    await step('inspector: responsive properties preserve the work area', async () => {
+      const inspector = page.getByRole('complementary', { name: 'Entity inspector' });
+      await page.setViewportSize({ width: 1280, height: 800 });
+      await expect(inspector).toHaveAttribute('data-layout', 'panel');
+      const navigationWidth = page.getByRole('separator', { name: 'Sidebar width' });
+      await expect(navigationWidth).toHaveAttribute('aria-valuenow', '240');
+      await navigationWidth.focus();
+      await navigationWidth.press('ArrowRight');
+      await expect(navigationWidth).toHaveAttribute('aria-valuenow', '260');
+      await page.setViewportSize({ width: 1000, height: 800 });
+      await expect(inspector).toHaveAttribute('data-layout', 'drawer');
+      await expect(page.getByRole('separator', { name: 'Properties width' })).toHaveCount(0);
+      await expect(page.getByRole('main')).toHaveCSS('margin-right', '0px');
+      await page.getByRole('button', { name: 'Close inspector' }).press('Escape');
+      await expect(inspector).toHaveCount(0);
+      await expect(navigationWidth).toBeFocused();
+      await expect(page.getByRole('navigation', { name: 'Cluster scope' })).toContainText('N-48');
+      await page.getByRole('button', { name: 'Hide navigation' }).click();
+      await expect(page.getByRole('complementary', { name: 'Cluster tree sidebar' })).toBeHidden();
+      await page.getByRole('button', { name: 'Show navigation' }).click();
+      await page.getByRole('treeitem').filter({ hasText: 'N-48' }).getByRole('button', { name: 'N-48' }).click();
+      await expect(inspector).toHaveAttribute('data-layout', 'drawer');
+      await page.setViewportSize({ width: 1280, height: 800 });
+      await expect(inspector).toHaveAttribute('data-layout', 'panel');
+    });
+
     await step('inspector: reset clears selection', async () => {
       await page.getByRole('button', { name: /^Reset$/ }).click();
       const dialog = page.getByRole('dialog', { name: 'Delete Cluster' });

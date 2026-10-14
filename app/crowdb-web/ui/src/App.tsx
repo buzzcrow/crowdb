@@ -1,6 +1,7 @@
 import { PanelDivider } from './components/PanelDivider';
 import { ClusterViewSwitch } from './shell/ClusterViewSwitch';
 import { ClusterBreadcrumb } from './shell/ClusterBreadcrumb';
+import { useClusterLayout } from './shell/useClusterLayout';
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
@@ -98,8 +99,8 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
   const [rememberedDeployPorts, setRememberedDeployPorts] = useState<{ mgmt: number[]; rpc: number[]; diskdbRpc: number[] }>({ mgmt: [], rpc: [], diskdbRpc: [] });
   const [lastRefreshTime, setLastRefreshTime] = useState<Date>(new Date());
   const [refreshing, setRefreshing] = useState(false);
-  const [sidebarWidth, setSidebarWidth] = useState(280);
-  const [inspectorWidth, setInspectorWidth] = useState(320);
+  const clusterLayout = useClusterLayout(activeDomain === Domain.Cluster, !!selectedEntity);
+  const { sidebarWidth, propertiesWidth: inspectorWidth, setSidebar: setSidebarWidth, setProperties: setInspectorWidth } = clusterLayout;
   const [canvasFocusRequest, setCanvasFocusRequest] = useState<{ targetId: string; subtree: boolean; nonce: number } | null>(null);
   // Cross-jumps replace the destination scope once. Manual switches retain
   // each domain's selection.
@@ -491,7 +492,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
 
       {managed && <MonitorSummary apiPrefix={apiPrefix} />}
 
-      <div hidden={ownsSidebar}><Sidebar
+      <div hidden={ownsSidebar || clusterLayout.hidden}><Sidebar
         onCandidatesChanged={handleRefresh}
         nodeManagement={nodeManagement}
         allServers={allServers}
@@ -520,19 +521,25 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
         servicePlans={servicePlans.plans}
       /></div>
 
-      {!ownsSidebar && <PanelDivider fixed side="left" width={sidebarWidth} onResize={setSidebarWidth} />}
+      {!ownsSidebar && !clusterLayout.hidden && !clusterLayout.overlayNavigation && <PanelDivider fixed side="left" width={sidebarWidth} onResize={setSidebarWidth}
+        min={activeDomain === Domain.Cluster ? 200 : 220} max={clusterLayout.sidebarMax} />}
 
       <main
         className="tw-mt-14 tw-h-[calc(100vh-3.5rem)] tw-flex tw-flex-col tw-min-h-0"
         style={{
-          marginLeft: ownsSidebar ? 0 : sidebarWidth,
-          marginRight: selectedEntity && !ownsSidebar ? inspectorWidth : 0,
+          marginLeft: ownsSidebar || clusterLayout.hidden || clusterLayout.overlayNavigation ? 0 : sidebarWidth,
+          marginRight: selectedEntity && !ownsSidebar && !clusterLayout.drawer ? inspectorWidth : 0,
         }}
       >
         {dataError && <div role="alert" className="tw-shrink-0 tw-border-b tw-border-failed/30 tw-bg-failed/10 tw-px-4 tw-py-2 tw-text-sm tw-text-failed">
           {domain === Domain.Capacity ? `${dataError.message} — retrying` : 'Backend unreachable — retrying'}
         </div>}
         {activeDomain === Domain.Cluster && <>
+          <button className="tw-self-start tw-px-4 tw-py-1 tw-text-xs tw-text-accent" aria-expanded={!clusterLayout.hidden}
+            style={{ marginLeft: clusterLayout.overlayNavigation && !clusterLayout.hidden ? sidebarWidth : 0 }}
+            onClick={() => clusterLayout.setCollapsed(!clusterLayout.collapsed)}>
+            {clusterLayout.hidden ? 'Show navigation' : 'Hide navigation'}
+          </button>
           <ClusterBreadcrumb />
           {!storageDetail && <ClusterViewSwitch />}
           {nodeManagement && !managed && <AutoJoin readonly={readonly} />}
@@ -549,7 +556,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
             nodes={nodes}
             servers={servers}
             stores={stores}
-            viewportWidthKey={selectedEntity && !ownsSidebar ? inspectorWidth : 0}
+            viewportWidthKey={selectedEntity && !ownsSidebar && !clusterLayout.drawer ? inspectorWidth : 0}
             nodeStores={nodeStores}
             nodeHealthById={nodeHealthById}
             diskdbNodeIds={diskdbNodeIds}
@@ -584,10 +591,11 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
       </main>
 
       {!ownsSidebar && <Suspense fallback={null}>
-        <Inspector readonly={domain === Domain.KV ? logicalReadonly : topologyReadonly} allServers={allServers} modules={modules} nodes={nodes} racks={racks} servers={servers} stores={stores} capacityUsage={capacityUsage} hardwareCapacity={hardwareCapacity} diskdbInstances={diskdbInstances} width={inspectorWidth} pendingSelectionRef={pendingSelectionRef} />
+        <Inspector drawer={clusterLayout.drawer} readonly={domain === Domain.KV ? logicalReadonly : topologyReadonly} allServers={allServers} modules={modules} nodes={nodes} racks={racks} servers={servers} stores={stores} capacityUsage={capacityUsage} hardwareCapacity={hardwareCapacity} diskdbInstances={diskdbInstances} width={inspectorWidth} pendingSelectionRef={pendingSelectionRef} />
       </Suspense>}
 
-      {selectedEntity && !ownsSidebar && <PanelDivider fixed side="right" width={inspectorWidth} onResize={setInspectorWidth} />}
+      {selectedEntity && !ownsSidebar && !clusterLayout.drawer && <PanelDivider fixed side="right" width={inspectorWidth} onResize={setInspectorWidth}
+        min={activeDomain === Domain.Cluster ? 280 : 220} max={clusterLayout.propertiesMax} />}
 
       {menuState && <ContextMenu items={menuState.items} position={menuState.position} onClose={closeMenu} />}
 
