@@ -13,6 +13,16 @@ live in the linked document; implementation follows
 
 ## Dataset and access
 
+- **[R231](R231-dataset-public-rest-api.md)** — portable Dataset REST contract,
+  complete HTTP payload upload/read, publication and scoped read lifecycle.
+  **Area:** Dataset / access server. **Complexity:** High.
+- **[R232](R232-sdk-dataset-http.md)** — independently packaged SDK in `sdk/`,
+  Rust Dataset HTTP core with a Python wrapper, and real-server compatibility tests.
+  **Area:** SDK. **Complexity:** High. **Dependencies:** R231 for release.
+- **[R233](R233-sdk-local-cache-checkpoint.md)** — optional local disk read cache
+  and recoverable checkpoint staging with explicit remote durability.
+  **Area:** SDK. **Complexity:** High. **Status:** Deferred until R231/R232
+  HTTP workload measurements.
 - **[R220](R220-dataset-fat-client-plan.md)** — Dataset SDK fat-client direct
   access and optimization contract. **Area:** Dataset SDK. **Complexity:** High.
   **Status:** Deferred until the core Dataset contract has workload measurements.

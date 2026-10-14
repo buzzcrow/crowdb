@@ -3,18 +3,23 @@
 
 ### R220: Dataset — Fat-client direct access plan
 
-Status: Separate Dataset SDK project maintained by this team. Deferred until R219
-is implemented and the CPU HTTP path has measured latency, throughput, memory,
-and digest costs.
+Status: Deferred until R231/R232 deliver the public HTTP SDK and measured CPU
+HTTP latency, throughput, memory, and digest costs. The SDK project lives under
+`sdk/` in this repository with independent packages, as defined by R232.
 
 Problem: The SDK fat client can avoid HTTP routing and payload relay by connecting
 directly to internal Chunk-KV and DiskIO, but it also takes responsibility for
 routing freshness, retries, buffer lifetime, backpressure, and worker
 partitioning. Implementing it before the HTTP baseline would make optimization
 claims hard to measure and could duplicate authority logic.
+The root contract is [Dataset design](../design/access-server/dataset/design-crowdb-access-dataset.md).
 
 Solution:
 
+- Implement direct access in the Rust SDK core and expose it through the same
+  Python wrapper established by R232. Routing, buffers, retries and optional
+  RDMA stay in Rust; Python does not implement another data plane. Additional
+  C/C++ bindings can be added later without making a C ABI a prerequisite.
 - Document the SDK direct-client protocol over the same Dataset authority and Read
   Plan contract used by HTTP.
 - Compare direct Chunk-KV metadata reads and DiskIO/chunk range reads with the
@@ -27,10 +32,14 @@ Solution:
   library. The client cannot publish placement or bypass Dataset authority.
 - Reserve GPU/direct-memory delivery for a later design after CPU direct access
   is measured and correct.
+- Use explicit server capabilities and authorization for direct Chunk-KV/chunk
+  access. Direct access never grants unrestricted internal metadata mutation.
+  Keep HTTP available for unsupported capabilities; choose transport before
+  starting an operation and never replay an ambiguous mutation on a new path.
 
-Dependencies: R219 HTTP baseline, R217 CPU E2E/container acceptance, and the
-measured Chunk-KV/DiskIO read flows. Unlanded direct-access work remains a design
-artifact; no native client is required for R213–R219 acceptance.
+Dependencies: R231 public REST and R232 packaged HTTP SDK baseline, existing CPU
+E2E/container acceptance, and measured Chunk-KV/DiskIO read flows. R233 caching
+is optional. Unlanded direct access does not block the first HTTP SDK release.
 
 Acceptance:
 
@@ -43,20 +52,14 @@ Acceptance:
 3. Given a slow consumer, assert direct prefetch and in-flight buffers remain
    bounded and cancellation releases client buffers. Bounded delivery invariant.
    Integration test.
-
-Resolved decisions:
-
-- The core remains Rust. The separate SDK exposes a narrow C ABI over opaque
-  handles first, then builds Python/PyTorch bindings over the same contract.
-  C++ and RDMA wrappers remain later data-plane work.
-- Client metadata is cached by immutable Snapshot ID and explicitly refreshed
-  when resolving `latest`; no Dataset-specific global watch stream is required
-  for the first version.
-
-Open Issues:
-
-- Define the C ABI ownership, error, cancellation, and buffer lifetime contract
-  before implementing the fat client. Keep the ABI in the separate SDK project.
+4. Given unsupported direct capability or denied direct credentials, select
+   transport and attempt access; assert HTTP fallback where authorized, no
+   authority bypass and no cross-transport replay of ambiguous writes.
+   Transport authority invariant. Integration test.
+5. Given the same direct read through Rust and the Python wrapper, cancel and
+   close the read while retaining returned data; assert equivalent logical
+   results, valid buffer lifetimes and isolated cleanup. Binding invariant.
+   Integration test.
 
 Verification commands:
 

@@ -106,6 +106,10 @@ def main() -> int:
         ("default", "test-console-ui"),
         ("s3-e2e", "test-boto3-copy-error"),
         ("default", "test-access-sdk"),
+        ("default", "test-dataset-sdk"),
+        ("default", "sdk-fmt-check"),
+        ("default", "sdk-lint"),
+        ("default", "check-dataset-sdk-boundary"),
     })
     # Component protocol peers and complete container domains have distinct owners.
     unreachable = sorted(required - reachable)

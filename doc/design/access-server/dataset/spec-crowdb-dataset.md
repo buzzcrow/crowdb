@@ -226,6 +226,11 @@ that status and do not double-delete a payload.
 
 ## 10. HTTP and native surfaces
 
+The versioned public wire schemas, resource paths, binary framing and retry
+contract are defined by [Dataset HTTP API v1](openapi-crowdb-dataset-v1.yaml).
+The public surface uses JSON control records and binary payload streams;
+persisted authority bincode records are not public DTOs.
+
 The HTTP surface is the portable wire contract. It exposes Dataset creation and
 opening, latest and Snapshot inspection, publication and preparation, Manifest
 retrieval, retention, stable selection, reclamation status, bounded reads, read
