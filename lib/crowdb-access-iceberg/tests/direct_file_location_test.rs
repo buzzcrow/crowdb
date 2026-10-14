@@ -24,6 +24,39 @@ fn table() -> TableLocation {
 }
 
 #[tokio::test]
+async fn identical_replacement_at_the_same_root_extent_cannot_revive_a_reclaimed_locator() {
+    let blocks = Arc::new(blocks::TestBlocks::default());
+    let table = table();
+    let signer = DirectFileLocations::new(1, BTreeMap::from([(1, [1; 32])])).unwrap();
+    let bytes = b"identical parquet bytes";
+    let mut files = Vec::new();
+    for _ in 0..2 {
+        let file = FileId::random();
+        let mut writer = FileTreeWriter::new(blocks.clone(), FileIdentity { table, file }, 1024).unwrap();
+        writer.push(bytes).await.unwrap();
+        let tree = writer.finish().await.unwrap();
+        let root = tree.root.unwrap();
+        assert!(root.height > 0);
+        files.push((
+            signer
+                .parquet(table, "part", file, tree.length, tree.digest, root.clone())
+                .unwrap(),
+            root,
+        ));
+    }
+    assert_ne!(files[0].0.location, files[1].0.location);
+    let mut reused = (*blocks.values.load_full()).clone();
+    reused.insert(files[0].1.chunk.low, reused[&files[1].1.chunk.low].clone());
+    blocks.values.store(Arc::new(reused));
+    let old = signer.resolve(&files[0].0.location).unwrap().unwrap();
+    let mut reader =
+        FileReader::new(blocks.clone(), old, Some(ByteRange { start: 0, end: 3 }), 1024).unwrap();
+    assert!(reader.next().await.is_err());
+    let mut reader = FileReader::new(blocks, files[1].0.clone(), None, 1024).unwrap();
+    assert_eq!(reader.next().await.unwrap().unwrap(), bytes);
+}
+
+#[tokio::test]
 async fn injection_replay_and_logical_delete_do_not_add_direct_read_metadata_queries() {
     use std::sync::atomic::Ordering;
     let mut fixture = fixture::TestFile::new(common::TestStore::default()).await;

@@ -39,7 +39,23 @@ async fn fixture(
     GcLimits,
     FileId,
 ) {
-    let fixture = common::file::TestFile::new(common::TestStore::default()).await;
+    fixture_at(retire, false).await
+}
+
+async fn fixture_at(
+    retire: bool,
+    native: bool,
+) -> (
+    common::file::TestFile,
+    Arc<gc_blocks::TestReclaimBlocks>,
+    GcTask,
+    GcLimits,
+    FileId,
+) {
+    let mut fixture = common::file::TestFile::new(common::TestStore::default()).await;
+    if native {
+        fixture.table.storage_namespace = Some(crowdb_access_iceberg::key::NamespaceId::random());
+    }
     let blocks = Arc::new(gc_blocks::TestReclaimBlocks::default());
     let owner = FileIdentity {
         table: fixture.table,
@@ -229,6 +245,58 @@ async fn retired_file_reclamation_survives_worker_restart_at_every_step() {
     assert_eq!(task.reclaimed_bytes, 4096);
     assert!(blocks.blocks.values.load().is_empty());
     assert!(!published_file_exists(&fixture, file).await);
+}
+
+#[tokio::test]
+async fn native_retirement_discovers_and_reclaims_single_filename_records_after_restart() {
+    use crowdb_access_iceberg::file::canonical_file_key;
+    use crowdb_access_iceberg::key::{StorageKey, TableStorageKey, TableStorageScope};
+    let (fixture, blocks, mut task, limits, _) = fixture_at(true, true).await;
+    let file = canonical_file_key(&fixture.table.file("data/object.parquet").unwrap())
+        .encode()
+        .unwrap();
+    let projection = TableStorageKey {
+        table: fixture.table.storage_path().unwrap(),
+        scope: TableStorageScope::Projection,
+        suffix: "1/derived/1/0".into(),
+    }
+    .encode()
+    .unwrap();
+    fixture
+        .store
+        .compare_exchange(
+            &projection,
+            None,
+            b"derived",
+            mutation_identity(&projection, None, b"derived"),
+        )
+        .await
+        .unwrap();
+    for _ in 0..350 {
+        let repository = GcRepository::new(fixture.store.clone());
+        let worker = GcWorker::new(repository.clone(), blocks.clone(), limits).unwrap();
+        task = worker.step(&task, 2000_u64.max(task.retry_at_ms)).await.unwrap();
+        task = repository
+            .task(task.context.catalog, task.identity)
+            .await
+            .unwrap()
+            .unwrap();
+        if task.phase == GcPhase::Complete {
+            break;
+        }
+    }
+    assert_eq!(task.phase, GcPhase::Complete, "{task:?}");
+    assert_eq!(task.deleted, 1);
+    assert_eq!(task.reclaimed_bytes, 4096);
+    assert!(blocks.blocks.values.load().is_empty());
+    assert!(fixture.store.get(&file).await.unwrap().is_none());
+    assert!(fixture.store.get(&projection).await.unwrap().is_none());
+    assert!(!fixture
+        .store
+        .values
+        .load()
+        .keys()
+        .any(|key| matches!(StorageKey::decode(key), Ok(StorageKey::NativeTable(_)))));
 }
 
 #[tokio::test]
@@ -896,6 +964,7 @@ async fn missing_file_claim_stops_sweep_before_any_physical_deletion() {
     let page = fixture
         .store
         .scan_gc(GcScan {
+            native: false,
             catalog: task.context.catalog,
             scope: Some(CatalogScope::GcClaim),
             prefix: Vec::new(),

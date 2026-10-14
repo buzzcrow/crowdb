@@ -15,14 +15,47 @@ Goal: make catalog, namespace, and table identities explicit in the Iceberg
 KV and FileIO path model, keep file bytes in the native CROWDB Iceberg storage,
 and preserve file locations across table rename and cross-namespace move.
 
-Status: implementation in progress. Native identity/URI/key codecs, storage
-dispatch, logical file publication/resolution and bounded prefix listing are
-implemented. File/directory/grant/name-mapping records preserve storage namespace.
-Native head lookup/publication/rename/drop/GC fences and direct URL reads are
-implemented. Catalog v2 activation, remaining workflow/GC/projection keys and
-injection HTTP/loader/recovery integration remain pending. Direct reads skip
-Iceberg file-location/state KV and preserve
-the chunk layer's normal layout resolution, as confirmed in the chat.
+Status: implementation in progress. Native catalog layout selection, default
+namespace creation, table/file/projection paths, direct URL reads, upload
+selection/replay and the loader's returned-location handoff are implemented.
+Remaining work is the auxiliary-key/recovery audit, complete native SDK/container
+acceptance, and final design/backlog cleanup. Direct reads skip Iceberg
+file-location/state KV and retain the chunk layer's normal layout resolution,
+as confirmed in the chat.
+
+Latest verified behavior:
+
+- Native catalog authorities persist layout 2 in a record envelope that older
+  servers reject; omitted legacy layout fields remain version 1. Rename and
+  capability activation preserve layout. New initialization/clear chooses 2.
+  The authority also persists the reserved version-1 locator key; access-token
+  rotation cannot invalidate file URLs. Configured later signing versions retain
+  that catalog key automatically. Both credential and locator key rotation pass
+  the native HTTP read test.
+- Native default namespace creation uses normal durable namespace publication
+  before table metadata writes. Native creation and replay retain one frozen
+  namespace, one head and one filename authority.
+- Native GC discovers v2 file records through bounded v2 scans, resolves standard
+  graph references by canonical filename, deletes that authority and removes
+  native projection pages at catalog retirement. Restart-at-every-step tests pass.
+- Injection PUT selects an operation receipt before file publication. Both lost
+  receipt and lost publication replies replay the same FileId, root and URL;
+  changed digest/principal/identity and deleted-file replays fail closed.
+- Direct locators require an owner-bound directory root even for one leaf.
+  An identical replacement at a reused root extent cannot revive the old URL.
+  HTTP probes root ownership for HEAD/GET/conditions and reuses the preflight
+  directory in its pull reader, without file-location/state KV.
+- Native HTTP integration forbids all file KV GETs and verifies cold restart,
+  locator-key rotation, range reads, ETag conditions, scoped listing, logical
+  delete retention, and HEAD/GET failure after physical root removal.
+- Credential refresh includes the frozen namespace in the existing endpoint URL.
+  Moving a table, dropping/recreating its default namespace and refreshing through
+  the old endpoint retains its old prefix without any table-ID reverse index.
+- The TPC loader journals its UUIDv7 upload URI before transfer and the selected
+  returned URL before manifest registration. Python verification: 222 passed,
+  7 explicitly skipped integrations; Ruff check/format passed. Existing unrelated
+  loader edits are preserved. A pre-existing region-only assertion was corrected
+  to validate the actual table name for the nation case as well.
 
 Verified foundation gates:
 
@@ -134,8 +167,9 @@ table-ID reverse index: callers and recovery tasks carry the full identity.
 acceleration, not another file record or authoritative snapshot store.
 
 The first three path segments are parsed by fixed identity encodings and
-positions. The canonical encodings remain lower-case unpadded base32 for the
-catalog ID and lower-case fixed-width hexadecimal for namespace and table IDs;
+positions. The native canonical encodings are lower-case fixed-width hexadecimal for all
+three 128-bit IDs (32 bytes of ASCII each). Legacy buckets retain their base32
+catalog component;
 labels such as `namespace` and `table` are rejected rather than accepted as
 aliases.
 
@@ -475,7 +509,7 @@ three-ID prefix and a matching grant.
   prefixes. Round trips must recover all three IDs and the relative file key.
   Files: `lib/crowdb-access-iceberg/src/file/location.rs`,
   `lib/crowdb-access-iceberg/tests/file_location_test.rs`.
-- [ ] **Assign the storage path once** during table creation, including staged
+- [x] **Assign the storage path once** during table creation, including staged
   creation, and bind it into the table head and initial metadata. Rename and
   cross-namespace move must retain it; a newly created table gets a new table
   identity and path.
@@ -494,13 +528,13 @@ three-ID prefix and a matching grant.
   `lib/crowdb-access-iceberg/src/metadata_projection/`,
   `lib/crowdb-access-iceberg/src/key/codec.rs`.
 
-- [ ] **Introduce one table-path prefix encoder** for catalog, storage
+- [x] **Introduce one table-path prefix encoder** for catalog, storage
   namespace, and table IDs. All table-owned file keys must use it rather than
   assembling ad-hoc suffixes.
   Files: `lib/crowdb-access-iceberg/src/key.rs`,
   `lib/crowdb-access-iceberg/src/key/codec.rs`,
   `lib/crowdb-access-iceberg/src/file/key.rs`.
-- [ ] **Move the single file authority under the prefix**:
+- [x] **Move the single file authority under the prefix**:
   `table-path/file/<public-relative-filename>` is the complete selected record.
   Do not introduce separate file name, public-key or file-ID indexes. Preserve bounded
   ordered scans and reject a range
@@ -509,7 +543,7 @@ three-ID prefix and a matching grant.
   `lib/crowdb-access-iceberg/src/file/listing.rs`,
   `lib/crowdb-access-iceberg/src/file/listing/repository.rs`,
   `lib/crowdb-access-iceberg/src/catalog/storage.rs`.
-- [ ] **Audit every table-owned auxiliary key**: multipart records, write
+- [~] **Audit every table-owned auxiliary key**: multipart records, write
   intents/fences, GC candidates/nodes/pending state, and recovery scans must
   either carry the same table-path prefix or explicitly document why an
   operation-scoped key is independent. Update range bounds and foreign-record
@@ -559,7 +593,7 @@ three-ID prefix and a matching grant.
   Files: `lib/crowdb-access-iceberg/src/file/blocks.rs`,
   `lib/crowdb-chunk-client/src/chunk/chunk_reader.rs`,
   `lib/crowdb-chunk-client/tests/chunk_reader_test.rs`.
-- [ ] **Reuse bounded permission validation**: define permission-cache entries
+- [x] **Reuse bounded permission validation**: define permission-cache entries
   by principal, catalog epoch, full storage identity and operations; bound
   validity by grants and applicable authority leases. Misses validate authority,
   expired entries fail closed, and direct reads never load per-file state.
@@ -605,7 +639,7 @@ three-ID prefix and a matching grant.
   `lib/crowdb-access-iceberg/src/file/location.rs`,
   `app/crowdb-access-server/src/iceberg/file_http/`,
   `lib/crowdb-access-iceberg/src/wire/credentials.rs`.
-- [ ] **Add direct locator validation**: bind locator version, table identity,
+- [x] **Add direct locator validation**: bind locator version, table identity,
   file identity, length, integrity metadata and chunk root; authenticate the
   current HTTP grant independently of the durable locator signature;
   reject tampering before chunk access and enforce one contiguous range.
@@ -624,7 +658,7 @@ three-ID prefix and a matching grant.
   `lib/crowdb-access-iceberg/src/table/metadata/`,
   `lib/crowdb-access-iceberg/src/metadata_projection/`,
   `lib/crowdb-access-iceberg/src/commit/files.rs`.
-- [ ] **Implement bounded metadata prefix list**: map the public metadata or
+- [x] **Implement bounded metadata prefix list**: map the public metadata or
   filename prefix to the exact `file/` range; stream ordered records into a
   bounded page and persist an authenticated continuation at scan-budget
   exhaustion. Handle tombstones, sparse pages, delimiter common prefixes and

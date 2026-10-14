@@ -86,6 +86,7 @@ impl GcWorker {
 
     fn terminal_scan(&self, task: &GcTask) -> GcScan {
         GcScan {
+            native: false,
             catalog: task.context.catalog,
             scope: None,
             prefix: Vec::new(),

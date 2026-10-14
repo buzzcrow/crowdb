@@ -5,7 +5,7 @@ use crowdb_chunk_client::ReclaimOutcome;
 use crate::{
     catalog::{CatalogError, CatalogLifecycle, RootState},
     error::ValidationError,
-    file::{file_key, location_key, FileBlockStore, FileIoError},
+    file::{file_key, FileBlockStore, FileIoError},
     key::{CatalogScope, IcebergKey, SystemScope},
     record::StorageRecord,
 };
@@ -21,6 +21,7 @@ mod cleanup;
 mod inactive;
 mod live;
 mod multipart;
+mod native;
 mod sweep;
 mod system;
 mod terminal;
@@ -107,6 +108,7 @@ impl GcWorker {
             GcPhase::Roots if task.kind == GcTaskKind::LiveTable => self.live_roots(task, now_ms).await,
             GcPhase::Mark if task.kind == GcTaskKind::LiveTable => self.live_mark(task).await,
             GcPhase::Roots => self.inactive_roots(task, now_ms).await,
+            GcPhase::RootsNative => self.native_roots(task, now_ms).await,
             GcPhase::Fence if task.kind == GcTaskKind::LiveTable => self.live_fence(task, now_ms).await,
             GcPhase::Fence => self.fence(task, now_ms).await,
             GcPhase::Sweep => self.sweep(task, now_ms).await,
@@ -116,6 +118,7 @@ impl GcWorker {
             GcPhase::SweepWrites => self.sweep_writes(task, now_ms).await,
             GcPhase::CleanupSystem => self.cleanup_system(task, now_ms).await,
             GcPhase::CleanupCatalog => self.cleanup_catalog(task, now_ms).await,
+            GcPhase::CleanupNative => self.cleanup_native(task, now_ms).await,
             GcPhase::VerifyCleanup => self.verify_cleanup(task).await,
             GcPhase::CleanupGc => self.cleanup_gc(task).await,
             GcPhase::RootsSystem | GcPhase::PreSweepSystem => self.scan_system_protection(task, now_ms).await,
@@ -223,6 +226,7 @@ impl GcWorker {
 
     fn candidates(&self, task: &GcTask) -> GcScan {
         GcScan {
+            native: false,
             catalog: task.context.catalog,
             scope: Some(CatalogScope::GcCandidate),
             prefix: task

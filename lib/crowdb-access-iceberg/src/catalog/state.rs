@@ -42,8 +42,63 @@ pub enum CatalogLifecycle {
     Retired,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum CatalogStorageLayout {
+    Legacy = 1,
+    Native = 2,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct CatalogLocatorKey([u8; 32]);
+
+impl CatalogLocatorKey {
+    /// # Errors
+    /// Rejects an uninitialized persistent locator secret.
+    pub fn new(bytes: [u8; 32]) -> Result<Self, ValidationError> {
+        if bytes == [0; 32] {
+            return Err(ValidationError::Record);
+        }
+        Ok(Self(bytes))
+    }
+
+    #[must_use]
+    pub const fn bytes(self) -> [u8; 32] {
+        self.0
+    }
+
+    fn generate() -> Self {
+        use sha2::{Digest, Sha256};
+        let mut digest = Sha256::new();
+        digest.update(b"crowdb-native-locator-key-v1");
+        digest.update(uuid::Uuid::new_v4().as_bytes());
+        digest.update(uuid::Uuid::new_v4().as_bytes());
+        Self(digest.finalize().into())
+    }
+}
+
+impl std::fmt::Debug for CatalogLocatorKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("CatalogLocatorKey([redacted])")
+    }
+}
+
+impl CatalogStorageLayout {
+    /// # Errors
+    /// Rejects unrecognized persisted layouts without attempting a fallback.
+    pub fn from_version(version: u8) -> Result<Self, ValidationError> {
+        match version {
+            1 => Ok(Self::Legacy),
+            2 => Ok(Self::Native),
+            _ => Err(ValidationError::KeyVersion(version)),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CatalogAuthority {
+    pub storage_layout: CatalogStorageLayout,
+    pub locator_key: Option<CatalogLocatorKey>,
     pub catalog: CatalogId,
     pub display_name: String,
     pub name_generation: u64,
@@ -58,6 +113,8 @@ impl CatalogAuthority {
     /// Rejects invalid display names; no table format support is enabled initially.
     pub fn new(catalog: CatalogId, display_name: String) -> Result<Self, ValidationError> {
         let authority = Self {
+            storage_layout: CatalogStorageLayout::Legacy,
+            locator_key: None,
             catalog,
             display_name,
             name_generation: 1,
@@ -70,11 +127,25 @@ impl CatalogAuthority {
         Ok(authority)
     }
 
+    /// Creates an authority for a new catalog without relabeling existing data.
+    /// # Errors
+    /// Rejects invalid display names.
+    pub fn new_native(catalog: CatalogId, display_name: String) -> Result<Self, ValidationError> {
+        Ok(Self {
+            storage_layout: CatalogStorageLayout::Native,
+            locator_key: Some(CatalogLocatorKey::generate()),
+            ..Self::new(catalog, display_name)?
+        })
+    }
+
     /// # Errors
     /// Rejects malformed names, zero generations and inconsistent capabilities.
     pub fn validate(&self) -> Result<(), ValidationError> {
         validate_display_name(&self.display_name)?;
         if self.name_generation == 0 || self.config_generation == 0 {
+            return Err(ValidationError::Record);
+        }
+        if (self.storage_layout == CatalogStorageLayout::Native) != self.locator_key.is_some() {
             return Err(ValidationError::Record);
         }
         self.admission_bounds.completion_deadline(0)?;
@@ -94,6 +165,8 @@ impl CatalogAuthority {
             .checked_add(1)
             .ok_or(ValidationError::GenerationExhausted)?;
         Ok(Self {
+            storage_layout: self.storage_layout,
+            locator_key: self.locator_key,
             catalog: self.catalog,
             display_name,
             name_generation,

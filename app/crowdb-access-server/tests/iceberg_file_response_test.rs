@@ -208,3 +208,37 @@ fn complete_uses_only_a_published_matching_record() {
     session.published = None;
     assert!(MultipartResponses::complete(&session, &record, "https://storage.example/a").is_err());
 }
+#[test]
+fn read_conditions_preserve_strong_preconditions_and_conditional_range_semantics() {
+    use crowdb_access_server::iceberg::{file_read_condition, FileReadCondition};
+    use hyper::header::{HeaderMap, HeaderValue, IF_MATCH, IF_NONE_MATCH, IF_RANGE};
+    let tag = "\"current\"";
+    let mut headers = HeaderMap::new();
+    headers.insert(IF_MATCH, HeaderValue::from_static("\"old\", \"current\""));
+    headers.insert(IF_RANGE, HeaderValue::from_static("\"old\""));
+    assert_eq!(
+        file_read_condition(&headers, tag).unwrap(),
+        FileReadCondition::Read { use_range: false }
+    );
+    headers.insert(IF_RANGE, HeaderValue::from_static("\"current\""));
+    assert_eq!(
+        file_read_condition(&headers, tag).unwrap(),
+        FileReadCondition::Read { use_range: true }
+    );
+    headers.insert(IF_MATCH, HeaderValue::from_static("W/\"current\""));
+    assert_eq!(
+        file_read_condition(&headers, tag),
+        Err(FileS3ErrorCode::PreconditionFailed)
+    );
+    headers.remove(IF_MATCH);
+    headers.insert(IF_NONE_MATCH, HeaderValue::from_static("W/\"current\""));
+    assert_eq!(
+        file_read_condition(&headers, tag).unwrap(),
+        FileReadCondition::NotModified
+    );
+    headers.insert(IF_NONE_MATCH, HeaderValue::from_static("\"old\", invalid"));
+    assert_eq!(
+        file_read_condition(&headers, tag),
+        Err(FileS3ErrorCode::InvalidRequest)
+    );
+}

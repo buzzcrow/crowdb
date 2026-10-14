@@ -6,6 +6,7 @@ mod file;
 mod gc;
 mod gc_key;
 mod gc_node;
+mod injection;
 mod management;
 mod multipart;
 mod multipart_admission;

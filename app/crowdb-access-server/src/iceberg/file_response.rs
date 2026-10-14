@@ -33,6 +33,7 @@ pub enum FileS3ErrorCode {
     Conflict,
     BadDigest,
     EntityTooSmall,
+    PreconditionFailed,
 }
 
 impl FileS3ErrorCode {
@@ -48,6 +49,7 @@ impl FileS3ErrorCode {
             Self::InvalidRange => StatusCode::RANGE_NOT_SATISFIABLE,
             Self::SlowDown => StatusCode::SERVICE_UNAVAILABLE,
             Self::Conflict => StatusCode::CONFLICT,
+            Self::PreconditionFailed => StatusCode::PRECONDITION_FAILED,
         }
     }
 
@@ -65,6 +67,7 @@ impl FileS3ErrorCode {
             Self::Conflict => "The immutable object already exists with different content",
             Self::BadDigest => "The supplied digest does not match the uploaded content",
             Self::EntityTooSmall => "A nonfinal upload part is smaller than 5 MiB",
+            Self::PreconditionFailed => "An object precondition was not satisfied",
         }
     }
 
@@ -82,6 +85,7 @@ impl FileS3ErrorCode {
             Self::Conflict => "OperationAborted",
             Self::BadDigest => "BadDigest",
             Self::EntityTooSmall => "EntityTooSmall",
+            Self::PreconditionFailed => "PreconditionFailed",
         }
     }
 }

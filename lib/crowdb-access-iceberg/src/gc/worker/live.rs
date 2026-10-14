@@ -77,6 +77,7 @@ impl GcWorker {
             return Ok(self.repository.start_proof(task).await?);
         }
         let scan = GcScan {
+            native: false,
             catalog: task.context.catalog,
             scope: None,
             prefix: Vec::new(),
@@ -126,8 +127,7 @@ impl GcWorker {
             next.scan_after.clone_from(&last.key);
         } else {
             next.scan_after.clear();
-            next.proof.complete = false;
-            next.phase = GcPhase::Mark;
+            next.phase = GcPhase::RootsNative;
         }
         self.repository.update(task, &next).await?;
         Ok(next)

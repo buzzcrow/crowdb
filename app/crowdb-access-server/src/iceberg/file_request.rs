@@ -25,6 +25,7 @@ pub enum MultipartRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileRequest {
+    pub injection: Option<crowdb_access_iceberg::operation::RequestIdentity>,
     pub location: FileLocation,
     pub operation: FileOperation,
     pub multipart: Option<MultipartRequest>,
@@ -54,7 +55,23 @@ impl FileRequest {
             .parse()
             .map_err(|_| FileRequestError::Invalid)?;
         let mut query = query(uri.query())?;
+        let injection = query
+            .remove("crowdb-native-upload")
+            .map(|identity| {
+                if method != Method::PUT
+                    || location.table().storage_namespace.is_none()
+                    || !location.relative_key().ends_with(".parquet")
+                {
+                    return Err(FileRequestError::Invalid);
+                }
+                crowdb_access_iceberg::operation::RequestIdentity::parse(&identity, u64::MAX)
+                    .map_err(|_| FileRequestError::Invalid)
+            })
+            .transpose()?;
         let multipart = multipart(method, &mut query)?;
+        if injection.is_some() && multipart.is_some() {
+            return Err(FileRequestError::Invalid);
+        }
         if !query.is_empty() {
             return Err(FileRequestError::Unsupported);
         }
@@ -77,6 +94,7 @@ impl FileRequest {
             return Err(FileRequestError::Invalid);
         }
         Ok(Self {
+            injection,
             location,
             operation,
             multipart,

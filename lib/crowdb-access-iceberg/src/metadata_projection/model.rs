@@ -1,11 +1,12 @@
 use std::collections::BTreeMap;
+use std::fmt::Write;
 
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use sha2::{Digest, Sha256};
 
 use crate::file::{FileRecord, TableLocation};
-use crate::key::{CatalogScope, IcebergKey};
+use crate::key::{CatalogScope, IcebergKey, TableStorageKey, TableStorageScope};
 
 pub const PROJECTION_VERSION: u16 = 2;
 pub const PROJECTION_PAGE_BYTES: usize = 32 * 1024;
@@ -32,6 +33,19 @@ impl ProjectionIdentity {
     }
 
     pub(super) fn key(self, child: u16, page: u16) -> Option<Vec<u8>> {
+        if let Some(table) = self.table.storage_path() {
+            let mut digest = String::with_capacity(64);
+            for byte in self.digest {
+                write!(digest, "{byte:02x}").expect("string writes do not fail");
+            }
+            return TableStorageKey {
+                table,
+                scope: TableStorageScope::Projection,
+                suffix: format!("{}/{digest}/{}/{child}/{page}", self.generation, self.version),
+            }
+            .encode()
+            .ok();
+        }
         let mut suffix = self.table.table.as_bytes().to_vec();
         suffix.extend_from_slice(&self.generation.to_be_bytes());
         suffix.extend_from_slice(&self.digest);

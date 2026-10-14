@@ -18,6 +18,46 @@ fn root_key() -> IcebergKey {
 }
 
 #[test]
+fn native_catalog_authority_uses_a_version_legacy_servers_cannot_silently_relabel() {
+    use crowdb_access_iceberg::catalog::{Capabilities, CatalogStorageLayout};
+    let catalog = CatalogId::random();
+    let key = IcebergKey::Catalog {
+        catalog,
+        scope: CatalogScope::Authority,
+        suffix: Vec::new(),
+    };
+    for (authority, version) in [
+        (CatalogAuthority::new(catalog, "legacy".into()).unwrap(), 1),
+        (CatalogAuthority::new_native(catalog, "native".into()).unwrap(), 2),
+    ] {
+        let record = StorageRecord::Authority(authority.clone());
+        let bytes = record.encode().unwrap();
+        assert_eq!(
+            fb::root_as_fbiceberg_record(&bytes).unwrap().schema_version(),
+            version
+        );
+        assert_eq!(StorageRecord::decode(&key, &bytes).unwrap(), record);
+        let activated = authority
+            .activated(Capabilities::from_bits(0x3fff).unwrap())
+            .unwrap();
+        assert_eq!(activated.storage_layout, authority.storage_layout);
+        assert_eq!(activated.locator_key, authority.locator_key);
+        assert_eq!(
+            activated.renamed("renamed".into()).unwrap().storage_layout,
+            authority.storage_layout
+        );
+        assert_eq!(
+            activated.renamed("renamed".into()).unwrap().locator_key,
+            authority.locator_key
+        );
+        assert_eq!(
+            authority.storage_layout == CatalogStorageLayout::Native,
+            version == 2
+        );
+    }
+}
+
+#[test]
 fn every_root_phase_round_trips_with_its_exact_catalog_and_deadline() {
     let previous = CatalogContext {
         catalog: CatalogId::random(),
@@ -130,6 +170,8 @@ fn authority_codec_rejects_unknown_lifecycle_capabilities_and_invalid_generation
         let authority = FBCatalogAuthority::create(
             &mut builder,
             &FBCatalogAuthorityArgs {
+                locator_key: None,
+                storage_layout: 1,
                 catalog: Some(identity),
                 display_name: Some(name),
                 lifecycle,

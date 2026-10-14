@@ -90,6 +90,7 @@ impl GcWorker {
             return Err(CatalogError::Busy.into());
         }
         let scan = GcScan {
+            native: false,
             catalog: task.context.catalog,
             scope: None,
             prefix: Vec::new(),
@@ -113,6 +114,63 @@ impl GcWorker {
             {
                 self.delete_exact(&item.key, &item.value).await?;
             }
+        }
+        let mut next = task.progress()?;
+        if let Some(last) = page.items.last() {
+            next.scan_after.clone_from(&last.key);
+        } else {
+            next.scan_after.clear();
+            next.phase = GcPhase::CleanupNative;
+        }
+        self.repository.update(task, &next).await?;
+        Ok(next)
+    }
+
+    pub(super) async fn cleanup_native(&self, task: &GcTask, now_ms: u64) -> Result<GcTask, GcWorkError> {
+        self.verify_inactive(task).await?;
+        if task.kind != GcTaskKind::RetiredCatalog || now_ms < task.not_before_ms {
+            return Err(CatalogError::Busy.into());
+        }
+        let scan = GcScan {
+            native: true,
+            catalog: task.context.catalog,
+            scope: None,
+            prefix: Vec::new(),
+            after: task.scan_after.clone(),
+            items: usize::from(self.limits.page_items),
+            bytes: self.limits.step_bytes.min(16 * 1024 * 1024) as usize,
+        };
+        let page = self
+            .repository
+            .store
+            .scan_gc(scan.clone())
+            .await
+            .map_err(CatalogError::from)?;
+        scan.validate_page(&page).map_err(CatalogError::from)?;
+        for item in &page.items {
+            let crate::key::StorageKey::NativeTable(key) = crate::key::StorageKey::decode(&item.key)? else {
+                return Err(ValidationError::Key.into());
+            };
+            match key.scope {
+                crate::key::TableStorageScope::Projection => {}
+                crate::key::TableStorageScope::Head => {
+                    StorageRecord::decode_storage(&crate::key::StorageKey::NativeTable(key), &item.value)?;
+                }
+                crate::key::TableStorageScope::Operation => {
+                    let StorageRecord::NativeInjection(receipt) = StorageRecord::decode_storage(
+                        &crate::key::StorageKey::NativeTable(key),
+                        &item.value,
+                    )?
+                    else {
+                        return Err(ValidationError::Record.into());
+                    };
+                    if receipt.retained(now_ms) {
+                        return Err(CatalogError::Busy.into());
+                    }
+                }
+                _ => return Err(CatalogError::Busy.into()),
+            }
+            self.delete_exact(&item.key, &item.value).await?;
         }
         let mut next = task.progress()?;
         if let Some(last) = page.items.last() {
@@ -182,6 +240,7 @@ impl GcWorker {
                     return Err(CatalogError::Busy.into());
                 }
                 let parts = GcScan {
+                    native: false,
                     catalog: task.context.catalog,
                     scope: Some(CatalogScope::MultipartPart),
                     prefix: session.upload.as_bytes().to_vec(),

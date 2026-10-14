@@ -8,6 +8,8 @@ mod credentials;
 mod deletion_vector;
 mod digest;
 mod direct_location;
+mod injection;
+pub use injection::{NativeInjection, NativeInjectionRepository, NativeInjectionRequest};
 mod directory;
 mod format;
 mod json;

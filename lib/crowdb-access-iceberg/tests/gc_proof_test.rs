@@ -473,6 +473,7 @@ async fn live_sweep_recovers_a_lost_final_fence_release_response() {
         if task.phase == GcPhase::SweepWrites {
             let page = store
                 .scan_gc(GcScan {
+                    native: false,
                     catalog: task.context.catalog,
                     scope: Some(CatalogScope::FileWriteIntent),
                     prefix: task.head.as_ref().unwrap().table.as_bytes().to_vec(),

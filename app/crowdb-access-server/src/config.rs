@@ -206,6 +206,7 @@ pub struct S3Config {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct IcebergConfig {
+    pub locator_signing: Option<IcebergLocatorSigningConfig>,
     /// Overrides the legacy shared small-write policy for Iceberg only.
     pub small_write: Option<SmallWriteConfig>,
     pub listen: Option<String>,
@@ -221,6 +222,22 @@ pub struct IcebergConfig {
     pub large_chunk_preparation_depth: Option<usize>,
     pub large_mirror_copies: Option<u32>,
     pub gc: IcebergGcConfig,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub struct IcebergLocatorSigningConfig {
+    pub active_version: u32,
+    pub keys: std::collections::BTreeMap<u32, [u8; 32]>,
+}
+
+impl std::fmt::Debug for IcebergLocatorSigningConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("IcebergLocatorSigningConfig")
+            .field("active_version", &self.active_version)
+            .field("key_versions", &self.keys.keys().collect::<Vec<_>>())
+            .finish()
+    }
 }
 
 /// Dataset's listener and read-admission limits. Dataset is optional so an

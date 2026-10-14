@@ -35,6 +35,8 @@ table FBCatalogAuthority {
     root_lease_ms:ulong;
     delegated_access_ms:ulong;
     clock_skew_ms:ulong;
+    storage_layout:ubyte = 1;
+    locator_key:[ubyte];
 }
 
 table FBManagementOperation {
@@ -480,7 +482,16 @@ table FBGcNode {
     complete:bool;
 }
 
-union FBRecordValue { FBActiveCatalog, FBCatalogAuthority, FBManagementOperation, FBRetryRecord, FBNamespaceAuthority, FBNamespaceMapping, FBPayloadPage, FBRetryResult, FBNamespaceOperation, FBFileRecord, FBFileMapping, FBMultipartSession, FBMultipartPart, FBMultipartAdmission, FBTableHead, FBTableMapping, FBTableCommitOperation, FBTableCreateOperation, FBTableLifecycleOperation, FBTablePurgeTask, FBGcTask, FBGcCandidate, FBGcPage, FBGcNode, FBFileWriteIntent, FBDeletedFile }
+table FBNativeInjection {
+    operation:[ubyte] (required);
+    issued_ms:ulong;
+    activation_epoch:ulong;
+    principal:[ubyte] (required);
+    stem:string (required);
+    file:FBFileRecord (required);
+}
+
+union FBRecordValue { FBActiveCatalog, FBCatalogAuthority, FBManagementOperation, FBRetryRecord, FBNamespaceAuthority, FBNamespaceMapping, FBPayloadPage, FBRetryResult, FBNamespaceOperation, FBFileRecord, FBFileMapping, FBMultipartSession, FBMultipartPart, FBMultipartAdmission, FBTableHead, FBTableMapping, FBTableCommitOperation, FBTableCreateOperation, FBTableLifecycleOperation, FBTablePurgeTask, FBGcTask, FBGcCandidate, FBGcPage, FBGcNode, FBFileWriteIntent, FBDeletedFile, FBNativeInjection }
 
 table FBIcebergRecord {
     schema_version:ushort;

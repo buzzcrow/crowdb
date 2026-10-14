@@ -24,12 +24,13 @@ Depends on: [Native Iceberg Storage](design-crowdb-iceberg.md) and
 Native injection owns both byte ingestion and the subsequent construction of
 Iceberg file references:
 
-1. Finish durable IcebergTable chunk writes and seal a complete native
-   descriptor or bounded chunk-resident directory root.
+1. Finish durable IcebergTable chunk writes and seal an owner-bound directory
+   root. Even a one-leaf native tree includes its file identity in that root.
 2. Form `f/v1/<readable-stem>.<locator>.parquet` under the immutable
    `<catalog-id>/<storage-namespace-id>/<table-id>/` prefix. Bind the locator's
    unique file identity, length, descriptor and exact filename by signature.
-3. Publish one `file/<filename>` record with create-only CAS. Return the one
+3. Durably select the descriptor in the UUIDv7 injection operation before
+   publishing one `file/<filename>` record with create-only CAS. Return the one
    `s3://iceberg/<table-path>/<filename>` URL after publication. A retry uses
    the same operation/file identity and returns the selected URL; conflicts
    never overwrite published content.
@@ -39,10 +40,27 @@ Iceberg file references:
    safe cleanup flow; they do not change a previously returned URL.
 
 Direct HEAD/GET/range requests validate cached permissions and the locator,
-then read native storage without file-record or chunk-KV location lookup.
+then read native storage without Iceberg file-location or file-state KV lookup.
+The chunk layer still performs its normal replica/EC layout resolution.
+HEAD and conditional reads probe the physical directory root; GET reuses the
+verified directory in its pull reader. Reclaimed or reused roots fail closed.
 List and cleanup still use the single file record. Logical deletion removes
 the file from list; its known direct URL may read retained bytes until physical
 GC. Reclaimed identities cannot alias newly allocated bytes.
+
+The native injection entry is a signed PUT with
+`crowdb-native-upload=<UUIDv7>` on a table-scoped parquet upload URI. It requires
+an explicit SHA-256 payload hash and returns one JSON `location` after durable
+selection and publication. The operation binds its principal, full table path,
+readable stem, payload digest and retry deadline. A missing publication is
+completed from the selected receipt after response loss; a changed or deleted
+publication cannot be replayed. The listener advertises the single-request byte
+bound. Native loader parts stay within it; normal SDK multipart retains its
+chosen logical URL.
+
+The loader journals the stable upload URI before transfer and the returned
+location before adding standard manifest references. Its report preserves the
+upload URI for recovery; it does not add a file-location field to Iceberg metadata.
 
 ### Standard SDK uploads
 

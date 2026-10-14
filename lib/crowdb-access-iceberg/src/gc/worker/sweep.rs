@@ -1,10 +1,10 @@
 use crate::{catalog::CasOutcome, operation::mutation_identity};
+use crate::{file::canonical_file_key, record::StorageRecordKey};
 use crowdb_protocol::chunkdb::rpc::Location;
 
 use super::{
-    file_key, location_key, CandidatePhase, CatalogError, GcCandidate, GcPhase, GcStalledReason, GcTask,
-    GcTaskKind, GcWorkError, GcWorker, IcebergKey, ReclaimOutcome, ReclaimStep, StorageRecord,
-    ValidationError,
+    file_key, CandidatePhase, CatalogError, GcCandidate, GcPhase, GcStalledReason, GcTask, GcTaskKind,
+    GcWorkError, GcWorker, IcebergKey, ReclaimOutcome, ReclaimStep, StorageRecord, ValidationError,
 };
 
 impl GcWorker {
@@ -249,7 +249,7 @@ impl GcWorker {
         {
             return Ok(());
         }
-        let key = location_key(&candidate.file.location);
+        let key = canonical_file_key(&candidate.file.location);
         let value = self
             .repository
             .store
@@ -311,7 +311,7 @@ impl GcWorker {
             file: candidate.file.file,
             location: candidate.file.location.clone(),
         };
-        let location = location_key(&mapping.location);
+        let location = canonical_file_key(&mapping.location);
         if let Some(value) = self
             .repository
             .store
@@ -337,6 +337,9 @@ impl GcWorker {
                 _ => return Err(CatalogError::Conflict.into()),
             }
         }
+        if mapping.location.table().storage_namespace.is_some() {
+            return Ok(());
+        }
         self.remove_record(
             &file_key(mapping.location.table().catalog, mapping.file),
             &StorageRecord::File(Box::new(candidate.file.clone())),
@@ -344,8 +347,12 @@ impl GcWorker {
         .await
     }
 
-    async fn remove_record(&self, key: &IcebergKey, record: &StorageRecord) -> Result<(), GcWorkError> {
-        let key = key.encode()?;
+    async fn remove_record<Key: StorageRecordKey>(
+        &self,
+        key: &Key,
+        record: &StorageRecord,
+    ) -> Result<(), GcWorkError> {
+        let key = key.storage_bytes()?;
         let bytes = record.encode()?;
         match self
             .repository

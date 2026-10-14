@@ -108,6 +108,13 @@ pub struct FileReadBody {
 }
 
 impl FileReadBody {
+    /// # Errors
+    /// Rejects preflight bytes for a stream or a different file owner/root.
+    pub fn with_root_directory(mut self, bytes: Vec<u8>) -> Result<Self, FileIoError> {
+        let reader = self.reader.take().ok_or(FileIoError::Bounds)?;
+        self.reader = Some(reader.with_root_directory(bytes)?);
+        Ok(self)
+    }
     fn finish(&mut self) {
         self.reader = None;
         self.pending = None;

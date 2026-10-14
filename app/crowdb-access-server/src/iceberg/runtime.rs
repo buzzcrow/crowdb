@@ -179,6 +179,13 @@ async fn start_listener(
         )?
         .with_small_object_threshold(access_config.iceberg_small_write().threshold_exclusive())?
         .with_large_write_policy(large_write)?;
+    if let Some(signing) = &access_config.iceberg.locator_signing {
+        service =
+            service.with_direct_file_locations(crowdb_access_iceberg::file::DirectFileLocations::new(
+                signing.active_version,
+                signing.keys.clone(),
+            )?)?;
+    }
     if authority.admission_bounds.delegated_access_ms >= 900_000 {
         let endpoint =
             std::env::var("CROWDB_ICEBERG_PUBLIC_URI").unwrap_or_else(|_| format!("http://{address}"));

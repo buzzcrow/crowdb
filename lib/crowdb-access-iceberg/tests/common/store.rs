@@ -15,6 +15,7 @@ pub struct TestStore {
     pub values: ArcSwap<BTreeMap<Vec<u8>, StoredValue>>,
     pub fail_after: AtomicUsize,
     pub file_record_reply_loss: AtomicBool,
+    pub native_injection_reply_loss: AtomicBool,
     pub gc_workspace_denied: AtomicBool,
     #[allow(dead_code)]
     pub gc_delete_reply_loss: AtomicBool,
@@ -65,6 +66,16 @@ impl TestStore {
     }
 
     fn lose_file_reply(&self, key: &[u8]) -> bool {
+        if matches!(
+            StorageKey::decode(key),
+            Ok(StorageKey::NativeTable(TableStorageKey {
+                scope: TableStorageScope::Operation,
+                ..
+            }))
+        ) && self.native_injection_reply_loss.swap(false, Ordering::SeqCst)
+        {
+            return true;
+        }
         matches!(
             StorageKey::decode(key),
             Ok(StorageKey::Legacy(IcebergKey::Catalog {

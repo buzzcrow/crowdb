@@ -9,7 +9,7 @@ mod common;
 #[allow(dead_code)]
 mod fixture;
 
-use crowdb_access_iceberg::key::IcebergKey;
+use crowdb_access_iceberg::key::{IcebergKey, StorageKey};
 use serde_json::{json, Value};
 use std::{sync::atomic::Ordering, time::Duration};
 
@@ -66,11 +66,11 @@ async fn official_commit_loses_real_head_cas_without_rebase_and_keeps_hidden_ret
     assert!(
         fixture.store.values.load().keys().all(|key| {
             !matches!(
-                IcebergKey::decode(key).unwrap(),
-                IcebergKey::Catalog {
+                StorageKey::decode(key).unwrap(),
+                StorageKey::Legacy(IcebergKey::Catalog {
                     scope: crowdb_access_iceberg::key::CatalogScope::TableCommitOperation,
                     ..
-                }
+                })
             )
         }),
         "ordinary commits must not write a phase journal"

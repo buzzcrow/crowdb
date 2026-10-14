@@ -34,6 +34,15 @@ impl TestBlocks {
             values: self.values.clone(),
         }
     }
+
+    #[allow(dead_code)]
+    pub fn remove_root(&self, root: &ChunkRoot) {
+        self.values.rcu(|values| {
+            let mut next = (**values).clone();
+            next.remove(&root.chunk.low);
+            next
+        });
+    }
 }
 
 #[async_trait]

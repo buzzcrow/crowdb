@@ -1,7 +1,7 @@
 use crate::{
     catalog::CatalogContext,
     error::ValidationError,
-    key::{CatalogScope, IcebergKey, OperationId},
+    key::{CatalogScope, IcebergKey, OperationId, StorageKey},
     table::TableHead,
 };
 
@@ -33,6 +33,8 @@ pub enum GcPhase {
     SweepWrites,
     VerifyCleanup,
     CleanupGc,
+    CleanupNative,
+    RootsNative,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -78,6 +80,14 @@ pub struct GcTask {
 }
 
 impl GcTask {
+    pub(super) const fn last_discovery_scope(&self) -> u8 {
+        if matches!(self.kind, GcTaskKind::MultipartCleanup) {
+            3
+        } else {
+            4
+        }
+    }
+
     pub(crate) fn retirement_key(catalog: crate::key::CatalogId) -> IcebergKey {
         IcebergKey::Catalog {
             catalog,
@@ -101,12 +111,7 @@ impl GcTask {
         self.context.validate()?;
         self.proof.validate(self)?;
         if self.revision == 0
-            || self.discovery_scope
-                > if self.kind == GcTaskKind::MultipartCleanup {
-                    2
-                } else {
-                    3
-                }
+            || self.discovery_scope > self.last_discovery_scope()
             || (self.discovery_scope != 0 && !matches!(self.phase, GcPhase::Discover | GcPhase::Rescan))
             || self.created_ms == 0
             || self.not_before_ms < self.created_ms
@@ -121,6 +126,7 @@ impl GcTask {
                     | GcPhase::PreSweepSystem
                     | GcPhase::VerifyCleanup
                     | GcPhase::CleanupGc
+                    | GcPhase::CleanupNative
             ) && self.kind != GcTaskKind::RetiredCatalog)
             || (matches!(
                 self.kind,
@@ -139,8 +145,17 @@ impl GcTask {
                 GcPhase::CleanupSystem | GcPhase::RootsSystem | GcPhase::PreSweepSystem
             ) {
                 super::GcSystemScan::validate_cursor(&self.scan_after)?;
-            } else if !IcebergKey::catalog_range(self.context.catalog).contains(&self.scan_after) {
-                return Err(ValidationError::Key);
+            } else {
+                match StorageKey::decode(&self.scan_after)? {
+                    StorageKey::Legacy(IcebergKey::Catalog { catalog, .. })
+                        if catalog == self.context.catalog => {}
+                    StorageKey::NativeTable(key)
+                        if key.table.catalog == self.context.catalog
+                            && self.head.as_ref().map_or(true, |head| {
+                                head.storage_location().storage_path() == Some(key.table)
+                            }) => {}
+                    _ => return Err(ValidationError::Key),
+                }
             }
         }
         if let Some(head) = &self.head {

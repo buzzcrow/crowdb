@@ -16,6 +16,7 @@ const SCHEMA_VERSION: u16 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StorageRecord {
+    NativeInjection(Box<crate::file::NativeInjection>),
     FileWriteIntent(Box<crate::file::FileWriteIntent>),
     GcNode(Box<crate::gc::GcNode>),
     GcTask(Box<crate::gc::GcTask>),
@@ -53,7 +54,13 @@ impl StorageRecord {
         let envelope = FBIcebergRecord::create(
             &mut builder,
             &FBIcebergRecordArgs {
-                schema_version: SCHEMA_VERSION,
+                schema_version: if matches!(self, Self::Authority(authority)
+                    if authority.storage_layout == crate::catalog::CatalogStorageLayout::Native)
+                {
+                    2
+                } else {
+                    SCHEMA_VERSION
+                },
                 value_type,
                 value: Some(value),
             },
@@ -74,6 +81,10 @@ impl StorageRecord {
             return Ok(value);
         }
         Ok(match self {
+            Self::NativeInjection(receipt) => (
+                FBRecordValue::FBNativeInjection,
+                super::injection::encode(builder, receipt)?.as_union_value(),
+            ),
             Self::FileWriteIntent(intent) => (
                 FBRecordValue::FBFileWriteIntent,
                 super::write_intent::encode(builder, intent)?.as_union_value(),
@@ -213,6 +224,7 @@ impl StorageRecord {
             return self.validate_key(key);
         }
         let expected = match self {
+            Self::NativeInjection(receipt) => receipt.key()?,
             Self::File(file) => crate::file::canonical_file_key(&file.location),
             Self::DeletedFile(file) => crate::file::canonical_file_key(&file.file.location),
             Self::TableHead(head) => crate::table::storage_head_key(head.storage_location()),
@@ -232,14 +244,29 @@ impl StorageRecord {
             return Err(ValidationError::Record);
         }
         let envelope = fb::root_as_fbiceberg_record(bytes).map_err(|_| ValidationError::Record)?;
-        if envelope.schema_version() != SCHEMA_VERSION {
+        if envelope.schema_version() != SCHEMA_VERSION
+            && !(envelope.schema_version() == 2 && envelope.value_type() == FBRecordValue::FBCatalogAuthority)
+        {
             return Err(ValidationError::RecordVersion(envelope.schema_version()));
         }
-        Self::decode_value(envelope)
+        let record = Self::decode_value(envelope)?;
+        let native_authority = matches!(&record, Self::Authority(authority)
+            if authority.storage_layout == crate::catalog::CatalogStorageLayout::Native);
+        if (envelope.schema_version() == 2) != native_authority {
+            return Err(ValidationError::RecordVersion(envelope.schema_version()));
+        }
+        Ok(record)
     }
 
     fn decode_value(envelope: FBIcebergRecord<'_>) -> Result<Self, ValidationError> {
         match envelope.value_type() {
+            FBRecordValue::FBNativeInjection => {
+                return Ok(Self::NativeInjection(Box::new(super::injection::decode(
+                    envelope
+                        .value_as_fbnative_injection()
+                        .ok_or(ValidationError::Record)?,
+                )?)));
+            }
             FBRecordValue::FBFileWriteIntent => {
                 return Ok(Self::FileWriteIntent(Box::new(super::write_intent::decode(
                     envelope

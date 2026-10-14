@@ -12,12 +12,38 @@ const PAYLOAD_BYTES: usize = 142;
 const TOKEN_BYTES: usize = PAYLOAD_BYTES + 32;
 
 /// Persistent file locators use a key ring independent of expiring HTTP grants.
+#[derive(Clone)]
 pub struct DirectFileLocations {
     active_version: u32,
     keys: BTreeMap<u32, [u8; 32]>,
 }
 
 impl DirectFileLocations {
+    /// # Errors
+    /// Rejects a configured replacement of the catalog's reserved key version.
+    pub fn for_catalog(
+        &self,
+        key: crate::catalog::CatalogLocatorKey,
+        strict: bool,
+    ) -> Result<Self, ValidationError> {
+        let key = key.bytes();
+        if strict && self.keys.get(&1).is_some_and(|configured| *configured != key) {
+            return Err(ValidationError::IdentityMismatch);
+        }
+        let mut keys = self.keys.clone();
+        keys.insert(1, key);
+        Self::new(self.active_version, keys)
+    }
+    /// # Errors
+    /// Rejects stems which cannot fit the final authenticated object key.
+    pub fn validate_stem(stem: &str) -> Result<(), ValidationError> {
+        const LOCATOR_KEY_BYTES: usize = 99 + 5 + 1 + 232 + 8;
+        super::validate_relative_key(stem)?;
+        if stem.contains('/') || stem.len() > super::MAX_OBJECT_KEY_BYTES - LOCATOR_KEY_BYTES {
+            return Err(ValidationError::Key);
+        }
+        Ok(())
+    }
     /// # Errors
     /// Rejects missing active keys, reserved versions and uninitialized keys.
     pub fn new(active_version: u32, keys: BTreeMap<u32, [u8; 32]>) -> Result<Self, ValidationError> {
@@ -42,10 +68,10 @@ impl DirectFileLocations {
         digest: [u8; 32],
         root: ChunkRoot,
     ) -> Result<FileRecord, ValidationError> {
-        if table.storage_namespace.is_none() || stem.contains('/') {
+        if table.storage_namespace.is_none() || root.height == 0 {
             return Err(ValidationError::Key);
         }
-        super::validate_relative_key(stem)?;
+        Self::validate_stem(stem)?;
         let mut payload = Vec::with_capacity(TOKEN_BYTES);
         payload.push(1);
         payload.extend_from_slice(&self.active_version.to_be_bytes());
@@ -65,7 +91,7 @@ impl DirectFileLocations {
         let record = FileRecord {
             file,
             location,
-            kind: FileKind::Data,
+            kind: FileKind::Unbound,
             format: ContentFormat::Parquet,
             length,
             digest,
@@ -82,6 +108,9 @@ impl DirectFileLocations {
     /// # Errors
     /// Rejects reserved-path corruption, altered identities and unknown signing keys.
     pub fn resolve(&self, location: &FileLocation) -> Result<Option<FileRecord>, ValidationError> {
+        if location.table().storage_namespace.is_some() && location.relative_key() == "f" {
+            return Err(ValidationError::Key);
+        }
         if location.table().storage_namespace.is_none() || !location.relative_key().starts_with("f/") {
             return Ok(None);
         }
@@ -108,10 +137,13 @@ impl DirectFileLocations {
         let length = fields.number()?;
         let digest = fields.take()?;
         let root = decode_root(&mut fields)?;
+        if root.height == 0 {
+            return Err(ValidationError::Record);
+        }
         let record = FileRecord {
             file,
             location: location.clone(),
-            kind: FileKind::Data,
+            kind: FileKind::Unbound,
             format: ContentFormat::Parquet,
             length,
             digest,

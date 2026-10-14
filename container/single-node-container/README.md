@@ -88,8 +88,11 @@ pixi run clean-container
 `start-container` builds the image, starts `crowdb-single-node`, exposes
 ports 9090–9094 on the container network, waits for readiness, and prints client
 credentials. Docker creates an anonymous data volume unless configured
-otherwise. `inject-container` loads TPC-H SF1 into Iceberg and copies its
-Parquet files to the container's S3 endpoint. The loader retains its data and
+otherwise. `inject-container` loads TPC-H SF1 into native Iceberg and copies its
+Parquet files to the container's S3 endpoint as an independent benchmark copy.
+The S3 report's bucket and keys are not Iceberg locations or backing storage;
+Iceberg manifests use the native listener's returned table-scoped URLs.
+The loader retains its data and
 reports under `.crowdb-runtime/artifacts/tpc-loader/`. `clean-container`
 removes the named container, other exited containers created from the selected
 image, all untagged images that are not referenced by any container, and all

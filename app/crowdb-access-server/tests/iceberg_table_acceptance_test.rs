@@ -11,7 +11,7 @@ use std::{collections::BTreeMap, sync::atomic::Ordering, time::Duration};
 
 use crowdb_access_iceberg::{
     catalog::StoredValue,
-    key::{CatalogScope, IcebergKey, OperationId, TableId},
+    key::{CatalogScope, IcebergKey, OperationId, StorageKey, TableId, TableStorageKey, TableStorageScope},
     record::StorageRecord,
     table::{head_key, name_key, TableHead, TableLifecycle, TableMapping, TableMappingState},
 };
@@ -164,15 +164,18 @@ fn authority(test: &TestTableHttp) -> BTreeMap<Vec<u8>, StoredValue> {
         .iter()
         .filter(|(key, _)| {
             matches!(
-                IcebergKey::decode(key),
-                Ok(IcebergKey::Catalog {
+                StorageKey::decode(key),
+                Ok(StorageKey::Legacy(IcebergKey::Catalog {
                     scope: CatalogScope::TableHead
                         | CatalogScope::TableName
                         | CatalogScope::File
                         | CatalogScope::FileLocation
                         | CatalogScope::Reclamation,
                     ..
-                })
+                }) | StorageKey::NativeTable(TableStorageKey {
+                    scope: TableStorageScope::Head | TableStorageScope::File,
+                    ..
+                }))
             )
         })
         .map(|(key, value)| (key.clone(), value.clone()))
@@ -232,11 +235,14 @@ async fn lost_drop_publication_reply_replays_once_and_preserves_files_for_both_p
         let after = authority(&test);
         for (key, value) in before {
             if matches!(
-                IcebergKey::decode(&key).unwrap(),
-                IcebergKey::Catalog {
+                StorageKey::decode(&key).unwrap(),
+                StorageKey::Legacy(IcebergKey::Catalog {
                     scope: CatalogScope::File | CatalogScope::FileLocation,
                     ..
-                }
+                }) | StorageKey::NativeTable(TableStorageKey {
+                    scope: TableStorageScope::File,
+                    ..
+                })
             ) {
                 assert_eq!(after.get(&key), Some(&value));
             }
@@ -245,11 +251,11 @@ async fn lost_drop_publication_reply_replays_once_and_preserves_files_for_both_p
             .keys()
             .filter(|key| {
                 matches!(
-                    IcebergKey::decode(key).unwrap(),
-                    IcebergKey::Catalog {
+                    StorageKey::decode(key).unwrap(),
+                    StorageKey::Legacy(IcebergKey::Catalog {
                         scope: CatalogScope::Reclamation,
                         ..
-                    }
+                    })
                 )
             })
             .count();

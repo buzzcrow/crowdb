@@ -104,6 +104,11 @@ impl FileTreeWriter {
                 continue;
             }
             if self.levels[level].len() == 1 && self.levels[level + 1..].iter().all(Vec::is_empty) {
+                if level == 0 && self.owner.table.storage_namespace.is_some() {
+                    let entry = self.flush_directory(level).await?;
+                    self.append(entry).await?;
+                    continue;
+                }
                 let entry = self.levels[level].pop().ok_or(FileIoError::Bounds)?;
                 if entry.length != self.length {
                     return Err(FileIoError::Bounds);

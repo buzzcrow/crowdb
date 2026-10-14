@@ -42,6 +42,7 @@ async fn assert_checkpoint_intent(
     let intents = crowdb_access_iceberg::gc::GcStore::scan_gc(
         stack.store().await.as_ref(),
         crowdb_access_iceberg::gc::GcScan {
+            native: false,
             catalog: owner.table.catalog,
             scope: Some(crowdb_access_iceberg::key::CatalogScope::FileWriteIntent),
             prefix: owner.table.table.as_bytes().to_vec(),

@@ -102,7 +102,8 @@ async fn table_publication_recovers_before_and_after_every_durable_write() {
                 ]),
                 "direct updates must publish immutable metadata through one head CAS"
             );
-            assert_eq!(count, 4);
+            // The native tree persists data and its owner-bound directory before publication.
+            assert_eq!(count, 6);
         } else {
             assert!(labels.iter().any(|label| label.starts_with("create-")));
         }

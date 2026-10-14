@@ -6,9 +6,8 @@ use crowdb_access_iceberg::catalog::{
     CatalogError, CatalogLifecycle, CatalogRepository, CatalogStore, RootState,
 };
 use crowdb_access_iceberg::file::{
-    resolve_range, DirectFileLocations, FileBlockStore, FileGrantError, FileGrantIssuer, FileOperation,
-    FileRecord, FileRepository, FileSealer, MultipartLister, MultipartPartStore, MultipartRepository,
-    RangeError,
+    DirectFileLocations, FileBlockStore, FileGrantError, FileGrantIssuer, FileOperation, FileRecord,
+    FileRepository, FileSealer, MultipartLister, MultipartPartStore, MultipartRepository, RangeError,
 };
 use crowdb_access_iceberg::gc::{GcRepository, GcStore};
 use crowdb_access_iceberg::key::OperationId;
@@ -17,8 +16,8 @@ use crowdb_access_s3::auth::{RawAuthRequest, StreamingPayloadVerifier};
 use crowdb_access_s3::native_buffer::{NativeBodyAllocator, NativeBodyReceiver};
 use crowdb_chunk_client::LargeWritePolicy;
 use hyper::body::Incoming;
-use hyper::http::header::{ACCEPT_RANGES, CONTENT_LENGTH, CONTENT_RANGE, ETAG, RANGE};
-use hyper::{Method, Request, Response, StatusCode};
+use hyper::http::header::{CONTENT_LENGTH, ETAG};
+use hyper::{Method, Request, Response};
 
 use super::body::IcebergBody;
 use super::file_admission::{FileAdmissionError, FileServiceLimits, FileTransferAdmission};
@@ -31,13 +30,21 @@ use crate::upload_flow::body_encoding::UploadBody;
 
 mod bucket;
 mod delete;
+mod injection;
 mod listing;
 mod metrics;
 mod multipart;
+mod read;
 mod stream;
 
 use metrics::UploadFlowMetrics;
 pub use metrics::UploadFlowSnapshot;
+
+struct CatalogLocators {
+    catalog: crowdb_access_iceberg::key::CatalogId,
+    key: Option<crowdb_access_iceberg::catalog::CatalogLocatorKey>,
+    locations: DirectFileLocations,
+}
 
 pub(super) struct FileHttp {
     repository: FileRepository,
@@ -48,6 +55,8 @@ pub(super) struct FileHttp {
     blocks: Arc<dyn FileBlockStore>,
     issuer: FileGrantIssuer,
     direct_locations: DirectFileLocations,
+    locator_cache: arc_swap::ArcSwapOption<CatalogLocators>,
+    locator_keys_configured: bool,
     responses: FileResponseBudget,
     uploads: FileUploadBudget,
     small_threshold_exclusive: usize,
@@ -60,6 +69,36 @@ pub(super) struct FileHttp {
 }
 
 impl FileHttp {
+    pub(super) fn set_direct_locations(&mut self, locations: DirectFileLocations) {
+        self.direct_locations = locations;
+        self.locator_keys_configured = true;
+        self.locator_cache.store(None);
+    }
+
+    fn catalog_locations(
+        &self,
+        authority: &crowdb_access_iceberg::catalog::CatalogAuthority,
+    ) -> Result<Arc<CatalogLocators>, FileS3ErrorCode> {
+        if let Some(cached) = self.locator_cache.load_full() {
+            if cached.catalog == authority.catalog && cached.key == authority.locator_key {
+                return Ok(cached);
+            }
+        }
+        let locations = if let Some(key) = authority.locator_key {
+            self.direct_locations
+                .for_catalog(key, self.locator_keys_configured)
+                .map_err(|_| FileS3ErrorCode::InternalError)?
+        } else {
+            self.direct_locations.clone()
+        };
+        let locators = Arc::new(CatalogLocators {
+            catalog: authority.catalog,
+            key: authority.locator_key,
+            locations,
+        });
+        self.locator_cache.store(Some(locators.clone()));
+        Ok(locators)
+    }
     pub(super) fn native_receive_metrics(
         &self,
     ) -> Option<crowdb_access_s3::native_buffer::NativeBufferMetricsSnapshot> {
@@ -97,6 +136,8 @@ impl FileHttp {
             return Err(FileGrantError::Invalid);
         }
         Ok(Self {
+            locator_cache: arc_swap::ArcSwapOption::empty(),
+            locator_keys_configured: false,
             direct_locations: DirectFileLocations::new(1, std::collections::BTreeMap::from([(1, secret)]))
                 .map_err(|_| FileGrantError::Invalid)?,
             list_tokens: crowdb_access_iceberg::file::FileListTokens::new(secret)
@@ -245,11 +286,27 @@ impl FileHttp {
                 .map_err(admission_error)?;
         let native_receiver =
             self.receive_provider(&mut request, file_request.operation, streaming.is_some());
+        let locators = self.catalog_locations(&authority)?;
         match file_request.operation {
             FileOperation::Head | FileOperation::Get => {
-                self.read(&file_request, &request, root.context, &admission).await
+                self.read(
+                    &file_request,
+                    &request,
+                    root.context,
+                    &admission,
+                    &locators.locations,
+                )
+                .await
             }
             FileOperation::Put => {
+                if file_request.injection.is_some() {
+                    if streaming.is_some() {
+                        return Err(FileS3ErrorCode::InvalidRequest);
+                    }
+                    return self
+                        .inject(&file_request, request, &admission, now_ms, &locators.locations)
+                        .await;
+                }
                 self.put(
                     &file_request,
                     request,
@@ -358,70 +415,6 @@ impl FileHttp {
             .map_err(catalog_error)?;
         let mut response = Response::new(IcebergBody::new(Vec::new()));
         set_header(&mut response, ETAG, &etag(&published))?;
-        Ok(response)
-    }
-
-    async fn read(
-        &self,
-        file_request: &FileRequest,
-        request: &Request<Incoming>,
-        context: crowdb_access_iceberg::catalog::CatalogContext,
-        admission: &FileTransferAdmission,
-    ) -> Result<Response<IcebergBody>, FileS3ErrorCode> {
-        let record = match self
-            .direct_locations
-            .resolve(&file_request.location)
-            .map_err(|_| FileS3ErrorCode::AccessDenied)?
-        {
-            Some(record) => record,
-            None => self
-                .repository
-                .load(context, &file_request.location)
-                .await
-                .map_err(catalog_error)?
-                .ok_or(FileS3ErrorCode::NoSuchKey)?,
-        };
-        let range = match request
-            .headers()
-            .get_all(RANGE)
-            .iter()
-            .collect::<Vec<_>>()
-            .as_slice()
-        {
-            [] => None,
-            [value] => Some(value.to_str().map_err(|_| FileS3ErrorCode::InvalidRange)?),
-            _ => return Err(FileS3ErrorCode::InvalidRange),
-        };
-        let range = resolve_range(range, record.length).map_err(range_error)?;
-        let bytes = range.map_or(record.length, |range| range.end - range.start);
-        let body = if request.method() == Method::HEAD {
-            admission.check_bytes(0, record.length).map_err(admission_error)?;
-            IcebergBody::new(Vec::new())
-        } else {
-            IcebergBody::file(
-                admission
-                    .read_body(&self.responses, self.blocks.clone(), record.clone(), range)
-                    .map_err(admission_error)?,
-            )
-        };
-        let mut response = Response::new(body);
-        *response.status_mut() = if range.is_some() {
-            StatusCode::PARTIAL_CONTENT
-        } else {
-            StatusCode::OK
-        };
-        set_header(&mut response, CONTENT_LENGTH, &bytes.to_string())?;
-        set_header(&mut response, ETAG, &etag(&record))?;
-        response
-            .headers_mut()
-            .insert(ACCEPT_RANGES, hyper::header::HeaderValue::from_static("bytes"));
-        if let Some(range) = range {
-            set_header(
-                &mut response,
-                CONTENT_RANGE,
-                &format!("bytes {}-{}/{}", range.start, range.end - 1, record.length),
-            )?;
-        }
         Ok(response)
     }
 }

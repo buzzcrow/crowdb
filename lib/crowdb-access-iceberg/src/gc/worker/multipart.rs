@@ -11,6 +11,7 @@ impl GcWorker {
     ) -> Result<GcTask, GcWorkError> {
         self.verify_inactive(task).await?;
         let scan = GcScan {
+            native: false,
             catalog: task.context.catalog,
             scope: Some(CatalogScope::MultipartSession),
             prefix: Vec::new(),
@@ -40,6 +41,7 @@ impl GcWorker {
             .await?
         {
             let parts = GcScan {
+                native: false,
                 catalog: task.context.catalog,
                 scope: Some(CatalogScope::MultipartPart),
                 prefix: session.upload.as_bytes().to_vec(),

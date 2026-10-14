@@ -9,7 +9,7 @@ use crowdb_access_iceberg::{
     catalog::{CasOutcome, CatalogStore, StoreError, StoredValue},
     file::{ChunkRoot, FileBlockStore, FileIdentity, FileIoError, MultipartPartScan, MultipartPartStore},
     gc::{GcScan, GcStore, GcSystemScan},
-    key::{CatalogScope, IcebergKey},
+    key::{CatalogScope, IcebergKey, StorageKey, TableStorageKey, TableStorageScope},
     namespace::{ChildScan, NamespaceStore},
     record::StorageRecord,
 };
@@ -114,7 +114,7 @@ impl<Store: NamespaceStore + GcStore + MultipartPartStore> CatalogStore for Test
         value: &[u8],
         identity: ClientRequestId,
     ) -> Result<CasOutcome, StoreError> {
-        let record_key = IcebergKey::decode(key)?;
+        let record_key = StorageKey::decode(key)?;
         let label = match StorageRecord::decode(&record_key, value)? {
             StorageRecord::TableCreateOperation(operation) => format!("create-{:?}", operation.phase),
             StorageRecord::TableCommitOperation(operation) => format!("commit-{:?}", operation.phase),
@@ -122,10 +122,13 @@ impl<Store: NamespaceStore + GcStore + MultipartPartStore> CatalogStore for Test
             StorageRecord::File(_)
                 if matches!(
                     record_key,
-                    IcebergKey::Catalog {
+                    StorageKey::Legacy(IcebergKey::Catalog {
                         scope: CatalogScope::FileLocation,
                         ..
-                    }
+                    }) | StorageKey::NativeTable(TableStorageKey {
+                        scope: TableStorageScope::File,
+                        ..
+                    })
                 ) =>
             {
                 "file-location-authority".into()

@@ -332,8 +332,9 @@ contract, not delegation to the general S3 authority. File publication,
 immutability, authorization, and deletion remain under Iceberg control.
 Public URIs use the fixed virtual bucket `iceberg`:
 `s3://iceberg/<catalog-id>/<storage-namespace-id>/<table-id>/<filename>`.
-Typed locations use lower-case unpadded base32 catalog IDs and lower-case hex
-namespace and table IDs. Relative UTF-8 object keys preserve case, literal percent signs, plus
+Native typed locations use lower-case fixed-width hexadecimal for all three
+128-bit IDs. Legacy compatibility buckets retain their base32 catalog component.
+Relative UTF-8 object keys preserve case, literal percent signs, plus
 signs and repeated internal slashes; the whole object key is bounded to 1,024
 bytes. Dot traversal, leading slash, backslash, controls, query and fragment
 delimiters are rejected rather than normalized. HTTP percent decoding belongs
@@ -441,6 +442,11 @@ unbounded URL. Native chunk routing preserves repair/failover without embedding
 transient replica addresses in URLs. Reclaimed identities and reused extents
 must never make an old locator return a different file's bytes.
 
+Native trees retain an owner-bound directory root even when they contain one
+leaf. Its digest and encoded full file identity distinguish an identical-content
+replacement at a reused extent. Direct request preflight checks that root before
+HEAD or conditional success, and GET reuses its verified bytes in the pull reader.
+
 Authorization uses bounded validated grant/context caches and signature,
 scope and expiry checks. An authorization cache miss may load authority; it
 must not become a per-file location/state lookup. Expired entries are not
@@ -451,6 +457,22 @@ authority. Persistent locators have no credential expiry; retain signing-key
 verification material for their files' lifetime. A locator is not a bearer
 permission. Cold/warm authorization costs and storage resolution counts are
 measured separately.
+
+Native catalog authority persists the default locator verification/signing key,
+independent of access tokens. Key version 1 is reserved for that catalog key;
+renaming and capability activation preserve it. Additional signing versions are
+configured through `iceberg.locator_signing`, with an active version and retained
+verification keys. Configured version 1 must match the persisted catalog key.
+Every serving node uses the same configured versions and retains them until the
+corresponding files are physically reclaimed. A lock-free cache selects the
+current catalog's key ring; clearing to a new catalog selects its new default key.
+Native authority uses record envelope 2 so a legacy server cannot silently ignore
+the storage layout. Legacy authorities retain envelope 1 and omitted layout
+fields decode as the legacy layout.
+
+Credential refresh URLs carry the table ID and frozen storage namespace ID.
+The listener resolves that immutable head directly, so refreshing an old endpoint
+after a move or namespace recreation does not require a table-ID reverse index.
 
 Legacy chunk-backed files use bounded leaf blocks and immutable chunk-resident directory
 pages, with at most 256 children per page and eight directory levels. Each page
