@@ -217,3 +217,7 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   (543 Tree, 56 RPC, 57 DiskIO, 31 Common, 55 Tree FFI, 25 RPC FFI cases).
   Artifact: unit/cpp-6de3ce8355cb4297b6b5e135be920f81. The initial new-test
   initializer typo was corrected before this passing run.
+- Inventory now reports backing filesystem capacity/available bytes once per
+  filesystem, with per-file references and separate virtual/physical allocation.
+  Failed observations remain unknown with an error. Six inventory tests,
+  monitor/protocol all-target Clippy and Rust formatting pass.

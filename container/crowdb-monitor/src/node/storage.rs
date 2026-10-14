@@ -10,7 +10,9 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crowdb_protocol::mgmt::node::storage::{DiskBackend, DiskInput, DiskInventory, DiskObservation};
+use crowdb_protocol::mgmt::node::storage::{
+    BackingFilesystem, DiskBackend, DiskInput, DiskInventory, DiskObservation,
+};
 
 const MAX_DISKS: usize = 4096;
 
@@ -45,11 +47,12 @@ pub fn discover_disks(root: &Path, supplied: &[DiskInput]) -> io::Result<DiskInv
         return Err(io::Error::other("disk inventory exceeds limit"));
     }
     let mut identities = BTreeMap::<String, usize>::new();
+    let mut filesystems = BTreeMap::new();
     let mut disks: Vec<_> = paths
         .into_iter()
         .map(|path| {
             let expected = inputs.get(&path);
-            let mut observation = observe(&path, expected.is_some());
+            let mut observation = observe(&path, expected.is_some(), &mut filesystems);
             if let Some(input) = expected {
                 if observation.error.is_none() && observation.backend != Some(input.backend) {
                     observation.error = Some("disk type differs from supplied mapping".into());
@@ -86,6 +89,7 @@ pub fn discover_disks(root: &Path, supplied: &[DiskInput]) -> io::Result<DiskInv
         )
         .unwrap_or(u64::MAX),
         disks,
+        filesystems: filesystems.into_values().collect(),
     };
     // Leave room for the control response envelope within its 64 KiB limit.
     if serde_json::to_vec(&inventory).map_err(io::Error::other)?.len() > 60 * 1024 {
@@ -94,7 +98,11 @@ pub fn discover_disks(root: &Path, supplied: &[DiskInput]) -> io::Result<DiskInv
     Ok(inventory)
 }
 
-fn observe(path: &Path, supplied: bool) -> DiskObservation {
+fn observe(
+    path: &Path,
+    supplied: bool,
+    filesystems: &mut BTreeMap<String, BackingFilesystem>,
+) -> DiskObservation {
     let mut result = DiskObservation {
         path: path.to_string_lossy().into_owned(),
         backend: None,
@@ -103,14 +111,19 @@ fn observe(path: &Path, supplied: bool) -> DiskObservation {
         backing_identity: None,
         supplied,
         error: None,
+        backing_filesystem: None,
     };
-    if let Err(error) = inspect(path, &mut result) {
+    if let Err(error) = inspect(path, &mut result, filesystems) {
         result.error = Some(error.to_string());
     }
     result
 }
 
-fn inspect(path: &Path, result: &mut DiskObservation) -> io::Result<()> {
+fn inspect(
+    path: &Path,
+    result: &mut DiskObservation,
+    filesystems: &mut BTreeMap<String, BackingFilesystem>,
+) -> io::Result<()> {
     let metadata = fs::symlink_metadata(path)?;
     if metadata.is_file() {
         result.backend = Some(DiskBackend::File);
@@ -120,6 +133,19 @@ fn inspect(path: &Path, result: &mut DiskObservation) -> io::Result<()> {
         if metadata.len() == 0 {
             return Err(io::Error::other("disk file is empty"));
         }
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(i32::try_from(rustix::fs::OFlags::NOFOLLOW.bits()).map_err(io::Error::other)?)
+            .open(path)?;
+        let opened = file.metadata()?;
+        if !opened.is_file() || opened.dev() != metadata.dev() || opened.ino() != metadata.ino() {
+            return Err(io::Error::other("disk changed during observation"));
+        }
+        let identity = format!("filesystem:{}", opened.dev());
+        result.backing_filesystem = Some(identity.clone());
+        filesystems
+            .entry(identity.clone())
+            .or_insert_with(|| filesystem(&file, identity));
     } else if metadata.file_type().is_block_device() {
         result.backend = Some(DiskBackend::BlockDevice);
         result.backing_identity = Some(format!("device:{}", metadata.rdev()));
@@ -138,4 +164,24 @@ fn inspect(path: &Path, result: &mut DiskObservation) -> io::Result<()> {
         ));
     }
     Ok(())
+}
+
+fn filesystem(file: &fs::File, identity: String) -> BackingFilesystem {
+    let mut result = BackingFilesystem {
+        identity,
+        capacity_bytes: None,
+        available_bytes: None,
+        error: None,
+    };
+    match rustix::fs::fstatvfs(file) {
+        Ok(stat) => {
+            result.capacity_bytes = stat.f_blocks.checked_mul(stat.f_frsize);
+            result.available_bytes = stat.f_bavail.checked_mul(stat.f_frsize);
+            if result.capacity_bytes.is_none() || result.available_bytes.is_none() {
+                result.error = Some("backing filesystem size exceeds observation bounds".into());
+            }
+        }
+        Err(error) => result.error = Some(error.to_string()),
+    }
+    result
 }

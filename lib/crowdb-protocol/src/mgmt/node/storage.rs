@@ -31,10 +31,24 @@ pub struct DiskObservation {
     pub backing_identity: Option<String>,
     pub supplied: bool,
     pub error: Option<String>,
+    /// Reference into the inventory's deduplicated filesystem observations.
+    #[serde(default)]
+    pub backing_filesystem: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BackingFilesystem {
+    pub identity: String,
+    pub capacity_bytes: Option<u64>,
+    /// Space available to this process, excluding filesystem-reserved blocks.
+    pub available_bytes: Option<u64>,
+    pub error: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DiskInventory {
     pub observed_at_ms: u64,
     pub disks: Vec<DiskObservation>,
+    #[serde(default)]
+    pub filesystems: Vec<BackingFilesystem>,
 }

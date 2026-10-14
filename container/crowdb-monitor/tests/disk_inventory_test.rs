@@ -126,3 +126,30 @@ fn supplied_file_requires_the_launchers_observed_identity() {
         .is_some());
     assert_eq!(fs::read(path).unwrap(), b"existing data");
 }
+
+#[test]
+fn file_disks_share_one_backing_space_observation_without_counting_virtual_capacity_as_used() {
+    let root = TestRoot::new();
+    fs::create_dir(root.0.join("disks")).unwrap();
+    for name in ["first.img", "second.img"] {
+        fs::File::create(root.0.join("disks").join(name))
+            .unwrap()
+            .set_len(16 * 1024 * 1024)
+            .unwrap();
+    }
+    let inventory = discover_disks(&root.0, &[]).unwrap();
+    assert_eq!(inventory.disks.len(), 2);
+    assert_eq!(inventory.filesystems.len(), 1);
+    let backing = &inventory.filesystems[0];
+    assert!(backing.error.is_none());
+    assert!(backing.available_bytes.unwrap() <= backing.capacity_bytes.unwrap());
+    for disk in &inventory.disks {
+        assert_eq!(disk.backing_filesystem.as_ref(), Some(&backing.identity));
+        assert_eq!(disk.capacity_bytes, Some(16 * 1024 * 1024));
+        assert!(disk.allocated_bytes.unwrap() < disk.capacity_bytes.unwrap());
+    }
+    assert_ne!(
+        inventory.disks[0].backing_identity,
+        inventory.disks[1].backing_identity
+    );
+}
