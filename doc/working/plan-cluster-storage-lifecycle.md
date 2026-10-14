@@ -149,3 +149,8 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   worker unnecessarily requested a data group. Automatic initialization now
   requests only Store 0 / Group 0; the release fixture asserts that accepted
   choice. Rebuilt-image rerun is pending; no assertion was weakened.
+- Bridge admission profile passes on image `9ddf0082`: browser preparation 7.4 s,
+  cross-UI resume of the fixed operation 4.9 s, independent cluster cleanup 3.6 s,
+  authenticated node update 11.3 s. The profile also verifies cancellation fencing,
+  later nonvoting admission, remote service lifecycle, minority authority gating,
+  snapshot/WAL catch-up and cleanup. Artifact: run-b5ae534af16044099d11e4db5f0036a4.

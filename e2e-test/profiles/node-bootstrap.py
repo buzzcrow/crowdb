@@ -4,13 +4,23 @@
 
 """Real browser preparation and recovery from an independent UI."""
 import json
+import socket
+from urllib.parse import urlparse
 from bridge_node import browser
-import urllib.error
+
+
+def ssh_listener_stopped(origin):
+    try:
+        with socket.create_connection((urlparse(origin).hostname, 2222), timeout=0.2):
+            return False
+    except ConnectionRefusedError:
+        return True
 
 
 def verify(docker, request, wait, verify_incomplete_preparation, PREFIX, names, origins):
     for origin in origins:
         wait(lambda: request(origin, "/api/node/candidates"), lambda result: len(result["candidates"]) == 3, "three-node discovery")
+        request(origin, "/api/node/auto-join", {"enabled": False})
     origins[0] = verify_incomplete_preparation(names[0], origins[0])
     snapshot = wait(lambda: request(origins[0], "/api/node/candidates"),
                     lambda result: len(result["candidates"]) == 3 and all(
@@ -21,20 +31,26 @@ def verify(docker, request, wait, verify_incomplete_preparation, PREFIX, names, 
             CROWDB_NODE_UI_PREPARE_ONLY="1",
             CROWDB_NODE_UI_IDENTITIES=json.dumps(sorted(identities)))
     prepared = request(origins[0], "/api/node/admissions")
-    docker("pause", names[2])
+    local_ids = [request(origin, "/api/node/candidates")["local"]["advertisement"]["discovery_id"]
+                 for origin in origins]
+    peer = next(index for index in (1, 2) if local_ids[index] != min(local_ids))
+    ssh_pid = docker("exec", names[peer], "cat", "/opt/crowdb/run/sshd.pid")
+    assert ssh_pid.isdigit(), ssh_pid
+    docker("exec", names[peer], "/bin/kill", "-TERM", ssh_pid)
     try:
-        try:
-            request(origins[0], "/api/cluster/init", {"nodes": [node["node_id"] for node in prepared]})
-        except urllib.error.HTTPError as error:
-            assert error.code == 500 and "SSH connection/authentication exceeded" in " ".join(error.__notes__), error
-        else:
-            raise AssertionError("unreachable selected node did not interrupt bootstrap")
+        wait(lambda: ssh_listener_stopped(origins[peer]), bool, "peer SSH listener stopped")
+        accepted = request(origins[0], "/api/cluster/init", {"nodes": [node["node_id"] for node in prepared]})
+        assert accepted["phase"] == "preparing", accepted
+        failed = wait(lambda: request(origins[0], "/api/cluster/initialization"),
+                      lambda result: result["phase"] == "failed", "monitor records unreachable peer")
+        assert failed["operation_id"] == accepted["operation_id"] and "peer monitor control failed" in failed["error"], failed
     finally:
-        docker("unpause", names[2])
+        docker("exec", names[peer], "/usr/sbin/sshd", "-f", "/opt/crowdb/run/sshd_config")
     fixed = request(origins[0], "/api/node/status")
     assert fixed["phase"] == "bootstrap_in_progress", fixed
-    browser(origins[1], "another UI resumes", "resume",
-            CROWDB_NODE_UI_RECOVERY_ORIGIN=origins[1])
+    recovery_origin = origins[next(index for index in (1, 2) if index != peer)]
+    browser(recovery_origin, "another UI resumes", "resume",
+            CROWDB_NODE_UI_RECOVERY_ORIGIN=recovery_origin)
     records = request(origins[0], "/api/node/admissions")
     print("Three nodes prepared and bootstrapped through the actual browser UI", flush=True)
     clusters = []
