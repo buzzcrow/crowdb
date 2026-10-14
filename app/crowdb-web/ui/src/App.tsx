@@ -118,7 +118,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
   const managementAuthorized = !nodeManagement || nodeAuthority?.available === true;
   const draftEditable = nodeAuthority?.phase === 'unbound_draft';
   const topologyReadonly = readonly || managed || (nodeManagement && !managementAuthorized && !draftEditable);
-  const logicalReadonly = readonly;
+  const logicalReadonly = readonly || (nodeManagement && !managementAuthorized && !draftEditable);
   const ownsSidebar = domain === Domain.Iceberg || domain === Domain.S3 || (domain === Domain.Chunk || domain === Domain.ChunkKV);
   const physicalActive = domain === Domain.Cluster;
   const capacityActive = domain === Domain.Capacity;
@@ -468,6 +468,10 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
 
     return info;
   }, [groups, nodes]);
+
+  if (nodeManagement && !nodeAuthority) {
+    return <div role="status" className="tw-p-6 tw-text-muted">Loading cluster authority…</div>;
+  }
 
   return (
     <div className="tw-min-h-screen tw-bg-bg tw-text-text crowdb-console">

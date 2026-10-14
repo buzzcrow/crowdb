@@ -64,7 +64,7 @@ pub enum LifecycleError {
     #[error("allocation failed: {0}")]
     Allocation(#[from] AllocError),
     #[error("storage error: {0}")]
-    Storage(#[from] StoreError),
+    Storage(StoreError),
     #[error("invalid request: {0}")]
     InvalidRequest(String),
     #[error("chunk bucket {bucket} not in owned ranges")]
@@ -81,6 +81,15 @@ pub enum LifecycleError {
     Cleanup(String),
     #[error("cluster reservation capacity is exhausted")]
     ReservationLimit,
+}
+
+impl From<StoreError> for LifecycleError {
+    fn from(error: StoreError) -> Self {
+        match error {
+            StoreError::Conflict => Self::StateConflict,
+            other => Self::Storage(other),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -710,7 +719,12 @@ impl LifecycleHandler {
         chunk.acknowledged_cursor = acknowledged_cursor;
         chunk.writer_lease_deadline_ms = now_ms.saturating_add(writer_lease_ms);
         chunk.modify_ts = chunk.modify_ts.saturating_add(1);
-        self.store.put_chunk(&chunk).await?;
+        self.store.put_chunk(&chunk).await.map_err(|error| {
+            if let Some(guard) = &guard {
+                guard.invalidate();
+            }
+            error
+        })?;
         if let Some(ref mut guard) = guard {
             guard.refresh(chunk.clone());
         }

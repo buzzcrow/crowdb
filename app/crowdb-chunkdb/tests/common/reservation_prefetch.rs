@@ -168,3 +168,73 @@ pub(super) async fn confirm_group(
         fence.expected_modify_ts = confirmed.chunk.modify_ts;
     }
 }
+
+#[tokio::test]
+async fn reservation_confirmation_conflict_reloads_durable_chunk() {
+    let cluster = KvCluster::start_pinned().await;
+    seed_hardware(&cluster.make_hardware_client()).await;
+    let _diskdb = DiskdbServer::start(&cluster).await;
+    let harness = ChunkdbHarness::start(&cluster).await;
+    let chunk = harness
+        .handler
+        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::S3, 91, 30_000)
+        .await
+        .unwrap();
+    let chunk_id = chunk.id.unwrap();
+    let group_id = ChunkId { high: 198, low: 1 };
+    let mut fence = ReservationFence {
+        expected_modify_ts: chunk.modify_ts,
+        writer_epoch: 91,
+        lease_generation: 1,
+        lease_ms: 30_000,
+    };
+    let reserved = harness
+        .handler
+        .reserve_strip_group(
+            &chunk_id,
+            &group_id,
+            fence,
+            ReserveGroupSpec {
+                reservation_offset_kb: None,
+                strip_size: 1,
+                strip_count: 1,
+                copy_count: 3,
+                conversion_data_num: 0,
+                conversion_code_num: 0,
+            },
+        )
+        .await
+        .unwrap();
+    fence.expected_modify_ts = reserved.chunk.modify_ts;
+    let strip = &reserved.group.as_ref().unwrap().strips[0];
+    let mut update = ReservationUpdate {
+        strip_sequence: strip.strip_sequence,
+        action: StripReservationAction::Consume,
+        acknowledged_cursor: u64::from(strip.chunk_offset + strip.capacity) * 1024,
+        closed_strip_sequence: Some(strip.strip_sequence),
+    };
+    harness
+        .handler
+        .mutate_strip_reservation(&chunk_id, &group_id, fence, update)
+        .await
+        .unwrap();
+    let mut durable = reserved.chunk;
+    durable.modify_ts += 1;
+    durable.writer_lease_deadline_ms += 1;
+    harness.store.put_chunk(&durable).await.unwrap();
+    update.action = StripReservationAction::Confirm;
+    let error = harness
+        .handler
+        .mutate_strip_reservation(&chunk_id, &group_id, fence, update)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, LifecycleError::StateConflict), "{error:?}");
+    fence.expected_modify_ts = durable.modify_ts;
+    let confirmed = harness
+        .handler
+        .mutate_strip_reservation(&chunk_id, &group_id, fence, update)
+        .await
+        .unwrap();
+    assert_eq!(confirmed.chunk.modify_ts, durable.modify_ts + 1);
+    assert_eq!(confirmed.chunk.acknowledged_cursor, update.acknowledged_cursor);
+}

@@ -245,6 +245,6 @@ export function useNodeServicePlans(stores: EnrichedStoreView[], groups: Record<
       window.removeEventListener('pageshow', restore);
     };
   }, [persist, failProgress]);
-  useEffect(() => { wake.current(); }, [prerequisiteKey]);
+  useEffect(() => { wake.current(); }, [prerequisiteKey, enabled]);
   return { plans, start, stop };
 }

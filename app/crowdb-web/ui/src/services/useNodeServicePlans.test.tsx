@@ -395,3 +395,23 @@ describe('node service plans', () => {
   });
 
 });
+
+it('reconciles recovered plans as soon as node authority becomes available', async () => {
+  const steps = newPlan();
+  for (const kind of serviceOrder) steps[kind] = { state: 'disabled' };
+  steps['chunk-kv'] = { state: 'pending' };
+  vi.mocked(listServers).mockResolvedValue([
+    { node_id: 1, service_type: 'chunkdb', pid: 12 },
+    { node_id: 1, service_type: 'diskio', pid: 13 },
+    { node_id: 2, service_type: 'diskio' },
+  ] as Awaited<ReturnType<typeof listServers>>);
+  const request = vi.mocked(serviceRequest).getMockImplementation()!;
+  vi.mocked(serviceRequest).mockImplementation(async (path, method, body) => path === '/service-plans'
+    ? { 1: { revision: 1, steps } } : request(path, method, body));
+  const { result, rerender } = renderHook(({ enabled }) => useNodeServicePlans(stores, {}, async () => {}, enabled),
+    { initialProps: { enabled: false } });
+  await act(async () => { rerender({ enabled: true }); });
+  expect(result.current.plans[1]['chunk-kv']).toEqual({
+    state: 'waiting', detail: 'Waiting: restart registered DiskIO services before connecting chunk storage',
+  });
+});

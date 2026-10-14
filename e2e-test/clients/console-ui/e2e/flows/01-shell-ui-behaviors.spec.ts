@@ -44,6 +44,7 @@ test('shell defaults and tree interactions distinguish live and stopped release 
   await addGroup.getByRole('button', { name: 'Create Group', exact: true }).click();
   await expect(addGroup).toHaveCount(0);
   const storeBranch = sidebar.getByTestId('tree-node-S-207');
+  await expect(storeRow).toHaveAttribute('aria-expanded', /^(true|false)$/);
   if (await storeRow.getAttribute('aria-expanded') !== 'true') await storeRow.getByRole('button', { name: 'Expand', exact: true }).click();
   const group = storeBranch.getByRole('button', { name: 'G-1', exact: true });
   await group.click({ button: 'right' });

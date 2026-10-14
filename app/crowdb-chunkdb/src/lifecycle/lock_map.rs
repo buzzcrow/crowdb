@@ -310,6 +310,11 @@ impl ChunkGuard {
         self.chunk.as_ref()
     }
 
+    /// Discard a cached snapshot after a failed or ambiguous metadata write.
+    pub fn invalidate(&self) {
+        self.chunks.remove(&self.chunk_id);
+    }
+
     /// Update the cache after a successful `put_chunk`. Caller MUST
     /// have persisted first. If `CacheHint::NoCache`, only updates
     /// the guard's local copy.

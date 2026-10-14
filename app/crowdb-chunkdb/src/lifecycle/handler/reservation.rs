@@ -384,7 +384,11 @@ impl LifecycleHandler {
                     let retain_group = group.data_num != 0 || group.code_num != 0 || !terminal;
                     self.store
                         .put_chunk_and_finish_reservation(&chunk, retain_group.then_some(&group), group_id)
-                        .await?;
+                        .await
+                        .map_err(|error| {
+                            guard.invalidate();
+                            error
+                        })?;
                     let usage = strip_usage(&group.strips[index]);
                     self.reservation_admission.release(usage.0, usage.1);
                     self.commit_strip_segments_background(vec![group.strips[index].clone()]);
