@@ -76,9 +76,11 @@ impl From<crowdb_access_dataset::UploadError> for ApiError {
             UploadError::Conflict => Self::conflict(),
             UploadError::Integrity => Self::integrity(),
             UploadError::Capacity => Self::capacity(),
-            UploadError::Pending | UploadError::Storage(_) | UploadError::Store(_) => {
+            UploadError::Storage(_) | UploadError::Store(_) => {
+                tracing::error!(%error, "Dataset upload failed; returning retryable unavailable response");
                 Self::new(StatusCode::SERVICE_UNAVAILABLE, "unavailable")
             }
+            UploadError::Pending => Self::new(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
         }
     }
 }
