@@ -193,3 +193,13 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   the pending choice disabled with explicit Saving status; restore authoritative
   state on failure. All 194 UI component tests and TypeScript pass, including
   delayed failure and intervening poll coverage. Release browser rerun pending.
+- Full fixture unit gate: 136 pass, one pre-existing Dataset selection-count
+  failure (`selection_test.py:107`, expected 2, actual 3). The extra SDK case
+  was introduced by `257508ada5`; the assertion predates this work. Rust E2E
+  all-test Clippy and formatting pass. Existing `ts-lint` points at removed
+  `ui/tsconfig.e2e.json`; direct native-client typecheck also encounters old
+  cross-source imports in untouched catalog specs. UI application types pass.
+- Single release acceptance now passes on `69a0cb32` before and after container
+  replacement (run-d276efeb561848638aa9b975ab657f09): original ready manifest
+  preserved, system acceptance matches it, each group has one voter and its
+  configured leader, foreign acceptance rejected, acknowledged KV value retained.
