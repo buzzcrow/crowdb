@@ -18,6 +18,7 @@
 #include "crowdb-rpc/scheduled_executor.h"
 #include "dio_config.h"
 #include "disk/disk_set.h"
+#include "disk/retired_disks.h"
 #include "disk/types.h"
 
 #include <memory>
@@ -66,6 +67,7 @@ class Group0Sync
     void fetch_disks_from_group0();
     void reconcile_disks(const std::string &json);
     void heartbeat();
+    void release_quiescent_disks();
 
     Group0SyncConfig                       cfg_;
     std::shared_ptr<DiskSet>               disk_set_;
@@ -73,6 +75,7 @@ class Group0Sync
     crowdb::rpc::ScheduledExecutor        &executor_;
     crowdb::rpc::ScheduledExecutor::TaskId sync_task_id_{0};
     std::vector<uint64_t>                  owned_dg_ids_;
+    RetiredDisks                           retired_disks_;
 
     // FFI handles (opaque pointers from crowdb-kv-client FFI).
     void *hw_client_  = nullptr;

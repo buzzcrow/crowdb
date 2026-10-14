@@ -206,3 +206,14 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
 - Rebuilt auto-join browser acceptance passes in 2.4 s with explicit save-complete
   observation before reload/navigation. Automatic three-node bootstrap and all
   existing capacity/status assertions pass (run-352f07693d664ab1a11a15133decfa0e).
+- DiskIO retirement now detaches the active map before descriptor unregistration,
+  retains handles until old snapshots/request callbacks drain, and delays reopen
+  of the same identity. Fsync callbacks retain their disk just like reads/writes.
+  New descriptor-lifetime and independent-drain tests are in the C++ gate;
+  changed-source tree-lint exits 0 (existing warnings). This is the quiescence
+  foundation only; authoritative Offline tokens, owner acknowledgements and
+  retained removal metadata remain unfinished.
+- Retirement gates pass: changed C++ formatting and tree-lint; full `test-cpp`
+  (543 Tree, 56 RPC, 57 DiskIO, 31 Common, 55 Tree FFI, 25 RPC FFI cases).
+  Artifact: unit/cpp-6de3ce8355cb4297b6b5e135be920f81. The initial new-test
+  initializer typo was corrected before this passing run.

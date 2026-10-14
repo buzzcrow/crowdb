@@ -103,10 +103,25 @@ void Group0Sync::schedule_next_sync()
 
 void Group0Sync::do_sync()
 {
+    release_quiescent_disks();
     if (cfg_.auto_discover_disks) {
         fetch_disks_from_group0();
     }
     heartbeat();
+}
+
+void Group0Sync::release_quiescent_disks()
+{
+    for (const auto &disk : retired_disks_.collect_quiescent()) {
+#ifdef CROWDB_HAVE_LIBURING
+        if (auto uring_engine = std::dynamic_pointer_cast<UringEngine>(engine_);
+            uring_engine != nullptr && disk->fd() >= 0) {
+            uring_engine->uring().unregister_fd(disk->fd());
+        }
+#else
+        (void)disk;
+#endif
+    }
 }
 
 void Group0Sync::fetch_disks_from_group0()
@@ -176,6 +191,11 @@ void Group0Sync::reconcile_disks(const std::string &json)
         seen_ids.insert(did);
         seen_groups.insert(cfg_.dg_id == 0 ? static_cast<uint64_t>(entry["disk_group_id"].asInt()) : cfg_.dg_id);
 
+        // Do not reopen an identity while callbacks still hold its old handle.
+        if (retired_disks_.contains(did)) {
+            continue;
+        }
+
         // Check if this disk already exists in the DiskSet.
         auto existing = disk_set_->find_disk(did);
         if (existing != nullptr) {
@@ -231,19 +251,11 @@ void Group0Sync::reconcile_disks(const std::string &json)
                     zone_count);
     }
 
-    // Remove disks that are no longer in group-0.
-    // In-flight IO on removed disks completes safely (shared_ptr keeps
-    // the Disk alive); new requests get DiskNotExist.
+    // Detach first: old map readers and in-flight IO retain the descriptor
+    // registration until every request callback has released its handle.
     for (const auto &existing_id : disk_set_->disk_ids()) {
         if (seen_ids.find(existing_id) == seen_ids.end()) {
-#ifdef CROWDB_HAVE_LIBURING
-            auto disk = disk_set_->find_disk(existing_id);
-            if (auto uring_engine = std::dynamic_pointer_cast<UringEngine>(engine_);
-                uring_engine != nullptr && disk != nullptr && disk->fd() >= 0) {
-                uring_engine->uring().unregister_fd(disk->fd());
-            }
-#endif
-            disk_set_->remove_disk(existing_id);
+            retired_disks_.retire(*disk_set_, existing_id);
             std::printf("group-0: removed disk {%llu,%llu} (no longer in group-0)\n",
                         static_cast<unsigned long long>(existing_id.high),
                         static_cast<unsigned long long>(existing_id.low));

@@ -391,6 +391,11 @@ descriptor after draining in-flight work. The first group-0 disk sync runs
 immediately so a restarted service does not advertise an empty `DiskSet` for
 one refresh interval.
 
+Detachment removes the disk from new request lookups first. The synchronization
+owner retains its handle until old map snapshots and all read/write/fsync
+callbacks have released theirs, then unregisters and closes the descriptor.
+Rediscovery waits for this retirement before reopening the same disk identity.
+
 `Zone` holds `{zone_index, base_offset, capacity, state}`. The
 physical offset for an I/O is `zone.base_offset + zone_offset`. Zone
 records come from diskdb's allocation.

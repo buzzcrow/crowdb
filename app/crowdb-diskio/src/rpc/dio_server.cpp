@@ -358,16 +358,17 @@ crowdb::rpc::OutFrame *DiskioServer::handle_fsync(crowdb::rpc::Frame *request, c
 
     Disk *disk_ptr = disk.get();
     auto  started  = std::chrono::steady_clock::now();
-    disk_ptr->engine()->submit_fsync(disk_ptr, [this, conn, req_id, create_nano, msg_type, started](int res) {
-        fsync_latency_->observe(elapsed_nanos(started));
-        int16_t ret_code = (res < 0) ? static_cast<int16_t>(dproto::FBDiskIoRetCode_IoError)
-                                     : static_cast<int16_t>(dproto::FBDiskIoRetCode_Success);
-        auto   *pool     = conn->pool();
-        auto   *ctrl     = build_response_ctrl(pool, req_id, create_nano, ret_code, msg_type);
-        auto   *out      = crowdb::rpc::build_out_frame(req_id, msg_type, ctrl, nullptr);
-        out->create_nano = static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
-        transport_->submit(conn, out);
-    });
+    disk_ptr->engine()->submit_fsync(
+        disk_ptr, [this, conn, req_id, create_nano, msg_type, started, disk = std::move(disk)](int res) {
+            fsync_latency_->observe(elapsed_nanos(started));
+            int16_t ret_code = (res < 0) ? static_cast<int16_t>(dproto::FBDiskIoRetCode_IoError)
+                                         : static_cast<int16_t>(dproto::FBDiskIoRetCode_Success);
+            auto   *pool     = conn->pool();
+            auto   *ctrl     = build_response_ctrl(pool, req_id, create_nano, ret_code, msg_type);
+            auto   *out      = crowdb::rpc::build_out_frame(req_id, msg_type, ctrl, nullptr);
+            out->create_nano = static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
+            transport_->submit(conn, out);
+        });
 
     return nullptr;
 }
