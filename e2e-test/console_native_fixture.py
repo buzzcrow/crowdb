@@ -149,6 +149,10 @@ class NativeConsoleCluster(ShellBrowserCluster):
         accepted = json.loads(self.command("exec", initiator, "cat", "/opt/crowdb/data/initialization.json"))
         assert accepted["operation"]["identity"]["operation_id"] == operation["operation_id"]
         assert accepted["create_data_group"] is False, accepted
+        for address in self.addresses:
+            with HTTP.open(f"http://{address}:10000/stores/0/groups/0/ready", timeout=5) as response:
+                readiness = json.load(response)
+                assert readiness["ready"] and readiness["voting_replicas"] == 3, readiness
         self.api("/api/node/auto-join", {"enabled": False})
         assert self.api("/api/cluster/initialization")["operation_id"] == operation["operation_id"]
 

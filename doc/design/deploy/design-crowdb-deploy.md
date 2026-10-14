@@ -172,8 +172,8 @@ its topology is not imported automatically.
 
 Announcements are untrusted hints. The direct handshake and admission policy
 must validate the management peer before privileged actions. Never advertise
-credentials in TXT records. Admission requires explicit operator approval in the UI and authenticated
-management peers; discovery never automatically admits a node. The Cluster
+credentials in TXT records. Admission requires authenticated management peers and
+either an explicit submission or the workspace's enabled Auto join policy. The Cluster
 tab shows a separate Candidate Nodes list below its left-side cluster view.
 Moving a candidate into a cluster opens SSH access and rack selection. Before
 bootstrap this updates only the visibly uncommitted draft; afterward admission
@@ -250,7 +250,8 @@ requires an explicit recovery/decommission procedure, not an automatic timeout.
 ### 6.2 Initialization flow
 
 1. Any UI collects compatible candidates and the operator's rack assignments.
-2. The operator explicitly selects initial Group-0 voting members. Candidate
+2. The operator selects initial Group-0 voting members, or Auto join selects
+   three authenticated eligible candidates in discovery-UUID order. Candidate
    count is not voting-member count; application nodes need not all vote.
 3. Submit the bootstrap identity, immutable initial manifest and initial data
    group choice to the selected member with the smallest discovery UUID. Its
@@ -297,6 +298,21 @@ Disjoint selected memberships may create independent clusters; UIs display
 them separately and do not automatically merge their logs or topology.
 
 ### 6.3 Recovery and subsequent admission
+
+Standard node workspaces persist an enabled-by-default Auto join policy. The Web
+backend evaluates it without a browser connection, using the existing authenticated
+admission operation and configured rack assignments. A workspace with no rack waits
+for one. Missing key access remains Needs access; automatic admission does not
+supply a password. Multiple advertised clusters without a configured local draft
+require target selection rather than selecting an arbitrary advertisement.
+
+Before bootstrap, fewer than three eligible nodes remain pending. The first three
+in UUID order form the fixed manifest, and the smallest UUID member's monitor
+executes initialization. Automatic initialization creates only Store 0 / Group 0.
+After publication, admission can add nonvoting nodes but does not replace or expand
+the initial voters. Quorum loss waits for authority recovery. A persisted target
+without its binding is a recovery condition, not permission to create a cluster.
+Turning Auto join off stops new scheduling while accepted monitor work continues.
 
 Startup mode is durable node policy. Standard and explicit single mode cannot
 replace one another by changing an environment variable, including before the

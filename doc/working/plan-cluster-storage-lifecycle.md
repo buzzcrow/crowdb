@@ -154,3 +154,10 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   authenticated node update 11.3 s. The profile also verifies cancellation fencing,
   later nonvoting admission, remote service lifecycle, minority authority gating,
   snapshot/WAL catch-up and cleanup. Artifact: run-b5ae534af16044099d11e4db5f0036a4.
+- Rebuilt-image automatic-bootstrap and hardware browser acceptance passes on
+  `f9c0ec96` (run-a586ef734f9241c08ab1c5990a103f9b): each fresh node defaults enabled,
+  three authenticated nodes initialize without an init submission, accepted
+  membership follows UUID order, the minimum UUID monitor owns execution, and
+  every replica reports exactly three voters. No ordinary data group is created.
+  Browser policy toggles survive reload and preserve all prior capacity/status
+  assertions. Playwright 2.4 s versus initial 1.3 s (below 2x); root case 13.91 s.
