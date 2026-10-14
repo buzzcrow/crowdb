@@ -302,3 +302,12 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
 - Final component/type gate for independent inspection passes (198 tests),
   including scope retention on Close and distinct row Inspect/Open callbacks.
   Property selection has a separate visible/accessible indicator from tree scope.
+- Release `9af1e624` verifies independent inspection: four canvas cases pass
+  (1.8/6.3/1.2/2.1 s, run-c11694fadb5847529d82f1c7a730824b), and native disk
+  navigation passes in 5.7 s (run-e9e9c65d60564adb80ff40fdd513784d). Closing
+  properties preserves the center; breadcrumb and Back restore disk scope.
+- Reset selection regression passes in 1.6 s
+  (run-2e7ae0e07d8d445e871ff1e67e825a1a). Native S3 multipart, exact data round
+  trip and Chunk-to-Cluster disk navigation pass in 8.2 s against recorded 5.3 s
+  baseline (run-836840b7f7534834af3fee1d76abb225). The physical cross-link now
+  asserts canonical Cluster scope and the actual DiskGroup breadcrumb.

@@ -27,7 +27,8 @@ UID/GID ranges for the invoking user, and permitted unprivileged user namespaces
 Pixi supplies RootlessKit, BuildKit and runc; it cannot grant kernel privileges.
 The builder uses the native snapshotter and host network, so no FUSE or CNI is
 required. Startup errors include complete daemon diagnostics. Rootless preflight
-is implemented; current local acceptance exercised the explicit rootful mode.
+validates these requirements before starting BuildKit.
+Both rootless build/import and the explicit rootful recipe are supported.
 
 If rootless prerequisites are unavailable, an administrator can explicitly run:
 
@@ -57,9 +58,18 @@ digest. Never substitute a local config ID for a registry digest.
 
 ## Startup policies
 
-The image defaults to `CROWDB_STARTUP_MODE=manual`: discovery, SSH and UI start;
-operators admit candidates, configure storage and initialize Group 0. A single
-local candidate can form an editable cluster and later admit more nodes.
+The image defaults to `CROWDB_STARTUP_MODE=manual`: discovery, SSH and UI start.
+Operators authenticate and admit candidates into the cluster. Auto join defaults
+to enabled: three eligible admitted nodes are ordered by UUID, and the smallest
+UUID's monitor initializes Store 0 / Group 0 with those three voters. Membership
+is then fixed; later admitted nodes do not automatically become Group-0 voters.
+Disable Auto join to submit initialization through the UI instead. Accepted
+initialization continues in the monitor after the UI closes; inspect its progress
+or retry the same operation after a reported failure.
+
+Storage preparation is separate from effective Group-0 disk membership. Configure
+and verify each disk's placement, metadata binding, owner and DiskIO availability.
+A single admitted node in standard mode does not imply the single-node policy.
 
 Explicit `CROWDB_STARTUP_MODE=single` creates virtual disks and initializes the
 existing development profile automatically. UI editing and backend mutations

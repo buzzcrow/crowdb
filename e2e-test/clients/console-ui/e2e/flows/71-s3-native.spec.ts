@@ -94,7 +94,9 @@ test('S3 native multipart upload, HEAD, bounded preview and full round trip', as
         await expect(chunkProperties.locator('dt').filter({ hasText: new RegExp(`^${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) }).locator('..').locator('dd')).toHaveText(String(value));
       }
       await page.getByRole('button', { name: 'Show disk capacity', exact: true }).click();
-      await expect(page.getByTestId('domain-capacity')).toHaveAttribute('aria-pressed', 'true');
+      await expect(page.getByTestId('domain-cluster')).toHaveAttribute('aria-pressed', 'true');
+      await expect(page.getByRole('heading', { name: /^Capacity — Disk/ })).toBeVisible();
+      await expect(page.getByRole('navigation', { name: 'Cluster scope' })).toContainText(`DG-${placement.disk_group_id}`);
       await page.goBack();
       await expect(page.getByRole('region', { name: 'Chunk layout', exact: true })).toBeVisible();
       await expect(page.getByLabel('Chunk properties', { exact: true })).toContainText(diskId);
