@@ -9,9 +9,17 @@ from unittest.mock import Mock
 from allocation import LABEL
 from console_native_observation import services, process, BrowserObservations
 from console_native_fixture import NativeConsoleCluster
+from console_native_storage import prepared_file_observation
 
 
 class NativeObservationTest(unittest.TestCase):
+    def test_file_preparation_failure_is_reported_without_poll_timeout(self):
+        cluster = SimpleNamespace(servers=["owned-node"], command=Mock(return_value=json.dumps({
+            "phase": "failed", "error": "insufficient backing space including host reserve"})))
+        with self.assertRaisesRegex(AssertionError, "insufficient backing space"):
+            prepared_file_observation(cluster, "operation")
+        self.assertEqual(cluster.command.call_count, 1)
+
     def test_bootstrap_observation_reports_monitor_failure_without_waiting(self):
         cluster = NativeConsoleCluster.__new__(NativeConsoleCluster)
         cluster.api = Mock(return_value={"phase": "failed", "error": "peer host key rejected"})

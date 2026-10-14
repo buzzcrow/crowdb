@@ -249,3 +249,11 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   covering absent/deleted records, preserved geometry and no-op revisions;
   kv-client all-target/all-feature Clippy passes. Cross-record removal fencing
   and lifecycle-aware cascade guards are still pending.
+- Rootless OCI release `ca41589b` builds/imports successfully. Native automatic
+  bootstrap/hardware acceptance passes, including new private-control assertions:
+  unbound file preparation rejected, bound preallocation completes with matching
+  inventory identity and actual allocation, no fabricated Group-0 membership,
+  changed-intent replay rejected. Browser 2.3 s (initial baseline 1.3 s), root
+  case 12.54 s; artifact run-3f1918ea27be451497ddf712c5ee0078. Eight native fixture
+  observation tests pass. The first direct Python invocation omitted PYTHONPATH;
+  corrected with `PYTHONPATH=e2e-test` before the passing run.

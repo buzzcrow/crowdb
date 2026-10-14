@@ -1,0 +1,62 @@
+# Copyright 2026-present Gian <crow.db@outlook.com>
+# Licensed under the Apache License, Version 2.0.
+"""Private monitor file preparation on owned standard release nodes."""
+
+import json
+import uuid
+
+from fixture import wait
+
+
+def control(cluster, body):
+    return json.loads(cluster.command("exec", "--user", "crowdb", cluster.servers[0],
+        "crowdb-monitor", "control", "--json", json.dumps(body)))
+
+
+def unbound_file_rejected(cluster):
+    request = {"operation_id": str(uuid.uuid4()), "cluster_id": "unbound",
+        "node_id": 1, "capacity_bytes": 1024 ** 2, "sparse": False,
+        "reserve_bytes": 1024 ** 3}
+    try:
+        control(cluster, {"command": "prepare_disk_file", "request": request})
+    except RuntimeError as error:
+        assert "waiting for Group 0 binding" in str(error), error
+    else:
+        raise AssertionError("unbound node accepted file preparation")
+    inventory = control(cluster, {"command": "disk_inventory"})
+    assert inventory["disks"] == [], inventory
+
+
+def prepared_file_observation(cluster, operation_id):
+    state = control(cluster, {"command": "disk_file_preparation", "operation_id": operation_id})
+    if state["phase"] == "failed":
+        raise AssertionError(f"monitor file preparation failed: {state}")
+    return state
+
+
+def verify_file_preparation(cluster):
+    authority = cluster.api("/api/node/status")
+    request = {"operation_id": str(uuid.uuid4()), "cluster_id": authority["cluster_id"],
+        "node_id": cluster.node_ids[0], "capacity_bytes": 1024 ** 2,
+        "sparse": False, "reserve_bytes": 1024 ** 3}
+    accepted = control(cluster, {"command": "prepare_disk_file", "request": request})
+    assert accepted["phase"] == "accepted", accepted
+    assert accepted["request"] == request
+    ready = wait(lambda: prepared_file_observation(cluster, request["operation_id"]),
+        lambda result: result["phase"] == "prepared", "monitor-owned file preparation", seconds=10)
+    assert ready["preparation_complete"] and ready["backing_identity"], ready
+    inventory = control(cluster, {"command": "disk_inventory"})
+    disk = next(disk for disk in inventory["disks"] if disk["path"] == ready["path"])
+    assert disk["capacity_bytes"] == request["capacity_bytes"]
+    assert disk["allocated_bytes"] >= request["capacity_bytes"]
+    assert disk["backing_identity"] == ready["backing_identity"]
+    assert disk["error"] is None
+    # File preparation must not fabricate hardware membership.
+    assert cluster.api(f"/api/nodes/{cluster.node_ids[0]}/disk-groups") == []
+    try:
+        control(cluster, {"command": "prepare_disk_file", "request": {**request, "sparse": True}})
+    except RuntimeError as error:
+        assert "inputs differ from accepted intent" in str(error), error
+    else:
+        raise AssertionError("monitor replaced an accepted file allocation mode")
+    (cluster.artifacts / "file-preparation.json").write_text(json.dumps(ready, indent=2))

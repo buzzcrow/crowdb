@@ -12,6 +12,7 @@ from console_shell_fixture import ShellBrowserCluster
 from console_native_observation import services, process, BrowserObservations
 from control import Control
 from console_native_browser import INSPECTION_CASES
+from console_native_storage import unbound_file_rejected, verify_file_preparation
 
 
 class NativeConsoleCluster(ShellBrowserCluster):
@@ -103,6 +104,8 @@ class NativeConsoleCluster(ShellBrowserCluster):
                 assert json.load(response)["enabled"] is False
         for rack in sorted(set(self.rack_ids)):
             self.api("/api/racks", {"id": rack, "name": "native acceptance"}, status=201)
+        if self.auto_bootstrap:
+            unbound_file_rejected(self)
         candidates = wait(lambda: self.api("/api/node/candidates"),
                           lambda result: len(result["candidates"]) == self.node_count,
                           "isolated manual node candidates", seconds=10)["candidates"]
@@ -132,6 +135,7 @@ class NativeConsoleCluster(ShellBrowserCluster):
                  "live remote KV observations", seconds=10)
             if self.auto_bootstrap:
                 self.verify_auto_bootstrap()
+                verify_file_preparation(self)
         self.origins = [f"http://{address}:10000" for address in self.addresses]
         (self.artifacts / "native-endpoints.json").write_text(json.dumps({
             "nodes": self.node_ids, "addresses": self.addresses, "disk_gib": self.disk_gib,
