@@ -3,7 +3,7 @@
 import { test, expect } from '../fixtures/realBackend';
 import { diskMenu } from '../fixtures/capacity';
 
-// Baseline: 4.3s (2026-10-12).
+// Baseline: 6.0s (2026-10-15).
 test('shell defaults and tree interactions distinguish live and stopped release nodes', async ({ page, request }) => {
   test.setTimeout(90_000);
   const stopped = await request.post('/api/nodes/4/server/stop');
@@ -88,4 +88,15 @@ test('shell defaults and tree interactions distinguish live and stopped release 
   const node = sidebar.getByTestId('tree-node-N-3').locator(':scope > [role="treeitem"]');
   await node.getByRole('button', { name: 'N-3', exact: true }).click();
   await expect(node).toHaveAttribute('aria-selected', 'true');
+  const storage = sidebar.getByTestId('tree-node-STORAGE-3').locator(':scope > [role="treeitem"]');
+  await expect(storage).toHaveAttribute('aria-expanded', 'false');
+  await page.getByTestId('domain-capacity').click();
+  await expect(node).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('heading', { name: 'Capacity — Node 3', exact: true })).toBeVisible();
+  await expect(sidebar.getByTestId('tree-node-SERVICES-3')).toBeVisible();
+  await storage.getByRole('button', { name: 'Expand', exact: true }).click();
+  await expect(storage).toHaveAttribute('aria-expanded', 'true');
+  await page.getByTestId('cluster-topology').click();
+  await expect(node).toHaveAttribute('aria-selected', 'true');
+  await expect(storage).toHaveAttribute('aria-expanded', 'true');
 });

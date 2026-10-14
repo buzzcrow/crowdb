@@ -3,7 +3,7 @@
 
 import { createContext, useContext, useState, useCallback, useRef, ReactNode } from 'react';
 import { Domain, type ServiceKind } from '../types';
-import { useDomain, useNavigationSnapshot } from './DomainContext';
+import { canonicalDomain, useDomain, useNavigationSnapshot } from './DomainContext';
 
 export type EntityType = 'Datacenter' | 'Rack' | 'Node' | 'Server' | 'Store' | 'Group' | 'Replica' | 'DiskGroup' | 'Disk' | 'Partition' | 'Iceberg' | 'S3';
 
@@ -18,6 +18,7 @@ export interface SelectedEntity {
   parentIds?: Record<string, string | number>;
   domain: Domain;
   name?: string;
+  section?: 'services' | 'storage' | 'candidates';
   /** Service flavor for `Server` entities: KV vs DiskDB. */
   serviceType?: ServiceKind;
 }
@@ -37,13 +38,14 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
   const [scopes, setScopes] = useState<Partial<Record<Domain, SelectedEntity | null>>>({});
   const latestScopes = useRef(scopes); latestScopes.current = scopes;
   const selectedEntity = scopes[domain] ?? null;
-  const selectionForDomain = useCallback((scope: Domain) => scopes[scope] ?? null, [scopes]);
+  const selectionForDomain = useCallback((scope: Domain) => scopes[canonicalDomain(scope)] ?? null, [scopes]);
 
   useNavigationSnapshot(domain, 'selection', () => {
     const selection = scopes[domain] ?? null;
     return () => setScopes(previous => ({ ...previous, [domain]: selection }));
   });
   const selectEntity = useCallback((entity: SelectedEntity | null, record = true) => {
+    entity = entity ? { ...entity, domain: canonicalDomain(entity.domain) } : null;
     const scope = entity?.domain ?? domain;
     if (record && JSON.stringify(latestScopes.current[scope] ?? null) !== JSON.stringify(entity)) checkpoint();
     setScopes(previous => ({ ...previous, [scope]: entity }));

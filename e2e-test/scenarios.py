@@ -418,7 +418,7 @@ CONSOLE_OPERATION_CASES = (
     Case("console.browser.registry", "console::browser_registry::slot_warning", shell_browser="fixed-slot warning stays healthy and persists across reload"),
     Case("console.browser.shell", "console::shell::embedding", shell_browser="embedding honors apiPrefix, readonly, and module opt-out"),
     Case("console.browser.shell", "console::shell::backend_unavailable", shell_browser="shows an alert when backend API requests fail"),
-    Case("console.browser.shell", "console::shell::domain_toggle", shell_browser="domain toggle switches between all seven domains"),
+    Case("console.browser.shell", "console::shell::domain_toggle", shell_browser="domain toggle switches between six domains and shared Cluster views"),
     Case("console.web.standalone", "console::web_diskio_discovery::diskio_discovers_disk_groups_created_after_web_deployment"),
     Case("console.web.wal", "console::web_leader_removal::remove_leader_from_five_node_group_elects_new_leader", stores=(0, 0, 0, 0, 0)),
     Case("console.web.wal", "console::web_leader_removal::remove_unreachable_leader_retains_group0_membership", stores=(0, 0, 0, 0, 0), preserve_network=True),

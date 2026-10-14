@@ -78,3 +78,23 @@ it('keeps a bounded return route, restores snapshots and drops forward on new na
   while (result.current.canBack) { const old = result.current.domain; act(() => result.current.back()); await waitFor(() => expect(result.current.domain).not.toBe(old)); count++; }
   expect(count).toBe(32);
 });
+
+it('canonicalizes Capacity links and restores Cluster view through history', async () => {
+  const { result } = renderHook(() => useDomain(), {
+    wrapper: ({ children }) => <DomainProvider initialDomain={Domain.Capacity}>{children}</DomainProvider>,
+  });
+  expect(result.current.domain).toBe(Domain.Cluster);
+  expect(result.current.clusterView).toBe('capacity');
+  expect(new URL(window.location.href).searchParams.get('domain')).toBe('Cluster');
+  expect(new URL(window.location.href).searchParams.get('view')).toBe('capacity');
+  await act(async () => { result.current.setClusterView('topology'); });
+  expect(result.current.clusterView).toBe('topology');
+  act(() => result.current.back());
+  await waitFor(() => expect(result.current.clusterView).toBe('capacity'));
+  act(() => result.current.forward());
+  await waitFor(() => expect(result.current.clusterView).toBe('topology'));
+  await act(async () => { result.current.setDomain(Domain.KV); });
+  await act(async () => { result.current.setDomain(Domain.Capacity); });
+  expect(result.current.domain).toBe(Domain.Cluster);
+  expect(result.current.clusterView).toBe('capacity');
+});

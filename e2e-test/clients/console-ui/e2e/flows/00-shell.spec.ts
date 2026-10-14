@@ -1,6 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
-// Baseline: embedding 2.9s, unavailable 0.46s, navigation 1.0s (2026-10-12)
+// Baseline: embedding 2.8s, unavailable 0.453s, navigation 1.1s (2026-10-15)
 
 import { test, expect } from "../fixtures/realBackend";
 import { step } from "../fixtures/stepTimer";
@@ -17,7 +17,7 @@ test.describe("shell · embedding", () => {
     await expect(page.getByRole('button', { name: 'Add Rack' })).toHaveCount(0);
   });
 
-  test('domain toggle switches between all seven domains', async ({ page }) => {
+  test('domain toggle switches between six domains and shared Cluster views', async ({ page }) => {
     await step('shell: goto', () => page.goto('/'));
 
     await expect(page).toHaveTitle('CrowDB Console');
@@ -33,6 +33,14 @@ test.describe("shell · embedding", () => {
     // Default domain is Cluster.
     await expect(page.getByTestId('domain-cluster')).toHaveAttribute('aria-pressed', 'true');
 
+    const domains = page.getByRole('navigation', { name: 'Console domains' });
+    await expect(domains.getByRole('button')).toHaveCount(6);
+    await expect(domains.getByRole('button', { name: 'Capacity', exact: true })).toHaveCount(0);
+    await page.getByTestId('domain-capacity').click();
+    await expect(page.getByTestId('domain-capacity')).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByTestId('domain-cluster')).toHaveAttribute('aria-pressed', 'true');
+    await expect(page).toHaveURL(/domain=Cluster&view=capacity/);
+
     // Switch to KV.
     await page.getByTestId('domain-kv').click();
     await expect(page.getByTestId('domain-kv')).toHaveAttribute('aria-pressed', 'true');
@@ -44,6 +52,9 @@ test.describe("shell · embedding", () => {
     // Switch back to Cluster.
     await page.getByTestId('domain-cluster').click();
     await expect(page.getByTestId('domain-cluster')).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByTestId('domain-capacity')).toHaveAttribute('aria-pressed', 'true');
+    await page.getByTestId('cluster-topology').click();
+    await expect(page.getByTestId('cluster-topology')).toHaveAttribute('aria-pressed', 'true');
   });
   test('embedding honors apiPrefix, readonly, and module opt-out', async ({ page, baseURL, request }) => {
     const post = async (path: string, data: Record<string, unknown>, status = 201) => {

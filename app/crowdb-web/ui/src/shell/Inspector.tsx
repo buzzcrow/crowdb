@@ -212,7 +212,6 @@ function DetailsTab({ entity, nodes, racks, servers, stores, capacityUsage, hard
 
     // In Physical view, only show capacity for DiskGroup and Disk
     // (rack/node/datacenter capacity is a Capacity-view concept).
-    if (entity.domain === Domain.Cluster && entity.type !== 'DiskGroup' && entity.type !== 'Disk') return null;
 
     if (!['Datacenter', 'Rack', 'Node', 'DiskGroup', 'Disk'].includes(entity.type)) return null;
     return observeCapacity(hardwareCapacity, capacityUsage, {

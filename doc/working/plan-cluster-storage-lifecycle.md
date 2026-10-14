@@ -16,7 +16,7 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
 - [x] **Disk observations**: expose bounded monitor inventory, reject duplicate
   resources and mismatched launcher identities. Inventory tests and Clippy pass;
   real raw-device/containerd acceptance remains in integration verification.
-- [~] **Effective admission**: add Group-0-gated registration, default file
+- [ ] **Effective admission**: add Group-0-gated registration, default file
   creation and geometry validation; merge observations with authority records.
   Files: `container/crowdb-monitor/src/node`, `bootstrap/disk_files.rs`,
   `lib/crowdb-protocol/src/mgmt.rs`, `lib/crowdb-console-shared/src/ops/hardware`,
@@ -33,7 +33,7 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
 - [x] **UI baseline**: measure affected current root-runner browser flow before
   visible edits; record exact per-test timings here. Inspect tree/view/history,
   managed candidate components and existing physical/capacity flow registrations.
-- [ ] **Unified workspace**: consolidate navigation and selection, common center
+- [~] **Unified workspace**: consolidate navigation and selection, common center
   scope, candidates and status actions, responsive properties drawer, init policy
   and progress. Files: `app/crowdb-web/ui/src/{shell,views,menus,managed}` and
   associated hooks/styles/tests. Acceptance A14-A18.
@@ -257,3 +257,14 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   case 12.54 s; artifact run-3f1918ea27be451497ddf712c5ee0078. Eight native fixture
   observation tests pass. The first direct Python invocation omitted PYTHONPATH;
   corrected with `PYTHONPATH=e2e-test` before the passing run.
+- Fresh baseline before the navigation/tree consolidation on `ca41589b`:
+  shell embedding 2.8 s, unavailable backend 0.453 s, domain toggle 1.1 s
+  (run-ff5a36671a3343dab80e233a5ed0902f); native shell/tree 6.0 s
+  (run-acb8eb1a94bb41a08ce0c525ea1cafc2). All pass. Shared Cluster view,
+  physical Storage branches and canonical Capacity links are now in progress.
+- Cluster now owns the Capacity view and canonicalizes old Capacity links.
+  Selection/history and one Services/Storage tree are shared; physical groups
+  no longer depend on DiskDB ownership. Storage expansion remains lazy. All
+  196 UI component tests and application TypeScript pass. Release browser
+  regression is pending; lifecycle dialogs and independent center/inspection
+  selection remain unfinished.

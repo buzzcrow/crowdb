@@ -32,7 +32,7 @@ function propsFromQuery(search: string): CrowdbConsoleProps {
   }
 
   const d = q.get("domain");
-  if (d === "Cluster") props.initialDomain = Domain.Cluster;
+  if (d === "Cluster") props.initialDomain = q.get("view") === "capacity" ? Domain.Capacity : Domain.Cluster;
   else if (d === "KV") props.initialDomain = Domain.KV;
   else if (d === "Capacity") props.initialDomain = Domain.Capacity;
   else if (d === "Chunk") props.initialDomain = Domain.Chunk;

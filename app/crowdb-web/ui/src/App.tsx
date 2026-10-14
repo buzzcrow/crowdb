@@ -1,9 +1,9 @@
 import { PanelDivider } from './components/PanelDivider';
+import { ClusterViewSwitch } from './shell/ClusterViewSwitch';
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
 import { Suspense, useState, useCallback, useMemo, lazy, useEffect, useRef } from 'react';
-import type { CenterPanelMode } from './shell/Header';
 import { DomainProvider, useDomain } from './contexts/DomainContext';
 import { SelectionProvider, useSelection, type SelectedEntity } from './contexts/SelectionContext';
 import { ToastProvider, useToast } from './contexts/ToastContext';
@@ -78,8 +78,11 @@ export interface CrowdbConsoleProps {
 }
 
 function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, managed = false, nodeManagement = false }: CrowdbConsoleProps) {
-  const { domain, setDomain } = useDomain();
+  const { domain: activeDomain, clusterView, setClusterView, setDomain } = useDomain();
   const { selectedEntity, selectionForDomain, selectEntity, clearSelection } = useSelection();
+  const storageDetail = selectedEntity?.type === 'Disk' || selectedEntity?.type === 'DiskGroup';
+  const domain = activeDomain === Domain.Cluster && (clusterView === 'capacity' || storageDetail)
+    ? Domain.Capacity : activeDomain;
   const { success, error } = useToast();
   const { log } = useActivity();
 
@@ -94,7 +97,6 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
   const [rememberedDeployPorts, setRememberedDeployPorts] = useState<{ mgmt: number[]; rpc: number[]; diskdbRpc: number[] }>({ mgmt: [], rpc: [], diskdbRpc: [] });
   const [lastRefreshTime, setLastRefreshTime] = useState<Date>(new Date());
   const [refreshing, setRefreshing] = useState(false);
-  const [centerPanel, setCenterPanel] = useState<CenterPanelMode>('topology');
   const [sidebarWidth, setSidebarWidth] = useState(280);
   const [inspectorWidth, setInspectorWidth] = useState(320);
   const [canvasFocusRequest, setCanvasFocusRequest] = useState<{ targetId: string; subtree: boolean; nonce: number } | null>(null);
@@ -304,7 +306,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
     }));
   }, [runMutation, clearSelection]);
 
-  const menuContext = { readonly, managed, managementAuthorized, domain, physicalActive, modules, requestDelete, runMutation, serverNodeIds, diskdbNodeIds, allServers, setDialog, capacityUsage };
+  const menuContext = { readonly, managed, managementAuthorized, domain: activeDomain, physicalActive: activeDomain === Domain.Cluster, modules, requestDelete, runMutation, serverNodeIds, diskdbNodeIds, allServers, setDialog, capacityUsage };
   const buildMenuItems = useClusterMenus(menuContext);
   const buildCapacityMenuItems = useCapacityMenus(menuContext);
 
@@ -318,7 +320,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
         label: node.label,
         serviceType: node.serviceType,
       };
-      const items = capacityActive ? buildCapacityMenuItems(target) : buildMenuItems(target);
+      const items = target.type === 'Disk' || target.type === 'DiskGroup' ? buildCapacityMenuItems(target) : buildMenuItems(target);
       if (items.length > 0) openMenu(event, items);
     },
     [buildMenuItems, buildCapacityMenuItems, capacityActive, openMenu],
@@ -326,15 +328,16 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
 
   const onCanvasContextMenu = useCallback(
     (target: MenuTarget, event: React.MouseEvent) => {
-      const items = capacityActive ? buildCapacityMenuItems(target) : buildMenuItems(target);
+      const items = target.type === 'Disk' || target.type === 'DiskGroup' ? buildCapacityMenuItems(target) : buildMenuItems(target);
       if (items.length > 0) openMenu(event, items);
     },
     [buildMenuItems, buildCapacityMenuItems, capacityActive, openMenu],
   );
 
   const onTreeNodeClick = useCallback((node: TreeNode) => {
-    setCanvasFocusRequest({ targetId: node.id, subtree: true, nonce: Date.now() });
-  }, []);
+    if (node.section) setClusterView(node.section === 'services' ? 'topology' : 'capacity');
+    setCanvasFocusRequest({ targetId: node.section ? `N-${node.rawId}` : node.id, subtree: true, nonce: Date.now() });
+  }, [setClusterView]);
 
   const handleAdd = useCallback(() => {
     if (readonly || (nodeManagement && !managementAuthorized && !draftEditable)) return;
@@ -482,7 +485,6 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
         onRefresh={handleRefresh}
         refreshing={refreshing}
         onShowTopology={() => {}}
-        onShowCapacity={() => { if (centerPanel !== 'chunk') setCenterPanel('capacity'); }}
         onResetCluster={topologyReadonly || nodeManagement ? undefined : handleResetCluster}
       />
 
@@ -535,10 +537,13 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
           marginRight: selectedEntity && !ownsSidebar ? inspectorWidth : 0,
         }}
       >
-        {(
-          <div hidden={domain !== Domain.Cluster} style={{ display: domain === Domain.Cluster ? 'flex' : 'none' }} className="tw-flex-1 tw-min-h-0 tw-flex-col">{!managed && <div className="tw-px-4 tw-py-2 tw-text-xs tw-bg-panel tw-border-b tw-border-border">Physical topology · Rack → Node → Service · Deploy and manage services here</div>}
+        {activeDomain === Domain.Cluster && <>
+          {!storageDetail && <ClusterViewSwitch />}
           {nodeManagement && !managed && <AutoJoin readonly={readonly} />}
           {nodeManagement && <InitializationProgress readonly={readonly} />}
+        </>}
+        {(
+          <div hidden={domain !== Domain.Cluster} style={{ display: domain === Domain.Cluster ? 'flex' : 'none' }} className="tw-flex-1 tw-min-h-0 tw-flex-col">{!managed && <div className="tw-px-4 tw-py-2 tw-text-xs tw-bg-panel tw-border-b tw-border-border">Physical topology · Rack → Node → Service · Deploy and manage services here</div>}
           {!clusterInitialized && !loading && !logError && <p className="tw-px-4 tw-py-2 tw-text-xs tw-text-muted" data-testid="bootstrap-state">{nodeManagement ? 'Bootstrap: create a rack, move discovered candidates, then initialize Group 0 in KV. This draft is local until publication.' : 'Bootstrap: add racks and nodes, deploy KV servers, then initialize Group 0 in KV. Changes are saved in the default workspace.'}</p>}
           <div className="tw-flex-1 tw-min-h-0"><ClusterView
             active={domain === Domain.Cluster}

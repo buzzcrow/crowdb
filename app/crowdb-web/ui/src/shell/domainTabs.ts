@@ -1,4 +1,4 @@
-import { Database, HardDrive, Layers, Network, Package, type LucideIcon } from 'lucide-react';
+import { Database, Layers, Network, Package, type LucideIcon } from 'lucide-react';
 import { Domain } from '../types';
 
 /**
@@ -29,7 +29,6 @@ export interface DomainTab {
 export const domainTabs: readonly DomainTab[] = [
   { domain: Domain.Cluster, id: 'cluster', label: 'Cluster', description: 'Nodes, services, and physical topology', docs: 'https://crowdb.dev/docs/manual/console/ui/tab/cluster/', Icon: Network },
   { domain: Domain.KV, id: 'kv', label: 'PaxosKV', description: 'Consensus groups and key-value data', docs: 'https://crowdb.dev/docs/manual/console/ui/tab/kv/', Icon: Database },
-  { domain: Domain.Capacity, id: 'capacity', label: 'Capacity', description: 'Disk groups, disks, and hardware health', docs: 'https://crowdb.dev/docs/manual/console/ui/tab/capacity/', Icon: HardDrive },
   { domain: Domain.Chunk, id: 'chunk', label: 'Chunk', description: 'User-data chunks and placement', docs: 'https://crowdb.dev/docs/manual/console/ui/tab/chunk/', Icon: Package },
   { domain: Domain.ChunkKV, id: 'chunk-kv', label: 'ChunkKV', description: 'Chunk partition catalog and serving layout', docs: 'https://crowdb.dev/docs/manual/console/ui/tab/chunkkv/', Icon: Database },
   { domain: Domain.Iceberg, id: 'iceberg', label: 'Iceberg', description: 'Tables, snapshots, manifests, and files', docs: 'https://crowdb.dev/docs/manual/console/ui/tab/iceberg/', Icon: Layers },

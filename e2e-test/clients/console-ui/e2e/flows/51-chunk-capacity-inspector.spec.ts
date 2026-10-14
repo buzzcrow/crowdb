@@ -17,23 +17,25 @@ async function verifyOwnerProjection(page: Page, request: APIRequestContext, har
   for (const server of services) {
     const row = sidebar.getByTestId(`tree-node-DDB-${server.node_id}`).locator(':scope > [role="treeitem"]');
     await expect(row.getByTitle('Healthy', { exact: true })).toBeVisible();
-    await row.getByRole('button', { name: 'Expand', exact: true }).click();
+    await expect(row).not.toHaveAttribute('aria-expanded');
   }
   for (const server of services) {
     const instance = instances.find((row: { rpc_endpoint: string }) => row.rpc_endpoint === (server.endpoint || server.rpc_url));
     expect(instance).toBeDefined();
-    const tree = sidebar.getByTestId(`tree-node-DDB-${server.node_id}`);
-    await expect(tree.getByRole('treeitem')).toHaveCount(instance.owned_dg_ids.length + 1);
     for (const id of instance.owned_dg_ids) {
       const physical = hardware.disk_groups.find((row: { disk_group_id: number }) => row.disk_group_id === id);
       expect(physical).toBeDefined();
-      await expect(tree.getByTestId(`tree-node-CL-DG-${physical.node_id}-${id}`)).toBeVisible();
     }
   }
-  for (const physical of hardware.disk_groups.filter((row: { node_id: number }) => row.node_id === 1)) {
-    const group = sidebar.getByTestId(`tree-node-CL-DG-1-${physical.disk_group_id}`).locator(':scope > [role="treeitem"]');
-    await group.getByRole('button', { name: 'Expand', exact: true }).click();
-    for (const disk of physical.disks) await expect(sidebar.getByTestId(`tree-node-CL-D-1-${physical.disk_group_id}-${disk.disk_id}`)).toBeVisible();
+  for (const node of new Set<number>(hardware.disk_groups.map((row: { node_id: number }) => row.node_id))) {
+    const storage = sidebar.getByTestId(`tree-node-STORAGE-${node}`);
+    await storage.getByRole('button', { name: 'Expand', exact: true }).click();
+    for (const physical of hardware.disk_groups.filter((row: { node_id: number }) => row.node_id === node)) {
+      const group = storage.getByTestId(`tree-node-CH-DG-${node}-${physical.disk_group_id}`);
+      await expect(group).toBeVisible();
+      await group.getByRole('button', { name: 'Expand', exact: true }).click();
+      for (const disk of physical.disks) await expect(group.getByTestId(`tree-node-CH-D-${node}-${physical.disk_group_id}-${disk.disk_id}`)).toBeVisible();
+    }
   }
   const expand = page.getByRole('button', { name: /^N-1 Expand children\b/ });
   if (await expand.count()) await expand.click();
@@ -71,7 +73,7 @@ test('native diagnostics: disk Inspector and Capacity selection retain two actua
   const first = await diskBranch(page, 1, 1);
   await diskBranch(page, 1, 581);
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
-  for (const node of [1, 2, 3]) await expect(sidebar.getByTestId(`tree-node-DDB-${node}`)).toHaveCount(0);
+  for (const node of [1, 2, 3]) await expect(sidebar.getByTestId(`tree-node-DDB-${node}`)).toBeVisible();
   await sidebar.getByTestId('tree-node-R-1').locator(':scope > [role="treeitem"]')
     .getByRole('button', { name: /^R-1 / }).click();
   await expect(page.getByRole('heading', { name: 'Capacity — Rack 1', exact: true })).toBeVisible();

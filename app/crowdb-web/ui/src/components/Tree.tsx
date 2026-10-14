@@ -15,6 +15,7 @@ export interface TreeNode {
   rawId?: string | number;
   label: string;
   title?: string;
+  section?: 'services' | 'storage' | 'candidates';
   selected?: boolean;
   footer?: React.ReactNode;
   type: 'Datacenter' | 'Rack' | 'Node' | 'Server' | 'Store' | 'Group' | 'Replica' | 'DiskGroup' | 'Disk' | 'Partition' | 'Iceberg' | 'S3';
@@ -68,10 +69,10 @@ function TreeNodeComponent({
     String(node.parentIds?.store_id) === String(selectedEntity?.parentIds?.store_id)
       && (node.type !== 'Replica' || String(node.parentIds?.group_id) === String(selectedEntity?.parentIds?.group_id));
   const isNodeSelected = node.selected ?? (selectedEntity?.type === node.type && selectedEntity.id === String(entityId)
-    && sameOwner && (!node.serviceType || node.serviceType === selectedEntity.serviceType));
+    && sameOwner && node.section === selectedEntity.section && (!node.serviceType || node.serviceType === selectedEntity.serviceType));
 
   const select = useCallback(() => {
-    selectEntity({ type: node.type, id: String(entityId), name: node.label, parentIds: node.parentIds, domain, serviceType: node.serviceType });
+    selectEntity({ type: node.type, id: String(entityId), name: node.label, parentIds: node.parentIds, domain, section: node.section, serviceType: node.serviceType });
   }, [node, entityId, selectEntity, domain]);
 
   const handleSelectClick = useCallback(() => {

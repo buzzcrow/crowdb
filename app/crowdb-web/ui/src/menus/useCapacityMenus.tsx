@@ -8,13 +8,13 @@ import type { MenuTarget } from '../topology/TopologyCanvas';
 import type { MenuItemOrSeparator } from '../components/ContextMenu';
 import { buildStatusSubmenu } from './status';
 import type { MenuContext } from './context';
-export function useCapacityMenus({ readonly, managed, diskdbNodeIds, capacityUsage, requestDelete, runMutation, setDialog }: MenuContext) {
+export function useCapacityMenus({ readonly, managed, managementAuthorized, diskdbNodeIds, capacityUsage, requestDelete, runMutation, setDialog }: MenuContext) {
   /** Capacity view has its own menu code path — rack/node management
    * belongs to the Physical view; here only disk-group/disk operations
    * and DiskDB deploy are exposed. */
   return useCallback(
     (t: MenuTarget): MenuItemOrSeparator[] => {
-      if (readonly || managed) return [];
+      if (readonly || managed || !managementAuthorized) return [];
       const items: MenuItemOrSeparator[] = [];
       const p = t.parentIds || {};
 
@@ -157,7 +157,7 @@ export function useCapacityMenus({ readonly, managed, diskdbNodeIds, capacityUsa
       }
       return items;
     },
-    [readonly, managed, diskdbNodeIds, capacityUsage, requestDelete, runMutation, setDialog, buildStatusSubmenu],
+    [readonly, managed, managementAuthorized, diskdbNodeIds, capacityUsage, requestDelete, runMutation, setDialog, buildStatusSubmenu],
   );
 
 }

@@ -43,7 +43,7 @@ test('native capacity: disk-group CRUD and explicit owner binding use mounted st
   await create.getByRole('combobox', { name: 'KV group', exact: true }).selectOption('0/1');
   await create.getByRole('button', { name: 'Create Disk Group', exact: true }).click();
   await expect(create).toHaveCount(0);
-  await node.getByRole('button', { name: 'Expand', exact: true }).click();
+  await sidebar.getByTestId('tree-node-STORAGE-1').getByRole('button', { name: 'Expand', exact: true }).click();
   const group = sidebar.getByTestId('tree-node-CH-DG-1-520').locator(':scope > [role="treeitem"]');
   await expect(group).toContainText('mounted CRUD');
   expect(await json(request, '/api/nodes/1/disk-groups'))
@@ -122,6 +122,7 @@ test('KV binding recommends the least loaded group and initialization creates Gr
   await expect(init).toHaveCount(0, { timeout: 10_000 });
   const group = await request.get('/api/stores/0/groups/1');
   expect(group.ok(), await group.text()).toBe(true);
+  await page.getByTestId('domain-cluster').click();
   await page.getByTestId('domain-capacity').click();
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
   const node = sidebar.getByTestId('tree-node-N-1').locator(':scope > [role="treeitem"]');
@@ -139,7 +140,7 @@ test('KV binding recommends the least loaded group and initialization creates Gr
   await expect(dialog).toHaveCount(0);
   expect(await (await request.get('/api/nodes/1/disk-groups')).json())
     .toEqual(expect.arrayContaining([expect.objectContaining({ id: 591 })]));
-  await node.getByRole('button', { name: 'Expand', exact: true }).click();
+  await sidebar.getByTestId('tree-node-STORAGE-1').getByRole('button', { name: 'Expand', exact: true }).click();
   await expect(sidebar.getByRole('button', { name: 'DG-591', exact: true })).toBeVisible();
   const added = await request.post('/api/stores/0/groups', {
     data: { group_id: 2, replica_id: 1, nodes: [1, 2, 3] },
@@ -178,8 +179,9 @@ test('KV binding recommends the least loaded group and initialization creates Gr
   expect((await servers.json()).filter((row: { service_type: string }) => row.service_type === 'diskdb')).toHaveLength(0);
   await page.goto('/?domain=Cluster');
   await expect(sidebar.getByRole('button', { name: 'DG-593', exact: true })).toHaveCount(0);
+  await page.getByTestId('domain-cluster').click();
   await page.getByTestId('domain-capacity').click();
-  const physical = sidebar.getByTestId('tree-node-N-1').locator(':scope > [role="treeitem"]');
+  const physical = sidebar.getByTestId('tree-node-STORAGE-1').locator(':scope > [role="treeitem"]');
   if (await physical.getAttribute('aria-expanded') !== 'true') {
     await physical.getByRole('button', { name: 'Expand', exact: true }).click();
   }

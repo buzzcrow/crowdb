@@ -12,6 +12,7 @@ function ScopeProbe() {
   return <><output>{selectedEntity?.id ?? 'empty'}</output>
     <button onClick={() => selectEntity({ domain, type: domain === Domain.KV ? 'Group' : 'Node', id: domain === Domain.KV ? 'group-7' : 'node-1' })}>Select</button>
     <button onClick={() => setDomain(Domain.KV)}>KV</button>
+    <button onClick={() => setDomain(Domain.Capacity)}>Capacity</button>
     <button onClick={() => setDomain(Domain.Cluster)}>Cluster</button>
     <button onClick={clearSelection}>Clear</button></>;
 }
@@ -28,4 +29,14 @@ describe('domain selection scope', () => {
     fireEvent.click(screen.getByRole('button', { name: 'KV' }));
     expect(screen.getByRole('status')).toHaveTextContent('group-7');
   });
+});
+
+it('shares the selected entity between both Cluster views', () => {
+  render(<DomainProvider><SelectionProvider><ScopeProbe /></SelectionProvider></DomainProvider>);
+  fireEvent.click(screen.getByRole('button', { name: 'Select' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Capacity' }));
+  expect(screen.getByRole('status')).toHaveTextContent('node-1');
+  fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Cluster' }));
+  expect(screen.getByRole('status')).toHaveTextContent('empty');
 });

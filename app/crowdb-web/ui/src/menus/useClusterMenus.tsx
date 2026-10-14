@@ -65,6 +65,8 @@ export function useClusterMenus({ readonly, managed, managementAuthorized, domai
           const nodeId = Number(t.rawId ?? t.id);
           const hasServer = serverNodeIds.has(nodeId);
           const hasDiskdb = diskdbNodeIds.has(nodeId);
+          items.push({ id: 'add-dg', label: 'Add Disk Group', icon: <HardDrive size={16} />,
+            onSelect: () => setDialog(dialog => ({ ...dialog, addDiskGroup: { nodeId } })) });
           // Add Services — deploy CrowDB Storage and/or DiskDB.
           if (!hasServer) {
             items.push({
