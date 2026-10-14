@@ -78,7 +78,11 @@ async fn fixture_at(
         .publish(fixture.context, &file)
         .await
         .unwrap();
-    let mut retired = CatalogAuthority::new(fixture.context.catalog, "retired".into()).unwrap();
+    let mut retired = if native {
+        CatalogAuthority::new_native(fixture.context.catalog, "retired".into()).unwrap()
+    } else {
+        CatalogAuthority::new(fixture.context.catalog, "retired".into()).unwrap()
+    };
     if retire {
         retired.lifecycle = CatalogLifecycle::Retired;
     }

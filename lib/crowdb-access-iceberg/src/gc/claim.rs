@@ -95,7 +95,7 @@ impl GcRepository {
             || previous
                 .head
                 .as_ref()
-                .is_some_and(|head| head.table != candidate.file.location.table().table)
+                .is_some_and(|head| head.storage_location() != candidate.file.location.table())
             || !matches!(
                 (task.kind, previous.kind),
                 (

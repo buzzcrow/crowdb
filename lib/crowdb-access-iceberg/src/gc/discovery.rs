@@ -1,5 +1,5 @@
 use crate::{
-    catalog::{CatalogContext, CatalogError},
+    catalog::{CatalogContext, CatalogError, CatalogStorageLayout},
     error::ValidationError,
     file::MultipartPhase,
     key::{CatalogScope, IcebergKey, OperationId, StorageKey, TableStorageScope},
@@ -118,7 +118,28 @@ impl GcRepository {
             bytes: (crate::record::MAX_RECORD_BYTES + crate::key::MAX_KEY_BYTES)
                 .min(limits.step_bytes as usize),
         };
-        let page = self.store.scan_gc(scan.clone()).await?;
+        let layout = self.catalog_layout(task.context.catalog).await?;
+        if task.head.as_ref().is_some_and(|head| {
+            head.storage_location().storage_namespace.is_some() != (layout == CatalogStorageLayout::Native)
+        }) {
+            return Err(ValidationError::IdentityMismatch.into());
+        }
+        let data_scope = task.discovery_scope == 0
+            || (task.kind != GcTaskKind::MultipartCleanup && task.discovery_scope == 1);
+        let allowed = if native {
+            layout == CatalogStorageLayout::Native
+        } else {
+            !data_scope || layout == CatalogStorageLayout::Legacy
+        };
+        let page = if allowed {
+            self.store.scan_gc(scan.clone()).await?
+        } else {
+            crowdb_chunk_kv_client::MultiScanPage {
+                items: Vec::new(),
+                continuation: None,
+                terminal_failure: None,
+            }
+        };
         scan.validate_page(&page)?;
         for item in &page.items {
             let key = StorageKey::decode(&item.key)?;
@@ -229,7 +250,7 @@ impl GcRepository {
         if task
             .head
             .as_ref()
-            .is_some_and(|head| head.table != file.location.table().table)
+            .is_some_and(|head| head.storage_location() != file.location.table())
         {
             return Ok(None);
         }

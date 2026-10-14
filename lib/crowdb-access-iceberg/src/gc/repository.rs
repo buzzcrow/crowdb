@@ -16,6 +16,25 @@ pub struct GcRepository {
 }
 
 impl GcRepository {
+    pub(super) async fn catalog_layout(
+        &self,
+        catalog: CatalogId,
+    ) -> Result<crate::catalog::CatalogStorageLayout, CatalogError> {
+        let key = IcebergKey::Catalog {
+            catalog,
+            scope: CatalogScope::Authority,
+            suffix: Vec::new(),
+        };
+        let value = self
+            .store
+            .get(&key.encode()?)
+            .await?
+            .ok_or(ValidationError::Record)?;
+        let StorageRecord::Authority(authority) = StorageRecord::decode(&key, &value.bytes)? else {
+            return Err(ValidationError::Record.into());
+        };
+        Ok(authority.storage_layout)
+    }
     #[must_use]
     pub fn new(store: Arc<dyn GcStore>) -> Self {
         Self { store }
