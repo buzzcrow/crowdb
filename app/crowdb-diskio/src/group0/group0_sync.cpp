@@ -9,6 +9,7 @@
 #include "disk/null_disk.h"
 #include "engine/uring/uring_engine.h"
 #include "group0/disk_identity.h"
+#include "group0/disk_membership.h"
 #include "group0/ffi_result.h"
 
 #include <folly/dynamic.h>
@@ -18,7 +19,6 @@
 #include <cstdio>
 #include <cstring>
 #include <thread>
-#include <unordered_set>
 
 namespace crowdb::diskio
 {
@@ -155,22 +155,24 @@ void Group0Sync::reconcile_disks(const std::string &json)
 {
     // Disk identity words are decimal strings so all 64 bits survive JSON parsing.
     folly::dynamic parsed;
+    DiskMembership membership;
     try {
-        parsed = folly::parseJson(json);
+        parsed     = folly::parseJson(json);
+        membership = DiskMembership::parse(parsed, cfg_.dg_id);
     }
     catch (const std::exception &e) {
-        std::fprintf(stderr, "warning: group-0 disk list JSON parse error: %s\n", e.what());
+        std::fprintf(stderr, "warning: group-0 disk membership rejected: %s\n", e.what());
         return;
     }
 
-    if (!parsed.isArray()) {
-        std::fprintf(stderr, "warning: group-0 disk list is not a JSON array\n");
-        return;
+    // Exclude before opening other disks. Old readers and request callbacks
+    // retain detached handles until descriptor unregistration is safe.
+    for (const auto &id : membership.exclude(*disk_set_, retired_disks_)) {
+        std::printf("group-0: excluded disk {%llu,%llu} (Offline or absent)\n",
+                    static_cast<unsigned long long>(id.high), static_cast<unsigned long long>(id.low));
     }
 
     // Collect the disk IDs from group-0 and create/update disks.
-    std::unordered_set<DiskId, DiskIdHash> seen_ids;
-    std::unordered_set<uint64_t>           seen_groups;
     for (const auto &entry : parsed) {
         if (!entry.isObject()) {
             continue;
@@ -188,8 +190,9 @@ void Group0Sync::reconcile_disks(const std::string &json)
             return;
         }
         DiskId did{.high = *high, .low = *low};
-        seen_ids.insert(did);
-        seen_groups.insert(cfg_.dg_id == 0 ? static_cast<uint64_t>(entry["disk_group_id"].asInt()) : cfg_.dg_id);
+        if (!membership.active.contains(did)) {
+            continue;
+        }
 
         // Do not reopen an identity while callbacks still hold its old handle.
         if (retired_disks_.contains(did)) {
@@ -251,17 +254,7 @@ void Group0Sync::reconcile_disks(const std::string &json)
                     zone_count);
     }
 
-    // Detach first: old map readers and in-flight IO retain the descriptor
-    // registration until every request callback has released its handle.
-    for (const auto &existing_id : disk_set_->disk_ids()) {
-        if (seen_ids.find(existing_id) == seen_ids.end()) {
-            retired_disks_.retire(*disk_set_, existing_id);
-            std::printf("group-0: removed disk {%llu,%llu} (no longer in group-0)\n",
-                        static_cast<unsigned long long>(existing_id.high),
-                        static_cast<unsigned long long>(existing_id.low));
-        }
-    }
-    owned_dg_ids_.assign(seen_groups.begin(), seen_groups.end());
+    owned_dg_ids_.assign(membership.groups.begin(), membership.groups.end());
     std::sort(owned_dg_ids_.begin(), owned_dg_ids_.end());
 }
 

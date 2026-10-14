@@ -161,6 +161,14 @@ layer (chunkdb/diskdb) is responsible for marking a disk as bad and
 stopping new allocations on it. After all in-flight I/O to a failing
 disk drains, no further I/O is sent to it.
 
+Administrative Offline is enforced by Group-0 discovery. A complete valid
+membership observation detaches Offline disks from the active map, rejecting
+new requests while existing handles drain through descriptor retirement. Offline
+disks still contribute their physical DiskGroup identity to the service's
+observation. Bad, Suspect and maintenance states do not by themselves close a
+handle needed for recovery reads. Failed or malformed membership observations
+retain the previous map; missing status or duplicate disk identities are errors.
+
 This keeps diskio simple — it does one thing (data I/O) and reports
 results. Disk health policy lives in diskdb, where it belongs.
 

@@ -231,3 +231,15 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   an MSRV-incompatible helper, oversized dispatcher and test import placement;
   all corrected. File preparation is not admission: Group-0 metadata registration,
   DiskIO readiness, web orchestration and dialogs remain to be connected.
+- DiskIO now applies authoritative Offline during successful Group-0 discovery,
+  retaining in-flight handles but excluding new requests. It validates every
+  membership identity/status before applying exclusions; malformed observations
+  do not remove disks. Three new membership tests and full `test-cpp` pass
+  (543 Tree, 56 RPC, 60 DiskIO, 31 Common, 55 Tree FFI, 25 RPC FFI cases), artifact
+  unit/cpp-60619b7fc26c471c99d247a47e33130d. Changed-source formatting and tree-lint
+  pass (existing warnings in the sync source). Per-revision owner/DiskIO exclusion
+  acknowledgements and guarded removal remain unfinished.
+- Removal implementation must also fence `HardwareClient::set_disk_status`:
+  its current read/default/write can recreate a missing disk with empty geometry
+  or overwrite concurrent status. A removed marker alone is insufficient while
+  direct status writes and cascade deletion bypass the authoritative lifecycle.
