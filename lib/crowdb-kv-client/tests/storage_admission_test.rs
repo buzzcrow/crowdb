@@ -320,13 +320,16 @@ async fn initial_activation_requires_the_original_receipt_and_never_overrides_of
 async fn diskio_observations_retain_exact_revisions_and_reject_changed_geometry() {
     let fixture = TestStorage::start().await;
     let hw = &fixture.hardware;
-    let original = record(5);
+    let mut original = record(u64::MAX);
+    original.disk_id.high = u64::MAX;
     hw.admit_disk_storage(&original).await.unwrap();
     let before = hw.disk_io_inventory(1, 2, None).await.unwrap();
     assert_eq!(before.len(), 1);
     assert_eq!(before[0].storage, Some(original.clone()));
     let wire = serde_json::to_value(&before).unwrap();
-    assert_eq!(wire[0]["disk_id"]["high"], "4");
+    assert_eq!(wire[0]["disk_id"]["high"], u64::MAX.to_string());
+    assert_eq!(wire[0]["storage"]["disk_id"]["high"], u64::MAX.to_string());
+    assert_eq!(wire[0]["storage"]["disk_id"]["low"], u64::MAX.to_string());
     assert_eq!(wire[0]["revision"], before[0].revision.to_string());
     hw.set_disk_status(1, 2, 3, &original.disk_id, HwStatus::Offline)
         .await

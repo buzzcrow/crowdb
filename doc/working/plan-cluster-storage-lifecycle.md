@@ -416,3 +416,11 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   authorization contract. Four affected Web suites (14 cases), Clippy and fmt
   pass. Scratch Node storage UI is prepared outside the repository while waiting
   for the unchanged browser baseline; no unverified UI has entered a release.
+- Third native run (f792bce8, run-d1de0944c130428db1bd1dcd9ec33ebf) verifies
+  concurrent creation, protected membership, node restart and durable resume.
+  Activation waits because DiskIO rejects the full JSON payload: the newly
+  nested backing receipt contains raw unsigned UUID words that overflow folly's
+  signed JSON parser. Outer IDs were already strings; project nested receipt IDs
+  as decimal strings at the same FFI boundary. Group-0 serialization is unchanged.
+  Regression now exercises u64::MAX in both words and both nested/outer identities;
+  all ten focused tests, all-feature Clippy and fmt pass. No timeout increases.

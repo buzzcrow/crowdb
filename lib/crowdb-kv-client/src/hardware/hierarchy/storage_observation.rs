@@ -58,7 +58,27 @@ pub struct DiskIoObservation {
     #[serde(serialize_with = "revision")]
     pub revision: u64,
     pub value: DiskValue,
+    #[serde(serialize_with = "backing")]
     pub storage: Option<DiskStorageRecord>,
+}
+
+#[allow(
+    clippy::ref_option,
+    reason = "serde serialize_with requires a field reference"
+)]
+fn backing<S: serde::Serializer>(
+    record: &Option<DiskStorageRecord>,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    let Some(record) = record else {
+        return serializer.serialize_none();
+    };
+    let mut projected = serde_json::to_value(record).map_err(serde::ser::Error::custom)?;
+    // The complete FFI payload must be parseable by signed-integer JSON
+    // consumers, including redundant identities inside the backing receipt.
+    projected["disk_id"] =
+        serde_json::json!({"high": record.disk_id.high.to_string(), "low": record.disk_id.low.to_string()});
+    projected.serialize(serializer)
 }
 
 fn identity<S: serde::Serializer>(id: &DiskId, serializer: S) -> std::result::Result<S::Ok, S::Error> {
