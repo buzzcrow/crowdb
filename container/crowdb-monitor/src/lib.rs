@@ -30,7 +30,9 @@ pub use liveness::{probe_liveness, LivenessError, LivenessServer};
 pub use manifest::{BootstrapManifest, BootstrapSession, ManifestError, ManifestState};
 pub use monitor_log::{MonitorEvent, MonitorEventKind, MonitorLog, MonitorLogError};
 #[cfg(feature = "test-util")]
-pub use node::{accept_startup_mode_for_tests, InitializationForTests};
+pub use node::{
+    accept_file_for_tests, accept_startup_mode_for_tests, prepare_file_for_tests, InitializationForTests,
+};
 pub use node::{
     control_node, discover_disks, run_node, run_single_node, serve_node_management, CandidateCache,
     DiscoveryConfig, DiscoveryError, NodeDiscovery, NodeIdentity, NodeIdentityError, NodeManagementError,

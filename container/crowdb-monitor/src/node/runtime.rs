@@ -28,6 +28,7 @@ mod services;
 use kv::start_kv;
 mod admission;
 mod credentials;
+mod file_preparation;
 mod initialization;
 #[cfg(feature = "test-util")]
 pub use initialization::InitializationForTests;
@@ -111,6 +112,8 @@ pub async fn run_node(config: NodeRuntimeConfig) -> Result<()> {
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut initialization = initialization::Initialization::default();
     initialization.resume(&profile)?;
+    let mut file_allocator = file_preparation::FileAllocator::default();
+    file_allocator.resume(&root)?;
     let mut heartbeat = tokio::time::interval(Duration::from_secs(1));
     let result = async {
         loop {
@@ -121,7 +124,7 @@ pub async fn run_node(config: NodeRuntimeConfig) -> Result<()> {
                 connection = listener.accept() => {
                     let (mut stream, _) = connection?;
                     let reply = match read_request(&mut stream).await {
-                        Ok(request) => match execute(&profile, &mut processes, &mut initialization, request).await {
+                        Ok(request) => match execute(&profile, &mut processes, &mut initialization, &mut file_allocator, request).await {
                             Ok(value) => json!({"ok": true, "value": value}),
                             Err(error) => json!({"ok": false, "error": error.to_string()}),
                         },
@@ -140,6 +143,7 @@ pub async fn run_node(config: NodeRuntimeConfig) -> Result<()> {
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     }.await;
     initialization.stop().await;
+    file_allocator.stop().await;
     let _ = stop.send(());
     if !discovery.is_finished() {
         discovery.await??;
@@ -159,10 +163,17 @@ async fn execute(
     profile: &DeploymentProfile,
     processes: &mut ProcessManager,
     initialization: &mut initialization::Initialization,
+    file_allocator: &mut file_preparation::FileAllocator,
     request: NodeControl,
 ) -> Result<Value> {
     let root = &profile.paths.data_root;
     match request {
+        NodeControl::PrepareDiskFile { request } => {
+            Ok(serde_json::to_value(file_allocator.accept(root, request).await?)?)
+        }
+        NodeControl::DiskFilePreparation { operation_id } => Ok(serde_json::to_value(
+            super::storage::file_preparation::status(root, &operation_id)?,
+        )?),
         NodeControl::Initialize {
             manifest,
             credentials,
@@ -226,18 +237,7 @@ async fn execute(
                 admission::validate(root, &bootstrap, node_id, grant, false).await?;
             }
             authorize_bound(root).await?;
-            if root.join("node-binding.json").exists()
-                && services::desired(profile).await?.iter().any(|intent| {
-                    intent.kind == "kv"
-                        && matches!(
-                            intent.action,
-                            crowdb_protocol::mgmt::node::NodeServiceAction::Stop
-                                | crowdb_protocol::mgmt::node::NodeServiceAction::Delete
-                        )
-                })
-            {
-                return Err("KV is stopped by the current cluster intent".into());
-            }
+            kv::ensure_start_allowed(profile).await?;
             let accepted = preparation::accept(root, node_id, bootstrap, manifest, credentials, admission)?;
             start_kv(profile, processes, &accepted).await?;
             Ok(json!({"node_id": node_id, "management_port": 10000, "rpc_port": 10100}))
@@ -249,6 +249,9 @@ async fn execute(
         } => {
             if initialization.running() {
                 return Err("initialization is still running".into());
+            }
+            if file_allocator.running() {
+                return Err("disk file preparation is still running".into());
             }
             cleanup::execute(profile, processes, bootstrap, confirm_delete_system_store).await
         }

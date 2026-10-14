@@ -5,6 +5,42 @@
 
 use serde::{Deserialize, Serialize};
 
+pub const DEFAULT_FILE_CAPACITY_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+pub const DEFAULT_FILE_RESERVE_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// Preparation is provisional; only Group 0 can admit the resulting disk.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrepareDiskFile {
+    pub operation_id: String,
+    pub cluster_id: String,
+    pub node_id: u64,
+    pub capacity_bytes: u64,
+    pub sparse: bool,
+    pub reserve_bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FilePreparationPhase {
+    Accepted,
+    Creating,
+    Prepared,
+    Failed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct FilePreparation {
+    pub version: u32,
+    pub request: PrepareDiskFile,
+    pub path: String,
+    pub phase: FilePreparationPhase,
+    pub backing_identity: Option<String>,
+    /// Once complete, retries validate only; they never resize or recreate.
+    pub preparation_complete: bool,
+    pub error: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DiskBackend {

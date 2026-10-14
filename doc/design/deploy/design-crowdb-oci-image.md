@@ -175,6 +175,23 @@ bootstrap. Automatic development usage adds `-e CROWDB_STARTUP_MODE=single`;
 production resource/device arguments are not prerequisites for the simple
 development example. Both use the same image.
 
+The standard monitor accepts private `PrepareDiskFile` requests only for its
+confirmed node/cluster binding with available Group-0 authority. It records the
+request before allocating a generated file asynchronously; control connections
+and service heartbeat processing do not wait for preallocation. One allocation
+runs at a time. `DiskFilePreparation` reports accepted, creating, prepared or
+failed, including the retained backing identity. Preparation alone grants no
+disk membership or usable capacity.
+
+File preparation checks available filesystem space including the requested host
+reserve. Preallocation errors remain failures; sparse allocation must be explicit.
+Retry preserves the original intent and verifies the recorded inode. Completed
+files are never recreated or resized. An existing file without a durable ownership
+receipt is rejected, including after an interruption between creation and receipt
+publication. Cleanup is blocked while allocation runs; shutdown waits for the
+blocking allocator to finish its durable record. New storage still requires
+Group-0 registration and runtime availability confirmation.
+
 Local OCI archive loading is version-dependent and must be tested separately.
 The baseline production contract is registry pull by digest. If a supported
 Docker version needs a Docker archive for offline loading, an explicit import

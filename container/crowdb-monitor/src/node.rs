@@ -13,6 +13,8 @@ mod single;
 pub(crate) mod startup;
 mod storage;
 pub use storage::discover_disks;
+#[cfg(feature = "test-util")]
+pub use storage::file_preparation::{accept_file_for_tests, prepare_file_for_tests};
 mod trust;
 pub use single::run_single_node;
 

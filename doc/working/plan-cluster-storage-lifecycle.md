@@ -16,12 +16,12 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
 - [x] **Disk observations**: expose bounded monitor inventory, reject duplicate
   resources and mismatched launcher identities. Inventory tests and Clippy pass;
   real raw-device/containerd acceptance remains in integration verification.
-- [ ] **Effective admission**: add Group-0-gated registration, default file
+- [~] **Effective admission**: add Group-0-gated registration, default file
   creation and geometry validation; merge observations with authority records.
   Files: `container/crowdb-monitor/src/node`, `bootstrap/disk_files.rs`,
   `lib/crowdb-protocol/src/mgmt.rs`, `lib/crowdb-console-shared/src/ops/hardware`,
   `app/crowdb-web/src/physical`. Acceptance A03-A05.
-- [~] **Backend initialization**: inspect existing single/bootstrap ownership,
+- [ ] **Backend initialization**: inspect existing single/bootstrap ownership,
   reuse monitor execution for UI trigger, UUID-min automatic initiation and
   three-/one-voter policy. Persist policy and reuse accepted manifests.
   Files: monitor node runtime, console bootstrap/admission, web managed routes.
@@ -221,3 +221,13 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   filesystem, with per-file references and separate virtual/physical allocation.
   Failed observations remain unknown with an error. Six inventory tests,
   monitor/protocol all-target Clippy and Rust formatting pass.
+- Standard monitor now durably accepts private file-preparation requests for its
+  confirmed Group-0 node binding and allocates off the control/heartbeat loop.
+  Generated paths, retained inode identity, explicit sparse mode, host reserve,
+  immutable completed capacity and visible failures are enforced. Interrupted
+  unreceipted files are rejected rather than adopted; cleanup waits for active
+  preparation. Six new filesystem regressions and the full monitor suite pass;
+  monitor/protocol all-target Clippy and Rust formatting pass. Clippy first found
+  an MSRV-incompatible helper, oversized dispatcher and test import placement;
+  all corrected. File preparation is not admission: Group-0 metadata registration,
+  DiskIO readiness, web orchestration and dialogs remain to be connected.

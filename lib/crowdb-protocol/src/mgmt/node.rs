@@ -64,6 +64,12 @@ pub struct CandidateSnapshot {
 pub enum NodeControl {
     Identity,
     DiskInventory,
+    PrepareDiskFile {
+        request: storage::PrepareDiskFile,
+    },
+    DiskFilePreparation {
+        operation_id: String,
+    },
     Initialize {
         manifest: serde_json::Value,
         credentials: NodeServiceCredentials,

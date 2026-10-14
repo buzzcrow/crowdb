@@ -125,3 +125,15 @@ pub(super) async fn start_kv(
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
+pub(super) async fn ensure_start_allowed(profile: &crate::DeploymentProfile) -> super::Result<()> {
+    use crowdb_protocol::mgmt::node::NodeServiceAction;
+    if profile.paths.data_root.join("node-binding.json").exists()
+        && super::services::desired(profile).await?.iter().any(|intent| {
+            intent.kind == "kv"
+                && matches!(intent.action, NodeServiceAction::Stop | NodeServiceAction::Delete)
+        })
+    {
+        return Err("KV is stopped by the current cluster intent".into());
+    }
+    Ok(())
+}

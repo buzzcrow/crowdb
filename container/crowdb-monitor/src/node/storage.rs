@@ -3,6 +3,8 @@
 
 //! Read-only media discovery; Group 0 remains the admission authority.
 
+pub(crate) mod file_preparation;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Seek, SeekFrom};
