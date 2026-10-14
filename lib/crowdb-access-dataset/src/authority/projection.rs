@@ -73,6 +73,9 @@ impl DatasetAuthority {
                     }
                 }
             }
+            if output.values().all(|resolved| resolved.len() == projection.len()) {
+                break;
+            }
         }
         Ok(ids
             .iter()
