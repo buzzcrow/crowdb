@@ -144,6 +144,7 @@ test.describe('inspector · activity log', () => {
       await dialog.getByRole('button', { name: 'Delete Cluster' }).click();
       expect((await responsePromise).ok()).toBeTruthy();
       await expect(page.getByRole('complementary', { name: 'Entity inspector' })).toHaveCount(0);
+      await expect(page.getByRole('navigation', { name: 'Cluster scope' }).getByRole('button', { name: 'Cluster', exact: true })).toHaveAttribute('aria-current', 'page');
     });
   });
 });

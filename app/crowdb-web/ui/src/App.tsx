@@ -300,12 +300,12 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
           await runMutation('Reset Cluster', 'all', async () => {
             await servicePlans.stop();
             await resetCluster();
-            clearSelection();
+            selectEntity(null, false);
           });
         },
       },
     }));
-  }, [runMutation, clearSelection]);
+  }, [runMutation, selectEntity]);
 
   const menuContext = { readonly, managed, managementAuthorized, domain: activeDomain, physicalActive: activeDomain === Domain.Cluster, modules, requestDelete, runMutation, serverNodeIds, diskdbNodeIds, allServers, setDialog, capacityUsage };
   const buildMenuItems = useClusterMenus(menuContext);
