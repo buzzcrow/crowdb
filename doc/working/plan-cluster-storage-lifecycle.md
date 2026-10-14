@@ -161,3 +161,25 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   every replica reports exactly three voters. No ordinary data group is created.
   Browser policy toggles survive reload and preserve all prior capacity/status
   assertions. Playwright 2.4 s versus initial 1.3 s (below 2x); root case 13.91 s.
+- Navigation baseline before consolidation (2026-10-15), exact canvas scope on
+  image `f9c0ec96`: Fit All 1.6 s, nested collapse/context menus 4.6 s, pan reset
+  0.962 s, view switching/autofit 2.0 s. All four pass; artifact
+  run-5e30721f7c524643a91d2d2b0ed8af7d. Shell baseline is running separately.
+- Exact shell baseline passes before consolidation: unavailable-backend 0.428 s,
+  embedding/readonly/module opt-out 3.1 s, seven-domain switching 1.1 s. Artifact
+  run-2c7360fe19e9485ba61c6bcbccae2b17. Native tree baseline is running separately.
+- Native shell/tree baseline passes in 4.5 s before tree consolidation; artifact
+  run-1d088c046a9246388c6cfdce37eefcc8. Cross-view node navigation baseline follows.
+- Cross-view node baseline passes: replica navigation 4.0 s and node-to-store
+  navigation 1.7 s; artifact run-1dbce2b41b6b40839a61728cbf04b520.
+- Single-profile system replica creation now calls the same
+  `initialize_system_replicas` prepare/create/wire driver as standard accepted
+  bootstrap. Its existing manifest identity and profile metadata/storage stages
+  remain intact. Ready restart verifies durable KV bootstrap acceptance as well as
+  replica geometry. Four monitor KV tests pass, including lost response without
+  duplicate creation and foreign-bootstrap rejection; seven shared intent,
+  prepare-barrier and replay tests pass. Full single release acceptance remains
+  pending; profile-specific metadata publication is still separate.
+- Auto join target selection now permits an explicit initial local draft. A pinned
+  target can be cleared only in an unbound workspace with a matching completed
+  cleanup record; loss of binding alone is insufficient. Six backend tests pass.

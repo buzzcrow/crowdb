@@ -25,6 +25,8 @@ struct Policy {
     enabled: bool,
     /// None means the uncommitted local workspace; never a discovered foreign cluster.
     target_cluster_id: Option<String>,
+    #[serde(default)]
+    local_draft_selected: bool,
 }
 
 impl Default for Policy {
@@ -33,6 +35,7 @@ impl Default for Policy {
             version: 1,
             enabled: true,
             target_cluster_id: None,
+            local_draft_selected: false,
         }
     }
 }
@@ -91,6 +94,13 @@ pub(crate) async fn status(State(state): State<AppState>) -> Result<Json<Value>,
 #[serde(deny_unknown_fields)]
 pub(crate) struct Update {
     enabled: bool,
+    target: Option<Target>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum Target {
+    LocalDraft,
 }
 
 pub(crate) async fn update(
@@ -101,8 +111,37 @@ pub(crate) async fn update(
     if state.readonly {
         return Err(err_400("Workspace is readonly"));
     }
-    let _operation = crate::services::Operation::claim(&state, vec!["node/auto-join".into()])?;
+    let mut resources = vec!["node/auto-join".into()];
+    if body.target.is_some() {
+        resources.extend(["cluster/init".into(), "node/admission".into()]);
+    }
+    let _operation = crate::services::Operation::claim(&state, resources)?;
     let mut policy = read(&state)?;
+    if body.target.is_some() {
+        if super::status(State(state.clone())).await.0["phase"] != "unbound_draft" {
+            return Err(err_409("A local draft requires an unbound workspace"));
+        }
+        if let Some(target) = &policy.target_cluster_id {
+            let root = state
+                .runtime_root
+                .parent()
+                .ok_or_else(|| err_409("Node root is absent"))?;
+            let path = root.join("node-cleaned.json");
+            let metadata = fs::symlink_metadata(&path)
+                .map_err(|_| err_409("Recover or explicitly clean up the retained target first"))?;
+            if !metadata.is_file() || metadata.len() > 4096 {
+                return Err(err_409("Invalid completed cleanup record"));
+            }
+            let cleaned: crowdb_protocol::mgmt::SystemBootstrapIdentity =
+                serde_json::from_slice(&fs::read(path).map_err(|error| err_502(error.to_string()))?)
+                    .map_err(|error| err_502(error.to_string()))?;
+            if cleaned.cluster_id != *target {
+                return Err(err_409("Completed cleanup belongs to another target"));
+            }
+        }
+        policy.target_cluster_id = None;
+        policy.local_draft_selected = true;
+    }
     policy.enabled = body.enabled;
     super::save(&state.runtime_root.join("auto-join.json"), &policy)?;
     status(State(state.clone())).await

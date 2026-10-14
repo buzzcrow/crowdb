@@ -128,7 +128,7 @@ async fn admit_candidates(
             .iter()
             .any(|candidate| candidate.advertisement.discovery_id == *id)
     });
-    if !bound && config.nodes.is_empty() {
+    if !bound && config.nodes.is_empty() && !super::read(state)?.local_draft_selected {
         let clusters: std::collections::BTreeSet<_> = snapshot
             .candidates
             .iter()

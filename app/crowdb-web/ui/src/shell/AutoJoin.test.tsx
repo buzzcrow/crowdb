@@ -44,4 +44,15 @@ describe('AutoJoin', () => {
     expect(screen.getByRole('checkbox')).toBeChecked();
     expect(screen.getByRole('checkbox')).toBeDisabled();
   });
+
+  it('requires an explicit local draft choice when targets are ambiguous', async () => {
+    vi.mocked(nodeAutoJoin).mockResolvedValue({ ...status, observation: { phase: 'needs-target' } });
+    vi.mocked(setNodeAutoJoin).mockResolvedValue(status);
+    render(<AutoJoin />);
+    await act(async () => {});
+    expect(screen.getByRole('status')).toHaveTextContent('Choose target');
+    expect(setNodeAutoJoin).not.toHaveBeenCalled();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Use initial local draft' })); });
+    expect(setNodeAutoJoin).toHaveBeenCalledWith(true, 'local-draft');
+  });
 });

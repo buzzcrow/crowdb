@@ -9,6 +9,7 @@ use axum::{
 use crowdb_console_shared::ConsoleConfig;
 use crowdb_web::{router, start_node_auto_join, AppState};
 use serde_json::{json, Value};
+use std::os::unix::fs::PermissionsExt;
 use tower::ServiceExt;
 
 struct TestWorkspace(std::path::PathBuf);
@@ -232,4 +233,39 @@ async fn two_authenticated_nodes_wait_in_uuid_order_without_initializing() {
     assert_eq!(policy["observation"]["phase"], "waiting");
     assert_eq!(policy["observation"]["members"], json!([2, 9]));
     assert!(!workspace.0.join("console/prepared-bootstrap.json").exists());
+}
+
+#[tokio::test]
+async fn choosing_a_new_draft_requires_matching_completed_cleanup_for_a_pinned_target() {
+    let workspace = TestWorkspace::new();
+    let path = workspace.0.join("console/auto-join.json");
+    std::fs::write(
+        &path,
+        br#"{"version":1,"enabled":false,"target_cluster_id":"retained"}"#,
+    )
+    .unwrap();
+    let choice = json!({"enabled":true,"target":"local-draft"});
+    assert_eq!(
+        request(router(workspace.state()), Some(choice.clone())).await.0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        request(router(workspace.state()), None).await.1["target_cluster_id"],
+        "retained"
+    );
+    let cleaned = workspace.0.join("node-cleaned.json");
+    let identity = |cluster| json!({"cluster_id":cluster,"operation_id":uuid::Uuid::new_v4().to_string(),"configuration_digest":"a".repeat(64)});
+    std::fs::write(&cleaned, identity("another").to_string()).unwrap();
+    assert_eq!(
+        request(router(workspace.state()), Some(choice.clone())).await.0,
+        StatusCode::CONFLICT
+    );
+    std::fs::remove_file(&cleaned).unwrap();
+    // Cleanup reconciliation consumes a private durable record.
+    std::fs::write(&cleaned, identity("retained").to_string()).unwrap();
+    std::fs::set_permissions(&cleaned, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let (status, body) = request(router(workspace.state()), Some(choice)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["target_cluster_id"].is_null());
+    assert_eq!(body["enabled"], true);
 }

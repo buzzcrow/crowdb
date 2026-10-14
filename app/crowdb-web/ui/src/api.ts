@@ -639,10 +639,10 @@ export async function nodeAutoJoin(options?: RequestOptions): Promise<AutoJoinSt
   return jsonOrThrow(await fetchWithOptions('/api/node/auto-join', options));
 }
 
-export async function setNodeAutoJoin(enabled: boolean): Promise<AutoJoinStatus> {
+export async function setNodeAutoJoin(enabled: boolean, target?: 'local-draft'): Promise<AutoJoinStatus> {
   return jsonOrThrow(await fetchWithOptions('/api/node/auto-join', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ enabled }), skipDeduplication: true,
+    body: JSON.stringify({ enabled, target }), skipDeduplication: true,
   }));
 }
 
