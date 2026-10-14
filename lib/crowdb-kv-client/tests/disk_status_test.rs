@@ -1,0 +1,115 @@
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
+
+use std::sync::Arc;
+
+use crowdb_kv::cluster::{
+    group::PxGroup, kv_server::KvServer, PxKvStore, PxLocalReplica, PxLocalReplicaRole,
+};
+use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient};
+use crowdb_protocol::{
+    common::{DiskId, HwStatus},
+    diskdb::rpc::DiskValue,
+    key::{DiskKey, TextKey},
+};
+
+struct TestHardware {
+    store: Arc<PxKvStore>,
+    hardware: HardwareClient,
+}
+
+impl TestHardware {
+    async fn start() -> Self {
+        let store = Arc::new(PxKvStore::new(0, "127.0.0.1:0".parse().unwrap()));
+        store.add_group(PxGroup::new(
+            0,
+            PxLocalReplica::new(1, PxLocalReplicaRole::Leader),
+        ));
+        store.start().await.unwrap();
+        let client = CrowdbKvClient::new(ClientConfig::new(vec![]));
+        client.seed_leader(0, 0, store.listen_addr().unwrap().to_string());
+        Self {
+            store,
+            hardware: HardwareClient::new(client),
+        }
+    }
+}
+
+impl Drop for TestHardware {
+    fn drop(&mut self) {
+        self.store.stop();
+    }
+}
+
+fn key() -> DiskKey {
+    DiskKey {
+        rack_id: 1,
+        node_id: 2,
+        disk_group_id: 3,
+        disk_id: DiskId { high: 4, low: 5 },
+    }
+}
+
+#[tokio::test]
+async fn setting_status_never_creates_a_missing_or_removed_disk() {
+    let fixture = TestHardware::start().await;
+    let hw = &fixture.hardware;
+    let key = key();
+    for status in [HwStatus::Offline, HwStatus::Up] {
+        let error = hw
+            .set_disk_status(1, 2, 3, &key.disk_id, status)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("does not exist"));
+        assert!(hw.get_disk_with_revision(&key).await.unwrap().is_none());
+    }
+    hw.kv()
+        .put(
+            0,
+            0,
+            key.to_path().as_bytes(),
+            &serde_json::to_vec(&DiskValue::default()).unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    hw.remove_disk(1, 2, 3, &key.disk_id).await.unwrap();
+    assert!(hw
+        .set_disk_status(1, 2, 3, &key.disk_id, HwStatus::Up)
+        .await
+        .is_err());
+    assert!(hw.get_disk_with_revision(&key).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn status_transition_preserves_geometry_and_noop_preserves_revision() {
+    let fixture = TestHardware::start().await;
+    let hw = &fixture.hardware;
+    let key = key();
+    let original = DiskValue {
+        status: HwStatus::Up as i32,
+        disk_type: 1,
+        capacity_units: 4096,
+        zone_size_units: 1024,
+        unit_size_bytes: 4096,
+        zone_count: 4,
+        device_path: "/data/original.img".into(),
+    };
+    hw.add_disk(1, 2, 3, &key.disk_id, &original).await.unwrap();
+    let (_, initial_revision) = hw.get_disk_with_revision(&key).await.unwrap().unwrap();
+    hw.set_disk_status(1, 2, 3, &key.disk_id, HwStatus::Offline)
+        .await
+        .unwrap();
+    let (mut value, changed_revision) = hw.get_disk_with_revision(&key).await.unwrap().unwrap();
+    assert!(changed_revision > initial_revision);
+    assert_eq!(value.status, HwStatus::Offline as i32);
+    value.status = original.status;
+    assert_eq!(value, original);
+    hw.set_disk_status(1, 2, 3, &key.disk_id, HwStatus::Offline)
+        .await
+        .unwrap();
+    assert_eq!(
+        hw.get_disk_with_revision(&key).await.unwrap().unwrap().1,
+        changed_revision
+    );
+}

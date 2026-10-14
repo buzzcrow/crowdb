@@ -92,8 +92,12 @@ error mapping without coupling a monitor to the RPC transport.
   (lifecycle HTTP calls to kv-server + delegates metadata writes to
   `KVClusterMetaClient`). Contains a `KVClusterMetaClient` internally.
 
-All writes are blind puts (no CAS); values are small (< 1 KB) and
-JSON-encoded. See §3 for the key/value schema.
+Values are small and JSON-encoded. Conditional mutations use revision CAS
+where concurrent ownership or lifecycle changes must be preserved. Disk status
+setters require an existing record, read it linearly and compare its revision
+when writing the new status; missing disks are never recreated by a status
+update. A matching status is a read-only no-op. Conflicts and unknown outcomes
+require reconciliation before retry. See §3 for the key/value schema.
 
 ### 2.2 `crowdb-kv-server` mgmt API is internal
 

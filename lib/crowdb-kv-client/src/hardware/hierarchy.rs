@@ -9,12 +9,12 @@
 //! keys are text-path keys (see `design-crowdb-protocol-key.md` §5.2); all values
 //! are JSON-encoded proto `*Value` types from `crowdb-protocol`.
 //!
-//! Writes are blind puts (no CAS); values are small (< 1 KB). Status
-//! setters do a read-modify-write to preserve other fields and bump
-//! `status_changed_at_ms`.
+//! Most hierarchy writes are blind puts; values are small (< 1 KB).
+//! Disk status updates use revision CAS and never create missing disks.
 //!
 //! See `doc/design/kv/design-crowdb-kv-group0.md` §2.1, §3.
 
+mod disk_status;
 mod ownership;
 
 use std::sync::Arc;
@@ -650,28 +650,6 @@ impl HardwareClient {
             nodes: node_entries,
             disk_groups: dg_entries,
         })
-    }
-
-    /// Set a disk's status (read-modify-write).
-    pub async fn set_disk_status(
-        &self,
-        rack_id: RackId,
-        node_id: NodeId,
-        dg_id: DiskGroupId,
-        disk_id: &crowdb_protocol::common::DiskId,
-        status: HwStatus,
-    ) -> Result<()> {
-        let key = DiskKey {
-            rack_id,
-            node_id,
-            disk_group_id: dg_id,
-            disk_id: *disk_id,
-        };
-        let mut value = get_json::<DiskValue>(&self.kv, &key.to_path())
-            .await?
-            .unwrap_or_default();
-        value.status = status as i32;
-        put_json(&self.kv, &key.to_path(), &value).await
     }
 }
 

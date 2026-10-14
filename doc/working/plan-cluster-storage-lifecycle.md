@@ -243,3 +243,9 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   its current read/default/write can recreate a missing disk with empty geometry
   or overwrite concurrent status. A removed marker alone is insufficient while
   direct status writes and cascade deletion bypass the authoritative lifecycle.
+- Disk status setters now require a present record and use that disk revision
+  for CAS; matching status is a read-only no-op. A revision-bearing read is
+  available for exclusion observations. Two real Group-0 regression tests pass,
+  covering absent/deleted records, preserved geometry and no-op revisions;
+  kv-client all-target/all-feature Clippy passes. Cross-record removal fencing
+  and lifecycle-aware cascade guards are still pending.
