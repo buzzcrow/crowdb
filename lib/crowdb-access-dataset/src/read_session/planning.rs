@@ -15,6 +15,7 @@ impl DatasetSessions {
         spec: SessionSpec,
         now: u64,
     ) -> Result<ReadSession, AuthorityError> {
+        self.reserve_session_version(identity, spec.id, 1).await?;
         match self.record(identity, spec.id).await {
             Ok((_, _old)) => {
                 if self.read_spec(identity, spec.id).await?.spec != spec {
@@ -71,7 +72,7 @@ impl DatasetSessions {
             CasOutcome::Conflict(None) => Err(AuthorityError::Corrupt),
         }
     }
-    async fn resolve_snapshot(
+    pub(super) async fn resolve_snapshot(
         &self,
         identity: &DatasetIdentity,
         value: &str,
@@ -113,23 +114,7 @@ impl DatasetSessions {
         spec: &SessionSpec,
     ) -> Result<Vec<Vec<u8>>, AuthorityError> {
         self.authority.get_snapshot(identity, snapshot).await?;
-        let p = &spec.partition;
-        if p.workers == 0
-            || p.world_size == 0
-            || p.worker >= p.workers
-            || p.rank >= p.world_size
-            || spec.fields.len() > 256
-        {
-            return Err(DatasetError::InvalidManifest.into());
-        }
-        let plan = ReadPlan {
-            snapshot,
-            selection: spec.selection.clone(),
-            ordering: Ordering::SampleId,
-            projection: spec.fields.clone(),
-            batch_size: spec.batch_size,
-        };
-        plan.validate()?;
+        let plan = validate_spec(spec, snapshot)?;
         let manifest = self.authority.get_manifest(identity, snapshot).await?;
         if spec
             .fields
@@ -138,31 +123,79 @@ impl DatasetSessions {
         {
             return Err(DatasetError::InvalidManifest.into());
         }
-        let mut ids = plan.scan_ids(&manifest)?;
+        let ids = plan.scan_ids(&manifest)?;
         if ids.len() > 100_000 {
             return Err(DatasetError::ReadLimitExceeded.into());
         }
-        if let Some(shuffle) = &spec.shuffle {
-            if shuffle.group_size == 0 || shuffle.group_size > 1_000_000 {
-                return Err(DatasetError::InvalidManifest.into());
-            }
-            for group in ids.chunks_mut(shuffle.group_size) {
-                group.sort_by_cached_key(|id| {
-                    let mut hash = Md5::new();
-                    hash.update(shuffle.seed.to_le_bytes());
-                    hash.update(snapshot.as_bytes());
-                    hash.update(id);
-                    <[u8; 16]>::from(hash.finalize())
-                });
-            }
-        }
-        let slot = usize::from(p.rank) * usize::from(p.workers) + usize::from(p.worker);
-        let slots = usize::from(p.world_size) * usize::from(p.workers);
-        ids = ids
-            .into_iter()
-            .enumerate()
-            .filter_map(|(i, id)| (i % slots == slot).then_some(id))
-            .collect();
-        Ok(ids)
+        arrange_ids(spec, snapshot, ids)
     }
+}
+
+pub(super) fn validate_spec(spec: &SessionSpec, snapshot: SnapshotId) -> Result<ReadPlan, AuthorityError> {
+    validate_delivery(spec)?;
+    let plan = ReadPlan {
+        snapshot,
+        selection: spec.selection.clone(),
+        ordering: Ordering::SampleId,
+        projection: spec.fields.clone(),
+        batch_size: spec.batch_size,
+    };
+    plan.validate()?;
+    Ok(plan)
+}
+pub(super) fn arrange_ids(
+    spec: &SessionSpec,
+    snapshot: SnapshotId,
+    mut ids: Vec<Vec<u8>>,
+) -> Result<Vec<Vec<u8>>, AuthorityError> {
+    let p = &spec.partition;
+    if let Some(shuffle) = &spec.shuffle {
+        if shuffle.group_size == 0 || shuffle.group_size > 1_000_000 {
+            return Err(DatasetError::InvalidManifest.into());
+        }
+        for group in ids.chunks_mut(shuffle.group_size) {
+            group.sort_by_cached_key(|id| {
+                let mut hash = Md5::new();
+                hash.update(shuffle.seed.to_le_bytes());
+                hash.update(snapshot.as_bytes());
+                hash.update(id);
+                <[u8; 16]>::from(hash.finalize())
+            });
+        }
+    }
+    let slot = usize::from(p.rank) * usize::from(p.workers) + usize::from(p.worker);
+    let slots = usize::from(p.world_size) * usize::from(p.workers);
+    ids = ids
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, id)| (i % slots == slot).then_some(id))
+        .collect();
+    Ok(ids)
+}
+
+pub(super) fn validate_delivery(spec: &SessionSpec) -> Result<(), AuthorityError> {
+    let p = &spec.partition;
+    if p.workers == 0
+        || p.world_size == 0
+        || p.worker >= p.workers
+        || p.rank >= p.world_size
+        || spec.fields.len() > 256
+    {
+        return Err(DatasetError::InvalidManifest.into());
+    }
+    let mut names = std::collections::BTreeSet::new();
+    if spec.batch_size == 0
+        || spec.batch_size > crate::MAX_BATCH_SIZE
+        || spec
+            .fields
+            .iter()
+            .any(|name| name.is_empty() || !names.insert(name))
+        || spec
+            .shuffle
+            .as_ref()
+            .is_some_and(|shuffle| shuffle.group_size == 0 || shuffle.group_size > 1_000_000)
+    {
+        return Err(DatasetError::InvalidManifest.into());
+    }
+    Ok(())
 }

@@ -79,5 +79,6 @@ pub use store::{
 
 mod read_session;
 pub use read_session::{
-    DatasetSessions, ReadSession, SessionBatch, SessionPartition, SessionShuffle, SessionSpec,
+    DatasetSessions, ReadPreparation, ReadSession, SessionBatch, SessionPartition, SessionShuffle,
+    SessionSpec, SessionSpecV2, SessionSplit,
 };

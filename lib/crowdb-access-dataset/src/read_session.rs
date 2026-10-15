@@ -6,6 +6,8 @@
 mod pages;
 mod planning;
 mod progress;
+mod split;
+pub use split::{ReadPreparation, SessionSpecV2, SessionSplit};
 
 use crate::{
     AuthorityError, CasOutcome, DatasetAuthority, DatasetError, DatasetIdentity, OperationId, Ordering,

@@ -21,7 +21,9 @@ impl DatasetSessions {
             if record.closed {
                 return Err(DatasetError::ReadCancelled.into());
             }
-            self.authority.get_snapshot(identity, record.snapshot).await?;
+            self.authority
+                .require_committed_snapshot(identity, record.snapshot)
+                .await?;
             self.authority
                 .touch_read_handle(identity, record.snapshot, id, now, TTL)
                 .await?;

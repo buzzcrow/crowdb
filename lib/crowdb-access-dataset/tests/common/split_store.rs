@@ -15,6 +15,8 @@ pub(super) struct TestDraftStore {
     pub lose_split_reply: AtomicBool,
     pub reject_receipts: AtomicBool,
     pub inspect_only: AtomicBool,
+    pub metadata_only: AtomicBool,
+    pub cancel_scan: AtomicBool,
 }
 #[async_trait::async_trait]
 impl DatasetStore for TestDraftStore {
@@ -23,6 +25,12 @@ impl DatasetStore for TestDraftStore {
             !self.inspect_only.load(Ordering::Relaxed),
             "Split inspection used unbounded get"
         );
+        if self.metadata_only.load(Ordering::Relaxed) {
+            assert!(
+                !key.starts_with(b"DS\0S\0") && !key.starts_with(b"DS\0M\0"),
+                "metadata planning loaded Manifest"
+            );
+        }
         self.inner.get(key).await
     }
     async fn get_bounded(
@@ -31,7 +39,7 @@ impl DatasetStore for TestDraftStore {
         budget: MetadataScanBudget,
         cancel: &ReadCancellation,
     ) -> Result<Option<StoredValue>, StoreError> {
-        if self.inspect_only.load(Ordering::Relaxed) {
+        if self.inspect_only.load(Ordering::Relaxed) || self.metadata_only.load(Ordering::Relaxed) {
             assert!(
                 !key.starts_with(b"DS\0S\0") && !key.starts_with(b"DS\0M\0"),
                 "Split inspection loaded data Manifest"
@@ -44,6 +52,9 @@ impl DatasetStore for TestDraftStore {
         request: &MetadataScan,
         cancel: &ReadCancellation,
     ) -> Result<MetadataPage, StoreError> {
+        if self.cancel_scan.swap(false, Ordering::Relaxed) {
+            cancel.cancel();
+        }
         self.inner.scan_page(request, cancel).await
     }
     async fn delete(&self, key: &[u8]) -> Result<(), StoreError> {

@@ -191,7 +191,7 @@ until its corresponding API and visibility tests pass.
   Exit: complete child membership assembled without browser/full-SDK scans,
   unchanged required values remain represented through server-owned bindings,
   no invented raw chunk locators or duplicate payload uploads for inheritance.
-- [~] **C2 Bound draft lifecycle**: successful mutation invalidates preview;
+- [ ] **C2 Bound draft lifecycle**: successful mutation invalidates preview;
   preview jobs bind draft revision and persist continuation. At most one complete
   result binding wins CAS. Caller-driven bounded steps avoid a new scheduler.
   Persist input refs/digests, not local file handles. Renew source protection while
@@ -288,14 +288,15 @@ until its corresponding API and visibility tests pass.
 
 ## Phase E — reads, API and SDK delivery
 
-- [ ] **E1 Bind read sessions**: version session specs with concrete Snapshot and
+- [x] **E1 Bind read sessions**: version session specs with concrete Snapshot and
   Split revision/name. Resolve aliases once and persist binding before evaluation;
   filter -> ordering/shuffle -> worker partition -> payload fetch. Reuse issued
   cursor/ack protocol. Files: `read_session.rs`, `read_session/{planning,pages,
-  progress}.rs`, HTTP `api/session.rs`, new `tests/split_read_test.rs`.
+  progress,split}.rs`, `tests/split_session{,_edges}_test.rs`. HTTP conversion
+  and route admission are E2; the durable authority session contract is complete.
   Exit: old read plans decode with old semantics; new plans cannot resume under
   another revision, same-name Split, projection or source; empty set ends normally.
-- [ ] **E2 Complete public endpoints**: expose capabilities, head generation,
+- [~] **E2 Complete public endpoints**: expose capabilities, head generation,
   discovery/metadata preparation, composition, revision drafts/commit/status/
   history and scoped member/read operations. Suggested v2 route families under
   `/namespaces/{ns}/datasets/{dataset}`: `/head`, `/snapshot-inventory`,
@@ -709,3 +710,31 @@ failure; record actual failures and add Blocked only when that workflow requires
   `/tmp/dataset-upload-retirement-lint.log`.
 - Permanent Dataset architecture now records branch protection, reclaim ownership,
   bounded metadata cleanup and persistence-version rules.
+
+### Boundary sequencing
+
+- Core composition/revision publication, cancellation fencing and upload owner
+  revocation are available. Remaining C2/D5c work depends on the HTTP ingestion
+  coordinator that resolves upload references and owns claims. Implement E1's
+  revision-bound sessions next, then E2 together with the remaining lifecycle
+  orchestration; do not advertise mutation capabilities until those gates pass.
+- Obsolete preparation/scratch and abandoned Split metadata cleanup remains
+  required; no C2/D5c completion is claimed by this sequencing change.
+
+### Revision-bound read session verification
+
+- Versioned specs persist concrete Snapshot and optional Split revision/name before
+  bounded selection. Existing session records retain their exact v2 bincode layout;
+  a separate version reservation prevents v1/v2 reuse of one operation ID.
+- Selection and frozen membership intersection precede shuffle and worker/rank
+  partitioning. Prepared ID pages have count/byte limits and checksum binding.
+  Empty sets finish normally; missing names fail. Resume uses commit metadata,
+  not the full Manifest, and preserves acknowledged delivery progress.
+- Six focused cases cover alias changes, restart/replay, worker disjointness,
+  spec collisions, cancellation fences, empty inline equality and no Manifest
+  reads. Request cancellation releases the owned lease while preserving progress.
+- Full `pixi run cargo test -p crowdb-access-dataset` passed; the additional
+  cancellation case passed in `--test split_session_edges_test` afterward.
+  Its initial fixture incorrectly used v1 publication for a new root; corrected
+  it to the candidate/attempt API without changing v1 semantics.
+- `pixi run rs-lint`, `pixi run rs-fmt-check`, `git diff --check`: passed.
