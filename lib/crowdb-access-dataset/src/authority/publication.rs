@@ -4,6 +4,7 @@
 mod candidate;
 mod commit;
 mod legacy;
+mod legacy_reclaim;
 mod opaque;
 mod receipt;
 mod visibility;

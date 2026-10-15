@@ -11,9 +11,9 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 #[derive(Serialize, Deserialize)]
-struct LegacyAnchor {
+pub(super) struct LegacyAnchor {
     version: u16,
-    head: HeadRecord,
+    pub head: HeadRecord,
 }
 #[derive(Serialize, Deserialize)]
 struct LegacyVisibility {
@@ -148,7 +148,7 @@ impl DatasetAuthority {
         Ok(false)
     }
 }
-fn decode_anchor(bytes: &[u8]) -> Result<LegacyAnchor, AuthorityError> {
+pub(super) fn decode_anchor(bytes: &[u8]) -> Result<LegacyAnchor, AuthorityError> {
     if bytes.len() > 1024 {
         return Err(AuthorityError::Corrupt);
     }
@@ -158,7 +158,7 @@ fn decode_anchor(bytes: &[u8]) -> Result<LegacyAnchor, AuthorityError> {
     }
     Ok(anchor)
 }
-fn anchor_key(identity: &DatasetIdentity) -> Result<Vec<u8>, DatasetError> {
+pub(super) fn anchor_key(identity: &DatasetIdentity) -> Result<Vec<u8>, DatasetError> {
     let mut key = b"DS\0LA\0".to_vec();
     key.extend_from_slice(&identity.key()?);
     Ok(key)

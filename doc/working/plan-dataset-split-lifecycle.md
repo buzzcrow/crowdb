@@ -263,7 +263,15 @@ until its corresponding API and visibility tests pass.
   owning Snapshot. Files: `composition/prepare.rs`, `authority/publication/`,
   `split/publication.rs`. Exit: every crash boundary exposes either no new Snapshot
   or complete data plus requested initial Splits; no false full-success response.
-- [ ] **D5 Integrate retention/reclaim fences**: all committed revisions live with
+- [x] **D5a Protect branch ancestry and concurrent reclaim ownership**: inspect
+  bounded child indexes using committed proof independent of temporary admission
+  fences. Only an Aborted record plus durable retirement marker permits reclaiming
+  its parent. Walk captured legacy roots within 64 records/16 MiB for unindexed
+  descendants. Access v3 explicitly decodes v1/v2 and adds CAS reclaim ownership
+  plus an irreversible retiring phase; a stale worker cannot reopen admission.
+  Files: `authority/access{,/reclaim}.rs`, `authority/publication/legacy_reclaim.rs`,
+  `inspection/reclaim.rs`, branch/legacy/reclaim-race tests.
+- [ ] **D5b Complete retained revision and draft cleanup**: all committed revisions live with
   owning Snapshot; read/compose leases pin source. Revision publication must win
   a live-owner fence against reclaim. Cleanup batches have durable progress and
   preserve prepared/shared upload ownership. Files: `retention.rs`, `lease.rs`,
@@ -641,3 +649,16 @@ failure; record actual failures and add Blocked only when that workflow requires
   Lint output: `/tmp/dataset-initial-split-lint.log`.
 - C2/D5 still owns candidate abandonment fencing, durable orphan cleanup and
   branch-aware ancestry protection; HTTP/SDK integration remains Phase E.
+
+### Branch reclaim verification
+
+- `pixi run cargo test -p crowdb-access-dataset`: passed. Full output:
+  `/tmp/dataset-branch-reclaim-tests.log`.
+- New tests cover historical live children, prepared non-children, temporary
+  child fences, unindexed legacy descendants and a fixed concurrent interleaving
+  where an old protected result must not undo a newer terminal reclaim.
+- Existing candidate fault-store needed bounded scan delegation after reclaim
+  began checking child indexes. Retirement marker reads now include key bytes
+  in their explicit read budget. Both first-divergence failures are fixed.
+- `pixi run rs-lint`, `pixi run rs-fmt-check`, `git diff --check`: passed.
+  Full lint output: `/tmp/dataset-branch-reclaim-lint.log`.

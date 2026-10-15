@@ -26,6 +26,15 @@ impl DatasetAuthority {
                 return Ok(false);
             }
         }
+        self.snapshot_has_commit_proof(identity, snapshot, work).await
+    }
+    pub(crate) async fn snapshot_has_commit_proof(
+        &self,
+        identity: &DatasetIdentity,
+        snapshot: SnapshotId,
+        work: &mut InspectionWork<'_>,
+    ) -> Result<bool, InspectionError> {
+        use crate::AuthorityError;
         if let Some(value) = work
             .get(
                 &snapshot_commit_key(identity, snapshot).map_err(AuthorityError::from)?,

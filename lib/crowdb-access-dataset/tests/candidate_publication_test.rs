@@ -32,6 +32,13 @@ impl DatasetStore for TestStore {
     ) -> Result<Option<StoredValue>, StoreError> {
         self.inner.get_bounded(key, budget, cancel).await
     }
+    async fn scan_page(
+        &self,
+        request: &MetadataScan,
+        cancel: &ReadCancellation,
+    ) -> Result<MetadataPage, StoreError> {
+        self.inner.scan_page(request, cancel).await
+    }
     async fn compare_exchange(
         &self,
         key: &[u8],
