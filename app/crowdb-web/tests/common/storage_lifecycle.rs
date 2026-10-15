@@ -166,6 +166,7 @@ async fn seed_hardware(hw: &HardwareClient) -> DiskKey {
     };
     hw.admit_disk_storage(&DiskStorageRecord {
         version: 1,
+        physical_backing: None,
         operation_id: "operation".into(),
         rack_id: 1,
         node_id: 2,

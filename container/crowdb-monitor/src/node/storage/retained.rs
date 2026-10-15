@@ -31,9 +31,7 @@ pub(crate) fn check(
         .find(|disk| disk.path == record.geometry.device_path)
         .ok_or_else(|| io::Error::other("retained medium is missing from discovery"))?;
     let capacity = record
-        .geometry
-        .capacity_units
-        .checked_mul(u64::from(record.geometry.unit_size_bytes))
+        .physical_capacity_bytes()
         .ok_or_else(|| io::Error::other("retained capacity overflows"))?;
     if observed.error.is_some()
         || observed.backend != Some(record.backend)

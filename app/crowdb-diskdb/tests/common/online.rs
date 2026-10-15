@@ -74,6 +74,7 @@ impl TestOnline {
         hardware
             .admit_disk_storage(&DiskStorageRecord {
                 version: 1,
+                physical_backing: None,
                 operation_id: "new-disk".into(),
                 rack_id: 1,
                 node_id: 2,

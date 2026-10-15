@@ -11,6 +11,7 @@
 #endif
 
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
 #include <utility>
 
@@ -26,7 +27,8 @@ bool matches_backing_identity(int fd, const std::string &path, const folly::dyna
         return false;
     }
     try {
-        if (storage.at("version").asInt() != 1 || storage.at("removed").asBool()) {
+        auto version = storage.at("version").asInt();
+        if ((version != 1 && version != 2) || storage.at("removed").asBool()) {
             return false;
         }
         const auto &geometry  = storage.at("geometry");
@@ -37,6 +39,25 @@ bool matches_backing_identity(int fd, const std::string &path, const folly::dyna
             return false;
         }
         auto        capacity = static_cast<uint64_t>(units) * static_cast<uint64_t>(unit_size);
+        const auto *physical = storage.get_ptr("physical_backing");
+        if (version == 1) {
+            if (physical != nullptr && !physical->isNull()) {
+                return false;
+            }
+        }
+        else {
+            if (physical == nullptr || !physical->isObject()) {
+                return false;
+            }
+            auto  physical_capacity = physical->at("capacity_bytes").asInt();
+            auto *host              = std::getenv("CROWDB_PHYSICAL_HOST_ID");
+            if (physical_capacity <= 0 || std::cmp_less(physical_capacity, capacity) || host == nullptr ||
+                physical->at("physical_host_id").asString() != host ||
+                physical->at("resource_identity").asString().empty()) {
+                return false;
+            }
+            capacity = static_cast<uint64_t>(physical_capacity);
+        }
         std::string identity;
         if (storage.at("backend").asString() == "file" && S_ISREG(opened.st_mode)) {
             identity = "file:" + std::to_string(opened.st_dev) + ":" + std::to_string(opened.st_ino);

@@ -84,6 +84,7 @@ fn record(state: &FilePreparation) -> Result<DiskStorageRecord> {
     let unit = u64::from(placement.unit_size_bytes);
     let record = DiskStorageRecord {
         version: 1,
+        physical_backing: None,
         operation_id: request.operation_id.clone(),
         rack_id: placement.rack_id,
         node_id: request.node_id,

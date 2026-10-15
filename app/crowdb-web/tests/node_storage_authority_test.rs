@@ -143,6 +143,7 @@ async fn verify_retained_backing(app: &axum::Router, hw: &HardwareClient) {
     assert!(read(app, backing_path).await.is_null());
     let record = crowdb_protocol::disk_storage::DiskStorageRecord {
         version: 1,
+        physical_backing: None,
         operation_id: "backing-observation".into(),
         rack_id: 1,
         node_id: 2,

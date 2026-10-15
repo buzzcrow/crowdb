@@ -1123,3 +1123,33 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   final acceptance. Capture owned cgroup pids/memory counters and process thread
   counts on the next failure to distinguish resource exhaustion from runtime
   state/recovery failure before changing production code.
+
+- Diagnostic rerun of the unchanged exact ordered bridge profile passes on image
+  `ebf670db` / config `sha256:1585b41dd9e1b80087231a799e1438c59735a378536f7e8a2a820157be8b0f69`:
+  artifact `run-1f7e4dae606544588868fec9dd50b81d`. Original preparation 13.0 s,
+  cross-UI recovery 4.8 s, independent cleanup 2.4 s, authenticated update 10.9 s.
+  Default submit/close 9.7 s and middle-workspace progress 1.2 s. The real fixture
+  confirms three preallocated 16-GiB files with 1-GiB reserves, unchanged inode/
+  byte geometry after an actual monitor/container restart, retained operation IDs,
+  all six selected services Ready and all seven supervised processes healthy on
+  every node. `admission/default-node-setup.json` retains per-file proof.
+- The earlier intermittent foreign-exception exit was not reproduced and is not
+  declared fixed. Keep owned resource diagnostics enabled for future acceptance;
+  do not raise pids budgets or timeouts without evidence. This does not prevent
+  independent supplied-media implementation, but remains a final verification
+  concern. Full raw-device/containerd acceptance is still pending.
+
+- Compatible version-2 backing receipts now retain physical host/resource identity
+  and physical capacity separately from whole-zone logical geometry. Version-1
+  serialization/capacity remain unchanged and strict. Monitor retained checks,
+  Web original-medium reconciliation and real DiskIO descriptor checks use exact
+  physical capacity; DiskIO also verifies the launch host for new receipts and
+  opens raw media with O_EXCL through existing descriptor retirement.
+- Seven protocol cases, four retained-medium cases, full KV-client tests/rustdoc,
+  three Web authority/lifecycle cases and ten DiskDB Online/retained cases pass.
+  Affected all-target/all-feature Clippy, changed C++ format/tree-lint and full
+  test-cpp pass; artifact `unit/cpp-e2451c10b98e4c57bb571112a5967bcb`. The new C++
+  descriptor test rejects host/physical-capacity mismatch and preserves v1 exact
+  capacity semantics. Initial lint caught a test integer conversion and pointer/
+  signedness style warnings; fixed without suppressions. Real raw-device
+  exclusion/provisioning and global resource reservations remain pending.

@@ -53,11 +53,7 @@ pub(super) async fn verify(
         || medium.disk_id != key.disk_id.to_display_string()
         || medium.backend != backing.backend
         || medium.backing_identity != backing.backing_identity
-        || Some(medium.capacity_bytes)
-            != backing
-                .geometry
-                .capacity_units
-                .checked_mul(u64::from(backing.geometry.unit_size_bytes))
+        || Some(medium.capacity_bytes) != backing.physical_capacity_bytes()
     {
         return Err(err_409(
             "Original medium could not be verified; disk membership was not changed",

@@ -36,7 +36,8 @@ BlockDisk::BlockDisk(DiskId id, const std::string &path, std::shared_ptr<IoEngin
       o_direct_(o_direct),
       engine_(std::move(engine))
 {
-    int flags = O_RDWR | O_NOFOLLOW;
+    // Linux keeps this raw-device claim until the retired descriptor closes.
+    int flags = O_RDWR | O_NOFOLLOW | O_EXCL;
     if (o_direct) {
 #ifdef O_DIRECT
         flags |= O_DIRECT;

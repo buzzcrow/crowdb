@@ -11,6 +11,7 @@ use crowdb_protocol::{
 fn record() -> DiskStorageRecord {
     DiskStorageRecord {
         version: 1,
+        physical_backing: None,
         operation_id: "operation".into(),
         rack_id: 1,
         node_id: 2,
@@ -179,4 +180,44 @@ fn online_authorization_fixes_offline_revision_and_validates_outcome() {
     operation.validate().unwrap();
     operation.offline_revision = 0;
     assert!(operation.validate().is_err());
+}
+
+#[test]
+fn physical_backing_preserves_tail_and_legacy_capacity_contract() {
+    use crowdb_protocol::disk_storage::PhysicalBacking;
+    let mut disk = record();
+    let logical = disk.physical_capacity_bytes().unwrap();
+    let legacy = serde_json::to_value(&disk).unwrap();
+    assert!(legacy.get("physical_backing").is_none());
+    disk.version = 2;
+    assert!(disk.validate().is_err());
+    disk.physical_backing = Some(PhysicalBacking {
+        physical_host_id: "owned-host".into(),
+        resource_identity: "file:10:20".into(),
+        capacity_bytes: logical + 512,
+    });
+    disk.validate().unwrap();
+    assert_eq!(disk.physical_capacity_bytes(), Some(logical + 512));
+    assert_eq!(
+        disk.geometry.capacity_units * u64::from(disk.geometry.unit_size_bytes),
+        logical
+    );
+    assert_eq!(
+        serde_json::from_value::<DiskStorageRecord>(serde_json::to_value(&disk).unwrap()).unwrap(),
+        disk
+    );
+    disk.version = 1;
+    assert!(
+        disk.validate().is_err(),
+        "legacy version cannot acquire a new capacity interpretation"
+    );
+    disk.version = 2;
+    disk.physical_backing.as_mut().unwrap().capacity_bytes = logical - 1;
+    assert!(disk.validate().is_err());
+    disk.physical_backing.as_mut().unwrap().capacity_bytes = logical;
+    disk.physical_backing.as_mut().unwrap().resource_identity = "file:010:20".into();
+    assert!(disk.validate().is_err());
+    disk.physical_backing.as_mut().unwrap().resource_identity = "device:20".into();
+    disk.physical_backing.as_mut().unwrap().physical_host_id.clear();
+    assert!(disk.validate().is_err());
 }

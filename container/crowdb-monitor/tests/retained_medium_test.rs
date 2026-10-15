@@ -23,6 +23,7 @@ impl TestMedium {
         let observation = discover_disks(root.path(), &[]).unwrap().disks.remove(0);
         let record = DiskStorageRecord {
             version: 1,
+            physical_backing: None,
             operation_id: "original".into(),
             rack_id: 1,
             node_id: 2,
@@ -96,4 +97,36 @@ fn retained_check_rejects_underlying_aliases_and_changed_external_mapping() {
     fs::hard_link(&test.path, test.root.path().join("disks/alias.img")).unwrap();
     assert!(test.check().is_err());
     assert_eq!(fs::read(&test.path).unwrap(), vec![b'Z'; 256 * 1024]);
+}
+
+#[test]
+fn retained_physical_tail_is_preserved_and_never_interpreted_as_allocatable_capacity() {
+    use crowdb_protocol::disk_storage::PhysicalBacking;
+    use std::io::Write;
+    let mut test = TestMedium::new();
+    let logical = 256 * 1024;
+    let mut file = fs::OpenOptions::new().append(true).open(&test.path).unwrap();
+    file.write_all(&[b'T'; 512]).unwrap();
+    file.sync_all().unwrap();
+    assert!(
+        test.check().is_err(),
+        "legacy geometry still requires its original exact capacity"
+    );
+    test.record.version = 2;
+    test.record.physical_backing = Some(PhysicalBacking {
+        physical_host_id: "owned-host".into(),
+        resource_identity: test.record.backing_identity.clone(),
+        capacity_bytes: logical + 512,
+    });
+    let observation = test.check().unwrap();
+    assert_eq!(observation.capacity_bytes, logical + 512);
+    assert_eq!(test.record.geometry.capacity_units, 64);
+    let expected = [vec![b'Z'; usize::try_from(logical).unwrap()], vec![b'T'; 512]].concat();
+    assert_eq!(fs::read(&test.path).unwrap(), expected);
+    test.record.physical_backing.as_mut().unwrap().capacity_bytes = logical;
+    assert!(
+        test.check().is_err(),
+        "physical bytes cannot be inferred from usable geometry"
+    );
+    assert_eq!(fs::read(&test.path).unwrap(), expected);
 }

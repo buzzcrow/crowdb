@@ -72,6 +72,7 @@ impl Drop for TestStorage {
 pub fn record(low: u64) -> DiskStorageRecord {
     DiskStorageRecord {
         version: 1,
+        physical_backing: None,
         operation_id: format!("operation-{low}"),
         rack_id: 1,
         node_id: 2,
