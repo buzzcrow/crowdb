@@ -136,7 +136,13 @@ pub(super) async fn prepare_credentials(
         env_file: None,
         readiness_url: None,
     };
-    super::credentials::prepare(state.runtime_root.as_ref(), &spec, &binding.management_seeds).await
+    super::credentials::prepare(
+        state.runtime_root.as_ref(),
+        &spec,
+        &binding.management_seeds,
+        state.kv_client().await.as_ref(),
+    )
+    .await
 }
 
 pub(super) async fn configuration(

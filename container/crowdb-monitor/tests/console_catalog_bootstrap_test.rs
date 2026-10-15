@@ -1,6 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+#[path = "common/node_setup.rs"]
+mod node_setup;
 use crowdb_monitor::{IcebergBootstrap, ServerCredentials};
 use serde_json::{json, Value};
 use std::{fs, os::unix::fs::PermissionsExt, path::Path};
@@ -113,4 +115,67 @@ async fn existing_catalog_is_preserved_and_corrupt_pending_journal_is_rejected()
             .await
             .is_err()
     );
+}
+
+#[tokio::test]
+async fn another_node_finishes_shared_activation_and_preserves_later_operator_policy() {
+    let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("console-shared-activation");
+    let credentials = ServerCredentials::load_or_create(root.path()).unwrap();
+    let program = command(root.path());
+    let authority = node_setup::TestAuthority::start(
+        root.path(),
+        &crowdb_protocol::mgmt::node::setup::NodeSetupRequest {
+            version: 1,
+            discovery_id: uuid::Uuid::new_v4().to_string(),
+            operation_id: uuid::Uuid::new_v4().to_string(),
+            choices: crowdb_protocol::mgmt::node::setup::NodeSetupChoices::default(),
+        },
+    )
+    .await;
+    assert_eq!(authority.binding.node_id, 2);
+    assert_eq!(authority.registry.nodes.len(), 1);
+    let (initialize, activate) =
+        IcebergBootstrap::shared_console_operations_for_tests(root.path(), &authority.kv)
+            .await
+            .unwrap();
+    let catalog = root.path().join("observed.json");
+    let observed = json!({"initialized":true,"catalog_id":"11111111-1111-4111-8111-111111111111",
+        "display_name":"CROWDB","state":"Ready","activation_epoch":1,
+        "capability_bits":"0x0000","root_operation_id":initialize.simple().to_string()});
+    fs::write(&catalog, serde_json::to_vec(&observed).unwrap()).unwrap();
+    // The initializing node has disappeared before activation. This node has no journal.
+    assert!(!root.path().join("console-iceberg-bootstrap.json").exists());
+    IcebergBootstrap::ensure_shared_console_catalog(
+        root.path(),
+        &program,
+        "127.0.0.1:1",
+        &credentials,
+        &authority.kv,
+    )
+    .await
+    .unwrap();
+    let completed: Value = serde_json::from_slice(&fs::read(&catalog).unwrap()).unwrap();
+    assert_eq!(completed["root_operation_id"], activate.simple().to_string());
+    assert_eq!(completed["capability_bits"], "0x3fff");
+    let calls = fs::read_to_string(root.path().join("calls")).unwrap();
+    assert!(!calls.lines().any(|line| line.contains("initialize")), "{calls}");
+    let mut operator = completed;
+    operator["root_operation_id"] = json!(uuid::Uuid::now_v7().simple().to_string());
+    operator["capability_bits"] = json!("0x0000");
+    operator["activation_epoch"] = json!(2);
+    fs::write(&catalog, serde_json::to_vec(&operator).unwrap()).unwrap();
+    let other = root.path().join("other-node");
+    fs::create_dir(&other).unwrap();
+    IcebergBootstrap::ensure_shared_console_catalog(
+        &other,
+        &program,
+        "127.0.0.1:1",
+        &credentials,
+        &authority.kv,
+    )
+    .await
+    .unwrap();
+    let retained: Value = serde_json::from_slice(&fs::read(&catalog).unwrap()).unwrap();
+    assert_eq!(retained, operator);
+    assert!(!other.join("console-iceberg-bootstrap.json").exists());
 }

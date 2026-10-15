@@ -1028,3 +1028,52 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   Web Clippy and Rust formatting. Initial lint caught an oversized handler and
   needless borrow; split target execution into its owning helper. Original
   bridge and default-plan acceptance remain pending the rebuilt image.
+
+### Supplied-media implementation boundary
+
+- Add compatible version-2 backing metadata: physical capacity and authoritative
+  physical-host/resource identity remain separate from exact opened inode/device
+  identity and whole-zone logical geometry. Version-1 records stay strict and
+  readable. Update monitor retained checks and real DiskIO descriptor checks;
+  neither may compare a device's physical tail to logical usable capacity.
+- Reserve the canonical host/resource identity globally before membership, with a
+  sticky original disk placement and bounded legacy verification. Launcher needs
+  verified canonical resources for exposed devices, including loop-device backing
+  files; unknown stacked/aliased backing must remain explicitly ineligible.
+  Preserve retained launch mappings and host identity across replacement.
+- Use one bounded supplied-medium worker and immutable per-medium operations for
+  node setup and explicit candidate Join. Validate the authenticated confirmed
+  node, captured observation and compatible bound group before effects. Check
+  complete contents read-only; reset partial blank-check progress on restart.
+  Nonzero/unreadable/replaced/claimed media produces a visible per-row failure,
+  never a fallback file or fresh initialization of retained occupied bytes.
+- Open raw media exclusively and retain actual DiskIO descriptor ownership through
+  retirement. After initial publication as Init, recheck usable zero bytes through
+  the real DiskIO descriptor before Up, covering the local-check/owner-open gap.
+  An uncertain activation must reconcile receipt and membership rather than
+  repeat fresh blank validation of a disk that has already become allocatable.
+- Add explicit multi-selection/group assignment and initialization agreement to
+  Candidates, shared with accepted node choices. Keep removed Rejoin separate
+  from fresh provisioning internally and show each retained/fresh outcome. Add
+  owned blank loop-backed Docker/containerd proof; never target host data disks.
+
+- Image `8cf608d0`, config
+  `sha256:bd1f2257a8995911a30a2928148912717087078a8c4b090302eaf8a27b415e3e`,
+  passes all original bridge tests including concurrent cleanup in
+  `run-2cefcee2ac1e4e24b7ffe3e120de21ac`. Preparation 11.2 s, cross-UI recovery
+  4.7 s, independent cleanup 2.2 s, authenticated update 11.3 s. Default browser
+  submission/closure 9.6 s; all three 16-GiB disks, DiskDB/DiskIO/ChunkDB/Chunk-KV
+  become ready across actual monitor restart. Last Access setup fails because
+  independent Console journals reserved different catalog Initialize/Activate
+  IDs before the shared catalog appeared. Preserve strict identity checks; reserve
+  one immutable pair in Group 0 and reuse those commands on every node. Existing
+  conflicting pending journals are explicit conflicts, never silently rewritten.
+  Updated tests/gates and OCI proof remain pending.
+- Shared Console catalog reservation passes three live Group-0 cases: concurrent
+  callers converge without revision-changing replay, existing pending identity is
+  retained and another local identity conflicts without rewrite, malformed/version
+  records fail closed. Three Console bootstrap cases include another node finishing
+  shared activation without reinitialization and preservation of later operator
+  policy; two existing Iceberg bootstrap cases also pass. Monitor/Web all-target/
+  all-feature Clippy, three affected Web cases and repository Rust fmt pass.
+  Updated real three-node default setup acceptance remains pending.

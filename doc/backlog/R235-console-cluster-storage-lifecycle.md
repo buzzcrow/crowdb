@@ -386,6 +386,12 @@
   Completion still requires every retained member, and retry keeps the same
   identity and explicit deletion confirmation.
 
+- Access deployment on multiple nodes shares one Group-0-reserved pair of
+  Console catalog Initialize/Activate operation IDs. Concurrent nodes replay
+  those same commands. Existing local pending identities may seed the reservation;
+  conflicting local journals remain visible and are never rewritten or adopted
+  by guessing. Existing ready operator catalogs retain identity and policy.
+
 **Dependencies**:
 
 - Reuse current durable Group-0 bootstrap exclusion, immutable intent, monitor
