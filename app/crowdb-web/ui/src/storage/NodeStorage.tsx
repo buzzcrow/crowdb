@@ -28,7 +28,7 @@ interface Props {
 export function NodeStorage({ nodeId, rackId, active, readonly, ready, inventory, hardware, usage, candidatesOnly, loadGroup, onAddGroup, onCandidates }: Props) {
   const candidateSection = useRef<HTMLElement>(null);
   const diskElements = useRef(new Map<string, HTMLElement>());
-  const [focusDisk, setFocusDisk] = useState<string>();
+  const [focusTarget, setFocusTarget] = useState<string>();
   const model = useNodeStorage(nodeId, active);
   const removed = useRemovedDisks(nodeId, active && ready);
   const [managing, setManaging] = useState<{ disk: string; group: number }>();
@@ -43,10 +43,10 @@ export function NodeStorage({ nodeId, rackId, active, readonly, ready, inventory
   }, [active, nodeId, groupIds, completed, loadGroup]);
   const registered = Object.values(inventory?.disksByDg ?? {}).flat();
   useEffect(() => {
-    if (!focusDisk) return;
-    const element = diskElements.current.get(focusDisk);
-    if (element) { element.focus(); setFocusDisk(undefined); }
-  }, [focusDisk, registered]);
+    if (managing || !focusTarget) return;
+    const element = focusTarget === 'candidates' ? candidateSection.current : diskElements.current.get(focusTarget);
+    if (element) { element.focus(); setFocusTarget(undefined); }
+  }, [focusTarget, managing, registered]);
   const paths = new Set(registered.map(disk => disk.device_path).filter(Boolean));
   const pendingPaths = new Set(Object.values(model.operations).filter(operation => operation.request.admission).map(operation => operation.path));
   const removedPaths = new Set(removed.items.map(disk => disk.container_path));
@@ -134,8 +134,8 @@ export function NodeStorage({ nodeId, rackId, active, readonly, ready, inventory
     </section>
     {managing && <DiskLifecycleDialog key={`${nodeId}:${managing.group}:${managing.disk}`} nodeId={nodeId} groupId={managing.group} diskId={managing.disk}
       onClose={() => setManaging(undefined)} onCommitted={(state, action) => {
-        if (action === 'rejoin') setFocusDisk(state.disk_id);
-        if (state.removed) requestAnimationFrame(() => candidateSection.current?.focus());
+        if (action === 'rejoin') setFocusTarget(state.disk_id);
+        if (state.removed) setFocusTarget('candidates');
         if (selectedEntity?.type === 'Disk' && selectedEntity.id === state.disk_id) inspectEntity({ ...selectedEntity });
         setConfirmed(previous => ({ ...previous, [state.disk_id]: state }));
         void loadGroup(nodeId, managing.group, true); void removed.refresh(undefined, true); void model.refresh();

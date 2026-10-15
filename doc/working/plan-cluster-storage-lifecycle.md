@@ -647,3 +647,21 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   stale-owner/revision and restart regressions, then extend the real occupied
   native flow through Online and read back the fsynced marker without changing
   disk identity. Rejoin-Offline alone does not complete A13.
+- Rejoin-image native run `run-1aa3141766e749368b467581b585894f` failed at
+  the retained-candidate focus assertion after confirmed removal (13.5 s browser).
+  The newly retained Inspector selection exposed a real effect-ordering bug:
+  requestAnimationFrame could focus Candidates before Dialog's passive cleanup
+  restored its original, soon-removed trigger. Focus now waits for modal unmount
+  in the workspace's passive effect, then targets Candidates or the restored row.
+  A component regression keeps the old row mounted and proves Dialog cleanup
+  cannot steal the final focus. All 226 UI cases/types pass; browser retry pending.
+- Further safety audit before Online: a stable DiskDB instance ID currently
+  reuses its exact data-group ownership fence after process restart. Unknown
+  metadata requests from the old process can outlive it remotely. A fresh closed
+  local gate alone is therefore insufficient evidence of drainage across restart.
+  Fence each process incarnation before any recovery/allocation or exclusion ACK.
+  Preserve the logical owner ID/Group-0 generation; add a monotonic process epoch
+  to the data-group fence, allocated once per boot from Group 0. Old process
+  epochs must be unable to reclaim or write after the new epoch, including when
+  logical ownership is unchanged. This is control metadata, not a disk format
+  change. Add a same-instance restart regression before enabling Online.
