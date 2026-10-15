@@ -67,7 +67,7 @@ impl DatasetStore for TestDraftStore {
         {
             return Err(StoreError::Rejected);
         }
-        if key.starts_with(b"DS\0SD\0")
+        if (key.starts_with(b"DS\0SD\0") || key.starts_with(b"DS\0CD\0"))
             && expected.is_some()
             && matches!(result, CasOutcome::Applied(_))
             && self.lose_edit_reply.swap(false, Ordering::Relaxed)

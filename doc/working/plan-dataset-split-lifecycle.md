@@ -171,7 +171,18 @@ until its corresponding API and visibility tests pass.
 
 ## Phase C — durable drafts and data publication prerequisites
 
-- [~] **C1 Compose child data on the server**: durable revision-CAS draft binds
+- [x] **C1a Persist and evaluate server composition**: immutable begin binding pins
+  the source once; revision-CAS edits use immutable edit-ID pages and helpable
+  receipts. Source, patch and validation windows persist redo records before
+  applying Sample rows, then CAS progress. Bound pages to 20 Samples, 1 MiB
+  metadata records and 4096 edit pages; copy effective locators, never chunk bytes.
+  Tests cover lost edit/evaluation replies, historical retry, binary pagination,
+  required fields, filtered reintroduction, cancellation and preview invalidation.
+  Data-only prepare verifies count/digest before freezing a candidate, with an
+  explicit 8 MiB assembled metadata limit. Initial Split prepare stays C1b/D4.
+  Files: `composition/{begin,edit,state,evaluation,evaluate_step,prepare}.rs`,
+  `inspection/materialize.rs`, `tests/composition{,_recovery}_test.rs`.
+- [~] **C1b Complete composition publication and initial Splits**: durable revision-CAS draft binds
   parent and optional Split source revision, with bounded edit pages. Expose begin,
   apply-edit, inspect, evaluate-next-page, prepare and abandon operations; each
   editing request carries expected draft revision and idempotency identity.
@@ -600,3 +611,13 @@ failure; record actual failures and add Blocked only when that workflow requires
   uncommitted/unknown source revisions or names fail. Full Dataset suite: 100
   tests passed; root Rust lint passed. Logs: `/tmp/dataset-split-inheritance-tests.log`,
   `/tmp/dataset-split-inheritance-lint.log`. Rust fmt and diff whitespace pass.
+
+### Composition draft/evaluation verification
+
+- `pixi run cargo test -p crowdb-access-dataset`: passed, including five new
+  composition/recovery cases. Full output: `/tmp/dataset-composition-tests.log`.
+- `pixi run rs-lint`: passed. Full output: `/tmp/dataset-composition-lint.log`.
+- `pixi run rs-fmt-check` and `git diff --check`: passed.
+- Preparation currently accepts data-only drafts; initial Split binding, publish
+  recovery and durable cleanup remain active C1b/C2/D4/D5 work. No mutation
+  capability is advertised to HTTP/SDK clients yet.

@@ -23,6 +23,7 @@ pub use pages::InspectionPage;
 mod content;
 mod evaluate;
 
+mod materialize;
 mod matrix;
 pub use matrix::InspectionSample;
 
