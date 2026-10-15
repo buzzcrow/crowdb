@@ -363,6 +363,10 @@
   Retain diagnostic maintenance controls, but replace legacy direct Up/Down/Delete
   controls. Group creation menus use the same verified file provisioning dialog.
   Empty-group deletion remains separate and cannot cascade through physical disks.
+- Short-lived SSH control requests use a current-thread runtime, independent of
+  long-running service worker settings. They must not create one host-sized
+  thread pool per status observation. Preserve the Node PID/resource budget;
+  do not raise it to mask control-query thread pressure.
 - A pristine single-mode data root is initialized by its own bootstrap. External
   supplied-media mappings are a standard-node flow; do not precreate arbitrary
   entries in an uninitialized single root to emulate standard admission.

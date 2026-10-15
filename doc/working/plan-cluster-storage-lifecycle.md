@@ -1482,3 +1482,64 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   Clippy and workspace fmt pass. Register the actual visible center/sidebar
   scrollers with existing bounded navigation restoration; the real Inspector
   regression asserts its exact scroll offset alongside zone/page after Back.
+- Third runtime/UI freeze is `89a396d9f81a35bb01a6029109c885e18a838423`.
+  Release stage, rootless OCI build and Docker import pass. Manifest
+  `sha256:90b4dd43e78454b71ca74d740fe76e91a303273cb11223e60dcba064c3b5a184`,
+  config `sha256:e196fb21f5b32184506ce12c67b010996704f5f4826915a05924f2fd1c1e9405`,
+  runtime `c45c28c44b7680650f3ac0add5ddd6330669b0de082ac042ac8260ca78886a2e`.
+  Default E2E host client compilation passes. Start final hardware/Inspector,
+  admission/default-plan and affected navigation/capacity acceptance on this image;
+  keep runtime/UI frozen while gathering that evidence.
+- Final hardware acceptance passes on the third image:
+  `run-b4e9347e46fc4671bb14dab659cb9344`, browser 17.9 s / host 42.76 s.
+  Its screenshot confirms the shared dark controls and real per-disk review;
+  `supplied-media-proof.json` preserves all three original inode/size/tail markers.
+  Verified native TypeScript in the actual child `browser-client` with installed
+  compiler (`npx --no-install`), not the uninstalled root client source snapshot.
+- Final Inspector passes as `run-442cf52d0b1747a6998ffe0aa9721dee`, browser 7.7 s
+  against prior 5.0 s, host 19.57 s. Both actual 4-TiB groups, owners and capacities
+  remain checked. The UI uses explicit Diagram, Rack node rows, and Node storage
+  sections instead of removed center lists. The first diagnostic run retained the
+  old default-Diagram assumption; the next contained an incorrectly outer-scoped
+  row `has` locator. Correct those test navigation/locator assumptions without
+  touching frozen production code. Thirty-two visible zone buttons, actual Zone 32
+  bitmap, no zone tree, and Back-restored page/selection/exact scroll all pass.
+- Scanner passes as `run-eff2c46251ea451aa56bf1410f664ad7`, browser 3.0 s against
+  prior 2.3 s, host 20.03 s. Keep initial unobserved scan/usage distinct from an
+  observed never-run scan: explicitly Refresh before checking authoritative scan
+  state. Scope summary labels away from new sort controls and navigate current
+  Rack rows/Node storage. Raw API scan/recalc and original drift assertions remain.
+- Maintenance diagnostic `run-8e0bf97b2cb84f73bae91964f31afc88` correctly committed
+  Offline but retained `No scoped DiskIO exclusion confirmation is available`:
+  this fixture deliberately starts DiskDB only. Its old direct status menu is now
+  replaced by Node lifecycle. Assert that real UI route, committed Offline, the
+  explicit unmet condition and disabled Remove even after acknowledgement. Do not
+  invent an exclusion confirmation or weaken the separate real DiskIO-positive
+  Remove/Rejoin acceptance. Keep metadata-only hardware badge API cases intact.
+- Maintenance now passes as `run-88586d7c71b24067b3d8b0804b5c9bdd`, browser
+  13.3 s against 6.8 s (under 2x), host 26.13 s. Actual maintenance requests still
+  target the chosen owner/group, every hardware badge remains checked, and absent
+  DiskIO cannot be mistaken for safe removal. New Node lifecycle replaces the old
+  physical-disk direct status menu; metadata-only API badge fixtures are unchanged.
+- Third-image full bridge run `run-c0a60bd1f6dc4684a1fc315421954cae` passes every
+  browser stage through default submit (12.7/5.0/2.7/11.4/9.5 s), then times out
+  reading Node 1 Access setup after the actual monitor restart. All three durable
+  setup journals are Ready; failure is observation, not an absent accepted intent.
+  Owned `node-resources.json` proves no OOM and Node 1 PID peak 256 / max events 40.
+  Its Chunk-KV log again contains foreign-exception aborts. No local core exists;
+  the host routes dumps through Apport, so do not claim that crash independently
+  explained or fixed without its report. Preserve the diagnostics.
+- Confirmed an independent upstream resource defect: every SSH control CLI used
+  the service-sized Tokio pool. A real Unix-socket CLI regression with worker
+  setting 64 measured 66 threads before the fix. Only Node/Run now build the
+  service worker pool; control/probe/validation/credential commands use a current-
+  thread runtime. Both worker settings 1 and 64 now produce the same bounded two
+  threads, and the real reply remains checked. Profile validation also ignores a
+  service-only worker setting. Do not raise PID limits, timeouts or caller retries.
+  This ends the third runtime freeze; run the Monitor gates and rebuild before
+  rerunning the exact ordered bridge profile. Do not claim the bridge passed yet.
+- Full Monitor integration suite: 130 cases pass, including the two CLI cases;
+  affected all-target/all-feature Clippy and workspace fmt pass. The observed
+  two-thread control bound is constant under worker settings 1/64; it includes
+  the executable's existing auxiliary thread, rather than asserting a fictional
+  one-thread process. Keep actual request/reply and subprocess success assertions.

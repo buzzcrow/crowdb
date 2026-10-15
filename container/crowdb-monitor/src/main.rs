@@ -79,9 +79,8 @@ enum CredentialFormat {
     Env,
 }
 
-#[tokio::main]
-async fn main() -> std::process::ExitCode {
-    match run().await {
+fn main() -> std::process::ExitCode {
+    match execute(Cli::parse()) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("Error: {error}");
@@ -90,8 +89,18 @@ async fn main() -> std::process::ExitCode {
     }
 }
 
-async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let cli = Cli::parse();
+fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+    // Only long-running services need a worker pool. Socket control, probes and
+    // other short commands must not inherit service thread-pool sizing.
+    let mut builder = if matches!(&cli.command, Command::Node { .. } | Command::Run { .. }) {
+        tokio::runtime::Builder::new_multi_thread()
+    } else {
+        tokio::runtime::Builder::new_current_thread()
+    };
+    builder.enable_all().build()?.block_on(run(cli))
+}
+
+async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Command::Node {
             seed,
