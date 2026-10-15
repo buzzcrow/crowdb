@@ -119,6 +119,16 @@ pub struct NodeSetupForTests(NodeSetup);
 #[cfg(feature = "test-util")]
 impl NodeSetupForTests {
     /// # Errors
+    /// Uses production acceptance with an explicit launcher declaration fixture.
+    pub fn accept_with_inputs_for_tests(
+        &mut self,
+        root: &Path,
+        request: NodeSetupRequest,
+        inputs: &[crowdb_protocol::mgmt::node::storage::DiskInput],
+    ) -> Result<NodeSetupStatus> {
+        journal::accept_with_inputs(root, request, self.0.running(), inputs)
+    }
+    /// # Errors
     /// Propagates target identity, authorization and immutable intent failures.
     pub fn accept_for_tests(&mut self, root: &Path, request: NodeSetupRequest) -> Result<NodeSetupStatus> {
         self.0.accept(root, request)

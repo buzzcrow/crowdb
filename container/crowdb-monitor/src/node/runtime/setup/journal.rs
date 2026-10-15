@@ -14,6 +14,8 @@ use crowdb_protocol::mgmt::node::{
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+mod supplied;
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct AcceptedSetup {
@@ -23,12 +25,26 @@ pub(super) struct AcceptedSetup {
     pub(super) file: Option<crowdb_protocol::mgmt::node::storage::PrepareDiskFile>,
     #[serde(default)]
     pub(super) storage_binding: Option<crowdb_protocol::common::BindMapValue>,
+    #[serde(default)]
+    pub(super) supplied_observations: Vec<crowdb_protocol::mgmt::node::storage::DiskObservation>,
+    #[serde(default)]
+    pub(super) supplied: Vec<AcceptedSupplied>,
+    #[serde(default)]
+    pub(super) retry_supplied: std::collections::BTreeSet<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct AcceptedSupplied {
+    pub(super) request: crowdb_protocol::mgmt::node::storage::PrepareSuppliedDisk,
+    pub(super) binding: crowdb_protocol::common::BindMapValue,
 }
 
 pub(super) fn read(root: &Path) -> Result<Option<AcceptedSetup>> {
     let current: Option<AcceptedSetup> = durable::read(&root.join("node-setup.json"))?;
     if let Some(current) = &current {
         current.request.validate()?;
+        supplied::validate(current)?;
         validate_status(&current.status)?;
         for identity in [&current.request.discovery_id, &current.request.operation_id] {
             let parsed = uuid::Uuid::parse_str(identity)?;
@@ -47,6 +63,7 @@ pub(super) fn read(root: &Path) -> Result<Option<AcceptedSetup>> {
 }
 
 pub(super) fn save(root: &Path, state: &AcceptedSetup) -> Result<()> {
+    supplied::validate(state)?;
     validate_status(&state.status)?;
     durable::write(&root.join("node-setup.json"), state)?;
     Ok(())
@@ -70,6 +87,20 @@ pub(super) fn bounded(text: &str, maximum: usize) -> String {
 }
 
 pub(super) fn accept(root: &Path, request: NodeSetupRequest, running: bool) -> Result<NodeSetupStatus> {
+    let inputs = if matches!(&request.choices.storage, SetupStorage::Supplied { .. }) {
+        crate::node::storage::supplied::inputs()?
+    } else {
+        Vec::new()
+    };
+    accept_with_inputs(root, request, running, &inputs)
+}
+
+pub(super) fn accept_with_inputs(
+    root: &Path,
+    request: NodeSetupRequest,
+    running: bool,
+    inputs: &[DiskInput],
+) -> Result<NodeSetupStatus> {
     request.validate()?;
     if root
         .join(format!(
@@ -98,7 +129,7 @@ pub(super) fn accept(root: &Path, request: NodeSetupRequest, running: bool) -> R
         }
         retire_cancelled(root, &current, running)?;
     }
-    validate_supplied(root, &request)?;
+    let supplied_observations = validate_supplied(root, &request, inputs)?;
     let status = NodeSetupStatus {
         version: 1,
         discovery_id: request.discovery_id.clone(),
@@ -133,6 +164,9 @@ pub(super) fn accept(root: &Path, request: NodeSetupRequest, running: bool) -> R
             binding: None,
             file: None,
             storage_binding: None,
+            supplied_observations,
+            supplied: Vec::new(),
+            retry_supplied: std::collections::BTreeSet::new(),
         },
     )?;
     Ok(status)
@@ -148,6 +182,13 @@ fn replay(root: &Path, current: &mut AcceptedSetup, running: bool) -> Result<Nod
                 service.detail = None;
             }
         }
+        for disk in &mut current.status.disks {
+            if disk.phase == SetupStepPhase::Failed {
+                current.retry_supplied.insert(disk.operation_id.clone());
+                disk.phase = SetupStepPhase::Pending;
+                disk.detail = None;
+            }
+        }
         save(root, current)?;
     }
     Ok(current.status.clone())
@@ -157,6 +198,7 @@ fn retire_cancelled(root: &Path, current: &AcceptedSetup, running: bool) -> Resu
     if running
         || current.binding.is_some()
         || current.file.is_some()
+        || !current.supplied.is_empty()
         || current
             .status
             .services
@@ -177,13 +219,16 @@ fn retire_cancelled(root: &Path, current: &AcceptedSetup, running: bool) -> Resu
     Ok(())
 }
 
-fn validate_supplied(root: &Path, request: &NodeSetupRequest) -> Result<()> {
+fn validate_supplied(
+    root: &Path,
+    request: &NodeSetupRequest,
+    inputs: &[DiskInput],
+) -> Result<Vec<crowdb_protocol::mgmt::node::storage::DiskObservation>> {
     let SetupStorage::Supplied { disks } = &request.choices.storage else {
-        return Ok(());
+        return Ok(Vec::new());
     };
-    let inputs: Vec<DiskInput> =
-        serde_json::from_str(&std::env::var("CROWDB_DISK_INPUTS").unwrap_or_else(|_| "[]".into()))?;
-    let inventory = crate::node::discover_disks(root, &inputs)?;
+    let inventory = crate::node::discover_disks(root, inputs)?;
+    let mut observations = Vec::new();
     for selected in disks {
         let actual = inventory
             .disks
@@ -191,12 +236,16 @@ fn validate_supplied(root: &Path, request: &NodeSetupRequest) -> Result<()> {
             .find(|disk| disk.path == selected.path)
             .ok_or("selected disk is no longer discovered")?;
         if actual.error.is_some()
+            || !actual.supplied
             || actual.backend != Some(selected.backend)
             || actual.backing_identity.as_ref() != Some(&selected.backing_identity)
             || actual.capacity_bytes != Some(selected.capacity_bytes)
+            || actual.resource_identity.is_none()
+            || selected.capacity_bytes < 64 * 1024 * 1024
         {
             return Err("selected disk observation changed; refresh before admission".into());
         }
+        observations.push(actual.clone());
     }
-    Ok(())
+    Ok(observations)
 }

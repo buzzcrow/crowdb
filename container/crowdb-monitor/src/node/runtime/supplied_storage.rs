@@ -51,6 +51,7 @@ impl SuppliedStorage {
         request: PrepareSuppliedDisk,
     ) -> Result<SuppliedPreparation> {
         authorize(root, &request).await?;
+        self.tick(root)?;
         let id = request.record.operation_id.clone();
         if self.known.contains(&id) {
             let current = journal::status(root, &id)?;

@@ -429,6 +429,12 @@
   Already-Up replay validates the retained receipt without treating user data as
   a new blank medium. Missing live DiskIO ownership is visible waiting; malformed
   ownership, changed identity and nonzero usable bytes are failures.
+- Node setup seals each selected medium's canonical observation, disk operation
+  and media-class placement before dispatch. Different classes cannot claim the
+  same initially empty group. A failed disk preserves successful siblings;
+  explicit retry consumes one retry authorization for that original operation.
+  Earlier accepted supplied plans without sealed lineage require explicit review
+  or migration rather than silently taking a new observation as the old medium.
 
 **Dependencies**:
 

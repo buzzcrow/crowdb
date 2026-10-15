@@ -15,6 +15,7 @@ use std::time::Duration;
 
 mod services;
 mod storage;
+mod supplied;
 
 pub(super) async fn run(profile: DeploymentProfile, mut state: AcceptedSetup) -> Result<()> {
     let root = &profile.paths.data_root;

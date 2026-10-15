@@ -18,16 +18,14 @@ pub(super) async fn advance(
     binding: &NodeBinding,
     kv: &std::sync::Arc<CrowdbKvClient>,
 ) -> Result<bool> {
-    let SetupStorage::Automatic {
-        capacity_bytes,
-        reserve_bytes,
-        sparse,
-    } = state.request.choices.storage
-    else {
-        return match state.request.choices.storage {
-            SetupStorage::Diskless => Ok(true),
-            _ => Err("supplied media is waiting for verified provisioning".into()),
-        };
+    let (capacity_bytes, reserve_bytes, sparse) = match &state.request.choices.storage {
+        SetupStorage::Automatic {
+            capacity_bytes,
+            reserve_bytes,
+            sparse,
+        } => (*capacity_bytes, *reserve_bytes, *sparse),
+        SetupStorage::Diskless => return Ok(true),
+        SetupStorage::Supplied { .. } => return super::supplied::advance(profile, state, binding, kv).await,
     };
     let root = &profile.paths.data_root;
     if state.file.is_none() {
@@ -45,7 +43,15 @@ pub(super) async fn advance(
             .find(|(_, id, _)| *id == binding.node_id)
             .ok_or("node hardware is not published")?
             .0;
-        let (id, data_binding) = select_group(&hardware, kv, rack, binding.node_id).await?;
+        let (id, data_binding) = select_group(
+            &hardware,
+            kv,
+            rack,
+            binding.node_id,
+            None,
+            &std::collections::BTreeSet::new(),
+        )
+        .await?;
         state.storage_binding = Some(data_binding);
         state.file = Some(PrepareDiskFile {
             operation_id: uuid::Uuid::new_v4().to_string(),
@@ -98,7 +104,7 @@ pub(super) async fn advance(
     Ok(ready)
 }
 
-async fn ensure_group(
+pub(super) async fn ensure_group(
     kv: &std::sync::Arc<CrowdbKvClient>,
     binding: &NodeBinding,
     group_id: u64,
@@ -138,17 +144,22 @@ async fn ensure_group(
     Ok(())
 }
 
-async fn select_group(
+pub(super) async fn select_group(
     hardware: &HardwareClient,
     kv: &std::sync::Arc<CrowdbKvClient>,
     rack: u64,
     node: u64,
+    media_type: Option<i32>,
+    excluded: &std::collections::BTreeSet<u64>,
 ) -> Result<(u64, crowdb_protocol::common::BindMapValue)> {
     let mut groups = hardware.list_disk_groups_on_node(rack, node).await?;
     groups.sort_unstable_by_key(|group| group.dg_id);
     for group in groups {
+        if excluded.contains(&group.dg_id) {
+            continue;
+        }
         match hardware
-            .validate_disk_group_storage(rack, node, group.dg_id, None, 1024 * 1024)
+            .validate_disk_group_storage(rack, node, group.dg_id, media_type, 1024 * 1024)
             .await
         {
             Ok(()) => {}

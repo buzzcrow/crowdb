@@ -1192,3 +1192,22 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   completion/exclusion, and OCI restart/cleanup acceptance remain pending. Also
   verify loop backing identity through the actual DiskIO descriptor at handoff,
   so changed loop association cannot be accepted solely from launch-time evidence.
+- Supplied node setup now seals launcher observations and all fixed per-medium
+  requests before dispatch, reuses compatible bound groups per media class, and
+  excludes a group already chosen for another class while it is still empty.
+  Successful sibling outcomes remain Ready when one fails. Only explicit setup
+  retry authorizes redispatch of that failed original operation, consumed before
+  sending. Legacy accepted plans lacking sealed lineage fail visibly for review.
+  Durable plan validation rejects changed/unselected placement and retry IDs.
+- Four new native setup cases pass (explicit mapping/sealed read-only replay,
+  stable operations and class grouping, partial failure/one-medium retry, corrupt
+  placement rejected before dispatch), together with the full monitor suite and
+  all-target/all-feature Clippy/fmt. Native socket fixtures prove control dispatch;
+  they do not replace real OCI supplied-media completion. Initial compile repairs
+  used exhaustive mode dispatch and explicit group-cache types, without lint
+  suppression or test relaxation.
+- Still wire the preflight canonical identity into the submitted SetupMedium/UI
+  contract before raw support is accepted; sealing only at target acceptance must
+  not hide a loop reassociation between review and final submission. Bulk Join,
+  new managed-file v2 receipts, actual-descriptor lineage, UI and raw/containerd
+  acceptance remain pending.
