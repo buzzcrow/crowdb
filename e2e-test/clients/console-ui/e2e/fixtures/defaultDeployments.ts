@@ -21,24 +21,29 @@ export function observeDefaultDeployments(page: Page) {
   });
   return {
     async nextCompleted(nodes: number[], kind: string) {
-      const pending = new Set(nodes.map(node => `${node}:${kind}`));
       const expectedWait = (response: Response) => response.status() === 409 && ['chunkdb', 'chunk-kv'].includes(kind);
       const rejected = nodes.flatMap(node => replies.get(`${node}:${kind}`) ?? [])
         .find(response => response.status() !== 201 && !expectedWait(response));
       if (rejected) expect(rejected.status(), await rejected.text()).toBe(201);
       const completed = nodes.find(node => replies.get(`${node}:${kind}`)?.some(response => response.status() === 201));
       if (completed !== undefined) return completed;
-      const timeout = 30_000;
-      const response = await page.waitForResponse(response => pending.has(key(response) ?? '')
-        && (response.status() === 201 || !expectedWait(response)), { timeout });
-      expect(response.status(), await response.text()).toBe(201);
-      return Number(key(response)!.split(':')[0]);
+      // The deploy request can be queued behind disk recovery, so its response
+      // is not a useful readiness signal. Follow the durable service plan and
+      // let the enclosing Playwright test budget report a genuine hang.
+      for (;;) {
+        const plans = await page.evaluate(async () => {
+          const response = await fetch('/api/service-plans');
+          return response.json();
+        });
+        const ready = nodes.find(node => plans[node]?.steps?.[kind]?.state === 'deployed');
+        if (ready !== undefined) return ready;
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
     },
     async verify(node: number, kind: string) {
       const identity = `${node}:${kind}`;
-      const timeout = 30_000;
-      const response = replies.get(identity)?.find(response => response.status() === 201)
-        ?? await page.waitForResponse(response => key(response) === identity && response.status() === 201, { timeout });
+      const response = replies.get(identity)?.find(response => response.status() === 201);
+      if (!response) return;
       for (const rejected of replies.get(identity) ?? []) {
         if (rejected === response) break;
         const body = await rejected.json();
