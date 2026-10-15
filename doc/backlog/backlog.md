@@ -20,15 +20,6 @@ live in the linked document; implementation follows
   access and optimization contract. **Area:** Dataset SDK. **Complexity:** High.
   **Status:** Deferred until the core Dataset contract has workload measurements.
 
-## Console and service control
-
-- **[R236](R236-console-dataset-workspace.md)** — Dataset tab before S3,
-  parent-based Snapshot tree, combined Schema/Sample inspection, bounded metadata
-  APIs, local test/demo import/prepare/publish and Split revision flows.
-  **Area:** Console / Dataset /
-  Access Server. **Complexity:** High. **Status:** In progress; backend/API/SDK prerequisite complete;
-  [execution plan](../working/plan-console-dataset-workspace.md).
-
 ## Access server and external data
 
 - **[R168](R168-s3-shared-object-reclamation.md)** — shared small-object
