@@ -10,6 +10,8 @@ use crowdb_protocol::chunk_kv::{ChunkKvResponse, OperationResult, RpcCompareCond
 
 use crate::store::{CasOutcome, DatasetStore, StoreError, StoredValue};
 
+mod metadata;
+
 /// A cancellation handle shared by bounded payload reads.
 #[derive(Clone, Default)]
 pub struct ReadCancellation(Arc<AtomicBool>);
@@ -105,6 +107,22 @@ impl ChunkKvDatasetStore {
 
 #[async_trait]
 impl DatasetStore for ChunkKvDatasetStore {
+    async fn get_bounded(
+        &self,
+        key: &[u8],
+        budget: crate::MetadataScanBudget,
+        cancel: &ReadCancellation,
+    ) -> Result<Option<StoredValue>, StoreError> {
+        self.read_metadata_key(key, budget, cancel).await
+    }
+
+    async fn scan_page(
+        &self,
+        request: &crate::MetadataScan,
+        cancel: &ReadCancellation,
+    ) -> Result<crate::MetadataPage, StoreError> {
+        self.read_metadata_page(request, cancel).await
+    }
     async fn get(&self, key: &[u8]) -> Result<Option<StoredValue>, StoreError> {
         let response = self.client.get(key.to_vec(), None).await?;
         match response.result.map_err(|error| failure(&error))? {

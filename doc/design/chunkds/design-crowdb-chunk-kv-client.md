@@ -105,6 +105,20 @@ the number of buffered partition pages is one and therefore stays within the
 configured page bound. Global item, caller byte, and client response-byte caps
 apply across every partition.
 
+`scan_bounded` is a forward-only metadata read with positive item and byte
+budgets. Its dedicated RPC requires server enforcement; unsupported transports
+fail without falling back to ordinary scan. Owners cap the caller budget by
+their response limit and check native value lengths before copying external
+memory cells or assembling overflow payloads. An oversized first value or a
+native traversal deadline with no progress is an explicit failure, not an empty
+completed range. Partial native pages retain their last emitted key.
+
+The strict client returns after a nonempty owner page so the next request gets
+a fresh byte budget. A continuation may therefore require one final empty page
+to establish completion. Dataset metadata reads additionally bound total request
+time and observe cancellation while waiting for the client. Ordinary scan retains
+its existing first-entry and response-validation behavior.
+
 The public continuation contains direction, original bounds, last emitted key,
 and observed catalog generation. Pagination resumes strictly after that key for
 forward scans and strictly before it for reverse scans. When a split or transfer

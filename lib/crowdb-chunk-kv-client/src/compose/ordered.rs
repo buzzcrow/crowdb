@@ -155,6 +155,23 @@ impl ChunkKvClient {
     /// deadline, identity exhaustion, or configured response-bound violation.
     #[allow(clippy::too_many_lines)]
     pub async fn scan(&self, request: MultiScanRequest) -> Result<MultiScanPage> {
+        self.scan_inner(request, false).await
+    }
+
+    /// Scans forward with a server-enforced pre-materialization byte budget.
+    /// # Errors
+    /// Rejects unsupported transports, reverse scans, invalid bounds and storage failures.
+    pub async fn scan_bounded(&self, request: MultiScanRequest) -> Result<MultiScanPage> {
+        if request.direction != ScanDirection::Forward || request.max_items == 0 || request.max_bytes == 0 {
+            return Err(ClientError::InvalidRequest(
+                "strict forward scan requires positive budgets".into(),
+            ));
+        }
+        self.scan_inner(request, true).await
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn scan_inner(&self, request: MultiScanRequest, strict: bool) -> Result<MultiScanPage> {
         validate_scan(&request)?;
         if request.max_items == 0 || request.max_bytes == 0 {
             return Ok(MultiScanPage {
@@ -217,7 +234,8 @@ impl ChunkKvClient {
                 let mut attempts = 0_u32;
                 loop {
                     let remaining_items = request.max_items.saturating_sub(items.len());
-                    if remaining_items == 0 || bytes >= request.max_bytes {
+                    if remaining_items == 0 || bytes >= request.max_bytes.min(self.config.max_response_bytes)
+                    {
                         return Ok(scan_page(&request, items, last_key, map.generation(), None));
                     }
                     let rpc = ScanRequest {
@@ -246,14 +264,30 @@ impl ChunkKvClient {
                     let remaining = deadline
                         .checked_duration_since(Instant::now())
                         .ok_or(ClientError::Deadline)?;
-                    let response =
-                        tokio::time::timeout(remaining, self.transport.scan(&entry.owner.rpc_endpoint, &rpc))
-                            .await
-                            .map_err(|_| ClientError::Deadline)?;
+                    let response = tokio::time::timeout(remaining, async {
+                        if strict {
+                            self.transport
+                                .scan_bounded(
+                                    &entry.owner.rpc_endpoint,
+                                    &rpc,
+                                    request
+                                        .max_bytes
+                                        .min(self.config.max_response_bytes)
+                                        .saturating_sub(bytes),
+                                )
+                                .await
+                        } else {
+                            self.transport.scan(&entry.owner.rpc_endpoint, &rpc).await
+                        }
+                    })
+                    .await
+                    .map_err(|_| ClientError::Deadline)?;
                     let response = match response {
                         Ok(response) => response,
                         Err(error) => {
-                            if attempts >= self.config.max_attempts {
+                            if matches!(error, ClientError::InvalidRequest(_) | ClientError::TooLarge)
+                                || attempts >= self.config.max_attempts
+                            {
                                 return Err(error);
                             }
                             if replans < self.config.max_route_refreshes {
@@ -293,6 +327,11 @@ impl ChunkKvClient {
                                 bytes += item_bytes;
                                 last_key = Some(item.key.clone());
                                 items.push(item);
+                            }
+                            // A strict page ends at the first native budget boundary. Resume
+                            // in a new request with a fresh budget, even across partitions.
+                            if strict && !items.is_empty() {
+                                return Ok(scan_page(&request, items, last_key, map.generation(), None));
                             }
                             attempts = 0;
                             match continuation {

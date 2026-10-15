@@ -498,3 +498,76 @@ async fn same_generation_activation_preserves_the_discovery_budget() {
     assert_eq!(calls, 4);
     assert_eq!(loads, 1);
 }
+
+struct TestBoundedTransport(OrderedTransport);
+#[async_trait]
+impl ChunkKvTransport for TestBoundedTransport {
+    async fn point(&self, _: &str, _: &PointRequest) -> Result<ChunkKvResponse> {
+        panic!("unexpected point")
+    }
+    async fn scan(&self, _: &str, _: &ScanRequest) -> Result<ChunkKvResponse> {
+        panic!("unexpected legacy scan")
+    }
+    async fn scan_bounded(
+        &self,
+        endpoint: &str,
+        request: &ScanRequest,
+        max_bytes: usize,
+    ) -> Result<ChunkKvResponse> {
+        // Every fixture entry has one key byte and seven value bytes.
+        if max_bytes < 8 {
+            return Err(crowdb_chunk_kv_client::ClientError::TooLarge);
+        }
+        let mut bounded = request.clone();
+        bounded.limit = bounded.limit.min(u32::try_from(max_bytes / 8).unwrap());
+        self.0.scan(endpoint, &bounded).await
+    }
+}
+#[tokio::test]
+async fn strict_pages_cross_partition_boundaries_without_legacy_fallback() {
+    let client = ChunkKvClient::new(
+        ClientConfig::default(),
+        Arc::new(ScriptedCatalog {
+            versions: Mutex::new(vec![catalog(1, &[(b"", Some(b"m"), 1), (b"m", None, 2)])]),
+        }),
+        Arc::new(TestBoundedTransport(OrderedTransport::stable())),
+    )
+    .unwrap();
+    let mut request = scan(ScanDirection::Forward, 10);
+    request.max_bytes = 9;
+    let mut keys = Vec::new();
+    for _ in 0..5 {
+        let page = client.scan_bounded(request.clone()).await.unwrap();
+        assert!(page.terminal_failure.is_none());
+        assert!(
+            page.items
+                .iter()
+                .map(|item| item.key.len() + item.value.len())
+                .sum::<usize>()
+                <= 9
+        );
+        keys.extend(page.items.into_iter().map(|item| item.key));
+        request.continuation = page.continuation;
+        if request.continuation.is_none() {
+            break;
+        }
+    }
+    assert!(request.continuation.is_none());
+    assert_eq!(keys, [b"a".to_vec(), b"b".to_vec(), b"m".to_vec(), b"z".to_vec()]);
+}
+#[tokio::test]
+async fn legacy_only_transport_cannot_silently_ignore_strict_scan_budget() {
+    let client = ChunkKvClient::new(
+        ClientConfig::default(),
+        Arc::new(ScriptedCatalog {
+            versions: Mutex::new(vec![catalog(1, &[(b"", None, 1)])]),
+        }),
+        Arc::new(OrderedTransport::stable()),
+    )
+    .unwrap();
+    let result = client.scan_bounded(scan(ScanDirection::Forward, 10)).await;
+    assert!(matches!(
+        result,
+        Err(crowdb_chunk_kv_client::ClientError::InvalidRequest(_))
+    ));
+}

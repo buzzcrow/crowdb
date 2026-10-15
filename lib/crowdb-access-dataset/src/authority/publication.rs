@@ -184,6 +184,7 @@ impl DatasetAuthority {
         }
 
         self.persist_manifest_parts(identity, snapshot, &manifest).await?;
+        self.persist_inspection_index(identity, parent, &manifest).await?;
         if !publish {
             return Ok(snapshot);
         }

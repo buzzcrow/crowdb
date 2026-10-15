@@ -111,6 +111,30 @@ pub fn encode_scan_request(
     rpc_create_nano: u64,
     request: &ScanRequest,
 ) -> Result<(Vec<u8>, usize), ChunkKvWireError> {
+    encode_scan_with_budget(rpc_request_id, rpc_create_nano, request, 0)
+}
+
+/// Encodes the strict forward-scan message sent using its dedicated RPC type.
+/// # Errors
+/// Rejects zero budgets, reverse scans and malformed routing/bounds.
+pub fn encode_bounded_scan_request(
+    rpc_request_id: u64,
+    rpc_create_nano: u64,
+    request: &ScanRequest,
+    max_bytes: u64,
+) -> Result<(Vec<u8>, usize), ChunkKvWireError> {
+    if max_bytes == 0 || request.direction != crate::chunk_kv::ScanDirection::Forward {
+        return Err(ChunkKvWireError::InvalidRequest);
+    }
+    encode_scan_with_budget(rpc_request_id, rpc_create_nano, request, max_bytes)
+}
+
+fn encode_scan_with_budget(
+    rpc_request_id: u64,
+    rpc_create_nano: u64,
+    request: &ScanRequest,
+    max_bytes: u64,
+) -> Result<(Vec<u8>, usize), ChunkKvWireError> {
     request.validate().map_err(|_| ChunkKvWireError::InvalidRequest)?;
     let mut builder = FlatBufferBuilder::new();
     let start = request.start.as_ref().map(|value| builder.create_vector(value));
@@ -145,6 +169,7 @@ pub fn encode_scan_request(
             end,
             direction: encode_direction(request.direction),
             limit: request.limit,
+            max_bytes,
             has_continuation: request.continuation.is_some(),
             continuation_direction: encode_direction(continuation.direction),
             continuation_last_key,
@@ -284,4 +309,18 @@ fn decode_seek_kind(kind: FBChunkKvSeekKind) -> Result<SeekKind, ChunkKvWireErro
         FBChunkKvSeekKind::Lower => Ok(SeekKind::Lower),
         _ => Err(ChunkKvWireError::InvalidRequest),
     }
+}
+
+/// Decodes a strict scan; legacy unbounded requests cannot enter this route.
+/// # Errors
+/// Rejects zero/unsupported budgets, reverse direction and invalid envelopes.
+pub fn decode_bounded_scan_request(bytes: &[u8]) -> Result<(ScanRequestEnvelope, usize), ChunkKvWireError> {
+    let encoded =
+        flatbuffers::root::<FBChunkKvScanRequest>(bytes).map_err(|_| ChunkKvWireError::InvalidRequest)?;
+    let budget = usize::try_from(encoded.max_bytes()).map_err(|_| ChunkKvWireError::InvalidRequest)?;
+    let envelope = decode_scan_request(bytes)?;
+    if budget == 0 || envelope.request.direction != crate::chunk_kv::ScanDirection::Forward {
+        return Err(ChunkKvWireError::InvalidRequest);
+    }
+    Ok((envelope, budget))
 }

@@ -11,7 +11,7 @@ description = "Native Dataset authority and bounded sample access."
 workspace = true
 
 [dependencies]
-tokio = { workspace = true, features = ["rt"] }
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
 async-trait = "0.1"
 bincode = "1.3"
 bytes = "1"

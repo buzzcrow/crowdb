@@ -13,6 +13,7 @@ mod cursor;
 mod delivery;
 mod error;
 mod identity;
+pub mod inspection;
 mod key;
 mod lease;
 mod manifest;
@@ -71,7 +72,9 @@ pub use record::{
 pub use retention::{
     RetentionLease, RetentionLeaseHandle, RetentionLeaseRegistry, RetentionPlan, RetentionPlanner,
 };
-pub use store::{CasOutcome, DatasetStore, StoreError, StoredValue};
+pub use store::{
+    CasOutcome, DatasetStore, MetadataPage, MetadataScan, MetadataScanBudget, StoreError, StoredValue,
+};
 
 mod read_session;
 pub use read_session::{

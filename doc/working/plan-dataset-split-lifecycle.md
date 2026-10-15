@@ -107,7 +107,7 @@ and Rust/Python SDK contract before Console integration.
 
 ## Phase B — bounded authority metadata and composition inputs
 
-- [~] **B1 Add bounded metadata store operations**: adapt ordered range scans and
+- [x] **B1 Add bounded metadata store operations**: adapt ordered range scans and
   key/value limits at `DatasetStore`; implement in production and test stores.
   Define `scan_page(prefix, after, item_budget, byte_budget)` or equivalent with
   explicit partial/end and cancellation/deadline. Check underlying transport
@@ -115,14 +115,29 @@ and Rust/Python SDK contract before Console integration.
   `chunk_store.rs`, `tests/common/dataset_store.rs`, Chunk-KV adapter tests.
   Exit: old Dataset identity keys are discoverable across store restart without
   a new-only registry. Zero/invalid budgets, long keys and partial pages tested.
-- [ ] **B2 Build new-write metadata projections**: persist small Snapshot summary,
+  Implementation note: the existing Chunk-KV byte limit was checked after
+  decoding an RPC result, and the native scan admitted an oversized first entry.
+  Added a dedicated bounded-scan RPC (3708) and strict tree/FFI path so old
+  servers cannot silently ignore the limit. Strict scans check overflow lengths
+  and external L0 cell sizes before payload materialization; empty truncated
+  pages are explicit failures. Dataset adapters enforce item/byte/time budgets,
+  cancellation, binary prefix cursors and exact-key reads without point fallback.
+  Verified: protocol (7), server (14), client ordered (9), strict native scan
+  (3), Dataset adapter (4), Dataset suite and inspection index (4) tests pass.
+  Full Rust lint, focused final Clippy, tree lint and C++ test task exit 0.
+- [x] **B2a Build new-write metadata projections**: persist small Snapshot summary,
   paged Schema, Sample IDs and per-field metadata/value bindings before publication.
   Keep inline bytes separate from inspection projections. Use immutable ordered
-  keys/pages for Snapshot roots/children/inventory, verifying commit visibility.
+  keys/pages for Snapshot roots/children/inventory. Ready means the projection
+  is complete; committed visibility is verified separately in B2b after C4.
   Files: new `src/inspection.rs`, `inspection/{index,pages,projection}.rs`,
   `authority/publication.rs`, `manifest.rs`. Exit: one metadata page does not decode
   the full publication Manifest; payload reader counters remain zero.
-- [ ] **B3 Prepare legacy inspection metadata**: implement bounded resumable
+- [ ] **B2b Bind index visibility to commit evidence**: after C4, all public
+  enumeration verifies the small committed marker/receipt, never projection
+  readiness or Published state alone. Add prepared/head-conflict/crash cases to
+  the B4 API tests before advertising inspection capability.
+- [~] **B3 Prepare legacy inspection metadata**: implement bounded resumable
   preparation per selected old Snapshot; scan old identities for discovery without
   preparing every Snapshot. Track revision/progress/error and idempotently publish
   new immutable projection bindings. Reject a legacy value beyond the configured
@@ -410,3 +425,26 @@ failure; record actual failures and add Blocked only when that workflow requires
   bounded metadata reads must enforce the cap before materializing/transporting
   legacy values. Extend the protocol/storage boundary and its tests before using
   a post-decode slice as a supposed read bound. No B1 implementation is claimed.
+
+## Bounded metadata and projection verification — 2026-10-16
+
+- `pixi run cargo test -p crowdb-protocol --test chunk_kv_wire_test`: 7 passed.
+- `pixi run cargo test -p crowdb-chunk-kv-client --test ordered_test`: 9 passed;
+  strict cross-partition continuation and unsupported transport covered.
+- `pixi run cargo test -p crowdb-chunk-kv-server --test server_test`: 14 passed;
+  oversized first value, retry with larger budget, and split-writer boundary covered.
+- `pixi run cargo test -p crowdb-tree-ffi --test bounded_scan_test`: 3 passed;
+  resident, flushed, external-cell, binary bounds and legacy behavior covered.
+- `pixi run cargo test -p crowdb-access-dataset --tests`: 66 passed, followed by
+  `--test inspection_index_test`: 4 passed after adding the binary-ID case.
+- `pixi run rs-lint`: passed; final touched Dataset/client `cargo clippy
+  --all-targets -- -D warnings`: passed. Rust formatting and diff whitespace pass.
+- `pixi run tree-lint`: exit 0. Complete log `/tmp/dataset-tree-lint-final.log`;
+  existing diagnostics outside the changed scan remain. New nested conditional
+  warning was removed before the final run.
+- `pixi run test-cpp`: exit 0. Complete log `/tmp/dataset-cpp-tests.log`;
+  measurements `.crowdb-runtime/artifacts/unit/cpp-453e53c9789a434dbf0737af515b8362/results.json`.
+- Index tests prove interrupted readiness cannot advance latest, retry preserves
+  immutable rows, exact binary IDs retain byte order, payload bytes are separate
+  from small field metadata, and legacy over-limit IDs remain publishable with
+  explicit unsupported inspection status. Public inspection visibility remains B2b.

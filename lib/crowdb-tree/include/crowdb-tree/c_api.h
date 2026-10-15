@@ -623,6 +623,12 @@ ct_status ct_scan(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t 
                   int has_start_bound, int start_inclusive, const uint8_t *end_key, size_t elen, size_t limit,
                   size_t byte_budget, int keys_only, uint64_t deadline_ms, int include_tombstones, ct_buf *out_entries,
                   uint64_t *out_count, int32_t *truncated);
+// Strict byte budget: never materialize an entry exceeding remaining bytes.
+// Empty output with truncated=1 means the first matching entry does not fit.
+ct_status ct_scan_strict(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t *start_key, size_t sklen,
+                         int has_start_bound, int start_inclusive, const uint8_t *end_key, size_t elen, size_t limit,
+                         size_t byte_budget, int keys_only, uint64_t deadline_ms, int include_tombstones,
+                         ct_buf *out_entries, uint64_t *out_count, int32_t *truncated);
 ct_status ct_seek_reverse(ct_tree *t, const uint8_t *start_key, size_t sklen, int start_inclusive,
                           const uint8_t *begin_key, size_t bklen, int32_t *found, ct_buf *out_key, uint64_t *out_slot,
                           ct_buf *out_value);

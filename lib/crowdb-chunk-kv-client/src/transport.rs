@@ -13,7 +13,9 @@ use crowdb_protocol::chunk_kv_group_wire::{
     decode_batch_mutation_response, decode_multi_get_response, encode_batch_mutation_request,
     encode_multi_get_request,
 };
-use crowdb_protocol::chunk_kv_ordered_wire::{encode_scan_request, encode_seek_request};
+use crowdb_protocol::chunk_kv_ordered_wire::{
+    encode_bounded_scan_request, encode_scan_request, encode_seek_request,
+};
 use crowdb_protocol::chunk_kv_wire::{decode_point_response, encode_point_request, ChunkKvWireError};
 use crowdb_protocol::fb::FBMsgType;
 use crowdb_rpc_ffi::{
@@ -74,6 +76,17 @@ pub trait ChunkKvTransport: Send + Sync {
     /// Returns only transport failures; typed server outcomes remain encoded.
     async fn scan(&self, _endpoint: &str, _request: &ScanRequest) -> Result<ChunkKvResponse> {
         Err(ClientError::Transport("scan transport is not implemented".into()))
+    }
+    /// Sends a strict forward scan; implementations must not fall back to legacy scanning.
+    async fn scan_bounded(
+        &self,
+        _endpoint: &str,
+        _request: &ScanRequest,
+        _max_bytes: usize,
+    ) -> Result<ChunkKvResponse> {
+        Err(ClientError::InvalidRequest(
+            "strict scan transport unavailable".into(),
+        ))
     }
 }
 
@@ -210,6 +223,29 @@ impl ChunkKvTransport for ChunkKvRpcTransport {
             id,
             Buffer::from_vec_offset(bytes, offset),
             FBMsgType::EChunkKvScanRequest.0 as u16,
+        )
+        .await
+    }
+
+    async fn scan_bounded(
+        &self,
+        endpoint: &str,
+        request: &ScanRequest,
+        max_bytes: usize,
+    ) -> Result<ChunkKvResponse> {
+        let id = self.next_id()?;
+        let (bytes, offset) = encode_bounded_scan_request(
+            id,
+            wall_time_ns(),
+            request,
+            u64::try_from(max_bytes).map_err(|_| ClientError::TooLarge)?,
+        )
+        .map_err(|error| wire_error(&error))?;
+        self.call_point_response(
+            endpoint,
+            id,
+            Buffer::from_vec_offset(bytes, offset),
+            FBMsgType::EChunkKvBoundedScanRequest.0 as u16,
         )
         .await
     }

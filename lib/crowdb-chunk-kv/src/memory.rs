@@ -144,6 +144,36 @@ impl PartitionTree for MemoryPartitionTree {
         Ok((entries, truncated))
     }
 
+    async fn scan_forward_bounded(
+        &self,
+        start: Option<&[u8]>,
+        inclusive: bool,
+        end: Option<&[u8]>,
+        limit: usize,
+        budget: usize,
+    ) -> Result<(Vec<ScanEntry>, bool)> {
+        let values = self.values.read().await;
+        let mut entries = Vec::new();
+        let mut remaining = budget;
+        for (key, value) in values.iter() {
+            if start.is_some_and(|start| key.as_slice() < start || (!inclusive && key.as_slice() == start))
+                || end.is_some_and(|end| key.as_slice() >= end)
+            {
+                continue;
+            }
+            let bytes = key.len().saturating_add(value.value.len());
+            if entries.len() == limit || bytes > remaining {
+                return Ok((entries, true));
+            }
+            remaining -= bytes;
+            entries.push(ScanEntry {
+                key: Bytes::copy_from_slice(key),
+                value: value.clone(),
+            });
+        }
+        Ok((entries, false))
+    }
+
     async fn seek_reverse(
         &self,
         start_key: &[u8],

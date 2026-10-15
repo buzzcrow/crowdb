@@ -1671,7 +1671,7 @@ Crowdbtree::scan(Slice prefix, Slice start_after, Slice end_key, size_t limit, s
                  std::vector<scan_entry> *out, // NOLINT(readability-non-const-parameter) written to via push_back
                  bool *truncated, bool include_tombstones, ScanPackedBuf *out_packed,
                  size_t *out_count, // NOLINT(readability-non-const-parameter) written to via *out_count
-                 bool has_start_bound, bool start_inclusive) const
+                 bool has_start_bound, bool start_inclusive, bool strict_byte_budget) const
 {
     auto generation = generation_.enter();
     // Preserve scan()'s original `start_after` contract for direct C++
@@ -1825,7 +1825,8 @@ Crowdbtree::scan(Slice prefix, Slice start_after, Slice end_key, size_t limit, s
         }
         if (v.is_tombstone()) {
             size_t entry_bytes = key.size();
-            if (byte_budget != 0 && cur_count > 0 && accumulated_bytes + entry_bytes > byte_budget) {
+            if (byte_budget != 0 && (strict_byte_budget || cur_count > 0) &&
+                (accumulated_bytes > byte_budget || entry_bytes > byte_budget - accumulated_bytes)) {
                 if (truncated != nullptr) {
                     *truncated = true;
                 }
@@ -1845,19 +1846,23 @@ Crowdbtree::scan(Slice prefix, Slice start_after, Slice end_key, size_t limit, s
             accumulated_bytes += entry_bytes;
             return true;
         }
-        std::string val;
+        size_t key_size   = key.size();
+        size_t value_size = 0;
         if (!keys_only) {
-            val =
-                v.is_overflow() ? assemble_overflow_value(v.overflow_head(), v.overflow_len()) : v.value().to_string();
+            value_size = v.is_overflow() ? v.overflow_len() : v.value().size();
         }
-        size_t key_size    = key.size();
-        size_t value_size  = val.size();
         size_t entry_bytes = key_size + value_size;
-        if (byte_budget != 0 && cur_count > 0 && accumulated_bytes + entry_bytes > byte_budget) {
+        if (byte_budget != 0 && (strict_byte_budget || cur_count > 0) &&
+            (accumulated_bytes > byte_budget || entry_bytes > byte_budget - accumulated_bytes)) {
             if (truncated != nullptr) {
                 *truncated = true;
             }
             return false; // byte budget would be exceeded; keep what we have
+        }
+        std::string val;
+        if (!keys_only) {
+            val =
+                v.is_overflow() ? assemble_overflow_value(v.overflow_head(), v.overflow_len()) : v.value().to_string();
         }
         if (out_packed != nullptr) {
             out_packed->pack_u32(static_cast<uint32_t>(key_size));
@@ -2106,6 +2111,29 @@ Crowdbtree::scan(Slice prefix, Slice start_after, Slice end_key, size_t limit, s
                 lt.drain_winner();
                 if (lt_sources[cw].kind == MergeSource::kL0 && !lt_sources[cw].valid()) {
                     --n_valid_l0;
+                }
+            }
+        }
+
+        if (strict_byte_budget) {
+            if (opt_.key_range.at_or_after_end(winner_key) || (!end_key.empty() && winner_key.compare(end_key) >= 0) ||
+                (!prefix.empty() && !winner_key.starts_with(prefix) && winner_key.compare(prefix) > 0)) {
+                break;
+            }
+            if (opt_.key_range.before(winner_key) || !winner_key.starts_with(prefix) ||
+                (has_start_bound &&
+                 (start_inclusive ? winner_key.compare(start_after) < 0 : winner_key.compare(start_after) <= 0))) {
+                continue;
+            }
+            if (l0_winner != nullptr && l0_winner->cell.ownership() == buffer::mode::kExternal &&
+                (l0_winner->flags & kFlagTombstone) == 0) {
+                const size_t value_size = keys_only ? 0 : l0_winner->cell.size();
+                if (accumulated_bytes > byte_budget || winner_key.size() > byte_budget - accumulated_bytes ||
+                    value_size > byte_budget - accumulated_bytes - winner_key.size()) {
+                    if (truncated != nullptr) {
+                        *truncated = true;
+                    }
+                    break;
                 }
             }
         }

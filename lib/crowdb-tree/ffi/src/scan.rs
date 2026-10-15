@@ -191,6 +191,7 @@ impl Crowdbtree {
             keys_only,
             deadline_ms,
             include_tombstones,
+            false,
         )
     }
 
@@ -219,6 +220,41 @@ impl Crowdbtree {
             keys_only,
             deadline_ms,
             include_tombstones,
+            false,
+        )
+    }
+
+    /// Reads a forward window without materializing values beyond the byte budget.
+    /// A 50 ms native deadline also bounds traversal through non-emitted entries.
+    /// Empty output with `truncated` means no progress within the budget.
+    /// # Errors
+    /// Rejects a zero byte budget or propagates storage failures.
+    pub fn scan_from_bounded(
+        &self,
+        start: &[u8],
+        inclusive: bool,
+        end: &[u8],
+        limit: usize,
+        byte_budget: usize,
+    ) -> Result<(Vec<ScanEntry>, bool), CtError> {
+        let deadline_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .saturating_add(50);
+        let deadline_ms = u64::try_from(deadline_ms).unwrap_or(u64::MAX);
+        self.scan_bound(
+            b"",
+            start,
+            true,
+            inclusive,
+            end,
+            limit,
+            byte_budget,
+            false,
+            deadline_ms,
+            false,
+            true,
         )
     }
 
@@ -235,6 +271,7 @@ impl Crowdbtree {
         keys_only: bool,
         deadline_ms: u64,
         include_tombstones: bool,
+        strict_byte_budget: bool,
     ) -> Result<(Vec<ScanEntry>, bool), CtError> {
         let mut buf = sys::ct_buf {
             data: std::ptr::null_mut(),
@@ -242,8 +279,13 @@ impl Crowdbtree {
         };
         let mut count = 0u64;
         let mut truncated: c_int = 0;
+        let scan = if strict_byte_budget {
+            sys::ct_scan_strict
+        } else {
+            sys::ct_scan
+        };
         let status = unsafe {
-            sys::ct_scan(
+            scan(
                 self.as_ptr(),
                 prefix.as_ptr(),
                 prefix.len(),

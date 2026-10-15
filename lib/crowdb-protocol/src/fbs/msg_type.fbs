@@ -152,4 +152,5 @@ enum FBMsgType : int16 {
     EChunkKvMultiGetResponse = 3705,
     EChunkKvBatchMutationRequest = 3706,
     EChunkKvBatchMutationResponse = 3707,
+    EChunkKvBoundedScanRequest = 3708,
 }

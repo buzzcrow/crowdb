@@ -123,6 +123,7 @@ table FBChunkKvScanRequest {
     continuation_partition_low:uint64;
     continuation_owner_epoch:uint64;
     continuation_map_revision:uint64;
+    max_bytes:uint64;
 }
 
 table FBChunkKvGroupRequest {

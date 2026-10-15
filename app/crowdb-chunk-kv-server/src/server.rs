@@ -16,15 +16,15 @@ use crowdb_protocol::chunk_kv::{
     ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPartitionState, ChunkKvResponse,
     ChunkKvRpcErrorCode, Id128, KeyRange, MultiGetRequest, MultiGetResponse, OperationResult, OwnerHint,
     PointOperation, PointRequest, RequestRouting, RpcCompareCondition, RpcFailure, RpcJournalPosition,
-    RpcValue, ScanContinuation, ScanDirection, ScanRequest, SeekKind, SeekRequest,
+    RpcValue, ScanContinuation, ScanRequest, SeekKind, SeekRequest,
 };
 use crowdb_protocol::common::{ChunkKvExtra, ChunkKvPartitionLoad};
 use thiserror::Error;
 use tracing::info;
 
 use crate::{
-    validate_and_clip_scan, AuthorityError, ChunkKvRangeCatalogError, ClippedScan, ScanValidationError,
-    ServerMetrics, ServingAuthority,
+    validate_and_clip_scan, AuthorityError, ChunkKvRangeCatalogError, ScanValidationError, ServerMetrics,
+    ServingAuthority,
 };
 
 mod activation;
@@ -35,6 +35,7 @@ mod observation;
 mod prepared_transfer;
 mod reconcile;
 mod routing;
+mod scan;
 pub(crate) use observation::PageQuery;
 
 const DEFAULT_SCAN_RESPONSE_BYTES: usize = 17 * 1024 * 1024;
@@ -1234,7 +1235,7 @@ impl ChunkKvService {
     ) -> ChunkKvResponse {
         self.metrics.request();
         let response = self
-            .handle_scan_inner(request, now_wall_ms, now_monotonic_ms)
+            .handle_scan_inner(request, now_wall_ms, now_monotonic_ms, None)
             .await;
         self.metrics.response(&response);
         response
@@ -1245,6 +1246,7 @@ impl ChunkKvService {
         request: ScanRequest,
         now_wall_ms: u64,
         now_monotonic_ms: u64,
+        strict_budget: Option<usize>,
     ) -> ChunkKvResponse {
         let catalog = self.catalog.load_full();
         if !self.admitting.load(Ordering::Acquire) {
@@ -1321,124 +1323,17 @@ impl ChunkKvService {
         {
             return response;
         }
-        match self.execute_scan(&partition, &request, &clipped).await {
+        match self
+            .execute_scan(&partition, &request, &clipped, strict_budget)
+            .await
+        {
+            Ok(page) if strict_budget.is_some() && page.entries.is_empty() && page.truncated => failure(
+                catalog.generation,
+                ChunkKvRpcErrorCode::InvalidRequest,
+                "strict scan made no progress within byte or traversal budget".into(),
+            ),
             Ok(page) => scan_success(catalog.generation, &request, page),
             Err(error) => partition_failure(catalog.generation, &error, Some(entry)),
-        }
-    }
-
-    async fn execute_scan(
-        &self,
-        partition: &Partition,
-        request: &ScanRequest,
-        clipped: &ClippedScan,
-    ) -> Result<crowdb_chunk_kv::ScanPage, ChunkKvError> {
-        if let Some(ingress) = partition.split_ingress() {
-            return self.execute_split_scan(&ingress, request, clipped).await;
-        }
-        self.execute_partition_scan(
-            partition,
-            request,
-            clipped,
-            clipped.limit as usize,
-            self.max_scan_response_bytes,
-        )
-        .await
-    }
-
-    async fn execute_split_scan(
-        &self,
-        ingress: &crowdb_chunk_kv::SplitIngress,
-        request: &ScanRequest,
-        clipped: &ClippedScan,
-    ) -> Result<crowdb_chunk_kv::ScanPage, ChunkKvError> {
-        let writers = match clipped.direction {
-            ScanDirection::Forward => [ingress.retained_parent(), ingress.child()],
-            ScanDirection::Reverse => [ingress.child(), ingress.retained_parent()],
-        };
-        let mut entries = Vec::new();
-        let mut remaining_bytes = self.max_scan_response_bytes;
-        for (index, writer) in writers.iter().enumerate() {
-            let remaining = (clipped.limit as usize).saturating_sub(entries.len());
-            if remaining == 0 || remaining_bytes == 0 {
-                return Ok(crowdb_chunk_kv::ScanPage {
-                    entries,
-                    truncated: true,
-                });
-            }
-            let page = self
-                .execute_partition_scan(writer, request, clipped, remaining, remaining_bytes)
-                .await?;
-            remaining_bytes = remaining_bytes.saturating_sub(scan_page_bytes(&page));
-            entries.extend(page.entries);
-            if page.truncated {
-                return Ok(crowdb_chunk_kv::ScanPage {
-                    entries,
-                    truncated: true,
-                });
-            }
-            if entries.len() == clipped.limit as usize && index + 1 < writers.len() {
-                return Ok(crowdb_chunk_kv::ScanPage {
-                    entries,
-                    truncated: true,
-                });
-            }
-        }
-        Ok(crowdb_chunk_kv::ScanPage {
-            entries,
-            truncated: false,
-        })
-    }
-
-    async fn execute_partition_scan(
-        &self,
-        partition: &Partition,
-        request: &ScanRequest,
-        clipped: &ClippedScan,
-        limit: usize,
-        byte_budget: usize,
-    ) -> Result<crowdb_chunk_kv::ScanPage, ChunkKvError> {
-        let minimum = request.routing.min_journal_position.map(journal_position);
-        let writer_epoch = partition.snapshot().ownership_epoch;
-        match clipped.direction {
-            ScanDirection::Forward => {
-                if let Some(resume_after) = clipped.resume_after.as_deref() {
-                    partition
-                        .scan_forward_after(
-                            writer_epoch,
-                            resume_after,
-                            clipped.end.as_deref(),
-                            limit,
-                            byte_budget,
-                            minimum,
-                        )
-                        .await
-                } else {
-                    partition
-                        .scan_forward(
-                            writer_epoch,
-                            Some(&clipped.start),
-                            clipped.end.as_deref(),
-                            limit,
-                            byte_budget,
-                            minimum,
-                        )
-                        .await
-                }
-            }
-            ScanDirection::Reverse => {
-                let start_before = clipped.resume_after.as_deref().or(clipped.end.as_deref());
-                partition
-                    .scan_reverse(
-                        writer_epoch,
-                        start_before,
-                        Some(&clipped.start),
-                        limit,
-                        byte_budget,
-                        minimum,
-                    )
-                    .await
-            }
         }
     }
 
