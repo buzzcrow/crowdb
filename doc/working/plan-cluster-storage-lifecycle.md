@@ -724,3 +724,16 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   Web lifecycle regression, affected all-target/all-feature Clippy and fmt pass.
   The existing hardware browser flow now also triggers and verifies Online;
   rebuilt-image verification remains pending.
+- Visible Online acceptance passes on committed image `04a8176a`, config
+  `sha256:5ac47f36b018f9df725a76b09ce4e6b49846f97e113b5f6400e9fcf8a3c81413`,
+  artifact `run-6b634ac077c644228f40c871ecb510f5`. The actual dialog triggers
+  202 acceptance, observes completion, refreshes Up and returns focus to the
+  registered disk. Browser 13.4 s versus 10.1 s baseline; no timeout inflation,
+  interception or retries. The occupied native flow again reads retained bytes
+  after Online and preserves exact allocation metadata (client 34.68 s).
+- Next hardening: reserve disk IDs globally, including compatibility writers,
+  before Rack-fenced admission; do not release reservations on Remove. Validate
+  legacy locations without unbounded response retention. Unknown physical legacy
+  records must not bypass removal through direct deletion or parent cascades.
+  Existing compatibility add already rejects restoring a removed disk in the
+  same retained scope (`allow_initial=false`); preserve this guard.
