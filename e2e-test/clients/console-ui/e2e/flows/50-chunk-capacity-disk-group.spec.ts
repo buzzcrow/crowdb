@@ -146,9 +146,13 @@ test('KV binding recommends the least loaded group and initialization creates Gr
   await expect(init.getByRole('checkbox', { checked: true })).toHaveCount(3);
   await init.getByRole('button', { name: 'Initialize Cluster', exact: true }).click();
   await expect(init).toHaveCount(0, { timeout: 10_000 });
+  await page.getByTestId('domain-cluster').click();
+  await step('observe accepted initialization completion', async () => {
+    await expect(page.getByRole('region', { name: 'Cluster initialization' }).getByRole('status'))
+      .toHaveText('Initialization complete', { timeout: 10_000 });
+  });
   const group = await request.get('/api/stores/0/groups/1');
   expect(group.ok(), await group.text()).toBe(true);
-  await page.getByTestId('domain-cluster').click();
   await page.getByTestId('domain-capacity').click();
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
   const node = sidebar.getByTestId('tree-node-N-1').locator(':scope > [role="treeitem"]');

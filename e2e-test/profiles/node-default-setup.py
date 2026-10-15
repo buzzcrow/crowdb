@@ -41,6 +41,7 @@ def verify(docker, request, wait, names, origins):
         assert int(physical.split(":")[2]) == expected, physical
         assert int(physical.split(":")[3]) * 512 >= expected, physical
         files[node] = {"name": name, "operation": operation, "stat": physical}
+    (DATA / "default-node-setup-before-restart.json").write_text(json.dumps(files, indent=2))
     docker("restart", "--time", "10", names[0])
     wait(lambda: request(selected[0], "/api/node/status"), lambda status: status["phase"] == "active",
          "default setup monitor returns with the same binding")
@@ -58,7 +59,9 @@ def verify(docker, request, wait, names, origins):
         assert status["phase"] == "ready" and status["storage_mode"] == "automatic", status
         assert len(status["disks"]) == 1 and status["disks"][0]["phase"] == "ready", status
         path = file["operation"]["path"]
-        assert docker("exec", file["name"], "stat", "-c", "%d:%i:%s:%b", path) == file["stat"]
+        current_stat = docker("exec", file["name"], "stat", "-c", "%d:%i:%s:%b", path)
+        assert current_stat == file["stat"], {"node": node, "path": path,
+            "before": file["stat"], "after": current_stat}
         observed = wait(lambda name=file["name"]: json.loads(docker("exec", name, "cat", "/opt/crowdb/run/status/monitor.json")),
             lambda observed: len(observed["services"]) == 7 and all(service["healthy"] for service in observed["services"].values()),
             f"default node {node} all actual processes healthy")

@@ -4,6 +4,8 @@
 # Cluster Storage Lifecycle Plan
 
 Upstream: [R235](../backlog/R235-console-cluster-storage-lifecycle.md).
+Current user scope: complete R235 only; do not start R236, R237 or other backlog work.
+
 Goal: implement shared initialization and Group-0-authoritative OCI disk management
 in one Cluster workspace, preserving existing data and bootstrap exclusion.
 
@@ -1607,3 +1609,36 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   `run-c0a60bd1f6dc4684a1fc315421954cae`; kept journals/logs/resource evidence.
   Exact generated paths, regular type, UID/GID 10001 and sizes audited first.
   No unrelated media or Docker state pruned.
+
+- Full native inspection current-image run
+  `run-c08a7513edb145678bc44613324173c5`: 10/14 browser cases passed.
+  Capacity bounded fetch 1.6s and interrupted DiskDB Unknown 3.7s passed.
+  Zone first divergence: obsolete tree traversal did not open Storage before
+  finding DG; replaced with existing actual `diskBranch` navigation helper.
+  All pixel, block windows and Zone paging assertions remain unchanged.
+- Independent Access stop request exceeded its existing 10s request budget;
+  test tracked only confirmed stops, so it failed to restore this unknown stop
+  and caused two later S3 502 failures. Track attempted stops before dispatch
+  and instrument stop/restore steps. Keep stop timeout/assertions unchanged;
+  rerun ordered selection to distinguish service latency from cascade.
+- Ordered bridge with unchanged stat equality passed:
+  `run-95e12d3a36db4ef0956cb0a6eb7006f4`, 160.97s host time. Preparation
+  12.8s, other-UI resume 5.2s, independent cleanup 2.2s, authenticated update
+  11.3s, default submission 9.7s, completed middle-panel progress 1.2s.
+  Default preallocation and all actual processes survived monitor restart, with
+  original operation identities and exact file stat unchanged in this run.
+  Prior occasional stat difference remains unexplained; preserve the original
+  assertion and new diagnostic artifact, do not label that root cause fixed.
+- Binding baseline `run-1f549a772cbc46c184a4d6d9b8cdf0ce`, 3.4s: old flow
+  read Group 1 immediately when the asynchronous initialization dialog closed.
+  First divergence was no known Group-0 leader. Observe completed initialization
+  in the actual Cluster status with the existing 10s election bound before
+  checking Group 1; no mutation retry or broader request timeout.
+- Final-image canvas scope `run-3ffe7788ba5244f38a5c696d386ef48a` passed all
+  four cases: fit 2.3s, nested collapse/context 6.2s, pan/reset 1.3s, navigation
+  fit 2.6s. Binding scope `run-5c94db77b3db400c9aedad729ad1e731` passed 9.8s
+  vs prior 5.8s; observed asynchronous initialization boundary was 4.947s.
+  Native TypeScript check passed against that fixture's complete client snapshot.
+- Bridge diagnostics now retain before-restart file receipts/stats and print
+  both sides on a future stat assertion failure; original equality stays intact.
+  Focused admission fixture unit tests: 4 passed.
