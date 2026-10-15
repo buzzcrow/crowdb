@@ -1172,3 +1172,23 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   it. All 29 OCI-tool tests, full monitor tests, protocol/monitor all-target/
   all-feature Clippy and Rust fmt pass. Actual owned-loop launch/exclusion proof
   and supplied provisioning remain pending.
+- Added private PrepareSuppliedDisk/status controls and a four-worker durable
+  provisioning queue. Fresh media is fully read under an exact descriptor before
+  Init publication; a raw exclusive claim survives that publication. DiskIO
+  rechecks all usable bytes before Online. Interrupted scans restart at zero;
+  existing Init/Up receipts reconcile before any repeated monitor scan. Explicit
+  cleanup retires and drains these workers. No wipe or tail modification occurs.
+- Seven new monitor cases cover distant nonzero data, physical tails, interrupted
+  scans, replacement during reads, unlisted/changed lineage, real Group-0 Init
+  publication without DiskIO, and immutable failed-request replay. Full monitor
+  tests and DiskIO-client tests/rustdoc pass; protocol/monitor/DiskIO/Web all-target/
+  all-feature Clippy and fmt pass. The first integrated case exposed missing live
+  owner classification as a permanent topology error; fixed upstream to typed
+  unavailable while retaining duplicate/mismatched/malformed owner failures.
+  Initial compile/lint repairs corrected Eq derivation, existing client ownership,
+  fixture directory/dead-field usage and split private dispatch; no allow or
+  product timeout/retry/assertion relaxation was added.
+- Supplied node-setup dispatch, bulk candidate Join UI/API, actual DiskIO/raw-loop
+  completion/exclusion, and OCI restart/cleanup acceptance remain pending. Also
+  verify loop backing identity through the actual DiskIO descriptor at handoff,
+  so changed loop association cannot be accepted solely from launch-time evidence.

@@ -200,7 +200,7 @@ fn build(
     let mut endpoints = HashSet::new();
     for disk in disks {
         let owner = owners.get(&disk.disk_group_id).ok_or_else(|| {
-            DiskioError::TopologyInconsistent(format!(
+            DiskioError::TopologyUnavailable(format!(
                 "disk group {} has no live DiskIO owner",
                 disk.disk_group_id
             ))

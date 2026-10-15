@@ -4,7 +4,9 @@
 //! Node-local media observations, never disk membership authority.
 
 mod retained;
+mod supplied;
 pub use retained::{CheckRetainedDisk, RetainedDiskCondition, RetainedMedium};
+pub use supplied::{PrepareSuppliedDisk, SuppliedPreparation, SuppliedPreparationPhase};
 
 use serde::{Deserialize, Serialize};
 

@@ -420,6 +420,15 @@
   unknown virtual-device lineage, and loop offset/size slices. This deliberately
   favors verifiable non-overlap over broader device coverage; additional device
   kinds need a canonical lineage contract before admission is enabled.
+- Supplied-medium provisioning reads every usable byte before publishing Init,
+  retaining its exact descriptor (and exclusive raw-device claim) through that
+  publication. DiskIO then checks the usable bytes through its own descriptor
+  before Online. Unusable physical tails remain untouched. Interrupted partial
+  scans restart at byte zero; a failed blank check never wipes or publishes
+  membership and retains its original reservation for an explicit retry.
+  Already-Up replay validates the retained receipt without treating user data as
+  a new blank medium. Missing live DiskIO ownership is visible waiting; malformed
+  ownership, changed identity and nonzero usable bytes are failures.
 
 **Dependencies**:
 

@@ -76,6 +76,12 @@ pub enum NodeControl {
     PrepareDiskFile {
         request: storage::PrepareDiskFile,
     },
+    PrepareSuppliedDisk {
+        request: storage::PrepareSuppliedDisk,
+    },
+    SuppliedDiskPreparation {
+        operation_id: String,
+    },
     DiskFilePreparation {
         operation_id: String,
     },

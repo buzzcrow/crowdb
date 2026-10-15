@@ -12,6 +12,8 @@ mod runtime;
 mod single;
 pub(crate) mod startup;
 mod storage;
+#[cfg(feature = "test-util")]
+pub use storage::blank::verify_blank_medium_for_tests;
 pub use storage::discover_disks;
 #[cfg(feature = "test-util")]
 pub use storage::file_operations::file_operations_for_tests;
@@ -22,6 +24,8 @@ pub use storage::retained::check_retained_medium_for_tests;
 mod trust;
 pub use single::run_single_node;
 
+#[cfg(feature = "test-util")]
+pub use runtime::prepare_supplied_disk_for_tests;
 #[cfg(feature = "test-util")]
 pub use runtime::InitializationForTests;
 #[cfg(feature = "test-util")]

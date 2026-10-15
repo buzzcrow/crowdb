@@ -32,8 +32,11 @@ fn topology_requires_one_matching_authoritative_owner() {
         1
     );
 
-    for result in [
+    assert!(matches!(
         validate_topology_for_tests(Vec::new(), vec![disk(7)]),
+        Err(DiskioError::TopologyUnavailable(_))
+    ));
+    for result in [
         validate_topology_for_tests(
             vec![
                 instance("127.0.0.1:100", vec![7]),
