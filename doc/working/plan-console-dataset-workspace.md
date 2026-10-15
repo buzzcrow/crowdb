@@ -411,3 +411,19 @@ record image identity and source revision. An old image passing is not evidence.
 - `pixi run ts-lint` exposes a pre-existing task path error: it references removed
   `app/crowdb-web/ui/tsconfig.e2e.json`. Correct to the owned browser client config
   before the final gate; frontend types are separately checked by test-console-ui.
+
+### Dataset workbench implementation — 2026-10-16
+
+- U1 registers five owned native Dataset cases and initial 80/81/82 flow specs.
+  Actual browser acceptance is pending; the runner correctly rejected the first
+  attempt because release image provenance requires committed server/UI sources.
+- U3-U9 first implementation includes Dataset domain/module/query selection,
+  bounded forest/matrix/history, explicit preview, local mapping/MD5/parts,
+  composition and complete Split revision editing, receipts and lifecycle actions.
+  These are implementation checkpoints, not completed acceptance tasks.
+- Current component suite passes 257 tests including RFC MD5 vectors, binary ID
+  identity and ambiguous mapping rejection. TypeScript frontend passes. Native
+  tests and remaining failure-recovery/capability coverage will drive refinement.
+- Fixed the stale ts-lint path by staging the same client-owned layout and three
+  shared serializers/types as the native runner. Included DOM.Iterable in its
+  complete client config; no assertion or error is suppressed.

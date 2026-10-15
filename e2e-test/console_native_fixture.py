@@ -252,6 +252,12 @@ class NativeConsoleCluster(ShellBrowserCluster):
                     extra_env={"CROWDB_NATIVE_CHUNK_FIXTURE": json.dumps(chunks)})
                 return {"passed": True}
             cases = {
+                "console::browser_dataset::browse": "Dataset native: browse",
+                "console::browser_dataset::import": "Dataset native: import",
+                "console::browser_dataset::split_revisions": "Dataset native: split_revisions",
+                "console::browser_dataset::recovery": "Dataset native: recovery",
+                "console::browser_dataset::capabilities": "Dataset native: capabilities",
+
                 "console::native_browser::disk_inspector_and_selection":
                     "native diagnostics: disk Inspector and Capacity selection retain two actual groups",
                 "console::native_browser::disk_maintenance_and_status_badges":

@@ -177,7 +177,7 @@ rs-fmt-check = '''cargo metadata --format-version 1 --no-deps | jq -r '.workspac
 check-production-dashmap = "python3 tools/ci-checks/check-production-dashmap.py"
 check-version = "python3 tools/ci-checks/check-version.py"
 rs-lint = { cmd = "cargo clippy --all-targets -- -D warnings", depends-on = ["check-production-dashmap", "check-version"] }
-ts-lint = { cmd = "cd app/crowdb-web/ui && npx tsc --noEmit --project tsconfig.e2e.json", depends-on = ["install-ui-deps"] }
+ts-lint = { cmd = "python tools/pixi-tasks/check-console-types.py", depends-on = ["install-ui-deps"] }
 # Full build: C++ libs + release Rust binaries + frontend. Used by
 # run/bench/profile. Tests use build-cpp (C++ tests) or nothing (Rust tests).
 build = { cmd = "bash tools/pixi-tasks/build-release.sh", depends-on = ["build-cpp", "install-ui-deps"] }

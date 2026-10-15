@@ -222,6 +222,7 @@ export enum Domain {
   Chunk = 'Chunk',
   ChunkKV = 'Chunk-KV',
   Iceberg = 'Iceberg',
+  Dataset = 'Dataset',
   S3 = 'S3'
 }
 

@@ -64,6 +64,7 @@ import { CapacityView } from './views/CapacityView';
 import { ChunkBrowser } from './chunk/ChunkBrowser';
 import { ChunkKvView } from './chunk-kv/ChunkKvView';
 import { IcebergView } from './views/IcebergView';
+import { DatasetView } from './views/DatasetView';
 import { S3View } from './views/S3View';
 
 const Inspector = lazy(() => import('./shell/Inspector').then((m) => ({ default: m.Inspector })));
@@ -76,7 +77,7 @@ export interface CrowdbConsoleProps {
   /** Hide all mutating controls. */
   readonly?: boolean;
   /** Opt feature areas in/out. */
-  modules?: Partial<Record<'racks' | 'nodes' | 'stores' | 'groups' | 'replicas' | 'kv' | 'activity', boolean>>;
+  modules?: Partial<Record<'racks' | 'nodes' | 'stores' | 'groups' | 'replicas' | 'kv' | 'activity' | 'dataset', boolean>>;
   /** Initial domain (default Cluster). */
   initialDomain?: Domain;
   /** Container topology is immutable; native data credentials remain independent. */
@@ -152,7 +153,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
   const draftEditable = nodeAuthority?.phase === 'unbound_draft';
   const topologyReadonly = readonly || managed || (nodeManagement && !managementAuthorized && !draftEditable);
   const logicalReadonly = readonly || (nodeManagement && !managementAuthorized && !draftEditable);
-  const ownsSidebar = domain === Domain.Iceberg || domain === Domain.S3 || (domain === Domain.Chunk || domain === Domain.ChunkKV);
+  const ownsSidebar = domain === Domain.Dataset || domain === Domain.Iceberg || domain === Domain.S3 || (domain === Domain.Chunk || domain === Domain.ChunkKV);
   const physicalActive = domain === Domain.Cluster;
   const capacityActive = domain === Domain.Capacity;
   const { racks, nodes, services: managedServers, nodeStores, nodeHealthById, nodeDiskGroups: clusterDiskGroups, loadNodeDisks, loadGroupDisks, loading: physLoading, error: physError, refresh: refreshPhysical } = useClusterTree({
@@ -517,6 +518,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
   return (
     <div className="tw-min-h-screen tw-bg-bg tw-text-text crowdb-console">
       <Header
+        datasetEnabled={modules?.dataset !== false}
         clusterHealth={clusterHealth}
         onRefresh={handleRefresh}
         refreshing={refreshing}
@@ -656,6 +658,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
           onChunk={id => { setChunkRequest(previous => ({ id, nonce: (previous?.nonce ?? 0) + 1 })); setDomain(Domain.Chunk); }}
         /></div>
         <div hidden={domain !== Domain.Iceberg} className="tw-flex-1 tw-min-h-0"><IcebergView active={domain === Domain.Iceberg} readonly={readonly} /></div>
+        {modules?.dataset !== false && <div hidden={domain !== Domain.Dataset} className="tw-flex-1 tw-min-h-0"><DatasetView active={domain === Domain.Dataset} readonly={readonly} /></div>}
         <div hidden={domain !== Domain.S3} className="tw-flex-1 tw-min-h-0"><S3View active={domain === Domain.S3} readonly={readonly}
           onChunk={id => { setChunkRequest(previous => ({ id, nonce: (previous?.nonce ?? 0) + 1 })); setDomain(Domain.Chunk); }} /></div>
       </main>
@@ -890,7 +893,7 @@ export default function App(props: CrowdbConsoleProps = {}) {
   if (mode === 'bare-metal-pending') return <div role="alert" className="tw-p-6 tw-text-muted">Bare-metal deployment management is not available yet.</div>;
 
   return (
-    <DomainProvider initialDomain={props.initialDomain}>
+    <DomainProvider initialDomain={props.initialDomain === Domain.Dataset && props.modules?.dataset === false ? Domain.Cluster : props.initialDomain}>
       <SelectionProvider>
         <ToastProvider>
           <ActivityProvider>

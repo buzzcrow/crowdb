@@ -11,6 +11,7 @@ export type ClusterHealth = 'Healthy' | 'Degraded' | 'Failed' | 'Unknown';
 export type CenterPanelMode = 'topology' | 'kv' | 'capacity' | 'chunk';
 
 interface HeaderProps {
+  datasetEnabled?: boolean;
   clusterHealth: ClusterHealth;
   onRefresh: () => void;
   refreshing?: boolean;
@@ -35,6 +36,7 @@ const healthGlyph: Record<ClusterHealth, string> = {
 
 export function Header({
   clusterHealth,
+  datasetEnabled = true,
   onRefresh,
   refreshing,
   onShowTopology,
@@ -68,7 +70,7 @@ export function Header({
       </span>
 
       <nav aria-label="Console domains" className="console-domains tw-flex tw-items-center tw-self-stretch">
-        {domainTabs.map(({ domain: target, id, label, description, Icon }) => (
+        {domainTabs.filter(tab => datasetEnabled || tab.domain !== Domain.Dataset).map(({ domain: target, id, label, description, Icon }) => (
           <div key={id} className="tw-flex tw-items-center tw-self-stretch">
             <button data-testid={`domain-${id}`} onClick={() => { setDomain(target); if (target === Domain.Cluster || target === Domain.KV) onShowTopology?.(); if (target === Domain.Capacity) onShowCapacity?.(); }}
               className={cn('tw-flex tw-items-center tw-gap-1.5 tw-px-3 tw-py-1.5 tw-text-xs tw-transition-colors', domain === target ? 'tw-bg-accent/15 tw-text-accent' : 'tw-text-muted hover:tw-bg-bg')}

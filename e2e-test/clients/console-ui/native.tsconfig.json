@@ -21,6 +21,9 @@
     "e2e/flows/70-s3-object.spec.ts",
     "e2e/flows/91-navigation-state.spec.ts",
     "e2e/fixtures/realBackend.ts",
-    "e2e/fixtures/stepTimer.ts"
+    "e2e/fixtures/stepTimer.ts",
+    "e2e/flows/80-dataset-browse.spec.ts",
+    "e2e/flows/81-dataset-import.spec.ts",
+    "e2e/flows/82-dataset-splits.spec.ts"
   ]
 }

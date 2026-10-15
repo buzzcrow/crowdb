@@ -32,5 +32,6 @@ export const domainTabs: readonly DomainTab[] = [
   { domain: Domain.Chunk, id: 'chunk', label: 'Chunk', description: 'User-data chunks and placement', docs: 'https://crowdb.dev/docs/manual/console/ui/tab/chunk/', Icon: Package },
   { domain: Domain.ChunkKV, id: 'chunk-kv', label: 'ChunkKV', description: 'Chunk partition catalog and serving layout', docs: 'https://crowdb.dev/docs/manual/console/ui/tab/chunkkv/', Icon: Database },
   { domain: Domain.Iceberg, id: 'iceberg', label: 'Iceberg', description: 'Tables, snapshots, manifests, and files', docs: 'https://crowdb.dev/docs/manual/console/ui/tab/iceberg/', Icon: Layers },
+  { domain: Domain.Dataset, id: 'dataset', label: 'Dataset', description: 'Samples, Snapshots and Split revisions', docs: 'https://crowdb.dev/docs/manual/', Icon: Database },
   { domain: Domain.S3, id: 's3', label: 'S3', description: 'Buckets, objects, and multipart uploads', docs: 'https://crowdb.dev/docs/manual/console/ui/tab/s3/', Icon: Package },
 ];

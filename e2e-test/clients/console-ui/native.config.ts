@@ -8,6 +8,7 @@ export default defineConfig({
   metadata: { fileBackedSync: true },
   timeout: Number(process.env.CROWDB_WEB_E2E_TEST_TIMEOUT_MS || 180_000),
   testMatch: [
+    '**/80-dataset-browse.spec.ts', '**/81-dataset-import.spec.ts', '**/82-dataset-splits.spec.ts',
     '**/92-three-node-data.spec.ts',
     '**/22-kv-topology.spec.ts',
     '**/13-node-service-plans.spec.ts',

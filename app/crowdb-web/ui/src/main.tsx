@@ -38,6 +38,7 @@ function propsFromQuery(search: string): CrowdbConsoleProps {
   else if (d === "Chunk") props.initialDomain = Domain.Chunk;
   else if (d === "Chunk-KV") props.initialDomain = Domain.ChunkKV;
   else if (d === "Iceberg") props.initialDomain = Domain.Iceberg;
+  else if (d === "Dataset" && props.modules?.dataset !== false) props.initialDomain = Domain.Dataset;
   else if (d === "S3") props.initialDomain = Domain.S3;
 
   return props;
