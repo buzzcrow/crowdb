@@ -114,9 +114,18 @@ impl HardwareClient {
                     .extra
                     .and_then(|extra| extra.diskdb)
                     .ok_or_else(|| Error::Server("disk exclusion service location is unknown".into()))?;
+                let covers_group = match &location.diskio_scope {
+                    Some(scope) => {
+                        scope.version == 1
+                            && scope.rack_id == record.rack_id
+                            && scope.node_id == record.node_id
+                            && (scope.disk_group_id == 0 || scope.disk_group_id == record.disk_group_id)
+                    }
+                    None => location.owned_dg_ids.contains(&record.disk_group_id),
+                };
                 if location.rack_id != Some(record.rack_id)
                     || location.node_id != Some(record.node_id)
-                    || !location.owned_dg_ids.contains(&record.disk_group_id)
+                    || !covers_group
                 {
                     return Err(Error::Server(
                         "disk exclusion service location does not match".into(),

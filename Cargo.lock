@@ -1119,6 +1119,7 @@ version = "0.3.0"
 dependencies = [
  "arc-swap",
  "axum",
+ "bincode",
  "bytes",
  "crowdb-common",
  "crowdb-kv",

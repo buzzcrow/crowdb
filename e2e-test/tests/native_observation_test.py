@@ -7,7 +7,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock
 from allocation import LABEL
-from console_native_observation import services, process, BrowserObservations
+from console_native_observation import services, process, retained_marker, BrowserObservations
 from console_native_fixture import NativeConsoleCluster
 from console_native_storage import prepared_file_observation
 
@@ -68,6 +68,25 @@ class NativeObservationTest(unittest.TestCase):
             cluster.command.reset_mock()
             with self.assertRaisesRegex(ValueError, "invalid"):
                 process(cluster, 0, pid)
+            cluster.command.assert_not_called()
+
+    def test_retained_marker_requires_owned_file_and_aligned_range(self):
+        path = "/opt/crowdb/data/disks/managed-12345678-1234-4234-8234-123456789abc.img"
+        cluster = self.cluster()
+        inspect = cluster.command.return_value
+        cluster.command.side_effect = [inspect, "Z" * 4096]
+        self.assertEqual(retained_marker(cluster, 0, path, 4096), {"matches": True, "length": 4096})
+        cluster.command.assert_called_with("exec", "immutable", "dd", f"if={path}", "iflag=nofollow",
+                                           "bs=4096", "skip=1", "count=1", "status=none")
+        for invalid in ("/etc/passwd", "/opt/crowdb/data/disks/../secret", None):
+            cluster = self.cluster()
+            with self.assertRaisesRegex(ValueError, "generated file"):
+                retained_marker(cluster, 0, invalid, 0)
+            cluster.command.assert_not_called()
+        for invalid in (-1, 1, True, 1 << 63):
+            cluster = self.cluster()
+            with self.assertRaisesRegex(ValueError, "aligned bounded"):
+                retained_marker(cluster, 0, path, invalid)
             cluster.command.assert_not_called()
 
     def test_browser_dispatch_requires_its_recorded_case(self):

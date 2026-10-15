@@ -198,6 +198,18 @@ pub fn router(state: AppState) -> axum::Router {
             get(node::storage::backing::get),
         )
         .route(
+            "/api/nodes/:id/disk-groups/:dg_id/disks/:disk_id/lifecycle",
+            get(node::storage::lifecycle::status),
+        )
+        .route(
+            "/api/nodes/:id/disk-groups/:dg_id/disks/:disk_id/offline",
+            post(node::storage::lifecycle::offline),
+        )
+        .route(
+            "/api/nodes/:id/disk-groups/:dg_id/disks/:disk_id/removal",
+            post(node::storage::lifecycle::remove),
+        )
+        .route(
             "/api/nodes/:id/disk-files",
             get(node::storage::files::list).post(node::storage::files::create),
         )

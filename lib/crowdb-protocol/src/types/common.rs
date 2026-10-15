@@ -290,8 +290,20 @@ pub struct ChunkKvPartitionLoad {
     pub independently_recoverable: bool,
 }
 
+/// Immutable physical scope of one `DiskIO` process. Group zero denotes all
+/// disk groups on the configured node, matching the existing launcher option.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiskioHardwareScope {
+    pub version: u32,
+    pub rack_id: u64,
+    pub node_id: u64,
+    pub disk_group_id: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct DiskdbExtra {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diskio_scope: Option<DiskioHardwareScope>,
     #[serde(default)]
     pub rack_id: Option<u64>,
     #[serde(default)]

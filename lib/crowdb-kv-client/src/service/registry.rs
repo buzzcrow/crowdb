@@ -263,6 +263,7 @@ impl ServiceRegistryClient {
     ) -> Result<()> {
         let extra = ServiceExtra {
             diskdb: Some(DiskdbExtra {
+                diskio_scope: None,
                 rack_id: None,
                 node_id: None,
                 owned_dg_ids: owned_dg_ids.to_vec(),
@@ -313,6 +314,7 @@ impl ServiceRegistryClient {
     ) -> Result<()> {
         let extra = ServiceExtra {
             diskdb: Some(DiskdbExtra {
+                diskio_scope: None,
                 rack_id: None,
                 node_id: None,
                 owned_dg_ids: owned_dg_ids.to_vec(),
@@ -336,8 +338,37 @@ impl ServiceRegistryClient {
     ) -> Result<()> {
         let extra = ServiceExtra {
             diskdb: Some(DiskdbExtra {
+                diskio_scope: None,
                 rack_id: Some(rack_id),
                 node_id: Some(node_id),
+                owned_dg_ids: owned_dg_ids.to_vec(),
+                group_usages: group_usages.to_vec(),
+            }),
+            kv_server: None,
+            chunk_kv: None,
+        };
+        self.register("diskio", instance_id, rpc_endpoint, &extra).await
+    }
+}
+
+impl ServiceRegistryClient {
+    /// Register the immutable configured scope before a process opens media.
+    pub async fn heartbeat_diskio_scoped(
+        &self,
+        instance_id: InstanceId,
+        rpc_endpoint: &str,
+        scope: &crowdb_protocol::common::DiskioHardwareScope,
+        owned_dg_ids: &[u64],
+        group_usages: &[DiskGroupUsageSummary],
+    ) -> Result<()> {
+        if scope.version != 1 {
+            return Err(Error::Server("unsupported DiskIO scope version".into()));
+        }
+        let extra = ServiceExtra {
+            diskdb: Some(DiskdbExtra {
+                diskio_scope: Some(scope.clone()),
+                rack_id: Some(scope.rack_id),
+                node_id: Some(scope.node_id),
                 owned_dg_ids: owned_dg_ids.to_vec(),
                 group_usages: group_usages.to_vec(),
             }),

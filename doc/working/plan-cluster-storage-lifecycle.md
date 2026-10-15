@@ -513,3 +513,27 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   confirmation still awaits a committed-source image build. Before enabling
   Remove, persist DiskIO's configured node/group scope so a stale owned-group
   advertisement cannot hide a just-started participant.
+- DiskIO now persists an immutable versioned configured node/group scope before
+  opening media; removal observes every matching retained participant, including
+  expired heartbeats and empty owned-group advertisements. Concurrent first
+  registration and removal share the Rack fence. Five exclusion regressions,
+  full KV-client/rustdoc, affected Clippy and the full C++ gate pass; tree-lint
+  exits 0 with the existing warnings.
+- Atomic removal requires exact Offline revision and current owner-generation/
+  DiskIO drainage evidence. It retains backing, allocation records, owner and
+  binding, removes membership and commits a same-revision reconciliation receipt.
+  Three live removal regressions cover occupied metadata, replay, expired
+  participants and concurrent registration. Protocol schema tests pass.
+- Domain-monitor owner placement now also shares the Rack fence, closing a
+  direct owner-CAS bypass. Existing placement assertions plus revision checks
+  pass. Scoped HTTP lifecycle/Offline/Remove routes expose unmet conditions and
+  decimal-string revisions; readonly rejects before mutation. Four web cases
+  pass, including stale canonical revisions and receipt replay. Web/KV/server
+  all-target/all-feature Clippy and formatting pass.
+- Added post-browser native acceptance that allocates through the real DiskDB,
+  fsyncs and reads a marker through DiskIO, then verifies Offline/Remove preserves
+  underlying bytes and committed allocation metadata, rejects old access and
+  permits allocation on another disk. The owned read-only marker observer has
+  nine passing Python tests; E2E all-target Clippy passes. Actual container run
+  awaits rebuilding this committed source. Rejoin/Online and UI actions remain
+  unfinished; these backend gates do not complete A11-A13.

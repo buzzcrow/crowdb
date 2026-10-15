@@ -3,8 +3,10 @@
 
 //! Authenticated monitor storage observations, independent of disk registration.
 
+mod authority;
 pub(crate) mod backing;
 pub(crate) mod files;
+pub(crate) mod lifecycle;
 
 use axum::{
     extract::{Path, State},

@@ -49,6 +49,7 @@ pub fn validate_topology_for_tests(
         last_heartbeat_ms: 1,
         extra: Some(ServiceExtra {
             diskdb: Some(DiskdbExtra {
+                diskio_scope: None,
                 rack_id: instance.rack_id,
                 node_id: instance.node_id,
                 owned_dg_ids: instance.disk_group_ids,

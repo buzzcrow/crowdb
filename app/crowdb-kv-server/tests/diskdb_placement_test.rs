@@ -9,7 +9,7 @@ use crowdb_kv_server::group0_control_plane::Group0ControlPlane;
 use crowdb_kv_server::store_registry::KvStoreRegistry;
 use crowdb_protocol::chunk_kv::{DomainFailurePolicy, DomainMonitorDescriptor};
 use crowdb_protocol::common::{BindMapValue, InstanceValue, OwnerMapValue};
-use crowdb_protocol::key::{BindMapKey, DiskGroupKey, InstanceKey, OwnerMapKey, TextKey};
+use crowdb_protocol::key::{BindMapKey, DiskGroupKey, InstanceKey, OwnerMapKey, RackKey, TextKey};
 use std::sync::Arc;
 fn descriptor() -> DomainMonitorDescriptor {
     DomainMonitorDescriptor {
@@ -85,36 +85,16 @@ async fn instance(control: &Group0ControlPlane, id: u64, heartbeat: u64) {
 async fn assigns_balances_and_replaces_dead_owners_without_changing_bindings() {
     let (_, store) = registry_with_group_zero(PxLocalReplicaRole::Leader);
     let control = Group0ControlPlane::acquire(&store).await.unwrap();
+    let rack_path = RackKey { rack_id: 1 }.to_path();
+    put_json(
+        &control,
+        rack_path.clone(),
+        &crowdb_protocol::common::RackValue::default(),
+    )
+    .await;
+    let original_rack_revision = control.get(rack_path.as_bytes()).await.unwrap().revision;
     instance(&control, 1, u64::MAX).await;
-    for dg in 1..=5 {
-        put_json(
-            &control,
-            DiskGroupKey {
-                rack_id: 1,
-                node_id: 1,
-                disk_group_id: dg,
-            }
-            .to_path(),
-            &serde_json::json!({"status": 0, "disk_ids": [], "name": ""}),
-        )
-        .await;
-        if dg != 5 {
-            put_json(
-                &control,
-                BindMapKey {
-                    rack_id: 1,
-                    node_id: 1,
-                    disk_group_id: dg,
-                }
-                .to_path(),
-                &BindMapValue {
-                    store_id: 7,
-                    group_id: 9,
-                },
-            )
-            .await;
-        }
-    }
+    prepare_groups(&control).await;
     let driver = DiskdbPlacementMonitorDriver;
     let policy = descriptor();
     driver.tick(&control, &policy).await.unwrap();
@@ -126,6 +106,12 @@ async fn assigns_balances_and_replaces_dead_owners_without_changing_bindings() {
         }
         .to_path()
     };
+    let rack_revision = control.get(rack_path.as_bytes()).await.unwrap().revision;
+    assert!(rack_revision > original_rack_revision);
+    assert_eq!(
+        rack_revision,
+        control.get(owner_key(4).as_bytes()).await.unwrap().revision
+    );
     for dg in 1..=4 {
         let owner: OwnerMapValue = get_json(&control, &owner_key(dg)).await;
         assert_eq!(owner.instance_id, 1);
@@ -172,4 +158,36 @@ async fn assigns_balances_and_replaces_dead_owners_without_changing_bindings() {
         .unwrap()
         .value
         .is_none());
+}
+
+async fn prepare_groups(control: &Group0ControlPlane) {
+    for dg in 1..=5 {
+        put_json(
+            control,
+            DiskGroupKey {
+                rack_id: 1,
+                node_id: 1,
+                disk_group_id: dg,
+            }
+            .to_path(),
+            &serde_json::json!({"status": 0, "disk_ids": [], "name": ""}),
+        )
+        .await;
+        if dg != 5 {
+            put_json(
+                control,
+                BindMapKey {
+                    rack_id: 1,
+                    node_id: 1,
+                    disk_group_id: dg,
+                }
+                .to_path(),
+                &BindMapValue {
+                    store_id: 7,
+                    group_id: 9,
+                },
+            )
+            .await;
+        }
+    }
 }

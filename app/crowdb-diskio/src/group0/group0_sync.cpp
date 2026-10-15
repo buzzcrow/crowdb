@@ -287,8 +287,9 @@ bool Group0Sync::heartbeat()
     const std::string dg_ids_json = folly::toJson(groups);
 
     auto ctx = std::make_shared<FfiResult>();
-    crowdb_svc_heartbeat_diskio_at(svc_client_, cfg_.instance_id, cfg_.rpc_endpoint.c_str(), cfg_.rack_id, cfg_.node_id,
-                                   dg_ids_json.c_str(), "[]", complete_ffi_result, retain_ffi_result(ctx));
+    crowdb_svc_heartbeat_diskio_scoped(svc_client_, cfg_.instance_id, cfg_.rpc_endpoint.c_str(), cfg_.rack_id,
+                                       cfg_.node_id, cfg_.dg_id, dg_ids_json.c_str(), "[]", complete_ffi_result,
+                                       retain_ffi_result(ctx));
     if (!wait_for_ctx(*ctx)) {
         std::fprintf(stderr, "warning: group-0 heartbeat timed out\n");
         return false;

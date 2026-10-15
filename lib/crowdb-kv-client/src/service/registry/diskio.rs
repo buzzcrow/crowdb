@@ -15,6 +15,10 @@ fn location(value: &InstanceValue) -> Option<(u64, u64)> {
     Some((extra.rack_id?, extra.node_id?))
 }
 
+fn scope(value: &InstanceValue) -> Option<&crowdb_protocol::common::DiskioHardwareScope> {
+    value.extra.as_ref()?.diskdb.as_ref()?.diskio_scope.as_ref()
+}
+
 impl ServiceRegistryClient {
     async fn instance_record(&self, path: &str) -> Result<Option<(InstanceValue, u64)>> {
         match self
@@ -39,16 +43,28 @@ impl ServiceRegistryClient {
         for _ in 0..10 {
             let existing = self.instance_record(path).await?;
             let previous = existing.as_ref().and_then(|(value, _)| location(value));
+            let previous_scope = existing.as_ref().and_then(|(value, _)| scope(value));
+            let current_scope = scope(value);
+            if let Some(scope) = current_scope {
+                if scope.version != 1 || location(value) != Some((scope.rack_id, scope.node_id)) {
+                    return Err(Error::Server("invalid DiskIO configured scope".into()));
+                }
+            }
+            if previous_scope.is_some() && previous_scope != current_scope {
+                return Err(Error::Server(
+                    "DiskIO configured scope cannot be replaced or cleared".into(),
+                ));
+            }
             let current = location(value);
             if previous.is_some() && previous != current {
                 return Err(Error::Server(
                     "DiskIO physical identity cannot be replaced or cleared".into(),
                 ));
             }
-            let revision = existing.map_or(0, |(_, revision)| revision);
+            let revision = existing.as_ref().map_or(0, |(_, revision)| *revision);
             // Pin the initial physical identity with instance CAS before sharing
             // the Rack fence. A simultaneous different-node claimant must lose.
-            if previous.is_none() {
+            if previous.is_none() || (previous_scope.is_none() && current_scope.is_some()) {
                 match self.kv.put_cas(0, 0, path.as_bytes(), payload, revision).await {
                     Ok(_) if current.is_none() => return Ok(()),
                     Ok(_) | Err(Error::CasFailed { .. } | Error::CasBusy | Error::OutcomeUnknown) => continue,

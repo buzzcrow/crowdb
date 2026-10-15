@@ -137,3 +137,78 @@ async fn competing_initial_locations_cannot_share_one_diskio_identity() {
     );
     assert_ne!(a.is_ok(), b.is_ok(), "a={a:?}, b={b:?}");
 }
+
+#[tokio::test]
+async fn immutable_configured_scope_covers_disks_before_usage_advertisements_catch_up() {
+    use crowdb_protocol::common::DiskioHardwareScope;
+    let fixture = TestStorage::start().await;
+    let hw = &fixture.hardware;
+    let svc = ServiceRegistryClient::from_shared(hw.shared_kv());
+    svc.heartbeat_diskio_at(7, "a:7200", 1, 2, &[], &[])
+        .await
+        .unwrap();
+    let scope = DiskioHardwareScope {
+        version: 1,
+        rack_id: 1,
+        node_id: 2,
+        disk_group_id: 0,
+    };
+    svc.heartbeat_diskio_scoped(7, "a:7200", &scope, &[], &[])
+        .await
+        .unwrap();
+    assert!(svc
+        .heartbeat_diskio_at(7, "a:7200", 1, 2, &[], &[])
+        .await
+        .is_err());
+    let mut other = scope.clone();
+    other.disk_group_id = 4;
+    assert!(svc
+        .heartbeat_diskio_scoped(7, "a:7200", &other, &[], &[])
+        .await
+        .is_err());
+    svc.heartbeat_diskio_scoped(8, "b:7200", &other, &[3], &[])
+        .await
+        .unwrap();
+    let disk = record(5);
+    hw.admit_disk_storage(&disk).await.unwrap();
+    hw.set_disk_status(1, 2, 3, &disk.disk_id, HwStatus::Offline)
+        .await
+        .unwrap();
+    let mut proof = DiskExclusionRecord {
+        version: 1,
+        rack_id: 1,
+        node_id: 2,
+        disk_group_id: 3,
+        disk_id: disk.disk_id,
+        disk_revision: revision(hw, &key(&disk).to_path()).await,
+        reporter: DiskExclusionReporter::Diskio,
+        instance_id: 7,
+        owner_revision: None,
+    };
+    hw.acknowledge_disk_exclusion(&proof).await.unwrap();
+    proof.instance_id = 8;
+    assert!(
+        hw.acknowledge_disk_exclusion(&proof).await.is_err(),
+        "a mutable advertisement cannot expand configured scope"
+    );
+}
+
+#[tokio::test]
+async fn simultaneous_first_scope_selection_pins_one_configuration() {
+    use crowdb_protocol::common::DiskioHardwareScope;
+    let fixture = TestStorage::start().await;
+    let svc = ServiceRegistryClient::from_shared(fixture.hardware.shared_kv());
+    let first = DiskioHardwareScope {
+        version: 1,
+        rack_id: 1,
+        node_id: 2,
+        disk_group_id: 0,
+    };
+    let mut second = first.clone();
+    second.disk_group_id = 3;
+    let (a, b) = tokio::join!(
+        svc.heartbeat_diskio_scoped(7, "a:7200", &first, &[], &[]),
+        svc.heartbeat_diskio_scoped(7, "b:7200", &second, &[], &[])
+    );
+    assert_ne!(a.is_ok(), b.is_ok(), "a={a:?}, b={b:?}");
+}

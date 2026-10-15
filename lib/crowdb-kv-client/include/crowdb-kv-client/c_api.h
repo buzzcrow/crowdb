@@ -84,6 +84,12 @@ void crowdb_svc_heartbeat_diskio_at(crowdb_svc_client_t client, uint64_t instanc
                                     uint64_t rack_id, uint64_t node_id, const char *owned_dg_ids_json,
                                     const char *group_usages_json, crowdb_kv_on_complete callback, void *user_data);
 
+// Scoped registration: configured_group=0 means every group on this node.
+void crowdb_svc_heartbeat_diskio_scoped(crowdb_svc_client_t client, uint64_t instance_id, const char *rpc_endpoint,
+                                        uint64_t rack_id, uint64_t node_id, uint64_t configured_group,
+                                        const char *owned_dg_ids_json, const char *group_usages_json,
+                                        crowdb_kv_on_complete callback, void *user_data);
+
 // ── Runtime lifecycle ─────────────────────────────────────────────
 
 // Shut down the FFI tokio runtime. Call before process exit.

@@ -102,3 +102,31 @@ fn exclusion_evidence_retains_exact_identity_and_rejects_invalid_generations() {
     evidence.disk_revision = 0;
     assert!(evidence.validate().is_err());
 }
+
+#[test]
+fn removal_receipt_preserves_backing_geometry_and_fixes_operation_identity() {
+    use crowdb_protocol::{disk_storage::DiskRemovalRecord, key::DiskKey};
+    let mut retained = record();
+    let key = DiskKey {
+        rack_id: retained.rack_id,
+        node_id: retained.node_id,
+        disk_group_id: retained.disk_group_id,
+        disk_id: retained.disk_id,
+    };
+    assert!(DiskRemovalRecord::new(retained.clone(), 7).validate().is_err());
+    retained.removed = true;
+    let receipt = DiskRemovalRecord::new(retained.clone(), 7);
+    receipt.validate().unwrap();
+    assert_eq!(receipt.disk, retained);
+    assert!(DiskRemovalRecord::key_for(&key).starts_with("/hw/disk-removal/1/2/3/"));
+    assert_eq!(
+        serde_json::from_slice::<DiskRemovalRecord>(&serde_json::to_vec(&receipt).unwrap()).unwrap(),
+        receipt
+    );
+    let mut invalid = receipt.clone();
+    invalid.operation_id = "changed".into();
+    assert!(invalid.validate().is_err());
+    invalid = receipt;
+    invalid.offline_revision = 0;
+    assert!(invalid.validate().is_err());
+}

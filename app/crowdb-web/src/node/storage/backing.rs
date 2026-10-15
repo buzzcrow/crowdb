@@ -7,14 +7,11 @@ use axum::{
     extract::{Path, State},
     Json,
 };
-use crowdb_protocol::{key::DiskKey, mgmt::node::storage::DiskBackend, DiskIdExt};
+use crowdb_protocol::mgmt::node::storage::DiskBackend;
 use serde::Serialize;
 
 use super::Failure;
-use crate::{
-    error::{err_400, err_404, err_409, err_502},
-    state::AppState,
-};
+use crate::{error::err_502, state::AppState};
 
 #[derive(Serialize)]
 pub(crate) struct DiskBackingInfo {
@@ -39,31 +36,8 @@ pub(crate) async fn get(
     State(state): State<AppState>,
     Path((node_id, group, disk)): Path<(u64, u64, String)>,
 ) -> Result<Json<Option<DiskBackingInfo>>, Failure> {
-    if state.node_monitor_url.is_none() {
-        return Err(err_404("Node monitor is not configured"));
-    }
-    let disk_id = crowdb_protocol::common::DiskId::from_display_string(&disk).map_err(err_400)?;
-    let hardware = crate::mgmt::build_hardware_client(&state)
-        .await
-        .ok_or_else(|| err_409("Backing properties are waiting for Group 0"))?;
-    let nodes = hardware
-        .list_nodes()
-        .await
-        .map_err(|error| err_502(error.to_string()))?;
-    let mut location = nodes.iter().filter(|(_, id, _)| *id == node_id);
-    let rack_id = location
-        .next()
-        .map(|(rack, _, _)| *rack)
-        .ok_or_else(|| err_404("Node not found"))?;
-    if location.next().is_some() {
-        return Err(err_409("Node identity has multiple hardware locations"));
-    }
-    let key = DiskKey {
-        rack_id,
-        node_id,
-        disk_group_id: group,
-        disk_id,
-    };
+    let (hardware, key) = super::authority::disk(&state, node_id, group, &disk).await?;
+    let rack_id = key.rack_id;
     let Some(record) = hardware
         .disk_storage(&key)
         .await

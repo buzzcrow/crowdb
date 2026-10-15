@@ -3,6 +3,7 @@
 """Read ordinary monitor/process observations only in the recorded node namespace."""
 
 import json
+import re
 from allocation import LABEL
 
 
@@ -41,6 +42,18 @@ def process(cluster, node, pid):
     state = cluster.command("exec", identity, "sh", "-c",
         f"if test -f /proc/{pid}/stat; then awk '{{print $3}}' /proc/{pid}/stat; else echo dead; fi").strip()
     return {"alive": state not in ("dead", "Z", "X")}
+
+
+def retained_marker(cluster, node, path, offset):
+    if (not isinstance(path, str) or not re.fullmatch(
+            r"/opt/crowdb/data/disks/managed-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.img", path)):
+        raise ValueError("retained observation requires an owned generated file path")
+    if type(offset) is not int or not 0 <= offset <= (1 << 63) - 4096 or offset % 4096:
+        raise ValueError("retained observation requires an aligned bounded offset")
+    identity = owned(cluster, node)
+    data = cluster.command("exec", identity, "dd", f"if={path}", "iflag=nofollow",
+                           "bs=4096", f"skip={offset // 4096}", "count=1", "status=none")
+    return {"matches": data == "Z" * 4096, "length": len(data.encode())}
 
 
 class BrowserObservations:

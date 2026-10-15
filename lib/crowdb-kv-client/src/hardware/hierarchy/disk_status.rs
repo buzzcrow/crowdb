@@ -125,3 +125,62 @@ impl HardwareClient {
         Ok(())
     }
 }
+
+impl HardwareClient {
+    /// Close one retained disk at the revision the operator inspected.
+    ///
+    /// # Errors
+    /// Rejects stale active membership, removed disks and changed geometry.
+    /// Unknown writes reconcile the same Offline state without reopening it.
+    pub async fn offline_disk_storage(&self, key: &DiskKey, expected_revision: u64) -> Result<u64> {
+        if expected_revision == 0 {
+            return Err(Error::Server("disk revision is required".into()));
+        }
+        let rack_path = RackKey { rack_id: key.rack_id }.to_path();
+        for _ in 0..10 {
+            let (rack, revision) = mutation::read(&self.kv, &rack_path)
+                .await?
+                .ok_or_else(|| Error::Server("disk exclusion rack is absent".into()))?;
+            let receipt = self
+                .disk_storage(key)
+                .await?
+                .filter(|record| !record.removed)
+                .ok_or_else(|| Error::Server("disk exclusion requires registered retained backing".into()))?;
+            let (mut disk, current_revision) = self
+                .get_disk_with_revision(key)
+                .await?
+                .ok_or_else(|| Error::Server("disk membership is absent".into()))?;
+            let mut geometry = disk.clone();
+            geometry.status = receipt.geometry.status;
+            if geometry != receipt.geometry {
+                return Err(Error::Server("disk backing geometry changed".into()));
+            }
+            if disk.status == HwStatus::Offline as i32 {
+                return Ok(current_revision);
+            }
+            if current_revision != expected_revision {
+                return Err(Error::Server(
+                    "disk revision changed; refresh before marking Offline".into(),
+                ));
+            }
+            disk.status = HwStatus::Offline as i32;
+            let operations = [
+                mutation::put(&key.to_path(), &disk)?,
+                crate::BatchOp::Put {
+                    key: rack_path.as_bytes().to_vec().into(),
+                    value: rack,
+                },
+            ];
+            match self
+                .kv
+                .batch_write_cas(0, 0, &operations, rack_path.as_bytes(), revision)
+                .await
+            {
+                Ok(result) => return Ok(result.revision),
+                Err(Error::CasFailed { .. } | Error::CasBusy | Error::OutcomeUnknown) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Err(Error::OutcomeUnknown)
+    }
+}

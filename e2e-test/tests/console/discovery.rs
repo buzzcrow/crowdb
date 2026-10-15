@@ -250,6 +250,7 @@ async fn expired_instance_filtered() {
             diskdb: Some(DiskdbExtra {
                 rack_id: None,
                 node_id: None,
+                diskio_scope: None,
                 owned_dg_ids: vec![1],
                 group_usages: vec![],
             }),

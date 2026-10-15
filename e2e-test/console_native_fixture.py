@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 from allocation import LABEL, create_network, node_data, start_node
 from fixture import Cluster, HTTP, wait
 from console_shell_fixture import ShellBrowserCluster
-from console_native_observation import services, process, BrowserObservations
+from console_native_observation import services, process, retained_marker, BrowserObservations
 from control import Control
 from console_native_browser import INSPECTION_CASES
 from console_native_storage import unbound_file_rejected, verify_file_preparation, verify_file_admission
@@ -244,6 +244,8 @@ class NativeConsoleCluster(ShellBrowserCluster):
             self.browser_timeout = 180
             self.browser(name, config="native.config.ts")
             return {"passed": True}
+        if body.get("action") == "observe-retained-marker":
+            return retained_marker(self, body.get("node"), body.get("path"), body.get("offset"))
         if body.get("action") == "observe-native-services":
             return services(self, body.get("node"))
         if body.get("action") == "observe-native-process":

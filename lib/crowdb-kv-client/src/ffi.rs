@@ -18,6 +18,7 @@
 #![allow(unsafe_code)]
 
 mod disk_exclusion;
+mod diskio_scope;
 #[cfg(feature = "test-util")]
 pub use disk_exclusion::parse_diskio_exclusions_for_tests;
 

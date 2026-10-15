@@ -4,7 +4,9 @@
 //! Versioned Group-0 backing identity, separate from the existing disk geometry.
 
 mod exclusion;
+mod removal;
 pub use exclusion::{DiskExclusionRecord, DiskExclusionReporter};
+pub use removal::DiskRemovalRecord;
 
 use serde::{Deserialize, Serialize};
 

@@ -23,13 +23,16 @@ pub struct TestStorage {
 impl TestStorage {
     pub async fn start() -> Self {
         let store = Arc::new(PxKvStore::new(0, "127.0.0.1:0".parse().unwrap()));
-        store.add_group(PxGroup::new(
-            0,
-            PxLocalReplica::new(1, PxLocalReplicaRole::Leader),
-        ));
+        for group in [0, 1] {
+            store.add_group(PxGroup::new(
+                group,
+                PxLocalReplica::new(1, PxLocalReplicaRole::Leader),
+            ));
+        }
         store.start().await.unwrap();
         let client = CrowdbKvClient::new(ClientConfig::new(vec![]));
         client.seed_leader(0, 0, store.listen_addr().unwrap().to_string());
+        client.seed_leader(0, 1, store.listen_addr().unwrap().to_string());
         let hardware = HardwareClient::new(client);
         hardware
             .add_rack(
