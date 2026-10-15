@@ -21,6 +21,17 @@ fn disk_id(operation: &BatchOp) -> Option<DiskId> {
 }
 
 impl DdbKvClient {
+    pub(crate) fn retained_disk_gate(
+        &self,
+        id: DiskId,
+    ) -> Option<std::sync::Arc<crate::model::disk::DiskWriteGate>> {
+        self.disks
+            .as_ref()?
+            .iter()
+            .find(|disk| disk.disk_id == id)
+            .map(|disk| disk.write_gate.clone())
+    }
+
     pub(super) fn admit_disk_writes(&self, operations: &[BatchOp]) -> Result<Vec<DiskWritePermit<'_>>> {
         let Some(disks) = &self.disks else {
             return Ok(Vec::new());

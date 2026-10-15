@@ -29,7 +29,7 @@ pub struct DdbDisk {
     pub node_id: NodeId,
     pub rack_id: RackId,
     pub disk_value: DiskValue,
-    pub write_gate: DiskWriteGate,
+    pub write_gate: Arc<DiskWriteGate>,
     /// All zones on this disk, indexed by `zone_index`.
     pub zones: ArcSwap<Vec<Arc<DdbZone>>>,
     /// Round-robin cursor for zone rotation scan.
@@ -64,7 +64,7 @@ impl DdbDisk {
             node_id,
             rack_id,
             disk_value,
-            write_gate: DiskWriteGate::default(),
+            write_gate: Arc::new(DiskWriteGate::default()),
             zones: ArcSwap::from_pointee(Vec::new()),
             pos_v_zone: AtomicU64::new(0),
             active_zone_context: ArcSwap::from_pointee(Vec::new()),

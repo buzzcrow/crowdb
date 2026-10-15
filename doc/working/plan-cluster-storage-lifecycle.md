@@ -16,7 +16,7 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
 - [x] **Disk observations**: expose bounded monitor inventory, reject duplicate
   resources and mismatched launcher identities. Inventory tests and Clippy pass;
   real raw-device/containerd acceptance remains in integration verification.
-- [~] **Effective admission**: add Group-0-gated registration, default file
+- [ ] **Effective admission**: add Group-0-gated registration, default file
   creation and geometry validation; merge observations with authority records.
   Files: `container/crowdb-monitor/src/node`, `bootstrap/disk_files.rs`,
   `lib/crowdb-protocol/src/mgmt.rs`, `lib/crowdb-console-shared/src/ops/hardware`,
@@ -26,7 +26,7 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   three-/one-voter policy. Persist policy and reuse accepted manifests.
   Files: monitor node runtime, console bootstrap/admission, web managed routes.
   Acceptance A06-A10.
-- [ ] **Offline/remove semantics**: preserve removed disk metadata and allocation
+- [~] **Offline/remove semantics**: preserve removed disk metadata and allocation
   identity, prove status application before remove, gate cascades, support explicit
   rejoin without blank initialization. Files: hardware ops, protocol hardware
   records, DiskDB/DiskIO status observation, web routes. Acceptance A11-A13.
@@ -496,3 +496,7 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   no premature evidence, completes it, then checks exact disk/owner revisions.
   All five initialization/exclusion tests, all-target Clippy and fmt pass.
   DiskIO still needs its corresponding publisher before removal can be enabled.
+- Startup reconstruction now retains the original disk's shared write gate.
+  A captured Up snapshot cannot create a fresh writable disk after Offline;
+  already excluded disks skip baseline construction. Startup/recovery/exclusion
+  regressions (15 cases), all-target DiskDB Clippy and fmt pass.

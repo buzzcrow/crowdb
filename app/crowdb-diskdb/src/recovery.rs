@@ -98,6 +98,21 @@ pub struct ZoneLoader {
 }
 
 impl ZoneLoader {
+    fn recovery_disk(&self, group: &DdbDiskGroup, id: DiskId, value: &DiskValue) -> DdbDisk {
+        let mut disk = DdbDisk::new(
+            id,
+            group.disk_group_id,
+            group.node_id,
+            group.rack_id,
+            value.clone(),
+        );
+        if let Some(gate) = self.kv.retained_disk_gate(id) {
+            disk.write_gate = gate;
+        }
+        disk.metrics = Some(Arc::new(DiskMetrics::new()));
+        disk
+    }
+
     #[must_use]
     pub fn for_group(&self, group: &DdbDiskGroup) -> Self {
         Self::new(Arc::new(self.kv.for_group(group)), self.load_concurrency)
@@ -139,9 +154,12 @@ impl ZoneLoader {
         let mut max_freed_ts_in_dg: u64 = 0;
 
         for (disk_id, disk_value) in disks {
-            let mut disk = DdbDisk::new(*disk_id, dg_id, node_id, rack_id, disk_value.clone());
-            // Attach per-disk hot-path counters (R74 §3).
-            disk.metrics = Some(Arc::new(DiskMetrics::new()));
+            let disk = self.recovery_disk(&dg, *disk_id, disk_value);
+            if disk_value.status == HwStatus::Offline as i32 || disk.write_gate.closed() {
+                disk.exclude();
+                dg.add_disk(Arc::new(disk));
+                continue;
+            }
             let disk = Arc::new(disk);
 
             let zone_count = disk_value.zone_count;
