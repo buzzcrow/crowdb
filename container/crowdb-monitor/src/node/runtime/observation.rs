@@ -21,5 +21,7 @@ pub(super) fn processes(
     }
     // This authenticated read observes only local children. It needs no live
     // Group-0 grant and remains available while that authority is unavailable.
-    Ok(json!({"cluster_id":cluster,"node_id":node,"processes":manager.live_pids()?}))
+    Ok(
+        json!({"cluster_id":cluster,"node_id":node,"processes":manager.live_pids()?,"service_failures":super::services::failures(root)?}),
+    )
 }

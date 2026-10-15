@@ -81,7 +81,17 @@ async fn advance(profile: &DeploymentProfile, state: &mut AcceptedSetup) -> Resu
     // file preparation may wait for DiskIO while DiskIO is still starting.
     let disk_ready = storage::advance(profile, state, &binding, &kv).await;
     let services_ready = services::advance(profile, state, &binding, &kv).await;
-    if disk_ready? && services_ready? {
+    let services_ready = services_ready?;
+    if state
+        .status
+        .services
+        .iter()
+        .any(|step| step.phase == crowdb_protocol::mgmt::node::setup::SetupStepPhase::Failed)
+    {
+        state.status.phase = NodeSetupPhase::Failed;
+        return Err("service startup exhausted its restart budget; inspect service logs and use explicit service controls".into());
+    }
+    if disk_ready? && services_ready {
         state.status.phase = NodeSetupPhase::Ready;
     }
     Ok(())

@@ -385,3 +385,6 @@ fn disk_inventory(root: &std::path::Path) -> Result<Value> {
     let inputs: Vec<crowdb_protocol::mgmt::node::storage::DiskInput> = serde_json::from_str(&inputs)?;
     Ok(serde_json::to_value(super::discover_disks(root, &inputs)?)?)
 }
+
+#[cfg(feature = "test-util")]
+pub use services::NodeServiceForTests;

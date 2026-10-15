@@ -43,3 +43,6 @@ pub(crate) fn write_single_binding(
 ) -> std::io::Result<()> {
     durable::write(&root.join("node-binding.json"), binding)
 }
+
+#[cfg(feature = "test-util")]
+pub use runtime::NodeServiceForTests;

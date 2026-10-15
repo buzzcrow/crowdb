@@ -14,7 +14,7 @@ test('Docker default setup: submit storage and services then close the initiatin
   await rack.getByRole('button', { name: 'Create Rack', exact: true }).click();
   await expect(rack).toHaveCount(0);
   const candidates = page.getByRole('region', { name: 'Candidate nodes' });
-  for (const [index, id] of identities.entries()) {
+  for (const id of identities) {
     await candidates.getByTestId(`candidate-${id}`).getByRole('button', { name: 'Move to cluster', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Move candidate to cluster' });
     await dialog.getByRole('button', { name: 'Verify and review', exact: true }).click();
@@ -22,7 +22,6 @@ test('Docker default setup: submit storage and services then close the initiatin
     await expect(dialog.getByLabel('Initial SSH password', { exact: true })).toHaveValue('');
     for (const checkbox of await dialog.getByRole('region', { name: 'Node service choices' }).getByRole('checkbox').all()) await expect(checkbox).toBeChecked();
     await expect(dialog.getByLabel('Managed file capacity (GiB)', { exact: true })).toHaveValue('16');
-    if (index > 0) await dialog.getByLabel('Managed file capacity (GiB)', { exact: true }).fill('1');
     await dialog.getByRole('button', { name: 'Join and start', exact: true }).click();
     await expect(dialog).toHaveCount(0, { timeout: 10_000 });
   }

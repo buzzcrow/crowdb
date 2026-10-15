@@ -3,15 +3,12 @@
 
 #[path = "../src/node/durable.rs"]
 mod durable;
-#[path = "../src/node/runtime/observation.rs"]
-mod observation;
+use crowdb_monitor::NodeServiceForTests;
 
 use crowdb_monitor::LogProfile;
 pub use crowdb_monitor::ProcessManager;
 use crowdb_protocol::mgmt::{node::NodeBinding, SystemBootstrapIdentity};
 use std::path::PathBuf;
-
-type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 struct TestRoot(PathBuf);
 impl TestRoot {
@@ -37,6 +34,8 @@ impl TestRoot {
             },
         )
         .unwrap();
+        let saved: NodeBinding = durable::read(&self.0.join("node-binding.json")).unwrap().unwrap();
+        assert_eq!(saved.node_id, 7);
     }
 }
 impl Drop for TestRoot {
@@ -61,7 +60,8 @@ async fn bound_namespace_is_observable_without_live_group0() {
     )
     .await
     .unwrap();
-    let observed = observation::processes(&root.0, &mut manager, "owned-cluster", 7).unwrap();
+    let observed =
+        NodeServiceForTests::processes_for_tests(&root.0, &mut manager, "owned-cluster", 7).unwrap();
     assert_eq!(observed["node_id"], 7);
     assert_eq!(observed["cluster_id"], "owned-cluster");
     assert_eq!(observed["processes"], serde_json::json!({}));
@@ -80,15 +80,15 @@ async fn unbound_foreign_and_invalid_binding_reject_process_observation() {
     )
     .await
     .unwrap();
-    assert!(observation::processes(&root.0, &mut manager, "owned-cluster", 7).is_err());
+    assert!(NodeServiceForTests::processes_for_tests(&root.0, &mut manager, "owned-cluster", 7).is_err());
     root.bind();
     for (cluster, node) in [("foreign-cluster", 7), ("owned-cluster", 8)] {
-        assert!(observation::processes(&root.0, &mut manager, cluster, node).is_err());
+        assert!(NodeServiceForTests::processes_for_tests(&root.0, &mut manager, cluster, node).is_err());
     }
     let binding = root.0.join("node-binding.json");
     std::fs::remove_file(&binding).unwrap();
     let foreign = root.0.join("foreign.json");
     durable::write(&foreign, &serde_json::json!({})).unwrap();
     std::os::unix::fs::symlink(&foreign, &binding).unwrap();
-    assert!(observation::processes(&root.0, &mut manager, "owned-cluster", 7).is_err());
+    assert!(NodeServiceForTests::processes_for_tests(&root.0, &mut manager, "owned-cluster", 7).is_err());
 }

@@ -33,7 +33,7 @@ def verify(docker, request, wait, names, origins):
                     f"default node {node} original file admission")
         operation = page["items"][0]
         assert not operation["request"]["sparse"]
-        expected = 16 * 1024 ** 3 if node == 1 else 1024 ** 3
+        expected = 16 * 1024 ** 3
         assert operation["request"]["capacity_bytes"] == expected, operation
         assert operation["request"]["reserve_bytes"] == 1024 ** 3, operation
         name = names[identities.index(record["discovery_id"])]

@@ -160,6 +160,19 @@ async fn observe(
             .probe_service(&service, &BTreeMap::new())
             .await
             .is_ok();
+    let failure = &processes["service_failures"][&intent.service_id];
+    if !healthy && failure["operation_id"].as_str() == Some(&intent.operation_id) {
+        step.phase = if failure["exhausted"].as_bool() == Some(true) {
+            SetupStepPhase::Failed
+        } else {
+            SetupStepPhase::Accepted
+        };
+        step.detail = Some(journal::bounded(
+            failure["error"].as_str().unwrap_or("Service startup failed"),
+            128,
+        ));
+        return Ok(false);
+    }
     step.phase = if healthy {
         SetupStepPhase::Ready
     } else {

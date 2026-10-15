@@ -988,3 +988,24 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   UI checks caught unsupported assertion syntax and missing Rack fixture fields;
   corrected test setup/types while retaining the assertions. Updated-image
   bridge acceptance, including browser closure and real monitor restart, is next.
+
+- Combined-admission image `910438e1`, config
+  `sha256:b1757fe8e5c6fa6a153eb1f55fdd0f46233651c403adb78620fced716323bb7a`,
+  preserved all existing bridge checks in `run-67102d4c51194d40a788c93cf5635433`:
+  prepare/init 12.9 s (baseline 7.6 s), cross-UI recovery 4.9 s, independent
+  cleanup 2.6 s, authenticated node update 11.4 s. The new default submission
+  closes the browser in 9.8 s; all disks register and DiskDB/DiskIO/ChunkDB ready.
+  Chunk-KV later fails checkpoint because two fixture disks were reduced to 1 GiB;
+  actual tree logs report DiskDB No space, not a UI observation delay. Retain all
+  three 16-GiB product defaults in this acceptance. No timeout change or retry.
+- The same failure exposed managed recovery counting only successful launches,
+  allowing failed services to restart indefinitely and setup to remain Accepted.
+  Persist a five-attempt per-operation budget and bounded last error, expose it
+  in authenticated process observations and mark exhausted setup services Failed.
+  Explicit later service commands remain authoritative and start a fresh budget.
+  Eight setup cases, two process-observation cases, the full monitor suite,
+  all-target/all-feature Clippy, repository Rust fmt and Python compilation pass.
+  The new regression covers durable failed attempts, exhausted progress, unchanged
+  state for an unconfirmed command and a later confirmed Stop. Initial checks
+  caught module visibility/import and fixture log-directory errors; corrected
+  without relaxing assertions. Updated OCI acceptance remains pending.

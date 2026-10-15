@@ -371,6 +371,13 @@
   silently accept other KV port overrides. Optional service choices retain
   existing deployments; unselecting KV is not a request to stop the admitted KV.
 
+- Managed-service startup has a durable five-attempt budget for consecutive failed startup/readiness attempts per service
+  operation. Successful readiness clears that failure budget. Monitor restart does not reset it.
+  Exhaustion is a visible Failed setup step with the process/readiness error;
+  a later explicit service command owns a new operation and can recover after
+  the operator fixes prerequisites. Replaying node setup alone cannot erase the
+  service failure budget or override a later operator command.
+
 **Dependencies**:
 
 - Reuse current durable Group-0 bootstrap exclusion, immutable intent, monitor

@@ -341,3 +341,135 @@ async fn observe_file_requests(
     }
     requests
 }
+
+#[tokio::test]
+async fn service_failure_budget_survives_restart_and_yields_to_a_new_operator_command() {
+    use crowdb_monitor::NodeServiceForTests;
+    use crowdb_protocol::mgmt::node::{NodeServiceAction, NodeServiceIntent};
+    let directory = crowdb_test_harness::test_dirs::tempdir_in_test_data("node-service-budget");
+    let root = directory.path();
+    let mut request = request(root);
+    request.choices.storage = SetupStorage::Diskless;
+    for service in &mut request.choices.services {
+        service.enabled = service.kind == crowdb_protocol::mgmt::node::setup::SetupServiceKind::Chunkdb;
+    }
+    authorize(root, &request);
+    NodeSetupForTests::default()
+        .accept_for_tests(root, request.clone())
+        .unwrap();
+    let authority = node_setup::TestAuthority::start(root, &request).await;
+    let mut profile = profile(root);
+    profile.paths.log_root = root.join("log");
+    std::fs::create_dir_all(&profile.paths.log_root).unwrap();
+    profile.paths.run_root = root.join("run");
+    profile
+        .services
+        .iter_mut()
+        .find(|service| service.id == "chunkdb")
+        .unwrap()
+        .program = root.join("absent-binary");
+    let mut intent = NodeServiceIntent {
+        cluster_id: authority.binding.bootstrap.cluster_id.clone(),
+        operation_id: uuid::Uuid::new_v4().to_string(),
+        node_id: 2,
+        service_id: "chunkdb-2".into(),
+        kind: "chunkdb".into(),
+        action: NodeServiceAction::Start,
+        configuration: "[server]\nhttp_listen_addr = '127.0.0.1:12345'\n".into(),
+        environment: std::collections::BTreeMap::default(),
+    };
+    let key = b"/deployment/services/2/chunkdb-2";
+    authority
+        .kv
+        .put(0, 0, key, &serde_json::to_vec(&intent).unwrap(), None)
+        .await
+        .unwrap();
+    for attempt in 1..=5 {
+        // Recreating the manager cannot reset the persisted operation budget.
+        let mut worker = NodeServiceForTests::new_for_tests(profile.clone()).await.unwrap();
+        assert!(worker.pending_for_tests(&intent).unwrap());
+        let error = worker.execute_for_tests(intent.clone()).await.unwrap_err();
+        assert!(error.to_string().contains("No such file"), "{error}");
+        let failures = worker.failures_for_tests().unwrap();
+        assert_eq!(failures["chunkdb-2"]["attempts"], attempt);
+        assert_eq!(failures["chunkdb-2"]["exhausted"], attempt == 5);
+    }
+    observe_exhausted_setup(root, &profile).await;
+    let mut worker = NodeServiceForTests::new_for_tests(profile).await.unwrap();
+    assert!(!worker.pending_for_tests(&intent).unwrap());
+    assert!(worker
+        .execute_for_tests(intent.clone())
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("restart budget"));
+    let saved = std::fs::read(root.join("services/chunkdb-2/execution.json")).unwrap();
+    intent.operation_id = uuid::Uuid::new_v4().to_string();
+    intent.action = NodeServiceAction::Stop;
+    // A different operation needs its own confirmed authority before effects.
+    assert!(worker.execute_for_tests(intent.clone()).await.is_err());
+    assert_eq!(
+        std::fs::read(root.join("services/chunkdb-2/execution.json")).unwrap(),
+        saved
+    );
+    authority
+        .kv
+        .put(0, 0, key, &serde_json::to_vec(&intent).unwrap(), None)
+        .await
+        .unwrap();
+    assert!(worker.pending_for_tests(&intent).unwrap());
+    worker.execute_for_tests(intent.clone()).await.unwrap();
+    assert!(!worker.pending_for_tests(&intent).unwrap());
+    assert!(worker
+        .failures_for_tests()
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .is_empty());
+}
+
+async fn observe_exhausted_setup(root: &Path, profile: &DeploymentProfile) {
+    let failures = crowdb_monitor::NodeServiceForTests::new_for_tests(profile.clone())
+        .await
+        .unwrap()
+        .failures_for_tests()
+        .unwrap();
+    std::fs::create_dir_all(&profile.paths.run_root).unwrap();
+    let listener = tokio::net::UnixListener::bind(profile.paths.run_root.join("node-control.sock")).unwrap();
+    let observe = tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut bytes = Vec::new();
+        stream.read_to_end(&mut bytes).await.unwrap();
+        assert!(matches!(
+            serde_json::from_slice::<crowdb_protocol::mgmt::node::NodeControl>(&bytes).unwrap(),
+            crowdb_protocol::mgmt::node::NodeControl::Processes { .. }
+        ));
+        stream
+            .write_all(
+                &serde_json::to_vec(
+                    &serde_json::json!({"ok":true,"value":{"processes":{},"service_failures":failures}}),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+    });
+    NodeSetupForTests::advance_for_tests(profile.clone())
+        .await
+        .unwrap();
+    observe.await.unwrap();
+    let status = NodeSetupForTests::status_for_tests(root).unwrap().unwrap();
+    assert_eq!(status.phase, NodeSetupPhase::Failed);
+    let service = status
+        .services
+        .iter()
+        .find(|step| step.kind == crowdb_protocol::mgmt::node::setup::SetupServiceKind::Chunkdb)
+        .unwrap();
+    assert_eq!(
+        service.phase,
+        crowdb_protocol::mgmt::node::setup::SetupStepPhase::Failed
+    );
+    assert!(service.detail.as_ref().unwrap().contains("No such file"));
+    assert!(status.error.unwrap().contains("restart budget"));
+}
