@@ -13,16 +13,29 @@ export const buttonClass = 'tw-rounded tw-border tw-border-border tw-px-3 tw-py-
 export function DocsHelp({ href, title, auth }: { href: string; title: string; auth?: string }) {
   const [credentials, setCredentials] = useState<string | null>(null);
   const [error, setError] = useState('');
+  const [copyStatus, setCopyStatus] = useState('');
+  const endpointForBrowser = (value: string | null) => {
+    if (!value) return '';
+    try {
+      const url = new URL(value);
+      const browserHost = window.location.hostname;
+      if (browserHost && ['localhost', '127.0.0.1', '[::1]', '::1'].includes(url.hostname)) url.hostname = browserHost;
+      return url.toString().replace(/\/$/, '');
+    } catch {
+      return value;
+    }
+  };
   const reveal = async () => {
     setError('');
+    setCopyStatus('');
     try {
       const response = await fetch(`${getApiBase()}/access/credentials`, { cache: 'no-store' });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const value = await response.json() as { s3: Record<string, string | null>; iceberg: Record<string, string | null> };
       const lines = [
-        `ICEBERG_URI=${value.iceberg.uri ?? ''}`,
+        `ICEBERG_URI=${endpointForBrowser(value.iceberg.uri)}`,
         `ICEBERG_TOKEN=${value.iceberg.token ?? ''}`,
-        `AWS_ENDPOINT_URL=${value.s3.endpoint ?? ''}`,
+        `AWS_ENDPOINT_URL=${endpointForBrowser(value.s3.endpoint)}`,
         `AWS_DEFAULT_REGION=${value.s3.region ?? ''}`,
         `AWS_ACCESS_KEY_ID=${value.s3.access_key_id ?? ''}`,
         `AWS_SECRET_ACCESS_KEY=${value.s3.secret_access_key ?? ''}`,
@@ -32,13 +45,29 @@ export function DocsHelp({ href, title, auth }: { href: string; title: string; a
       setError(`Credentials are unavailable: ${String(reason)}`);
     }
   };
-  const copy = () => { if (credentials) void navigator.clipboard?.writeText(credentials); };
+  const copy = async () => {
+    if (!credentials) return;
+    setCopyStatus('');
+    try {
+      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(credentials);
+      else {
+        const input = document.createElement('textarea');
+        input.value = credentials; input.setAttribute('readonly', ''); input.style.position = 'fixed'; input.style.opacity = '0';
+        document.body.appendChild(input); input.select();
+        if (!document.execCommand('copy')) throw new Error('Clipboard is unavailable');
+        input.remove();
+      }
+      setCopyStatus('Copied environment variables');
+    } catch (reason) {
+      setCopyStatus(`Copy failed: ${String(reason)}`);
+    }
+  };
   return <section aria-label={`${title} help`} className="tw-rounded tw-border tw-border-border tw-bg-panel tw-p-3 tw-space-y-2">
     <div className="tw-flex tw-items-center tw-justify-between tw-gap-2">
       <div className="tw-text-sm tw-font-semibold">{title}</div>
       <a className="tw-inline-flex tw-items-center tw-gap-1 tw-text-xs tw-text-accent tw-underline" href={href} target="_blank" rel="noreferrer">Help <ExternalLink className="tw-h-3 tw-w-3" /></a>
     </div>
-    {auth && <details className="tw-text-xs tw-text-muted"><summary className="tw-cursor-pointer">Connection credentials</summary><p className="tw-mt-2">{auth}</p><div className="tw-mt-2 tw-flex tw-gap-2"><button type="button" className={buttonClass} onClick={() => void reveal()}>Show local credentials</button>{credentials && <button type="button" className={buttonClass} onClick={copy}>Copy env</button>}</div>{error && <p role="alert" className="tw-mt-2 tw-text-failed">{error}</p>}{credentials && <pre className="tw-mt-2 tw-max-h-40 tw-overflow-auto tw-whitespace-pre-wrap tw-break-all tw-rounded tw-bg-bg tw-p-2 tw-text-[10px]">{credentials}</pre>}</details>}
+    {auth && <details className="tw-text-xs tw-text-muted"><summary className="tw-cursor-pointer">Connection credentials</summary><p className="tw-mt-2">{auth}</p><div className="tw-mt-2 tw-flex tw-gap-2"><button type="button" className={buttonClass} onClick={() => void reveal()}>Show local credentials</button>{credentials && <button type="button" className={buttonClass} onClick={() => void copy()}>Copy env</button>}</div>{error && <p role="alert" className="tw-mt-2 tw-text-failed">{error}</p>}{copyStatus && <p role="status" className="tw-mt-2">{copyStatus}</p>}{credentials && <pre className="tw-mt-2 tw-max-h-40 tw-overflow-auto tw-whitespace-pre-wrap tw-break-all tw-rounded tw-bg-bg tw-p-2 tw-text-[10px]">{credentials}</pre>}</details>}
   </section>;
 }
 export function Workbench({ sidebar, children, detail, showActivity = true, resizableSidebar = true, help }: { resizableSidebar?: boolean; showActivity?: boolean; sidebar: ReactNode; children: ReactNode; detail?: ReactNode; help?: ReactNode }) {
