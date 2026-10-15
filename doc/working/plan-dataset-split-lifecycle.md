@@ -95,7 +95,7 @@ and Rust/Python SDK contract before Console integration.
   codec,key}.rs`, `tests/split_record_test.rs`. Exit: exact UTF-8 byte bounds,
   no-revision versus empty-set revision, malformed/unsupported/trailing records,
   page ordering/count/scope/content integrity and recursion bounds pass.
-- [~] **A3b Define operation state records**: add versioned current
+- [x] **A3b Define operation state records**: add versioned current
   reference, draft revision, candidate, membership-page binding, operation status,
   commit attempt and successful receipt. Suggested symbols: `SplitRevisionId`,
   `SplitRevisionRecord`, `SplitHead`, `CompositionRecord`, `CommitAttempt`.
@@ -107,7 +107,7 @@ and Rust/Python SDK contract before Console integration.
 
 ## Phase B — bounded authority metadata and composition inputs
 
-- [ ] **B1 Add bounded metadata store operations**: adapt ordered range scans and
+- [~] **B1 Add bounded metadata store operations**: adapt ordered range scans and
   key/value limits at `DatasetStore`; implement in production and test stores.
   Define `scan_page(prefix, after, item_budget, byte_budget)` or equivalent with
   explicit partial/end and cancellation/deadline. Check underlying transport
@@ -397,3 +397,16 @@ failure; record actual failures and add Blocked only when that workflow requires
   HTTP v1/v2 (5 tests), SDK workspace (15 tests), root and SDK clippy pass.
   Attempt/receipt storage and helping CAS are still C4, not implemented merely
   because record types exist. Composition/Split draft state remains A3b work.
+- A3b record verification: `CompositionRecord`, `SplitDraftRecord` and
+  `DraftProgress` now bind input revision, exact source Snapshot/Split revision,
+  evaluation position/binding, prepared target and published attempt. Edits
+  invalidate previews and reject frozen content or stale expected revisions.
+  Full Dataset crate tests pass (59 integration tests). These are validated
+  records/state primitives; durable edit CAS, lease renewal and publication
+  recovery remain C1-C4/D2-D5.
+- B1 investigation: `MultiScanRequest.max_bytes` is applied after receiving and
+  decoding a partition response. Current `ScanRequest` wire has an item limit
+  but no caller byte budget; `execute_scan` uses a fixed server budget. Production
+  bounded metadata reads must enforce the cap before materializing/transporting
+  legacy values. Extend the protocol/storage boundary and its tests before using
+  a post-decode slice as a supposed read bound. No B1 implementation is claimed.

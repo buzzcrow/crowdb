@@ -3,8 +3,9 @@
 
 //! Immutable named Split sets, scoped to one data Snapshot.
 
-mod codec;
-mod definition;
+pub(crate) mod codec;
+pub(crate) mod definition;
+mod draft;
 pub mod key;
 mod record;
 
@@ -12,6 +13,7 @@ pub use definition::{
     CoveragePolicy, MembershipOrigin, OverlapPolicy, PartitionWeight, SplitDefinition, SplitName,
     SplitPolicy, SplitSource,
 };
+pub use draft::{DraftSplit, SplitDraftRecord};
 pub use record::{
     MembershipPage, MembershipPageBinding, NamedSplitRecord, SplitHead, SplitRevisionRecord,
     MAX_MEMBERSHIP_PAGE_ITEMS, MAX_SPLIT_RECORD_BYTES,

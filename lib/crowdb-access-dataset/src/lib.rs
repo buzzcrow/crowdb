@@ -8,6 +8,7 @@ mod adapter;
 mod authority;
 mod chunk_store;
 mod client;
+pub mod composition;
 mod cursor;
 mod delivery;
 mod error;

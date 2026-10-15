@@ -38,7 +38,7 @@ pub enum CommitTarget {
 }
 
 impl CommitTarget {
-    fn validate(self) -> Result<(), AuthorityError> {
+    pub(crate) fn validate(self) -> Result<(), AuthorityError> {
         let snapshot = match self {
             Self::Snapshot { snapshot } => snapshot,
             Self::SplitRevision { snapshot, revision } => {

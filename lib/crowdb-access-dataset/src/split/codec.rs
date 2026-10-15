@@ -4,13 +4,13 @@
 use super::{SplitError, MAX_SPLIT_RECORD_BYTES};
 use serde::{de::DeserializeOwned, Serialize};
 
-pub(super) fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, SplitError> {
+pub(crate) fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, SplitError> {
     let mut writer = BoundedWriter(Vec::new());
     serde_json::to_writer(&mut writer, value).map_err(|_| SplitError::Limit)?;
     Ok(writer.0)
 }
 
-pub(super) fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, SplitError> {
+pub(crate) fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, SplitError> {
     if bytes.len() as u64 > MAX_SPLIT_RECORD_BYTES {
         return Err(SplitError::Limit);
     }

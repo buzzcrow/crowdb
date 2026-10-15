@@ -91,7 +91,7 @@ pub enum SplitDefinition {
 }
 
 impl SplitDefinition {
-    pub(super) fn validate(&self) -> Result<(), SplitError> {
+    pub(crate) fn validate(&self) -> Result<(), SplitError> {
         match self {
             Self::Selection(selection) => validate_selection(selection, 0),
             Self::WeightedPartition { weights, index, .. } => {
@@ -114,7 +114,7 @@ impl SplitDefinition {
     }
 }
 
-fn validate_selection(selection: &Selection, depth: usize) -> Result<(), SplitError> {
+pub(crate) fn validate_selection(selection: &Selection, depth: usize) -> Result<(), SplitError> {
     if depth > 32 {
         return Err(SplitError::Limit);
     }
