@@ -34,12 +34,23 @@ test('Dataset native: import', async ({ page, request }) => {
   await page.getByLabel('Split 1 name').fill('train');
   await page.getByRole('button', { name: 'Review mapping' }).click();
   await step('mutation response', async () => {
-    const completed = page.waitForResponse(response => response.request().method() === 'POST' && /\/uploads\/[0-9a-f]{32}\/complete$/.test(response.url()));
-    await page.getByRole('button', { name: 'Save draft and upload local data' }).click();
-    const response = await completed; expect(response.ok(), await response.text()).toBe(true);
-    const upload = await response.json(); expect(upload.md5).toBe(createHash('md5').update(payload).digest('hex'));
-    expect(upload.parts).toHaveLength(2); expect(upload.length).toBe(String(payload.length));
-    await expect(page.getByRole('button', { name: 'Evaluate complete membership' })).toBeEnabled();
+    const responses: import('@playwright/test').Response[] = [];
+    const observe = (response: import('@playwright/test').Response) => { if (response.url().includes(`${datasetPath(name)}/`) && response.request().method() !== 'GET') responses.push(response); };
+    page.on('response', observe);
+    try {
+      await page.getByRole('button', { name: 'Save draft and upload local data' }).click();
+      // Assert each actual transfer boundary, rather than timing the entire
+      // digest/create/two-part/complete/edit pipeline as a single response.
+      for (const suffix of ['/compositions', '/uploads', '/parts/0', '/parts/1', '/complete']) {
+        await expect.poll(() => responses.some(response => response.url().endsWith(suffix)), { intervals: [100], timeout: 3000 }).toBe(true);
+        const response = responses.find(response => response.url().endsWith(suffix))!;
+        expect(response.ok(), await response.text()).toBe(true);
+      }
+      const upload = await responses.find(response => response.url().endsWith('/complete'))!.json();
+      expect(upload.md5).toBe(createHash('md5').update(payload).digest('hex'));
+      expect(upload.parts).toHaveLength(2); expect(upload.length).toBe(String(payload.length));
+      await expect(page.getByRole('button', { name: 'Evaluate complete membership' })).toBeEnabled();
+    } finally { page.off('response', observe); }
   });
   await step('lifecycle poll', () => publishDraft(page, 'Snapshot'));
   const head = await call(request, `${datasetPath(name)}/head`);
@@ -63,7 +74,12 @@ test('Dataset native: import', async ({ page, request }) => {
   const child = (await call(request, `${datasetPath(name)}/head`)).latest;
   expect((await call(request, `${datasetPath(name)}/snapshots/${child}/summary`)).parent).toBe(head.latest);
   const values = await call(request, `${datasetPath(name)}/snapshots/${child}/matrix`, 'POST', { sample_ids: [Buffer.from('sample-1').toString('base64'), Buffer.from('new').toString('base64')], fields: ['text'] });
-  expect(values.entries[0].fields[0].source_snapshot).toBe(head.latest);
+  // Composition materializes the effective parent binding in the complete child.
+  expect(values.entries[0].fields[0].source_snapshot).toBe(child);
+  const inheritedPreview = await call(request, `${datasetPath(name)}/snapshots/${child}/preview?sample=${encodeURIComponent(Buffer.from('sample-1').toString('base64'))}&field=text`);
+  expect(inheritedPreview.data).toBe(preview.data);
+  const parentPreview = await call(request, `${datasetPath(name)}/snapshots/${head.latest}/preview?sample=${encodeURIComponent(Buffer.from('sample-1').toString('base64'))}&field=text`);
+  expect(parentPreview.data).toBe(preview.data);
   expect(values.entries[1].fields[0].storage).toBe('tombstone');
   const childRevision = (await call(request, `${datasetPath(name)}/snapshots/${child}/split-head`)).revision;
   expect((await call(request, `${datasetPath(name)}/snapshots/${child}/split-revisions/${childRevision}/splits/train/members`)).entries).toEqual([Buffer.from('sample-1').toString('base64')]);

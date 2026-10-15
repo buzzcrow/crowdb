@@ -18,17 +18,18 @@ export function SplitEditor({ dataset, snapshot, initialRevision, recovery, clos
   const [op, setOp] = useState<Operation | undefined>(recovery);
   const [draft, setDraft] = useState<SplitDraft>();
   const [splits, setSplits] = useState<DraftSplit[]>([]); const [policy, setPolicy] = useState<SplitPolicy>(defaultPolicy);
+  const [ready, setReady] = useState(false);
   const [base, setBase] = useState<{ revision: string | null; generation: string | null }>();
   const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [dirty, setDirty] = useState(false);
   const run = (action: () => Promise<void>) => { setBusy(true); setError(''); void action().catch(reason => setError(String(reason))).finally(() => setBusy(false)); };
   useEffect(() => {
-    const cancel = new AbortController();
+    const cancel = new AbortController(); setReady(false);
     void (async () => {
-      if (recovery) { const value = await api.control<SplitDraft>(operationPath(recovery), 'GET', undefined, cancel.signal); setDraft(value); setSplits(value.splits); setPolicy(value.policy); return; }
+      if (recovery) { const value = await api.control<SplitDraft>(operationPath(recovery), 'GET', undefined, cancel.signal); if (!cancel.signal.aborted) { setDraft(value); setSplits(value.splits); setPolicy(value.policy); setReady(true); } return; }
       const head = await api.splitHead(dataset, snapshot, cancel.signal);
       const revision = initialRevision ?? head.revision;
       const value = revision ? await api.revision(dataset, snapshot, revision, cancel.signal) : null;
-      if (!cancel.signal.aborted) { setBase({ ...head, revision }); setSplits(value?.splits.map(({ name, definition, origin }) => ({ name, definition, origin })) ?? []); setPolicy(value?.policy ?? defaultPolicy); }
+      if (!cancel.signal.aborted) { setBase({ ...head, revision }); setSplits(value?.splits.map(({ name, definition, origin }) => ({ name, definition, origin })) ?? []); setPolicy(value?.policy ?? defaultPolicy); setReady(true); }
     })().catch(reason => { if (!cancel.signal.aborted) setError(String(reason)); });
     return () => cancel.abort();
   }, [dataset, snapshot, initialRevision, recovery]);
@@ -46,9 +47,10 @@ export function SplitEditor({ dataset, snapshot, initialRevision, recovery, clos
   return <section ref={element} role="dialog" aria-label="Edit Split revision" className="tw-space-y-3 tw-border tw-border-border tw-p-4">
     <h2 className="tw-font-semibold">Edit Split revision · {snapshot}</h2>
     <p className="tw-text-xs">Expected revision: {base?.revision ?? draft?.expected_revision ?? 'none'}. Renaming or removing a Split never changes historical revisions.</p>
-    <Definitions splits={splits} policy={policy} disabled={busy || !!op?.pending || !!draft && !['editing', 'evaluating', 'evaluated'].includes(draft.progress.state)} change={(values, rules) => { setSplits(values); setPolicy(rules); setDirty(true); }} />
+    <Definitions splits={splits} policy={policy} disabled={!ready || busy || !!op?.pending || !!draft && !['editing', 'evaluating', 'evaluated'].includes(draft.progress.state)} change={(values, rules) => { setSplits(values); setPolicy(rules); setDirty(true); }} />
+    {!ready && !error && <p role="status">Loading Split revision…</p>}
     {error && <p role="alert">{error}</p>}
-    <button className={buttonClass} disabled={busy || !!op?.pending || !!draft && !dirty} onClick={() => run(save)}>Save Split draft</button>
+    <button className={buttonClass} disabled={!ready || busy || !!op?.pending || !!draft && !dirty} onClick={() => run(save)}>Save Split draft</button>
     <button className={buttonClass} disabled={busy} onClick={close}>Close editor</button>
     {op && !draft && <BeginRecovery discarded={() => setOp(undefined)} operation={op} busy={busy} run={run} loaded={value => { setDraft(value as SplitDraft); setSplits(value.splits); setPolicy(value.policy); }} />}
     {op && draft && !dirty && <Publication restart={async () => { setBase(await api.splitHead(dataset, snapshot)); setOp(undefined); setDraft(undefined); setDirty(true); }} operation={op} draft={draft} update={value => setDraft(value as SplitDraft)} complete={complete} busy={busy} run={run} />}

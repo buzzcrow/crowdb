@@ -37,7 +37,10 @@ test('Dataset native: split_revisions', async ({ page, request, browser, baseURL
     await expect(stale.getByRole('button', { name: 'Keep stale draft for explicit abandonment' })).toBeEnabled();
     await stale.getByRole('button', { name: 'Keep stale draft for explicit abandonment' }).click();
     await stale.getByRole('button', { name: 'Abandon draft' }).click();
-    await stale.getByRole('button', { name: 'Advance cleanup' }).click();
+    for (let window = 0; window < 20 && await stale.getByRole('button', { name: 'Edit as new operation' }).count() === 0; window++) {
+      await stale.getByRole('button', { name: 'Advance cleanup' }).click();
+      await expect(stale.getByRole('button', { name: 'Inspect draft status' })).toBeEnabled();
+    }
     await expect(stale.getByRole('button', { name: 'Edit as new operation' })).toBeEnabled();
   } finally { await staleContext.close(); }
   const frozen = (await call(request, `${path}/split-head`)).revision;
@@ -45,6 +48,8 @@ test('Dataset native: split_revisions', async ({ page, request, browser, baseURL
   await page.getByRole('button', { name: frozen, exact: false }).click();
   await page.getByRole('button', { name: 'training (3)', exact: true }).click();
   await page.getByRole('button', { name: 'Create child from Split' }).click();
+  await page.getByLabel('Filter frozen Split membership').check();
+  await page.getByRole('textbox', { name: 'Selection rule', exact: true }).fill(JSON.stringify({ kind: 'explicit', ids: [Buffer.from('sample-00').toString('base64'), Buffer.from('sample-01').toString('base64')] }));
   // A later revision must not change the already chosen historical source.
   await publishSplits(request, name, snapshot, [{ name: 'training', origin: { kind: 'evaluated' }, definition: { kind: 'selection', predicate: { kind: 'explicit', ids: [] } } }]);
   await page.getByRole('button', { name: 'Review mapping' }).click();
@@ -52,11 +57,17 @@ test('Dataset native: split_revisions', async ({ page, request, browser, baseURL
   await expect(page.getByRole('button', { name: 'Evaluate complete membership' })).toBeEnabled();
   await publishDraft(page, 'Snapshot');
   const child = (await call(request, `${datasetPath(name)}/head`)).latest;
-  expect((await call(request, `${datasetPath(name)}/snapshots/${child}/summary`)).sample_count).toBe('3');
+  expect((await call(request, `${datasetPath(name)}/snapshots/${child}/summary`)).sample_count).toBe('2');
   const initial = (await call(request, `${datasetPath(name)}/snapshots/${child}/split-head`)).revision;
   const inherited = await call(request, `${datasetPath(name)}/snapshots/${child}/split-revisions/${initial}`);
-  expect(inherited.splits[0].origin.source.revision).toBe(frozen); expect(inherited.splits[0].count).toBe('3');
+  expect(inherited.splits[0].origin.source.revision).toBe(frozen); expect(inherited.splits[0].count).toBe('2');
   await openDataset(page, name); await page.getByRole('button', { name: snapshot, exact: true }).click();
+  await page.getByRole('button', { name: 'Split revision history' }).click();
+  await page.getByRole('button', { name: first.revision, exact: false }).click();
+  await page.getByRole('button', { name: 'Edit Split revision', exact: true }).click();
+  await expect(page.getByLabel('Split 1 name')).toHaveValue('train');
+  await page.getByRole('button', { name: 'Close editor', exact: true }).click();
+  await page.getByRole('button', { name: 'Go to current Split revision', exact: true }).click();
   await page.getByRole('button', { name: 'Edit Split revision', exact: true }).click();
   await expect(page.getByLabel('Split 1 name')).toHaveValue('training');
   await page.getByRole('button', { name: 'Remove training', exact: true }).click();

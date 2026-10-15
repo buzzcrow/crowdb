@@ -13,6 +13,7 @@ vi.mock('./api', async original => ({ ...await original<typeof import('./api')>(
   capabilities: vi.fn(async () => ['dataset-management', 'composition']),
   mutate: vi.fn(async () => ({})),
   page: vi.fn(async () => ({ entries: [], after: null })),
+  splitHead: vi.fn(async () => ({ revision: null, generation: null })),
   head: vi.fn(async () => ({ generation: null, latest: null, stable: null })),
   control: vi.fn(async () => ({})),
 }));
@@ -87,4 +88,19 @@ it('reclamation confirmation keeps its exact Snapshot target across navigation',
   await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Confirm reclamation' })));
   expect(api.mutate).toHaveBeenCalledWith('snapshot-reclaim', expect.stringContaining(`/snapshots/${'1'.repeat(32)}/reclaim`), 'POST');
   expect(complete).toHaveBeenCalledOnce();
+});
+
+it('waits for the selected Split base before enabling edits so loading cannot erase input', async () => {
+  const { SplitEditor } = await import('./splits/Editor');
+  let loaded!: (value: import('./types').SplitHead) => void;
+  vi.mocked(api.splitHead).mockReturnValueOnce(new Promise(resolve => { loaded = resolve; }));
+  render(<SplitEditor dataset="demo" snapshot={'1'.repeat(32)} close={vi.fn()} complete={vi.fn()} />);
+  expect(screen.getByRole('button', { name: 'Add selection Split' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Save Split draft' })).toBeDisabled();
+  expect(screen.queryByLabelText('Split 1 name')).toBeNull();
+  await act(async () => loaded({ revision: null, generation: null }));
+  fireEvent.click(screen.getByRole('button', { name: 'Add selection Split' }));
+  fireEvent.change(screen.getByLabelText('Split 1 name'), { target: { value: 'train' } });
+  await act(async () => {});
+  expect(screen.getByLabelText('Split 1 name')).toHaveValue('train');
 });

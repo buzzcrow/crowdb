@@ -52,9 +52,13 @@ membership/provenance, not the future currentSplit value. Inherited Split member
 intersect surviving child IDs; newly added IDs remain unassigned unless explicit
 assignments or reevaluated definitions include them.
 
-Sample upsert replaces its complete field set; remove excludes its ID. Effective
-inherited values are resolved server-side. An unchanged required field must remain
-represented in the final complete membership. Tombstone, missing and empty inline
+Sample upsert replaces the supplied field bindings while preserving other effective
+fields; remove excludes its ID. Effective inherited values are resolved server-side
+and materialized as bindings in the complete child Manifest. Inspection reports the
+child as the binding source after this copy; chunk payloads remain shared. Sparse
+Manifests created through direct publication can still resolve omitted optional
+fields from an ancestor and report that ancestor as the source. An unchanged
+required field must remain represented in the final complete membership. Tombstone, missing and empty inline
 value remain distinct. The current Schema contains only version/name/requiredness.
 
 Evaluation advances revision-bound windows of at most twenty Samples. Durable

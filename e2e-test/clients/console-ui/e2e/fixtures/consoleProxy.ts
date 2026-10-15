@@ -11,8 +11,17 @@ export async function consoleProxy(baseURL: string) {
     const path = (incoming.url ?? '/').replace(/^\/proxy\/api(?=\/|\?|$)/, '/api');
     const upstream = request(new URL(path, baseURL), { method: incoming.method, headers: incoming.headers }, response => {
       if (dropSuffix && path.endsWith(dropSuffix) && incoming.method === 'POST' && response.statusCode === 200) {
-        dropSuffix = undefined; response.resume();
-        response.on('end', () => { dropped++; outgoing.destroy(); });
+        dropSuffix = undefined;
+        let prefix: Buffer | undefined;
+        response.on('data', (chunk: Buffer) => { prefix ??= chunk.subarray(0, 1); });
+        response.on('end', () => {
+          dropped++;
+          // Deliver real headers and a partial real body before disconnecting.
+          // Closing an unused keep-alive socket lets Chromium transparently replay
+          // the POST, which would not exercise an unknown publication outcome.
+          outgoing.writeHead(response.statusCode!, response.headers);
+          outgoing.write(prefix ?? Buffer.alloc(0), () => outgoing.destroy());
+        });
         return;
       }
       outgoing.writeHead(response.statusCode ?? 502, response.headers);

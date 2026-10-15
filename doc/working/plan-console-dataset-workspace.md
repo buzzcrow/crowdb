@@ -111,7 +111,7 @@ these real operations and owned native fixtures.
 
 ## Phase U — dependency-ordered implementation tasks
 
-- [ ] **U1 Measure shell baseline and register new acceptance owners**: inspect
+- [x] **U1 Measure shell baseline and register new acceptance owners**: inspect
   current native browser fixture/selection/credentials paths; run affected shell
   and navigation owner baselines before visible changes. Reserve Dataset `8x`
   specs (Iceberg 6x, S3 7x, cross-domain 9x); register new owned native cases in
@@ -121,7 +121,7 @@ these real operations and owned native fixtures.
   `81-dataset-import.spec.ts`, `82-dataset-splits.spec.ts`.
   Exit: every new mutation flow has one fixture owner; proposed case names listed
   below resolve in root runner, no host browser process starts service binaries.
-- [~] **U2 Wire configured Dataset service**: add Dataset origin/config discovery,
+- [x] **U2 Wire configured Dataset service**: add Dataset origin/config discovery,
   server-held bearer use and capability reporting. Audit local/remote/managed
   Access launch, monitor credentials and default ports without changing other
   protocol identities. Add API-prefix-safe v2 proxy/streaming routes with explicit
@@ -132,7 +132,7 @@ these real operations and owned native fixtures.
   Exit: configured origin only, no browser bearer/arbitrary URL; missing/unready/
   unauthorized are distinct; readonly blocks direct API mutations; managed mode
   supports Dataset data operations without enabling topology mutations.
-- [ ] **U3 Add domain and typed frontend adapter**: Dataset enum/module/route,
+- [x] **U3 Add domain and typed frontend adapter**: Dataset enum/module/route,
   header order, embedding whitelist/initialDomain, view mount and state provider.
   Define API DTO parsing from R237 and keep exact integer/opaque IDs as strings.
   Files: UI `types.ts`, `App.tsx`, `embed.ts`, `shell/domainTabs.ts`,
@@ -140,7 +140,7 @@ these real operations and owned native fixtures.
   `dataset/{api,types,state,navigation}.ts(x)`.
   Exit: seven actual domains in correct order; preexisting Capacity alias still
   works; no duplicate connection dialog or styles outside Console scope.
-- [ ] **U4 Build lazy catalog and Snapshot forest**: root lists authoritative
+- [x] **U4 Build lazy catalog and Snapshot forest**: root lists authoritative
   Datasets; expand Dataset roots then declared child Snapshots independently.
   Include a paged Splits group per Snapshot with selected revision and history.
   Root/Dataset summaries use supplied identity/head/count only. Direct links reveal
@@ -149,7 +149,7 @@ these real operations and owned native fixtures.
   SnapshotSummary,RevisionPicker}.tsx`, typed query hooks.
   Exit: SDK-created old/new resources and off-latest branches discoverable; no
   descendant prefetch, fake totals or parent inference from ID sorting.
-- [ ] **U5 Build combined matrix and properties**: Sample ID sticky column, field
+- [x] **U5 Build combined matrix and properties**: Sample ID sticky column, field
   name/requiredness headers, paged rows/columns and metadata-only cells. Header,
   row and cell clicks produce distinct structured properties. Display inline/
   chunk/tombstone/missing/inherited states, exact length and declared digest.
@@ -159,7 +159,7 @@ these real operations and owned native fixtures.
   Exit: zero-field and wide Schema, UTF-8/binary IDs, empty Split, removed Samples,
   inheritance/tombstones and API partial/limit states render accurately. Browsing
   transfers no payload bytes or whole Manifest; field checksum is labelled declared.
-- [ ] **U6 Add navigation, limits and explicit preview**: capture bounded visit
+- [x] **U6 Add navigation, limits and explicit preview**: capture bounded visit
   identities/windows/scroll, abort obsolete queries, suspend hidden observation,
   retain primary success when optional metadata fails. Add text/hex Preview action
   for selected cell: check complete known length <=64 KiB before transfer, consume
@@ -168,7 +168,7 @@ these real operations and owned native fixtures.
   shared contexts as necessary, new `dataset/FieldPreview.tsx`, proxy read stream.
   Exit: Back/Forward restores exact r2/cell, stale cursor disables Next, corrupt/
   cancelled transfer discards output, keyboard/resize do not reset selection.
-- [ ] **U7 Implement local import and data publication wizard**: root Create
+- [x] **U7 Implement local import and data publication wizard**: root Create
   Dataset, Dataset Import/New Snapshot, Snapshot Create child and Split Create
   child use one stateful flow. Stages: choose Dataset/source -> Schema/member edits
   -> map local data -> upload -> optional Split definitions -> validate/review ->
@@ -179,7 +179,7 @@ these real operations and owned native fixtures.
   S1-r2-Split source, additions/removals/tombstones and inherited required fields
   reach real authority with complete membership; never submit a browser delta as
   a complete Manifest. Samples/Splits freeze together for initial publication.
-- [ ] **U7a Specify and validate local mapping format**: use version 1 JSON envelope
+- [x] **U7a Specify and validate local mapping format**: use version 1 JSON envelope
   with Schema and Sample/Field mappings aligned to SDK data model; field source is
   inline canonical base64 or local file reference. Sample IDs use canonical base64
   with explicit UTF-8 helper input in UI. A file reference matches a user-selected
@@ -189,7 +189,7 @@ these real operations and owned native fixtures.
   Files: new `dataset/import/mapping.ts`, fixtures/tests and UI user docs.
   Exit: ordinary few-file form works without a mapping file; batch JSON is bounded
   at 8 MiB and produces paged server edits, not an unbounded local registry.
-- [ ] **U7b Transfer and recover uploads**: bounded incremental file digesting and
+- [x] **U7b Transfer and recover uploads**: bounded incremental file digesting and
   chunked upload, at most 4 MiB per part/10000 parts, default two concurrent part
   requests and four-part retained-buffer cap. Honor stricter server admission.
   Show bytes/part/completion states and exact errors. Reuse immutable receipts on
@@ -197,7 +197,7 @@ these real operations and owned native fixtures.
   Files: new `dataset/import/{upload,digest,recovery}.ts`, worker if needed,
   proxy streaming, unit tests. Exit: memory does not grow with file size; reload
   recovers server IDs, never assumes lost File handles or changed bytes are valid.
-- [ ] **U7c Handle prepare/publish conflicts and cleanup**: persist bounded recovery
+- [x] **U7c Handle prepare/publish conflicts and cleanup**: persist bounded recovery
   identities; use operation status for Outcome unknown. Head conflict presents
   observed change and explicit reviewed new attempt on same candidate; never
   silently switches parent or repeats completed publication. Close does not mean
@@ -205,7 +205,7 @@ these real operations and owned native fixtures.
   Files: wizard reducer/recovery components and HTTP adapter.
   Exit: dropped responses, reload, stale head, edit-after-prepare and cancellation
   each have deterministic state, input preserved and no duplicate Snapshot.
-- [ ] **U8 Implement independent Split revision editor**: set-level draft supports
+- [x] **U8 Implement independent Split revision editor**: set-level draft supports
   create/edit/rename/remove, explicit IDs/rules, seed/weight partition, independent
   overlap/coverage settings, inherited/frozen vs reevaluated membership. Preview
   uses revision-bound server work and invalidates after edit. Whole-set review ->
@@ -215,14 +215,14 @@ these real operations and owned native fixtures.
   Exit: r2 publishes on S1 without S2 or latest movement; concurrent r1 edit
   conflicts with recoverable input; deleting last Split creates empty r2 and r1
   remains readable. Reuse editor for initial Splits in U7 without duplicating rules.
-- [ ] **U9 Add Snapshot lifecycle controls and capabilities**: Set stable,
+- [x] **U9 Add Snapshot lifecycle controls and capabilities**: Set stable,
   Retain/Release/Reclaim with precise targets, actual protection reason, pending
   status and reconciliation. Copy/reference actions keep complete identities;
   readonly/managed behavior enforced through both UI and API. Files:
   `dataset/ResourceActions.tsx`, properties/dialogs, proxy tests.
   Exit: no unsupported Dataset delete or Split-history purge; stale eligibility
   never overrides backend checks; optional failures preserve primary view.
-- [ ] **U10 Run real acceptance and finalize docs**: complete test matrix below,
+- [~] **U10 Run real acceptance and finalize docs**: complete test matrix below,
   record timing/artifacts, update Console architecture/UI contract/domain counts/
   8x test ownership and local mapping examples. Update Dataset integration docs
   only where UI configuration affects them. Files: Console design docs, API-prefix/
@@ -505,3 +505,43 @@ record image identity and source revision. An old image passing is not evidence.
   SDK Clippy passes. Rerun their actual native consumer owner before final cleanup.
 - These UI refinements postdate the running full-domain image and require the final
   focused Dataset owner rerun on a newly built matching image.
+
+### Final verification in progress — 2026-10-16
+
+- Latest UI suite: 265 tests and TypeScript checks passed; artifact
+  `unit/ui-eaf7ffd28a7c4a84ba27e1bb3f94ee83/results.json`. Root `ts-lint` passed.
+- Latest matching image source `a700daa3787705829aa85c85fcff0cf55b1381ac`,
+  config `sha256:6fca70d0f2cbb85e8d6511da6e2a00fece779cf983dc7044e441f0eae3b7824d`.
+- Full Console regression exposed existing hardware test mismatch:
+  `console::web_authority::bare_metal_hardware_routes_share_confirmed_group_zero_state`
+  fails at `web_authority.rs:264`, deleting `/dev/test`: expected 204, actual 409.
+  Guard added by preexisting `dc4cdf2b` rejects physical disk deletion without
+  verified Offline/Remove lifecycle; the test still dates from `5e54be81`.
+  Dataset changes do not alter this handler or guard. Keep the safety guard and
+  original assertion; record this unrelated regression separately from Dataset
+  acceptance. Full run and latest Dataset/SDK native checks remain pending.
+- Native SDK rerun passed on the latest image: Rust example and independently
+  packaged/installed Python consumer, including lifecycle observations;
+  artifact `run-073a4b9dfea74e168b95ad2ac2267d5e`. Extracted sdist Rust tests passed.
+- Latest root Rust/SDK fmt and Clippy and OpenAPI local-reference validation pass.
+- Full run browse (13.7 s) and capabilities (4.7 s) passed. Actual browse screenshot
+  inspected: seven-domain order, parent tree and combined matrix/properties are
+  visible without overlapping panels. Latest image browse also passes (15.8 s).
+- Import/Split native traces exposed bootstrap ChunkKV split/transfer overlapping
+  browser actions: final evaluation took 2993 ms plus status GET, and Split
+  publication was still pending after 3 s. Latest import reproduced a different
+  slow mutation during the same startup placement. Dataset fixtures now reuse
+  the native Journal initial-placement readiness check; original 3 s UI assertions
+  remain unchanged. Exact import rerun pending.
+- Recovery fault injection originally closed before response headers, allowing
+  Chromium to transparently replay the POST and receive the successful receipt.
+  Proxy now sends actual headers and one actual body byte before disconnecting,
+  exercising partial/lost responses without fabricating server state or JSON.
+- Additional unrelated full-regression mismatches use removed physical-media
+  entry points: six_node_round_trips expects Add Disk menu; fixed_ports_and_failed_retry
+  posts unverified device_path and receives the existing 409 owner-verification guard.
+
+- Expanded import passed (14.1 s), artifact `run-23c2adbac4a143d89605c73fb5055f6b`: multipart digest, publication, child data preservation, tombstone and inherited Split intersection. Composition copies effective bindings into the child, so source metadata correctly identifies the child; parent and child preview bytes are asserted equal. Sparse-Manifest ancestor source remains covered by `inspection_pages_test`.
+- Expanded Split reached successful frozen-r2 child publication with two selected members and historical editor-base checks. Intermittent global browser GET stalls remain under diagnosis; native network logging is temporary and will be removed.
+
+- Native run `run-45afb606e2ab447ea8a150b533e6c082` found a genuine editor race: Add Split was enabled before the asynchronous base revision arrived, whose response then erased the new field. Split editor now keeps edits/save disabled until base loading succeeds, with a deferred-response component regression. Temporary browser netlog instrumentation was removed.
