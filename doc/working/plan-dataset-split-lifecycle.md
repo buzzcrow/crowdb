@@ -352,14 +352,14 @@ until its corresponding API and visibility tests pass.
 
 ## Phase F — release acceptance and handoff
 
-- [~] **F1 Register native owned cases**: extend `e2e-test/scenarios.py`,
+- [x] **F1 Register native owned cases**: extend `e2e-test/scenarios.py`,
   `access_dataset_fixture.py`, `tests/access_dataset.rs` and SDK consumer fixture.
   Proposed new cases: `access_dataset::split_revision_lifecycle`,
   `access_dataset::split_commit_restart`, `dataset::sdk_split_revision_round_trip`.
   Register in existing `dataset.http`/`dataset.sdk`; names are new until implemented.
   Exit: real multi-node native storage, restart and installed SDK produce evidence;
   fixture setup does not bypass HTTP/SDK mutation acceptance.
-- [ ] **F2 Gates, permanent docs and R236 handoff**: complete scoped tests and
+- [x] **F2 Gates, permanent docs and R236 handoff**: complete scoped tests and
   formatting/lints separately; update Dataset design/spec/OpenAPI v1 compatibility,
   add v2 index entry and SDK usage docs. Write actual API signatures/capabilities,
   package versions, test commands/artifacts and limits into R236 plan handoff.
@@ -1018,3 +1018,35 @@ failure; record actual failures and add Blocked only when that workflow requires
 - SDK Python Clippy, root Clippy and formatting passed. Native acceptance is next;
   runner rejected the stale release image before executing cases, so rebuild the
   shared OCI image with current server inputs before claiming multi-node evidence.
+
+### Native acceptance preparation
+
+- Registered `access_dataset_split::split_commit_restart_preserves_candidates_receipts_and_historical_members`
+  under dataset.http and `dataset::sdk_split_revision_round_trip` under
+  dataset.sdk. The former restarts Access and Chunk-KV around draft edits,
+  preparation, publication and historical reads; the latter runs the Rust example
+  and externally installed Python wheel against real native storage.
+- Fixture registration and resource selection passed all 150 Python fixture
+  tests after updating expected Dataset case counts. The current release image
+  rebuild includes all committed backend sources; native case execution is next.
+- Release build passed. OCI packing encountered a pre-existing broken BuildKit
+  snapshot cache after the earlier disk-pressure cleanup. Repacking the staged
+  runtime with `--cache target/oci-build-cache-dataset` succeeded, then
+  `pixi run image-import target/crowdb.oci.tar --image crowdb-node:dev` installed
+  the new artifact. Source revision `b9b0448c85380ce7d77b9144276660c70faad5e9`,
+  image config `sha256:8f7142e2104536efe0053a0b1f8d08a90c1e41e3309f9da387d0cd946de13d02`.
+  A run before import correctly rejected the old Docker image. No source checks
+  were bypassed. Rust format and OpenAPI reference/operation validation passed.
+- First native execution passed restart-safe edits, candidate invisibility and
+  replayed data commit receipts, then failed the test's assumption that one Split
+  evaluation call completes even on native storage. Native bounded scan returned
+  continuation. Updated the consumer to advance explicit page windows, require
+  progress, and assert exactly one scanned/unassigned Sample on completion.
+  Failure artifact: `run-4b42eed9bdb6470bac34c51d844e123b`; rerun pending.
+- Corrected native HTTP case passed (12.13 seconds), artifact
+  `run-c4b496a7d5584827a4cbccf4e952fff5`. Native SDK case passed for both Rust
+  and externally installed Python, artifact `run-095555cada884960806c49e4a521c547`.
+  Artifact roots are under `.crowdb-runtime/artifacts/container-e2e/`.
+  Root Clippy and format checks passed after the test change. Permanent Dataset
+  control design, specification and index updated; actual contracts and native
+  evidence transferred to the Console plan. Backend acceptance is complete.

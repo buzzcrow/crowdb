@@ -203,5 +203,8 @@ def bundle_dataset_sdk(output):
     root=Path(__file__).resolve().parents[1]
     subprocess.run(["cargo","build","--locked","--manifest-path",str(root/"sdk/Cargo.toml"),"-p","crowdb-sdk-dataset","--example","payload"],check=True,timeout=600)
     shutil.copy2(root/"sdk/target/debug/examples/payload",Path(output)/"dataset-rust-client")
+    subprocess.run(["cargo","build","--locked","--manifest-path",str(root/"sdk/Cargo.toml"),"-p","crowdb-sdk-dataset","--example","split_control"],check=True,timeout=600)
+    shutil.copy2(root/"sdk/target/debug/examples/split_control",Path(output)/"dataset-rust-split-client")
     subprocess.run(["python",str(root/"tools/sdk/package.py"),"--destination",str(Path(output)/"dataset-sdk")],check=True,timeout=600)
     shutil.copy2(root/"sdk/tests/real_consumer.py",Path(output)/"dataset-sdk/real_consumer.py")
+    shutil.copy2(root/"sdk/tests/split_consumer.py",Path(output)/"dataset-sdk/split_consumer.py")

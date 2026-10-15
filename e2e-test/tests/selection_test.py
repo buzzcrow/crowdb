@@ -105,7 +105,7 @@ class SelectionTest(unittest.TestCase):
                             for case in diskdb))
         dataset = json.loads(self.invoke("--list", "--layer", "dataset"))
         self.assertCountEqual([case["scope"] for case in dataset],
-                              ["dataset.http", "dataset.http", "dataset.sdk"])
+                          ["dataset.http", "dataset.http", "dataset.http", "dataset.sdk", "dataset.sdk"])
         self.assertTrue(all(case["nodes"] == 13 for case in dataset))
         console = json.loads(self.invoke("--list", "--layer", "console"))
         self.assertEqual(len(console), 154)

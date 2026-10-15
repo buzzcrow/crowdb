@@ -38,7 +38,7 @@ erasure coding, repair, or physical chunk layout. It does not become a query
 engine or a training-framework-specific storage protocol.
 
 The core objects are Dataset, Snapshot, Manifest, Schema, Sample, Field,
-Selection, Read Plan, and Cursor. Worker scheduling, tensor decoding, collation,
+Split revision, Selection, Read Plan, and Cursor. Worker scheduling, tensor decoding, collation,
 and model checkpoints remain in adapters or execution systems above Dataset.
 
 ## 2. Authority and naming
@@ -59,9 +59,9 @@ that resolve to real snapshot IDs; cursors and read plans store the real ID.
 
 A Snapshot has at most one `parent_snapshot_id`. A child applies additions,
 deletions, and membership rules to its parent; the numeric order of IDs never
-implies ancestry. Snapshot merge is explicit: a merge produces a new snapshot
-with a declared parent and delta. Old snapshots remain readable until retention
-releases them.
+implies ancestry. Any committed same-Dataset Snapshot can be the parent; multiple
+parentless roots form a forest. Multi-parent merging is not supported. Old
+Snapshots remain readable until reclamation has passed their protection checks.
 
 Publication builds and validates the manifest, schema binding, indexes, payload
 references, checksums, and durability state before atomically advancing a
@@ -70,13 +70,15 @@ complete snapshot.
 
 ## 4. Manifest, schema, samples, and fields
 
-The Manifest is the authority for a snapshot's schema binding, sample membership,
-splits, selections, field locators, checksums, statistics, and parent delta. It
+The Manifest is the authority for a Snapshot's schema binding, sample membership,
+field locators, checksums and parent delta. Split sets are separate immutable
+revisions owned by that Snapshot. The Manifest
 may be partitioned and indexed; a single hot key cannot be required for all
-reads. Schema defines field type, structure, requiredness, missing-field
-semantics, and evolution rules.
+reads. The current Schema records a version and field names/requiredness; it
+does not declare types, MIME, nested structures or semantic media metadata.
 
-`sample_id` is a stable opaque string supplied by the importer. Within one
+`sample_id` is a stable opaque byte sequence supplied by the importer, represented
+as canonical padded base64 in JSON. Within one
 snapshot, `(sample_id, field)` has one logical value. A field is either an inline
 KV value for bounded metadata or an opaque chunk location string for larger
 payloads. Dataset passes the location to the chunk system and never parses or
@@ -90,11 +92,19 @@ tensor composition belong to the consumer adapter.
 
 ## 5. Selection and read plans
 
-A Split is a logical subset of a snapshot. A Selection in a Read Plan chooses
+A Split is a named logical subset of a Snapshot. One immutable Split revision
+contains the complete set of names, definitions, membership and overlap/coverage
+policy. A Snapshot's currentSplit points to one revision or is absent. Publishing
+a revision changes only this pointer, never Dataset latest or the data Snapshot.
+A Selection in a Read Plan chooses
 samples using prefix, range, explicit IDs, keyword, field match, and boolean
 composition. Prefix, range, and explicit IDs can be checked for overlap directly;
-metadata predicates require a scan against one fixed snapshot. The manifest
-records any permitted overlap policy.
+metadata predicates require bounded work against one fixed Snapshot. Defaults
+are disjoint membership and allowed unassigned Samples. A committed empty set
+differs from no Split revision. All committed revisions live until owner reclaim.
+
+The [control lifecycle](design-dataset-control.md) specifies durable composition,
+frozen Split inheritance, publication attempts, bounded inspection and cleanup.
 
 A Read Plan binds one snapshot ID to selection, ordering, optional shuffle
 parameters, and batch policy. The implementation supports bounded sample and

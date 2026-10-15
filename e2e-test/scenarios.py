@@ -525,6 +525,8 @@ CONSOLE_OPERATION_CASES = (
 
 DATASET_CASES = (
     Case("dataset.sdk", "dataset::sdk_real_payload_restart",dataset_sdk=True,client_timeout=600),
+    Case("dataset.sdk", "dataset::sdk_split_revision_round_trip",dataset_sdk=True,client_timeout=600),
+    Case("dataset.http", "access_dataset_split::split_commit_restart_preserves_candidates_receipts_and_historical_members",client_timeout=600),
     Case("dataset.http", "access_dataset::listener_authenticates_and_serves_create_open"),
     Case("dataset.http", "access_dataset::publish_persist_restart_and_scan_round_trip"),
 )
@@ -767,7 +769,10 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
             elif case.s3_script:
                 cluster.script_client(case.s3_script)
             elif case.dataset_sdk:
-                cluster.sdk_roundtrip()
+                if case.name == "dataset::sdk_split_revision_round_trip":
+                    cluster.sdk_split_roundtrip()
+                else:
+                    cluster.sdk_roundtrip()
             elif case.sdk_client:
                 cluster.sdk_client(case.name.rsplit("::", 1)[-1])
             elif case.restart:

@@ -12,9 +12,9 @@ local import, publication and independent Split revision editing flow.
 
 ## Handoff and scope
 
-- Implementation authorized on 2026-10-15; waiting for R237. All tasks unchecked;
-  no Console implementation or browser test has run. R237 must deliver backend/HTTP/SDK acceptance before this plan's
-  integration work. Read its actual API handoff, not just these intended names.
+- Implementation authorized on 2026-10-15. Backend/HTTP/SDK acceptance completed
+  on 2026-10-16; Console implementation and browser baselines are next. Read the
+  actual API handoff below, not just the initially proposed names.
 - Own Console listener discovery/proxy/capability enforcement, Dataset navigation,
   single Sample/Schema matrix, local test/demo import, revision editing and E2E.
   Backend authority/index/selection/composition/publication belongs to R237.
@@ -33,24 +33,66 @@ local import, publication and independent Split revision editing flow.
 
 ## Dependency handoff checklist
 
-R237's implementing model fills in these fields before R236 starts; they are
-unverified today. A missing field is unfinished backend integration, not permission
-to mock the final acceptance path.
+The backend handoff below is verified. The Console acceptance path must consume
+these real operations and owned native fixtures.
 
-- [ ] **H1 Wire capabilities**: record v2 OpenAPI path, server/SDK versions and
+- [x] **H1 Wire capabilities**: record v2 OpenAPI path, server/SDK versions and
   availability endpoint. Expected support: bounded catalog/inspection, metadata
   preparation status, compositions, branch publication and Split revisions.
-- [ ] **H2 Publication contract**: record exact candidate/attempt/expected-head
+- [x] **H2 Publication contract**: record exact candidate/attempt/expected-head
   fields, success receipt and retry/status operations. Record how an explicit
   new commit attempt preserves candidate/parent after head conflict.
-- [ ] **H3 Composition and revision contract**: record draft expected-revision
+- [x] **H3 Composition and revision contract**: record draft expected-revision
   edits, preview progression, source pinning, invalidation, initial revision
   binding, independent revision CAS, abandon and recovery operations.
-- [ ] **H4 Evidence and fixtures**: record passing dataset.http/dataset.sdk native
+- [x] **H4 Evidence and fixtures**: record passing dataset.http/dataset.sdk native
   artifact paths and source fixture creation helpers. Verify old identity discovery,
   bounded inspection and same-name Split revision identity against live API.
 
 ## Shared UI state contract
+
+### Implemented upstream wire handoff
+
+- Server version 0.3.0; independent Rust/Python SDK version 0.1.0. The contract is
+  [OpenAPI v2](../design/access-server/dataset/openapi-crowdb-dataset-v2.yaml),
+  base `/api/dataset/v2`; GET `/capabilities` reports configured features.
+  Dataset routes use `/namespaces/dataset-ns/datasets/{dataset}`. Uploads,
+  composition and Snapshot reclaim require the configured upload service;
+  inspection, Dataset management and independent Split revisions do not.
+- All u64 wire values are canonical decimal strings. Opaque IDs are nonzero
+  32-character lowercase hex; generations are 64-character lowercase hex.
+  Sample IDs are canonical padded base64 and remain binary identities.
+- Composition POST begins a durable operation with explicit nullable parent,
+  all/selection/frozen-Split source and optional pinned inherited Split revision.
+  PUT applies at most twenty Sample edits with an edit ID and expected revision.
+  GET returns current status; identical historical edit retries return their
+  original result. Evaluate advances explicit expected-page windows. Prepare
+  advances candidate, initial Split and upload ownership until publication_ready.
+- Publish sends `{attempt,snapshot,expected_head}` with required nullable head.
+  A successful receipt is authoritative; GET `commits/{attempt}` reconciles lost
+  responses. A head conflict requires a reviewed new attempt and observed head,
+  preserving the prepared candidate and declared parent. Latest advances only
+  on successful data publication; stable is separate.
+- Independent Split drafts use expected draft revision and page progression.
+  Their publication compares expected Split revision, never Dataset head.
+  Historical revision membership remains immutable. Abandon and cleanup are
+  separate bounded operations for both kinds of draft; cleanup reports deferred
+  physical work explicitly. Status/receipt inspection precedes ambiguous retries.
+- Inspection POST matrix takes `sample_ids` and returns `entries`; it transfers
+  metadata only. Explicit preview returns state, nullable length/digest/data and
+  truncated. Column/schema and row/sample paging remain independent. Native
+  HTTP/SDK fixture evidence remains pending H4; these contracts passed standalone
+  HTTP and externally installed SDK acceptance.
+- Native HTTP restart acceptance passed in
+  `.crowdb-runtime/artifacts/container-e2e/run-c4b496a7d5584827a4cbccf4e952fff5`
+  (case `access_dataset_split::split_commit_restart_preserves_candidates_receipts_and_historical_members`,
+  12.13 seconds). Rust and installed Python native Split flows passed in
+  `run-095555cada884960806c49e4a521c547` (case
+  `dataset::sdk_split_revision_round_trip`). Both used source
+  `b9b0448c85380ce7d77b9144276660c70faad5e9` and image config
+  `sha256:8f7142e2104536efe0053a0b1f8d08a90c1e41e3309f9da387d0cd946de13d02`.
+  `AccessDatasetCluster` owns the real storage/listener; Rust `split_control`
+  and Python `split_consumer.py` demonstrate public-API fixture creation.
 
 - `DatasetSelection` is a discriminated union (new): root, Dataset, Snapshot,
   Split revision/set, named Split, Sample row, Schema field header or Sample/Field

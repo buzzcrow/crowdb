@@ -1,7 +1,7 @@
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
 <!-- Licensed under the Apache License, Version 2.0. -->
 
-# CROWDB Dataset Specification
+# CROWDB - Design: Dataset Specification
 
 This document is the normative Dataset contract. It defines the objects,
 identities, state transitions, observable behavior, and compatibility rules
@@ -47,6 +47,8 @@ The following terms have one meaning throughout this specification:
   tombstone explicitly hides an inherited value.
 - **Locator** identifies payload bytes. Inline values are stored in metadata;
   chunk locators are opaque strings interpreted only by the chunk subsystem.
+- **Split revision** is an immutable complete set of named subsets, definitions,
+  membership and policies owned by one Snapshot. currentSplit is its mutable pointer.
 - **Selection** identifies samples from one Snapshot.
 - **Read Plan** binds a Selection, ordering, projection, batching, and optional
   shuffle to one immutable Snapshot.
@@ -71,6 +73,9 @@ the resolved Snapshot ID and never stores a mutable name in its place.
 A Snapshot has zero or one declared parent. Parentage is explicit; ID ordering
 never implies ancestry. A child may add, replace, or tombstone samples and
 fields while inheriting all values not overridden by its visible parent chain.
+Any committed same-Dataset Snapshot may be the parent, independently of latest.
+Multiple parentless roots are permitted. Sample IDs are opaque bytes, represented
+as canonical padded base64 in JSON; they MUST NOT be normalized as text or paths.
 
 ## 3. Dataset records
 
@@ -97,6 +102,9 @@ are an internal representation; readers observe one logical Manifest.
 The Dataset authority provides these operations. Each operation is scoped by a
 Dataset identity; operations that take a Snapshot ID MUST use the immutable ID,
 not `latest` or `stable` as an implicit mutable reference.
+The table summarizes the legacy publication/read surface. Control v2 adds bounded
+catalog/tree inspection, composition drafts and independent Split revisions as
+specified below and in its versioned OpenAPI contract.
 
 | Operation | Input | Successful result |
 | --- | --- | --- |
@@ -175,7 +183,18 @@ Manifest.
 
 `stable` may be set only to an existing published Snapshot. Publishing a new
 Snapshot never changes `stable` implicitly. A published Snapshot remains
-addressable by ID until reclamation removes its metadata under Section 8.
+addressable by ID until reclamation removes its metadata under Section 9.
+
+Control v2 separates candidate creation from publication attempts. An attempt MUST
+bind the exact candidate and expected opaque head generation. Initial Split
+membership and candidate upload ownership MUST be ready before the head transition.
+A successful attempt MUST have a durable recoverable receipt. Retry of a historical
+success MUST NOT rewind latest. A head conflict preserves the candidate and parent;
+a reviewed retry uses a new attempt with a newly observed generation.
+
+Publishing an independent Split revision MUST update only its Snapshot's currentSplit
+pointer with an expected revision/head CAS. It MUST NOT create a data Snapshot or
+change latest/stable. Old revisions remain addressable until owner reclamation.
 
 ## 7. Selection, plans, and cursors
 
@@ -188,6 +207,9 @@ A Read Plan contains the resolved Snapshot ID, Selection, ordering, projection,
 batch size, and optional deterministic shuffle parameters. The plan identity
 includes all of those values. A plan cannot be resumed with a different
 Snapshot, Selection, projection, ordering, or shuffle configuration.
+Control v2 additionally pins a selected Split revision/name. Membership filtering
+precedes shuffle and worker partitioning, which precede payload reads. A currentSplit
+change MUST NOT alter an admitted plan or composition source.
 
 A Cursor is either at the start or contains a plan-bound group and offset. The
 caller acknowledges a batch by persisting the next Cursor. A failed or
@@ -237,9 +259,29 @@ that status and do not double-delete a payload.
 ## 10. HTTP and native surfaces
 
 The versioned public wire schemas, resource paths, binary framing and retry
-contract are defined by [Dataset HTTP API v1](openapi-crowdb-dataset-v1.yaml).
+contract are defined by [Dataset HTTP API v1](openapi-crowdb-dataset-v1.yaml) and
+[Dataset control API v2](openapi-crowdb-dataset-v2.yaml).
 The public surface uses JSON control records and binary payload streams;
 persisted authority bincode records are not public DTOs.
+
+Control v2 MUST negotiate capabilities before mutation and MUST NOT downgrade
+Split-aware inputs to v1. Required nullable preconditions MUST be supplied explicitly.
+Unsigned 64-bit control values use canonical decimal strings. Legacy routes and
+read-plan interpretations remain compatible; binary framing is unchanged.
+
+Composition is durable and revision-CAS edited. Parent data defaults to all Samples;
+Selection, frozen named Split and their intersection can restrict it. Source
+S1/r2/train creates a child with parent S1 and frozen source membership. Inherited
+Splits intersect surviving IDs; new IDs are unassigned until explicit assignment or
+reevaluation. Defaults are disjoint/allow-unassigned/frozen inheritance. Weighted
+partition follows the versioned SHA-256 algorithm in the
+[control lifecycle](design-dataset-control.md#3-split-evaluation-and-publication).
+
+Inspection MUST bound underlying metadata work, not merely paginate a fully loaded
+Manifest. Committed inventory/children, Schema, Samples and projected field metadata
+are separate bounded reads. Legacy inspection preparation is explicit and resumable;
+unsupported state MUST NOT appear as an empty result. Preview is opt-in, capped at
+64 KiB and MUST NOT acknowledge read consumption.
 
 The HTTP surface is the portable wire contract. It exposes Dataset creation and
 opening, latest and Snapshot inspection, publication and preparation, Manifest

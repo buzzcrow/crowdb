@@ -73,3 +73,20 @@ class AccessDatasetCluster(ChunkKvCluster):
                 if phase=="write":
                     for node in (12,11):self.control({"action":"kill","node":node})
                     for node in (11,12):self.control({"action":"start","node":node})
+
+    def sdk_split_roundtrip(self):
+        endpoint = f"http://{self.addresses[12]}:7503"
+        for language in ("rust", "python"):
+            environment = dict(os.environ, CROWDB_DATASET_ENDPOINT=endpoint,
+                CROWDB_DATASET_NAME="split-sdk-" + language, CROWDB_DATASET_READ_TOKEN="token")
+            bypass = ",".join(filter(None, [environment.get("NO_PROXY", ""), environment.get("no_proxy", ""), *self.addresses]))
+            environment.update(NO_PROXY=bypass, no_proxy=bypass)
+            command = ([str(self.bundle / "dataset-rust-split-client")] if language == "rust" else
+                [str(self.bundle / "dataset-sdk/consumer/bin/python"), str(self.bundle / "dataset-sdk/split_consumer.py")])
+            result = subprocess.run(command, env=environment, cwd=self.artifacts,
+                text=True, capture_output=True, timeout=600)
+            output = result.stdout + result.stderr
+            (self.artifacts / f"sdk-{language}-split.log").write_text(output)
+            print(output, end="", flush=True)
+            if result.returncode:
+                raise RuntimeError(f"Dataset {language} Split SDK failed: {output}")

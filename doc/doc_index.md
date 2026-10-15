@@ -123,6 +123,7 @@ Temporary plans live under `doc/working/`; flow analyses live under
 | `doc/design/access-server/iceberge/iceberg-table-spec-1.11.0.md`              | Backed-up normative Iceberg table format specification. |
 | `doc/design/access-server/iceberge/iceberg-rest-catalog-open-api-1.11.0.yaml` | Backed-up normative Iceberg REST Catalog OpenAPI.       |
 | `doc/design/access-server/dataset/design-crowdb-access-dataset.md`            | Dataset authority, payload lifecycle, REST and SDK.     |
+| `doc/design/access-server/dataset/design-dataset-control.md`                 | Composition, Split revisions, bounded reads and cleanup. |
 | `doc/design/access-server/dataset/spec-crowdb-dataset.md`                     | Normative Dataset behavior and compatibility.           |
 | `doc/design/access-server/dataset/openapi-crowdb-dataset-v1.yaml`             | Dataset REST v1 schemas, framing, bounds and retries.   |
 | `doc/design/access-server/dataset/openapi-crowdb-dataset-v2.yaml`             | Dataset REST v2 capability-gated control operations.    |
