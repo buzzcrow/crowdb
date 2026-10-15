@@ -238,8 +238,9 @@
    existing DiskDB usage reporting.
    - Fetch only opened inventory branches; use at most four workers with duplicate
      request coalescing. Do not fetch runtime usage, scan all disks or load bitmaps
-     merely because Cluster opens. Show cached summaries with time; entering
-     Capacity or explicitly requesting totals fetches the appropriate aggregate.
+     merely because Cluster opens. Root/Rack Capacity shows cached summaries
+     with time until explicit Refresh requests aggregate runtime observations;
+     opened DiskGroup/Disk scopes request their corresponding runtime data.
    - Distinguish logical capacity/allocated/free, file physical allocation, and
      backing filesystem available space. Deduplicate filesystem observations and
      never sum its shared available space once per file. File creation preflight
@@ -367,6 +368,11 @@
   long-running service worker settings. They must not create one host-sized
   thread pool per status observation. Preserve the Node PID/resource budget;
   do not raise it to mask control-query thread pressure.
+- Explicit single mode retains its fixed four-file development profile; supplied
+  external media require standard/manual mode. Reject that combination before
+  launching. The launcher does not write an empty external-mapping receipt into
+  a pristine single root, because it would race bootstrap's clean-root check.
+  Do not relax that check or delete an existing unknown root entry automatically.
 - A pristine single-mode data root is initialized by its own bootstrap. External
   supplied-media mappings are a standard-node flow; do not precreate arbitrary
   entries in an uninitialized single root to emulate standard admission.

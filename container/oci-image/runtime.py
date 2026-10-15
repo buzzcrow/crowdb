@@ -67,6 +67,8 @@ class Runtime:
 
     def create(self, args):
         disks = inputs(args)
+        if getattr(args, "startup_mode", "manual") == "single" and disks:
+            raise ValueError("single startup uses fixed preview disks; supplied media require manual mode")
         validate_retained_inputs(args.data_root, disks)
         token = str(uuid.uuid4())
         shares = getattr(args, "cpu_shares", None)
@@ -97,7 +99,10 @@ class Runtime:
                 kind = "-f" if disk["backend"] == "file" else "-b"
                 self.invoke("exec", "--user", "10001:10001", container, "sh", "-c",
                             'test "$1" "$2" && test -r "$2" && test -w "$2"', "sh", kind, disk["path"])
-            record_inputs(args.data_root, disks)
+            # Single bootstrap requires a pristine root before its manifest is
+            # accepted. An empty external-mapping receipt must not race it.
+            if args.startup_mode != "single":
+                record_inputs(args.data_root, disks)
             return container
         except BaseException:
             # A failed create can leave a container; only this operation owns it.

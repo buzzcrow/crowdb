@@ -1543,3 +1543,12 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   two-thread control bound is constant under worker settings 1/64; it includes
   the executable's existing auxiliary thread, rather than asserting a fictional
   one-thread process. Keep actual request/reply and subprocess success assertions.
+- Launcher boundary regression also proves that writing an empty mapping receipt
+  after starting single mode dirties its pristine root before bootstrap can accept
+  the manifest. The first test failed with `container-storage.json` present and
+  with supplied inputs incorrectly accepted. Single mode now rejects external
+  media before launch and leaves empty-mapping receipt creation to standard mode.
+  This matches the existing fixed preview profile, without weakening clean-root
+  validation or deleting retained files. All 31 OCI host tests pass. The adapter
+  is host-only and excluded from staged image inputs; the Node stage remains the
+  committed `a1eeb063` sources, while host adapter changes are tracked separately.

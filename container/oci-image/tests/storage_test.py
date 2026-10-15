@@ -18,6 +18,28 @@ from storage import inputs, record_inputs, runtime_arguments, validate_retained_
 
 
 class StorageTest(unittest.TestCase):
+    def test_single_startup_keeps_the_initial_root_clean_and_rejects_external_media(self):
+        for supplied in (False, True):
+            with self.subTest(supplied=supplied), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory) / "node"
+                root.mkdir()
+                source = Path(directory) / "external.img"
+                source.write_bytes(b"retained")
+                args = SimpleNamespace(data_root=root, disk_file=[source] if supplied else [], device=[],
+                                       name="node", cpus=1, memory_mib=512, network="host",
+                                       startup_mode="single", physical_host_id="host", interface="eth0",
+                                       password_file=None, seed=[], ui_port=None, image="image")
+                runtime = Runtime("docker")
+                with patch.object(runtime, "invoke", return_value="container") as invoke, patch.object(runtime, "verify"):
+                    if supplied:
+                        with self.assertRaisesRegex(ValueError, "single.*supplied"):
+                            runtime.create(args)
+                        invoke.assert_not_called()
+                    else:
+                        self.assertEqual(runtime.create(args), "container")
+                    self.assertEqual(list(root.iterdir()), [], "single bootstrap owns its initial data directory")
+                self.assertEqual(source.read_bytes(), b"retained")
+
     def test_failed_start_preserves_logs_before_owned_cleanup(self):
         for owned in (True, False):
             with self.subTest(owned=owned), tempfile.TemporaryDirectory() as directory:
