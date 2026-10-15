@@ -768,3 +768,65 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   Offline, verifies a changed process PID, stable logical instance ID, advanced
   owner generation and unknown occupancy, then continues validated Online and
   original-byte reads. Rebuilt-image verification is pending.
+
+## Remaining node-admission integration
+
+- Accept one immutable node storage/service plan on the authenticated monitor,
+  tied to discovery UUID and admission operation before initial binding. Resolve
+  numeric node/cluster authority only from the matching confirmed admission;
+  unbound or nonquorate nodes wait without effective disk registration. Include
+  diskless selection, selected existing supplied inputs and the no-input default
+  of one preallocated 16-GiB file with 1-GiB reserve. Never create fallback files
+  when supplied inputs are invalid, missing or not authorized.
+- Extend the existing candidate form with Node/Services/Storage sections. Verify
+  credentials and read the private inventory before the final initialization
+  summary; display individual media and require explicit raw-device agreement.
+  Final submission persists the plan once. Preserve the existing default service
+  choices and dependency waiting states. Background execution must not depend on
+  the browser; investigate reusing the node's owned REST backend for existing
+  typed deployment operations rather than duplicating launch logic.
+- Reuse or create a compatible node-local group per media class, preserving all
+  existing placements. Resolve metadata binding against an existing ordinary KV
+  group and persist its choice; do not silently create Group 1 or expand voters.
+  Unbound ownership remains a visible prerequisite, distinct from media access.
+- Supplied-file/raw provisioning needs a durable bounded full-zero verification
+  before fresh admission; absence of a recognized signature is not blank proof.
+  Read-only validation must reject nonzero, foreign, in-use, replaced or aliased
+  media. Keep fixed expected path/type/identity/capacity and per-disk progress.
+  Use exclusive raw-device access and preserve its exclusion through DiskIO fd
+  retirement. Cross-node resource claims must account for authoritative physical
+  host identity as well as node-local backing identity.
+- Extend existing owned Docker/containerd acceptance with disposable loop-backed
+  media; create, verify and detach only the fixture's own loop resource. The
+  existing containerd host fixture supplies an isolated privileged runtime host;
+  the CROWDB node itself remains unprivileged and cannot use a runtime socket.
+- Retire Console's unverified legacy physical Create shortcut when this path is
+  available. Keep trusted existing bootstrap formats readable without a header.
+  Also finish Missing/replaced-media health publication, scoped Cluster/Rack
+  workspaces, remaining zone navigation, permanent docs and full acceptance.
+
+## Current verification and physical health
+
+- Committed image `7b283051` passed native hardware lifecycle acceptance in
+  `run-9ab937107441447787b41a1b65970db1`: browser 12.6 s, native client 33.15 s.
+  Actual Offline owner restart advanced its generation, reported unknown usage,
+  preserved allocation records and completed strict Online with original bytes.
+- Fresh bridge-admission baseline on the same image passed in
+  `run-4cfd63d8787e47a78a43b0b7046f76bf`: prepare/init 7.7 s, cross-UI recovery
+  4.8 s, independent cluster cleanup 2.3 s, authenticated node update 11.4 s.
+  Other shared-rack, minority, remote-service and delayed-admission checks pass.
+- Monitor physical health now checks one eight-receipt page per background pass,
+  with one worker and five-second spacing. Exact retained identity, geometry,
+  no-follow descriptor and first/last reads reuse the read-only recovery check.
+  Missing/replaced/unreadable media is quarantined Offline at the captured disk
+  revision under Rack CAS; stale observations cannot close a later lifecycle.
+  Records, placement and bytes survive; restored paths never reopen automatically.
+- Two live SDK physical-failure fencing cases, three retained-medium cases,
+  affected all-target/all-feature Clippy and Python compilation pass. Initial
+  checks caught a test name shadowing error and ordinary Clippy layout/style
+  issues; fixed without weakening assertions or lint configuration.
+- Actual missing-media acceptance is added to the owned native hardware fixture:
+  admit a separate file, move only that fixture file out of the disk directory,
+  observe authoritative exclusion, restart the monitor, prove membership remains
+  with no replacement, restore the same inode and prove it remains Offline.
+  Updated-image verification remains pending; no completion claimed yet.

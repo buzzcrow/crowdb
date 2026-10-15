@@ -114,3 +114,48 @@ def verify_file_admission(cluster):
             lambda result: result["phase"] == "registered", "same-intent file replay", seconds=10)
     assert {disk["disk_id"]: disk for disk in cluster.api(f"/api/nodes/{node}/disk-groups/{group}/disks")} == original
     (cluster.artifacts / "file-admission.json").write_text(json.dumps(completed, indent=2))
+    verify_missing_medium(cluster, node)
+
+
+def verify_missing_medium(cluster, node):
+    """An owned missing file remains admitted and needs validated recovery."""
+    group = 593
+    cluster.api(f"/api/nodes/{node}/disk-groups", {
+        "id": group, "name": "missing-medium-acceptance", "store_id": 1, "group_id": 1}, status=201)
+    request = {"operation_id": str(uuid.uuid4()), "disk_group_id": group,
+        "capacity_bytes": 64 * 1024 ** 2, "sparse": False}
+    cluster.api(f"/api/nodes/{node}/disk-files", request, status=202)
+    prepared = wait(lambda: file_operation(cluster, node, request["operation_id"]),
+        lambda result: result["phase"] == "registered", "health fixture admission", seconds=10)
+    disks_url = f"/api/nodes/{node}/disk-groups/{group}/disks"
+    original = cluster.api(disks_url)
+    assert len(original) == 1, original
+    disk = original[0]["disk_id"]
+    endpoint = f"{disks_url}/{disk}"
+    backing = cluster.api(f"{endpoint}/backing")
+    path = prepared["path"]
+    assert path == backing["container_path"]
+    assert path.startswith("/opt/crowdb/data/disks/") and "/" not in path.removeprefix("/opt/crowdb/data/disks/")
+    retained = f"/opt/crowdb/data/health-retained-{request['operation_id']}.img"
+    cluster.command("exec", "--user", "crowdb", cluster.servers[0], "mv", "--", path, retained)
+    try:
+        closed = wait(lambda: cluster.api(f"{endpoint}/lifecycle"),
+            lambda result: result["offline"], "missing registered medium quarantined", seconds=10)
+        assert not closed["removed"], closed
+        assert len(cluster.api(disks_url)) == 1
+        assert cluster.api(f"{endpoint}/backing")["backing_identity"] == backing["backing_identity"]
+        cluster.command("restart", cluster.servers[0])
+        cluster.ready()
+        inventory = control(cluster, {"command": "disk_inventory"})
+        assert not any(row["path"] == path for row in inventory["disks"]), inventory
+        assert cluster.api(f"{endpoint}/lifecycle")["offline"]
+        assert len(cluster.api(disks_url)) == 1
+    finally:
+        cluster.command("exec", "--user", "crowdb", cluster.servers[0], "mv", "--", retained, path)
+    assert cluster.api(f"{endpoint}/lifecycle")["offline"], "restored path must not reopen membership"
+    inventory = control(cluster, {"command": "disk_inventory"})
+    restored = next(row for row in inventory["disks"] if row["path"] == path)
+    assert restored["backing_identity"] == backing["backing_identity"]
+    assert restored["capacity_bytes"] == request["capacity_bytes"]
+    (cluster.artifacts / "missing-medium.json").write_text(json.dumps({
+        "closed": closed, "backing": backing, "restored": restored}, indent=2))

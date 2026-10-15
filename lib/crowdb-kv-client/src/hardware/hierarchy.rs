@@ -29,6 +29,7 @@ mod storage_rejoin;
 mod storage_removal;
 pub use storage_removal::DiskRemovalReadiness;
 mod storage_guard;
+mod storage_health;
 mod storage_observation;
 mod storage_online;
 mod storage_page;

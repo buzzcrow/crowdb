@@ -33,6 +33,7 @@ mod file_admission;
 mod file_preparation;
 mod initialization;
 mod retained_storage;
+mod storage_health;
 #[cfg(feature = "test-util")]
 pub use initialization::InitializationForTests;
 mod preparation;
@@ -117,12 +118,14 @@ pub async fn run_node(config: NodeRuntimeConfig) -> Result<()> {
     initialization.resume(&profile)?;
     let mut file_allocator = file_preparation::FileAllocator::default();
     file_allocator.resume(&root)?;
+    let mut storage_health = storage_health::StorageHealth::default();
     let mut heartbeat = tokio::time::interval(Duration::from_secs(1));
     let result = async {
         loop {
             tokio::select! {
                 _ = heartbeat.tick() => {
                     file_allocator.tick(&root)?;
+                    storage_health.tick(&root).await;
                     health.tick(&profile, &web, &mut processes).await?;
                 }
                 connection = listener.accept() => {
@@ -147,20 +150,26 @@ pub async fn run_node(config: NodeRuntimeConfig) -> Result<()> {
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     }.await;
     initialization.stop().await;
+    storage_health.stop().await;
     file_allocator.stop().await;
     let _ = stop.send(());
     if !discovery.is_finished() {
         discovery.await??;
     }
+    stop_services(&profile, &mut processes).await?;
+    std::fs::remove_file(socket)?;
+    result
+}
+
+async fn stop_services(profile: &DeploymentProfile, processes: &mut ProcessManager) -> Result<()> {
     let mut order = vec!["web".into(), "kv".into()];
     order.extend(
-        services::retained(&profile)?
+        services::retained(profile)?
             .into_iter()
             .map(|intent| intent.service_id),
     );
     processes.stop_all(&order, Duration::from_secs(10)).await?;
-    std::fs::remove_file(socket)?;
-    result
+    Ok(())
 }
 
 async fn execute(
