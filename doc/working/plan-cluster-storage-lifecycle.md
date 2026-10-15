@@ -680,3 +680,11 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   Four live SDK tests and the complete DiskDB suite pass, including same-instance
   restart fencing. Affected SDK/DiskDB/server/protocol all-target, all-feature
   Clippy and workspace formatting pass. Native image verification remains pending.
+- Strict retained-zone validation now requires a CRC/geometry-valid existing
+  snapshot, strictly decoded live facts, valid ranges/states/timestamps and
+  nonoverlapping busy records. It retains uncertain occupied bits and seeds the
+  incarnation source. Fixed-cutoff scans use advancing 128-record pages, with
+  explicit 131072-record/32-MiB per-zone bounds; incomplete scans fail closed.
+  Four focused tests pass, including real multi-page reads and unchanged snapshot
+  bytes after malformed input. DiskDB all-target/all-feature Clippy and fmt pass.
+  The loader is not yet wired into Online execution or retained startup.

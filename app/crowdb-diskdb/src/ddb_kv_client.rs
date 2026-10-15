@@ -28,6 +28,7 @@ use crate::model::records::{BusyRecord, FreeRecord, ZoneRecords};
 
 mod disk_writes;
 mod ownership;
+mod retained;
 mod zone_init;
 pub use ownership::OwnershipFence;
 pub use zone_init::MAX_ZONE_INIT_BATCH;

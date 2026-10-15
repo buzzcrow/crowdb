@@ -23,6 +23,7 @@ pub mod compaction;
 pub mod disk_recovery;
 pub mod full_scan;
 pub mod journal_replay;
+pub mod retained;
 
 use std::sync::Arc;
 
