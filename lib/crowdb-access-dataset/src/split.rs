@@ -35,3 +35,7 @@ mod partition;
 mod policy;
 pub use partition::{partition_bucket, SamplePartition};
 pub use policy::SplitValidation;
+
+mod lifecycle;
+mod state;
+pub use lifecycle::{SplitDraftEdit, SplitLifecycleError};

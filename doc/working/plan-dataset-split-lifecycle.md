@@ -220,7 +220,15 @@ until its corresponding API and visibility tests pass.
   policy}.rs`, `tests/split_selection_test.rs`. Exit: deterministic sample assignment
   across order/restart/SDK, no payload search, bounded overlap examples and explicit
   complete/partial counts. Empty named Splits valid, empty data Snapshot invalid.
-- [~] **D2 Prepare immutable revision pages**: draft -> evaluating -> prepared;
+- [x] **D2a Persist independent Split drafts and edit receipts**: begin/status,
+  whole-set revision-CAS edit and abandon use bounded durable records. A successful
+  edit marker is helped into a receipt before any later draft mutation. Exact
+  historical retries return their original revision without overwriting newer
+  edits. Owning Snapshot leases protect active drafts. Files: `split/{lifecycle,
+  state}.rs`, `tests/split_draft_test.rs`. Exit: lost reply/restart, divergent retry,
+  historical retry, stale revision, unchanged Dataset head and abandon/frozen
+  transitions pass. Focused tests (2), crate all-target Clippy and formatting pass.
+- [~] **D2b Prepare immutable revision pages**: draft -> evaluating -> prepared;
   store page integrity and complete binding before ready status. Validate member
   universe and cross-Split policy on one Snapshot. Define idempotent revision edits,
   rename/remove and cancellation/abandon. Files: new `split/{draft,pages,prepare}.rs`,
