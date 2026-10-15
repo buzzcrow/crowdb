@@ -548,8 +548,12 @@ impl DdbDiskGroup {
         let mut allocatable_capacity_bytes = 0u64;
         let mut allocatable_busy_bytes = 0u64;
         let mut disk_usages: Vec<DiskUsage> = Vec::with_capacity(disks_guard.len());
+        let mut usage_known = true;
         for disk in disks_guard.iter() {
             let u = disk.usage();
+            usage_known &= disk.disk_value.zone_count > 0
+                && u.zone_count == disk.disk_value.zone_count
+                && u.capacity_bytes > 0;
             capacity_bytes += u.capacity_bytes;
             busy_bytes += u.busy_bytes;
             if membership
@@ -570,6 +574,7 @@ impl DdbDiskGroup {
         let allocatable_free_bytes = allocatable_capacity_bytes.saturating_sub(allocatable_busy_bytes);
         DiskGroupUsage {
             disk_group_id: self.disk_group_id,
+            usage_known,
             capacity_bytes,
             busy_bytes,
             free_bytes,
@@ -640,6 +645,7 @@ impl DdbDiskGroup {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiskGroupUsage {
     pub disk_group_id: DiskGroupId,
+    pub usage_known: bool,
     pub capacity_bytes: u64,
     pub busy_bytes: u64,
     pub free_bytes: u64,

@@ -30,6 +30,7 @@ async fn discover_registered_diskdb_instance() {
         "127.0.0.1:11000",
         &[1, 2],
         &[DiskGroupUsageSummary {
+            usage_known: true,
             disk_group_id: 1,
             capacity_bytes: 1000,
             used_bytes: 0,

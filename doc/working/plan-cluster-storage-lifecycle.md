@@ -756,3 +756,15 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
 - Remaining admission work must also retire the Console's unverified legacy
   physical Create shortcut once supplied-medium provisioning is connected. The
   trusted low-level SDK bootstrap API still supports existing disk formats.
+- Capacity REST projections now expose explicit usage coverage. Unloaded or
+  partial geometry cannot claim known occupancy; the UI renders unknown used/free
+  values at disk and aggregate scopes. Known zero remains valid. No data-group
+  wire or on-medium format changes are needed. Group-0 heartbeat summaries also
+  carry coverage, defaulting old missing flags to unknown. Allocatable capacity
+  remains separately reported, so one unknown Offline disk does not hide healthy
+  allocation candidates. Twenty-five protocol cases, fourteen DiskDB usage/query
+  cases, 231 UI cases/types and affected all-target/all-feature Clippy pass.
+- Native lifecycle acceptance now restarts the actual retained disk's owner while
+  Offline, verifies a changed process PID, stable logical instance ID, advanced
+  owner generation and unknown occupancy, then continues validated Online and
+  original-byte reads. Rebuilt-image verification is pending.

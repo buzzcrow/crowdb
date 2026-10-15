@@ -320,6 +320,7 @@ export interface CapacityUsageResponse {
 }
 
 export interface DiskGroupInfoDto {
+  usage_known?: boolean;
   rack_id: number;
   node_id: number;
   disk_group_id: number;
@@ -333,6 +334,7 @@ export interface DiskGroupInfoDto {
 }
 
 export interface DiskInfoDto {
+  usage_known?: boolean;
   rack_id: number;
   node_id: number;
   disk_group_id: number;

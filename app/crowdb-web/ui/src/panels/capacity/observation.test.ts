@@ -25,6 +25,16 @@ it('uses reported free bytes and refuses mismatched inventory coverage', () => {
   expect(observeCapacity(null, usage).capacity).toBeNull();
 });
 
+it('never reports unloaded or partly loaded Offline allocation metadata as empty/free', () => {
+  const unloaded = { disk_groups: usage.disk_groups.map(group => ({ ...group, usage_known: false,
+    disks: group.disks.map(disk => ({ ...disk, usage_known: false, capacity_bytes: 0, busy_bytes: 0, free_bytes: 0,
+      capacity_units: 10, unit_size_bytes: 10 })) })) } as CapacityUsageResponse;
+  expect(observeCapacity(hardware, unloaded, { diskId: 'disk1' })).toEqual({ capacity: 100, busy: null, free: null });
+  expect(observeCapacity(hardware, unloaded)).toEqual({ capacity: 200, busy: null, free: null });
+  const partial = { disk_groups: unloaded.disk_groups.map(group => ({ ...group, disks: group.disks.map(disk => ({ ...disk, capacity_bytes: 50, free_bytes: 50 })) })) };
+  expect(observeCapacity(hardware, partial, { diskId: 'disk1' }).free).toBeNull();
+});
+
 
 it('accepts reserved space with matching physical geometry and ignores removed groups', () => {
   const actual = { disk_groups: usage.disk_groups.map(group => ({ ...group, capacity_bytes: 90,

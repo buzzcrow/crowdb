@@ -305,8 +305,8 @@ pub use chunk_task_value::{decode_chunk_task_value, encode_chunk_task_value, Chu
 pub mod fb_wrappers;
 
 pub use crate::types::diskdb_util::{
-    disk_id, effective_status, DiskIdExt, HwStatusExt, RecoveryScanProgressValueExt, ZoneAllocationStateExt,
-    ZoneValueExt, EMPTY_ZONE_BITMAP_LZ4,
+    disk_id, disk_usage_is_complete, effective_status, DiskIdExt, HwStatusExt, RecoveryScanProgressValueExt,
+    ZoneAllocationStateExt, ZoneValueExt, EMPTY_ZONE_BITMAP_LZ4,
 };
 
 pub mod common_type;

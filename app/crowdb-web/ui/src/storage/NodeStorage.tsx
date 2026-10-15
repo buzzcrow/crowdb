@@ -8,6 +8,7 @@ import type { NodeDiskGroups } from '../data/useDiskInventory';
 import { useSelection } from '../contexts/SelectionContext';
 import { formatBytes } from '../utils/capacity';
 import { hwStatusLabel } from '../utils/entityDisplay';
+import { knownDiskUsage } from '../panels/capacity/observation';
 import { createNodeDiskFile } from '../api';
 import { CreateFileDiskDialog } from './CreateFileDiskDialog';
 import { useNodeStorage } from './useNodeStorage';
@@ -106,7 +107,7 @@ export function NodeStorage({ nodeId, rackId, active, readonly, ready, inventory
           </div>
           <p className="tw-text-sm">{observed?.backend ?? 'Backend unknown'} · Media {media} · {formatBytes(disk.capacity_bytes)} · {health}</p>
           <Button size="sm" variant="secondary" disabled={readonly || !ready} onClick={() => setManaging({ disk: disk.disk_id, group: group.id })}>Manage disk</Button>
-          <p className="tw-text-xs tw-text-muted">{report ? `${formatBytes(report.busy_bytes)} used` : 'Usage unknown'} · {observed?.error || (model.inventory && !observed ? 'Missing from latest discovery' : disk.device_path)}</p>
+          <p className="tw-text-xs tw-text-muted">{report && knownDiskUsage(report) ? `${formatBytes(report.busy_bytes)} used` : 'Usage unknown'} · {observed?.error || (model.inventory && !observed ? 'Missing from latest discovery' : disk.device_path)}</p>
         </article>;
       })}
     </section>)}

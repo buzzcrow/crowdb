@@ -5,6 +5,9 @@ import type { CapacityUsageResponse, HardwareCapacitySummary, DiskInfoDto } from
 
 export interface CapacityScope { rackId?: number; nodeId?: number; dgId?: number; diskId?: string }
 export const diskKey = (id: string) => id.replace(/-/g, '').toLowerCase();
+// Older responses omit the explicit coverage flag. A zero/partial runtime
+// observation from a current server is never interpreted as an empty disk.
+export const knownDiskUsage = (disk: DiskInfoDto) => disk.usage_known !== false && disk.capacity_bytes > 0;
 const valid = (capacity: number, busy: number, free: number) =>
   [capacity, busy, free].every(value => Number.isFinite(value) && value >= 0) && busy + free <= capacity;
 
@@ -25,14 +28,14 @@ export function observeCapacity(hardware: HardwareCapacitySummary | null | undef
     const disk = groups?.flatMap(group => group.disks).find(disk => diskKey(disk.disk_id) === key);
     const report = reports.flatMap(group => group.disks).find(disk => diskKey(disk.disk_id) === key);
     const capacity = disk?.capacity_bytes ?? report?.capacity_bytes ?? null;
-    const known = !!report && capacity === physicalCapacity(report) && valid(report.capacity_bytes, report.busy_bytes, report.free_bytes) && report.capacity_bytes <= capacity;
+    const known = !!report && knownDiskUsage(report) && capacity === physicalCapacity(report) && valid(report.capacity_bytes, report.busy_bytes, report.free_bytes) && report.capacity_bytes <= capacity;
     return { capacity, busy: known ? report.busy_bytes : null, free: known ? report.free_bytes : null };
   }
   const inventoryMatches = !!groups;
   const capacity = groups && (groups.length > 0 || reports.length === 0) ? groups.reduce((sum, group) => sum + group.capacity_bytes, 0) : null;
   const complete = inventoryMatches && !!usage && groups!.every(group => {
     const report = reports.find(report => report.disk_group_id === group.disk_group_id && report.node_id === group.node_id);
-    return !!report && report.disks.reduce((sum, disk) => sum + physicalCapacity(disk), 0) === group.capacity_bytes && valid(report.capacity_bytes, report.busy_bytes, report.free_bytes) && report.capacity_bytes <= group.capacity_bytes &&
+    return !!report && report.usage_known !== false && report.disks.every(knownDiskUsage) && report.disks.reduce((sum, disk) => sum + physicalCapacity(disk), 0) === group.capacity_bytes && valid(report.capacity_bytes, report.busy_bytes, report.free_bytes) && report.capacity_bytes <= group.capacity_bytes &&
       group.disks.every(disk => report.disks.some(observed => diskKey(disk.disk_id) === diskKey(observed.disk_id) && physicalCapacity(observed) === disk.capacity_bytes));
   });
   const covered = groups?.map(group => reports.find(report => report.disk_group_id === group.disk_group_id && report.node_id === group.node_id)!) ?? [];

@@ -117,6 +117,7 @@ pub(super) async fn remove_occupied(context: &TestNativeContext) {
     let remaining = allocator.allocate_blocks(allocation()).await.unwrap().segments;
     assert_eq!(remaining.len(), 1);
     assert_ne!(remaining[0].disk_id, Some(key.disk_id));
+    super::native_disk_usage::restart_offline_owner(context, &key).await;
     let online = online_retained(context, &endpoint, &rejoined, &io, target).await;
     assert_eq!(hardware.disk_storage(&key).await.unwrap(), Some(original));
     assert_eq!(

@@ -315,6 +315,8 @@ pub struct DiskdbExtra {
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct DiskGroupUsageSummary {
     pub disk_group_id: u64,
+    #[serde(default)]
+    pub usage_known: bool,
     pub capacity_bytes: u64,
     pub used_bytes: u64,
     pub free_bytes: u64,

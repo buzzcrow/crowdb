@@ -27,6 +27,7 @@ impl KeepAlive {
                 let u = dg.aggregate_usage();
                 Some(DiskGroupUsageSummary {
                     disk_group_id: dg_id,
+                    usage_known: u.usage_known,
                     capacity_bytes: u.capacity_bytes,
                     used_bytes: u.busy_bytes,
                     free_bytes: u.free_bytes,
