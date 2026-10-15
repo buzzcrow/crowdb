@@ -401,6 +401,13 @@
   Credential enumeration is bounded at 4096 records; a truncated/timed-out result
   fails explicitly rather than authorizing new issuance or a partial cache.
 
+- New external-device admission requires launcher-verified physical resource
+  lineage, including a loop device's backing-file identity. Unknown stacked or
+  ambiguous aliases remain ineligible; an initialization checkbox cannot supply
+  missing identity evidence. Exact opened device/inode identity and canonical
+  physical resource identity serve different checks. This provisioning work is
+  still pending and is not counted as accepted raw-device support yet.
+
 **Dependencies**:
 
 - Reuse current durable Group-0 bootstrap exclusion, immutable intent, monitor

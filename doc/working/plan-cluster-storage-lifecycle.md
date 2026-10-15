@@ -1099,3 +1099,27 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   so the final case exercises the actual caller limit while retaining its failure
   assertions. No product timeout, retry, or assertion was relaxed. OCI acceptance
   with the updated credential authority is next.
+
+### Follow-on handoff
+
+- Continue R237 after R235. Its detail and `plan-dataset-split-lifecycle.md` are
+  present; the latest user instruction authorizes implementation despite the old
+  planning-only handoff wording. Preserve R236 as another workstream's UI scope.
+- R238 detail/plan are not currently present. Checked the working documentation,
+  all local Git refs' matching requirement history, and active worktrees; the
+  index still says next number R238. Do not invent its scope or consume that
+  number. Recheck after R237; retain this missing-artifact note for the user's
+  later review without interrupting authorized work now.
+
+- Image `ebf670db`, config
+  `sha256:1585b41dd9e1b80087231a799e1438c59735a378536f7e8a2a820157be8b0f69`,
+  preserves every original bridge assertion and the default browser submit/close
+  (9.5 s) in `run-7673e60165224396a938f85a5d93d56d`. The later Node 2 setup
+  HTTP read times out. Read-only retained journals show all three setup plans
+  Ready, all six selected services Ready, and all default disks Ready; this does
+  not prove their current health. Actual Chunk-KV logs show `Rust cannot catch
+  foreign exceptions, aborting` / SIGABRT after readiness. No core was retained;
+  the recorded host core policy pipes to apport. Do not change timeouts or claim
+  final acceptance. Capture owned cgroup pids/memory counters and process thread
+  counts on the next failure to distinguish resource exhaustion from runtime
+  state/recovery failure before changing production code.

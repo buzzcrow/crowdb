@@ -12,7 +12,8 @@ import time
 import urllib.error
 import uuid
 
-from bridge_node import IMAGE, PREFIX, docker, HTTP, origin_for, start_node, cleanup
+from bridge_node import IMAGE, PREFIX, DATA, docker, HTTP, origin_for, start_node, cleanup
+from node_resources import capture as capture_resources
 
 
 def request(origin, path, body=None):
@@ -144,6 +145,7 @@ def main():
         scenario("node-default-setup.py").verify(docker, request, wait, names, origins)
 
     except Exception:
+        capture_resources(docker, names, DATA / "node-resources.json")
         for name in names:
             try:
                 print(docker("logs", name), flush=True)
