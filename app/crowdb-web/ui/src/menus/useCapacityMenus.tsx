@@ -102,7 +102,7 @@ export function useCapacityMenus({ readonly, managed, nodeManagement, onManageNo
           destructive: true,
           onSelect: () => requestDelete('Disk Group', dgId, async () => {
             await runMutation('Delete Disk Group', t.label || t.id, () => removeDiskGroup(dgNodeId, dgId));
-          }, nodeManagement ? 'The disk group must be empty; remove its disks through Node storage first.' : 'All disks in this disk group will also be removed.'),
+          }, nodeManagement ? 'Only unassigned disk groups without retained media can be deleted. Removed disks still retain their group.' : 'All disks in this disk group will also be removed.'),
         });
       } else if (t.type === 'Disk') {
         const diskId = String(p.disk_id || t.rawId || t.id);

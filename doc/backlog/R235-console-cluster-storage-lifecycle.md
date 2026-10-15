@@ -364,6 +364,11 @@
   Retain diagnostic maintenance controls, but replace legacy direct Up/Down/Delete
   controls. Group creation menus use the same verified file provisioning dialog.
   Empty-group deletion remains separate and cannot cascade through physical disks.
+- Keep parent metadata while any disk receipt is retained, including Removed.
+  DiskGroup deletion additionally requires no owner or metadata binding. An empty
+  membership alone is not sufficient. Explain this in confirmation; do not add
+  an implicit unassign/forget cascade. Recovery/forgetting retained media remains
+  outside this release and needs later review.
 - Short-lived SSH control requests use a current-thread runtime, independent of
   long-running service worker settings. They must not create one host-sized
   thread pool per status observation. Preserve the Node PID/resource budget;

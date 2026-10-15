@@ -1562,3 +1562,10 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   alongside inode/tail checks. OCI 31, media ownership 4 and shell syntax pass.
   This changes a packaged runtime asset; commit, restage and build a new image
   before actual acceptance. Do not reuse the prior image for the new entrypoint.
+- Clarify parent deletion before final freeze: the existing authoritative guard
+  rejects retained receipts even after Remove, and also rejects an owner/binding.
+  The previous confirmation incorrectly implied that removing membership alone
+  makes a group deletable. Explain the real unassigned/no-retained-media condition;
+  do not add an unsafe implicit forget/cascade. Existing CRUD acceptance must
+  retain its separate empty/unassigned group deletion checks and verify that
+  physical media keep their recovery parent. This is a documented release limit.
