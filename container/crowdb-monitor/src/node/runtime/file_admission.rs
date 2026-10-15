@@ -35,18 +35,15 @@ pub(super) async fn validate_placement(root: &Path, request: &PrepareDiskFile) -
         return Ok(());
     };
     let hardware = authority(root, request)?;
-    let node = hardware
-        .get_node(placement.rack_id, request.node_id)
-        .await?
-        .ok_or("file admission node is absent from Group 0")?;
-    if !node.disk_group_ids.contains(&placement.disk_group_id)
-        || hardware
-            .get_disk_group(placement.rack_id, request.node_id, placement.disk_group_id)
-            .await?
-            .is_none()
-    {
-        return Err("file admission requires an existing DiskGroup on this node".into());
-    }
+    hardware
+        .validate_disk_group_storage(
+            placement.rack_id,
+            request.node_id,
+            placement.disk_group_id,
+            placement.media_type,
+            placement.unit_size_bytes,
+        )
+        .await?;
     Ok(())
 }
 

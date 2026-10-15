@@ -113,7 +113,7 @@ async fn bound_storage_reads_observe_monitor_publication_without_console_cache_r
     );
     verify_retained_backing(&app, &hw).await;
     let capacity = read(&app, "/api/hardware/capacity").await;
-    assert_eq!(capacity["disk_groups"][0]["disks"].as_array().unwrap().len(), 3);
+    assert_eq!(capacity["disk_groups"][0]["disks"].as_array().unwrap().len(), 2);
     assert_eq!(read(&app, "/api/nodes/2/disk-groups/7").await["id"], 7);
     assert_eq!(
         read(
@@ -126,14 +126,27 @@ async fn bound_storage_reads_observe_monitor_publication_without_console_cache_r
 }
 
 async fn verify_retained_backing(app: &axum::Router, hw: &HardwareClient) {
-    let backing_path = "/api/nodes/2/disk-groups/7/disks/ffffffffffffffff-ffffffffffffffff/backing";
+    hw.add_node(
+        1,
+        2,
+        &NodeValue {
+            disk_group_ids: vec![7, 8],
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    hw.add_disk_group(1, 2, 8, &DiskGroupValue::default())
+        .await
+        .unwrap();
+    let backing_path = "/api/nodes/2/disk-groups/8/disks/ffffffffffffffff-ffffffffffffffff/backing";
     assert!(read(app, backing_path).await.is_null());
     let record = crowdb_protocol::disk_storage::DiskStorageRecord {
         version: 1,
         operation_id: "backing-observation".into(),
         rack_id: 1,
         node_id: 2,
-        disk_group_id: 7,
+        disk_group_id: 8,
         disk_id: DiskId {
             high: u64::MAX,
             low: u64::MAX,

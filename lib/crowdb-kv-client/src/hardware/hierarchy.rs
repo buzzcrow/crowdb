@@ -20,6 +20,7 @@ mod mutation;
 mod ownership;
 mod storage_activation;
 mod storage_admission;
+mod storage_compatibility;
 mod storage_guard;
 mod storage_observation;
 pub use storage_observation::DiskIoObservation;

@@ -33,6 +33,14 @@ impl HardwareClient {
             if self.storage_replay(record, &group).await? {
                 return Ok(());
             }
+            self.validate_disk_group_storage(
+                record.rack_id,
+                record.node_id,
+                record.disk_group_id,
+                record.media_type,
+                record.geometry.unit_size_bytes,
+            )
+            .await?;
             self.check_storage_duplicates(record).await?;
             group.disk_ids.push(record.disk_id);
             group.disk_ids.sort_unstable_by_key(|id| (id.high, id.low));

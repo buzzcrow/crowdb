@@ -4,9 +4,9 @@
 //! Conditional disk status writes preserve concurrent lifecycle changes.
 
 use crowdb_protocol::{
-    common::{DiskId, HwStatus},
+    common::{DiskId, HwStatus, OwnerMapValue},
     diskdb::rpc::DiskValue,
-    key::{DiskKey, TextKey},
+    key::{DiskKey, OwnerMapKey, RackKey, TextKey},
 };
 
 use super::{mutation, HardwareClient, G0_GROUP, G0_STORE};
@@ -64,5 +64,64 @@ impl HardwareClient {
             Ok(())
         })
         .await
+    }
+}
+
+impl HardwareClient {
+    /// Quarantine a failed load under both ownership and membership fencing.
+    /// Advancing the owner revision invalidates the loader's captured generation.
+    ///
+    /// # Errors
+    /// Rejects changed owners, absent disks, concurrent hierarchy mutation and
+    /// unknown outcomes. Legacy unparented fixtures retain owner-CAS semantics.
+    pub async fn mark_disk_offline_if_owned(
+        &self,
+        key: &DiskKey,
+        instance_id: u64,
+        owner_revision: u64,
+    ) -> Result<()> {
+        let rack_path = RackKey { rack_id: key.rack_id }.to_path();
+        let rack = mutation::read(&self.kv, &rack_path).await?;
+        let owner_path = OwnerMapKey {
+            rack_id: key.rack_id,
+            node_id: key.node_id,
+            disk_group_id: key.disk_group_id,
+        }
+        .to_path();
+        let (owner, generation) = mutation::read(&self.kv, &owner_path)
+            .await?
+            .ok_or_else(|| Error::Server("DiskGroup owner disappeared".into()))?;
+        let current: OwnerMapValue = mutation::decode(&owner_path, &owner)?;
+        if current.instance_id != instance_id || generation != owner_revision {
+            return Err(Error::Server(
+                "DiskGroup ownership changed; stale DiskDB writes are fenced".into(),
+            ));
+        }
+        let path = key.to_path();
+        let (bytes, _) = mutation::read(&self.kv, &path)
+            .await?
+            .ok_or_else(|| Error::Server("disk membership disappeared".into()))?;
+        let mut value: DiskValue = mutation::decode(&path, &bytes)?;
+        value.status = HwStatus::Offline as i32;
+        let mut operations = vec![
+            mutation::put(&path, &value)?,
+            crate::BatchOp::Put {
+                key: owner_path.as_bytes().to_vec().into(),
+                value: owner,
+            },
+        ];
+        let (condition, revision) = if let Some((bytes, revision)) = rack {
+            operations.push(crate::BatchOp::Put {
+                key: rack_path.as_bytes().to_vec().into(),
+                value: bytes,
+            });
+            (rack_path.as_str(), revision)
+        } else {
+            (owner_path.as_str(), generation)
+        };
+        self.kv
+            .batch_write_cas(0, 0, &operations, condition.as_bytes(), revision)
+            .await?;
+        Ok(())
     }
 }

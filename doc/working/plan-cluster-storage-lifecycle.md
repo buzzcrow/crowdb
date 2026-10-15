@@ -446,3 +446,26 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   decimal strings. All 213 UI tests/types and the live authority regression pass.
   Browser continuation/creation/properties assertions are added; rebuilt-image
   execution remains required. New test helper was split after Clippy's line limit.
+- Native workspace acceptance passes on `ff6c5313` with image config
+  `4df579c1e261b261c545c18cd6f3cc5ff20cf1d366709ce4d79e0b676536e0d6`
+  (`run-9ae4dae44375462cbbedde32cbb1afee`). Existing assertions remain; added
+  actual UI file creation, monitor continuation outside Node scope, registered
+  membership/backing properties and candidate navigation. Playwright 6.7 s
+  versus 3.3 s baseline; all added stepTimer boundaries are below 2 s, with
+  extra mutation/lifecycle/return/properties coverage accounting for the increase.
+- DiskGroup admission now validates media class and allocation-unit size before
+  file preparation and again under the atomic Rack fence. Unknown is distinct
+  from legacy HDD; file and raw backends can share a compatible class. Retained
+  removed receipts still constrain reuse. Four compatibility/race regressions
+  and ten admission tests pass. A legacy-sibling fixture explicitly declares
+  HDD before retained admission instead of mixing it with unknown media.
+- Failed DiskDB load write-back now shares the hierarchy Rack fence as well as
+  checking the exact owner generation; it cannot recreate removed membership.
+  Existing four ownership regressions and the concurrent-removal regression pass.
+  Web backing regression now uses an independent compatible group; it passes.
+  Affected all-target/all-feature Clippy and fmt pass.
+- The full monitor suite initially passed functional tests but rustdoc reported
+  missing dependent crates after concurrent feature variants rewrote the shared
+  KV-client output. Cleaning only that crate's generated artifacts and running
+  the same full suite serially passes, including rustdoc. Serialize these Cargo
+  feature variants through the remaining gates.
