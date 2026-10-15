@@ -69,3 +69,36 @@ fn invalid_backing_or_schema_never_becomes_a_usable_record() {
     changed.geometry.capacity_units = u64::MAX;
     assert!(changed.validate().is_err());
 }
+
+#[test]
+fn exclusion_evidence_retains_exact_identity_and_rejects_invalid_generations() {
+    use crowdb_protocol::disk_storage::{DiskExclusionRecord, DiskExclusionReporter};
+    let mut evidence = DiskExclusionRecord {
+        version: 1,
+        rack_id: 1,
+        node_id: 2,
+        disk_group_id: 3,
+        disk_id: DiskId {
+            high: u64::MAX,
+            low: u64::MAX,
+        },
+        disk_revision: u64::MAX,
+        reporter: DiskExclusionReporter::Diskio,
+        instance_id: 7,
+        owner_revision: None,
+    };
+    evidence.validate().unwrap();
+    assert_eq!(
+        serde_json::from_slice::<DiskExclusionRecord>(&serde_json::to_vec(&evidence).unwrap()).unwrap(),
+        evidence
+    );
+    assert!(evidence
+        .key()
+        .ends_with("/ffffffffffffffffffffffffffffffff/diskio/7"));
+    evidence.reporter = DiskExclusionReporter::Diskdb;
+    assert!(evidence.validate().is_err());
+    evidence.owner_revision = Some(1);
+    evidence.validate().unwrap();
+    evidence.disk_revision = 0;
+    assert!(evidence.validate().is_err());
+}

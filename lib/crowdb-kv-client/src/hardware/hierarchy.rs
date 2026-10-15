@@ -14,6 +14,7 @@
 //!
 //! See `doc/design/kv/design-crowdb-kv-group0.md` §2.1, §3.
 
+mod disk_exclusion;
 mod disk_status;
 mod legacy_cascade;
 mod mutation;

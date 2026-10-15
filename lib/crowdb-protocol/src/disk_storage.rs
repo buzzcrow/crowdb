@@ -3,6 +3,9 @@
 
 //! Versioned Group-0 backing identity, separate from the existing disk geometry.
 
+mod exclusion;
+pub use exclusion::{DiskExclusionRecord, DiskExclusionReporter};
+
 use serde::{Deserialize, Serialize};
 
 use crate::{

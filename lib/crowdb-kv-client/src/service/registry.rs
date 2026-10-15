@@ -12,6 +12,8 @@
 //!
 //! See `doc/design/kv/design-crowdb-kv-group0.md` §4.
 
+mod diskio;
+
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -105,6 +107,9 @@ impl ServiceRegistryClient {
 
     /// Unregister a service instance (clean shutdown).
     pub async fn unregister(&self, service: &str, instance_id: InstanceId) -> Result<()> {
+        if service == "diskio" {
+            return self.unregister_diskio(instance_id).await;
+        }
         let key = InstanceKey {
             service: service.to_string(),
             instance_id,
@@ -234,6 +239,9 @@ impl ServiceRegistryClient {
             key: path.clone(),
             reason: e.to_string(),
         })?;
+        if service == "diskio" {
+            return self.put_diskio_instance(&path, value, &payload).await;
+        }
         self.kv
             .put(G0_STORE, G0_GROUP, path.as_bytes(), &payload, None)
             .await

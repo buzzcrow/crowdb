@@ -480,3 +480,12 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   now contain their actual disks, including the successor's recovered membership.
   Exact-revision Group-0 acknowledgements, removal/rejoin and browser actions
   remain unfinished; this gate is not itself a removal acknowledgement.
+- Group-0 now stores versioned exact-disk-revision exclusion evidence, with
+  reporter instance and exact DiskDB owner generation. Non-Offline, stale or
+  wrong-location confirmations reject. Located DiskIO registrations pin physical
+  identity with initial instance CAS, then share the Rack fence; clearing/moving
+  identity and deleting its retained registration are rejected. TTL expiry is
+  not evidence of quiescence. Three live-authority regressions plus protocol
+  schema coverage, the full KV client suite/rustdoc, Clippy and fmt pass.
+  Runtime services still need to publish evidence after actual drainage; no
+  removal endpoint is enabled from these records yet.
