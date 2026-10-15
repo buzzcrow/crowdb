@@ -5,9 +5,16 @@ import type { AddressInfo } from 'node:net';
 
 /** Actual reverse proxy: every response comes from the owned console server. */
 export async function consoleProxy(baseURL: string) {
+  let dropSuffix: string | undefined;
+  let dropped = 0;
   const server = createServer((incoming, outgoing) => {
     const path = (incoming.url ?? '/').replace(/^\/proxy\/api(?=\/|\?|$)/, '/api');
     const upstream = request(new URL(path, baseURL), { method: incoming.method, headers: incoming.headers }, response => {
+      if (dropSuffix && path.endsWith(dropSuffix) && incoming.method === 'POST' && response.statusCode === 200) {
+        dropSuffix = undefined; response.resume();
+        response.on('end', () => { dropped++; outgoing.destroy(); });
+        return;
+      }
       outgoing.writeHead(response.statusCode ?? 502, response.headers);
       response.pipe(outgoing);
     });
@@ -16,6 +23,8 @@ export async function consoleProxy(baseURL: string) {
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   return {
+    dropNextSuccessfulResponse: (suffix: string) => { dropSuffix = suffix; },
+    droppedResponses: () => dropped,
     url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
     close: () => new Promise<void>((resolve, reject) => {
       server.close(error => error ? reject(error) : resolve()); server.closeAllConnections();

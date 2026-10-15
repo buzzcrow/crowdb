@@ -7,7 +7,7 @@ import type { CompositionDraft, Receipt, SplitDraft } from './types';
 import { newId } from './import/upload';
 export interface Operation {
   dataset: string; kind: 'composition' | 'split'; operation: string; snapshot?: string;
-  conflict?: boolean;
+  conflict?: boolean; fileKeys?: Record<string, string>; uploads?: Array<{ id: string; key: string }>;
   mappingDigest?: string; importsComplete?: boolean;
   expectedHead: string | null; attempt?: string; pending?: { path: string; method: string; body?: unknown };
 }

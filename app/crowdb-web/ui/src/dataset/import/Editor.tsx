@@ -5,20 +5,24 @@ import { useEffect, useRef, useState } from 'react';
 import { buttonClass, inputClass, JsonView } from '../../access/Workbench';
 import * as api from '../api';
 import { encoded } from '../identity';
-import { defaultPolicy, type CompositionDraft, type CompositionSource, type DraftSplit, type Predicate, type Receipt, type SplitPolicy, type SplitSource } from '../types';
-import { operationPath, request, saveOperation, type Operation } from '../operation';
+import { defaultPolicy, type CompositionDraft, type DraftSplit, type Predicate, type Receipt, type SplitPolicy, type SplitSource } from '../types';
+import { operationPath, type Operation } from '../operation';
 import { Definitions, PredicateInput, validateEditor } from '../splits/Definitions';
 import { BeginRecovery } from '../BeginRecovery';
 import { Publication } from '../Publication';
-import { parseMapping, resolveSample, type Mapping } from './mapping';
-import { Md5 } from './digest';
-import { newId, upload } from './upload';
+import { parseMapping, type Mapping } from './mapping';
+import { CompositionSplits } from './Splits';
+import { saveImport } from './transfer';
 
 const emptyMapping = JSON.stringify({ version: 1, schema: { version: 1, fields: [] }, samples: [] }, null, 2);
 export function ImportEditor({ dataset, parent: initialParent, source: initialSource, recovery, close, complete }: {
   dataset: string; parent?: string; source?: SplitSource; recovery?: Operation; close: () => void; complete: (receipt: Receipt) => void;
 }) {
+  const transfer = useRef<AbortController>();
+  useEffect(() => () => transfer.current?.abort(), []);
+  const [editingSplits, setEditingSplits] = useState(false);
   const [parent, setParent] = useState(initialParent ?? '');
+  const [frozenSource, setFrozenSource] = useState(initialSource);
   const [mode, setMode] = useState(initialSource ? 'split' : 'all');
   const [predicate, setPredicate] = useState<Predicate>({ kind: 'all' });
   const [inherit, setInherit] = useState(!!initialParent);
@@ -33,7 +37,7 @@ export function ImportEditor({ dataset, parent: initialParent, source: initialSo
     if (!recovery) return;
     const cancel = new AbortController();
     void api.control<CompositionDraft>(operationPath(recovery), 'GET', undefined, cancel.signal).then(value => {
-      if (!cancel.signal.aborted) { setDraft(value); setParent(value.parent ?? ''); setSplits(value.splits); setPolicy(value.policy); }
+      if (!cancel.signal.aborted) { setDraft(value); setParent(value.parent ?? ''); setSplits(value.splits); setPolicy(value.policy); setMode(value.source.kind); if (value.source.kind === 'split') setFrozenSource(value.source.source); if (value.source.kind === 'selection') setPredicate(value.source.predicate); }
     }).catch(reason => { if (!cancel.signal.aborted) setError(String(reason)); });
     return () => cancel.abort();
   }, [recovery]);
@@ -43,49 +47,20 @@ export function ImportEditor({ dataset, parent: initialParent, source: initialSo
   };
   const save = async () => {
     validateEditor(element.current);
-    if (!mapping) throw new Error('Review the mapping first.');
-    const mappingDigest = new Md5().update(new TextEncoder().encode(JSON.stringify(mapping))).finish();
-    if (op?.mappingDigest && op.mappingDigest !== mappingDigest) throw new Error('Reselect the original mapping; this operation cannot accept a different import.');
-    if (op?.pending) throw new Error('Reconcile the pending request first.');
-    const current = await api.head(dataset);
-    const parentHead = parent && inherit ? await api.splitHead(dataset, parent) : null;
-    const source: CompositionSource = mode === 'replace' ? { kind: 'selection', predicate: { kind: 'explicit', ids: [] } }
-      : mode === 'selection' ? { kind: 'selection', predicate }
-      : mode === 'split' && initialSource ? { kind: 'split', source: initialSource, selection: null } : { kind: 'all' };
-    const operation: Operation = op ?? { dataset, kind: 'composition', operation: newId(), expectedHead: current.generation, mappingDigest, importsComplete: false };
-    saveOperation(operation); setOp(operation);
-    let value = op ? await api.control<CompositionDraft>(operationPath(op)) : await request<CompositionDraft>(operation, `${api.datasetPath(dataset)}/compositions`, 'POST', {
-      operation: operation.operation, parent: parent || null, source, schema: mapping.schema,
-      inherit_parent_splits: inherit && !!parent, parent_split_revision: parentHead?.revision ?? null, splits, policy,
-    });
-    setDraft(value);
-    const uploaded = new Map<string, string>();
-    for (const sample of mapping.samples) {
-      if (sample.kind !== 'upsert') continue;
-      for (const field of sample.fields) {
-        if (field.value.kind !== 'file' || uploaded.has(field.value.file)) continue;
-        const token = field.value.file; const file = files.find(file => (file.webkitRelativePath || file.name) === token)!;
-        uploaded.set(token, await upload(dataset, file, setProgress));
-      }
-    }
-    for (let offset = 0; offset < mapping.samples.length; offset += 20) {
-      const samples = mapping.samples.slice(offset, offset + 20).map(sample => resolveSample(sample, uploaded));
-      value = await request<CompositionDraft>(operation, operationPath(operation), 'PUT', { edit: newId(), expected_revision: value.revision, samples });
-      setDraft(value); setProgress(`Saved ${Math.min(offset + 20, mapping.samples.length)}/${mapping.samples.length} Sample edits`);
-    }
-    operation.importsComplete = true; saveOperation(operation); setDraft({ ...value });
-    setProgress('All reviewed edits are saved. Evaluate complete membership before preparation.');
+    transfer.current = new AbortController(); const signal = transfer.current.signal;
+    try { await saveImport({ dataset, parent, inherit, mode, predicate, frozenSource, splits, policy, op, mapping, files, signal, setOp, setDraft, setProgress }); }
+    finally { transfer.current = undefined; }
   };
   return <section ref={element} role="dialog" aria-label="Import Snapshot" className="tw-space-y-3 tw-border tw-border-border tw-p-4">
     <h2 className="tw-font-semibold">Import / New Snapshot</h2>
     <p className="tw-text-xs">Local test/demo import · namespace dataset-ns · {dataset}</p>
     {(!op || !op.importsComplete) && <>
-      <label>Parent Snapshot (empty for independent root) <input className={`${inputClass} tw-w-full`} value={parent} onChange={event => { setParent(event.target.value); setMapping(undefined); }} /></label>
-      <label>Parent data <select className={inputClass} value={mode} onChange={event => { setMode(event.target.value); setMapping(undefined); }}>
-        <option value="all">Preserve all parent data</option><option value="replace">Replace membership with imported Samples</option><option value="selection">Filter parent data</option>{initialSource && <option value="split">Frozen Split {initialSource.name} / {initialSource.revision}</option>}
+      <label>Parent Snapshot (empty for independent root) <input className={`${inputClass} tw-w-full`} disabled={!!op} value={parent} onChange={event => { setParent(event.target.value); setMapping(undefined); }} /></label>
+      <label>Parent data <select className={inputClass} disabled={!!op} value={mode} onChange={event => { setMode(event.target.value); setMapping(undefined); }}>
+        <option value="all">Preserve all parent data</option><option value="replace">Replace membership with imported Samples</option><option value="selection">Filter parent data</option>{frozenSource && <option value="split">Frozen Split {frozenSource.name} / {frozenSource.revision}</option>}
       </select></label>
-      {mode === 'selection' && <PredicateInput value={predicate} change={value => { setPredicate(value); setMapping(undefined); }} />}
-      <label className="tw-block"><input type="checkbox" checked={inherit} disabled={!parent} onChange={event => { setInherit(event.target.checked); setMapping(undefined); }} /> Inherit parent Splits, intersected with surviving Samples; additions remain unassigned</label>
+      {mode === 'selection' && !op && <PredicateInput value={predicate} change={value => { setPredicate(value); setMapping(undefined); }} />}
+      <label className="tw-block"><input type="checkbox" checked={inherit} disabled={!parent || !!op} onChange={event => { setInherit(event.target.checked); setMapping(undefined); }} /> Inherit parent Splits, intersected with surviving Samples; additions remain unassigned</label>
       <label className="tw-block">Local payload files <input type="file" multiple onChange={event => { setFiles(Array.from(event.target.files ?? [])); setMapping(undefined); }} /></label>
       <QuickMapping add={value => { setText(JSON.stringify(value, null, 2)); setMapping(undefined); }} files={files} />
       <label className="tw-block">Batch mapping JSON (version 1, ≤8 MiB)<input type="file" accept=".json,application/json" onChange={event => {
@@ -95,15 +70,19 @@ export function ImportEditor({ dataset, parent: initialParent, source: initialSo
       }} /></label>
       <label className="tw-block tw-text-xs">Schema and Sample edits<textarea aria-label="Sample mapping JSON" className={`${inputClass} tw-w-full tw-font-mono`} rows={8} value={text} onChange={event => { setText(event.target.value); setMapping(undefined); }} /></label>
       <p className="tw-text-xs">Schema null inherits parent schema. Sample IDs and inline data are canonical base64. Fields accept inline, file or tombstone; Sample edits accept upsert or remove. Omitted optional fields inherit only for surviving Samples.</p>
-      <Definitions splits={splits} policy={policy} disabled={busy} change={(values, rules) => { setSplits(values); setPolicy(rules); setMapping(undefined); }} />
+      <Definitions splits={splits} policy={policy} disabled={busy || !!op} change={(values, rules) => { setSplits(values); setPolicy(rules); setMapping(undefined); }} />
       <button className={buttonClass} disabled={busy} onClick={review}>Review mapping</button>
       {mapping && <><p>{mapping.samples.filter(s => s.kind === 'upsert').length} additions/replacements · {mapping.samples.filter(s => s.kind === 'remove').length} removals · parent mode: {mode}.</p>
         <JsonView value={{ schema: mapping.schema, first_edits: mapping.samples.slice(0, 20), total_edits: mapping.samples.length, splits, policy }} />
         <button className={buttonClass} disabled={busy || !!op?.pending} onClick={() => run(save)}>{op ? 'Resume reviewed import' : 'Save draft and upload local data'}</button></>}
     </>}
+    {draft && <details><summary>Frozen source and inherited Split definitions</summary><JsonView value={{ parent: draft.parent, source: draft.source, parent_split_revision: draft.parent_split_revision, splits: draft.splits }} /></details>}
     {error && <p role="alert">{error}</p>}{progress && <p role="status">{progress}</p>}
-    {op && !draft && <BeginRecovery operation={op} busy={busy} run={run} loaded={value => { setDraft(value as CompositionDraft); setSplits(value.splits); setPolicy(value.policy); }} />}
-    {op && draft && <Publication operation={op} draft={draft} update={value => setDraft(value as CompositionDraft)} complete={complete} busy={busy} run={run} />}
+    {op && !draft && <BeginRecovery discarded={() => setOp(undefined)} operation={op} busy={busy} run={run} loaded={result => { const value = result as CompositionDraft; setDraft(value); setSplits(value.splits); setPolicy(value.policy); setMode(value.source.kind); if (value.source.kind === 'split') setFrozenSource(value.source.source); if (value.source.kind === 'selection') setPredicate(value.source.predicate); }} />}
+    {op?.importsComplete && draft && !op.pending && ['editing', 'evaluating', 'evaluated'].includes(draft.progress.state) && !editingSplits && <button className={buttonClass} disabled={busy} onClick={() => setEditingSplits(true)}>Edit initial Split set</button>}
+    {op && draft && editingSplits && <CompositionSplits operation={op} draft={draft} busy={busy} run={run} saved={value => { setDraft(value); setEditingSplits(false); }} close={() => setEditingSplits(false)} />}
+    {op && draft && !editingSplits && <Publication restart={async () => { setOp(undefined); setDraft(undefined); setMapping(undefined); setProgress('Previous candidate was abandoned. Review mapping and files for a new operation.'); }} operation={op} draft={draft} update={value => setDraft(value as CompositionDraft)} complete={complete} busy={busy} run={run} />}
+    {busy && transfer.current && <button className={buttonClass} onClick={() => transfer.current?.abort()}>Cancel local transfer</button>}
     <button className={buttonClass} disabled={busy} onClick={close}>Close draft</button><p className="tw-text-xs">Closing keeps the server draft. Resume it from this Dataset; File handles must be reselected after reload. Abandon explicitly to release eligible ownership.</p>
   </section>;
 }

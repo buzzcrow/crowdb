@@ -8,13 +8,13 @@ import { digest } from './digest';
 import { getApiBase } from '../../api';
 export const newId = () => randomUUID().replaceAll('-', '');
 const partSize = 4 * 1024 * 1024;
-export async function upload(dataset: string, file: File, progress: (text: string) => void, signal?: AbortSignal): Promise<string> {
+export async function upload(dataset: string, file: File, progress: (text: string) => void, signal?: AbortSignal, register?: (id: string, key: string) => void): Promise<string> {
   if (Math.ceil(file.size / partSize) > 10000) throw new Error('File exceeds 10000 upload parts.');
   const md5 = await digest(file, signal, count => progress(`${file.name}: checksum ${count}/${file.size}`));
   const key = `crowdb.dataset.upload:${getApiBase()}:${dataset}:${file.size}:${md5}`;
   const saved = localStorage.getItem(key);
   const id = saved ?? newId();
-  localStorage.setItem(key, id);
+  localStorage.setItem(key, id); register?.(id, key);
   const path = `${api.datasetPath(dataset)}/uploads/${id}`;
   let status: UploadStatus;
   try { status = await api.control<UploadStatus>(path, 'GET', undefined, signal); }

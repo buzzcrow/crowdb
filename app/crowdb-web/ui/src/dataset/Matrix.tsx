@@ -52,11 +52,11 @@ export function Matrix({ scope, active, refresh, select, window, updateWindow }:
     {!data.value && !data.error && <p role="status">Loading metadata…</p>}
     {data.value && <div className="tw-overflow-auto"><table className="tw-w-full tw-text-xs" aria-label="Sample field matrix">
       <thead className="tw-sticky tw-top-0 tw-bg-panel"><tr><th className="tw-sticky tw-left-0 tw-bg-panel tw-p-2">Sample ID</th>
-        {data.value.schema.entries.map(field => <th key={field.name} className="tw-p-2"><button onClick={() => select({ kind: 'schema', ...scope, field: field.name, required: field.required })}>{field.name}<small className="tw-block tw-text-muted">{field.required ? 'Required' : 'Optional'}</small></button></th>)}
+        {data.value.schema.entries.map(field => <th key={field.name} className="tw-p-2"><button onClick={() => select({ ...scope, kind: 'schema', field: field.name, required: field.required })}>{field.name}<small className="tw-block tw-text-muted">{field.required ? 'Required' : 'Optional'}</small></button></th>)}
       </tr></thead><tbody>
         {data.value.rows.filter(row => !filter || sampleLabel(row.id).includes(filter) || row.id.includes(filter)).map(row => <tr key={row.id} className="tw-border-t tw-border-border">
-          <th className="tw-sticky tw-left-0 tw-bg-panel tw-p-2 tw-text-left"><button title={row.id} onClick={() => select({ kind: 'sample', ...scope, sample: row.id })}>{sampleLabel(row.id)}</button></th>
-          {row.fields.map((field, index) => <td key={data.value!.schema.entries[index].name} className="tw-p-2"><button onClick={() => select({ kind: 'cell', ...scope, sample: row.id, field: data.value!.schema.entries[index].name })}>
+          <th className="tw-sticky tw-left-0 tw-bg-panel tw-p-2 tw-text-left"><button title={row.id} onClick={() => select({ ...scope, kind: 'sample', sample: row.id })}>{sampleLabel(row.id)}</button></th>
+          {row.fields.map((field, index) => <td key={data.value!.schema.entries[index].name} className="tw-p-2"><button onClick={() => select({ ...scope, kind: 'cell', sample: row.id, field: data.value!.schema.entries[index].name })}>
             {field ? `${field.storage} · ${field.length} B` : 'Missing'}{field && field.source_snapshot !== scope.snapshot && <small className="tw-block">Inherited</small>}
           </button></td>)}
         </tr>)}

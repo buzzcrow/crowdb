@@ -33,7 +33,7 @@ export async function openDataset(page: Page, name: string) {
   await page.goto('/?domain=Dataset');
   await page.getByRole('navigation', { name: 'Dataset tree' }).getByRole('button', { name, exact: true }).click();
 }
-export async function publishDraft(page: Page, kind: 'Snapshot' | 'Split revision') {
+export async function prepareDraft(page: Page, kind: 'Snapshot' | 'Split revision') {
   const region = page.getByRole('region', { name: 'Draft publication' });
   for (let step = 0; step < 100; step++) {
     const evaluate = region.getByRole('button', { name: /^(Evaluate complete membership|Continue evaluation)$/ });
@@ -46,6 +46,27 @@ export async function publishDraft(page: Page, kind: 'Snapshot' | 'Split revisio
     await region.getByRole('button', { name: 'Prepare candidate' }).click();
     await expect(region.getByRole('button', { name: 'Inspect draft status' })).toBeEnabled();
   }
-  await expect(publish).toBeEnabled(); await publish.click();
+  await expect(publish).toBeEnabled();
+}
+export async function publishDraft(page: Page, kind: 'Snapshot' | 'Split revision') {
+  await prepareDraft(page, kind);
+  await page.getByRole('region', { name: 'Draft publication' }).getByRole('button', { name: `Publish ${kind}`, exact: true }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
+}
+
+export async function publishSplits(request: APIRequestContext, name: string, snapshot: string, splits: unknown[]) {
+  const root = datasetPath(name); const operation = id(); const path = `${root}/split-drafts/${operation}`;
+  const head = await call(request, `${root}/snapshots/${snapshot}/split-head`);
+  let draft = await call(request, `${root}/snapshots/${snapshot}/split-drafts`, 'POST', {
+    operation, expected_revision: head.revision, splits, policy: { overlap: 'disjoint', coverage: 'allow_unassigned' },
+  });
+  let next = '0'; let complete = false;
+  for (let step = 0; step < 100 && !complete; step++) {
+    const value = await call(request, `${path}/evaluate`, 'POST', { expected_revision: draft.revision, expected_page: next });
+    complete = value.complete; next = value.next_page;
+  }
+  expect(complete).toBe(true);
+  await call(request, `${path}/prepare`, 'POST', { expected_revision: draft.revision });
+  draft = await call(request, path);
+  return call(request, `${path}/publish`, 'POST', { attempt: id(), revision: draft.progress.target.revision, expected_head: head.generation });
 }

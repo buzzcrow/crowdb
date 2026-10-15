@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 import { describe, expect, it } from 'vitest';
 import { Md5 } from './digest';
-import { parseMapping } from './mapping';
+import { editWindows, parseMapping } from './mapping';
 import { bytes, sampleLabel } from '../identity';
 
 describe('local import integrity', () => {
@@ -32,4 +32,13 @@ describe('local import integrity', () => {
     expect(parseMapping(JSON.stringify(data), [file]).samples).toHaveLength(1);
     expect(() => parseMapping(JSON.stringify({ ...data, samples: [sample, sample] }), [file])).toThrow('Duplicate Sample');
   });
+});
+
+it('bounds edit bodies by bytes as well as row count before transfer', () => {
+  const sample = { kind: 'upsert' as const, id: 'YQ==', fields: [{ name: 'text', value: { kind: 'inline' as const, data: btoa('x'.repeat(65536)) } }] };
+  const samples = Array.from({ length: 20 }, (_, index) => ({ ...sample, id: btoa(String(index)) }));
+  const windows = [...editWindows(samples)];
+  expect(windows.length).toBeGreaterThan(1); expect(windows.flat()).toEqual(samples);
+  for (const window of windows) expect(new TextEncoder().encode(JSON.stringify(window)).length).toBeLessThan(768 * 1024 + 2);
+  expect(() => [...editWindows([{ ...sample, fields: Array.from({ length: 13 }, () => sample.fields[0]) }])]).toThrow('768 KiB');
 });

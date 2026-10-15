@@ -6,12 +6,15 @@ import { buttonClass, JsonView } from '../access/Workbench';
 import * as api from './api';
 import type { CompositionDraft, CompositionPreview, Receipt, SplitDraft, SplitPreview, SplitRevision } from './types';
 import { forgetOperation, newAttempt, operationPath, reconcile, request, retryIdentical, saveOperation, type Operation } from './operation';
+import { cleanupUploads } from './import/cleanup';
 import { newId } from './import/upload';
 
-export function Publication({ operation: op, draft, update, complete, busy, run }: {
+export function Publication({ operation: op, draft, update, complete, busy, run, restart }: {
   operation: Operation; draft: CompositionDraft | SplitDraft; update: (draft: CompositionDraft | SplitDraft) => void;
+  restart?: () => Promise<void>;
   complete: (receipt: Receipt) => void; busy: boolean; run: (action: () => Promise<void>) => void;
 }) {
+  const [cleaned, setCleaned] = useState(false);
   const [preview, setPreview] = useState<CompositionPreview | SplitPreview>();
   const [cleanup, setCleanup] = useState<unknown>(); const [conflict, setConflict] = useState<{ generation: string | null }>();
   const path = operationPath(op);
@@ -62,9 +65,10 @@ export function Publication({ operation: op, draft, update, complete, busy, run 
         update(await request<CompositionDraft | SplitDraft>(op, path, 'DELETE', { expected_revision: draft.revision }));
       })}>Abandon draft</button>
       {state === 'abandoned' && <button className={buttonClass} disabled={busy} onClick={() => run(async () => {
-        const result = await request<{ complete: boolean; physical_cleanup_deferred: boolean }>(op, `${path}/cleanup`, 'POST'); setCleanup(result); if (result.complete) forgetOperation(op);
+        const result = await request<{ complete: boolean; physical_cleanup_deferred: boolean }>(op, `${path}/cleanup`, 'POST'); setCleanup(result); if (result.complete) { const uploadsComplete = await cleanupUploads(op); setCleanup({ ...result, uploads_complete: uploadsComplete }); if (uploadsComplete) { forgetOperation(op); setCleaned(true); } }
       })}>Advance cleanup</button>}
     </div>}
+    {cleaned && restart && <button className={buttonClass} disabled={busy} onClick={() => run(restart)}>Edit as new operation</button>}
     {cleanup !== undefined && <JsonView value={cleanup} />}
   </section>;
 }

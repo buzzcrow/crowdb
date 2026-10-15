@@ -10,6 +10,8 @@ import { useQuery } from '../dataset/query';
 import type { DatasetSelection, SnapshotSummary } from '../dataset/types';
 import { SnapshotTree, type TreeState, type TreeEntry } from '../dataset/Tree';
 import { Matrix, emptyWindow, type MatrixWindow } from '../dataset/Matrix';
+import { InspectionPreparation } from '../dataset/InspectionPreparation';
+import { Ancestry } from '../dataset/Ancestry';
 import { Actions } from '../dataset/Actions';
 import { History } from '../dataset/splits/History';
 import { Properties } from '../dataset/Properties';
@@ -41,6 +43,7 @@ export function DatasetView({ active, readonly, showActivity = true }: { active:
     </div>)}
     {catalog.value?.after && <button className={buttonClass} onClick={() => setCursor(catalog.value!.after!)}>Next Datasets</button>}
     {cursor && <button className={buttonClass} onClick={() => setCursor(undefined)}>First Datasets</button>}
+    {'snapshot' in selected && <Ancestry key={`${selected.dataset}:${selected.snapshot}`} dataset={selected.dataset} snapshot={selected.snapshot} active={active} select={select} />}
   </nav>} detail={<Properties selected={selected} active={active} />}>
     <div className="tw-flex tw-items-center tw-justify-between"><h1 className="tw-text-xl tw-font-semibold">Dataset{selected.kind !== 'root' && ` · ${selected.dataset}`}</h1>
       <button className={buttonClass} onClick={() => { setCursor(undefined); setWindows({}); setRefresh(value => value + 1); }}>Refresh Dataset</button></div>
@@ -57,7 +60,7 @@ export function DatasetView({ active, readonly, showActivity = true }: { active:
         {catalog.value?.entries.map(dataset => <tr key={dataset.id}><td><button className="tw-text-accent" onClick={() => select({ kind: 'dataset', dataset: dataset.name })}>{dataset.name}</button></td><td>{dataset.id}</td><td>{dataset.latest ?? 'None'}</td><td>{dataset.stable ?? 'None'}</td></tr>)}
       </tbody></table>
     </> : selected.kind === 'dataset' ? <Inventory key={selected.dataset} dataset={selected.dataset} active={active} refresh={refresh} select={select} /> : <>
-      <SnapshotOverview selected={selected} active={active} refresh={refresh} select={select} />
+      <SnapshotOverview readonly={readonly} refreshed={() => setRefresh(value => value + 1)} selected={selected} active={active} refresh={refresh} select={select} />
       <History dataset={selected.dataset} snapshot={selected.snapshot} active={active} refresh={refresh} select={select} />
       <Matrix window={windows[windowKey] ?? emptyWindow} updateWindow={updateWindow} scope={selected} active={active} refresh={refresh} select={select} />
     </>}
@@ -81,7 +84,7 @@ function Inventory({ dataset, active, refresh, select }: { dataset: string; acti
     {cursor && <button className={buttonClass} onClick={() => setCursor(undefined)}>First Snapshots</button>}
   </section>;
 }
-function SnapshotOverview({ selected, active, refresh, select }: { selected: Exclude<DatasetSelection, { kind: 'root' | 'dataset' }>; active: boolean; refresh: number; select: (value: DatasetSelection) => void }) {
+function SnapshotOverview({ selected, active, refresh, select, readonly, refreshed }: { readonly: boolean; refreshed: () => void; selected: Exclude<DatasetSelection, { kind: 'root' | 'dataset' }>; active: boolean; refresh: number; select: (value: DatasetSelection) => void }) {
   const result = useQuery(`${selected.dataset}:${selected.snapshot}:${refresh}`, active, signal => api.summary(selected.dataset, selected.snapshot, signal));
   return <section className="tw-text-sm tw-space-y-2">
     <h2 className="tw-font-semibold tw-break-all">Snapshot {selected.snapshot}</h2>
@@ -89,6 +92,7 @@ function SnapshotOverview({ selected, active, refresh, select }: { selected: Exc
     {result.value && <><p>{result.value.sample_count} Samples · Schema v{result.value.schema_version} · {result.value.field_count} fields</p>
       {result.value.parent ? <button className="tw-text-accent" onClick={() => select({ kind: 'snapshot', dataset: selected.dataset, snapshot: result.value!.parent! })}>Parent {result.value.parent}</button> : <p>Independent root</p>}
       {result.value.inspection !== 'ready' && <p role="status">Inspection unavailable: {result.value.reason}</p>}</>}
+    {(result.error || result.value?.inspection !== 'ready' && result.value) && <InspectionPreparation key={`${selected.dataset}:${selected.snapshot}`} dataset={selected.dataset} snapshot={selected.snapshot} readonly={readonly} refreshed={refreshed} />}
     {selected.revision && <p>Split revision: {selected.revision} {selected.split && `· ${selected.split}`}</p>}
   </section>;
 }

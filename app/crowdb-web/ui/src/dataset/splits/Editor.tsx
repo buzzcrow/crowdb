@@ -49,8 +49,8 @@ export function SplitEditor({ dataset, snapshot, recovery, close, complete }: {
     {error && <p role="alert">{error}</p>}
     <button className={buttonClass} disabled={busy || !!op?.pending || !!draft && !dirty} onClick={() => run(save)}>Save Split draft</button>
     <button className={buttonClass} disabled={busy} onClick={close}>Close editor</button>
-    {op && !draft && <BeginRecovery operation={op} busy={busy} run={run} loaded={value => { setDraft(value as SplitDraft); setSplits(value.splits); setPolicy(value.policy); }} />}
-    {op && draft && !dirty && <Publication operation={op} draft={draft} update={value => setDraft(value as SplitDraft)} complete={complete} busy={busy} run={run} />}
+    {op && !draft && <BeginRecovery discarded={() => setOp(undefined)} operation={op} busy={busy} run={run} loaded={value => { setDraft(value as SplitDraft); setSplits(value.splits); setPolicy(value.policy); }} />}
+    {op && draft && !dirty && <Publication restart={async () => { setBase(await api.splitHead(dataset, snapshot)); setOp(undefined); setDraft(undefined); setDirty(true); }} operation={op} draft={draft} update={value => setDraft(value as SplitDraft)} complete={complete} busy={busy} run={run} />}
     {dirty && draft && <p>Unsaved edits invalidate preview. Save before evaluation.</p>}
   </section>;
 }

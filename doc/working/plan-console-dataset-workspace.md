@@ -467,3 +467,23 @@ record image identity and source revision. An old image passing is not evidence.
 - Added begin-response recovery, Split scratch cleanup, invalid-rule input
   validation, weighted group rename consistency, metadata error messages and
   activity module control. Remaining advanced native scenarios are not yet accepted.
+
+### Recovery and native flow expansion — 2026-10-16
+
+- Image revision 13a2de838bacfa30e1d89690db342cf4b337569c, config
+  sha256:77300ff4537cbb4f144d47a3007e6dff41232fdea235cf85d74bf72be41e73ca.
+  Native run-807474b8a38442bd9bea597f2bba0b24: import 6.5 s, Split revisions
+  8.2 s, reload recovery 5.9 s, capabilities 2.4 s passed. Browse progressed
+  past preparation but exposed selection kind overwritten by spread scope;
+  fixed construction order, preserving the original header/row/cell assertions.
+- Added bounded selected ancestry, explicit legacy inspection preparation,
+  metadata byte-sized edit windows, source-pinned inherited Split definitions,
+  initial Split set editing, cancellation and recorded upload cleanup, replacement
+  operation after explicit abandon/cleanup, and known-rejected creation recovery.
+  Optional lifecycle failure now preserves Snapshot summary.
+- Expanded native owners for multipart payload/MD5/binary IDs, inherited/tombstoned
+  child data, competing Split editors, historical frozen-source child, readonly
+  reverse proxy/module exclusion, and real upstream publication-response loss
+  followed by reload/reconciliation. No synthetic service responses are used.
+- UI tests pass 262 with editor uniqueness, invalid rule, partition rename,
+  readonly and byte-budget regressions. Expanded native acceptance is pending.
