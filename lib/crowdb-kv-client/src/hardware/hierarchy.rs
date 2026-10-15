@@ -28,6 +28,7 @@ mod storage_admission;
 mod storage_compatibility;
 mod storage_rejoin;
 mod storage_removal;
+mod storage_resource;
 pub use storage_removal::DiskRemovalReadiness;
 mod storage_guard;
 mod storage_health;

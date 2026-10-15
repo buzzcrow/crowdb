@@ -27,6 +27,7 @@ impl HardwareClient {
                 "new disk admission requires Init membership".into(),
             ));
         }
+        self.reserve_disk_resource(record).await?;
         for _ in 0..10 {
             let (rack, revision) = self.storage_rack(record.rack_id).await?;
             let mut group = self.storage_parent(record, &rack).await?;

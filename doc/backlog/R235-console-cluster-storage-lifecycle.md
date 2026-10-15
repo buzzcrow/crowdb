@@ -407,6 +407,14 @@
   missing identity evidence. Exact opened device/inode identity and canonical
   physical resource identity serve different checks. This provisioning work is
   still pending and is not counted as accepted raw-device support yet.
+- Verified resources use a sticky Group-0 reservation keyed by physical host and
+  canonical resource identity, shared across Rack mutation domains and backend
+  types. Interrupted admission and Remove retain that reservation; replay cannot
+  change its disk placement, operation, opened identity or physical capacity.
+  Unknown legacy raw lineage, unknown legacy host identity, or physical membership
+  without a backing receipt requires explicit migration. Do not guess that an
+  apparently different path is safe. Legacy version-1 bootstrap remains a trusted
+  compatibility interface; new verified provisioning must use version 2.
 
 **Dependencies**:
 

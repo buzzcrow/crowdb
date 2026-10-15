@@ -27,6 +27,9 @@ impl HardwareClient {
         failure: Option<&str>,
     ) -> Result<DiskOnlineRecord> {
         accepted.validate().map_err(|error| Error::Server(error.into()))?;
+        if failure.is_none() {
+            self.reserve_disk_resource(&accepted.disk).await?;
+        }
         let rack_path = RackKey { rack_id: key.rack_id }.to_path();
         for _ in 0..10 {
             let (rack, revision) = self.storage_rack(key.rack_id).await?;

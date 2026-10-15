@@ -29,6 +29,7 @@ impl HardwareClient {
         if record.removed || self.disk_storage(&key).await?.as_ref() != Some(record) {
             return Err(Error::Server("disk activation backing receipt changed".into()));
         }
+        self.reserve_disk_resource(record).await?;
         mutation::update::<DiskValue, _>(&self.kv, record.rack_id, &key.to_path(), |value| {
             if !matches!(
                 HwStatus::try_from(value.status),

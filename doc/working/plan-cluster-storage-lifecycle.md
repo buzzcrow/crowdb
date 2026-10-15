@@ -1153,3 +1153,12 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   capacity semantics. Initial lint caught a test integer conversion and pointer/
   signedness style warnings; fixed without suppressions. Real raw-device
   exclusion/provisioning and global resource reservations remain pending.
+- Global physical resource reservations are now wired into version-2 admission,
+  initial activation, Rejoin and successful Online completion. Claims are shared
+  across Rack fences, retained after interruption/removal and validated against
+  confirmed node host authority. Bounded legacy scans reject unknown lineage or
+  missing receipts instead of guessing. Eight real Group-0 regression cases,
+  full KV-client tests/rustdoc, all-target/all-feature Clippy and Rust fmt pass.
+  Initial Clippy caught a projection type naming issue, corrected without an
+  allow. Actual launcher lineage, supplied provisioning and raw-device E2E remain
+  pending; metadata concurrency tests do not count as raw-device acceptance.

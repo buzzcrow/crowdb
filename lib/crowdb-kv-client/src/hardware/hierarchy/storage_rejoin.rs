@@ -50,6 +50,7 @@ impl HardwareClient {
                 .ok_or_else(|| Error::Server("disk rejoin removal operation changed".into()))?;
             let outcome = DiskRejoinRecord::new(source);
             let restored = outcome.restored();
+            self.reserve_disk_resource(&restored).await?;
             let retained = self
                 .disk_storage(key)
                 .await?
