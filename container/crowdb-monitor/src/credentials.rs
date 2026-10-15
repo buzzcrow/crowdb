@@ -122,6 +122,12 @@ impl ServerCredentials {
         &self.s3_master_key
     }
 
+    /// Dataset uses a separate, stable bearer without migrating stored secrets.
+    #[must_use]
+    pub fn dataset_token(&self) -> String {
+        crowdb_protocol::dataset_auth::deployment_bearer(&self.s3_master_key)
+    }
+
     #[must_use]
     pub fn iceberg_manage_token(&self) -> &str {
         &self.iceberg_manage_token

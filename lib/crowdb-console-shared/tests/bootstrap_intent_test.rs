@@ -25,6 +25,7 @@ fn config() -> ConsoleConfig {
         ssh_credential_ref: Some("ops-key".into()),
     });
     config.servers.push(ServerEntry {
+        dataset_origin: None,
         id: "kv-1".into(),
         url: "http://127.0.0.1:10000".into(),
         node_id: Some(1),

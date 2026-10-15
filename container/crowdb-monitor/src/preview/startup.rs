@@ -96,6 +96,10 @@ async fn start_access(
         .find_map(|line| line.strip_prefix("CROWDB_ICEBERG_READ_TOKEN=").map(str::to_owned))
         .ok_or(PreviewError::Invalid("Iceberg reader credential is absent"))?;
     web_environment.insert("CROWDB_ICEBERG_READ_TOKEN".into(), reader);
+    web_environment.insert("CROWDB_DATASET_READ_TOKEN".into(), credentials.dataset_token());
+    if let Some(origin) = access.env.get("CROWDB_DATASET_PUBLIC_URI") {
+        web_environment.insert("CROWDB_DATASET_PUBLIC_URI".into(), origin.clone());
+    }
     for name in ["CROWDB_S3_PUBLIC_URI", "CROWDB_ICEBERG_PUBLIC_URI"] {
         let value = access
             .env

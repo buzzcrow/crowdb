@@ -69,6 +69,19 @@ fn request() -> NodeSetupRequest {
 }
 
 #[test]
+fn dataset_listener_is_access_owned_and_cannot_collide() {
+    let mut plan = request();
+    plan.choices.services[5].listeners.dataset_port = Some(19093);
+    plan.validate().unwrap();
+    plan.choices.services[5].listeners.health_port = Some(19093);
+    assert!(plan.validate().is_err());
+    plan.choices.services[5].listeners.health_port = Some(19094);
+    plan.validate().unwrap();
+    plan.choices.services[2].listeners.dataset_port = Some(19095);
+    assert!(plan.validate().is_err());
+}
+
+#[test]
 fn omitted_choices_select_six_services_and_preallocated_standard_capacity() {
     let choices: NodeSetupChoices = serde_json::from_value(json!({})).unwrap();
     assert_eq!(choices, NodeSetupChoices::default());

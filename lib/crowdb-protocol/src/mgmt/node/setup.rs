@@ -36,6 +36,7 @@ pub struct SetupListeners {
     pub http_port: Option<u16>,
     pub rpc_port: Option<u16>,
     pub s3_port: Option<u16>,
+    pub dataset_port: Option<u16>,
     pub health_port: Option<u16>,
     pub keepalive_interval_secs: Option<std::num::NonZeroU32>,
     pub dynamic_ownership: Option<bool>,

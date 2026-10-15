@@ -329,6 +329,7 @@ pub use key::{
     TentativeOwnerGraceKey, TextKey, ZoneKey, CROWDB_KEY_MAGIC, DISKDB_WATCH_PREFIXES,
 };
 
+pub mod dataset_auth;
 pub mod sysdata;
 pub use sysdata::{DiskGroupEntry, DiskdbOwnerEntry, KVGroupBindEntry};
 

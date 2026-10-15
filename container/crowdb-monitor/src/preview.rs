@@ -189,7 +189,11 @@ fn apply_public_uri_overrides(profile: &mut DeploymentProfile) {
     let Some(access) = profile.services.iter_mut().find(|service| service.id == "access") else {
         return;
     };
-    for name in ["CROWDB_S3_PUBLIC_URI", "CROWDB_ICEBERG_PUBLIC_URI"] {
+    for name in [
+        "CROWDB_S3_PUBLIC_URI",
+        "CROWDB_ICEBERG_PUBLIC_URI",
+        "CROWDB_DATASET_PUBLIC_URI",
+    ] {
         if let Ok(value) = std::env::var(name) {
             if !value.is_empty() {
                 access.env.insert(name.to_owned(), value);

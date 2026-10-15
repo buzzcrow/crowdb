@@ -44,6 +44,7 @@ async fn kv_get_returns_502_when_leader_unreachable() {
     });
     // The node has a configured rpc_url, but the port is dead.
     cfg.add_server(ServerEntry {
+        dataset_origin: None,
         id: "n1".to_string(),
         url: format!("http://127.0.0.1:{dead_port}"),
         node_id: Some(1),

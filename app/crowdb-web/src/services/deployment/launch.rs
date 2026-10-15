@@ -139,6 +139,12 @@ async fn native(
             format!("{}:{}", node.host, body.health_port.unwrap()),
         );
         spec.env.insert("CROWDB_ICEBERG_PUBLIC_URI".into(), http.clone());
+        if let Some(port) = body.dataset_port {
+            spec.env.insert(
+                "CROWDB_DATASET_PUBLIC_URI".into(),
+                format!("http://{}:{port}", node.host),
+            );
+        }
         spec.env.insert(
             "CROWDB_S3_PUBLIC_URI".into(),
             format!("http://{}:{}", node.host, body.s3_port.unwrap()),
@@ -212,6 +218,9 @@ pub(super) fn access_config(body: &Deploy, seeds: &[String], node: &NodeEntry) -
         "s3":{"listen":format!("{}:{}",node.host,body.s3_port.unwrap()),"tenant":"default","region":"us-east-1"},
         "iceberg":{"listen":format!("{}:{}",node.host,body.http_port.unwrap())},
     });
+    if let Some(port) = body.dataset_port {
+        config["dataset"] = json!({"listen":format!("{}:{port}",node.host),"request_timeout_seconds":5});
+    }
     if body.test_single_node {
         config["deployment"] = json!({"mode":"test_single_node","max_node_failures":0});
         config["small_write"] = json!({"mirror_copies":1,"conversion_enabled":false,"ec_data":2,"ec_code":1});

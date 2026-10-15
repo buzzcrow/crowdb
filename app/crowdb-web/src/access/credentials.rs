@@ -27,6 +27,19 @@ pub(super) fn writer(state: &AppState) -> Result<String, String> {
         .ok_or_else(|| "Cluster Catalog writer is missing".into())
 }
 
+pub(super) fn dataset(state: &AppState) -> Result<String, String> {
+    if let Ok(token) = std::env::var("CROWDB_DATASET_READ_TOKEN") {
+        return if token.is_empty() {
+            Err("Dataset credential is empty".into())
+        } else {
+            Ok(token)
+        };
+    }
+    crowdb_monitor::ServerCredentials::load_existing(&root(state))
+        .map(|credentials| credentials.dataset_token())
+        .map_err(|_| "Dataset credential is not configured on the Console server".into())
+}
+
 pub(super) struct S3Credentials {
     pub access: String,
     pub secret: String,

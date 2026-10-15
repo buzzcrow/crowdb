@@ -141,6 +141,7 @@ async fn remove_node_with_server_conflict() {
     {
         let mut cfg = ctx.config_mut();
         cfg.servers.push(crowdb_console_shared::config::ServerEntry {
+            dataset_origin: None,
             id: "10".into(),
             url: "http://127.0.0.1:10000".into(),
             node_id: Some(10),

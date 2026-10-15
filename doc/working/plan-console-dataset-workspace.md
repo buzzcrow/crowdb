@@ -111,7 +111,7 @@ these real operations and owned native fixtures.
 
 ## Phase U — dependency-ordered implementation tasks
 
-- [~] **U1 Measure shell baseline and register new acceptance owners**: inspect
+- [ ] **U1 Measure shell baseline and register new acceptance owners**: inspect
   current native browser fixture/selection/credentials paths; run affected shell
   and navigation owner baselines before visible changes. Reserve Dataset `8x`
   specs (Iceberg 6x, S3 7x, cross-domain 9x); register new owned native cases in
@@ -121,7 +121,7 @@ these real operations and owned native fixtures.
   `81-dataset-import.spec.ts`, `82-dataset-splits.spec.ts`.
   Exit: every new mutation flow has one fixture owner; proposed case names listed
   below resolve in root runner, no host browser process starts service binaries.
-- [ ] **U2 Wire configured Dataset service**: add Dataset origin/config discovery,
+- [~] **U2 Wire configured Dataset service**: add Dataset origin/config discovery,
   server-held bearer use and capability reporting. Audit local/remote/managed
   Access launch, monitor credentials and default ports without changing other
   protocol identities. Add API-prefix-safe v2 proxy/streaming routes with explicit
@@ -386,3 +386,28 @@ record image identity and source revision. An old image passing is not evidence.
 - Remove completed requirement/index entry/plan only after full acceptance, under
   implement-requirement cleanup. Persistent failure follows five root-cause attempts;
   record Blocked only when its stated conditions apply.
+
+### Console baseline — 2026-10-16
+
+- `console::shell::domain_toggle` passed, Playwright 1.7 seconds; artifact
+  `run-d40d1530dbec4349b10fca86f590c80f`.
+- `console::native_browser::storage_windows_and_access_recovery` passed four
+  browser cases; navigation/history baseline was 7.0 seconds, whole browser phase
+  49.8 seconds. Artifact `run-c80bf1892d1b448f877aafc4cef4a197`.
+- Both used the verified backend image before visible Console changes. U1 new
+  Dataset owner registration remains pending. U2 proxy/deployment implementation
+  is active; no Dataset UI acceptance is claimed.
+
+### Console transport verification — 2026-10-16
+
+- U2 configured origin and private derived Dataset bearer are wired through Access,
+  monitor, local/remote deployment and durable listener overrides. Readonly permits
+  exact matrix observation and rejects mutations; metadata responses remain capped
+  at 1 MiB and upload requests at 4 MiB. Browser adapter uses explicit bounded preview.
+- Passed Dataset proxy (2), service plan (2), monitor credential (5), node setup (6)
+  tests, root Rust format and Clippy. Prior affected access/managed tests also passed.
+- UI first adapter/matrix implementation is in progress. Existing UI suite passed
+  254 tests and frontend type check; no new Dataset browser acceptance yet.
+- `pixi run ts-lint` exposes a pre-existing task path error: it references removed
+  `app/crowdb-web/ui/tsconfig.e2e.json`. Correct to the owned browser client config
+  before the final gate; frontend types are separately checked by test-console-ui.

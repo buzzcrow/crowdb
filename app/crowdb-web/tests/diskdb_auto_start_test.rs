@@ -28,6 +28,7 @@ async fn startup_does_not_replay_local_diskdb_launch_policy_without_group0() {
         .unwrap();
     config
         .add_server(ServerEntry {
+            dataset_origin: None,
             id: "diskdb-7777".into(),
             url: "http://127.0.0.1:1".into(),
             node_id: Some(7777),

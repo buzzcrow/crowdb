@@ -722,6 +722,7 @@ mod tests {
     fn resolve_group0_endpoint_no_store0_returns_none() {
         let mut config = ConsoleConfig::default();
         let _ = config.add_server(ServerEntry {
+            dataset_origin: None,
             id: "s1".into(),
             url: "http://127.0.0.1:10000".into(),
             node_id: Some(1),
@@ -745,6 +746,7 @@ mod tests {
     fn resolve_group0_endpoint_prefers_store0_rpc_url() {
         let mut config = ConsoleConfig::default();
         let _ = config.add_server(ServerEntry {
+            dataset_origin: None,
             id: "s1".into(),
             url: "http://127.0.0.1:10000".into(),
             node_id: Some(1),
@@ -779,6 +781,7 @@ mod tests {
     async fn op_context_shares_cached_kv_client() {
         let mut config = ConsoleConfig::default();
         let _ = config.add_server(ServerEntry {
+            dataset_origin: None,
             id: "s1".into(),
             url: "http://127.0.0.1:10000".into(),
             node_id: Some(1),
@@ -834,6 +837,7 @@ mod tests {
     async fn commit_op_context_writes_back_config() {
         let mut config = ConsoleConfig::default();
         let _ = config.add_server(ServerEntry {
+            dataset_origin: None,
             id: "s1".into(),
             url: "http://127.0.0.1:10000".into(),
             node_id: Some(1),

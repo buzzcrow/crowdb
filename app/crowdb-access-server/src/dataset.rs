@@ -190,7 +190,13 @@ pub async fn run_with_shutdown(
         DatasetHttpService::new(reads, Duration::from_secs(access.dataset.request_timeout_seconds))
             .with_api_capacity(access.dataset.max_in_flight)
             .with_uploads(Arc::clone(&uploads));
-    if let Ok(token) = std::env::var("CROWDB_DATASET_READ_TOKEN") {
+    let bearer = std::env::var("CROWDB_DATASET_READ_TOKEN").ok().or_else(|| {
+        std::env::var("CROWDB_S3_MASTER_KEY")
+            .ok()
+            .filter(|key| !key.is_empty())
+            .map(|key| crowdb_protocol::dataset_auth::deployment_bearer(&key))
+    });
+    if let Some(token) = bearer {
         if token.is_empty() {
             return Err("CROWDB_DATASET_READ_TOKEN must not be empty".into());
         }

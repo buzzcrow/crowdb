@@ -38,7 +38,8 @@ pub(crate) async fn require_editable(
         *request.method(),
         axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
     );
-    if state.readonly && !observe {
+    if state.readonly && !observe && !crate::access::dataset::observes(request.method(), request.uri().path())
+    {
         return Err(crate::error::err_403("Workspace is readonly"));
     }
     Ok(next.run(request).await)

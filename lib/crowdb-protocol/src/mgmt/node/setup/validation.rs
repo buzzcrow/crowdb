@@ -133,7 +133,10 @@ fn valid_listeners(service: &SetupService, ports: &mut BTreeSet<u16>) -> bool {
     }
     if (service.kind != Chunkdb && listeners.dynamic_ownership.is_some())
         || (service.kind != Diskdb && listeners.keepalive_interval_secs.is_some())
-        || (service.kind != AccessServer && (listeners.s3_port.is_some() || listeners.health_port.is_some()))
+        || (service.kind != AccessServer
+            && (listeners.s3_port.is_some()
+                || listeners.health_port.is_some()
+                || listeners.dataset_port.is_some()))
         || (service.kind == AccessServer && listeners.rpc_port.is_some())
         || (matches!(service.kind, Diskdb | Diskio) && listeners.http_port.is_some())
     {
@@ -147,6 +150,7 @@ fn valid_listeners(service: &SetupService, ports: &mut BTreeSet<u16>) -> bool {
         listeners.rpc_port,
         listeners.s3_port,
         listeners.health_port,
+        listeners.dataset_port,
     ]
     .into_iter()
     .flatten()

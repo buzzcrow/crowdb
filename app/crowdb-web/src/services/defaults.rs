@@ -26,6 +26,7 @@ fn occupied(config: &ConsoleConfig) -> HashSet<u16> {
         ports.extend(port(&server.url));
         ports.extend(server.rpc_url.as_deref().and_then(port));
         ports.extend(server.rest_port);
+        ports.extend(server.dataset_origin.as_deref().and_then(port));
         ports.extend(server.rpc_port);
         if server.service_type == ServiceType::Diskdb {
             if let Some(rpc) = server.rpc_url.as_deref().and_then(port) {
@@ -34,7 +35,11 @@ fn occupied(config: &ConsoleConfig) -> HashSet<u16> {
         }
     }
     for launch in config.local_launches.values() {
-        for name in ["CROWDB_S3_PUBLIC_URI", "CROWDB_ICEBERG_PUBLIC_URI"] {
+        for name in [
+            "CROWDB_S3_PUBLIC_URI",
+            "CROWDB_ICEBERG_PUBLIC_URI",
+            "CROWDB_DATASET_PUBLIC_URI",
+        ] {
             ports.extend(launch.env.get(name).and_then(|value| port(value)));
         }
         ports.extend(launch.readiness_url.as_deref().and_then(port));
@@ -88,6 +93,7 @@ pub(super) async fn get(State(state): State<AppState>) -> Result<Json<Value>, Fa
                 value["s3_port"] = json!(first);
                 value["http_port"] = json!(next(&mut used, base + 1, 1)?);
                 value["health_port"] = json!(next(&mut used, base + 2, 1)?);
+                value["dataset_port"] = json!(next(&mut used, base + 3, 1)?);
             }
             _ => {
                 value["http_port"] = json!(first);

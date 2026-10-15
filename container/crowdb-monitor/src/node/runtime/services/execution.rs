@@ -227,6 +227,7 @@ fn validate(intent: &NodeServiceIntent) -> Result<()> {
             "CROWDB_CHUNKDB_OWNERSHIP_POLICY",
             "CROWDB_S3_PUBLIC_URI",
             "CROWDB_ICEBERG_PUBLIC_URI",
+            "CROWDB_DATASET_PUBLIC_URI",
             "CROWDB_ACCESS_HEALTH_LISTEN",
         ]
         .contains(&name.as_str())

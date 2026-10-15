@@ -93,6 +93,9 @@ pub(super) async fn deploy(
     entry.node_id = Some(node_id);
     entry.rpc_url = body.rpc_port.map(|port| format!("{host}:{port}"));
     entry.rest_port = body.http_port;
+    if matches!(body.kind, Kind::AccessServer) {
+        entry.dataset_origin = body.dataset_port.map(|port| format!("http://{host}:{port}"));
+    }
     entry.rpc_port = body.rpc_port;
     entry.auto_start = true;
     {
@@ -220,6 +223,12 @@ pub(super) fn environment(body: &Deploy, node: &NodeEntry) -> BTreeMap<String, S
             "CROWDB_ICEBERG_PUBLIC_URI".into(),
             format!("http://{}:{}", node.host, body.http_port.unwrap()),
         );
+        if let Some(port) = body.dataset_port {
+            env.insert(
+                "CROWDB_DATASET_PUBLIC_URI".into(),
+                format!("http://{}:{port}", node.host),
+            );
+        }
         env.insert(
             "CROWDB_S3_PUBLIC_URI".into(),
             format!("http://{}:{}", node.host, body.s3_port.unwrap()),
