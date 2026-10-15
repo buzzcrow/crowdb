@@ -858,3 +858,18 @@ failure; record actual failures and add Blocked only when that workflow requires
 - `pixi run rs-lint` passed. C2/D5c remains open: obsolete preparation/scratch and
   abandoned Split metadata cleanup, committed Snapshot payload retirement, and
   HTTP cleanup orchestration are not completed by this change.
+
+### Obsolete composition evaluation cleanup
+
+- Added resumable `cleanup_composition_scratch_step`: one obsolete evaluation
+  window per call, with bounded metadata reads and a two-second deadline. Active
+  input revisions are excluded; terminal roots retire all input revisions.
+- Work pages already describe every possible row write. Cleanup replaces those
+  rows with small permanent CAS fences before sealing their work page; sealing
+  the first absent work page prevents an in-flight evaluator from creating an
+  untracked next window. A durable cursor survives restart and partial progress.
+- Three new tests cover obsolete/current revision isolation, delayed CAS rejection,
+  early abandonment, cancellation/restart, and committed Manifest/receipt survival.
+  Focused composition cleanup/recovery/abandon suites and root Clippy passed.
+- This retires bulk evaluation rows, not edit receipts, candidate preparation,
+  Split membership or committed payload ownership. Remaining C2/D5c work stays open.
