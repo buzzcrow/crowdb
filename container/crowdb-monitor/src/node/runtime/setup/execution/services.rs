@@ -64,10 +64,11 @@ pub(super) async fn advance(
             continue;
         }
         let name = name(kind);
-        if let Some(intent) = intents
-            .iter()
-            .find(|intent| intent.node_id == binding.node_id && intent.kind == name)
-        {
+        if let Some(intent) = intents.iter().find(|intent| {
+            intent.node_id == binding.node_id
+                && intent.cluster_id == binding.bootstrap.cluster_id
+                && intent.kind == name
+        }) {
             if !observe(profile, step, intent, &processes).await? {
                 return Ok(false);
             }
@@ -85,18 +86,14 @@ pub(super) async fn advance(
         } else {
             SetupStepPhase::Waiting
         };
-        step.detail = Some(
-            value["error"]
-                .as_str()
-                .unwrap_or(if success {
-                    "Service intent accepted"
-                } else {
-                    "Service prerequisites unavailable"
-                })
-                .chars()
-                .take(128)
-                .collect(),
-        );
+        step.detail = Some(journal::bounded(
+            value["error"].as_str().unwrap_or(if success {
+                "Service intent accepted"
+            } else {
+                "Service prerequisites unavailable"
+            }),
+            128,
+        ));
         return Ok(false);
     }
     Ok(true)
@@ -118,7 +115,7 @@ async fn prepare(
     state: &AcceptedSetup,
     kind: SetupServiceKind,
 ) -> Result<(bool, serde_json::Value)> {
-    let response = reqwest::Client::builder()
+    let mut response = reqwest::Client::builder()
         .no_proxy()
         .timeout(Duration::from_secs(30))
         .build()?
@@ -130,7 +127,14 @@ async fn prepare(
         .send()
         .await?;
     let success = response.status().is_success();
-    let value: serde_json::Value = response.json().await?;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if bytes.len() + chunk.len() > 65536 {
+            return Err("prepared service reply exceeds its bound".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let value: serde_json::Value = serde_json::from_slice(&bytes)?;
     Ok((success, value))
 }
 

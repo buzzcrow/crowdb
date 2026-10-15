@@ -165,8 +165,12 @@ pub(crate) async fn guard(State(state): State<AppState>, request: Request, next:
         }
     } else if mutation {
         let draft = path == "/api/racks" || path.starts_with("/api/racks/");
-        let permitted =
-            path == "/api/node/admit" || path == "/api/node/cancel" || path == "/api/cluster/init" || draft;
+        let permitted = path == "/api/node/admit"
+            || path == "/api/node/preflight"
+            || (path.starts_with("/api/node/preflight/") && *request.method() == Method::DELETE)
+            || path == "/api/node/cancel"
+            || path == "/api/cluster/init"
+            || draft;
         if !permitted {
             return err_409(
                 "Only candidate, rack and Group 0 bootstrap operations are available before publication",

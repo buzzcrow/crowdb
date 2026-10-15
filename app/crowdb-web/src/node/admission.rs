@@ -28,6 +28,10 @@ pub(crate) struct AdmitRequest {
     pub(super) ssh_user: String,
     pub(super) ssh_port: u16,
     pub(super) ssh_password: Option<String>,
+    #[serde(default)]
+    pub(super) preflight_operation_id: Option<String>,
+    #[serde(default)]
+    pub(super) setup: Option<crowdb_protocol::mgmt::node::setup::NodeSetupChoices>,
 }
 
 pub(crate) async fn admit(
@@ -71,7 +75,14 @@ pub(super) async fn observe(
             "Candidate identity, version or cluster binding prevents admission",
         ));
     }
-    if body.ssh_user.is_empty() || body.ssh_port == 0 {
+    if body.ssh_user.is_empty()
+        || body.ssh_user.len() > 128
+        || body.ssh_port == 0
+        || body
+            .ssh_password
+            .as_ref()
+            .is_some_and(|password| password.len() > 4096)
+    {
         return Err(err_400("SSH login and port are required"));
     }
     let endpoint = candidate
@@ -117,34 +128,15 @@ async fn admit_observed(
     if !config.racks.iter().any(|rack| rack.id == body.rack_id) {
         return Err(err_400("Select an existing rack"));
     }
-    let mut record: NodeRecord = if path.exists() {
-        serde_json::from_slice(&fs::read(&path).map_err(|error| err_502(error.to_string()))?)
-            .map_err(|error| err_502(error.to_string()))?
-    } else {
-        NodeRecord {
-            discovery_id: id.to_string(),
-            node_id: config
-                .nodes
-                .iter()
-                .map(|node| node.id)
-                .chain(records(state)?.iter().map(|node| node.node_id))
-                .max()
-                .unwrap_or(0)
-                + 1,
-            physical_host_id: handshake.physical_host_id,
-            rack_id: body.rack_id,
-            host: host.clone(),
-            ssh_port: body.ssh_port,
-            ssh_user: body.ssh_user.clone(),
-            operation_id: uuid::Uuid::new_v4().to_string(),
-            confirmed: false,
-            cancelled: false,
-        }
-    };
-    if record.cancelled {
-        record.operation_id = uuid::Uuid::new_v4().to_string();
-        record.cancelled = false;
-    }
+    let mut record = initial_record(
+        state,
+        &body,
+        id,
+        &host,
+        &handshake.physical_host_id,
+        &config,
+        &path,
+    )?;
     let binding = binding(state)?;
     if binding.is_none() {
         record.host = host;
@@ -182,6 +174,7 @@ async fn admit_observed(
     )
     .await
     .map_err(map_config_err)?;
+    super::setup::accept(state, &record, &target, body.setup).await?;
     target.ssh_password = None;
     target.ssh_key = None;
     target.ssh_credential_ref = Some("id_ed25519".into());
@@ -191,7 +184,24 @@ async fn admit_observed(
     update_config(state, &record, target)?;
     save(&path, &record)?;
     state.persist().map_err(map_persist_err)?;
+    super::preflight::finish(state, &record)?;
     Ok(record)
+}
+
+pub(super) fn next_node_id(
+    config: &crowdb_console_shared::ConsoleConfig,
+    records: &[NodeRecord],
+) -> Result<u64, Failure> {
+    config
+        .nodes
+        .iter()
+        .map(|node| node.id)
+        .chain(records.iter().map(|node| node.node_id))
+        .max()
+        .unwrap_or(0)
+        .checked_add(1)
+        .filter(|id| *id < (1_u64 << 53))
+        .ok_or_else(|| err_409("Node ID space is exhausted"))
 }
 
 pub(crate) async fn admissions(State(state): State<AppState>) -> Result<Json<Vec<NodeRecord>>, Failure> {
@@ -381,4 +391,55 @@ async fn confirm_admission(
     .await
     .map_err(map_config_err)?;
     Ok(())
+}
+
+fn initial_record(
+    state: &AppState,
+    body: &AdmitRequest,
+    id: uuid::Uuid,
+    host: &str,
+    physical_host: &str,
+    config: &crowdb_console_shared::ConsoleConfig,
+    path: &Path,
+) -> Result<NodeRecord, Failure> {
+    let prepared_access = super::preflight::accepted(state, body, host, physical_host)?;
+    let mut record: NodeRecord = if path.exists() {
+        serde_json::from_slice(&fs::read(path).map_err(|error| err_502(error.to_string()))?)
+            .map_err(|error| err_502(error.to_string()))?
+    } else if let Some(preflight) = prepared_access {
+        let mut record = preflight;
+        record.node_id = next_node_id(config, &records(state)?)?;
+        record
+    } else {
+        NodeRecord {
+            discovery_id: id.to_string(),
+            node_id: next_node_id(config, &records(state)?)?,
+            physical_host_id: physical_host.to_owned(),
+            rack_id: body.rack_id,
+            host: host.to_owned(),
+            ssh_port: body.ssh_port,
+            ssh_user: body.ssh_user.clone(),
+            operation_id: uuid::Uuid::new_v4().to_string(),
+            confirmed: false,
+            cancelled: false,
+        }
+    };
+    if record.discovery_id != id.to_string() || record.physical_host_id != physical_host {
+        return Err(err_409("Retained admission identity or physical host differs"));
+    }
+    if record.cancelled {
+        record.operation_id = uuid::Uuid::new_v4().to_string();
+        record.cancelled = false;
+    }
+    if let Some(choices) = &body.setup {
+        crowdb_protocol::mgmt::node::setup::NodeSetupRequest {
+            version: 1,
+            discovery_id: record.discovery_id.clone(),
+            operation_id: record.operation_id.clone(),
+            choices: choices.clone(),
+        }
+        .validate()
+        .map_err(err_400)?;
+    }
+    Ok(record)
 }

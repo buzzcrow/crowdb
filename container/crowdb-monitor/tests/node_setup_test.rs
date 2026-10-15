@@ -56,6 +56,66 @@ fn setup_requires_target_identity_and_authenticated_admission_then_replays_read_
     assert_eq!(std::fs::read(root.join("node-setup.json")).unwrap(), bytes);
 }
 
+#[test]
+fn cancelled_unbound_setup_can_be_replaced_without_losing_its_journal() {
+    let directory = crowdb_test_harness::test_dirs::tempdir_in_test_data("node-setup-cancelled");
+    let root = directory.path();
+    let original = request(root);
+    authorize(root, &original);
+    let mut setup = NodeSetupForTests::default();
+    setup.accept_for_tests(root, original.clone()).unwrap();
+    let mut next = original.clone();
+    next.operation_id = uuid::Uuid::new_v4().to_string();
+    next.choices.storage = SetupStorage::Diskless;
+    std::fs::write(
+        root.join("ssh/authorized_keys"),
+        format!(
+            "ssh-ed25519 fixture crowdb:{}\nssh-ed25519 fixture crowdb:{}\n",
+            original.operation_id, next.operation_id
+        ),
+    )
+    .unwrap();
+    assert!(
+        setup.accept_for_tests(root, next.clone()).is_err(),
+        "a live accepted plan remains immutable"
+    );
+    std::fs::write(
+        root.join(format!("ssh/cancelled-{}.json", original.operation_id)),
+        "{}",
+    )
+    .unwrap();
+    setup.accept_for_tests(root, next.clone()).unwrap();
+    assert_eq!(
+        NodeSetupForTests::status_for_tests(root)
+            .unwrap()
+            .unwrap()
+            .operation_id,
+        next.operation_id
+    );
+    assert!(root
+        .join(format!("cancelled-node-setup-{}.json", original.operation_id))
+        .exists());
+    assert!(setup.accept_for_tests(root, original).is_err());
+}
+
+#[test]
+fn oversized_progress_never_becomes_an_unreadable_private_control_reply() {
+    let directory = crowdb_test_harness::test_dirs::tempdir_in_test_data("node-setup-progress-bound");
+    let root = directory.path();
+    let intent = request(root);
+    authorize(root, &intent);
+    NodeSetupForTests::default()
+        .accept_for_tests(root, intent)
+        .unwrap();
+    let path = root.join("node-setup.json");
+    let mut current: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    current["status"]["error"] = serde_json::Value::String("x".repeat(65536));
+    std::fs::write(&path, serde_json::to_vec(&current).unwrap()).unwrap();
+    let error = NodeSetupForTests::status_for_tests(root).unwrap_err();
+    assert!(error.to_string().contains("control reply bound"), "{error}");
+    assert!(!root.join("disks").exists());
+}
+
 #[tokio::test]
 async fn unbound_setup_survives_a_worker_restart_without_creating_disks_or_services() {
     let directory = crowdb_test_harness::test_dirs::tempdir_in_test_data("node-setup-unbound");

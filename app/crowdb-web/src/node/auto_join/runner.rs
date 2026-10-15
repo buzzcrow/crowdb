@@ -110,13 +110,22 @@ async fn admit_candidates(
         .map_err(|error| err_502(error.to_string()))?
         .clone();
     let records = node::records(state)?;
+    let prepared_access = node::preflight::pending(state)?;
     let Some(rack) = config.racks.first() else {
         return Ok(json!({"phase": "needs-rack"}));
     };
     let mut candidates: Vec<_> = snapshot
         .candidates
         .iter()
-        .filter(|candidate| candidate.state == CandidateState::Unbound)
+        .filter(|candidate| {
+            candidate.state == CandidateState::Unbound
+                && (!prepared_access.contains(&candidate.advertisement.discovery_id)
+                    || records.iter().any(|record| {
+                        record.discovery_id == candidate.advertisement.discovery_id
+                            && !record.cancelled
+                            && config.node(record.node_id).is_some()
+                    }))
+        })
         .collect();
     candidates.sort_by(|left, right| {
         left.advertisement
@@ -212,6 +221,8 @@ async fn admit_candidate(
         ssh_user: record.map_or_else(|| "crowdb".into(), |record| record.ssh_user.clone()),
         ssh_port: record.map_or(2222, |record| record.ssh_port),
         ssh_password: None,
+        preflight_operation_id: None,
+        setup: None,
     };
     if !super::read(state)?.enabled {
         return Ok(Some(json!({"phase": "disabled"})));

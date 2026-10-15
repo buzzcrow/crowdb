@@ -973,3 +973,18 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   native client 40.18 s. Added real second-operator Offline refresh/focus assertion
   passes; all original allocation, missing-file, restart, retained-byte and
   validated Online proofs remain. No retries or timeout inflation were added.
+- Fresh bridge baseline on that image passed in
+  `run-5bb926a6956f4bb1af02ee183cf40151`: prepare/init 7.6 s, cross-UI recovery
+  4.8 s, independent cleanup 2.7 s, authenticated node update 11.3 s. Use this
+  exact baseline for the combined admission form changes.
+- Combined admission now performs read-only authenticated inventory review,
+  then submits fixed Node/Services/Storage choices to the target monitor before
+  confirmed binding. Pending reviews are separate from admissions and can be
+  discarded without touching accepted work. Existing accepted choices reopen
+  read-only; passwords remain only in browser/request memory. Node workspace
+  exposes durable progress, diskless selection, stale reads and explicit retry.
+  Seven monitor cases, four protocol cases, six Web cases, 241 UI cases/types,
+  all-target/all-feature Clippy, Rust fmt and Python compilation pass. Initial
+  UI checks caught unsupported assertion syntax and missing Rack fixture fields;
+  corrected test setup/types while retaining the assertions. Updated-image
+  bridge acceptance, including browser closure and real monitor restart, is next.

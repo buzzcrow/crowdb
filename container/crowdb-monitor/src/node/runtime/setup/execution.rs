@@ -20,7 +20,7 @@ pub(super) async fn run(profile: DeploymentProfile, mut state: AcceptedSetup) ->
     let root = &profile.paths.data_root;
     match advance(&profile, &mut state).await {
         Ok(()) => state.status.error = None,
-        Err(error) => state.status.error = Some(error.to_string().chars().take(512).collect()),
+        Err(error) => state.status.error = Some(journal::bounded(&error.to_string(), 512)),
     }
     journal::save(root, &state)
 }

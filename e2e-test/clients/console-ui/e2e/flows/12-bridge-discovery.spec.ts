@@ -1,6 +1,52 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 import { test, expect } from '../fixtures/realBackend';
+import { reviewDisklessCandidate } from '../fixtures/candidateSetup';
+
+test('Docker default setup: submit storage and services then close the initiating browser', async ({ page, request }) => {
+  test.skip(!process.env.CROWDB_NODE_UI_IDENTITIES || !process.env.CROWDB_NODE_UI_ORIGIN, 'Owned default node fixture required');
+  const origin = process.env.CROWDB_NODE_UI_ORIGIN!;
+  const identities: string[] = JSON.parse(process.env.CROWDB_NODE_UI_IDENTITIES!);
+  await page.goto(`${origin}/?domain=Cluster`);
+  await page.getByRole('button', { name: 'Add Rack', exact: true }).click();
+  const rack = page.getByRole('dialog', { name: 'Add Rack' });
+  await rack.getByLabel('Rack ID', { exact: true }).fill('1');
+  await rack.getByRole('button', { name: 'Create Rack', exact: true }).click();
+  await expect(rack).toHaveCount(0);
+  const candidates = page.getByRole('region', { name: 'Candidate nodes' });
+  for (const [index, id] of identities.entries()) {
+    await candidates.getByTestId(`candidate-${id}`).getByRole('button', { name: 'Move to cluster', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Move candidate to cluster' });
+    await dialog.getByRole('button', { name: 'Verify and review', exact: true }).click();
+    await expect(dialog.getByText(/Access verified/)).toBeVisible();
+    await expect(dialog.getByLabel('Initial SSH password', { exact: true })).toHaveValue('');
+    for (const checkbox of await dialog.getByRole('region', { name: 'Node service choices' }).getByRole('checkbox').all()) await expect(checkbox).toBeChecked();
+    await expect(dialog.getByLabel('Managed file capacity (GiB)', { exact: true })).toHaveValue('16');
+    if (index > 0) await dialog.getByLabel('Managed file capacity (GiB)', { exact: true }).fill('1');
+    await dialog.getByRole('button', { name: 'Join and start', exact: true }).click();
+    await expect(dialog).toHaveCount(0, { timeout: 10_000 });
+  }
+  await page.getByTestId('domain-kv').click();
+  await page.getByRole('button', { name: 'Initialize Cluster', exact: true }).click();
+  const initialize = page.getByRole('dialog', { name: 'Initialize Cluster' });
+  const accepted = page.waitForResponse(response => response.url().endsWith('/api/cluster/init') && response.request().method() === 'POST');
+  await initialize.getByRole('button', { name: 'Initialize Cluster', exact: true }).click();
+  const response = await accepted;
+  expect(response.status(), await response.text()).toBe(202);
+  expect(await response.json()).toMatchObject({ phase: 'preparing' });
+  await page.close();
+});
+
+test('Docker default setup: progress is visible in the node middle workspace', async ({ page }) => {
+  test.skip(!process.env.CROWDB_NODE_UI_ORIGIN, 'Owned default node fixture required');
+  await page.goto(`${process.env.CROWDB_NODE_UI_ORIGIN}/?domain=Cluster`);
+  await page.getByTestId('tree-node-N-1').getByRole('button', { name: 'N-1', exact: true }).click();
+  const setup = page.getByRole('region', { name: 'Node 1 setup', exact: true });
+  await expect(setup.getByRole('status', { exact: true })).toHaveText('Completed');
+  await expect(setup).toContainText('Managed file');
+  await expect(setup).toContainText('crowdb-access-server · ready');
+  await expect(page.getByRole('region', { name: 'Node 1 storage', exact: true })).toContainText('Preallocated');
+});
 
 // Docker supplies the real node roots, SSH endpoints and candidate identities.
 // Baseline: 7.5s (2026-10-10; preparation phase).
@@ -23,7 +69,7 @@ test('Docker candidates: prepare nodes in UI and initialize their shared cluster
     const dialog = page.getByRole('dialog', { name: 'Move candidate to cluster' });
     await expect(dialog.getByLabel('SSH user', { exact: true })).toHaveValue('crowdb');
     await expect(dialog.getByLabel('Initial SSH password', { exact: true })).toHaveValue('crowdb');
-    await dialog.getByRole('button', { name: 'Verify and move', exact: true }).click();
+    await reviewDisklessCandidate(dialog, request, origin, id);
     // Admission performs authenticated key exchange and proves every peer pair.
     await expect(dialog).toHaveCount(0, { timeout: 10_000 });
     await expect(candidate).toContainText('Prepared or joining');

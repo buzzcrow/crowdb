@@ -141,6 +141,7 @@ def main():
         for origin in origins:
             wait(lambda: request(origin, "/api/node/status"), lambda result: result["phase"] == "unbound_draft", "cleanup releases UI binding")
         print("Shared rack mutations, minority gating and explicit cleanup passed", flush=True)
+        scenario("node-default-setup.py").verify(docker, request, wait, names, origins)
 
     except Exception:
         for name in names:

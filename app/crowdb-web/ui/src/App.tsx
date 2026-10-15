@@ -588,6 +588,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
         {workspaceNode && clusterSelection && <div className="tw-flex-1 tw-min-h-0"><NodeWorkspace
           key={workspaceNode.id} node={workspaceNode} scope={clusterSelection} capacity={clusterView === 'capacity'}
           readonly={topologyReadonly} ready={managementAuthorized} inventory={nodeDiskGroups[workspaceNode.id]}
+          setupEnabled={nodeManagement && !managed}
           hardware={hardwareCapacity} usage={capacityUsage} services={allServers} plan={servicePlans.plans[workspaceNode.id]}
           loadGroup={loadGroupDisks} onAddGroup={() => setDialog(previous => ({ ...previous, addDiskGroup: { nodeId: workspaceNode.id } }))}
           onServicePlan={() => setDialog(previous => ({ ...previous, defaultServices: { nodeId: workspaceNode.id } }))}

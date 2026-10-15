@@ -362,6 +362,14 @@
 - Explicit cluster cleanup retires accepted setup and drains its current pass
   before deleting system metadata. If a pass is still active, report pending
   cleanup and retain state for the existing explicit cleanup retry.
+- SSH/storage preflight only reads authenticated identity and inventory. It does
+  not install peer keys or grant new access that could trigger another Console's
+  Auto join. The browser keeps an initial credential only in memory until final
+  submission/cancel; no password enters persistent preflight or plan records.
+  A pending local review is excluded from that Console's automatic admission.
+- OCI node admission owns the KV bootstrap listeners (10000/10100). Setup cannot
+  silently accept other KV port overrides. Optional service choices retain
+  existing deployments; unselecting KV is not a request to stop the admitted KV.
 
 **Dependencies**:
 

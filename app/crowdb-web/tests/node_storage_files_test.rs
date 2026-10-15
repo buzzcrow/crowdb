@@ -23,6 +23,11 @@ async fn readonly_standard_node_rejects_storage_and_bootstrap_before_authority_w
         ("/api/racks", r#"{"id":1}"#),
         ("/api/cluster/init", r#"{"nodes":[1]}"#),
         (
+            "/api/node/preflight",
+            r#"{"discovery_id":"one","rack_id":1,"ssh_user":"crowdb","ssh_port":2222}"#,
+        ),
+        ("/api/nodes/1/setup", "{}"),
+        (
             "/api/nodes/1/disk-groups/1/disks/0000000000000001-0000000000000001/offline",
             r#"{"expected_revision":"1"}"#,
         ),

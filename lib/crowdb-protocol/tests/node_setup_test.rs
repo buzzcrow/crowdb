@@ -52,6 +52,15 @@ fn service_selection_and_reserved_diskdb_listener_range_cannot_be_ambiguous() {
     let mut unsupported = request();
     unsupported.choices.services[0].listeners.s3_port = Some(32000);
     assert!(unsupported.validate().is_err());
+    let mut fixed_bootstrap = request();
+    fixed_bootstrap.choices.services[0].listeners.http_port = Some(19910);
+    assert!(
+        fixed_bootstrap.validate().is_err(),
+        "node setup cannot silently ignore a bootstrap port override"
+    );
+    fixed_bootstrap.choices.services[0].listeners.http_port = Some(10000);
+    fixed_bootstrap.choices.services[0].listeners.rpc_port = Some(10100);
+    fixed_bootstrap.validate().unwrap();
 }
 
 #[test]

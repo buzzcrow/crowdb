@@ -11,6 +11,7 @@ import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
+from setup_choices import diskless_setup
 
 ROOT = Path(__file__).resolve().parents[2]
 HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -90,7 +91,7 @@ def main():
              lambda value: len(value["candidates"]) == 3, "cross-host discovery")
         request(origins[0], "/api/racks", {"id": 1, "name": "containerd-cluster"})
         members = [request(origins[0], "/api/node/admit", {"discovery_id": identity, "rack_id": 1,
-                    "ssh_user": "crowdb", "ssh_port": 2222, "ssh_password": "containerd-test"})["node_id"]
+                    "ssh_user": "crowdb", "ssh_port": 2222, "ssh_password": "containerd-test", "setup": diskless_setup()})["node_id"]
                    for identity in sorted(identities)]
         request(origins[0], "/api/cluster/init", {"nodes": members})
         states = [wait(lambda origin=origin: request(origin, "/api/node/status"),

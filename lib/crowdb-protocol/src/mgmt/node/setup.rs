@@ -64,6 +64,25 @@ pub enum SetupStorage {
     },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SetupStorageMode {
+    Automatic,
+    Diskless,
+    Supplied,
+}
+
+impl SetupStorage {
+    #[must_use]
+    pub const fn mode(&self) -> SetupStorageMode {
+        match self {
+            Self::Automatic { .. } => SetupStorageMode::Automatic,
+            Self::Diskless => SetupStorageMode::Diskless,
+            Self::Supplied { .. } => SetupStorageMode::Supplied,
+        }
+    }
+}
+
 impl Default for SetupStorage {
     fn default() -> Self {
         Self::Automatic {
@@ -172,6 +191,8 @@ pub struct NodeSetupStatus {
     pub discovery_id: String,
     pub operation_id: String,
     pub phase: NodeSetupPhase,
+    #[serde(default)]
+    pub storage_mode: Option<SetupStorageMode>,
     pub node_id: Option<u64>,
     pub cluster_id: Option<String>,
     pub disks: Vec<SetupDiskStatus>,

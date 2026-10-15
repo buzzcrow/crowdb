@@ -5,6 +5,8 @@
 
 mod admission;
 pub(crate) mod auto_join;
+pub(crate) mod preflight;
+pub(crate) mod setup;
 mod update;
 pub(crate) use update::update;
 mod authority;
@@ -28,6 +30,7 @@ pub(crate) struct NodeCandidates {
     pub local: NodeHandshake,
     pub candidates: Vec<CandidateNode>,
     pub diagnostics: Vec<String>,
+    pub prepared_access: Vec<preflight::PreparedCandidate>,
 }
 
 pub(crate) async fn candidates(State(state): State<AppState>) -> Result<Json<NodeCandidates>, StatusCode> {
@@ -64,10 +67,12 @@ pub(crate) async fn candidates(State(state): State<AppState>) -> Result<Json<Nod
             },
         );
     }
+    let prepared_access = preflight::summaries(&state, &candidates).map_err(|(status, _)| status)?;
     Ok(Json(NodeCandidates {
         local,
         candidates,
         diagnostics: snapshot.discovery_diagnostics,
+        prepared_access,
     }))
 }
 

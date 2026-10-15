@@ -12,6 +12,7 @@ import tempfile
 import time
 import urllib.request
 from pathlib import Path
+from setup_choices import diskless_setup
 
 OCI = Path(__file__).resolve().parents[2] / "container/oci-image"
 
@@ -55,7 +56,7 @@ def scenario(runtime, image, data, secret, mode):
             discovery_id = snapshot["local"]["advertisement"]["discovery_id"]
             request("/api/racks", {"id": 1, "name": "containerd-rack"})
             node = request("/api/node/admit", {"discovery_id": discovery_id, "rack_id": 1,
-                                              "ssh_user": "crowdb", "ssh_port": 2222, "ssh_password": "containerd-test"})
+                                              "ssh_user": "crowdb", "ssh_port": 2222, "ssh_password": "containerd-test", "setup": diskless_setup()})
             request("/api/cluster/init", {"nodes": [node["node_id"]]})
             state = wait(lambda: request("/api/node/status"), lambda s: s["phase"] == "active", "Group 0 bootstrap")
             cluster = state["cluster_id"]

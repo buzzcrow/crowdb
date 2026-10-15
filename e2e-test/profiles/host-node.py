@@ -14,6 +14,7 @@ import uuid
 import signal
 from contextlib import nullcontext
 from node import docker, request, wait, IMAGE
+from setup_choices import diskless_setup
 
 
 def main():
@@ -44,7 +45,7 @@ def main():
             assert snapshot["local"]["hardware"]["logical_cpus"] > 0
             request(origin, "/api/racks", {"id":1,"name":"host-rack"})
             record = request(origin, "/api/node/admit", {"discovery_id":discovery_id,"rack_id":1,
-                             "ssh_user":"crowdb","ssh_port":2222,"ssh_password":"host-ssh-acceptance"})
+                             "ssh_user":"crowdb","ssh_port":2222,"ssh_password":"host-ssh-acceptance", "setup":diskless_setup()})
             request(origin, "/api/cluster/init", {"nodes":[record["node_id"]]})
             active = request(origin, "/api/node/status")
             assert active["phase"] == "active", active

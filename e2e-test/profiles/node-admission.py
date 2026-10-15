@@ -6,6 +6,7 @@
 import json
 from bridge_node import start_node, origin_for, CLIENT, BROWSER_OUTPUT
 import urllib.error
+from setup_choices import diskless_setup
 
 
 def verify(docker, request, wait, IMAGE, PREFIX, names, origins, identities, records):
@@ -18,7 +19,7 @@ def verify(docker, request, wait, IMAGE, PREFIX, names, origins, identities, rec
     candidate = next(item for item in discovered["candidates"] if item["advertisement"]["discovery_id"] not in identities)
     assert request(fourth_origin, "/api/node/status")["phase"] == "unbound_draft"
     admission_body = {"discovery_id": candidate["advertisement"]["discovery_id"],
-                      "rack_id": 1, "ssh_user": "crowdb", "ssh_port": 2222, "ssh_password": "wrong-password"}
+                      "rack_id": 1, "ssh_user": "crowdb", "ssh_port": 2222, "ssh_password": "wrong-password", "setup": diskless_setup()}
     try:
         request(origins[1], "/api/node/admit", admission_body)
     except urllib.error.HTTPError as error:
@@ -48,7 +49,7 @@ def verify(docker, request, wait, IMAGE, PREFIX, names, origins, identities, rec
         raise AssertionError("delayed cancelled preparation restarted KV")
     print("Pending KV admission cancellation and delayed-command fencing passed", flush=True)
     joined = request(origins[1], "/api/node/admit", {"discovery_id": candidate["advertisement"]["discovery_id"],
-                     "rack_id":1, "ssh_user":"crowdb", "ssh_port":2222, "ssh_password":"crowdb"})
+                     "rack_id":1, "ssh_user":"crowdb", "ssh_port":2222, "ssh_password":"crowdb", "setup":diskless_setup()})
     assert joined["confirmed"] and joined["node_id"] not in {record["node_id"] for record in records}
     assert joined["node_id"] == pending["node_id"] and joined["operation_id"] != pending["operation_id"]
     origins.append(fourth_origin)

@@ -231,6 +231,12 @@ pub fn router(state: AppState) -> axum::Router {
         )
         .route("/api/node/admissions", get(node::admissions))
         .route("/api/node/admit", post(node::admit))
+        .route("/api/node/preflight", post(node::preflight::prepare))
+        .route("/api/node/preflight/:id", delete(node::preflight::discard))
+        .route(
+            "/api/nodes/:id/setup",
+            get(node::setup::status).post(node::setup::retry),
+        )
         .route("/api/node/update", post(node::update))
         .route("/api/node/cleanup", post(node::cleanup))
         .route("/api/node/cancel", post(node::cancel))

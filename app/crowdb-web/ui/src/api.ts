@@ -175,6 +175,7 @@ export interface NodeCandidates {
   local: { advertisement: DiscoveredNode['advertisement']; physical_host_id: string; rack_hint: string | null };
   candidates: DiscoveredNode[];
   diagnostics: string[];
+  prepared_access?: PreparedNodeReference[];
 }
 
 export async function listNodeCandidates(options?: RequestOptions): Promise<NodeCandidates> {
@@ -191,6 +192,7 @@ export interface NodeDeploymentStatus {
   cleanup?: { operation_id: string; completed: number[]; pending: number[]; errors: string[] };
 }
 export interface NodeAdmission { discovery_id: string; node_id: number; rack_id: number; host: string; physical_host_id: string; ssh_user: string; ssh_port: number; operation_id: string; confirmed: boolean; cancelled: boolean }
+export type PreparedNodeReference = Pick<NodeAdmission, 'discovery_id' | 'operation_id' | 'rack_id' | 'ssh_user' | 'ssh_port'>;
 export async function nodeAdmissions(options?: RequestOptions): Promise<NodeAdmission[]> {
   return jsonOrThrow(await fetchWithOptions('/api/node/admissions', options));
 }
@@ -203,7 +205,20 @@ export async function cleanupNodeCluster(operationId: string): Promise<{ pending
 export async function nodeDeploymentStatus(options?: RequestOptions): Promise<NodeDeploymentStatus> {
   return jsonOrThrow(await fetchWithOptions('/api/node/status', options));
 }
-export async function admitCandidate(body: { discovery_id: string; rack_id: number; ssh_user: string; ssh_port: number; ssh_password: string | null }): Promise<unknown> {
+export async function prepareCandidate(body: import('./shell/nodeSetup').NodeAdmissionRequest): Promise<import('./shell/nodeSetup').PreparedNodeAccess> {
+  return jsonOrThrow(await fetchWithOptions('/api/node/preflight', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), skipDeduplication: true }));
+}
+export async function discardCandidateReview(discoveryId: string, operationId: string): Promise<void> {
+  const response = await fetchWithOptions(`/api/node/preflight/${encodeURIComponent(discoveryId)}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operation_id: operationId }), skipDeduplication: true });
+  if (!response.ok) await jsonOrThrow(response);
+}
+export function nodeSetupStatus(node: number, options?: RequestOptions): Promise<import('./shell/nodeSetup').NodeSetupStatus | null> {
+  return inventoryJson(`/api/nodes/${node}/setup`, options);
+}
+export async function retryNodeSetup(node: number): Promise<import('./shell/nodeSetup').NodeSetupStatus> {
+  return jsonOrThrow(await fetchWithOptions(`/api/nodes/${node}/setup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', skipDeduplication: true }));
+}
+export async function admitCandidate(body: import('./shell/nodeSetup').NodeAdmissionRequest): Promise<unknown> {
   return jsonOrThrow(await fetchWithOptions('/api/node/admit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), skipDeduplication: true }));
 }export async function updateCandidate(body: { discovery_id: string; rack_id: number; ssh_user: string; ssh_port: number; ssh_password: string | null }): Promise<unknown> {
   return jsonOrThrow(await fetchWithOptions('/api/node/update', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), skipDeduplication: true }));

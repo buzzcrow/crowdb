@@ -209,7 +209,7 @@ fn disk_status(
         },
         detail: status
             .and_then(|status| status.error.as_ref())
-            .map(|text| text.chars().take(128).collect()),
+            .map(|text| journal::bounded(text, 128)),
         operation_id: request.operation_id.clone(),
         disk_id: Some({
             use crowdb_protocol::DiskIdExt;

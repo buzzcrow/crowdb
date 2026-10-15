@@ -3,7 +3,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { listNodeCandidates, nodeDeploymentStatus, nodeAdmissions, cancelNodeAdmission, type NodeAdmission, type NodeCandidates, type NodeDeploymentStatus } from '../api';
+import { listNodeCandidates, nodeDeploymentStatus, nodeAdmissions, cancelNodeAdmission, discardCandidateReview, type NodeAdmission, type NodeCandidates, type NodeDeploymentStatus } from '../api';
 import { AdmitCandidateDialog } from './AdmitCandidateDialog';
 import { Button } from '../components/ui/Button';
 import { NodeRecoveryDialog } from './NodeRecoveryDialog';
@@ -68,6 +68,11 @@ export function CandidateNodes({ racks, readonly, onChange }: { racks: Rack[]; r
         <div className="tw-break-all">{node.advertisement.discovery_id}</div>
         <div className="tw-text-muted">{labels[node.state]}{node.advertisement.discovery_id === snapshot.local.advertisement.discovery_id ? ' · This node' : ''}</div>
         {node.state === 'foreign_cluster' && node.advertisement.monitor_endpoints[0] && <a className="tw-text-accent" href={clusterConsole(node.advertisement.monitor_endpoints[0])} target="_blank" rel="noreferrer">Open this cluster UI</a>}
+        {snapshot.prepared_access?.some(prepared => prepared.discovery_id === node.advertisement.discovery_id) && <div className="tw-text-muted">Access review pending</div>}
+        {snapshot.prepared_access?.filter(prepared => prepared.discovery_id === node.advertisement.discovery_id).map(prepared => <Button key={`review-${prepared.operation_id}`} size="sm" disabled={readonly || unavailable} onClick={async () => {
+          try { await discardCandidateReview(prepared.discovery_id, prepared.operation_id); onChange?.(); }
+          catch (cause) { setActionError(String(cause)); }
+        }}>Discard access review</Button>)}
         {node.advertisement.cluster_id && <div className="tw-break-all tw-text-muted">Cluster {node.advertisement.cluster_id}</div>}
         {node.advertisement.monitor_endpoints.map(endpoint => <div key={endpoint} className="tw-break-all tw-text-muted">{endpoint}</div>)}
         {admissions.some(entry => entry.discovery_id === node.advertisement.discovery_id) && <div className="tw-text-muted">{admissions.find(entry => entry.discovery_id === node.advertisement.discovery_id)?.confirmed ? 'Admitted' : admissions.find(entry => entry.discovery_id === node.advertisement.discovery_id)?.cancelled ? 'Cancelled · cleanup can be retried' : 'Prepared or joining · retry available'}</div>}
@@ -78,7 +83,7 @@ export function CandidateNodes({ racks, readonly, onChange }: { racks: Rack[]; r
     </ul>
     {snapshot?.diagnostics.map((diagnostic, index) => <p key={index} className="tw-text-xs tw-text-muted tw-mt-2">{diagnostic}</p>)}
     {recovery && deployment && dialogRoot && createPortal(<NodeRecoveryDialog status={deployment} cleanup={recovery === 'cleanup'} onClose={() => setRecovery(undefined)} onChange={onChange} />, dialogRoot)}
-    {selected && dialogRoot && createPortal(<AdmitCandidateDialog discoveryId={selected} racks={racks} current={updating ? admissions.find(entry => entry.discovery_id === selected) : undefined} onClose={() => setSelected(undefined)} onSuccess={onChange} />, dialogRoot)}
+    {selected && dialogRoot && createPortal(<AdmitCandidateDialog discoveryId={selected} racks={racks} preparedNode={snapshot?.prepared_access?.find(entry => entry.discovery_id === selected)} current={updating ? admissions.find(entry => entry.discovery_id === selected) : undefined} onClose={() => setSelected(undefined)} onSuccess={onChange} />, dialogRoot)}
   </section>;
 }
 
