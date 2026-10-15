@@ -5,6 +5,12 @@
 
 mod index;
 mod key;
+mod legacy;
+mod preparation;
 mod record;
+mod rows;
+mod status;
 
 pub use record::{FieldMetadata, FieldStorageKind, InspectionState, SnapshotSummary};
+
+pub use preparation::{InspectionError, InspectionPreparation, PreparationLimits, PreparationState};

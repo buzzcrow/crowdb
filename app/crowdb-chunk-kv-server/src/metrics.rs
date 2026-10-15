@@ -76,7 +76,8 @@ impl ServerMetrics {
                 | ChunkKvRpcErrorCode::Recovering
                 | ChunkKvRpcErrorCode::TargetNotReady
                 | ChunkKvRpcErrorCode::RequestConflict
-                | ChunkKvRpcErrorCode::InvalidRequest => {}
+                | ChunkKvRpcErrorCode::InvalidRequest
+                | ChunkKvRpcErrorCode::ScanLimitExceeded => {}
             },
         }
     }

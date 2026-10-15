@@ -44,7 +44,7 @@ async fn bounded_scan_rejects_oversized_first_value_and_resumes_without_skipping
     let rejected = service.handle_bounded_scan(next.clone(), 16, 1_500, 50_100).await;
     assert_eq!(
         rejected.result.unwrap_err().code,
-        ChunkKvRpcErrorCode::InvalidRequest
+        ChunkKvRpcErrorCode::ScanLimitExceeded
     );
     let resumed = service.handle_bounded_scan(next, 256, 1_500, 50_100).await;
     let OperationResult::Scan { items, continuation } = resumed.result.unwrap() else {

@@ -137,13 +137,14 @@ and Rust/Python SDK contract before Console integration.
   enumeration verifies the small committed marker/receipt, never projection
   readiness or Published state alone. Add prepared/head-conflict/crash cases to
   the B4 API tests before advertising inspection capability.
-- [~] **B3 Prepare legacy inspection metadata**: implement bounded resumable
+- [x] **B3a Prepare legacy inspection metadata**: implement bounded resumable
   preparation per selected old Snapshot; scan old identities for discovery without
   preparing every Snapshot. Track revision/progress/error and idempotently publish
   new immutable projection bindings. Reject a legacy value beyond the configured
   storage read/decode cap before allocation if the store supports it; otherwise
   extend its bounded read contract, not a post-allocation check. Files: new
-  `inspection/legacy.rs`, HTTP status endpoints, `tests/inspection_legacy_test.rs`.
+  `inspection/{legacy,preparation,rows,status}.rs`, `tests/inspection_legacy_test.rs`.
+  HTTP routes are wired and verified in E2 with the complete v2 contract.
   Exit: interrupted/repeated preparation preserves old bytes, exposes explicit
   preparing/unsupported/limit state and never returns misleading empty data.
 - [ ] **B4 Add paged metadata authority**: Dataset list, root/child/inventory lists,
@@ -161,6 +162,12 @@ and Rust/Python SDK contract before Console integration.
   Files: `planner.rs`, new `selection.rs`, `authority/projection.rs`,
   `tests/selection_v2_test.rs`. Exit: inherited match, tombstone, missing, empty,
   chunk-backed and unknown-field cases have distinct asserted outcomes.
+
+Sequencing refinement: execute C3/C4 before B4/B2b. Enumeration must rely on
+small durable commit evidence, so publication helping and arbitrary-parent
+preparation are prerequisites for exposing the index. B5 and C1/C2 then consume
+the completed paged authority. No inspection/mutation capability is advertised
+until its corresponding API and visibility tests pass.
 
 ## Phase C — durable drafts and data publication prerequisites
 
@@ -182,7 +189,7 @@ and Rust/Python SDK contract before Console integration.
   `lease.rs`, `upload/ownership.rs`, new `tests/composition_test.rs`.
   Exit: cancellation, duplicate edits, expiry, source reclaim and stale evaluation
   cannot publish incomplete membership or leak another operation's ownership.
-- [ ] **C3 Separate ancestry and data-head precondition**: expose opaque head
+- [~] **C3 Separate ancestry and data-head precondition**: expose opaque head
   generation, accept valid historical/parentless source, and freeze candidate
   content independently of commit attempts. Each attempt binds candidate,
   expected head generation and attempt ID. A conflict permits explicit new attempt
@@ -448,3 +455,21 @@ failure; record actual failures and add Blocked only when that workflow requires
   immutable rows, exact binary IDs retain byte order, payload bytes are separate
   from small field metadata, and legacy over-limit IDs remain publishable with
   explicit unsupported inspection status. Public inspection visibility remains B2b.
+
+## Legacy inspection verification — 2026-10-16
+
+- `pixi run cargo test -p crowdb-access-dataset --tests`: passed (71 cases).
+  New legacy tests cover bounded resumable windows across authority recreation,
+  stable completed progress, untouched legacy bytes, cancellation, explicit size
+  limits/unsupported opaque records, lease release, reclaim fences and corrupted
+  durable positions. Index and store regressions remain green.
+- Added typed `ScanLimitExceeded` wire response and `StoreError::Limit` so a
+  budget failure is distinguishable from invalid input and empty completion.
+  Protocol tests: 8 passed; affected strict server scan case passed.
+- Full `pixi run rs-lint` passed after splitting the preparation orchestration;
+  complete log `/tmp/dataset-inspection-lint-final.log`. Dataset suite log:
+  `/tmp/dataset-legacy-tests.log`. Rust fmt and diff whitespace pass.
+- Preparation validates source existence before creating a lease, processes at
+  most 100 rows/1 MiB per step, caps old record decode at 16 MiB and persists a
+  source digest plus validated position. Ready publication follows all row and
+  inventory writes. Status reads never load a Manifest.

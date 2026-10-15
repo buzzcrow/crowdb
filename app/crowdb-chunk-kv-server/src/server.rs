@@ -1329,7 +1329,7 @@ impl ChunkKvService {
         {
             Ok(page) if strict_budget.is_some() && page.entries.is_empty() && page.truncated => failure(
                 catalog.generation,
-                ChunkKvRpcErrorCode::InvalidRequest,
+                ChunkKvRpcErrorCode::ScanLimitExceeded,
                 "strict scan made no progress within byte or traversal budget".into(),
             ),
             Ok(page) => scan_success(catalog.generation, &request, page),

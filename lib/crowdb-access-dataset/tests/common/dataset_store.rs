@@ -39,7 +39,7 @@ impl DatasetStore for TestDatasetStore {
         let values = self.values.lock().unwrap();
         let value = values.get(key);
         if value.is_some_and(|v| key.len().saturating_add(v.bytes.len()) > budget.bytes) {
-            return Err(crowdb_access_dataset::StoreError::Rejected);
+            return Err(crowdb_access_dataset::StoreError::Limit);
         }
         Ok(value.cloned())
     }
@@ -76,7 +76,7 @@ impl DatasetStore for TestDatasetStore {
                     .last()
                     .map(|(key, _): &(Vec<u8>, StoredValue)| key.clone());
                 if after.is_none() {
-                    return Err(crowdb_access_dataset::StoreError::Rejected);
+                    return Err(crowdb_access_dataset::StoreError::Limit);
                 }
                 return Ok(crowdb_access_dataset::MetadataPage { entries, after });
             }

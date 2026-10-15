@@ -23,6 +23,8 @@ pub enum StoreError {
     Invalid(#[from] DatasetError),
     #[error("dataset store rejected the operation")]
     Rejected,
+    #[error("metadata read exceeded its byte or traversal budget")]
+    Limit,
     #[error("Chunk-KV client failed: {0}")]
     Client(#[from] crowdb_chunk_kv_client::ClientError),
     #[error("Chunk-KV returned a failure: {0}")]

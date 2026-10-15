@@ -83,13 +83,16 @@ impl ChunkKvDatasetStore {
             }
         };
         let page = tokio::select! {
-            result = read => result.map_err(|_| StoreError::Failure("metadata read deadline expired".into()))??,
+            result = read => result.map_err(|_| StoreError::Limit)?.map_err(|error| match error { crowdb_chunk_kv_client::ClientError::TooLarge => StoreError::Limit, error => StoreError::from(error) })?,
             () = cancelled => return Err(DatasetError::ReadCancelled.into()),
         };
         if cancel.is_cancelled() {
             return Err(DatasetError::ReadCancelled.into());
         }
         if let Some(error) = page.terminal_failure {
+            if error.code == crowdb_protocol::chunk_kv::ChunkKvRpcErrorCode::ScanLimitExceeded {
+                return Err(StoreError::Limit);
+            }
             return Err(failure(&error));
         }
         let after = page.continuation.map(|cursor| cursor.last_key);

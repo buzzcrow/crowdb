@@ -871,6 +871,7 @@ pub enum ChunkKvRpcErrorCode {
     RefreshRequired,
     InvalidRequest,
     Internal,
+    ScanLimitExceeded,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

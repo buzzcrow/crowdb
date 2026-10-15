@@ -186,3 +186,20 @@ fn strict_scan_requires_an_explicit_forward_byte_budget() {
     request.direction = ScanDirection::Reverse;
     assert!(encode_bounded_scan_request(1, 2, &request, 4096).is_err());
 }
+
+#[test]
+fn scan_limit_failure_round_trip_is_distinct_from_invalid_request() {
+    let response = ChunkKvResponse {
+        map_revision: 1,
+        journal_position: None,
+        result: Err(RpcFailure {
+            code: ChunkKvRpcErrorCode::ScanLimitExceeded,
+            message: "budget".into(),
+            retry_after_ms: None,
+            latest_map_revision: None,
+            owner_hint: None,
+        }),
+    };
+    let (bytes, offset) = encode_point_response(1, 2, &response);
+    assert_eq!(decode_point_response(&bytes[offset..]).unwrap(), response);
+}
