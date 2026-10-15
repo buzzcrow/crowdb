@@ -38,32 +38,40 @@ pub(super) fn put<T: serde::Serialize>(path: &str, value: &T) -> Result<BatchOp>
 pub(super) async fn update<T, F>(kv: &CrowdbKvClient, rack_id: u64, path: &str, change: F) -> Result<()>
 where
     T: serde::de::DeserializeOwned + serde::Serialize + PartialEq,
-    F: FnOnce(&mut T) -> Result<()>,
+    F: Fn(&mut T) -> Result<()>,
 {
-    let rack_path = RackKey { rack_id }.to_path();
-    let rack = read(kv, &rack_path)
-        .await?
-        .ok_or_else(|| Error::Server(format!("hardware rack does not exist: {rack_path}")))?;
-    let (bytes, revision) = read(kv, path)
-        .await?
-        .ok_or_else(|| Error::Server(format!("hardware record does not exist: {path}")))?;
-    let mut value: T = decode(path, &bytes)?;
-    let original: T = decode(path, &bytes)?;
-    change(&mut value)?;
-    if value == original {
-        return Ok(());
+    for _ in 0..10 {
+        let rack_path = RackKey { rack_id }.to_path();
+        let rack = read(kv, &rack_path)
+            .await?
+            .ok_or_else(|| Error::Server(format!("hardware rack does not exist: {rack_path}")))?;
+        let (bytes, revision) = read(kv, path)
+            .await?
+            .ok_or_else(|| Error::Server(format!("hardware record does not exist: {path}")))?;
+        let mut value: T = decode(path, &bytes)?;
+        let original: T = decode(path, &bytes)?;
+        change(&mut value)?;
+        if value == original {
+            return Ok(());
+        }
+        let mut operations = vec![put(path, &value)?];
+        let (precondition, revision) = if path == rack_path {
+            (path, revision)
+        } else {
+            operations.push(BatchOp::Put {
+                key: rack_path.as_bytes().to_vec().into(),
+                value: rack.0,
+            });
+            (rack_path.as_str(), rack.1)
+        };
+        match kv
+            .batch_write_cas(0, 0, &operations, precondition.as_bytes(), revision)
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(Error::CasFailed { .. } | Error::CasBusy | Error::OutcomeUnknown) => {}
+            Err(error) => return Err(error),
+        }
     }
-    let mut operations = vec![put(path, &value)?];
-    let (precondition, revision) = if path == rack_path {
-        (path, revision)
-    } else {
-        operations.push(BatchOp::Put {
-            key: rack_path.as_bytes().to_vec().into(),
-            value: rack.0,
-        });
-        (rack_path.as_str(), rack.1)
-    };
-    kv.batch_write_cas(0, 0, &operations, precondition.as_bytes(), revision)
-        .await?;
-    Ok(())
+    Err(Error::OutcomeUnknown)
 }

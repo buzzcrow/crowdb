@@ -88,6 +88,7 @@ impl DiskStorageRecord {
             || geometry.unit_size_bytes == 0
             || geometry.zone_size_units == 0
             || geometry.zone_count == 0
+            || geometry.capacity_units % geometry.zone_size_units != 0
             || geometry.capacity_units / geometry.zone_size_units != u64::from(geometry.zone_count)
             || geometry
                 .capacity_units

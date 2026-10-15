@@ -17,12 +17,25 @@ pub(super) async fn disk(
     group: u64,
     disk: &str,
 ) -> Result<(HardwareClient, DiskKey), Failure> {
-    if state.node_monitor_url.is_none() {
-        return Err(err_404("Node monitor is not configured"));
-    }
     let disk_id = crowdb_protocol::common::DiskId::from_display_string(disk).map_err(err_400)?;
     if disk_id.to_display_string() != disk {
         return Err(err_400("Disk identity must use canonical display format"));
+    }
+    let (hardware, rack_id) = node(state, node_id).await?;
+    Ok((
+        hardware,
+        DiskKey {
+            rack_id,
+            node_id,
+            disk_group_id: group,
+            disk_id,
+        },
+    ))
+}
+
+pub(super) async fn node(state: &AppState, node_id: u64) -> Result<(HardwareClient, u64), Failure> {
+    if state.node_monitor_url.is_none() {
+        return Err(err_404("Node monitor is not configured"));
     }
     let hardware = crate::mgmt::build_hardware_client(state)
         .await
@@ -39,13 +52,5 @@ pub(super) async fn disk(
     if location.next().is_some() {
         return Err(err_409("Node identity has multiple hardware locations"));
     }
-    Ok((
-        hardware,
-        DiskKey {
-            rack_id,
-            node_id,
-            disk_group_id: group,
-            disk_id,
-        },
-    ))
+    Ok((hardware, rack_id))
 }

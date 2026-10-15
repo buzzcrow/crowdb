@@ -537,3 +537,23 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   nine passing Python tests; E2E all-target Clippy passes. Actual container run
   awaits rebuilding this committed source. Rejoin/Online and UI actions remain
   unfinished; these backend gates do not complete A11-A13.
+- First rebuilt-image hardware run failed before new removal coverage at the
+  original status assertion: HTTP 502 `set_disk_status: compare-and-set key is
+  busy` (`run-61548971e2c54f1aade2e3159d43c236`, Playwright 4.6 s). Root cause:
+  every scoped DiskIO heartbeat rewrote Rack while one-shot hardware mutations
+  exposed normal contention. Initial scope publication still shares Rack; later
+  immutable-scope heartbeats CAS only the instance. A crash after initial location
+  pinning leaves scope unpublished and still requires Rack-fenced publication.
+  Hardware status mutation now reobserves and revalidates after CAS conflicts.
+  Concurrent status and no-Rack-heartbeat regressions pass; existing assertions
+  and timeouts remain unchanged. Native retry awaits rebuilt sources.
+- Managed file geometry now rejects a partial last zone before durable acceptance
+  or byte creation. New receipts reject unrepresented capacity; legacy DiskValue
+  formats remain unchanged. Monitor preparation (nine cases), protocol storage
+  schema (four), and HTTP 48-GiB rejection pass.
+- Retained backing now has bounded per-node pages (maximum 64), node-scoped
+  validated cursors, exact receipt identity and stable Rack observation. New
+  `/api/nodes/:id/removed-disks` reads Removed candidates from Group 0 rather than
+  inferring them from absent membership or current filesystem visibility. Paging,
+  foreign cursor and HTTP removed-identity regressions pass. Four status, eleven
+  admission, five exclusion, three removal and four web cases pass.

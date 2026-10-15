@@ -45,6 +45,7 @@ async fn request(
 #[tokio::test]
 async fn scoped_http_offline_and_remove_require_confirmation_and_reconcile_one_receipt() {
     let fixture = TestStorageApi::start().await;
+    verify_partial_zone_rejected(&fixture).await;
     let path = format!(
         "/api/nodes/2/disk-groups/3/disks/{}",
         fixture.disk.disk_id.to_display_string()
@@ -119,6 +120,7 @@ async fn scoped_http_offline_and_remove_require_confirmation_and_reconcile_one_r
     assert_eq!(observed["removed"], true);
     assert_eq!(observed["operation_id"], outcome["operation_id"]);
     assert_eq!(observed["removed_from_revision"], revision);
+    verify_removed_candidate(&fixture).await;
     assert!(
         fixture
             .hardware
@@ -180,4 +182,53 @@ async fn confirm_and_remove(fixture: &TestStorageApi, path: &str, revision: &str
     .await;
     assert_eq!(outcome, replay);
     outcome
+}
+
+async fn verify_removed_candidate(fixture: &TestStorageApi) {
+    let page = request(
+        &fixture.app,
+        "GET",
+        "/api/nodes/2/removed-disks?limit=1",
+        None,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(page["items"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        page["items"][0]["disk_id"],
+        fixture.disk.disk_id.to_display_string()
+    );
+    assert_eq!(page["items"][0]["disk_group_id"], 3);
+    assert!(page["items"][0]["capacity_units"].is_string());
+    request(
+        &fixture.app,
+        "GET",
+        "/api/nodes/2/removed-disks?limit=65",
+        None,
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+    request(
+        &fixture.app,
+        "GET",
+        "/api/nodes/2/removed-disks?after=foreign-node",
+        None,
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+}
+
+async fn verify_partial_zone_rejected(fixture: &TestStorageApi) {
+    let response = request(
+        &fixture.app,
+        "POST",
+        "/api/nodes/2/disk-files",
+        Some(
+            json!({"operation_id":"12345678-1234-4234-8234-123456789abc", "disk_group_id":3,
+            "capacity_bytes":48_u64 * 1024 * 1024 * 1024}),
+        ),
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+    assert!(response["error"].as_str().unwrap().contains("whole 32 GiB zones"));
 }

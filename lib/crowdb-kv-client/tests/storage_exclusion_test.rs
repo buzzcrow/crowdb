@@ -156,6 +156,15 @@ async fn immutable_configured_scope_covers_disks_before_usage_advertisements_cat
     svc.heartbeat_diskio_scoped(7, "a:7200", &scope, &[], &[])
         .await
         .unwrap();
+    let rack_revision = revision(hw, "/hw/rack/1").await;
+    svc.heartbeat_diskio_scoped(7, "a:7200", &scope, &[3], &[])
+        .await
+        .unwrap();
+    assert_eq!(
+        revision(hw, "/hw/rack/1").await,
+        rack_revision,
+        "ordinary heartbeat must not contend with hardware membership"
+    );
     assert!(svc
         .heartbeat_diskio_at(7, "a:7200", 1, 2, &[], &[])
         .await

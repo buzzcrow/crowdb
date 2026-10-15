@@ -65,6 +65,9 @@ fn invalid_backing_or_schema_never_becomes_a_usable_record() {
     changed = original.clone();
     changed.geometry.zone_count += 1;
     assert!(changed.validate().is_err());
+    changed = original.clone();
+    changed.geometry.capacity_units += 1;
+    assert!(changed.validate().is_err());
     changed = original;
     changed.geometry.capacity_units = u64::MAX;
     assert!(changed.validate().is_err());

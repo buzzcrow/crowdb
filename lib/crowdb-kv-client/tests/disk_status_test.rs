@@ -19,6 +19,39 @@ struct TestHardware {
 }
 
 #[tokio::test]
+async fn concurrent_status_changes_reobserve_the_shared_rack_fence() {
+    let fixture = TestHardware::start().await;
+    let hw = &fixture.hardware;
+    let first = key();
+    let mut second = key();
+    second.disk_id.low += 1;
+    for key in [&first, &second] {
+        hw.add_disk(1, 2, 3, &key.disk_id, &DiskValue::default())
+            .await
+            .unwrap();
+    }
+    let (first_result, second_result) = tokio::join!(
+        hw.set_disk_status(1, 2, 3, &first.disk_id, HwStatus::Suspect),
+        hw.set_disk_status(1, 2, 3, &second.disk_id, HwStatus::Up)
+    );
+    first_result.unwrap();
+    second_result.unwrap();
+    assert_eq!(
+        hw.get_disk_with_revision(&first).await.unwrap().unwrap().0.status,
+        HwStatus::Suspect as i32
+    );
+    assert_eq!(
+        hw.get_disk_with_revision(&second)
+            .await
+            .unwrap()
+            .unwrap()
+            .0
+            .status,
+        HwStatus::Up as i32
+    );
+}
+
+#[tokio::test]
 async fn status_change_invalidates_an_already_prepared_hierarchy_removal() {
     let fixture = TestHardware::start().await;
     let hw = &fixture.hardware;

@@ -326,3 +326,22 @@ async fn duplicate_checks_cover_every_inventory_page() {
     assert!(hw.admit_disk_storage(&alias).await.is_err());
     assert!(hw.get_disk_with_revision(&key(&alias)).await.unwrap().is_none());
 }
+
+#[tokio::test]
+async fn retained_pages_advance_and_reject_foreign_node_cursors() {
+    let fixture = TestStorage::start().await;
+    let hw = &fixture.hardware;
+    let first = record(5);
+    hw.admit_disk_storage(&first).await.unwrap();
+    let mut second = record(6);
+    second.backing_identity = "file:10:6".into();
+    second.geometry.device_path = "/opt/crowdb/data/disks/second.img".into();
+    hw.admit_disk_storage(&second).await.unwrap();
+    let (page, next) = hw.disk_storage_page(1, 2, None, 1).await.unwrap();
+    assert_eq!(page, vec![first]);
+    let (page, end) = hw.disk_storage_page(1, 2, next.as_deref(), 1).await.unwrap();
+    assert_eq!(page, vec![second]);
+    assert!(end.is_none());
+    assert!(hw.disk_storage_page(1, 99, next.as_deref(), 1).await.is_err());
+    assert!(hw.disk_storage_page(1, 2, None, 65).await.is_err());
+}

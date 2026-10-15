@@ -75,6 +75,7 @@ fn validate(request: &PrepareDiskFile) -> io::Result<()> {
             || admission.zone_size_bytes % u64::from(admission.unit_size_bytes) != 0
             || request.capacity_bytes % u64::from(admission.unit_size_bytes) != 0
             || request.capacity_bytes < admission.zone_size_bytes
+            || request.capacity_bytes % admission.zone_size_bytes != 0
             || request.capacity_bytes / admission.zone_size_bytes > u64::from(u32::MAX)
             || admission
                 .media_type

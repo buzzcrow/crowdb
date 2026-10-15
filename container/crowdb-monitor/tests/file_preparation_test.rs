@@ -72,6 +72,27 @@ fn admission_geometry_is_immutable_and_invalid_geometry_creates_no_file() {
 }
 
 #[test]
+fn partial_last_zone_is_rejected_before_durable_acceptance_or_file_creation() {
+    let root = TestRoot::new();
+    let mut request = request();
+    request.capacity_bytes = 3 * 1024 * 1024;
+    request.admission = Some(FileDiskAdmission {
+        rack_id: 1,
+        disk_group_id: 2,
+        unit_size_bytes: 4096,
+        zone_size_bytes: 2 * 1024 * 1024,
+        media_type: None,
+    });
+    let error = accept_file_for_tests(&root.0, &request).unwrap_err();
+    assert!(error.to_string().contains("geometry"));
+    assert!(file_operations_for_tests(&root.0, None, 32)
+        .unwrap()
+        .items
+        .is_empty());
+    assert!(!root.0.join("disks").exists());
+}
+
+#[test]
 fn durable_pages_include_failed_creation_without_requiring_a_disk_file() {
     let root = TestRoot::new();
     let mut requests = Vec::new();

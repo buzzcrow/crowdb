@@ -62,12 +62,27 @@ impl ServiceRegistryClient {
                 ));
             }
             let revision = existing.as_ref().map_or(0, |(_, revision)| *revision);
-            // Pin the initial physical identity with instance CAS before sharing
-            // the Rack fence. A simultaneous different-node claimant must lose.
-            if previous.is_none() || (previous_scope.is_none() && current_scope.is_some()) {
-                match self.kv.put_cas(0, 0, path.as_bytes(), payload, revision).await {
+            // Pin physical identity first, but publish configured scope only in
+            // the Rack-fenced transaction. A crash between these steps must not
+            // make the next heartbeat skip that admission fence.
+            if previous.is_none() {
+                let mut pinned = value.clone();
+                if let Some(extra) = pinned.extra.as_mut().and_then(|extra| extra.diskdb.as_mut()) {
+                    extra.diskio_scope = None;
+                }
+                let pinned = serde_json::to_vec(&pinned).map_err(|error| Error::Server(error.to_string()))?;
+                match self.kv.put_cas(0, 0, path.as_bytes(), &pinned, revision).await {
                     Ok(_) if current.is_none() => return Ok(()),
                     Ok(_) | Err(Error::CasFailed { .. } | Error::CasBusy | Error::OutcomeUnknown) => continue,
+                    Err(error) => return Err(error),
+                }
+            }
+            // Scope is immutable and its first publication already advanced
+            // Rack. Liveness/owned-group changes cannot add a new participant.
+            if current_scope.is_some() && previous_scope == current_scope {
+                match self.kv.put_cas(0, 0, path.as_bytes(), payload, revision).await {
+                    Ok(_) => return Ok(()),
+                    Err(Error::CasFailed { .. } | Error::CasBusy | Error::OutcomeUnknown) => continue,
                     Err(error) => return Err(error),
                 }
             }

@@ -5,6 +5,7 @@
 
 mod authority;
 pub(crate) mod backing;
+pub(crate) mod candidates;
 pub(crate) mod files;
 pub(crate) mod lifecycle;
 
