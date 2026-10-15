@@ -13,11 +13,6 @@ live in the linked document; implementation follows
 
 ## Dataset and access
 
-- **[R237](R237-dataset-split-lifecycle.md)** — independent Split revisions,
-  Split-source inheritance/filtering, atomic publication, paged HTTP APIs, and Rust/Python SDK
-  parity. **Area:** Dataset / Access Server / SDK. **Complexity:** High.
-  **Status:** In progress; [execution plan](../working/plan-dataset-split-lifecycle.md).
-  Implement before R236; owns shared Dataset backend/API/SDK prerequisites.
 - **[R233](R233-sdk-local-cache-checkpoint.md)** — optional local disk read cache
   and recoverable checkpoint staging with explicit remote durability.
   **Area:** SDK. **Complexity:** High. **Status:** Deferred until dedicated HTTP workload measurements.
@@ -29,9 +24,9 @@ live in the linked document; implementation follows
 
 - **[R236](R236-console-dataset-workspace.md)** — Dataset tab before S3,
   parent-based Snapshot tree, combined Schema/Sample inspection, bounded metadata
-  APIs, local test/demo import/prepare/publish and Split revision flows (R237).
+  APIs, local test/demo import/prepare/publish and Split revision flows.
   **Area:** Console / Dataset /
-  Access Server. **Complexity:** High. **Status:** Planned after R237;
+  Access Server. **Complexity:** High. **Status:** In progress; backend/API/SDK prerequisite complete;
   [execution plan](../working/plan-console-dataset-workspace.md).
 
 ## Access server and external data

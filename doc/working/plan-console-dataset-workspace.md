@@ -4,8 +4,7 @@
 # Console Dataset Workspace Plan
 
 Upstream: [R236](../backlog/R236-console-dataset-workspace.md),
-[R237](../backlog/R237-dataset-split-lifecycle.md),
-[backend plan](plan-dataset-split-lifecycle.md),
+[Dataset control lifecycle](../design/access-server/dataset/design-dataset-control.md),
 [Console UI](../design/console/design-crowdb-console-ui.md).
 Goal: deliver Dataset before S3 with real Snapshot/Split inspection and a complete
 local import, publication and independent Split revision editing flow.
@@ -81,7 +80,7 @@ these real operations and owned native fixtures.
 - Inspection POST matrix takes `sample_ids` and returns `entries`; it transfers
   metadata only. Explicit preview returns state, nullable length/digest/data and
   truncated. Column/schema and row/sample paging remain independent. Native
-  HTTP/SDK fixture evidence remains pending H4; these contracts passed standalone
+  HTTP/SDK fixture evidence is recorded below; these contracts also passed standalone
   HTTP and externally installed SDK acceptance.
 - Native HTTP restart acceptance passed in
   `.crowdb-runtime/artifacts/container-e2e/run-c4b496a7d5584827a4cbccf4e952fff5`
@@ -112,7 +111,7 @@ these real operations and owned native fixtures.
 
 ## Phase U — dependency-ordered implementation tasks
 
-- [ ] **U1 Measure shell baseline and register new acceptance owners**: inspect
+- [~] **U1 Measure shell baseline and register new acceptance owners**: inspect
   current native browser fixture/selection/credentials paths; run affected shell
   and navigation owner baselines before visible changes. Reserve Dataset `8x`
   specs (Iceberg 6x, S3 7x, cross-domain 9x); register new owned native cases in
@@ -378,7 +377,7 @@ record image identity and source revision. An old image passing is not evidence.
 ## Evidence and completion checklist
 
 - Planning: current UI spec, Iceberg patterns, domain/history, proxy, Dataset model,
-  SDK and runner reviewed. Backend not implemented; H1-H4 pending.
+  SDK and runner reviewed. Backend acceptance complete; H1-H4 verified.
 - Baseline timings and fixture/image identities: pending.
 - Component/API/native case results and artifact locations: pending.
 - All task exits and upstream acceptance cases verified, modes/accessibility/

@@ -3,12 +3,11 @@
 
 ### R236: console — Dataset Workspace, Snapshot Tree and Publication Flow
 
-**Status**: Planned; implementation has not started. Execute
-[the Console plan](../working/plan-console-dataset-workspace.md) after R237's
-backend/API/SDK acceptance. The user has confirmed a
+**Status**: In progress. Backend/API/SDK acceptance is complete; execute
+[the Console plan](../working/plan-console-dataset-workspace.md). The user has confirmed a
 parent-based Snapshot tree, one combined Snapshot view, and the complete browser
 import/prepare/publish flow and full named Split UI in the first release.
-[R237](R237-dataset-split-lifecycle.md) owns the required Split model, API and
+[Dataset control lifecycle](../design/access-server/dataset/design-dataset-control.md) owns the required Split model, API and
 Rust/Python SDK contract. Successful new publication
 advances latest, and child creation defaults to preserving all parent data.
 Split-only edits publish independent Split revisions without creating a data
@@ -354,7 +353,7 @@ acceptance. Implement no duplicate store, planner or publication authority here.
 
 **Dependencies**:
 
-- [R237](R237-dataset-split-lifecycle.md) supplies authoritative Split definitions,
+- [Dataset control lifecycle](../design/access-server/dataset/design-dataset-control.md) supplies authoritative Split definitions,
   membership, inheritance/filtering, publication and SDK/API parity. Full Split
   UI is mandatory for this requirement's completion. Its absence is a visible
   capability limitation during development, not grounds to drop the feature.
@@ -372,7 +371,7 @@ acceptance. Implement no duplicate store, planner or publication authority here.
 - R220 direct-client access and R233 local caching are not prerequisites.
   Standard HTTP is the fallback. Missing Dataset service shows unavailable;
   S3/Iceberg content is never substituted for Dataset state.
-- Execute R237's shared backend plan before R236 integration; the planning defaults
+- The shared backend acceptance is complete; the planning defaults
   above settle remaining scope choices. Reopen a decision only if implementation
   evidence invalidates the stated contract, not merely because code is unfinished.
 
