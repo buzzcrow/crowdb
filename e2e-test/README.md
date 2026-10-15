@@ -318,7 +318,7 @@ pixi run test-container-e2e --scope console.native --cpus 8 --memory-mib 16384 -
   The proxy page must be ready before the embedding navigation is checked.
 - `console.browser.registry` covers the empty shell, datacenter rack menu,
   ownership-probe scope, persisted Access-only listener plan and fixed-slot
-  warning, plus duplicate rack/node rejection. It uses public HTTP setup and fixed Access ports 9000/9001/9002;
+  warning, plus duplicate rack/node rejection. It uses public HTTP setup and fixed Access ports 9000/9001/9002/9003;
   dependencies remain unprovisioned and the Access service stays waiting.
 - `console.browser.kv` covers real KV pagination, binary representation and
   automatic scans. `console.browser.canvas` covers fit, pan, collapsed children
@@ -349,6 +349,16 @@ pixi run test-container-e2e --scope console.browser.shell --concurrency 2
 pixi run test-container-e2e --scope console.browser.registry --concurrency 2
 pixi run test-container-e2e --scope console.browser --concurrency 2 --cpus 8 --memory-mib 16384 --node-cpus 1
 ```
+
+## Dataset browser workspace
+
+`console.native.browser.dataset` owns five isolated release-backed browser flows:
+`browse`, `import`, `split_revisions`, `recovery`, and `capabilities`, under
+`console::browser_dataset`. The `80/81/82-dataset-*` specs cover the combined
+Sample/Schema matrix, Snapshot ancestry, multipart local import, independent Split
+revisions, frozen inheritance, publication-response loss, and readonly/prefix modes.
+Each case uses real Access/storage services. Recovery may sever a real reverse-proxy
+connection after the upstream commits; it never substitutes a service response.
 
 ## Console WAL recovery
 

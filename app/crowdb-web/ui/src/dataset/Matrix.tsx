@@ -21,7 +21,7 @@ export function Matrix({ scope, active, refresh, select, window, updateWindow }:
   const setFilter = (value: string) => updateWindow({ ...window, filter: value });
   const [error, setError] = useState('');
   const { checkpoint } = useDomain();
-  const key = JSON.stringify([scope, rowCursor, columnCursor, lookup, refresh]);
+  const key = JSON.stringify([scope.dataset, scope.snapshot, scope.revision, scope.split, rowCursor, columnCursor, lookup, refresh]);
   const data = useQuery(key, active, async signal => {
     const [schema, samples] = await Promise.all([
       api.schemaPage(scope.dataset, scope.snapshot, columnCursor, signal),

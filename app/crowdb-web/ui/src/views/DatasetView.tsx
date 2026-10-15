@@ -61,7 +61,7 @@ export function DatasetView({ active, readonly, showActivity = true }: { active:
       </tbody></table>
     </> : selected.kind === 'dataset' ? <Inventory key={selected.dataset} dataset={selected.dataset} active={active} refresh={refresh} select={select} /> : <>
       <SnapshotOverview readonly={readonly} refreshed={() => setRefresh(value => value + 1)} selected={selected} active={active} refresh={refresh} select={select} />
-      <History dataset={selected.dataset} snapshot={selected.snapshot} active={active} refresh={refresh} select={select} />
+      <History key={`${selected.dataset}:${selected.snapshot}`} dataset={selected.dataset} snapshot={selected.snapshot} active={active} refresh={refresh} select={select} />
       <Matrix window={windows[windowKey] ?? emptyWindow} updateWindow={updateWindow} scope={selected} active={active} refresh={refresh} select={select} />
     </>}
   </Workbench>;
@@ -86,6 +86,7 @@ function Inventory({ dataset, active, refresh, select }: { dataset: string; acti
 }
 function SnapshotOverview({ selected, active, refresh, select, readonly, refreshed }: { readonly: boolean; refreshed: () => void; selected: Exclude<DatasetSelection, { kind: 'root' | 'dataset' }>; active: boolean; refresh: number; select: (value: DatasetSelection) => void }) {
   const result = useQuery(`${selected.dataset}:${selected.snapshot}:${refresh}`, active, signal => api.summary(selected.dataset, selected.snapshot, signal));
+  const current = useQuery(`${selected.dataset}:${selected.snapshot}:${refresh}`, active && !!selected.revision, signal => api.splitHead(selected.dataset, selected.snapshot, signal));
   return <section className="tw-text-sm tw-space-y-2">
     <h2 className="tw-font-semibold tw-break-all">Snapshot {selected.snapshot}</h2>
     {result.error && <p role="alert">{result.error} This immutable scope remains selected.</p>}
@@ -93,6 +94,7 @@ function SnapshotOverview({ selected, active, refresh, select, readonly, refresh
       {result.value.parent ? <button className="tw-text-accent" onClick={() => select({ kind: 'snapshot', dataset: selected.dataset, snapshot: result.value!.parent! })}>Parent {result.value.parent}</button> : <p>Independent root</p>}
       {result.value.inspection !== 'ready' && <p role="status">Inspection unavailable: {result.value.reason}</p>}</>}
     {(result.error || result.value?.inspection !== 'ready' && result.value) && <InspectionPreparation key={`${selected.dataset}:${selected.snapshot}`} dataset={selected.dataset} snapshot={selected.snapshot} readonly={readonly} refreshed={refreshed} />}
+    {selected.revision && current.value?.revision && selected.revision !== current.value.revision && <button className={buttonClass} onClick={() => select({ kind: 'revision', dataset: selected.dataset, snapshot: selected.snapshot, revision: current.value!.revision! })}>Go to current Split revision</button>}
     {selected.revision && <p>Split revision: {selected.revision} {selected.split && `· ${selected.split}`}</p>}
   </section>;
 }

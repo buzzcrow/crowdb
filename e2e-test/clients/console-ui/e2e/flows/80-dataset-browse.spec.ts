@@ -5,7 +5,7 @@ import { call, datasetPath, openDataset, seed } from '../fixtures/dataset';
 import { consoleProxy } from '../fixtures/consoleProxy';
 import { step } from '../fixtures/stepTimer';
 
-test('Dataset native: browse', async ({ page, request }) => {
+test('Dataset native: browse', async ({ page, request }, testInfo) => {
   const name = `browse-${Date.now()}`;
   const root = await step('setup', () => seed(request, name));
   const child = await seed(request, name, root);
@@ -33,6 +33,7 @@ test('Dataset native: browse', async ({ page, request }) => {
     await tree.getByRole('button', { name: `Expand Snapshot ${root}`, exact: true }).click();
     await expect(tree.getByRole('button', { name: child.slice(0, 10), exact: true })).toBeVisible();
     await expect(tree).toContainText('Stable'); await expect(tree).toContainText('Latest');
+    await page.screenshot({ path: testInfo.outputPath('dataset-workspace.png'), fullPage: true });
   });
 });
 

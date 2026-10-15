@@ -10,7 +10,7 @@ import { ImportEditor } from './import/Editor';
 import { SplitEditor } from './splits/Editor';
 
 export function Actions({ selected, readonly, capabilities, complete }: { selected: DatasetSelection; readonly: boolean; capabilities: string[]; complete: (receipt?: Receipt) => void }) {
-  const [editor, setEditor] = useState<{ kind: 'composition' | 'split'; parent?: string; source?: SplitSource; recovery?: Operation }>();
+  const [editor, setEditor] = useState<{ kind: 'composition' | 'split'; parent?: string; revision?: string; source?: SplitSource; recovery?: Operation }>();
   const [error, setError] = useState(''); const [busy, setBusy] = useState(false); const [observation, setObservation] = useState<unknown>(); const [confirm, setConfirm] = useState<string>(); const [unknown, setUnknown] = useState<string>();
   if (selected.kind === 'root') return null;
   const dataset = selected.dataset; const snapshot = 'snapshot' in selected ? selected.snapshot : undefined;
@@ -20,7 +20,7 @@ export function Actions({ selected, readonly, capabilities, complete }: { select
       const recovery = savedOperation(dataset);
       if (recovery) { setEditor({ kind: recovery.kind, recovery, parent: recovery.snapshot }); return; }
       const source = 'split' in selected && selected.split !== undefined && selected.revision && snapshot ? { snapshot, revision: selected.revision, name: selected.split } : undefined;
-      setEditor({ kind, parent: snapshot, source });
+      setEditor({ kind, parent: snapshot, source, revision: 'revision' in selected ? selected.revision : undefined });
     } catch (reason) { setError(String(reason)); }
   };
   const done = (receipt: Receipt) => { setEditor(undefined); complete(receipt); };
@@ -48,6 +48,6 @@ export function Actions({ selected, readonly, capabilities, complete }: { select
     </div>}
     {error && <p role="alert">{error}</p>}{observation !== undefined && <JsonView value={observation} />}
     {!readonly && editor?.kind === 'composition' && <ImportEditor dataset={dataset} parent={editor.parent} source={editor.source} recovery={editor.recovery} close={() => setEditor(undefined)} complete={done} />}
-    {!readonly && editor?.kind === 'split' && editor.parent && <SplitEditor dataset={dataset} snapshot={editor.parent} recovery={editor.recovery} close={() => setEditor(undefined)} complete={done} />}
+    {!readonly && editor?.kind === 'split' && editor.parent && <SplitEditor initialRevision={editor.revision} dataset={dataset} snapshot={editor.parent} recovery={editor.recovery} close={() => setEditor(undefined)} complete={done} />}
   </section>;
 }

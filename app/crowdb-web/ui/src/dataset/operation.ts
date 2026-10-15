@@ -33,12 +33,7 @@ export async function request<T>(op: Operation, path: string, method: string, bo
     const result = await api.mutate<T>(op.kind === 'composition' ? 'composition' : 'split-revisions', path, method, body, signal);
     delete op.pending; delete op.conflict; saveOperation(op); return result;
   } catch (reason) {
-    if (reason instanceof api.DatasetError && reason.status >= 400 && reason.status < 500) {
-      if (reason.status === 409 && path.endsWith('/publish')) op.conflict = true;
-      else delete op.pending;
-      saveOperation(op);
-    }
-    throw reason;
+    recordFailure(op, path, reason); throw reason;
   }
 }
 export async function reconcile(op: Operation): Promise<{ draft: CompositionDraft | SplitDraft; receipt: Receipt | null }> {
@@ -50,11 +45,21 @@ export async function reconcile(op: Operation): Promise<{ draft: CompositionDraf
 export async function retryIdentical<T>(op: Operation): Promise<T> {
   if (!op.pending) throw new Error('No pending request.');
   const { path, method, body } = op.pending;
-  const result = await api.mutate<T>(op.kind === 'composition' ? 'composition' : 'split-revisions', path, method, body);
-  delete op.pending; saveOperation(op); return result;
+  try {
+    const result = await api.mutate<T>(op.kind === 'composition' ? 'composition' : 'split-revisions', path, method, body);
+    delete op.pending; delete op.conflict; saveOperation(op); return result;
+  } catch (reason) { recordFailure(op, path, reason); throw reason; }
 }
 export function newAttempt(op: Operation, observed: string | null) {
   if (!op.conflict) throw new Error('A new attempt requires a confirmed head conflict.');
   delete op.conflict; op.expectedHead = observed; op.attempt = newId(); delete op.pending; saveOperation(op);
 }
 export function forgetOperation(op: Operation) { localStorage.removeItem(key(op.dataset)); }
+
+function recordFailure(op: Operation, path: string, reason: unknown) {
+  if (reason instanceof api.DatasetError && reason.status >= 400 && reason.status < 500) {
+    if (reason.status === 409 && path.endsWith('/publish')) op.conflict = true;
+    else delete op.pending;
+    saveOperation(op);
+  }
+}

@@ -487,3 +487,21 @@ record image identity and source revision. An old image passing is not evidence.
   followed by reload/reconciliation. No synthetic service responses are used.
 - UI tests pass 262 with editor uniqueness, invalid rule, partition rename,
   readonly and byte-budget regressions. Expanded native acceptance is pending.
+
+### Contract detail checks during full Console regression — 2026-10-16
+
+- Full Console operations started on image source 9f924107287378ad664b29eacd9a925b6c1220df,
+  config sha256:6ca6eef7b05986eb68f832668e2d0e51ff384b0e3efb5aa1e2110648f5c4d06f,
+  artifact run-d8d8be2ccd134b29941341fce26b990b. Initial service/recovery cases pass;
+  browser and overall result still pending. Effective case admission is one slot.
+- Added the remaining explicit Split-plus-rule source option, selected historical
+  revision as editor base, Go to current revision, separately selectable canonical
+  Sample identity, and initial Split validation details. Matrix selection no longer
+  reloads an unchanged window; rule fields resynchronize when removing a sibling.
+- Identical retry now records a newly observed confirmed publication conflict, so
+  head review remains available after an initially unknown response. Added tests
+  for this transition, exact reclamation confirmation targets and matrix selection.
+- Rust/Python native consumer examples now assert the lifecycle observation route;
+  SDK Clippy passes. Rerun their actual native consumer owner before final cleanup.
+- These UI refinements postdate the running full-domain image and require the final
+  focused Dataset owner rerun on a newly built matching image.

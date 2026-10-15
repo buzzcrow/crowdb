@@ -63,6 +63,7 @@ def upload_source(client, source, upload_id, length, md5, part_size=1024*1024):
 async def verify_async(endpoint, name, token, snapshot, revision):
     async with AsyncDatasetClient(endpoint, name, token) as owner:
         client = owner.control()
+        assert (await client.lifecycle(snapshot))["snapshot"] == snapshot
         plan = {"id": new_id(), "snapshot": snapshot, "selection": {"kind": "all"},
                 "fields": ["value"], "batch_size": 1,
                 "partition": {"worker": 0, "workers": 1, "rank": 0, "world_size": 1},
@@ -110,6 +111,8 @@ def main():
             "samples": [{"kind": "upsert", "id": sample, "fields": [{"name": "value", "value": {"kind": "upload", "id": upload}}]}], "splits": None, "policy": None})
         snapshot = prepare(client, operation, "2")
         publish(client, operation, snapshot)
+        lifecycle = client.lifecycle(snapshot)
+        assert lifecycle["snapshot"] == snapshot and lifecycle["latest"] and not lifecycle["retained"]
         cleanup(client, operation)
         head = client.split_head(snapshot)
         revision = head["revision"]

@@ -113,6 +113,10 @@ async fn import(client: &v2::ControlClient) -> Result<(v2::OpaqueId, v2::OpaqueI
         expected_head: client.head().await?.generation,
     };
     let receipt = client.publish_composition(&operation, &request).await?;
+    let lifecycle = client.lifecycle(&snapshot).await?;
+    assert_eq!(lifecycle.snapshot, snapshot);
+    assert!(lifecycle.latest);
+    assert!(!lifecycle.retained);
     assert_eq!(
         client.commit_status(&request.attempt).await?.unwrap().attempt,
         receipt.attempt

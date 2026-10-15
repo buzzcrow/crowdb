@@ -11,8 +11,8 @@ import { Definitions, validateEditor } from './Definitions';
 import { BeginRecovery } from '../BeginRecovery';
 import { Publication } from '../Publication';
 
-export function SplitEditor({ dataset, snapshot, recovery, close, complete }: {
-  dataset: string; snapshot: string; recovery?: Operation; close: () => void; complete: (receipt: Receipt) => void;
+export function SplitEditor({ dataset, snapshot, initialRevision, recovery, close, complete }: {
+  dataset: string; snapshot: string; initialRevision?: string; recovery?: Operation; close: () => void; complete: (receipt: Receipt) => void;
 }) {
   const element = useRef<HTMLElement>(null);
   const [op, setOp] = useState<Operation | undefined>(recovery);
@@ -26,11 +26,12 @@ export function SplitEditor({ dataset, snapshot, recovery, close, complete }: {
     void (async () => {
       if (recovery) { const value = await api.control<SplitDraft>(operationPath(recovery), 'GET', undefined, cancel.signal); setDraft(value); setSplits(value.splits); setPolicy(value.policy); return; }
       const head = await api.splitHead(dataset, snapshot, cancel.signal);
-      const value = head.revision ? await api.revision(dataset, snapshot, head.revision, cancel.signal) : null;
-      if (!cancel.signal.aborted) { setBase(head); setSplits(value?.splits.map(({ name, definition, origin }) => ({ name, definition, origin })) ?? []); setPolicy(value?.policy ?? defaultPolicy); }
+      const revision = initialRevision ?? head.revision;
+      const value = revision ? await api.revision(dataset, snapshot, revision, cancel.signal) : null;
+      if (!cancel.signal.aborted) { setBase({ ...head, revision }); setSplits(value?.splits.map(({ name, definition, origin }) => ({ name, definition, origin })) ?? []); setPolicy(value?.policy ?? defaultPolicy); }
     })().catch(reason => { if (!cancel.signal.aborted) setError(String(reason)); });
     return () => cancel.abort();
-  }, [dataset, snapshot, recovery]);
+  }, [dataset, snapshot, initialRevision, recovery]);
   const save = async () => {
     validateEditor(element.current);
     if (op && draft) {

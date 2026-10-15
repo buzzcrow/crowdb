@@ -130,6 +130,14 @@ Snapshot-scoped Split drafts, possible index writes and ordinary metadata in pha
 Completion reports logical retirement; physical upload deletion remains deferred
 to its registry cleanup. There is no independent committed Split revision pruning.
 
+`GET snapshots/{snapshot}/reclaim` is bounded, read-only observation. It returns
+publication operation identity where available, latest/stable/retained/read-lease
+facts, and not_started/pending/completed retirement state. Parent reachability is
+explicitly not evaluated in this small read; observed flags are never permission
+to reclaim. Rust/Python `control().lifecycle(snapshot)` share this contract.
+Metadata HTTP reads remain capped at five seconds, while bounded mutation steps
+use their configured mutation deadline (normally 60 seconds).
+
 ## 6. Compatibility and invariants
 
 Control v2 exposes strict DTOs and capability discovery. Required null preconditions

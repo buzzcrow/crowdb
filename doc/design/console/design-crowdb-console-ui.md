@@ -177,7 +177,7 @@ provide observable capacity and bitmap fixtures.
   or pending-review Rack choices take precedence over a new default.
 - Defaults select Paxos-KV, DiskDB, DiskIO, ChunkDB, Chunk-KV and Access Server.
   Each service and its listeners can be disabled. Access has independent Iceberg,
-  S3 and Health ports; DiskDB's related RPC listeners must not overlap. Node
+  S3, Dataset and Health ports; DiskDB's related RPC listeners must not overlap. Node
   admission owns the fixed KV bootstrap listeners. Canonical service type is
   `paxos-kv`; a legacy `kv` wire value is rejected.
 - With no supplied input, standard setup chooses a 16-GiB preallocated file and

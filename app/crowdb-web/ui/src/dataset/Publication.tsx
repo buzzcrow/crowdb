@@ -44,6 +44,7 @@ export function Publication({ operation: op, draft, update, complete, busy, run,
     <p className="tw-text-xs tw-break-all">Operation {op.operation} · edit revision {draft.revision}</p>
     <p className="tw-text-xs">{op.kind === 'composition' ? 'Successful publication advances Dataset latest. Stable and the chosen parent stay unchanged.' : 'Publication replaces the complete current Split set. Dataset latest stays unchanged.'}</p>
     {preview && <JsonView value={preview} />}
+    {'uploads' in draft && <details><summary>Upload ownership and initial Split validation</summary><JsonView value={{ uploads: draft.uploads, split_preview: draft.preparation?.split_preview ?? null }} /></details>}
     {draft.progress.state === 'prepared' && <JsonView value={draft.progress.target} />}
     {op.pending ? <div className="tw-space-y-2">
       <p role="status">Request unresolved. Inspect status before retrying; do not start another operation.</p>

@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 import { useEffect, useState } from 'react';
-import { buttonClass, JsonView } from '../access/Workbench';
+import { buttonClass, inputClass, JsonView } from '../access/Workbench';
 import * as api from './api';
 import { useQuery } from './query';
 import type { DatasetSelection, FieldMetadata } from './types';
@@ -22,6 +22,7 @@ export function Properties({ selected, active }: { selected: DatasetSelection; a
   return <section aria-label="Dataset properties" className="tw-space-y-3">
     <h2 className="tw-font-semibold">Properties · {selected.kind}</h2>
     {selected.kind !== 'root' && <p className="tw-text-xs tw-break-all">{selected.dataset}</p>}
+    {(selected.kind === 'sample' || selected.kind === 'cell') && <label className="tw-block tw-text-xs">Canonical Sample ID (select to copy)<input aria-label="Canonical Sample ID" className={`${inputClass} tw-w-full tw-font-mono`} readOnly value={selected.sample} onFocus={event => event.target.select()} /></label>}
     {result.error && <p role="alert">{result.error}</p>}
     {result.value !== undefined && <JsonView value={result.value} />}
     {selected.kind === 'cell' && result.value !== undefined && <FieldPreview key={JSON.stringify(selected)} selected={selected} field={result.value as FieldMetadata | null} active={active} />}

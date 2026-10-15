@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { buttonClass, inputClass } from '../../access/Workbench';
 import { decimal } from '../api';
 import type { DraftSplit, Predicate, SplitPolicy } from '../types';
@@ -46,10 +46,12 @@ export function Definitions({ splits, policy, change, disabled = false }: { spli
 }
 export function PredicateInput({ value, change }: { value: Predicate; change: (value: Predicate) => void }) {
   const [text, setText] = useState(JSON.stringify(value)); const [error, setError] = useState('');
+  const sent = useRef(value); const input = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => { if (value !== sent.current) { setText(JSON.stringify(value)); setError(''); input.current?.setCustomValidity(''); sent.current = value; } }, [value]);
   return <label className="tw-block tw-text-xs">Selection rule (API JSON; byte values use base64)
-    <textarea aria-label="Selection rule" className={`${inputClass} tw-block tw-w-full`} value={text} onChange={event => {
+    <textarea ref={input} aria-label="Selection rule" className={`${inputClass} tw-block tw-w-full`} value={text} onChange={event => {
       setText(event.target.value);
-      try { const parsed = JSON.parse(event.target.value) as Predicate; if (!parsed || typeof parsed.kind !== 'string') throw new Error('A rule requires kind.'); change(parsed); event.target.setCustomValidity(''); setError(''); }
+      try { const parsed = JSON.parse(event.target.value) as Predicate; if (!parsed || typeof parsed.kind !== 'string') throw new Error('A rule requires kind.'); sent.current = parsed; change(parsed); event.target.setCustomValidity(''); setError(''); }
       catch (reason) { change(value); event.target.setCustomValidity('Invalid selection rule JSON.'); setError(String(reason)); }
     }} />{error && <span role="alert">{error}</span>}
   </label>;

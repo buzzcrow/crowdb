@@ -65,3 +65,26 @@ it('readonly exposes inspection without creation, import or lifecycle mutations'
   expect(api.mutate).not.toHaveBeenCalled();
   expect(screen.queryByText('Session activity')).toBeNull();
 });
+it('a conflict discovered by identical retry retains candidate and enables explicit head review', async () => {
+  const { request, retryIdentical, newAttempt } = await import('./operation');
+  const operation: import('./operation').Operation = { dataset: 'retry', kind: 'composition', operation: '1'.repeat(32), expectedHead: null, attempt: '2'.repeat(32) };
+  const body = { attempt: operation.attempt, snapshot: '3'.repeat(32), expected_head: null };
+  vi.mocked(api.mutate).mockRejectedValueOnce(new api.DatasetError(502, 'outcome unknown', true)).mockRejectedValueOnce(new api.DatasetError(409, 'head conflict'));
+  await expect(request(operation, '/compositions/publish', 'POST', body)).rejects.toThrow('outcome unknown');
+  await expect(retryIdentical(operation)).rejects.toThrow('head conflict');
+  expect(operation.pending?.body).toEqual(body); expect(operation.conflict).toBe(true);
+  newAttempt(operation, '4'.repeat(32));
+  expect(operation.expectedHead).toBe('4'.repeat(32)); expect(operation.attempt).not.toBe(body.attempt);
+  expect(operation.pending).toBeUndefined();
+});
+it('reclamation confirmation keeps its exact Snapshot target across navigation', async () => {
+  const { Actions } = await import('./Actions');
+  const complete = vi.fn();
+  const props = { readonly: false, capabilities: ['snapshot-reclaim'], complete };
+  const { rerender } = render(<Actions {...props} selected={{ kind: 'snapshot', dataset: 'demo', snapshot: '1'.repeat(32) }} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Reclaim Snapshot' }));
+  rerender(<Actions {...props} selected={{ kind: 'snapshot', dataset: 'demo', snapshot: '2'.repeat(32) }} />);
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Confirm reclamation' })));
+  expect(api.mutate).toHaveBeenCalledWith('snapshot-reclaim', expect.stringContaining(`/snapshots/${'1'.repeat(32)}/reclaim`), 'POST');
+  expect(complete).toHaveBeenCalledOnce();
+});
