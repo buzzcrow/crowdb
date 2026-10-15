@@ -681,3 +681,15 @@ failure; record actual failures and add Blocked only when that workflow requires
   Lint output: `/tmp/dataset-metadata-cleanup-lint.log`.
 - Abandoned composition/candidate fencing, scratch/obsolete evaluation cleanup,
   and upload ownership release remain C2/D5c, with boundary wiring in E2.
+
+### Prepared composition abandonment verification
+
+- Abandon now fences the raw data candidate and initial Split owner, then retires
+  only an uncommitted candidate. The fence helps pending head receipts before
+  deciding; a successful historical candidate repairs composition Published state
+  and is never deleted by cancellation. Owned source leases release afterward.
+- `pixi run cargo test -p crowdb-access-dataset` and `pixi run rs-lint`: passed.
+  Logs: `/tmp/dataset-abandon-tests.log`, `/tmp/dataset-abandon-lint.log`.
+- `pixi run rs-fmt-check` and `git diff --check`: passed.
+- C2/D5c remains open for obsolete preparation/scratch cleanup and durable upload
+  owner retirement; this checkpoint covers the current prepared candidate fence.

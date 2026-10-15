@@ -100,7 +100,7 @@ impl DatasetAuthority {
         }
         Ok(state.draft)
     }
-    async fn finish_composition_publication(
+    pub(super) async fn finish_composition_publication(
         &self,
         identity: &DatasetIdentity,
         old: &StoredValue,

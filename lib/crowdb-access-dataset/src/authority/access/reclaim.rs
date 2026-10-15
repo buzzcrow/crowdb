@@ -114,15 +114,30 @@ impl DatasetAuthority {
                     return Err(error);
                 }
             }
-            self.update_access(identity, snapshot, |a| {
-                if !a.reclaiming || a.retiring || a.reclaim_owner != Some(owner) {
-                    return Err(AuthorityError::HeadConflict);
-                }
-                a.retiring = true;
-                Ok(())
-            })
-            .await?;
+            self.begin_terminal_retirement(identity, snapshot, owner).await?;
         }
+        self.retire_snapshot_record(identity, snapshot).await
+    }
+    async fn begin_terminal_retirement(
+        &self,
+        identity: &DatasetIdentity,
+        snapshot: SnapshotId,
+        owner: OperationId,
+    ) -> Result<(), AuthorityError> {
+        self.update_access(identity, snapshot, |a| {
+            if !a.reclaiming || a.retiring || a.reclaim_owner != Some(owner) {
+                return Err(AuthorityError::HeadConflict);
+            }
+            a.retiring = true;
+            Ok(())
+        })
+        .await
+    }
+    async fn retire_snapshot_record(
+        &self,
+        identity: &DatasetIdentity,
+        snapshot: SnapshotId,
+    ) -> Result<crate::SnapshotRecord, AuthorityError> {
         let key = key::snapshot(identity, snapshot)?;
         for _ in 0..64 {
             let old = self
@@ -147,5 +162,26 @@ impl DatasetAuthority {
             }
         }
         Err(AuthorityError::HeadConflict)
+    }
+    /// Fences a cancelled modern candidate without retiring a successful historical publication.
+    pub(crate) async fn abort_uncommitted_candidate(
+        &self,
+        identity: &DatasetIdentity,
+        snapshot: SnapshotId,
+    ) -> Result<Option<crate::SuccessfulCommit>, AuthorityError> {
+        self.snapshot_candidate(identity, snapshot)
+            .await?
+            .ok_or(AuthorityError::SnapshotNotFound)?;
+        if let Some(owner) = self.fence_reclaim(identity, snapshot).await? {
+            if let Some(receipt) = self.snapshot_commit(identity, snapshot).await? {
+                self.unfence_reclaim(identity, snapshot, owner).await?;
+                return Ok(Some(receipt));
+            }
+            self.begin_terminal_retirement(identity, snapshot, owner).await?;
+        } else if let Some(receipt) = self.snapshot_commit(identity, snapshot).await? {
+            return Ok(Some(receipt));
+        }
+        self.retire_snapshot_record(identity, snapshot).await?;
+        Ok(None)
     }
 }
