@@ -1,6 +1,7 @@
 mod access;
 pub use access::{
-    MetadataCleanupProgress, SnapshotReclaimError, SnapshotReclaimPhase, SnapshotReclaimStatus,
+    MetadataCleanupProgress, SnapshotLifecycle, SnapshotReclaimError, SnapshotReclaimPhase,
+    SnapshotReclaimStatus,
 };
 mod discovery;
 mod head;

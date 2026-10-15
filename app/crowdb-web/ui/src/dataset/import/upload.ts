@@ -3,9 +3,10 @@
 
 import * as api from '../api';
 import type { UploadStatus } from '../types';
+import { randomUUID } from '../../utils/randomUUID';
 import { digest } from './digest';
 import { getApiBase } from '../../api';
-export const newId = () => crypto.randomUUID().replaceAll('-', '');
+export const newId = () => randomUUID().replaceAll('-', '');
 const partSize = 4 * 1024 * 1024;
 export async function upload(dataset: string, file: File, progress: (text: string) => void, signal?: AbortSignal): Promise<string> {
   if (Math.ceil(file.size / partSize) > 10000) throw new Error('File exceeds 10000 upload parts.');

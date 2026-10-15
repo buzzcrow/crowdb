@@ -9,6 +9,9 @@ async function create(page: import('@playwright/test').Page, name: string) {
   await page.getByRole('textbox', { name: 'New Dataset name' }).fill(name);
   await page.getByRole('button', { name: 'Create Dataset', exact: true }).click();
   await expect(page.getByRole('heading', { name: `Dataset · ${name}`, exact: true })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Dataset actions', exact: true })).toHaveCount(1);
+  await page.getByRole('button', { name: 'Refresh Dataset', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Dataset actions', exact: true })).toHaveCount(1);
   await page.getByRole('button', { name: 'Import / New Snapshot', exact: true }).click();
   await page.getByRole('textbox', { name: 'Inline text', exact: true }).fill('native import payload');
   await page.getByRole('button', { name: 'Use single Sample mapping' }).click();

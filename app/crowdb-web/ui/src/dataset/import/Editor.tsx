@@ -1,15 +1,17 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { buttonClass, inputClass, JsonView } from '../../access/Workbench';
 import * as api from '../api';
 import { encoded } from '../identity';
 import { defaultPolicy, type CompositionDraft, type CompositionSource, type DraftSplit, type Predicate, type Receipt, type SplitPolicy, type SplitSource } from '../types';
 import { operationPath, request, saveOperation, type Operation } from '../operation';
-import { Definitions, PredicateInput } from '../splits/Definitions';
+import { Definitions, PredicateInput, validateEditor } from '../splits/Definitions';
+import { BeginRecovery } from '../BeginRecovery';
 import { Publication } from '../Publication';
 import { parseMapping, resolveSample, type Mapping } from './mapping';
+import { Md5 } from './digest';
 import { newId, upload } from './upload';
 
 const emptyMapping = JSON.stringify({ version: 1, schema: { version: 1, fields: [] }, samples: [] }, null, 2);
@@ -23,6 +25,7 @@ export function ImportEditor({ dataset, parent: initialParent, source: initialSo
   const [text, setText] = useState(initialParent ? JSON.stringify({ version: 1, schema: null, samples: [] }, null, 2) : emptyMapping);
   const [files, setFiles] = useState<File[]>([]); const [mapping, setMapping] = useState<Mapping>();
   const [splits, setSplits] = useState<DraftSplit[]>([]); const [policy, setPolicy] = useState<SplitPolicy>(defaultPolicy);
+  const element = useRef<HTMLElement>(null);
   const [op, setOp] = useState<Operation | undefined>(recovery); const [draft, setDraft] = useState<CompositionDraft>();
   const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [progress, setProgress] = useState('');
   const run = (action: () => Promise<void>) => { setBusy(true); setError(''); void action().catch(reason => setError(String(reason))).finally(() => setBusy(false)); };
@@ -35,12 +38,13 @@ export function ImportEditor({ dataset, parent: initialParent, source: initialSo
     return () => cancel.abort();
   }, [recovery]);
   const review = () => {
-    try { const value = parseMapping(text, files); if (parent) api.opaqueId(parent); setMapping(value); setError(''); }
+    try { validateEditor(element.current); const value = parseMapping(text, files); if (parent) api.opaqueId(parent); setMapping(value); setError(''); }
     catch (reason) { setError(String(reason)); }
   };
   const save = async () => {
+    validateEditor(element.current);
     if (!mapping) throw new Error('Review the mapping first.');
-    const mappingDigest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(mapping)))), byte => byte.toString(16).padStart(2, '0')).join('');
+    const mappingDigest = new Md5().update(new TextEncoder().encode(JSON.stringify(mapping))).finish();
     if (op?.mappingDigest && op.mappingDigest !== mappingDigest) throw new Error('Reselect the original mapping; this operation cannot accept a different import.');
     if (op?.pending) throw new Error('Reconcile the pending request first.');
     const current = await api.head(dataset);
@@ -72,7 +76,7 @@ export function ImportEditor({ dataset, parent: initialParent, source: initialSo
     operation.importsComplete = true; saveOperation(operation); setDraft({ ...value });
     setProgress('All reviewed edits are saved. Evaluate complete membership before preparation.');
   };
-  return <section role="dialog" aria-label="Import Snapshot" className="tw-space-y-3 tw-border tw-border-border tw-p-4">
+  return <section ref={element} role="dialog" aria-label="Import Snapshot" className="tw-space-y-3 tw-border tw-border-border tw-p-4">
     <h2 className="tw-font-semibold">Import / New Snapshot</h2>
     <p className="tw-text-xs">Local test/demo import · namespace dataset-ns · {dataset}</p>
     {(!op || !op.importsComplete) && <>
@@ -98,6 +102,7 @@ export function ImportEditor({ dataset, parent: initialParent, source: initialSo
         <button className={buttonClass} disabled={busy || !!op?.pending} onClick={() => run(save)}>{op ? 'Resume reviewed import' : 'Save draft and upload local data'}</button></>}
     </>}
     {error && <p role="alert">{error}</p>}{progress && <p role="status">{progress}</p>}
+    {op && !draft && <BeginRecovery operation={op} busy={busy} run={run} loaded={value => { setDraft(value as CompositionDraft); setSplits(value.splits); setPolicy(value.policy); }} />}
     {op && draft && <Publication operation={op} draft={draft} update={value => setDraft(value as CompositionDraft)} complete={complete} busy={busy} run={run} />}
     <button className={buttonClass} disabled={busy} onClick={close}>Close draft</button><p className="tw-text-xs">Closing keeps the server draft. Resume it from this Dataset; File handles must be reselected after reload. Abandon explicitly to release eligible ownership.</p>
   </section>;

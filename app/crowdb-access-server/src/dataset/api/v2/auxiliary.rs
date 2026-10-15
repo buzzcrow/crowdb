@@ -47,6 +47,18 @@ impl DatasetHttpService {
                     &serde_json::json!({"snapshot":snapshot.to_string(),"retained":*action == "retain"}),
                 );
             }
+            (Method::GET, ["snapshots", id, "reclaim"]) => {
+                read_body(request, false).await?;
+                let value = authority
+                    .inspect_snapshot_lifecycle(identity, snapshot(id)?, &ReadCancellation::new())
+                    .await?;
+                return json(&serde_json::json!({"snapshot": value.snapshot.to_string(),
+                    "operation": value.operation.map(|id| id.to_string()), "latest": value.latest,
+                    "stable": value.stable, "retained": value.retained, "active_read_lease": value.active_read_lease,
+                    "state": if value.completed { "completed" } else if value.retiring { "pending" } else { "not_started" },
+                    "physical_cleanup_deferred": value.retiring || value.completed,
+                    "parent_protection": "not_evaluated"}));
+            }
             (Method::POST, ["snapshots", id, "reclaim"]) => {
                 read_body(request, false).await?;
                 let uploads = self.uploads.as_ref().ok_or_else(ApiError::unsupported)?;

@@ -1,7 +1,9 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{required_option, CommitReceipt, Head, OpaqueId, RetainedSnapshot, SnapshotReclaim};
+use super::{
+    required_option, CommitReceipt, Head, OpaqueId, RetainedSnapshot, SnapshotLifecycle, SnapshotReclaim,
+};
 use crate::{DatasetClient, DatasetInfo, Error};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
@@ -97,6 +99,18 @@ impl ControlClient {
         self.call::<(), _>(
             "snapshot-reclaim",
             "POST",
+            &["snapshots", snapshot.as_str(), "reclaim"],
+            None,
+        )
+        .await
+    }
+    /// Observes retirement and protection without advancing reclamation.
+    /// # Errors
+    /// Returns capability, missing Snapshot, transport or service errors.
+    pub async fn lifecycle(&self, snapshot: &OpaqueId) -> Result<SnapshotLifecycle, Error> {
+        self.call::<(), _>(
+            "bounded-inspection",
+            "GET",
             &["snapshots", snapshot.as_str(), "reclaim"],
             None,
         )

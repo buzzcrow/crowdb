@@ -427,3 +427,43 @@ record image identity and source revision. An old image passing is not evidence.
 - Fixed the stale ts-lint path by staging the same client-owned layout and three
   shared serializers/types as the native runner. Included DOM.Iterable in its
   complete client config; no assertion or error is suppressed.
+
+### Acceptance refinements still required
+
+- Native HTTP origins are insecure contexts: use the existing `randomUUID`
+  fallback and incremental mapping digest instead of assuming crypto.subtle /
+  crypto.randomUUID. Add a regression before accepting browser import.
+- Complete recovery for failed begin (no draft response), resumed mapping/upload,
+  definite rejection vs ambiguous mutation, Split cleanup and prepared editing.
+  Prevent invalid Selection JSON from keeping a previously valid rule silently.
+- Current UI calls GET Snapshot reclaim status, but v2 exposes only POST. Add a
+  bounded lifecycle observation contract (retained/retiring/completed and observed
+  protection), tests and API docs; do not infer reclaim eligibility from UI data.
+- Manual Access/service-plan/node-setup forms still need Dataset port after their
+  exact existing baselines. Dataset API defaults are already supplied.
+- Expand real tests beyond initial happy paths: multipart payload, historical
+  branching/independent root, binary ID/tombstone/inheritance, stale Split CAS,
+  frozen Split child, lost response, cancellation, read-only/managed/embedding.
+- Native runner accepts one `--case`; use one invocation per owner or the registered
+  `console.native.browser.dataset` scope. Repeated --case arguments select only
+  the last. First running owner is capabilities, not all seven listed arguments.
+- Fixture unit suite first found only two expected inventory-count assertions
+  (154 -> 159 from five new owners); updated counts, focused selection tests pass.
+
+### First native acceptance corrections — 2026-10-16
+
+- First five-owner run: capabilities passed (2.7 s); browse failed at a 5 s
+  prepare deadline; import/recovery exposed duplicate React sibling keys; Split
+  creation exposed insecure-context UUID use. Artifact run-17846a6cb1c74000978ea73168aa57eb.
+- Restored 60 s mutation budget while v2 metadata remains at most 5 s. Unique
+  Actions key fixes duplicate DOM; native assertion checks one Actions region
+  before and after refresh. UUID uses existing fallback, mapping hash uses MD5.
+- Added bounded lifecycle GET with Rust/Python SDK and OpenAPI contract. HTTP
+  observation and Split contract tests pass (3). Root fmt/Clippy, SDK fmt/Clippy,
+  SDK tests, independent Python wheel consumer (10), UI tests (257), TypeScript
+  and fixture unit tests (150) pass at this checkpoint.
+- Exact Access form baselines: auxiliary_dialog_defaults 5.6 s and access_plan
+  2.2 s. Added Dataset port and updated corresponding assertions. Native rerun pending.
+- Added begin-response recovery, Split scratch cleanup, invalid-rule input
+  validation, weighted group rename consistency, metadata error messages and
+  activity module control. Remaining advanced native scenarios are not yet accepted.

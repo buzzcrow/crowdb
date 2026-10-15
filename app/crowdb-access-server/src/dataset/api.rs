@@ -56,6 +56,11 @@ impl DatasetHttpService {
         let deadline =
             if request.uri().path().contains("/uploads/") && request.uri().path().ends_with("/complete") {
                 self.request_timeout.max(std::time::Duration::from_secs(1800))
+            } else if request.uri().path().starts_with("/api/dataset/v2/")
+                && (matches!(*request.method(), Method::GET | Method::HEAD)
+                    || (*request.method() == Method::POST && request.uri().path().ends_with("/matrix")))
+            {
+                self.request_timeout.min(std::time::Duration::from_secs(5))
             } else {
                 self.request_timeout
             };

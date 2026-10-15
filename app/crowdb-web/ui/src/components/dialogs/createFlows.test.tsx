@@ -40,7 +40,7 @@ const deploymentDefaults = {
   diskio: { instance_id: '1', rpc_port: 13010 },
   chunkdb: { instance_id: '1', http_port: 12010, rpc_port: 12110 },
   'chunk-kv': { instance_id: '1', http_port: 15010, rpc_port: 15110 },
-  'access-server': { instance_id: '1', http_port: 9092, s3_port: 9091, health_port: 9094 },
+  'access-server': { instance_id: '1', http_port: 9092, s3_port: 9091, dataset_port: 9093, health_port: 9094 },
 };
 
 function installFetchMock(response: any = {}, status = 200) {
@@ -170,7 +170,7 @@ describe('Add Node dialog', () => {
       expect(screen.getByLabelText(`${serviceLabels[kind]} RPC port`)).toBeEnabled();
     }
     fireEvent.click(screen.getByLabelText('crowdb-access-server'));
-    for (const name of ['Iceberg', 'S3', 'Health']) expect(screen.getByLabelText(`crowdb-access-server ${name} port`)).toBeDisabled();
+    for (const name of ['Iceberg', 'S3', 'Dataset', 'Health']) expect(screen.getByLabelText(`crowdb-access-server ${name} port`)).toBeDisabled();
   });
   it('preserves an arbitrary subset and the operator listener overrides', async () => {
     installFetchMock();
@@ -181,7 +181,7 @@ describe('Add Node dialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create Node' }));
     await waitFor(() => expect(captured).toHaveLength(2));
     const plan = captured[1].body;
-    expect(plan.overrides).toEqual({ 'access-server': { http_port: 9092, s3_port: 9091, health_port: 19093 } });
+    expect(plan.overrides).toEqual({ 'access-server': { http_port: 9092, s3_port: 9091, dataset_port: 9093, health_port: 19093 } });
     for (const kind of serviceOrder) expect(plan.steps[kind].state).toBe(kind === 'access-server' ? 'pending' : 'disabled');
   });
   it.each(['', '0', '65536', '9091'])('blocks invalid or duplicate health port %s', async value => {

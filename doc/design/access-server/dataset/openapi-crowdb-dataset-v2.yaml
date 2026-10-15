@@ -780,6 +780,24 @@ paths:
         default:
           $ref: '#/components/responses/InspectionError'
   /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/reclaim:
+    get:
+      operationId: observeSnapshotLifecycleV2
+      summary: Observe bounded protection and retirement facts without mutation
+      parameters:
+      - $ref: '#/components/parameters/dataset'
+      - in: path
+        name: snapshot
+        required: true
+        schema: *id001
+      responses:
+        '200':
+          description: Observed facts, not permission to reclaim; parent reachability is not evaluated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SnapshotLifecycle'
+        default:
+          $ref: '#/components/responses/InspectionError'
     post:
       operationId: reclaimSnapshotV2
       summary: Advance bounded Snapshot retirement
@@ -2060,6 +2078,29 @@ components:
       properties:
         snapshot: *composition001
         retained: *composition005
+    SnapshotLifecycle:
+      type: object
+      required: [snapshot, operation, latest, stable, retained, active_read_lease, state, physical_cleanup_deferred, parent_protection]
+      properties:
+        snapshot: *id001
+        operation:
+          type: [string, 'null']
+        latest:
+          type: boolean
+        stable:
+          type: boolean
+        retained:
+          type: boolean
+        active_read_lease:
+          type: boolean
+        state:
+          type: string
+          enum: [not_started, pending, completed]
+        physical_cleanup_deferred:
+          type: boolean
+        parent_protection:
+          type: string
+          const: not_evaluated
     SnapshotReclaim:
       type: object
       additionalProperties: false

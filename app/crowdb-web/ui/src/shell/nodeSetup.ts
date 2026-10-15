@@ -5,7 +5,7 @@ import type { ServiceKind } from '../services/useNodeServicePlans';
 import type { DiskInventory, DiskBackend } from '../storage/types';
 
 export interface SetupListeners {
-  http_port?: number | null; rpc_port?: number | null; s3_port?: number | null; health_port?: number | null;
+  http_port?: number | null; rpc_port?: number | null; s3_port?: number | null; dataset_port?: number | null; health_port?: number | null;
   keepalive_interval_secs?: number | null; dynamic_ownership?: boolean | null;
 }
 export interface SetupService { kind: ServiceKind; enabled: boolean; listeners: SetupListeners }

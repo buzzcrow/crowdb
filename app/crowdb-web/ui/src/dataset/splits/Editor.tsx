@@ -1,18 +1,20 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { buttonClass } from '../../access/Workbench';
 import * as api from '../api';
 import { defaultPolicy, type DraftSplit, type Receipt, type SplitDraft, type SplitPolicy } from '../types';
 import { newId } from '../import/upload';
 import { operationPath, request, saveOperation, type Operation } from '../operation';
-import { Definitions } from './Definitions';
+import { Definitions, validateEditor } from './Definitions';
+import { BeginRecovery } from '../BeginRecovery';
 import { Publication } from '../Publication';
 
 export function SplitEditor({ dataset, snapshot, recovery, close, complete }: {
   dataset: string; snapshot: string; recovery?: Operation; close: () => void; complete: (receipt: Receipt) => void;
 }) {
+  const element = useRef<HTMLElement>(null);
   const [op, setOp] = useState<Operation | undefined>(recovery);
   const [draft, setDraft] = useState<SplitDraft>();
   const [splits, setSplits] = useState<DraftSplit[]>([]); const [policy, setPolicy] = useState<SplitPolicy>(defaultPolicy);
@@ -30,6 +32,7 @@ export function SplitEditor({ dataset, snapshot, recovery, close, complete }: {
     return () => cancel.abort();
   }, [dataset, snapshot, recovery]);
   const save = async () => {
+    validateEditor(element.current);
     if (op && draft) {
       const value = await request<SplitDraft>(op, operationPath(op), 'PUT', { edit: newId(), expected_revision: draft.revision, splits, policy }); setDraft(value);
     } else {
@@ -39,13 +42,14 @@ export function SplitEditor({ dataset, snapshot, recovery, close, complete }: {
     }
     setDirty(false);
   };
-  return <section role="dialog" aria-label="Edit Split revision" className="tw-space-y-3 tw-border tw-border-border tw-p-4">
+  return <section ref={element} role="dialog" aria-label="Edit Split revision" className="tw-space-y-3 tw-border tw-border-border tw-p-4">
     <h2 className="tw-font-semibold">Edit Split revision · {snapshot}</h2>
     <p className="tw-text-xs">Expected revision: {base?.revision ?? draft?.expected_revision ?? 'none'}. Renaming or removing a Split never changes historical revisions.</p>
     <Definitions splits={splits} policy={policy} disabled={busy || !!op?.pending || !!draft && !['editing', 'evaluating', 'evaluated'].includes(draft.progress.state)} change={(values, rules) => { setSplits(values); setPolicy(rules); setDirty(true); }} />
     {error && <p role="alert">{error}</p>}
     <button className={buttonClass} disabled={busy || !!op?.pending || !!draft && !dirty} onClick={() => run(save)}>Save Split draft</button>
     <button className={buttonClass} disabled={busy} onClick={close}>Close editor</button>
+    {op && !draft && <BeginRecovery operation={op} busy={busy} run={run} loaded={value => { setDraft(value as SplitDraft); setSplits(value.splits); setPolicy(value.policy); }} />}
     {op && draft && !dirty && <Publication operation={op} draft={draft} update={value => setDraft(value as SplitDraft)} complete={complete} busy={busy} run={run} />}
     {dirty && draft && <p>Unsaved edits invalidate preview. Save before evaluation.</p>}
   </section>;

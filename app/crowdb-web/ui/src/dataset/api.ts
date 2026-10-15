@@ -35,9 +35,10 @@ async function readBounded(response: Response): Promise<unknown> {
   let result: unknown;
   try { result = JSON.parse(text); } catch { throw new DatasetError(response.status || 502, 'Dataset returned an invalid response.'); }
   if (!response.ok) {
-    const error = result as { error?: string | { message?: string; code?: string } };
-    const message = typeof error.error === 'string' ? error.error : error.error?.message;
-    throw new DatasetError(response.status, message ?? `Dataset HTTP ${response.status}`, response.status >= 500);
+    const error = result as { message?: string; code?: string; error?: string | { message?: string; code?: string } };
+    const message = error.message ?? (typeof error.error === 'string' ? error.error : error.error?.message);
+    const detail = error.code && message !== error.code ? `${error.code}: ${message}` : message;
+    throw new DatasetError(response.status, detail ?? `Dataset HTTP ${response.status}`, response.status >= 500);
   }
   return result;
 }

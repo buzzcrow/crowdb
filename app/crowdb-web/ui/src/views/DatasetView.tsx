@@ -14,7 +14,7 @@ import { Actions } from '../dataset/Actions';
 import { History } from '../dataset/splits/History';
 import { Properties } from '../dataset/Properties';
 
-export function DatasetView({ active, readonly }: { active: boolean; readonly: boolean }) {
+export function DatasetView({ active, readonly, showActivity = true }: { active: boolean; readonly: boolean; showActivity?: boolean }) {
   const [selected, setSelected] = useState<DatasetSelection>({ kind: 'root' });
   const [tree, setTree] = useState<TreeState>({});
   const updateTree = (key: string, value: TreeEntry) => setTree(previous => Object.fromEntries([...Object.entries(previous).filter(([name]) => name !== key).slice(-63), [key, value]]));
@@ -33,7 +33,7 @@ export function DatasetView({ active, readonly }: { active: boolean; readonly: b
     try { await api.mutate('dataset-management', api.datasetPath(name), 'PUT'); setRefresh(value => value + 1); select({ kind: 'dataset', dataset: name }); }
     catch (reason) { setError(String(reason)); } finally { setBusy(false); }
   };
-  return <Workbench sidebar={<nav aria-label="Dataset tree" className="tw-space-y-3 tw-text-sm">
+  return <Workbench showActivity={showActivity} sidebar={<nav aria-label="Dataset tree" className="tw-space-y-3 tw-text-sm">
     <button className="tw-font-semibold" onClick={() => select({ kind: 'root' })}>Datasets</button>
     {catalog.value?.entries.map(dataset => <div key={dataset.id}>
       <button onClick={() => select({ kind: 'dataset', dataset: dataset.name })}>{dataset.name}</button>
@@ -43,9 +43,9 @@ export function DatasetView({ active, readonly }: { active: boolean; readonly: b
     {cursor && <button className={buttonClass} onClick={() => setCursor(undefined)}>First Datasets</button>}
   </nav>} detail={<Properties selected={selected} active={active} />}>
     <div className="tw-flex tw-items-center tw-justify-between"><h1 className="tw-text-xl tw-font-semibold">Dataset{selected.kind !== 'root' && ` · ${selected.dataset}`}</h1>
-      <button className={buttonClass} onClick={() => { setCursor(undefined); setRefresh(value => value + 1); }}>Refresh Dataset</button></div>
+      <button className={buttonClass} onClick={() => { setCursor(undefined); setWindows({}); setRefresh(value => value + 1); }}>Refresh Dataset</button></div>
     {(catalog.error || capabilities.error || error) && <p role="alert">{catalog.error || capabilities.error || error}</p>}
-    <Actions key={selected.kind === 'root' ? 'root' : selected.dataset} selected={selected} readonly={readonly} capabilities={capabilities.value ?? []} complete={receipt => { setRefresh(value => value + 1); if (receipt && selected.kind !== 'root') select({ kind: receipt.target.kind === 'snapshot' ? 'snapshot' : 'revision', dataset: selected.dataset, snapshot: receipt.target.snapshot, ...(receipt.target.kind === 'split_revision' ? { revision: receipt.target.revision } : {}) }); }} />
+    <Actions key={`actions:${selected.kind === 'root' ? 'root' : selected.dataset}`} selected={selected} readonly={readonly} capabilities={capabilities.value ?? []} complete={receipt => { setRefresh(value => value + 1); if (receipt && selected.kind !== 'root') select({ kind: receipt.target.kind === 'snapshot' ? 'snapshot' : 'revision', dataset: selected.dataset, snapshot: receipt.target.snapshot, ...(receipt.target.kind === 'split_revision' ? { revision: receipt.target.revision } : {}) }); }} />
     {selected.kind === 'root' ? <>
       <p className="tw-text-sm tw-text-muted">Namespace: dataset-ns</p>
       {!readonly && <form className="tw-flex tw-gap-2" onSubmit={event => { event.preventDefault(); void create(); }}>

@@ -15,7 +15,8 @@ export function Properties({ selected, active }: { selected: DatasetSelection; a
     if (selected.kind === 'sample') return { sample_id_base64: selected.sample, snapshot: selected.snapshot, revision: selected.revision, split: selected.split };
     if (selected.kind === 'schema') return { field: selected.field, required: selected.required, definition: 'The selected column shows required/optional. Schema fields have no type or MIME declaration.' };
     if (selected.revision) return api.revision(selected.dataset, selected.snapshot, selected.revision, signal);
-    return api.summary(selected.dataset, selected.snapshot, signal);
+    const [summary, lifecycle] = await Promise.all([api.summary(selected.dataset, selected.snapshot, signal), api.control(`${api.snapshotPath(selected.dataset, selected.snapshot)}/reclaim`, 'GET', undefined, signal)]);
+    return { ...summary, lifecycle };
   });
   return <section aria-label="Dataset properties" className="tw-space-y-3">
     <h2 className="tw-font-semibold">Properties · {selected.kind}</h2>

@@ -67,6 +67,7 @@ test('native diagnostics: auxiliary menus stop and restart the actual typed proc
 });
 
 // Baseline: new native defaults/reopen acceptance (2026-10-04).
+// Baseline: 5.6s (2026-10-16), before adding Dataset listener.
 test('native diagnostics: auxiliary dialogs reopen with unused IDs ports and valid dependencies', async ({ page, request }) => {
   const response = await request.get('/api/deployment-defaults?node_id=1');
   expect(response.ok(), await response.text()).toBe(true);
@@ -85,7 +86,7 @@ test('native diagnostics: auxiliary dialogs reopen with unused IDs ports and val
       await expect(dialog.getByLabel('Instance ID', { exact: true })).toHaveValue(defaults[kind].instance_id);
       expect(servers.some((server: { id: string }) => server.id === `${kind}-${defaults[kind].instance_id}`)).toBe(false);
       const fields = kind === 'diskio' ? [['RPC port', 'rpc_port']] : kind === 'access-server'
-        ? [['Iceberg HTTP port', 'http_port'], ['S3 HTTP port', 's3_port']]
+        ? [['Iceberg HTTP port', 'http_port'], ['S3 HTTP port', 's3_port'], ['Dataset HTTP port', 'dataset_port'], ['Health HTTP port', 'health_port']]
         : [['Management HTTP port', 'http_port'], ['RPC port', 'rpc_port']];
       for (const [field, key] of fields) await expect(dialog.getByLabel(field, { exact: true })).toHaveValue(String(defaults[kind][key]));
       if (kind === 'diskio') await expect(dialog.getByLabel('Disk group', { exact: true })).toHaveValue('1');

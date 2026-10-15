@@ -219,7 +219,7 @@ pub(super) fn access_config(body: &Deploy, seeds: &[String], node: &NodeEntry) -
         "iceberg":{"listen":format!("{}:{}",node.host,body.http_port.unwrap())},
     });
     if let Some(port) = body.dataset_port {
-        config["dataset"] = json!({"listen":format!("{}:{port}",node.host),"request_timeout_seconds":5});
+        config["dataset"] = json!({"listen":format!("{}:{port}",node.host),"request_timeout_seconds":60});
     }
     if body.test_single_node {
         config["deployment"] = json!({"mode":"test_single_node","max_node_failures":0});

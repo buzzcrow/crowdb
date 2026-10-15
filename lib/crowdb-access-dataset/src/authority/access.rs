@@ -4,7 +4,9 @@
 use super::{decode, DatasetAuthority, VersionedRecord};
 mod cleanup;
 mod lifecycle;
+mod observation;
 pub use lifecycle::{SnapshotReclaimError, SnapshotReclaimPhase, SnapshotReclaimStatus};
+pub use observation::SnapshotLifecycle;
 mod reclaim;
 use crate::{key, AuthorityError, CasOutcome, DatasetError, DatasetIdentity, OperationId, SnapshotId};
 pub use cleanup::MetadataCleanupProgress;

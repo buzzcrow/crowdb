@@ -61,7 +61,7 @@ export function Publication({ operation: op, draft, update, complete, busy, run 
       <button className={buttonClass} disabled={busy || ['published', 'abandoned', 'committing'].includes(state)} onClick={() => run(async () => {
         update(await request<CompositionDraft | SplitDraft>(op, path, 'DELETE', { expected_revision: draft.revision }));
       })}>Abandon draft</button>
-      {state === 'abandoned' && op.kind === 'composition' && <button className={buttonClass} disabled={busy} onClick={() => run(async () => {
+      {state === 'abandoned' && <button className={buttonClass} disabled={busy} onClick={() => run(async () => {
         const result = await request<{ complete: boolean; physical_cleanup_deferred: boolean }>(op, `${path}/cleanup`, 'POST'); setCleanup(result); if (result.complete) forgetOperation(op);
       })}>Advance cleanup</button>}
     </div>}

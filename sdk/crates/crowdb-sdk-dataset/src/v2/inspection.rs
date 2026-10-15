@@ -114,3 +114,27 @@ pub struct RetainedSnapshot {
     pub snapshot: OpaqueId,
     pub retained: bool,
 }
+
+/// Bounded observed facts; parent reachability remains server-authoritative.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+// Independent protection facts may coexist; they are not exclusive states.
+#[allow(clippy::struct_excessive_bools)]
+pub struct SnapshotLifecycle {
+    pub snapshot: OpaqueId,
+    #[serde(deserialize_with = "required_option")]
+    pub operation: Option<OpaqueId>,
+    pub latest: bool,
+    pub stable: bool,
+    pub retained: bool,
+    pub active_read_lease: bool,
+    pub state: LifecycleState,
+    pub physical_cleanup_deferred: bool,
+    pub parent_protection: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LifecycleState {
+    NotStarted,
+    Pending,
+    Completed,
+}

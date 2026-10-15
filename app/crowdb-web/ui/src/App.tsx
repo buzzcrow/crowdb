@@ -658,7 +658,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
           onChunk={id => { setChunkRequest(previous => ({ id, nonce: (previous?.nonce ?? 0) + 1 })); setDomain(Domain.Chunk); }}
         /></div>
         <div hidden={domain !== Domain.Iceberg} className="tw-flex-1 tw-min-h-0"><IcebergView active={domain === Domain.Iceberg} readonly={readonly} /></div>
-        {modules?.dataset !== false && <div hidden={domain !== Domain.Dataset} className="tw-flex-1 tw-min-h-0"><DatasetView active={domain === Domain.Dataset} readonly={readonly} /></div>}
+        {modules?.dataset !== false && <div hidden={domain !== Domain.Dataset} className="tw-flex-1 tw-min-h-0"><DatasetView active={domain === Domain.Dataset} readonly={readonly} showActivity={modules?.activity !== false} /></div>}
         <div hidden={domain !== Domain.S3} className="tw-flex-1 tw-min-h-0"><S3View active={domain === Domain.S3} readonly={readonly}
           onChunk={id => { setChunkRequest(previous => ({ id, nonce: (previous?.nonce ?? 0) + 1 })); setDomain(Domain.Chunk); }} /></div>
       </main>

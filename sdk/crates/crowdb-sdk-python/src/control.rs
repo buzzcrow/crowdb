@@ -29,6 +29,7 @@ pub(super) async fn dispatch(client: DatasetClient, name: &str, args: &str) -> R
         "retain" => encode(&client.retain(&id()?).await?),
         "release" => encode(&client.release(&id()?).await?),
         "set_stable" => encode(&client.set_stable(&id()?).await?),
+        "lifecycle" => encode(&client.lifecycle(&id()?).await?),
         "reclaim" => encode(&client.reclaim(&id()?).await?),
         "prepare_inspection" => encode(&client.prepare_inspection(&id()?).await?),
         "inspection_status" => encode(&client.inspection_status(&id()?).await?),

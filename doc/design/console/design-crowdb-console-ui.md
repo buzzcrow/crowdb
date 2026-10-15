@@ -43,14 +43,15 @@ does not establish that a native service operation succeeds.
 - [22. S3](#22-s3)
 - [23. Actions and properties](#23-actions-and-properties)
 - [24. E2E organization and timing](#24-e2e-organization-and-timing)
+- [25. Dataset](#25-dataset)
 
 ## 1. Product contract
 
 - **UI-01:** One Console serves one configured cluster. Opening the UI enters
   that cluster directly; no Connect dialog, endpoint input, or access-key form
   precedes ordinary browsing.
-- **UI-02:** The six top-level tabs are Cluster, KV, Chunk, Chunk-KV, Iceberg,
-  and S3. Each has an independent selected resource and query window. Cluster
+- **UI-02:** The seven top-level tabs are Cluster, KV, Chunk, Chunk-KV, Iceberg,
+  Dataset and S3. Each has an independent selected resource and query window. Cluster
   contains Topology and Capacity views sharing selection and tree expansion.
 - **UI-03:** Assume an administrator/root session until UI authentication is
   introduced. Available backend operations remain authoritative; capability
@@ -81,7 +82,7 @@ provide observable capacity and bitmap fixtures.
 
 ## 3. Navigation and layout
 
-- **NAV-01:** The header keeps the six domains in a stable order. Domain
+- **NAV-01:** The header keeps the seven domains in a stable order. Domain
   changes preserve that domain's bounded query state and selected identity.
 - **NAV-02:** The left panel selects hierarchy/scope; the center presents the
   selected resource or overview; the right panel presents selected properties.
@@ -251,7 +252,7 @@ provide observable capacity and bitmap fixtures.
   logical KV, and data operations supported by the backend.
 - **MODE-02:** Standard manual OCI nodes expose authenticated admission and
   confirmed Group-0 topology/service/storage operations. Explicit single-profile
-  preview mode uses the same six-domain UI for observation and supported logical/
+  preview mode uses the same seven-domain UI for observation and supported logical/
   data operations, but rejects physical topology/deployment/storage mutations.
   Backend enforcement accompanies hidden/disabled controls in either mode.
 - **MODE-03:** Readonly embedding disallows mutations. Every fetch uses the
@@ -739,7 +740,7 @@ Unsupported features are explicit rather than represented as working controls.
 - **ACT-01:** Resource title/path appear first, then one compact Actions strip,
   collapsed by default, then primary content. Expanded Actions name their exact
   operation target. Changing resource closes obsolete action forms.
-- **ACT-02:** KV, Iceberg and S3 use this shared structure and button style.
+- **ACT-02:** KV, Iceberg, Dataset and S3 use this shared structure and button style.
   Ordinary buttons have a visible border; destructive buttons use muted red.
   Refresh, Previous and Next belong with the query/list and do not hide inside
   mutation forms. Readonly/container capabilities apply to every action.
@@ -753,7 +754,7 @@ Unsupported features are explicit rather than represented as working controls.
 
 - **TEST-02:** Page-function specs retain each behavior once: shell `0x`,
   physical lifecycle `1x`, logical KV `2x`, KV data `3x`, inspector/canvas `4x`,
-  Capacity/Chunk/Chunk-KV `5x`, Iceberg `6x`, S3 `7x`, cross-function `9x`.
+  Capacity/Chunk/Chunk-KV `5x`, Iceberg `6x`, S3 `7x`, Dataset `8x`, cross-function `9x`.
   Dedicated creation/reconfiguration specs retain their UI mutations; a smoke
   chain does not repeat every dialog or failure permutation.
 - **TEST-03:** Use separate unit, backend integration and native browser E2E
@@ -771,3 +772,91 @@ Unsupported features are explicit rather than represented as working controls.
   election 10 s, polling every 100 ms. No fixed sleeps. Native large multipart
   and SF=1 loader acceptance run separately from ordinary UI iteration; normal
   smoke data remain small while preserving multi-Strip and pagination cases.
+
+
+## 25. Dataset
+
+Depends on: [Dataset control lifecycle](../access-server/dataset/design-dataset-control.md).
+
+- **DS-01 — Scope:** Dataset is immediately before S3. The fixed `dataset-ns`
+  namespace is a property, not a single-child navigation level. Catalog discovery
+  comes from the configured authority, including SDK-created identities. Empty,
+  missing configuration, unavailable service and denied access remain distinct.
+  Credentials stay on the Console server; no browser endpoint or bearer editor.
+- **DS-02 — Relationships:** left navigation follows declared parent links as a
+  forest. Roots and each parent's children page independently; no ancestry scan
+  or Snapshot-ID sorting reconstructs the tree. Latest and Stable are reference
+  badges. A Snapshot's Splits group is a peer of its children. Samples and Fields
+  remain in the center. Direct Snapshot navigation preserves the exact identity;
+  bounded ancestor discovery reports incomplete paths explicitly.
+- **DS-03 — Combined inspection:** one Samples matrix uses Schema definitions as
+  columns, defaulting to twenty rows and twelve fields. Required/optional is the
+  actual field definition; no inferred type, MIME or nested schema. Header, Sample
+  row and Sample/Field cell selections have separate properties and history.
+  Missing, tombstoned, inline, payload-backed and inherited values are distinct.
+  Known lengths and declared checksums are metadata, not verified payloads.
+- **DS-04 — Bounds:** each catalog/row/column query carries its immutable scope and
+  explicit continuation. A stale continuation requires first-page refresh. Loaded
+  row filtering is labelled local. Opaque binary Sample IDs retain canonical padded
+  base64; valid UTF-8 is only a display/helper encoding. Decimal u64 values remain
+  strings. Navigation retains bounded identities/cursors and scroll, not payloads.
+  Hidden work stops; late responses cannot replace another scope.
+- **DS-05 — Preview:** only the explicit Preview action reads a selected field.
+  Complete verified values of at most 64 KiB render as UTF-8 or hex. Unknown length,
+  missing/tombstoned values, oversized data, integrity failures and cancelled reads
+  never appear as a successful truncated value. Browsing starts no Read Plan.
+- **DS-06 — Local import:** create Dataset, then Import / New Snapshot or Create
+  child. Any published parent may be selected. Preserve all parent data is the
+  default; Replace membership and authority-evaluated Selection are explicit.
+  A Split source freezes Snapshot/revision/name. Schema/member edits, local file
+  mappings and Split policies are reviewed before publication. External sources
+  are SDK-owned and require no connector UI.
+- **DS-07 — Durable publication:** uploads use immutable parts of at most 4 MiB,
+  at most 10000 parts, incremental MD5 and two concurrent requests. Review, Evaluate,
+  Prepare and Publish are distinct stages. Partial evaluation or incomplete import
+  cannot publish. A prepared candidate is immutable; edits require a new operation
+  and explicit abandonment/cleanup of the old one. Only a successful receipt moves
+  latest; stable is independent. Unknown outcomes reconcile operation/attempt IDs.
+  Confirmed head conflicts require explicit review and a new attempt on the same
+  candidate and parent. Closing does not abandon a draft. Reload restores control
+  identities; local File handles must be reselected and match their declared digest.
+- **DS-08 — Split revisions:** author the complete set, including an empty set,
+  with named Selection or deterministic weighted partitions and independent overlap
+  and coverage policies. Inherited membership is frozen and intersected with child
+  membership; new Samples remain unassigned. Explicit reevaluation is separate.
+  Independent Split publication compares the expected revision, preserves historical
+  members, and does not move Dataset latest or create a data Snapshot. History and
+  named membership pages stay pinned to the selected immutable revision.
+- **DS-09 — Lifecycle:** stable, retain, release and reclaim name the exact
+  Snapshot. Backend protection wins over an observed eligibility hint. Reclaim
+  distinguishes unknown, pending logical cleanup and completed retirement; physical
+  cleanup may remain deferred. No Dataset delete or Split-history purge action.
+- **DS-10 — Modes:** `modules.dataset=false` hides the domain and prevents Dataset
+  observation. API prefixes apply to every request. Readonly disables editing and
+  the Console API rejects direct writes; exact matrix POST remains an observation.
+  Managed mode permits supported data operations without enabling topology changes.
+
+Local batch mapping uses version 1 JSON aligned with Sample/Field edit models,
+bounded at 8 MiB and 10000 Sample edits. `schema: null` inherits the parent Schema.
+IDs and inline bytes are canonical base64. File names identify exactly one selected
+local File; they never grant filesystem access. Ambiguous/missing files, duplicate
+Samples/fields and invalid encodings are rejected before upload. A single-Sample
+helper can create this mapping from a UTF-8 ID and text or a selected local file.
+
+```json
+{
+  "version": 1,
+  "schema": {"version": 1, "fields": [{"name": "text", "required": true}]},
+  "samples": [
+    {"kind": "upsert", "id": "c2FtcGxlLTE=", "fields": [
+      {"name": "text", "value": {"kind": "inline", "data": "aGVsbG8="}}
+    ]}
+  ]
+}
+```
+
+A local payload value is `{"kind":"file","file":"selected.bin"}`. An optional
+field tombstone is `{"kind":"tombstone"}`. Removal is
+`{"kind":"remove","id":"c2FtcGxlLTE="}`. Authority composition combines these
+bounded edits with the frozen source; the browser never constructs a partial
+Manifest and labels it complete membership.

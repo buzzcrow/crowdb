@@ -49,6 +49,7 @@ class ControlClient:
     def retain(self, snapshot): return self._call("retain", {"id": snapshot})
     def release(self, snapshot): return self._call("release", {"id": snapshot})
     def set_stable(self, snapshot): return self._call("set_stable", {"id": snapshot})
+    def lifecycle(self, snapshot): return self._call("lifecycle", {"id": snapshot})
     def reclaim(self, snapshot): return self._call("reclaim", {"id": snapshot})
     def prepare_inspection(self, snapshot): return self._call("prepare_inspection", {"id": snapshot})
     def inspection_status(self, snapshot): return self._call("inspection_status", {"id": snapshot})

@@ -8,10 +8,10 @@ import { formatBytes } from '../utils/capacity';
 import { automaticStorage, discoveredStorage, type NodeSetupChoices, type SetupListeners, type SetupService } from './nodeSetup';
 
 interface Props { choices: NodeSetupChoices; inventory: DiskInventory; disabled: boolean; onChange: (choices: NodeSetupChoices) => void }
-type Port = 'http_port' | 'rpc_port' | 's3_port' | 'health_port';
+type Port = 'http_port' | 'rpc_port' | 's3_port' | 'dataset_port' | 'health_port';
 function listeners(service: SetupService): Port[] {
   if (service.kind === 'paxos-kv') return [];
-  if (service.kind === 'access-server') return ['http_port', 's3_port', 'health_port'];
+  if (service.kind === 'access-server') return ['http_port', 's3_port', 'dataset_port', 'health_port'];
   return service.kind === 'diskdb' || service.kind === 'diskio' ? ['rpc_port'] : ['http_port', 'rpc_port'];
 }
 

@@ -1,5 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
+// Dataset domain navigation baseline: 1.7s (2026-10-16), measured before adding Dataset.
 // Baseline: embedding 2.8s, unavailable 0.453s, navigation 1.1s (2026-10-15)
 
 import { test, expect } from "../fixtures/realBackend";
@@ -17,7 +18,7 @@ test.describe("shell · embedding", () => {
     await expect(page.getByRole('button', { name: 'Add Rack' })).toHaveCount(0);
   });
 
-  test('domain toggle switches between six domains and shared Cluster views', async ({ page }) => {
+  test('domain toggle switches between seven domains and shared Cluster views', async ({ page }) => {
     await step('shell: goto', () => page.goto('/'));
 
     await expect(page).toHaveTitle('CrowDB Console');
@@ -28,14 +29,15 @@ test.describe("shell · embedding", () => {
     await expect(page.getByTestId('domain-kv')).toBeVisible();
     await expect(page.getByTestId('domain-chunk')).toBeVisible();
 
-    for (const domain of ['capacity', 'chunk-kv', 'iceberg', 's3']) await expect(page.getByTestId(`domain-${domain}`)).toBeVisible();
+    for (const domain of ['capacity', 'chunk-kv', 'iceberg', 'dataset', 's3']) await expect(page.getByTestId(`domain-${domain}`)).toBeVisible();
 
     // Default domain is Cluster.
     await expect(page.getByTestId('domain-cluster')).toHaveAttribute('aria-pressed', 'true');
 
     const domains = page.getByRole('navigation', { name: 'Console domains' });
-    await expect(domains.getByRole('button')).toHaveCount(6);
+    await expect(domains.getByRole('button')).toHaveCount(7);
     await expect(domains.getByRole('button', { name: 'Capacity', exact: true })).toHaveCount(0);
+    await expect(domains.getByRole('button')).toHaveText(['Cluster', 'PaxosKV', 'Chunk', 'ChunkKV', 'Iceberg', 'Dataset', 'S3']);
     await page.getByTestId('domain-capacity').click();
     await expect(page.getByTestId('domain-capacity')).toHaveAttribute('aria-pressed', 'true');
     await expect(page.getByTestId('domain-cluster')).toHaveAttribute('aria-pressed', 'true');
