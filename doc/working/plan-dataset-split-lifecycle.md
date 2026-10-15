@@ -86,7 +86,16 @@ and Rust/Python SDK contract before Console integration.
   Exit: valid/invalid request fixtures cover null vs omitted expected revisions,
   exact IDs/base64 and feature-unavailable behavior; older servers cannot silently
   ignore Split inputs. V2 is a planned addition, not an existing route.
-- [ ] **A3 Define durable state records**: add versioned Split revision ID, current
+  Sequencing refinement: finalize mutation DTOs with their authority operations,
+  after A3 supplies validated identities/state and before E2/SDK writes. Discovery
+  stays available now, with no unimplemented capability advertised.
+- [x] **A3a Define immutable Split records**: implement validated opaque names,
+  revision identity, whole-set records, head, membership pages, SHA-256 bindings
+  and scoped keys. Files: `identity.rs`, `split.rs`, `split/{definition,record,
+  codec,key}.rs`, `tests/split_record_test.rs`. Exit: exact UTF-8 byte bounds,
+  no-revision versus empty-set revision, malformed/unsupported/trailing records,
+  page ordering/count/scope/content integrity and recursion bounds pass.
+- [~] **A3b Define operation state records**: add versioned current
   reference, draft revision, candidate, membership-page binding, operation status,
   commit attempt and successful receipt. Suggested symbols: `SplitRevisionId`,
   `SplitRevisionRecord`, `SplitHead`, `CompositionRecord`, `CommitAttempt`.
@@ -371,3 +380,12 @@ failure; record actual failures and add Blocked only when that workflow requires
   Discovery tests cover unauthorized requests, old-server 404, unknown versions,
   missing required capabilities, and no fallback mutation. Native acceptance and
   all mutation DTOs remain pending; this is not a completed v2 implementation.
+- A3a: Split record codecs use new versioned JSON with a 1 MiB encoded limit,
+  a parser recursion guard and strict record fields; existing bincode records are
+  unchanged. Member pages hold at most 1024 ordered unique IDs and bind their
+  complete encoded scope/content with SHA-256. Predicate depth is at most 32;
+  effective-field lookup and unknown-field/universe validation remain B5/D1.
+  `cargo test -p crowdb-access-dataset --tests` passed 53 integration tests;
+  focused tests passed again after strict codec checks, and crate all-target
+  clippy passed. Initial fixture syntax error was fixed; a concurrent lint using
+  the old dependency graph was rerun after the sha2 dependency settled.

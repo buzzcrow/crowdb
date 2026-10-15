@@ -22,6 +22,7 @@ mod publication;
 mod record;
 mod retention;
 mod shuffle;
+pub mod split;
 mod store;
 mod surface;
 mod transport;
@@ -34,7 +35,7 @@ pub use upload::{DatasetUploads, UploadError, UploadPart, UploadRecord, UploadSt
 pub use cursor::ReadCursor;
 pub use delivery::DeliveryWindow;
 pub use error::DatasetError;
-pub use identity::{DatasetId, OperationId, SnapshotId};
+pub use identity::{DatasetId, OperationId, SnapshotId, SplitRevisionId};
 pub use key::manifest_partition;
 pub use lease::{ReadLease, DEFAULT_READ_LEASE_SECONDS};
 pub use manifest::{
