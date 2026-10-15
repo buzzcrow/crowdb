@@ -9,10 +9,24 @@ import sys
 import unittest
 from unittest.mock import patch
 import run
-from special_profiles import cleanup_owned_host
+from special_profiles import cleanup_owned_host, cleanup_owned_media
 
 
 class HostProfileTest(unittest.TestCase):
+    def test_media_helper_cleanup_checks_all_three_ownership_boundaries(self):
+        for field in ("image", "owner", "mount", None):
+            info = {"Image": "foreign" if field == "image" else "image",
+                    "Config": {"Labels": {"org.crowdb.e2e.run": "foreign" if field == "owner" else "owned"}},
+                    "Mounts": [{"Destination": "/owned", "Source": "/foreign" if field == "mount" else "/owned"}]}
+            with self.subTest(field=field), patch("special_profiles.docker", side_effect=["owned-media", json.dumps([info]), ""]) as docker:
+                if field:
+                    with self.assertRaisesRegex(ValueError, "ownership"):
+                        cleanup_owned_media("owned", Path("/owned"), "image")
+                    self.assertEqual(docker.call_count, 2)
+                else:
+                    cleanup_owned_media("owned", Path("/owned"), "image")
+                    self.assertEqual(docker.call_args.args, ("rm", "-f", "owned-media"))
+
     def test_selection_and_resource_validation_precede_docker(self):
         for args in (("--concurrency","2"),("--concurrency","1","--cpus","1"),
                      ("--concurrency","1","--memory-mib","1024"),

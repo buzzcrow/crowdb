@@ -1383,3 +1383,65 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   managed preallocation; an external sparse=false receipt cannot prove how its
   host file was allocated. These source changes end the prior image freeze and
   require another committed production image for acceptance.
+- Second production freeze is `afa327865e78c7260f97ab62828f059efde5ab7c` after
+  `1e8a7c2c` (consistent class reads/typed pending descriptor) and the shared UI
+  controls/allocation-label correction. Full DiskIO-client tests/rustdoc, 21
+  focused Monitor cases, 16 SDK admission/class cases, five affected crates'
+  all-target/all-feature Clippy, UI 251+TypeScript and staged build pass.
+  Manifest `sha256:f48fcb8509ea66d50f36a3bc72b0e73e8160e08c1d95f18fb6657efa77f0164d`,
+  config `sha256:23414660358feed2ec4c870ed523afe9767c418406ec9bee427214c3405a222a`,
+  runtime `f39d7db8083e02b6c1675986d1b4b829a7f7bc56b092183b9ba80d1e365c17bd`.
+  Build/import are rootless and receipt-verified, with the known shutdown warning.
+- Hardware browser now passes on that image in `run-f9869429e1e849e88e430c6facb3cccb`
+  (18.2 s including the new real three-medium Join, versus prior 14.5 s). Two blank
+  files register and retain distinct v2 receipts, the nonblank file fails, reload
+  reopens durable outcomes, and only its original failed operation is retried.
+  Host occupied Remove/Rejoin acceptance and exact file/tail proof still complete
+  under the root runner before treating this whole case as passed.
+- New isolated containerd-host fixture work is pending actual execution: create
+  only owned files and a private loop device node, pin/verify its exact kernel
+  mapping and set autoclear for interruption. No host disk or pre-existing device
+  permissions change. Test actual fsync/read through the normal Rust DiskIO SDK,
+  exclusive raw claim while Online/release after Offline, retained Remove/Rejoin,
+  recreated-container reads and physical-tail persistence. Existing single-profile
+  initialization/recreate assertions remain. Seven Python boundary/ownership cases
+  and e2e-client Clippy pass; do not claim real loop acceptance yet.
+- Follow-up after this freeze: registered supplied rows must display the retained
+  nullable media class rather than the geometry's compatibility HDD fallback.
+  Also hide direct Open candidates in modes with no Node storage workspace.
+  These are UI contract corrections, not changes to media admission or group
+  class constraints; retain regression assertions and build before final acceptance.
+- Isolated containerd supplied File/raw acceptance now passes on the frozen image:
+  `run-88ecd8a11c5348b6bf8cbdd47821d57c`, full profile 78.89 s. Real SDK fsync/read,
+  raw exclusive ownership/release, retained Remove/Rejoin, same-image recreation,
+  exact tail markers and single-mode automatic initialization/recreation pass.
+  Earlier `run-09028bb294374640b3e9019011f14844` and
+  `run-d75f8b00ba1441cf851db2e33ea4f873` passed all supplied-media probes but failed
+  single startup because the fixture precreated `disks/` in a pristine single
+  root, violating BootstrapSession's explicit clean-root contract. Create that
+  directory only in manual supplied-media fixtures. Memory events confirm no OOM.
+  One diagnostic attempt itself failed reading a nonexistent cgroup-root file;
+  resolve the host cgroup through `/proc/self/cgroup` and never mask cleanup.
+- Docker host profile now exercises the same supplied-media contract through an
+  owned privileged loop helper; the actual Node stays unprivileged and receives
+  only declared file/device mappings. Helper has no network or runtime socket,
+  pins one verified autoclear mapping, and cleanup checks image/label/data mount.
+  Host driver reads only the known nonsecret binding through UID 10001. Its
+  launcher receipt write temporarily grants the fixture operator group access;
+  restore 0755 before SSH because StrictModes rejects a writable parent. Existing
+  bootstrap assertions now observe the asynchronous accepted-to-active lifecycle.
+  Docker end-to-end result is pending; these fixture corrections are not product
+  privilege fallback or a claim that acceptance has passed.
+- Docker same-image host acceptance now passes as
+  `run-0e82f8ca1fc44609a1982d3ba55c067e`: both SDK media probes, Offline exclusive
+  release, Remove/Rejoin and recreated-container original-byte reads pass. Fix
+  fixture group permissions explicitly after mkdir (umask had removed write),
+  without changing Node privileges or unrelated device permissions. Containerd
+  and Docker now have real supplied raw/file evidence on the same frozen image.
+  OCI image Python suite: 30 pass under its pinned environment. E2E client Clippy
+  and supplied-media/host ownership unit cases pass. A direct root-environment
+  invocation lacked PyYAML; the pinned OCI task supplies it and passes.
+- Full root fixture suite: 148 pass, one confirmed pre-existing Dataset inventory
+  count failure in `selection_test.py` (expects 2 owners, currently 3). This was
+  already present before these deployment edits and belongs to Dataset runner
+  contract verification; retain the complete failure in `/tmp/crowdb-r235-fixture-gate.log`.

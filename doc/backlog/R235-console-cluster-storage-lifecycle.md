@@ -344,6 +344,14 @@
 
 **Implementation decisions for later review**:
 
+- The user reiterated on 2026-10-15 that implementation should continue without
+  waiting for conflict confirmation. Prefer an option supported by existing
+  authority and ownership rules; record any deferred conflicting scope here.
+- Online completion records successful retained-medium validation and the Group-0
+  Up transition. It does not promise that every DiskIO watcher has already opened
+  its descriptor. Display current service health separately; acceptance observes
+  the actual descriptor before testing its exclusive claim and retained data.
+  Do not reinterpret an absent descriptor as successful I/O or add blanket read retries.
 - The user authorized choosing a well-supported option or skipping a disputed
   part without waiting for confirmation. Record unresolved consequences here;
   skipped acceptance criteria remain incomplete. Retain this requirement and

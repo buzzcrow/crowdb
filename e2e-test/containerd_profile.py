@@ -5,12 +5,14 @@
 import importlib.util
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
 import time
 import uuid
 from fixture import docker, redact
+from client import bundle_client
 from image_identity import verify_server_sources
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -67,7 +69,20 @@ def run_profile(args, parser):
     (run_root / "identity.json").write_text(json.dumps({"profile":args.profile, "artifact":verified,
         "sources":source,"concurrency":1,"cpus":needed_cpu,"memory_mib":needed_memory,
         "node_cpus":args.node_cpus,"host_data":str(data)}, indent=2))
+    client = None
+    if not cluster:
+        staged = ROOT / "target/container-runtime"
+        if (staged / "SOURCE_REVISION").read_text().strip() != verified["revision"]:
+            raise RuntimeError("storage SDK probe requires the exact OCI dependency stage")
+        client = bundle_client(run_root / "media-client")
+        for library in (ROOT / "target/container-runtime/lib").iterdir():
+            destination = client / "lib" / library.name
+            if library.is_file() and not destination.exists():
+                shutil.copy2(library, destination)
     env = os.environ.copy()
+    if client:
+        env["CROWDB_CONTAINERD_MEDIA_CLIENT"] = str(client)
+
     env.update(CROWDB_CONTAINERD_DATA=str(data), CROWDB_CONTAINERD_PREFIX=prefix,
                CROWDB_CONTAINERD_ARCHIVE=str(archive), CROWDB_CONTAINERD_HOST_IMAGE=verified["base_image"],
                CROWDB_CONTAINERD_NODE_CPUS=str(args.node_cpus))

@@ -13,11 +13,39 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from runtime import Runtime
+from runtime import OWNER, Runtime
 from storage import inputs, record_inputs, runtime_arguments, validate_retained_inputs
 
 
 class StorageTest(unittest.TestCase):
+    def test_failed_start_preserves_logs_before_owned_cleanup(self):
+        for owned in (True, False):
+            with self.subTest(owned=owned), tempfile.TemporaryDirectory() as directory:
+                args = SimpleNamespace(data_root=Path(directory), disk_file=[], device=[],
+                                       name="node", cpus=1, memory_mib=512, network="host",
+                                       startup_mode="single", physical_host_id="host", interface="eth0",
+                                       password_file=None, seed=[], ui_port=None, image="image")
+                calls = []
+                token = None
+
+                def invoke(*command):
+                    nonlocal token
+                    calls.append(command)
+                    if command[0] == "run":
+                        token = command[command.index("--label") + 1].split("=", 1)[1]
+                    return "startup diagnostic"
+
+                runtime = Runtime("docker")
+                with patch.object(runtime, "invoke", side_effect=invoke), \
+                        patch.object(runtime, "verify", side_effect=RuntimeError("stopped")), \
+                        patch.object(runtime, "inspect", side_effect=lambda _: {
+                            "Config": {"Labels": {OWNER: token if owned else "unrelated"}}}), \
+                        patch("builtins.print") as output:
+                    with self.assertRaisesRegex(RuntimeError, "stopped"):
+                        runtime.create(args)
+                self.assertEqual(calls[1:], [("logs", "node"), ("rm", "-f", "node")] if owned else [])
+                self.assertEqual(output.call_count, 2 * int(owned))
+
     def test_replacement_preserves_original_mappings_before_runtime_launch(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

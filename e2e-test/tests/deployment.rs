@@ -12,6 +12,7 @@ mod kv_bootstrap;
 mod listeners;
 mod storage;
 mod supervision;
+mod supplied_media;
 mod validation;
 
 #[tokio::test]

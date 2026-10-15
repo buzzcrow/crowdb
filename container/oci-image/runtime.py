@@ -104,6 +104,11 @@ class Runtime:
             try:
                 current = self.inspect(args.name)
                 if current.get("Config", {}).get("Labels", {}).get(OWNER) == token:
+                    print(f"Startup failure state: {json.dumps(current.get('State', {}))}", flush=True)
+                    try:
+                        print(self.invoke("logs", args.name), flush=True)
+                    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as log_error:
+                        print(f"Startup failure logs unavailable: {log_error}", flush=True)
                     self.invoke("rm", "-f", args.name)
             except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as cleanup_error:
                 print(f"Inspect/cleanup after launch failure: {cleanup_error}", flush=True)
