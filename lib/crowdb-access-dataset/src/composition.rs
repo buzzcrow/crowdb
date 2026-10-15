@@ -7,7 +7,9 @@ mod record;
 pub use record::{CompositionRecord, CompositionSource, DraftProgress};
 
 mod begin;
+mod candidates;
 mod cleanup;
+pub use candidates::CompositionCandidateCleanup;
 pub use cleanup::CompositionScratchCleanup;
 mod edit;
 mod evaluate_step;

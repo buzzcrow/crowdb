@@ -12,6 +12,45 @@ use crate::{
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 impl DatasetAuthority {
+    pub(crate) async fn fence_initial_split_reservation(
+        &self,
+        identity: &DatasetIdentity,
+        operation: OperationId,
+    ) -> Result<bool, SplitLifecycleError> {
+        let key = state_key(b"DS\0SD\0", identity, operation, None)?;
+        let stored = self.split_state_get(&key).await?;
+        if let Some(stored) = &stored {
+            if stored.bytes != super::cleanup::SEALED {
+                self.release_initial_split_leases(identity, operation).await?;
+                return Ok(true);
+            }
+        } else {
+            match self
+                .store
+                .compare_exchange(&key, None, super::cleanup::SEALED)
+                .await?
+            {
+                crate::CasOutcome::Applied(_) => {}
+                crate::CasOutcome::Conflict(Some(v)) if v.bytes == super::cleanup::SEALED => {}
+                crate::CasOutcome::Conflict(_) => return Err(SplitLifecycleError::Conflict),
+            }
+        }
+        let begin = state_key(b"DS\0SB\0", identity, operation, None)?;
+        let stored = self.split_state_get(&begin).await?;
+        match self
+            .store
+            .compare_exchange(
+                &begin,
+                stored.as_ref().map(|v| v.bytes.as_slice()),
+                super::cleanup::SEALED,
+            )
+            .await?
+        {
+            crate::CasOutcome::Applied(_) => Ok(false),
+            crate::CasOutcome::Conflict(Some(v)) if v.bytes == super::cleanup::SEALED => Ok(false),
+            crate::CasOutcome::Conflict(_) => Err(SplitLifecycleError::Conflict),
+        }
+    }
     pub(crate) async fn release_initial_split_leases(
         &self,
         identity: &DatasetIdentity,

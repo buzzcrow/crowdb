@@ -896,3 +896,25 @@ failure; record actual failures and add Blocked only when that workflow requires
   No mutation capability advertisement or complete lifecycle claim is made yet.
 - Full `pixi run cargo test -p crowdb-access-dataset`, root `rs-lint`,
   `rs-fmt-check` and `git diff --check` passed after the final reclaim changes.
+
+### Failed and superseded candidate cleanup
+
+- `cleanup_composition_candidates_step` visits deterministic candidate operations
+  for obsolete input revisions, including preparation attempts absent from the
+  composition root. Missing operation/Snapshot reservations become permanent
+  fences; existing candidates are fenced against publication before bulk cleanup.
+- Candidate metadata cleanup enumerates all possible Manifest/index writes from
+  the retained original record, sealing keys that an interrupted writer has not
+  created yet. It persists partition/index cursors, retains valid small retired
+  summaries, and seals absent initial Split reservations before late creation.
+  Successful historical publications are preserved.
+- Four tests cover absent preparation, missing final candidate binding/index rows,
+  superseded partial initial Splits, restart, retained successful publication and
+  rejection of delayed index writes after general Snapshot cleanup.
+- Focused candidate/abandon/branch/Split reclaim tests passed eleven cases; candidate
+  tests passed again with delayed-write regression. Root `rs-lint` passed. Reads
+  cap the retained candidate record at 9 MiB and each metadata window at 9 MiB;
+  the operation has a two-second deadline. These are explicit preparation-cleanup
+  bounds, separate from the ordinary inspection budget.
+- Remaining lifecycle work: orphan edit pages, committed Snapshot upload owner
+  retirement and full HTTP ingestion/cleanup orchestration. C2/D5c remain open.

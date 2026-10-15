@@ -73,6 +73,8 @@ impl DatasetAuthority {
                 cancel,
             )
             .await?;
+        let mut inspection_summary = scoped(b"DS\0I\0", identity, snapshot)?;
+        inspection_summary.push(b'H');
         for (key, value) in &page.entries {
             if cancel.is_cancelled() {
                 return Err(DatasetError::ReadCancelled.into());
@@ -90,6 +92,13 @@ impl DatasetAuthority {
                     CasOutcome::Conflict(Some(value)) if value.bytes == crate::split::RETIRED_RECORD => {}
                     CasOutcome::Conflict(_) => return Err(AuthorityError::HeadConflict),
                 }
+                continue;
+            }
+            if key == &inspection_summary
+                || value.bytes == crate::inspection::RETIRED_RECORD
+                || key.starts_with(b"DS\0II\0")
+                || key.starts_with(b"DS\0IC\0")
+            {
                 continue;
             }
             tokio::time::timeout(Duration::from_secs(2), self.store.delete(key))

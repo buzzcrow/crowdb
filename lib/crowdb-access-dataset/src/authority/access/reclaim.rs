@@ -169,9 +169,27 @@ impl DatasetAuthority {
         identity: &DatasetIdentity,
         snapshot: SnapshotId,
     ) -> Result<Option<crate::SuccessfulCommit>, AuthorityError> {
-        self.snapshot_candidate(identity, snapshot)
-            .await?
-            .ok_or(AuthorityError::SnapshotNotFound)?;
+        if self.snapshot_candidate(identity, snapshot).await?.is_none() {
+            let value = self
+                .store
+                .get_bounded(
+                    &key::snapshot(identity, snapshot)?,
+                    crate::MetadataScanBudget {
+                        items: 1,
+                        bytes: 9 * 1024 * 1024,
+                        timeout: std::time::Duration::from_secs(2),
+                    },
+                    &crate::ReadCancellation::new(),
+                )
+                .await?
+                .ok_or(AuthorityError::SnapshotNotFound)?;
+            let record: crate::SnapshotRecord = decode(&value.bytes)?;
+            if record.publication.state != crate::PublicationState::Prepared
+                && record.publication.state != crate::PublicationState::Aborted
+            {
+                return Err(AuthorityError::SnapshotNotFound);
+            }
+        }
         if let Some(owner) = self.fence_reclaim(identity, snapshot).await? {
             if let Some(receipt) = self.snapshot_commit(identity, snapshot).await? {
                 self.unfence_reclaim(identity, snapshot, owner).await?;

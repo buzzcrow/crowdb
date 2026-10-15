@@ -56,7 +56,7 @@ impl DatasetAuthority {
                 let retired = work
                     .get(
                         &retired_key(identity, summary.snapshot).map_err(AuthorityError::from)?,
-                        256,
+                        1024,
                     )
                     .await?;
                 if let Some(retired) = retired {
@@ -87,7 +87,7 @@ impl DatasetAuthority {
         match work
             .get(
                 &retired_key(identity, snapshot).map_err(AuthorityError::from)?,
-                256,
+                1024,
             )
             .await?
         {

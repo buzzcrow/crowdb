@@ -37,3 +37,6 @@ mod split_evaluation;
 mod split_rules;
 
 mod reclaim;
+
+mod retirement;
+pub(crate) use retirement::RETIRED_RECORD;

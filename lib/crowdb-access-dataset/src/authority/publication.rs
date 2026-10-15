@@ -7,6 +7,7 @@ mod legacy;
 mod legacy_reclaim;
 mod opaque;
 mod receipt;
+mod retirement;
 mod visibility;
 
 #[derive(Clone, Copy)]
@@ -99,6 +100,9 @@ impl DatasetAuthority {
             .get(&key::operation(identity, operation)?)
             .await?
             .ok_or(AuthorityError::SnapshotNotFound)?;
+        if record.bytes == retirement::RETIRED {
+            return Err(DatasetError::InvalidPublicationState.into());
+        }
         let snapshot = SnapshotId::from_bytes(&record.bytes)?;
         let record = self
             .store
@@ -148,6 +152,9 @@ impl DatasetAuthority {
         }
         let operation_key = key::operation(identity, operation)?;
         let snapshot = if let Some(value) = self.store.get(&operation_key).await? {
+            if value.bytes == retirement::RETIRED {
+                return Err(DatasetError::InvalidPublicationState.into());
+            }
             SnapshotId::from_bytes(&value.bytes)?
         } else {
             let current_latest = self.current_latest(identity).await?;

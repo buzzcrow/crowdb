@@ -281,6 +281,15 @@ revisions. Split drafts without the work-intent format remain readable but are
 rejected by draft scratch cleanup; new roots carry an explicit work format marker
 that older strict decoders reject.
 
+Obsolete composition candidates are discovered by deterministic operation IDs,
+even when preparation failed before storing a pointer in the draft. Missing
+operation/Snapshot reservations become permanent fences. Existing uncommitted
+candidates enter terminal retirement before cleanup enumerates every possible
+Manifest/index key from the retained input. This seals writes not yet sent by a
+failed preparer. Small valid retired inventory/child summaries and write fences
+survive general cleanup. Candidate recovery caps its original record at 9 MiB
+and metadata window at 9 MiB with a two-second operation deadline.
+
 Managed composition uploads register staging and candidate owners durably before
 claiming payloads. Publication requires complete candidate ownership. Terminal
 cleanup retires the staging owner and obsolete candidate owners, preserving
