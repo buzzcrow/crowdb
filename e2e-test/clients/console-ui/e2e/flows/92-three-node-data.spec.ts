@@ -97,7 +97,7 @@ async function addDisks({ page, request }: UIContext) {
       await sidebar.getByRole('button', { name: `DG-${id}`, exact: true }).click({ button: 'right' });
       await page.getByRole('menuitem', { name: 'Add Disk', exact: true }).click();
       const disks = page.getByRole('dialog', { name: 'Add Disks', exact: true });
-      await disks.getByLabel('Device Path (optional)', { exact: true }).fill(`/opt/crowdb/data/disk-${id}.img`);
+      await disks.getByLabel('Device Path (optional)', { exact: true }).fill(`/opt/crowdb/data/disks/disk-${id}.img`);
       await disks.getByRole('button', { name: 'Add Disks', exact: true }).click();
       await expect(disks).toHaveCount(0);
       await expect.poll(async () => {

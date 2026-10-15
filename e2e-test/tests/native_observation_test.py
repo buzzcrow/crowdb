@@ -7,7 +7,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock
 from allocation import LABEL
-from console_native_observation import services, process, retained_marker, BrowserObservations
+from console_native_observation import services, process, retained_marker, disk_backing, BrowserObservations
 from console_native_fixture import NativeConsoleCluster
 from console_native_storage import prepared_file_observation
 
@@ -58,6 +58,26 @@ class NativeObservationTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "outside"):
                 services(cluster, node)
             cluster.command.assert_not_called()
+
+    def test_owned_native_backing_identity_requires_a_regular_file_with_original_capacity(self):
+        cluster = self.cluster()
+        cluster.disk_gib = (8,)
+        inspection = cluster.command.return_value
+        cluster.command.side_effect = [inspection, "81a4:20:30:8589934592\n"]
+        self.assertEqual(disk_backing(cluster, 0), {"path": "/opt/crowdb/data/disks/disk-1.img",
+                         "backing_identity": "file:20:30", "capacity_bytes": 8 * 1024 ** 3})
+        cluster.command.assert_called_with("exec", "--user", "crowdb", "immutable", "stat",
+                                           "--format=%f:%d:%i:%s", "--", "/opt/crowdb/data/disks/disk-1.img")
+        for observation in ("a1ff:20:30:8589934592", "81a4:20:30:8589934593", "81a4:20:0:8589934592"):
+            cluster.command.side_effect = [inspection, observation]
+            with self.subTest(observation=observation), self.assertRaises(ValueError):
+                disk_backing(cluster, 0)
+
+    def test_foreign_native_backing_rejects_before_file_inspection(self):
+        cluster = self.cluster(owner="foreign")
+        with self.assertRaisesRegex(ValueError, "ownership"):
+            disk_backing(cluster, 0)
+        self.assertEqual(cluster.command.call_count, 1)
 
     def test_unobserved_pid_cannot_read_an_unrelated_process(self):
         cluster = self.cluster()

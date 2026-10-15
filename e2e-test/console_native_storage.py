@@ -14,6 +14,7 @@ def control(cluster, body):
 
 
 def unbound_file_rejected(cluster):
+    before = control(cluster, {"command": "disk_inventory"})
     request = {"operation_id": str(uuid.uuid4()), "cluster_id": "unbound",
         "node_id": 1, "capacity_bytes": 1024 ** 2, "sparse": False,
         "reserve_bytes": 1024 ** 3}
@@ -24,7 +25,7 @@ def unbound_file_rejected(cluster):
     else:
         raise AssertionError("unbound node accepted file preparation")
     inventory = control(cluster, {"command": "disk_inventory"})
-    assert inventory["disks"] == [], inventory
+    assert inventory["disks"] == before["disks"], inventory
 
 
 def prepared_file_observation(cluster, operation_id):

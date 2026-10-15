@@ -19,7 +19,7 @@ async function occupyDiskdbPort(request: APIRequestContext) {
   expect(added.status(), await added.text()).toBe(201);
   const disk = await request.post('/api/nodes/1/disk-groups/1/disks', { data: {
     disk_id: '0000000000000001-0000000000000001', disk_type: 'Hdd', capacity_bytes: 80 * 1024 ** 3,
-    zone_size_bytes: 1024 ** 3, unit_size_bytes: 1024 ** 2, device_path: '/opt/crowdb/data/disk-1.img',
+    zone_size_bytes: 1024 ** 3, unit_size_bytes: 1024 ** 2, device_path: '/opt/crowdb/data/disks/disk-1.img',
   } });
   expect(disk.status(), await disk.text()).toBe(201);
   const defaults = await json(request, '/api/deployment-defaults?node_id=1');

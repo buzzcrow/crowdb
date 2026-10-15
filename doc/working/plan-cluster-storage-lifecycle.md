@@ -1235,3 +1235,53 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   behavior relaxation. UI still must echo canonical identity and exclude unlisted
   or unverified candidates. Rebuild the frozen OCI image and capture the current
   browser baseline before those visible UI changes.
+- Frozen image for the next baseline: revision `cdecd44d`, config
+  `sha256:07be671f197eae4729d1865fa1399a936442acbfe15500ac50f40d64d5175f93`,
+  manifest `sha256:e1e6b81308636698ae4968aac5ac499dbdec29fbb09f9d6112c8b1099782562b`,
+  runtime `eb4ac5f7e7ef6a6df40874ecd9b786dd4cd124d5b20823207142e3ad3c47f0f4`.
+  Rootless build/import succeed without privileged fallback. Keep runtime/UI
+  sources frozen until baseline acceptance finishes.
+- Hardware baseline attempt `run-2318c2f78efc4d3eb71332a6633ffbba` fails before
+  browser execution: native fixture omitted setup choices, so all-service/default
+  storage tasks allocate groups alongside its fixed group IDs. Read-only retained
+  journals prove Node 2 chose DG 3 and Node 3 DG 2. Use explicit diskless/disabled
+  service choices for this manually provisioned fixture, keeping default setup in
+  its dedicated real bridge flow. No product guard is bypassed.
+- Next attempt `run-dc363355ba36439eb6fe6d1ec36ecb02` reaches new managed-file
+  provisioning and correctly rejects legacy physical membership with no backing
+  receipt. The native fixture now observes only its labeled/image/mount-verified
+  own regular files, checks original capacity, and bootstraps them through atomic
+  trusted v1 SDK admission rather than creating unreceipted physical metadata.
+  Native files use the common disks directory; existing dedicated public CRUD
+  assertions remain (51-chunk-capacity-disk.spec.ts), and dependent fixture path
+  literals change without removing assertions. Unbound preparation proves its
+  existing provisional inventory is unchanged, rather than assuming it is empty.
+  Actual browser/retained lifecycle acceptance with these repairs is running.
+- Fixture Python gate has one confirmed pre-existing failure:
+  `selection_test.SelectionTest.test_layers_select_only_their_domains_and_count_dependencies`,
+  Dataset expected 2 vs actual 3 after `257508ad` added a Dataset SDK case. Original
+  test last changed at `5e54be81`; no selection/runtime behavior was changed here.
+  Keep its failing evidence and fix the inventory contract in R237. Other 138
+  fixture cases passed before adding two owned-file observation regressions;
+  focused observation cases (11), e2e-client Clippy and fmt pass.
+- Follow-up geometry fix found during code inspection: supplied zones must be
+  rounded down to a multiple of 64 allocation units, not only one unit. A 65-MiB
+  physical medium should expose 64 MiB and retain its tail; current preparation
+  fails validation for such a capacity. Add that regression and correct geometry
+  after the frozen baseline. Also finish echoing canonical identity from the UI.
+- Preserve supplied-file allocation semantics after the baseline: existing sparse
+  files are authorized inputs, not a preallocation fallback. Derive their initial
+  sparse indication from the sealed allocated-byte observation, allow that flag
+  for File only, and keep raw devices nonsparse. Current supplied preparation
+  always writes sparse=false and rejects true, which must not imply external
+  hole-backed files were preallocated. Add a focused case with the geometry fix.
+- Repaired native hardware baseline passes unchanged production image `cdecd44d`,
+  artifact `run-e55e51d349c64b1399a36a993fcf9cee`. Browser 14.5 s (previous
+  13.5 s, below 2x); host client 41.35 s. Actual managed v2 file admission/restart,
+  missing-file quarantine and restore-Offline, occupied Remove/Rejoin, owner
+  restart/unknown usage and Online reading original committed bytes all pass.
+  Eleven focused fixture ownership/type/capacity cases and e2e-client Clippy/fmt
+  pass. Root fixture suite's one Dataset inventory mismatch remains confirmed
+  pre-existing; no assertions/timeouts or production resource guards were relaxed.
+  Native fixture trusted v1 backing receipts are only for its freshly truncated,
+  owned sparse files and do not authorize adopting arbitrary legacy media.

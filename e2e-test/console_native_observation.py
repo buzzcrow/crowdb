@@ -4,6 +4,7 @@
 
 import json
 import re
+import stat
 from allocation import LABEL
 
 
@@ -31,6 +32,18 @@ def services(cluster, node):
             known.add((identity, node, pid))
     cluster.native_processes = known
     return status
+
+
+def disk_backing(cluster, node):
+    identity = owned(cluster, node)
+    path = f"/opt/crowdb/data/disks/disk-{node + 1}.img"
+    fields = cluster.command("exec", "--user", "crowdb", identity, "stat", "--format=%f:%d:%i:%s", "--", path).strip().split(":")
+    if len(fields) != 4 or not stat.S_ISREG(int(fields[0], 16)):
+        raise ValueError("native backing is not the owned regular fixture file")
+    device, inode, size = (int(value) for value in fields[1:])
+    if device < 0 or inode <= 0 or size != cluster.disk_gib[node] * 1024 ** 3:
+        raise ValueError("native backing identity or capacity changed")
+    return {"path": path, "backing_identity": f"file:{device}:{inode}", "capacity_bytes": size}
 
 
 def process(cluster, node, pid):

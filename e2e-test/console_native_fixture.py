@@ -9,10 +9,11 @@ from urllib.parse import urlparse
 from allocation import LABEL, create_network, node_data, start_node
 from fixture import Cluster, HTTP, wait
 from console_shell_fixture import ShellBrowserCluster
-from console_native_observation import services, process, retained_marker, BrowserObservations
+from console_native_observation import services, process, retained_marker, disk_backing, BrowserObservations
 from control import Control
 from console_native_browser import INSPECTION_CASES
 from console_native_storage import unbound_file_rejected, verify_file_preparation, verify_file_admission
+from profiles.setup_choices import diskless_setup
 
 
 class NativeConsoleCluster(ShellBrowserCluster):
@@ -76,12 +77,14 @@ class NativeConsoleCluster(ShellBrowserCluster):
             raise AssertionError("Docker physical host identity is absent")
         for index in range(self.node_count):
             data = node_data(self, index)
-            disk = data / f"disk-{index + 1}.img"
+            disks = data / "disks"
+            disks.mkdir()
+            disk = disks / f"disk-{index + 1}.img"
             if index + 1 not in self.diskless_nodes:
                 with disk.open("wb") as file:
                     file.truncate(self.disk_gib[index] * 1024 ** 3)
             if index == 0 and self.spare_disk_gib:
-                with (data / "capacity-spare.img").open("wb") as file:
+                with (disks / "capacity-spare.img").open("wb") as file:
                     file.truncate(self.spare_disk_gib * 1024 ** 3)
             name = f"{self.run_id}-prepare{index}"
             self.containers.append(name)
@@ -119,7 +122,8 @@ class NativeConsoleCluster(ShellBrowserCluster):
                 continue
             record = self.api("/api/node/admit", {
                 "discovery_id": candidate["advertisement"]["discovery_id"],
-                "rack_id": self.rack_ids[index], "ssh_user": "crowdb", "ssh_port": 2222, "ssh_password": "crowdb"})
+                "rack_id": self.rack_ids[index], "ssh_user": "crowdb", "ssh_port": 2222, "ssh_password": "crowdb",
+                "setup": diskless_setup()})
             self.node_ids.append(record["node_id"])
         if self.bootstrap:
             if self.auto_bootstrap:
@@ -180,7 +184,8 @@ class NativeConsoleCluster(ShellBrowserCluster):
     def control(self, body):
         if body.get("action") == "native-storage-profile":
             return {"disk_gib": self.disk_gib, "zone_gib": self.zone_gib,
-                    "spare_disk_gib": self.spare_disk_gib}
+                    "spare_disk_gib": self.spare_disk_gib,
+                    "backings": [disk_backing(self, node) for node in range(3)]}
         if body.get("action") == "run-native-browser":
             if self.case_name == "console::native_browser::page_layout_and_iceberg_inspection":
                 chunks = body.get("chunks")

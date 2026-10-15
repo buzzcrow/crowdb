@@ -25,7 +25,7 @@ pub(super) async fn prepare(context: &TestNativeContext) {
             "/api/nodes/1/disk-groups/581/disks",
             json!({"disk_id":"00000000000000000000000000000581","disk_type":"Hdd",
                 "capacity_bytes":capacity,"zone_size_bytes":32 * 1024u64.pow(3),
-                "unit_size_bytes":128 * 1024,"device_path":"/opt/crowdb/data/capacity-spare.img"}),
+                "unit_size_bytes":128 * 1024,"device_path":"/opt/crowdb/data/disks/capacity-spare.img"}),
             201,
         )
         .await;
