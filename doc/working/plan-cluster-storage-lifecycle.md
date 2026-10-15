@@ -900,3 +900,26 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   Online request at the original full-width revision, and an older completed
   read cannot erase Pending validation. All 232 UI cases and TypeScript pass.
   Original native assertions/timeouts remain unchanged. Updated OCI rerun pending.
+
+- Image `3cf6fcee` / config
+  `sha256:81fe210de43dd229b0bfc9c164744ef77254456f08948f1888865dcffe1d3748`
+  passed the entire native hardware scope in
+  `run-e6386ab2df2f4b9b9d0da30a619f10ee`. Browser 10.7 s (original baseline
+  10.1 s), native lifecycle client 38.22 s including the additional missing-file
+  restart proof. Every original browser assertion remains. Atomic batch capacity,
+  actual missing-medium quarantine/no replacement, restored inode still Offline,
+  validated Online UI/focus, occupied removal, same-owner process restart,
+  unknown occupancy and original committed-byte reads all pass.
+
+- Fresh bridge baseline on committed image `3cf6fcee` passed in
+  `run-c33b85e8fc294014befb1c39c5a099ca`: preparation/init 7.7 s,
+  cross-UI recovery 4.9 s, independent cleanup 2.6 s, authenticated node update
+  10.8 s. All original authority, cancellation and service lifecycle proofs pass.
+- Node-plan service publication now has `publish_planned_start`: only a fixed
+  canonical Start operation may create an absent desired record. Exact full
+  replay retains its revision; different operations/configuration and newer
+  explicit Stop/Restart/Delete remain authoritative. Monitor's existing desired
+  reconciliation can execute the accepted record without browser delivery.
+  Four live publication/race/fencing cases and three existing identity cases
+  pass; affected all-target/all-feature Clippy and Rust fmt pass. This is a
+  verified building block; the node-plan worker/UI integration remains pending.
