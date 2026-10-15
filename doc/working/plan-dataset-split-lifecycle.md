@@ -133,7 +133,7 @@ and Rust/Python SDK contract before Console integration.
   Files: new `src/inspection.rs`, `inspection/{index,pages,projection}.rs`,
   `authority/publication.rs`, `manifest.rs`. Exit: one metadata page does not decode
   the full publication Manifest; payload reader counters remain zero.
-- [~] **B2b Bind index visibility to commit evidence**: after C4, all public
+- [x] **B2b Bind index visibility to commit evidence**: after C4, all public
   enumeration verifies the small committed marker/receipt, never projection
   readiness or Published state alone. Add prepared/head-conflict/crash cases to
   the B4 API tests before advertising inspection capability.
@@ -147,7 +147,7 @@ and Rust/Python SDK contract before Console integration.
   HTTP routes are wired and verified in E2 with the complete v2 contract.
   Exit: interrupted/repeated preparation preserves old bytes, exposes explicit
   preparing/unsupported/limit state and never returns misleading empty data.
-- [ ] **B4 Add paged metadata authority**: Dataset list, root/child/inventory lists,
+- [x] **B4 Add paged metadata authority**: Dataset list, root/child/inventory lists,
   Schema windows, Sample ID windows, exact-ID lookup and projected field matrix.
   New list defaults 20/max 100/1 MiB; UI fields request max 12 at a time, API max
   existing 256 Schema fields. Scan/decode/ancestry budgets must be independent of
@@ -155,7 +155,7 @@ and Rust/Python SDK contract before Console integration.
   stay usable while unrelated latest changes. Files: `inspection/`, `authority/
   projection.rs`, new `tests/inspection_test.rs`. Exit: stale cursor conflicts,
   complete/non-complete results distinguished, no chunk reads or read-plan acks.
-- [ ] **B5 Implement effective-value selection**: extract a bounded evaluator
+- [~] **B5 Implement effective-value selection**: extract a bounded evaluator
   over metadata projection, explicit inheritance and tombstones; use v2 semantics
   without changing old v1 persisted plans. Prefix/range/IDs use exact bytes;
   predicates resolve effective inline values; Not is relative to chosen universe.
@@ -491,3 +491,26 @@ failure; record actual failures and add Blocked only when that workflow requires
   `/tmp/dataset-candidate-tests.log`, `/tmp/dataset-candidate-lint.log`.
 - Public inspection remains B2b/B4; Split atomic initialization remains D4, and
   branch-wide reclamation/fence lifecycle remains D5. No new capability advertised.
+
+## Paged inspection verification — 2026-10-16
+
+- B2b/B4 authority now discovers legacy Dataset identity keys and exposes paged
+  roots/children/inventory, Schema, binary Sample IDs, exact membership and
+  projected effective field metadata. Page size is capped at 100 and aggregate
+  storage bytes at 1 MiB. Reads share a deadline and cancellation; no Manifest,
+  payload, unbounded point read, mutation or consumer acknowledgement is needed.
+- Visibility uses the durable Snapshot receipt, current successful head marker,
+  or validated legacy migration marker. Published state alone is insufficient.
+  Legacy preparation reconciles proven publication before indexing; oversized old
+  records remain bounded and unproven candidates remain invisible.
+- Opaque versioned cursors bind Dataset/Snapshot/query/projection. Immutable
+  Snapshot continuations survive unrelated head changes; cross-query reuse fails.
+  Inherited cells expose source Snapshot, tombstones and missing cells distinctly.
+- `pixi run cargo test -p crowdb-access-dataset --tests`: 84 tests passed.
+  Six new inspection cases assert no unbounded/Manifest/payload reads, ghost
+  exclusion, pending receipt visibility, exact IDs, source metadata, cancellation,
+  aggregate limits, old identity discovery and projection cursor binding.
+  Full log `/tmp/dataset-inspection-pages-tests.log`. Public HTTP wiring stays E2.
+- Full `pixi run rs-lint` passed after consolidating a duplicated test helper
+  module import; log `/tmp/dataset-inspection-pages-lint.log`. Rust fmt and
+  diff whitespace pass.

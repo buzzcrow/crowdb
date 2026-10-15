@@ -1,4 +1,5 @@
 mod access;
+mod discovery;
 mod head;
 mod projection;
 

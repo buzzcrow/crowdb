@@ -1,11 +1,12 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::super::{decode, head::decode_head};
+use super::super::{head::decode_head, VersionedRecord};
 use crate::{
     key, AuthorityError, CasOutcome, DatasetAuthority, DatasetError, DatasetIdentity, HeadRecord,
     MetadataScanBudget, PublicationState, ReadCancellation, SnapshotId, SnapshotRecord, StoredValue,
 };
+use bincode::Options;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -54,18 +55,11 @@ impl DatasetAuthority {
         let Some(stored) = self.store.get(&visibility_key(identity, snapshot)?).await? else {
             return Ok(false);
         };
-        if stored.bytes.len() > 1024 {
-            return Err(AuthorityError::Corrupt);
-        }
-        let record: LegacyVisibility =
-            serde_json::from_slice(&stored.bytes).map_err(|_| AuthorityError::Corrupt)?;
-        if record.version != 1 || record.snapshot != snapshot {
-            return Err(AuthorityError::Corrupt);
-        }
+        validate_visibility(&stored.bytes, snapshot)?;
         Ok(true)
     }
 
-    pub(in crate::authority) async fn require_committed_snapshot(
+    pub(crate) async fn require_committed_snapshot(
         &self,
         identity: &DatasetIdentity,
         snapshot: SnapshotId,
@@ -135,7 +129,16 @@ impl DatasetAuthority {
                     .await?
                     .ok_or(AuthorityError::Corrupt)?;
                 remaining = remaining.saturating_sub(stored.bytes.len());
-                let record: SnapshotRecord = decode(&stored.bytes)?;
+                let record: VersionedRecord<SnapshotRecord> = bincode::DefaultOptions::new()
+                    .with_fixint_encoding()
+                    .with_limit(stored.bytes.len() as u64)
+                    .reject_trailing_bytes()
+                    .deserialize(&stored.bytes)
+                    .map_err(|_| AuthorityError::Corrupt)?;
+                if record.version != 1 {
+                    return Err(AuthorityError::Corrupt);
+                }
+                let record = record.payload;
                 if record.publication.state == PublicationState::Prepared {
                     return Err(AuthorityError::Corrupt);
                 }
@@ -168,4 +171,15 @@ pub(crate) fn visibility_key(
     key.extend_from_slice(&identity.key()?);
     key.extend_from_slice(snapshot.as_bytes());
     Ok(key)
+}
+
+pub(super) fn validate_visibility(bytes: &[u8], snapshot: SnapshotId) -> Result<(), AuthorityError> {
+    if bytes.len() > 1024 {
+        return Err(AuthorityError::Corrupt);
+    }
+    let record: LegacyVisibility = serde_json::from_slice(bytes).map_err(|_| AuthorityError::Corrupt)?;
+    if record.version != 1 || record.snapshot != snapshot {
+        return Err(AuthorityError::Corrupt);
+    }
+    Ok(())
 }

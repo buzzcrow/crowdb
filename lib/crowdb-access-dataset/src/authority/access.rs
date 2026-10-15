@@ -298,3 +298,7 @@ impl DatasetAuthority {
         Err(AuthorityError::HeadConflict)
     }
 }
+
+pub(super) fn is_reclaiming(bytes: &[u8]) -> Result<bool, AuthorityError> {
+    Ok(decode_access(bytes)?.reclaiming)
+}

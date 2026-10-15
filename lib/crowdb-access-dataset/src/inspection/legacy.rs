@@ -42,6 +42,17 @@ impl DatasetAuthority {
         if cancel.is_cancelled() {
             return Err(InspectionError::Cancelled);
         }
+        // Old published records gain a small visibility marker only with head/ancestry proof.
+        match tokio::time::timeout(
+            Duration::from_secs(2),
+            self.require_committed_snapshot(identity, snapshot),
+        )
+        .await
+        .map_err(|_| InspectionError::Limit)?
+        {
+            Ok(()) | Err(AuthorityError::SnapshotNotFound) => {}
+            Err(error) => return Err(error.into()),
+        }
         match self
             .inspection_preparation_status(identity, snapshot, cancel)
             .await

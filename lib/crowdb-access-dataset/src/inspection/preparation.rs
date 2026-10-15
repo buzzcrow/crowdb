@@ -17,6 +17,8 @@ pub enum InspectionError {
     Limit,
     #[error("inspection metadata is not prepared")]
     NotPrepared,
+    #[error("inspection is unsupported: {0}")]
+    Unsupported(String),
     #[error("inspection metadata is malformed")]
     Corrupt,
     #[error("inspection work was cancelled")]

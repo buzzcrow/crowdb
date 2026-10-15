@@ -14,3 +14,15 @@ mod status;
 pub use record::{FieldMetadata, FieldStorageKind, InspectionState, SnapshotSummary};
 
 pub use preparation::{InspectionError, InspectionPreparation, PreparationLimits, PreparationState};
+
+pub(crate) mod work;
+
+mod pages;
+pub use pages::InspectionPage;
+
+mod content;
+
+mod matrix;
+pub use matrix::InspectionSample;
+
+pub(crate) mod cursor;

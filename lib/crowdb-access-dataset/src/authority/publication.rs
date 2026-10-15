@@ -6,6 +6,7 @@ mod commit;
 mod legacy;
 mod opaque;
 mod receipt;
+mod visibility;
 
 #[derive(Clone, Copy)]
 enum PublicationMode {
