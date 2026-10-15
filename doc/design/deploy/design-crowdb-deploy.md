@@ -407,6 +407,10 @@ evacuation remain separate operations.
 Retained receipts also prevent parent deletion after Remove. Group deletion
 requires an unassigned scope with no retained media, rather than silently
 forgetting ownership, bindings or recovery inputs.
+Public HTTP owner/binding routes assign or replace; they do not expose explicit
+unassignment. A scope blocked by these records remains retained. Forgetting media
+and unassigning their parents require a separate explicit operator flow; deletion
+must not emulate that flow with an implicit cascade.
 
 Explicit service Stop/Restart/Delete supersedes old setup intent. Consecutive
 startup/readiness failures have a durable five-attempt budget per operation;

@@ -199,6 +199,12 @@ publication. Cleanup is blocked while allocation runs; shutdown waits for the
 blocking allocator to finish its durable record. New storage still requires
 Group-0 registration and runtime availability confirmation.
 
+Monitor restart preserves a managed file's filesystem/device identity, inode and
+logical size. A preallocated file must remain fully allocated, but its allocated
+block count is an observation rather than identity: filesystem extent metadata
+can grow as services write. Additional allocated metadata does not indicate a
+replacement medium.
+
 The persistent data mount contains node identity, bootstrap/service journals and
 managed disk files. Supplied files and whole block devices use the same container
 disks directory in Docker and containerd, with launcher-verified exact mappings.
