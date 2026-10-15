@@ -8,7 +8,7 @@
 //! (disk-add init, status changes, removals).
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
 use crowdb_common::metrics::Counter;
@@ -69,6 +69,7 @@ struct RecoveryScanHandle {
 
 /// Background sync loop: keep-alive + hardware read + disk-add init.
 pub struct KeepAlive {
+    exclusion_cursor: AtomicUsize,
     ownership_fencing: bool,
     hw: HardwareClient,
     svc: ServiceRegistryClient,
@@ -134,6 +135,7 @@ impl KeepAlive {
         let status_machine = HwStateMachine::new(config.temp_failure_timeout_secs);
         Self {
             ownership_fencing: false,
+            exclusion_cursor: AtomicUsize::new(0),
             hw,
             svc,
             container,
@@ -256,6 +258,7 @@ impl KeepAlive {
 
         let (groups_added, groups_removed) = self.reconcile_ownership(&observed);
         let mut outcome = self.reconcile_observed_disks(&observed).await;
+        self.confirm_exclusions(&observed).await;
         if let Some(config) = &self.config_handle {
             let allocator = config.load().allocator.clone();
             for disk_group_id in self.container.disk_group_ids() {
@@ -306,6 +309,8 @@ impl KeepAlive {
     }
 }
 
+#[path = "exclusion.rs"]
+mod exclusion;
 #[path = "heartbeat.rs"]
 mod heartbeat;
 #[path = "loading.rs"]

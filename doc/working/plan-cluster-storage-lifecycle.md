@@ -489,3 +489,10 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   schema coverage, the full KV client suite/rustdoc, Clippy and fmt pass.
   Runtime services still need to publish evidence after actual drainage; no
   removal endpoint is enabled from these records yet.
+- DiskDB keepalive publishes exact-revision exclusion evidence only from a
+  closed, drained disk with the observed owner generation and unchanged Group-0
+  geometry/status. Authority work is capped at 32 disks per tick with round-robin
+  progress. A live regression holds an admitted write across Offline, verifies
+  no premature evidence, completes it, then checks exact disk/owner revisions.
+  All five initialization/exclusion tests, all-target Clippy and fmt pass.
+  DiskIO still needs its corresponding publisher before removal can be enabled.
