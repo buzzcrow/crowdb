@@ -315,7 +315,12 @@ until its corresponding API and visibility tests pass.
   HTTP tests. Exit: pending status, cancellation fence, no implicit ACK, unchanged
   v1 behavior and 16 KiB binary-ID locator projection pass. V2 delivery resolves
   indexed field locators with one 16 MiB/2-second metadata work budget.
-- [~] **E2d Complete composition and auxiliary endpoints**: expose capabilities, head generation,
+- [x] **E2d Add exact matrices and field previews**: read-only explicit-ID
+  projection (20 Samples x 12 fields) for Split/exact-ID browsing and bounded
+  field prefixes. Files: `inspection/exact.rs`, `api/v2/preview.rs`, HTTP preview
+  tests. Exit: requested ID order, unknown/duplicate rejection, metadata-only
+  projection, multipart prefix bounds and missing/tombstone distinction pass.
+- [~] **E2e Complete composition and auxiliary endpoints**: expose capabilities, head generation,
   discovery/metadata preparation, composition, revision drafts/commit/status/
   history and scoped member/read operations. Suggested v2 route families under
   `/namespaces/{ns}/datasets/{dataset}`: `/head`, `/snapshot-inventory`,
@@ -814,3 +819,22 @@ failure; record actual failures and add Blocked only when that workflow requires
 - Root `rs-lint`, `rs-fmt-check`, `git diff --check`: passed. Remaining auxiliary
   work includes exact-ID metadata matrices, bounded field preview, v2 ingestion,
   composition publication ownership and lifecycle cleanup before advertisement.
+
+### Exact inspection and preview verification
+
+- Added read-only POST matrix projection for a bounded explicit Sample window,
+  retaining request order without loading inline bytes or creating read sessions.
+  GET preview returns at most 64 KiB, distinguishes missing/tombstone/empty values,
+  and verifies uploaded parts across part boundaries under a five-second deadline.
+  Only Dataset-scoped upload locators are accepted by this preview implementation.
+- Shared owned read leases now release on preview completion, error or dropped
+  request; lease expiry remains the storage-failure fallback. Payload bytes are
+  returned as canonical base64 for text/hex presentation; truncated MD5 describes
+  the full field, not its prefix. No application acknowledgement is performed.
+- `pixi run clean-env && pixi run cargo test -p crowdb-access-server --test
+  dataset_preview_contract_test --test dataset_split_session_contract_test` passed;
+  preview tests passed again after adding scoped upload validation.
+- Root `rs-lint`, `rs-fmt-check`, `git diff --check` passed. System Python has the
+  YAML parser unavailable in the Pixi Python environment: `pixi run
+  /usr/bin/python3 /tmp/validate_dataset_openapi.py` passed (26 paths, 32 unique
+  operations, no duplicate YAML keys, all local schema references resolve).

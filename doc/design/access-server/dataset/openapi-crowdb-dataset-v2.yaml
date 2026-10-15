@@ -193,6 +193,37 @@ paths:
               schema: {$ref: '#/components/schemas/MatrixPage'}
         default:
           $ref: '#/components/responses/InspectionError'
+    post:
+      operationId: exactSnapshotMatrix
+      summary: Project a bounded explicit ID window without creating a read session
+      description: Read-only query, including Sample IDs obtained from a Split member page. Retains request order.
+      parameters:
+        - {$ref: '#/components/parameters/dataset'}
+        - {$ref: '#/components/parameters/snapshot'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [sample_ids, fields]
+              properties:
+                sample_ids: {type: array, minItems: 1, maxItems: 20, uniqueItems: true, items: {type: string}}
+                fields: {type: array, minItems: 1, maxItems: 12, uniqueItems: true, items: {type: string}}
+      responses:
+        '200':
+          description: Effective field metadata only; no payload or consumption progress mutation.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [entries]
+                properties:
+                  entries: {type: array, maxItems: 20, items: {$ref: '#/components/schemas/MatrixRow'}}
+        default:
+          $ref: '#/components/responses/InspectionError'
+
   /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/contains:
     get:
       operationId: snapshotContains
@@ -612,6 +643,46 @@ paths:
             application/vnd.crowdb.dataset-batch.v1:
               schema: {type: string, format: binary}
               description: Existing CDBDS001 framing, field integrity and end/error records.
+        default:
+          $ref: '#/components/responses/InspectionError'
+  /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/preview:
+    get:
+      operationId: snapshotFieldPreview
+      summary: Read a bounded binary field prefix for text or hex presentation
+      description: >-
+        Never acknowledges an application read. Response bytes are capped at 64 KiB;
+        uploaded parts are independently integrity-checked with a 4 MiB per-part
+        allocation cap and five-second payload deadline. Full-field MD5 identifies
+        the entire value, not the truncated prefix. External legacy locators without
+        supported payload storage return an explicit error, never an arbitrary URL.
+      parameters:
+        - {$ref: '#/components/parameters/dataset'}
+        - {$ref: '#/components/parameters/snapshot'}
+        - in: query
+          name: sample
+          required: true
+          schema: {type: string, description: Canonical padded base64 Sample ID}
+        - in: query
+          name: field
+          required: true
+          schema: {type: string}
+        - in: query
+          name: max_bytes
+          schema: {type: integer, minimum: 1, maximum: 65536, default: 65536}
+      responses:
+        '200':
+          description: Binary prefix or explicit missing/tombstone state
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [state, length, md5, data, truncated]
+                properties:
+                  state: {enum: [value, missing, tombstone]}
+                  length: {type: [string, 'null']}
+                  md5: {type: [string, 'null']}
+                  data: {type: [string, 'null'], description: Canonical padded base64; empty string is an empty value}
+                  truncated: {type: boolean}
         default:
           $ref: '#/components/responses/InspectionError'
 components:

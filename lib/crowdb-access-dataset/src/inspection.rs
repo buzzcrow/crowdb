@@ -23,6 +23,7 @@ pub use pages::InspectionPage;
 mod content;
 mod evaluate;
 
+mod exact;
 mod materialize;
 mod matrix;
 mod read;

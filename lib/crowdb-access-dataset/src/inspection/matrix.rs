@@ -81,7 +81,7 @@ impl DatasetAuthority {
         })
     }
 
-    async fn validate_inspection_projection(
+    pub(super) async fn validate_inspection_projection(
         &self,
         identity: &DatasetIdentity,
         summary: &SnapshotSummary,

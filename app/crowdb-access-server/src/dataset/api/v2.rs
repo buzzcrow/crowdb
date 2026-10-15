@@ -6,6 +6,7 @@
 mod inspection;
 mod inspection_models;
 mod predicate;
+mod preview;
 mod query;
 mod read_models;
 mod reads;
@@ -67,6 +68,16 @@ impl DatasetHttpService {
             let identity =
                 DatasetIdentity::new(NamespacePath::root(), &parts[6]).map_err(|_| ApiError::invalid())?;
             let tail: Vec<_> = parts[7..].iter().map(String::as_str).collect();
+            if let ["snapshots", id, "preview"] = tail.as_slice() {
+                return self.v2_preview(&identity, super::snapshot(id)?, request).await;
+            }
+            if let ["snapshots", id, "matrix"] = tail.as_slice() {
+                if request.method() == Method::POST {
+                    return self
+                        .v2_exact_matrix(&identity, super::snapshot(id)?, request)
+                        .await;
+                }
+            }
             if tail.first() == Some(&"read-plans") {
                 return self.v2_read_session(&identity, &tail, request).await;
             }

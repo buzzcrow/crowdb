@@ -86,18 +86,7 @@ impl DatasetHttpService {
         let id = snapshot(&request.snapshot)?;
         let ids = request.ids()?;
         let authority = self.reads.authority();
-        let handle = crowdb_access_dataset::OperationId::random();
-        authority
-            .touch_read_handle(identity, id, handle, unix_seconds(), 60)
-            .await?;
-        let lease = Arc::new(Lease {
-            authority: authority.clone(),
-            identity: identity.clone(),
-            snapshot: id,
-            handle,
-            session,
-            failed: AtomicBool::new(false),
-        });
+        let lease = Lease::acquire(authority.clone(), identity, id, session).await?;
         let weak = Arc::downgrade(&lease);
         tokio::spawn(async move {
             let mut timer = tokio::time::interval(std::time::Duration::from_secs(15));
@@ -209,13 +198,34 @@ fn make_header(
         end,
     }
 }
-struct Lease {
+pub(super) struct Lease {
     authority: Arc<crowdb_access_dataset::DatasetAuthority>,
     identity: DatasetIdentity,
     snapshot: SnapshotId,
     handle: crowdb_access_dataset::OperationId,
     session: Option<crowdb_access_dataset::OperationId>,
     failed: AtomicBool,
+}
+impl Lease {
+    pub(super) async fn acquire(
+        authority: Arc<crowdb_access_dataset::DatasetAuthority>,
+        identity: &DatasetIdentity,
+        snapshot: SnapshotId,
+        session: Option<crowdb_access_dataset::OperationId>,
+    ) -> Result<Arc<Self>, ApiError> {
+        let handle = crowdb_access_dataset::OperationId::random();
+        authority
+            .touch_read_handle(identity, snapshot, handle, unix_seconds(), 60)
+            .await?;
+        Ok(Arc::new(Self {
+            authority,
+            identity: identity.clone(),
+            snapshot,
+            handle,
+            session,
+            failed: AtomicBool::new(false),
+        }))
+    }
 }
 impl Drop for Lease {
     fn drop(&mut self) {
