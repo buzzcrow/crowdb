@@ -7,8 +7,9 @@ import { triggerDiskdbScan, recalcDiskdbUsage, setDiskStatus, setDiskGroupStatus
 import type { MenuTarget } from '../topology/TopologyCanvas';
 import type { MenuItemOrSeparator } from '../components/ContextMenu';
 import { buildStatusSubmenu } from './status';
+import { storageLifecycleMenu } from './storage';
 import type { MenuContext } from './context';
-export function useCapacityMenus({ readonly, managed, managementAuthorized, diskdbNodeIds, capacityUsage, requestDelete, runMutation, setDialog }: MenuContext) {
+export function useCapacityMenus({ readonly, managed, nodeManagement, onManageNodeStorage, managementAuthorized, diskdbNodeIds, capacityUsage, requestDelete, runMutation, setDialog }: MenuContext) {
   /** Capacity view has its own menu code path — rack/node management
    * belongs to the Physical view; here only disk-group/disk operations
    * and DiskDB deploy are exposed. */
@@ -75,7 +76,7 @@ export function useCapacityMenus({ readonly, managed, managementAuthorized, disk
         const dgRackId = Number(p.rack_id);
         items.push({
           id: 'add-disk',
-          label: 'Add Disk',
+          label: nodeManagement ? 'Create File Disk' : 'Add Disk',
           icon: <HardDrive className="tw-h-4 tw-w-4" />,
           onSelect: () => setDialog((d) => ({ ...d, addDisk: { nodeId: dgNodeId, dgId } })),
         });
@@ -101,7 +102,7 @@ export function useCapacityMenus({ readonly, managed, managementAuthorized, disk
           destructive: true,
           onSelect: () => requestDelete('Disk Group', dgId, async () => {
             await runMutation('Delete Disk Group', t.label || t.id, () => removeDiskGroup(dgNodeId, dgId));
-          }, 'All disks in this disk group will also be removed.'),
+          }, nodeManagement ? 'The disk group must be empty; remove its disks through Node storage first.' : 'All disks in this disk group will also be removed.'),
         });
       } else if (t.type === 'Disk') {
         const diskId = String(p.disk_id || t.rawId || t.id);
@@ -155,9 +156,9 @@ export function useCapacityMenus({ readonly, managed, managementAuthorized, disk
           }, 'All zones on this disk will be lost.'),
         });
       }
-      return items;
+      return storageLifecycleMenu(items, t, onManageNodeStorage);
     },
-    [readonly, managed, managementAuthorized, diskdbNodeIds, capacityUsage, requestDelete, runMutation, setDialog, buildStatusSubmenu],
+    [readonly, managed, nodeManagement, onManageNodeStorage, managementAuthorized, diskdbNodeIds, capacityUsage, requestDelete, runMutation, setDialog, buildStatusSubmenu],
   );
 
 }

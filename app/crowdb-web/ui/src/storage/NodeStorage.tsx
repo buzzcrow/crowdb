@@ -106,7 +106,9 @@ export function NodeStorage({ nodeId, rackId, active, readonly, ready, inventory
         const health = authority?.state.offline ? 'Offline' : authority?.state.online?.state === 'complete' ? 'Up' : status === undefined ? 'Health unknown' : hwStatusLabel(status);
         const report = usage?.disk_groups.find(item => item.disk_group_id === group.id && item.node_id === nodeId)?.disks.find(item => item.disk_id === disk.disk_id);
         const preparation = operationRows.find(operation => operation.path === disk.device_path);
-        const media = preparation?.request.admission?.media_type === null ? 'Unknown' : disk.disk_type;
+        const joined = Object.values(supplied.operations).find(operation => operation.disk_id === disk.disk_id && operation.disk_group_id === group.id);
+        const mediaType = joined ? joined.medium.media_type : preparation?.request.admission?.media_type;
+        const media = mediaType == null ? 'Unknown' : ['HDD', 'SSD', 'Zoned SSD', 'SMR HDD'][mediaType] ?? 'Unknown';
         const entity = { domain: Domain.Cluster, type: 'Disk' as const, id: disk.disk_id, parentIds: { rack_id: rackId, node_id: nodeId, disk_group_id: group.id, disk_id: disk.disk_id } };
         return <article tabIndex={-1} ref={element => { if (element) diskElements.current.set(disk.disk_id, element); else diskElements.current.delete(disk.disk_id); }} key={disk.disk_id} aria-label={`Registered disk ${disk.disk_id}`} className="tw-rounded tw-border tw-border-border tw-p-3 tw-space-y-1">
           <div className="tw-flex tw-flex-wrap tw-justify-between tw-gap-2">

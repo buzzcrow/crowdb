@@ -34,6 +34,7 @@ interface CapacityPanelProps {
   scanStatus: ScanStatusResponse | null;
   loading?: boolean;
   readonly?: boolean;
+  onManageDisk?: () => void;
   onRefresh?: () => Promise<void>;
   selectedEntity?: SelectedEntity | null;
 }
@@ -60,6 +61,7 @@ export function CapacityPanel({
   scanStatus,
   loading,
   readonly,
+  onManageDisk,
   onRefresh,
   selectedEntity,
 }: CapacityPanelProps) {
@@ -175,7 +177,7 @@ export function CapacityPanel({
   }
 
   return (
-    <div className="tw-h-full tw-overflow-auto tw-p-6 tw-space-y-6">
+    <div data-navigation-scroll={`cluster-capacity-${selectedEntity?.type ?? 'Cluster'}-${selectedEntity?.id ?? 'root'}`} className="tw-h-full tw-overflow-auto tw-p-6 tw-space-y-6">
       {/* Summary header */}
       <div className="tw-flex tw-items-center tw-justify-between">
         <div>
@@ -270,6 +272,7 @@ export function CapacityPanel({
           usage={usage}
           hardwareCapacity={hardwareCapacity ?? null}
           readonly={readonly}
+          onManageDisk={onManageDisk}
           onRefresh={onRefresh}
         />
       )}

@@ -79,6 +79,20 @@ class NativeObservationTest(unittest.TestCase):
             disk_backing(cluster, 0)
         self.assertEqual(cluster.command.call_count, 1)
 
+    def test_spare_backing_uses_only_the_owned_first_node_and_exact_size(self):
+        cluster = self.cluster()
+        cluster.disk_gib = (8,)
+        cluster.spare_disk_gib = 4096
+        inspection = cluster.command.return_value
+        cluster.command.side_effect = [inspection, f"81a4:20:31:{4096 * 1024 ** 3}"]
+        actual = disk_backing(cluster, 0, spare=True)
+        self.assertEqual(actual["path"], "/opt/crowdb/data/disks/capacity-spare.img")
+        self.assertEqual(actual["backing_identity"], "file:20:31")
+        cluster.spare_disk_gib = 0
+        cluster.command.side_effect = [inspection]
+        with self.assertRaisesRegex(ValueError, "owned first-node"):
+            disk_backing(cluster, 0, spare=True)
+
     def test_unobserved_pid_cannot_read_an_unrelated_process(self):
         cluster = self.cluster()
         with self.assertRaisesRegex(ValueError, "not observed"):

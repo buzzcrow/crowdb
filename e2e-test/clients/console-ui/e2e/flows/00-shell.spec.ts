@@ -95,6 +95,7 @@ test.describe("shell · embedding", () => {
 
       // modules: selecting the group exposes Details/Activity but no KV tab.
       await page.getByTestId('domain-cluster').click();
+      await expect(page.getByRole('button', { name: 'Open candidates', exact: true })).toHaveCount(0);
       const node = page.getByRole('treeitem').filter({ hasText: 'N-23' });
       await node.getByRole('button', { name: 'N-23', exact: true }).click();
       const inspector = page.getByRole('complementary', { name: 'Entity inspector', exact: true });

@@ -114,7 +114,7 @@ async fn disk_group(context: &TestNativeContext, node: u64) {
         .await;
 }
 
-async fn disks(context: &TestNativeContext, units: [u64; 3]) {
+pub(super) async fn disks(context: &TestNativeContext, units: [u64; 3]) {
     let profile = crate::common::control::request(json!({"action":"native-storage-profile"})).await;
     media::admit(context, units, &profile).await;
 }

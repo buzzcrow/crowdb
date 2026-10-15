@@ -193,6 +193,7 @@ class NativeConsoleCluster(ShellBrowserCluster):
         if body.get("action") == "native-storage-profile":
             return {"disk_gib": self.disk_gib, "zone_gib": self.zone_gib,
                     "spare_disk_gib": self.spare_disk_gib,
+                    "spare_backing": disk_backing(self, 0, spare=True) if self.spare_disk_gib else None,
                     "backings": [disk_backing(self, node) for node in range(3)]}
         if body.get("action") == "run-native-browser":
             if self.case_name == "console::native_browser::page_layout_and_iceberg_inspection":

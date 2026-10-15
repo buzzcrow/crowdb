@@ -1445,3 +1445,40 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   count failure in `selection_test.py` (expects 2 owners, currently 3). This was
   already present before these deployment edits and belongs to Dataset runner
   contract verification; retain the complete failure in `/tmp/crowdb-r235-fixture-gate.log`.
+- Source freeze ended after Docker and containerd acceptance. Follow-up UI now
+  displays nullable retained supplied classes (including Unknown), with conservative
+  Unknown when bounded history is unavailable, and restricts candidate navigation
+  to modes with a Node storage workspace. UI gate: 253 cases plus TypeScript pass.
+  Extend the real supplied-browser assertion and legacy embedding capability check.
+- Managed-node legacy create/batch APIs reject nonempty physical paths before
+  metadata publication; the metadata-only batch compatibility tests remain. Three
+  real Group-0 Web batch cases pass, including no partial mutation on a mixed batch.
+  Migrate large native fixtures to their existing trusted owned-file bootstrap,
+  retaining actual inode/size receipts rather than preserving a public bypass.
+  Spare capacity observations verify the fresh first-node file's exact identity;
+  12 read-only ownership/observation cases pass. Extend the real 128-zone Inspector
+  case with a 32-row page bound, inline bitmap and Back-restored page/selection.
+- Validate setup status against its retained admission operation/discovery ID,
+  numeric node when assigned, and cluster when both sides know it. Retry checks
+  intent before submitting it. Five protocol setup tests pass, including rejected
+  foreign operation/node/cluster and accepted prebinding status. Rerun Console
+  suite and affected Clippy before committing/rebuilding the next frozen image.
+- Complete standard-mode entry-point routing: physical group menus open the
+  verified file dialog; disk status/deletion menus route to Node storage instead
+  of legacy status/delete calls. Keep maintenance actions and legacy mode controls.
+  Capacity disk detail exposes Manage disk in place of direct Up/Down. Backend
+  guards remain authoritative. UI gate now 254 + TypeScript, including menu mode
+  regression; real hardware and Inspector assertions cover these entry points.
+- Full Console gate found five old `diskdb_routes_test` cases still configuring
+  only local data despite Group-0-owned publication already existing at the prior
+  HEAD. Failures were missing management seeds, before their assertions. Give
+  the mutation fixtures the existing real in-memory metadata peer and seed their
+  actual hierarchy. Keep unavailable-Group-0 cases unavailable and keep the
+  missing-group test's API setup/no-group state. All eight exact route cases pass.
+- Full Console gate now passes for shared/CLI/Web, artifact
+  `unit/console-5f0d691903b34d308b7537b9cb1fd6be` (25.19/31.55/64.73 s).
+  Latest UI 254 + TypeScript pass, artifact
+  `unit/ui-946208547d2a433abbf67458d63f64f1`. Affected Web/protocol/E2E all-feature
+  Clippy and workspace fmt pass. Register the actual visible center/sidebar
+  scrollers with existing bounded navigation restoration; the real Inspector
+  regression asserts its exact scroll offset alongside zone/page after Back.

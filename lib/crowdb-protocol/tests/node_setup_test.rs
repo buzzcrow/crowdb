@@ -7,6 +7,58 @@ use crowdb_protocol::mgmt::node::{
 };
 use serde_json::json;
 
+#[test]
+fn progress_is_bound_to_admission_before_and_after_cluster_binding() {
+    use crowdb_protocol::mgmt::node::setup::{NodeSetupPhase, NodeSetupStatus};
+    let intent = request();
+    let status = NodeSetupStatus {
+        version: 1,
+        discovery_id: intent.discovery_id.clone(),
+        operation_id: intent.operation_id.clone(),
+        phase: NodeSetupPhase::WaitingForBinding,
+        storage_mode: None,
+        node_id: None,
+        cluster_id: None,
+        disks: vec![],
+        services: vec![],
+        error: None,
+    };
+    let validate = |status: &NodeSetupStatus| {
+        status.validate_identity(&intent.discovery_id, &intent.operation_id, 7, Some("cluster"))
+    };
+    validate(&status).unwrap();
+    let bound = NodeSetupStatus {
+        node_id: Some(7),
+        cluster_id: Some("cluster".into()),
+        ..status.clone()
+    };
+    validate(&bound).unwrap();
+    for changed in [
+        NodeSetupStatus {
+            version: 2,
+            ..bound.clone()
+        },
+        NodeSetupStatus {
+            discovery_id: "foreign".into(),
+            ..bound.clone()
+        },
+        NodeSetupStatus {
+            operation_id: "foreign".into(),
+            ..bound.clone()
+        },
+        NodeSetupStatus {
+            node_id: Some(8),
+            ..bound.clone()
+        },
+        NodeSetupStatus {
+            cluster_id: Some("foreign".into()),
+            ..bound.clone()
+        },
+    ] {
+        assert!(validate(&changed).is_err());
+    }
+}
+
 fn request() -> NodeSetupRequest {
     NodeSetupRequest {
         version: 1,

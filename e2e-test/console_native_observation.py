@@ -34,14 +34,17 @@ def services(cluster, node):
     return status
 
 
-def disk_backing(cluster, node):
+def disk_backing(cluster, node, *, spare=False):
     identity = owned(cluster, node)
-    path = f"/opt/crowdb/data/disks/disk-{node + 1}.img"
+    if spare and (node != 0 or not cluster.spare_disk_gib):
+        raise ValueError("spare backing requires the owned first-node fixture file")
+    path = "/opt/crowdb/data/disks/capacity-spare.img" if spare else f"/opt/crowdb/data/disks/disk-{node + 1}.img"
     fields = cluster.command("exec", "--user", "crowdb", identity, "stat", "--format=%f:%d:%i:%s", "--", path).strip().split(":")
     if len(fields) != 4 or not stat.S_ISREG(int(fields[0], 16)):
         raise ValueError("native backing is not the owned regular fixture file")
     device, inode, size = (int(value) for value in fields[1:])
-    if device < 0 or inode <= 0 or size != cluster.disk_gib[node] * 1024 ** 3:
+    capacity = cluster.spare_disk_gib if spare else cluster.disk_gib[node]
+    if device < 0 or inode <= 0 or size != capacity * 1024 ** 3:
         raise ValueError("native backing identity or capacity changed")
     return {"path": path, "backing_identity": f"file:{device}:{inode}", "capacity_bytes": size}
 

@@ -30,7 +30,7 @@ interface Props {
 export function NodeWorkspace({ node, scope, capacity, readonly, ready, setupEnabled, onSetupObserved, inventory, hardware, usage, services, plan, loadGroup, onAddGroup, onServicePlan, onMenu, onCandidates }: Props) {
   const { inspectEntity, selectEntity } = useSelection();
   const actual = new Map(services.filter(service => service.node_id === node.id).map(service => [service.service_type, service]));
-  return <div className="tw-h-full tw-overflow-auto tw-p-4 tw-space-y-6" aria-label={`Node ${node.id} workspace`}>
+  return <div data-navigation-scroll={`cluster-node-${node.id}-${capacity ? 'capacity' : 'topology'}-${scope.section ?? 'all'}`} className="tw-h-full tw-overflow-auto tw-p-4 tw-space-y-6" aria-label={`Node ${node.id} workspace`}>
     <header className="tw-flex tw-flex-wrap tw-items-start tw-justify-between tw-gap-3">
       <div><h1 className="tw-text-lg tw-font-semibold">Node {node.id}</h1><p className="tw-text-xs tw-text-muted">Rack {node.rack_id} · {node.host}</p></div>
       <Button size="sm" variant="secondary" disabled={readonly} onClick={event => onMenu({ type: 'Node', id: String(node.id), rawId: node.id, parentIds: { rack_id: node.rack_id }, label: `Node ${node.id}` }, event)}>Node actions</Button>

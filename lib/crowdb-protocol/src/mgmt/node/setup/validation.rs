@@ -1,8 +1,35 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{NodeSetupRequest, SetupService, SetupServiceKind, SetupStorage};
+use super::{NodeSetupRequest, NodeSetupStatus, SetupService, SetupServiceKind, SetupStorage};
 use std::collections::BTreeSet;
+
+impl NodeSetupStatus {
+    /// Validate an authenticated observation against its retained admission.
+    ///
+    /// # Errors
+    /// Rejects another operation/node/cluster or an unsupported status version.
+    /// An unbound setup may still omit its eventual numeric node and cluster.
+    pub fn validate_identity(
+        &self,
+        discovery: &str,
+        operation: &str,
+        node: u64,
+        cluster: Option<&str>,
+    ) -> Result<(), &'static str> {
+        if self.version != 1
+            || self.discovery_id != discovery
+            || self.operation_id != operation
+            || self.node_id.is_some_and(|actual| actual != node)
+            || cluster
+                .zip(self.cluster_id.as_deref())
+                .is_some_and(|(expected, actual)| expected != actual)
+        {
+            return Err("node setup observation differs from retained admission identity");
+        }
+        Ok(())
+    }
+}
 
 impl NodeSetupRequest {
     /// Check bounds and choices before durable monitor acceptance.

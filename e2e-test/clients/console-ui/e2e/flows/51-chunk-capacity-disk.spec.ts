@@ -129,6 +129,13 @@ test('native diagnostics: hardware capacity aggregates disks and dashed status u
 async function verifyNodeFileWorkspace(page: Page, request: APIRequestContext) {
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
   const workspace = page.getByLabel('Node 1 workspace', { exact: true });
+  await step('group menu uses verified file provisioning', async () => {
+    await diskMenu(page, sidebar.getByTestId('tree-node-CH-DG-1-591').locator(':scope > [role="treeitem"]'), 'Create File Disk');
+    const create = page.getByRole('dialog', { name: 'Create File Disk', exact: true });
+    await expect(create.getByLabel('Disk group')).toHaveValue('591');
+    await expect(create.getByLabel('Device path', { exact: true })).toHaveCount(0);
+    await create.getByRole('button', { name: 'Close dialog', exact: true }).click();
+  });
   await step('open Node storage workspace', async () => {
     await sidebar.getByTestId('tree-node-STORAGE-1').getByRole('button', { name: 'Storage', exact: true }).click();
     await expect(workspace).toBeVisible();
@@ -225,6 +232,7 @@ async function verifySuppliedCandidates(page: Page, request: APIRequestContext) 
       const value = await backing.json();
       if (index === 2) { expect(value).toBeNull(); await expect(row).toContainText('not blank'); }
       else {
+        await expect(workspace.getByRole('article', { name: `Registered disk ${operation.disk_id}`, exact: true })).toContainText('Media Unknown');
         expect(value).toMatchObject({ version: 2, container_path: operation.medium.path, capacity_units: '64', sparse: true,
           physical_backing: { capacity_bytes: String(65 * 1024 ** 2 + 512), usable_bytes: String(64 * 1024 ** 2), tail_bytes: String(1024 ** 2 + 512) } });
       }

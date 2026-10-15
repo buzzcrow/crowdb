@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 import { serviceLifecycle } from './serviceLifecycle';
+import { storageLifecycleMenu } from './storage';
 import { useCallback } from 'react';
 import { Server, Database, Plus, Trash2, Activity, RotateCw, Square, HardDrive } from 'lucide-react';
 import { removeRack, removeNode, removeStore, removeGroup, removeReplica, stopServer, restartServer, pingNode, setDiskStatus, setDiskGroupStatus, restartDiskdb, stopDiskdb, removeServer, removeDiskdb, removeDiskGroup, removeDisk } from '../api';
@@ -10,7 +11,7 @@ import type { MenuItemOrSeparator } from '../components/ContextMenu';
 import { buildStatusSubmenu } from './status';
 import type { MenuContext } from './context';
 import { isAuxiliaryKind, serviceNames, serviceInstanceLabel, type AuxiliaryKind } from '../services/client';
-export function useClusterMenus({ readonly, managed, managementAuthorized, domain, physicalActive, modules, requestDelete, runMutation, serverNodeIds, diskdbNodeIds, allServers, setDialog }: MenuContext) {
+export function useClusterMenus({ readonly, managed, nodeManagement, onManageNodeStorage, managementAuthorized, domain, physicalActive, modules, requestDelete, runMutation, serverNodeIds, diskdbNodeIds, allServers, setDialog }: MenuContext) {
   /** Build per-layer context menu items for a normalized target. */
   return useCallback(
     (t: MenuTarget): MenuItemOrSeparator[] => {
@@ -133,10 +134,10 @@ export function useClusterMenus({ readonly, managed, managementAuthorized, domai
           const dgId = Number(t.rawId);
           const nodeId = Number(p.node_id);
           const rackId = Number(p.rack_id);
-          items.push({ id: 'add-disk', label: 'Add Disk', icon: <HardDrive className="tw-h-4 tw-w-4" />, onSelect: () => setDialog((d) => ({ ...d, addDisk: { nodeId, dgId } })) });
+          items.push({ id: 'add-disk', label: nodeManagement ? 'Create File Disk' : 'Add Disk', icon: <HardDrive className="tw-h-4 tw-w-4" />, onSelect: () => setDialog((d) => ({ ...d, addDisk: { nodeId, dgId } })) });
           items.push({ id: 'dg-status', label: 'Change Status', icon: <Activity className="tw-h-4 tw-w-4" />, submenu: buildStatusSubmenu((status) => runMutation(`Set DG ${status}`, t.label || t.id, () => setDiskGroupStatus(rackId, nodeId, dgId, status))) });
           items.push({ id: 'assign-dg', label: 'Assign to DiskDB', icon: <Server className="tw-h-4 tw-w-4" />, onSelect: () => setDialog((d) => ({ ...d, assignDiskGroup: { rackId, nodeId, dgId, dgName: t.label } })) });
-          items.push({ id: 'del-dg', label: 'Delete Disk Group', icon: <Trash2 className="tw-h-4 tw-w-4" />, destructive: true, onSelect: () => requestDelete('Disk Group', dgId, async () => { await runMutation('Delete Disk Group', t.label || t.id, () => removeDiskGroup(nodeId, dgId)); }, 'All disks in this disk group will also be removed.') });
+          items.push({ id: 'del-dg', label: 'Delete Disk Group', icon: <Trash2 className="tw-h-4 tw-w-4" />, destructive: true, onSelect: () => requestDelete('Disk Group', dgId, async () => { await runMutation('Delete Disk Group', t.label || t.id, () => removeDiskGroup(nodeId, dgId)); }, nodeManagement ? 'The disk group must be empty; remove its disks through Node storage first.' : 'All disks in this disk group will also be removed.') });
         } else if (t.type === 'Disk') {
           const diskId = String(p.disk_id || t.rawId || t.id);
           const nodeId = Number(p.node_id);
@@ -310,9 +311,9 @@ export function useClusterMenus({ readonly, managed, managementAuthorized, domai
           });
         }
       }
-      return items;
+      return storageLifecycleMenu(items, t, onManageNodeStorage);
     },
-    [readonly, managed, managementAuthorized, domain, physicalActive, modules, requestDelete, runMutation, serverNodeIds, diskdbNodeIds, allServers, buildStatusSubmenu],
+    [readonly, managed, nodeManagement, onManageNodeStorage, managementAuthorized, domain, physicalActive, modules, requestDelete, runMutation, serverNodeIds, diskdbNodeIds, allServers, buildStatusSubmenu],
   );
 
 }

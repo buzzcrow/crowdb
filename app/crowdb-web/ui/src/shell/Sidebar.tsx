@@ -275,7 +275,7 @@ export function Sidebar({
         </div>
       </div>
 
-      <div className="tw-min-h-0 tw-flex-1 tw-overflow-y-auto">{loading && treeNodes.length === 0 ? (
+      <div data-navigation-scroll={`cluster-sidebar-${domain}`} className="tw-min-h-0 tw-flex-1 tw-overflow-y-auto">{loading && treeNodes.length === 0 ? (
         <div className="tw-p-4 tw-animate-pulse tw-space-y-2">
           <div className="tw-h-6 tw-bg-panel tw-rounded-md" />
           <div className="tw-h-6 tw-bg-panel tw-rounded-md tw-w-3/4" />

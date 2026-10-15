@@ -19,7 +19,10 @@ async fn retained_data_probe() {
     let mode = specification["mode"].as_str().unwrap();
     assert!(matches!(mode, "write" | "verify"));
     let host = specification["physical_host_id"].as_str().unwrap();
-    assert!(matches!(host, "containerd-acceptance-host" | "docker-acceptance-host"));
+    assert!(matches!(
+        host,
+        "containerd-acceptance-host" | "docker-acceptance-host"
+    ));
     let seeds: Vec<String> = serde_json::from_value(specification["seeds"].clone()).unwrap();
     let hardware = HardwareClient::new(CrowdbKvClient::new(ClientConfig::new(seeds.clone())));
     let disks = specification["disks"].as_array().unwrap();
@@ -54,10 +57,7 @@ async fn retained_data_probe() {
                 DiskBackend::File
             }
         );
-        assert_eq!(
-            record.physical_backing.as_ref().unwrap().physical_host_id,
-            host
-        );
+        assert_eq!(record.physical_backing.as_ref().unwrap().physical_host_id, host);
         assert_eq!(record.geometry.unit_size_bytes, unit);
         assert_eq!(record.geometry.capacity_units, 64);
         assert_eq!(

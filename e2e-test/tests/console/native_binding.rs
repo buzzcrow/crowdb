@@ -103,18 +103,8 @@ async fn start_storage(context: &TestNativeContext) {
     }
     for node in 1..=3 {
         disk_group(context, node).await;
-        let capacity = (if node == 1 { 80 } else { 8 }) * 1024u64.pow(3);
-        context
-            .api(
-                Method::POST,
-                &format!("/api/nodes/{node}/disk-groups/{node}/disks"),
-                json!({"disk_id":format!("{node:032x}"),"disk_type":"Hdd","capacity_bytes":capacity,
-                "zone_size_bytes":1024u64.pow(3),"unit_size_bytes":128*1024,
-                "device_path":format!("/opt/crowdb/data/disks/disk-{node}.img")}),
-                201,
-            )
-            .await;
     }
+    super::native_storage::disks(context, [128 * 1024; 3]).await;
 }
 
 async fn verify_bindings(context: &TestNativeContext, hardware: &HardwareClient) {

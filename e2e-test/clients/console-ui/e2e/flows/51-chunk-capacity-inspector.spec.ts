@@ -107,20 +107,34 @@ test('native diagnostics: disk Inspector and Capacity selection retain two actua
   await expect(panel.getByText(actual.disk_id, { exact: true })).toBeVisible();
   await expect(page.getByTestId('disk-geometry')).toContainText(
     `${['BlockHdd', 'BlockSsd', 'ZoneSsd', 'SmrHdd'][actual.disk_type]} · Up · ${actual.zone_count} zones`);
-  for (const name of ['Scan', 'Recalc', 'Compact', 'Rebuild', 'Down', 'Up']) {
+  for (const name of ['Scan', 'Recalc', 'Compact', 'Rebuild', 'Manage disk']) {
     await expect(panel.getByRole('button', { name, exact: true })).toBeVisible();
   }
+  for (const name of ['Down', 'Up']) await expect(panel.getByRole('button', { name, exact: true })).toHaveCount(0);
   await expect(panel.getByText('Recalc (DG-1)', { exact: true })).toBeVisible();
   await expect(panel.getByRole('button', { name: 'Run Recalc', exact: true })).toBeVisible();
   await expect(panel.getByText(`Zone grid (${actual.zone_count} zones)`, { exact: true })).toBeVisible();
+  expect(actual.zone_count).toBeGreaterThan(32);
+  const zones = page.getByRole('group', { name: 'Disk zones', exact: true });
+  await expect(zones.getByRole('button', { name: /^Zone \d+$/ })).toHaveCount(32);
+  await zones.getByRole('button', { name: 'Next zones', exact: true }).click();
+  await zones.getByRole('button', { name: 'Zone 32', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Zone 32 detail', exact: true })).toContainText('free blocks');
+  await expect(sidebar.getByRole('button', { name: 'Zone 32', exact: true })).toHaveCount(0);
   const inspector = page.getByRole('complementary', { name: 'Entity inspector' });
   for (const name of ['Type', 'ID', 'Parent: rack_id', 'Parent: node_id', 'Parent: disk_group_id']) {
     await expect(inspector.getByText(name, { exact: true })).toBeVisible();
   }
   await expect(inspector.getByText('Name', { exact: true })).toHaveCount(0);
   await expect(inspector.getByText('Parent: disk_id', { exact: true })).toHaveCount(0);
+  const savedScroll = await panel.evaluate(element => { element.scrollTop = element.scrollHeight; return element.scrollTop; });
+  expect(savedScroll).toBeGreaterThan(0);
   await page.getByRole('navigation', { name: 'Cluster scope' }).getByRole('button', { name: 'DG-1', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Capacity — DG-1', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Back', exact: true }).click();
   await expect(page.getByRole('heading', { name: /^Capacity — Disk/ })).toBeVisible();
+  await expect(zones.getByRole('button', { name: 'Zone 32', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(zones.getByRole('button', { name: 'Zone 0', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('region', { name: 'Zone 32 detail', exact: true })).toBeVisible();
+  await expect.poll(() => panel.evaluate(element => element.scrollTop), { intervals: [100] }).toBe(savedScroll);
 });

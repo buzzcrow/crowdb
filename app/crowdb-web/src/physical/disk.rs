@@ -8,9 +8,21 @@ use crowdb_console_shared::config::{DiskEntry, DiskGroupEntry};
 use crowdb_kv_client::HardwareClient;
 
 use crate::{
-    error::{err_502, map_config_err, map_persist_err, ErrorBody},
+    error::{err_409, err_502, map_config_err, map_persist_err, ErrorBody},
     state::AppState,
 };
+
+pub(crate) fn validate_metadata_only(
+    state: &AppState,
+    paths: impl IntoIterator<Item = impl AsRef<str>>,
+) -> Result<(), (StatusCode, Json<ErrorBody>)> {
+    if state.node_monitor_url.is_some() && paths.into_iter().any(|path| !path.as_ref().is_empty()) {
+        return Err(err_409(
+            "Physical media require Create File Disk or Join Candidates and owner verification",
+        ));
+    }
+    Ok(())
+}
 
 pub(crate) async fn persist_added(
     state: &AppState,

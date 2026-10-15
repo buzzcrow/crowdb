@@ -125,3 +125,30 @@ async fn invalid_or_conflicting_batch_has_no_partial_membership() {
         3
     );
 }
+
+#[tokio::test]
+async fn physical_paths_cannot_bypass_verified_candidate_admission() {
+    let fixture = TestStorageApi::start().await;
+    let mut physical = disk(1);
+    physical["device_path"] = json!("/opt/crowdb/data/disks/unverified.img");
+    let error = batch(&fixture, vec![disk(2), physical.clone()], StatusCode::CONFLICT).await;
+    assert!(error["error"].as_str().unwrap().contains("Join Candidates"));
+    let response = fixture
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/nodes/2/disk-groups/3/disks")
+                .header("content-type", "application/json")
+                .body(Body::from(physical.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        fixture.hardware.list_disks_in_group(1, 2, 3).await.unwrap().len(),
+        1
+    );
+}

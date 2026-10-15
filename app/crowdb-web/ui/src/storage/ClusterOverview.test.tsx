@@ -17,11 +17,11 @@ const props: ClusterOverviewProps = {
   ] }, usage: null, candidates: { 2: { count: 2, observed_at_ms: 10, stale: true, partial: true } },
   readonly: false, onAddRack: vi.fn(), onAddNode: vi.fn(),
 };
-function Workspace({ capacity = false }: { capacity?: boolean }) {
+function Workspace({ capacity = false, candidateWorkspace = false }: { capacity?: boolean; candidateWorkspace?: boolean }) {
   const { scopeEntity, selectedEntity, selectEntity } = useSelection();
   return <><output aria-label="scope">{scopeEntity?.id ?? 'root'}</output><output aria-label="selection">{selectedEntity?.id ?? 'none'}</output>
     <button onClick={() => selectEntity({ domain: Domain.Cluster, type: 'Rack', id: '2' })}>Scope Rack 2</button>
-    <ClusterOverview {...props} capacity={capacity} /></>;
+    <ClusterOverview {...props} capacity={capacity} candidateWorkspace={candidateWorkspace} /></>;
 }
 function mount(capacity = false) {
   return render(<DomainProvider><SelectionProvider><Workspace capacity={capacity} /></SelectionProvider></DomainProvider>);
@@ -56,4 +56,13 @@ it('filters scoped table rows and sorts registered capacity without inventing us
   expect(nodeOrder()).toEqual(['N-1']);
   fireEvent.click(screen.getByRole('button', { name: 'Scope Rack 2' }));
   expect(within(table).queryByRole('button', { name: /^N-/ })).toBeNull();
+});
+
+it('offers candidate navigation only when the mode has a node storage workspace', () => {
+  const view = mount();
+  expect(screen.queryByRole('button', { name: 'Open candidates' })).toBeNull();
+  view.rerender(<DomainProvider><SelectionProvider><Workspace candidateWorkspace /></SelectionProvider></DomainProvider>);
+  const card = screen.getByRole('article', { name: 'Node 2 summary' });
+  fireEvent.click(within(card).getByRole('button', { name: 'Open candidates' }));
+  expect(screen.getByLabelText('scope')).toHaveTextContent('2');
 });

@@ -1463,6 +1463,7 @@ pub async fn http_add_disk(
     Path((node_id, dg_id)): Path<(NodeId, DiskGroupId)>,
     Json(body): Json<AddDiskBody>,
 ) -> Result<(StatusCode, Json<DiskEntry>), (StatusCode, Json<ErrorBody>)> {
+    crate::physical::disk::validate_metadata_only(&state, [&body.device_path])?;
     let ctx = state.op_context().await.map_err(|e| err_502(format!("{e}")))?;
     let input = ops::hardware::AddDiskInput {
         disk_id: body.disk_id,
@@ -1495,6 +1496,7 @@ pub async fn http_add_disks_batch(
     Path((node_id, dg_id)): Path<(NodeId, DiskGroupId)>,
     Json(body): Json<AddDisksBatchBody>,
 ) -> Result<(StatusCode, Json<AddDisksBatchResult>), (StatusCode, Json<ErrorBody>)> {
+    crate::physical::disk::validate_metadata_only(&state, body.disks.iter().map(|disk| &disk.device_path))?;
     let ctx = state.op_context().await.map_err(|e| err_502(format!("{e}")))?;
     let inputs: Vec<ops::hardware::AddDiskInput> = body
         .disks

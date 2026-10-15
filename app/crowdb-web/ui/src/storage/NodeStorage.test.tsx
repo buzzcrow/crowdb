@@ -5,10 +5,12 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
 import { diskLifecycle, offlineNodeDisk, removeNodeDisk, onlineNodeDisk } from '../api';
 import { NodeStorage } from './NodeStorage';
+import type { SuppliedOperation } from './types';
+const supplied = vi.hoisted(() => ({ operations: {} as Record<string, SuppliedOperation> }));
 vi.mock('../api', () => ({ diskLifecycle: vi.fn(), offlineNodeDisk: vi.fn(), removeNodeDisk: vi.fn(), rejoinNodeDisk: vi.fn(), onlineNodeDisk: vi.fn(), createNodeDiskFile: vi.fn() }));
 vi.mock('../contexts/SelectionContext', () => ({ useSelection: () => ({ inspectEntity: vi.fn(), selectEntity: vi.fn(), selectedEntity: null }) }));
 vi.mock('./useNodeStorage', () => ({ useNodeStorage: () => ({ operations: {}, errors: {}, loading: false, next: null, refresh: vi.fn(), accept: vi.fn() }) }));
-vi.mock('./useSuppliedOperations', () => ({ useSuppliedOperations: () => ({ operations: {}, error: '', loading: false, next: null, refresh: vi.fn(), accept: vi.fn() }) }));
+vi.mock('./useSuppliedOperations', () => ({ useSuppliedOperations: () => ({ operations: supplied.operations, error: '', loading: false, next: null, refresh: vi.fn(), accept: vi.fn() }) }));
 vi.mock('./useRemovedDisks', () => ({ useRemovedDisks: () => ({ items: [], next: null, observed: true, refresh: vi.fn() }) }));
 
 it('moves focus after dialog cleanup even while its original row remains mounted', async () => {
@@ -59,4 +61,24 @@ it('shows confirmed Online and restores row focus after background validation co
   expect(row).toHaveFocus();
   vi.mocked(diskLifecycle).mockRejectedValue(new Error('authority unavailable'));
   await waitFor(() => expect(row).toHaveTextContent('Last confirmed; status refresh unavailable'), { timeout: 2000 });
+});
+
+it('uses the retained supplied media class independently of compatibility geometry', () => {
+  const operation: SuppliedOperation = { node_id: 1, operation_id: 'supplied', disk_id: 'one', disk_group_id: 7,
+    medium: { path: '/disk.img', backend: 'file', backing_identity: 'file:1:2', resource_identity: 'file:1:2',
+      capacity_bytes: 65536, media_type: null, initialize: true }, phase: 'registered', verified_bytes: 65536, error: null };
+  supplied.operations = { supplied: operation };
+  const properties = { nodeId: 1, rackId: 1, active: false, readonly: true, ready: true, hardware: null, usage: null,
+    inventory: { diskGroups: [{ id: 7, node_id: 1, rack_id: 1 }], disksByDg: { 7: [{ disk_id: 'one', disk_group_id: 7,
+      node_id: 1, rack_id: 1, device_path: '/disk.img', disk_type: 'Hdd', capacity_bytes: 65536, zone_size_bytes: 65536, unit_size_bytes: 4096 }] } },
+    loadGroup: vi.fn(), onAddGroup: vi.fn(), onCandidates: vi.fn() };
+  const view = render(<NodeStorage {...properties} />);
+  const row = screen.getByRole('article', { name: 'Registered disk one' });
+  expect(row).toHaveTextContent('Media Unknown');
+  supplied.operations = { supplied: { ...operation, medium: { ...operation.medium, media_type: 1 } } };
+  view.rerender(<NodeStorage {...properties} />);
+  expect(row).toHaveTextContent('Media SSD');
+  supplied.operations = {};
+  view.rerender(<NodeStorage {...properties} />);
+  expect(row).toHaveTextContent('Media Unknown');
 });

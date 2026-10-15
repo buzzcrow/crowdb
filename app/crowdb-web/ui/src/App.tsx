@@ -52,6 +52,7 @@ import { isCrowdbKVServerAvailable } from './data/crowdbKvServers';
 import { toUiHealth } from './utils/entityDisplay';
 import { ClusterView } from './views/ClusterView';
 import { ClusterOverview } from './storage/ClusterOverview';
+import { CreateFileDiskDialog } from './storage/CreateFileDiskDialog';
 import { useNavigationSnapshot } from './contexts/DomainContext';
 import { NodeWorkspace } from './storage/NodeWorkspace';
 import type { NodeSetupSummary } from './shell/nodeSetup';
@@ -336,7 +337,12 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
     }));
   }, [runMutation, selectEntity]);
 
-  const menuContext = { readonly, managed, managementAuthorized, domain: activeDomain, physicalActive: activeDomain === Domain.Cluster, modules, requestDelete, runMutation, serverNodeIds, diskdbNodeIds, allServers, setDialog, capacityUsage };
+  const openNodeStorage = useCallback((nodeId: number) => {
+    const node = nodes.find(node => node.id === nodeId);
+    if (node) selectEntity({ domain: Domain.Cluster, type: 'Node', id: String(node.id), parentIds: { rack_id: node.rack_id }, section: 'storage' });
+  }, [nodes, selectEntity]);
+  const manageNodeStorage = nodeManagement && !managed ? openNodeStorage : undefined;
+  const menuContext = { readonly, managed, nodeManagement, onManageNodeStorage: manageNodeStorage, managementAuthorized, domain: activeDomain, physicalActive: activeDomain === Domain.Cluster, modules, requestDelete, runMutation, serverNodeIds, diskdbNodeIds, allServers, setDialog, capacityUsage };
   const buildMenuItems = useClusterMenus(menuContext);
   const buildCapacityMenuItems = useCapacityMenus(menuContext);
 
@@ -582,6 +588,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
         {activeDomain === Domain.Cluster && <div hidden={!overviewScope || domain !== Domain.Cluster || diagram} className="tw-flex-1 tw-min-h-0">
           <ClusterOverview racks={racks} nodes={nodes} services={allServers} nodeHealthById={nodeHealthById}
             hardware={hardwareCapacity} usage={capacityUsage} candidates={candidateSummaries} setups={setupSummaries} capacity={false}
+            candidateWorkspace={nodeManagement && !managed}
             readonly={topologyReadonly} onAddRack={() => setDialog(previous => ({ ...previous, addRack: true }))}
             onAddNode={rackId => {
               if (nodeManagement) { clusterLayout.setCollapsed(false); setAddNodeRequest({ rackId, nonce: Date.now() }); }
@@ -628,9 +635,11 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
             active={domain === Domain.Capacity && !workspaceNode}
             instances={diskdbInstances} usage={capacityUsage} hardwareCapacity={hardwareCapacity}
             scanStatus={capacityScanStatus} loading={capLoading} readonly={topologyReadonly}
+            onManageDisk={manageNodeStorage && clusterSelection?.type === 'Disk' ? () => manageNodeStorage(Number(clusterSelection.parentIds?.node_id)) : undefined}
             overview={overviewScope ? <>
           <ClusterOverview racks={racks} nodes={nodes} services={allServers} nodeHealthById={nodeHealthById}
             hardware={hardwareCapacity} usage={capacityUsage} candidates={candidateSummaries} setups={setupSummaries} capacity
+            candidateWorkspace={nodeManagement && !managed}
             readonly={topologyReadonly} onAddRack={() => setDialog(previous => ({ ...previous, addRack: true }))}
             onAddNode={rackId => {
               if (nodeManagement) { clusterLayout.setCollapsed(false); setAddNodeRequest({ rackId, nonce: Date.now() }); }
@@ -769,7 +778,13 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
         />
       )}
       {dialog.addDisk && (
-        <AddDiskDialog
+        nodeManagement && !managed ? <CreateFileDiskDialog nodeId={dialog.addDisk.nodeId}
+          groups={nodeDiskGroups[dialog.addDisk.nodeId]?.diskGroups ?? []} groupId={dialog.addDisk.dgId} available={null}
+          onClose={closeDialogs} onAccepted={() => {
+            const node = nodes.find(node => node.id === dialog.addDisk!.nodeId);
+            closeDialogs();
+            if (node) selectEntity({ domain: Domain.Cluster, type: 'Node', id: String(node.id), parentIds: { rack_id: node.rack_id }, section: 'storage' });
+          }} /> : <AddDiskDialog
           isOpen
           onClose={closeDialogs}
           nodeId={dialog.addDisk.nodeId}

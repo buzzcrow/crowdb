@@ -352,6 +352,20 @@
   its descriptor. Display current service health separately; acceptance observes
   the actual descriptor before testing its exclusive claim and retained data.
   Do not reinterpret an absent descriptor as successful I/O or add blanket read retries.
+- The registered Node row uses observed durable provisioning intent for media
+  class. If that bounded history has not been observed, show Unknown rather than
+  infer HDD from legacy geometry defaults; Properties can fetch its exact receipt.
+- In managed standard-node mode, legacy disk-create endpoints remain available
+  for metadata-only entries with no device path. Physical paths require the
+  owner-verified Create File Disk or Join Candidates flow. Retain existing
+  standalone/legacy deployment contracts until their explicit migration.
+- Standard-node menus and disk detail route lifecycle operations to Node storage.
+  Retain diagnostic maintenance controls, but replace legacy direct Up/Down/Delete
+  controls. Group creation menus use the same verified file provisioning dialog.
+  Empty-group deletion remains separate and cannot cascade through physical disks.
+- A pristine single-mode data root is initialized by its own bootstrap. External
+  supplied-media mappings are a standard-node flow; do not precreate arbitrary
+  entries in an uninitialized single root to emulate standard admission.
 - The user authorized choosing a well-supported option or skipping a disputed
   part without waiting for confirmation. Record unresolved consequences here;
   skipped acceptance criteria remain incomplete. Retain this requirement and

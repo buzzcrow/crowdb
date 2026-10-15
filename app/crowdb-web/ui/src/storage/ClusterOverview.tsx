@@ -19,12 +19,13 @@ export interface ClusterOverviewProps {
   services: ServerSummary[]; hardware: HardwareCapacitySummary | null; usage: CapacityUsageResponse | null;
   setups?: Record<number, NodeSetupSummary>;
   candidates: Record<number, CandidateSummary>; capacity?: boolean; readonly: boolean;
+  candidateWorkspace?: boolean;
   onAddRack: () => void; onAddNode: (rackId: number) => void;
 }
 type Sort = 'node' | 'capacity' | 'busy' | 'free';
 
 /** A summary of existing observations; opening this page never discovers every node's disks. */
-export function ClusterOverview({ racks, nodes, nodeHealthById, services, hardware, usage, candidates, setups = {}, capacity, readonly, onAddRack, onAddNode }: ClusterOverviewProps) {
+export function ClusterOverview({ racks, nodes, nodeHealthById, services, hardware, usage, candidates, setups = {}, capacity, readonly, candidateWorkspace = false, onAddRack, onAddNode }: ClusterOverviewProps) {
   const { scopeEntity, selectedEntity, selectEntity, inspectEntity } = useSelection();
   const [query, setQuery] = useState('');
   const [health, setHealth] = useState('all');
@@ -63,7 +64,7 @@ export function ClusterOverview({ racks, nodes, nodeHealthById, services, hardwa
     return state ? `Setup: ${state.phase === 'ready' ? state.warning ? 'Completed with warnings' : 'Completed' : state.phase}${state.stale ? ' · Stale' : ' · Last observed'}${state.error ? ` · ${state.error}` : ''}` : 'Setup: Not observed';
   };
   const bytes = (value: number | null) => value === null ? 'Unknown' : formatBytes(value);
-  return <section aria-label={capacity ? 'Cluster capacity workspace' : 'Cluster node workspace'} className={capacity ? "tw-space-y-4" : "tw-h-full tw-overflow-auto tw-p-4 tw-space-y-4"}>
+  return <section data-navigation-scroll={capacity ? undefined : `cluster-topology-${rackId ?? 'root'}`} aria-label={capacity ? 'Cluster capacity workspace' : 'Cluster node workspace'} className={capacity ? "tw-space-y-4" : "tw-h-full tw-overflow-auto tw-p-4 tw-space-y-4"}>
     <header className="tw-flex tw-items-center tw-justify-between tw-gap-3">
       <h1 className="tw-text-lg tw-font-semibold">{capacity ? 'Capacity Overview' : 'Cluster nodes'}{rackId === undefined ? '' : ` · Rack ${rackId}`}</h1>
       {!readonly && (rackId === undefined ? <Button size="sm" disabled={readonly} onClick={onAddRack}>Add Rack</Button>
@@ -101,7 +102,7 @@ export function ClusterOverview({ racks, nodes, nodeHealthById, services, hardwa
           <div className="tw-flex tw-justify-between"><button className="tw-text-accent tw-font-semibold" onClick={event => { event.stopPropagation(); selectEntity(entity(row.node)); }}>N-{row.node.id}</button><span>{state.health}</span></div>
           <p className="tw-text-sm tw-break-all">{row.node.host}</p><p className="tw-text-sm">{state.services}</p><p className="tw-text-xs tw-text-muted">{setup(row.node)}</p>
           <p className="tw-text-sm">{bytes(row.busy)} used / {bytes(row.capacity)} total</p><p className="tw-text-xs tw-text-muted">Candidates: {state.candidates}{state.alerts ? ` · ${state.alerts} disk alerts` : ''}</p>
-          <button className="tw-text-xs tw-text-accent" onClick={event => { event.stopPropagation(); selectEntity({ ...entity(row.node), section: 'candidates' }); }}>Open candidates</button>
+          {candidateWorkspace && <button className="tw-text-xs tw-text-accent" onClick={event => { event.stopPropagation(); selectEntity({ ...entity(row.node), section: 'candidates' }); }}>Open candidates</button>}
         </article>;
       })}</div>
       {!rows.some(row => row.node.rack_id === rack.id) && <p className="tw-text-sm tw-text-muted">No matching nodes in this rack.</p>}
