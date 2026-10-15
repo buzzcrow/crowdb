@@ -23,7 +23,7 @@ class DatasetError(RuntimeError):
         self.code = record.get("code", "invalid")
         self.status = record.get("status", 0)
         self.retryable = record.get("retryable", False)
-        self.identity = identity
+        self.identity = record.get("identity", identity)
 
 
 class ConflictError(DatasetError):
@@ -165,6 +165,9 @@ class DatasetClient:
         return _result(self._start(name, arguments), arguments.get("operation", arguments.get("id")))
 
     def create(self): return self._call("create", {})
+    def control(self):
+        from .control import ControlClient
+        return ControlClient(self)
     def open(self): return self._call("open", {})
     def prepare(self, publication): return self._call("prepare", publication)
     def publish(self, publication): return self._call("publish", publication)
@@ -248,6 +251,10 @@ class AsyncDatasetClient:
     """Asynchronous calls share the same Rust client and cancel their Rust task."""
     def __init__(self, endpoint, name, bearer=None, **options):
         self._client = DatasetClient(endpoint, name, bearer, **options)
+
+    def control(self):
+        from .control import AsyncControlClient
+        return AsyncControlClient(self._client)
 
     def __getattr__(self, name):
         method = getattr(DatasetClient, name, None)

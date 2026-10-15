@@ -109,6 +109,9 @@ impl Drop for NativeOperation {
     }
 }
 async fn dispatch(c: DatasetClient, name: &str, args: &str) -> Result<String, Error> {
+    if let Some(name) = name.strip_prefix("v2.") {
+        return super::control::dispatch(c, name, args).await;
+    }
     match name {
         "prepare" => {
             return Ok(serde_json::to_string(

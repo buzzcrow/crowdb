@@ -340,7 +340,7 @@ until its corresponding API and visibility tests pass.
   `split.rs`, `composition.rs`, `tests/split_contract_test.rs`, examples.
   Exit: network fixtures verify retries preserve bytes/IDs and no eager all-page
   collection; unsupported v2 capability fails before writes.
-- [~] **E4 Implement Python parity and source example**: extend PyO3 wrappers,
+- [x] **E4 Implement Python parity and source example**: extend PyO3 wrappers,
   Python models/helpers and packaged wheel exports; reuse Rust state machine.
   Include local import and caller-owned remote-stream adapter examples with exact
   field mappings; require replayable source/reselection for retry, never silently
@@ -352,7 +352,7 @@ until its corresponding API and visibility tests pass.
 
 ## Phase F — release acceptance and handoff
 
-- [ ] **F1 Register native owned cases**: extend `e2e-test/scenarios.py`,
+- [~] **F1 Register native owned cases**: extend `e2e-test/scenarios.py`,
   `access_dataset_fixture.py`, `tests/access_dataset.rs` and SDK consumer fixture.
   Proposed new cases: `access_dataset::split_revision_lifecycle`,
   `access_dataset::split_commit_restart`, `dataset::sdk_split_revision_round_trip`.
@@ -997,3 +997,24 @@ failure; record actual failures and add Blocked only when that workflow requires
   historical membership/read, explicit ACK, frozen branching, metadata/preview,
   stable/latest separation and cleanup passed. This still uses an in-memory service
   store; native multi-node acceptance remains F1.
+
+### Installed Python control SDK
+
+- Synchronous/asynchronous `.control()` wrappers dispatch the same typed Rust v2
+  operations. Paging remains lazy, part and stream transfers use native admission,
+  cancellation aborts native tasks, and ambiguous errors preserve their exact
+  attempt/edit identity. Added SplitSource and exact-u64 decimal helpers.
+- Installed-wheel tests passed ten cases including new capability gating, lazy
+  paging and async cancellation plus existing GIL/admission/fork/Iterable checks.
+  Initial paging failure was a nullable request dictionary in the Python identity
+  helper; corrected and retested in a fresh external wheel install.
+- `/tmp/crowdb-split-wheel` contains the externally built sdist, wheel and consumer.
+  The installed Python consumer passed local file/import, bounded reader adapter,
+  initial/independent Split publication, historical membership, frozen branching,
+  async read/explicit ACK and pagination against the real HTTP listener.
+  Command: `CROWDB_DATASET_PYTHON=/tmp/crowdb-split-wheel/consumer/bin/python
+  pixi run cargo test -p crowdb-access-server --test dataset_sdk_python_split_test
+  -- --ignored --nocapture` (preceded by clean-env).
+- SDK Python Clippy, root Clippy and formatting passed. Native acceptance is next;
+  runner rejected the stale release image before executing cases, so rebuild the
+  shared OCI image with current server inputs before claiming multi-node evidence.

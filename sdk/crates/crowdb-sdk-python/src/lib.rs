@@ -2,8 +2,10 @@
 // Licensed under the Apache License, Version 2.0.
 
 //! Python owns ergonomics; Rust owns the reusable runtime, HTTP and operations.
+mod control;
 mod operation;
 mod stream;
+mod upload;
 use crowdb_sdk_core::{Error, HttpConfig};
 use crowdb_sdk_dataset::DatasetClient;
 use pyo3::{exceptions::PyRuntimeError, prelude::*};
@@ -216,41 +218,10 @@ impl NativeClient {
         ))
     }
     fn part(&self, id: &str, index: u32, data: &[u8]) -> PyResult<operation::NativeOperation> {
-        self.resources.check()?;
-        if data.is_empty() || data.len() > 4 * 1024 * 1024 {
-            return Err(PyRuntimeError::new_err(
-                "upload part must contain 1 byte through 4 MiB",
-            ));
-        }
-        if id.len() != 32
-            || !id
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-            || id.bytes().all(|b| b == b'0')
-        {
-            return Ok(operation::NativeOperation::failed(
-                self.resources.clone(),
-                &Error::Invalid("upload identity".into()),
-            ));
-        }
-        let id = id.to_owned();
-        let client = self.resources.client();
-        let credit = match self.resources.budget(data.len()) {
-            Ok(credit) => credit,
-            Err(error) => {
-                return Ok(operation::NativeOperation::failed(self.resources.clone(), &error));
-            }
-        };
-        let data = bytes::Bytes::copy_from_slice(data);
-        Ok(operation::NativeOperation::spawn_future(
-            self.resources.clone(),
-            async move {
-                let _credit = credit;
-                Ok(serde_json::to_string(
-                    &client.upload_part(&id, index, data).await?,
-                )?)
-            },
-        ))
+        upload::part(&self.resources, id, index, data, false)
+    }
+    fn part_v2(&self, id: &str, index: u32, data: &[u8]) -> PyResult<operation::NativeOperation> {
+        upload::part(&self.resources, id, index, data, true)
     }
     fn stream(&self, kind: &str, arguments: &str) -> PyResult<stream::NativeStream> {
         self.resources.check()?;

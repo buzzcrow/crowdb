@@ -216,3 +216,17 @@ initial Split publication, independent revision publication, historical Split re
 frozen child inheritance, paged inspection and explicit acknowledgement. Run it
 against a configured Dataset listener with `CROWDB_DATASET_ENDPOINT`,
 `CROWDB_DATASET_NAME` and `CROWDB_DATASET_READ_TOKEN` set.
+
+Python `DatasetClient.control()` and `AsyncDatasetClient.control()` expose the same
+v2 operations through Rust. `SplitSource` identifies a frozen revision/name and
+`decimal(n)` rejects floats, booleans and out-of-range integers. Request dictionaries
+use the OpenAPI v2 field names; omitted required nullable preconditions fail.
+`pages(kind, ...)` is lazy in both synchronous and asynchronous clients. Use
+`next_batch` as a context manager, then explicitly acknowledge after processing.
+Cancellation aborts the Rust operation; clients inherited across fork remain invalid.
+
+`tests/split_consumer.py` is a complete installed-wheel consumer and includes a
+bounded caller-owned stream adapter. Supply a stable source, known length/checksum
+and the same upload ID for retries. File/remote source objects are never mutated.
+The adapter uses the native part API for idempotence and integrity; it does not add
+another HTTP transport. `upload_file(path, id)` runs the bounded Rust file flow.
