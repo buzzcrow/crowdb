@@ -46,7 +46,9 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
 - [ ] **Verification and documentation**: run focused component/runtime/browser
   tests, then fmt/lint separately; update permanent Console/deployment/OCI guides.
   Commit coherent passing tasks; remove requirement/index entry/plan only after
-  full acceptance is verified.
+  full acceptance is verified. The user now explicitly requests retaining
+  decisions for later review: preserve the R235 detail until that review, even
+  after implementation; do not erase its decision record during cleanup.
 
 ## Verification
 
@@ -1009,3 +1011,20 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   state for an unconfirmed command and a later confirmed Stop. Initial checks
   caught module visibility/import and fixture log-directory errors; corrected
   without relaxing assertions. Updated OCI acceptance remains pending.
+
+- Image `5641d9d4`, config
+  `sha256:75b70fbdc08048840856cab3ee6e62b7184714b1356aaaddead32b8bdec92ed3`,
+  failed the existing bridge cleanup before the new default-file scenario;
+  artifact `run-cc1ba43a745e4ccd94606b7fc71b8e8b`. Existing browser preparation
+  13.8 s, cross-UI recovery 5.0 s, independent cleanup 2.3 s, authenticated
+  update 11.4 s pass. The first explicit cleanup HTTP request exceeds 45 s.
+  Its retained journal confirms completed nodes 1/2/3, unreachable node 4's
+  10-second SSH timeout, and node 5 still pending. Sequential target dispatch
+  accumulates shutdown and unreachable-peer delays. Bound independent cleanup
+  dispatch to four targets and persist every individual completion; retain all
+  pending/unreachable-member assertions and original request timeout. Default
+  storage acceptance has not run on this image; no success is claimed.
+- Cleanup dispatch change passes six affected Web cases, all-target/all-feature
+  Web Clippy and Rust formatting. Initial lint caught an oversized handler and
+  needless borrow; split target execution into its owning helper. Original
+  bridge and default-plan acceptance remain pending the rebuilt image.

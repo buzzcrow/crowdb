@@ -346,7 +346,9 @@
 
 - The user authorized choosing a well-supported option or skipping a disputed
   part without waiting for confirmation. Record unresolved consequences here;
-  skipped acceptance criteria remain incomplete.
+  skipped acceptance criteria remain incomplete. Retain this requirement and
+  its decisions after implementation until the user has reviewed them; do not
+  delete this review record as routine requirement cleanup.
 - Allocate numeric DiskGroup IDs from Group 0 and retain a global placement
   reservation. Existing allocation/service interfaces address groups by numeric
   ID, so independent per-node counters would create ambiguous ownership.
@@ -377,6 +379,12 @@
   a later explicit service command owns a new operation and can recover after
   the operator fixes prerequisites. Replaying node setup alone cannot erase the
   service failure budget or override a later operator command.
+
+- Cluster cleanup sends the already confirmed bootstrap command to at most four
+  retained nodes concurrently and saves each result as it arrives. Unreachable
+  nodes remain pending; their timeout does not delay dispatch to all other nodes.
+  Completion still requires every retained member, and retry keeps the same
+  identity and explicit deletion confirmation.
 
 **Dependencies**:
 

@@ -8,6 +8,7 @@ use crate::{
 use axum::{extract::State, http::StatusCode, Json};
 use crowdb_console_shared::deployment::{admission, PreparedBootstrap};
 use crowdb_protocol::mgmt::node::NodeControl;
+use futures::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
@@ -62,29 +63,7 @@ pub(crate) async fn cleanup(
     }
     progress.errors.clear();
     super::save(&progress_path, &progress)?;
-    for member in progress.pending.clone() {
-        let mut node = config
-            .node(member)
-            .cloned()
-            .ok_or_else(|| err_409("Retained member missing"))?;
-        node.ssh_key = Some(super::node_key_path(&state).to_string_lossy().into_owned());
-        match admission::remote_control(
-            &node,
-            &NodeControl::Cleanup {
-                bootstrap: operation.identity.clone(),
-                confirm_delete_system_store: true,
-            },
-        )
-        .await
-        {
-            Ok(_) => {
-                progress.pending.retain(|id| *id != member);
-                progress.completed.push(member);
-            }
-            Err(error) => progress.errors.push(format!("Node {member}: {error}")),
-        }
-        super::save(&progress_path, &progress)?;
-    }
+    cleanup_members(&state, &operation, &config, &mut progress, &progress_path).await?;
     if progress.pending.is_empty() {
         super::save(
             &state.runtime_root.join(format!(
@@ -143,4 +122,46 @@ fn cleanup_config(
         }
     }
     Ok(config)
+}
+
+async fn cleanup_members(
+    state: &AppState,
+    operation: &PreparedBootstrap,
+    config: &crowdb_console_shared::ConsoleConfig,
+    progress: &mut CleanupProgress,
+    progress_path: &std::path::Path,
+) -> Result<(), (StatusCode, Json<ErrorBody>)> {
+    let key = super::node_key_path(state).to_string_lossy().into_owned();
+    let mut pending = Vec::with_capacity(progress.pending.len());
+    for member in &progress.pending {
+        let mut node = config
+            .node(*member)
+            .cloned()
+            .ok_or_else(|| err_409("Retained member missing"))?;
+        node.ssh_key = Some(key.clone());
+        pending.push(node);
+    }
+    // Each target validates the same retained bootstrap independently. An
+    // unreachable peer must not serialize every other target's shutdown.
+    let command = NodeControl::Cleanup {
+        bootstrap: operation.identity.clone(),
+        confirm_delete_system_store: true,
+    };
+    let mut replies = stream::iter(pending.into_iter().map(|node| {
+        let command = &command;
+        async move { (node.id, admission::remote_control(&node, command).await) }
+    }))
+    .buffer_unordered(4);
+    while let Some((member, result)) = replies.next().await {
+        match result {
+            Ok(_) => {
+                progress.pending.retain(|id| *id != member);
+                progress.completed.push(member);
+                progress.completed.sort_unstable();
+            }
+            Err(error) => progress.errors.push(format!("Node {member}: {error}")),
+        }
+        super::save(progress_path, progress)?;
+    }
+    Ok(())
 }
