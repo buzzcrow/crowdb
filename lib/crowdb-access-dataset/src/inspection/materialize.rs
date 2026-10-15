@@ -69,7 +69,7 @@ impl DatasetAuthority {
         }
         Ok(samples)
     }
-    async fn composition_field_locator(
+    pub(super) async fn composition_field_locator(
         &self,
         identity: &DatasetIdentity,
         sample: &[u8],

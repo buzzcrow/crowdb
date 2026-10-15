@@ -25,6 +25,7 @@ mod evaluate;
 
 mod materialize;
 mod matrix;
+mod read;
 pub use matrix::InspectionSample;
 
 pub(crate) mod cursor;

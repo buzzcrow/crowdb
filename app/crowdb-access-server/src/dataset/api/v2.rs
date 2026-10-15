@@ -7,6 +7,8 @@ mod inspection;
 mod inspection_models;
 mod predicate;
 mod query;
+mod read_models;
+mod reads;
 mod split_models;
 mod split_requests;
 mod split_responses;
@@ -65,6 +67,9 @@ impl DatasetHttpService {
             let identity =
                 DatasetIdentity::new(NamespacePath::root(), &parts[6]).map_err(|_| ApiError::invalid())?;
             let tail: Vec<_> = parts[7..].iter().map(String::as_str).collect();
+            if tail.first() == Some(&"read-plans") {
+                return self.v2_read_session(&identity, &tail, request).await;
+            }
             if matches!(
                 tail.as_slice(),
                 ["split-drafts", ..]

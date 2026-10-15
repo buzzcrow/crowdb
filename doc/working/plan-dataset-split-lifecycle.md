@@ -309,7 +309,13 @@ until its corresponding API and visibility tests pass.
   restart/conflict tests. Exit: explicit null versus omitted preconditions, stable
   operation retries, historical reads, exact names and no data-head mutation pass.
   Mutation capability advertisement waits for C2/D5c cleanup completion.
-- [~] **E2c Complete composition and read endpoints**: expose capabilities, head generation,
+- [x] **E2c Expose revision-bound reads**: strict read specs, bounded preparation,
+  pinned status, next/ACK/progress and cancellation using existing binary framing.
+  Files: `dataset/api/v2/{read_models,reads}.rs`, `inspection/read.rs`, Split read
+  HTTP tests. Exit: pending status, cancellation fence, no implicit ACK, unchanged
+  v1 behavior and 16 KiB binary-ID locator projection pass. V2 delivery resolves
+  indexed field locators with one 16 MiB/2-second metadata work budget.
+- [~] **E2d Complete composition and auxiliary endpoints**: expose capabilities, head generation,
   discovery/metadata preparation, composition, revision drafts/commit/status/
   history and scoped member/read operations. Suggested v2 route families under
   `/namespaces/{ns}/datasets/{dataset}`: `/head`, `/snapshot-inventory`,
@@ -792,3 +798,19 @@ failure; record actual failures and add Blocked only when that workflow requires
   `rs-lint`, `rs-fmt-check`, `git diff --check`: passed. OpenAPI records the new
   operations. Mutation advertisement remains deferred until abandoned/superseded
   metadata cleanup is integrated; these HTTP tests do not claim native E2E delivery.
+
+### Revision-bound HTTP read verification
+
+- Added strict v2 prepare/status/next/progress/acknowledge/cancel endpoints. Status
+  exposes frozen Snapshot/Split scope and partial progress; it does not acknowledge
+  delivery. All u64 control values are decimal strings. V1 framing is reused.
+- V2 batch delivery resolves exact member/field locators from bounded indexes,
+  preserving request order and inherited field semantics without full Manifest
+  allocation. V1 keeps its original path and limits. Binary IDs up to 16 KiB are
+  accepted by indexed delivery; unknown samples/fields and cancellation fail.
+- `pixi run clean-env && pixi run cargo test -p crowdb-access-server --test
+  dataset_split_session_contract_test --test dataset_contract_test`: five passed.
+  Focused Dataset inspection-read and Split-session suites: seven passed.
+- Root `rs-lint`, `rs-fmt-check`, `git diff --check`: passed. Remaining auxiliary
+  work includes exact-ID metadata matrices, bounded field preview, v2 ingestion,
+  composition publication ownership and lifecycle cleanup before advertisement.

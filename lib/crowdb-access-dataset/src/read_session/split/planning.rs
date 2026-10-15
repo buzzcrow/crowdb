@@ -13,6 +13,30 @@ use crate::{
 use sha2::{Digest, Sha256};
 
 impl DatasetSessions {
+    /// Reads pinned preparation scope and progress without acknowledging any batch.
+    /// # Errors
+    /// Rejects unknown or cancelled preparations, retired owners and storage failures.
+    pub async fn split_read_status(
+        &self,
+        identity: &DatasetIdentity,
+        id: crate::OperationId,
+        now: u64,
+        cancel: &ReadCancellation,
+    ) -> Result<ReadPreparation, AuthorityError> {
+        let bound = self.bound_split_read_spec(identity, id, cancel).await?;
+        let (_, progress) = self.split_preparation_progress(identity, id, cancel).await?;
+        if progress.cancelled {
+            return Err(DatasetError::ReadCancelled.into());
+        }
+        self.authority
+            .require_committed_snapshot(identity, bound.snapshot)
+            .await?;
+        match self.record(identity, id).await {
+            Ok(_) => self.prepared_split_read(identity, &bound, &progress, now).await,
+            Err(AuthorityError::NotFound) => Ok(preparation(&bound, &progress)),
+            Err(error) => Err(error),
+        }
+    }
     /// Resolves aliases once and advances one bounded effective-selection/Split window.
     /// Complete preparation freezes ordering and worker membership before payload reads.
     /// # Errors

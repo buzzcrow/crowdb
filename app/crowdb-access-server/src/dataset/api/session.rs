@@ -130,6 +130,7 @@ impl DatasetHttpService {
                         snapshot: batch.snapshot.to_string(),
                         sample_ids: batch.ids.iter().map(|id| STANDARD.encode(id)).collect(),
                         fields: batch.fields,
+                        sample_id_limit: None,
                     },
                     Some(batch.next),
                     batch.end,

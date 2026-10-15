@@ -22,6 +22,25 @@ pub(super) struct BatchRequest {
     pub snapshot: String,
     pub sample_ids: Vec<String>,
     pub fields: Vec<String>,
+    #[serde(skip)]
+    pub sample_id_limit: Option<usize>,
+}
+impl BatchRequest {
+    fn ids(&self) -> Result<Vec<Vec<u8>>, ApiError> {
+        self.sample_ids
+            .iter()
+            .map(|value| {
+                let bytes = STANDARD.decode(value).map_err(|_| ApiError::invalid())?;
+                if bytes.is_empty()
+                    || bytes.len() > self.sample_id_limit.unwrap_or(1024)
+                    || STANDARD.encode(&bytes) != *value
+                {
+                    return Err(ApiError::invalid());
+                }
+                Ok(bytes)
+            })
+            .collect::<Result<Vec<_>, _>>()
+    }
 }
 #[derive(Serialize)]
 struct BatchField {
@@ -65,17 +84,7 @@ impl DatasetHttpService {
         request_id: String,
     ) -> ApiResult {
         let id = snapshot(&request.snapshot)?;
-        let ids = request
-            .sample_ids
-            .iter()
-            .map(|value| {
-                let bytes = STANDARD.decode(value).map_err(|_| ApiError::invalid())?;
-                if bytes.is_empty() || bytes.len() > 1024 || STANDARD.encode(&bytes) != *value {
-                    return Err(ApiError::invalid());
-                }
-                Ok(bytes)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let ids = request.ids()?;
         let authority = self.reads.authority();
         let handle = crowdb_access_dataset::OperationId::random();
         authority
@@ -116,6 +125,16 @@ impl DatasetHttpService {
         });
         let samples = if ids.is_empty() {
             Vec::new()
+        } else if request.sample_id_limit.is_some() {
+            authority
+                .resolve_inspection_batch_locators(
+                    identity,
+                    id,
+                    &ids,
+                    &request.fields,
+                    &crowdb_access_dataset::ReadCancellation::new(),
+                )
+                .await?
         } else {
             authority
                 .resolve_batch_locators(identity, id, &ids, &request.fields)
