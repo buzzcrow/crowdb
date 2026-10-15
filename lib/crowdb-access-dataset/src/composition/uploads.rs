@@ -42,7 +42,7 @@ impl DatasetAuthority {
             }
             let mut next = state.clone();
             next.edit = None;
-            next.draft.record.version = 2;
+            next.draft.record.version = next.draft.record.version.max(2);
             next.uploads = Some(UploadOwnership::default());
             self.replace_composition(identity, &old, &state, &next).await?;
         }

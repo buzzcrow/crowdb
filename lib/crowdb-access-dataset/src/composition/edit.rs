@@ -54,7 +54,7 @@ impl DatasetAuthority {
         if state.draft.record.revision != edit.expected_revision {
             return Err(CompositionError::Conflict);
         }
-        let mut next = edited_state(&state, edit, marker)?;
+        let mut next = edited_state(&state, edit, marker.clone())?;
         if let Some(parent) = next.draft.record.parent {
             validate_schema_extension(
                 &self.composition_parent_schema(identity, parent).await?,
@@ -65,6 +65,11 @@ impl DatasetAuthority {
         self.renew_composition_source(identity, &next.draft).await?;
         next.draft.record.source_lease_deadline = super::state::now().saturating_add(3600);
         next.encode()?;
+        let (old, state) = self
+            .register_composition_edit(identity, &old, &state, edit.id)
+            .await?;
+        next = edited_state(&state, edit, marker)?;
+        next.draft.record.source_lease_deadline = super::state::now().saturating_add(3600);
         // Edit IDs own immutable pages. Losing a root CAS cannot occupy the winner's ordinal.
         let mut page_key = key::scope(b"DS\0CE\0", identity, operation)?;
         page_key.extend_from_slice(edit.id.as_bytes());

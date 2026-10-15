@@ -293,7 +293,18 @@ and metadata window at 9 MiB with a two-second operation deadline.
 Managed composition uploads register staging and candidate owners durably before
 claiming payloads. Publication requires complete candidate ownership. Terminal
 cleanup retires the staging owner and obsolete candidate owners, preserving
-published candidates and independent owners of shared uploads.
+published candidates and independent owners of shared uploads. Snapshot upload
+reclaim walks at most twenty retained Manifest field positions per step after
+terminal admission fencing. It revokes only that Snapshot publication's owner;
+physical cleanup stays in the durable upload registry. The retained Manifest
+allows owner cleanup even after inspection indexes have been retired.
+
+Composition version 3 registers each edit ID in the root before writing its
+payload page. Up to 4096 registered edits, including failed attempts, are allowed.
+Terminal cleanup seals these pages in bounded windows and keeps immutable edit
+receipts. Older composition writers reject version 3 rather than ignoring the
+registration protocol. Existing records remain readable; editing upgrades the
+root while preserving its journal and payload ownership.
 
 `retire_owner` permanently revokes one publication's upload claim with the same
 session CAS that removes its ownership. A delayed claim for that operation then

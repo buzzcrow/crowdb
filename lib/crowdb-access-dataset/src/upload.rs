@@ -311,3 +311,6 @@ fn decode_part(bytes: &[u8]) -> Result<PartEntry, UploadError> {
     }
     Ok(record)
 }
+
+mod reclaim;
+pub use reclaim::{SnapshotUploadCleanup, UploadReclaimError};

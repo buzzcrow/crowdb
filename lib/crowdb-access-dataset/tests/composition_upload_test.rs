@@ -244,3 +244,72 @@ async fn child_candidate_claims_inherited_upload_and_cancellation_preserves_pare
         Some(parent)
     );
 }
+
+#[tokio::test]
+async fn reclaimed_snapshot_retires_its_upload_owner_after_index_cleanup() {
+    let f = TestComposition::new().await;
+    let snapshot = f.prepare().await;
+    f.own().await;
+    let attempt = common::attempt(&f.authority, &f.identity, snapshot).await;
+    f.authority
+        .publish_composition(&f.identity, f.operation, &attempt)
+        .await
+        .unwrap();
+    assert!(f.cleanup().await.complete);
+    let record = f.authority.get_snapshot(&f.identity, snapshot).await.unwrap();
+    let other_owner = OperationId::random();
+    f.uploads.claim(&f.location, other_owner, 3).await.unwrap();
+    assert!(matches!(
+        f.authority
+            .reclaim_snapshot_uploads_step(&f.identity, snapshot, &f.uploads)
+            .await,
+        Err(UploadReclaimError::Authority(AuthorityError::SnapshotProtected))
+    ));
+    let root = f
+        .authority
+        .prepare_snapshot_candidate(
+            &f.identity,
+            None,
+            publication::publication_manifest(3),
+            OperationId::random(),
+        )
+        .await
+        .unwrap();
+    f.authority
+        .publish_snapshot_candidate(
+            &f.identity,
+            &common::attempt(&f.authority, &f.identity, root).await,
+        )
+        .await
+        .unwrap();
+    f.authority
+        .reclaim_snapshot_metadata(&f.identity, snapshot)
+        .await
+        .unwrap();
+    let progress = f
+        .authority
+        .reclaim_snapshot_uploads_step(&f.identity, snapshot, &f.uploads)
+        .await
+        .unwrap();
+    assert!(progress.complete);
+    assert_eq!(progress.retired_references, 1);
+    assert_eq!(
+        f.authority
+            .reclaim_snapshot_uploads_step(&f.identity, snapshot, &f.uploads)
+            .await
+            .unwrap(),
+        progress
+    );
+    assert!(matches!(
+        f.uploads.abort(&f.location).await,
+        Err(UploadError::Conflict)
+    ));
+    assert!(matches!(
+        f.uploads
+            .claim(&f.location, record.publication.operation, 4)
+            .await,
+        Err(UploadError::Conflict)
+    ));
+    f.uploads.retire_owner(&f.location, other_owner).await.unwrap();
+    assert!(f.uploads.abort(&f.location).await.unwrap().cleanup_complete);
+}

@@ -918,3 +918,23 @@ failure; record actual failures and add Blocked only when that workflow requires
   bounds, separate from the ordinary inspection budget.
 - Remaining lifecycle work: orphan edit pages, committed Snapshot upload owner
   retirement and full HTTP ingestion/cleanup orchestration. C2/D5c remain open.
+
+### Terminal upload ownership and edit payload cleanup
+
+- Snapshot upload reclaim uses the retained bounded Manifest after terminal
+  admission fencing, retiring at most twenty field positions per call. Durable
+  progress survives retry/index cleanup; independent shared owners remain valid.
+  Physical data cleanup remains in the upload registry and is not reported as
+  completed merely because ownership retirement finished.
+- Composition version 3 registers edit IDs before writing edit payload pages.
+  Terminal cleanup seals registered pages, including failed edits whose root CAS
+  did not apply, while historical edit receipts continue to return their original
+  result. Registration is capped at 4096 attempted edit IDs and upgrades old roots.
+- New tests prove latest protection, shared upload survival, permanent retired-owner
+  rejection, post-index owner cleanup, failed edit admission/late-write fencing,
+  historical edit receipts and published data survival. Focused suites passed.
+- Lifecycle pieces are available for composition API integration. D5c still needs
+  HTTP orchestration and whole-Snapshot cleanup of in-flight Split draft work;
+  mutation capabilities remain unadvertised pending that acceptance.
+- Full Dataset crate tests and root Clippy passed after the terminal ownership/edit
+  changes. The full test output is `/tmp/dataset-lifecycle-cleanup-tests.log`.

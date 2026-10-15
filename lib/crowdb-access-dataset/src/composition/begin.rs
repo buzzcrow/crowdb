@@ -139,7 +139,7 @@ impl DatasetAuthority {
         }
         let draft = CompositionDraft {
             record: CompositionRecord {
-                version: 1,
+                version: 3,
                 operation,
                 parent: input.parent,
                 parent_split_revision: revision,
@@ -161,6 +161,7 @@ impl DatasetAuthority {
             draft,
             edit: None,
             journal: vec![],
+            registered_edits: vec![],
             evaluation: None,
         };
         state.encode()?;

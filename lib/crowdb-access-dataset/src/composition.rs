@@ -12,6 +12,8 @@ mod cleanup;
 pub use candidates::CompositionCandidateCleanup;
 pub use cleanup::CompositionScratchCleanup;
 mod edit;
+mod edit_cleanup;
+pub use edit_cleanup::CompositionEditCleanup;
 mod evaluate_step;
 mod evaluation;
 pub use evaluation::CompositionPreview;

@@ -107,7 +107,7 @@ impl CompositionRecord {
     /// # Errors
     /// Rejects malformed versions, mismatched frozen sources or stale evaluation.
     pub fn validate(&self) -> Result<(), SplitError> {
-        if !matches!(self.version, 1 | 2) {
+        if !matches!(self.version, 1..=3) {
             return Err(SplitError::InvalidRecord);
         }
         OperationId::from_bytes(self.operation.as_bytes()).map_err(|_| SplitError::InvalidRecord)?;

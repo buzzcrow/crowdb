@@ -20,6 +20,8 @@ pub(super) struct CompositionState {
     pub draft: CompositionDraft,
     pub edit: Option<EditMarker>,
     pub journal: Vec<OperationId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub registered_edits: Vec<OperationId>,
     pub evaluation: Option<super::evaluation::Evaluation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uploads: Option<super::uploads::UploadOwnership>,
@@ -33,11 +35,17 @@ impl CompositionState {
     pub(super) fn encode(&self) -> Result<Vec<u8>, CompositionError> {
         self.draft.record.validate()?;
         if let Some(uploads) = &self.uploads {
-            if self.draft.record.version != 2 {
+            if !matches!(self.draft.record.version, 2 | 3) {
                 return Err(CompositionError::Corrupt);
             }
             uploads.validate()?;
         } else if self.draft.record.version == 2 {
+            return Err(CompositionError::Corrupt);
+        }
+        if self.registered_edits.len() > 4096
+            || self.registered_edits.windows(2).any(|pair| pair[0] >= pair[1])
+            || (!self.registered_edits.is_empty() && self.draft.record.version != 3)
+        {
             return Err(CompositionError::Corrupt);
         }
         if self.journal.len() > 4096 || self.journal.len() as u64 != self.draft.record.edit_pages {
