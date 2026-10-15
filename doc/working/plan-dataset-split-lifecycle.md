@@ -171,7 +171,7 @@ until its corresponding API and visibility tests pass.
 
 ## Phase C — durable drafts and data publication prerequisites
 
-- [ ] **C1 Compose child data on the server**: durable revision-CAS draft binds
+- [~] **C1 Compose child data on the server**: durable revision-CAS draft binds
   parent and optional Split source revision, with bounded edit pages. Expose begin,
   apply-edit, inspect, evaluate-next-page, prepare and abandon operations; each
   editing request carries expected draft revision and idempotency identity.
@@ -234,7 +234,7 @@ until its corresponding API and visibility tests pass.
   rename/remove and cancellation/abandon. Files: new `split/{draft,pages,prepare}.rs`,
   `tests/split_revision_test.rs`. Exit: stale preview cannot prepare, restart resumes
   bounded work, an empty set revision is distinguishable from never-created.
-- [~] **D2c Resolve frozen membership sources**: after D3 provides committed
+- [x] **D2c Resolve frozen membership sources**: after D3 provides committed
   revision reads, evaluate inherited definitions by source revision membership
   intersection; never reevaluate their rule implicitly. Pin source owners and
   reject missing/foreign revision/name. Add indexed membership lookup and tests
@@ -583,3 +583,20 @@ failure; record actual failures and add Blocked only when that workflow requires
   continuation rejection. Full Dataset suite: 98 passed. Root Rust lint passes
   after splitting a long test fixture. Logs: `/tmp/dataset-split-publication-tests.log`,
   `/tmp/dataset-split-publication-lint.log`. Rust fmt and diff whitespace pass.
+
+## Frozen Split inheritance verification — 2026-10-16
+
+- D2c resolves exact committed parent revision/name and intersects its frozen
+  membership with child Sample IDs. It does not run inherited predicates against
+  new child samples. Explicit reevaluation switches origin to Evaluated.
+- Frozen source definitions are cached per revision within one bounded evaluation
+  window; binary search over checksum-bound member pages avoids a full source
+  membership scan. Source ownership must match the child's direct parent.
+  Drafts retain source leases, including sources removed by subsequent edits, so
+  publish/abandon can release every acquired source handle without losing retry
+  ownership. Expired leases are revalidated before evaluation/preparation.
+- Tests prove frozen r1 survives parent r2, newly matching child IDs stay unassigned,
+  explicit reevaluation admits them, removed IDs disappear by intersection, and
+  uncommitted/unknown source revisions or names fail. Full Dataset suite: 100
+  tests passed; root Rust lint passed. Logs: `/tmp/dataset-split-inheritance-tests.log`,
+  `/tmp/dataset-split-inheritance-lint.log`. Rust fmt and diff whitespace pass.

@@ -80,7 +80,7 @@ impl DatasetAuthority {
         self.read_split_revision(identity, snapshot, revision, &mut work)
             .await
     }
-    pub(super) async fn read_split_revision(
+    pub(crate) async fn read_split_revision(
         &self,
         identity: &DatasetIdentity,
         snapshot: SnapshotId,

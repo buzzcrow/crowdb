@@ -22,6 +22,8 @@ pub(super) struct DraftState {
     pub edit: Option<EditMarker>,
     #[serde(default)]
     pub evaluation: Option<super::evaluation::EvaluationProgress>,
+    #[serde(default)]
+    pub source_leases: Vec<crate::SnapshotId>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -33,6 +35,16 @@ pub(super) struct EditReceipt {
 impl DraftState {
     pub(super) fn encode(&self) -> Result<Vec<u8>, SplitLifecycleError> {
         self.record.validate()?;
+        if self.source_leases.len() > 1
+            || super::inheritance::source_owners(&self.record)
+                .iter()
+                .any(|id| !self.source_leases.contains(id))
+        {
+            return Err(SplitLifecycleError::Corrupt);
+        }
+        for source in &self.source_leases {
+            crate::SnapshotId::from_bytes(source.as_bytes()).map_err(crate::AuthorityError::from)?;
+        }
         if let Some(evaluation) = &self.evaluation {
             evaluation.validate(self)?;
         } else if matches!(
@@ -151,6 +163,11 @@ impl DatasetAuthority {
         record: &SplitDraftRecord,
     ) -> Result<(), SplitLifecycleError> {
         self.require_committed_snapshot(identity, record.snapshot).await?;
+        self.validate_split_sources(identity, record).await?;
+        for source in super::inheritance::source_owners(record) {
+            self.touch_read_handle(identity, source, record.operation, now(), 3600)
+                .await?;
+        }
         self.touch_read_handle(identity, record.snapshot, record.operation, now(), 3600)
             .await?;
         Ok(())

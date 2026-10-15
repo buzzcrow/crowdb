@@ -3,13 +3,12 @@
 
 use super::{content::validate_page_budget, key, work::InspectionWork, FieldStorageKind, InspectionError};
 use crate::{
-    selection::EffectiveSelection,
-    split::{DraftSplit, MembershipOrigin, SamplePartition, SplitDefinition, SplitValidation},
+    split::{DraftSplit, SplitValidation},
     AuthorityError, DatasetAuthority, DatasetError, DatasetIdentity, MetadataScanBudget, ReadCancellation,
     SnapshotId,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct SplitEvaluationWindow {
@@ -37,40 +36,12 @@ impl DatasetAuthority {
         let schema = self
             .inspection_schema_definitions(identity, &summary, &mut work)
             .await?;
-        let mut rules = Vec::new();
-        let mut partitions = Vec::new();
-        let mut fields = BTreeSet::new();
-        let mut explicit = BTreeSet::new();
-        for split in splits {
-            if !matches!(split.origin, MembershipOrigin::Evaluated) {
-                return Err(InspectionError::Unsupported(
-                    "frozen membership source is not available".into(),
-                ));
-            }
-            match &split.definition {
-                SplitDefinition::Selection(selection) => {
-                    let rule = EffectiveSelection::new(selection, &schema).map_err(AuthorityError::from)?;
-                    fields.extend(rule.fields.iter().cloned());
-                    explicit.extend(rule.explicit_ids.iter().cloned());
-                    rules.push(Some(rule));
-                    partitions.push(None);
-                }
-                SplitDefinition::WeightedPartition { seed, weights, index } => {
-                    split
-                        .definition
-                        .validate()
-                        .map_err(|_| InspectionError::Corrupt)?;
-                    let partition =
-                        SamplePartition::new(*seed, weights.clone()).map_err(|_| InspectionError::Corrupt)?;
-                    partitions.push(Some((partition, weights[*index as usize].name.clone())));
-                    rules.push(None);
-                }
-            }
-        }
+        let compiled =
+            super::split_rules::compile(self, identity, summary.parent, splits, &schema, &mut work).await?;
         let prefix = key::scope(identity, snapshot, b'M').map_err(AuthorityError::from)?;
-        for id in explicit {
+        for id in &compiled.explicit {
             let mut key = prefix.clone();
-            key::component(&mut key, &id);
+            key::component(&mut key, id);
             if work.get(&key, 128 * 1024).await?.is_none() {
                 return Err(AuthorityError::Invalid(DatasetError::SampleNotFound).into());
             }
@@ -88,7 +59,7 @@ impl DatasetAuthority {
         };
         for id in samples.entries {
             let mut values = BTreeMap::new();
-            for field in &fields {
+            for field in &compiled.fields {
                 if let Some(metadata) = self
                     .effective_field_metadata(identity, snapshot, &id, field, &mut summaries, &mut work)
                     .await?
@@ -104,13 +75,9 @@ impl DatasetAuthority {
             }
             let mut count = 0;
             for index in 0..splits.len() {
-                let matches = if let Some(rule) = &rules[index] {
-                    rule.matches(&id, &values)
-                } else if let Some((partition, name)) = &partitions[index] {
-                    partition.assign(&id).map_err(|_| InspectionError::Corrupt)? == name
-                } else {
-                    false
-                };
+                let matches = compiled.rules[index]
+                    .matches(self, identity, &id, &values, &mut work)
+                    .await?;
                 if matches {
                     result.members[index].push(id.clone());
                     count += 1;

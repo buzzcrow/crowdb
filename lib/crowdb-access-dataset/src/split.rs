@@ -54,3 +54,5 @@ mod recovery;
 
 mod read;
 pub use read::SplitRevisionSummary;
+
+mod inheritance;

@@ -168,8 +168,7 @@ impl DatasetAuthority {
             attempt: receipt.attempt.id,
         };
         self.replace_split_draft(identity, old, state, &next).await?;
-        self.release_read_handle(identity, state.record.snapshot, state.record.operation)
-            .await?;
+        self.release_split_draft_leases(identity, state).await?;
         Ok(())
     }
 }

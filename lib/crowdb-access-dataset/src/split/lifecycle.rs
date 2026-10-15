@@ -70,11 +70,14 @@ impl DatasetAuthority {
             progress: DraftProgress::Editing,
         };
         let initial = record.encode()?;
+        self.validate_split_sources(identity, &record).await?;
         self.require_committed_snapshot(identity, snapshot).await?;
         self.put_split_state(&state_key(b"DS\0SB\0", identity, operation, None)?, &initial)
             .await?;
+        let source_leases = super::inheritance::source_owners(&record).into_iter().collect();
         let state = DraftState {
             record,
+            source_leases,
             edit: None,
             evaluation: None,
         };
@@ -143,7 +146,12 @@ impl DatasetAuthority {
         next.record.splits.clone_from(&edit.splits);
         next.edit = Some(marker);
         next.evaluation = None;
+        self.validate_split_sources(identity, &next.record).await?;
+        let mut sources: std::collections::BTreeSet<_> = next.source_leases.iter().copied().collect();
+        sources.extend(super::inheritance::source_owners(&next.record));
+        next.source_leases = sources.into_iter().collect();
         self.replace_split_draft(identity, &old, &state, &next).await?;
+        self.renew_split_draft_lease(identity, &next.record).await?;
         Ok(next.record)
     }
 
@@ -193,8 +201,7 @@ impl DatasetAuthority {
         next.record.progress = DraftProgress::Abandoned;
         next.edit = None;
         self.replace_split_draft(identity, &old, &state, &next).await?;
-        self.release_read_handle(identity, next.record.snapshot, operation)
-            .await?;
+        self.release_split_draft_leases(identity, &next).await?;
         Ok(next.record)
     }
 }
