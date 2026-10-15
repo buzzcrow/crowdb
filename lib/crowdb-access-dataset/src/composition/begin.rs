@@ -157,6 +157,7 @@ impl DatasetAuthority {
         self.validate_composition_splits(identity, &draft).await?;
         self.renew_composition_source(identity, &draft).await?;
         let state = CompositionState {
+            uploads: None,
             draft,
             edit: None,
             journal: vec![],

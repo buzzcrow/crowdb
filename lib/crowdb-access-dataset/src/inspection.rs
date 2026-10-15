@@ -27,6 +27,7 @@ mod exact;
 mod materialize;
 mod matrix;
 mod read;
+mod uploads;
 pub use matrix::InspectionSample;
 
 pub(crate) mod cursor;

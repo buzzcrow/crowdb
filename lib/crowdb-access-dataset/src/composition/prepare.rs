@@ -176,7 +176,10 @@ impl DatasetAuthority {
         Ok(manifest)
     }
 }
-fn candidate_operation(operation: OperationId, revision: u64) -> Result<OperationId, CompositionError> {
+pub(super) fn candidate_operation(
+    operation: OperationId,
+    revision: u64,
+) -> Result<OperationId, CompositionError> {
     let mut hash = Sha256::new();
     hash.update(b"crowdb-composition-candidate-v1\0");
     hash.update(operation.as_bytes());

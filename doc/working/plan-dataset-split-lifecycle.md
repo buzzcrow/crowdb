@@ -838,3 +838,23 @@ failure; record actual failures and add Blocked only when that workflow requires
   YAML parser unavailable in the Pixi Python environment: `pixi run
   /usr/bin/python3 /tmp/validate_dataset_openapi.py` passed (26 paths, 32 unique
   operations, no duplicate YAML keys, all local schema references resolve).
+
+### Composition upload ownership verification
+
+- Managed compositions use version 2 roots: staging references are durably
+  registered before upload claims; candidate references are registered in bounded
+  locator windows before claims. Publication rejects incomplete ownership.
+- Terminal cleanup retires staging owners and obsolete candidate owners, preserving
+  committed candidates and other owners of shared payloads. Candidate fencing and
+  owner retirement share a twenty-operation window with durable progress. Revoked
+  owners cannot claim again after delayed work resumes. Historical edit receipts
+  remain readable after staging retirement.
+- `pixi run cargo test -p crowdb-access-dataset --test composition_upload_test
+  --test composition_test --test composition_publication_test --test upload_test`
+  passed fifteen cases, including four new ownership scenarios. Initial test
+  compilation exposed fixture type errors (binary locator and verified part tuple);
+  corrected those without production changes. Clippy's similar-name failure was
+  resolved by naming the ownership collection explicitly and factoring enrollment.
+- `pixi run rs-lint` passed. C2/D5c remains open: obsolete preparation/scratch and
+  abandoned Split metadata cleanup, committed Snapshot payload retirement, and
+  HTTP cleanup orchestration are not completed by this change.

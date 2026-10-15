@@ -72,7 +72,7 @@ impl DatasetAuthority {
         self.replace_composition(identity, &old, &state, &next).await?;
         Ok(next.draft)
     }
-    async fn composition_edit_receipt(
+    pub(super) async fn composition_edit_receipt(
         &self,
         identity: &DatasetIdentity,
         operation: OperationId,

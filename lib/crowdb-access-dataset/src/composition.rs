@@ -16,10 +16,14 @@ mod key;
 mod prepare;
 mod publication;
 mod state;
+mod uploads;
 pub use input::{CompositionDraft, CompositionEdit, CompositionInput, CompositionPreparation, SampleChange};
+pub use uploads::{CompositionUploadCleanup, CompositionUploadStatus};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CompositionError {
+    #[error(transparent)]
+    Upload(#[from] crate::UploadError),
     #[error(transparent)]
     Authority(#[from] crate::AuthorityError),
     #[error(transparent)]

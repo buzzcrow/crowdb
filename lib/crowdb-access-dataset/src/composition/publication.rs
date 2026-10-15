@@ -36,6 +36,9 @@ impl DatasetAuthority {
                 .await?;
             return Ok(receipt);
         }
+        if state.uploads.is_some() && !super::uploads::publication_ready(&state)? {
+            return Err(CompositionError::Conflict);
+        }
         self.persist_attempt(identity, attempt).await?;
         match state.draft.record.progress {
             DraftProgress::Prepared { .. } => {
