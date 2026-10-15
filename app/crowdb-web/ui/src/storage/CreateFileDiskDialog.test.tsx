@@ -42,6 +42,15 @@ describe('managed file creation', () => {
     expect(screen.getByRole('button', { name: 'Create and Join' })).toBeEnabled();
     expect(create).not.toHaveBeenCalled();
   });
+  it('requires bitmap-word and whole-zone capacity before submission', () => {
+    render(<CreateFileDiskDialog nodeId={2} groups={groups} groupId={7} available={null} onAccepted={vi.fn()} onClose={vi.fn()} />);
+    for (const [capacity, valid] of [['0.015625', false], ['0.0625', true], ['48', false], ['64', true]] as const) {
+      fireEvent.change(screen.getByLabelText('Capacity (GiB)'), { target: { value: capacity } });
+      const submit = screen.getByRole('button', { name: 'Create and Join' });
+      if (valid) expect(submit).toBeEnabled(); else expect(submit).toBeDisabled();
+    }
+    expect(create).not.toHaveBeenCalled();
+  });
   it('keeps identity and inputs fixed after an unconfirmed response', async () => {
     create.mockRejectedValueOnce(new Error('connection lost'));
     render(<CreateFileDiskDialog nodeId={2} groups={groups} groupId={7} available={null} onAccepted={vi.fn()} onClose={vi.fn()} />);

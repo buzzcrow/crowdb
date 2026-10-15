@@ -66,11 +66,11 @@ pub(crate) async fn create(
     canonical_operation(&body.operation_id)?;
     if body.capacity_bytes == 0
         || body.capacity_bytes > i64::MAX as u64
-        || body.capacity_bytes % u64::from(UNIT_SIZE) != 0
+        || body.capacity_bytes % (64 * u64::from(UNIT_SIZE)) != 0
         || (body.capacity_bytes > ZONE_SIZE && body.capacity_bytes % ZONE_SIZE != 0)
     {
         return Err(err_400(
-            "File capacity must be a positive multiple of 1 MiB within signed 64-bit bounds; above 32 GiB it must contain whole 32 GiB zones",
+            "File capacity must be a positive multiple of 64 MiB within signed 64-bit bounds; above 32 GiB it must contain whole 32 GiB zones",
         ));
     }
     let binding = crate::node::cluster_binding(&state)?

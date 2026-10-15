@@ -30,7 +30,7 @@ export function CreateFileDiskDialog({ nodeId, groups, groupId, available, onClo
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const bytes = Number(capacity) * GIB;
-  const valid = Number.isSafeInteger(bytes) && bytes > 0 && bytes % MIB === 0 && groups.some(entry => entry.id === Number(group));
+  const valid = Number.isSafeInteger(bytes) && bytes > 0 && bytes % (64 * MIB) === 0 && (bytes <= 32 * GIB || bytes % (32 * GIB) === 0) && groups.some(entry => entry.id === Number(group));
   const enough = available === null || available >= GIB + (sparse ? 0 : bytes);
   const path = `/opt/crowdb/data/disks/managed-${operationId}.img`;
   const submit = async () => {
@@ -56,6 +56,7 @@ export function CreateFileDiskDialog({ nodeId, groups, groupId, available, onClo
       <p className="tw-text-xs tw-text-muted tw-break-all">Container path: <code>{path}</code></p>
       <Input label="Capacity (GiB)" inputMode="decimal" value={capacity} disabled={!!sealed}
         onChange={event => setCapacity(event.target.value)} />
+      <p className="tw-text-xs tw-text-muted">Use multiples of 64 MiB; above 32 GiB, use whole 32 GiB zones.</p>
       <Select label="Disk group" value={group} disabled={!!sealed} onChange={event => setGroup(event.target.value)}>
         <option value="">Select a disk group</option>
         {groups.map(entry => <option key={entry.id} value={entry.id}>{entry.name || `DG-${entry.id}`} · DG-{entry.id}</option>)}

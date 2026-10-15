@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button } from '../components/ui/Button';
 import { Domain, type CapacityUsageResponse, type HardwareCapacitySummary } from '../types';
 import type { NodeDiskGroups } from '../data/useDiskInventory';
@@ -11,7 +11,9 @@ import { hwStatusLabel } from '../utils/entityDisplay';
 import { createNodeDiskFile } from '../api';
 import { CreateFileDiskDialog } from './CreateFileDiskDialog';
 import { useNodeStorage } from './useNodeStorage';
-import { filePhaseLabel, type FilePreparation, type CandidateSummary } from './types';
+import { useRemovedDisks } from './useRemovedDisks';
+import { DiskLifecycleDialog } from './DiskLifecycleDialog';
+import { filePhaseLabel, type FilePreparation, type CandidateSummary, type DiskLifecycle } from './types';
 
 interface Props {
   nodeId: number; rackId: number; active: boolean; readonly: boolean; ready: boolean;
@@ -23,7 +25,11 @@ interface Props {
 }
 
 export function NodeStorage({ nodeId, rackId, active, readonly, ready, inventory, hardware, usage, candidatesOnly, loadGroup, onAddGroup, onCandidates }: Props) {
+  const candidateSection = useRef<HTMLElement>(null);
   const model = useNodeStorage(nodeId, active);
+  const removed = useRemovedDisks(nodeId, active && ready);
+  const [managing, setManaging] = useState<{ disk: string; group: number }>();
+  const [confirmed, setConfirmed] = useState<Record<string, DiskLifecycle>>({});
   const { inspectEntity, selectEntity, selectedEntity } = useSelection();
   const [creating, setCreating] = useState(false);
   const [retryError, setRetryError] = useState('');
@@ -35,14 +41,17 @@ export function NodeStorage({ nodeId, rackId, active, readonly, ready, inventory
   const registered = Object.values(inventory?.disksByDg ?? {}).flat();
   const paths = new Set(registered.map(disk => disk.device_path).filter(Boolean));
   const pendingPaths = new Set(Object.values(model.operations).filter(operation => operation.request.admission).map(operation => operation.path));
-  const candidates = model.inventory?.disks.filter(disk => !paths.has(disk.path) && !pendingPaths.has(disk.path)) ?? [];
+  const removedPaths = new Set(removed.items.map(disk => disk.container_path));
+  const candidates = model.inventory?.disks.filter(disk => !paths.has(disk.path) && !pendingPaths.has(disk.path) && !removedPaths.has(disk.path)) ?? [];
   const operationRows = Object.values(model.operations).filter(operation => operation.request.admission);
   const membershipKnown = inventory && inventory.diskGroups.every(group => inventory.disksByDg[group.id] !== undefined);
   const observedAt = model.inventory?.observed_at_ms;
-  const stale = !!model.errors.inventory;
+  const stale = !!model.errors.inventory || !!removed.error;
+  const candidateCount = candidates.length + removed.items.length;
+  const partial = !!removed.next;
   useEffect(() => {
-    if (membershipKnown && observedAt !== undefined) onCandidates(nodeId, { count: candidates.length, observed_at_ms: observedAt, stale });
-  }, [membershipKnown, observedAt, stale, candidates.length, nodeId, onCandidates]);
+    if (membershipKnown && observedAt !== undefined && removed.observed) onCandidates(nodeId, { count: candidateCount, observed_at_ms: observedAt, stale, partial });
+  }, [membershipKnown, observedAt, stale, candidateCount, partial, removed.observed, nodeId, onCandidates]);
   const recommendedGroup = operationRows.find(operation => operation.request.admission?.media_type === null && inventory?.diskGroups.some(group => group.id === operation.request.admission!.disk_group_id))?.request.admission?.disk_group_id
     ?? inventory?.diskGroups.find(group => inventory.disksByDg[group.id]?.length === 0)?.id;
   const backing = operationRows.map(operation => model.inventory?.disks.find(disk => disk.path === operation.path && disk.backing_identity === operation.backing_identity)).find(disk => disk?.backing_filesystem);
@@ -59,7 +68,7 @@ export function NodeStorage({ nodeId, rackId, active, readonly, ready, inventory
     <header className="tw-flex tw-flex-wrap tw-items-center tw-justify-between tw-gap-2">
       <h2 className="tw-font-semibold">Storage</h2>
       <div className="tw-flex tw-gap-2">
-        <Button size="sm" variant="secondary" disabled={model.loading} onClick={() => { void model.refresh(); }}>Refresh Discovery</Button>
+        <Button size="sm" variant="secondary" disabled={model.loading} onClick={() => { void model.refresh(); void removed.refresh(); for (const group of inventory?.diskGroups ?? []) void loadGroup(nodeId, group.id); }}>Refresh Discovery</Button>
         <Button size="sm" variant="secondary" disabled={readonly || !ready} onClick={onAddGroup}>Add Disk Group</Button>
         <Button size="sm" disabled={readonly || !ready || !membershipKnown} onClick={() => setCreating(true)}>Create File Disk</Button>
       </div>
@@ -67,6 +76,7 @@ export function NodeStorage({ nodeId, rackId, active, readonly, ready, inventory
     {!ready && <p role="status" className="tw-rounded tw-border tw-border-border tw-p-3">Waiting for Group 0 · inventory is provisional; disk membership cannot change.</p>}
     {Object.entries(model.errors).filter(([, error]) => error).map(([source, error]) => <p key={source} role="alert" className="tw-text-sm tw-text-failed">{source}: {error} · Last-known observations retained.</p>)}
     {model.inventory && <p className="tw-text-xs tw-text-muted">Discovery observed {new Date(model.inventory.observed_at_ms).toLocaleString()}{model.errors.inventory ? ' · Stale' : ''}. Virtual capacity, allocated file bytes and shared backing space are separate.</p>}
+    {removed.error && <p role="alert">Removed candidates: {removed.error} · Last-known candidates retained.</p>}
     {!model.inventory && <p role="status">{model.loading ? 'Loading discovery…' : 'Discovery unavailable'}</p>}
     {!candidatesOnly && inventory?.diskGroups.map(group => <section key={group.id} aria-label={`Disk group ${group.id}`} className="tw-rounded tw-border tw-border-border tw-p-3 tw-space-y-2">
       <button className="tw-text-accent" onClick={() => selectEntity({ domain: Domain.Cluster, type: 'DiskGroup', id: String(group.id), parentIds: { rack_id: rackId, node_id: nodeId } })}>{group.name || `DG-${group.id}`} · DG-{group.id}</button>
@@ -84,7 +94,8 @@ export function NodeStorage({ nodeId, rackId, active, readonly, ready, inventory
             <button className="tw-text-accent tw-font-mono tw-text-sm" onClick={() => selectEntity(entity)}>{disk.disk_id}</button>
             <button className="tw-text-xs tw-text-muted" aria-pressed={selectedEntity?.type === 'Disk' && selectedEntity.id === disk.disk_id} onClick={() => inspectEntity(entity)}>Properties</button>
           </div>
-          <p className="tw-text-sm">{observed?.backend ?? 'Backend unknown'} · Media {media} · {formatBytes(disk.capacity_bytes)} · {status === undefined ? 'Health unknown' : hwStatusLabel(status)}</p>
+          <p className="tw-text-sm">{observed?.backend ?? 'Backend unknown'} · Media {media} · {formatBytes(disk.capacity_bytes)} · {confirmed[disk.disk_id]?.offline ? 'Offline' : status === undefined ? 'Health unknown' : hwStatusLabel(status)}</p>
+          <Button size="sm" variant="secondary" disabled={readonly || !ready} onClick={() => setManaging({ disk: disk.disk_id, group: group.id })}>Manage disk</Button>
           <p className="tw-text-xs tw-text-muted">{report ? `${formatBytes(report.busy_bytes)} used` : 'Usage unknown'} · {observed?.error || (model.inventory && !observed ? 'Missing from latest discovery' : disk.device_path)}</p>
         </article>;
       })}
@@ -101,14 +112,28 @@ export function NodeStorage({ nodeId, rackId, active, readonly, ready, inventory
       </article>)}
       {model.next && <Button size="sm" variant="secondary" disabled={model.loading} onClick={() => { void model.refresh(model.next!); }}>More operations</Button>}
     </section>
-    <section aria-label="Candidate disks" className="tw-space-y-2">
-      <h3 className="tw-text-sm tw-font-semibold">Candidates ({candidates.length})</h3>
-      {candidates.length === 0 && model.inventory && <p className="tw-text-sm tw-text-muted">No discovered unregistered media.</p>}
+    <section ref={candidateSection} tabIndex={-1} aria-label="Candidate disks" className="tw-space-y-2">
+      <h3 className="tw-text-sm tw-font-semibold">Candidates ({candidateCount}{partial ? '+' : ''})</h3>
+      {candidateCount === 0 && model.inventory && removed.observed && <p className="tw-text-sm tw-text-muted">No discovered unregistered media.</p>}
+      {removed.items.map(disk => <article key={disk.disk_id} aria-label={`Removed disk ${disk.disk_id}`} className="tw-rounded tw-border tw-border-border tw-p-3 tw-text-sm tw-space-y-1">
+        <p role="status">Removed · DG-{disk.disk_group_id} · {disk.disk_id}</p>
+        <p className="tw-break-all">{disk.container_path}</p>
+        <p>{disk.backend} · {disk.sparse ? 'Sparse' : disk.backend === 'file' ? 'Preallocated' : 'Raw device'} · Medium and allocation metadata retained.</p>
+        <p className="tw-text-muted">{model.inventory?.disks.find(item => item.path === disk.container_path)?.error || (model.inventory && !model.inventory.disks.some(item => item.path === disk.container_path) ? 'Missing from latest discovery' : 'Explicit Rejoin required; never automatically readmitted.')}</p>
+        <button className="tw-text-accent" onClick={() => inspectEntity({ domain: Domain.Cluster, type: 'Disk', id: disk.disk_id, parentIds: { rack_id: rackId, node_id: nodeId, disk_group_id: disk.disk_group_id, disk_id: disk.disk_id } })}>Properties</button>
+      </article>)}
+      {removed.next && <Button size="sm" variant="secondary" disabled={removed.loading} onClick={() => { void removed.refresh(removed.next!); }}>More retained candidates</Button>}
       {candidates.map(disk => <article key={disk.path} className="tw-rounded tw-border tw-border-border tw-p-3 tw-text-sm tw-space-y-1">
         <p className="tw-break-all">{disk.path}</p><p>{disk.backend ?? 'Backend unknown'} · {disk.capacity_bytes === null ? 'Capacity unknown' : formatBytes(disk.capacity_bytes)}</p>
         <p className="tw-text-muted">{disk.error ?? 'Requires explicit provisioning validation; discovery does not prove blank contents.'}</p>
       </article>)}
     </section>
+    {managing && <DiskLifecycleDialog key={`${nodeId}:${managing.group}:${managing.disk}`} nodeId={nodeId} groupId={managing.group} diskId={managing.disk}
+      onClose={() => setManaging(undefined)} onCommitted={state => {
+        if (state.removed) requestAnimationFrame(() => candidateSection.current?.focus());
+        setConfirmed(previous => ({ ...previous, [state.disk_id]: state }));
+        void loadGroup(nodeId, managing.group); void removed.refresh(); void model.refresh();
+      }} />}
     {creating && <CreateFileDiskDialog nodeId={nodeId} groups={inventory?.diskGroups ?? []} groupId={recommendedGroup} available={available} onClose={() => setCreating(false)} onAccepted={model.accept} />}
   </section>;
 }

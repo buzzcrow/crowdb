@@ -1214,3 +1214,23 @@ export async function createNodeDiskFile(nodeId: number, body: import('./storage
 export function diskBacking(nodeId: number, groupId: number, diskId: string, options?: RequestOptions): Promise<import('./storage/types').DiskBackingInfo | null> {
   return inventoryJson(`/api/nodes/${nodeId}/disk-groups/${groupId}/disks/${encodeURIComponent(diskId)}/backing`, options);
 }
+
+function nodeDiskPath(nodeId: number, groupId: number, diskId: string) {
+  return `/api/nodes/${nodeId}/disk-groups/${groupId}/disks/${encodeURIComponent(diskId)}`;
+}
+export function diskLifecycle(nodeId: number, groupId: number, diskId: string, options?: RequestOptions): Promise<import('./storage/types').DiskLifecycle> {
+  return inventoryJson(`${nodeDiskPath(nodeId, groupId, diskId)}/lifecycle`, options);
+}
+export async function offlineNodeDisk(nodeId: number, groupId: number, diskId: string, revision: string): Promise<import('./storage/types').DiskLifecycle> {
+  return jsonOrThrow(await fetchWithOptions(`${nodeDiskPath(nodeId, groupId, diskId)}/offline`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expected_revision: revision }), skipDeduplication: true,
+  }));
+}
+export async function removeNodeDisk(nodeId: number, groupId: number, diskId: string, revision: string): Promise<import('./storage/types').DiskRemovalOutcome> {
+  return jsonOrThrow(await fetchWithOptions(`${nodeDiskPath(nodeId, groupId, diskId)}/removal`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expected_revision: revision }), skipDeduplication: true,
+  }));
+}
+export function removedNodeDisks(nodeId: number, after?: string, options?: RequestOptions): Promise<import('./storage/types').RemovedDiskPage> {
+  return inventoryJson(`/api/nodes/${nodeId}/removed-disks${qs({ after, limit: 32 })}`, options);
+}

@@ -76,7 +76,7 @@ def verify_file_admission(cluster):
     cluster.api(f"/api/nodes/{node}/disk-groups", {
         "id": group, "name": "managed-file-acceptance", "store_id": 1, "group_id": 1}, status=201)
     requests = [{"operation_id": str(uuid.uuid4()), "disk_group_id": group,
-        "capacity_bytes": 16 * 1024 ** 2, "sparse": False} for _ in range(2)]
+        "capacity_bytes": 64 * 1024 ** 2, "sparse": False} for _ in range(2)]
     for request in requests:
         accepted = cluster.api(f"/api/nodes/{node}/disk-files", request, status=202)
         assert accepted["phase"] == "accepted", accepted
@@ -87,7 +87,7 @@ def verify_file_admission(cluster):
     assert len(disks) == 2, disks
     original = {disk["disk_id"]: disk for disk in disks}
     for disk in disks:
-        assert disk["capacity_bytes"] == 16 * 1024 ** 2, disk
+        assert disk["capacity_bytes"] == 64 * 1024 ** 2, disk
         try:
             cluster.api(f"/api/nodes/{node}/disk-groups/{group}/disks/{disk['disk_id']}", method="DELETE", status=204)
         except AssertionError as error:

@@ -31,7 +31,7 @@ test('native diagnostics: Capacity navigation fetches only opened storage branch
   expect(groups.every(node => node === 1)).toBe(true);
 });
 
-// Baseline: 3.3s (2026-10-15), durable native file admission fixture.
+// Baseline: 6.5s (2026-10-15), native file admission and node workspace.
 test('native diagnostics: hardware capacity aggregates disks and dashed status updates', async ({ page, request }) => {
   const group = await request.post('/api/nodes/1/disk-groups', {
     data: { id: 591, name: 'test-dg-hwcap', store_id: 1, group_id: 1 },
@@ -121,7 +121,7 @@ async function verifyNodeFileWorkspace(page: Page, request: APIRequestContext) {
   const dialog = page.getByRole('dialog', { name: 'Create File Disk', exact: true });
   await expect(dialog.getByLabel('Capacity (GiB)')).toHaveValue('16');
   await expect(dialog.getByLabel('Sparse file')).not.toBeChecked();
-  await dialog.getByLabel('Capacity (GiB)').fill('0.015625');
+  await dialog.getByLabel('Capacity (GiB)').fill('0.0625');
   await dialog.getByLabel('Disk group').selectOption('592');
   const accepted = await step('accept durable file operation', async () => {
     const response = page.waitForResponse(response => new URL(response.url()).pathname === '/api/nodes/1/disk-files' && response.request().method() === 'POST');
@@ -142,7 +142,7 @@ async function verifyNodeFileWorkspace(page: Page, request: APIRequestContext) {
       return (await result.json()).phase;
     }, { intervals: [100], timeout: 3000 }).toBe('registered');
   });
-  await step('refresh Node membership and inspect backing properties', async () => {
+  const createdDisk = await step('refresh Node membership and inspect backing properties', async () => {
     await sidebar.getByTestId('tree-node-STORAGE-1').getByRole('button', { name: 'Storage', exact: true }).click();
     await expect(workspace.getByRole('article', { name: `File operation ${operationId}`, exact: true })).toContainText('Registered · DiskIO verified');
     const rows = await request.get('/api/nodes/1/disk-groups/592/disks');
@@ -160,7 +160,52 @@ async function verifyNodeFileWorkspace(page: Page, request: APIRequestContext) {
     await expect(sidebar.getByTestId('tree-node-CANDIDATES-1')).not.toContainText('(?)');
     await sidebar.getByTestId('tree-node-CANDIDATES-1').getByRole('button', { name: /Candidates/ }).click();
     await expect(workspace.getByRole('region', { name: 'Candidate disks' })).toContainText('discovery does not prove blank contents');
+    return disk.disk_id as string;
   });
+  await verifyDiskLifecycle(page, request, createdDisk);
+}
+
+async function verifyDiskLifecycle(page: Page, request: APIRequestContext, diskId: string) {
+  const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
+  const workspace = page.getByLabel('Node 1 workspace', { exact: true });
+  await sidebar.getByTestId('tree-node-STORAGE-1').getByRole('button', { name: 'Storage', exact: true }).click();
+  const row = workspace.getByRole('article', { name: `Registered disk ${diskId}`, exact: true });
+  await row.getByRole('button', { name: 'Manage disk', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Disk lifecycle', exact: true });
+  await expect(dialog.getByRole('button', { name: 'Mark Offline', exact: true })).toBeEnabled();
+  await expect(dialog.getByRole('button', { name: 'Remove disk', exact: true })).toHaveCount(0);
+  await step('commit Offline through Group 0', async () => {
+    const response = page.waitForResponse(response => response.url().endsWith(`/disks/${diskId}/offline`) && response.request().method() === 'POST');
+    await dialog.getByRole('button', { name: 'Mark Offline', exact: true }).click();
+    const result = await response;
+    expect(result.status(), await result.text()).toBe(200);
+    expect(result.request().postDataJSON().expected_revision).toMatch(/^[1-9][0-9]*$/);
+  });
+  const remove = dialog.getByRole('button', { name: 'Remove disk', exact: true });
+  await expect(remove).toBeDisabled();
+  await expect(dialog).toContainText('does not migrate or recover data');
+  await dialog.getByRole('checkbox', { name: 'I understand that data may become unavailable.' }).check();
+  await step('owner and DiskIO exclusion reaches the dialog', async () => {
+    await expect(remove).toBeEnabled();
+    await expect(dialog.getByRole('status').filter({ hasText: 'exclusion confirmed' })).toBeVisible();
+  });
+  await step('remove membership and retain candidate identity', async () => {
+    const response = page.waitForResponse(response => response.url().endsWith(`/disks/${diskId}/removal`) && response.request().method() === 'POST');
+    await remove.click();
+    const result = await response;
+    expect(result.status(), await result.text()).toBe(200);
+    await expect(dialog).toHaveCount(0);
+    await expect(row).toHaveCount(0);
+    await expect(workspace.getByRole('region', { name: 'Candidate disks', exact: true })).toBeFocused();
+    const candidate = workspace.getByRole('article', { name: `Removed disk ${diskId}`, exact: true });
+    await expect(candidate).toContainText('Medium and allocation metadata retained');
+    await candidate.getByRole('button', { name: 'Properties', exact: true }).click();
+    await expect(page.getByRole('region', { name: 'Disk backing properties' })).toContainText('Removed');
+    const state = await request.get(`/api/nodes/1/disk-groups/592/disks/${diskId}/lifecycle`);
+    expect(state.ok(), await state.text()).toBe(true);
+    expect(await state.json()).toMatchObject({ removed: true, offline: true, disk_revision: null });
+  });
+  await expect(page.getByRole('button', { name: 'Delete File', exact: true })).toHaveCount(0);
 }
 
 // Baseline: 6.8s (2026-10-12).

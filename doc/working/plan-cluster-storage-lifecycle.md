@@ -557,3 +557,27 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   inferring them from absent membership or current filesystem visibility. Paging,
   foreign cursor and HTTP removed-identity regressions pass. Four status, eleven
   admission, five exclusion, three removal and four web cases pass.
+- Rebuilt hardware browser assertions pass at 6.5 s
+  (`run-281dce267b68477b90d42c73e1736c86`), establishing the current baseline
+  before lifecycle UI changes. Its new post-browser allocation returned NoSpace.
+  DiskDB diagnostics showed all three Up disks with zone capacity zero: the
+  16-MiB fixture has only 16 one-MiB units, rounded down by the existing 64-unit
+  bitmap-word requirement. New admission now rejects non-word-aligned zones;
+  the managed file API/UI require multiples of 64 MiB, and the fixture uses
+  64 MiB. The default 16-GiB geometry is unchanged. No allocator semantics or
+  assertions were weakened. Monitor/protocol/HTTP geometry regressions pass.
+- Node storage now exposes an authority-backed lifecycle dialog. Offline is
+  separate from Remove, pending owner/DiskIO conditions remain visible, exact
+  revisions remain strings, and removal requires explicit acknowledgement of
+  unavailable data and retained media. Unknown responses require authority
+  refresh before any same-revision retry; committed receipt reconciliation does
+  not repeat removal. Reads stop on close; server mutations are not cancelled.
+- Removed candidates now merge bounded Group-0 pages with discovery, show retained
+  original placement/properties even when missing, and avoid double-counting
+  registered/generated paths. Partial counts are marked `+`; failed refresh keeps
+  last-known candidates. Removal returns focus to Candidates. Component coverage
+  includes exact unsigned revisions, both response-loss paths, unmet conditions,
+  candidate pagination/node isolation and the allocation geometry boundary.
+  All 219 UI tests/types, affected Rust Clippy and fmt pass. Extended existing
+  native hardware browser flow covers both UI transitions/properties/focus;
+  full rebuilt-image acceptance is still pending.

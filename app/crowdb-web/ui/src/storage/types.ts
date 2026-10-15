@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 export type DiskBackend = 'file' | 'block-device';
-export interface CandidateSummary { count: number; observed_at_ms: number; stale: boolean }
+export interface CandidateSummary { count: number; observed_at_ms: number; stale: boolean; partial?: boolean }
 export interface DiskObservation {
   path: string;
   backend: DiskBackend | null;
@@ -59,3 +59,16 @@ export function storageOperationId(): string {
   const hex = Array.from(bytes, value => value.toString(16).padStart(2, '0')).join('');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
+
+export interface DiskLifecycle {
+  version: number; disk_id: string; removed: boolean; offline: boolean;
+  disk_revision: string | null; remove_conditions: string[]; operation_id: string | null;
+  removed_from_revision: string | null;
+}
+export interface DiskRemovalOutcome { operation_id: string; disk_id: string; removed: boolean; offline_revision: string }
+export interface RemovedDisk {
+  disk_id: string; disk_group_id: number; operation_id: string; container_path: string;
+  backend: DiskBackend; backing_identity: string; media_type: number | null; sparse: boolean;
+  capacity_units: string; unit_size_bytes: number;
+}
+export interface RemovedDiskPage { items: RemovedDisk[]; next: string | null }

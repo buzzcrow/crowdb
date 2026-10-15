@@ -73,6 +73,7 @@ fn validate(request: &PrepareDiskFile) -> io::Result<()> {
             || !admission.unit_size_bytes.is_power_of_two()
             || admission.zone_size_bytes == 0
             || admission.zone_size_bytes % u64::from(admission.unit_size_bytes) != 0
+            || admission.zone_size_bytes % (64 * u64::from(admission.unit_size_bytes)) != 0
             || request.capacity_bytes % u64::from(admission.unit_size_bytes) != 0
             || request.capacity_bytes < admission.zone_size_bytes
             || request.capacity_bytes % admission.zone_size_bytes != 0

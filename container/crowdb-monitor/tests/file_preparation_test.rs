@@ -55,6 +55,7 @@ fn admission_geometry_is_immutable_and_invalid_geometry_creates_no_file() {
     for (unit, zone, media) in [
         (0, 1024 * 1024, None),
         (4096, 1, None),
+        (4096, 64 * 1024, None),
         (4096, 2 * 1024 * 1024, None),
         (4096, 1024 * 1024, Some(99)),
     ] {

@@ -67,7 +67,7 @@ export function storageTree({ rackId, nodeId, disks: ndg, hardwareCapacity, capa
   }
 
   children.push({ id: `CANDIDATES-${nodeId}`, rawId: nodeId, type: 'Node', section: 'candidates',
-    label: `Candidates (${candidates?.count ?? '?'})`, parentIds: { rack_id: rackId },
+    label: `Candidates (${candidates?.count ?? '?'}${candidates?.partial ? '+' : ''})`, parentIds: { rack_id: rackId },
     title: candidates ? `Observed ${new Date(candidates.observed_at_ms).toLocaleString()}${candidates.stale ? ' · Stale' : ''}` : 'Not observed',
     icon: <HardDrive className="tw-h-4 tw-w-4 tw-text-muted" /> });
   return children;
