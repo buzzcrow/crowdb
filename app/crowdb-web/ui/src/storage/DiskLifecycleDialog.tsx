@@ -4,15 +4,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Dialog } from '../components/Dialog';
 import { Button } from '../components/ui/Button';
-import { diskLifecycle, offlineNodeDisk, removeNodeDisk, rejoinNodeDisk } from '../api';
+import { diskLifecycle, offlineNodeDisk, removeNodeDisk, rejoinNodeDisk, onlineNodeDisk } from '../api';
 import type { DiskLifecycle } from './types';
 
 interface Props {
   nodeId: number; groupId: number; diskId: string;
   onClose: () => void;
-  onCommitted: (state: DiskLifecycle, action: 'offline' | 'removal' | 'rejoin') => void;
+  onCommitted: (state: DiskLifecycle, action: 'offline' | 'removal' | 'rejoin' | 'online') => void;
 }
-type Submission = { action: 'offline' | 'removal'; revision: string } | { action: 'rejoin'; operation: string };
+type Submission = { action: 'offline' | 'removal' | 'online'; revision: string } | { action: 'rejoin'; operation: string };
 
 /** Only observations are cancelled on close; accepted mutations remain server-owned. */
 export function DiskLifecycleDialog({ nodeId, groupId, diskId, onClose, onCommitted }: Props) {
@@ -23,6 +23,8 @@ export function DiskLifecycleDialog({ nodeId, groupId, diskId, onClose, onCommit
   const [fresh, setFresh] = useState(false);
   const [acknowledged, setAcknowledged] = useState(false);
   const [submission, setSubmission] = useState<Submission>();
+  const [bringingOnline, setBringingOnline] = useState(false);
+  const acceptedOnline = useRef<string>();
   const controller = useRef(new AbortController());
   const pending = useRef<Promise<void>>();
   const callbacks = useRef({ onCommitted, onClose });
@@ -32,6 +34,16 @@ export function DiskLifecycleDialog({ nodeId, groupId, diskId, onClose, onCommit
   const observe = useCallback((current: DiskLifecycle) => {
     setState(current); setFresh(true); setError('');
     const attempt = submitted.current;
+    const operation = current.online;
+    if (operation?.state === 'failed') { acceptedOnline.current = undefined; setBringingOnline(true); }
+    if (operation && (operation.state === 'pending' || attempt?.action === 'online')
+      && (!attempt || attempt.action !== 'online' || operation.offline_revision === attempt.revision)) {
+      acceptedOnline.current = operation.state === 'failed' ? undefined : operation.operation_id; setBringingOnline(true);
+      if (attempt?.action === 'online') { submitted.current = undefined; setSubmission(undefined); }
+    }
+    if (operation?.state === 'complete' && !current.offline && !current.removed && acceptedOnline.current === operation.operation_id) {
+      acceptedOnline.current = undefined; callbacks.current.onCommitted(current, 'online'); callbacks.current.onClose();
+    }
     if (attempt?.action === 'offline' && current.offline && !current.removed) {
       submitted.current = undefined; setSubmission(undefined); callbacks.current.onCommitted(current, 'offline');
     }
@@ -60,15 +72,19 @@ export function DiskLifecycleDialog({ nodeId, groupId, diskId, onClose, onCommit
     return () => { controller.current.abort(); };
   }, [refresh]);
   useEffect(() => {
-    if (!state?.offline || state.removed || !state.remove_conditions.length || busy || error) return;
+    if (!state || state.removed || busy || error) return;
+    if (!(state.offline && state.remove_conditions.length) && state.online?.state !== 'pending'
+      && !(acceptedOnline.current && state.offline)) return;
     const timer = setTimeout(() => { void refresh(); }, 250);
     return () => clearTimeout(timer);
   }, [state, busy, error, refresh]);
   useEffect(() => { setAcknowledged(false); }, [state?.disk_revision]);
-  const action = submission?.action ?? (state?.removed ? 'rejoin' : state?.offline ? 'removal' : 'offline');
+  const action = submission?.action ?? (state?.removed ? 'rejoin' : state?.offline ? (bringingOnline ? 'online' : 'removal') : 'offline');
+  const validationPending = state?.online?.state === 'pending' && state.online.offline_revision === state.disk_revision;
   const sameRevision = !submission || (submission.action === 'rejoin' ? state?.operation_id === submission.operation : state?.disk_revision === submission.revision);
   const canSubmit = fresh && !busy && !loading && state && sameRevision
-    && (action === 'rejoin' ? state.removed && !!state.operation_id : !state.removed && !!state.disk_revision && (action === 'offline' || (state.offline && state.remove_conditions.length === 0 && acknowledged)));
+    && (action === 'rejoin' ? state.removed && !!state.operation_id : !state.removed && !!state.disk_revision && (action === 'offline'
+      || (action === 'online' ? state.offline && !validationPending : state.offline && state.remove_conditions.length === 0 && acknowledged)));
   const submit = async () => {
     if (!canSubmit || !state) return;
     const attempt: Submission = submission ?? (action === 'rejoin' ? { action, operation: state.operation_id! } : { action, revision: state.disk_revision! });
@@ -79,6 +95,9 @@ export function DiskLifecycleDialog({ nodeId, groupId, diskId, onClose, onCommit
         if (!controller.current.signal.aborted) {
           observe(current);
         }
+      } else if (attempt.action === 'online') {
+        const operation = await onlineNodeDisk(nodeId, groupId, diskId, attempt.revision);
+        if (!controller.current.signal.aborted) observe({ ...state, online: operation });
       } else if (attempt.action === 'rejoin') {
         const receipt = await rejoinNodeDisk(nodeId, groupId, diskId, attempt.operation);
         if (!controller.current.signal.aborted) observe(receipt.state);
@@ -95,7 +114,8 @@ export function DiskLifecycleDialog({ nodeId, groupId, diskId, onClose, onCommit
     } finally { if (!controller.current.signal.aborted) setBusy(false); }
   };
   return <Dialog isOpen title="Disk lifecycle" onClose={onClose} description={`Disk ${diskId} · Node ${nodeId} · DG-${groupId}`}
-    confirmLabel={submission ? 'Retry same operation' : action === 'offline' ? 'Mark Offline' : action === 'rejoin' ? 'Rejoin Offline' : 'Remove disk'}
+    confirmLabel={submission ? 'Retry same operation' : action === 'offline' ? 'Mark Offline' : action === 'rejoin' ? 'Rejoin Offline'
+      : action === 'online' ? (validationPending ? 'Validation in progress' : 'Validate and bring Online') : 'Remove disk'}
     onConfirm={submit} confirmLoading={busy} confirmDisabled={!canSubmit} destructive={action === 'removal'}>
     <div className="tw-space-y-3 tw-text-sm">
       <Button size="sm" variant="secondary" disabled={loading || busy} onClick={() => { void refresh(); }}>Refresh authority</Button>
@@ -107,11 +127,20 @@ export function DiskLifecycleDialog({ nodeId, groupId, diskId, onClose, onCommit
       {action === 'rejoin' && <p>Restore this disk at its original node and disk group with the same ID and allocation metadata. The original medium must pass validation. Membership stays Offline until existing data and metadata pass Online validation.</p>}
       {action === 'offline' && <p>Stop this disk's allocation and data participation. Removal will wait for its DiskDB owner and DiskIO to confirm exclusion and drain outstanding I/O.</p>}
       {state?.offline && !state.removed && <>
+        <div className="tw-flex tw-gap-2" role="group" aria-label="Offline disk actions">
+          <Button size="sm" variant="secondary" disabled={!fresh || busy || !!submission || validationPending} onClick={() => setBringingOnline(false)}>Remove disk…</Button>
+          <Button size="sm" variant="secondary" disabled={!fresh || busy || !!submission || validationPending} onClick={() => setBringingOnline(true)}>Bring Online…</Button>
+        </div>
         {state.remove_conditions.length > 0 ? <ul aria-label="Removal conditions" className="tw-list-disc tw-pl-5">{state.remove_conditions.map(reason => <li key={reason}>{reason}</li>)}</ul>
           : <p role="status">Owner and DiskIO exclusion confirmed for this revision.</p>}
-        <p>Removing this disk does not migrate or recover data. Referenced data may become unavailable. The medium, disk identity and allocation metadata are retained.</p>
+        {action === 'online' ? <>
+          <p>Verify the original medium and existing allocation metadata before Online. Accepted validation continues if this dialog closes. Failure leaves the disk Offline.</p>
+          {validationPending && <p role="status">Validation accepted · waiting for exclusion or checking retained metadata.</p>}
+          {state.online?.state === 'failed' && <p role="alert">Online validation failed: {state.online.error}</p>}
+          {state.online && <p className="tw-text-xs tw-break-all">Online operation: {state.online.operation_id}</p>}
+        </> : <><p>Removing this disk does not migrate or recover data. Referenced data may become unavailable. The medium, disk identity and allocation metadata are retained.</p>
         <label className="tw-flex tw-gap-2"><input type="checkbox" checked={acknowledged} disabled={busy}
-          onChange={event => setAcknowledged(event.target.checked)} />I understand that data may become unavailable.</label>
+          onChange={event => setAcknowledged(event.target.checked)} />I understand that data may become unavailable.</label></>}
       </>}
     </div>
   </Dialog>;

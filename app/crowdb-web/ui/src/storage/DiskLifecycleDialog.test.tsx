@@ -3,10 +3,10 @@
 
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, expect, it, vi } from 'vitest';
-import { diskLifecycle, offlineNodeDisk, removeNodeDisk, rejoinNodeDisk } from '../api';
+import { diskLifecycle, offlineNodeDisk, removeNodeDisk, rejoinNodeDisk, onlineNodeDisk } from '../api';
 import { DiskLifecycleDialog } from './DiskLifecycleDialog';
 import type { DiskLifecycle } from './types';
-vi.mock('../api', () => ({ diskLifecycle: vi.fn(), offlineNodeDisk: vi.fn(), removeNodeDisk: vi.fn(), rejoinNodeDisk: vi.fn() }));
+vi.mock('../api', () => ({ diskLifecycle: vi.fn(), offlineNodeDisk: vi.fn(), removeNodeDisk: vi.fn(), rejoinNodeDisk: vi.fn(), onlineNodeDisk: vi.fn() }));
 const read = vi.mocked(diskLifecycle); const offline = vi.mocked(offlineNodeDisk); const remove = vi.mocked(removeNodeDisk);
 const initial: DiskLifecycle = { version: 1, disk_id: 'disk', offline: false, removed: false,
   disk_revision: '18446744073709551000', remove_conditions: ['Mark the disk Offline before removal'], operation_id: null, removed_from_revision: null };
@@ -17,7 +17,48 @@ function setup() {
   return { onClose, onCommitted };
 }
 beforeEach(() => {
-  read.mockReset(); offline.mockReset(); remove.mockReset(); vi.mocked(rejoinNodeDisk).mockReset(); read.mockResolvedValue(initial);
+  read.mockReset(); offline.mockReset(); remove.mockReset(); vi.mocked(rejoinNodeDisk).mockReset(); vi.mocked(onlineNodeDisk).mockReset(); read.mockResolvedValue(initial);
+});
+
+it('shows accepted validation until Group 0 confirms Online and preserves exact revision strings', async () => {
+  read.mockResolvedValue({ ...excluded, remove_conditions: [] });
+  const operation = { operation_id: `online/disk/${excluded.disk_revision}`, offline_revision: excluded.disk_revision!, state: 'pending' as const, error: null };
+  vi.mocked(onlineNodeDisk).mockResolvedValue(operation);
+  const { onClose, onCommitted } = setup();
+  await screen.findByText(/Owner and DiskIO exclusion confirmed/);
+  fireEvent.click(screen.getByRole('button', { name: 'Bring Online…' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Validate and bring Online' }));
+  await screen.findByText(/Validation accepted/);
+  expect(onlineNodeDisk).toHaveBeenCalledWith(1, 7, 'disk', excluded.disk_revision);
+  expect(onClose).not.toHaveBeenCalled(); expect(onCommitted).not.toHaveBeenCalled();
+  expect(screen.getByRole('button', { name: 'Validation in progress' })).toBeDisabled();
+  read.mockResolvedValue({ ...initial, disk_revision: '18446744073709551002', online: { ...operation, state: 'complete' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh authority' }));
+  await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  expect(onCommitted.mock.calls[0][1]).toBe('online');
+});
+
+it('reconciles lost Online acceptance without issuing a second request', async () => {
+  read.mockResolvedValue({ ...excluded, remove_conditions: [] });
+  vi.mocked(onlineNodeDisk).mockRejectedValue(new Error('response lost'));
+  const { onClose } = setup();
+  await screen.findByText(/Owner and DiskIO exclusion confirmed/);
+  fireEvent.click(screen.getByRole('button', { name: 'Bring Online…' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Validate and bring Online' }));
+  await screen.findByRole('alert');
+  expect(screen.getByRole('button', { name: 'Retry same operation' })).toBeDisabled();
+  read.mockResolvedValue({ ...excluded, online: { operation_id: 'online/disk/revision', offline_revision: excluded.disk_revision!, state: 'pending', error: null } });
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh authority' }));
+  await screen.findByText(/Validation accepted/);
+  expect(onlineNodeDisk).toHaveBeenCalledTimes(1); expect(onClose).not.toHaveBeenCalled();
+});
+
+it('reopens a failed validation as Offline with its reason and an explicit retry', async () => {
+  read.mockResolvedValue({ ...excluded, online: { operation_id: 'online/disk/revision', offline_revision: excluded.disk_revision!, state: 'failed', error: 'existing snapshot checksum mismatch' } });
+  const { onClose } = setup();
+  await screen.findByText(/Online validation failed: existing snapshot checksum mismatch/);
+  expect(screen.getByRole('button', { name: 'Validate and bring Online' })).toBeEnabled();
+  expect(onClose).not.toHaveBeenCalled(); expect(onlineNodeDisk).not.toHaveBeenCalled();
 });
 
 it('requires exact-revision exclusion and explicit data-unavailability acknowledgement', async () => {

@@ -31,7 +31,7 @@ test('native diagnostics: Capacity navigation fetches only opened storage branch
   expect(groups.every(node => node === 1)).toBe(true);
 });
 
-// Baseline: 9.0s (2026-10-15), native file admission, Offline/Remove and retained candidates.
+// Baseline: 10.1s (2026-10-15), native file admission, Offline/Remove and retained Offline Rejoin.
 test('native diagnostics: hardware capacity aggregates disks and dashed status updates', async ({ page, request }) => {
   const group = await request.post('/api/nodes/1/disk-groups', {
     data: { id: 591, name: 'test-dg-hwcap', store_id: 1, group_id: 1 },
@@ -223,6 +223,23 @@ async function verifyDiskLifecycle(page: Page, request: APIRequestContext, diskI
     await expect(row).toContainText('Offline');
     await expect(row).toBeFocused();
     await expect(page.getByRole('region', { name: 'Disk backing properties' }).getByText('Registered', { exact: true })).toBeVisible();
+  });
+  await step('trigger retained validation and observe authoritative Online', async () => {
+    await row.getByRole('button', { name: 'Manage disk', exact: true }).click();
+    await expect(dialog.getByRole('button', { name: 'Bring Online…', exact: true })).toBeEnabled();
+    await dialog.getByRole('button', { name: 'Bring Online…', exact: true }).click();
+    await expect(dialog).toContainText('Accepted validation continues if this dialog closes');
+    const response = page.waitForResponse(response => response.url().endsWith(`/disks/${diskId}/online`) && response.request().method() === 'POST');
+    await dialog.getByRole('button', { name: 'Validate and bring Online', exact: true }).click();
+    const result = await response;
+    expect(result.status(), await result.text()).toBe(202);
+    expect((await result.json()).offline_revision).toMatch(/^[1-9][0-9]*$/);
+    await expect(dialog).toHaveCount(0);
+    await expect(row).toContainText('Up');
+    await expect(row).toBeFocused();
+    const state = await request.get(`/api/nodes/1/disk-groups/592/disks/${diskId}/lifecycle`);
+    expect(state.ok(), await state.text()).toBe(true);
+    expect(await state.json()).toMatchObject({ removed: false, offline: false, online: { state: 'complete' } });
   });
   await expect(page.getByRole('button', { name: 'Delete File', exact: true })).toHaveCount(0);
 }

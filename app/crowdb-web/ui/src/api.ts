@@ -1240,3 +1240,9 @@ export async function rejoinNodeDisk(nodeId: number, groupId: number, diskId: st
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ removal_operation_id: removalOperation }), skipDeduplication: true,
   }));
 }
+
+export async function onlineNodeDisk(nodeId: number, groupId: number, diskId: string, revision: string): Promise<import('./storage/types').DiskOnlineOperation> {
+  return jsonOrThrow(await fetchWithOptions(`${nodeDiskPath(nodeId, groupId, diskId)}/online`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expected_revision: revision }), skipDeduplication: true,
+  }));
+}

@@ -85,6 +85,17 @@ pub(crate) async fn status(
 }
 
 pub(super) async fn observe(hardware: &HardwareClient, key: &DiskKey) -> Result<DiskLifecycle, Failure> {
+    for _ in 0..3 {
+        if let Some(observed) = observe_once(hardware, key).await? {
+            return Ok(observed);
+        }
+    }
+    Err(err_409(
+        "Disk revision changed during lifecycle observation; refresh",
+    ))
+}
+
+async fn observe_once(hardware: &HardwareClient, key: &DiskKey) -> Result<Option<DiskLifecycle>, Failure> {
     let backing = hardware
         .disk_storage(key)
         .await
@@ -101,7 +112,7 @@ pub(super) async fn observe(hardware: &HardwareClient, key: &DiskKey) -> Result<
         if receipt.disk != backing {
             return Err(err_409("Removed backing differs from the operation receipt"));
         }
-        return Ok(DiskLifecycle {
+        return Ok(Some(DiskLifecycle {
             version: 1,
             disk_id: key.disk_id.to_display_string(),
             removed: true,
@@ -113,7 +124,7 @@ pub(super) async fn observe(hardware: &HardwareClient, key: &DiskKey) -> Result<
             rejoin_operation_id: None,
             rejoin_source_removal_operation_id: None,
             online: None,
-        });
+        }));
     }
     let readiness = hardware.disk_removal_readiness(key).await.map_err(failure)?;
     let current = hardware
@@ -122,7 +133,7 @@ pub(super) async fn observe(hardware: &HardwareClient, key: &DiskKey) -> Result<
         .map_err(failure)?
         .ok_or_else(|| err_409("Disk membership changed during observation"))?;
     if current.1 != readiness.disk_revision {
-        return Err(err_409("Disk revision changed during observation; refresh"));
+        return Ok(None);
     }
     let rejoin = hardware
         .disk_rejoin_receipt(key)
@@ -139,7 +150,16 @@ pub(super) async fn observe(hardware: &HardwareClient, key: &DiskKey) -> Result<
                     || (current.0.status == HwStatus::Up as i32
                         && operation.state == crowdb_protocol::disk_storage::DiskOnlineState::Complete))
         });
-    Ok(DiskLifecycle {
+    if hardware
+        .get_disk_with_revision(key)
+        .await
+        .map_err(failure)?
+        .map(|(_, revision)| revision)
+        != Some(current.1)
+    {
+        return Ok(None);
+    }
+    Ok(Some(DiskLifecycle {
         version: 1,
         disk_id: key.disk_id.to_display_string(),
         removed: false,
@@ -152,7 +172,7 @@ pub(super) async fn observe(hardware: &HardwareClient, key: &DiskKey) -> Result<
         rejoin_operation_id: rejoin.as_ref().map(|receipt| receipt.operation_id.clone()),
         rejoin_source_removal_operation_id: rejoin.map(|receipt| receipt.source.operation_id),
         online: online.map(Into::into),
-    })
+    }))
 }
 
 pub(crate) async fn offline(

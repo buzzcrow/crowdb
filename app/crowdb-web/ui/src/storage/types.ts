@@ -65,7 +65,9 @@ export interface DiskLifecycle {
   disk_revision: string | null; remove_conditions: string[]; operation_id: string | null;
   removed_from_revision: string | null;
   rejoin_operation_id?: string | null; rejoin_source_removal_operation_id?: string | null;
+  online?: DiskOnlineOperation | null;
 }
+export interface DiskOnlineOperation { operation_id: string; offline_revision: string; state: 'pending' | 'failed' | 'complete'; error: string | null }
 export interface DiskRemovalOutcome { operation_id: string; disk_id: string; removed: boolean; offline_revision: string }
 export interface RemovedDisk {
   disk_id: string; disk_group_id: number; operation_id: string; container_path: string;

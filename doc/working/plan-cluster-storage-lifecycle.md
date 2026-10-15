@@ -708,3 +708,19 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   waits for authoritative validation, and reads the original fsynced marker
   through DiskIO, retaining the exact BusyBlock record. Actual container result
   is pending. Visible Online controls will follow a fresh browser baseline.
+- Full occupied-disk native acceptance passes on image `8777d182`, config
+  `sha256:497012cfdedd2eefb56f36c6268a9a83d5a606428791f61bad05d8c367cc3fa5`,
+  artifact `run-cee7a8d38c994a318ea2fb46ee03ef24`. Remove/Rejoin/validated Online
+  retains identity, allocations and fsynced bytes, then reads those bytes through
+  real DiskIO. Browser before visible Online changes is 10.1 s; native client
+  29.70 s. Temporary DiskNotExist responses precede actual read success while
+  DiskIO applies Up; they are printed as pending, never reported as recovery.
+- Online UI now exposes explicit original-medium validation, durable Pending and
+  Failed states, exact-revision response-loss reconciliation, retry and focus
+  restoration to the original registered row. Acceptance is not shown as Online.
+  All 230 UI cases and application types pass, including failure/reopen, lost
+  acceptance and row status/focus. Lifecycle reads reobserve a changed disk
+  revision rather than mix Offline membership with completed Online metadata.
+  Web lifecycle regression, affected all-target/all-feature Clippy and fmt pass.
+  The existing hardware browser flow now also triggers and verifies Online;
+  rebuilt-image verification remains pending.
