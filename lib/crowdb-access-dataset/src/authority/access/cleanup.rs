@@ -73,9 +73,24 @@ impl DatasetAuthority {
                 cancel,
             )
             .await?;
-        for (key, _) in &page.entries {
+        for (key, value) in &page.entries {
             if cancel.is_cancelled() {
                 return Err(DatasetError::ReadCancelled.into());
+            }
+            if key.starts_with(b"DS\0SR\0") || key.starts_with(b"DS\0SM\0") {
+                match tokio::time::timeout(
+                    Duration::from_secs(2),
+                    self.store
+                        .compare_exchange(key, Some(&value.bytes), crate::split::RETIRED_RECORD),
+                )
+                .await
+                .map_err(|_| AuthorityError::Invalid(DatasetError::ReadLimitExceeded))??
+                {
+                    CasOutcome::Applied(_) => {}
+                    CasOutcome::Conflict(Some(value)) if value.bytes == crate::split::RETIRED_RECORD => {}
+                    CasOutcome::Conflict(_) => return Err(AuthorityError::HeadConflict),
+                }
+                continue;
             }
             tokio::time::timeout(Duration::from_secs(2), self.store.delete(key))
                 .await

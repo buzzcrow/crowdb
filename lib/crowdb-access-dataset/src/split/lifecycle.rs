@@ -76,6 +76,7 @@ impl DatasetAuthority {
             .await?;
         let source_leases = super::inheritance::source_owners(&record).into_iter().collect();
         let state = DraftState {
+            work_version: Some(1),
             record,
             initial: false,
             source_leases,

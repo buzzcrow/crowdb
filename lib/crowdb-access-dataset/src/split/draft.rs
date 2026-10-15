@@ -40,6 +40,9 @@ impl SplitDraftRecord {
             SplitRevisionId::from_bytes(revision.as_bytes()).map_err(|_| SplitError::InvalidRecord)?;
         }
         self.progress.validate(self.revision)?;
+        if self.splits.len() > 64 {
+            return Err(SplitError::Limit);
+        }
         let mut names = std::collections::BTreeSet::new();
         for split in &self.splits {
             if !names.insert(&split.name) {

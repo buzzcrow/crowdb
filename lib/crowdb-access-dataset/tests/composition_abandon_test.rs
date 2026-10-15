@@ -51,6 +51,20 @@ async fn abandoned_prepared_composition_fences_raw_candidate_and_initial_split()
         .abandon_composition(&identity, operation, 1)
         .await
         .unwrap();
+    let split_operation = preparation.split_operation.unwrap();
+    let mut split_cleaned = false;
+    for _ in 0..100 {
+        if authority
+            .cleanup_split_scratch_step(&identity, split_operation, &ReadCancellation::new())
+            .await
+            .unwrap()
+            .complete
+        {
+            split_cleaned = true;
+            break;
+        }
+    }
+    assert!(split_cleaned);
     authority
         .reclaim_snapshot_metadata(&identity, preparation.candidate)
         .await

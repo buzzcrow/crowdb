@@ -193,6 +193,8 @@ impl DatasetAuthority {
         next.evaluation = Some(progress.clone());
         next.edit = None;
         next.encode()?;
+        self.register_split_window(identity, &state, expected_page, &pages)
+            .await?;
         for page in pages {
             if cancel.is_cancelled() {
                 return Err(crate::inspection::InspectionError::Cancelled.into());

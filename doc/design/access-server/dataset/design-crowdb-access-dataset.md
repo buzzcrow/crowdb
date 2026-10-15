@@ -264,10 +264,27 @@ bytes. Deferred physical cleanup remains pending. Shared range retirement does
 not count as a reclaimed whole chunk.
 
 `reclaim_snapshot_metadata_step` persists phase and continuation while deleting
-at most twenty metadata keys per step. It removes Manifest storage, inspection
-projections and Snapshot-owned Split revisions/member pages. Commit receipts,
-head fences and terminal retirement evidence remain. A retry helps the final
-status marker if deletion completed before the response or status write failed.
+at most twenty metadata keys per step. It removes Manifest storage and inspection
+projections. Snapshot-owned Split revision/member records become small permanent
+CAS fences so delayed immutable writes cannot restore removed contents. Commit
+receipts, head fences and terminal retirement evidence remain. A retry helps the
+final status marker if cleanup completed before the response or status write failed.
+
+Composition evaluation work pages record their possible row writes before applying
+those writes. Obsolete-window cleanup seals rows before sealing their work page,
+then seals the first absent work page to exclude delayed next-window creation.
+Split evaluation similarly registers immutable page keys/digests before writing
+members. Split cleanup processes at most twenty page references per step, retaining
+committed live revision data. Initial Split cleanup requires terminal retirement of
+its data Snapshot. Both cleanup cursors survive restart and preserve active input
+revisions. Split drafts without the work-intent format remain readable but are
+rejected by draft scratch cleanup; new roots carry an explicit work format marker
+that older strict decoders reject.
+
+Managed composition uploads register staging and candidate owners durably before
+claiming payloads. Publication requires complete candidate ownership. Terminal
+cleanup retires the staging owner and obsolete candidate owners, preserving
+published candidates and independent owners of shared uploads.
 
 `retire_owner` permanently revokes one publication's upload claim with the same
 session CAS that removes its ownership. A delayed claim for that operation then

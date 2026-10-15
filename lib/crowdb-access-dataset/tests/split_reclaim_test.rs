@@ -71,27 +71,26 @@ async fn retired_snapshot_cleans_all_revision_pages_without_touching_other_owner
         ReclaimState::Completed
     );
     for revision in [&first, &second] {
-        assert!(store
-            .get(&split::key::revision(&identity, snapshot, revision.revision).unwrap())
-            .await
-            .unwrap()
-            .is_none());
+        let revision_key = split::key::revision(&identity, snapshot, revision.revision).unwrap();
+        assert_retired_fence(store.as_ref(), &revision_key).await;
+        assert!(matches!(
+            store
+                .compare_exchange(&revision_key, None, &revision.encode().unwrap())
+                .await
+                .unwrap(),
+            CasOutcome::Conflict(_)
+        ));
         for split in &revision.splits {
             for page in &split.pages {
-                assert!(store
-                    .get(
-                        &split::key::membership_page(
-                            &identity,
-                            snapshot,
-                            revision.revision,
-                            &split.name,
-                            page.page
-                        )
-                        .unwrap()
-                    )
-                    .await
-                    .unwrap()
-                    .is_none());
+                let page_key = split::key::membership_page(
+                    &identity,
+                    snapshot,
+                    revision.revision,
+                    &split.name,
+                    page.page,
+                )
+                .unwrap();
+                assert_retired_fence(store.as_ref(), &page_key).await;
             }
         }
     }
@@ -163,4 +162,16 @@ async fn cleanup_completion_is_helped_after_final_status_write_failure() {
             .state,
         ReclaimState::Completed
     );
+}
+
+async fn assert_retired_fence(store: &dyn DatasetStore, key: &[u8]) {
+    let value = store.get(key).await.unwrap().unwrap();
+    assert_eq!(value.bytes, b"split-retired-v1");
+    assert!(matches!(
+        store
+            .compare_exchange(key, None, b"delayed payload")
+            .await
+            .unwrap(),
+        CasOutcome::Conflict(_)
+    ));
 }

@@ -40,7 +40,11 @@ mod lifecycle;
 mod state;
 pub use lifecycle::{SplitDraftEdit, SplitLifecycleError};
 
+mod cleanup;
 mod evaluation;
+mod work;
+pub use cleanup::SplitScratchCleanup;
+pub(crate) use cleanup::SEALED as RETIRED_RECORD;
 pub use evaluation::SplitPreview;
 
 mod prepare;

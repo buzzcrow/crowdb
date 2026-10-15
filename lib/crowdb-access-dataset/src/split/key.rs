@@ -73,3 +73,13 @@ pub fn revision_summary(
     key.extend_from_slice(revision.as_bytes());
     Ok(key)
 }
+
+pub(crate) fn membership_prefix(
+    identity: &DatasetIdentity,
+    snapshot: SnapshotId,
+    revision: SplitRevisionId,
+) -> Result<Vec<u8>, DatasetError> {
+    let mut key = scoped(b"DS\0SM\0", identity, snapshot)?;
+    key.extend_from_slice(revision.as_bytes());
+    Ok(key)
+}

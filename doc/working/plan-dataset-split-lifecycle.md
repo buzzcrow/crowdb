@@ -873,3 +873,26 @@ failure; record actual failures and add Blocked only when that workflow requires
   Focused composition cleanup/recovery/abandon suites and root Clippy passed.
 - This retires bulk evaluation rows, not edit receipts, candidate preparation,
   Split membership or committed payload ownership. Remaining C2/D5c work stays open.
+
+### Split work intent and retirement verification
+
+- Split evaluation durably registers membership page keys/digests before sending
+  immutable writes. New strict draft roots carry a work-format marker; older roots
+  still decode but cannot use scratch cleanup without the recorded intents.
+- `cleanup_split_scratch_step` retires obsolete/abandoned membership and candidate
+  records in twenty-reference windows. It preserves live committed revisions and
+  accepts initial Split cleanup only after terminal data Snapshot retirement.
+  Small permanent CAS fences also survive general Snapshot metadata cleanup.
+- New tests cover abandoned prepared data, delayed immutable CAS rejection,
+  historical/current revision isolation, restart and 45 overlapping Splits.
+  Initial-Split abandonment now exercises scratch cleanup. Existing reclaim test
+  now asserts retained small fences and failed resurrection instead of absent keys,
+  matching the strengthened storage contract; unrelated owners remain readable.
+- Focused cleanup/abandon/reclaim suites passed ten cases; evaluation tests passed.
+  Root Clippy passed after correcting a serde callback signature and MSRV use.
+  A misspelled test target and a temporary delimiter error were corrected.
+- Remaining C2/D5c: failed/superseded data-candidate metadata fencing, orphan edit
+  pages, committed Snapshot upload-owner retirement and HTTP orchestration.
+  No mutation capability advertisement or complete lifecycle claim is made yet.
+- Full `pixi run cargo test -p crowdb-access-dataset`, root `rs-lint`,
+  `rs-fmt-check` and `git diff --check` passed after the final reclaim changes.

@@ -75,6 +75,7 @@ impl DatasetAuthority {
         self.put_split_state(&state_key(b"DS\0SB\0", identity, operation, None)?, &initial)
             .await?;
         let state = DraftState {
+            work_version: Some(1),
             source_leases: super::inheritance::source_owners(&record).into_iter().collect(),
             record,
             initial: true,

@@ -78,6 +78,24 @@ impl DatasetAuthority {
             }
         }
     }
+    pub(crate) async fn inspection_snapshot_retired(
+        &self,
+        identity: &DatasetIdentity,
+        snapshot: SnapshotId,
+        work: &mut InspectionWork<'_>,
+    ) -> Result<bool, InspectionError> {
+        match work
+            .get(
+                &retired_key(identity, snapshot).map_err(AuthorityError::from)?,
+                256,
+            )
+            .await?
+        {
+            None => Ok(false),
+            Some(value) if value.bytes == [1] => Ok(true),
+            Some(_) => Err(InspectionError::Corrupt),
+        }
+    }
     pub(crate) async fn mark_snapshot_retired(
         &self,
         identity: &DatasetIdentity,

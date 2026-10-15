@@ -19,6 +19,8 @@ pub(super) struct EditMarker {
 #[serde(deny_unknown_fields)]
 pub(super) struct DraftState {
     pub record: SplitDraftRecord,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_version: Option<u16>,
     #[serde(default)]
     pub initial: bool,
     pub edit: Option<EditMarker>,
@@ -37,6 +39,9 @@ pub(super) struct EditReceipt {
 impl DraftState {
     pub(super) fn encode(&self) -> Result<Vec<u8>, SplitLifecycleError> {
         self.record.validate()?;
+        if self.work_version.is_some_and(|version| version != 1) {
+            return Err(SplitLifecycleError::Corrupt);
+        }
         if self.source_leases.len() > 1
             || super::inheritance::source_owners(&self.record)
                 .iter()
