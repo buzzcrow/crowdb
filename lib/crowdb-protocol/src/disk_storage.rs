@@ -9,7 +9,7 @@ mod online;
 mod rejoin;
 mod removal;
 pub use exclusion::{DiskExclusionRecord, DiskExclusionReporter};
-pub use identity::DiskIdReservation;
+pub use identity::{DiskGroupIdReservation, DiskIdReservation};
 pub use online::{DiskOnlineRecord, DiskOnlineState};
 pub use rejoin::DiskRejoinRecord;
 pub use removal::DiskRemovalRecord;

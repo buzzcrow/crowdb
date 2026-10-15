@@ -21,6 +21,12 @@ impl HardwareClient {
         instance_id: u64,
         lease_expiry_ms: u64,
     ) -> Result<()> {
+        self.reserve_disk_group_id(&DiskGroupKey {
+            rack_id,
+            node_id,
+            disk_group_id: dg_id,
+        })
+        .await?;
         let rack_path = RackKey { rack_id }.to_path();
         let rack = mutation::read(&self.kv, &rack_path).await?;
         let revision = self.owner_revision(rack_id, node_id, dg_id, instance_id).await?;

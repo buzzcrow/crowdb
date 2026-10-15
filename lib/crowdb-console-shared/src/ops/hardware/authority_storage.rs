@@ -146,6 +146,13 @@ pub async fn add_disk_group_bound_to_group0(
         disk_group_id: dg_id,
     }
     .to_path();
+    ctx.sysmd()
+        .reserve_disk_group_id(&DiskGroupKey {
+            rack_id,
+            node_id,
+            disk_group_id: dg_id,
+        })
+        .await?;
     let bind_path = BindMapKey {
         rack_id,
         node_id,

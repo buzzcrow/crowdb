@@ -342,6 +342,20 @@
      target/trust, foreign-cluster isolation and bootstrap-conflict safeguards
      remain. Update that guide during implementation together with the UI rules.
 
+**Implementation decisions for later review**:
+
+- The user authorized choosing a well-supported option or skipping a disputed
+  part without waiting for confirmation. Record unresolved consequences here;
+  skipped acceptance criteria remain incomplete.
+- Allocate numeric DiskGroup IDs from Group 0 and retain a global placement
+  reservation. Existing allocation/service interfaces address groups by numeric
+  ID, so independent per-node counters would create ambiguous ownership.
+- Accepted node setup uses the target monitor's durable intent and existing
+  service desired-state reconciliation. A later explicit Stop/Restart/Delete
+  takes precedence over setup retries; the browser only submits and observes.
+- Raw-device physical capacity and usable allocation geometry are distinct.
+  Preserve any unusable tail; do not resize a supplied medium to match zones.
+
 **Dependencies**:
 
 - Reuse current durable Group-0 bootstrap exclusion, immutable intent, monitor

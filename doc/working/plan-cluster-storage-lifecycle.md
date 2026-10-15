@@ -26,10 +26,16 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   three-/one-voter policy. Persist policy and reuse accepted manifests.
   Files: monitor node runtime, console bootstrap/admission, web managed routes.
   Acceptance A06-A10.
-- [~] **Offline/remove semantics**: preserve removed disk metadata and allocation
+- [x] **Offline/remove semantics**: preserve removed disk metadata and allocation
   identity, prove status application before remove, gate cascades, support explicit
   rejoin without blank initialization. Files: hardware ops, protocol hardware
   records, DiskDB/DiskIO status observation, web routes. Acceptance A11-A13.
+- [~] **Accepted node setup**: persist authenticated discovery/admission choices
+  on the target monitor; advance binding, default file and fixed service intents
+  independently of the browser. Files: monitor `runtime/setup`, protocol
+  `mgmt/node/setup`, Web `services/deployment/planned`, node admission and UI.
+  Finish compatible-group reuse/binding, explicit cleanup fencing, supplied-media
+  provisioning and visible progress before claiming complete acceptance.
 - [x] **UI baseline**: measure affected current root-runner browser flow before
   visible edits; record exact per-test timings here. Inspect tree/view/history,
   managed candidate components and existing physical/capacity flow registrations.
@@ -806,6 +812,12 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   workspaces, remaining zone navigation, permanent docs and full acceptance.
 
 ## Current verification and physical health
+
+- Global numeric DiskGroup placement reservations and bounded allocation now
+  cover SDK group creation, owner publication and Console creation. Live legacy
+  collision tests exposed a binary/text prefix mix-up; the allocator now uses
+  the explicit text-key prefix. Three new cases and the complete SDK suite,
+  including rustdoc, pass. Timed-out retained pages now fail explicitly.
 
 - Committed image `7b283051` passed native hardware lifecycle acceptance in
   `run-9ab937107441447787b41a1b65970db1`: browser 12.6 s, native client 33.15 s.

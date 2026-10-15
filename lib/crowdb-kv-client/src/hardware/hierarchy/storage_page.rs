@@ -51,6 +51,9 @@ impl HardwareClient {
                 None,
             )
             .await?;
+        if page.timed_out {
+            return Err(Error::Server("retained disk page observation timed out".into()));
+        }
         let next = if page.truncated {
             let key = page
                 .items

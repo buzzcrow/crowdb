@@ -213,6 +213,10 @@ impl CrowdbSysmdClient {
 
     // ── hardware: disk ──────────────────────────────────────────
 
+    pub async fn reserve_disk_group_id(&self, key: &crowdb_protocol::key::DiskGroupKey) -> Result<()> {
+        self.hw.reserve_disk_group_id(key).await
+    }
+
     pub async fn add_disk(
         &self,
         rack_id: RackId,

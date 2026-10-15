@@ -17,6 +17,7 @@
 mod disk_exclusion;
 mod disk_identity;
 mod disk_status;
+mod group_identity;
 mod legacy_cascade;
 mod legacy_media;
 mod mutation;
@@ -364,6 +365,7 @@ impl HardwareClient {
             node_id,
             disk_group_id: dg_id,
         };
+        self.reserve_disk_group_id(&key).await?;
         self.legacy_put(
             rack_id,
             (Some(node_id), Some(dg_id)),
