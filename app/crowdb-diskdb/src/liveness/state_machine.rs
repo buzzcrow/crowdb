@@ -78,7 +78,7 @@ impl HwStateMachine {
     /// Returns the new status, or `Err` on an illegal transition.
     pub fn transition_disk(&self, disk: &DdbDisk, to: HwStatus) -> Result<HwStatus, IllegalTransition> {
         let from = disk.effective_status();
-        if !Self::is_legal_transition(from, to) {
+        if (disk.write_gate.closed() && to != HwStatus::Offline) || !Self::is_legal_transition(from, to) {
             return Err(IllegalTransition { from, to });
         }
         Self::on_enter_disk(to, disk);

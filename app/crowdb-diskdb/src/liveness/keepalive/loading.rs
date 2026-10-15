@@ -18,8 +18,15 @@ impl KeepAlive {
 
         // Add the Init disk to the group (not allocatable until
         // transitioned to Up).
+        if disk_value.status == HwStatus::Offline as i32 {
+            disk.exclude();
+        }
         dg.add_disk(disk.clone());
         dg.rebuild_allocating_disks();
+
+        if disk.write_gate.closed() {
+            return;
+        }
 
         // Spawn background zone load if we have a kv client and the
         // disk-group is bound to a real data group.

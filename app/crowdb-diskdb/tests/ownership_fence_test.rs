@@ -3,10 +3,11 @@
 mod common;
 use common::metadata::TestMetadata;
 use crowdb_diskdb::ddb_kv_client::OwnershipFence;
-use crowdb_diskdb::model::disk_group::DdbDiskGroup;
 use crowdb_diskdb::model::zone::DdbZone;
+use crowdb_diskdb::model::{disk::DdbDisk, disk_group::DdbDiskGroup};
 use crowdb_protocol::{
     common::DiskId,
+    diskdb::rpc::DiskValue,
     key::{BinaryKey, ZoneKey},
     ZoneValueExt,
 };
@@ -17,7 +18,6 @@ async fn stale_zone_loader_cannot_mark_a_successor_disk_offline() {
     use crowdb_kv_client::ReadMode;
     use crowdb_protocol::{
         common::{HwStatus, OwnerMapValue},
-        diskdb::rpc::DiskValue,
         key::{OwnerMapKey, TextKey},
     };
     let cluster = TestMetadata::start().await;
@@ -104,6 +104,13 @@ async fn handover_rejects_old_writes_and_cannot_reclaim_an_old_generation() {
     };
     let old_group = DdbDiskGroup::new(1, 1, 1);
     old_group.set_ownership_fence(Some(Arc::new(fence.clone())));
+    old_group.add_disk(Arc::new(DdbDisk::new(
+        DiskId::default(),
+        1,
+        1,
+        1,
+        DiskValue::default(),
+    )));
     let old = kv.for_group(&old_group);
     let disk = crowdb_protocol::common::DiskId::default();
     assert!(kv.delete_recovery_scan_progress((0, 1), &disk).await.is_err());
@@ -119,6 +126,7 @@ async fn handover_rejects_old_writes_and_cannot_reclaim_an_old_generation() {
     assert!(kv.claim_ownership((0, 1), &fence).await.is_err());
     let new_group = DdbDiskGroup::new(1, 1, 1);
     new_group.set_ownership_fence(Some(Arc::new(next)));
+    new_group.add_disk(Arc::new(DdbDisk::new(disk, 1, 1, 1, DiskValue::default())));
     let new = kv.for_group(&new_group);
     let results =
         futures::future::join_all((0..8).map(|_| new.delete_recovery_scan_progress((0, 1), &disk))).await;
@@ -141,6 +149,15 @@ async fn concurrent_disk_initialization_persists_every_zone_under_one_owner() {
     kv.claim_ownership((0, 1), &fence).await.unwrap();
     let group = DdbDiskGroup::new(1, 1, 1);
     group.set_ownership_fence(Some(Arc::new(fence)));
+    for id in 1..=8 {
+        group.add_disk(Arc::new(DdbDisk::new(
+            DiskId { high: id, low: 1 },
+            1,
+            1,
+            1,
+            DiskValue::default(),
+        )));
+    }
     let scoped = kv.for_group(&group);
     // One sequential initialization per disk, sharing the DG ownership guard.
     let results = futures::future::join_all((1..=8).map(|id| {

@@ -469,3 +469,14 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   KV-client output. Cleaning only that crate's generated artifacts and running
   the same full suite serially passes, including rustdoc. Serialize these Cargo
   feature variants through the remaining gates.
+- DiskDB administrative exclusion now closes a lock-free per-disk metadata-write
+  gate before waiting for admitted persistence. Scoped KV clients retain the same
+  disk gates across async writes; stale loader status cannot reopen the disk.
+  Cancelled or unknown writes poison quiescence instead of permitting removal.
+  Production fenced writes reject disk IDs absent from their captured membership.
+  Rejected multi-disk batches release unsubmitted permits without poisoning peers.
+  Full all-feature DiskDB suite and rustdoc pass; four focused initialization/
+  exclusion tests, affected all-target Clippy and fmt pass. Owner test fixtures
+  now contain their actual disks, including the successor's recovered membership.
+  Exact-revision Group-0 acknowledgements, removal/rejoin and browser actions
+  remain unfinished; this gate is not itself a removal acknowledgement.

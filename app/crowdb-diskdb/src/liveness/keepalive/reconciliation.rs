@@ -154,6 +154,19 @@ impl KeepAlive {
         };
         let Some(disk) = disk else { return };
         let old_status = disk.effective_status();
+        let raw_disk_status = HwStatus::try_from(disk_value.status).unwrap_or(HwStatus::Offline);
+        let new_effective = HwStateMachine::effective_status(node_status, group_status, raw_disk_status);
+        if new_effective == HwStatus::Offline {
+            disk.exclude();
+            dg.rebuild_allocating_disks();
+            outcome.status_changes += usize::from(old_status != HwStatus::Offline);
+            return;
+        }
+        if disk.write_gate.closed() {
+            // Administrative exclusion survives stale loaders and observations.
+            // Explicit validated recovery must construct a new disk admission.
+            return;
+        }
         // R81: an Init disk's status is owned by the background zone
         // load task — it transitions Init → disk_value.status only
         // after all zones are loaded. Skipping reconciliation here
@@ -179,9 +192,6 @@ impl KeepAlive {
             }
             return;
         }
-        let raw_disk_status = HwStatus::try_from(disk_value.status).unwrap_or(HwStatus::Up);
-        // A.1: effective = max(node, group, disk).
-        let new_effective = HwStateMachine::effective_status(node_status, group_status, raw_disk_status);
         if old_status != new_effective {
             // R76: unified recovery path for → Up transitions.
             if new_effective == HwStatus::Up

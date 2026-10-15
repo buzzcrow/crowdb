@@ -12,6 +12,9 @@ use crowdb_protocol::common::{DiskId, HwStatus};
 use crowdb_protocol::diskdb::rpc::DiskValue;
 use crowdb_protocol::{DiskGroupId, NodeId, RackId};
 
+mod write_gate;
+pub use write_gate::{DiskWriteGate, DiskWritePermit};
+
 use crate::metrics::DiskMetrics;
 use crate::model::zone::{AllocatedRange, DdbZone, ZoneUsage};
 
@@ -26,6 +29,7 @@ pub struct DdbDisk {
     pub node_id: NodeId,
     pub rack_id: RackId,
     pub disk_value: DiskValue,
+    pub write_gate: DiskWriteGate,
     /// All zones on this disk, indexed by `zone_index`.
     pub zones: ArcSwap<Vec<Arc<DdbZone>>>,
     /// Round-robin cursor for zone rotation scan.
@@ -60,6 +64,7 @@ impl DdbDisk {
             node_id,
             rack_id,
             disk_value,
+            write_gate: DiskWriteGate::default(),
             zones: ArcSwap::from_pointee(Vec::new()),
             pos_v_zone: AtomicU64::new(0),
             active_zone_context: ArcSwap::from_pointee(Vec::new()),
@@ -95,7 +100,17 @@ impl DdbDisk {
     }
 
     pub fn effective_status(&self) -> HwStatus {
+        if self.write_gate.closed() {
+            return HwStatus::Offline;
+        }
         HwStatus::try_from(self.effective_status.load(Ordering::Acquire)).unwrap_or(HwStatus::Init)
+    }
+
+    /// Close administrative participation before waiting for durable writes.
+    pub fn exclude(&self) {
+        self.write_gate.close();
+        self.effective_status
+            .store(HwStatus::Offline as i32, Ordering::Release);
     }
 
     /// Directly set the effective status, bypassing transition
@@ -104,7 +119,9 @@ impl DdbDisk {
     /// a test/direct-set helper. Zones follow the disk-level
     /// `HwStatus` — no per-zone marking.
     pub fn set_effective_status(&self, status: HwStatus) {
-        self.effective_status.store(status as i32, Ordering::Release);
+        if !self.write_gate.closed() {
+            self.effective_status.store(status as i32, Ordering::Release);
+        }
     }
 
     /// Disk-level allocate — round-robin over the active zone set,

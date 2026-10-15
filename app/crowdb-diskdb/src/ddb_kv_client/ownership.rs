@@ -92,6 +92,7 @@ impl DdbKvClient {
     pub fn for_group(&self, group: &crate::model::disk_group::DdbDiskGroup) -> Self {
         let mut scoped = self.clone();
         scoped.fence = group.ownership_fence();
+        scoped.disks = Some(group.disk_snapshot());
         scoped
     }
 
@@ -125,6 +126,22 @@ impl DdbKvClient {
     }
 
     pub(super) async fn write_owned(
+        &self,
+        bind: Bind,
+        ops: &[BatchOp],
+        record_condition: Option<(&[u8], u64)>,
+    ) -> Result<u64> {
+        let writes = self.admit_disk_writes(ops)?;
+        let outcome = self.write_owned_fenced(bind, ops, record_condition).await;
+        if !matches!(outcome, Err(Error::OutcomeUnknown)) {
+            for write in writes {
+                write.complete();
+            }
+        }
+        outcome
+    }
+
+    async fn write_owned_fenced(
         &self,
         bind: Bind,
         ops: &[BatchOp],

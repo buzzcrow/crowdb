@@ -101,3 +101,80 @@ async fn provisional_init_waits_for_activation_and_only_then_loads_allocatable_z
     let group = container.get_disk_group(3).unwrap();
     assert!(group.disk_snapshot()[0].allocatable());
 }
+
+#[test]
+fn exclusion_waits_for_confirmed_writes_and_never_accepts_cancelled_outcomes() {
+    use crowdb_diskdb::model::disk::DiskWriteGate;
+    let gate = DiskWriteGate::default();
+    let write = gate.enter().unwrap();
+    gate.close();
+    assert!(!gate.quiescent());
+    assert!(gate.enter().is_none());
+    write.complete();
+    assert!(gate.quiescent());
+    let uncertain = DiskWriteGate::default();
+    drop(uncertain.enter().unwrap());
+    assert!(uncertain.closed());
+    assert!(!uncertain.quiescent(), "an unconfirmed write must block removal");
+}
+
+#[tokio::test]
+async fn excluded_disk_rejects_old_scoped_metadata_writes_and_late_loader_status() {
+    use crowdb_diskdb::model::{disk::DdbDisk, disk_group::DdbDiskGroup, zone::DdbZone};
+    let metadata = TestMetadata::start().await;
+    let kv = metadata.make_ddb_kv_client();
+    let id = DiskId { high: 4, low: 5 };
+    let group = DdbDiskGroup::new(3, 2, 1);
+    let disk = Arc::new(DdbDisk::new(id, 3, 2, 1, DiskValue::default()));
+    group.add_disk(disk.clone());
+    let scoped = kv.for_group(&group);
+    let zone = DdbZone::new(id, 0, 3, 128).to_zone_value();
+    scoped
+        .put_zone_batch((0, 1), &id, &[(0, zone.clone())])
+        .await
+        .unwrap();
+    disk.exclude();
+    disk.set_effective_status(HwStatus::Up);
+    assert_eq!(disk.effective_status(), HwStatus::Offline);
+    assert!(!disk.allocatable());
+    assert!(disk.write_gate.quiescent());
+    assert!(scoped.put_zone_batch((0, 1), &id, &[(0, zone)]).await.is_err());
+    assert!(
+        disk.write_gate.quiescent(),
+        "rejected writes do not create unknown outcomes"
+    );
+}
+
+#[tokio::test]
+async fn atomic_multi_disk_rejection_does_not_poison_unsubmitted_writes() {
+    use crowdb_diskdb::model::{disk::DdbDisk, disk_group::DdbDiskGroup};
+    use crowdb_protocol::diskdb::rpc::BusyBlockValue;
+    let metadata = TestMetadata::start().await;
+    let group = DdbDiskGroup::new(3, 2, 1);
+    let first = Arc::new(DdbDisk::new(
+        DiskId { high: 1, low: 1 },
+        3,
+        2,
+        1,
+        DiskValue::default(),
+    ));
+    let second = Arc::new(DdbDisk::new(
+        DiskId { high: 1, low: 2 },
+        3,
+        2,
+        1,
+        DiskValue::default(),
+    ));
+    group.add_disk(first.clone());
+    group.add_disk(second.clone());
+    let kv = metadata.make_ddb_kv_client().for_group(&group);
+    second.exclude();
+    let records = vec![
+        (first.disk_id, 0, 0, BusyBlockValue::default()),
+        (second.disk_id, 0, 0, BusyBlockValue::default()),
+    ];
+    assert!(kv.persist_busy_batch((0, 1), &records).await.is_err());
+    first.exclude();
+    assert!(first.write_gate.quiescent(), "no batch was submitted");
+    assert!(second.write_gate.quiescent());
+}

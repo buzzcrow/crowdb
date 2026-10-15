@@ -26,6 +26,7 @@ use crowdb_protocol::{RecoveryScanProgressValueExt, ZoneValueExt};
 
 use crate::model::records::{BusyRecord, FreeRecord, ZoneRecords};
 
+mod disk_writes;
 mod ownership;
 mod zone_init;
 pub use ownership::OwnershipFence;
@@ -44,6 +45,7 @@ pub struct DdbKvClient {
     kv: Arc<CrowdbKvClient>,
     metrics: Option<Arc<crate::metrics::DiskdbMetrics>>,
     require_fence: bool,
+    disks: Option<Arc<Vec<Arc<crate::model::disk::DdbDisk>>>>,
     fence: Option<Arc<OwnershipFence>>,
 }
 
@@ -183,6 +185,7 @@ impl DdbKvClient {
             kv: Arc::new(kv),
             metrics: None,
             require_fence: false,
+            disks: None,
             fence: None,
         }
     }
@@ -194,6 +197,7 @@ impl DdbKvClient {
             kv,
             metrics: None,
             require_fence: false,
+            disks: None,
             fence: None,
         }
     }
