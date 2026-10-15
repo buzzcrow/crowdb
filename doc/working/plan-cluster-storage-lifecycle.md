@@ -853,3 +853,50 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   all-feature Clippy and repository Rust fmt. Initial replay failure revealed
   the cache's canonical media spelling; fixed the confirmed projection merge
   without relaxing the replay assertion. Container rerun remains pending.
+
+
+### Next node-plan implementation boundary
+
+- Keep one accepted `NodeSetup` intent on the target monitor, matched to its
+  discovery UUID and admission operation. A specific bounded worker may ask the
+  owned local Web backend to prepare existing typed service configurations; the
+  monitor's existing desired-intent reconciliation starts/observes the processes.
+  No browser executor owns accepted work and no generic workflow engine is added.
+- Persist each complete prepared `NodeServiceIntent` before publication, including
+  chosen ports and Chunk-KV bootstrap IDs. Publish a fresh Start only when its
+  desired key is absent; exact operation/configuration replay is read-only.
+  Never overwrite a newer operator Stop/Restart/Delete during plan reconciliation.
+  Existing explicit service controls retain their normal supersession behavior.
+- Treat installed/registered-but-stopped services as explicit prerequisites rather
+  than restarting them through default-plan retries. Resolve existing KV binding
+  as the Paxos step; do not deploy another KV instance or create Group 1.
+- Node plan state must include the no-input managed-file default, explicit
+  diskless and supplied-media selections, per-medium results, and separate
+  waiting states for authority, binding, ownership and service readiness.
+- Also reject timed-out retained pages explicitly in `disk_storage_page`; do not
+  interpret a partial observation as a complete inventory. This remains a pending
+  hardening hunk, not an implemented claim.
+
+- UI follow-up identified during the health integration: `NodeStorage.confirmed`
+  currently overlays successful local lifecycle results indefinitely. Retire that
+  overlay against fresh authoritative lifecycle revisions so a later physical
+  quarantine or another Console mutation cannot remain painted Up (or Offline).
+  Preserve the immediate confirmed result/focus behavior, bounded observation
+  concurrency, and add both component and actual browser regression assertions.
+
+- Image `02260a4c` / config
+  `sha256:30b2d481fbd5f644faa196a1c605db34fb5e79ba91bc9d7c03dfa652a448719d`
+  passed missing-medium proof again and the original atomic batch/capacity
+  assertions. Artifact `run-d54accc5a818482897bc63f376847158`. Browser reached
+  validated Online but failed waiting for its POST; per-test time 14.4 s.
+- Trace showed the Online click completed but no POST was sent. Its dialog
+  disabled Confirm whenever the 250-ms exclusion poll was in flight, including
+  between pointer-down and pointer-up. Existing confirmed revision remains safe
+  for a conditional mutation; the handler now keeps that action available while
+  reading. Failed observations still disable mutations until fresh authority.
+  An observation generation prevents a read begun before submission from
+  overwriting the accepted mutation result or error afterward.
+- Added deferred-read regression: Confirm remains enabled, emits exactly one
+  Online request at the original full-width revision, and an older completed
+  read cannot erase Pending validation. All 232 UI cases and TypeScript pass.
+  Original native assertions/timeouts remain unchanged. Updated OCI rerun pending.

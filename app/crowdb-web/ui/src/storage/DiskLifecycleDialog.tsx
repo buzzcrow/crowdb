@@ -27,6 +27,7 @@ export function DiskLifecycleDialog({ nodeId, groupId, diskId, onClose, onCommit
   const acceptedOnline = useRef<string>();
   const controller = useRef(new AbortController());
   const pending = useRef<Promise<void>>();
+  const observationGeneration = useRef(0);
   const callbacks = useRef({ onCommitted, onClose });
   callbacks.current = { onCommitted, onClose };
   const submitted = useRef<Submission>();
@@ -57,10 +58,11 @@ export function DiskLifecycleDialog({ nodeId, groupId, diskId, onClose, onCommit
   const refresh = useCallback(() => {
     if (pending.current) return pending.current;
     const signal = controller.current.signal;
+    const generation = observationGeneration.current;
     setLoading(true);
     const work = diskLifecycle(nodeId, groupId, diskId, { signal })
-      .then(current => { if (!signal.aborted) observe(current); })
-      .catch(cause => { if (!signal.aborted) { setFresh(false); setError(String(cause)); } })
+      .then(current => { if (!signal.aborted && generation === observationGeneration.current) observe(current); })
+      .catch(cause => { if (!signal.aborted && generation === observationGeneration.current) { setFresh(false); setError(String(cause)); } })
       .finally(() => { if (!signal.aborted) setLoading(false); if (pending.current === work) pending.current = undefined; });
     pending.current = work;
     return work;
@@ -82,11 +84,14 @@ export function DiskLifecycleDialog({ nodeId, groupId, diskId, onClose, onCommit
   const action = submission?.action ?? (state?.removed ? 'rejoin' : state?.offline ? (bringingOnline ? 'online' : 'removal') : 'offline');
   const validationPending = state?.online?.state === 'pending' && state.online.offline_revision === state.disk_revision;
   const sameRevision = !submission || (submission.action === 'rejoin' ? state?.operation_id === submission.operation : state?.disk_revision === submission.revision);
-  const canSubmit = fresh && !busy && !loading && state && sameRevision
+  // A background read must not interrupt a click on an already confirmed
+  // revision. The backend condition fences any intervening authority change.
+  const canSubmit = fresh && !busy && state && sameRevision
     && (action === 'rejoin' ? state.removed && !!state.operation_id : !state.removed && !!state.disk_revision && (action === 'offline'
       || (action === 'online' ? state.offline && !validationPending : state.offline && state.remove_conditions.length === 0 && acknowledged)));
   const submit = async () => {
     if (!canSubmit || !state) return;
+    observationGeneration.current += 1;
     const attempt: Submission = submission ?? (action === 'rejoin' ? { action, operation: state.operation_id! } : { action, revision: state.disk_revision! });
     submitted.current = attempt; setSubmission(attempt); setBusy(true); setError('');
     try {

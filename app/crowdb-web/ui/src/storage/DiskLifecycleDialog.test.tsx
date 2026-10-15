@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { diskLifecycle, offlineNodeDisk, removeNodeDisk, rejoinNodeDisk, onlineNodeDisk } from '../api';
 import { DiskLifecycleDialog } from './DiskLifecycleDialog';
@@ -18,6 +18,27 @@ function setup() {
 }
 beforeEach(() => {
   read.mockReset(); offline.mockReset(); remove.mockReset(); vi.mocked(rejoinNodeDisk).mockReset(); vi.mocked(onlineNodeDisk).mockReset(); read.mockResolvedValue(initial);
+});
+
+it('keeps an exact-revision Online action clickable during a refresh and ignores its old response', async () => {
+  read.mockResolvedValue({ ...excluded, remove_conditions: [] });
+  const operation = { operation_id: `online/disk/${excluded.disk_revision}`, offline_revision: excluded.disk_revision!, state: 'pending' as const, error: null };
+  vi.mocked(onlineNodeDisk).mockResolvedValue(operation);
+  const { onClose } = setup();
+  await screen.findByText(/Owner and DiskIO exclusion confirmed/);
+  fireEvent.click(screen.getByRole('button', { name: 'Bring Online…' }));
+  let finish!: (value: DiskLifecycle) => void;
+  read.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh authority' }));
+  expect(screen.getByRole('button', { name: 'Refresh authority' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Validate and bring Online' })).toBeEnabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Validate and bring Online' }));
+  await screen.findByText(/Validation accepted/);
+  await act(async () => { finish({ ...excluded, remove_conditions: [] }); });
+  expect(screen.getByRole('button', { name: 'Validation in progress' })).toBeDisabled();
+  expect(onlineNodeDisk).toHaveBeenCalledTimes(1);
+  expect(onlineNodeDisk).toHaveBeenCalledWith(1, 7, 'disk', excluded.disk_revision);
+  expect(onClose).not.toHaveBeenCalled();
 });
 
 it('shows accepted validation until Group 0 confirms Online and preserves exact revision strings', async () => {
