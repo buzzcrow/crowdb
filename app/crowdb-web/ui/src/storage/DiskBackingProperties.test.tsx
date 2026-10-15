@@ -49,3 +49,12 @@ it('shows unknown legacy backing without inventing a file or allocation policy',
   await screen.findByText(/unknown for this legacy disk/);
   expect(nodeDiskFile).not.toHaveBeenCalled();
 });
+
+it('refreshes the same selected disk when it is inspected after removal', async () => {
+  const { rerender } = render(<DiskBackingProperties nodeId={2} groupId={7} diskId="disk" observationKey={{}} />);
+  await screen.findByText('Registered', { exact: true });
+  backing.mockResolvedValue({ ...sample, removed: true });
+  rerender(<DiskBackingProperties nodeId={2} groupId={7} diskId="disk" observationKey={{}} />);
+  await screen.findByText('Removed', { exact: true });
+  expect(backing).toHaveBeenCalledTimes(2);
+});

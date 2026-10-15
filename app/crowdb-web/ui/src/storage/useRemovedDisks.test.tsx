@@ -35,3 +35,15 @@ it('isolates candidate pages when the selected node changes', async () => {
   expect(result.current.node).toBe(2);
   expect(result.current.items).toHaveLength(0);
 });
+
+it('does not reuse a candidate read that started before a committed removal', async () => {
+  let finish!: (value: { items: RemovedDisk[]; next: null }) => void;
+  read.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  read.mockResolvedValueOnce({ items: [disk], next: null });
+  const { result } = renderHook(() => useRemovedDisks(1, true));
+  let committed!: Promise<void>;
+  act(() => { committed = result.current.refresh(undefined, true); });
+  await act(async () => { finish({ items: [], next: null }); await committed; });
+  expect(read).toHaveBeenCalledTimes(2);
+  expect(result.current.items).toEqual([disk]);
+});

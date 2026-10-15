@@ -581,3 +581,15 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   All 219 UI tests/types, affected Rust Clippy and fmt pass. Extended existing
   native hardware browser flow covers both UI transitions/properties/focus;
   full rebuilt-image acceptance is still pending.
+- Full native hardware acceptance passes on committed image `bc45d1d7`
+  (`run-4ea2b66540e843d0baeb5866a7445d12`, config
+  `sha256:d53d10afb05285cdb2aa44127fc29e77b93c84e2bb1b75b10cbfd948e47d50f3`).
+  Browser 9.0 s versus 6.5 s baseline; the additional actual owner/DiskIO
+  exclusion boundary is 2.428 s, with assertions still at 3 s. Actual occupied
+  removal prints allocation/bytes retained, old I/O fails and another disk
+  successfully allocates. No response interception, wait inflation or retries.
+- Follow-up UI correctness: mutation refresh waits out older in-flight membership
+  and retained-candidate reads, then observes anew. Reinspecting an already selected
+  disk and committed mutation refresh its backing properties. New regressions
+  cover all three cases; existing native flow now keeps the Inspector on the disk
+  across removal. This small extension awaits focused browser verification.

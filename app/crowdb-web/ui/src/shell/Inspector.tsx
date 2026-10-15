@@ -322,7 +322,7 @@ function DetailsTab({ entity, nodes, racks, servers, stores, capacityUsage, hard
         ))}
       </dl>
       {nodeManagement && entity.type === 'Disk' && entity.parentIds?.node_id !== undefined && entity.parentIds?.disk_group_id !== undefined &&
-        <DiskBackingProperties key={entity.id} nodeId={Number(entity.parentIds.node_id)} groupId={Number(entity.parentIds.disk_group_id)} diskId={entity.id} />}
+        <DiskBackingProperties observationKey={entity} key={entity.id} nodeId={Number(entity.parentIds.node_id)} groupId={Number(entity.parentIds.disk_group_id)} diskId={entity.id} />}
 
       {dgDisks && dgDisks.length > 0 && (
         <div className="tw-space-y-1">

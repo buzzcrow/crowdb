@@ -7,7 +7,7 @@ import { diskBacking, nodeDiskFile } from '../api';
 import type { DiskBackingInfo, FilePreparation } from './types';
 import { filePhaseLabel, pendingFilePreparation } from './types';
 
-export function DiskBackingProperties({ nodeId, groupId, diskId }: { nodeId: number; groupId: number; diskId: string }) {
+export function DiskBackingProperties({ nodeId, groupId, diskId, observationKey }: { nodeId: number; groupId: number; diskId: string; observationKey?: unknown }) {
   const [record, setRecord] = useState<DiskBackingInfo | null>();
   const [operation, setOperation] = useState<FilePreparation>();
   const [error, setError] = useState('');
@@ -31,7 +31,7 @@ export function DiskBackingProperties({ nodeId, groupId, diskId }: { nodeId: num
     };
     void refresh();
     return () => { controller.abort(); clearTimeout(timer); };
-  }, [nodeId, groupId, diskId, revision]);
+  }, [nodeId, groupId, diskId, revision, observationKey]);
   const fields = record ? [
     ['Container path', record.container_path], ['Backend', record.backend === 'file' ? 'File' : 'Block device'],
     ['Media', record.media_type === null ? 'Unknown' : ['HDD', 'SSD', 'Zoned SSD', 'SMR HDD'][record.media_type] ?? 'Unknown'],

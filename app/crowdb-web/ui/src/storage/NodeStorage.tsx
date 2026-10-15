@@ -19,7 +19,7 @@ interface Props {
   nodeId: number; rackId: number; active: boolean; readonly: boolean; ready: boolean;
   inventory?: NodeDiskGroups; hardware: HardwareCapacitySummary | null; usage: CapacityUsageResponse | null;
   candidatesOnly?: boolean;
-  loadGroup: (node: number, group: number) => Promise<void>;
+  loadGroup: (node: number, group: number, fresh?: boolean) => Promise<void>;
   onAddGroup: () => void;
   onCandidates: (nodeId: number, summary: CandidateSummary) => void;
 }
@@ -118,7 +118,7 @@ export function NodeStorage({ nodeId, rackId, active, readonly, ready, inventory
       {removed.items.map(disk => <article key={disk.disk_id} aria-label={`Removed disk ${disk.disk_id}`} className="tw-rounded tw-border tw-border-border tw-p-3 tw-text-sm tw-space-y-1">
         <p role="status">Removed · DG-{disk.disk_group_id} · {disk.disk_id}</p>
         <p className="tw-break-all">{disk.container_path}</p>
-        <p>{disk.backend} · {disk.sparse ? 'Sparse' : disk.backend === 'file' ? 'Preallocated' : 'Raw device'} · Medium and allocation metadata retained.</p>
+        <p>{disk.backend} · {formatBytes(Number(disk.capacity_units) * disk.unit_size_bytes)} · Media {disk.media_type === null ? 'Unknown' : disk.media_type} · {disk.sparse ? 'Sparse' : disk.backend === 'file' ? 'Preallocated' : 'Raw device'} · Medium and allocation metadata retained.</p>
         <p className="tw-text-muted">{model.inventory?.disks.find(item => item.path === disk.container_path)?.error || (model.inventory && !model.inventory.disks.some(item => item.path === disk.container_path) ? 'Missing from latest discovery' : 'Explicit Rejoin required; never automatically readmitted.')}</p>
         <button className="tw-text-accent" onClick={() => inspectEntity({ domain: Domain.Cluster, type: 'Disk', id: disk.disk_id, parentIds: { rack_id: rackId, node_id: nodeId, disk_group_id: disk.disk_group_id, disk_id: disk.disk_id } })}>Properties</button>
       </article>)}
@@ -131,8 +131,9 @@ export function NodeStorage({ nodeId, rackId, active, readonly, ready, inventory
     {managing && <DiskLifecycleDialog key={`${nodeId}:${managing.group}:${managing.disk}`} nodeId={nodeId} groupId={managing.group} diskId={managing.disk}
       onClose={() => setManaging(undefined)} onCommitted={state => {
         if (state.removed) requestAnimationFrame(() => candidateSection.current?.focus());
+        if (selectedEntity?.type === 'Disk' && selectedEntity.id === state.disk_id) inspectEntity({ ...selectedEntity });
         setConfirmed(previous => ({ ...previous, [state.disk_id]: state }));
-        void loadGroup(nodeId, managing.group); void removed.refresh(); void model.refresh();
+        void loadGroup(nodeId, managing.group, true); void removed.refresh(undefined, true); void model.refresh();
       }} />}
     {creating && <CreateFileDiskDialog nodeId={nodeId} groups={inventory?.diskGroups ?? []} groupId={recommendedGroup} available={available} onClose={() => setCreating(false)} onAccepted={model.accept} />}
   </section>;

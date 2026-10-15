@@ -31,7 +31,7 @@ test('native diagnostics: Capacity navigation fetches only opened storage branch
   expect(groups.every(node => node === 1)).toBe(true);
 });
 
-// Baseline: 6.5s (2026-10-15), native file admission and node workspace.
+// Baseline: 9.0s (2026-10-15), native file admission, Offline/Remove and retained candidates.
 test('native diagnostics: hardware capacity aggregates disks and dashed status updates', async ({ page, request }) => {
   const group = await request.post('/api/nodes/1/disk-groups', {
     data: { id: 591, name: 'test-dg-hwcap', store_id: 1, group_id: 1 },
@@ -170,6 +170,8 @@ async function verifyDiskLifecycle(page: Page, request: APIRequestContext, diskI
   const workspace = page.getByLabel('Node 1 workspace', { exact: true });
   await sidebar.getByTestId('tree-node-STORAGE-1').getByRole('button', { name: 'Storage', exact: true }).click();
   const row = workspace.getByRole('article', { name: `Registered disk ${diskId}`, exact: true });
+  await row.getByRole('button', { name: 'Properties', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Disk backing properties' })).toContainText('Registered');
   await row.getByRole('button', { name: 'Manage disk', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Disk lifecycle', exact: true });
   await expect(dialog.getByRole('button', { name: 'Mark Offline', exact: true })).toBeEnabled();

@@ -12,9 +12,9 @@ export function useRemovedDisks(node: number, enabled: boolean) {
   const [loading, setLoading] = useState(false);
   const controller = useRef(new AbortController());
   const pending = useRef<Promise<void>>();
-  const refresh = useCallback((after?: string) => {
+  const refresh = useCallback((after?: string, fresh = false): Promise<void> => {
     if (!enabled) return Promise.resolve();
-    if (pending.current) return pending.current;
+    if (pending.current) return fresh ? pending.current.then(() => refresh(after)) : pending.current;
     const signal = controller.current.signal;
     setLoading(true);
     const work = removedNodeDisks(node, after, { signal }).then(page => {
