@@ -4,8 +4,11 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
+#include <cstdint>
 #include <memory>
 #include <string>
+#include <thread>
 
 namespace crowdb::diskio
 {
@@ -16,6 +19,17 @@ struct FfiResult
     std::string       json_result;
     std::atomic<bool> done{false};
 };
+
+inline bool wait_for_ctx(FfiResult &ctx, uint32_t timeout_ms = 10000)
+{
+    for (uint32_t i = 0; i < timeout_ms / 10; ++i) {
+        if (ctx.done.load(std::memory_order_acquire)) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return false;
+}
 
 // The caller and callback each retain the result independently. A bounded wait
 // can return without invalidating user_data while the Rust operation completes.

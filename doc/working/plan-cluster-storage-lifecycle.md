@@ -500,3 +500,16 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   A captured Up snapshot cannot create a fresh writable disk after Offline;
   already excluded disks skip baseline construction. Startup/recovery/exclusion
   regressions (15 cases), all-target DiskDB Clippy and fmt pass.
+- DiskIO registers before opening media, then confirms Offline only after old
+  snapshots/callbacks release the disk and descriptor retirement completes.
+  Exact revisions are batched at most 16 per sync through a bounded, timed C ABI
+  call; unconfirmed batches rotate and reconcile idempotently. The wire uses
+  decimal strings for all 64-bit identities/revisions. Two C++ regressions cover
+  drainage, old confirmations, batch fairness and unsigned limits; the Rust
+  wire-boundary regression passes. Full C++ gate passes (543 tree, 56 RPC,
+  63 DiskIO, 31 common, 55 tree-FFI, 25 RPC-FFI). Full tree-lint exits 0;
+  focused touched-file lint has only three existing Group0Sync style warnings.
+  KV all-target/all-feature Clippy and Rust/C++ formatting pass. Native runtime
+  confirmation still awaits a committed-source image build. Before enabling
+  Remove, persist DiskIO's configured node/group scope so a stale owned-group
+  advertisement cannot hide a just-started participant.

@@ -17,6 +17,10 @@
 #![allow(non_camel_case_types, non_snake_case)]
 #![allow(unsafe_code)]
 
+mod disk_exclusion;
+#[cfg(feature = "test-util")]
+pub use disk_exclusion::parse_diskio_exclusions_for_tests;
+
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_void};
 use std::ptr;

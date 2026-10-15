@@ -26,17 +26,6 @@ namespace crowdb::diskio
 
 // ── Callback context for async FFI ops ────────────────────────────
 
-static bool wait_for_ctx(FfiResult &ctx, uint32_t timeout_ms = 10000)
-{
-    for (uint32_t i = 0; i < timeout_ms / 10; ++i) {
-        if (ctx.done.load(std::memory_order_acquire)) {
-            return true;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    return false;
-}
-
 // ── Group0Sync ────────────────────────────────────────────────────
 
 Group0Sync::Group0Sync(Group0SyncConfig cfg, std::shared_ptr<DiskSet> disk_set, std::shared_ptr<IoEngine> engine,
@@ -105,10 +94,20 @@ void Group0Sync::schedule_next_sync()
 void Group0Sync::do_sync()
 {
     release_quiescent_disks();
+    // Register before acquiring any disk handle so exclusion observers cannot
+    // miss a newly starting instance. A failed registration never opens media.
+    if (!registered_) {
+        registered_ = heartbeat();
+        if (!registered_) {
+            return;
+        }
+    }
     if (cfg_.auto_discover_disks) {
         fetch_disks_from_group0();
     }
-    heartbeat();
+    if (heartbeat()) {
+        confirm_exclusions();
+    }
 }
 
 void Group0Sync::release_quiescent_disks()
@@ -160,6 +159,7 @@ void Group0Sync::reconcile_disks(const std::string &json)
     try {
         parsed     = folly::parseJson(json);
         membership = DiskMembership::parse(parsed, cfg_.dg_id);
+        exclusions_.observe(parsed, cfg_.dg_id);
     }
     catch (const std::exception &e) {
         std::fprintf(stderr, "warning: group-0 disk membership rejected: %s\n", e.what());
@@ -269,10 +269,10 @@ void Group0Sync::reconcile_disks(const std::string &json)
     std::sort(owned_dg_ids_.begin(), owned_dg_ids_.end());
 }
 
-void Group0Sync::heartbeat()
+bool Group0Sync::heartbeat()
 {
     if (svc_client_ == nullptr) {
-        return;
+        return false;
     }
 
     // A node-local DiskIO instance may run before any Capacity disk group
@@ -291,11 +291,13 @@ void Group0Sync::heartbeat()
                                    dg_ids_json.c_str(), "[]", complete_ffi_result, retain_ffi_result(ctx));
     if (!wait_for_ctx(*ctx)) {
         std::fprintf(stderr, "warning: group-0 heartbeat timed out\n");
-        return;
+        return false;
     }
     if (ctx->status.load() != 0) {
         std::fprintf(stderr, "warning: group-0 heartbeat failed\n");
+        return false;
     }
+    return true;
 }
 
 } // namespace crowdb::diskio

@@ -50,6 +50,12 @@ void crowdb_hw_list_disks_in_group(crowdb_hw_client_t client, uint64_t rack_id, 
 void crowdb_hw_list_disks_on_node(crowdb_hw_client_t client, uint64_t rack_id, uint64_t node_id,
                                   crowdb_kv_on_complete callback, void *user_data);
 
+// Confirm at most 16 drained Offline disk revisions. All integer words in
+// entries_json are decimal strings; failed/unknown batches must be reconciled.
+void crowdb_hw_ack_diskio_exclusions(crowdb_hw_client_t client, uint64_t rack_id, uint64_t node_id,
+                                     uint64_t instance_id, const char *entries_json, crowdb_kv_on_complete callback,
+                                     void *user_data);
+
 // List all diskdb ownership entries. Callback receives a JSON array
 // of DiskdbOwnerEntry objects.
 void crowdb_hw_list_owners(crowdb_hw_client_t client, crowdb_kv_on_complete callback, void *user_data);
