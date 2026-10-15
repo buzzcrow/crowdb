@@ -96,6 +96,19 @@ describe('Sidebar · Cluster tree projection', () => {
     expect(queryByText('PKV-11')).toBeNull();
   });
 
+  it('keeps a stopped registered PKV service visible for restart actions', () => {
+    const stoppedRack = {
+      ...rack,
+      nodes: rack.nodes.map(node => node.id === 10 ? { ...node, kv_server: undefined } : node),
+    };
+    const { getByText } = renderSidebar(Domain.Cluster, {
+      racks: [stoppedRack],
+      servers: [],
+      allServers: [{ id: 'kv-10', node_id: 10, service_type: 'paxos-kv', health: 'down' }],
+    });
+    expect(getByText('PKV-10', { exact: true })).toBeTruthy();
+  });
+
   it('renders assigned disk groups and disks under the owning DiskDB service', () => {
     const { getByTestId, getByText } = renderSidebar(Domain.Cluster);
     const diskdbSubtree = getByTestId('tree-node-DDB-10');

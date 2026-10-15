@@ -140,7 +140,13 @@ export function Sidebar({
           const kinds: ServiceKind[] = plan ? [...serviceOrder] : [];
           if (!plan) {
             for (const service of nodeServices) if (isAuxiliaryKind(service.service_type)) kinds.push(service.service_type);
-            if (serverByNodeId.has(nodeId)) kinds.push('paxos-kv');
+            // Keep a registered KV service visible after it is stopped. The
+            // physical node projection may omit `kv_server` while the process
+            // is down, but `/api/servers` still owns the deployment record and
+            // the restart action must remain available for that record.
+            if (serverByNodeId.has(nodeId) || nodeServices.some(service => service.service_type === 'paxos-kv')) {
+              kinds.push('paxos-kv');
+            }
             if (diskdbNodeIds?.has(nodeId)) kinds.push('diskdb');
           }
           for (const kind of [...new Set(kinds)]) {
