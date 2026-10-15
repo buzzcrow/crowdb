@@ -155,7 +155,7 @@ and Rust/Python SDK contract before Console integration.
   stay usable while unrelated latest changes. Files: `inspection/`, `authority/
   projection.rs`, new `tests/inspection_test.rs`. Exit: stale cursor conflicts,
   complete/non-complete results distinguished, no chunk reads or read-plan acks.
-- [~] **B5 Implement effective-value selection**: extract a bounded evaluator
+- [x] **B5 Implement effective-value selection**: extract a bounded evaluator
   over metadata projection, explicit inheritance and tombstones; use v2 semantics
   without changing old v1 persisted plans. Prefix/range/IDs use exact bytes;
   predicates resolve effective inline values; Not is relative to chosen universe.
@@ -212,7 +212,7 @@ until its corresponding API and visibility tests pass.
 
 ## Phase D — Split set revision lifecycle
 
-- [ ] **D1 Evaluate definitions and partition policy**: validate names, IDs,
+- [x] **D1 Evaluate definitions and partition policy**: validate names, IDs,
   predicates, overlap/coverage independently; implement exact backlog SHA-256
   algorithm with checked weights/128-bit arithmetic and fixed vectors. Persist
   ordered definition inputs and evaluator version; distinguish inherited frozen
@@ -220,7 +220,7 @@ until its corresponding API and visibility tests pass.
   policy}.rs`, `tests/split_selection_test.rs`. Exit: deterministic sample assignment
   across order/restart/SDK, no payload search, bounded overlap examples and explicit
   complete/partial counts. Empty named Splits valid, empty data Snapshot invalid.
-- [ ] **D2 Prepare immutable revision pages**: draft -> evaluating -> prepared;
+- [~] **D2 Prepare immutable revision pages**: draft -> evaluating -> prepared;
   store page integrity and complete binding before ready status. Validate member
   universe and cross-Split policy on one Snapshot. Define idempotent revision edits,
   rename/remove and cancellation/abandon. Files: new `split/{draft,pages,prepare}.rs`,
@@ -514,3 +514,24 @@ failure; record actual failures and add Blocked only when that workflow requires
 - Full `pixi run rs-lint` passed after consolidating a duplicated test helper
   module import; log `/tmp/dataset-inspection-pages-lint.log`. Rust fmt and
   diff whitespace pass.
+
+## Effective selection and partition evaluation — 2026-10-16
+
+- B5 evaluates bounded member windows against effective inherited inline values,
+  preserving binary ID order, exact empty equality, tombstones and missing values.
+  Unknown explicit IDs and predicate fields fail; chunk-backed predicates do not
+  fetch payloads. Not complements the selected Snapshot universe. Predicate-scoped
+  continuations prevent resuming a different rule; v1 planning remains unchanged.
+- D1 adds `SamplePartition` using the exact SHA-256 domain/seed/ID-length bytes,
+  u128 multiply/shift and checked u32 weight sums. Four Python hashlib golden
+  vectors cover binary IDs, maximal seeds and maximal total weight. Assignment
+  order/restart and invalid interval tests pass. `SplitValidation` tracks assigned,
+  overlapping and unassigned counts independently with bounded example counts.
+- Focused selection, partition and inspection tests passed; full Dataset suite
+  passed 89 tests and root Rust lint passed. Logs: `/tmp/dataset-selection-tests.log`
+  and `/tmp/dataset-selection-lint.log`. Final partition tests and crate lint also
+  pass after adding a 32 KiB-per-category diagnostic byte cap. Draft evaluation and
+  persistence remain D2, and revision publication remains D3.
+- Sequencing refinement: complete D2/D3 before C1/C2, because child composition
+  consumes frozen parent Split revisions. C1/C2 then adds child data and inherited
+  membership, followed by atomic initial Split visibility in D4.

@@ -21,6 +21,7 @@ mod pages;
 pub use pages::InspectionPage;
 
 mod content;
+mod evaluate;
 
 mod matrix;
 pub use matrix::InspectionSample;

@@ -23,6 +23,7 @@ mod planner;
 mod publication;
 mod record;
 mod retention;
+mod selection;
 mod shuffle;
 pub mod split;
 mod store;
