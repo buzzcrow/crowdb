@@ -923,3 +923,19 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   Four live publication/race/fencing cases and three existing identity cases
   pass; affected all-target/all-feature Clippy and Rust fmt pass. This is a
   verified building block; the node-plan worker/UI integration remains pending.
+
+- Added typed `mgmt::node::setup` choices/progress contract: one fixed discovery
+  UUID/admission operation, explicit Automatic/Diskless/Supplied storage, exact
+  supplied identity/capacity and initialization agreement, six selected service
+  kinds and bounded listener overrides. Omitted choices default to all services
+  and a preallocated 16-GiB file with 1-GiB reserve. Progress excludes prepared
+  configuration and credentials. Serialized request size is capped at 32 KiB;
+  duplicate media/services/listener reservations fail before acceptance.
+  Four contract cases and all-target/all-feature protocol Clippy pass.
+  Monitor journal/worker and public API integration remain pending.
+- Raw-media provisioning must distinguish observed physical bytes from usable
+  whole-zone geometry, retaining any unused tail rather than rejecting ordinary
+  sector-sized devices or resizing them. Introduce a compatible optional backing
+  capacity field when implementing that path, with strict retained identity
+  validation. Automatic DiskGroup selection must avoid global ID collisions
+  because allocation/service APIs address groups by numeric ID.

@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod setup;
 pub mod storage;
 
 pub const NODE_PROTOCOL_VERSION: u32 = 1;
