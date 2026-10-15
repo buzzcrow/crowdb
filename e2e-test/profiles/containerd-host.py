@@ -45,10 +45,6 @@ def wait(action, predicate, description, seconds=120):
 
 
 def scenario(runtime, image, data, secret, mode):
-    if mode == "manual":
-        disks = data / "disks"
-        disks.mkdir()
-        os.chown(disks, 10001, 10001)
     media = Media(data.parent / "supplied-media") if mode == "manual" else None
     media_state = None
     command = [sys.executable, str(OCI / "run-node.py"),
@@ -62,6 +58,9 @@ def scenario(runtime, image, data, secret, mode):
         subprocess.run(command, check=True, timeout=90)
         if mode == "manual":
             snapshot = wait(lambda: request("/api/node/candidates"), lambda s: bool(s["local"]), "local discovery")
+            owner = runtime.invoke("exec", "crowdb-node", "stat", "-c", "%u:%a", "/opt/crowdb/data/disks").strip()
+            assert owner.split(":")[0] == "10001", f"supplied-media parent owner/mode: {owner}"
+            runtime.invoke("exec", "--user", "10001:10001", "crowdb-node", "test", "-w", "/opt/crowdb/data/disks")
             discovery_id = snapshot["local"]["advertisement"]["discovery_id"]
             request("/api/racks", {"id": 1, "name": "containerd-rack"})
             node = request("/api/node/admit", {"discovery_id": discovery_id, "rack_id": 1,

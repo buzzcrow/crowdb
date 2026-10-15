@@ -75,6 +75,7 @@ class Media:
             os.chown(self.raw, 10001, group)
             self.raw.chmod(0o660)
             assert self.exclusive_available(), "fresh owned loop is already claimed"
+            self.permissions = {path.name: ownership(path) for path in (self.backing, self.file, self.bad, self.raw)}
         except BaseException:
             self.close()
             raise
@@ -106,6 +107,8 @@ class Media:
 
     def verify_tails(self):
         self.status()
+        for path in (self.backing, self.file, self.bad, self.raw):
+            assert ownership(path) == self.permissions[path.name], f"external source ownership/mode changed: {path.name}"
         for path in (self.backing, self.file, self.bad):
             with path.open("rb") as file:
                 assert os.fstat(file.fileno()).st_size == CAPACITY
@@ -226,12 +229,17 @@ def serve_owned_media():
     signal.signal(signal.SIGINT, stop)
     media = Media(root / "supplied-media")
     try:
-        (root / "media-ready.json").write_text(json.dumps({"identity": media.identity}))
+        (root / "media-ready.json").write_text(json.dumps({"identity": media.identity, "permissions": media.permissions}))
         while not stopped:
             signal.pause()
     finally:
         media.close()
-        (root / "media-closed.json").write_text(json.dumps({"identity": media.identity}))
+        (root / "media-closed.json").write_text(json.dumps({"identity": media.identity, "permissions": media.permissions}))
+
+
+def ownership(path):
+    metadata = path.stat()
+    return [metadata.st_uid, metadata.st_gid, stat.S_IMODE(metadata.st_mode)]
 
 
 if __name__ == "__main__":

@@ -1552,3 +1552,13 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   validation or deleting retained files. All 31 OCI host tests pass. The adapter
   is host-only and excluded from staged image inputs; the Node stage remains the
   committed `a1eeb063` sources, while host adapter changes are tracked separately.
+- Real bare-root supplied-media regression `run-eb3a6a8cef05435db691e02f3ee6d7f0`
+  fails before the fix: the runtime-created disk parent is `0:755`, so UID 10001
+  cannot create later managed files. Existing fixtures had precreated/chowned it
+  and masked this product gap. Manual entrypoint now rejects a symlink/non-directory
+  parent and prepares only that directory for crowdb; no recursive source changes.
+  Remove fixture-side preparation from Docker/containerd and assert actual UID
+  plus write capability. Preserve external source UID/GID/mode in media proof
+  alongside inode/tail checks. OCI 31, media ownership 4 and shell syntax pass.
+  This changes a packaged runtime asset; commit, restage and build a new image
+  before actual acceptance. Do not reuse the prior image for the new entrypoint.

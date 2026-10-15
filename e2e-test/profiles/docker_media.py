@@ -38,7 +38,9 @@ class DockerMedia(Media):
                    'python e2e-test/profiles/supplied_media.py')
             ready = root / "media-ready.json"
             wait(ready.exists, bool, "owned Docker loop helper readiness")
-            self.identity = tuple(json.loads(ready.read_text())["identity"])
+            observed = json.loads(ready.read_text())
+            self.identity = tuple(observed["identity"])
+            self.permissions = observed["permissions"]
             self.descriptor = os.open(self.raw, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
             self.status()
         except BaseException:

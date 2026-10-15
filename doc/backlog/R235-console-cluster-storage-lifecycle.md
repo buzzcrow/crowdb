@@ -373,6 +373,11 @@
   launching. The launcher does not write an empty external-mapping receipt into
   a pristine single root, because it would race bootstrap's clean-root check.
   Do not relax that check or delete an existing unknown root entry automatically.
+- In standard mode the image prepares the common disk directory for UID/GID
+  10001, including the root-owned parent created by OCI child mounts. Change only
+  that directory; never recursively chown/chmod supplied files or device nodes.
+  Reject a symlink/non-directory parent. The supplied-media acceptance starts
+  from a bare owned data root and checks original source UID/GID/mode unchanged.
 - A pristine single-mode data root is initialized by its own bootstrap. External
   supplied-media mappings are a standard-node flow; do not precreate arbitrary
   entries in an uninitialized single root to emulate standard admission.

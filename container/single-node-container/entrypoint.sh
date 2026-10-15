@@ -69,6 +69,15 @@ if test "$mode" = manual && test -z "${CROWDB_PHYSICAL_HOST_ID:-}"; then
     echo 'Manual mode requires CROWDB_PHYSICAL_HOST_ID' >&2
     exit 1
 fi
+if test "$mode" = manual; then
+    disks=/opt/crowdb/data/disks
+    if test -L "$disks" || { test -e "$disks" && ! test -d "$disks"; }; then
+        echo 'Disk directory must be a real directory, not a symlink or file.' >&2
+        exit 1
+    fi
+    mkdir -p "$disks"
+    chown -h crowdb:crowdb "$disks"
+fi
 ssh_password_auth=yes
 if test -n "${CROWDB_SSH_PASSWORD_FILE:-}"; then
     test -f "$CROWDB_SSH_PASSWORD_FILE" || { echo 'SSH password file missing' >&2; exit 1; }

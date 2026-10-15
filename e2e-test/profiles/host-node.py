@@ -30,7 +30,7 @@ def main():
         data = root / "node"
         docker("run", "--rm", "--network", "none", "--entrypoint", "/bin/sh", "--mount",
                f"type=bind,source={root},target=/test", IMAGE, "-c",
-               'mkdir /test/node /test/node/disks; chown -R "10001:$1" /test/node; chmod 0770 /test/node /test/node/disks', "sh", str(os.getgid()))
+               'mkdir /test/node; chown "10001:$1" /test/node; chmod 0770 /test/node', "sh", str(os.getgid()))
         image = json.loads(docker("image", "inspect", IMAGE))[0]["Id"]
         command = [sys.executable, "container/single-node-container/run-node.py", "--image", image,
                    "--name", name, "--network", "host", "--data-root", str(data), "--physical-host-id", "docker-acceptance-host",
@@ -58,6 +58,9 @@ def main():
             launch()
             origin = "http://127.0.0.1:9090"
             snapshot = wait(lambda: request(origin, "/api/node/candidates"), lambda result: bool(result["local"]), "host-network discovery")
+            owner = docker("exec", name, "stat", "-c", "%u:%a", "/opt/crowdb/data/disks")
+            assert owner.split(":")[0] == "10001", f"supplied-media parent owner/mode: {owner}"
+            docker("exec", "--user", "10001:10001", name, "test", "-w", "/opt/crowdb/data/disks")
             discovery_id = snapshot["local"]["advertisement"]["discovery_id"]
             assert snapshot["local"]["hardware"]["memory_bytes"] <= 1024 * 1024 * 1024
             assert snapshot["local"]["hardware"]["logical_cpus"] > 0
