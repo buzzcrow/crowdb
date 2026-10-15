@@ -90,9 +90,25 @@ pub(super) async fn run_with_inputs(
                 .downcast_ref::<crowdb_diskio_client::DiskioError>()
                 .is_some_and(|error| {
                     error.is_retryable_read()
-                        || matches!(error, crowdb_diskio_client::DiskioError::TopologyUnavailable(_))
+                        || matches!(
+                            error,
+                            crowdb_diskio_client::DiskioError::TopologyUnavailable(_)
+                                | crowdb_diskio_client::DiskioError::DiskNotFound
+                        )
                 }) =>
         {
+            authorize(root, &state.request).await?;
+            if !hardware
+                .get_disk_with_revision(&key)
+                .await?
+                .is_some_and(|(disk, _)| disk.status == HwStatus::Init as i32)
+                || hardware.disk_storage(&key).await?.as_ref() != Some(&state.request.record)
+            {
+                return Err(
+                    "supplied disk no longer has its exact Init membership; inspect exclusion/recovery"
+                        .into(),
+                );
+            }
             state.error = Some(error.to_string().chars().take(128).collect());
             return Ok(journal::save(root, &state)?);
         }

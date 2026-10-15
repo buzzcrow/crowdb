@@ -250,6 +250,7 @@ fn map_read_error(error: DiskioError) -> IoError {
         | DiskioError::DeadlineExceeded => IoError::TransientRead(error.to_string()),
         DiskioError::InvalidInput(_)
         | DiskioError::TopologyInconsistent(_)
+        | DiskioError::DiskNotFound
         | DiskioError::DiskFailure(_)
         | DiskioError::PartialWrite
         | DiskioError::DurabilityFailure(_)

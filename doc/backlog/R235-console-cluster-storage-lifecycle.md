@@ -478,6 +478,14 @@
   explicit operator review. No automatic recovery or resource-release policy is
   introduced here.
 
+- Compatible-group validation must observe backing receipts and membership at
+  one stable Rack revision. Concurrent publication cannot reinterpret a new
+  Unknown-class disk as legacy HDD. A typed local DiskNotFound during initial
+  handoff is waiting only while Group 0 retains that exact Init intent; ordinary
+  reads retain their nonretryable missing-disk behavior. Real I/O errors are not
+  reclassified as readiness. External files with fully allocated observed bytes
+  are not described as proven managed preallocation.
+
 **Dependencies**:
 
 - Reuse current durable Group-0 bootstrap exclusion, immutable intent, monitor

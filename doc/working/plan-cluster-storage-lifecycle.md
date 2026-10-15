@@ -1335,10 +1335,51 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   supplied files and one nonblank file with known tail markers, closes/reopens
   durable progress, retries only the failed original operation, and verifies
   unchanged inode/size/tails through an owned read-only host proof.
-- Standalone native TypeScript invocation also exposes three confirmed pre-existing
-  unresolved imports in untouched 55-chunk-kv-catalog.spec.ts and
-  60-iceberg-catalog.spec.ts (`../../src/chunk-kv/catalog`, `iceberg/json`,
-  `iceberg/types`, last modified at `5e54be81`). Do not fabricate these modules or
-  suppress diagnostics. Bridge and shell TypeScript checks run independently;
-  current changed native spec has no reported type errors. Runtime acceptance
-  still must run against the new committed image.
+- A standalone native TypeScript invocation lacks three source snapshots consumed
+  by untouched 55-chunk-kv-catalog.spec.ts and 60-iceberg-catalog.spec.ts. Further
+  inspection confirms `bundle_client` deliberately copies these serializers/types
+  into the owned browser client; this is a missing staged-input context, not a
+  confirmed product defect. Do not fabricate modules in the repository. Run the
+  native TypeScript check in that actual bundle; bridge/shell direct checks pass.
+- New runtime/UI freeze at `e4c5695807ca38c0a7b4f011f2cf5fab33138edc`.
+  Rootless stage/build/import succeed. OCI manifest
+  `sha256:e0bff990e1f53c8d63644e514b24dfcf140d560c4b0c624dbb25695a4dda062a`,
+  Docker config `sha256:ddab63877647521dba87ba5fde7cf91896262a732c60f78ca5d8ef35cd294946`,
+  runtime `b96a6306e01e672d7396a29ece0b9902e9c99a93e3936156d87893792a66a239`.
+  Known CDI/fsverity/shutdown warnings remain non-fatal; artifact receipt verifies
+  the completed export. Native stage build and both bridge/shell TypeScript pass.
+  Existing npm audit/chunk-size warnings remain visible; no dependency changes.
+  Permanent docs now distinguish standard monitor-owned setup from legacy
+  session-owned deployment, explicit single preview, storage identities/tails,
+  per-disk durable Join, and retained exclusion/rejoin. Browser acceptance runs
+  before any further runtime/UI edits; success screenshots are added to its owned
+  artifact only, without changing assertions, timeouts or the frozen image.
+- Canvas acceptance on `e4c56958` passes in
+  `run-b02e63b47433450e9c3f0baf97fe781e`: fit 2.2 s, collapse+explicit Refresh
+  6.1 s, pan 1.2 s, navigation 2.7 s. The original collapse assertion is retained.
+- New supplied hardware acceptance `run-5e7bc7c3b7694b1fae2250981e31a3e7`
+  reaches all original node/file/lifecycle assertions and the new UI review, then
+  fails: expected registered/registered/failed, received failed/failed/failed.
+  Read-only exact-image helper reads only its three non-secret supplied journals:
+  bad medium correctly fails at byte 67108863; blank A fails with DiskNotExist
+  immediately before DiskIO's logged descriptor addition; blank B fails class
+  validation after A publishes. Screenshots of real cards/table/dialog are retained.
+- Root cause reproduced deterministically in real Group 0:
+  `compatible_unknown_media_admitted_between_receipt_and_membership_reads_is_not_legacy`
+  fails before the fix with false incompatible class. A newly atomic receipt/member
+  commit can appear between separate scans, so the old scan misses its receipt and
+  misclassifies Unknown as legacy HDD. Validate both scans within a stable Rack
+  revision, retrying a changed revision within a bounded loop; no lock or media
+  class relaxation. All 16 admission/compatibility cases now pass.
+- DiskNotExist is now a distinct typed DiskNotFound, not a physical I/O failure.
+  Ordinary client reads do not gain automatic retries. Accepted supplied work may
+  remain Waiting for DiskIO only after rechecking the exact retained Init receipt
+  and current confirmed binding; Offline/removal/changed intent still fail. Actual
+  I/O/alignment failures retain their original classification. Add code-boundary
+  regression and rerun full DiskIO client/monitor gates before rebuilding.
+- Visual inspection found native grey controls from a nonexistent surface color;
+  use the shared dark Input/Select controls in node filters and Join rows, with
+  unique IDs. Also distinguish observed allocated external files from proven
+  managed preallocation; an external sparse=false receipt cannot prove how its
+  host file was allocated. These source changes end the prior image freeze and
+  require another committed production image for acceptance.

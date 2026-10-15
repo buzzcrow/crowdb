@@ -18,6 +18,8 @@ pub enum DiskioError {
     TransportUnavailable(String),
     #[error("DiskIO queue rejected the operation: {0}")]
     Backpressure(String),
+    #[error("DiskIO has not opened the requested disk")]
+    DiskNotFound,
     #[error("permanent disk failure: {0}")]
     DiskFailure(String),
     #[error("DiskIO reported a partial write")]

@@ -128,3 +128,20 @@ async fn owner_status_write_cannot_resurrect_concurrently_removed_membership() {
     assert!(hw.mark_disk_offline_if_owned(&key, 7, revision).await.is_err());
     assert!(hw.get_disk_with_revision(&key).await.unwrap().is_none());
 }
+
+#[tokio::test]
+async fn compatible_unknown_media_admitted_between_receipt_and_membership_reads_is_not_legacy() {
+    let fixture = TestStorage::start().await;
+    let hw = &fixture.hardware;
+    let first = record(1);
+    hw.admit_disk_storage(&first).await.unwrap();
+    let mut second = record(2);
+    second.backing_identity = "file:10:21".into();
+    second.geometry.device_path = "/opt/crowdb/data/disks/concurrent".into();
+    hw.validate_disk_group_storage_after_receipts_for_tests(1, 2, 3, None, 4096, async {
+        hw.admit_disk_storage(&second).await.unwrap();
+    })
+    .await
+    .expect("a concurrently committed backing receipt must not become a legacy HDD");
+    assert_eq!(hw.list_disks_in_group(1, 2, 3).await.unwrap().len(), 2);
+}

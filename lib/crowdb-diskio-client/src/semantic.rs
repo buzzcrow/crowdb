@@ -297,6 +297,13 @@ impl std::fmt::Debug for DiskioClient {
 }
 
 impl DiskioClient {
+    /// Classify an actual wire return code without broadening ordinary read retries.
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn classify_read_error_for_tests(error: WireError) -> DiskioError {
+        Self::classify_wire(error, OperationKind::Read)
+    }
+
     /// Connect a semantic client to an injected static route set.
     ///
     /// # Errors
@@ -611,7 +618,11 @@ impl DiskioClient {
                     return Ok(());
                 }
                 Err(DiskioError::PartialWrite) => return Err(DiskioError::PartialWrite),
-                Err(error @ (DiskioError::DiskFailure(_) | DiskioError::InvalidInput(_))) => {
+                Err(
+                    error @ (DiskioError::DiskFailure(_)
+                    | DiskioError::DiskNotFound
+                    | DiskioError::InvalidInput(_)),
+                ) => {
                     return Err(error);
                 }
                 Err(error) => {
@@ -834,7 +845,7 @@ impl DiskioClient {
                 .await
             {
                 Ok(()) => return Ok(()),
-                Err(error @ DiskioError::DiskFailure(_)) => {
+                Err(error @ (DiskioError::DiskFailure(_) | DiskioError::DiskNotFound)) => {
                     return if durability_context {
                         Err(DiskioError::DurabilityFailure(error.to_string()))
                     } else {
@@ -924,6 +935,7 @@ impl DiskioClient {
             }
             WireError::Rpc(error) => DiskioError::Protocol(error.to_string()),
             WireError::Protocol(message) => DiskioError::Protocol(message),
+            WireError::IoError(DiskIoRetCode::DiskNotExist) => DiskioError::DiskNotFound,
             WireError::IoError(DiskIoRetCode::PartialWrite) => DiskioError::PartialWrite,
             WireError::IoError(DiskIoRetCode::InvalidAlignment) => {
                 DiskioError::InvalidInput("DiskIO rejected address alignment".into())
