@@ -31,6 +31,10 @@ pub enum SplitLifecycleError {
     Corrupt,
     #[error("Split operation exceeded its work limit")]
     Limit,
+    #[error("Split draft has no complete current evaluation")]
+    NotEvaluated,
+    #[error("Split overlap or coverage policy is violated")]
+    PolicyViolation,
     #[error("Split draft cannot be edited in its current state")]
     Frozen,
 }
@@ -69,7 +73,11 @@ impl DatasetAuthority {
         self.require_committed_snapshot(identity, snapshot).await?;
         self.put_split_state(&state_key(b"DS\0SB\0", identity, operation, None)?, &initial)
             .await?;
-        let state = DraftState { record, edit: None };
+        let state = DraftState {
+            record,
+            edit: None,
+            evaluation: None,
+        };
         let key = state_key(b"DS\0SD\0", identity, operation, None)?;
         // A repeated begin can observe an already edited draft, but not change its original input.
         if self.split_state_get(&key).await?.is_none() {
@@ -134,6 +142,7 @@ impl DatasetAuthority {
         next.record.policy = edit.policy;
         next.record.splits.clone_from(&edit.splits);
         next.edit = Some(marker);
+        next.evaluation = None;
         self.replace_split_draft(identity, &old, &state, &next).await?;
         Ok(next.record)
     }

@@ -27,3 +27,5 @@ mod matrix;
 pub use matrix::InspectionSample;
 
 pub(crate) mod cursor;
+
+mod split_evaluation;

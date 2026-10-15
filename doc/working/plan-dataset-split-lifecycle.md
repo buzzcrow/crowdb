@@ -228,13 +228,18 @@ until its corresponding API and visibility tests pass.
   state}.rs`, `tests/split_draft_test.rs`. Exit: lost reply/restart, divergent retry,
   historical retry, stale revision, unchanged Dataset head and abandon/frozen
   transitions pass. Focused tests (2), crate all-target Clippy and formatting pass.
-- [~] **D2b Prepare immutable revision pages**: draft -> evaluating -> prepared;
+- [x] **D2b Prepare immutable revision pages**: draft -> evaluating -> prepared;
   store page integrity and complete binding before ready status. Validate member
   universe and cross-Split policy on one Snapshot. Define idempotent revision edits,
   rename/remove and cancellation/abandon. Files: new `split/{draft,pages,prepare}.rs`,
   `tests/split_revision_test.rs`. Exit: stale preview cannot prepare, restart resumes
   bounded work, an empty set revision is distinguishable from never-created.
-- [ ] **D3 Commit Split head with durable receipts**: reuse C4's proven protocol
+- [ ] **D2c Resolve frozen membership sources**: after D3 provides committed
+  revision reads, evaluate inherited definitions by source revision membership
+  intersection; never reevaluate their rule implicitly. Pin source owners and
+  reject missing/foreign revision/name. Add indexed membership lookup and tests
+  for frozen r2 while r3 changes. Complete before C1/C2 composition integration.
+- [~] **D3 Commit Split head with durable receipts**: reuse C4's proven protocol
   for independent `SplitHead`; expected-current-revision CAS and exact attempt IDs.
   A new revision updates the complete set atomically, never Dataset head. Reconcile
   unknown outcomes and retain committed histories. Files: new `split/{publication,
@@ -543,3 +548,18 @@ failure; record actual failures and add Blocked only when that workflow requires
 - Sequencing refinement: complete D2/D3 before C1/C2, because child composition
   consumes frozen parent Split revisions. C1/C2 then adds child data and inherited
   membership, followed by atomic initial Split visibility in D4.
+
+## Split draft evaluation verification — 2026-10-16
+
+- D2b persists twenty-Sample evaluation windows and immutable member pages before
+  advancing draft progress. Candidate identity derives from operation + editing
+  revision; page retries are idempotent. Complete progress binds SHA-256, page
+  counts, Snapshot universe count and policy diagnostics. Prepare freezes the
+  entire set only from that exact evaluation revision.
+- Empty named sets prepare successfully under allow-unassigned. Overlap/coverage
+  violations stop Prepare; cancellation and stale evaluation requests do not
+  advance progress. Draft edits clear evaluation state. Frozen inherited sources
+  explicitly remain unsupported until D2c supplies committed revision lookup.
+- Focused draft/evaluation tests pass (4); full Dataset suite passes 93 tests.
+  `pixi run rs-lint`, crate Clippy, Rust fmt and diff whitespace pass. Logs:
+  `/tmp/dataset-split-evaluation-tests.log`, `/tmp/dataset-split-evaluation-lint.log`.

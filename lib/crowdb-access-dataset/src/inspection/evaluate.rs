@@ -81,7 +81,7 @@ impl DatasetAuthority {
         })
     }
 
-    async fn inspection_inline_value(
+    pub(super) async fn inspection_inline_value(
         &self,
         identity: &DatasetIdentity,
         sample: &[u8],

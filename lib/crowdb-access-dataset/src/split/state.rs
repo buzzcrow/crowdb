@@ -20,6 +20,8 @@ pub(super) struct EditMarker {
 pub(super) struct DraftState {
     pub record: SplitDraftRecord,
     pub edit: Option<EditMarker>,
+    #[serde(default)]
+    pub evaluation: Option<super::evaluation::EvaluationProgress>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -31,6 +33,15 @@ pub(super) struct EditReceipt {
 impl DraftState {
     pub(super) fn encode(&self) -> Result<Vec<u8>, SplitLifecycleError> {
         self.record.validate()?;
+        if let Some(evaluation) = &self.evaluation {
+            evaluation.validate(self)?;
+        } else if matches!(
+            self.record.progress,
+            crate::composition::DraftProgress::Evaluating { .. }
+                | crate::composition::DraftProgress::Evaluated { .. }
+        ) {
+            return Err(SplitLifecycleError::Corrupt);
+        }
         if let Some(edit) = &self.edit {
             OperationId::from_bytes(edit.id.as_bytes()).map_err(crate::AuthorityError::from)?;
         }

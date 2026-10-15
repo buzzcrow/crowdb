@@ -65,3 +65,29 @@ pub(super) async fn fixture() -> (
         .unwrap();
     (store, authority, identity, snapshot)
 }
+
+#[allow(dead_code)]
+pub(super) fn partition_splits() -> Vec<crowdb_access_dataset::split::DraftSplit> {
+    use crowdb_access_dataset::split::*;
+    let weights: Vec<_> = ["train", "test"]
+        .into_iter()
+        .map(|name| PartitionWeight {
+            name: SplitName::new(name).unwrap(),
+            weight: 1,
+        })
+        .collect();
+    let splits = weights
+        .iter()
+        .enumerate()
+        .map(|(index, weight)| DraftSplit {
+            name: weight.name.clone(),
+            definition: SplitDefinition::WeightedPartition {
+                seed: 42,
+                weights: weights.clone(),
+                index: u32::try_from(index).unwrap(),
+            },
+            origin: MembershipOrigin::Evaluated,
+        })
+        .collect();
+    splits
+}

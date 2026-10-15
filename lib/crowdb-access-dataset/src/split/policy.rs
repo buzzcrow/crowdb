@@ -47,6 +47,36 @@ impl SplitValidation {
         }
         Ok(())
     }
+    pub(crate) fn merge(&mut self, other: &Self) -> Result<(), SplitError> {
+        let scanned = self.scanned.checked_add(other.scanned).ok_or(SplitError::Limit)?;
+        let assigned = self
+            .assigned
+            .checked_add(other.assigned)
+            .ok_or(SplitError::Limit)?;
+        let unassigned = self
+            .unassigned
+            .checked_add(other.unassigned)
+            .ok_or(SplitError::Limit)?;
+        let overlapping = self
+            .overlapping
+            .checked_add(other.overlapping)
+            .ok_or(SplitError::Limit)?;
+        self.scanned = scanned;
+        self.assigned = assigned;
+        self.unassigned = unassigned;
+        self.overlapping = overlapping;
+        for id in &other.unassigned_examples {
+            if can_record(&self.unassigned_examples, id) {
+                self.unassigned_examples.push(id.clone());
+            }
+        }
+        for id in &other.overlap_examples {
+            if can_record(&self.overlap_examples, id) {
+                self.overlap_examples.push(id.clone());
+            }
+        }
+        Ok(())
+    }
     #[must_use]
     pub fn satisfies(&self, policy: SplitPolicy) -> bool {
         (policy.overlap == OverlapPolicy::AllowOverlap || self.overlapping == 0)
