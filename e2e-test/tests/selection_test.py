@@ -104,8 +104,9 @@ class SelectionTest(unittest.TestCase):
         self.assertTrue(all(case["scope"].startswith("diskdb.") and case["nodes"] == 2
                             for case in diskdb))
         dataset = json.loads(self.invoke("--list", "--layer", "dataset"))
-        self.assertEqual(len(dataset), 2)
-        self.assertTrue(all(case["scope"] == "dataset.http" and case["nodes"] == 13 for case in dataset))
+        self.assertCountEqual([case["scope"] for case in dataset],
+                              ["dataset.http", "dataset.http", "dataset.sdk"])
+        self.assertTrue(all(case["nodes"] == 13 for case in dataset))
         console = json.loads(self.invoke("--list", "--layer", "console"))
         self.assertEqual(len(console), 154)
         wal_nodes = {"remove_leader_from_five_node_group_elects_new_leader": 6,

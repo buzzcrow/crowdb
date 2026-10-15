@@ -1718,3 +1718,11 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   collection within 3s and requires graceful stop exit 0 before recreation.
 - Freed only audited three 16-GiB disposable files from old failed
   `run-af7bf01453ce4e0ba5228c691f7aae0f`; retained diagnostic journals/logs.
+- Shared fixture test repair: actual `--layer dataset --list` contains two
+  existing HTTP owners and one existing SDK owner, all 13 nodes. Assert that
+  exact scope multiset and retain resource checks; do not change Dataset code
+  or start R237. This removes the stale HTTP-only expectation from the shared
+  fixture verification gate without reducing coverage.
+- New image prerequisites: OCI tests 31 passed; host/containerd fixture ownership
+  tests 3+3 passed; shared fixture suite now 150/150 passed after repairing only
+  the existing Dataset scope expectation. Runtime source freeze `c262867c`.
