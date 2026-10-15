@@ -122,7 +122,7 @@ export function S3View({ active, readonly, onChunk }: { active: boolean; readonl
     const response = await request('HEAD', objectPath(bucket, row.key));
     setDetail(Object.fromEntries(response.headers.entries()));
   }, `Inspected ${row.key}`); };
-  useEffect(() => { if (origin) void run(listBuckets, 'Buckets refreshed'); }, [origin]);
+  useEffect(() => { if (active && origin) void run(listBuckets, 'Buckets refreshed'); }, [active, origin]);
   useNavigationSnapshot(Domain.S3, 'object-query', () => {
     const state = { bucket, bucketStart, bucketFilter, prefix, listedPrefix, cursor,
       previous: [...previous], selected: selected ? { ...selected } : null,

@@ -25,7 +25,7 @@ test('S3 native multipart upload, HEAD, bounded preview and full round trip', as
       await page.goto('/?domain=S3');
       await expect(page.getByLabel('Access key', { exact: true })).toHaveCount(0);
       const bucketButton = page.getByRole('navigation', { name: 'S3 buckets' }).getByRole('button', { name: bucket, exact: true });
-      await expect(bucketButton).toBeVisible({ timeout: 10_000 });
+      await expect(bucketButton).toBeVisible();
       await bucketButton.click();
       await page.getByText('Bucket actions', { exact: true }).click();
       await page.getByLabel('Object key', { exact: true }).fill(key);
