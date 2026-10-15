@@ -26,9 +26,9 @@ live in the linked document; implementation follows
   workspace, automatic node admission and three-voter Group-0 bootstrap, OCI
   file/block disk admission, monitor-owned initialization, and Offline/remove flow.
   **Area:** Console / deployment / monitor / DiskIO / DiskDB / ChunkDB.
-  **Complexity:** High. **Status:** Implemented; retained for review.
-  Scoped acceptance passed; wider load/recovery failures and deferred decisions
-  remain recorded in R235 and its execution plan.
+  **Complexity:** High. **Status:** Complete; retained for review.
+  Affected acceptance passed, including the original ordered inspection and
+  Docker/containerd lifecycle checks. Decisions and evidence remain in R235.
 
 ## Access server and external data
 

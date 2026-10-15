@@ -15,6 +15,7 @@ from console_native_browser import INSPECTION_CASES
 from console_native_storage import unbound_file_rejected, verify_file_preparation, verify_file_admission
 from console_native_candidates import prepare as prepare_candidates, verify as verify_candidates
 from profiles.setup_choices import diskless_setup
+from profiles.node_resources import capture as capture_resources
 
 
 class NativeConsoleCluster(ShellBrowserCluster):
@@ -203,9 +204,16 @@ class NativeConsoleCluster(ShellBrowserCluster):
                         or chunks.get("ec") != chunks["ids"][1]):
                     raise ValueError("inspection requires its actual 21 allocated chunks")
                 self.browser_timeout = len(INSPECTION_CASES) * 180
-                self.browser(INSPECTION_CASES, config="native.config.ts",
-                    extra_env={"CROWDB_NATIVE_CHUNK_FIXTURE": json.dumps(chunks)},
-                    expected=len(INSPECTION_CASES))
+                try:
+                    self.browser(INSPECTION_CASES, config="native.config.ts",
+                        extra_env={"CROWDB_NATIVE_CHUNK_FIXTURE": json.dumps(chunks)},
+                        expected=len(INSPECTION_CASES))
+                finally:
+                    resources = capture_resources(self.command, self.servers,
+                                                  self.artifacts / "node-resources.json")
+                for name, node in resources.items():
+                    assert node.get("pids.events") == "max 0", f"{name} exhausted its PID budget: {node}"
+                    assert not node.get("OOMKilled", False), f"{name} was OOM killed: {node}"
                 return {"passed": True}
             if self.case_name == "console::native_browser::production_split_and_transfer_journals":
                 self.browser_timeout = 12 * 60

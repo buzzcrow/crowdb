@@ -41,6 +41,7 @@ def capture(docker, names, destination):
             result.setdefault(name, {})["capture_error"] = str(error)
     destination.write_text(json.dumps(result, indent=2))
     print("Owned node resource diagnostics: " + json.dumps(result), flush=True)
+    return result
 
 
 def verify_reaping(invoke, name, wait):

@@ -60,8 +60,12 @@ def verify(docker, request, wait, names, origins):
         assert len(status["disks"]) == 1 and status["disks"][0]["phase"] == "ready", status
         path = file["operation"]["path"]
         current_stat = docker("exec", file["name"], "stat", "-c", "%d:%i:%s:%b", path)
-        assert current_stat == file["stat"], {"node": node, "path": path,
-            "before": file["stat"], "after": current_stat}
+        before, after = file["stat"].split(":"), current_stat.split(":")
+        evidence = {"node": node, "path": path, "before": file["stat"], "after": current_stat}
+        assert after[:3] == before[:3], evidence
+        # Extent metadata may allocate additional filesystem blocks after writes.
+        assert int(after[3]) * 512 >= file["operation"]["request"]["capacity_bytes"], evidence
+        file["stat_after_restart"] = current_stat
         observed = wait(lambda name=file["name"]: json.loads(docker("exec", name, "cat", "/opt/crowdb/run/status/monitor.json")),
             lambda observed: len(observed["services"]) == 7 and all(service["healthy"] for service in observed["services"].values()),
             f"default node {node} all actual processes healthy")

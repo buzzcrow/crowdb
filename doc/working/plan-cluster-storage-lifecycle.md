@@ -47,11 +47,11 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   scope, candidates and status actions, responsive properties drawer, init policy
   and progress. Files: `app/crowdb-web/ui/src/{shell,views,menus,managed}` and
   associated hooks/styles/tests. Acceptance A14-A18.
-- [~] **Scoped verification and documentation**: run focused component/runtime/browser
+- [x] **Scoped verification and documentation**: run focused component/runtime/browser
   tests, then fmt/lint separately; update permanent Console/deployment/OCI guides.
-  Focused disk/bootstrap/UI checks passed; broader shared-workload failures
-  remain explicitly deferred below and are not reported as passing. Retain this
-  evidence and the R235 decisions for the user's consolidated review.
+  Disk/bootstrap/UI checks and the original full inspection owner passed on the
+  init-backed image, with zero PID-limit events or OOM. Retain this evidence and
+  the R235 decisions for the user's consolidated review.
 
 ## Verification
 
@@ -1726,3 +1726,73 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
 - New image prerequisites: OCI tests 31 passed; host/containerd fixture ownership
   tests 3+3 passed; shared fixture suite now 150/150 passed after repairing only
   the existing Dataset scope expectation. Runtime source freeze `c262867c`.
+- Rootless image rebuild/import passed. Frozen source
+  `c262867cb4fbe0850122974a2115d1c4789ad65f`; manifest
+  `sha256:04a70df6e89bc6cbe47cf9767de5711c29eeeb67f8f5769055b8c25b5e68dd13`,
+  config `sha256:a656768cc0480a757bacb0c6241ff7c6ea5d8e6e49c413850185e02266c24e8b`,
+  runtime `0c491e7f8575240d86d111a8d36c2c96145c8393ccda06820941c85f7e0afda6`.
+- Old-image reproducer was deliberately interrupted after confirmed PID
+  exhaustion: 11 passed / 2 failed / 1 interrupted, not a completed pass.
+  First failing Access mutation returned SSH connection reset; S3 multipart
+  then failed and S3 history stalled during cleanup. Evidence retained.
+- Correct the independently proven file-stat invariant defect before final
+  default-plan acceptance: before/after filesystem device, inode and exact size
+  stay equal; allocated bytes must remain >= requested capacity at both points.
+  Keep both complete raw stat observations. The same-filesystem experiment
+  already proved legal extent metadata growth (131072 -> 131080 blocks) under
+  real fsynced writes. Do not treat allocation counter equality as identity or
+  relax exact medium, original operation, logical capacity or reserve checks.
+- New-image Docker host profile passed:
+  `run-f27fef1a19fb4c06819c979f36afc150`, actual 64-orphan collection, graceful
+  stop exit 0, file/raw fsync/read, exclusion/Remove/Rejoin, exact source
+  permission/tail preservation and recreated-container retained data.
+- Original 14-case owner now running on the frozen init image. Its final
+  resource snapshot rejects any PID-max event or OOM, in addition to all original
+  browser assertions. Add the same resource checks to successful bridge/default
+  startup acceptance with the existing 256-PID limit.
+- Midrun init-image snapshot `run-46bf03f899c34ea6af7a54498ac698dc`: zero
+  adopted zombies on all three nodes; PIDs 179/174/173, peaks 191/182/187,
+  all max events zero. This contrasts with 320+ unreaped sshd children and
+  saturated old nodes; original long-run browser acceptance remains in progress.
+- Original full inspection PASSED on the init image:
+  `run-46bf03f899c34ea6af7a54498ac698dc`, 14/14 browser cases, including
+  101-file Iceberg publication/footer, Access stop/restore 2.8s, S3 multipart
+  23.5s and history 7.0s. Zone pixels/pages 3.2s and interrupted DDB 3.7s passed.
+  All original assertions and request limits remain. Final PID peaks
+  201/189/190, max events zero on all nodes, no OOM. Former ordered stop failures
+  now have a demonstrated resource-leak cause and a successful original-owner
+  regression; no longer defer them as an unexplained Access/recovery problem.
+- Containerd host profile also PASSED on the exact same manifest:
+  `run-4a66ab67a5a54422a79d0bf16a0ab05b`. Manual and single modes each
+  reaped 64 actual orphans, stopped with exit 0 and recreated successfully.
+  File/raw SDK durability, release/rejoin, source permissions and byte tails
+  remained valid. New init does not alter storage identity or shutdown ordering.
+
+### Closure after resumed verification
+
+- Three-node bridge/default startup PASSED on the init image:
+  `run-c1d4a682cf2b41a5b5634d67825d29d8`. Browser closure, actual monitor
+  restart, original preallocated files/operations, all six services and middle
+  progress completed. PID peaks 183/173/176 against the original 256 limit;
+  all five retained nodes have max events zero and no OOM. Progress test 1.1s.
+- Exact filesystem device/inode/logical-size preservation and full physical
+  preallocation before/after restart passed with complete stat proof retained.
+- Completed affected gates: original inspection 14/14; fixture tests 150/150;
+  OCI tests 31/31; Docker and containerd manual/single real-media acceptance;
+  rootless OCI build/import; workspace fmt. No Rust/C++ code changed during this
+  resumed fix; prior affected Clippy/C++ gates remain valid.
+- Former long-run Access failures were caused by unreaped SSH descendants
+  exhausting cgroup PIDs. Init fixes the demonstrated cause, and the unchanged
+  original ordered workload now passes. The reduced unbalanced Iceberg diagnostic
+  is not substituted for its original owner; original 101-file publication passed.
+- The previous Dataset selector failure is fixed as a shared fixture expectation
+  only; existing HTTP+SDK registrations and 13-node resource assertions retained.
+- No blocking human choice or remaining R235 implementation task. Explicit
+  retained-media forgetting/unassignment and broader recovery design remain the
+  documented future scope, without changing current Offline/Remove/Rejoin safety.
+  R236/R237 were not started. Keep R235 and this evidence for user review.
+- Final default-plan proof directly demonstrates the former stat assertion
+  error: Node 1 device/inode/size stayed
+  `66306:1114548170:17179869184`, while blocks grew 33554472 -> 33554480
+  (4 KiB filesystem metadata). Both observations remain fully preallocated.
+  The corrected identity/reservation assertions preserve the real invariant.
