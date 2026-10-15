@@ -43,7 +43,8 @@ class StorageTest(unittest.TestCase):
 
     def test_devices_are_mapped_without_mknod_permission(self):
         metadata = SimpleNamespace(st_mode=stat.S_IFBLK | 0o660, st_rdev=123)
-        with patch.object(Path, "is_symlink", return_value=False), patch.object(Path, "stat", return_value=metadata):
+        with patch.object(Path, "is_symlink", return_value=False), patch.object(Path, "stat", return_value=metadata), \
+                patch("storage.resource_identity", return_value="device:123"):
             disks = inputs(SimpleNamespace(device=[Path("/dev/test-disk")]))
             with self.assertRaisesRegex(ValueError, "duplicate"):
                 inputs(SimpleNamespace(device=[Path("/dev/test-disk"), Path("/dev/alias")]))
@@ -102,7 +103,8 @@ class StorageTest(unittest.TestCase):
                 declaration = next(value for value in launch if value.startswith("CROWDB_DISK_INPUTS="))
                 self.assertEqual(json.loads(declaration.split("=", 1)[1]),
                                  [{"backend": "file", "path": "/opt/crowdb/data/disks/disk.img",
-                                   "backing_identity": f"file:{source.stat().st_dev}:{source.stat().st_ino}"}])
+                                   "backing_identity": f"file:{source.stat().st_dev}:{source.stat().st_ino}",
+                                   "resource_identity": f"file:{source.stat().st_dev}:{source.stat().st_ino}"}])
                 recorded = json.loads((root / "container-storage.json").read_text())
                 self.assertEqual(recorded["disks"][0]["source"], str(source))
                 self.assertEqual(source.read_bytes(), b"preserved")
@@ -114,3 +116,32 @@ class StorageTest(unittest.TestCase):
             record_inputs(root, [{"backend": "file", "source": "/host/disk", "path": "/node/disk"}])
             self.assertEqual(len(json.loads((root / "container-storage.json").read_text())["disks"]), 1)
             self.assertEqual([path.name for path in root.iterdir()], ["container-storage.json"])
+
+    def test_legacy_mapping_adds_lineage_only_for_unchanged_original(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "disk.img"
+            source.write_bytes(b"retained")
+            disks = inputs(SimpleNamespace(disk_file=[source]))
+            legacy = [{key: value for key, value in disk.items() if key != "resource_identity"}
+                      for disk in disks]
+            record_inputs(root, legacy)
+            before = (root / "container-storage.json").read_bytes()
+            validate_retained_inputs(root, disks)
+            self.assertEqual((root / "container-storage.json").read_bytes(), before)
+            with self.assertRaisesRegex(ValueError, "missing or changed"):
+                validate_retained_inputs(root, [dict(disks[0], backing_identity="file:1:2")])
+
+    def test_file_and_loop_alias_are_rejected_before_launch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "disk.img"
+            source.write_bytes(b"retained")
+            device = SimpleNamespace(st_mode=stat.S_IFBLK, st_rdev=123)
+            original_stat = Path.stat
+            def metadata(path, *args, **kwargs):
+                return device if str(path) == "/dev/owned-loop" else original_stat(path, *args, **kwargs)
+            with patch.object(Path, "stat", metadata), patch.object(Path, "is_symlink", return_value=False), \
+                    patch("storage.resource_identity", return_value="file:10:20"):
+                with self.assertRaisesRegex(ValueError, "duplicate"):
+                    inputs(SimpleNamespace(disk_file=[source], device=[Path("/dev/owned-loop")]))
+            self.assertEqual(source.read_bytes(), b"retained")

@@ -92,6 +92,7 @@ fn retained_check_rejects_underlying_aliases_and_changed_external_mapping() {
         path: test.path.to_string_lossy().into_owned(),
         backend: DiskBackend::File,
         backing_identity: Some("file:different".into()),
+        resource_identity: None,
     };
     assert!(check_retained_medium_for_tests(test.root.path(), &[input], &test.record).is_err());
     fs::hard_link(&test.path, test.root.path().join("disks/alias.img")).unwrap();

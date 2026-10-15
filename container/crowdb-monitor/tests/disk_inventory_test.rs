@@ -34,6 +34,7 @@ fn absent_inventory_does_not_create_default_disks_or_hide_missing_inputs() {
         backend: DiskBackend::BlockDevice,
         path: root.0.join("disks/missing").to_string_lossy().into_owned(),
         backing_identity: None,
+        resource_identity: None,
     };
     let inventory = discover_disks(&root.0, &[input]).unwrap();
     assert_eq!(inventory.disks.len(), 1);
@@ -70,6 +71,7 @@ fn aliases_symlinks_and_changed_mapping_types_remain_ineligible() {
         backend: DiskBackend::BlockDevice,
         path: disks.join("a.img").to_string_lossy().into_owned(),
         backing_identity: None,
+        resource_identity: None,
     };
     let inventory = discover_disks(&root.0, &[input]).unwrap();
     assert_eq!(inventory.disks.len(), 3);
@@ -78,6 +80,7 @@ fn aliases_symlinks_and_changed_mapping_types_remain_ineligible() {
         backend: DiskBackend::File,
         path: root.0.join("outside").to_string_lossy().into_owned(),
         backing_identity: None,
+        resource_identity: None,
     };
     assert!(discover_disks(&root.0, &[input]).is_err());
 }
@@ -89,6 +92,7 @@ fn oversized_inventory_returns_an_explicit_error_instead_of_a_truncated_reply() 
         .map(|index| DiskInput {
             backend: DiskBackend::File,
             backing_identity: None,
+            resource_identity: None,
             path: root
                 .0
                 .join(format!("disks/disk-{index}.img"))
@@ -112,10 +116,20 @@ fn supplied_file_requires_the_launchers_observed_identity() {
         backend: DiskBackend::File,
         path: path.to_string_lossy().into_owned(),
         backing_identity: observed.backing_identity,
+        resource_identity: None,
     };
     assert!(discover_disks(&root.0, &[input.clone()]).unwrap().disks[0]
         .error
         .is_none());
+    input.resource_identity = Some("file:0:0".into());
+    assert!(discover_disks(&root.0, &[input.clone()]).unwrap().disks[0]
+        .error
+        .as_deref()
+        .is_some_and(|error| error.contains("resource lineage")));
+    input.resource_identity = observed.resource_identity;
+    let verified = discover_disks(&root.0, &[input.clone()]).unwrap();
+    assert!(verified.disks[0].error.is_none());
+    assert_eq!(verified.disks[0].resource_identity, input.resource_identity);
     input.backing_identity = Some("file:0:0".into());
     assert!(discover_disks(&root.0, &[input.clone()]).unwrap().disks[0]
         .error

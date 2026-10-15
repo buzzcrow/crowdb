@@ -415,6 +415,11 @@
   without a backing receipt requires explicit migration. Do not guess that an
   apparently different path is safe. Legacy version-1 bootstrap remains a trusted
   compatibility interface; new verified provisioning must use version 2.
+- Initial external raw support accepts whole physical devices and whole-file
+  loop devices. Reject partitions, devices containing partitions, stacked devices,
+  unknown virtual-device lineage, and loop offset/size slices. This deliberately
+  favors verifiable non-overlap over broader device coverage; additional device
+  kinds need a canonical lineage contract before admission is enabled.
 
 **Dependencies**:
 

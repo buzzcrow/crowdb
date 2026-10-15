@@ -1162,3 +1162,13 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   Initial Clippy caught a projection type naming issue, corrected without an
   allow. Actual launcher lineage, supplied provisioning and raw-device E2E remain
   pending; metadata concurrency tests do not count as raw-device acceptance.
+- OCI launcher now reads whole-device lineage before launch: whole-file loop
+  resources use LOOP_GET_STATUS64 backing device/inode; partitions, whole devices
+  containing partitions, stacked/unknown virtual devices and sliced/raw-backed
+  loops fail closed. Exact opened identity remains separate. File/loop aliases
+  collide even across backend kinds. Old retained mappings may add verified
+  lineage only when all their original fields still match, without rewriting on
+  validation. Inventory carries canonical identity and retained v2 checks compare
+  it. All 29 OCI-tool tests, full monitor tests, protocol/monitor all-target/
+  all-feature Clippy and Rust fmt pass. Actual owned-loop launch/exclusion proof
+  and supplied provisioning remain pending.

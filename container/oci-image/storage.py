@@ -7,6 +7,8 @@ import os
 import stat
 from pathlib import Path
 
+from storage_identity import resource_identity
+
 DISK_ROOT = "/opt/crowdb/data/disks"
 
 
@@ -29,8 +31,7 @@ def inputs(args):
                 raise ValueError(f"{source}: expected {backend}")
             if backend == "file" and metadata.st_size == 0:
                 raise ValueError(f"{source}: supplied disk file is empty")
-            identity = (("file", metadata.st_dev, metadata.st_ino) if backend == "file"
-                        else ("block-device", metadata.st_rdev))
+            identity = resource_identity(source, metadata)
             target = f"{DISK_ROOT}/{source.name}"
             if target in targets or identity in identities:
                 raise ValueError(f"{source}: duplicate disk target or underlying resource")
@@ -39,7 +40,7 @@ def inputs(args):
             backing_identity = (f"file:{metadata.st_dev}:{metadata.st_ino}" if backend == "file"
                                 else f"device:{metadata.st_rdev}")
             result.append({"backend": backend, "source": str(source), "path": target,
-                           "backing_identity": backing_identity})
+                           "backing_identity": backing_identity, "resource_identity": identity})
     return result
 
 
@@ -50,7 +51,7 @@ def runtime_arguments(disks):
             result += ["--mount", f'type=bind,source={disk["source"]},target={disk["path"]}']
         else:
             result += ["--device", f'{disk["source"]}:{disk["path"]}:rw']
-    declaration = [{key: disk[key] for key in ("backend", "path", "backing_identity")} for disk in disks]
+    declaration = [{key: disk[key] for key in ("backend", "path", "backing_identity", "resource_identity")} for disk in disks]
     return [*result, "-e", "CROWDB_DISK_INPUTS=" + json.dumps(declaration, separators=(",", ":"))]
 
 
@@ -73,7 +74,12 @@ def validate_retained_inputs(root, disks):
         if target in seen:
             raise ValueError("duplicate retained disk mapping")
         seen.add(target)
-        if current.get(target) != previous:
+        expected = current.get(target)
+        # Old declarations retain exact source/type/opened identity. Only add the
+        # newly verified lineage; never adopt a changed medium as an upgrade.
+        if expected is not None and "resource_identity" not in previous:
+            expected = {key: value for key, value in expected.items() if key != "resource_identity"}
+        if expected != previous:
             raise ValueError(f"{target}: missing or changed retained disk mapping; restore the original input")
 
 

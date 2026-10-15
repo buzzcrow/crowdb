@@ -83,6 +83,9 @@ pub struct DiskInput {
     /// Identity observed by the launcher before mapping the host resource.
     #[serde(default)]
     pub backing_identity: Option<String>,
+    /// Canonical host resource, distinct from an opened loop device identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_identity: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -92,6 +95,8 @@ pub struct DiskObservation {
     pub capacity_bytes: Option<u64>,
     pub allocated_bytes: Option<u64>,
     pub backing_identity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_identity: Option<String>,
     pub supplied: bool,
     pub error: Option<String>,
     /// Reference into the inventory's deduplicated filesystem observations.

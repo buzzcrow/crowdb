@@ -68,8 +68,29 @@ pub fn discover_disks(root: &Path, supplied: &[DiskInput]) -> io::Result<DiskInv
                     observation.error =
                         Some("disk identity differs from supplied mapping or is unverified".into());
                 }
+                if observation.error.is_none() {
+                    if let Some(resource) = &input.resource_identity {
+                        let backing = crowdb_protocol::disk_storage::PhysicalBacking {
+                            physical_host_id: "launcher".into(),
+                            resource_identity: resource.clone(),
+                            capacity_bytes: observation.capacity_bytes.unwrap_or_default(),
+                        };
+                        if backing.validate().is_err()
+                            || (input.backend == DiskBackend::File
+                                && Some(resource) != observation.backing_identity.as_ref())
+                        {
+                            observation.error = Some("invalid supplied resource lineage".into());
+                        } else {
+                            observation.resource_identity = Some(resource.clone());
+                        }
+                    }
+                }
             }
-            if let Some(identity) = &observation.backing_identity {
+            if let Some(identity) = observation
+                .resource_identity
+                .as_ref()
+                .or(observation.backing_identity.as_ref())
+            {
                 *identities.entry(identity.clone()).or_default() += 1;
             }
             observation
@@ -77,8 +98,9 @@ pub fn discover_disks(root: &Path, supplied: &[DiskInput]) -> io::Result<DiskInv
         .collect();
     for disk in &mut disks {
         if disk
-            .backing_identity
+            .resource_identity
             .as_ref()
+            .or(disk.backing_identity.as_ref())
             .is_some_and(|identity| identities[identity] > 1)
         {
             disk.error = Some("duplicate underlying disk resource".into());
@@ -113,6 +135,7 @@ fn observe(
         capacity_bytes: None,
         allocated_bytes: None,
         backing_identity: None,
+        resource_identity: None,
         supplied,
         error: None,
         backing_filesystem: None,
@@ -134,6 +157,7 @@ fn inspect(
         result.capacity_bytes = Some(metadata.len());
         result.allocated_bytes = Some(metadata.blocks().saturating_mul(512));
         result.backing_identity = Some(format!("file:{}:{}", metadata.dev(), metadata.ino()));
+        result.resource_identity.clone_from(&result.backing_identity);
         if metadata.len() == 0 {
             return Err(io::Error::other("disk file is empty"));
         }

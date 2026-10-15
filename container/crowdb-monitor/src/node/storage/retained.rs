@@ -37,6 +37,10 @@ pub(crate) fn check(
         || observed.backend != Some(record.backend)
         || observed.backing_identity.as_ref() != Some(&record.backing_identity)
         || observed.capacity_bytes != Some(capacity)
+        || record
+            .physical_backing
+            .as_ref()
+            .is_some_and(|backing| observed.resource_identity.as_ref() != Some(&backing.resource_identity))
     {
         return Err(io::Error::other(format!(
             "retained medium observation conflicts: {}",
