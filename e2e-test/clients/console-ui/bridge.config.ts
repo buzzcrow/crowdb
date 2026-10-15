@@ -21,10 +21,11 @@ if (!process.env.PLAYWRIGHT_CHANNEL && !executablePath) {
   throw new Error('No system browser found; set PLAYWRIGHT_CHANNEL or PLAYWRIGHT_CHROMIUM_EXECUTABLE');
 }
 
+// Owned local release endpoints must not wait for host PAC/WPAD discovery.
 const chromiumUse = process.env.PLAYWRIGHT_CHANNEL
-  ? { ...devices['Desktop Chrome'], channel: process.env.PLAYWRIGHT_CHANNEL }
+  ? { ...devices['Desktop Chrome'], channel: process.env.PLAYWRIGHT_CHANNEL, launchOptions: { args: ['--no-proxy-server'] } }
   : executablePath
-    ? { ...devices['Desktop Chrome'], launchOptions: { executablePath } }
+    ? { ...devices['Desktop Chrome'], launchOptions: { executablePath, args: ['--no-proxy-server'] } }
     : { ...devices['Desktop Chrome'] };
 
 export default defineConfig({
