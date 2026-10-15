@@ -1285,3 +1285,60 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   pre-existing; no assertions/timeouts or production resource guards were relaxed.
   Native fixture trusted v1 backing receipts are only for its freshly truncated,
   owned sparse files and do not authorize adopting arbitrary legacy media.
+- Current canvas baseline on image `cdecd44d`: fit 2.0 s, pan 1.2 s, navigation
+  2.6 s pass in `run-56493c57aef44c37878e182e11b2231a`. Collapse fails at the
+  original assertion after closing R-480 (N-480 remains rendered); exact isolated
+  reproduction fails identically in `run-f4f63805c4d342e2868237c4b70a0c60` (7.8 s).
+  Source tracing shows ancestor-reveal replays the same focus nonce whenever
+  refreshed graph/default arrays change. Consume ancestor reveal once per domain/
+  nonce after the target exists; explicit collapse must survive polling. Preserve
+  the browser assertion and add deterministic refresh coverage after the frozen
+  bridge baseline. No retries, assertion weakening or timeout increases.
+- Datacenter registry browser baseline passes in
+  `run-c3146550d9674084a16a38cf2d57b130` (1.6 s). Full ordered bridge baseline now
+  runs in `run-dcdd65ea164d464a9924193ec6eb70e1` on the same production image.
+
+- Full ordered bridge baseline `run-dcdd65ea164d464a9924193ec6eb70e1`
+  passed on `cdecd44d` (171.66 s wall). Default progress 3.4 s versus prior
+  1.2 s needs step-level investigation on the next image; added boundaries without
+  changing timeouts or assertions. All six selected services and seven actual
+  processes are healthy; default backing inode/size/allocated blocks survive restart.
+- Current source fixes consume each canvas focus nonce only once, echo reviewed
+  canonical resource identity, and retain sparse supplied-file semantics with
+  64-unit zone geometry. UI and focused protocol/monitor gates pass; fresh-image
+  browser regression remains pending. Cluster/Rack now has cached node cards and
+  an optional Diagram, Capacity has filtered/sorted node rows, and scoped Add Node
+  reuses candidate access review. Root/Rack does not initiate runtime usage scans;
+  incomplete node coverage remains Unknown. Candidate and setup summaries retain
+  at most 64 observations. Added component and real hardware/browser assertions;
+  acceptance must run against a new committed OCI revision before closing this task.
+
+- Manual supplied Join now uses explicit existing compatible bound groups and
+  target-owned per-disk journals. Added HTTP POST/list/status, lossless string disk
+  IDs, reviewed-observation comparison, immutable replay, private optional lookup
+  and bounded pages (16 records/56 KiB). Missing target groups fail before blank
+  scanning or physical claims; full verification still precedes Init publication.
+  UI multiselect holds a fixed review snapshot, seals each request, caps dispatch
+  at four and preserves successful siblings across retry/close. Raw consent is
+  per device. Node progress reopens durable pages and retains at most 64 rows;
+  partial read failure does not prevent siblings from refreshing. Physical backing
+  properties separate exact host/resource/physical/usable/tail byte values.
+- Focused monitor tests: 9 blank/provision/page cases + 4 supplied setup cases +
+  8 existing setup cases pass. Web API authority/lifecycle and final UI/Clippy
+  gates are running; new supplied Join browser/owned raw/containerd proof remains
+  incomplete and must not be counted as accepted support yet.
+
+- Current focused gates pass: Monitor 21 cases, Web authority/file/readonly/lifecycle
+  6 cases, protocol backing/setup 11 cases, UI 251 cases plus TypeScript,
+  all-target/all-feature protocol/monitor/Web Clippy, workspace fmt, and 14 owned
+  fixture observation/candidate cases. New hardware browser flow adds two blank
+  supplied files and one nonblank file with known tail markers, closes/reopens
+  durable progress, retries only the failed original operation, and verifies
+  unchanged inode/size/tails through an owned read-only host proof.
+- Standalone native TypeScript invocation also exposes three confirmed pre-existing
+  unresolved imports in untouched 55-chunk-kv-catalog.spec.ts and
+  60-iceberg-catalog.spec.ts (`../../src/chunk-kv/catalog`, `iceberg/json`,
+  `iceberg/types`, last modified at `5e54be81`). Do not fabricate these modules or
+  suppress diagnostics. Bridge and shell TypeScript checks run independently;
+  current changed native spec has no reported type errors. Runtime acceptance
+  still must run against the new committed image.

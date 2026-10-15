@@ -143,6 +143,7 @@ function TopologyCanvasInner({ active = true, scope, allServers, racks, nodes, s
   const fittedOnceRef = useRef<Partial<Record<Domain, boolean>>>({});
   const lastRefreshTokenRef = useRef<number | undefined>(refreshToken);
   const lastFocusNonceRef = useRef<number | undefined>(undefined);
+  const revealedFocusRef = useRef<Partial<Record<Domain, number>>>({});
   const lastDomainRef = useRef<Domain | undefined>(undefined);
   const wasActive = useRef(active);
   const nodeIdsKeyRef = useRef<Partial<Record<Domain, string>>>({});
@@ -225,7 +226,9 @@ function TopologyCanvasInner({ active = true, scope, allServers, racks, nodes, s
 
   // Sidebar focus reveals every ancestor before centering a hidden target.
   useEffect(() => {
-    if (!focusRequest) return;
+    if (!focusRequest || revealedFocusRef.current[domain] === focusRequest.nonce
+      || !rawNodes.some(node => node.id === focusRequest.targetId)) return;
+    revealedFocusRef.current[domain] = focusRequest.nonce;
     setCollapsedByDomain(previous => {
       const next = new Set(previous[domain] ?? defaultCollapsed);
       next.forEach(id => {
@@ -234,7 +237,7 @@ function TopologyCanvasInner({ active = true, scope, allServers, racks, nodes, s
       if (next.size === (previous[domain] ?? defaultCollapsed).size) return previous;
       return { ...previous, [domain]: next };
     });
-  }, [domain, edges, focusRequest, defaultCollapsed]);
+  }, [domain, edges, focusRequest, defaultCollapsed, rawNodes]);
 
   useEffect(() => {
     if (refreshToken !== lastRefreshTokenRef.current) {

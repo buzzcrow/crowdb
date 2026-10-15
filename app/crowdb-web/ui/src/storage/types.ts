@@ -9,6 +9,7 @@ export interface DiskObservation {
   capacity_bytes: number | null;
   allocated_bytes: number | null;
   backing_identity: string | null;
+  resource_identity?: string | null;
   supplied: boolean;
   error: string | null;
   backing_filesystem: string | null;
@@ -41,6 +42,7 @@ export interface FilePreparation {
 }
 export interface FilePreparationPage { items: FilePreparation[]; next: string | null }
 export interface DiskBackingInfo {
+  physical_backing?: { host_id: string; resource_identity: string; capacity_bytes: string; usable_bytes: string; tail_bytes: string };
   version: number; operation_id: string; backend: DiskBackend; backing_identity: string;
   media_type: number | null; sparse: boolean; removed: boolean; container_path: string;
   capacity_units: string; unit_size_bytes: number; zone_size_units: string; zone_count: number;
@@ -77,3 +79,17 @@ export interface RemovedDisk {
 export interface RemovedDiskPage { items: RemovedDisk[]; next: string | null }
 
 export interface DiskRejoinOutcome { operation_id: string; source_removal_operation_id: string; state: DiskLifecycle }
+
+export interface JoinCandidateRequest { operation_id: string; disk_group_id: number; medium: import('../shell/nodeSetup').SetupMedium }
+export interface SuppliedOperation extends JoinCandidateRequest {
+  node_id: number; disk_id: string; phase: 'accepted' | 'verifying' | 'publishing' | 'waiting-for-diskio' | 'registered' | 'unknown' | 'failed';
+  verified_bytes: number; error: string | null;
+}
+export interface SuppliedOperationPage { items: SuppliedOperation[]; next: string | null }
+export const pendingSupplied = (operation: SuppliedOperation) => !['registered', 'failed'].includes(operation.phase);
+export function candidateIneligible(disk: DiskObservation): string | undefined {
+  if (disk.error) return disk.error;
+  if (!disk.supplied) return 'Not explicitly supplied by the launcher';
+  if (!disk.backend || !disk.backing_identity || !disk.resource_identity) return 'Physical resource identity is not verified';
+  if (!Number.isSafeInteger(disk.capacity_bytes) || disk.capacity_bytes! < 64 * 1024 ** 2) return 'Requires at least 64 MiB of verified capacity';
+}

@@ -442,6 +442,42 @@
   participate in global reservations. Existing version-1 file receipts replay
   unchanged; this is not an automatic metadata or disk-format migration.
 
+- Cluster/Rack defaults to node cards, with an explicit Diagram switch retaining
+  existing topology operations. Capacity at those scopes is a sortable/filterable
+  node table. Clicking a card/row inspects properties; its name opens that scope.
+  Add Node reuses authenticated candidate admission and preselects the selected
+  Rack. Existing accepted/preflight Rack choices take precedence over that default.
+- Root/Rack observations do not fan out to runtime disk queries. The overview may
+  reuse the most recent scoped usage observation, but a node total is known only
+  when that observation covers every registered disk in that node. Other values
+  remain Unknown; no accumulated partial reports are presented as one complete
+  snapshot. An explicit Capacity Refresh may collect a runtime snapshot for that
+  selected scope; ordinary overview polling does not repeat that fan-out. Existing
+  scanner actions remain explicit operator commands. Candidate/setup summaries are bounded to 64 observed nodes, explicitly
+  last observed, and do not cause background node-by-node polling. Current service
+  health remains separate from a completed setup receipt.
+
+- Manual Join on an existing node chooses an existing DiskGroup explicitly per
+  medium. It does not allocate/reassign groups on HTTP retry. Initial node setup
+  retains its separate sealed automatic per-class placement. Join accepts at most
+  16 selected media, submits at most four requests concurrently, and requires
+  general blank-media consent plus a separate acknowledgement for each raw device.
+  Closing the dialog stops unsent requests; each already accepted disk continues
+  independently on its monitor. Successful siblings remain accepted when another
+  submission fails. A lost reply reuses the same operation and exact inputs.
+- Candidate operation history is paged (at most 16 records and 56 KiB per private
+  reply). The Node workspace keeps at most 64 active/terminal observations and
+  identifies incomplete candidate coverage. Reopening reads the durable journals;
+  missing and unreadable journals are distinct outcomes. Physical resource/host,
+  physical capacity, usable geometry and unused tail are separate properties.
+- Concurrent first disks of different media classes targeting the same empty
+  group may race. Validate compatibility before reserving the physical resource
+  and again under the existing publication fence. The loser remains a visible
+  failure with its original intent; do not silently relocate it or add a new lock.
+  Choosing another placement after such an accepted conflict requires later
+  explicit operator review. No automatic recovery or resource-release policy is
+  introduced here.
+
 **Dependencies**:
 
 - Reuse current durable Group-0 bootstrap exclusion, immutable intent, monitor

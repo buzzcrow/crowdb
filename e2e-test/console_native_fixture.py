@@ -13,13 +13,16 @@ from console_native_observation import services, process, retained_marker, disk_
 from control import Control
 from console_native_browser import INSPECTION_CASES
 from console_native_storage import unbound_file_rejected, verify_file_preparation, verify_file_admission
+from console_native_candidates import prepare as prepare_candidates, verify as verify_candidates
 from profiles.setup_choices import diskless_setup
 
 
 class NativeConsoleCluster(ShellBrowserCluster):
     def __init__(self, image, artifacts, bundle, *, disk_gib=(80, 8, 8),
                  zone_gib=(1, 1, 1), spare_disk_gib=0, bootstrap=True, rack_ids=None,
-                 admission_count=None, diskless_nodes=(), auto_bootstrap=False, **kwargs):
+                 admission_count=None, diskless_nodes=(), auto_bootstrap=False, supplied_candidates=False, **kwargs):
+        if type(supplied_candidates) is not bool:
+            raise ValueError("supplied candidate selection must be boolean")
         if type(bootstrap) is not bool:
             raise ValueError("native bootstrap selection must be a boolean")
         count = len(disk_gib)
@@ -50,6 +53,8 @@ class NativeConsoleCluster(ShellBrowserCluster):
         self.disk_gib = tuple(disk_gib)
         self.zone_gib = tuple(zone_gib)
         self.spare_disk_gib = spare_disk_gib
+        self.supplied_candidates = supplied_candidates
+        self.candidate_inputs = []
         self.bootstrap = bootstrap
         self.auto_bootstrap = auto_bootstrap
         self.rack_ids = racks
@@ -86,6 +91,8 @@ class NativeConsoleCluster(ShellBrowserCluster):
             if index == 0 and self.spare_disk_gib:
                 with (disks / "capacity-spare.img").open("wb") as file:
                     file.truncate(self.spare_disk_gib * 1024 ** 3)
+            if index == 0 and self.supplied_candidates:
+                self.candidate_inputs = prepare_candidates(data)
             name = f"{self.run_id}-prepare{index}"
             self.containers.append(name)
             self.command("run", "--rm", "--name", name, "--label", f"{LABEL}={self.run_id}",
@@ -95,7 +102,8 @@ class NativeConsoleCluster(ShellBrowserCluster):
                 "-R", "crowdb:crowdb", "/opt/crowdb/data")
             self.addresses.append(start_node(self, index, data, (), memory="2048m", pids_limit=512,
                 address=str(subnet.network_address + index + 2),
-                environment=("CROWDB_STARTUP_MODE=manual", f"CROWDB_PHYSICAL_HOST_ID={host}")))
+                environment=("CROWDB_STARTUP_MODE=manual", f"CROWDB_PHYSICAL_HOST_ID={host}",
+                    "CROWDB_DISK_INPUTS=" + json.dumps(self.candidate_inputs if index == 0 else []))))
         self.ready()
         for address in self.addresses:
             with HTTP.open(f"http://{address}:9090/api/node/auto-join", timeout=5) as response:
@@ -248,6 +256,8 @@ class NativeConsoleCluster(ShellBrowserCluster):
                 verify_file_admission(self)
             self.browser_timeout = 180
             self.browser(name, config="native.config.ts")
+            if self.supplied_candidates:
+                verify_candidates(self)
             return {"passed": True}
         if body.get("action") == "observe-retained-marker":
             return retained_marker(self, body.get("node"), body.get("path"), body.get("offset"))

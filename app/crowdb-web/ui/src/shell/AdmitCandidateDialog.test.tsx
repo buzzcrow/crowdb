@@ -7,6 +7,7 @@ import { admitCandidate, prepareCandidate, updateCandidate, discardCandidateRevi
 import { AdmitCandidateDialog } from './AdmitCandidateDialog';
 import type { DiskInventory } from '../storage/types';
 import { defaultNodeSetup } from './nodeSetup';
+import { discoveredStorage } from './nodeSetup';
 vi.mock('../api', () => ({ admitCandidate: vi.fn(), prepareCandidate: vi.fn(), updateCandidate: vi.fn(), discardCandidateReview: vi.fn() }));
 const empty: DiskInventory = { observed_at_ms: 1, disks: [], filesystems: [] };
 beforeEach(() => {
@@ -44,7 +45,7 @@ it('reviews authenticated storage before one immutable submission with all servi
 it('requires raw-device agreement and never offers a fallback file for supplied inputs', async () => {
   vi.mocked(prepareCandidate).mockResolvedValue({ operation_id: 'raw-admission', inventory: { ...empty, disks: [
     { path: '/opt/crowdb/data/disks/raw', backend: 'block-device', capacity_bytes: 64 * 1024 ** 2,
-      allocated_bytes: null, backing_identity: 'device:7', supplied: true, error: null, backing_filesystem: null },
+      allocated_bytes: null, backing_identity: 'device:7', resource_identity: 'file:10:20', supplied: true, error: null, backing_filesystem: null },
     { path: '/opt/crowdb/data/disks/missing', backend: 'file', capacity_bytes: null,
       allocated_bytes: null, backing_identity: null, supplied: true, error: 'mapping missing', backing_filesystem: null },
   ] } });
@@ -72,6 +73,27 @@ it('updates an existing node through the original authenticated operation', asyn
   await waitFor(() => expect(updateCandidate).toHaveBeenCalledOnce());
   expect(prepareCandidate).not.toHaveBeenCalled();
   expect(admitCandidate).not.toHaveBeenCalled();
+});
+
+it('submits the reviewed loop backing and excludes unlisted or unverified media', async () => {
+  const disk = { path: '/opt/crowdb/data/disks/loop', backend: 'block-device' as const, capacity_bytes: 64 * 1024 ** 2,
+    allocated_bytes: null, backing_identity: 'device:7', resource_identity: 'file:10:20', supplied: true, error: null, backing_filesystem: null };
+  const inventory = { ...empty, disks: [disk, { ...disk, path: '/opt/crowdb/data/disks/unverified', resource_identity: null },
+    { ...disk, path: '/opt/crowdb/data/disks/unlisted', backend: 'file' as const, supplied: false }] };
+  expect(discoveredStorage(inventory)).toMatchObject({ mode: 'supplied', disks: [{ path: disk.path, resource_identity: 'file:10:20' }] });
+  vi.mocked(prepareCandidate).mockResolvedValue({ operation_id: 'raw-admission', inventory });
+  render(<AdmitCandidateDialog discoveryId="candidate" racks={[{ id: 1, nodes: [] }]} onClose={vi.fn()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Verify and review' }));
+  await screen.findByText(/Access verified/);
+  expect(screen.getByLabelText('Use /opt/crowdb/data/disks/unverified')).toBeDisabled();
+  expect(screen.getByLabelText('Use /opt/crowdb/data/disks/unlisted')).toBeDisabled();
+  fireEvent.click(screen.getByRole('checkbox', { name: /I authorize initialization/ }));
+  fireEvent.click(screen.getByRole('button', { name: 'Join and start' }));
+  await waitFor(() => expect(admitCandidate).toHaveBeenCalledOnce());
+  expect(vi.mocked(admitCandidate).mock.calls[0][0].setup?.storage).toEqual({ mode: 'supplied', disks: [{
+    path: disk.path, backend: disk.backend, backing_identity: 'device:7', resource_identity: 'file:10:20',
+    capacity_bytes: disk.capacity_bytes, media_type: null, initialize: true,
+  }] });
 });
 
 it('discarding a read-only review cannot submit or cancel an accepted node plan', async () => {

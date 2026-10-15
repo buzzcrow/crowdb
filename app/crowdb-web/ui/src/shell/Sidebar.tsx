@@ -32,6 +32,7 @@ function datacenterRoot(children: TreeNode[]): TreeNode {
 }
 
 interface SidebarProps {
+  addNodeRequest?: { rackId: number; nonce: number };
   candidateSummaries?: Record<number, CandidateSummary>;
   onCandidatesChanged?: () => void;
   nodeManagement?: boolean;
@@ -64,6 +65,7 @@ interface SidebarProps {
 }
 
 export function Sidebar({
+  addNodeRequest,
   candidateSummaries = {},
   onCandidatesChanged,
   nodeManagement = false,
@@ -308,7 +310,7 @@ export function Sidebar({
                 )}
         </div>
       )}</div>
-      {nodeManagement && domain === Domain.Cluster && <CandidateNodes racks={racks} readonly={candidateReadonly} onChange={onCandidatesChanged} />}
+      {nodeManagement && domain === Domain.Cluster && <CandidateNodes addNodeRequest={addNodeRequest} racks={racks} readonly={candidateReadonly} onChange={onCandidatesChanged} />}
     </aside>
   );
 }

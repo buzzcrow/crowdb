@@ -14,7 +14,8 @@ const ready: NodeSetupStatus = { version: 1, discovery_id: 'node', operation_id:
 it('reopens target-owned progress and marks failed observations stale without losing rows', async () => {
   vi.useFakeTimers();
   vi.mocked(nodeSetupStatus).mockResolvedValue(ready);
-  render(<NodeSetupProgress node={1} readonly={false} />);
+  const observe = vi.fn();
+  render(<NodeSetupProgress node={1} readonly={false} onObserved={observe} />);
   await act(async () => {});
   expect(screen.getByRole('status')).toHaveTextContent('Completed');
   expect(screen.getByText(/Diskless · no disk creation/)).toBeInTheDocument();
@@ -22,6 +23,7 @@ it('reopens target-owned progress and marks failed observations stale without lo
   await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
   expect(screen.getByRole('alert')).toHaveTextContent('Last confirmed progress retained');
   expect(screen.getByRole('status')).toHaveTextContent('Completed');
+  expect(observe).toHaveBeenLastCalledWith(1, expect.objectContaining({ phase: 'ready', stale: true, observed_at_ms: expect.any(Number) }));
 });
 
 it('keeps accepted retry results when an earlier observation finishes afterward', async () => {

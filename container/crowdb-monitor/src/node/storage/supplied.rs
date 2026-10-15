@@ -23,6 +23,53 @@ pub(crate) fn path(root: &Path, id: &str) -> io::Result<PathBuf> {
     Ok(root.join(format!("disk-supplied-{id}.json")))
 }
 
+pub(crate) fn lookup(root: &Path, id: &str) -> io::Result<Option<SuppliedPreparation>> {
+    if !path(root, id)?.try_exists()? {
+        return Ok(None);
+    }
+    status(root, id).map(Some)
+}
+
+pub(crate) fn list(
+    root: &Path,
+    after: Option<&str>,
+    limit: u32,
+) -> io::Result<crowdb_protocol::mgmt::node::storage::SuppliedPreparationPage> {
+    use crowdb_protocol::mgmt::node::storage::SuppliedPreparationPage;
+    if limit == 0 || limit > 16 {
+        return Err(io::Error::other("supplied operation page limit must be 1..16"));
+    }
+    if let Some(after) = after {
+        path(root, after)?;
+    }
+    let ids = operations(root)?;
+    let mut page = SuppliedPreparationPage {
+        items: Vec::new(),
+        next: None,
+    };
+    let mut bytes = 0;
+    for id in ids
+        .iter()
+        .filter(|id| after.map_or(true, |after| id.as_str() > after))
+    {
+        let item = status(root, id)?;
+        let size = serde_json::to_vec(&item)?.len();
+        if size > 48 * 1024 {
+            return Err(io::Error::other("supplied operation record exceeds reply bound"));
+        }
+        if page.items.len() >= limit as usize || bytes + size > 56 * 1024 {
+            page.next = page
+                .items
+                .last()
+                .map(|item| item.request.record.operation_id.clone());
+            break;
+        }
+        bytes += size;
+        page.items.push(item);
+    }
+    Ok(page)
+}
+
 pub(crate) fn status(root: &Path, id: &str) -> io::Result<SuppliedPreparation> {
     let state: SuppliedPreparation = durable::read(&path(root, id)?)?
         .ok_or_else(|| io::Error::other("supplied operation does not exist"))?;
@@ -104,4 +151,34 @@ pub(crate) fn operations(root: &Path) -> io::Result<Vec<String>> {
     }
     ids.sort_unstable();
     Ok(ids)
+}
+
+#[cfg(feature = "test-util")]
+pub struct SuppliedOperationsForTests;
+
+#[cfg(feature = "test-util")]
+impl SuppliedOperationsForTests {
+    /// # Errors
+    /// Propagates production journal, request and exact input validation.
+    pub fn accept_for_tests(
+        root: &Path,
+        request: PrepareSuppliedDisk,
+        inputs: &[DiskInput],
+    ) -> io::Result<SuppliedPreparation> {
+        accept_with_inputs(root, request, inputs)
+    }
+    /// # Errors
+    /// Propagates production cursor, bound and durable-record validation.
+    pub fn list_for_tests(
+        root: &Path,
+        after: Option<&str>,
+        limit: u32,
+    ) -> io::Result<crowdb_protocol::mgmt::node::storage::SuppliedPreparationPage> {
+        list(root, after, limit)
+    }
+    /// # Errors
+    /// Missing journals return None; other read/validation errors remain errors.
+    pub fn lookup_for_tests(root: &Path, id: &str) -> io::Result<Option<SuppliedPreparation>> {
+        lookup(root, id)
+    }
 }

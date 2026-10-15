@@ -9,7 +9,9 @@ import { useSelection } from '../contexts/SelectionContext';
 import { formatBytes } from '../utils/capacity';
 import { hwStatusLabel } from '../utils/entityDisplay';
 import { knownDiskUsage } from '../panels/capacity/observation';
-import { createNodeDiskFile } from '../api';
+import { createNodeDiskFile, joinNodeCandidate } from '../api';
+import { useSuppliedOperations } from './useSuppliedOperations';
+import { JoinCandidatesDialog } from './JoinCandidatesDialog';
 import { CreateFileDiskDialog } from './CreateFileDiskDialog';
 import { useNodeStorage } from './useNodeStorage';
 import { useRemovedDisks } from './useRemovedDisks';
@@ -32,6 +34,8 @@ export function NodeStorage({ nodeId, rackId, active, readonly, ready, inventory
   const diskElements = useRef(new Map<string, HTMLElement>());
   const [focusTarget, setFocusTarget] = useState<string>();
   const model = useNodeStorage(nodeId, active);
+  const supplied = useSuppliedOperations(nodeId, active && ready);
+  const [joining, setJoining] = useState(false);
   const removed = useRemovedDisks(nodeId, active && ready);
   const [managing, setManaging] = useState<{ disk: string; group: number }>();
   const confirmed = useConfirmedDiskLifecycle(nodeId, active && ready, group => {
@@ -41,7 +45,7 @@ export function NodeStorage({ nodeId, rackId, active, readonly, ready, inventory
   const [creating, setCreating] = useState(false);
   const [retryError, setRetryError] = useState('');
   const groupIds = inventory?.diskGroups.map(group => group.id).join(',') ?? '';
-  const completed = Object.values(model.operations).filter(operation => operation.phase === 'registered').map(operation => operation.request.operation_id).sort().join(',');
+  const completed = Object.values(model.operations).filter(operation => operation.phase === 'registered').map(operation => operation.request.operation_id).sort().join(',') + Object.values(supplied.operations).filter(row => row.phase === 'registered').map(row => row.operation_id).sort().join(',');
   useEffect(() => {
     if (active) for (const id of groupIds.split(',').filter(Boolean)) void loadGroup(nodeId, Number(id));
   }, [active, nodeId, groupIds, completed, loadGroup]);
@@ -53,6 +57,7 @@ export function NodeStorage({ nodeId, rackId, active, readonly, ready, inventory
   }, [focusTarget, managing, registered]);
   const paths = new Set(registered.map(disk => disk.device_path).filter(Boolean));
   const pendingPaths = new Set(Object.values(model.operations).filter(operation => operation.request.admission).map(operation => operation.path));
+  for (const operation of Object.values(supplied.operations)) pendingPaths.add(operation.medium.path);
   const removedPaths = new Set(removed.items.map(disk => disk.container_path));
   const candidates = model.inventory?.disks.filter(disk => !paths.has(disk.path) && !pendingPaths.has(disk.path) && !removedPaths.has(disk.path)) ?? [];
   const operationRows = Object.values(model.operations).filter(operation => operation.request.admission);
@@ -60,7 +65,7 @@ export function NodeStorage({ nodeId, rackId, active, readonly, ready, inventory
   const observedAt = model.inventory?.observed_at_ms;
   const stale = !!model.errors.inventory || !!removed.error;
   const candidateCount = candidates.length + removed.items.length;
-  const partial = !!removed.next;
+  const partial = !!removed.next || !!supplied.next;
   useEffect(() => {
     if (membershipKnown && observedAt !== undefined && removed.observed) onCandidates(nodeId, { count: candidateCount, observed_at_ms: observedAt, stale, partial });
   }, [membershipKnown, observedAt, stale, candidateCount, partial, removed.observed, nodeId, onCandidates]);
@@ -109,6 +114,7 @@ export function NodeStorage({ nodeId, rackId, active, readonly, ready, inventory
             <button className="tw-text-xs tw-text-muted" aria-pressed={selectedEntity?.type === 'Disk' && selectedEntity.id === disk.disk_id} onClick={() => inspectEntity(entity)}>Properties</button>
           </div>
           <p className="tw-text-sm">{observed?.backend ?? 'Backend unknown'} · Media {media} · {formatBytes(disk.capacity_bytes)} · {health}{authority?.stale ? ' · Last confirmed; status refresh unavailable' : ''}</p>
+          {observed?.backend === 'file' && <p className="tw-text-xs tw-text-muted">Allocated file bytes: {observed.allocated_bytes === null ? 'Unknown' : formatBytes(observed.allocated_bytes)} · Separate from virtual capacity and shared filesystem free space.</p>}
           <Button size="sm" variant="secondary" disabled={readonly || !ready} onClick={() => setManaging({ disk: disk.disk_id, group: group.id })}>Manage disk</Button>
           <p className="tw-text-xs tw-text-muted">{report && knownDiskUsage(report) ? `${formatBytes(report.busy_bytes)} used` : 'Usage unknown'} · {observed?.error || (model.inventory && !observed ? 'Missing from latest discovery' : disk.device_path)}</p>
         </article>;
@@ -126,8 +132,25 @@ export function NodeStorage({ nodeId, rackId, active, readonly, ready, inventory
       </article>)}
       {model.next && <Button size="sm" variant="secondary" disabled={model.loading} onClick={() => { void model.refresh(model.next!); }}>More operations</Button>}
     </section>
+    <section aria-label="Supplied disk operations" className="tw-space-y-2">
+      <h3 className="tw-text-sm tw-font-semibold">Supplied disk operations</h3>
+      {supplied.error && <p role="alert">{supplied.error} · Last observed operations retained.</p>}
+      {Object.values(supplied.operations).map(operation => <article key={operation.operation_id} aria-label={`Supplied operation ${operation.operation_id}`} className="tw-border tw-border-border tw-rounded tw-p-3 tw-text-sm tw-space-y-1">
+        <p className="tw-break-all">{operation.medium.path} · DG-{operation.disk_group_id}</p>
+        <p role="status">{operation.phase} · Verified {formatBytes(operation.verified_bytes)}</p>
+        {operation.error && <p>{operation.error}</p>}
+        {['failed', 'unknown'].includes(operation.phase) && <Button size="sm" disabled={readonly || !ready} onClick={async () => {
+          setRetryError('');
+          try { supplied.accept(await joinNodeCandidate(nodeId, { operation_id: operation.operation_id, disk_group_id: operation.disk_group_id, medium: operation.medium })); }
+          catch (cause) { setRetryError(String(cause)); }
+        }}>Retry original candidate operation</Button>}
+      </article>)}
+      {supplied.next && <Button size="sm" variant="secondary" disabled={supplied.loading} onClick={() => { void supplied.refresh(supplied.next!); }}>More supplied operations</Button>}
+    </section>
     <section ref={candidateSection} tabIndex={-1} aria-label="Candidate disks" className="tw-space-y-2">
-      <h3 className="tw-text-sm tw-font-semibold">Candidates ({candidateCount}{partial ? '+' : ''})</h3>
+      <div className="tw-flex tw-items-center tw-justify-between tw-gap-2"><h3 className="tw-text-sm tw-font-semibold">Candidates ({candidateCount}{partial ? '+' : ''})</h3>
+        <Button size="sm" disabled={readonly || !ready || !membershipKnown || candidates.length === 0 || Object.values(supplied.operations).filter(row => !['registered', 'failed'].includes(row.phase)).length > 48} onClick={() => setJoining(true)}>Join Candidates</Button>
+      </div>
       {candidateCount === 0 && model.inventory && removed.observed && <p className="tw-text-sm tw-text-muted">No discovered unregistered media.</p>}
       {removed.items.map(disk => <RemovedDiskRow key={disk.disk_id} disk={disk} inventory={model.inventory} ready={ready} readonly={readonly}
         onInspect={() => inspectEntity({ domain: Domain.Cluster, type: 'Disk', id: disk.disk_id, parentIds: { rack_id: rackId, node_id: nodeId, disk_group_id: disk.disk_group_id, disk_id: disk.disk_id } })}
@@ -146,6 +169,7 @@ export function NodeStorage({ nodeId, rackId, active, readonly, ready, inventory
         confirmed.confirm(managing.group, state);
         void loadGroup(nodeId, managing.group, true); void removed.refresh(undefined, true); void model.refresh();
       }} />}
+    {joining && <JoinCandidatesDialog nodeId={nodeId} disks={candidates} groups={inventory?.diskGroups ?? []} onClose={() => setJoining(false)} onAccepted={supplied.accept} />}
     {creating && <CreateFileDiskDialog nodeId={nodeId} groups={inventory?.diskGroups ?? []} groupId={recommendedGroup} available={available} onClose={() => setCreating(false)} onAccepted={model.accept} />}
   </section>;
 }

@@ -1261,3 +1261,15 @@ export async function onlineNodeDisk(nodeId: number, groupId: number, diskId: st
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expected_revision: revision }), skipDeduplication: true,
   }));
 }
+
+export async function joinNodeCandidate(node: number, body: import('./storage/types').JoinCandidateRequest): Promise<import('./storage/types').SuppliedOperation> {
+  return jsonOrThrow(await fetchWithOptions(`/api/nodes/${node}/disk-candidates`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), skipDeduplication: true,
+  }));
+}
+export async function listNodeCandidateOperations(node: number, after?: string, options?: RequestOptions): Promise<import('./storage/types').SuppliedOperationPage> {
+  return inventoryJson(`/api/nodes/${node}/disk-candidates${qs({ after, limit: 16 })}`, options);
+}
+export async function nodeCandidateOperation(node: number, id: string, options?: RequestOptions): Promise<import('./storage/types').SuppliedOperation | null> {
+  return inventoryJson(`/api/nodes/${node}/disk-candidates/${encodeURIComponent(id)}`, options);
+}

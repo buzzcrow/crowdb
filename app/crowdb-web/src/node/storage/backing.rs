@@ -30,6 +30,17 @@ pub(crate) struct DiskBackingInfo {
     owner: Option<String>,
     binding: Option<String>,
     observed_at_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    physical_backing: Option<PhysicalBackingInfo>,
+}
+
+#[derive(Serialize)]
+struct PhysicalBackingInfo {
+    host_id: String,
+    resource_identity: String,
+    capacity_bytes: String,
+    usable_bytes: String,
+    tail_bytes: String,
 }
 
 pub(crate) async fn get(
@@ -45,6 +56,28 @@ pub(crate) async fn get(
     else {
         return Ok(Json(None));
     };
+    let usable = record
+        .geometry
+        .capacity_units
+        .checked_mul(u64::from(record.geometry.unit_size_bytes))
+        .ok_or_else(|| err_502("Logical disk capacity overflow"))?;
+    let physical_backing = record
+        .physical_backing
+        .as_ref()
+        .map(|backing| {
+            Ok::<_, Failure>(PhysicalBackingInfo {
+                host_id: backing.physical_host_id.clone(),
+                resource_identity: backing.resource_identity.clone(),
+                capacity_bytes: backing.capacity_bytes.to_string(),
+                usable_bytes: usable.to_string(),
+                tail_bytes: backing
+                    .capacity_bytes
+                    .checked_sub(usable)
+                    .ok_or_else(|| err_502("Physical capacity is smaller than usable geometry"))?
+                    .to_string(),
+            })
+        })
+        .transpose()?;
     let owner = hardware
         .get_owner(rack_id, node_id, group)
         .await
@@ -54,6 +87,7 @@ pub(crate) async fn get(
         .await
         .map_err(|error| err_502(error.to_string()))?;
     Ok(Json(Some(DiskBackingInfo {
+        physical_backing,
         version: record.version,
         operation_id: record.operation_id,
         backend: record.backend,

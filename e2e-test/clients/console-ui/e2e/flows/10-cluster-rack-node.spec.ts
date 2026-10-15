@@ -45,6 +45,7 @@ test.describe('cluster · registry browser', () => {
       // The rack appears as the datacenter's child.
       await expect(aside.getByText('R-60 (Rack Sixty)')).toBeVisible({ timeout: 3_000 });
 
+      await page.getByRole('button', { name: 'Show diagram', exact: true }).click();
       // The topology canvas also renders the datacenter node at layer 0.
       await expect(page.locator('.react-flow__node').filter({ hasText: 'datacenter' })).toBeVisible({ timeout: 5_000 });
 

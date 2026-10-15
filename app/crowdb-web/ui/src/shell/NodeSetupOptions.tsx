@@ -57,10 +57,14 @@ export function NodeSetupOptions({ choices, inventory, disabled, onChange }: Pro
       {inventory.disks.map(disk => {
         const selected = storage.mode === 'supplied' && storage.disks.some(item => item.path === disk.path);
         const eligible = supplied.mode === 'supplied' ? supplied.disks.find(item => item.path === disk.path) : undefined;
+        const reason = disk.error ?? (!disk.supplied ? 'Not an explicitly supplied disk.'
+          : !disk.resource_identity ? 'Disk source could not be verified.'
+          : disk.capacity_bytes !== null && disk.capacity_bytes < 64 * 1024 ** 2 ? 'At least 64 MiB is required.'
+          : 'Full blank and ownership checks are required before initialization.');
         return <article key={disk.path} className="tw-rounded tw-border tw-border-border tw-p-2 tw-space-y-1">
           <label className="tw-flex tw-gap-2 tw-text-xs tw-break-all"><input type="checkbox" aria-label={`Use ${disk.path}`} checked={selected} disabled={!eligible || storage.mode !== 'supplied'}
             onChange={event => { if (storage.mode === 'supplied' && eligible) onChange({ ...choices, storage: { ...storage, disks: event.target.checked ? [...storage.disks, eligible] : storage.disks.filter(item => item.path !== disk.path) } }); }} />{disk.path}</label>
-          <p className="tw-text-xs tw-text-muted">{disk.backend ?? 'Unknown backend'} · {disk.capacity_bytes === null ? 'Unknown capacity' : formatBytes(disk.capacity_bytes)} · {disk.error ?? 'Full blank and ownership checks are required before initialization.'}</p>
+          <p className="tw-text-xs tw-text-muted">{disk.backend ?? 'Unknown backend'} · {disk.capacity_bytes === null ? 'Unknown capacity' : formatBytes(disk.capacity_bytes)} · {reason}</p>
         </article>;
       })}
       {storage.mode === 'supplied' && storage.disks.some(disk => disk.backend === 'block-device') && <label className="tw-flex tw-gap-2 tw-text-sm"><input type="checkbox"

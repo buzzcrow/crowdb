@@ -40,6 +40,11 @@ export function DiskBackingProperties({ nodeId, groupId, diskId, observationKey 
     ['KV binding', record.binding ?? 'Unbound'], ['Allocation units', record.capacity_units],
     ['Unit size (bytes)', String(record.unit_size_bytes)], ['Zone units', record.zone_size_units], ['Zone count', String(record.zone_count)],
     ['Authority observed', new Date(record.observed_at_ms).toLocaleString()], ['Operation ID', record.operation_id],
+    ...(record.physical_backing ? [
+      ['Physical host', record.physical_backing.host_id], ['Physical resource', record.physical_backing.resource_identity],
+      ['Physical capacity (bytes)', record.physical_backing.capacity_bytes], ['Usable capacity (bytes)', record.physical_backing.usable_bytes],
+      ['Unusable tail (bytes)', record.physical_backing.tail_bytes],
+    ] : []),
   ] : [];
   return <section aria-label="Disk backing properties" className="tw-space-y-2">
     <Button size="sm" variant="secondary" onClick={() => setRevision(value => value + 1)}>Refresh backing properties</Button>

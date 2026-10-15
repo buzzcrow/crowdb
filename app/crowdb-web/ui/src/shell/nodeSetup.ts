@@ -9,7 +9,7 @@ export interface SetupListeners {
   keepalive_interval_secs?: number | null; dynamic_ownership?: boolean | null;
 }
 export interface SetupService { kind: ServiceKind; enabled: boolean; listeners: SetupListeners }
-export interface SetupMedium { path: string; backend: DiskBackend; backing_identity: string; capacity_bytes: number; media_type: number | null; initialize: boolean }
+export interface SetupMedium { path: string; backend: DiskBackend; backing_identity: string; resource_identity?: string | null; capacity_bytes: number; media_type: number | null; initialize: boolean }
 export type SetupStorage = { mode: 'automatic'; capacity_bytes: number; reserve_bytes: number; sparse: boolean }
   | { mode: 'diskless' } | { mode: 'supplied'; disks: SetupMedium[] };
 export interface NodeSetupChoices { storage: SetupStorage; services: SetupService[] }
@@ -30,9 +30,9 @@ export const defaultNodeSetup = (): NodeSetupChoices => ({ storage: automaticSto
 
 export function discoveredStorage(inventory: DiskInventory): SetupStorage {
   if (!inventory.disks.length) return automaticStorage();
-  return { mode: 'supplied', disks: inventory.disks.filter(disk => !disk.error && disk.backend && disk.backing_identity &&
+  return { mode: 'supplied', disks: inventory.disks.filter(disk => disk.supplied && !disk.error && disk.backend && disk.backing_identity && disk.resource_identity &&
     disk.capacity_bytes !== null && disk.capacity_bytes >= 64 * 1024 ** 2).map(disk => ({ path: disk.path, backend: disk.backend!,
-      backing_identity: disk.backing_identity!, capacity_bytes: disk.capacity_bytes!, media_type: null, initialize: disk.backend === 'file' })) };
+      backing_identity: disk.backing_identity!, resource_identity: disk.resource_identity!, capacity_bytes: disk.capacity_bytes!, media_type: null, initialize: disk.backend === 'file' })) };
 }
 
 export function validNodeSetup(choices: NodeSetupChoices): boolean {
@@ -58,4 +58,8 @@ export function validNodeSetup(choices: NodeSetupChoices): boolean {
   const zone = 32 * 1024 ** 3;
   return Number.isSafeInteger(storage.capacity_bytes) && storage.capacity_bytes > 0 && storage.capacity_bytes % (64 * 1024 ** 2) === 0
     && (storage.capacity_bytes <= zone || storage.capacity_bytes % zone === 0);
+}
+
+export interface NodeSetupSummary {
+  phase: NodeSetupStatus['phase']; warning: boolean; error: string | null; observed_at_ms: number; stale: boolean;
 }

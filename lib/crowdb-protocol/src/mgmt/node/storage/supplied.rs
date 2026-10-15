@@ -24,13 +24,15 @@ impl PrepareSuppliedDisk {
         if self.cluster_id.is_empty()
             || self.cluster_id.len() > 256
             || self.cluster_id.contains('\0')
+            || disk.geometry.device_path.len() > 4096
+            || !disk.geometry.device_path.starts_with('/')
+            || disk.geometry.device_path.contains('\0')
             || !self.initialize
             || disk.version != 2
             || disk.removed
             || disk.geometry.status != crate::common::HwStatus::Init as i32
             || disk.geometry.unit_size_bytes != 1024 * 1024
             || !(64 * 1024 * 1024..=32 * 1024 * 1024 * 1024).contains(&zone)
-            || disk.sparse
         {
             return Err("invalid supplied medium authorization or geometry");
         }
@@ -58,4 +60,11 @@ pub struct SuppliedPreparation {
     pub phase: SuppliedPreparationPhase,
     pub verified_bytes: u64,
     pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SuppliedPreparationPage {
+    pub items: Vec<SuppliedPreparation>,
+    pub next: Option<String>,
 }

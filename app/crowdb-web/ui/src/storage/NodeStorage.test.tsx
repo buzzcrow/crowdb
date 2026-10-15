@@ -8,6 +8,7 @@ import { NodeStorage } from './NodeStorage';
 vi.mock('../api', () => ({ diskLifecycle: vi.fn(), offlineNodeDisk: vi.fn(), removeNodeDisk: vi.fn(), rejoinNodeDisk: vi.fn(), onlineNodeDisk: vi.fn(), createNodeDiskFile: vi.fn() }));
 vi.mock('../contexts/SelectionContext', () => ({ useSelection: () => ({ inspectEntity: vi.fn(), selectEntity: vi.fn(), selectedEntity: null }) }));
 vi.mock('./useNodeStorage', () => ({ useNodeStorage: () => ({ operations: {}, errors: {}, loading: false, next: null, refresh: vi.fn(), accept: vi.fn() }) }));
+vi.mock('./useSuppliedOperations', () => ({ useSuppliedOperations: () => ({ operations: {}, error: '', loading: false, next: null, refresh: vi.fn(), accept: vi.fn() }) }));
 vi.mock('./useRemovedDisks', () => ({ useRemovedDisks: () => ({ items: [], next: null, observed: true, refresh: vi.fn() }) }));
 
 it('moves focus after dialog cleanup even while its original row remains mounted', async () => {

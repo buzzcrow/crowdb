@@ -58,3 +58,13 @@ it('refreshes the same selected disk when it is inspected after removal', async 
   await screen.findByText('Removed', { exact: true });
   expect(backing).toHaveBeenCalledTimes(2);
 });
+
+it('shows physical resource and retained tail separately from usable geometry', async () => {
+  backing.mockResolvedValue({ ...sample, version: 2, container_path: '/opt/crowdb/data/disks/supplied',
+    physical_backing: { host_id: 'owned-host', resource_identity: 'file:1:2', capacity_bytes: '68157952', usable_bytes: '67108864', tail_bytes: '1049088' } });
+  render(<DiskBackingProperties nodeId={2} groupId={7} diskId="disk" />);
+  await screen.findByText('owned-host');
+  expect(screen.getByText('file:1:2')).toBeVisible();
+  for (const value of ['68157952', '67108864', '1049088']) expect(screen.getByText(value)).toBeVisible();
+  expect(nodeDiskFile).not.toHaveBeenCalled();
+});

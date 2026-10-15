@@ -11,6 +11,7 @@ pub(crate) mod lifecycle;
 pub(crate) mod online;
 pub(crate) mod rejoin;
 mod retained_medium;
+pub(crate) mod supplied;
 
 use axum::{
     extract::{Path, State},

@@ -27,6 +27,7 @@ async fn readonly_standard_node_rejects_storage_and_bootstrap_before_authority_w
             r#"{"discovery_id":"one","rack_id":1,"ssh_user":"crowdb","ssh_port":2222}"#,
         ),
         ("/api/nodes/1/setup", "{}"),
+        ("/api/nodes/1/disk-candidates", "{}"),
         (
             "/api/nodes/1/disk-groups/1/disks/0000000000000001-0000000000000001/offline",
             r#"{"expected_revision":"1"}"#,
@@ -88,5 +89,34 @@ async fn file_creation_without_a_monitor_has_no_local_fallback() {
         )
         .await
         .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn supplied_candidate_routes_reject_invalid_intent_and_have_no_local_fallback() {
+    let app = router(AppState::default());
+    for (uri, expected) in [
+        ("/api/nodes/1/disk-candidates?limit=17", StatusCode::BAD_REQUEST),
+        (
+            "/api/nodes/1/disk-candidates?after=not-a-uuid",
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "/api/nodes/1/disk-candidates/00000000-0000-0000-0000-000000000000",
+            StatusCode::BAD_REQUEST,
+        ),
+        ("/api/nodes/1/disk-candidates", StatusCode::NOT_FOUND),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected, "{uri}");
+    }
+    let response = app.oneshot(Request::builder().method("POST").uri("/api/nodes/1/disk-candidates")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"operation_id":"12345678-1234-4234-8234-123456789abc","disk_group_id":7,"medium":{"path":"/opt/crowdb/data/disks/file","backend":"file","backing_identity":"file:1:2","resource_identity":"file:1:2","capacity_bytes":67108864,"media_type":null,"initialize":false}}"#)).unwrap())
+        .await.unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }

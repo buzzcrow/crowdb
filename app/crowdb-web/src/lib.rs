@@ -55,6 +55,14 @@ pub fn router(state: AppState) -> axum::Router {
             .route("/api/node/disks", get(node::storage::local))
             .route("/api/cluster/initialization", get(node::initialization::status))
             .route("/api/nodes/:id/disk-inventory", get(node::storage::remote))
+            .route(
+                "/api/nodes/:id/disk-candidates",
+                get(node::storage::supplied::list).post(node::storage::supplied::create),
+            )
+            .route(
+                "/api/nodes/:id/disk-candidates/:operation_id",
+                get(node::storage::supplied::status),
+            )
             .route("/api/node/admissions", get(node::admissions))
             .route("/api/node/status", get(node::status))
             .route("/api/authority", get(managed::authority))
@@ -228,6 +236,14 @@ pub fn router(state: AppState) -> axum::Router {
         .route(
             "/api/nodes/:id/disk-files/:operation_id",
             get(node::storage::files::status),
+        )
+        .route(
+            "/api/nodes/:id/disk-candidates",
+            get(node::storage::supplied::list).post(node::storage::supplied::create),
+        )
+        .route(
+            "/api/nodes/:id/disk-candidates/:operation_id",
+            get(node::storage::supplied::status),
         )
         .route("/api/node/admissions", get(node::admissions))
         .route("/api/node/admit", post(node::admit))

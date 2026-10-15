@@ -30,6 +30,7 @@ pub(super) async fn execute(
         request @ (NodeControl::PrepareDiskFile { .. }
         | NodeControl::PrepareSuppliedDisk { .. }
         | NodeControl::SuppliedDiskPreparation { .. }
+        | NodeControl::SuppliedDiskPreparations { .. }
         | NodeControl::DiskFilePreparation { .. }
         | NodeControl::DiskFilePreparations { .. }) => {
             storage(root, file_allocator, supplied_storage, request).await
@@ -58,9 +59,7 @@ pub(super) async fn execute(
             node_id,
             admission,
         } => admission::cancel(profile, processes, bootstrap, node_id, admission).await,
-        NodeControl::Identity => Ok(json!({"discovery_id": NodeIdentity::load_or_create(root)?.uuid(),
-            "public_key": std::fs::read_to_string(root.join("ssh/id_ed25519.pub"))?,
-            "host_key": std::fs::read_to_string(root.join("ssh/ssh_host_ed25519_key.pub"))?})),
+        NodeControl::Identity => identity(root),
         NodeControl::InstallKey {
             operation_id,
             public_key,
@@ -133,7 +132,10 @@ async fn storage(
             supplied_storage.accept(root, request).await?,
         )?),
         NodeControl::SuppliedDiskPreparation { operation_id } => Ok(serde_json::to_value(
-            crate::node::storage::supplied::status(root, &operation_id)?,
+            crate::node::storage::supplied::lookup(root, &operation_id)?,
+        )?),
+        NodeControl::SuppliedDiskPreparations { after, limit } => Ok(serde_json::to_value(
+            crate::node::storage::supplied::list(root, after.as_deref(), limit)?,
         )?),
         NodeControl::DiskFilePreparation { operation_id } => Ok(serde_json::to_value(
             crate::node::storage::file_preparation::status(root, &operation_id)?,
@@ -143,4 +145,10 @@ async fn storage(
         )?),
         _ => Err("unsupported storage control request".into()),
     }
+}
+
+fn identity(root: &std::path::Path) -> Result<Value> {
+    Ok(json!({"discovery_id": NodeIdentity::load_or_create(root)?.uuid(),
+        "public_key": std::fs::read_to_string(root.join("ssh/id_ed25519.pub"))?,
+        "host_key": std::fs::read_to_string(root.join("ssh/ssh_host_ed25519_key.pub"))?}))
 }

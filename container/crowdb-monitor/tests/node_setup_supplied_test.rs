@@ -35,7 +35,7 @@ impl TestSetup {
         for name in ["first", "second", "third"] {
             fs::File::create(root.path().join("disks").join(name))
                 .unwrap()
-                .set_len(64 * 1024 * 1024 + 512)
+                .set_len(65 * 1024 * 1024 + 512)
                 .unwrap();
         }
         let disks = crowdb_monitor::discover_disks(root.path(), &[]).unwrap().disks;
@@ -253,8 +253,12 @@ async fn media_class_placement_and_disk_operations_survive_repeated_background_p
         request.validate().unwrap();
         let backing = request.record.physical_backing.as_ref().unwrap();
         assert_eq!(backing.physical_host_id, "owned-host");
-        assert_eq!(backing.capacity_bytes, 64 * 1024 * 1024 + 512);
+        assert_eq!(backing.capacity_bytes, 65 * 1024 * 1024 + 512);
         assert_eq!(request.record.geometry.capacity_units, 64);
+        assert!(
+            request.record.sparse,
+            "existing sparse files must not be labeled preallocated"
+        );
         let key = crowdb_protocol::key::DiskKey {
             rack_id: 1,
             node_id: 2,

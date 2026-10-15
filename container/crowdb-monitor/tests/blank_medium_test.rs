@@ -9,8 +9,9 @@ use crowdb_protocol::{
     mgmt::node::storage::{DiskBackend, DiskInput},
 };
 use std::{
+    fmt::Write as _,
     fs, io,
-    os::unix::fs::{FileExt, MetadataExt},
+    os::unix::fs::{FileExt, MetadataExt, PermissionsExt},
     path::Path,
 };
 #[path = "common/node_setup.rs"]
@@ -313,4 +314,117 @@ async fn nonblank_provisioning_never_publishes_membership_and_changed_retry_cann
             .unwrap_err();
     assert!(error.to_string().contains("inputs changed"), "{error}");
     assert_eq!(fs::read(path).unwrap(), before);
+}
+
+#[test]
+fn supplied_pages_resume_durable_rows_and_distinguish_missing_from_corrupt_records() {
+    use crowdb_monitor::SuppliedOperationsForTests as Operations;
+    use crowdb_protocol::mgmt::node::storage::PrepareSuppliedDisk;
+    let test = TestMedium::new(0);
+    let mut ids = Vec::new();
+    for _ in 0..18 {
+        let mut record = test.record.clone();
+        record.operation_id = uuid::Uuid::new_v4().to_string();
+        ids.push(record.operation_id.clone());
+        Operations::accept_for_tests(
+            test.root.path(),
+            PrepareSuppliedDisk {
+                cluster_id: "cluster".into(),
+                record,
+                initialize: true,
+            },
+            &test.inputs,
+        )
+        .unwrap();
+    }
+    ids.sort();
+    let first = Operations::list_for_tests(test.root.path(), None, 16).unwrap();
+    assert_eq!(first.items.len(), 16);
+    assert_eq!(first.next.as_ref(), Some(&ids[15]));
+    let second = Operations::list_for_tests(test.root.path(), first.next.as_deref(), 16).unwrap();
+    assert_eq!(second.items.len(), 2);
+    assert!(second.next.is_none());
+    assert_eq!(second.items[1].request.record.operation_id, ids[17]);
+    assert!(Operations::list_for_tests(test.root.path(), None, 17).is_err());
+    assert!(Operations::list_for_tests(test.root.path(), Some("not-a-uuid"), 16).is_err());
+    let unknown = uuid::Uuid::new_v4().to_string();
+    assert!(Operations::lookup_for_tests(test.root.path(), &unknown)
+        .unwrap()
+        .is_none());
+    fs::write(
+        test.root.path().join(format!("disk-supplied-{unknown}.json")),
+        b"corrupt",
+    )
+    .unwrap();
+    assert!(Operations::lookup_for_tests(test.root.path(), &unknown).is_err());
+    let saved = test.root.path().join(format!("disk-supplied-{}.json", ids[0]));
+    assert_eq!(fs::metadata(saved).unwrap().permissions().mode() & 0o777, 0o600);
+}
+
+#[tokio::test]
+async fn missing_target_group_fails_before_blank_scan_and_global_resource_claim() {
+    use crowdb_protocol::mgmt::node::storage::PrepareSuppliedDisk;
+    let test = TestMedium::new(0);
+    let authority = authority(&test).await;
+    let mut record = test.record.clone();
+    record.disk_group_id = 99;
+    let error = crowdb_monitor::prepare_supplied_disk_for_tests(
+        test.root.path(),
+        PrepareSuppliedDisk {
+            cluster_id: authority.binding.bootstrap.cluster_id.clone(),
+            record: record.clone(),
+            initialize: true,
+        },
+        test.inputs.clone(),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("existing DiskGroup"), "{error}");
+    let current =
+        crowdb_monitor::SuppliedOperationsForTests::lookup_for_tests(test.root.path(), &record.operation_id)
+            .unwrap()
+            .unwrap();
+    assert_eq!(current.verified_bytes, 0);
+    let resources = authority
+        .kv
+        .get(
+            0,
+            0,
+            record.key().as_bytes(),
+            crowdb_kv_client::ReadMode::Linearizable,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(resources, crowdb_kv_client::GetOutcome::NotFound));
+    let physical = record.physical_backing.as_ref().unwrap();
+    let encode = |text: &str| {
+        text.as_bytes().iter().fold(String::new(), |mut encoded, byte| {
+            write!(&mut encoded, "{byte:02x}").unwrap();
+            encoded
+        })
+    };
+    let path = format!(
+        "/hw/disk-resource/{}/{}",
+        encode(&physical.physical_host_id),
+        encode(&physical.resource_identity)
+    );
+    let claim = authority
+        .kv
+        .get(
+            0,
+            0,
+            path.as_bytes(),
+            crowdb_kv_client::ReadMode::Linearizable,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(claim, crowdb_kv_client::GetOutcome::NotFound));
+    assert!(
+        fs::metadata(test.root.path().join("disks/owned.img"))
+            .unwrap()
+            .len()
+            > 0
+    );
 }

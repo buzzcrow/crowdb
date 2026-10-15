@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-import { useState, useCallback, useMemo, useRef } from 'react';
+import { useState, useCallback, useMemo, useRef, type ReactNode } from 'react';
 import { Server, Loader2, RefreshCw } from 'lucide-react';
 import { useToast } from '../contexts/ToastContext';
 import { useActivity } from '../contexts/ActivityContext';
@@ -26,6 +26,7 @@ import { DiskGroupView } from './capacity/DiskGroupView';
 import { DiskView, type DiskQuery } from './capacity/DiskView';
 
 interface CapacityPanelProps {
+  overview?: ReactNode;
   active?: boolean;
   instances: DiskdbInstanceInfo[];
   usage: CapacityUsageResponse | null;
@@ -52,6 +53,7 @@ function scopeFromEntity(entity: SelectedEntity | null | undefined): CapacitySco
 
 export function CapacityPanel({
   active = true,
+  overview,
   instances,
   usage,
   hardwareCapacity,
@@ -152,7 +154,9 @@ export function CapacityPanel({
     });
   }, [selectEntity, inspectEntity]);
 
-  if (loading && instances.length === 0) {
+  if (!active) return null;
+
+  if (loading && instances.length === 0 && !overview) {
     return (
       <div className="tw-flex tw-items-center tw-justify-center tw-h-full">
         <Loader2 className="tw-h-6 tw-w-6 tw-animate-spin tw-text-muted" />
@@ -160,7 +164,7 @@ export function CapacityPanel({
     );
   }
 
-  if (instances.length === 0 && !hardwareCapacity) {
+  if (instances.length === 0 && !hardwareCapacity && !overview) {
     return (
       <div className="tw-flex tw-flex-col tw-items-center tw-justify-center tw-h-full tw-text-muted tw-gap-3">
         <Server className="tw-h-12 tw-w-12 tw-opacity-40" />
@@ -218,7 +222,7 @@ export function CapacityPanel({
       )}
 
       {/* Scope-specific body */}
-      {scope === 'Cluster' && (
+      {scope === 'Cluster' && (overview ??
         <ClusterView
           selectedId={inspectedEntity?.type === 'Rack' ? inspectedEntity.id : undefined}
           usage={usage}
@@ -227,7 +231,7 @@ export function CapacityPanel({
           onInspectRack={id => selectRack(id, true)}
         />
       )}
-      {scope === 'Rack' && rackId !== undefined && (
+      {scope === 'Rack' && rackId !== undefined && (overview ??
         <RackView
           selectedId={inspectedEntity?.type === 'Node' ? inspectedEntity.id : undefined}
           rackId={rackId}

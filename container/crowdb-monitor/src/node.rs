@@ -21,6 +21,8 @@ pub use storage::file_operations::file_operations_for_tests;
 pub use storage::file_preparation::{accept_file_for_tests, prepare_file_for_tests};
 #[cfg(feature = "test-util")]
 pub use storage::retained::check_retained_medium_for_tests;
+#[cfg(feature = "test-util")]
+pub use storage::supplied::SuppliedOperationsForTests;
 mod trust;
 pub use single::run_single_node;
 

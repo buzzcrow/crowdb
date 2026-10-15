@@ -12,11 +12,13 @@ import { serviceOrder, serviceLabels, type NodeServicePlan } from '../services/u
 import { serviceInstanceLabel } from '../services/client';
 import { NodeStorage } from './NodeStorage';
 import type { CandidateSummary } from './types';
+import type { NodeSetupSummary } from '../shell/nodeSetup';
 import { NodeSetupProgress } from '../shell/NodeSetupProgress';
 
 interface Props {
   node: Node; scope: SelectedEntity; capacity: boolean; readonly: boolean; ready: boolean;
   setupEnabled?: boolean;
+  onSetupObserved?: (node: number, summary: NodeSetupSummary) => void;
   inventory?: NodeDiskGroups; hardware: HardwareCapacitySummary | null; usage: CapacityUsageResponse | null;
   services: ServerSummary[]; plan?: NodeServicePlan;
   loadGroup: (node: number, group: number) => Promise<void>;
@@ -25,7 +27,7 @@ interface Props {
   onCandidates: (nodeId: number, summary: CandidateSummary) => void;
 }
 
-export function NodeWorkspace({ node, scope, capacity, readonly, ready, setupEnabled, inventory, hardware, usage, services, plan, loadGroup, onAddGroup, onServicePlan, onMenu, onCandidates }: Props) {
+export function NodeWorkspace({ node, scope, capacity, readonly, ready, setupEnabled, onSetupObserved, inventory, hardware, usage, services, plan, loadGroup, onAddGroup, onServicePlan, onMenu, onCandidates }: Props) {
   const { inspectEntity, selectEntity } = useSelection();
   const actual = new Map(services.filter(service => service.node_id === node.id).map(service => [service.service_type, service]));
   return <div className="tw-h-full tw-overflow-auto tw-p-4 tw-space-y-6" aria-label={`Node ${node.id} workspace`}>
@@ -33,7 +35,7 @@ export function NodeWorkspace({ node, scope, capacity, readonly, ready, setupEna
       <div><h1 className="tw-text-lg tw-font-semibold">Node {node.id}</h1><p className="tw-text-xs tw-text-muted">Rack {node.rack_id} · {node.host}</p></div>
       <Button size="sm" variant="secondary" disabled={readonly} onClick={event => onMenu({ type: 'Node', id: String(node.id), rawId: node.id, parentIds: { rack_id: node.rack_id }, label: `Node ${node.id}` }, event)}>Node actions</Button>
     </header>
-    {setupEnabled && <NodeSetupProgress node={node.id} readonly={readonly} />}
+    {setupEnabled && <NodeSetupProgress onObserved={onSetupObserved} node={node.id} readonly={readonly} />}
     {!capacity && scope.section !== 'storage' && scope.section !== 'candidates' && <section aria-label={`Node ${node.id} services`} className="tw-space-y-3">
       <header className="tw-flex tw-justify-between tw-items-center tw-gap-3"><h2 className="tw-font-semibold">Services</h2>
         <Button size="sm" variant="secondary" disabled={readonly || !ready} onClick={onServicePlan}>Service plan</Button>

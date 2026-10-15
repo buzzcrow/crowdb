@@ -90,6 +90,7 @@ class Case:
     native_admission_count: int | None = None
     native_diskless_nodes: tuple = ()
     native_spare_disk_gib: int = 0
+    native_supplied_candidates: bool = False
     native_bootstrap: bool = True
     native_auto_bootstrap: bool = False
     native_observations: bool = False
@@ -371,7 +372,7 @@ CONSOLE_OPERATION_CASES = (
     Case("console.browser.registry", "console::browser_registry::selected_services_before_group0", shell_browser="persists all six selected services but starts only PKV before Group 0", shell_observations=True),
     Case("console.browser.discovery", "console::browser_discovery::stale_provider_observations", shell_browser="discovery: release monitor observations remain visible and stale after provider loss"),
     Case("console.native.geometry", "console::native_geometry::mixed_units_reject_consumers_without_starting_services", native_client=True),
-    Case("console.native.browser.hardware", "console::native_browser::hardware_capacity_and_dashed_status", native_client=True, native_auto_bootstrap=True, client_timeout=360),
+    Case("console.native.browser.hardware", "console::native_browser::hardware_capacity_and_dashed_status", native_client=True, native_auto_bootstrap=True, native_supplied_candidates=True, client_timeout=360),
     Case("console.native.browser.maintenance", "console::native_browser::disk_maintenance_and_status_badges", native_client=True, client_timeout=360),
     Case("console.native.browser.disk", "console::native_browser::disk_inspector_and_selection", native_client=True, native_disk_gib=(4096, 8, 8), native_zone_gib=(32, 1, 1), native_spare_disk_gib=4096, client_timeout=360),
     Case("console.native.browser.binding", "console::browser_capacity::binding_recommendations", native_browser="KV binding recommends the least loaded group and initialization creates Group 1", native_bootstrap=False),
@@ -625,6 +626,7 @@ def allocate_cluster(case, image, artifacts, bundle, data_root):
         return NativeConsoleCluster(image, artifacts, bundle, disk_gib=case.native_disk_gib,
                                     zone_gib=case.native_zone_gib,
                                     spare_disk_gib=case.native_spare_disk_gib,
+                                    supplied_candidates=case.native_supplied_candidates,
                                     bootstrap=case.native_bootstrap,
                                     auto_bootstrap=case.native_auto_bootstrap,
                                     rack_ids=case.native_rack_ids,

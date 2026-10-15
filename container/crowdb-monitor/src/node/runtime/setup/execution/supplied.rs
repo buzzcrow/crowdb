@@ -151,7 +151,8 @@ async fn prepare(
             group
         };
         let unit = 1024 * 1024;
-        let zone = (medium.capacity_bytes.min(32 * 1024 * 1024 * 1024) / unit) * unit;
+        let quantum = 64 * unit;
+        let zone = (medium.capacity_bytes.min(32 * 1024 * 1024 * 1024) / quantum) * quantum;
         if zone < 64 * 1024 * 1024 {
             return Err("supplied medium is smaller than the minimum 64 MiB zone".into());
         }
@@ -171,7 +172,10 @@ async fn prepare(
                 backend: medium.backend,
                 backing_identity: medium.backing_identity.clone(),
                 media_type: medium.media_type,
-                sparse: false,
+                sparse: medium.backend == crowdb_protocol::mgmt::node::storage::DiskBackend::File
+                    && observed
+                        .allocated_bytes
+                        .is_some_and(|bytes| bytes < medium.capacity_bytes),
                 removed: false,
                 physical_backing: Some(PhysicalBacking {
                     physical_host_id: node.physical_host_id.clone(),

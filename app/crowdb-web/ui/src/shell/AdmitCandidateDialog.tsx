@@ -9,8 +9,8 @@ import type { Rack } from '../types';
 import { NodeSetupOptions } from './NodeSetupOptions';
 import { defaultNodeSetup, discoveredStorage, validNodeSetup, type PreparedNodeAccess, type NodeSetupChoices, type NodeAdmissionRequest } from './nodeSetup';
 
-export function AdmitCandidateDialog({ discoveryId, racks, current, preparedNode, onClose, onSuccess }: { discoveryId: string; racks: Rack[]; current?: NodeAdmission; preparedNode?: PreparedNodeReference; onClose: () => void; onSuccess?: () => void }) {
-  const [rack, setRack] = useState(String(current?.rack_id ?? preparedNode?.rack_id ?? racks[0]?.id ?? ''));
+export function AdmitCandidateDialog({ discoveryId, racks, initialRackId, current, preparedNode, onClose, onSuccess }: { discoveryId: string; racks: Rack[]; initialRackId?: number; current?: NodeAdmission; preparedNode?: PreparedNodeReference; onClose: () => void; onSuccess?: () => void }) {
+  const [rack, setRack] = useState(String(current?.rack_id ?? preparedNode?.rack_id ?? initialRackId ?? racks[0]?.id ?? ''));
   const [user, setUser] = useState(current?.ssh_user ?? preparedNode?.ssh_user ?? 'crowdb');
   const [password, setPassword] = useState(current || preparedNode ? '' : 'crowdb');
   const [port, setPort] = useState(String(current?.ssh_port ?? preparedNode?.ssh_port ?? 2222));

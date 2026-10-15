@@ -34,7 +34,7 @@ pub use node::{
     accept_file_for_tests, accept_startup_mode_for_tests, check_retained_medium_for_tests,
     file_operations_for_tests, prepare_file_for_tests, prepare_supplied_disk_for_tests,
     publish_file_for_tests, verify_blank_medium_for_tests, InitializationForTests, NodeServiceForTests,
-    NodeSetupForTests,
+    NodeSetupForTests, SuppliedOperationsForTests,
 };
 pub use node::{
     control_node, discover_disks, run_node, run_single_node, serve_node_management, CandidateCache,

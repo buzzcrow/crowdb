@@ -5,13 +5,21 @@ import { useEffect, useRef, useState } from 'react';
 import { nodeSetupStatus, retryNodeSetup } from '../api';
 import { Button } from '../components/ui/Button';
 import { serviceLabels } from '../services/useNodeServicePlans';
-import type { NodeSetupStatus } from './nodeSetup';
+import type { NodeSetupStatus, NodeSetupSummary } from './nodeSetup';
 
-export function NodeSetupProgress({ node, readonly }: { node: number; readonly: boolean }) {
+export function NodeSetupProgress({ node, readonly, onObserved }: { node: number; readonly: boolean; onObserved?: (node: number, summary: NodeSetupSummary) => void }) {
   const [status, setStatus] = useState<NodeSetupStatus | null>();
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const generation = useRef(0);
+  const observer = useRef(onObserved); observer.current = onObserved;
+  const lastSummary = useRef<NodeSetupSummary>();
+  const observe = (value: NodeSetupStatus | null) => {
+    if (!value) return;
+    const summary = { phase: value.phase, warning: value.services.some(service => service.phase === 'warning'),
+      error: value.error, observed_at_ms: Date.now(), stale: false };
+    lastSummary.current = summary; observer.current?.(node, summary);
+  };
   useEffect(() => {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
@@ -19,8 +27,8 @@ export function NodeSetupProgress({ node, readonly }: { node: number; readonly: 
       const captured = generation.current;
       try {
         const observation = await nodeSetupStatus(node, { signal: controller.signal });
-        if (!controller.signal.aborted && captured === generation.current) { setStatus(observation); setError(''); }
-      } catch (cause) { if (!controller.signal.aborted && captured === generation.current) setError(String(cause)); }
+        if (!controller.signal.aborted && captured === generation.current) { setStatus(observation); setError(''); observe(observation); }
+      } catch (cause) { if (!controller.signal.aborted && captured === generation.current) { setError(String(cause)); if (lastSummary.current) observer.current?.(node, { ...lastSummary.current, stale: true }); } }
       finally { if (!controller.signal.aborted) timer = setTimeout(() => { void refresh(); }, 2000); }
     };
     void refresh();
@@ -28,7 +36,7 @@ export function NodeSetupProgress({ node, readonly }: { node: number; readonly: 
   }, [node]);
   const retry = async () => {
     setBusy(true); setError(''); generation.current++;
-    try { setStatus(await retryNodeSetup(node)); }
+    try { const result = await retryNodeSetup(node); setStatus(result); observe(result); }
     catch (cause) { setError(String(cause)); }
     finally { generation.current++; setBusy(false); }
   };

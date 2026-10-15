@@ -2,13 +2,14 @@
 // Licensed under the Apache License, Version 2.0.
 import { test, expect } from '../fixtures/realBackend';
 import { reviewDisklessCandidate } from '../fixtures/candidateSetup';
+import { step } from '../fixtures/stepTimer';
 
 test('Docker default setup: submit storage and services then close the initiating browser', async ({ page, request }) => {
   test.skip(!process.env.CROWDB_NODE_UI_IDENTITIES || !process.env.CROWDB_NODE_UI_ORIGIN, 'Owned default node fixture required');
   const origin = process.env.CROWDB_NODE_UI_ORIGIN!;
   const identities: string[] = JSON.parse(process.env.CROWDB_NODE_UI_IDENTITIES!);
   await page.goto(`${origin}/?domain=Cluster`);
-  await page.getByRole('button', { name: 'Add Rack', exact: true }).click();
+  await page.getByRole('region', { name: 'Cluster node workspace', exact: true }).getByRole('button', { name: 'Add Rack', exact: true }).click();
   const rack = page.getByRole('dialog', { name: 'Add Rack' });
   await rack.getByLabel('Rack ID', { exact: true }).fill('1');
   await rack.getByRole('button', { name: 'Create Rack', exact: true }).click();
@@ -38,10 +39,10 @@ test('Docker default setup: submit storage and services then close the initiatin
 
 test('Docker default setup: progress is visible in the node middle workspace', async ({ page }) => {
   test.skip(!process.env.CROWDB_NODE_UI_ORIGIN, 'Owned default node fixture required');
-  await page.goto(`${process.env.CROWDB_NODE_UI_ORIGIN}/?domain=Cluster`);
-  await page.getByTestId('tree-node-N-1').getByRole('button', { name: 'N-1', exact: true }).click();
+  await step('default progress: initial page', () => page.goto(`${process.env.CROWDB_NODE_UI_ORIGIN}/?domain=Cluster`));
+  await step('default progress: open node workspace', () => page.getByTestId('tree-node-N-1').getByRole('button', { name: 'N-1', exact: true }).click());
   const setup = page.getByRole('region', { name: 'Node 1 setup', exact: true });
-  await expect(setup.getByRole('status', { exact: true })).toHaveText('Completed');
+  await step('default progress: observe completed setup', () => expect(setup.getByRole('status', { exact: true })).toHaveText('Completed'));
   await expect(setup).toContainText('Managed file');
   await expect(setup).toContainText('crowdb-access-server · ready');
   await expect(page.getByRole('region', { name: 'Node 1 storage', exact: true })).toContainText('Preallocated');
@@ -56,7 +57,7 @@ test('Docker candidates: prepare nodes in UI and initialize their shared cluster
   await page.goto(`${origin}/?domain=Cluster`);
   const candidates = page.getByRole('region', { name: 'Candidate nodes' });
   await expect(candidates.getByTestId('deployment-phase')).toContainText('Uncommitted local draft');
-  await page.getByRole('button', { name: 'Add Rack', exact: true }).click();
+  await page.getByRole('region', { name: 'Cluster node workspace', exact: true }).getByRole('button', { name: 'Add Rack', exact: true }).click();
   const rack = page.getByRole('dialog', { name: 'Add Rack' });
   await rack.getByLabel('Rack ID', { exact: true }).fill('1');
   await rack.getByLabel('Name (optional)', { exact: true }).fill('rack-one');

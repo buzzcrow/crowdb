@@ -82,6 +82,10 @@ pub enum NodeControl {
     SuppliedDiskPreparation {
         operation_id: String,
     },
+    SuppliedDiskPreparations {
+        after: Option<String>,
+        limit: u32,
+    },
     DiskFilePreparation {
         operation_id: String,
     },

@@ -36,6 +36,15 @@ pub(super) async fn run_with_inputs(
         disk_group_id: record.disk_group_id,
         disk_id: record.disk_id,
     };
+    hardware
+        .validate_disk_group_storage(
+            record.rack_id,
+            record.node_id,
+            record.disk_group_id,
+            record.media_type,
+            record.geometry.unit_size_bytes,
+        )
+        .await?;
     hardware.reserve_disk_resource(record).await?;
     match hardware.disk_storage(&key).await? {
         Some(retained) if retained == *record => {}
@@ -46,36 +55,7 @@ pub(super) async fn run_with_inputs(
             if hardware.get_disk_with_revision(&key).await?.is_some() {
                 return Err("supplied medium has legacy membership; explicit migration is required".into());
             }
-            let execution_root = root.to_path_buf();
-            let retired = retirement.clone();
-            let mut verifying = state.clone();
-            let mut medium = tokio::task::spawn_blocking(move || -> Result<_> {
-                verifying.phase = SuppliedPreparationPhase::Verifying;
-                verifying.error = None;
-                verifying.verified_bytes = 0;
-                journal::save(&execution_root, &verifying)?;
-                let mut last = 0;
-                let medium = blank::verify(
-                    &execution_root,
-                    &inputs,
-                    &verifying.request.record.clone(),
-                    |count| {
-                        if retired.exists() {
-                            return Err(std::io::Error::other(
-                                "supplied provisioning retired by explicit cleanup",
-                            ));
-                        }
-                        if count == 0 || count - last >= 64 * 1024 * 1024 {
-                            verifying.verified_bytes = count;
-                            journal::save(&execution_root, &verifying)?;
-                            last = count;
-                        }
-                        Ok(())
-                    },
-                )?;
-                Ok(medium)
-            })
-            .await??;
+            let mut medium = verify_medium(root, &state, inputs, &retirement).await?;
             // Keep the claimed descriptor through the authority write. DiskIO
             // acquires its own descriptor only after this object is dropped.
             authorize(root, &state.request).await?;
@@ -180,4 +160,42 @@ async fn verify_diskio(
         }
     }
     Ok(())
+}
+
+async fn verify_medium(
+    root: &Path,
+    state: &SuppliedPreparation,
+    inputs: Vec<crowdb_protocol::mgmt::node::storage::DiskInput>,
+    retirement: &Path,
+) -> Result<blank::VerifiedMedium> {
+    let execution_root = root.to_path_buf();
+    let retired = retirement.to_path_buf();
+    let mut verifying = state.clone();
+    tokio::task::spawn_blocking(move || -> Result<_> {
+        verifying.phase = SuppliedPreparationPhase::Verifying;
+        verifying.error = None;
+        verifying.verified_bytes = 0;
+        journal::save(&execution_root, &verifying)?;
+        let mut last = 0;
+        let medium = blank::verify(
+            &execution_root,
+            &inputs,
+            &verifying.request.record.clone(),
+            |count| {
+                if retired.exists() {
+                    return Err(std::io::Error::other(
+                        "supplied provisioning retired by explicit cleanup",
+                    ));
+                }
+                if count == 0 || count - last >= 64 * 1024 * 1024 {
+                    verifying.verified_bytes = count;
+                    journal::save(&execution_root, &verifying)?;
+                    last = count;
+                }
+                Ok(())
+            },
+        )?;
+        Ok(medium)
+    })
+    .await?
 }

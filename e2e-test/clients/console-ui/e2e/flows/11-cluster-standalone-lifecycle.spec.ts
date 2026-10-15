@@ -43,7 +43,7 @@ async function mutation(page: Page, row: LiveService, name: string, path: string
 
 async function createEmptyNode(page: Page, request: APIRequestContext) {
   await page.goto('/?domain=Cluster');
-  await page.getByRole('button', { name: 'Add Rack', exact: true }).click();
+  await page.getByRole('region', { name: 'Cluster node workspace', exact: true }).getByRole('button', { name: 'Add Rack', exact: true }).click();
   let dialog = page.getByRole('dialog', { name: 'Add Rack', exact: true });
   await dialog.getByLabel('Rack ID', { exact: true }).fill('1');
   await dialog.getByLabel('Name (optional)', { exact: true }).fill('lifecycle');

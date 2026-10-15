@@ -6,7 +6,9 @@
 mod retained;
 mod supplied;
 pub use retained::{CheckRetainedDisk, RetainedDiskCondition, RetainedMedium};
-pub use supplied::{PrepareSuppliedDisk, SuppliedPreparation, SuppliedPreparationPhase};
+pub use supplied::{
+    PrepareSuppliedDisk, SuppliedPreparation, SuppliedPreparationPage, SuppliedPreparationPhase,
+};
 
 use serde::{Deserialize, Serialize};
 
