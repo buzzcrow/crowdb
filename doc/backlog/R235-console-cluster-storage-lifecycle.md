@@ -369,6 +369,10 @@
   membership alone is not sufficient. Explain this in confirmation; do not add
   an implicit unassign/forget cascade. Recovery/forgetting retained media remains
   outside this release and needs later review.
+- The current public HTTP owner/binding routes only assign or replace; they do
+  not provide explicit unassignment. Keep retained-parent deletion blocked and
+  defer that operator flow for review. Do not emulate unassignment with an
+  implicit cascade or remove authoritative metadata directly in browser fixtures.
 - Short-lived SSH control requests use a current-thread runtime, independent of
   long-running service worker settings. They must not create one host-sized
   thread pool per status observation. Preserve the Node PID/resource budget;

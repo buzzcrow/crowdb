@@ -135,6 +135,50 @@ The default snapshotter is overlayfs; use `--snapshotter native` where overlayfs
 is unavailable. No Docker daemon, runtime socket mount or CNI plugin is needed.
 The tested tool versions are containerd 2.4.1, nerdctl 2.4.1 and runc 1.4.3.
 
+## Persistent storage and candidate admission
+
+Keep `/opt/crowdb/data` on a persistent host directory or named runtime volume.
+The OCI image contains the programs; the container writable layer is not the
+node's durable storage. Node identity, bootstrap receipts and storage journals
+must survive container replacement along with the original media.
+
+Use repeated `--disk-file /host/path/disk.img` for existing files and `--device
+/dev/...` for raw devices. Both map into `/opt/crowdb/data/disks/<basename>` in
+Docker and containerd. Basenames and canonical underlying resources must be
+unique. A file and its loop alias cannot be supplied as independent disks.
+Retain all recorded source mappings on replacement; changed inode/device,
+missing source or insufficient UID/GID 10001 access fails without substitution.
+Never mount a Docker or containerd socket into the node to manage its storage.
+Standard startup prepares the common disk directory for UID/GID 10001. It does
+not recursively change the ownership or mode of supplied files or devices.
+
+- With no supplied inputs, standard node setup defaults to one 16-GiB managed
+  file with preallocation and a 1-GiB host reserve. It is created in the retained
+  data directory. Additional Create File Disk operations use generated paths in
+  that same directory. Sparse allocation is an explicit advanced choice;
+  failed preallocation remains a failure.
+- Supplied inputs appear in discovery. Review them during node setup or use
+  Node → Storage → Join Candidates after Group 0 is ready. Select an existing
+  bound DiskGroup and media class; a raw device needs its own acknowledgement.
+  Group 0 owns effective membership. Blank verification reads every usable byte
+  and never wipes data; nonblank media fail. Supported raw lineage is a whole
+  device or a whole-file loop mapping. Partitions, partitioned whole devices,
+  stacked devices, ambiguous virtual lineage and loop slices are rejected.
+- Physical size can exceed usable whole-zone geometry. The unused tail remains
+  untouched. Backing properties distinguish host/resource identity, physical
+  bytes, usable bytes and tail bytes. File allocated bytes and shared filesystem
+  free space are separate observations, not a sum of virtual file capacities.
+- Close/reopen does not cancel accepted per-disk work. Failed rows keep their
+  original operation for explicit retry. Offline, then Remove, excludes the disk
+  while retaining its bytes, ID, geometry and allocation metadata. Rejoin uses
+  that retained identity Offline; explicit validated Online restores participation.
+  Removal does not evacuate data or establish recovery/redundancy.
+- Explicit single mode retains the development profile's four sparse 16-GiB
+  files and one-voter Store-0/Group-0 initialization. It is not inferred from
+  seeing only one standard node and cannot replace an accepted standard mode.
+  Supplied external media require manual mode. Single startup keeps its initial
+  root pristine until bootstrap accepts the manifest.
+
 ## Daemon and node lifecycle
 
 Keep the runtime Pixi workspace/environment in an administrator-owned, versioned

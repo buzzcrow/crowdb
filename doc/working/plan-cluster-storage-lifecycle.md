@@ -1569,3 +1569,27 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   do not add an unsafe implicit forget/cascade. Existing CRUD acceptance must
   retain its separate empty/unassigned group deletion checks and verify that
   physical media keep their recovery parent. This is a documented release limit.
+
+### Frozen final image acceptance
+
+- Source `e7754f3ff64c98a33f853ecf23f9014568d81fe4`; OCI manifest
+  `sha256:494da00fbc5556b5603232c9a310b31c228ed83d780278a76648f21d8cbc7bca`,
+  Docker config `sha256:ac196700658d3862a0daa9a577b1092f359415bb76dd69c63907a4b72868d232`.
+- Containerd profile passed, artifact `container-e2e/run-ee59e92050114d6581a708181effb415`: bare
+  data root, common directory owner/write check, source permissions unchanged,
+  file/raw fsync/read, Offline release, Remove/Rejoin, container recreation and
+  single-mode bootstrap/recreation. No packaged sources changed during acceptance.
+- CRUD current-image baseline: `run-454f4064f1644cbbbb3110dfc2241931`, 6.6s,
+  first divergence obsolete Add Disk menu expectation. Migrate to verified file
+  operation after empty-group binding, actual DiskIO and retained-parent 409.
+  Successful UI unassignment/deletion is deferred: public routes have no explicit
+  owner/binding removal. Decision recorded in R235; no direct fixture metadata
+  deletion substitutes for the missing operator flow.
+- Docker host profile also passed on the same image:
+  `container-e2e/run-de861aaabc9a48829b7e4ecc0ffff747`. File/raw retained-data
+  probes, source UID/GID/mode checks and same-image persistent recovery passed.
+- Updated CRUD browser passed in 8.6s (old 12.4s), artifact
+  `container-e2e/run-8bbddb09896d4538806c4c6c0afd4de2`; generated 64-MiB
+  preallocated media registered with actual DiskIO, binding moved before receipt,
+  physical legacy menu controls absent, retained parent deletion returned 409.
+  Native browser TypeScript check passed against that run's client snapshot.

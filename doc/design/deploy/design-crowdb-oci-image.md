@@ -192,6 +192,23 @@ publication. Cleanup is blocked while allocation runs; shutdown waits for the
 blocking allocator to finish its durable record. New storage still requires
 Group-0 registration and runtime availability confirmation.
 
+The persistent data mount contains node identity, bootstrap/service journals and
+managed disk files. Supplied files and whole block devices use the same container
+disks directory in Docker and containerd, with launcher-verified exact mappings.
+Replacement retains the original sources and identities; invalid inputs never
+trigger managed-file fallback. Standard setup defaults to one 16-GiB preallocated
+file and a 1-GiB host reserve; explicit single mode retains four sparse development
+files. File preallocation failure is not permission for sparse fallback.
+
+Supplied provisioning seals the canonical physical host/resource and physical
+capacity separately from whole-zone usable geometry. A full-file loop device
+shares its backing file's canonical resource; partitions, loop slices and ambiguous
+stacked/virtual lineage are rejected. The monitor reads every usable byte before
+Init membership, and DiskIO verifies its own opened descriptor before Online.
+Reservations survive interruption and removal. Unusable physical tails and
+existing retained data are not rewritten by admission or recovery. Detailed
+operator commands and candidate/rejoin flows live in the operational guide.
+
 Local OCI archive loading is version-dependent and must be tested separately.
 The baseline production contract is registry pull by digest. If a supported
 Docker version needs a Docker archive for offline loading, an explicit import
@@ -272,7 +289,7 @@ support is not established merely by OCI image publication.
   SBOM/provenance; failed gates never publish moving tags.
 - Rootful build and isolated Linux containerd host acceptance use the pinned tool
   matrix in the operational guide. Rootless preflight reports missing host UID/GID
-  helpers; native rootless execution has not yet been accepted on this host.
+  helpers and never silently falls back to a privileged builder.
 - CI publication, remote signing and protected-environment approval are configured;
   live registry acceptance requires a release workflow dispatch.
 - Keep Ubuntu 24.04 and Linux amd64 initially. ARM64, macOS VM execution and

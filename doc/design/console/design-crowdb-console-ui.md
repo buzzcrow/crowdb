@@ -132,7 +132,7 @@ provide observable capacity and bitmap fixtures.
   Hiding a topology panel interrupts viewport motion before zero-size geometry
   is observed. Rapid domain switches retain finite coordinates; centering runs
   only in a visible, measured canvas.
-  Cluster initially expands Datacenter/Rack and stops at visible Node cards;
+  The optional Diagram initially expands Datacenter/Rack and stops at visible Node cards;
   service descendants appear when a Node is explicitly expanded.
 
 ## 4. Visual language and service identity
@@ -169,40 +169,38 @@ provide observable capacity and bitmap fixtures.
 - **CLU-02:** Rack actions include Add Node. A Node context menu independently
   manages each service type and each existing instance, using the same lifecycle
   pattern as KV/DiskDB. It must not route other service types through KV APIs.
-- **CLU-03:** Add Node is one dialog and one submit. Defaults select the current
-  Rack, next available Node ID, valid host settings, and a complete six-service
-  set in order: Access, Chunk-KV, ChunkDB, DiskDB, DiskIO, Paxos-KV.
-  Canonical service types use `paxos-kv`; the legacy `kv` wire value is rejected.
-  Internal cards expose RPC ports; management HTTP stays on loopback and hidden.
-  Access exposes independent Iceberg, S3 and Health HTTP ports.
-  Each service can be disabled independently, including all its listeners.
-- Registration produces an immutable Node identity. The dialog closes after
-  its selected services and listener overrides are durably saved; plan-save
-  failure retains the identity and allows another save without registration.
-  Per-service rows show queued, waiting for dependency, deploying, deployed,
-  or failed, with a specific reason. Closing progress is not another deployment
-  confirmation and does not cancel already accepted work.
-- Waiting deployment steps resume when prerequisites become available while
-  the console session is active. The Node menu reopens/resumes the plan after
-  navigation or reload; deployed instances are reconciled before retry.
-  Waiting plans reevaluate dependencies every ten seconds. Only Paxos-KV can
-  start before Group 0 exists. ChunkDB additionally requires live DiskIO
-  registrations covering every configured disk group and selected DiskIO node.
-- Six-service progress is saved in each Node workspace, with a revision checked
-  on every update. Saving progress must succeed before a deployment starts.
-  Explicit Start/Retry requests queue behind in-flight reconciliation in the
-  same session, then save against its latest completed revision. Timer wakes
-  cannot publish competing progress while that registration is being saved.
-  A competing browser receives a conflict and must reload. Reload turns an
-  interrupted Deploying step into an explicit failure; Retry first checks the
-  registered instance and never repeats a successful deployment. Stopped
-  registered services require their normal Restart action. Removing a Node or
-  resetting the cluster clears its deployment intent. This is durable progress,
-  not an unattended scheduler while the console is closed.
-- A partial failure retains the Node and successful services. Retry operates
-  only on missing/failed steps and retains selected/disabled states and explicit
-  listener overrides while revalidating defaults. It never creates a
-  second Node or a second copy of a successful service.
+- **CLU-03:** Standard OCI Add Node opens the existing candidate flow with its
+  Rack preselected. Verify and review authenticates SSH and reads actual disk
+  inventory without admitting the node or initializing storage. Join and start
+  submits the reviewed choices and accepted preflight identity. Existing accepted
+  or pending-review Rack choices take precedence over a new default.
+- Defaults select Paxos-KV, DiskDB, DiskIO, ChunkDB, Chunk-KV and Access Server.
+  Each service and its listeners can be disabled. Access has independent Iceberg,
+  S3 and Health ports; DiskDB's related RPC listeners must not overlap. Node
+  admission owns the fixed KV bootstrap listeners. Canonical service type is
+  `paxos-kv`; a legacy `kv` wire value is rejected.
+- With no supplied input, standard setup chooses a 16-GiB preallocated file and
+  1-GiB host reserve. Sparse allocation is explicit. Supplied media retain exact
+  observed identities and capacities; each raw device requires initialization
+  acknowledgement. Diskless setup creates no disk. Invalid supplied choices
+  never fall back to a managed file.
+- The target monitor durably accepts storage and service intent before reporting
+  acceptance. Progress continues after the dialog, Web connection or browser
+  closes; restart resumes the same intent. Node progress polls every two seconds
+  and retains last confirmed rows on observation failure. A completed setup
+  receipt is separate from current service or I/O health.
+- Storage waits for Group 0 and an ordinary metadata binding. Dependent services
+  wait for real prerequisites. A failed disk/service retains successful siblings;
+  explicit retry uses their original operations and fixed placement. Later
+  operator Stop/Restart/Delete commands take precedence over setup replay.
+  Consecutive failed startup/readiness attempts have a durable five-attempt
+  budget per service operation; successful readiness clears that budget.
+- Legacy standalone Add Node retains its one-dialog registration and saved
+  six-service plan. Its session reconciler saves revision-checked progress before
+  deployment, resumes waiting steps while that Console session is active, and
+  requires explicit retry for interrupted deployment. It never duplicates a
+  registered Node or successful service. This session-owned plan is distinct
+  from the standard target monitor's accepted node setup.
 - Internal service health probes the RPC endpoint independently for each
   service. Startup records lacking RPC endpoints use process observation.
   Before its first store exists, PKV reserves but does not bind its RPC port;
@@ -217,6 +215,21 @@ provide observable capacity and bitmap fixtures.
 - **CLU-04:** Cluster readiness is reported by capability: KV quorum, storage,
   Chunk-KV, and Access protocols. A PID or registry entry alone is not Ready.
   Missing prerequisites link to the domain where they can be resolved.
+
+- **CLU-05:** Cluster/Rack Topology defaults to node cards grouped by Rack;
+  Diagram remains available explicitly. Cards show observed health, service
+  readiness, registered capacity, cached candidate/setup summaries and disk
+  alerts. Card bodies inspect properties; names open the Node workspace. Add
+  Node is scoped to its Rack. Capacity uses sortable/filterable node rows with
+  unknown values last in either numeric sort direction. Search, health and
+  observed-candidate filters retain their bounded history state.
+- **CLU-06:** Auto join starts enabled for a new standard workspace and retains
+  an explicit target. Three authenticated eligible nodes are ordered by UUID;
+  the smallest UUID initiates Store 0 / Group 0 with those fixed three voters.
+  Fewer nodes wait. Later admission is nonvoting and never expands/replaces
+  Group-0 voters. Explicit single mode auto-starts the same initialization
+  lifecycle with one local voter. Turning Auto join off stops new triggers;
+  accepted initialization continues and conflicting intents require recovery.
 
 ## 6. Properties and cross-links
 
@@ -236,10 +249,11 @@ provide observable capacity and bitmap fixtures.
 
 - **MODE-01:** Standalone mode exposes administrator topology, service, storage,
   logical KV, and data operations supported by the backend.
-- **MODE-02:** Container mode uses the same seven-domain UI for observation and
-  supported logical/data operations. Cluster topology/deployment mutations and
-  Capacity disk-management mutations are unavailable. Backend enforcement is
-  required as well as disabled/hidden UI controls.
+- **MODE-02:** Standard manual OCI nodes expose authenticated admission and
+  confirmed Group-0 topology/service/storage operations. Explicit single-profile
+  preview mode uses the same six-domain UI for observation and supported logical/
+  data operations, but rejects physical topology/deployment/storage mutations.
+  Backend enforcement accompanies hidden/disabled controls in either mode.
 - **MODE-03:** Readonly embedding disallows mutations. Every fetch uses the
   configured API prefix. Styles remain scoped to the Console; embedding does
   not change resource identities or connect to another cluster.
@@ -387,7 +401,8 @@ provide observable capacity and bitmap fixtures.
 
 ## 14. DiskGroup and disk management
 
-- **DISK-01:** Capacity hierarchy is Rack → Node → DiskGroup → Disk → Zone.
+- **DISK-01:** The physical tree ends at Disk: Rack → Node → Storage → DiskGroup
+  → Disk. Zones and allocation bitmaps remain in the center workspace.
   DiskGroup creation establishes its authoritative registration, data binding,
   and owner, or reports which prerequisite/step prevents completion.
 - The dialog does not spin indefinitely when Group 0, a data group, or DiskDB
@@ -398,14 +413,45 @@ provide observable capacity and bitmap fixtures.
   and owner instead of allocating another group. Binding can exist before a
   DiskDB service is registered; this partial state names the missing owner
   prerequisite explicitly.
-- **DISK-02:** Disk creation exposes identity, type, device path, capacity, zone
-  size, and allocation unit. Validate consistent geometry and ID uniqueness.
-  Batch rows report per-row outcomes and preserve failed entries for correction.
+- **DISK-02:** Node storage separates registered disks, operation progress and
+  candidates. Create File Disk seals a generated path, capacity, existing group,
+  reserve and allocation mode. Accepted preparation/admission continues on the
+  monitor. Pending/failed outcomes do not count as usable capacity.
+- Join Candidates selects at most 16 eligible supplied media, each with an
+  existing compatible bound DiskGroup and media class. File/device backend and
+  HDD/SSD class are separate. Unverified identity, changed observations, missing
+  mappings and insufficient capacity disable admission and explain why.
+  General initialization consent and per-raw-device acknowledgement are explicit.
+- Bulk Join submits at most four independent operations concurrently. Each row
+  retains its operation and exact reviewed medium across response loss/retry;
+  successful siblings are not resubmitted. Closing stops unsent submissions,
+  while accepted work continues. Durable history pages contain at most 16 rows;
+  the Node workspace retains at most 64 observations and reports partial coverage.
+  Nonzero usable bytes fail without wiping or publishing disk membership.
+- Legacy metadata-only disk editors retain geometry and uniqueness checks; they
+  are separate from verified physical provisioning.
+- Standard-node group menus open Create File Disk, while disk lifecycle links
+  open Node storage. Direct legacy Up/Down/Delete controls are unavailable in
+  that mode. Maintenance diagnostics remain available. A disk row with no observed
+  provisioning receipt reports Unknown media rather than inferring a class from
+  compatibility geometry.
 - **DISK-03:** Distinguish physical location, DiskDB owner instance, and metadata
   Store/Group binding. Neither Node ID nor service ID implies ownership.
 - Owner/status/binding operations are available only when supported and expose
   the resulting authoritative state. Container restrictions apply to all entry
   points, including context menus and direct API requests.
+
+- **DISK-05:** Offline applies exclusion to the current owner and every configured
+  DiskIO participant, then waits for I/O quiescence. Remove requires authoritative
+  Offline and the exact revision/owner evidence. A lost reply is reconciled with
+  Group 0 before showing success. Removed media appear as retained candidates.
+  Rejoin restores their original identity and allocation metadata Offline, then
+  explicit Online validates the retained format and current descriptor. No
+  recovery migration, evacuation or physical file deletion is implied. Missing
+  or replaced registered media remain quarantined; discovery creates no substitute.
+- A retained receipt preserves its parent even after Remove. DiskGroup deletion
+  requires no retained media, owner or metadata binding; empty membership alone
+  does not permit a cascade. Confirmation explains the blocking prerequisites.
 
 ## 15. Capacity
 
@@ -429,7 +475,10 @@ provide observable capacity and bitmap fixtures.
 
 - **CAP-06:** Opening Cluster does not issue DiskDB runtime usage or scan
   requests. Capacity usage is scoped to the selected DiskGroup/Disk when that
-  scope is known; cluster totals explicitly request aggregate observation.
+  scope is known. Cluster/Rack overviews use cached reports until an explicit
+  Refresh requests a runtime snapshot; opening an overview is not that request.
+  Cached candidate/setup summaries are bounded to 64 nodes and never initiate
+  node-by-node discovery.
   Disk inventory belongs to one shared source. Expanding a Node's Storage branch loads its
   DiskGroups; expanding/selecting a DiskGroup loads its disks. Selecting a
   linked Disk loads the required ancestor inventory directly. Four workers
@@ -497,7 +546,7 @@ plan, never edited out of this specification to make a run pass.
   no hidden fetch-all, invented totals, or selection replacement on page changes.
 - **A11 / failures:** inject unavailable owner/group, malformed API response, stale cursor,
   and slow/unknown mutation outcome; verify §16 and retry without duplication.
-- **A12 / modes:** Container rejects topology/disk mutations through UI and API;
+- **A12 / modes:** Single preview rejects physical topology/disk mutations through UI and API;
   supported admin data operations remain usable. Readonly embedding forbids
   mutations and respects API/style isolation.
 

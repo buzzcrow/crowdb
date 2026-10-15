@@ -369,6 +369,54 @@ Generic join cannot bypass an accepted system bootstrap. Independent clusters
 remain separate: operators explicitly clean one cluster, wait for every node's
 cleanup, admit the released nodes to the retained cluster and add voting replicas.
 
+### 6.5 Accepted node setup and storage
+
+Node access review reads authenticated identity and inventory without installing
+peer authorization or granting admission. The browser keeps an initial password
+only in request/session memory. Final admission retains the original review
+operation and sends the selected storage/services to the target monitor.
+
+The monitor persists an immutable `NodeSetupRequest` and sealed placement before
+starting work. Browser disconnect, another Console session and monitor restart
+reuse that intent. Provisional disk discovery grants no membership: only ready
+Group 0 can register disks. Standard default storage is one 16-GiB preallocated
+file with a 1-GiB reserve; supplied or diskless choices never silently fall back.
+Different media classes use compatible independent placement. A chosen missing
+ordinary metadata group remains waiting instead of creating an unrelated group.
+
+Each supplied medium has a stable operation, opened identity, canonical physical
+resource and physical size. Whole-zone logical size excludes any unusable tail.
+The monitor verifies every usable byte while retaining its exact descriptor and
+exclusive raw-device claim through Init publication. DiskIO acquires and validates
+its own descriptor before Online. Nonzero contents fail without a wipe; interrupted
+scans start from zero. Already-Up replay checks its retained receipt and does not
+mistake existing user bytes for a new blank medium.
+
+Global Group-0 physical reservations are sticky across interruption and Remove,
+keyed by physical host and canonical resource. File/loop aliases share the same
+resource. Unknown legacy raw lineage, unknown host or physical membership without
+a backing receipt requires explicit migration. Numeric DiskGroup IDs also have
+retained global placement reservations. Retry never chooses a different group or
+medium after acceptance. Per-disk failures preserve successful siblings.
+
+Offline requires current revision/owner exclusion and I/O quiescence. Remove
+retains backing identity, geometry and allocation metadata. Rejoin restores the
+same disk Offline and requires validated Online. Discovery and restart never
+replace missing/reassociated media or auto-online a restored path. Recovery and
+evacuation remain separate operations.
+Retained receipts also prevent parent deletion after Remove. Group deletion
+requires an unassigned scope with no retained media, rather than silently
+forgetting ownership, bindings or recovery inputs.
+
+Explicit service Stop/Restart/Delete supersedes old setup intent. Consecutive
+startup/readiness failures have a durable five-attempt budget per operation;
+readiness success resets it. Explicit cluster cleanup retires and drains accepted
+setup/provisioning before deleting system metadata. Cleanup dispatches to at most
+four retained nodes concurrently and saves each result; unreachable nodes stay
+pending under the original confirmed cleanup operation.
+Short-lived monitor control and probe commands do not create service-sized
+worker pools. Service worker settings apply to the long-running node modes.
+
 ## 7. Shared UI and management operations
 
 The UI presents explicit lifecycle states:
