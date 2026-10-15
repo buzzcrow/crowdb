@@ -133,7 +133,7 @@ and Rust/Python SDK contract before Console integration.
   Files: new `src/inspection.rs`, `inspection/{index,pages,projection}.rs`,
   `authority/publication.rs`, `manifest.rs`. Exit: one metadata page does not decode
   the full publication Manifest; payload reader counters remain zero.
-- [ ] **B2b Bind index visibility to commit evidence**: after C4, all public
+- [~] **B2b Bind index visibility to commit evidence**: after C4, all public
   enumeration verifies the small committed marker/receipt, never projection
   readiness or Published state alone. Add prepared/head-conflict/crash cases to
   the B4 API tests before advertising inspection capability.
@@ -189,7 +189,7 @@ until its corresponding API and visibility tests pass.
   `lease.rs`, `upload/ownership.rs`, new `tests/composition_test.rs`.
   Exit: cancellation, duplicate edits, expiry, source reclaim and stale evaluation
   cannot publish incomplete membership or leak another operation's ownership.
-- [~] **C3 Separate ancestry and data-head precondition**: expose opaque head
+- [x] **C3 Separate ancestry and data-head precondition**: expose opaque head
   generation, accept valid historical/parentless source, and freeze candidate
   content independently of commit attempts. Each attempt binds candidate,
   expected head generation and attempt ID. A conflict permits explicit new attempt
@@ -198,7 +198,8 @@ until its corresponding API and visibility tests pass.
   `authority/publication/opaque.rs`, HTTP publication, SDK publication helpers.
   Exit: branching and multiple roots work; missing/foreign/reclaimed parents fail;
   stale generations do not overwrite latest/stable or automatically reparent.
-- [ ] **C4 Prove publication success across crashes and branches**: replace
+  Authority complete; HTTP and SDK exposure remains E2/E3.
+- [x] **C4 Prove publication success across crashes and branches**: replace
   ancestry-as-receipt logic with durable commit evidence. Implement a helpable
   single-head-CAS protocol: head CAS records commit identity; before replacing
   that head, every mutator first durably finalizes its successful receipt. A retry
@@ -473,3 +474,20 @@ failure; record actual failures and add Blocked only when that workflow requires
   most 100 rows/1 MiB per step, caps old record decode at 16 MiB and persists a
   source digest plus validated position. Ready publication follows all row and
   inventory writes. Status reads never load a Manifest.
+
+## Candidate publication verification — 2026-10-16
+
+- Candidate content/parent now bind an immutable preparation operation separately
+  from each head-CAS attempt. Historical parents and new roots are supported.
+- V3 head records retain the successful attempt until every replacing mutator
+  has durably written its receipt. Stable changes and reclaim head fences help
+  pending commits; retries return the original success without moving latest.
+- Modern candidates require commit evidence, including candidates whose Published
+  record was written before a losing CAS. Legacy ancestry uses a separately saved
+  migration anchor and visibility markers, never a fabricated modern receipt.
+- Full Dataset suite passed (77 tests); focused publication tests cover lost CAS,
+  lost reply, receipt failure, stale attempts, divergent IDs, old-head retry and
+  legacy ancestry after a new root. Root `pixi run rs-lint` passed. Logs:
+  `/tmp/dataset-candidate-tests.log`, `/tmp/dataset-candidate-lint.log`.
+- Public inspection remains B2b/B4; Split atomic initialization remains D4, and
+  branch-wide reclamation/fence lifecycle remains D5. No new capability advertised.

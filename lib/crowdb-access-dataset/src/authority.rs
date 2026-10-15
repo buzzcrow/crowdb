@@ -199,8 +199,12 @@ impl DatasetAuthority {
         snapshot: SnapshotId,
     ) -> Result<(), AuthorityError> {
         self.get_snapshot(identity, snapshot).await?;
+        self.require_committed_snapshot(identity, snapshot).await?;
         let key = key::head(identity)?;
         let current = self.store.get(&key).await?;
+        if let Some(current) = &current {
+            self.help_head_commit(identity, current).await?;
+        }
         let mut head = current
             .as_ref()
             .map(|value| decode_head(&value.bytes))
@@ -355,6 +359,10 @@ impl DatasetAuthority {
             CasOutcome::Conflict(Some(existing)) if existing.bytes == binding => {}
             CasOutcome::Conflict(_) => return Err(AuthorityError::AlreadyExists),
         }
+        self.persist_inspection_index(identity, snapshot_record.publication.parent, manifest)
+            .await?;
+        self.bind_completed_manifest(identity, &snapshot_record, manifest)
+            .await?;
         if snapshot_record.publication.state == PublicationState::Prepared {
             let published = SnapshotRecord {
                 publication: SnapshotPublication {

@@ -202,6 +202,9 @@ impl DatasetAuthority {
         let key = key::head(identity)?;
         for _ in 0..64 {
             let old = self.store.get(&key).await?;
+            if let Some(old) = &old {
+                self.help_head_commit(identity, old).await?;
+            }
             let head = old
                 .as_ref()
                 .map(|v| decode_head(&v.bytes))
