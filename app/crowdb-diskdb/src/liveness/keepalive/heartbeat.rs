@@ -39,11 +39,27 @@ impl KeepAlive {
                 })
             })
             .collect();
-        if let Err(e) = self
-            .svc
-            .heartbeat_diskdb(instance_id, &self.rpc_endpoint, &owned_dg_ids, &group_usages)
-            .await
-        {
+        let published = if self.ownership_fencing {
+            match self.ensure_process_session().await {
+                Ok(epoch) => {
+                    self.svc
+                        .heartbeat_diskdb_session(
+                            instance_id,
+                            &self.rpc_endpoint,
+                            &owned_dg_ids,
+                            &group_usages,
+                            epoch,
+                        )
+                        .await
+                }
+                Err(error) => Err(error),
+            }
+        } else {
+            self.svc
+                .heartbeat_diskdb(instance_id, &self.rpc_endpoint, &owned_dg_ids, &group_usages)
+                .await
+        };
+        if let Err(e) = published {
             warn!(error = %e, "sync: heartbeat failed");
             let count = self.missed_count.fetch_add(1, Ordering::SeqCst) + 1;
             if count >= self.config.miss_threshold {

@@ -660,8 +660,23 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   metadata requests from the old process can outlive it remotely. A fresh closed
   local gate alone is therefore insufficient evidence of drainage across restart.
   Fence each process incarnation before any recovery/allocation or exclusion ACK.
-  Preserve the logical owner ID/Group-0 generation; add a monotonic process epoch
-  to the data-group fence, allocated once per boot from Group 0. Old process
-  epochs must be unable to reclaim or write after the new epoch, including when
-  logical ownership is unchanged. This is control metadata, not a disk format
-  change. Add a same-instance restart regression before enabling Online.
+  Preserve the logical owner ID; allocate a stable process-session epoch once
+  per boot in Group 0 and advance each owner-map generation once for that epoch.
+  Claim the existing data-group fence before observing member disks. Old process
+  epochs cannot reclaim owners, write metadata or publish heartbeats after the
+  new process claims authority. The data-group fence and disk formats stay
+  unchanged. Same-instance restart and superseded-startup regressions pass.
+
+- Rejoin native acceptance passes on committed image `424a9887`
+  (`run-093e333f298b415aaa7e918e1174acff`): browser 9.7 s, including retained
+  candidate focus, original-ID Offline Rejoin and refreshed properties. Occupied
+  allocation, fsynced bytes and BusyBlock records survive Remove/Rejoin; old I/O
+  remains excluded and another disk allocates. This does not validate Online.
+- Process-session isolation is implemented without new locks. A boot freezes its
+  predecessor identity; stable epoch is separate from heartbeat record revision.
+  Conditional batches must mutate their precondition key, so session-aware
+  heartbeats atomically rewrite the unchanged session and liveness record. A new
+  boot may supersede an interrupted pending claim; the old claimant cannot revive.
+  Four live SDK tests and the complete DiskDB suite pass, including same-instance
+  restart fencing. Affected SDK/DiskDB/server/protocol all-target, all-feature
+  Clippy and workspace formatting pass. Native image verification remains pending.

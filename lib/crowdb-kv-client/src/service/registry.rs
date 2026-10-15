@@ -13,6 +13,7 @@
 //! See `doc/design/kv/design-crowdb-kv-group0.md` §4.
 
 mod diskio;
+mod session;
 
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};

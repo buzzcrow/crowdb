@@ -357,6 +357,13 @@ pub struct HostedGroup {
 pub struct OwnerMapValue {
     pub instance_id: u64,
     pub lease_expiry_ms: u64,
+    /// Group-0 revision of the manager process's accepted startup session.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub process_epoch: u64,
+}
+
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]

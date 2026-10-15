@@ -49,6 +49,7 @@ impl HardwareClient {
         }
         .to_path();
         let owner = crowdb_protocol::common::OwnerMapValue {
+            process_epoch: 0,
             instance_id,
             lease_expiry_ms,
         };
@@ -104,6 +105,7 @@ impl HardwareClient {
             disk_group_id: dg_id,
         };
         let value = crowdb_protocol::common::OwnerMapValue {
+            process_epoch: 0,
             instance_id,
             lease_expiry_ms,
         };

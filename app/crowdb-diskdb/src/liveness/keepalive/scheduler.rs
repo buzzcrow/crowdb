@@ -8,7 +8,7 @@
 //! (disk-add init, status changes, removals).
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
 use crowdb_common::metrics::Counter;
@@ -69,6 +69,9 @@ struct RecoveryScanHandle {
 
 /// Background sync loop: keep-alive + hardware read + disk-add init.
 pub struct KeepAlive {
+    boot_id: String,
+    process_epoch: AtomicU64,
+    previous_session: arc_swap::ArcSwapOption<session::Predecessor>,
     exclusion_cursor: AtomicUsize,
     ownership_fencing: bool,
     hw: HardwareClient,
@@ -134,6 +137,9 @@ impl KeepAlive {
     ) -> Self {
         let status_machine = HwStateMachine::new(config.temp_failure_timeout_secs);
         Self {
+            boot_id: uuid::Uuid::new_v4().to_string(),
+            process_epoch: AtomicU64::new(0),
+            previous_session: arc_swap::ArcSwapOption::empty(),
             ownership_fencing: false,
             exclusion_cursor: AtomicUsize::new(0),
             hw,
@@ -319,6 +325,8 @@ mod loading;
 mod observation;
 #[path = "reconciliation.rs"]
 mod reconciliation;
+#[path = "session.rs"]
+mod session;
 
 impl BackgroundTask for KeepAlive {
     fn run_cycle<'a>(&'a self, _ctx: &'a BgCtx) -> CycleFut<'a> {

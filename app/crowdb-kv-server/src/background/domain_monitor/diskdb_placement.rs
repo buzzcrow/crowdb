@@ -148,6 +148,7 @@ async fn assign(
     now: u64,
 ) -> Result<(), String> {
     let value = OwnerMapValue {
+        process_epoch: 0,
         instance_id: instance,
         lease_expiry_ms: now.saturating_add(3_600_000),
     };

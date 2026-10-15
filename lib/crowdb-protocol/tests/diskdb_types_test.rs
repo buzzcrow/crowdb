@@ -269,3 +269,15 @@ fn unsupported_zone_record_is_rejected() {
     value.bitmap_codec = 2;
     assert!(ZoneValue::from_bytes(&value.to_bytes()).is_err());
 }
+
+#[test]
+fn legacy_owner_defaults_to_no_process_epoch_without_changing_its_encoding() {
+    let legacy = br#"{"instance_id":7,"lease_expiry_ms":99}"#;
+    let mut owner: crowdb_protocol::common::OwnerMapValue = serde_json::from_slice(legacy).unwrap();
+    assert_eq!(owner.process_epoch, 0);
+    assert_eq!(serde_json::to_vec(&owner).unwrap(), legacy);
+    owner.process_epoch = 42;
+    let restored: crowdb_protocol::common::OwnerMapValue =
+        serde_json::from_slice(&serde_json::to_vec(&owner).unwrap()).unwrap();
+    assert_eq!(restored.process_epoch, 42);
+}

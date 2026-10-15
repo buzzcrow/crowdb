@@ -30,6 +30,7 @@ async fn stale_zone_loader_cannot_mark_a_successor_disk_offline() {
     }
     .to_path();
     let owner = serde_json::to_vec(&OwnerMapValue {
+        process_epoch: 0,
         instance_id: 1,
         lease_expiry_ms: u64::MAX,
     })
@@ -79,6 +80,7 @@ async fn stale_zone_loader_cannot_mark_a_successor_disk_offline() {
     })));
     let scoped = kv.for_group(&group);
     let next = serde_json::to_vec(&OwnerMapValue {
+        process_epoch: 0,
         instance_id: 2,
         lease_expiry_ms: u64::MAX,
     })
@@ -253,4 +255,49 @@ async fn ordinary_writes_cannot_bypass_ownership_handover() {
         kv.get(0, 1, other, ReadMode::Linearizable, None).await.unwrap(),
         GetOutcome::NotFound
     ));
+}
+
+#[tokio::test]
+async fn restarting_the_same_logical_owner_fences_its_previous_process_writes() {
+    let cluster = TestMetadata::start().await;
+    let kv = cluster.make_ddb_kv_client().with_ownership_fencing();
+    let hw = cluster.make_hardware_client();
+    let svc = cluster.make_service_registry_client();
+    let key = crowdb_protocol::key::OwnerMapKey {
+        rack_id: 1,
+        node_id: 1,
+        disk_group_id: 1,
+    };
+    hw.set_owner(1, 1, 1, 7, u64::MAX).await.unwrap();
+    let first = svc.claim_diskdb_session(7, "first-boot", None, 0).await.unwrap();
+    let generation = hw.claim_owner_process_epoch(&key, 7, first).await.unwrap();
+    let original = OwnershipFence {
+        rack_id: 1,
+        node_id: 1,
+        disk_group_id: 1,
+        instance_id: 7,
+        generation,
+    };
+    kv.claim_ownership((0, 1), &original).await.unwrap();
+    let group = DdbDiskGroup::new(1, 1, 1);
+    group.set_bind((0, 1));
+    group.set_ownership_fence(Some(Arc::new(original.clone())));
+    let disk = DiskId { high: 4, low: 5 };
+    group.add_disk(Arc::new(DdbDisk::new(disk, 1, 1, 1, DiskValue::default())));
+    let old = kv.for_group(&group);
+    old.delete_recovery_scan_progress((0, 1), &disk).await.unwrap();
+    let next = svc
+        .claim_diskdb_session(7, "next-boot", Some("first-boot"), first)
+        .await
+        .unwrap();
+    let generation = hw.claim_owner_process_epoch(&key, 7, next).await.unwrap();
+    assert!(generation > original.generation);
+    let restarted = OwnershipFence {
+        generation,
+        ..original.clone()
+    };
+    kv.claim_ownership((0, 1), &restarted).await.unwrap();
+    assert!(old.delete_recovery_scan_progress((0, 1), &disk).await.is_err());
+    assert!(kv.claim_ownership((0, 1), &original).await.is_err());
+    assert!(hw.claim_owner_process_epoch(&key, 7, first).await.is_err());
 }
