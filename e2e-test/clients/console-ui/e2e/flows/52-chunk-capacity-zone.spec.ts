@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 // Baseline: actual Zone windows and allocation pixels 1.3s (2026-10-04).
 import { test, expect } from '../fixtures/realBackend';
+import { diskBranch } from '../fixtures/capacity';
 
 test('native diagnostics: Zone canvas colors match every actual allocation bit', async ({ page, request }) => {
   const { step } = await import('../fixtures/stepTimer');
@@ -19,16 +20,9 @@ test('native diagnostics: Zone canvas colors match every actual allocation bit',
     await page.goto('/?domain=Capacity');
     await expect(page.getByRole('complementary', { name: 'Cluster tree sidebar' })).toBeVisible();
   });
-  // Expand the actual DDB/DG hierarchy rather than injecting a selection.
-  const tree = page.getByRole('tree');
-  const disk = tree.getByRole('button', { name: '000000000000…', exact: true });
-  for (const name of [/^R-1/, /^N-1$/, /^storage \(DG-1\)$/]) {
-    const row = tree.getByRole('treeitem').filter({ has: page.getByRole('button', { name }) });
-    await expect(row).toBeVisible();
-    const expand = row.getByRole('button', { name: 'Expand', exact: true });
-    if (await expand.count()) await expand.click();
-  }
-  await disk.click();
+  // Open the actual Storage branch before its DiskGroup and disk.
+  const { disk, id } = await diskBranch(page, 1, 1);
+  await disk.getByRole('button', { name: id.slice(0, 12) + '…', exact: true }).click();
   // Compare pixels with the actual response consumed by the UI. Background
   // allocation can legitimately change the bitmap after the initial probe.
   const bitmapResponse = page.waitForResponse(response => {

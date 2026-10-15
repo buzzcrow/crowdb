@@ -3,6 +3,10 @@
 
 ### R235: console — Cluster Hardware Workspace and OCI Disk Lifecycle
 
+**Status**: Implemented; focused storage/initialization/UI acceptance verified.
+Retained for the user's consolidated review, including the deferred wider
+load/recovery failures below. R236/R237 and other backlog work are not started.
+
 **Problem**:
 
 - Cluster currently handles nodes and services while Capacity separately handles
@@ -373,6 +377,17 @@
   not provide explicit unassignment. Keep retained-parent deletion blocked and
   defer that operator flow for review. Do not emulate unassignment with an
   implicit cascade or remove authoritative metadata directly in browser fixtures.
+- Preserve the original full inspection suite and its assertions. Its shared
+  workload still exposes Access stop request timeouts/rejections after multiple
+  service interruptions and data operations. Fresh owned storage verification
+  passes Zone paging/pixels, ChunkDB interruption, Access stop/restore and S3
+  history; this does not prove the longer recovery interaction fixed. A diagnostic
+  variant without the full balancing preparation also encountered Iceberg
+  101-file upload `SLOW_DOWN`. Defer that wider load/recovery investigation for
+  review, rather than changing timeouts, retrying mutations, suppressing failures,
+  or expanding this storage requirement into an Iceberg recovery redesign.
+  Full inspection is not reported as passing; logs and reproduction commands
+  remain in the execution plan.
 - Short-lived SSH control requests use a current-thread runtime, independent of
   long-running service worker settings. They must not create one host-sized
   thread pool per status observation. Preserve the Node PID/resource budget;

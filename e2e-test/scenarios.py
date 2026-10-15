@@ -384,6 +384,7 @@ CONSOLE_OPERATION_CASES = (
     Case("console.native.browser.defaults", "console::native_browser::auxiliary_dialog_defaults", native_client=True, client_timeout=360),
     Case("console.native.browser.plan", "console::native_browser::interrupted_plan_reconciliation", native_client=True, client_timeout=360),
     Case("console.native.browser.prerequisites", "console::native_browser::waiting_plan_prerequisites", native_client=True, client_timeout=360),
+    Case("console.native.browser.storage-windows", "console::native_browser::storage_windows_and_access_recovery", native_client=True, native_disk_gib=(80, 256, 256), client_timeout=360),
     Case("console.native.browser.scanner", "console::native_browser::scanner_and_scoped_recalc", native_client=True, client_timeout=360),
     Case("console.native.browser.journal-windows", "console::native_browser::large_journal_pagination_and_restart", native_client=True, client_timeout=480),
     Case("console.native.recovery", "console::native_recovery::all_typed_restarts_preserve_objects_and_keep_one_live_process", native_client=True),

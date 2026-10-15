@@ -230,6 +230,19 @@ class NativeConsoleCluster(ShellBrowserCluster):
                 self.browser("native diagnostics: waiting plan resumes when DiskIO prerequisites arrive",
                     config="native.config.ts", extra_env={"CROWDB_NATIVE_PLAN_PREREQUISITES": "1"})
                 return {"passed": True}
+            if self.case_name == "console::native_browser::storage_windows_and_access_recovery":
+                chunks = body.get("chunks")
+                if not isinstance(chunks, dict) or len(chunks.get("ids", [])) != 21:
+                    raise ValueError("storage windows require actual allocated chunks")
+                self.browser_timeout = 180
+                self.browser((
+                    "native diagnostics: Zone canvas colors match every actual allocation bit",
+                    "native diagnostics: Chunk replacement windows and real Mirror EC placement",
+                    "native diagnostics: unavailable catalog retries the actual Access services",
+                    "native diagnostics: browser history preserves S3 windows and rejects replaced or deleted resources",
+                ), config="native.config.ts", expected=4,
+                    extra_env={"CROWDB_NATIVE_CHUNK_FIXTURE": json.dumps(chunks)})
+                return {"passed": True}
             cases = {
                 "console::native_browser::disk_inspector_and_selection":
                     "native diagnostics: disk Inspector and Capacity selection retain two actual groups",

@@ -26,7 +26,9 @@ live in the linked document; implementation follows
   workspace, automatic node admission and three-voter Group-0 bootstrap, OCI
   file/block disk admission, monitor-owned initialization, and Offline/remove flow.
   **Area:** Console / deployment / monitor / DiskIO / DiskDB / ChunkDB.
-  **Complexity:** High.
+  **Complexity:** High. **Status:** Implemented; retained for review.
+  Scoped acceptance passed; wider load/recovery failures and deferred decisions
+  remain recorded in R235 and its execution plan.
 
 ## Access server and external data
 

@@ -4,6 +4,8 @@
 # Cluster Storage Lifecycle Plan
 
 Upstream: [R235](../backlog/R235-console-cluster-storage-lifecycle.md).
+Retention exception: keep this execution evidence with R235 for the user's consolidated review.
+
 Current user scope: complete R235 only; do not start R236, R237 or other backlog work.
 
 Goal: implement shared initialization and Group-0-authoritative OCI disk management
@@ -17,13 +19,13 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   Tests: `container/oci-image/tests`, container helper tests. Acceptance A01-A02.
 - [x] **Disk observations**: expose bounded monitor inventory, reject duplicate
   resources and mismatched launcher identities. Inventory tests and Clippy pass;
-  real raw-device/containerd acceptance remains in integration verification.
-- [ ] **Effective admission**: add Group-0-gated registration, default file
+  real raw-device/Docker/containerd acceptance passed on the frozen final image.
+- [x] **Effective admission**: add Group-0-gated registration, default file
   creation and geometry validation; merge observations with authority records.
   Files: `container/crowdb-monitor/src/node`, `bootstrap/disk_files.rs`,
   `lib/crowdb-protocol/src/mgmt.rs`, `lib/crowdb-console-shared/src/ops/hardware`,
   `app/crowdb-web/src/physical`. Acceptance A03-A05.
-- [ ] **Backend initialization**: inspect existing single/bootstrap ownership,
+- [x] **Backend initialization**: inspect existing single/bootstrap ownership,
   reuse monitor execution for UI trigger, UUID-min automatic initiation and
   three-/one-voter policy. Persist policy and reuse accepted manifests.
   Files: monitor node runtime, console bootstrap/admission, web managed routes.
@@ -32,25 +34,24 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   identity, prove status application before remove, gate cascades, support explicit
   rejoin without blank initialization. Files: hardware ops, protocol hardware
   records, DiskDB/DiskIO status observation, web routes. Acceptance A11-A13.
-- [~] **Accepted node setup**: persist authenticated discovery/admission choices
+- [x] **Accepted node setup**: persist authenticated discovery/admission choices
   on the target monitor; advance binding, default file and fixed service intents
   independently of the browser. Files: monitor `runtime/setup`, protocol
   `mgmt/node/setup`, Web `services/deployment/planned`, node admission and UI.
-  Finish compatible-group reuse/binding, explicit cleanup fencing, supplied-media
-  provisioning and visible progress before claiming complete acceptance.
+  Compatible-group reuse/binding, explicit cleanup fencing, supplied-media
+  provisioning and visible progress passed focused and real container acceptance.
 - [x] **UI baseline**: measure affected current root-runner browser flow before
   visible edits; record exact per-test timings here. Inspect tree/view/history,
   managed candidate components and existing physical/capacity flow registrations.
-- [ ] **Unified workspace**: consolidate navigation and selection, common center
+- [x] **Unified workspace**: consolidate navigation and selection, common center
   scope, candidates and status actions, responsive properties drawer, init policy
   and progress. Files: `app/crowdb-web/ui/src/{shell,views,menus,managed}` and
   associated hooks/styles/tests. Acceptance A14-A18.
-- [ ] **Verification and documentation**: run focused component/runtime/browser
+- [x] **Scoped verification and documentation**: run focused component/runtime/browser
   tests, then fmt/lint separately; update permanent Console/deployment/OCI guides.
-  Commit coherent passing tasks; remove requirement/index entry/plan only after
-  full acceptance is verified. The user now explicitly requests retaining
-  decisions for later review: preserve the R235 detail until that review, even
-  after implementation; do not erase its decision record during cleanup.
+  Focused disk/bootstrap/UI checks passed; broader shared-workload failures
+  remain explicitly deferred below and are not reported as passing. Retain this
+  evidence and the R235 decisions for the user's consolidated review.
 
 ## Verification
 
@@ -1642,3 +1643,58 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
 - Bridge diagnostics now retain before-restart file receipts/stats and print
   both sides on a future stat assertion failure; original equality stays intact.
   Focused admission fixture unit tests: 4 passed.
+- Final-image shell scope `run-fedee200552c4c728a97691aea378d59` passed:
+  readonly/apiPrefix/module opt-out 3.1s, backend unavailable 0.5s, six domains
+  and shared Cluster views 1.5s. No scope or mutation boundary was relaxed.
+- Final workspace Rust formatting gate passed (`pixi run rs-fmt-check`).
+- Second full inspection `run-b6b5389fb80f459f90d0ec3bcd644d3b`: 11/14
+  passed. Fixed Zone navigation's second divergence: row background inspects;
+  its explicit disk-name button navigates. Access stop still hit 10s, but attempted
+  stop restoration worked and later S3 multipart passed. S3 history encountered
+  another stop rejection; added original response text and restore unknown stops.
+- Registered focused owned `console.native.browser.storage-windows` with actual
+  three-node storage and 21 allocated chunks, without unrelated balancing seed.
+  Three original Zone/Access/S3-history cases passed in
+  `run-534880431bcf434986529e07b7e21857` (3.8s/3.8s/6.5s). Zone steps are all
+  below 2s; current test adds real second bitmap window, three Zone pages and
+  navigation restoration beyond its old 1.3s baseline. No wait inflated.
+- Adding predecessor ChunkDB interruption also passed all four original cases:
+  `run-a88acf7e367a4c93acf910630bc9f8b9`, 66.6s native test. Thus the long-run
+  stop failure is not reproduced by that interruption alone. Further ordered
+  bisection adds original DiskDB interruption and Iceberg writes.
+- CI partition coverage 2 passed; browser selection/reporting tests 3 passed.
+  Initial E2E crate all-target/all-feature Clippy passed; new chunk-fixture
+  forwarding helper requires a final repeat of that narrow gate.
+- Ordered diagnostic variant `run-aa88c2db51984fc486d19d2045faa4a2`: Zone
+  3.2s, interrupted DiskDB 3.7s, ChunkDB interruption 36.1s, schema 13.3s,
+  Access stop/restore 2.8s and S3 history 6.1s passed. Iceberg 101-file upload
+  failed with S3 `SLOW_DOWN` during CompleteMultipartUpload. This reduced
+  variant lacks original production balancing preparation and is not a valid
+  replacement for the full inspection owner. Restore the focused owner to its
+  four storage/recovery assertions; keep the original 14-case owner unchanged.
+- User-authorized scope decision: preserve and report broader ordered Access
+  stop failures / diagnostic Iceberg load failure for later review in R235.
+  No timeout increase, mutation retry, skipped original test or claim that the
+  full suite passed. R235's direct disk/bootstrap/UI contract is verified; the
+  wider cross-product load/recovery investigation remains deferred.
+
+### Final scoped result
+
+- Final owned storage-window run `run-bfadd9c3c99a4300b52d0d2aea42b903` passed
+  all four unchanged assertion sets: actual Zone pixels/pages 3.5s, real
+  Mirror/EC placements plus ChunkDB interruption 35.6s, Access stop/restore 2.7s,
+  and S3 history/replaced/deleted resources 6.4s. Native test 69.67s.
+- Final TypeScript check passed against this complete client snapshot; workspace
+  fmt and E2E all-target/all-feature Clippy passed independently.
+- Fixture suite 149 passed / 1 known pre-existing failure out of 150:
+  `selection_test.SelectionTest.test_layers_select_only_their_domains_and_count_dependencies`,
+  line 107: Dataset expected 2 registered cases, actual 3. New Console owner
+  updates both relevant counts to 154; CI partition/disjoint coverage passes.
+  Preserve the unrelated Dataset expectation for its owner; R237 is not started.
+- Packaged sources stayed frozen at `e7754f3f` throughout final image acceptance;
+  later commits change docs/test/host evidence only. No push or PR requested.
+- Remaining review/deferred work: explicit owner/binding unassignment; full
+  shared-workload Access stop timeout/rejection; prior intermittent full-file
+  stat assertion difference (new diagnostics retained); diagnostic Iceberg load
+  `SLOW_DOWN` without full balancing prelude. No claim of a clean full-regression
+  gate or repaired wider recovery. Scope stays R235 only.
