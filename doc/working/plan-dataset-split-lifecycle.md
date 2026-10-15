@@ -938,3 +938,19 @@ failure; record actual failures and add Blocked only when that workflow requires
   mutation capabilities remain unadvertised pending that acceptance.
 - Full Dataset crate tests and root Clippy passed after the terminal ownership/edit
   changes. The full test output is `/tmp/dataset-lifecycle-cleanup-tests.log`.
+
+### Whole-Snapshot retirement orchestration
+
+- Added resumable Snapshot-scoped scanning of Split draft roots, one root/window
+  at a time. Terminal owner proof is required before scanning; unrelated Snapshot
+  drafts remain unchanged. Existing work-format-free roots can be upgraded only
+  under terminal retirement; ordinary metadata cleanup seals their stored pages.
+- Split retirement also preserves a valid small revision summary fence, preventing
+  delayed preparation from restoring a removed summary. General metadata cleanup
+  retains these summaries alongside inventory/child summaries and negative fences.
+- `reclaim_snapshot_step` composes owner retirement, draft work cleanup, index
+  fencing and ordinary metadata cleanup under a ten-second deadline. It reports
+  the incomplete phase and explicitly defers physical upload cleanup.
+- Snapshot-wide draft cleanup, composition upload/reclaim and Split scratch suites
+  passed nine cases; root Clippy passed. Tests cover restart, missing delayed member
+  pages, foreign Snapshot isolation and successful composed retirement.

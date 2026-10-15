@@ -1,5 +1,7 @@
 mod access;
-pub use access::MetadataCleanupProgress;
+pub use access::{
+    MetadataCleanupProgress, SnapshotReclaimError, SnapshotReclaimPhase, SnapshotReclaimStatus,
+};
 mod discovery;
 mod head;
 mod projection;

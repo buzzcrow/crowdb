@@ -41,6 +41,8 @@ mod state;
 pub use lifecycle::{SplitDraftEdit, SplitLifecycleError};
 
 mod cleanup;
+mod snapshot_cleanup;
+pub use snapshot_cleanup::SnapshotSplitCleanup;
 mod evaluation;
 mod work;
 pub use cleanup::SplitScratchCleanup;

@@ -293,6 +293,21 @@ async fn reclaimed_snapshot_retires_its_upload_owner_after_index_cleanup() {
         .unwrap();
     assert!(progress.complete);
     assert_eq!(progress.retired_references, 1);
+    let mut retired = false;
+    for _ in 0..100 {
+        let status = f
+            .authority
+            .reclaim_snapshot_step(&f.identity, snapshot, &f.uploads, &ReadCancellation::new())
+            .await
+            .unwrap();
+        if status.complete {
+            assert_eq!(status.phase, SnapshotReclaimPhase::Complete);
+            assert!(status.physical_cleanup_deferred);
+            retired = true;
+            break;
+        }
+    }
+    assert!(retired);
     assert_eq!(
         f.authority
             .reclaim_snapshot_uploads_step(&f.identity, snapshot, &f.uploads)

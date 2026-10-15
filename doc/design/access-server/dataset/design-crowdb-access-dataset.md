@@ -279,7 +279,15 @@ committed live revision data. Initial Split cleanup requires terminal retirement
 its data Snapshot. Both cleanup cursors survive restart and preserve active input
 revisions. Split drafts without the work-intent format remain readable but are
 rejected by draft scratch cleanup; new roots carry an explicit work format marker
-that older strict decoders reject.
+that older strict decoders reject. Terminal Snapshot cleanup walks Dataset draft
+roots in resumable single-root windows, including drafts without a published
+revision summary. Under that terminal fence it can upgrade an older root's work
+marker before retiring its stored pages. Split revision summaries remain valid
+small records and are filtered by owner/commit visibility.
+
+The composed reclaim operation advances upload owners, Split drafts, index fences
+and ordinary metadata cleanup with a ten-second deadline. Each component retains
+its own restart cursor; completion does not claim physical upload deletion.
 
 Obsolete composition candidates are discovered by deterministic operation IDs,
 even when preparation failed before storing a pointer in the draft. Missing

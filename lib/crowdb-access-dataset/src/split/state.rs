@@ -66,7 +66,7 @@ impl DraftState {
         }
         Ok(codec::encode(self)?)
     }
-    fn decode(bytes: &[u8], operation: OperationId) -> Result<Self, SplitLifecycleError> {
+    pub(super) fn decode(bytes: &[u8], operation: OperationId) -> Result<Self, SplitLifecycleError> {
         let state: Self = codec::decode(bytes)?;
         state.encode()?;
         if state.record.operation != operation {

@@ -96,6 +96,7 @@ impl DatasetAuthority {
             }
             if key == &inspection_summary
                 || value.bytes == crate::inspection::RETIRED_RECORD
+                || key.starts_with(b"DS\0SRI\0")
                 || key.starts_with(b"DS\0II\0")
                 || key.starts_with(b"DS\0IC\0")
             {

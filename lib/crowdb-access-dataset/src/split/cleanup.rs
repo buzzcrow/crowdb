@@ -104,6 +104,17 @@ impl DatasetAuthority {
             // Preparation is immutable and can race abandonment after reading the root.
             // Fence its record before retiring the pages it could otherwise reference.
             self.seal_split_key(&record_key, &mut work).await?;
+            let summary = super::SplitRevisionSummary {
+                version: 1,
+                snapshot: state.record.snapshot,
+                revision,
+                operation,
+                split_count: 0,
+            };
+            let summary_key = super::key::revision_summary(identity, state.record.snapshot, revision)
+                .map_err(AuthorityError::from)?;
+            self.seal_split_value(&summary_key, &super::codec::encode(&summary)?, &mut work)
+                .await?;
             let intent_key = work_key(identity, operation, cursor.revision, cursor.page)?;
             self.retire_split_intent(
                 &intent_key,
@@ -189,17 +200,25 @@ impl DatasetAuthority {
         key: &[u8],
         work: &mut InspectionWork<'_>,
     ) -> Result<(), SplitLifecycleError> {
+        self.seal_split_value(key, SEALED, work).await
+    }
+    async fn seal_split_value(
+        &self,
+        key: &[u8],
+        bytes: &[u8],
+        work: &mut InspectionWork<'_>,
+    ) -> Result<(), SplitLifecycleError> {
         let stored = work.get(key, RECORD_CAP).await?;
-        if stored.as_ref().is_some_and(|v| v.bytes == SEALED) {
+        if stored.as_ref().is_some_and(|v| v.bytes == bytes) {
             return Ok(());
         }
         match self
             .store
-            .compare_exchange(key, stored.as_ref().map(|v| v.bytes.as_slice()), SEALED)
+            .compare_exchange(key, stored.as_ref().map(|v| v.bytes.as_slice()), bytes)
             .await?
         {
             CasOutcome::Applied(_) => Ok(()),
-            CasOutcome::Conflict(Some(v)) if v.bytes == SEALED => Ok(()),
+            CasOutcome::Conflict(Some(v)) if v.bytes == bytes => Ok(()),
             CasOutcome::Conflict(_) => Err(SplitLifecycleError::Conflict),
         }
     }
