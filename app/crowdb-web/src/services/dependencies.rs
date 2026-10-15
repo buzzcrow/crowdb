@@ -56,21 +56,6 @@ pub(super) async fn storage_wait_reason(state: &AppState) -> Option<String> {
     if diskio.is_empty() || groups.is_empty() {
         return Some("Waiting: configure disk groups and publish live DiskIO ownership".into());
     }
-    let Ok(diskdb_instances) = registry.read_all_diskdb_instances().await else {
-        return Some("Waiting: live DiskDB ownership registry is unavailable".into());
-    };
-    let mut diskdb_owned = HashSet::new();
-    for (_, instance) in diskdb_instances {
-        if instance.rpc_endpoint.is_empty() {
-            continue;
-        }
-        if let Some(ownership) = instance.extra.and_then(|extra| extra.diskdb) {
-            diskdb_owned.extend(ownership.owned_dg_ids);
-        }
-    }
-    if groups.iter().any(|group| !diskdb_owned.contains(&group.dg_id)) {
-        return Some("Waiting: every configured disk group needs live DiskDB ownership".into());
-    }
     let mut owned = HashSet::new();
     for server in diskio {
         let instance = instances.iter().find(|(_, value)| {

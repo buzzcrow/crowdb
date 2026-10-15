@@ -73,11 +73,6 @@ async fn chunk_storage_requires_live_complete_ownership_even_when_diskio_pid_is_
         .heartbeat_diskio(1, endpoint, &[11, 12], &[])
         .await
         .unwrap();
-    assert_eq!(readiness(&app).await["ready"], false);
-    registry
-        .heartbeat_diskdb(1, "127.0.0.1:14010", &[11, 12], &[])
-        .await
-        .unwrap();
     assert_eq!(readiness(&app).await["ready"], true);
     registry.unregister("diskio", 1).await.unwrap();
     assert_eq!(readiness(&app).await["ready"], false);
