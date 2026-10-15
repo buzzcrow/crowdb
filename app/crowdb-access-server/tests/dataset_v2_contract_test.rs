@@ -18,7 +18,7 @@ async fn json(request: reqwest::RequestBuilder, status: u16) -> Value {
 }
 
 #[tokio::test]
-async fn capabilities_use_existing_auth_and_do_not_enable_unimplemented_writes() {
+async fn capabilities_use_existing_auth_and_match_configured_operations() {
     let test = TestDatasetHttp::start(Arc::new(TestStore::default())).await;
     let client = Client::new();
     let endpoint = format!("{}/api/dataset/v2/capabilities", test.origin);
@@ -32,7 +32,14 @@ async fn capabilities_use_existing_auth_and_do_not_enable_unimplemented_writes()
     assert_eq!(value["api_version"], 2);
     assert_eq!(
         value["capabilities"],
-        serde_json::json!(["head-inspection", "bounded-inspection", "inspection-preparation"])
+        serde_json::json!([
+            "head-inspection",
+            "bounded-inspection",
+            "inspection-preparation",
+            "dataset-management",
+            "split-revisions",
+            "split-reads"
+        ])
     );
     let response = client.post(&endpoint).bearer_auth("secret").send().await.unwrap();
     assert_eq!(response.status(), 404);
@@ -42,7 +49,7 @@ async fn capabilities_use_existing_auth_and_do_not_enable_unimplemented_writes()
         test.origin
     );
     let response = client.put(&endpoint).bearer_auth("secret").send().await.unwrap();
-    assert_eq!(response.status(), 404);
+    assert_eq!(response.status(), 200);
     response.bytes().await.unwrap();
     let response = client
         .get(endpoint.replace("/v2/", "/v1/"))
@@ -50,7 +57,7 @@ async fn capabilities_use_existing_auth_and_do_not_enable_unimplemented_writes()
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), 404);
+    assert_eq!(response.status(), 200);
     response.bytes().await.unwrap();
     drop(client);
     test.stop().await;

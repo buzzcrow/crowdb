@@ -196,7 +196,7 @@ async fn scope_auth_versions_and_malformed_contract_reject_without_mutation() {
         404,
     )
     .await;
-    call(&client, &test, Method::GET, &ROOT.replace("v1", "v2"), None, 404).await;
+    call(&client, &test, Method::GET, &ROOT.replace("v1", "v3"), None, 404).await;
     call(
         &client,
         &test,

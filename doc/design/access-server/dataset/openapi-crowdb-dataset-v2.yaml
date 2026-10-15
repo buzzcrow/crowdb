@@ -11,7 +11,12 @@ info:
     implemented operation families. Existing v1 control and binary framing remain
     available under their original routes. Metadata GET routes require
     bounded-inspection; explicit POST inspection preparation requires
-    inspection-preparation. Query parameters are strict and duplicate keys fail.
+    inspection-preparation. Dataset creation, stable/retention changes and receipts
+    require dataset-management; Split lifecycle requires split-revisions; versioned
+    read plans require split-reads. Upload, composition and Snapshot retirement
+    require uploads, composition and snapshot-reclaim respectively, advertised only
+    when the upload service is configured. Query parameters are strict and duplicate
+    keys fail. Composition JSON bodies are limited to 1 MiB.
 servers:
   - url: /api/dataset/v2
 security:
@@ -685,6 +690,455 @@ paths:
                   truncated: {type: boolean}
         default:
           $ref: '#/components/responses/InspectionError'
+  /namespaces/dataset-ns/datasets/{dataset}:
+    put:
+      operationId: createDatasetV2
+      summary: Create a Dataset
+      parameters:
+      - $ref: '#/components/parameters/dataset'
+      responses:
+        '200':
+          description: Successful bounded operation. Integer counts are exact decimal strings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatasetInfo'
+        default:
+          $ref: '#/components/responses/InspectionError'
+    get:
+      operationId: getDatasetV2
+      summary: Read Dataset metadata
+      parameters:
+      - $ref: '#/components/parameters/dataset'
+      responses:
+        '200':
+          description: Successful bounded operation. Integer counts are exact decimal strings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatasetInfo'
+        default:
+          $ref: '#/components/responses/InspectionError'
+  /namespaces/dataset-ns/datasets/{dataset}/names/stable:
+    put:
+      operationId: setStableSnapshot
+      summary: Set stable without changing latest
+      parameters:
+      - $ref: '#/components/parameters/dataset'
+      responses:
+        '200':
+          description: Successful bounded operation. Integer counts are exact decimal strings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatasetInfo'
+        default:
+          $ref: '#/components/responses/InspectionError'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StableSnapshot'
+  /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/retain:
+    post:
+      operationId: retainSnapshotV2
+      summary: Retain Snapshot retention
+      parameters:
+      - $ref: '#/components/parameters/dataset'
+      - in: path
+        name: snapshot
+        required: true
+        schema: &id001
+          $ref: '#/components/schemas/OpaqueId'
+      responses:
+        '200':
+          description: Successful bounded operation. Integer counts are exact decimal strings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetainedSnapshot'
+        default:
+          $ref: '#/components/responses/InspectionError'
+  /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/release:
+    post:
+      operationId: releaseSnapshotV2
+      summary: Release Snapshot retention
+      parameters:
+      - $ref: '#/components/parameters/dataset'
+      - in: path
+        name: snapshot
+        required: true
+        schema: *id001
+      responses:
+        '200':
+          description: Successful bounded operation. Integer counts are exact decimal strings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetainedSnapshot'
+        default:
+          $ref: '#/components/responses/InspectionError'
+  /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/reclaim:
+    post:
+      operationId: reclaimSnapshotV2
+      summary: Advance bounded Snapshot retirement
+      parameters:
+      - $ref: '#/components/parameters/dataset'
+      - in: path
+        name: snapshot
+        required: true
+        schema: *id001
+      responses:
+        '200':
+          description: Successful bounded operation. Integer counts are exact decimal strings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SnapshotReclaim'
+        default:
+          $ref: '#/components/responses/InspectionError'
+      description: Repeat until complete. Latest, stable, retained, leased or live-parent Snapshots are protected.
+        Completion fences logical metadata and owners; physical upload deletion remains deferred.
+  /namespaces/dataset-ns/datasets/{dataset}/commits/{attempt}:
+    get:
+      operationId: commitStatusV2
+      summary: Recover a successful publication receipt
+      parameters:
+      - $ref: '#/components/parameters/dataset'
+      - in: path
+        name: attempt
+        required: true
+        schema: *id001
+      responses:
+        '200':
+          description: Successful bounded operation. Integer counts are exact decimal strings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommitStatus'
+        default:
+          $ref: '#/components/responses/InspectionError'
+  /namespaces/dataset-ns/datasets/{dataset}/split-drafts/{operation}/cleanup:
+    post:
+      operationId: cleanupSplitDraft
+      summary: Retire obsolete Split work
+      parameters:
+      - $ref: '#/components/parameters/dataset'
+      - in: path
+        name: operation
+        required: true
+        schema: *id001
+      responses:
+        '200':
+          description: Successful bounded operation. Integer counts are exact decimal strings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SplitCleanup'
+        default:
+          $ref: '#/components/responses/InspectionError'
+  /namespaces/dataset-ns/datasets/{dataset}/uploads:
+    post:
+      operationId: createUploadV2
+      summary: Create a Dataset-scoped multipart upload
+      parameters:
+      - $ref: '#/components/parameters/dataset'
+      responses:
+        '200':
+          description: Successful bounded operation. Integer counts are exact decimal strings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadStatus'
+        default:
+          $ref: '#/components/responses/InspectionError'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUpload'
+  /namespaces/dataset-ns/datasets/{dataset}/uploads/{upload}:
+    get:
+      operationId: getUploadV2
+      summary: Inspect upload progress
+      parameters:
+      - $ref: '#/components/parameters/dataset'
+      - in: path
+        name: upload
+        required: true
+        schema: *id001
+      responses:
+        '200':
+          description: Successful bounded operation. Integer counts are exact decimal strings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadStatus'
+        default:
+          $ref: '#/components/responses/InspectionError'
+    delete:
+      operationId: abortUploadV2
+      summary: Abort an unowned upload
+      parameters:
+      - $ref: '#/components/parameters/dataset'
+      - in: path
+        name: upload
+        required: true
+        schema: *id001
+      responses:
+        '200':
+          description: Successful bounded operation. Integer counts are exact decimal strings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadStatus'
+        default:
+          $ref: '#/components/responses/InspectionError'
+  /namespaces/dataset-ns/datasets/{dataset}/uploads/{upload}/complete:
+    post:
+      operationId: completeUploadV2
+      summary: Verify and complete upload parts
+      parameters:
+      - $ref: '#/components/parameters/dataset'
+      - in: path
+        name: upload
+        required: true
+        schema: *id001
+      responses:
+        '200':
+          description: Successful bounded operation. Integer counts are exact decimal strings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadStatus'
+        default:
+          $ref: '#/components/responses/InspectionError'
+  /namespaces/dataset-ns/datasets/{dataset}/uploads/{upload}/parts/{index}:
+    put:
+      operationId: uploadPartV2
+      summary: Write one bounded upload part
+      parameters:
+      - $ref: '#/components/parameters/dataset'
+      - in: path
+        name: upload
+        required: true
+        schema: *id001
+      - in: path
+        name: index
+        required: true
+        schema:
+          $ref: '#/components/schemas/Decimal'
+      responses:
+        '200':
+          description: Successful bounded operation. Integer counts are exact decimal strings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadPart'
+        default:
+          $ref: '#/components/responses/InspectionError'
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              maxLength: 4194304
+  /namespaces/dataset-ns/datasets/{dataset}/compositions:
+    post:
+      operationId: beginComposition
+      summary: Pin source membership and begin a composition
+      parameters:
+      - $ref: '#/components/parameters/dataset'
+      responses:
+        '200':
+          description: Successful bounded operation. Integer counts are exact decimal strings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompositionDraft'
+        default:
+          $ref: '#/components/responses/InspectionError'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BeginComposition'
+  /namespaces/dataset-ns/datasets/{dataset}/compositions/{operation}:
+    get:
+      operationId: getComposition
+      summary: Read current composition status
+      parameters:
+      - $ref: '#/components/parameters/dataset'
+      - in: path
+        name: operation
+        required: true
+        schema: *id001
+      responses:
+        '200':
+          description: Successful bounded operation. Integer counts are exact decimal strings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompositionDraft'
+        default:
+          $ref: '#/components/responses/InspectionError'
+    put:
+      operationId: editComposition
+      summary: Apply an idempotent revision-bound edit
+      parameters:
+      - $ref: '#/components/parameters/dataset'
+      - in: path
+        name: operation
+        required: true
+        schema: *id001
+      responses:
+        '200':
+          description: Successful bounded operation. Integer counts are exact decimal strings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompositionDraft'
+        default:
+          $ref: '#/components/responses/InspectionError'
+      description: At most 20 Sample changes and a 1 MiB JSON body. Historical edit retries return the historical
+        draft result; use GET for current status. Upload references are resolved within this Dataset; raw storage
+        locators are rejected.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EditComposition'
+    delete:
+      operationId: abandonComposition
+      summary: Abandon an unpublished composition
+      parameters:
+      - $ref: '#/components/parameters/dataset'
+      - in: path
+        name: operation
+        required: true
+        schema: *id001
+      responses:
+        '200':
+          description: Successful bounded operation. Integer counts are exact decimal strings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompositionDraft'
+        default:
+          $ref: '#/components/responses/InspectionError'
+      description: Cleanup is separately resumable through POST cleanup; abandonment never removes a successful publication.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DraftRevision'
+  /namespaces/dataset-ns/datasets/{dataset}/compositions/{operation}/evaluate:
+    post:
+      operationId: evaluateComposition
+      summary: Evaluate one bounded composition window
+      parameters:
+      - $ref: '#/components/parameters/dataset'
+      - in: path
+        name: operation
+        required: true
+        schema: *id001
+      responses:
+        '200':
+          description: Successful bounded operation. Integer counts are exact decimal strings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompositionPreview'
+        default:
+          $ref: '#/components/responses/InspectionError'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EvaluateDraft'
+  /namespaces/dataset-ns/datasets/{dataset}/compositions/{operation}/prepare:
+    post:
+      operationId: prepareComposition
+      summary: Prepare data, initial Splits and upload ownership
+      parameters:
+      - $ref: '#/components/parameters/dataset'
+      - in: path
+        name: operation
+        required: true
+        schema: *id001
+      responses:
+        '200':
+          description: Successful bounded operation. Integer counts are exact decimal strings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompositionDraft'
+        default:
+          $ref: '#/components/responses/InspectionError'
+      description: Repeat until uploads.publication_ready is true. Prepared candidates remain invisible until publication.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DraftRevision'
+  /namespaces/dataset-ns/datasets/{dataset}/compositions/{operation}/publish:
+    post:
+      operationId: publishComposition
+      summary: Publish data and initial Splits atomically
+      parameters:
+      - $ref: '#/components/parameters/dataset'
+      - in: path
+        name: operation
+        required: true
+        schema: *id001
+      responses:
+        '200':
+          description: Successful bounded operation. Integer counts are exact decimal strings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommitReceipt'
+        default:
+          $ref: '#/components/responses/InspectionError'
+      description: Successful publication advances latest only. Null expected_head is explicit; omission fails. Keep
+        the exact attempt and request on unknown outcome. A head conflict preserves the prepared candidate; refresh
+        the head and use a new attempt.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublishComposition'
+  /namespaces/dataset-ns/datasets/{dataset}/compositions/{operation}/cleanup:
+    post:
+      operationId: cleanupComposition
+      summary: Advance bounded obsolete composition cleanup
+      parameters:
+      - $ref: '#/components/parameters/dataset'
+      - in: path
+        name: operation
+        required: true
+        schema: *id001
+      responses:
+        '200':
+          description: Successful bounded operation. Integer counts are exact decimal strings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompositionCleanup'
+        default:
+          $ref: '#/components/responses/InspectionError'
+      description: Repeat until complete. Active drafts preserve current work; terminal drafts also retire staging
+        owners and edit payloads. Successful publication receipts remain available.
 components:
   parameters:
     dataset:
@@ -1206,3 +1660,433 @@ components:
       properties:
         plan: {type: string}
         cursor: {type: string}
+    CompositionSchema:
+      type: object
+      additionalProperties: false
+      required:
+      - version
+      - fields
+      properties:
+        version:
+          type: integer
+          const: 1
+        fields:
+          type: array
+          items:
+            $ref: '#/components/schemas/FieldDefinition'
+          maxItems: 256
+    CompositionSource:
+      oneOf:
+      - type: object
+        additionalProperties: false
+        required:
+        - kind
+        properties:
+          kind:
+            const: all
+      - type: object
+        additionalProperties: false
+        required:
+        - kind
+        - predicate
+        properties:
+          kind:
+            const: selection
+          predicate:
+            $ref: '#/components/schemas/Predicate'
+      - type: object
+        additionalProperties: false
+        required:
+        - kind
+        - source
+        properties:
+          kind:
+            const: split
+          source:
+            $ref: '#/components/schemas/SplitSource'
+          selection:
+            anyOf:
+            - $ref: '#/components/schemas/Predicate'
+            - type: 'null'
+    BeginComposition:
+      type: object
+      additionalProperties: false
+      required:
+      - operation
+      - parent
+      - source
+      - inherit_parent_splits
+      - splits
+      properties:
+        operation: &composition001
+          $ref: '#/components/schemas/OpaqueId'
+        parent:
+          $ref: '#/components/schemas/NullableRevision'
+        source:
+          $ref: '#/components/schemas/CompositionSource'
+        schema:
+          anyOf:
+          - $ref: '#/components/schemas/CompositionSchema'
+          - type: 'null'
+        inherit_parent_splits: &composition005
+          type: boolean
+        parent_split_revision:
+          $ref: '#/components/schemas/NullableRevision'
+        splits: &composition003
+          type: array
+          items:
+            $ref: '#/components/schemas/DraftSplit'
+          maxItems: 64
+        policy:
+          anyOf:
+          - $ref: '#/components/schemas/SplitPolicy'
+          - type: 'null'
+    CompositionValue:
+      oneOf:
+      - type: object
+        additionalProperties: false
+        required:
+        - kind
+        - data
+        properties:
+          kind:
+            const: inline
+          data:
+            type: string
+            description: Canonical padded base64; decoded length at most 65536 bytes, including empty.
+      - type: object
+        additionalProperties: false
+        required:
+        - kind
+        - id
+        properties:
+          kind:
+            const: upload
+          id: *composition001
+      - type: object
+        additionalProperties: false
+        required:
+        - kind
+        properties:
+          kind:
+            const: tombstone
+    CompositionField:
+      type: object
+      additionalProperties: false
+      required:
+      - name
+      - value
+      properties:
+        name: &composition002
+          type: string
+        value:
+          $ref: '#/components/schemas/CompositionValue'
+    SampleChange:
+      oneOf:
+      - type: object
+        additionalProperties: false
+        required:
+        - kind
+        - id
+        properties:
+          kind:
+            const: remove
+          id: *composition002
+      - type: object
+        additionalProperties: false
+        required:
+        - kind
+        - id
+        - fields
+        properties:
+          kind:
+            const: upsert
+          id: *composition002
+          fields:
+            type: array
+            items:
+              $ref: '#/components/schemas/CompositionField'
+            maxItems: 256
+      description: Sample IDs are canonical padded base64 of 1 through 16384 bytes. Upsert replaces the complete field
+        set for that Sample.
+    EditComposition:
+      type: object
+      additionalProperties: false
+      required:
+      - edit
+      - expected_revision
+      - samples
+      properties:
+        edit: *composition001
+        expected_revision: &composition004
+          $ref: '#/components/schemas/Decimal'
+        schema:
+          anyOf:
+          - $ref: '#/components/schemas/CompositionSchema'
+          - type: 'null'
+        samples:
+          type: array
+          items:
+            $ref: '#/components/schemas/SampleChange'
+          maxItems: 20
+        splits:
+          anyOf:
+          - *composition003
+          - type: 'null'
+        policy:
+          anyOf:
+          - $ref: '#/components/schemas/SplitPolicy'
+          - type: 'null'
+    CompositionPreview:
+      type: object
+      additionalProperties: false
+      required:
+      - input_revision
+      - next_page
+      - members
+      - complete
+      - binding
+      properties:
+        input_revision: *composition004
+        next_page: *composition004
+        members: *composition004
+        complete: *composition005
+        binding:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+    CompositionUploadStatus:
+      type: object
+      additionalProperties: false
+      required:
+      - publication_ready
+      - staged_uploads
+      - candidate_uploads
+      properties:
+        publication_ready: *composition005
+        staged_uploads: *composition004
+        candidate_uploads: *composition004
+    CompositionDraft:
+      type: object
+      additionalProperties: false
+      required:
+      - operation
+      - revision
+      - parent
+      - source
+      - parent_split_revision
+      - schema
+      - splits
+      - policy
+      - progress
+      - source_lease_deadline
+      - preparation
+      - uploads
+      properties:
+        operation: *composition001
+        revision: *composition004
+        parent:
+          $ref: '#/components/schemas/NullableRevision'
+        source:
+          $ref: '#/components/schemas/CompositionSource'
+        parent_split_revision:
+          $ref: '#/components/schemas/NullableRevision'
+        schema:
+          $ref: '#/components/schemas/CompositionSchema'
+        splits: *composition003
+        policy:
+          $ref: '#/components/schemas/SplitPolicy'
+        progress:
+          $ref: '#/components/schemas/DraftProgress'
+        source_lease_deadline: *composition004
+        preparation:
+          anyOf:
+          - type: object
+            additionalProperties: false
+            required:
+            - snapshot
+            - split_preview
+            properties:
+              snapshot: *composition001
+              split_preview:
+                anyOf:
+                - $ref: '#/components/schemas/SplitPreview'
+                - type: 'null'
+          - type: 'null'
+        uploads:
+          $ref: '#/components/schemas/CompositionUploadStatus'
+    PublishComposition:
+      type: object
+      additionalProperties: false
+      required:
+      - attempt
+      - snapshot
+      - expected_head
+      properties:
+        attempt: *composition001
+        snapshot: *composition001
+        expected_head:
+          $ref: '#/components/schemas/NullableGeneration'
+    CompositionCleanup:
+      type: object
+      additionalProperties: false
+      required:
+      - complete
+      - candidates
+      - uploads
+      - scratch
+      - edits
+      - physical_cleanup_deferred
+      properties:
+        complete: *composition005
+        candidates:
+          type: object
+          additionalProperties: false
+          required:
+          - input_revision
+          - complete
+          properties:
+            input_revision: *composition004
+            complete: *composition005
+        uploads:
+          type: object
+          additionalProperties: false
+          required:
+          - retired_owners
+          - complete
+          properties:
+            retired_owners: *composition004
+            complete: *composition005
+        scratch:
+          $ref: '#/components/schemas/SplitCleanup'
+        edits:
+          anyOf:
+          - type: object
+            additionalProperties: false
+            required:
+            - retired_pages
+            - complete
+            properties:
+              retired_pages: *composition004
+              complete: *composition005
+          - type: 'null'
+        physical_cleanup_deferred:
+          const: true
+    SplitCleanup:
+      type: object
+      additionalProperties: false
+      required:
+      - input_revision
+      - next_page
+      - complete
+      properties:
+        input_revision: *composition004
+        next_page: *composition004
+        complete: *composition005
+    CreateUpload:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - length
+      - part_size
+      - md5
+      properties:
+        id: *composition001
+        length: *composition004
+        part_size:
+          type: integer
+          minimum: 1
+          maximum: 4194304
+        md5: &composition006
+          type: string
+          pattern: ^[0-9a-f]{32}$
+    UploadPart:
+      type: object
+      additionalProperties: false
+      required:
+      - index
+      - length
+      - md5
+      properties:
+        index:
+          type: integer
+          minimum: 0
+        length: *composition004
+        md5: *composition006
+    UploadStatus:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - length
+      - part_size
+      - md5
+      - state
+      - expires_at
+      - cleanup_complete
+      - parts
+      properties:
+        id: *composition001
+        length: *composition004
+        part_size:
+          type: integer
+        md5: *composition006
+        state:
+          enum:
+          - open
+          - complete
+          - claimed
+          - aborted
+        expires_at: *composition004
+        cleanup_complete: *composition005
+        parts:
+          type: array
+          items:
+            $ref: '#/components/schemas/UploadPart'
+          maxItems: 10000
+    StableSnapshot:
+      type: object
+      additionalProperties: false
+      required:
+      - snapshot
+      properties:
+        snapshot: *composition001
+    RetainedSnapshot:
+      type: object
+      additionalProperties: false
+      required:
+      - snapshot
+      - retained
+      properties:
+        snapshot: *composition001
+        retained: *composition005
+    SnapshotReclaim:
+      type: object
+      additionalProperties: false
+      required:
+      - snapshot
+      - phase
+      - complete
+      - physical_cleanup_deferred
+      properties:
+        snapshot: *composition001
+        phase:
+          enum:
+          - upload_owners
+          - split_drafts
+          - index_fences
+          - metadata
+          - complete
+        complete: *composition005
+        physical_cleanup_deferred:
+          const: true
+    CommitStatus:
+      type: object
+      additionalProperties: false
+      required:
+      - receipt
+      properties:
+        receipt:
+          anyOf:
+          - $ref: '#/components/schemas/CommitReceipt'
+          - type: 'null'

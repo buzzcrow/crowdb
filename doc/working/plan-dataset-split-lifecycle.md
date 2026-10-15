@@ -191,7 +191,7 @@ until its corresponding API and visibility tests pass.
   Exit: complete child membership assembled without browser/full-SDK scans,
   unchanged required values remain represented through server-owned bindings,
   no invented raw chunk locators or duplicate payload uploads for inheritance.
-- [ ] **C2 Bound draft lifecycle**: successful mutation invalidates preview;
+- [x] **C2 Bound draft lifecycle**: successful mutation invalidates preview;
   preview jobs bind draft revision and persist continuation. At most one complete
   result binding wins CAS. Caller-driven bounded steps avoid a new scheduler.
   Persist input refs/digests, not local file handles. Renew source protection while
@@ -278,7 +278,7 @@ until its corresponding API and visibility tests pass.
   with strict 16 MiB/2-second scans; legacy convenience is capped at 64 steps and
   30 seconds. Help the final status marker after a lost/error response.
   Files: `authority/access/cleanup.rs`, `tests/split_reclaim_test.rs`.
-- [ ] **D5c Complete abandoned draft and payload cleanup**: all committed revisions live with
+- [x] **D5c Complete abandoned draft and payload cleanup**: all committed revisions live with
   owning Snapshot; read/compose leases pin source. Revision publication must win
   a live-owner fence against reclaim. Cleanup batches have durable progress and
   preserve prepared/shared upload ownership. Files: `retention.rs`, `lease.rs`,
@@ -320,7 +320,7 @@ until its corresponding API and visibility tests pass.
   field prefixes. Files: `inspection/exact.rs`, `api/v2/preview.rs`, HTTP preview
   tests. Exit: requested ID order, unknown/duplicate rejection, metadata-only
   projection, multipart prefix bounds and missing/tombstone distinction pass.
-- [~] **E2e Complete composition and auxiliary endpoints**: expose capabilities, head generation,
+- [x] **E2e Complete composition and auxiliary endpoints**: expose capabilities, head generation,
   discovery/metadata preparation, composition, revision drafts/commit/status/
   history and scoped member/read operations. Suggested v2 route families under
   `/namespaces/{ns}/datasets/{dataset}`: `/head`, `/snapshot-inventory`,
@@ -332,7 +332,7 @@ until its corresponding API and visibility tests pass.
   Files: `dataset/api/v2/`, OpenAPI v2, `tests/dataset_split_contract_test.rs`.
   Exit: direct HTTP fixtures exercise every route and invalid auth/scope/bounds;
   status/preview cannot acknowledge application consumption.
-- [ ] **E3 Implement Rust SDK helpers**: typed IDs/models, capabilities, lazy page
+- [~] **E3 Implement Rust SDK helpers**: typed IDs/models, capabilities, lazy page
   iterators, compose/edit/evaluate/prepare/commit, revision editing/history,
   conflict/unknown-outcome identities, Split plans and cancellation. Stream/file
   sources use bounded existing transfer code; do not import repository internals.
@@ -954,3 +954,26 @@ failure; record actual failures and add Blocked only when that workflow requires
 - Snapshot-wide draft cleanup, composition upload/reclaim and Split scratch suites
   passed nine cases; root Clippy passed. Tests cover restart, missing delayed member
   pages, foreign Snapshot isolation and successful composed retirement.
+
+### Composition HTTP lifecycle and configured capabilities
+
+- Added strict v2 composition begin/edit/evaluate/prepare/publish/status/abandon/
+  cleanup, Dataset-scoped multipart uploads, Dataset creation/metadata, stable,
+  retention, commit receipt lookup, Split cleanup and composed Snapshot reclaim.
+  Composition bodies cap at 1 MiB and edits at twenty Samples. Raw storage
+  locators are rejected; server-resolved uploads enter durable ownership first.
+- Capabilities now include dataset-management, split-revisions and split-reads.
+  uploads, composition and snapshot-reclaim are advertised only with a configured
+  upload service. Historical edit responses retain their original draft; GET
+  returns current status. OpenAPI validates 43 paths and 53 unique operations.
+- Five new HTTP cases cover uploaded initial Split publication, frozen Split child
+  inheritance, cancellation/historical retry, restart/head conflicts, canonical
+  request validation, Dataset upload isolation, retention and bounded retirement.
+  All passed. Full `pixi run cargo test -p crowdb-access-server` passed, including
+  v1 and Iceberg/S3 regression tests; root Clippy and format checks passed.
+- Initial fixture failures were missing upload-service wiring; an older unsupported
+  version test now uses v3 because v2 Dataset metadata is implemented. Disk-full
+  compilation was resolved with Cargo cache cleanup (222 GiB became available);
+  the broad clean reported permission errors in unrelated OCI cache, while Rust
+  artifacts were successfully cleared. No source or persistent runtime data was
+  removed. No native multi-node or browser acceptance is claimed by these tests.
