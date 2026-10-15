@@ -37,6 +37,7 @@ async function verifyOwnerProjection(page: Page, request: APIRequestContext, har
       for (const disk of physical.disks) await expect(group.getByTestId(`tree-node-CH-D-${node}-${physical.disk_group_id}-${disk.disk_id}`)).toBeVisible();
     }
   }
+  await page.getByRole('button', { name: 'Show diagram', exact: true }).click();
   const expand = page.getByRole('button', { name: 'Expand N-1 children', exact: true });
   if (await expand.count()) await expand.click();
   else await expect(page.getByRole('button', { name: 'Collapse N-1 children', exact: true })).toBeVisible();
@@ -66,9 +67,9 @@ test('native diagnostics: disk Inspector and Capacity selection retain two actua
   await expect(page.getByRole('heading', { name: 'Capacity — Cluster', exact: true })).toBeVisible();
   await expect(page.getByTestId('capacity-summary').locator(':scope > div')
     .filter({ hasText: 'Total Capacity' }).getByText('8.0 TB', { exact: true })).toBeVisible();
-  await expect(panel.getByText('Racks (1)', { exact: true })).toBeVisible();
+  const overview = panel.getByRole('region', { name: 'Cluster capacity workspace', exact: true });
+  await expect(overview).toContainText('Racks (1) · 4 DG(s) · 3 node(s)');
   await expect(panel.getByRole('button', { name: /R-1 / })).toBeVisible();
-  await expect(panel.getByText('4 DG(s) · 3 node(s)', { exact: true })).toBeVisible();
   await expect(panel.getByText('Scanner', { exact: true })).toBeVisible();
   const first = await diskBranch(page, 1, 1);
   await diskBranch(page, 1, 581);
@@ -77,10 +78,11 @@ test('native diagnostics: disk Inspector and Capacity selection retain two actua
   await sidebar.getByTestId('tree-node-R-1').locator(':scope > [role="treeitem"]')
     .getByRole('button', { name: /^R-1 / }).click();
   await expect(page.getByRole('heading', { name: 'Capacity — Rack 1', exact: true })).toBeVisible();
-  await expect(panel.getByText('Nodes in R-1 (3)', { exact: true })).toBeVisible();
-  await expect(panel.getByRole('button', { name: /^N-1 / })).toBeVisible();
-  await expect(panel.getByText('2 DG(s)', { exact: true })).toBeVisible();
-  await panel.getByRole('button', { name: 'Inspect N-1', exact: true }).click();
+  const table = overview.getByRole('table', { name: 'Node capacity', exact: true });
+  await expect(table.getByRole('row')).toHaveCount(4);
+  const node = table.getByRole('row').filter({ has: page.getByRole('button', { name: 'N-1', exact: true }) });
+  await expect(node).toContainText('8.0 TB');
+  await node.getByRole('button', { name: 'Properties', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Capacity — Rack 1', exact: true })).toBeVisible();
   await expect(page.getByRole('complementary', { name: 'Entity inspector' })).toContainText('N-1');
   await page.getByRole('button', { name: 'Close inspector', exact: true }).click();
@@ -88,10 +90,13 @@ test('native diagnostics: disk Inspector and Capacity selection retain two actua
   await expect(panel.getByText('Scanner', { exact: true })).toHaveCount(0);
   await sidebar.getByTestId('tree-node-N-1').locator(':scope > [role="treeitem"]')
     .getByRole('button', { name: 'N-1', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Capacity — Node 1', exact: true })).toBeVisible();
-  await expect(panel.getByText('Disk-groups on N-1 (2)', { exact: true })).toBeVisible();
-  for (const group of [1, 581]) await expect(panel.getByRole('button', { name: new RegExp(`DG-${group} `) })).toBeVisible();
-  await expect(panel.getByText('1 disk(s)', { exact: true })).toHaveCount(2);
+  const workspace = page.getByLabel('Node 1 workspace', { exact: true });
+  await expect(workspace).toBeVisible();
+  for (const group of [1, 581]) {
+    const section = workspace.getByRole('region', { name: `Disk group ${group}`, exact: true });
+    await expect(section).toBeVisible();
+    await expect(section.getByRole('article', { name: /^Registered disk / })).toHaveCount(1);
+  }
   await first.group.getByRole('button', { name: 'storage (DG-1)', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Capacity — DG-1', exact: true })).toBeVisible();
   await expect(panel.getByText('Disks in DG-1 (1)', { exact: true })).toBeVisible();

@@ -1593,3 +1593,17 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   preallocated media registered with actual DiskIO, binding moved before receipt,
   physical legacy menu controls absent, retained parent deletion returned 409.
   Native browser TypeScript check passed against that run's client snapshot.
+- Ordered bridge `run-af7bf01453ce4e0ba5228c691f7aae0f` reached all six
+  services Ready after monitor restart, then failed an undiagnosed whole-stat
+  equality assertion. Saved cgroup evidence: PID max events 0 on every node,
+  peaks 183/253/223 on the active three, no OOM. This is not yet a full pass.
+  Added before-restart nonsecret receipt/stat artifact and before/after assertion
+  diagnostics without changing the assertion or its timeouts.
+- Same-filesystem owned 64-MiB preallocation probe: identity and size unchanged
+  after 64 separate 4-KiB writes/fsync, `st_blocks` grew 131072 -> 131080. Thus
+  block-count equality is not generally a file-identity invariant; confirm the
+  exact bridge difference before changing its assertion.
+- Freed only three verified disposable 16-GiB managed files from failed older
+  `run-c0a60bd1f6dc4684a1fc315421954cae`; kept journals/logs/resource evidence.
+  Exact generated paths, regular type, UID/GID 10001 and sizes audited first.
+  No unrelated media or Docker state pruned.

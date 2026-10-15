@@ -382,16 +382,26 @@ test('native diagnostics: disk maintenance menus route to owners and retain ever
   const scanned = await scan;
   expect(scanned.ok(), await scanned.text()).toBe(true);
 
-  const groupOffline = page.waitForResponse(response => new URL(response.url()).pathname === '/api/disk-groups/1/2/2/status'
-    && response.request().method() === 'PUT');
-  await diskMenu(page, second.group, 'Change Status');
-  await page.getByRole('menuitem', { name: 'Offline', exact: true }).click();
-  expect((await groupOffline).status()).toBe(204);
-  const diskOffline = page.waitForResponse(response => new URL(response.url()).pathname === `/api/disks/${second.id}/status`
-    && response.request().method() === 'PUT');
-  await diskMenu(page, second.disk, 'Change Status');
-  await page.getByRole('menuitem', { name: 'Offline', exact: true }).click();
-  expect((await diskOffline).status()).toBe(204);
+  await second.group.click({ button: 'right' });
+  await expect(page.getByRole('menuitem', { name: 'Manage node storage', exact: true })).toBeVisible();
+  await expect(page.getByRole('menuitem', { name: 'Change Status', exact: true })).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await diskMenu(page, second.disk, 'Manage node storage');
+  const workspace = page.getByLabel('Node 2 workspace', { exact: true });
+  await workspace.getByRole('article', { name: `Registered disk ${second.id}`, exact: true }).getByRole('button', { name: 'Manage disk', exact: true }).click();
+  const lifecycle = page.getByRole('dialog', { name: 'Disk lifecycle', exact: true });
+  await expect(lifecycle.getByRole('button', { name: 'Mark Offline', exact: true })).toBeEnabled();
+  const diskOffline = page.waitForResponse(response => new URL(response.url()).pathname === `/api/nodes/2/disk-groups/2/disks/${second.id}/offline`
+    && response.request().method() === 'POST');
+  await lifecycle.getByRole('button', { name: 'Mark Offline', exact: true }).click();
+  expect((await diskOffline).status()).toBe(200);
+  await expect(lifecycle.getByRole('status')).toContainText('Offline');
+  await expect(lifecycle).toContainText('No scoped DiskIO exclusion confirmation is available');
+  await lifecycle.getByRole('checkbox').check();
+  await expect(lifecycle.getByRole('button', { name: 'Remove disk', exact: true })).toBeDisabled();
+  await lifecycle.getByRole('button', { name: 'Close dialog', exact: true }).click();
+  const groupOffline = await request.put('/api/disk-groups/1/2/2/status', { data: { status: 'Offline' } });
+  expect(groupOffline.status(), await groupOffline.text()).toBe(204);
 
   const paused: string[] = [];
   try {
@@ -448,9 +458,8 @@ async function hardwareBadges(page: Page, request: APIRequestContext, firstId: s
   const emptyRow = page.getByRole('complementary', { name: 'Cluster tree sidebar' })
     .getByTestId('tree-node-CH-DG-1-548').locator(':scope > [role="treeitem"]');
   await expect(emptyRow).toBeVisible();
-  const changed = page.waitForResponse(response => new URL(response.url()).pathname === '/api/disk-groups/1/1/548/status'
-    && response.request().method() === 'PUT');
-  await diskMenu(page, emptyRow, 'Change Status');
-  await page.getByRole('menuitem', { name: 'Offline', exact: true }).click();
-  expect((await changed).status()).toBe(204);
+  const changed = await request.put('/api/disk-groups/1/1/548/status', { data: { status: 'Offline' } });
+  expect(changed.status(), await changed.text()).toBe(204);
+  await page.getByRole('main').getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(emptyRow.getByTitle('Offline', { exact: true })).toBeVisible();
 }
