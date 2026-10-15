@@ -32,6 +32,7 @@ mod file_activation;
 mod file_admission;
 mod file_preparation;
 mod initialization;
+mod retained_storage;
 #[cfg(feature = "test-util")]
 pub use initialization::InitializationForTests;
 mod preparation;
@@ -171,6 +172,9 @@ async fn execute(
 ) -> Result<Value> {
     let root = &profile.paths.data_root;
     match request {
+        NodeControl::CheckRetainedDisk { request } => Ok(serde_json::to_value(
+            retained_storage::check(root, request).await?,
+        )?),
         NodeControl::PrepareDiskFile { request } => {
             Ok(serde_json::to_value(file_allocator.accept(root, request).await?)?)
         }

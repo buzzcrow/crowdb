@@ -30,6 +30,10 @@ async fn readonly_standard_node_rejects_storage_and_bootstrap_before_authority_w
             "/api/nodes/1/disk-groups/1/disks/0000000000000001-0000000000000001/removal",
             r#"{"expected_revision":"1"}"#,
         ),
+        (
+            "/api/nodes/1/disk-groups/1/disks/0000000000000001-0000000000000001/rejoin",
+            r#"{"removal_operation_id":"remove/disk/1"}"#,
+        ),
     ] {
         let response = app
             .clone()

@@ -13,6 +13,7 @@ import { CreateFileDiskDialog } from './CreateFileDiskDialog';
 import { useNodeStorage } from './useNodeStorage';
 import { useRemovedDisks } from './useRemovedDisks';
 import { DiskLifecycleDialog } from './DiskLifecycleDialog';
+import { RemovedDiskRow } from './RemovedDiskRow';
 import { filePhaseLabel, type FilePreparation, type CandidateSummary, type DiskLifecycle } from './types';
 
 interface Props {
@@ -26,6 +27,8 @@ interface Props {
 
 export function NodeStorage({ nodeId, rackId, active, readonly, ready, inventory, hardware, usage, candidatesOnly, loadGroup, onAddGroup, onCandidates }: Props) {
   const candidateSection = useRef<HTMLElement>(null);
+  const diskElements = useRef(new Map<string, HTMLElement>());
+  const [focusDisk, setFocusDisk] = useState<string>();
   const model = useNodeStorage(nodeId, active);
   const removed = useRemovedDisks(nodeId, active && ready);
   const [managing, setManaging] = useState<{ disk: string; group: number }>();
@@ -39,6 +42,11 @@ export function NodeStorage({ nodeId, rackId, active, readonly, ready, inventory
     if (active) for (const id of groupIds.split(',').filter(Boolean)) void loadGroup(nodeId, Number(id));
   }, [active, nodeId, groupIds, completed, loadGroup]);
   const registered = Object.values(inventory?.disksByDg ?? {}).flat();
+  useEffect(() => {
+    if (!focusDisk) return;
+    const element = diskElements.current.get(focusDisk);
+    if (element) { element.focus(); setFocusDisk(undefined); }
+  }, [focusDisk, registered]);
   const paths = new Set(registered.map(disk => disk.device_path).filter(Boolean));
   const pendingPaths = new Set(Object.values(model.operations).filter(operation => operation.request.admission).map(operation => operation.path));
   const removedPaths = new Set(removed.items.map(disk => disk.container_path));
@@ -89,7 +97,7 @@ export function NodeStorage({ nodeId, rackId, active, readonly, ready, inventory
         const preparation = operationRows.find(operation => operation.path === disk.device_path);
         const media = preparation?.request.admission?.media_type === null ? 'Unknown' : disk.disk_type;
         const entity = { domain: Domain.Cluster, type: 'Disk' as const, id: disk.disk_id, parentIds: { rack_id: rackId, node_id: nodeId, disk_group_id: group.id, disk_id: disk.disk_id } };
-        return <article key={disk.disk_id} aria-label={`Registered disk ${disk.disk_id}`} className="tw-rounded tw-border tw-border-border tw-p-3 tw-space-y-1">
+        return <article tabIndex={-1} ref={element => { if (element) diskElements.current.set(disk.disk_id, element); else diskElements.current.delete(disk.disk_id); }} key={disk.disk_id} aria-label={`Registered disk ${disk.disk_id}`} className="tw-rounded tw-border tw-border-border tw-p-3 tw-space-y-1">
           <div className="tw-flex tw-flex-wrap tw-justify-between tw-gap-2">
             <button className="tw-text-accent tw-font-mono tw-text-sm" onClick={() => selectEntity(entity)}>{disk.disk_id}</button>
             <button className="tw-text-xs tw-text-muted" aria-pressed={selectedEntity?.type === 'Disk' && selectedEntity.id === disk.disk_id} onClick={() => inspectEntity(entity)}>Properties</button>
@@ -115,13 +123,9 @@ export function NodeStorage({ nodeId, rackId, active, readonly, ready, inventory
     <section ref={candidateSection} tabIndex={-1} aria-label="Candidate disks" className="tw-space-y-2">
       <h3 className="tw-text-sm tw-font-semibold">Candidates ({candidateCount}{partial ? '+' : ''})</h3>
       {candidateCount === 0 && model.inventory && removed.observed && <p className="tw-text-sm tw-text-muted">No discovered unregistered media.</p>}
-      {removed.items.map(disk => <article key={disk.disk_id} aria-label={`Removed disk ${disk.disk_id}`} className="tw-rounded tw-border tw-border-border tw-p-3 tw-text-sm tw-space-y-1">
-        <p role="status">Removed · DG-{disk.disk_group_id} · {disk.disk_id}</p>
-        <p className="tw-break-all">{disk.container_path}</p>
-        <p>{disk.backend} · {formatBytes(Number(disk.capacity_units) * disk.unit_size_bytes)} · Media {disk.media_type === null ? 'Unknown' : disk.media_type} · {disk.sparse ? 'Sparse' : disk.backend === 'file' ? 'Preallocated' : 'Raw device'} · Medium and allocation metadata retained.</p>
-        <p className="tw-text-muted">{model.inventory?.disks.find(item => item.path === disk.container_path)?.error || (model.inventory && !model.inventory.disks.some(item => item.path === disk.container_path) ? 'Missing from latest discovery' : 'Explicit Rejoin required; never automatically readmitted.')}</p>
-        <button className="tw-text-accent" onClick={() => inspectEntity({ domain: Domain.Cluster, type: 'Disk', id: disk.disk_id, parentIds: { rack_id: rackId, node_id: nodeId, disk_group_id: disk.disk_group_id, disk_id: disk.disk_id } })}>Properties</button>
-      </article>)}
+      {removed.items.map(disk => <RemovedDiskRow key={disk.disk_id} disk={disk} inventory={model.inventory} ready={ready} readonly={readonly}
+        onInspect={() => inspectEntity({ domain: Domain.Cluster, type: 'Disk', id: disk.disk_id, parentIds: { rack_id: rackId, node_id: nodeId, disk_group_id: disk.disk_group_id, disk_id: disk.disk_id } })}
+        onRejoin={() => setManaging({ disk: disk.disk_id, group: disk.disk_group_id })} />)}
       {removed.next && <Button size="sm" variant="secondary" disabled={removed.loading} onClick={() => { void removed.refresh(removed.next!); }}>More retained candidates</Button>}
       {candidates.map(disk => <article key={disk.path} className="tw-rounded tw-border tw-border-border tw-p-3 tw-text-sm tw-space-y-1">
         <p className="tw-break-all">{disk.path}</p><p>{disk.backend ?? 'Backend unknown'} · {disk.capacity_bytes === null ? 'Capacity unknown' : formatBytes(disk.capacity_bytes)}</p>
@@ -129,7 +133,8 @@ export function NodeStorage({ nodeId, rackId, active, readonly, ready, inventory
       </article>)}
     </section>
     {managing && <DiskLifecycleDialog key={`${nodeId}:${managing.group}:${managing.disk}`} nodeId={nodeId} groupId={managing.group} diskId={managing.disk}
-      onClose={() => setManaging(undefined)} onCommitted={state => {
+      onClose={() => setManaging(undefined)} onCommitted={(state, action) => {
+        if (action === 'rejoin') setFocusDisk(state.disk_id);
         if (state.removed) requestAnimationFrame(() => candidateSection.current?.focus());
         if (selectedEntity?.type === 'Disk' && selectedEntity.id === state.disk_id) inspectEntity({ ...selectedEntity });
         setConfirmed(previous => ({ ...previous, [state.disk_id]: state }));

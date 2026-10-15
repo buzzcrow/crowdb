@@ -41,7 +41,7 @@ impl HardwareClient {
                 record.geometry.unit_size_bytes,
             )
             .await?;
-            self.check_storage_duplicates(record).await?;
+            self.check_storage_duplicates(record, None).await?;
             group.disk_ids.push(record.disk_id);
             group.disk_ids.sort_unstable_by_key(|id| (id.high, id.low));
             let rack_path = RackKey {
@@ -86,7 +86,7 @@ impl HardwareClient {
         Ok(value)
     }
 
-    async fn storage_rack(&self, rack_id: u64) -> Result<(RackValue, u64)> {
+    pub(super) async fn storage_rack(&self, rack_id: u64) -> Result<(RackValue, u64)> {
         let path = RackKey { rack_id }.to_path();
         match self
             .kv
@@ -98,7 +98,11 @@ impl HardwareClient {
         }
     }
 
-    async fn storage_parent(&self, record: &DiskStorageRecord, rack: &RackValue) -> Result<DiskGroupValue> {
+    pub(super) async fn storage_parent(
+        &self,
+        record: &DiskStorageRecord,
+        rack: &RackValue,
+    ) -> Result<DiskGroupValue> {
         let node = self
             .get_node(record.rack_id, record.node_id)
             .await?
@@ -135,7 +139,11 @@ impl HardwareClient {
         }
     }
 
-    async fn check_storage_duplicates(&self, record: &DiskStorageRecord) -> Result<()> {
+    pub(super) async fn check_storage_duplicates(
+        &self,
+        record: &DiskStorageRecord,
+        retained_source: Option<&DiskStorageRecord>,
+    ) -> Result<()> {
         let prefix = DiskStorageRecord::node_prefix(record.rack_id, record.node_id);
         let rows = super::storage_observation::bounded_inventory(&self.kv, &prefix).await?;
         for (key, value) in rows {
@@ -145,6 +153,9 @@ impl HardwareClient {
                 return Err(Error::Server(
                     "disk storage placement differs from its key".into(),
                 ));
+            }
+            if retained_source == Some(&existing) && existing.key() == record.key() {
+                continue;
             }
             if existing.backing_identity == record.backing_identity
                 || existing.geometry.device_path == record.geometry.device_path

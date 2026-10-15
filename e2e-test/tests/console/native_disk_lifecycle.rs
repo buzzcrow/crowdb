@@ -109,14 +109,40 @@ pub(super) async fn remove_occupied(context: &TestNativeContext) {
         "path":original.geometry.device_path,"offset":offset}))
     .await;
     assert_eq!(bytes, json!({"matches":true,"length":4096}));
+    let rejoined = rejoin_offline(context, &endpoint, &removed).await;
+    assert_eq!(hardware.disk_storage(&key).await.unwrap(), Some(original.clone()));
+    assert_eq!(
+        allocation_record(context, &hardware, &key, &segment).await,
+        metadata
+    );
+    assert!(
+        io.read(target, 0, 4096, OperationOptions::within(Duration::from_secs(1)))
+            .await
+            .is_err(),
+        "Rejoin restores Offline membership without opening data I/O"
+    );
     let remaining = allocator.allocate_blocks(allocation()).await.unwrap().segments;
     assert_eq!(remaining.len(), 1);
     assert_ne!(remaining[0].disk_id, Some(key.disk_id));
     println!(
         "retained occupied removal: {}",
         json!({"disk_id":key.disk_id.to_display_string(),"operation":removed,
-        "allocation_retained":true,"bytes_retained":true,"remaining_allocation":remaining})
+        "allocation_retained":true,"bytes_retained":true,"rejoin":rejoined,"remaining_allocation":remaining})
     );
+}
+
+async fn rejoin_offline(context: &TestNativeContext, endpoint: &str, removed: &Value) -> Value {
+    let rejoined = context
+        .api(
+            Method::POST,
+            &format!("{endpoint}/rejoin"),
+            json!({"removal_operation_id":removed["operation_id"]}),
+            200,
+        )
+        .await;
+    assert_eq!(rejoined["state"]["offline"], true);
+    assert_eq!(rejoined["state"]["removed"], false);
+    rejoined
 }
 
 async fn write_committed(

@@ -121,6 +121,7 @@ async fn scoped_http_offline_and_remove_require_confirmation_and_reconcile_one_r
     assert_eq!(observed["operation_id"], outcome["operation_id"]);
     assert_eq!(observed["removed_from_revision"], revision);
     verify_removed_candidate(&fixture).await;
+    verify_rejoin_requires_original_medium(&fixture, &path, &outcome).await;
     assert!(
         fixture
             .hardware
@@ -231,4 +232,42 @@ async fn verify_partial_zone_rejected(fixture: &TestStorageApi) {
     )
     .await;
     assert!(response["error"].as_str().unwrap().contains("whole 32 GiB zones"));
+}
+
+async fn verify_rejoin_requires_original_medium(fixture: &TestStorageApi, path: &str, outcome: &Value) {
+    request(
+        &fixture.app,
+        "POST",
+        &format!("{path}/rejoin"),
+        Some(json!({"removal_operation_id":"wrong-operation"})),
+        StatusCode::CONFLICT,
+    )
+    .await;
+    let response = request(
+        &fixture.app,
+        "POST",
+        &format!("{path}/rejoin"),
+        Some(json!({"removal_operation_id":outcome["operation_id"]})),
+        StatusCode::BAD_GATEWAY,
+    )
+    .await;
+    assert!(response["error"]
+        .as_str()
+        .unwrap()
+        .contains("membership was not changed"));
+    assert!(fixture
+        .hardware
+        .get_disk_with_revision(&fixture.disk)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(
+        fixture
+            .hardware
+            .disk_storage(&fixture.disk)
+            .await
+            .unwrap()
+            .unwrap()
+            .removed
+    );
 }

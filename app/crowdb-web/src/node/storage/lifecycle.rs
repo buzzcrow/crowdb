@@ -49,6 +49,8 @@ pub(crate) struct DiskLifecycle {
     remove_conditions: Vec<String>,
     operation_id: Option<String>,
     removed_from_revision: Option<String>,
+    rejoin_operation_id: Option<String>,
+    rejoin_source_removal_operation_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -81,7 +83,7 @@ pub(crate) async fn status(
     observe(&hardware, &key).await.map(Json)
 }
 
-async fn observe(hardware: &HardwareClient, key: &DiskKey) -> Result<DiskLifecycle, Failure> {
+pub(super) async fn observe(hardware: &HardwareClient, key: &DiskKey) -> Result<DiskLifecycle, Failure> {
     let backing = hardware
         .disk_storage(key)
         .await
@@ -107,6 +109,8 @@ async fn observe(hardware: &HardwareClient, key: &DiskKey) -> Result<DiskLifecyc
             remove_conditions: Vec::new(),
             operation_id: Some(receipt.operation_id),
             removed_from_revision: Some(receipt.offline_revision.to_string()),
+            rejoin_operation_id: None,
+            rejoin_source_removal_operation_id: None,
         });
     }
     let readiness = hardware.disk_removal_readiness(key).await.map_err(failure)?;
@@ -118,6 +122,11 @@ async fn observe(hardware: &HardwareClient, key: &DiskKey) -> Result<DiskLifecyc
     if current.1 != readiness.disk_revision {
         return Err(err_409("Disk revision changed during observation; refresh"));
     }
+    let rejoin = hardware
+        .disk_rejoin_receipt(key)
+        .await
+        .map_err(failure)?
+        .filter(|receipt| receipt.restored() == backing);
     Ok(DiskLifecycle {
         version: 1,
         disk_id: key.disk_id.to_display_string(),
@@ -128,6 +137,8 @@ async fn observe(hardware: &HardwareClient, key: &DiskKey) -> Result<DiskLifecyc
         operation_id: (current.0.status == HwStatus::Offline as i32)
             .then(|| format!("offline/{}/{}", key.disk_id.to_display_string(), current.1)),
         removed_from_revision: None,
+        rejoin_operation_id: rejoin.as_ref().map(|receipt| receipt.operation_id.clone()),
+        rejoin_source_removal_operation_id: rejoin.map(|receipt| receipt.source.operation_id),
     })
 }
 
@@ -162,6 +173,8 @@ pub(crate) async fn offline(
             committed
         )),
         removed_from_revision: None,
+        rejoin_operation_id: None,
+        rejoin_source_removal_operation_id: None,
     }))
 }
 

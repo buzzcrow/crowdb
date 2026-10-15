@@ -64,6 +64,9 @@ pub struct CandidateSnapshot {
 pub enum NodeControl {
     Identity,
     DiskInventory,
+    CheckRetainedDisk {
+        request: storage::CheckRetainedDisk,
+    },
     PrepareDiskFile {
         request: storage::PrepareDiskFile,
     },

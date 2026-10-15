@@ -5,6 +5,7 @@
 
 pub(crate) mod file_operations;
 pub(crate) mod file_preparation;
+pub(crate) mod retained;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};

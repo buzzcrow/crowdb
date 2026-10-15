@@ -214,6 +214,10 @@ pub fn router(state: AppState) -> axum::Router {
             post(node::storage::lifecycle::remove),
         )
         .route(
+            "/api/nodes/:id/disk-groups/:dg_id/disks/:disk_id/rejoin",
+            post(node::storage::rejoin::rejoin),
+        )
+        .route(
             "/api/nodes/:id/disk-files",
             get(node::storage::files::list).post(node::storage::files::create),
         )

@@ -593,3 +593,57 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   disk and committed mutation refresh its backing properties. New regressions
   cover all three cases; existing native flow now keeps the Inspector on the disk
   across removal. This small extension awaits focused browser verification.
+- Explicit Rejoin now has a versioned Group-0 receipt tied to the exact prior
+  removal. The Rack-fenced SDK restores the original ID, placement and geometry
+  Offline; it rechecks compatibility and aliases, retains all allocations and
+  does not reopen status or initial activation. Same-source replay preserves the
+  current status/revision. Two live SDK cases plus five protocol cases pass.
+  The initial new test incorrectly expected a creation replay to fail; the
+  established replay is intentionally a no-op, now asserted to preserve Offline
+  and the exact revision rather than initializing anything.
+- Monitor retained-medium control checks bound cluster/node/placement and exact
+  removal or Offline authority, verifies discovery/mapping, opens the same
+  no-follow identity read/write, reads the first/last block without changing
+  bytes, and rechecks authority. Three media tests cover unchanged bytes, missing,
+  truncation, same-size replacement, symlinks, aliases and changed mappings.
+  Rejoin HTTP requires that private check before restoring membership; unavailable
+  verification and readonly cannot restore membership. A committed operation
+  exposes its original removal source for lost-response reconciliation.
+- Candidates now offer explicit Rejoin only for the original observed identity,
+  backend and capacity. The lifecycle dialog retains operation identity through
+  unknown responses, restores Offline and returns focus to the registered row.
+  Rejoin does not authorize Online. All 225 UI cases/types pass, including response
+  loss and invalid-media eligibility. Web/monitor/KV/protocol/E2E all-target,
+  all-feature Clippy and Rust fmt pass. Native browser/occupied flow now also
+  asserts original-ID Offline Rejoin, retained allocations and continued I/O
+  exclusion; rebuilt-image acceptance is pending.
+
+## Remaining recovery implementation detail
+
+- Add a strict read-only retained-zone loader before enabling Online. Current
+  ordinary journal/full-scan recovery permits missing snapshots, skips malformed
+  records and may write a fallback snapshot; those paths cannot validate a
+  retained occupied disk. Require an existing valid geometry-matching snapshot
+  and strictly decode/range-check paged busy/free records. Preserve conservative
+  occupancy, seed allocation timestamps and never create a fresh baseline.
+- Persist a disk-specific Online intent at the exact Offline revision after the
+  original medium check. Reuse the owning DiskDB keepalive for execution; no new
+  scheduler, lock or initiator election. Wait for current owner/DiskIO exclusion
+  proofs and local closed/drained gate; validate the retained metadata read-only.
+  Successful activation must CAS the exact Offline revision, current owner
+  generation, backing and Rack into Up together with its reconciliation receipt.
+  Invalid state remains Offline with a recorded reason.
+- Old disk Arc snapshots keep their closed gates. After an authorized activation,
+  replace the current runtime disk with a new Init instance and strictly reload
+  before allocations; do not reopen an old gate. A later Offline tick closes the
+  same new instance before publishing its new-revision proof. Startup and disk-add
+  reconstruction must honor retained rejoin/recovery markers and never use blank
+  fallback for those disks. Ordinary legacy initialization remains unchanged.
+- Existing `read_zone_records_bounded` strictly decodes records at a cutoff but
+  requests unlimited scans. Retained validation needs explicit advancing pages
+  and bounds; existing `read_zone_records` silently skips invalid records and is
+  unsuitable. `ZoneBitmap::from_value` already validates decompression/geometry.
+- Add corrupt/missing snapshot, malformed/out-of-range/overlapping records,
+  stale-owner/revision and restart regressions, then extend the real occupied
+  native flow through Online and read back the fsynced marker without changing
+  disk identity. Rejoin-Offline alone does not complete A13.

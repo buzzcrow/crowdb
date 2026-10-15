@@ -138,3 +138,23 @@ fn removal_receipt_preserves_backing_geometry_and_fixes_operation_identity() {
     invalid.offline_revision = 0;
     assert!(invalid.validate().is_err());
 }
+
+#[test]
+fn rejoin_receipt_retains_the_exact_removed_source_without_initializing_it() {
+    use crowdb_protocol::disk_storage::{DiskRejoinRecord, DiskRemovalRecord};
+    let mut source = record();
+    source.removed = true;
+    let mut receipt = DiskRejoinRecord::new(DiskRemovalRecord::new(source.clone(), 7));
+    receipt.validate().unwrap();
+    assert_eq!(receipt.source.disk, source);
+    let mut restored = source;
+    restored.removed = false;
+    assert_eq!(receipt.restored(), restored);
+    assert_eq!(receipt.operation_id, "rejoin/0000000000000004-0000000000000005/7");
+    assert_eq!(
+        serde_json::from_slice::<DiskRejoinRecord>(&serde_json::to_vec(&receipt).unwrap()).unwrap(),
+        receipt
+    );
+    receipt.operation_id.push_str("/changed");
+    assert!(receipt.validate().is_err());
+}

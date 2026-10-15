@@ -171,7 +171,7 @@ async function verifyDiskLifecycle(page: Page, request: APIRequestContext, diskI
   await sidebar.getByTestId('tree-node-STORAGE-1').getByRole('button', { name: 'Storage', exact: true }).click();
   const row = workspace.getByRole('article', { name: `Registered disk ${diskId}`, exact: true });
   await row.getByRole('button', { name: 'Properties', exact: true }).click();
-  await expect(page.getByRole('region', { name: 'Disk backing properties' })).toContainText('Registered');
+  await expect(page.getByRole('region', { name: 'Disk backing properties' }).getByText('Registered', { exact: true })).toBeVisible();
   await row.getByRole('button', { name: 'Manage disk', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Disk lifecycle', exact: true });
   await expect(dialog.getByRole('button', { name: 'Mark Offline', exact: true })).toBeEnabled();
@@ -202,10 +202,27 @@ async function verifyDiskLifecycle(page: Page, request: APIRequestContext, diskI
     const candidate = workspace.getByRole('article', { name: `Removed disk ${diskId}`, exact: true });
     await expect(candidate).toContainText('Medium and allocation metadata retained');
     await candidate.getByRole('button', { name: 'Properties', exact: true }).click();
-    await expect(page.getByRole('region', { name: 'Disk backing properties' })).toContainText('Removed');
+    await expect(page.getByRole('region', { name: 'Disk backing properties' }).getByText('Removed', { exact: true })).toBeVisible();
     const state = await request.get(`/api/nodes/1/disk-groups/592/disks/${diskId}/lifecycle`);
     expect(state.ok(), await state.text()).toBe(true);
     expect(await state.json()).toMatchObject({ removed: true, offline: true, disk_revision: null });
+  });
+  await step('explicit Rejoin restores the original Offline membership', async () => {
+    const candidate = workspace.getByRole('article', { name: `Removed disk ${diskId}`, exact: true });
+    await candidate.getByRole('button', { name: 'Rejoin disk', exact: true }).click();
+    await expect(dialog.getByRole('button', { name: 'Rejoin Offline', exact: true })).toBeEnabled();
+    await expect(dialog).toContainText('same ID and allocation metadata');
+    const response = page.waitForResponse(response => response.url().endsWith(`/disks/${diskId}/rejoin`) && response.request().method() === 'POST');
+    await dialog.getByRole('button', { name: 'Rejoin Offline', exact: true }).click();
+    const result = await response;
+    expect(result.status(), await result.text()).toBe(200);
+    const restored = await result.json();
+    expect(restored.state).toMatchObject({ disk_id: diskId, removed: false, offline: true });
+    await expect(dialog).toHaveCount(0);
+    await expect(candidate).toHaveCount(0);
+    await expect(row).toContainText('Offline');
+    await expect(row).toBeFocused();
+    await expect(page.getByRole('region', { name: 'Disk backing properties' }).getByText('Registered', { exact: true })).toBeVisible();
   });
   await expect(page.getByRole('button', { name: 'Delete File', exact: true })).toHaveCount(0);
 }

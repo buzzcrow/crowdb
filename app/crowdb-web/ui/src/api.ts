@@ -1234,3 +1234,9 @@ export async function removeNodeDisk(nodeId: number, groupId: number, diskId: st
 export function removedNodeDisks(nodeId: number, after?: string, options?: RequestOptions): Promise<import('./storage/types').RemovedDiskPage> {
   return inventoryJson(`/api/nodes/${nodeId}/removed-disks${qs({ after, limit: 32 })}`, options);
 }
+
+export async function rejoinNodeDisk(nodeId: number, groupId: number, diskId: string, removalOperation: string): Promise<import('./storage/types').DiskRejoinOutcome> {
+  return jsonOrThrow(await fetchWithOptions(`${nodeDiskPath(nodeId, groupId, diskId)}/rejoin`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ removal_operation_id: removalOperation }), skipDeduplication: true,
+  }));
+}

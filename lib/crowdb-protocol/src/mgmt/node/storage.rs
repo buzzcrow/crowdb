@@ -3,6 +3,9 @@
 
 //! Node-local media observations, never disk membership authority.
 
+mod retained;
+pub use retained::{CheckRetainedDisk, RetainedDiskCondition, RetainedMedium};
+
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_FILE_CAPACITY_BYTES: u64 = 16 * 1024 * 1024 * 1024;

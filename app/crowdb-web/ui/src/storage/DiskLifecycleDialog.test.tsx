@@ -3,10 +3,10 @@
 
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, expect, it, vi } from 'vitest';
-import { diskLifecycle, offlineNodeDisk, removeNodeDisk } from '../api';
+import { diskLifecycle, offlineNodeDisk, removeNodeDisk, rejoinNodeDisk } from '../api';
 import { DiskLifecycleDialog } from './DiskLifecycleDialog';
 import type { DiskLifecycle } from './types';
-vi.mock('../api', () => ({ diskLifecycle: vi.fn(), offlineNodeDisk: vi.fn(), removeNodeDisk: vi.fn() }));
+vi.mock('../api', () => ({ diskLifecycle: vi.fn(), offlineNodeDisk: vi.fn(), removeNodeDisk: vi.fn(), rejoinNodeDisk: vi.fn() }));
 const read = vi.mocked(diskLifecycle); const offline = vi.mocked(offlineNodeDisk); const remove = vi.mocked(removeNodeDisk);
 const initial: DiskLifecycle = { version: 1, disk_id: 'disk', offline: false, removed: false,
   disk_revision: '18446744073709551000', remove_conditions: ['Mark the disk Offline before removal'], operation_id: null, removed_from_revision: null };
@@ -17,7 +17,7 @@ function setup() {
   return { onClose, onCommitted };
 }
 beforeEach(() => {
-  read.mockReset(); offline.mockReset(); remove.mockReset(); read.mockResolvedValue(initial);
+  read.mockReset(); offline.mockReset(); remove.mockReset(); vi.mocked(rejoinNodeDisk).mockReset(); read.mockResolvedValue(initial);
 });
 
 it('requires exact-revision exclusion and explicit data-unavailability acknowledgement', async () => {
@@ -67,4 +67,32 @@ it('reconciles a committed removal receipt after connection loss without repeati
   await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
   expect(remove).toHaveBeenCalledTimes(1);
   expect(onCommitted.mock.calls[0][0].removed).toBe(true);
+});
+
+it('rejoins only the inspected removed operation and preserves Offline membership', async () => {
+  const removed = { ...excluded, removed: true, disk_revision: null, operation_id: 'remove/disk/99', removed_from_revision: '99' };
+  read.mockResolvedValue(removed);
+  const restored = { ...excluded, rejoin_operation_id: 'rejoin/disk/99', rejoin_source_removal_operation_id: removed.operation_id };
+  vi.mocked(rejoinNodeDisk).mockResolvedValue({ operation_id: 'rejoin/disk/99', source_removal_operation_id: removed.operation_id, state: restored });
+  const { onClose, onCommitted } = setup();
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Rejoin Offline' })).toBeEnabled());
+  fireEvent.click(screen.getByRole('button', { name: 'Rejoin Offline' }));
+  await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  expect(rejoinNodeDisk).toHaveBeenCalledWith(1, 7, 'disk', removed.operation_id);
+  expect(onCommitted.mock.calls[0]).toEqual([restored, 'rejoin']);
+  expect(offline).not.toHaveBeenCalled(); expect(remove).not.toHaveBeenCalled();
+});
+
+it('reconciles a lost Rejoin response against the original removal operation', async () => {
+  const removed = { ...excluded, removed: true, disk_revision: null, operation_id: 'remove/disk/99', removed_from_revision: '99' };
+  read.mockResolvedValue(removed); vi.mocked(rejoinNodeDisk).mockRejectedValue(new Error('response lost'));
+  const { onClose } = setup();
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Rejoin Offline' })).toBeEnabled());
+  fireEvent.click(screen.getByRole('button', { name: 'Rejoin Offline' }));
+  await screen.findByRole('alert');
+  expect(screen.getByRole('button', { name: 'Retry same operation' })).toBeDisabled();
+  read.mockResolvedValue({ ...excluded, rejoin_source_removal_operation_id: removed.operation_id });
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh authority' }));
+  await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  expect(rejoinNodeDisk).toHaveBeenCalledTimes(1);
 });
