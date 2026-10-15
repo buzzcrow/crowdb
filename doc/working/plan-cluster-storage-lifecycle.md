@@ -830,3 +830,26 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   observe authoritative exclusion, restart the monitor, prove membership remains
   with no replacement, restore the same inode and prove it remains Offline.
   Updated-image verification remains pending; no completion claimed yet.
+
+- Image `e83e96c1` / config
+  `sha256:4a894592525bb660daa0bbf74fff4bda64adbb37832bdabf90722cbb078eb6a5`
+  completed the real missing-file quarantine/restart/restore proof, retaining the
+  exact backing and membership. Artifact: `run-9a44ad9f5f0345beb2e726f69ad97021`.
+  The subsequent original browser assertion failed at capacity: batch POST
+  returned two added disks and no errors, but GET capacity contained only one.
+- First divergence traced through actual network bodies to the compatibility
+  batch handler. It called best-effort SDK writes, discarded Rack-CAS errors and
+  unconditionally returned 201. Concurrent monitor/owner changes exposed this;
+  the capacity assertion correctly detected an incomplete publication.
+- Single/batch Console creation now uses confirmed Group-0 authority. Batch
+  validates all inputs, reserves global identities, commits all new disk records
+  and parent membership in one Rack-CAS batch, and reconciles identical replay.
+  Rejections cannot create partial membership. Local projections merge only the
+  confirmed records/parent and tolerate canonical media aliases on replay.
+- New live HTTP regression covers concurrent status churn, all disk records and
+  parent membership, exact capacity disk count, identical replay, duplicate IDs
+  and a conflicting last member leaving the first new member absent. Both new
+  cases and both existing lifecycle API cases pass, with affected all-target/
+  all-feature Clippy and repository Rust fmt. Initial replay failure revealed
+  the cache's canonical media spelling; fixed the confirmed projection merge
+  without relaxing the replay assertion. Container rerun remains pending.

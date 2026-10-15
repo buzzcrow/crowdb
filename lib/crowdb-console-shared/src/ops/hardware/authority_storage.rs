@@ -16,6 +16,9 @@ use crate::ops::OpContext;
 
 const RETRIES: u64 = 10;
 
+mod batch;
+pub use batch::add_disks_to_group0;
+
 async fn rack_revision(ctx: &OpContext, rack_id: u64) -> Result<(String, RackValue, u64)> {
     let path = RackKey { rack_id }.to_path();
     let (value, revision) = required::<RackValue>(ctx, &path, "rack", rack_id.to_string()).await?;

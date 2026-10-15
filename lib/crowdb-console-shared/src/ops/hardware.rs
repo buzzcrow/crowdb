@@ -21,7 +21,7 @@ mod relocation;
 pub use relocation::relocate_node;
 
 pub use authority_storage::{
-    add_disk_group_bound_to_group0, add_disk_group_to_group0, add_disk_to_group0,
+    add_disk_group_bound_to_group0, add_disk_group_to_group0, add_disk_to_group0, add_disks_to_group0,
     list_disk_groups_from_group0, list_disks_from_group0, remove_disk_from_group0,
     remove_disk_group_from_group0,
 };
