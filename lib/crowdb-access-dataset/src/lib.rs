@@ -61,7 +61,7 @@ pub use wire::{
 };
 
 pub use adapter::{BoundedPrefetch, WorkerPartition};
-pub use authority::{AuthorityError, DatasetAuthority, DatasetHead, SampleView};
+pub use authority::{AuthorityError, DatasetAuthority, DatasetHead, MetadataCleanupProgress, SampleView};
 pub use chunk_store::{
     unavailable_chunk_reader, ChunkKvDatasetStore, ChunkReadError, ChunkReader, ReadCancellation,
 };

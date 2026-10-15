@@ -2,8 +2,10 @@
 // Licensed under the Apache License, Version 2.0.
 
 use super::{decode, DatasetAuthority, VersionedRecord};
+mod cleanup;
 mod reclaim;
 use crate::{key, AuthorityError, CasOutcome, DatasetError, DatasetIdentity, OperationId, SnapshotId};
+pub use cleanup::MetadataCleanupProgress;
 use serde::{Deserialize, Serialize};
 
 #[derive(Default, Serialize, Deserialize)]

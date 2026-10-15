@@ -271,7 +271,14 @@ until its corresponding API and visibility tests pass.
   plus an irreversible retiring phase; a stale worker cannot reopen admission.
   Files: `authority/access{,/reclaim}.rs`, `authority/publication/legacy_reclaim.rs`,
   `inspection/reclaim.rs`, branch/legacy/reclaim-race tests.
-- [ ] **D5b Complete retained revision and draft cleanup**: all committed revisions live with
+- [x] **D5b Reclaim retired Snapshot metadata in bounded steps**: persist phase
+  and continuation in `DS GMC`; remove Manifest partitions/binding, inspection
+  projections/indexes and every owned Split revision/member page. Keep commit
+  receipts, head fences and retirement evidence. Steps delete at most 20 keys
+  with strict 16 MiB/2-second scans; legacy convenience is capped at 64 steps and
+  30 seconds. Help the final status marker after a lost/error response.
+  Files: `authority/access/cleanup.rs`, `tests/split_reclaim_test.rs`.
+- [ ] **D5c Complete abandoned draft and payload cleanup**: all committed revisions live with
   owning Snapshot; read/compose leases pin source. Revision publication must win
   a live-owner fence against reclaim. Cleanup batches have durable progress and
   preserve prepared/shared upload ownership. Files: `retention.rs`, `lease.rs`,
@@ -662,3 +669,15 @@ failure; record actual failures and add Blocked only when that workflow requires
   in their explicit read budget. Both first-divergence failures are fixed.
 - `pixi run rs-lint`, `pixi run rs-fmt-check`, `git diff --check`: passed.
   Full lint output: `/tmp/dataset-branch-reclaim-lint.log`.
+
+### Snapshot metadata cleanup verification
+
+- `pixi run cargo test -p crowdb-access-dataset`: passed. Full output:
+  `/tmp/dataset-metadata-cleanup-tests.log`.
+- Restarted cleanup removes both historical revision pages while preserving a
+  different Snapshot's current revision and old commit receipts. Injected failure
+  after durable completion progress is repaired by the next cleanup step.
+- `pixi run rs-lint`, `pixi run rs-fmt-check`, `git diff --check`: passed.
+  Lint output: `/tmp/dataset-metadata-cleanup-lint.log`.
+- Abandoned composition/candidate fencing, scratch/obsolete evaluation cleanup,
+  and upload ownership release remain C2/D5c, with boundary wiring in E2.

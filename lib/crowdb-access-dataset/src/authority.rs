@@ -1,4 +1,5 @@
 mod access;
+pub use access::MetadataCleanupProgress;
 mod discovery;
 mod head;
 mod projection;
@@ -530,35 +531,22 @@ impl DatasetAuthority {
         identity: &DatasetIdentity,
         snapshot: SnapshotId,
     ) -> Result<(), AuthorityError> {
-        self.begin_reclaim(identity, snapshot).await?;
-        if let Some(binding) = self
-            .store
-            .get(&key::manifest_binding(identity, snapshot)?)
-            .await?
-        {
-            let binding: ManifestBinding = decode(&binding.bytes)?;
-            for partition in 0..binding.partitions {
-                self.store
-                    .delete(&key::manifest_partition(identity, snapshot, partition)?)
-                    .await?;
+        let cancel = ReadCancellation::new();
+        let work = async {
+            for _ in 0..64 {
+                if self
+                    .reclaim_snapshot_metadata_step(identity, snapshot, &cancel)
+                    .await?
+                    .complete
+                {
+                    return Ok(());
+                }
             }
-            self.store
-                .delete(&key::manifest_binding(identity, snapshot)?)
-                .await?;
-        }
-        // Keep the aborted operation tombstone: retry must never resurrect a reclaimed candidate.
-        let progress = crate::ReclaimProgress {
-            snapshot,
-            state: crate::ReclaimState::Completed,
-            chunks_reclaimed: 0,
+            Err(AuthorityError::Invalid(DatasetError::ReadLimitExceeded))
         };
-        let progress_key = key::reclaim_progress(identity, snapshot)?;
-        let bytes = encode(&progress)?;
-        match self.store.compare_exchange(&progress_key, None, &bytes).await? {
-            CasOutcome::Applied(_) | CasOutcome::Conflict(Some(_)) => {}
-            CasOutcome::Conflict(None) => return Err(AuthorityError::Corrupt),
-        }
-        Ok(())
+        tokio::time::timeout(std::time::Duration::from_secs(30), work)
+            .await
+            .map_err(|_| AuthorityError::Invalid(DatasetError::ReadLimitExceeded))?
     }
 
     /// Returns durable reclaim progress, defaulting to pending for an unseen snapshot.

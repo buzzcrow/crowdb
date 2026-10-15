@@ -11,6 +11,7 @@ pub(super) struct TestDraftStore {
     inner: dataset_store::TestDatasetStore,
     pub lose_edit_reply: AtomicBool,
     pub lose_data_reply: AtomicBool,
+    pub reject_cleanup_finish: AtomicBool,
     pub lose_split_reply: AtomicBool,
     pub reject_receipts: AtomicBool,
     pub inspect_only: AtomicBool,
@@ -45,6 +46,9 @@ impl DatasetStore for TestDraftStore {
     ) -> Result<MetadataPage, StoreError> {
         self.inner.scan_page(request, cancel).await
     }
+    async fn delete(&self, key: &[u8]) -> Result<(), StoreError> {
+        self.inner.delete(key).await
+    }
     async fn compare_exchange(
         &self,
         key: &[u8],
@@ -59,6 +63,9 @@ impl DatasetStore for TestDraftStore {
             && self.reject_receipts.load(Ordering::Relaxed)
             && self.inner.get(key).await?.is_none()
         {
+            return Err(StoreError::Rejected);
+        }
+        if key.starts_with(b"DS\0G\0") && self.reject_cleanup_finish.swap(false, Ordering::Relaxed) {
             return Err(StoreError::Rejected);
         }
         let result = self.inner.compare_exchange(key, expected, value).await?;
@@ -203,4 +210,20 @@ pub(super) async fn publish_binary_samples(
         .await
         .unwrap();
     snapshot
+}
+
+#[allow(dead_code)]
+pub(super) async fn publish_revision(
+    authority: &DatasetAuthority,
+    identity: &DatasetIdentity,
+    record: &crowdb_access_dataset::split::SplitRevisionRecord,
+) -> SuccessfulCommit {
+    authority
+        .publish_split_draft(
+            identity,
+            record.operation,
+            &attempt(authority, identity, record).await,
+        )
+        .await
+        .unwrap()
 }
