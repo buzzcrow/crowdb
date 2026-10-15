@@ -62,7 +62,10 @@ impl EvaluationProgress {
                     return Err(SplitLifecycleError::Corrupt);
                 }
             }
-            DraftProgress::Prepared { .. } | DraftProgress::Published { .. } if self.complete => {}
+            DraftProgress::Prepared { .. }
+            | DraftProgress::Published { .. }
+            | DraftProgress::Committing { .. }
+                if self.complete => {}
             DraftProgress::Abandoned => {}
             _ => return Err(SplitLifecycleError::Corrupt),
         }

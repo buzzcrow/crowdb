@@ -24,7 +24,7 @@ impl DatasetAuthority {
         self.persist_commit_receipt(identity, &receipt).await
     }
 
-    pub(in crate::authority) async fn persist_commit_receipt(
+    pub(crate) async fn persist_commit_receipt(
         &self,
         identity: &DatasetIdentity,
         receipt: &SuccessfulCommit,
@@ -32,11 +32,13 @@ impl DatasetAuthority {
         let bytes = receipt.encode()?;
         self.put_commit_record(&receipt_key(identity, receipt.attempt.id)?, &bytes)
             .await?;
-        let CommitTarget::Snapshot { snapshot } = receipt.attempt.target else {
-            return Err(AuthorityError::Corrupt);
+        let key = match receipt.attempt.target {
+            CommitTarget::Snapshot { snapshot } => snapshot_commit_key(identity, snapshot)?,
+            CommitTarget::SplitRevision { snapshot, revision } => {
+                crate::split::key::committed_revision(identity, snapshot, revision)?
+            }
         };
-        self.put_commit_record(&snapshot_commit_key(identity, snapshot)?, &bytes)
-            .await
+        self.put_commit_record(&key, &bytes).await
     }
 
     pub(in crate::authority) async fn put_commit_record(
@@ -77,6 +79,15 @@ impl DatasetAuthority {
                 return Ok(Some(receipt));
             }
         }
+        if let Some(value) = self.store.get(&attempt_key(identity, attempt)?).await? {
+            let bound = CommitAttempt::decode(&value.bytes)?;
+            if bound.id != attempt {
+                return Err(AuthorityError::Corrupt);
+            }
+            if matches!(bound.target, CommitTarget::SplitRevision { .. }) {
+                return self.recover_split_commit(identity, &bound).await;
+            }
+        }
         Ok(None)
     }
 
@@ -110,7 +121,25 @@ impl DatasetAuthority {
         Ok(None)
     }
 
-    pub(in crate::authority) async fn persist_attempt(
+    pub(crate) async fn stored_commit_attempt(
+        &self,
+        identity: &DatasetIdentity,
+        id: OperationId,
+    ) -> Result<Option<CommitAttempt>, AuthorityError> {
+        self.store
+            .get(&attempt_key(identity, id)?)
+            .await?
+            .map(|value| {
+                let attempt = CommitAttempt::decode(&value.bytes)?;
+                if attempt.id != id {
+                    return Err(AuthorityError::Corrupt);
+                }
+                Ok(attempt)
+            })
+            .transpose()
+    }
+
+    pub(crate) async fn persist_attempt(
         &self,
         identity: &DatasetIdentity,
         attempt: &CommitAttempt,

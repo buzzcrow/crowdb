@@ -104,7 +104,7 @@ impl DatasetAuthority {
         identity: &DatasetIdentity,
         operation: OperationId,
     ) -> Result<SplitDraftRecord, SplitLifecycleError> {
-        Ok(self.load_split_draft(identity, operation).await?.1.record)
+        self.reconcile_split_draft(identity, operation).await
     }
 
     /// Replaces the whole definition set under a draft revision CAS.
@@ -183,7 +183,10 @@ impl DatasetAuthority {
         if state.record.revision != expected_revision {
             return Err(SplitLifecycleError::Conflict);
         }
-        if matches!(state.record.progress, DraftProgress::Published { .. }) {
+        if matches!(
+            state.record.progress,
+            DraftProgress::Published { .. } | DraftProgress::Committing { .. }
+        ) {
             return Err(SplitLifecycleError::Frozen);
         }
         let mut next = state.clone();

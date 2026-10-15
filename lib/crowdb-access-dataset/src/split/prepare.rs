@@ -80,6 +80,19 @@ impl DatasetAuthority {
             &bytes,
         )
         .await?;
+        let summary = super::SplitRevisionSummary {
+            version: 1,
+            snapshot: record.snapshot,
+            revision: record.revision,
+            operation,
+            split_count: u32::try_from(record.splits.len()).map_err(|_| SplitLifecycleError::Limit)?,
+        };
+        self.put_split_state(
+            &key::revision_summary(identity, record.snapshot, record.revision)
+                .map_err(crate::AuthorityError::from)?,
+            &super::codec::encode(&summary)?,
+        )
+        .await?;
         let mut next = state.clone();
         next.record.progress = DraftProgress::Prepared {
             target: CommitTarget::SplitRevision {

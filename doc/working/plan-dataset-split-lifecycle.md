@@ -234,12 +234,12 @@ until its corresponding API and visibility tests pass.
   rename/remove and cancellation/abandon. Files: new `split/{draft,pages,prepare}.rs`,
   `tests/split_revision_test.rs`. Exit: stale preview cannot prepare, restart resumes
   bounded work, an empty set revision is distinguishable from never-created.
-- [ ] **D2c Resolve frozen membership sources**: after D3 provides committed
+- [~] **D2c Resolve frozen membership sources**: after D3 provides committed
   revision reads, evaluate inherited definitions by source revision membership
   intersection; never reevaluate their rule implicitly. Pin source owners and
   reject missing/foreign revision/name. Add indexed membership lookup and tests
   for frozen r2 while r3 changes. Complete before C1/C2 composition integration.
-- [~] **D3 Commit Split head with durable receipts**: reuse C4's proven protocol
+- [x] **D3 Commit Split head with durable receipts**: reuse C4's proven protocol
   for independent `SplitHead`; expected-current-revision CAS and exact attempt IDs.
   A new revision updates the complete set atomically, never Dataset head. Reconcile
   unknown outcomes and retain committed histories. Files: new `split/{publication,
@@ -563,3 +563,23 @@ failure; record actual failures and add Blocked only when that workflow requires
 - Focused draft/evaluation tests pass (4); full Dataset suite passes 93 tests.
   `pixi run rs-lint`, crate Clippy, Rust fmt and diff whitespace pass. Logs:
   `/tmp/dataset-split-evaluation-tests.log`, `/tmp/dataset-split-evaluation-lint.log`.
+
+## Split publication and historical read verification — 2026-10-16
+
+- D3 uses an independent helpable Split head CAS and shared attempt/receipt
+  identities. Draft Committing state excludes concurrent abandon; status recovers
+  committed evidence or releases a definitively stale attempt back to Prepared.
+  Successful retries never rewind Split current revision or Dataset latest/stable.
+- Snapshot reclaim now fences the Split head after closing owner admission, and
+  helps any pending successful Split receipt before replacing its marker. Broader
+  branch/source cleanup and retention acceptance remain D5.
+- Small prepared revision indexes are filtered by receipt/current-head proof.
+  Historical revision definitions and checksum-bound member pages are available
+  through bounded reads. Cursors bind owner, revision, name, query and version;
+  no data Manifest or chunk read is required.
+- New publication tests (3) and history/member tests (2) pass, covering competing
+  editors, stale attempt reset, lost CAS response, receipt failure, historical
+  retry, no data-head mutation, invisible prepared revisions and cross-scope
+  continuation rejection. Full Dataset suite: 98 passed. Root Rust lint passes
+  after splitting a long test fixture. Logs: `/tmp/dataset-split-publication-tests.log`,
+  `/tmp/dataset-split-publication-lint.log`. Rust fmt and diff whitespace pass.

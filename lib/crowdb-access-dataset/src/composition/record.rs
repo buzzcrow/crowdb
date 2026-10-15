@@ -36,6 +36,10 @@ pub enum DraftProgress {
     Prepared {
         target: CommitTarget,
     },
+    Committing {
+        target: CommitTarget,
+        attempt: OperationId,
+    },
     Published {
         target: CommitTarget,
         attempt: OperationId,
@@ -74,7 +78,7 @@ impl DraftProgress {
                 Err(SplitError::InvalidRecord)
             }
             Self::Prepared { target } => validate_target(*target),
-            Self::Published { target, attempt } => {
+            Self::Published { target, attempt } | Self::Committing { target, attempt } => {
                 OperationId::from_bytes(attempt.as_bytes()).map_err(|_| SplitError::InvalidRecord)?;
                 validate_target(*target)
             }
@@ -118,7 +122,9 @@ impl CompositionRecord {
         }
         self.validate_source()?;
         match self.progress {
-            DraftProgress::Prepared { target } | DraftProgress::Published { target, .. } => {
+            DraftProgress::Prepared { target }
+            | DraftProgress::Published { target, .. }
+            | DraftProgress::Committing { target, .. } => {
                 let CommitTarget::Snapshot { snapshot } = target else {
                     return Err(SplitError::InvalidRecord);
                 };

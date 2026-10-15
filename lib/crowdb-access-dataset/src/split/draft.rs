@@ -55,7 +55,10 @@ impl SplitDraftRecord {
                 }
             }
         }
-        if let DraftProgress::Prepared { target } | DraftProgress::Published { target, .. } = self.progress {
+        if let DraftProgress::Prepared { target }
+        | DraftProgress::Published { target, .. }
+        | DraftProgress::Committing { target, .. } = self.progress
+        {
             if !matches!(target, CommitTarget::SplitRevision { snapshot, .. } if snapshot == self.snapshot) {
                 return Err(SplitError::InvalidRecord);
             }

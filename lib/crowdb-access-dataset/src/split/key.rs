@@ -47,3 +47,29 @@ fn scoped(prefix: &[u8], identity: &DatasetIdentity, snapshot: SnapshotId) -> Re
     key.extend_from_slice(snapshot.as_bytes());
     Ok(key)
 }
+
+/// Durable proof that a complete revision was published.
+/// # Errors
+/// Rejects invalid Dataset identities.
+pub fn committed_revision(
+    identity: &DatasetIdentity,
+    snapshot: SnapshotId,
+    revision: SplitRevisionId,
+) -> Result<Vec<u8>, DatasetError> {
+    let mut key = scoped(b"DS\0SRC\0", identity, snapshot)?;
+    key.extend_from_slice(revision.as_bytes());
+    Ok(key)
+}
+
+/// Small discovery index written before publication and filtered by commit proof.
+/// # Errors
+/// Rejects invalid Dataset identities.
+pub fn revision_summary(
+    identity: &DatasetIdentity,
+    snapshot: SnapshotId,
+    revision: SplitRevisionId,
+) -> Result<Vec<u8>, DatasetError> {
+    let mut key = scoped(b"DS\0SRI\0", identity, snapshot)?;
+    key.extend_from_slice(revision.as_bytes());
+    Ok(key)
+}

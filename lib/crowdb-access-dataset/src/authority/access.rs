@@ -198,6 +198,7 @@ impl DatasetAuthority {
             Ok(())
         })
         .await?;
+        self.fence_split_publication(identity, snapshot).await?;
         // Invalidate publishers that read the old head before checking the admission fence.
         let key = key::head(identity)?;
         for _ in 0..64 {
