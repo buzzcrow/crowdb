@@ -302,7 +302,14 @@ until its corresponding API and visibility tests pass.
   inspection_models,query}.rs`, `dataset_inspection_contract_test.rs`, OpenAPI.
   Exit: canonical binary IDs/cursors, bounded strict query handling, commit
   visibility, auth, metadata provenance and pagination tests pass.
-- [~] **E2b Complete public endpoints**: expose capabilities, head generation,
+- [x] **E2b Expose Split lifecycle endpoints**: strict versioned definition,
+  policy, provenance and revision DTOs; begin/edit/evaluate/prepare/publish/status/
+  abandon plus history/head/member pages. Files: `dataset/api/v2/{predicate,
+  split_models,split_requests,split_responses,splits}.rs`, Split HTTP contract and
+  restart/conflict tests. Exit: explicit null versus omitted preconditions, stable
+  operation retries, historical reads, exact names and no data-head mutation pass.
+  Mutation capability advertisement waits for C2/D5c cleanup completion.
+- [~] **E2c Complete composition and read endpoints**: expose capabilities, head generation,
   discovery/metadata preparation, composition, revision drafts/commit/status/
   history and scoped member/read operations. Suggested v2 route families under
   `/namespaces/{ns}/datasets/{dataset}`: `/head`, `/snapshot-inventory`,
@@ -766,3 +773,22 @@ failure; record actual failures and add Blocked only when that workflow requires
   DTO schemas are documented; optional standalone YAML parsing was unavailable
   because neither PyYAML nor the Node yaml package is installed. Validate the
   complete document with the release documentation tooling before F completion.
+
+### Split lifecycle HTTP verification
+
+- Strict DTOs cover predicates, weighted definitions with exact u64 seeds, frozen
+  provenance, policy, operation/draft revisions and publication preconditions.
+  Missing nullable preconditions differ from explicit null; unknown fields fail.
+- Routes expose begin/edit/status/abandon, bounded evaluate, prepare/publish,
+  current head, committed history/revisions and exact-name member pagination.
+  Prepared revisions remain invisible; stale publication retains the candidate;
+  historical receipt retry never moves current or Dataset latest/stable.
+- `pixi run clean-env && pixi run cargo test -p crowdb-access-server --test
+  dataset_split_contract_test --test dataset_split_recovery_contract_test --test
+  dataset_inspection_contract_test --test dataset_v2_contract_test`: nine passed.
+  Restart test resumes a partial evaluation, publishes an empty whole-set revision,
+  rejects a competing publisher and still reads the older complete revision.
+- `cargo test -p crowdb-access-dataset --test commit_record_test`: three passed.
+  `rs-lint`, `rs-fmt-check`, `git diff --check`: passed. OpenAPI records the new
+  operations. Mutation advertisement remains deferred until abandoned/superseded
+  metadata cleanup is integrated; these HTTP tests do not claim native E2E delivery.

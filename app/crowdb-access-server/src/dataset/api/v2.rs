@@ -5,7 +5,12 @@
 
 mod inspection;
 mod inspection_models;
+mod predicate;
 mod query;
+mod split_models;
+mod split_requests;
+mod split_responses;
+mod splits;
 
 use super::{json, read_body, ApiError, ApiResult, DatasetHttpService};
 use crowdb_access_dataset::{DatasetIdentity, NamespacePath};
@@ -60,6 +65,18 @@ impl DatasetHttpService {
             let identity =
                 DatasetIdentity::new(NamespacePath::root(), &parts[6]).map_err(|_| ApiError::invalid())?;
             let tail: Vec<_> = parts[7..].iter().map(String::as_str).collect();
+            if matches!(
+                tail.as_slice(),
+                ["split-drafts", ..]
+                    | [
+                        "snapshots",
+                        _,
+                        "split-drafts" | "split-head" | "split-revisions",
+                        ..
+                    ]
+            ) {
+                return self.v2_splits(&identity, &tail, request).await;
+            }
             return self.v2_inspection(&identity, &tail, request).await;
         }
         Err(ApiError::not_found())

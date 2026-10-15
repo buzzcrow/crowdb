@@ -243,6 +243,270 @@ paths:
               schema: {$ref: '#/components/schemas/InspectionPreparation'}
         default:
           $ref: '#/components/responses/InspectionError'
+  /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/split-head:
+    get:
+      operationId: splitHead
+      parameters:
+        - in: path
+          name: dataset
+          required: true
+          schema: {type: string}
+        - in: path
+          name: snapshot
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: Revision-bound operation result
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SplitHead'}
+        default:
+          $ref: '#/components/responses/InspectionError'
+  /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/split-revisions:
+    get:
+      operationId: splitHistory
+      parameters:
+        - in: path
+          name: dataset
+          required: true
+          schema: {type: string}
+        - in: path
+          name: snapshot
+          required: true
+          schema: {type: string}
+        - {$ref: '#/components/parameters/after'}
+        - {$ref: '#/components/parameters/limit'}
+      responses:
+        '200':
+          description: Revision-bound operation result
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SplitRevisionPage'}
+        default:
+          $ref: '#/components/responses/InspectionError'
+  /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/split-revisions/{revision}:
+    get:
+      operationId: splitRevision
+      parameters:
+        - in: path
+          name: dataset
+          required: true
+          schema: {type: string}
+        - in: path
+          name: snapshot
+          required: true
+          schema: {type: string}
+        - in: path
+          name: revision
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: Revision-bound operation result
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SplitRevision'}
+        default:
+          $ref: '#/components/responses/InspectionError'
+  /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/split-revisions/{revision}/splits/{name}/members:
+    get:
+      operationId: splitMembers
+      parameters:
+        - in: path
+          name: dataset
+          required: true
+          schema: {type: string}
+        - in: path
+          name: snapshot
+          required: true
+          schema: {type: string}
+        - in: path
+          name: revision
+          required: true
+          schema: {type: string}
+        - in: path
+          name: name
+          required: true
+          schema: {type: string}
+        - {$ref: '#/components/parameters/after'}
+        - {$ref: '#/components/parameters/limit'}
+      responses:
+        '200':
+          description: Revision-bound operation result
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SamplePage'}
+        default:
+          $ref: '#/components/responses/InspectionError'
+  /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/split-drafts:
+    post:
+      operationId: beginSplitDraft
+      parameters:
+        - in: path
+          name: dataset
+          required: true
+          schema: {type: string}
+        - in: path
+          name: snapshot
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/BeginSplit'}
+      responses:
+        '200':
+          description: Revision-bound operation result
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SplitDraft'}
+        default:
+          $ref: '#/components/responses/InspectionError'
+  /namespaces/dataset-ns/datasets/{dataset}/split-drafts/{operation}:
+    get:
+      operationId: splitDraft
+      parameters:
+        - in: path
+          name: dataset
+          required: true
+          schema: {type: string}
+        - in: path
+          name: operation
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: Revision-bound operation result
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SplitDraft'}
+        default:
+          $ref: '#/components/responses/InspectionError'
+    put:
+      operationId: editSplitDraft
+      parameters:
+        - in: path
+          name: dataset
+          required: true
+          schema: {type: string}
+        - in: path
+          name: operation
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/EditSplit'}
+      responses:
+        '200':
+          description: Revision-bound operation result
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SplitDraft'}
+        default:
+          $ref: '#/components/responses/InspectionError'
+    delete:
+      operationId: abandonSplitDraft
+      parameters:
+        - in: path
+          name: dataset
+          required: true
+          schema: {type: string}
+        - in: path
+          name: operation
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DraftRevision'}
+      responses:
+        '200':
+          description: Revision-bound operation result
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SplitDraft'}
+        default:
+          $ref: '#/components/responses/InspectionError'
+  /namespaces/dataset-ns/datasets/{dataset}/split-drafts/{operation}/evaluate:
+    post:
+      operationId: evaluateSplitDraft
+      parameters:
+        - in: path
+          name: dataset
+          required: true
+          schema: {type: string}
+        - in: path
+          name: operation
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/EvaluateDraft'}
+      responses:
+        '200':
+          description: Revision-bound operation result
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SplitPreview'}
+        default:
+          $ref: '#/components/responses/InspectionError'
+  /namespaces/dataset-ns/datasets/{dataset}/split-drafts/{operation}/prepare:
+    post:
+      operationId: prepareSplitDraft
+      parameters:
+        - in: path
+          name: dataset
+          required: true
+          schema: {type: string}
+        - in: path
+          name: operation
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DraftRevision'}
+      responses:
+        '200':
+          description: Revision-bound operation result
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SplitRevision'}
+        default:
+          $ref: '#/components/responses/InspectionError'
+  /namespaces/dataset-ns/datasets/{dataset}/split-drafts/{operation}/publish:
+    post:
+      operationId: publishSplitDraft
+      parameters:
+        - in: path
+          name: dataset
+          required: true
+          schema: {type: string}
+        - in: path
+          name: operation
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PublishSplit'}
+      responses:
+        '200':
+          description: Revision-bound operation result
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CommitReceipt'}
+        default:
+          $ref: '#/components/responses/InspectionError'
 components:
   parameters:
     dataset:
@@ -418,3 +682,267 @@ components:
           type: array
           maxItems: 100
           items: {$ref: '#/components/schemas/MatrixRow'}
+    Decimal:
+      type: string
+      pattern: '^(0|[1-9][0-9]*)$'
+      description: Exact unsigned 64-bit integer encoded as a canonical decimal string.
+    OpaqueId:
+      type: string
+      pattern: '^[0-9a-f]{32}$'
+      description: Nonzero opaque identity.
+    NullableRevision:
+      type: [string, 'null']
+      pattern: '^[0-9a-f]{32}$'
+    NullableGeneration:
+      type: [string, 'null']
+      pattern: '^[0-9a-f]{64}$'
+    Predicate:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [kind]
+          properties:
+            kind: {const: all}
+        - type: object
+          additionalProperties: false
+          required: [kind, ids]
+          properties:
+            kind: {const: explicit}
+            ids: {type: array, maxItems: 10000, items: {type: string}}
+        - type: object
+          additionalProperties: false
+          required: [kind, value]
+          properties:
+            kind: {enum: [prefix, keyword]}
+            value: {type: string, description: Nonempty canonical padded base64}
+        - type: object
+          additionalProperties: false
+          required: [kind, start, end]
+          properties:
+            kind: {const: range}
+            start: {type: string}
+            end: {type: string}
+        - type: object
+          additionalProperties: false
+          required: [kind, field, value]
+          properties:
+            kind: {const: field_match}
+            field: {type: string}
+            value: {type: string, description: Canonical padded base64; empty is an exact empty inline value}
+        - type: object
+          additionalProperties: false
+          required: [kind, items]
+          properties:
+            kind: {enum: [and, or]}
+            items: {type: array, minItems: 1, items: {$ref: '#/components/schemas/Predicate'}}
+        - type: object
+          additionalProperties: false
+          required: [kind, item]
+          properties:
+            kind: {const: not}
+            item: {$ref: '#/components/schemas/Predicate'}
+      description: Maximum depth 32 and 1024 nodes. IDs are binary base64, never text normalization.
+    SplitPolicy:
+      type: object
+      additionalProperties: false
+      required: [overlap, coverage]
+      properties:
+        overlap: {enum: [disjoint, allow_overlap]}
+        coverage: {enum: [require_complete, allow_unassigned]}
+    SplitSource:
+      type: object
+      additionalProperties: false
+      required: [snapshot, revision, name]
+      properties:
+        snapshot: {$ref: '#/components/schemas/OpaqueId'}
+        revision: {$ref: '#/components/schemas/OpaqueId'}
+        name: {type: string, minLength: 1, description: Exact UTF-8 name, at most 255 bytes}
+    SplitOrigin:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [kind]
+          properties:
+            kind: {const: evaluated}
+        - type: object
+          additionalProperties: false
+          required: [kind, source]
+          properties:
+            kind: {const: inherited}
+            source: {$ref: '#/components/schemas/SplitSource'}
+    SplitDefinition:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [kind, predicate]
+          properties:
+            kind: {const: selection}
+            predicate: {$ref: '#/components/schemas/Predicate'}
+        - type: object
+          additionalProperties: false
+          required: [kind, seed, weights, index]
+          properties:
+            kind: {const: weighted_partition}
+            seed: {$ref: '#/components/schemas/Decimal'}
+            index: {type: integer, minimum: 0}
+            weights:
+              type: array
+              minItems: 1
+              items:
+                type: object
+                additionalProperties: false
+                required: [name, weight]
+                properties:
+                  name: {type: string}
+                  weight: {type: integer, minimum: 1, maximum: 4294967295}
+      description: Uses sample-id-sha256-v1 with ordered weights and checked u32 sum.
+    DraftSplit:
+      type: object
+      additionalProperties: false
+      required: [name, definition, origin]
+      properties:
+        name: {type: string}
+        definition: {$ref: '#/components/schemas/SplitDefinition'}
+        origin: {$ref: '#/components/schemas/SplitOrigin'}
+    BeginSplit:
+      type: object
+      additionalProperties: false
+      required: [operation, expected_revision, policy, splits]
+      properties:
+        operation: {$ref: '#/components/schemas/OpaqueId'}
+        expected_revision: {$ref: '#/components/schemas/NullableRevision'}
+        policy: {$ref: '#/components/schemas/SplitPolicy'}
+        splits: {type: array, items: {$ref: '#/components/schemas/DraftSplit'}}
+    EditSplit:
+      type: object
+      additionalProperties: false
+      required: [edit, expected_revision, policy, splits]
+      properties:
+        edit: {$ref: '#/components/schemas/OpaqueId'}
+        expected_revision: {$ref: '#/components/schemas/Decimal'}
+        policy: {$ref: '#/components/schemas/SplitPolicy'}
+        splits: {type: array, items: {$ref: '#/components/schemas/DraftSplit'}}
+    DraftRevision:
+      type: object
+      additionalProperties: false
+      required: [expected_revision]
+      properties:
+        expected_revision: {$ref: '#/components/schemas/Decimal'}
+    EvaluateDraft:
+      type: object
+      additionalProperties: false
+      required: [expected_revision, expected_page]
+      properties:
+        expected_revision: {$ref: '#/components/schemas/Decimal'}
+        expected_page: {$ref: '#/components/schemas/Decimal'}
+    PublishSplit:
+      type: object
+      additionalProperties: false
+      required: [attempt, revision, expected_head]
+      properties:
+        attempt: {$ref: '#/components/schemas/OpaqueId'}
+        revision: {$ref: '#/components/schemas/OpaqueId'}
+        expected_head: {$ref: '#/components/schemas/NullableGeneration'}
+      description: Expected revision was pinned by BeginSplit. Null head is explicit; omission is invalid. A conflict retains the candidate.
+    CommitTarget:
+      oneOf:
+        - type: object
+          required: [kind, snapshot]
+          properties:
+            kind: {const: snapshot}
+            snapshot: {$ref: '#/components/schemas/OpaqueId'}
+        - type: object
+          required: [kind, snapshot, revision]
+          properties:
+            kind: {const: split_revision}
+            snapshot: {$ref: '#/components/schemas/OpaqueId'}
+            revision: {$ref: '#/components/schemas/OpaqueId'}
+    DraftProgress:
+      type: object
+      required: [state]
+      properties:
+        state: {enum: [editing, evaluating, evaluated, prepared, committing, published, abandoned]}
+        input_revision: {$ref: '#/components/schemas/Decimal'}
+        next_page: {$ref: '#/components/schemas/Decimal'}
+        binding: {type: string}
+        target: {$ref: '#/components/schemas/CommitTarget'}
+        attempt: {$ref: '#/components/schemas/OpaqueId'}
+    SplitDraft:
+      type: object
+      required: [operation, snapshot, expected_revision, revision, policy, splits, progress]
+      properties:
+        operation: {$ref: '#/components/schemas/OpaqueId'}
+        snapshot: {$ref: '#/components/schemas/OpaqueId'}
+        expected_revision: {$ref: '#/components/schemas/NullableRevision'}
+        revision: {$ref: '#/components/schemas/Decimal'}
+        policy: {$ref: '#/components/schemas/SplitPolicy'}
+        splits: {type: array, items: {$ref: '#/components/schemas/DraftSplit'}}
+        progress: {$ref: '#/components/schemas/DraftProgress'}
+    SplitRevision:
+      type: object
+      required: [snapshot, revision, operation, evaluator_version, policy, splits]
+      properties:
+        snapshot: {$ref: '#/components/schemas/OpaqueId'}
+        revision: {$ref: '#/components/schemas/OpaqueId'}
+        operation: {$ref: '#/components/schemas/OpaqueId'}
+        evaluator_version: {const: 1}
+        policy: {$ref: '#/components/schemas/SplitPolicy'}
+        splits:
+          type: array
+          items:
+            type: object
+            required: [name, definition, origin, count]
+            properties:
+              name: {type: string}
+              definition: {$ref: '#/components/schemas/SplitDefinition'}
+              origin: {$ref: '#/components/schemas/SplitOrigin'}
+              count: {$ref: '#/components/schemas/Decimal'}
+    SplitHead:
+      type: object
+      required: [snapshot, revision, generation]
+      properties:
+        snapshot: {$ref: '#/components/schemas/OpaqueId'}
+        revision: {$ref: '#/components/schemas/NullableRevision'}
+        generation: {$ref: '#/components/schemas/NullableGeneration'}
+    SplitRevisionPage:
+      type: object
+      required: [entries, after]
+      properties:
+        after: {type: [string, 'null']}
+        entries:
+          type: array
+          maxItems: 100
+          items:
+            type: object
+            required: [snapshot, revision, operation, split_count]
+            properties:
+              snapshot: {$ref: '#/components/schemas/OpaqueId'}
+              revision: {$ref: '#/components/schemas/OpaqueId'}
+              operation: {$ref: '#/components/schemas/OpaqueId'}
+              split_count: {type: integer}
+    SplitPreview:
+      type: object
+      required: [input_revision, next_page, complete, member_counts, validation]
+      properties:
+        input_revision: {$ref: '#/components/schemas/Decimal'}
+        next_page: {$ref: '#/components/schemas/Decimal'}
+        complete: {type: boolean}
+        member_counts: {type: array, items: {$ref: '#/components/schemas/Decimal'}}
+        validation:
+          type: object
+          required: [scanned, assigned, unassigned, overlapping, unassigned_examples, overlap_examples]
+          properties:
+            scanned: {$ref: '#/components/schemas/Decimal'}
+            assigned: {$ref: '#/components/schemas/Decimal'}
+            unassigned: {$ref: '#/components/schemas/Decimal'}
+            overlapping: {$ref: '#/components/schemas/Decimal'}
+            unassigned_examples: {type: array, items: {type: string}}
+            overlap_examples: {type: array, items: {type: string}}
+    CommitReceipt:
+      type: object
+      required: [attempt, target, expected_head, committed_head]
+      properties:
+        attempt: {$ref: '#/components/schemas/OpaqueId'}
+        target: {$ref: '#/components/schemas/CommitTarget'}
+        expected_head: {$ref: '#/components/schemas/NullableGeneration'}
+        committed_head: {type: string, pattern: '^[0-9a-f]{64}$'}
