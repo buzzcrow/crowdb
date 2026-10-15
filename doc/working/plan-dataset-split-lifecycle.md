@@ -389,3 +389,11 @@ failure; record actual failures and add Blocked only when that workflow requires
   focused tests passed again after strict codec checks, and crate all-target
   clippy passed. Initial fixture syntax error was fixed; a concurrent lint using
   the old dependency graph was rerun after the sha2 dependency settled.
+- A3b in progress: fixed-size `CommitAttempt`, `CommitTarget`, `CommitGeneration`
+  and `SuccessfulCommit` records reject unsupported versions, missing expected
+  head, unknown fields and zero identities. Three focused record tests pass.
+  `DatasetAuthority::inspect_head` observes names/generation from one stored head;
+  the v2 `/head` route and SDK helper advertise/require `head-inspection`.
+  HTTP v1/v2 (5 tests), SDK workspace (15 tests), root and SDK clippy pass.
+  Attempt/receipt storage and helping CAS are still C4, not implemented merely
+  because record types exist. Composition/Split draft state remains A3b work.

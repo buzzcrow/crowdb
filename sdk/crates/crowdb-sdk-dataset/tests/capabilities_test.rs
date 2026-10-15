@@ -53,3 +53,20 @@ async fn discovery_uses_v2_and_old_servers_cannot_trigger_a_downgraded_write() {
         .starts_with("GET /api/dataset/v2/capabilities "));
     assert!(old.requests.try_recv().is_err());
 }
+
+#[tokio::test]
+async fn head_is_not_requested_without_its_capability() {
+    use crowdb_sdk_dataset::{DatasetClient, DatasetHead};
+    let mut server = peer::TestPeer::start(r#"{"api_version":2,"capabilities":[]}"#, false).await;
+    let client = DatasetClient::new(&server.endpoint, "example", None).unwrap();
+    assert!(client.head().await.is_err());
+    assert!(server
+        .requests
+        .recv()
+        .await
+        .unwrap()
+        .starts_with("GET /api/dataset/v2/capabilities "));
+    assert!(server.requests.try_recv().is_err());
+    serde_json::from_str::<DatasetHead>(r#"{"latest":null,"stable":null,"generation":null}"#).unwrap();
+    assert!(serde_json::from_str::<DatasetHead>(r#"{"latest":null,"stable":null}"#).is_err());
+}

@@ -3,7 +3,8 @@
 
 ### R237: dataset — Named Split Lifecycle, HTTP API and SDK Support
 
-**Status**: In progress; baseline verification started. Execute
+**Status**: In progress; v2 discovery/head inspection and foundational Split
+records are implemented; mutation lifecycle and acceptance remain pending. Execute
 [the backend/SDK plan](../working/plan-dataset-split-lifecycle.md) before R236.
 Full Split support, including API, SDK and UI, is required by the user.
 R237 owns all shared Dataset backend/API/SDK prerequisites; R236 owns Console UI.

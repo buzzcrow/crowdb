@@ -43,7 +43,9 @@ pub use manifest::{
 };
 pub use namespace::{DatasetIdentity, NamespacePath, DEFAULT_NAMESPACE};
 pub use planner::{Ordering, ReadFailure, ReadLimits, ReadPlan, RetryPolicy, Selection, MAX_BATCH_SIZE};
-pub use publication::{PublicationState, SnapshotPublication};
+pub use publication::{
+    CommitAttempt, CommitGeneration, CommitTarget, PublicationState, SnapshotPublication, SuccessfulCommit,
+};
 pub use shuffle::{
     GroupShuffle, SampleShuffle, ShuffleSpec, DEFAULT_MAX_SHUFFLE_BYTES, DEFAULT_MAX_SHUFFLE_OBJECTS,
 };
@@ -56,7 +58,7 @@ pub use wire::{
 };
 
 pub use adapter::{BoundedPrefetch, WorkerPartition};
-pub use authority::{AuthorityError, DatasetAuthority, SampleView};
+pub use authority::{AuthorityError, DatasetAuthority, DatasetHead, SampleView};
 pub use chunk_store::{
     unavailable_chunk_reader, ChunkKvDatasetStore, ChunkReadError, ChunkReader, ReadCancellation,
 };

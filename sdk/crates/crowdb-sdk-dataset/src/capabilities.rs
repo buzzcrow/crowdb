@@ -12,6 +12,20 @@ pub struct DatasetCapabilities {
     pub capabilities: Vec<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct DatasetHead {
+    #[serde(deserialize_with = "required_option")]
+    pub latest: Option<String>,
+    #[serde(deserialize_with = "required_option")]
+    pub stable: Option<String>,
+    #[serde(deserialize_with = "required_option")]
+    pub generation: Option<String>,
+}
+
+fn required_option<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Option::<String>::deserialize(d)
+}
+
 impl DatasetCapabilities {
     /// # Errors
     /// Rejects an unsupported protocol version or a missing required capability.
@@ -31,6 +45,16 @@ impl DatasetCapabilities {
 }
 
 impl DatasetClient {
+    /// Reads mutable names and their opaque generation in one server observation.
+    /// # Errors
+    /// Rejects unsupported capability, missing Dataset or invalid server responses.
+    pub async fn head(&self) -> Result<DatasetHead, Error> {
+        self.capabilities().await?.require(&["head-inspection"])?;
+        let mut path = self.path(&["head"]);
+        path[2] = "v2";
+        self.http.json_idempotent::<(), _>("GET", &path, None).await
+    }
+
     /// Discovers capabilities without mutating a Dataset. A v1-only server returns
     /// an explicit service error; the SDK never retries a v2 write through v1.
     /// # Errors

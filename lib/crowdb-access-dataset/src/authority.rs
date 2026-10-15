@@ -2,6 +2,7 @@ mod access;
 mod head;
 mod projection;
 
+pub use head::DatasetHead;
 use head::{decode_head, encode_head};
 mod publication;
 

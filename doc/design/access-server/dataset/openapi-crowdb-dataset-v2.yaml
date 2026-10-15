@@ -15,6 +15,28 @@ servers:
 security:
   - bearerAuth: []
 paths:
+  /namespaces/dataset-ns/datasets/{dataset}/head:
+    get:
+      operationId: datasetHead
+      summary: Read mutable names and their current opaque head generation
+      description: >-
+        Requires head-inspection capability. Generation covers the exact head
+        including its internal fence. An absent head has null generation. Stable
+        changes and reclaim fences may change generation without changing latest.
+        Clients must treat the token as opaque and preserve it without decoding.
+      parameters:
+        - in: path
+          name: dataset
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: One consistent observation of the current head
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Head'}
+        '404':
+          description: Dataset or namespace is unavailable
   /capabilities:
     get:
       operationId: datasetCapabilities
@@ -40,6 +62,19 @@ components:
       type: http
       scheme: bearer
   schemas:
+    Head:
+      type: object
+      required: [latest, stable, generation]
+      properties:
+        latest:
+          type: [string, 'null']
+          pattern: '^[0-9a-f]{32}$'
+        stable:
+          type: [string, 'null']
+          pattern: '^[0-9a-f]{32}$'
+        generation:
+          type: [string, 'null']
+          pattern: '^[0-9a-f]{64}$'
     Capabilities:
       type: object
       required: [api_version, capabilities]
