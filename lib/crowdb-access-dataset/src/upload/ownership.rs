@@ -20,6 +20,9 @@ impl DatasetUploads {
         for _ in 0..16 {
             let stored = self.store.get(location).await?.ok_or(UploadError::NotFound)?;
             let mut record = decode_session(&stored.bytes)?;
+            if record.retired_owners.binary_search(&owner).is_ok() {
+                return Err(UploadError::Conflict);
+            }
             if record.owners.contains(&owner) {
                 return Ok(record);
             }

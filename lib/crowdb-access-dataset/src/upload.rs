@@ -7,6 +7,7 @@ mod index;
 mod ownership;
 mod parts;
 mod registry;
+mod retirement;
 
 use bytes::Bytes;
 use md5::{Digest, Md5};
@@ -67,6 +68,8 @@ pub struct UploadRecord {
     #[serde(skip)]
     pub parts: Vec<UploadPart>,
     owners: Vec<OperationId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    retired_owners: Vec<OperationId>,
     registry_page: Option<u64>,
     #[serde(default)]
     registry_generation: Option<OperationId>,
@@ -138,6 +141,7 @@ impl DatasetUploads {
             state: UploadState::Open,
             parts: Vec::new(),
             owners: Vec::new(),
+            retired_owners: Vec::new(),
             registry_page: None,
             registry_generation: None,
             registry_fence: None,
@@ -278,7 +282,14 @@ fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, UploadError> {
 }
 fn decode_session(bytes: &[u8]) -> Result<UploadRecord, UploadError> {
     let record: UploadRecord = decode(bytes)?;
-    if record.version != 2
+    if !matches!(record.version, 2 | 3)
+        || (record.version == 2 && !record.retired_owners.is_empty())
+        || record.retired_owners.len() > 4096
+        || record.retired_owners.windows(2).any(|pair| pair[0] >= pair[1])
+        || record
+            .owners
+            .iter()
+            .any(|owner| record.retired_owners.binary_search(owner).is_ok())
         || record.length == 0
         || record.part_size == 0
         || record.part_size as usize > MAX_UPLOAD_PART_BYTES

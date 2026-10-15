@@ -221,8 +221,8 @@ equivalent.
 ## 9. Retention and reclamation
 
 `retain` and `release` apply to an immutable Snapshot ID. The latest Snapshot,
-stable Snapshot, retained Snapshots, parent-reachable history, and Snapshots
-with active-read leases are protected from reclamation.
+stable Snapshot, retained Snapshots, parents of live committed Snapshots on any
+branch, and Snapshots with active-read leases are protected from reclamation.
 
 Reclamation is idempotent. It removes only unreachable Dataset-owned metadata
 and payload references. A payload shared by two retained or readable

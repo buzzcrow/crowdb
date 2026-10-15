@@ -693,3 +693,19 @@ failure; record actual failures and add Blocked only when that workflow requires
 - `pixi run rs-fmt-check` and `git diff --check`: passed.
 - C2/D5c remains open for obsolete preparation/scratch cleanup and durable upload
   owner retirement; this checkpoint covers the current prepared candidate fence.
+
+### Upload owner retirement verification
+
+- Added `DatasetUploads::retire_owner` for terminal publication cleanup: atomically
+  remove only that owner and persist revocation, including a not-yet-arrived claim.
+  Other owners continue protecting shared data. Version 3 sessions prevent older
+  writers from silently ignoring revocations; version 2 remains readable.
+- Revoked owner IDs are sorted, unique and capped at 4096 per upload. Ordinary
+  reversible release retains its existing behavior. Boundary cleanup will use
+  retirement when E2 connects composition ownership and cancellation.
+- `pixi run cargo test -p crowdb-access-dataset`, `pixi run rs-lint`,
+  `pixi run rs-fmt-check`, `git diff --check`: passed.
+  Logs: `/tmp/dataset-upload-retirement-tests.log`,
+  `/tmp/dataset-upload-retirement-lint.log`.
+- Permanent Dataset architecture now records branch protection, reclaim ownership,
+  bounded metadata cleanup and persistence-version rules.

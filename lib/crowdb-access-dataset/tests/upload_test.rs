@@ -174,3 +174,46 @@ async fn fenced_abandoned_range_is_retired_before_retrying_the_same_logical_part
     assert_eq!(payloads.writes.load(Ordering::Acquire), 2);
     assert_eq!(uploads.read_part(&key, 0).await.unwrap(), b"data".as_slice());
 }
+
+#[tokio::test]
+async fn retired_owner_cannot_reclaim_shared_upload_after_restart() {
+    let store = Arc::new(TestStore::default());
+    let payloads = Arc::new(TestPayload::default());
+    let uploads = DatasetUploads::new(store.clone(), payloads.clone());
+    let key = location("retired");
+    uploads
+        .create(&key, 4, 4, Md5::digest(b"data").into(), 100)
+        .await
+        .unwrap();
+    uploads
+        .put_part(&key, 0, Bytes::from_static(b"data"), 1)
+        .await
+        .unwrap();
+    assert_eq!(uploads.complete(&key, 2).await.unwrap().version, 2);
+    let first = OperationId::random();
+    let second = OperationId::random();
+    uploads.claim(&key, first, 3).await.unwrap();
+    uploads.claim(&key, second, 3).await.unwrap();
+    uploads.retire_owner(&key, first).await.unwrap();
+    let late = OperationId::random();
+    uploads.retire_owner(&key, late).await.unwrap();
+    assert!(matches!(
+        uploads.claim(&key, late, 4).await,
+        Err(UploadError::Conflict)
+    ));
+    let restarted = DatasetUploads::new(store, payloads);
+    assert_eq!(restarted.metadata(&key).await.unwrap().version, 3);
+    assert!(matches!(
+        restarted.claim(&key, first, 4).await,
+        Err(UploadError::Conflict)
+    ));
+    assert!(matches!(restarted.abort(&key).await, Err(UploadError::Conflict)));
+    restarted.retire_owner(&key, first).await.unwrap();
+    assert_eq!(restarted.read_part(&key, 0).await.unwrap(), b"data".as_slice());
+    restarted.retire_owner(&key, second).await.unwrap();
+    assert!(restarted.abort(&key).await.unwrap().cleanup_complete);
+    assert!(matches!(
+        restarted.claim(&key, second, 5).await,
+        Err(UploadError::Conflict)
+    ));
+}

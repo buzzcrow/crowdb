@@ -253,12 +253,26 @@ fetch never implies application acknowledgement.
 ### 10.3 Retention and reclaim flow
 
 Reclaim atomically fences new reads, invalidates stale head publishers with a
-head nonce, and rechecks latest, stable, explicit retention and parent ancestry.
+head nonce, and rechecks latest, stable, explicit retention and all live committed
+child branches. Temporary child admission fences do not prove retirement. A
+reclaimer owns a CAS token; only that owner can reopen admission or enter the
+irreversible retiring phase. Concurrent stale reclaimers cannot undo retirement.
 An Aborted Snapshot tombstone preserves the original Manifest while payload
 cleanup is pending and prevents publication retry resurrection. Upload ownership
 is released for that operation only; other Snapshot owners preserve shared
 bytes. Deferred physical cleanup remains pending. Shared range retirement does
 not count as a reclaimed whole chunk.
+
+`reclaim_snapshot_metadata_step` persists phase and continuation while deleting
+at most twenty metadata keys per step. It removes Manifest storage, inspection
+projections and Snapshot-owned Split revisions/member pages. Commit receipts,
+head fences and terminal retirement evidence remain. A retry helps the final
+status marker if deletion completed before the response or status write failed.
+
+`retire_owner` permanently revokes one publication's upload claim with the same
+session CAS that removes its ownership. A delayed claim for that operation then
+conflicts; other owners remain valid. Sessions retain at most 4096 retired owner
+IDs and report capacity explicitly. Ordinary `release` remains reversible.
 
 Upload expiry scans one bounded registry page per background sweep. Registration
 and removal use generation nonces and session CAS fences so stale cleanup cannot
@@ -281,8 +295,11 @@ operation IDs under one overall deadline. Authentication, integrity and semantic
 conflicts are not blanket retried. File downloads use a private temporary file
 and rename only after successful integrity verification.
 
-Head and lease envelopes decode legacy version 1 but write version 2 with
-publication/reclaim fencing and scoped leases. This metadata upgrade is one-way:
+Head envelopes decode legacy versions and use version 3 for commit-attempt
+markers. Access envelopes decode versions 1 and 2 and write version 3 with scoped
+leases, reclaim ownership and terminal retirement. Upload sessions decode version
+2; permanent owner retirement upgrades a session to version 3 so an older writer
+cannot ignore revocation. This metadata upgrade is one-way:
 do not downgrade an upgraded authority or run old and new authority writers
 against the same Dataset store. Immutable Dataset/Snapshot/Manifest encodings
 remain compatible. Upload registry pages also decode the initial array form and
