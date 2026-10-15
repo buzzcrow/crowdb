@@ -35,7 +35,7 @@ export function DiskBackingProperties({ nodeId, groupId, diskId, observationKey 
   const fields = record ? [
     ['Container path', record.container_path], ['Backend', record.backend === 'file' ? 'File' : 'Block device'],
     ['Media', record.media_type === null ? 'Unknown' : ['HDD', 'SSD', 'Zoned SSD', 'SMR HDD'][record.media_type] ?? 'Unknown'],
-    ['Backing identity', record.backing_identity], ['Allocation mode', record.backend === 'block-device' ? 'Raw device' : record.sparse ? 'Sparse' : 'Preallocated'],
+    ['Backing identity', record.backing_identity], ['Allocation mode', record.backend === 'block-device' ? 'Raw device' : record.sparse ? 'Sparse' : record.container_path.endsWith(`/managed-${record.operation_id}.img`) ? 'Preallocated' : 'Allocated file · source policy unknown'],
     ['Retained membership', record.removed ? 'Removed' : 'Registered'], ['DiskDB owner', record.owner ?? 'Unassigned'],
     ['KV binding', record.binding ?? 'Unbound'], ['Allocation units', record.capacity_units],
     ['Unit size (bytes)', String(record.unit_size_bytes)], ['Zone units', record.zone_size_units], ['Zone count', String(record.zone_count)],

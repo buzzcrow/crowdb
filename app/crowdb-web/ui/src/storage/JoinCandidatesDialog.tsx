@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { joinNodeCandidate } from '../api';
 import { Dialog } from '../components/Dialog';
+import { Select } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
 import type { DiskGroupEntry } from '../types';
 import { formatBytes } from '../utils/capacity';
@@ -63,18 +64,18 @@ export function JoinCandidatesDialog({ nodeId, disks, groups, onClose, onAccepte
       <p>Select at most 16 supplied media and their existing target groups. A group has one media class; backend file/device does not imply HDD/SSD.</p>
       <p>Every usable byte must read as zero before registration. No wipe is performed. Usable capacity contains whole zones; any physical tail is retained.</p>
       <p className="tw-text-xs tw-text-muted">Accepted operations continue on the node after closing. Closing stops any submissions that have not yet been sent.</p>
-      {reviewed.map(disk => { const state = choice(disk.path); const reason = candidateIneligible(disk); return <fieldset key={disk.path} disabled={!!sealed} className="tw-border tw-border-border tw-rounded tw-p-3 tw-space-y-2">
+      {reviewed.map((disk, index) => { const state = choice(disk.path); const reason = candidateIneligible(disk); return <fieldset key={disk.path} disabled={!!sealed} className="tw-border tw-border-border tw-rounded tw-p-3 tw-space-y-2">
         <label className="tw-flex tw-gap-2 tw-break-all"><input type="checkbox" aria-label={`Join ${disk.path}`} disabled={!!reason} checked={state.selected} onChange={event => update(disk.path, { selected: event.target.checked })} />{disk.path}</label>
         <p>{disk.backend ?? 'Unknown backend'} · {disk.capacity_bytes === null ? 'Unknown capacity' : formatBytes(disk.capacity_bytes)}</p>
         <p className="tw-text-xs tw-break-all">{disk.resource_identity ?? 'Unverified resource'}</p>
         {reason && <p role="status">{reason}</p>}
         {state.selected && <>
-          <label>Disk group <select aria-label={`Disk group for ${disk.path}`} value={state.group} onChange={event => update(disk.path, { group: event.target.value })} className="tw-bg-surface tw-border tw-border-border">
+          <div className="tw-grid tw-grid-cols-1 sm:tw-grid-cols-2 tw-gap-3"><Select id={`candidate-group-${index}`} label="Disk group" aria-label={`Disk group for ${disk.path}`} value={state.group} onChange={event => update(disk.path, { group: event.target.value })}>
             <option value="">Select group</option>{groups.map(group => <option key={group.id} value={group.id}>{group.name || `DG-${group.id}`} · DG-{group.id}</option>)}
-          </select></label>
-          <label>Media <select aria-label={`Media for ${disk.path}`} value={state.media} onChange={event => update(disk.path, { media: event.target.value })} className="tw-bg-surface tw-border tw-border-border">
+          </Select>
+          <Select id={`candidate-media-${index}`} label="Media" aria-label={`Media for ${disk.path}`} value={state.media} onChange={event => update(disk.path, { media: event.target.value })}>
             <option value="">Unknown</option><option value="0">HDD</option><option value="1">SSD</option><option value="2">Zoned SSD</option><option value="3">SMR HDD</option>
-          </select></label>
+          </Select></div>
           {disk.backend === 'block-device' && <label className="tw-block"><input type="checkbox" checked={state.rawConsent} onChange={event => update(disk.path, { rawConsent: event.target.checked })} />Authorize initialization of {disk.path}</label>}
         </>}
       </fieldset>; })}

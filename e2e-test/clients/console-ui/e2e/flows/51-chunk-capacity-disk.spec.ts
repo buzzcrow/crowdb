@@ -84,6 +84,7 @@ test('native diagnostics: hardware capacity aggregates disks and dashed status u
   await nodeCard.click({ position: { x: 5, y: 5 } });
   await expect(page.getByRole('complementary', { name: 'Entity inspector' })).toBeVisible();
   await expect(overview).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath('cluster-node-cards.png') });
   await expect(page.getByRole('navigation', { name: 'Cluster scope' }).getByRole('button', { name: 'Cluster', exact: true })).toHaveAttribute('aria-current', 'page');
   await page.getByTestId('domain-capacity').click();
   const nodeTable = page.getByRole('table', { name: 'Node capacity', exact: true });
@@ -93,6 +94,7 @@ test('native diagnostics: hardware capacity aggregates disks and dashed status u
   await page.getByRole('textbox', { name: 'Find node', exact: true }).fill('');
   await nodeTable.getByRole('button', { name: 'Capacity', exact: true }).click();
   await expect(nodeTable.getByRole('columnheader').filter({ has: page.getByRole('button', { name: 'Capacity', exact: true }) })).toHaveAttribute('aria-sort', 'ascending');
+  await page.screenshot({ path: test.info().outputPath('cluster-capacity-table.png') });
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
   await sidebar.getByTestId('tree-node-STORAGE-1').getByRole('button', { name: 'Expand', exact: true }).click();
   const item = sidebar.getByRole('button', { name: 'test-dg-hwcap (DG-591)', exact: true });
@@ -195,6 +197,7 @@ async function verifySuppliedCandidates(page: Page, request: APIRequestContext) 
     await expect(dialog.getByRole('button', { name: 'Join selected disks', exact: true })).toBeDisabled();
     await dialog.getByRole('checkbox', { name: 'Initialize the selected blank media and register them in Group 0', exact: true }).check();
   });
+  await page.screenshot({ path: test.info().outputPath('join-candidates.png') });
   const accepted = await step('accept each durable supplied disk operation', async () => {
     const replies = paths.map(path => page.waitForResponse(response => new URL(response.url()).pathname === '/api/nodes/1/disk-candidates'
       && response.request().method() === 'POST' && response.request().postDataJSON().medium.path === path));

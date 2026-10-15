@@ -6,6 +6,7 @@ import type { ServerSummary } from '../api';
 import { Domain, NodeHealth, type Node, type Rack, type HardwareCapacitySummary, type CapacityUsageResponse } from '../types';
 import { useSelection } from '../contexts/SelectionContext';
 import { useNavigationSnapshot } from '../contexts/DomainContext';
+import { Input, Select } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
 import { observeCapacity } from '../panels/capacity/observation';
 import { toUiHealth } from '../utils/entityDisplay';
@@ -68,12 +69,12 @@ export function ClusterOverview({ racks, nodes, nodeHealthById, services, hardwa
       {!readonly && (rackId === undefined ? <Button size="sm" disabled={readonly} onClick={onAddRack}>Add Rack</Button>
         : <Button size="sm" disabled={readonly} onClick={() => onAddNode(rackId)}>Add Node</Button>)}
     </header>
-    <div className="tw-flex tw-flex-wrap tw-gap-3 tw-text-sm">
-      <label>Find node <input aria-label="Find node" value={query} onChange={event => setQuery(event.target.value)} className="tw-bg-surface tw-border tw-border-border tw-rounded tw-p-1" /></label>
-      <label>Health <select aria-label="Node health" value={health} onChange={event => setHealth(event.target.value)} className="tw-bg-surface tw-border tw-border-border tw-p-1">
+    <div className="tw-flex tw-flex-wrap tw-items-end tw-gap-3 tw-text-sm">
+      <div className="tw-min-w-[12rem] tw-flex-1"><Input id={`${capacity ? 'capacity' : 'topology'}-node-query`} label="Find node" value={query} onChange={event => setQuery(event.target.value)} /></div>
+      <div className="tw-min-w-[8rem]"><Select id={`${capacity ? 'capacity' : 'topology'}-node-health`} label="Health" aria-label="Node health" value={health} onChange={event => setHealth(event.target.value)}>
         <option value="all">All</option><option value="up">Up</option><option value="down">Down</option><option value="unknown">Unknown</option>
-      </select></label>
-      <label><input type="checkbox" checked={candidatesOnly} onChange={event => setCandidatesOnly(event.target.checked)} /> With observed candidates</label>
+      </Select></div>
+      <label className="tw-flex tw-items-center tw-gap-2 tw-py-2"><input type="checkbox" checked={candidatesOnly} onChange={event => setCandidatesOnly(event.target.checked)} />With observed candidates</label>
     </div>
     <p className="tw-text-xs tw-text-muted">Registered logical capacity and last observed usage. Unknown values require an observation; open a node to discover candidates. Disk alerts reflect the last hardware observation.</p>
     {capacity && <nav aria-label="Capacity racks" className="tw-text-sm tw-space-y-2">
