@@ -3,7 +3,8 @@
 
 ### R235: console — Cluster Hardware Workspace and OCI Disk Lifecycle
 
-**Status**: Implemented; focused storage/initialization/UI acceptance verified.
+**Status**: Implementation present; focused storage/initialization/UI acceptance verified.
+Completion reopened to diagnose the remaining ordered regression failures.
 Retained for the user's consolidated review, including the deferred wider
 load/recovery failures below. R236/R237 and other backlog work are not started.
 
@@ -388,6 +389,10 @@ load/recovery failures below. R236/R237 and other backlog work are not started.
   or expanding this storage requirement into an Iceberg recovery redesign.
   Full inspection is not reported as passing; logs and reproduction commands
   remain in the execution plan.
+- Run the same image under a PID-1 init on Docker and containerd. Reap adopted
+  SSH children without consuming monitor-owned child exit statuses, and forward
+  stop signals to the monitor so its ordered shutdown remains authoritative.
+  Do not raise PID limits or let exit-status collection race Tokio's child owner.
 - Short-lived SSH control requests use a current-thread runtime, independent of
   long-running service worker settings. They must not create one host-sized
   thread pool per status observation. Preserve the Node PID/resource budget;

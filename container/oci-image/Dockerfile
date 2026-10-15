@@ -1,5 +1,5 @@
 FROM ubuntu:24.04@sha256:496754492fb28b4d3049432f2ca787449331e23fb14f0dd3fffea86bf5a93eb4
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates openssh-server util-linux curl && rm -rf /var/lib/apt/lists/* \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates openssh-server util-linux curl tini && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 crowdb \
     && useradd --system --uid 10001 --gid 10001 --home-dir /opt/crowdb --shell /bin/sh crowdb \
     && echo 'crowdb:crowdb' | chpasswd \
@@ -43,4 +43,4 @@ USER root
 VOLUME ["/opt/crowdb/data"]
 EXPOSE 9090 9091 9092 9095 2222
 STOPSIGNAL SIGTERM
-ENTRYPOINT ["/opt/crowdb/bin/entrypoint"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/opt/crowdb/bin/entrypoint"]

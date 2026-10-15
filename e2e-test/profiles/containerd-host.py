@@ -13,6 +13,7 @@ import time
 import urllib.request
 from pathlib import Path
 from setup_choices import diskless_setup
+from node_resources import verify_reaping, verify_stopped
 from supplied_media import Media, provision as provision_media, remove_and_rejoin, wait_for_descriptors
 
 OCI = Path(__file__).resolve().parents[2] / "container/oci-image"
@@ -56,6 +57,7 @@ def scenario(runtime, image, data, secret, mode):
         command.extend(media.arguments())
     try:
         subprocess.run(command, check=True, timeout=90)
+        verify_reaping(runtime.invoke, "crowdb-node", wait)
         if mode == "manual":
             snapshot = wait(lambda: request("/api/node/candidates"), lambda s: bool(s["local"]), "local discovery")
             owner = runtime.invoke("exec", "crowdb-node", "stat", "-c", "%u:%a", "/opt/crowdb/data/disks").strip()
@@ -83,6 +85,7 @@ def scenario(runtime, image, data, secret, mode):
                 raise AssertionError("single-node mode accepted a management mutation")
         key = runtime.invoke("exec", "crowdb-node", "cat", "/opt/crowdb/data/ssh/id_ed25519.pub")
         runtime.invoke("stop", "--time", "30", "crowdb-node")
+        verify_stopped(runtime.invoke, "crowdb-node")
         runtime.invoke("rm", "crowdb-node")
         subprocess.run(command, check=True, timeout=90)
         if mode == "manual":

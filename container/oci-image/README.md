@@ -56,6 +56,11 @@ local Docker archive. This changes only the import representation. The published
 OCI graph is unchanged; Docker's local config ID differs from its OCI manifest
 digest. Never substitute a local config ID for a registry digest.
 
+The image runs Tini as PID 1 in both runtimes. It reaps orphaned SSH session
+processes and forwards stop signals to the monitor; the monitor retains service
+shutdown ordering and child exit ownership. No runtime-specific `--init` flag is
+needed. Do not replace the image entrypoint with the monitor for normal nodes.
+
 ## Startup policies
 
 The image defaults to `CROWDB_STARTUP_MODE=manual`: discovery, SSH and UI start.

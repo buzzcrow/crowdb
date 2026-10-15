@@ -47,7 +47,7 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   scope, candidates and status actions, responsive properties drawer, init policy
   and progress. Files: `app/crowdb-web/ui/src/{shell,views,menus,managed}` and
   associated hooks/styles/tests. Acceptance A14-A18.
-- [x] **Scoped verification and documentation**: run focused component/runtime/browser
+- [~] **Scoped verification and documentation**: run focused component/runtime/browser
   tests, then fmt/lint separately; update permanent Console/deployment/OCI guides.
   Focused disk/bootstrap/UI checks passed; broader shared-workload failures
   remain explicitly deferred below and are not reported as passing. Retain this
@@ -1698,3 +1698,23 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   stat assertion difference (new diagnostics retained); diagnostic Iceberg load
   `SLOW_DOWN` without full balancing prelude. No claim of a clean full-regression
   gate or repaired wider recovery. Scope stays R235 only.
+
+### Reopened final regression work
+
+- User asked to continue completing R235. No new human decision required yet;
+  resume diagnosis of ordered Access stop failures rather than treating the
+  prior scoped result as full completion. Keep other backlog work untouched.
+- Reproduce original 14-case owner with read-only owned process/cgroup samples
+  every two seconds. Keep request/assertion budgets and production image unchanged.
+- Original owner `run-488242937bd54bd5a62801f5796edb0f` produced definitive
+  process-leak evidence: 324/320/333 zombie sshd children adopted by monitor
+  PID 1; cgroup peak reached 512 and max events rose despite only ~200 live
+  threads. Saved `orphan-processes.json`, two-second `resource-samples.jsonl`
+  and private-control latency samples. Access did not block/ignore SIGTERM.
+- Correct OCI responsibility: package Tini as PID 1, forward signals only to
+  monitor, and reap adopted SSH descendants independently of Tokio-owned service
+  children. Avoid generic waitpid in monitor and preserve PID/resource limits.
+  New real Docker/containerd acceptance creates 64 orphan sleepers, verifies
+  collection within 3s and requires graceful stop exit 0 before recreation.
+- Freed only audited three 16-GiB disposable files from old failed
+  `run-af7bf01453ce4e0ba5228c691f7aae0f`; retained diagnostic journals/logs.

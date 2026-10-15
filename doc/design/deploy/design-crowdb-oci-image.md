@@ -54,6 +54,13 @@ layout, configuration and layers; it does not require a particular distribution.
 Ubuntu supplies the existing SSH, certificate, shell and system-library runtime.
 Keep the current runtime dependency checks and UID/GID 10001 data ownership.
 
+Tini runs as PID 1 under both runtimes and reaps adopted orphan processes,
+including SSH session children. It forwards signals to the monitor child, which
+retains ordered service shutdown and the exit status of its own children.
+The monitor does not perform an indiscriminate wait that could consume an owned
+Tokio child status. This uses Tini's standard reaping/signal behavior as documented
+in its [upstream implementation](https://github.com/krallin/tini).
+
 The image contains the same monitor, UI, Rust/C++ servers, shared libraries,
 templates and entrypoint used by both deployment modes. The common
 image defaults to `CROWDB_STARTUP_MODE=manual`: discovery, SSH and UI start, then

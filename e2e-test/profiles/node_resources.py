@@ -41,3 +41,31 @@ def capture(docker, names, destination):
             result.setdefault(name, {})["capture_error"] = str(error)
     destination.write_text(json.dumps(result, indent=2))
     print("Owned node resource diagnostics: " + json.dumps(result), flush=True)
+
+
+def verify_reaping(invoke, name, wait):
+    """Create actual orphan children and require the image init to collect them."""
+    leader = invoke("exec", name, "cat", "/proc/1/comm").strip()
+    assert leader == "tini", f"OCI PID 1 must reap orphaned processes, got {leader}"
+    pid = int(json.loads(invoke("inspect", name))[0]["State"]["Pid"])
+    invoke("exec", name, "sh", "-c",
+           'i=0; while [ "$i" -lt 64 ]; do sh -c "sleep 0.05 &"; i=$((i+1)); done')
+
+    def children():
+        pending = []
+        for child in Path(f"/proc/{pid}/task/{pid}/children").read_text().split():
+            try:
+                fields = dict(line.split(":", 1) for line in Path(f"/proc/{child}/status").read_text().splitlines() if ":" in line)
+            except FileNotFoundError:
+                continue
+            if fields["Name"].strip() == "sleep" or fields["State"].strip().startswith("Z"):
+                pending.append({key: fields[key].strip() for key in ("Name", "Pid", "State")})
+        return pending
+
+    wait(children, lambda pending: not pending, "OCI init collects exited orphan children", seconds=3)
+    print("OCI init reaped 64 orphan children", flush=True)
+
+
+def verify_stopped(invoke, name):
+    state = json.loads(invoke("inspect", name))[0]["State"]
+    assert state["ExitCode"] == 0 and not state.get("OOMKilled", False), state

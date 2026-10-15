@@ -15,6 +15,7 @@ import signal
 from contextlib import nullcontext
 from node import docker, request, wait, IMAGE
 from setup_choices import diskless_setup
+from node_resources import verify_reaping, verify_stopped
 from docker_media import DockerMedia, NodeRuntime
 from supplied_media import provision as provision_media, remove_and_rejoin, wait_for_descriptors
 
@@ -61,6 +62,7 @@ def main():
             owner = docker("exec", name, "stat", "-c", "%u:%a", "/opt/crowdb/data/disks")
             assert owner.split(":")[0] == "10001", f"supplied-media parent owner/mode: {owner}"
             docker("exec", "--user", "10001:10001", name, "test", "-w", "/opt/crowdb/data/disks")
+            verify_reaping(docker, name, observe)
             discovery_id = snapshot["local"]["advertisement"]["discovery_id"]
             assert snapshot["local"]["hardware"]["memory_bytes"] <= 1024 * 1024 * 1024
             assert snapshot["local"]["hardware"]["logical_cpus"] > 0
@@ -74,6 +76,7 @@ def main():
             remove_and_rejoin(media, media_state, runtime, api, observe)
             key = docker("exec", name, "cat", "/opt/crowdb/data/ssh/id_ed25519.pub")
             docker("stop", "--time", "30", name)
+            verify_stopped(docker, name)
             docker("rm", name)
             launch()
             recovered = wait(lambda: request(origin, "/api/node/status"), lambda result: result["phase"] == "active", "host persistent recovery")
