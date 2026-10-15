@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub(super) struct TestDraftStore {
     inner: dataset_store::TestDatasetStore,
     pub lose_edit_reply: AtomicBool,
+    pub lose_data_reply: AtomicBool,
     pub lose_split_reply: AtomicBool,
     pub reject_receipts: AtomicBool,
     pub inspect_only: AtomicBool,
@@ -61,6 +62,12 @@ impl DatasetStore for TestDraftStore {
             return Err(StoreError::Rejected);
         }
         let result = self.inner.compare_exchange(key, expected, value).await?;
+        if key.starts_with(b"DS\0H\0")
+            && matches!(result, CasOutcome::Applied(_))
+            && self.lose_data_reply.swap(false, Ordering::Relaxed)
+        {
+            return Err(StoreError::Rejected);
+        }
         if key.starts_with(b"DS\0SH\0")
             && matches!(result, CasOutcome::Applied(_))
             && self.lose_split_reply.swap(false, Ordering::Relaxed)

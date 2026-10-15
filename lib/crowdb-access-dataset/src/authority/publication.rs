@@ -12,7 +12,7 @@ mod visibility;
 enum PublicationMode {
     LegacyPrepare,
     LegacyPublish,
-    Candidate,
+    Candidate(Option<crate::SplitRevisionId>),
 }
 
 use super::{decode, decode_head, decode_manifest, encode, DatasetAuthority};
@@ -120,7 +120,7 @@ impl DatasetAuthority {
         let mut manifest = match decode_manifest(&manifest_bytes) {
             Ok(manifest) => manifest,
             Err(AuthorityError::Invalid(DatasetError::InvalidManifest))
-                if !matches!(mode, PublicationMode::Candidate) =>
+                if !matches!(mode, PublicationMode::Candidate(_)) =>
             {
                 return self
                     .prepare_opaque_snapshot(identity, parent, manifest_bytes, operation)
@@ -150,7 +150,7 @@ impl DatasetAuthority {
             SnapshotId::from_bytes(&value.bytes)?
         } else {
             let current_latest = self.current_latest(identity).await?;
-            if !matches!(mode, PublicationMode::Candidate) && current_latest != parent {
+            if !matches!(mode, PublicationMode::Candidate(_)) && current_latest != parent {
                 return Err(AuthorityError::ParentConflict);
             }
             let snapshot = SnapshotId::random();
@@ -222,7 +222,16 @@ impl DatasetAuthority {
         self.persist_inspection_index(identity, parent, &manifest).await?;
         self.bind_snapshot_candidate(
             identity,
-            &candidate::binding(snapshot, parent, operation, &manifest_bytes),
+            &candidate::binding(
+                snapshot,
+                parent,
+                operation,
+                &manifest_bytes,
+                match mode {
+                    PublicationMode::Candidate(initial) => initial,
+                    _ => None,
+                },
+            ),
         )
         .await?;
         if !matches!(mode, PublicationMode::LegacyPublish) {

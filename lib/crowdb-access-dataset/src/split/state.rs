@@ -19,6 +19,8 @@ pub(super) struct EditMarker {
 #[serde(deny_unknown_fields)]
 pub(super) struct DraftState {
     pub record: SplitDraftRecord,
+    #[serde(default)]
+    pub initial: bool,
     pub edit: Option<EditMarker>,
     #[serde(default)]
     pub evaluation: Option<super::evaluation::EvaluationProgress>,
@@ -160,10 +162,16 @@ impl DatasetAuthority {
     pub(super) async fn renew_split_draft_lease(
         &self,
         identity: &DatasetIdentity,
-        record: &SplitDraftRecord,
+        state: &DraftState,
     ) -> Result<(), SplitLifecycleError> {
-        self.require_committed_snapshot(identity, record.snapshot).await?;
-        self.validate_split_sources(identity, record).await?;
+        let record = &state.record;
+        if state.initial {
+            self.require_initial_split_owner(identity, record.snapshot, record.operation)
+                .await?;
+        } else {
+            self.require_committed_snapshot(identity, record.snapshot).await?;
+            self.validate_split_sources(identity, record).await?;
+        }
         for source in super::inheritance::source_owners(record) {
             self.touch_read_handle(identity, source, record.operation, now(), 3600)
                 .await?;

@@ -20,9 +20,7 @@ impl DatasetAuthority {
         identity: &DatasetIdentity,
         operation: OperationId,
     ) -> Result<CompositionDraft, CompositionError> {
-        let (_, state) = self.load_composition(identity, operation).await?;
-        self.help_composition_edit(identity, &state).await?;
-        Ok(state.draft)
+        self.reconcile_composition(identity, operation).await
     }
     /// Appends a bounded Sample patch page and changes schema/Splits with a revision CAS.
     /// # Errors
@@ -153,6 +151,7 @@ fn edited_state(
     next.draft.record.edit_pages += 1;
     next.edit = Some(marker);
     next.evaluation = None;
+    next.draft.preparation = None;
     Ok(next)
 }
 pub(super) fn validate_schema_extension(

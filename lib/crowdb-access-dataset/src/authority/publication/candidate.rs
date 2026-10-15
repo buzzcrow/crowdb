@@ -39,8 +39,39 @@ impl DatasetAuthority {
         if let Some(parent) = parent {
             self.require_committed_snapshot(identity, parent).await?;
         }
-        self.write_publication(identity, parent, manifest, operation, PublicationMode::Candidate)
-            .await
+        self.write_publication(
+            identity,
+            parent,
+            manifest,
+            operation,
+            PublicationMode::Candidate(None),
+        )
+        .await
+    }
+
+    pub(crate) async fn prepare_candidate_with_split(
+        &self,
+        identity: &DatasetIdentity,
+        parent: Option<SnapshotId>,
+        manifest: Vec<u8>,
+        operation: OperationId,
+        initial: SplitRevisionId,
+    ) -> Result<SnapshotId, AuthorityError> {
+        if manifest.len() > 8 * 1024 * 1024 {
+            return Err(DatasetError::ReadLimitExceeded.into());
+        }
+        decode_manifest(&manifest)?.validate()?;
+        if let Some(parent) = parent {
+            self.require_committed_snapshot(identity, parent).await?;
+        }
+        self.write_publication(
+            identity,
+            parent,
+            manifest,
+            operation,
+            PublicationMode::Candidate(Some(initial)),
+        )
+        .await
     }
 
     pub(in crate::authority) async fn bind_snapshot_candidate(
@@ -57,7 +88,7 @@ impl DatasetAuthority {
         }
     }
 
-    pub(in crate::authority) async fn snapshot_candidate(
+    pub(crate) async fn snapshot_candidate(
         &self,
         identity: &DatasetIdentity,
         snapshot: SnapshotId,
@@ -90,6 +121,7 @@ pub(in crate::authority) fn binding(
     parent: Option<SnapshotId>,
     operation: OperationId,
     manifest: &[u8],
+    initial_split: Option<SplitRevisionId>,
 ) -> CandidateBinding {
     CandidateBinding {
         version: 1,
@@ -97,7 +129,7 @@ pub(in crate::authority) fn binding(
         parent,
         operation,
         manifest_sha256: Sha256::digest(manifest).into(),
-        initial_split: None,
+        initial_split,
     }
 }
 pub(crate) fn candidate_key(
@@ -143,6 +175,7 @@ impl DatasetAuthority {
                 snapshot_record.publication.parent,
                 snapshot_record.publication.operation,
                 &candidate_manifest,
+                None,
             ),
         )
         .await?;

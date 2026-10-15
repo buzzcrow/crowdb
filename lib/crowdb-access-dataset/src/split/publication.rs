@@ -2,10 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use super::{
-    head::{reference, CommittedSplitHead},
-    key,
-    state::DraftState,
-    SplitHead, SplitLifecycleError, SplitRevisionRecord,
+    head::CommittedSplitHead, key, state::DraftState, SplitHead, SplitLifecycleError, SplitRevisionRecord,
 };
 use crate::{
     composition::DraftProgress, CasOutcome, CommitAttempt, CommitGeneration, CommitTarget, DatasetAuthority,
@@ -24,6 +21,9 @@ impl DatasetAuthority {
     ) -> Result<SuccessfulCommit, SplitLifecycleError> {
         attempt.validate()?;
         let (mut old, mut state) = self.load_split_draft(identity, operation).await?;
+        if state.initial {
+            return Err(SplitLifecycleError::Frozen);
+        }
         let (DraftProgress::Prepared { target }
         | DraftProgress::Committing { target, .. }
         | DraftProgress::Published { target, .. }) = state.record.progress
@@ -63,7 +63,7 @@ impl DatasetAuthority {
                 .await?;
             return Ok(receipt);
         }
-        self.renew_split_draft_lease(identity, &state.record).await?;
+        self.renew_split_draft_lease(identity, &state).await?;
         match state.record.progress {
             DraftProgress::Prepared { .. } => {
                 let mut next = state.clone();
@@ -101,7 +101,9 @@ impl DatasetAuthority {
                 .await?;
             return Ok(receipt);
         }
-        let observed = reference(current.as_ref(), snapshot)?;
+        let observed = self
+            .resolve_split_reference(identity, current.as_ref(), snapshot)
+            .await?;
         if observed.generation != attempt.expected_head || observed.revision != state.record.expected_revision
         {
             self.reset_split_publication(identity, old, state).await?;

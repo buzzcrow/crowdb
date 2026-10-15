@@ -63,6 +63,8 @@ impl DatasetAuthority {
             self.require_committed_snapshot(identity, parent).await?;
         }
         self.ensure_snapshot_live(identity, snapshot).await?;
+        self.validate_initial_split(identity, snapshot, candidate.initial_split)
+            .await?;
         self.mark_candidate_published(identity, &candidate).await?;
         let old_head = current
             .as_ref()

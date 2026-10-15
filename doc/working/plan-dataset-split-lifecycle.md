@@ -182,7 +182,7 @@ until its corresponding API and visibility tests pass.
   explicit 8 MiB assembled metadata limit. Initial Split prepare stays C1b/D4.
   Files: `composition/{begin,edit,state,evaluation,evaluate_step,prepare}.rs`,
   `inspection/materialize.rs`, `tests/composition{,_recovery}_test.rs`.
-- [~] **C1b Complete composition publication and initial Splits**: durable revision-CAS draft binds
+- [x] **C1b Complete composition publication and initial Splits**: durable revision-CAS draft binds
   parent and optional Split source revision, with bounded edit pages. Expose begin,
   apply-edit, inspect, evaluate-next-page, prepare and abandon operations; each
   editing request carries expected draft revision and idempotency identity.
@@ -191,7 +191,7 @@ until its corresponding API and visibility tests pass.
   Exit: complete child membership assembled without browser/full-SDK scans,
   unchanged required values remain represented through server-owned bindings,
   no invented raw chunk locators or duplicate payload uploads for inheritance.
-- [ ] **C2 Bound draft lifecycle**: successful mutation invalidates preview;
+- [~] **C2 Bound draft lifecycle**: successful mutation invalidates preview;
   preview jobs bind draft revision and persist continuation. At most one complete
   result binding wins CAS. Caller-driven bounded steps avoid a new scheduler.
   Persist input refs/digests, not local file handles. Renew source protection while
@@ -256,7 +256,7 @@ until its corresponding API and visibility tests pass.
   unknown outcomes and retain committed histories. Files: new `split/{publication,
   history}.rs`, `tests/split_publication_test.rs`. Exit: competing editors choose one
   revision; historical retry, stale attempt and deletion cannot move data latest.
-- [ ] **D4 Bind initial revision to data publication**: prepare initial Split
+- [x] **D4 Bind initial revision to data publication**: prepare initial Split
   pages/binding before C4's data commit. Data commit evidence gates all initial
   visibility; lazy/helped initialization of Split head must use that binding and
   never overwrite a later revision. Independent Split edits require committed
@@ -621,3 +621,23 @@ failure; record actual failures and add Blocked only when that workflow requires
 - Preparation currently accepts data-only drafts; initial Split binding, publish
   recovery and durable cleanup remain active C1b/C2/D4/D5 work. No mutation
   capability is advertised to HTTP/SDK clients yet.
+
+### Initial Split and composition publication verification
+
+- Candidate binding now includes an immutable initial revision. Internal initial
+  Split preparation uses the candidate projection in bounded windows; public
+  readers and independent Split mutation still require a committed data owner.
+- Data commit requires the complete initial Split draft to be Prepared. Data
+  receipt gates initial revision visibility and provides a virtual initial head;
+  the first independent revision CAS does not overwrite or reinitialize it.
+- Composition Prepared -> Committing -> Published recovers lost responses through
+  durable receipts, excludes abandonment, and retains the candidate after a stale
+  expected-head conflict. Historical retries do not move either head backward.
+- `pixi run cargo test -p crowdb-access-dataset`: passed, full output
+  `/tmp/dataset-initial-split-tests.log`. Five focused initial/publication cases
+  also passed after tightening the initial-prepared gate, including pinned
+  parent revision changes, partial invisibility, inheritance and lost head reply.
+- `pixi run rs-lint`, `pixi run rs-fmt-check`, `git diff --check`: passed.
+  Lint output: `/tmp/dataset-initial-split-lint.log`.
+- C2/D5 still owns candidate abandonment fencing, durable orphan cleanup and
+  branch-aware ancestry protection; HTTP/SDK integration remains Phase E.

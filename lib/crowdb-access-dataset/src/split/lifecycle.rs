@@ -77,6 +77,7 @@ impl DatasetAuthority {
         let source_leases = super::inheritance::source_owners(&record).into_iter().collect();
         let state = DraftState {
             record,
+            initial: false,
             source_leases,
             edit: None,
             evaluation: None,
@@ -94,7 +95,7 @@ impl DatasetAuthority {
             current.record.progress,
             DraftProgress::Abandoned | DraftProgress::Published { .. }
         ) {
-            self.renew_split_draft_lease(identity, &current.record).await?;
+            self.renew_split_draft_lease(identity, &current).await?;
         }
         Ok(current.record)
     }
@@ -129,6 +130,9 @@ impl DatasetAuthority {
             return Ok(record);
         }
         let (old, state) = self.load_split_draft(identity, operation).await?;
+        if state.initial {
+            return Err(SplitLifecycleError::Frozen);
+        }
         self.help_split_edit(identity, &state).await?;
         if let Some(record) = self.split_edit_receipt(identity, operation, &marker).await? {
             return Ok(record);
@@ -136,7 +140,7 @@ impl DatasetAuthority {
         if state.record.revision != edit.expected_revision {
             return Err(SplitLifecycleError::Conflict);
         }
-        self.renew_split_draft_lease(identity, &state.record).await?;
+        self.renew_split_draft_lease(identity, &state).await?;
         let mut next = state.clone();
         next.record
             .progress
@@ -151,7 +155,7 @@ impl DatasetAuthority {
         sources.extend(super::inheritance::source_owners(&next.record));
         next.source_leases = sources.into_iter().collect();
         self.replace_split_draft(identity, &old, &state, &next).await?;
-        self.renew_split_draft_lease(identity, &next.record).await?;
+        self.renew_split_draft_lease(identity, &next).await?;
         Ok(next.record)
     }
 
@@ -188,6 +192,9 @@ impl DatasetAuthority {
         expected_revision: u64,
     ) -> Result<SplitDraftRecord, SplitLifecycleError> {
         let (old, state) = self.load_split_draft(identity, operation).await?;
+        if state.initial {
+            return Err(SplitLifecycleError::Frozen);
+        }
         if state.record.revision != expected_revision {
             return Err(SplitLifecycleError::Conflict);
         }

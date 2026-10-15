@@ -61,3 +61,28 @@ impl DatasetAuthority {
         Ok(false)
     }
 }
+
+impl DatasetAuthority {
+    pub(crate) async fn inspection_initial_split(
+        &self,
+        identity: &DatasetIdentity,
+        snapshot: SnapshotId,
+        work: &mut InspectionWork<'_>,
+    ) -> Result<Option<crate::SplitRevisionId>, InspectionError> {
+        let Some(value) = work
+            .get(
+                &super::candidate::candidate_key(identity, snapshot).map_err(crate::AuthorityError::from)?,
+                4096,
+            )
+            .await?
+        else {
+            return Ok(None);
+        };
+        let binding: super::candidate::CandidateBinding =
+            serde_json::from_slice(&value.bytes).map_err(|_| InspectionError::Corrupt)?;
+        if binding.version != 1 || binding.snapshot != snapshot {
+            return Err(InspectionError::Corrupt);
+        }
+        Ok(binding.initial_split)
+    }
+}

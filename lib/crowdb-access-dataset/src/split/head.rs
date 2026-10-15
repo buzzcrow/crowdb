@@ -65,7 +65,20 @@ impl DatasetAuthority {
         let stored = self
             .split_state_get(&key::head(identity, snapshot).map_err(crate::AuthorityError::from)?)
             .await?;
-        reference(stored.as_ref(), snapshot)
+        self.resolve_split_reference(identity, stored.as_ref(), snapshot)
+            .await
+    }
+    pub(super) async fn resolve_split_reference(
+        &self,
+        identity: &DatasetIdentity,
+        stored: Option<&StoredValue>,
+        snapshot: SnapshotId,
+    ) -> Result<SplitReference, SplitLifecycleError> {
+        let mut observed = reference(stored, snapshot)?;
+        if observed.revision.is_none() {
+            observed.revision = self.initial_split_revision(identity, snapshot).await?;
+        }
+        Ok(observed)
     }
     pub(super) async fn help_split_head(
         &self,
@@ -74,6 +87,9 @@ impl DatasetAuthority {
     ) -> Result<(), SplitLifecycleError> {
         if let Ok(head) = SplitHead::decode(&stored.bytes) {
             if let Some(revision) = head.revision {
+                if self.initial_split_revision(identity, head.snapshot).await? == Some(revision) {
+                    return Ok(());
+                }
                 let stored = self
                     .split_state_get(
                         &key::committed_revision(identity, head.snapshot, revision)

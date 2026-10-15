@@ -85,12 +85,7 @@ impl EvaluationProgress {
         }
     }
     fn initial(state: &DraftState) -> Result<Self, SplitLifecycleError> {
-        let mut hash = Sha256::new();
-        hash.update(b"crowdb-split-candidate-v1\0");
-        hash.update(state.record.operation.as_bytes());
-        hash.update(state.record.revision.to_be_bytes());
-        let candidate =
-            SplitRevisionId::from_bytes(&hash.finalize()[..16]).map_err(crate::AuthorityError::from)?;
+        let candidate = candidate_revision(state.record.operation, state.record.revision)?;
         Ok(Self {
             input_revision: state.record.revision,
             candidate,
@@ -125,7 +120,7 @@ impl DatasetAuthority {
         ) {
             return Err(SplitLifecycleError::Frozen);
         }
-        self.renew_split_draft_lease(identity, &state.record).await?;
+        self.renew_split_draft_lease(identity, &state).await?;
         let mut progress = state
             .evaluation
             .clone()
@@ -151,6 +146,7 @@ impl DatasetAuthority {
                     timeout: Duration::from_secs(2),
                 },
                 cancel,
+                state.initial,
             )
             .await?;
         let mut pages = Vec::new();
@@ -211,4 +207,15 @@ impl DatasetAuthority {
         self.replace_split_draft(identity, &old, &state, &next).await?;
         Ok(progress.preview())
     }
+}
+
+pub(crate) fn candidate_revision(
+    operation: OperationId,
+    revision: u64,
+) -> Result<SplitRevisionId, crate::AuthorityError> {
+    let mut hash = Sha256::new();
+    hash.update(b"crowdb-split-candidate-v1\0");
+    hash.update(operation.as_bytes());
+    hash.update(revision.to_be_bytes());
+    Ok(SplitRevisionId::from_bytes(&hash.finalize()[..16])?)
 }

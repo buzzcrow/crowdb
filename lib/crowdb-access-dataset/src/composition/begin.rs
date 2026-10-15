@@ -79,6 +79,7 @@ impl DatasetAuthority {
         operation: OperationId,
         input: &CompositionInput,
     ) -> Result<CompositionState, CompositionError> {
+        super::state::validate_splits(&input.splits)?;
         let parent_schema = match input.parent {
             Some(parent) => Some(self.composition_parent_schema(identity, parent).await?),
             None => None,
@@ -151,6 +152,7 @@ impl DatasetAuthority {
             schema,
             splits,
             policy,
+            preparation: None,
         };
         self.validate_composition_splits(identity, &draft).await?;
         self.renew_composition_source(identity, &draft).await?;

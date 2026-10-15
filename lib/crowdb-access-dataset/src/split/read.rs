@@ -128,6 +128,12 @@ impl DatasetAuthority {
         revision: SplitRevisionId,
         work: &mut InspectionWork<'_>,
     ) -> Result<bool, SplitLifecycleError> {
+        if self.inspection_initial_split(identity, snapshot, work).await? == Some(revision) {
+            return self
+                .inspection_snapshot_committed(identity, snapshot, work)
+                .await
+                .map_err(Into::into);
+        }
         let target = CommitTarget::SplitRevision { snapshot, revision };
         if let Some(value) = work
             .get(

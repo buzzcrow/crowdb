@@ -18,6 +18,7 @@ pub(crate) struct SplitEvaluationWindow {
     pub validation: SplitValidation,
 }
 impl DatasetAuthority {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn evaluate_split_window(
         &self,
         identity: &DatasetIdentity,
@@ -26,13 +27,19 @@ impl DatasetAuthority {
         after: Option<Vec<u8>>,
         budget: MetadataScanBudget,
         cancel: &ReadCancellation,
+        prepared_owner: bool,
     ) -> Result<SplitEvaluationWindow, InspectionError> {
         validate_page_budget(budget)?;
         if splits.len() > 64 {
             return Err(InspectionError::Limit);
         }
         let mut work = InspectionWork::new(self.store.as_ref(), cancel, budget)?;
-        let summary = self.ready_inspection(identity, snapshot, &mut work).await?;
+        let summary = if prepared_owner {
+            self.ready_inspection_projection(identity, snapshot, &mut work)
+                .await?
+        } else {
+            self.ready_inspection(identity, snapshot, &mut work).await?
+        };
         let schema = self
             .inspection_schema_definitions(identity, &summary, &mut work)
             .await?;

@@ -19,7 +19,7 @@ impl DatasetAuthority {
         if state.record.revision != expected_revision {
             return Err(SplitLifecycleError::Conflict);
         }
-        self.renew_split_draft_lease(identity, &state.record).await?;
+        self.renew_split_draft_lease(identity, &state).await?;
         if let DraftProgress::Prepared {
             target: CommitTarget::SplitRevision { snapshot, revision },
         } = state.record.progress

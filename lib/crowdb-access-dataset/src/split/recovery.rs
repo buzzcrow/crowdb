@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{head::reference, key, SplitHead, SplitLifecycleError};
+use super::{key, SplitHead, SplitLifecycleError};
 use crate::{
     AuthorityError, CasOutcome, CommitAttempt, CommitTarget, DatasetAuthority, DatasetIdentity, OperationId,
     SnapshotId, SuccessfulCommit,
@@ -77,7 +77,9 @@ impl DatasetAuthority {
             if let Some(value) = &old {
                 self.help_split_head(identity, value).await?;
             }
-            let observed = reference(old.as_ref(), snapshot)?;
+            let observed = self
+                .resolve_split_reference(identity, old.as_ref(), snapshot)
+                .await?;
             let bytes = SplitHead {
                 version: 1,
                 snapshot,

@@ -42,4 +42,12 @@ pub struct CompositionDraft {
     pub schema: SchemaRecord,
     pub splits: Vec<DraftSplit>,
     pub policy: SplitPolicy,
+    pub preparation: Option<CompositionPreparation>,
+}
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompositionPreparation {
+    pub candidate: SnapshotId,
+    pub split_operation: Option<OperationId>,
+    pub split_preview: Option<crate::split::SplitPreview>,
 }

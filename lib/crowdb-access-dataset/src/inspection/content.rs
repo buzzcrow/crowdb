@@ -20,6 +20,14 @@ impl DatasetAuthority {
         {
             return Err(AuthorityError::SnapshotNotFound.into());
         }
+        self.ready_inspection_projection(identity, snapshot, work).await
+    }
+    pub(super) async fn ready_inspection_projection(
+        &self,
+        identity: &DatasetIdentity,
+        snapshot: SnapshotId,
+        work: &mut InspectionWork<'_>,
+    ) -> Result<SnapshotSummary, InspectionError> {
         let key = key::scope(identity, snapshot, b'H').map_err(AuthorityError::from)?;
         let value = work
             .get(&key, 16 * 1024)

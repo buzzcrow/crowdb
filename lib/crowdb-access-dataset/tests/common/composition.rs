@@ -53,3 +53,57 @@ pub(super) async fn evaluate(
     }
     panic!("composition evaluation did not complete")
 }
+#[allow(dead_code)]
+pub(super) async fn prepare(
+    authority: &DatasetAuthority,
+    identity: &DatasetIdentity,
+    operation: OperationId,
+    revision: u64,
+) -> CompositionDraft {
+    for _ in 0..100 {
+        let draft = authority
+            .prepare_composition(identity, operation, revision, &ReadCancellation::new())
+            .await
+            .unwrap();
+        if matches!(draft.record.progress, DraftProgress::Prepared { .. }) {
+            return draft;
+        }
+    }
+    panic!("composition preparation did not complete")
+}
+#[allow(dead_code)]
+pub(super) fn budget() -> MetadataScanBudget {
+    MetadataScanBudget {
+        items: 20,
+        bytes: 1024 * 1024,
+        timeout: std::time::Duration::from_secs(2),
+    }
+}
+
+#[allow(dead_code)]
+pub(super) async fn attempt(
+    authority: &DatasetAuthority,
+    identity: &DatasetIdentity,
+    snapshot: SnapshotId,
+) -> CommitAttempt {
+    CommitAttempt {
+        version: 1,
+        id: OperationId::random(),
+        target: CommitTarget::Snapshot { snapshot },
+        expected_head: authority.inspect_head(identity).await.unwrap().generation,
+    }
+}
+
+#[allow(dead_code)]
+pub(super) async fn begin_evaluated(
+    authority: &DatasetAuthority,
+    identity: &DatasetIdentity,
+    operation: OperationId,
+    input: &CompositionInput,
+) {
+    authority
+        .begin_composition(identity, operation, input)
+        .await
+        .unwrap();
+    evaluate(authority, identity, operation, 1).await;
+}

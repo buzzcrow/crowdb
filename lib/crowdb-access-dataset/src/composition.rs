@@ -14,8 +14,9 @@ pub use evaluation::CompositionPreview;
 mod input;
 mod key;
 mod prepare;
+mod publication;
 mod state;
-pub use input::{CompositionDraft, CompositionEdit, CompositionInput, SampleChange};
+pub use input::{CompositionDraft, CompositionEdit, CompositionInput, CompositionPreparation, SampleChange};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CompositionError {

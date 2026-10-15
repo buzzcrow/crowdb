@@ -2,7 +2,8 @@
 // Licensed under the Apache License, Version 2.0.
 
 use super::{
-    evaluation::row_prefix, state::CompositionState, CompositionDraft, CompositionError, DraftProgress,
+    evaluation::row_prefix, state::CompositionState, CompositionDraft, CompositionError,
+    CompositionPreparation, DraftProgress,
 };
 use crate::{
     inspection::work::InspectionWork, AuthorityError, CommitTarget, DatasetAuthority, DatasetIdentity,
@@ -12,9 +13,9 @@ use sha2::{Digest, Sha256};
 use std::time::Duration;
 
 impl DatasetAuthority {
-    /// Freezes a fully evaluated data-only composition as an unpublished candidate.
+    /// Advances candidate and initial Split preparation; only complete content becomes Prepared.
     /// # Errors
-    /// Rejects stale/incomplete previews, empty data, initial Splits and bounded-work limits.
+    /// Rejects stale/incomplete previews, empty data, policy violations and bounded-work limits.
     pub async fn prepare_composition(
         &self,
         identity: &DatasetIdentity,
@@ -32,30 +33,87 @@ impl DatasetAuthority {
         if !matches!(state.draft.record.progress, DraftProgress::Evaluated { .. }) {
             return Err(CompositionError::Frozen);
         }
-        if !state.draft.splits.is_empty() {
-            return Err(CompositionError::Conflict);
-        }
         self.renew_composition_source(identity, &state.draft).await?;
-        let manifest = self.composition_manifest(identity, &state, cancel).await?;
+        let mut preparation = if let Some(preparation) = &state.draft.preparation {
+            preparation.clone()
+        } else {
+            self.create_composition_candidate(identity, &state, cancel)
+                .await?
+        };
+        let mut complete = true;
+        if let Some(split_operation) = preparation.split_operation {
+            let draft = self
+                .begin_initial_split(
+                    identity,
+                    split_operation,
+                    preparation.candidate,
+                    state.draft.policy,
+                    state.draft.splits.clone(),
+                )
+                .await?;
+            if !matches!(draft.progress, DraftProgress::Prepared { .. }) {
+                let page = match draft.progress {
+                    DraftProgress::Evaluating { next_page, .. } => next_page,
+                    _ => 0,
+                };
+                let preview = self
+                    .evaluate_split_draft(identity, split_operation, 1, page, cancel)
+                    .await?;
+                complete = preview.complete;
+                preparation.split_preview = Some(preview);
+                if complete {
+                    self.prepare_split_draft(identity, split_operation, 1).await?;
+                }
+            }
+        }
+        let mut next = state.clone();
+        next.edit = None;
+        if complete {
+            next.draft.record.progress = DraftProgress::Prepared {
+                target: CommitTarget::Snapshot {
+                    snapshot: preparation.candidate,
+                },
+            };
+        }
+        next.draft.preparation = Some(preparation);
+        self.replace_composition(identity, &old, &state, &next).await?;
+        Ok(next.draft)
+    }
+    async fn create_composition_candidate(
+        &self,
+        identity: &DatasetIdentity,
+        state: &CompositionState,
+        cancel: &ReadCancellation,
+    ) -> Result<CompositionPreparation, CompositionError> {
+        let manifest = self.composition_manifest(identity, state, cancel).await?;
         let bytes = bincode::serialize(&manifest).map_err(|_| CompositionError::Corrupt)?;
         if bytes.len() > 8 * 1024 * 1024 {
             return Err(CompositionError::Limit);
         }
-        let snapshot = self
-            .prepare_snapshot_candidate(
+        let operation = candidate_operation(state.draft.record.operation, state.draft.record.revision)?;
+        let split_operation = if state.draft.splits.is_empty() {
+            None
+        } else {
+            Some(candidate_operation(operation, 1)?)
+        };
+        let snapshot = if let Some(split_operation) = split_operation {
+            self.prepare_candidate_with_split(
                 identity,
                 state.draft.record.parent,
                 bytes,
-                candidate_operation(operation, expected_revision)?,
+                operation,
+                crate::split::candidate_revision(split_operation, 1)?,
             )
-            .await?;
-        let mut next = state.clone();
-        next.edit = None;
-        next.draft.record.progress = DraftProgress::Prepared {
-            target: CommitTarget::Snapshot { snapshot },
+            .await?
+        } else {
+            self.prepare_snapshot_candidate(identity, state.draft.record.parent, bytes, operation)
+                .await?
         };
-        self.replace_composition(identity, &old, &state, &next).await?;
-        Ok(next.draft)
+        Ok(CompositionPreparation {
+            candidate: snapshot,
+            split_operation,
+            split_preview: None,
+        })
     }
     async fn composition_manifest(
         &self,
