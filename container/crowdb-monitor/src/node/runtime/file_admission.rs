@@ -8,7 +8,7 @@ use std::path::Path;
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient};
 use crowdb_protocol::{
     common::{DiskId, HwStatus},
-    disk_storage::DiskStorageRecord,
+    disk_storage::{DiskStorageRecord, PhysicalBacking},
     diskdb::rpc::DiskValue,
     mgmt::node::{
         storage::{DiskBackend, FilePreparation, FilePreparationPhase, PrepareDiskFile},
@@ -51,16 +51,15 @@ pub(super) async fn publish(root: &Path, state: &FilePreparation) -> Result<()> 
     if state.request.admission.is_none() {
         return Ok(());
     }
-    let record = record(state)?;
+    let hardware = authority(root, &state.request)?;
+    let record = verified_record(&hardware, state).await?;
     files::outcome(
         root,
         &state.request.operation_id,
         FilePreparationPhase::Publishing,
         None,
     )?;
-    authority(root, &state.request)?
-        .admit_disk_storage(&record)
-        .await?;
+    hardware.admit_disk_storage(&record).await?;
     files::outcome(
         root,
         &state.request.operation_id,
@@ -69,6 +68,44 @@ pub(super) async fn publish(root: &Path, state: &FilePreparation) -> Result<()> 
     )?;
     super::file_activation::activate(root, state, &record).await?;
     Ok(())
+}
+
+async fn verified_record(hardware: &HardwareClient, state: &FilePreparation) -> Result<DiskStorageRecord> {
+    let mut record = record(state)?;
+    let key = crowdb_protocol::key::DiskKey {
+        rack_id: record.rack_id,
+        node_id: record.node_id,
+        disk_group_id: record.disk_group_id,
+        disk_id: record.disk_id,
+    };
+    if hardware
+        .disk_storage(&key)
+        .await?
+        .is_some_and(|existing| existing.version == 1)
+    {
+        return Ok(record);
+    }
+    let (registry, _) = crowdb_console_shared::deployment::registry::read(hardware.kv())
+        .await?
+        .ok_or("managed file is waiting for node host authority")?;
+    let node = registry
+        .nodes
+        .iter()
+        .find(|node| {
+            node.node_id == record.node_id
+                && node.rack_id == record.rack_id
+                && node.confirmed
+                && !node.cancelled
+        })
+        .ok_or("managed file is waiting for confirmed node host")?;
+    record.version = 2;
+    record.physical_backing = Some(PhysicalBacking {
+        physical_host_id: node.physical_host_id.clone(),
+        resource_identity: record.backing_identity.clone(),
+        capacity_bytes: state.request.capacity_bytes,
+    });
+    record.validate()?;
+    Ok(record)
 }
 
 fn record(state: &FilePreparation) -> Result<DiskStorageRecord> {
@@ -110,4 +147,13 @@ fn record(state: &FilePreparation) -> Result<DiskStorageRecord> {
     };
     record.validate()?;
     Ok(record)
+}
+
+#[cfg(feature = "test-util")]
+/// # Errors
+/// Runs production Group-0 publication and `DiskIO` availability reconciliation.
+pub async fn publish_file_for_tests(root: &Path, operation: &str) -> Result<FilePreparation> {
+    let state = files::status(root, operation)?;
+    publish(root, &state).await?;
+    Ok(files::status(root, operation)?)
 }

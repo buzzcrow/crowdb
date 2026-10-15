@@ -29,6 +29,8 @@ mod admission;
 mod credentials;
 mod file_activation;
 mod file_admission;
+#[cfg(feature = "test-util")]
+pub use file_admission::publish_file_for_tests;
 mod file_preparation;
 mod initialization;
 mod retained_storage;

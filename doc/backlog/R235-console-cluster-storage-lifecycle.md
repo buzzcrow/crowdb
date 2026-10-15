@@ -435,6 +435,12 @@
   explicit retry consumes one retry authorization for that original operation.
   Earlier accepted supplied plans without sealed lineage require explicit review
   or migration rather than silently taking a new observation as the old medium.
+- Raw-medium submission must echo the canonical resource observed during review;
+  changed loop backing is a refresh/review conflict. Legacy file selections may
+  omit that field only when their exact opened file identity supplies the same
+  canonical identity. Newly prepared managed files publish version-2 receipts and
+  participate in global reservations. Existing version-1 file receipts replay
+  unchanged; this is not an automatic metadata or disk-format migration.
 
 **Dependencies**:
 

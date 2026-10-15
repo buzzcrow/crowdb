@@ -241,6 +241,13 @@ fn validate_supplied(
             || actual.backing_identity.as_ref() != Some(&selected.backing_identity)
             || actual.capacity_bytes != Some(selected.capacity_bytes)
             || actual.resource_identity.is_none()
+            || actual.resource_identity.as_ref()
+                != Some(
+                    selected
+                        .resource_identity
+                        .as_ref()
+                        .unwrap_or(&selected.backing_identity),
+                )
             || selected.capacity_bytes < 64 * 1024 * 1024
         {
             return Err("selected disk observation changed; refresh before admission".into());

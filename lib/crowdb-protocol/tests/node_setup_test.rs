@@ -69,6 +69,7 @@ fn supplied_raw_input_requires_agreement_and_preserves_exact_observed_identity()
         path: "/opt/crowdb/data/disks/host-device".into(),
         backend: DiskBackend::BlockDevice,
         backing_identity: "device:1234".into(),
+        resource_identity: Some("device:1234".into()),
         capacity_bytes: 1024 * 1024 * 1024,
         media_type: None,
         initialize: false,
@@ -86,8 +87,15 @@ fn supplied_raw_input_requires_agreement_and_preserves_exact_observed_identity()
     plan.validate().unwrap();
     let decoded: NodeSetupRequest = serde_json::from_slice(&serde_json::to_vec(&plan).unwrap()).unwrap();
     assert_eq!(decoded, plan);
+    let mut unverified = authorized.clone();
+    unverified.resource_identity = None;
+    plan.choices.storage = SetupStorage::Supplied {
+        disks: vec![unverified],
+    };
+    assert!(plan.validate().is_err());
     let mut alias = authorized.clone();
     alias.path = "/opt/crowdb/data/disks/alias".into();
+    alias.backing_identity = "device:5678".into();
     plan.choices.storage = SetupStorage::Supplied {
         disks: vec![authorized, alias],
     };

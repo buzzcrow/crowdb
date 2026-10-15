@@ -59,6 +59,19 @@ impl NodeSetupRequest {
                     if !disk.initialize {
                         return Err("selected medium requires explicit initialization agreement");
                     }
+                    if disk.backend == crate::mgmt::node::storage::DiskBackend::BlockDevice
+                        && disk.resource_identity.is_none()
+                    {
+                        return Err("raw medium selection requires canonical resource lineage");
+                    }
+                    if let Some(resource) = &disk.resource_identity {
+                        crate::disk_storage::PhysicalBacking {
+                            physical_host_id: "selected-medium".into(),
+                            resource_identity: resource.clone(),
+                            capacity_bytes: disk.capacity_bytes,
+                        }
+                        .validate()?;
+                    }
                     if disk.path.is_empty()
                         || disk.path.len() > 512
                         || disk.path.contains('\0')
@@ -70,7 +83,8 @@ impl NodeSetupRequest {
                             .media_type
                             .is_some_and(|value| crate::diskdb::rpc::DiskType::try_from(value).is_err())
                         || !paths.insert(&disk.path)
-                        || !identities.insert(&disk.backing_identity)
+                        || !identities
+                            .insert(disk.resource_identity.as_ref().unwrap_or(&disk.backing_identity))
                     {
                         return Err("invalid or duplicate supplied medium observation");
                     }

@@ -1221,3 +1221,17 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   `unit/cpp-26766439b819438bb94bf4c9f18b1811` (Tree 543, RPC 56, DiskIO 64,
   Common 31 and both FFI domains). Actual owned-loop exclusion/reassociation
   acceptance remains pending and is not inferred from regular-file unit tests.
+- SetupMedium now carries optional canonical resource identity, required for raw
+  selections and compared against current launch inventory before acceptance.
+  Canonical aliases deduplicate even when opened device numbers differ. Legacy
+  file selections derive the same canonical identity from their exact file inode.
+  New managed files use version-2 host/resource/capacity receipts and global
+  reservations, while existing v1 receipts remain byte/revision-preserving replay.
+- A real Group-0 managed-file case proves the new claim, prepared-file identity/
+  size/allocation preservation and unchanged legacy receipt; four supplied setup,
+  eight existing setup and four protocol cases pass. Protocol/monitor/Web all-
+  target/all-feature Clippy and fmt pass. Initial lint repairs added documentation
+  markup and split the long fixture/replay checks; no suppressions or product
+  behavior relaxation. UI still must echo canonical identity and exclude unlisted
+  or unverified candidates. Rebuild the frozen OCI image and capture the current
+  browser baseline before those visible UI changes.

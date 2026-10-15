@@ -100,6 +100,8 @@ pub struct SetupMedium {
     pub path: String,
     pub backend: DiskBackend,
     pub backing_identity: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_identity: Option<String>,
     pub capacity_bytes: u64,
     pub media_type: Option<i32>,
     pub initialize: bool,

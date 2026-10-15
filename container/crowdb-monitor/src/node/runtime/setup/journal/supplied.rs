@@ -58,6 +58,11 @@ pub(super) fn validate(state: &AcceptedSetup) -> Result<()> {
             || selected.media_type != record.media_type
             || selected.initialize != accepted.request.initialize
             || observation.resource_identity.as_ref() != Some(&physical.resource_identity)
+            || &physical.resource_identity
+                != selected
+                    .resource_identity
+                    .as_ref()
+                    .unwrap_or(&selected.backing_identity)
         {
             return Err("sealed medium identity, placement or authorization changed".into());
         }

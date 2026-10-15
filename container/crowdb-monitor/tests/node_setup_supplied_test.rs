@@ -60,6 +60,7 @@ impl TestSetup {
                     path: disk.path.clone(),
                     backend: DiskBackend::File,
                     backing_identity: disk.backing_identity.clone().unwrap(),
+                    resource_identity: disk.resource_identity.clone(),
                     capacity_bytes: disk.capacity_bytes.unwrap(),
                     media_type: (index == 2).then_some(1),
                     initialize: true,
@@ -211,6 +212,14 @@ fn supplied_setup_requires_explicit_verified_mapping_before_persisting_intent() 
     let test = TestSetup::new();
     assert!(NodeSetupForTests::default()
         .accept_with_inputs_for_tests(test.root.path(), test.request.clone(), &[])
+        .is_err());
+    assert!(!test.root.path().join("node-setup.json").exists());
+    let mut changed = test.request.clone();
+    if let SetupStorage::Supplied { disks } = &mut changed.choices.storage {
+        disks[0].resource_identity = Some("file:1:2".into());
+    }
+    assert!(NodeSetupForTests::default()
+        .accept_with_inputs_for_tests(test.root.path(), changed, &test.inputs)
         .is_err());
     assert!(!test.root.path().join("node-setup.json").exists());
     test.accept();
