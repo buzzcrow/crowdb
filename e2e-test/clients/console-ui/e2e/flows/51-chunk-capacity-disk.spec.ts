@@ -241,6 +241,17 @@ async function verifyDiskLifecycle(page: Page, request: APIRequestContext, diskI
     expect(state.ok(), await state.text()).toBe(true);
     expect(await state.json()).toMatchObject({ removed: false, offline: false, online: { state: 'complete' } });
   });
+  await step('another operator Offline replaces the locally confirmed Online row', async () => {
+    const path = `/api/nodes/1/disk-groups/592/disks/${diskId}`;
+    const observation = await request.get(`${path}/lifecycle`);
+    expect(observation.ok(), await observation.text()).toBe(true);
+    const current = await observation.json();
+    const offline = await request.post(`${path}/offline`, { data: { expected_revision: current.disk_revision } });
+    expect(offline.ok(), await offline.text()).toBe(true);
+    await expect(row).toContainText('Offline');
+    await expect(row).not.toContainText(' · Up');
+    await expect(row).toBeFocused();
+  });
   await expect(page.getByRole('button', { name: 'Delete File', exact: true })).toHaveCount(0);
 }
 

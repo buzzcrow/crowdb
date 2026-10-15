@@ -52,4 +52,10 @@ it('shows confirmed Online and restores row focus after background validation co
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   const row = screen.getByRole('article', { name: 'Registered disk one' });
   expect(row).toHaveTextContent('Up'); expect(row).toHaveFocus();
+  vi.mocked(diskLifecycle).mockResolvedValue({ ...excluded, disk_revision: '103' });
+  await waitFor(() => expect(row).toHaveTextContent('Offline'), { timeout: 2000 });
+  expect(row).not.toHaveTextContent(' · Up');
+  expect(row).toHaveFocus();
+  vi.mocked(diskLifecycle).mockRejectedValue(new Error('authority unavailable'));
+  await waitFor(() => expect(row).toHaveTextContent('Last confirmed; status refresh unavailable'), { timeout: 2000 });
 });

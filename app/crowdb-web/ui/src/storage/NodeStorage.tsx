@@ -15,7 +15,8 @@ import { useNodeStorage } from './useNodeStorage';
 import { useRemovedDisks } from './useRemovedDisks';
 import { DiskLifecycleDialog } from './DiskLifecycleDialog';
 import { RemovedDiskRow } from './RemovedDiskRow';
-import { filePhaseLabel, type FilePreparation, type CandidateSummary, type DiskLifecycle } from './types';
+import { useConfirmedDiskLifecycle } from './useConfirmedDiskLifecycle';
+import { filePhaseLabel, type FilePreparation, type CandidateSummary } from './types';
 
 interface Props {
   nodeId: number; rackId: number; active: boolean; readonly: boolean; ready: boolean;
@@ -33,7 +34,9 @@ export function NodeStorage({ nodeId, rackId, active, readonly, ready, inventory
   const model = useNodeStorage(nodeId, active);
   const removed = useRemovedDisks(nodeId, active && ready);
   const [managing, setManaging] = useState<{ disk: string; group: number }>();
-  const [confirmed, setConfirmed] = useState<Record<string, DiskLifecycle>>({});
+  const confirmed = useConfirmedDiskLifecycle(nodeId, active && ready, group => {
+    void loadGroup(nodeId, group, true); void removed.refresh(undefined, true); void model.refresh();
+  });
   const { inspectEntity, selectEntity, selectedEntity } = useSelection();
   const [creating, setCreating] = useState(false);
   const [retryError, setRetryError] = useState('');
@@ -94,8 +97,8 @@ export function NodeStorage({ nodeId, rackId, active, readonly, ready, inventory
       {inventory.disksByDg[group.id]?.map(disk => {
         const observed = model.inventory?.disks.find(item => item.path === disk.device_path);
         const status = hardware?.disk_groups.find(item => item.disk_group_id === group.id && item.node_id === nodeId)?.disks.find(item => item.disk_id === disk.disk_id)?.status;
-        const authority = confirmed[disk.disk_id];
-        const health = authority?.offline ? 'Offline' : authority?.online?.state === 'complete' ? 'Up' : status === undefined ? 'Health unknown' : hwStatusLabel(status);
+        const authority = confirmed.disks[disk.disk_id];
+        const health = authority?.state.offline ? 'Offline' : authority?.state.online?.state === 'complete' ? 'Up' : status === undefined ? 'Health unknown' : hwStatusLabel(status);
         const report = usage?.disk_groups.find(item => item.disk_group_id === group.id && item.node_id === nodeId)?.disks.find(item => item.disk_id === disk.disk_id);
         const preparation = operationRows.find(operation => operation.path === disk.device_path);
         const media = preparation?.request.admission?.media_type === null ? 'Unknown' : disk.disk_type;
@@ -105,7 +108,7 @@ export function NodeStorage({ nodeId, rackId, active, readonly, ready, inventory
             <button className="tw-text-accent tw-font-mono tw-text-sm" onClick={() => selectEntity(entity)}>{disk.disk_id}</button>
             <button className="tw-text-xs tw-text-muted" aria-pressed={selectedEntity?.type === 'Disk' && selectedEntity.id === disk.disk_id} onClick={() => inspectEntity(entity)}>Properties</button>
           </div>
-          <p className="tw-text-sm">{observed?.backend ?? 'Backend unknown'} · Media {media} · {formatBytes(disk.capacity_bytes)} · {health}</p>
+          <p className="tw-text-sm">{observed?.backend ?? 'Backend unknown'} · Media {media} · {formatBytes(disk.capacity_bytes)} · {health}{authority?.stale ? ' · Last confirmed; status refresh unavailable' : ''}</p>
           <Button size="sm" variant="secondary" disabled={readonly || !ready} onClick={() => setManaging({ disk: disk.disk_id, group: group.id })}>Manage disk</Button>
           <p className="tw-text-xs tw-text-muted">{report && knownDiskUsage(report) ? `${formatBytes(report.busy_bytes)} used` : 'Usage unknown'} · {observed?.error || (model.inventory && !observed ? 'Missing from latest discovery' : disk.device_path)}</p>
         </article>;
@@ -140,7 +143,7 @@ export function NodeStorage({ nodeId, rackId, active, readonly, ready, inventory
         if (action === 'rejoin' || action === 'online') setFocusTarget(state.disk_id);
         if (state.removed) setFocusTarget('candidates');
         if (selectedEntity?.type === 'Disk' && selectedEntity.id === state.disk_id) inspectEntity({ ...selectedEntity });
-        setConfirmed(previous => ({ ...previous, [state.disk_id]: state }));
+        confirmed.confirm(managing.group, state);
         void loadGroup(nodeId, managing.group, true); void removed.refresh(undefined, true); void model.refresh();
       }} />}
     {creating && <CreateFileDiskDialog nodeId={nodeId} groups={inventory?.diskGroups ?? []} groupId={recommendedGroup} available={available} onClose={() => setCreating(false)} onAccepted={model.accept} />}
