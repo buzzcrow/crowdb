@@ -966,4 +966,10 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   existing shared four-worker budget. A later authoritative Offline supersedes
   a locally confirmed Online row; failed observations mark last-confirmed state
   visibly stale. Full-width revision and stale in-flight removal guards retain
-  the latest accepted state. UI and native regression verification is in progress.
+  the latest accepted state. All 234 UI cases and TypeScript pass. Committed image
+  `3ee3305e`, config `sha256:cb2980ba2e9da84391421ead39b3f3499a534f6ebaf960640be02c2be289b3fa`,
+  passed full native hardware acceptance in
+  `run-15153f6341eb494ead5fef3bce2994f1`: browser 13.5 s versus original 10.1 s,
+  native client 40.18 s. Added real second-operator Offline refresh/focus assertion
+  passes; all original allocation, missing-file, restart, retained-byte and
+  validated Online proofs remain. No retries or timeout inflation were added.

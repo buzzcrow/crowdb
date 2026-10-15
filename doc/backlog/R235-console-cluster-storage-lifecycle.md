@@ -355,6 +355,13 @@
   takes precedence over setup retries; the browser only submits and observes.
 - Raw-device physical capacity and usable allocation geometry are distinct.
   Preserve any unusable tail; do not resize a supplied medium to match zones.
+- Default storage reuses a compatible group with an existing ordinary metadata
+  binding. Otherwise choose the lowest existing ordinary store/group and retain
+  that choice before publication. Wait when no such group exists; do not create
+  consensus groups or change an operator's existing unbound placement.
+- Explicit cluster cleanup retires accepted setup and drains its current pass
+  before deleting system metadata. If a pass is still active, report pending
+  cleanup and retain state for the existing explicit cleanup retry.
 
 **Dependencies**:
 
