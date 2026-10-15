@@ -9,11 +9,11 @@ use crowdb_access_iceberg::{
     catalog::{
         CatalogContext, CatalogRepository, CatalogStore, ClearBounds, ManagementPrivilege, RoutedCatalogStore,
     },
-    file::{file_key, ContentFormat, FileContent, FileKind, FileRecord, TableLocation},
+    file::{canonical_file_key, ContentFormat, FileContent, FileKind, FileRecord, TableLocation},
     key::{FileId, NamespaceId, OperationId, TableId},
     operation::{mutation_identity, ManagementAction, ManagementRequest, RequestIdentity},
     record::StorageRecord,
-    table::{head_key, TableHead, TableLifecycle, TablePurgeTask},
+    table::{storage_head_key, TableHead, TableLifecycle, TablePurgeTask},
 };
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -60,6 +60,7 @@ pub(super) async fn seed_table(
 pub(super) async fn seed_head(store: &RoutedCatalogStore, context: CatalogContext) -> TableId {
     let table = TableId::random();
     let location = TableLocation {
+        storage_namespace: Some(NamespaceId::from_bytes(table.as_bytes()).unwrap()),
         catalog: context.catalog,
         table,
     };
@@ -80,7 +81,13 @@ pub(super) async fn seed_head(store: &RoutedCatalogStore, context: CatalogContex
         operation_fence: 1,
         pending_operation: None,
     };
-    let key = head_key(context.catalog, table).encode().unwrap();
+    let key = storage_head_key(TableLocation {
+        catalog: context.catalog,
+        storage_namespace: Some(NamespaceId::from_bytes(table.as_bytes()).unwrap()),
+        table,
+    })
+    .encode()
+    .unwrap();
     let bytes = StorageRecord::TableHead(Box::new(head)).encode().unwrap();
     store
         .compare_exchange(&key, None, &bytes, mutation_identity(&key, None, &bytes))
@@ -90,7 +97,11 @@ pub(super) async fn seed_head(store: &RoutedCatalogStore, context: CatalogContex
 }
 
 pub(super) async fn tombstone_head(store: &RoutedCatalogStore, context: CatalogContext, table: TableId) {
-    let key = head_key(context.catalog, table);
+    let key = storage_head_key(TableLocation {
+        catalog: context.catalog,
+        storage_namespace: Some(NamespaceId::from_bytes(table.as_bytes()).unwrap()),
+        table,
+    });
     let previous = store.get(&key.encode().unwrap()).await.unwrap().unwrap();
     let StorageRecord::TableHead(mut head) = StorageRecord::decode(&key, &previous.bytes).unwrap() else {
         panic!("table head");
@@ -122,6 +133,7 @@ pub(super) async fn seed_files(
         let file = FileRecord {
             file: FileId::random(),
             location: TableLocation {
+                storage_namespace: Some(NamespaceId::from_bytes(table.as_bytes()).unwrap()),
                 catalog: context.catalog,
                 table,
             }
@@ -134,7 +146,7 @@ pub(super) async fn seed_files(
             content: FileContent::select_inline(FileKind::Metadata, payload_json.as_bytes()).unwrap(),
             hint: None,
         };
-        let key = file_key(context.catalog, file.file).encode().unwrap();
+        let key = canonical_file_key(&file.location).encode().unwrap();
         let bytes = StorageRecord::File(Box::new(file)).encode().unwrap();
         store
             .compare_exchange(&key, None, &bytes, mutation_identity(&key, None, &bytes))
@@ -145,7 +157,11 @@ pub(super) async fn seed_files(
 
 pub(super) async fn seed_purge_marker(store: &RoutedCatalogStore, context: CatalogContext, table: TableId) {
     tombstone_head(store, context, table).await;
-    let key = head_key(context.catalog, table);
+    let key = storage_head_key(TableLocation {
+        catalog: context.catalog,
+        storage_namespace: Some(NamespaceId::from_bytes(table.as_bytes()).unwrap()),
+        table,
+    });
     let head = store.get(&key.encode().unwrap()).await.unwrap().unwrap();
     let StorageRecord::TableHead(head) = StorageRecord::decode(&key, &head.bytes).unwrap() else {
         panic!("table head");

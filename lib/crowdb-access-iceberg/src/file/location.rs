@@ -4,7 +4,7 @@ use std::str::FromStr;
 use data_encoding::BASE32_NOPAD;
 
 use crate::error::ValidationError;
-use crate::key::{CatalogId, TableId};
+use crate::key::{CatalogId, NamespaceId, StorageTablePath, TableId};
 
 pub const MAX_OBJECT_KEY_BYTES: usize = 1024;
 const TABLE_PREFIX_BYTES: usize = 35;
@@ -12,6 +12,7 @@ const BUCKET_BYTES: usize = 34;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct TableLocation {
+    pub storage_namespace: Option<NamespaceId>,
     pub catalog: CatalogId,
     pub table: TableId,
 }
@@ -19,6 +20,9 @@ pub struct TableLocation {
 impl TableLocation {
     #[must_use]
     pub fn bucket(self) -> String {
+        if self.storage_namespace.is_some() {
+            return super::NATIVE_ICEBERG_BUCKET.to_owned();
+        }
         format!(
             "iceberg-{}",
             BASE32_NOPAD.encode(self.catalog.as_bytes()).to_ascii_lowercase()
@@ -27,13 +31,31 @@ impl TableLocation {
 
     #[must_use]
     pub fn object_prefix(self) -> String {
+        if let Some(path) = self.storage_path() {
+            return path.to_string();
+        }
         format!("t/{}/", self.table)
+    }
+
+    #[must_use]
+    pub const fn storage_path(self) -> Option<StorageTablePath> {
+        match self.storage_namespace {
+            Some(storage_namespace) => Some(StorageTablePath {
+                catalog: self.catalog,
+                storage_namespace,
+                table: self.table,
+            }),
+            None => None,
+        }
     }
 
     /// # Errors
     /// Rejects keys outside this table or keys that cannot be represented exactly.
     pub fn file(self, relative_key: &str) -> Result<FileLocation, ValidationError> {
         validate_relative_key(relative_key)?;
+        if self.storage_namespace.is_some() {
+            super::validate_native_relative_key(relative_key)?;
+        }
         Ok(FileLocation {
             table: self,
             relative_key: relative_key.to_owned(),
@@ -53,6 +75,9 @@ impl FromStr for TableLocation {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         let body = value.strip_prefix("s3://").ok_or(ValidationError::Key)?;
         let (bucket, prefix) = body.split_once('/').ok_or(ValidationError::Key)?;
+        if bucket == super::NATIVE_ICEBERG_BUCKET {
+            return StorageTablePath::from_prefix(prefix).map(Self::from);
+        }
         if prefix.len() != TABLE_PREFIX_BYTES || !prefix.ends_with('/') {
             return Err(ValidationError::Key);
         }
@@ -73,6 +98,10 @@ impl FileLocation {
         if key.len() > MAX_OBJECT_KEY_BYTES {
             return Err(ValidationError::KeyTooLarge);
         }
+        if bucket == super::NATIVE_ICEBERG_BUCKET {
+            let (table, relative) = StorageTablePath::split_object_key(key)?;
+            return TableLocation::from(table).file(relative);
+        }
         let rest = key.strip_prefix("t/").ok_or(ValidationError::Key)?;
         let (table, relative) = rest.split_once('/').ok_or(ValidationError::Key)?;
         let table = parse_table(bucket, &format!("t/{table}"))?;
@@ -92,6 +121,16 @@ impl FileLocation {
     #[must_use]
     pub fn object_key(&self) -> String {
         format!("{}{}", self.table.object_prefix(), self.relative_key)
+    }
+}
+
+impl From<StorageTablePath> for TableLocation {
+    fn from(path: StorageTablePath) -> Self {
+        Self {
+            catalog: path.catalog,
+            storage_namespace: Some(path.storage_namespace),
+            table: path.table,
+        }
     }
 }
 
@@ -124,7 +163,11 @@ fn parse_table(bucket: &str, prefix: &str) -> Result<TableLocation, ValidationEr
         .map_err(|_| ValidationError::Key)?;
     let catalog = CatalogId::from_bytes(&bytes)?;
     let table = prefix.strip_prefix("t/").ok_or(ValidationError::Key)?.parse()?;
-    let location = TableLocation { catalog, table };
+    let location = TableLocation {
+        storage_namespace: None,
+        catalog,
+        table,
+    };
     if location.bucket() != bucket || format!("t/{table}") != prefix {
         return Err(ValidationError::Key);
     }

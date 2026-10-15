@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, fmt::Write, sync::Arc};
 
 use crowdb_access_iceberg::{
     catalog::{
@@ -7,9 +7,9 @@ use crowdb_access_iceberg::{
     },
     commit::{TableCreateJournal, TableCreatePhase},
     file::FileGrantIssuer,
-    key::{OperationId, TableId},
+    key::{NamespaceId, OperationId, TableId},
     namespace::{NamespaceIdentifier, NamespaceRepository, NamespaceStore},
-    table::TableRepository,
+    table::{storage_head_key, TableLifecycle, TableRepository},
     wire::{
         FileDelegationLimits, FileDelegationTarget, IcebergErrorResponse, LoadCredentialsResponse, Principal,
     },
@@ -38,6 +38,7 @@ pub(super) struct TableFileConfig {
 
 #[derive(Clone, Copy)]
 pub(super) struct TableFileTarget<'a> {
+    pub(super) storage_namespace: Option<crowdb_access_iceberg::key::NamespaceId>,
     pub(super) namespace: &'a NamespaceIdentifier,
     pub(super) name: &'a str,
     pub(super) table: TableId,
@@ -63,6 +64,19 @@ impl TableFileConfig {
         let endpoint = request_host.and_then(|host| self.endpoint_for_host(host));
         let mut properties =
             self.properties(target.namespace, target.name, target.table, endpoint.as_deref());
+        if target.storage_namespace.is_some() {
+            properties.insert("crowdb.native-injection", "true".into());
+            properties.insert(
+                "crowdb.native-injection-max-bytes",
+                (1024_u64 * 1024 * 1024).to_string(),
+            );
+            if let Some(namespace) = target.storage_namespace {
+                let endpoint = properties
+                    .get_mut("client.refresh-credentials-endpoint")
+                    .ok_or_else(service_unavailable)?;
+                write!(endpoint, "&storage-namespace-id={namespace}").expect("string writes do not fail");
+            }
+        }
         let credentials = FileDelegationLimits {
             ttl_ms: 900_000,
             max_request_bytes: 1024 * 1024 * 1024,
@@ -74,6 +88,7 @@ impl TableFileConfig {
             access.context,
             access.authority,
             FileDelegationTarget {
+                storage_namespace: target.storage_namespace,
                 table: target.table,
                 format_version: target.version,
                 staged: target.staged,
@@ -181,21 +196,19 @@ impl TableCredentials {
         principal: Principal,
         request: &Request<hyper::body::Incoming>,
     ) -> Result<Response<IcebergBody>, IcebergErrorResponse> {
-        if request.method() != hyper::Method::GET {
-            return Err(super::table_read::unsupported());
-        }
-        let path = request
-            .uri()
-            .path()
-            .strip_suffix("/credentials")
-            .ok_or_else(bad_request)?;
-        let target = super::table_write::request::parse(&path.parse().map_err(|_| bad_request())?)?;
-        let name = target.name.ok_or_else(bad_request)?;
-        let (selector, cleanup) = selector(request.uri().query())?;
+        let (namespace, name) = credential_target(request)?;
+        let (selector, storage_namespace, cleanup) = selector(request.uri().query())?;
         let now = now_ms()?;
+        if let (Some(table), Some(namespace)) = (selector, storage_namespace) {
+            if let Some(target) = self.native_target(context, table, namespace, cleanup).await? {
+                return self
+                    .issue_response(repository, context, principal, target, 900_000, now, cleanup)
+                    .await;
+            }
+        }
         let parent = self
             .namespaces
-            .load(context, &target.namespace)
+            .load(context, &namespace)
             .await
             .map_err(|_| service_unavailable())?
             .ok_or_else(missing_table)?;
@@ -205,14 +218,19 @@ impl TableCredentials {
             .await
             .map_err(|_| service_unavailable())?;
         let mut ttl_ms = 900_000;
-        let (table, version, staged) = if let Some(selected) =
+        let (table, version, staged, storage_namespace) = if let Some(selected) =
             selected.filter(|selected| selector.map_or(true, |table| table == selected.head.table))
         {
             self.tables
                 .ensure_current(context, &selected)
                 .await
                 .map_err(|_| service_unavailable())?;
-            (selected.head.table, selected.head.format_version, false)
+            (
+                selected.head.table,
+                selected.head.format_version,
+                false,
+                selected.head.metadata_location.table().storage_namespace,
+            )
         } else {
             let table = selector.ok_or_else(missing_table)?;
             let identity = OperationId::from_bytes(table.as_bytes()).map_err(|_| bad_request())?;
@@ -225,11 +243,14 @@ impl TableCredentials {
             let stage = operation.stage.as_ref().ok_or_else(missing_table)?;
             if !principal.namespace_write
                 || operation.principal != principal.name
-                || operation.namespace != target.namespace
+                || operation.namespace != namespace
                 || operation.candidate.namespace != parent.namespace
                 || operation.candidate.name != name
                 || operation.candidate.table != table
                 || operation.phase != TableCreatePhase::Staged
+                || storage_namespace.is_some_and(|namespace| {
+                    operation.candidate.storage_location().storage_namespace != Some(namespace)
+                })
             {
                 return Err(missing_table());
             }
@@ -249,13 +270,19 @@ impl TableCredentials {
             {
                 return Err(service_unavailable());
             }
-            (table, operation.candidate.format_version, true)
+            (
+                table,
+                operation.candidate.format_version,
+                true,
+                operation.candidate.metadata_location.table().storage_namespace,
+            )
         };
         self.issue_response(
             repository,
             context,
             principal,
             FileDelegationTarget {
+                storage_namespace,
                 table,
                 format_version: version,
                 staged,
@@ -265,6 +292,45 @@ impl TableCredentials {
             cleanup,
         )
         .await
+    }
+
+    async fn native_target(
+        &self,
+        context: CatalogContext,
+        table: TableId,
+        namespace: NamespaceId,
+        cleanup: bool,
+    ) -> Result<Option<FileDelegationTarget>, IcebergErrorResponse> {
+        let key = storage_head_key(crowdb_access_iceberg::file::TableLocation {
+            catalog: context.catalog,
+            storage_namespace: Some(namespace),
+            table,
+        });
+        let Some(value) = self
+            .store
+            .get(&key.encode().map_err(|_| bad_request())?)
+            .await
+            .map_err(|_| service_unavailable())?
+        else {
+            return Ok(None);
+        };
+        let crowdb_access_iceberg::record::StorageRecord::TableHead(head) =
+            crowdb_access_iceberg::record::StorageRecord::decode(&key, &value.bytes)
+                .map_err(|_| service_unavailable())?
+        else {
+            return Err(service_unavailable());
+        };
+        if head.lifecycle != TableLifecycle::Ready
+            && !(cleanup && head.lifecycle == TableLifecycle::Tombstone)
+        {
+            return Err(missing_table());
+        }
+        Ok(Some(FileDelegationTarget {
+            table,
+            storage_namespace: Some(namespace),
+            format_version: head.format_version,
+            staged: false,
+        }))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -310,8 +376,11 @@ impl TableCredentials {
     }
 }
 
-fn selector(query: Option<&str>) -> Result<(Option<TableId>, bool), IcebergErrorResponse> {
+fn selector(
+    query: Option<&str>,
+) -> Result<(Option<TableId>, Option<NamespaceId>, bool), IcebergErrorResponse> {
     let mut selector = None;
+    let mut namespace = None;
     let mut cleanup = false;
     for pair in query
         .unwrap_or_default()
@@ -323,9 +392,31 @@ fn selector(query: Option<&str>) -> Result<(Option<TableId>, bool), IcebergError
             "table-id" if selector.is_none() => {
                 selector = Some(decode_query(value)?.parse().map_err(|_| bad_request())?);
             }
+            "storage-namespace-id" if namespace.is_none() => {
+                namespace = Some(decode_query(value)?.parse().map_err(|_| bad_request())?);
+            }
             "cleanup" if !cleanup && decode_query(value)? == "true" => cleanup = true,
             _ => return Err(bad_request()),
         }
     }
-    Ok((selector, cleanup))
+    if namespace.is_some() && selector.is_none() {
+        return Err(bad_request());
+    }
+    Ok((selector, namespace, cleanup))
+}
+
+fn credential_target(
+    request: &Request<hyper::body::Incoming>,
+) -> Result<(NamespaceIdentifier, String), IcebergErrorResponse> {
+    if request.method() != hyper::Method::GET {
+        return Err(super::table_read::unsupported());
+    }
+    let path = request
+        .uri()
+        .path()
+        .strip_suffix("/credentials")
+        .ok_or_else(bad_request)?;
+    let target = super::table_write::request::parse(&path.parse().map_err(|_| bad_request())?)?;
+    let name = target.name.ok_or_else(bad_request)?;
+    Ok((target.namespace, name))
 }

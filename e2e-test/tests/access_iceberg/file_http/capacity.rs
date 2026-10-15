@@ -9,14 +9,14 @@ mod workspace;
 use crowdb_access_iceberg::{
     catalog::{CatalogContext, CatalogRepository, CatalogStore, ClearBounds, ManagementPrivilege},
     file::{
-        location_key, ContentFormat, FileContent, FileIdentity, FileKind, FileLocation, FileReader,
+        canonical_file_key, ContentFormat, FileContent, FileIdentity, FileKind, FileLocation, FileReader,
         FileRecord, FileRepository, FileTreeWriter, NativeFileBlocks, TableLocation,
     },
     gc::{GcLimits, GcPhase, GcRepository, GcStalledReason, GcTask, GcWorker},
     key::{FileId, OperationId, TableId},
     operation::{mutation_identity, ManagementAction, ManagementRequest, RequestIdentity},
     record::StorageRecord,
-    table::{head_key, TableHead, TableLifecycle, TablePurgeTask},
+    table::{storage_head_key, TableHead, TableLifecycle, TablePurgeTask},
 };
 use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, SmallWritePolicy};
 use crowdb_diskdb_client::{DiskdbClient, DiskdbClientError, DiskdbRpcTransport};
@@ -40,6 +40,7 @@ async fn full_simulated_disk_preserves_file_authority_then_recovers_after_compac
     let context = seed_catalog(&stack).await;
     let owner = FileIdentity {
         table: TableLocation {
+            storage_namespace: Some(crowdb_access_iceberg::key::NamespaceId::random()),
             catalog: context.catalog,
             table: TableId::random(),
         },

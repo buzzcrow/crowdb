@@ -23,6 +23,88 @@ use crowdb_access_iceberg::{
 };
 
 #[tokio::test]
+async fn native_catalog_creation_freezes_namespace_in_storage_identity_and_replays() {
+    use crowdb_access_iceberg::catalog::{CatalogAuthority, CatalogStorageLayout};
+    use crowdb_access_iceberg::key::{CatalogScope, IcebergKey, StorageKey, TableStorageScope};
+    let test = TestCreation::new().await;
+    let authority = CatalogAuthority::new_native(test.fixture.context.catalog, "native".into()).unwrap();
+    test.fixture
+        .put(
+            IcebergKey::Catalog {
+                catalog: authority.catalog,
+                scope: CatalogScope::Authority,
+                suffix: Vec::new(),
+            },
+            StorageRecord::Authority(authority.clone()),
+        )
+        .await;
+    let creator = test.creator();
+    let result = creator.create(&test.request).await.unwrap();
+    assert_eq!(creator.create(&test.request).await.unwrap(), result);
+    let selected = TableRepository::new(test.fixture.store.clone())
+        .select(test.fixture.context, test.parent.namespace, "events")
+        .await
+        .unwrap()
+        .unwrap();
+    let path = selected.head.storage_location().storage_path().unwrap();
+    assert_eq!(path.storage_namespace, test.parent.namespace);
+    assert_eq!(path.catalog, test.fixture.context.catalog);
+    assert!(selected
+        .head
+        .metadata_location
+        .to_string()
+        .starts_with(&format!("s3://iceberg/{path}")));
+    let keys = test.fixture.store.values.load_full();
+    let native: Vec<_> = keys
+        .keys()
+        .filter_map(|key| match StorageKey::decode(key) {
+            Ok(StorageKey::NativeTable(key)) => Some(key),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        native
+            .iter()
+            .filter(|key| key.scope == TableStorageScope::Head)
+            .count(),
+        1
+    );
+    assert_eq!(
+        native
+            .iter()
+            .filter(|key| key.scope == TableStorageScope::File)
+            .count(),
+        1
+    );
+    assert!(native.iter().all(|key| key.table == path));
+    assert_eq!(
+        authority.renamed("renamed".into()).unwrap().storage_layout,
+        CatalogStorageLayout::Native
+    );
+    let mut default = test.request.clone();
+    default.namespace =
+        crowdb_access_iceberg::namespace::NamespaceIdentifier::new(vec!["default".into()]).unwrap();
+    default.identity.operation = OperationId::random();
+    let created = creator.create(&default).await.unwrap();
+    assert_eq!(creator.create(&default).await.unwrap(), created);
+    let namespace = NamespaceRepository::new(test.fixture.store.clone())
+        .load(test.fixture.context, &default.namespace)
+        .await
+        .unwrap()
+        .unwrap();
+    let selected = TableRepository::new(test.fixture.store.clone())
+        .select(test.fixture.context, namespace.namespace, "events")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        selected.head.storage_location().storage_namespace,
+        Some(namespace.namespace)
+    );
+    assert_ne!(namespace.namespace, test.parent.namespace);
+}
+
+#[tokio::test]
 async fn response_reserve_rejects_before_durable_creation() {
     let test = TestCreation::new().await;
     let before = test.fixture.store.writes.load(Ordering::SeqCst);

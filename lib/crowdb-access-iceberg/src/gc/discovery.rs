@@ -1,8 +1,8 @@
 use crate::{
-    catalog::{CatalogContext, CatalogError},
+    catalog::{CatalogContext, CatalogError, CatalogStorageLayout},
     error::ValidationError,
     file::MultipartPhase,
-    key::{CatalogScope, IcebergKey, OperationId},
+    key::{CatalogScope, IcebergKey, OperationId, StorageKey, TableStorageScope},
     record::StorageRecord,
     table::{TableHead, TableLifecycle},
 };
@@ -83,32 +83,53 @@ impl GcRepository {
         if !matches!(task.phase, GcPhase::Discover | GcPhase::Rescan) || task.paused {
             return Err(CatalogError::Busy);
         }
+        let native = task.discovery_scope == task.last_discovery_scope();
         let scan = GcScan {
+            native,
             catalog: task.context.catalog,
-            scope: Some(if task.kind == GcTaskKind::MultipartCleanup {
-                match task.discovery_scope {
-                    0 => CatalogScope::FileLocation,
-                    1 => CatalogScope::MultipartPart,
-                    _ => CatalogScope::MultipartSession,
-                }
+            scope: if native {
+                None
             } else {
-                match task.discovery_scope {
-                    0 => CatalogScope::File,
-                    1 => CatalogScope::FileLocation,
-                    2 => CatalogScope::MultipartPart,
-                    _ => CatalogScope::MultipartSession,
-                }
-            }),
-            prefix: Vec::new(),
+                Some(if task.kind == GcTaskKind::MultipartCleanup {
+                    match task.discovery_scope {
+                        0 => CatalogScope::FileLocation,
+                        1 => CatalogScope::MultipartPart,
+                        _ => CatalogScope::MultipartSession,
+                    }
+                } else {
+                    match task.discovery_scope {
+                        0 => CatalogScope::File,
+                        1 => CatalogScope::FileLocation,
+                        2 => CatalogScope::MultipartPart,
+                        _ => CatalogScope::MultipartSession,
+                    }
+                })
+            },
+            prefix: if native {
+                task.head
+                    .as_ref()
+                    .and_then(|head| head.storage_location().storage_path())
+                    .map_or_else(Vec::new, |table| table.to_string().into_bytes())
+            } else {
+                Vec::new()
+            },
             after: task.scan_after.clone(),
             items: usize::from(limits.page_items),
             bytes: (crate::record::MAX_RECORD_BYTES + crate::key::MAX_KEY_BYTES)
                 .min(limits.step_bytes as usize),
         };
-        let page = self.store.scan_gc(scan.clone()).await?;
+        let page = if self.discovery_layout_allows(task, native).await? {
+            self.store.scan_gc(scan.clone()).await?
+        } else {
+            crowdb_chunk_kv_client::MultiScanPage {
+                items: Vec::new(),
+                continuation: None,
+                terminal_failure: None,
+            }
+        };
         scan.validate_page(&page)?;
         for item in &page.items {
-            let key = IcebergKey::decode(&item.key)?;
+            let key = StorageKey::decode(&item.key)?;
             if let Some(candidate) = self
                 .discovery_candidate(task, &key, &item.value, limits, now_ms)
                 .await?
@@ -121,13 +142,7 @@ impl GcRepository {
             next.scan_after.clone_from(&last.key);
         } else {
             next.scan_after.clear();
-            if task.discovery_scope
-                < if task.kind == GcTaskKind::MultipartCleanup {
-                    2
-                } else {
-                    3
-                }
-            {
+            if task.discovery_scope < task.last_discovery_scope() {
                 next.discovery_scope += 1;
             } else if task.phase == GcPhase::Rescan {
                 next.discovery_scope = 0;
@@ -154,29 +169,47 @@ impl GcRepository {
         Ok(next)
     }
 
+    async fn discovery_layout_allows(&self, task: &GcTask, native: bool) -> Result<bool, CatalogError> {
+        let layout = self.catalog_layout(task.context.catalog).await?;
+        if task.head.as_ref().is_some_and(|head| {
+            head.storage_location().storage_namespace.is_some() != (layout == CatalogStorageLayout::Native)
+        }) {
+            return Err(ValidationError::IdentityMismatch.into());
+        }
+        let data_scope = task.discovery_scope == 0
+            || (task.kind != GcTaskKind::MultipartCleanup && task.discovery_scope == 1);
+        Ok(if native {
+            layout == CatalogStorageLayout::Native
+        } else {
+            !data_scope || layout == CatalogStorageLayout::Legacy
+        })
+    }
+
     async fn discovery_candidate(
         &self,
         task: &GcTask,
-        key: &IcebergKey,
+        key: &StorageKey,
         bytes: &[u8],
         limits: GcLimits,
         now_ms: u64,
     ) -> Result<Option<GcCandidate>, CatalogError> {
         let mut deleted_ms = None;
         let (file, part, assembly) = match key {
-            IcebergKey::Catalog {
+            StorageKey::NativeTable(key) if key.scope != TableStorageScope::File => return Ok(None),
+            StorageKey::Legacy(IcebergKey::Catalog {
                 scope: CatalogScope::File,
                 ..
-            } => {
+            }) => {
                 let StorageRecord::File(file) = StorageRecord::decode(key, bytes)? else {
                     return Err(ValidationError::Record.into());
                 };
                 (*file, None, None)
             }
-            IcebergKey::Catalog {
+            StorageKey::NativeTable(_)
+            | StorageKey::Legacy(IcebergKey::Catalog {
                 scope: CatalogScope::FileLocation,
                 ..
-            } => match StorageRecord::decode(key, bytes)? {
+            }) => match StorageRecord::decode(key, bytes)? {
                 StorageRecord::File(file) if task.kind != GcTaskKind::MultipartCleanup => (*file, None, None),
                 StorageRecord::DeletedFile(record) => {
                     deleted_ms = Some(record.deleted_ms);
@@ -185,10 +218,10 @@ impl GcRepository {
                 StorageRecord::File(_) | StorageRecord::FileMapping(_) => return Ok(None),
                 _ => return Err(ValidationError::Record.into()),
             },
-            IcebergKey::Catalog {
+            StorageKey::Legacy(IcebergKey::Catalog {
                 scope: CatalogScope::MultipartPart,
                 ..
-            } => {
+            }) => {
                 let StorageRecord::MultipartPart(part) = StorageRecord::decode(key, bytes)? else {
                     return Err(ValidationError::Record.into());
                 };
@@ -197,10 +230,10 @@ impl GcRepository {
                 }
                 (GcCandidate::part_file(&part)?, Some(*part), None)
             }
-            IcebergKey::Catalog {
+            StorageKey::Legacy(IcebergKey::Catalog {
                 scope: CatalogScope::MultipartSession,
                 ..
-            } => {
+            }) => {
                 let StorageRecord::MultipartSession(session) = StorageRecord::decode(key, bytes)? else {
                     return Err(ValidationError::Record.into());
                 };
@@ -215,12 +248,12 @@ impl GcRepository {
                 }
                 (GcCandidate::assembly_file(&session)?, None, Some(session))
             }
-            _ => return Err(ValidationError::Record.into()),
+            StorageKey::Legacy(_) => return Err(ValidationError::Record.into()),
         };
         if task
             .head
             .as_ref()
-            .is_some_and(|head| head.table != file.location.table().table)
+            .is_some_and(|head| head.storage_location() != file.location.table())
         {
             return Ok(None);
         }

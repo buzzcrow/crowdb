@@ -18,6 +18,7 @@ impl GcWorker {
             return Err(CatalogError::Busy.into());
         }
         let scan = GcScan {
+            native: false,
             catalog: task.context.catalog,
             scope: Some(CatalogScope::FileWriteIntent),
             prefix: task

@@ -20,6 +20,7 @@ use hyper::Method;
 
 fn grant(operations: &[FileOperation]) -> FileGrant {
     FileGrant {
+        storage_namespace: None,
         context: CatalogContext {
             catalog: CatalogId::random(),
             activation_epoch: 1,
@@ -37,6 +38,7 @@ fn grant(operations: &[FileOperation]) -> FileGrant {
 
 fn location(grant: &FileGrant) -> crowdb_access_iceberg::file::FileLocation {
     TableLocation {
+        storage_namespace: None,
         catalog: grant.context.catalog,
         table: grant.table,
     }
@@ -112,6 +114,7 @@ fn authorization_intersects_grant_operation_scope_and_service_limits() {
     ));
     let mut wrong = get_request.clone();
     wrong.location = TableLocation {
+        storage_namespace: None,
         catalog: grant.context.catalog,
         table: TableId::random(),
     }

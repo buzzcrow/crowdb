@@ -33,6 +33,43 @@ struct ReadSource {
 }
 
 impl FileReader {
+    /// Checks physical directory ownership without any file authority lookup.
+    /// # Errors
+    /// Rejects absent, reclaimed, reused or corrupt roots and non-directory descriptors.
+    pub async fn probe_root(store: &dyn FileBlockStore, record: &FileRecord) -> Result<Vec<u8>, FileIoError> {
+        record.validate()?;
+        let FileContent::Chunks { root: Some(root) } = &record.content else {
+            return Err(FileIoError::Bounds);
+        };
+        if root.height == 0 {
+            return Err(FileIoError::Bounds);
+        }
+        let bytes = store.read(root).await?;
+        verify_block(root, &bytes)?;
+        ChunkDirectory::decode(
+            &bytes,
+            FileIdentity {
+                table: record.location.table(),
+                file: record.file,
+            },
+            root.height,
+            record.length,
+        )?;
+        Ok(bytes)
+    }
+
+    /// Reuses a preflight directory without keeping more than one cached directory.
+    /// # Errors
+    /// Rejects bytes which do not belong to this reader's root or owner.
+    pub fn with_root_directory(mut self, bytes: Vec<u8>) -> Result<Self, FileIoError> {
+        let FileContent::Chunks { root: Some(root) } = &self.record.content else {
+            return Err(FileIoError::Bounds);
+        };
+        verify_block(root, &bytes)?;
+        ChunkDirectory::decode(&bytes, self.record.owner, root.height, self.record.length)?;
+        self.leaf_directory = Some((root.clone(), bytes));
+        Ok(self)
+    }
     /// # Errors
     /// Rejects invalid records, out-of-file intervals and unbounded frame sizes.
     pub fn new(

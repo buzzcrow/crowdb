@@ -7,6 +7,7 @@ use std::sync::{
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use crowdb_access_iceberg::catalog::{CasOutcome, CatalogStore, StoreError, StoredValue};
+use crowdb_access_iceberg::key::{CatalogScope, IcebergKey, StorageKey, TableStorageKey, TableStorageScope};
 use crowdb_protocol::chunk_kv::ClientRequestId;
 
 #[derive(Default)]
@@ -14,6 +15,7 @@ pub struct TestStore {
     pub values: ArcSwap<BTreeMap<Vec<u8>, StoredValue>>,
     pub fail_after: AtomicUsize,
     pub file_record_reply_loss: AtomicBool,
+    pub native_injection_reply_loss: AtomicBool,
     pub gc_workspace_denied: AtomicBool,
     #[allow(dead_code)]
     pub gc_delete_reply_loss: AtomicBool,
@@ -64,12 +66,25 @@ impl TestStore {
     }
 
     fn lose_file_reply(&self, key: &[u8]) -> bool {
-        matches!(
-            crowdb_access_iceberg::key::IcebergKey::decode(key),
-            Ok(crowdb_access_iceberg::key::IcebergKey::Catalog {
-                scope: crowdb_access_iceberg::key::CatalogScope::FileLocation,
+        if matches!(
+            StorageKey::decode(key),
+            Ok(StorageKey::NativeTable(TableStorageKey {
+                scope: TableStorageScope::Operation,
                 ..
-            })
+            }))
+        ) && self.native_injection_reply_loss.swap(false, Ordering::SeqCst)
+        {
+            return true;
+        }
+        matches!(
+            StorageKey::decode(key),
+            Ok(StorageKey::Legacy(IcebergKey::Catalog {
+                scope: CatalogScope::FileLocation,
+                ..
+            }) | StorageKey::NativeTable(TableStorageKey {
+                scope: TableStorageScope::File,
+                ..
+            }))
         ) && self.file_record_reply_loss.swap(false, Ordering::SeqCst)
     }
 

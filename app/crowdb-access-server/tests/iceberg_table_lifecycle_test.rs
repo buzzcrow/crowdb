@@ -232,7 +232,17 @@ async fn credential_refresh_follows_exact_renamed_identity_and_stops_after_drop(
         .await,
     )
     .await;
-    value(test.request(Method::GET, old, "w", None).await, 404).await;
+    let refreshed = value(test.request(Method::GET, old, "w", None).await, 200).await;
+    assert_eq!(
+        refreshed["storage-credentials"][0]["prefix"]
+            .as_str()
+            .unwrap()
+            .trim_end_matches('/'),
+        created["metadata"]["location"]
+            .as_str()
+            .unwrap()
+            .trim_end_matches('/')
+    );
     let renamed = "/v1/namespaces/analytics/tables/renamed";
     let moved = value(test.request(Method::GET, renamed, "w", None).await, 200).await;
     let current = moved["config"]["client.refresh-credentials-endpoint"]

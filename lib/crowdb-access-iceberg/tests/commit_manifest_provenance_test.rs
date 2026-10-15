@@ -133,6 +133,7 @@ async fn candidate_sources_separate_reachable_history_from_new_definition_bound_
             upload
         );
         let foreign = crowdb_access_iceberg::file::TableLocation {
+            storage_namespace: None,
             catalog: fixture.namespace.context.catalog,
             table: crowdb_access_iceberg::key::TableId::random(),
         }

@@ -15,6 +15,40 @@ use sha2::{Digest, Sha256};
 const JSON: &[u8] = b"{ \n \"refs\" : {\"main\": { \"snapshot-id\": 123 }}, \"unknown\" : [1,  2] }\n";
 
 #[tokio::test]
+async fn native_projection_pages_are_bound_to_storage_namespace_and_generation() {
+    use crowdb_access_iceberg::key::{NamespaceId, StorageKey, TableStorageScope};
+    let mut fixture = TestProjection::new(JSON).await;
+    let mut table = fixture.record.location.table();
+    table.storage_namespace = Some(NamespaceId::random());
+    fixture.record.location = table.file("metadata/v7.json").unwrap();
+    assert!(fixture.projection.put(&fixture.record, 7, JSON).await);
+    for key in fixture.store.values.load().keys() {
+        let StorageKey::NativeTable(key) = StorageKey::decode(key).unwrap() else {
+            panic!()
+        };
+        assert_eq!(key.table, table.storage_path().unwrap());
+        assert_eq!(key.scope, TableStorageScope::Projection);
+        assert!(key.suffix.starts_with("7/"));
+    }
+    assert!(matches!(
+        fixture
+            .projection
+            .select(fixture.record.clone(), 7, &["refs"])
+            .await
+            .unwrap(),
+        MetadataRead::Selected(_)
+    ));
+    assert_eq!(fixture.blocks.reads.load(Ordering::SeqCst), 0);
+    table.storage_namespace = Some(NamespaceId::random());
+    let mut foreign = fixture.record.clone();
+    foreign.location = table.file("metadata/v7.json").unwrap();
+    assert!(!matches!(
+        fixture.projection.select(foreign, 7, &["refs"]).await,
+        Ok(MetadataRead::Selected(_))
+    ));
+}
+
+#[tokio::test]
 async fn selected_children_preserve_bytes_without_reading_canonical_blocks() {
     let fixture = TestProjection::new(JSON).await;
     assert!(fixture.projection.put(&fixture.record, 7, JSON).await);

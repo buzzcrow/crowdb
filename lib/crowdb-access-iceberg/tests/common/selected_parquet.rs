@@ -68,6 +68,7 @@ pub fn entry(content: FileContentKind) -> ManifestScalarEntry {
         },
         file: ManifestFileFields {
             location: TableLocation {
+                storage_namespace: None,
                 catalog: CatalogId::random(),
                 table: TableId::random(),
             }

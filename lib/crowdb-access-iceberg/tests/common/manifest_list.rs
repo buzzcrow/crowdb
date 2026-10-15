@@ -10,6 +10,7 @@ pub struct TestManifestList {
 
 pub fn table() -> TableLocation {
     TableLocation {
+        storage_namespace: None,
         catalog: CatalogId::from_bytes(&[1; 16]).unwrap(),
         table: TableId::from_bytes(&[2; 16]).unwrap(),
     }

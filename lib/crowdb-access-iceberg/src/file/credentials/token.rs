@@ -1,11 +1,13 @@
+use arc_swap::ArcSwap;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use data_encoding::BASE32_NOPAD;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
+use std::{collections::BTreeMap, sync::Arc};
 use subtle::ConstantTimeEq;
 
 use crate::catalog::CatalogContext;
-use crate::key::{CatalogId, OperationId, TableId};
+use crate::key::{CatalogId, NamespaceId, OperationId, TableId};
 
 use super::{FileCredentials, FileGrant, FileGrantError, FileOperations};
 
@@ -17,6 +19,7 @@ type Signer = Hmac<Sha256>;
 pub struct FileGrantIssuer {
     key: [u8; 32],
     max_ttl_ms: u64,
+    validated: ArcSwap<BTreeMap<String, FileCredentials>>,
 }
 
 impl FileGrantIssuer {
@@ -26,7 +29,11 @@ impl FileGrantIssuer {
         if key == [0; 32] || max_ttl_ms == 0 {
             return Err(FileGrantError::Invalid);
         }
-        Ok(Self { key, max_ttl_ms })
+        Ok(Self {
+            key,
+            max_ttl_ms,
+            validated: ArcSwap::from_pointee(BTreeMap::new()),
+        })
     }
 
     /// # Errors
@@ -77,27 +84,41 @@ impl FileGrantIssuer {
         context: CatalogContext,
         now_ms: u64,
     ) -> Result<FileCredentials, FileGrantError> {
-        if session_token.len() != TOKEN_CHARACTERS {
+        if ![TOKEN_CHARACTERS, 228].contains(&session_token.len()) {
             return Err(FileGrantError::Invalid);
+        }
+        if let Some(cached) = self.validated.load().get(session_token) {
+            validate_request(&cached.grant, context, now_ms)?;
+            return Ok(cached.clone());
         }
         let bytes = URL_SAFE_NO_PAD
             .decode(session_token)
             .map_err(|_| FileGrantError::Invalid)?;
-        if bytes.len() != TOKEN_BYTES {
+        if ![TOKEN_BYTES, TOKEN_BYTES + 16].contains(&bytes.len()) {
             return Err(FileGrantError::Invalid);
         }
-        self.signer(b"iceberg-file-grant-v1", &bytes[..CLAIM_BYTES])
-            .verify_slice(&bytes[CLAIM_BYTES..])
+        let claim_bytes = bytes.len() - 32;
+        self.signer(b"iceberg-file-grant-v1", &bytes[..claim_bytes])
+            .verify_slice(&bytes[claim_bytes..])
             .map_err(|_| FileGrantError::Invalid)?;
-        let grant = decode(&bytes[..CLAIM_BYTES])?;
+        let grant = decode(&bytes[..claim_bytes])?;
         grant.validate(self.max_ttl_ms)?;
-        if grant.context != context {
-            return Err(FileGrantError::Forbidden);
-        }
-        if now_ms < grant.issued_ms || now_ms >= grant.expires_ms {
-            return Err(FileGrantError::Expired);
-        }
-        Ok(self.credentials(grant, &bytes))
+        validate_request(&grant, context, now_ms)?;
+        let credentials = self.credentials(grant, &bytes);
+        self.remember(&credentials, now_ms);
+        Ok(credentials)
+    }
+
+    fn remember(&self, credentials: &FileCredentials, now_ms: u64) {
+        self.validated.rcu(|current| {
+            let mut next = (**current).clone();
+            next.retain(|_, value| value.grant.expires_ms > now_ms);
+            while next.len() >= 64 {
+                next.pop_first();
+            }
+            next.insert(credentials.session_token.clone(), credentials.clone());
+            Arc::new(next)
+        });
     }
 
     fn signer(&self, domain: &[u8], bytes: &[u8]) -> Signer {
@@ -125,9 +146,19 @@ impl FileGrantIssuer {
     }
 }
 
+fn validate_request(grant: &FileGrant, context: CatalogContext, now_ms: u64) -> Result<(), FileGrantError> {
+    if grant.context != context {
+        return Err(FileGrantError::Forbidden);
+    }
+    if now_ms < grant.issued_ms || now_ms >= grant.expires_ms {
+        return Err(FileGrantError::Expired);
+    }
+    Ok(())
+}
+
 fn encode(grant: &FileGrant) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(TOKEN_BYTES);
-    bytes.push(1);
+    bytes.push(if grant.storage_namespace.is_some() { 2 } else { 1 });
     bytes.extend_from_slice(grant.context.catalog.as_bytes());
     bytes.extend_from_slice(&grant.context.activation_epoch.to_be_bytes());
     bytes.extend_from_slice(grant.table.as_bytes());
@@ -138,11 +169,15 @@ fn encode(grant: &FileGrant) -> Vec<u8> {
     bytes.extend_from_slice(&grant.operations.0.to_be_bytes());
     bytes.extend_from_slice(&grant.max_request_bytes.to_be_bytes());
     bytes.extend_from_slice(&grant.max_file_bytes.to_be_bytes());
+    if let Some(namespace) = grant.storage_namespace {
+        bytes.extend_from_slice(namespace.as_bytes());
+    }
     bytes
 }
 
 fn decode(bytes: &[u8]) -> Result<FileGrant, FileGrantError> {
-    if bytes.len() != CLAIM_BYTES || bytes[0] != 1 {
+    if !((bytes.len() == CLAIM_BYTES && bytes[0] == 1) || (bytes.len() == CLAIM_BYTES + 16 && bytes[0] == 2))
+    {
         return Err(FileGrantError::Invalid);
     }
     let array = |start, end| bytes.get(start..end).ok_or(FileGrantError::Invalid);
@@ -154,6 +189,11 @@ fn decode(bytes: &[u8]) -> Result<FileGrant, FileGrantError> {
         ))
     };
     Ok(FileGrant {
+        storage_namespace: if bytes[0] == 2 {
+            Some(NamespaceId::from_bytes(&bytes[CLAIM_BYTES..]).map_err(|_| FileGrantError::Invalid)?)
+        } else {
+            None
+        },
         context: CatalogContext {
             catalog: CatalogId::from_bytes(array(1, 17)?).map_err(|_| FileGrantError::Invalid)?,
             activation_epoch: number(17)?,

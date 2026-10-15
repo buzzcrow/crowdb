@@ -53,6 +53,8 @@ pub struct TestStore {
     pub read_delay_ms: AtomicU64,
     pub scan_delay_ms: AtomicU64,
     pub scans: AtomicU64,
+    pub native_file_reads: AtomicU64,
+    pub deny_native_file_reads: AtomicBool,
     pub lose_reply_kind: AtomicU8,
     pub pause_file_read: AtomicBool,
     pub file_read_entered: tokio::sync::Notify,
@@ -174,14 +176,30 @@ impl CatalogStore for TestStore {
         })
     }
     async fn get(&self, key: &[u8]) -> Result<Option<StoredValue>, StoreError> {
+        if matches!(crowdb_access_iceberg::key::StorageKey::decode(key),
+            Ok(crowdb_access_iceberg::key::StorageKey::NativeTable(key))
+                if key.scope == crowdb_access_iceberg::key::TableStorageScope::File)
+        {
+            self.native_file_reads.fetch_add(1, Ordering::SeqCst);
+            if self.deny_native_file_reads.load(Ordering::SeqCst) {
+                return Err(StoreError::Response);
+            }
+        }
         let value = self.values.load().get(key).cloned();
         if matches!(
-            crowdb_access_iceberg::key::IcebergKey::decode(key),
-            Ok(crowdb_access_iceberg::key::IcebergKey::Catalog {
-                scope: crowdb_access_iceberg::key::CatalogScope::File
-                    | crowdb_access_iceberg::key::CatalogScope::FileLocation,
-                ..
-            })
+            crowdb_access_iceberg::key::StorageKey::decode(key),
+            Ok(crowdb_access_iceberg::key::StorageKey::Legacy(
+                crowdb_access_iceberg::key::IcebergKey::Catalog {
+                    scope: crowdb_access_iceberg::key::CatalogScope::File
+                        | crowdb_access_iceberg::key::CatalogScope::FileLocation,
+                    ..
+                }
+            ) | crowdb_access_iceberg::key::StorageKey::NativeTable(
+                crowdb_access_iceberg::key::TableStorageKey {
+                    scope: crowdb_access_iceberg::key::TableStorageScope::File,
+                    ..
+                }
+            ))
         ) && self.pause_file_read.swap(false, Ordering::SeqCst)
         {
             self.file_read_entered.notify_one();
@@ -202,11 +220,18 @@ impl CatalogStore for TestStore {
     ) -> Result<CasOutcome, StoreError> {
         identity.validate().unwrap();
         if matches!(
-            crowdb_access_iceberg::key::IcebergKey::decode(key),
-            Ok(crowdb_access_iceberg::key::IcebergKey::Catalog {
-                scope: crowdb_access_iceberg::key::CatalogScope::TableHead,
-                ..
-            })
+            crowdb_access_iceberg::key::StorageKey::decode(key),
+            Ok(crowdb_access_iceberg::key::StorageKey::Legacy(
+                crowdb_access_iceberg::key::IcebergKey::Catalog {
+                    scope: crowdb_access_iceberg::key::CatalogScope::TableHead,
+                    ..
+                }
+            ) | crowdb_access_iceberg::key::StorageKey::NativeTable(
+                crowdb_access_iceberg::key::TableStorageKey {
+                    scope: crowdb_access_iceberg::key::TableStorageScope::Head,
+                    ..
+                }
+            ))
         ) && self.pause_head_cas.swap(false, Ordering::SeqCst)
         {
             self.head_cas_entered.notify_one();
@@ -230,8 +255,10 @@ impl CatalogStore for TestStore {
             if Arc::ptr_eq(&current, &self.values.compare_and_swap(&current, Arc::new(next))) {
                 let mode = self.lose_reply_kind.load(Ordering::SeqCst);
                 let lose = mode == 1
-                    || match crowdb_access_iceberg::key::IcebergKey::decode(key) {
-                        Ok(crowdb_access_iceberg::key::IcebergKey::Catalog { scope, .. }) => {
+                    || match crowdb_access_iceberg::key::StorageKey::decode(key) {
+                        Ok(crowdb_access_iceberg::key::StorageKey::Legacy(
+                            crowdb_access_iceberg::key::IcebergKey::Catalog { scope, .. },
+                        )) => {
                             (mode == 2
                                 && scope == crowdb_access_iceberg::key::CatalogScope::NamespaceAuthority)
                                 || (mode == 3 && scope == crowdb_access_iceberg::key::CatalogScope::Operation)
@@ -243,6 +270,9 @@ impl CatalogStore for TestStore {
                                         crowdb_access_iceberg::record::StorageRecord::decode(&key, value)),
                                         Ok(crowdb_access_iceberg::record::StorageRecord::TableCommitOperation(operation))
                                             if operation.phase == crowdb_access_iceberg::commit::TableCommitPhase::Rejected))
+                        }
+                        Ok(crowdb_access_iceberg::key::StorageKey::NativeTable(key)) => {
+                            mode == 5 && key.scope == crowdb_access_iceberg::key::TableStorageScope::Head
                         }
                         _ => false,
                     };

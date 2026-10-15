@@ -5,6 +5,8 @@
 
 Run: pixi run -e iceberg-e2e python tools/load-tpch.py
 Local files and both upload reports remain under .crowdb-runtime/artifacts/.
+The S3 upload is an independent benchmark copy. Its bucket and keys do not
+describe or back the native Iceberg table's file locations.
 """
 
 import argparse
@@ -144,7 +146,7 @@ def copy_objects(args, report_path, work, properties, client):
     except ClientError as error:
         if error.response["Error"]["Code"] != "BucketAlreadyOwnedByYou":
             raise
-    copied = {"iceberg_report": str(report_path), "bucket": bucket, "status": "running", "objects": []}
+    copied = {"iceberg_report": str(report_path), "purpose": "independent-s3-benchmark-copy", "bucket": bucket, "status": "running", "objects": []}
     output = work / "s3-report.json"
     save_report(output, copied)
     for table in tables.values():

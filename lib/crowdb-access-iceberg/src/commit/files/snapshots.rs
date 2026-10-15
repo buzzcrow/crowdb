@@ -48,7 +48,7 @@ impl CandidateFileSource {
         {
             return Err(Error::Binding);
         }
-        self.validate_snapshot_set(Some(prior), &limits).await
+        Box::pin(self.validate_snapshot_set(Some(prior), &limits)).await
     }
 
     /// Validates all initial snapshots, including parent-child DV checks within a staged transaction.
@@ -61,7 +61,7 @@ impl CandidateFileSource {
         if self.fence.prior().is_some() {
             return Err(Error::Binding);
         }
-        self.validate_snapshot_set(None, &limits).await
+        Box::pin(self.validate_snapshot_set(None, &limits)).await
     }
 
     async fn validate_snapshot_set(

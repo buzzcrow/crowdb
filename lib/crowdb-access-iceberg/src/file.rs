@@ -7,6 +7,9 @@ mod content;
 mod credentials;
 mod deletion_vector;
 mod digest;
+mod direct_location;
+mod injection;
+pub use injection::{NativeInjection, NativeInjectionRepository, NativeInjectionRequest};
 mod directory;
 mod format;
 mod json;
@@ -21,6 +24,9 @@ mod multipart_list;
 mod multipart_recovery;
 mod multipart_repository;
 mod multipart_selection;
+mod native_location;
+pub(crate) use native_location::validate_native_relative_key;
+pub use native_location::{NativeFileLocation, NATIVE_ICEBERG_BUCKET};
 mod parquet;
 pub use parquet::ParquetPageLimits;
 pub(crate) use parquet::{ParquetColumnReader, ParquetColumnValue};
@@ -53,12 +59,13 @@ pub use deletion_vector::{
     DeletionVectorPositions, DeletionVectorReference, DeletionVectorStats,
 };
 pub use digest::FileDigest;
+pub use direct_location::DirectFileLocations;
 pub use directory::{ChunkDirectory, ChunkEntry, FileIdentity, MAX_DIRECTORY_ENTRIES};
 pub use format::{
     probe_orc_footer, probe_parquet_footer, probe_puffin_footer, FormatProbeError, OrcFooter, PuffinFooter,
 };
 pub use json::{JsonSealError, JsonSealer};
-pub use key::{file_key, location_key};
+pub use key::{canonical_file_key, file_key, location_key};
 pub(crate) use location::validate_relative_key;
 pub use location::{FileLocation, TableLocation, MAX_OBJECT_KEY_BYTES};
 pub use multipart::{

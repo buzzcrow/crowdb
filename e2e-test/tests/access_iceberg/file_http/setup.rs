@@ -89,6 +89,7 @@ pub(super) async fn setup_with_bounds_and_file_limit(
     let started = now_ms();
     let credentials = issuer
         .issue(FileGrant {
+            storage_namespace: table.storage_namespace,
             context,
             table: table.table,
             principal: [7; 32],
@@ -149,6 +150,7 @@ pub(super) async fn cleanup_client(
         client: client.client.clone(),
         credentials: issuer
             .issue(FileGrant {
+                storage_namespace: table.storage_namespace,
                 context,
                 table: table.table,
                 principal: [9; 32],

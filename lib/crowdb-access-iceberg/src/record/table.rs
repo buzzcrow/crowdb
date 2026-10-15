@@ -102,6 +102,9 @@ pub(super) fn encode_mapping<'buffer>(
     let namespace_id = builder.create_vector(mapping.namespace.as_bytes());
     let name = builder.create_string(&mapping.name);
     let operation = builder.create_vector(mapping.operation.as_bytes());
+    let storage_namespace = mapping
+        .storage_namespace
+        .map(|id| builder.create_vector(id.as_bytes()));
     Ok(FBTableMapping::create(
         builder,
         &FBTableMappingArgs {
@@ -115,12 +118,17 @@ pub(super) fn encode_mapping<'buffer>(
                 TableMappingState::Reserved => 0,
                 TableMappingState::Published => 1,
             },
+            storage_namespace,
         },
     ))
 }
 
 pub(super) fn decode_mapping(value: FBTableMapping<'_>) -> Result<TableMapping, ValidationError> {
     let mapping = TableMapping {
+        storage_namespace: value
+            .storage_namespace()
+            .map(|id| NamespaceId::from_bytes(id.bytes()))
+            .transpose()?,
         catalog: CatalogId::from_bytes(value.catalog().bytes())?,
         table: TableId::from_bytes(value.table_id().bytes())?,
         namespace: NamespaceId::from_bytes(value.namespace_id().bytes())?,

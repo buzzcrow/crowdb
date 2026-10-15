@@ -14,7 +14,12 @@ export function useClusterMenus({ readonly, managed, managementAuthorized, domai
   /** Build per-layer context menu items for a normalized target. */
   return useCallback(
     (t: MenuTarget): MenuItemOrSeparator[] => {
-      if (readonly || managed || !managementAuthorized) return [];
+      // Existing service lifecycle actions must remain available while the
+      // authority probe is down. Stopping a KV service makes that probe
+      // unavailable, but restart/stop/delete are exactly the recovery actions
+      // needed to bring the authority back.
+      const isServiceTarget = t.type === 'Server' && t.serviceType != null;
+      if (readonly || managed || (!managementAuthorized && !isServiceTarget)) return [];
       const items: MenuItemOrSeparator[] = [];
       const p = t.parentIds || {};
       if (physicalActive && t.type === 'Server' && isAuxiliaryKind(t.serviceType)) {

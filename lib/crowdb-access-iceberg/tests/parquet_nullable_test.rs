@@ -29,6 +29,7 @@ async fn official_parquet_java_v1_v2_nested_and_all_null_files_decode() {
         let (store, record) = fixture::stored_content(
             &bytes,
             TableLocation {
+                storage_namespace: None,
                 catalog: CatalogId::from_bytes(&[1; 16]).unwrap(),
                 table: TableId::from_bytes(&[2; 16]).unwrap(),
             },

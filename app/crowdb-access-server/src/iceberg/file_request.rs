@@ -25,6 +25,7 @@ pub enum MultipartRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileRequest {
+    pub injection: Option<crowdb_access_iceberg::operation::RequestIdentity>,
     pub location: FileLocation,
     pub operation: FileOperation,
     pub multipart: Option<MultipartRequest>,
@@ -50,11 +51,27 @@ impl FileRequest {
         }
         let path = decode(uri.path())?;
         let path = path.strip_prefix('/').ok_or(FileRequestError::Invalid)?;
-        let location = format!("s3://{path}")
+        let location: FileLocation = format!("s3://{path}")
             .parse()
             .map_err(|_| FileRequestError::Invalid)?;
         let mut query = query(uri.query())?;
+        let injection = query
+            .remove("crowdb-native-upload")
+            .map(|identity| {
+                if method != Method::PUT
+                    || location.table().storage_namespace.is_none()
+                    || !location.relative_key().ends_with(".parquet")
+                {
+                    return Err(FileRequestError::Invalid);
+                }
+                crowdb_access_iceberg::operation::RequestIdentity::parse(&identity, u64::MAX)
+                    .map_err(|_| FileRequestError::Invalid)
+            })
+            .transpose()?;
         let multipart = multipart(method, &mut query)?;
+        if injection.is_some() && multipart.is_some() {
+            return Err(FileRequestError::Invalid);
+        }
         if !query.is_empty() {
             return Err(FileRequestError::Unsupported);
         }
@@ -70,7 +87,14 @@ impl FileRequest {
             None if method == Method::DELETE => FileOperation::DeleteObject,
             None => return Err(FileRequestError::Unsupported),
         };
+        if location.table().storage_namespace.is_some()
+            && matches!(operation, FileOperation::Put | FileOperation::CreateMultipart)
+            && (location.relative_key() == "f" || location.relative_key().starts_with("f/"))
+        {
+            return Err(FileRequestError::Invalid);
+        }
         Ok(Self {
+            injection,
             location,
             operation,
             multipart,

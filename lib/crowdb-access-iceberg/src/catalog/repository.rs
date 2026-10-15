@@ -272,7 +272,7 @@ impl CatalogRepository {
                 .as_ref()
                 .ok_or(ValidationError::Record)?
                 .activated(request.capabilities.ok_or(ValidationError::Record)?)?,
-            _ => CatalogAuthority::new(candidate, request.display_name.clone())?,
+            _ => CatalogAuthority::new_native(candidate, request.display_name.clone())?,
         };
         result.admission_bounds = bounds;
         Ok(ManagementOperation {

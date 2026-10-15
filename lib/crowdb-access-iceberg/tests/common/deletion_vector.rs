@@ -69,6 +69,7 @@ pub async fn record(
     cardinality: u64,
 ) -> (FileRecord, DeletionVectorReference) {
     let table = TableLocation {
+        storage_namespace: None,
         catalog: CatalogId::random(),
         table: TableId::random(),
     };

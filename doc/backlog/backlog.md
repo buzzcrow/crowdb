@@ -9,7 +9,7 @@ requirements and their temporary execution plans are removed during the final
 live in the linked document; implementation follows
 [`implement-requirement`](../../.agents/skills/implement-requirement/SKILL.md).
 
-**Next R number: R231** — R221 is reserved by another workstream.
+**Next R number: R235** — R231 through R233 are reserved by other workstreams.
 
 ## Dataset and access
 

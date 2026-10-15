@@ -3,7 +3,7 @@ use flatbuffers::{FlatBufferBuilder, WIPOffset};
 
 use crate::error::ValidationError;
 use crate::file::{FileIdentity, FileTree, TableLocation};
-use crate::key::{CatalogId, FileId, TableId};
+use crate::key::{CatalogId, FileId, NamespaceId, TableId};
 use crate::record::file::{decode_root, encode_root};
 
 pub(super) fn encode_owner<'buffer>(
@@ -13,12 +13,17 @@ pub(super) fn encode_owner<'buffer>(
     let catalog = builder.create_vector(owner.table.catalog.as_bytes());
     let table_id = builder.create_vector(owner.table.table.as_bytes());
     let file_id = builder.create_vector(owner.file.as_bytes());
+    let storage_namespace = owner
+        .table
+        .storage_namespace
+        .map(|id| builder.create_vector(id.as_bytes()));
     FBFileIdentity::create(
         builder,
         &FBFileIdentityArgs {
             catalog: Some(catalog),
             table_id: Some(table_id),
             file_id: Some(file_id),
+            storage_namespace,
         },
     )
 }
@@ -26,6 +31,10 @@ pub(super) fn encode_owner<'buffer>(
 pub(super) fn decode_owner(value: FBFileIdentity<'_>) -> Result<FileIdentity, ValidationError> {
     Ok(FileIdentity {
         table: TableLocation {
+            storage_namespace: value
+                .storage_namespace()
+                .map(|id| NamespaceId::from_bytes(id.bytes()))
+                .transpose()?,
             catalog: CatalogId::from_bytes(value.catalog().bytes())?,
             table: TableId::from_bytes(value.table_id().bytes())?,
         },

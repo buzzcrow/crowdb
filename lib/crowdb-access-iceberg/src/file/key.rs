@@ -1,6 +1,20 @@
-use crate::key::{CatalogId, CatalogScope, FileId, IcebergKey};
+use crate::key::{
+    CatalogId, CatalogScope, FileId, IcebergKey, StorageKey, TableStorageKey, TableStorageScope,
+};
 
 use super::FileLocation;
+
+#[must_use]
+pub fn canonical_file_key(location: &FileLocation) -> StorageKey {
+    match location.table().storage_path() {
+        Some(table) => StorageKey::NativeTable(TableStorageKey {
+            table,
+            scope: TableStorageScope::File,
+            suffix: location.relative_key().to_owned(),
+        }),
+        None => StorageKey::Legacy(location_key(location)),
+    }
+}
 
 #[must_use]
 pub fn file_key(catalog: CatalogId, file: FileId) -> IcebergKey {

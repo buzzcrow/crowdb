@@ -286,6 +286,7 @@ async fn scan_and_advance(
         });
     }
     let scan = GcScan {
+        native: false,
         catalog,
         scope: Some(CatalogScope::GcTask),
         prefix: Vec::new(),
@@ -388,6 +389,7 @@ async fn scan_purge(
     limits: GcLimits,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
     let scan = GcScan {
+        native: false,
         catalog: context.catalog,
         scope: Some(CatalogScope::Reclamation),
         prefix: Vec::new(),

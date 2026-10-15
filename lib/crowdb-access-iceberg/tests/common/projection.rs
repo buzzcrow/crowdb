@@ -44,6 +44,7 @@ impl TestProjection {
         let blocks = Arc::new(TestBlocks::default());
         let owner = FileIdentity {
             table: TableLocation {
+                storage_namespace: None,
                 catalog: CatalogId::random(),
                 table: TableId::random(),
             },

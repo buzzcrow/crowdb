@@ -5,7 +5,7 @@ use crate::{
     key::{CatalogScope, IcebergKey, OperationId, SystemScope},
     operation::{ledger_locate, LedgerLocation, ManagementAction, ManagementOperation, ManagementPhase},
     record::StorageRecord,
-    table::{head_key, TablePurgeTask},
+    table::{storage_head_key, TablePurgeTask},
 };
 
 use super::{CandidatePhase, GcCandidate, GcLimits, GcRepository, GcTask, GcTaskKind, TreeReclaimCursor};
@@ -198,7 +198,7 @@ impl GcRepository {
             }
             return Ok(existing);
         }
-        let head_key = head_key(context.catalog, marker.head.table);
+        let head_key = storage_head_key(marker.head.storage_location());
         let head = self
             .store
             .get(&head_key.encode()?)

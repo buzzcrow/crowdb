@@ -165,7 +165,7 @@ impl NamespaceDropper {
             .await?;
             return Ok(true);
         }
-        let key = crate::table::head_key(mapping.catalog, mapping.table);
+        let key = crate::table::storage_head_key(mapping.storage_location());
         let value = self
             .creator
             .names

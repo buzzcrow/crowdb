@@ -122,7 +122,7 @@ export function S3View({ active, readonly, onChunk }: { active: boolean; readonl
     const response = await request('HEAD', objectPath(bucket, row.key));
     setDetail(Object.fromEntries(response.headers.entries()));
   }, `Inspected ${row.key}`); };
-  useEffect(() => { if (origin) void run(listBuckets, 'Buckets refreshed'); }, [origin]);
+  useEffect(() => { if (active && origin) void run(listBuckets, 'Buckets refreshed'); }, [active, origin]);
   useNavigationSnapshot(Domain.S3, 'object-query', () => {
     const state = { bucket, bucketStart, bucketFilter, prefix, listedPrefix, cursor,
       previous: [...previous], selected: selected ? { ...selected } : null,
@@ -197,7 +197,7 @@ export function S3View({ active, readonly, onChunk }: { active: boolean; readonl
       const bytes = await previewBytes(response); setPreview(new TextDecoder('utf-8', { fatal: false }).decode(bytes));
     }, 'Loaded first 4 KiB')}>Preview first 4 KiB</button>
     <button className={buttonClass} disabled={busy} onClick={() => void run(() => downloadObject( bucket, selected.key), 'Downloaded object')}>Download</button>
-    {!readonly && <button className={`${buttonClass} tw-text-failed tw-border-failed/30`} disabled={busy} onClick={() => { if (confirm(`Delete ${bucket}/${selected.key}?`)) void run(async () => { await request('DELETE', objectPath(bucket, selected.key)); setSelected(null); await loadObjects(bucket); }, 'Object deleted'); }}>Delete object</button>}
+    {!readonly && <button className={`${buttonClass} tw-text-failed tw-border-failed/30`} disabled={busy} onClick={() => { if (confirm(`Delete ${bucket}/${selected.key}?`)) void run(async () => { const deletedKey = selected.key; await request('DELETE', objectPath(bucket, deletedKey)); setRows(previous => previous.filter(row => row.key !== deletedKey)); setSelected(null); }, 'Object deleted'); }}>Delete object</button>}
       </>}
     </ResourceActions>
     {error && <p role="alert" className="tw-text-sm tw-text-failed tw-break-all">{error}</p>}

@@ -12,6 +12,62 @@ use crowdb_access_iceberg::record::StorageRecord;
 use std::sync::Arc;
 
 #[tokio::test]
+async fn native_multipart_identity_round_trips_the_full_storage_path() {
+    let mut session = fixtures::session();
+    session.owner.table.storage_namespace = Some(crowdb_access_iceberg::key::NamespaceId::random());
+    session.location = session.owner.table.file(session.location.relative_key()).unwrap();
+    let record = StorageRecord::MultipartSession(Box::new(session.clone()));
+    assert_eq!(
+        StorageRecord::decode(&session.key(), &record.encode().unwrap()).unwrap(),
+        record
+    );
+    session.owner.table.storage_namespace = Some(crowdb_access_iceberg::key::NamespaceId::random());
+    assert!(session.validate().is_err());
+}
+
+#[tokio::test]
+async fn native_partial_multipart_checkpoint_survives_record_reload() {
+    let store = Arc::new(TestBlocks::default());
+    let mut session = fixtures::session();
+    session.owner.table.storage_namespace = Some(crowdb_access_iceberg::key::NamespaceId::random());
+    session.location = session.owner.table.file("data/native.parquet").unwrap();
+    let owner = FileIdentity {
+        file: FileId::random(),
+        ..session.owner
+    };
+    let mut writer = FileTreeWriter::new(store.clone(), owner, 3).unwrap();
+    writer.push(b"bytes").await.unwrap();
+    let part = AssemblyPart {
+        ordinal: 0,
+        owner,
+        tree: writer.finish().await.unwrap(),
+    };
+    session.part_count = 1;
+    session.staged_bytes = 5;
+    session.phase = MultipartPhase::Completing;
+    session.completion = Some(fixtures::completion(&session));
+    let assembly = FileAssembly::new(store, session.owner, [3; 32], 1, 1000, 2, 3).unwrap();
+    let completion = session.completion.as_mut().unwrap();
+    completion.progress = assembly.advance(&completion.progress, &part).await.unwrap();
+    assert_eq!(completion.progress.part_digest.as_ref().unwrap().len(), 205);
+    let record = StorageRecord::MultipartSession(Box::new(session.clone()));
+    assert_eq!(
+        StorageRecord::decode(&session.key(), &record.encode().unwrap()).unwrap(),
+        record
+    );
+    let completion = session.completion.as_mut().unwrap();
+    completion
+        .progress
+        .active
+        .as_mut()
+        .unwrap()
+        .owner
+        .table
+        .storage_namespace = Some(crowdb_access_iceberg::key::NamespaceId::random());
+    assert!(session.validate().is_err());
+}
+
+#[tokio::test]
 async fn multipart_records_round_trip_open_partial_publishing_published_and_aborted_states() {
     let store = Arc::new(TestBlocks::default());
     let mut session = fixtures::session();

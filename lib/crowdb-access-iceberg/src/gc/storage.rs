@@ -5,11 +5,12 @@ use crowdb_protocol::chunk_kv::{ClientRequestId, ScanDirection};
 use crate::{
     catalog::{CasOutcome, CatalogStore, RoutedCatalogStore, StoreError},
     error::ValidationError,
-    key::{CatalogId, CatalogScope, IcebergKey, SystemScope},
+    key::{CatalogId, CatalogScope, IcebergKey, StorageKey, StorageTablePath, SystemScope},
 };
 
 #[derive(Clone, Debug)]
 pub struct GcScan {
+    pub native: bool,
     pub catalog: CatalogId,
     pub scope: Option<CatalogScope>,
     pub prefix: Vec<u8>,
@@ -107,6 +108,9 @@ impl GcScan {
         if self.items == 0 || self.items > 256 || self.bytes == 0 || self.bytes > 16 * 1024 * 1024 {
             return Err(ValidationError::RecordTooLarge);
         }
+        if self.native {
+            return self.native_request();
+        }
         if self.prefix.len() > 40 || (!self.prefix.is_empty() && self.scope.is_none()) {
             return Err(ValidationError::Key);
         }
@@ -144,6 +148,41 @@ impl GcScan {
         Ok(MultiScanRequest {
             start: Some(range.start),
             end: Some(range.end),
+            direction: ScanDirection::Forward,
+            max_items: self.items,
+            max_bytes: self.bytes,
+            continuation: None,
+        })
+    }
+
+    fn native_request(&self) -> Result<MultiScanRequest, ValidationError> {
+        if self.scope.is_some() {
+            return Err(ValidationError::Key);
+        }
+        let mut start = b"ICE\0\x02".to_vec();
+        if self.prefix.is_empty() {
+            start.extend_from_slice(format!("{}/", self.catalog).as_bytes());
+        } else {
+            let prefix = std::str::from_utf8(&self.prefix).map_err(|_| ValidationError::Key)?;
+            let table = StorageTablePath::from_prefix(prefix)?;
+            if table.catalog != self.catalog {
+                return Err(ValidationError::IdentityMismatch);
+            }
+            start.extend_from_slice(&self.prefix);
+        }
+        let mut end = start.clone();
+        *end.last_mut().ok_or(ValidationError::Key)? += 1;
+        if !self.after.is_empty() {
+            if self.after < start || self.after >= end {
+                return Err(ValidationError::Key);
+            }
+            StorageKey::decode(&self.after)?;
+            start.clone_from(&self.after);
+            start.push(0);
+        }
+        Ok(MultiScanRequest {
+            start: Some(start),
+            end: Some(end),
             direction: ScanDirection::Forward,
             max_items: self.items,
             max_bytes: self.bytes,

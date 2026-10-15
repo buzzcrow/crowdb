@@ -5,10 +5,10 @@ use crowdb_access_iceberg::{
         CatalogContext, CatalogRepository, CatalogStore, ManagementPrivilege, RootState, RoutedCatalogStore,
     },
     gc::{GcLimits, GcRepository, GcTask},
-    key::{CatalogId, OperationId, TableId},
+    key::{CatalogId, OperationId, StorageTablePath, TableId},
     operation::{ManagementAction, ManagementPhase},
     record::StorageRecord,
-    table::{head_key, TableHead, TableLifecycle},
+    table::{storage_head_key, TableHead, TableLifecycle},
     wire::BearerAuthenticator,
 };
 
@@ -88,13 +88,28 @@ async fn start_table(
     table: &str,
     limits: GcLimits,
 ) -> Result<(), BoxError> {
-    let (root, _) = catalog.status().await?;
+    let (root, authority) = catalog.status().await?;
     if root.state != RootState::Ready {
         return Err("catalog is not ready".into());
     }
-    let table: TableId = table.parse()?;
+    let table = match authority.storage_layout {
+        crowdb_access_iceberg::catalog::CatalogStorageLayout::Native => {
+            let path = StorageTablePath::from_prefix(&format!("{}/", table.trim_end_matches('/')))?;
+            if path.catalog != root.context.catalog {
+                return Err("table storage path belongs to another catalog".into());
+            }
+            path.into()
+        }
+        crowdb_access_iceberg::catalog::CatalogStorageLayout::Legacy => {
+            crowdb_access_iceberg::file::TableLocation {
+                catalog: root.context.catalog,
+                table: table.parse::<TableId>()?,
+                storage_namespace: None,
+            }
+        }
+    };
     let identity: OperationId = identity.parse()?;
-    let head = load_head(store, root.context.catalog, table).await?;
+    let head = load_head(store, table).await?;
     if head.lifecycle != TableLifecycle::Tombstone {
         return Err("live-table GC is disabled; only tombstoned tables can be reclaimed".into());
     }
@@ -151,10 +166,9 @@ async fn start_retired(
 
 async fn load_head(
     store: &RoutedCatalogStore,
-    catalog: CatalogId,
-    table: TableId,
+    table: crowdb_access_iceberg::file::TableLocation,
 ) -> Result<TableHead, BoxError> {
-    let key = head_key(catalog, table);
+    let key = storage_head_key(table);
     let value = store.get(&key.encode()?).await?.ok_or("table head is missing")?;
     let StorageRecord::TableHead(head) = StorageRecord::decode(&key, &value.bytes)? else {
         return Err("table head has an invalid record".into());

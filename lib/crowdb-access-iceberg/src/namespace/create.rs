@@ -29,6 +29,15 @@ pub struct NamespaceCreator {
 }
 
 impl NamespaceCreator {
+    pub(crate) fn from_parts(
+        store: Arc<dyn crate::catalog::CatalogStore>,
+        names: Arc<dyn NamespaceStore>,
+    ) -> Self {
+        Self {
+            repository: NamespaceRepository::from_parts(store, names.clone()),
+            names,
+        }
+    }
     #[must_use]
     pub fn new<Store: NamespaceStore + 'static>(store: Arc<Store>) -> Self {
         Self {

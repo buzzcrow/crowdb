@@ -59,7 +59,7 @@ impl TableRepository {
         if selected.head.catalog != context.catalog {
             return Err(ValidationError::IdentityMismatch.into());
         }
-        let key = super::head_key(context.catalog, selected.head.table);
+        let key = super::storage_head_key(selected.head.storage_location());
         let value = self
             .store
             .get(&key.encode()?)
@@ -90,7 +90,7 @@ impl TableRepository {
         if mapping.state != TableMappingState::Published {
             return Ok(None);
         }
-        let key = super::head_key(context.catalog, mapping.table);
+        let key = super::storage_head_key(mapping.storage_location());
         let Some(value) = self.store.get(&key.encode()?).await? else {
             return Ok(None);
         };

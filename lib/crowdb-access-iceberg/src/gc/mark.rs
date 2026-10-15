@@ -1,7 +1,7 @@
 use crate::{
     catalog::CatalogError,
     error::ValidationError,
-    file::{file_key, location_key, FileIoError, FileRecord},
+    file::{canonical_file_key, file_key, FileIoError, FileRecord},
     record::StorageRecord,
     table::TableMetadataError,
 };
@@ -27,7 +27,7 @@ impl GcRepository {
         &self,
         location: &crate::file::FileLocation,
     ) -> Result<FileRecord, CatalogError> {
-        let key = location_key(location);
+        let key = canonical_file_key(location);
         let value = self
             .store
             .get(&key.encode()?)

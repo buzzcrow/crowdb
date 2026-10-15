@@ -1,5 +1,5 @@
 use crate::catalog::CatalogContext;
-use crate::key::{OperationId, TableId};
+use crate::key::{NamespaceId, OperationId, TableId};
 
 use super::FileLocation;
 
@@ -53,6 +53,7 @@ impl FileOperations {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileGrant {
+    pub storage_namespace: Option<NamespaceId>,
     pub context: CatalogContext,
     pub table: TableId,
     pub principal: [u8; 32],
@@ -76,6 +77,7 @@ impl FileGrant {
     ) -> Result<(), FileGrantError> {
         if location.table().catalog != self.context.catalog
             || location.table().table != self.table
+            || location.table().storage_namespace != self.storage_namespace
             || !self.operations.allows(operation)
         {
             return Err(FileGrantError::Forbidden);
@@ -117,6 +119,7 @@ pub enum FileGrantError {
     Bounds,
 }
 
+#[derive(Clone)]
 pub struct FileCredentials {
     grant: FileGrant,
     access_key_id: String,

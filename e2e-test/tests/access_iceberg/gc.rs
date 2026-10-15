@@ -41,7 +41,12 @@ async fn authenticated_gc_controls_survive_separate_processes() {
     let stack = TestNativeStorage::new();
     let (store, context, table) = seed_table(&stack).await;
     let identity = OperationId::random().to_string();
-    let table_id = table.to_string();
+    let table_id = crowdb_access_iceberg::key::StorageTablePath {
+        catalog: context.catalog,
+        storage_namespace: crowdb_access_iceberg::key::NamespaceId::from_bytes(table.as_bytes()).unwrap(),
+        table,
+    }
+    .to_string();
     let catalog_id = context.catalog.to_string();
     let denied = command(&stack, 'w', &["start-table", &identity, &table_id]);
     assert!(!denied.status.success());

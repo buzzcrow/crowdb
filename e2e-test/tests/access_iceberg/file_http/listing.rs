@@ -51,6 +51,7 @@ async fn native_list_objects_v2_serves_selected_files_and_rejects_foreign_scope(
     assert!(xml.contains("<CommonPrefixes>"), "{xml}");
     assert!(xml.contains("data%2Fnested%2F"), "{xml}");
     let foreign = crowdb_access_iceberg::file::TableLocation {
+        storage_namespace: table.storage_namespace,
         catalog: table.catalog,
         table: crowdb_access_iceberg::key::TableId::random(),
     };
@@ -85,13 +86,25 @@ async fn native_list_objects_v2_serves_selected_files_and_rejects_foreign_scope(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires the pinned PyIceberg/PyArrow environment and native storage"]
 async fn official_pyarrow_native_fileio_creates_exact_files_and_lists_table_prefixes() {
-    use std::io::Write as _;
-    use std::process::{Command, Stdio};
-    let (_stack, _process, client, table) = setup().await;
+    let (stack, process, client, table) = setup().await;
     let config = serde_json::json!({ "endpoint": format!("http://{}", client.address),
         "bucket": table.bucket(), "prefix": table.object_prefix(),
         "access_key": client.credentials.access_key_id(), "secret_key": client.credentials.secret_access_key(),
-        "session_token": client.credentials.session_token() });
+        "session_token": client.credentials.session_token(),
+        "report_dir": std::env::var("CROWDB_E2E_ARTIFACTS").unwrap() });
+    run_python(config.clone()).await;
+    process.stop().await;
+    stack.restart_catalog().await;
+    let restarted = super::super::frontend::TestFrontend::start(13).await;
+    let mut config = config;
+    config["endpoint"] = format!("http://{}", restarted.address()).into();
+    config["verify_restart"] = true.into();
+    run_python(config).await;
+}
+
+async fn run_python(config: serde_json::Value) {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
     let status = tokio::task::spawn_blocking(move || {
         let mut child = Command::new("timeout")
             .arg("60")

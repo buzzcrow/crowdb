@@ -20,6 +20,7 @@ s3 = [
 ]
 
 [dependencies]
+arc-swap = "1.9"
 hex = "0.4"
 hmac = "0.12"
 async-trait = "0.1"
@@ -59,7 +60,6 @@ bincode = "1"
 crowdb-access-server = { path = ".", default-features = false, features = ["test-util"] }
 futures = "0.3"
 crowdb-console-shared = { path = "../../lib/crowdb-console-shared" }
-arc-swap = "1.9"
 async-trait = "0.1"
 crowdb-chunkdb-client = { path = "../../lib/crowdb-chunkdb-client" }
 crowdb-diskdb-client = { path = "../../lib/crowdb-diskdb-client" }

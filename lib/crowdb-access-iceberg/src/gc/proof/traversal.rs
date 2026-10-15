@@ -6,7 +6,7 @@ use crate::{
     file::{AvroDatumLimits, AvroLimits, FileBlockStore, FileReader},
     key::{CatalogScope, IcebergKey},
     record::StorageRecord,
-    table::{head_key, TableHead, TableMetadataDocument, TableMetadataLimits},
+    table::{storage_head_key, TableHead, TableMetadataDocument, TableMetadataLimits},
 };
 
 use super::super::{
@@ -28,7 +28,7 @@ impl GcRepository {
         }
         check_context(self.store.as_ref(), task.context).await?;
         let head = task.head.as_ref().ok_or(ValidationError::Record)?;
-        let key = head_key(head.catalog, head.table);
+        let key = storage_head_key(head.storage_location());
         let value = self
             .store
             .get(&key.encode()?)
@@ -49,7 +49,10 @@ impl GcRepository {
         head: &TableHead,
     ) -> Result<(), CatalogError> {
         if head.catalog != task.context.catalog
-            || task.head.as_ref().map_or(true, |root| root.table != head.table)
+            || task
+                .head
+                .as_ref()
+                .map_or(true, |root| root.storage_location() != head.storage_location())
         {
             return Err(ValidationError::IdentityMismatch.into());
         }

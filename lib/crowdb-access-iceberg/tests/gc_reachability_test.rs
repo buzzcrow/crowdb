@@ -16,6 +16,7 @@ mod blocks;
 
 fn table() -> TableLocation {
     TableLocation {
+        storage_namespace: None,
         catalog: CatalogId::random(),
         table: TableId::random(),
     }

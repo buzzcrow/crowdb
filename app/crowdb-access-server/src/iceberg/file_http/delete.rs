@@ -9,7 +9,7 @@ use crowdb_access_iceberg::gc::{
     avro_links, metadata_links, AvroMarkCursor, AvroMarkLimits, GcLimits, ReachableFile, ReachableKind,
 };
 use crowdb_access_iceberg::record::StorageRecord;
-use crowdb_access_iceberg::table::head_key;
+use crowdb_access_iceberg::table::storage_head_key;
 use crowdb_access_s3::auth::RawAuthRequest;
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
@@ -69,6 +69,7 @@ impl FileHttp {
             return Err(FileS3ErrorCode::AccessDenied);
         }
         let bucket = TableLocation {
+            storage_namespace: grant.storage_namespace,
             catalog: root.context.catalog,
             table: grant.table,
         }
@@ -111,6 +112,7 @@ impl FileHttp {
             return Err(FileS3ErrorCode::InvalidRequest);
         }
         let table = TableLocation {
+            storage_namespace: grant.storage_namespace,
             catalog: root.context.catalog,
             table: grant.table,
         };
@@ -223,7 +225,7 @@ impl FileHttp {
         context: CatalogContext,
         table: TableLocation,
     ) -> Result<HashSet<FileLocation>, FileS3ErrorCode> {
-        let key = head_key(context.catalog, table.table);
+        let key = storage_head_key(table);
         let Some(value) = self
             .store
             .get(&key.encode().map_err(|_| FileS3ErrorCode::InternalError)?)

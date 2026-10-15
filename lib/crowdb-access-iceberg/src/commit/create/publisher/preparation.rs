@@ -5,6 +5,29 @@ use super::{
 };
 
 impl TableCreator {
+    async fn storage_layout(
+        &self,
+        context: crate::catalog::CatalogContext,
+    ) -> Result<crate::catalog::CatalogStorageLayout, Error> {
+        let authority_key = crate::key::IcebergKey::Catalog {
+            catalog: context.catalog,
+            scope: crate::key::CatalogScope::Authority,
+            suffix: Vec::new(),
+        };
+        let value = self
+            .store
+            .get(&authority_key.encode()?)
+            .await
+            .map_err(CatalogError::from)?
+            .ok_or(CatalogError::Uninitialized)?;
+        let crate::record::StorageRecord::Authority(authority) =
+            crate::record::StorageRecord::decode(&authority_key, &value.bytes)?
+        else {
+            return Err(ValidationError::Record.into());
+        };
+        Ok(authority.storage_layout)
+    }
+
     pub(super) async fn prepare(
         &self,
         request: &TableCreationRequest,
@@ -14,10 +37,20 @@ impl TableCreator {
         if decoded.stage_create() != expires_ms.is_some() {
             return Err(Error::Unsupported("staged table creation"));
         }
-        let namespace = NamespaceRepository::from_parts(self.store.clone(), self.names.clone())
-            .load(request.context, &request.namespace)
-            .await?
-            .ok_or(Error::NamespaceMissing)?;
+        let layout = self.storage_layout(request.context).await?;
+        let repository = NamespaceRepository::from_parts(self.store.clone(), self.names.clone());
+        let namespace = if layout == crate::catalog::CatalogStorageLayout::Native
+            && request.namespace.components() == ["default"]
+        {
+            repository
+                .ensure_default(request.context, request.identity.issued_ms)
+                .await?
+        } else {
+            repository
+                .load(request.context, &request.namespace)
+                .await?
+                .ok_or(Error::NamespaceMissing)?
+        };
         if let Some(expiry) = expires_ms {
             if request.timestamp_ms < 0 || expiry <= request.timestamp_ms {
                 return Err(ValidationError::Record.into());
@@ -41,7 +74,13 @@ impl TableCreator {
                 .entry("created-at")
                 .or_insert(serde_json::Value::String(created));
         }
-        let target = target(request, namespace.namespace, decoded.name(), expires_ms.is_some())?;
+        let target = target(
+            request,
+            namespace.namespace,
+            decoded.name(),
+            expires_ms.is_some(),
+            layout,
+        )?;
         let initial = evaluate_table_creation(&decoded, target, request.timestamp_ms, limits())?;
         let response = if expires_ms.is_some() {
             super::staged::stage_response(initial.document.canonical())?
@@ -96,8 +135,13 @@ fn target(
     namespace: crate::key::NamespaceId,
     name: &str,
     staged: bool,
+    layout: crate::catalog::CatalogStorageLayout,
 ) -> Result<TableHead, ValidationError> {
     let table = TableLocation {
+        storage_namespace: match layout {
+            crate::catalog::CatalogStorageLayout::Legacy => None,
+            crate::catalog::CatalogStorageLayout::Native => Some(namespace),
+        },
         catalog: request.context.catalog,
         table: if staged {
             TableId::from_bytes(request.identity.operation.as_bytes())?

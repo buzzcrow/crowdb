@@ -42,6 +42,7 @@ async fn assert_checkpoint_intent(
     let intents = crowdb_access_iceberg::gc::GcStore::scan_gc(
         stack.store().await.as_ref(),
         crowdb_access_iceberg::gc::GcScan {
+            native: false,
             catalog: owner.table.catalog,
             scope: Some(crowdb_access_iceberg::key::CatalogScope::FileWriteIntent),
             prefix: owner.table.table.as_bytes().to_vec(),
@@ -106,6 +107,7 @@ async fn native_file_tree_publication_and_ranges_survive_catalog_storage_restart
     let context = seed_root(&stack).await;
     let owner = FileIdentity {
         table: TableLocation {
+            storage_namespace: Some(crowdb_access_iceberg::key::NamespaceId::random()),
             catalog: context.catalog,
             table: TableId::random(),
         },

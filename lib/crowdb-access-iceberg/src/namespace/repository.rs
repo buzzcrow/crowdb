@@ -13,6 +13,34 @@ pub struct NamespaceRepository {
 }
 
 impl NamespaceRepository {
+    pub(crate) async fn ensure_default(
+        &self,
+        context: CatalogContext,
+        issued_ms: u64,
+    ) -> Result<NamespaceAuthority, CatalogError> {
+        let identifier = NamespaceIdentifier::new(vec!["default".into()])?;
+        if let Some(authority) = self.load(context, &identifier).await? {
+            return Ok(authority);
+        }
+        let outcome = super::NamespaceCreator::from_parts(self.store.clone(), self.names.clone())
+            .create(&super::NamespaceCreateRequest {
+                context,
+                identity: crate::operation::RequestIdentity {
+                    operation: crate::key::OperationId::random(),
+                    issued_ms,
+                },
+                principal: "native-default-namespace".into(),
+                identifier: identifier.clone(),
+                properties: super::NamespaceProperties::default(),
+            })
+            .await;
+        if let Some(authority) = self.load(context, &identifier).await? {
+            Ok(authority)
+        } else {
+            outcome?;
+            Err(CatalogError::Busy)
+        }
+    }
     pub(crate) fn from_parts(store: Arc<dyn CatalogStore>, names: Arc<dyn super::NamespaceStore>) -> Self {
         Self { store, names }
     }

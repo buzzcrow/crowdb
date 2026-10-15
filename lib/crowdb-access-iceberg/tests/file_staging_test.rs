@@ -12,6 +12,7 @@ use std::sync::Arc;
 fn owner() -> FileIdentity {
     FileIdentity {
         table: TableLocation {
+            storage_namespace: None,
             catalog: CatalogId::random(),
             table: TableId::random(),
         },

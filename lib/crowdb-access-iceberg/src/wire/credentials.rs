@@ -22,6 +22,7 @@ impl From<FileCredentials> for StorageCredential {
         let grant = credentials.grant();
         Self {
             prefix: TableLocation {
+                storage_namespace: grant.storage_namespace,
                 catalog: grant.context.catalog,
                 table: grant.table,
             }
@@ -59,6 +60,7 @@ pub struct FileDelegationLimits {
 
 #[derive(Clone, Copy, Debug)]
 pub struct FileDelegationTarget {
+    pub storage_namespace: Option<crate::key::NamespaceId>,
     pub table: TableId,
     pub format_version: u8,
     pub staged: bool,
@@ -159,6 +161,7 @@ impl FileDelegationLimits {
         digest.update(b"crowdb-iceberg-file-principal-v1");
         digest.update(principal.name.as_bytes());
         issuer.issue(FileGrant {
+            storage_namespace: target.storage_namespace,
             context,
             table: target.table,
             principal: digest.finalize().into(),

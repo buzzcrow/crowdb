@@ -16,6 +16,7 @@ use crowdb_access_iceberg::{
 async fn logical_tib(store: &blocks::TestBlocks) -> FileRecord {
     let owner = FileIdentity {
         table: TableLocation {
+            storage_namespace: None,
             catalog: CatalogId::random(),
             table: TableId::random(),
         },

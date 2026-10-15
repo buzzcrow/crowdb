@@ -7,7 +7,7 @@ use crate::file::{
     file_key, location_key, DeletedFile, FileMapping, FileRecord, MultipartAdmissionRecord, MultipartPart,
     MultipartSession,
 };
-use crate::key::{CatalogScope, IcebergKey, SystemScope};
+use crate::key::{CatalogScope, IcebergKey, StorageKey, SystemScope};
 use crate::namespace::{authority_key, name_key, NamespaceAuthority, NamespaceMapping, NamespaceOperation};
 use crate::operation::{ledger_key_matches, ManagementOperation, PayloadPage, RetryRecord, RetryResult};
 
@@ -16,6 +16,7 @@ const SCHEMA_VERSION: u16 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StorageRecord {
+    NativeInjection(Box<crate::file::NativeInjection>),
     FileWriteIntent(Box<crate::file::FileWriteIntent>),
     GcNode(Box<crate::gc::GcNode>),
     GcTask(Box<crate::gc::GcTask>),
@@ -53,7 +54,13 @@ impl StorageRecord {
         let envelope = FBIcebergRecord::create(
             &mut builder,
             &FBIcebergRecordArgs {
-                schema_version: SCHEMA_VERSION,
+                schema_version: if matches!(self, Self::Authority(authority)
+                    if authority.storage_layout == crate::catalog::CatalogStorageLayout::Native)
+                {
+                    2
+                } else {
+                    SCHEMA_VERSION
+                },
                 value_type,
                 value: Some(value),
             },
@@ -74,6 +81,10 @@ impl StorageRecord {
             return Ok(value);
         }
         Ok(match self {
+            Self::NativeInjection(receipt) => (
+                FBRecordValue::FBNativeInjection,
+                super::injection::encode(builder, receipt)?.as_union_value(),
+            ),
             Self::FileWriteIntent(intent) => (
                 FBRecordValue::FBFileWriteIntent,
                 super::write_intent::encode(builder, intent)?.as_union_value(),
@@ -196,7 +207,36 @@ impl StorageRecord {
 
     /// # Errors
     /// Rejects malformed envelopes, unknown schemas, invalid fields or mismatched keys.
-    pub fn decode(key: &IcebergKey, bytes: &[u8]) -> Result<Self, ValidationError> {
+    pub fn decode<Key: super::StorageRecordKey>(key: &Key, bytes: &[u8]) -> Result<Self, ValidationError> {
+        let record = Self::decode_bytes(bytes)?;
+        key.validate_record(&record)?;
+        Ok(record)
+    }
+
+    /// # Errors
+    /// Rejects foreign storage identities, record kinds and key layouts.
+    pub fn decode_storage(key: &StorageKey, bytes: &[u8]) -> Result<Self, ValidationError> {
+        Self::decode(key, bytes)
+    }
+
+    pub(super) fn validate_storage_key(&self, key: &StorageKey) -> Result<(), ValidationError> {
+        if let StorageKey::Legacy(key) = key {
+            return self.validate_key(key);
+        }
+        let expected = match self {
+            Self::NativeInjection(receipt) => receipt.key()?,
+            Self::File(file) => crate::file::canonical_file_key(&file.location),
+            Self::DeletedFile(file) => crate::file::canonical_file_key(&file.file.location),
+            Self::TableHead(head) => crate::table::storage_head_key(head.storage_location()),
+            _ => return Err(ValidationError::Record),
+        };
+        if expected != *key {
+            return Err(ValidationError::IdentityMismatch);
+        }
+        Ok(())
+    }
+
+    fn decode_bytes(bytes: &[u8]) -> Result<Self, ValidationError> {
         if bytes.len() > MAX_RECORD_BYTES {
             return Err(ValidationError::RecordTooLarge);
         }
@@ -204,16 +244,29 @@ impl StorageRecord {
             return Err(ValidationError::Record);
         }
         let envelope = fb::root_as_fbiceberg_record(bytes).map_err(|_| ValidationError::Record)?;
-        if envelope.schema_version() != SCHEMA_VERSION {
+        if envelope.schema_version() != SCHEMA_VERSION
+            && !(envelope.schema_version() == 2 && envelope.value_type() == FBRecordValue::FBCatalogAuthority)
+        {
             return Err(ValidationError::RecordVersion(envelope.schema_version()));
         }
         let record = Self::decode_value(envelope)?;
-        record.validate_key(key)?;
+        let native_authority = matches!(&record, Self::Authority(authority)
+            if authority.storage_layout == crate::catalog::CatalogStorageLayout::Native);
+        if (envelope.schema_version() == 2) != native_authority {
+            return Err(ValidationError::RecordVersion(envelope.schema_version()));
+        }
         Ok(record)
     }
 
     fn decode_value(envelope: FBIcebergRecord<'_>) -> Result<Self, ValidationError> {
         match envelope.value_type() {
+            FBRecordValue::FBNativeInjection => {
+                return Ok(Self::NativeInjection(Box::new(super::injection::decode(
+                    envelope
+                        .value_as_fbnative_injection()
+                        .ok_or(ValidationError::Record)?,
+                )?)));
+            }
             FBRecordValue::FBFileWriteIntent => {
                 return Ok(Self::FileWriteIntent(Box::new(super::write_intent::decode(
                     envelope
@@ -390,7 +443,7 @@ impl StorageRecord {
         Ok(record)
     }
 
-    fn validate_key(&self, key: &IcebergKey) -> Result<(), ValidationError> {
+    pub(super) fn validate_key(&self, key: &IcebergKey) -> Result<(), ValidationError> {
         if let Some(result) = self.validate_gc_key(key) {
             return result;
         }

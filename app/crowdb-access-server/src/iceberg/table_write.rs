@@ -258,6 +258,7 @@ impl TableWrites {
                 config.append(
                     &mut body,
                     super::table_credentials::TableFileTarget {
+                        storage_namespace: table.storage_namespace,
                         namespace: &namespace,
                         name: &name,
                         table: table.table,

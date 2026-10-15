@@ -12,6 +12,7 @@ fn record(input: &[u8]) -> FileRecord {
     FileRecord {
         file: FileId::random(),
         location: TableLocation {
+            storage_namespace: None,
             catalog: CatalogId::random(),
             table: TableId::random(),
         }

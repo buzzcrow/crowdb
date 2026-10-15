@@ -1,6 +1,6 @@
 use crate::catalog::{check_context, CatalogError, StoreError};
 use crate::error::ValidationError;
-use crate::key::IcebergKey;
+use crate::key::{IcebergKey, StorageKey};
 use crate::record::StorageRecord;
 
 use super::{successor, FileListPage, FileListRequest, FileListTokens, FileLocationScan, ListedFile};
@@ -23,6 +23,7 @@ impl FileRepository {
         request.validate()?;
         if grant.context.catalog != request.table.catalog
             || grant.table != request.table.table
+            || grant.storage_namespace != request.table.storage_namespace
             || !grant.operations.allows(FileOperation::ListObjects)
             || now_ms < grant.issued_ms
             || now_ms >= grant.expires_ms
@@ -87,18 +88,21 @@ impl FileRepository {
             consumed += 1;
             start.clone_from(&item.key);
             start.push(0);
-            let key = IcebergKey::decode(&item.key)?;
+            let key = StorageKey::decode(&item.key)?;
             if matches!(
-                StorageRecord::decode(&key, &item.value)?,
+                StorageRecord::decode_storage(&key, &item.value)?,
                 StorageRecord::DeletedFile(_)
             ) {
                 continue;
             }
-            let IcebergKey::Catalog { suffix, .. } = key else {
-                return Err(ValidationError::Key.into());
+            let relative = match &key {
+                StorageKey::Legacy(IcebergKey::Catalog { suffix, .. }) => {
+                    std::str::from_utf8(suffix.get(16..).ok_or(ValidationError::Key)?)
+                        .map_err(|_| ValidationError::Key)?
+                }
+                StorageKey::NativeTable(key) => key.suffix.as_str(),
+                StorageKey::Legacy(_) => return Err(ValidationError::Key.into()),
             };
-            let relative = std::str::from_utf8(suffix.get(16..).ok_or(ValidationError::Key)?)
-                .map_err(|_| ValidationError::Key)?;
             let location = request.table.file(relative)?;
             let record = self.resolve_value(&location, &item.value).await?;
             let object_key = location.object_key();

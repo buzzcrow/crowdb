@@ -5,6 +5,7 @@ use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport};
 use crowdb_kv_client::{HardwareClient, RangeBindingClient, ServiceRegistryClient};
 use crowdb_protocol::chunkdb::rpc::{ChunkType, ListChunksRequest, QueryChunkRequest, Strip, StripType};
 use crowdb_protocol::common::{ChunkId, HwStatus};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -106,24 +107,57 @@ async fn ready(http: &reqwest::Client, endpoint: &str) {
 }
 
 pub(super) async fn storage_ready() {
+    let registry = ServiceRegistryClient::new(super::kv_client());
+    let hardware = HardwareClient::new(super::kv_client());
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     loop {
         let result = crowdb_diskio_client::DiskioClient::connect_with_clients(
-            ServiceRegistryClient::new(super::kv_client()),
-            HardwareClient::new(super::kv_client()),
+            registry.clone(),
+            hardware.clone(),
             crowdb_diskio_client::DiskioClientConfig::default(),
         )
         .await;
-        match result {
-            Ok(client) if client.status().disks == 3 => return,
-            result => assert!(
-                tokio::time::Instant::now() < deadline,
-                "restarted DiskIO owners must publish all three disks: {:?}",
-                result.as_ref().map(|client| client.status().disks)
-            ),
+        let diskdb = diskdb_missing(&registry, &hardware).await;
+        if matches!(&result, Ok(client) if client.status().disks == 3)
+            && matches!(&diskdb, Ok(missing) if missing.is_empty())
+        {
+            return;
         }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "restarted storage topology is not ready: DiskIO={:?}, DiskDB={diskdb:?}",
+            result.as_ref().map(|client| client.status().disks)
+        );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+async fn diskdb_missing(
+    registry: &ServiceRegistryClient,
+    hardware: &HardwareClient,
+) -> Result<Vec<u64>, String> {
+    let instances = registry
+        .read_all_diskdb_instances()
+        .await
+        .map_err(|error| format!("registry: {error}"))?;
+    let groups = hardware
+        .list_disk_groups()
+        .await
+        .map_err(|error| format!("hardware: {error}"))?;
+    let mut owned = HashSet::new();
+    for (_, instance) in instances {
+        if instance.rpc_endpoint.is_empty() {
+            continue;
+        }
+        if let Some(diskdb) = instance.extra.and_then(|extra| extra.diskdb) {
+            owned.extend(diskdb.owned_dg_ids);
+        }
+    }
+    Ok(groups
+        .iter()
+        .map(|group| group.dg_id)
+        .filter(|group| !owned.contains(group))
+        .collect())
 }
 
 pub(super) async fn repaired(chunks: &[ChunkId]) {

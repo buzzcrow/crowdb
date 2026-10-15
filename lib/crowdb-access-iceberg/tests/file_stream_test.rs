@@ -13,6 +13,7 @@ use crowdb_access_iceberg::key::{CatalogId, FileId, TableId};
 fn owner() -> FileIdentity {
     FileIdentity {
         table: TableLocation {
+            storage_namespace: None,
             catalog: CatalogId::random(),
             table: TableId::random(),
         },

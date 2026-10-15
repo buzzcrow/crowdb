@@ -99,6 +99,7 @@ async fn write_iceberg(iceberg_addr: SocketAddr, seeds: &[String]) {
     let context = repository.status().await.unwrap().0.context;
     let credentials = issuer
         .issue(FileGrant {
+            storage_namespace: table.storage_namespace,
             context,
             table: table.table,
             principal: [7; 32],
@@ -127,7 +128,14 @@ async fn write_iceberg(iceberg_addr: SocketAddr, seeds: &[String]) {
             table.file(&format!("data/{name}.bin")).unwrap().object_key()
         );
         let put = file_client.send(Method::PUT, &path, "", &bytes, true).await;
-        assert_eq!(put.status(), 200, "{}", put.text().await.unwrap());
+        if put.status() != 200 {
+            let status = put.status();
+            let body = put
+                .text()
+                .await
+                .unwrap_or_else(|error| format!("<body unavailable: {error}>"));
+            panic!("PUT {path} returned {status}: {body}");
+        }
         let get = file_client.send(Method::GET, &path, "", b"", false).await;
         assert_eq!(get.status(), 200);
         assert_eq!(get.bytes().await.unwrap().as_ref(), bytes);
