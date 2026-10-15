@@ -28,6 +28,19 @@ fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
 }
 
 impl DdbKvClient {
+    /// A durable rejoin or Online authorization forbids fresh initialization.
+    ///
+    /// # Errors
+    /// Propagates Group-0 authority or schema failures; callers must fail closed.
+    pub async fn disk_requires_retained_validation(
+        &self,
+        key: &crowdb_protocol::key::DiskKey,
+    ) -> Result<bool> {
+        let hardware = crowdb_kv_client::HardwareClient::from_shared(self.kv.clone());
+        Ok(hardware.disk_rejoin_receipt(key).await?.is_some()
+            || hardware.disk_online_operation(key).await?.is_some())
+    }
+
     /// Observe an existing snapshot and all live facts at one fixed cutoff.
     ///
     /// # Errors

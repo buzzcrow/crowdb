@@ -24,6 +24,7 @@ pub mod disk_recovery;
 pub mod full_scan;
 pub mod journal_replay;
 pub mod retained;
+mod startup;
 
 use std::sync::Arc;
 
@@ -162,6 +163,15 @@ impl ZoneLoader {
                 continue;
             }
             let disk = Arc::new(disk);
+            let strict = self
+                .kv
+                .disk_requires_retained_validation(&crowdb_protocol::key::DiskKey {
+                    rack_id,
+                    node_id,
+                    disk_group_id: dg_id,
+                    disk_id: *disk_id,
+                })
+                .await?;
 
             let zone_count = disk_value.zone_count;
             let zone_size_units = disk_value.zone_size_units;
@@ -173,9 +183,22 @@ impl ZoneLoader {
                 let unit_capacity = unit_capacity_for_zone(disk_value, zi, zone_count, zone_size_units);
                 let disk_id = *disk_id;
                 let kv = Arc::clone(&self.kv);
+                let unit_size = disk_value.unit_size_bytes;
                 let sem = Arc::clone(&sem);
                 let handle = tokio::spawn(async move {
                     let _permit = sem.acquire().await;
+                    if strict {
+                        return retained::load_retained_zone(
+                            &kv,
+                            bind,
+                            disk_id,
+                            zi,
+                            dg_id,
+                            unit_capacity,
+                            unit_size,
+                        )
+                        .await;
+                    }
                     journal_replay::load_zone_inner(&kv, bind, disk_id, zi, dg_id, unit_capacity)
                         .await
                         .map(|(z, ts, _)| (z, ts))
@@ -185,54 +208,9 @@ impl ZoneLoader {
 
             for (zi, handle) in zone_handles {
                 let unit_capacity = unit_capacity_for_zone(disk_value, zi, zone_count, zone_size_units);
-                let (zone, zone_max_freed_ts) = match handle.await {
-                    Ok(Ok((zone, max_freed_ts))) => (zone, max_freed_ts),
-                    Ok(Err(e)) => {
-                        tracing::warn!(
-                            disk_id = ?*disk_id,
-                            zone_index = zi,
-                            error = %e,
-                            "zone load failed; falling back to strategy 1 (full scan)"
-                        );
-                        // Fallback: strategy 1 full scan. No freed_ts
-                        // available (strategy 1 doesn't scan free
-                        // records).
-                        match full_scan::rebuild_zone_bitmap_full_scan(
-                            &self.kv,
-                            bind,
-                            *disk_id,
-                            zi,
-                            dg_id,
-                            unit_capacity,
-                        )
-                        .await
-                        {
-                            Ok((zone, _stats)) => (zone, 0),
-                            Err(e2) => {
-                                tracing::error!(
-                                    disk_id = ?*disk_id,
-                                    zone_index = zi,
-                                    error = %e2,
-                                    "strategy 1 fallback also failed; keeping disk-group non-writable"
-                                );
-                                return Err(ZoneLoadError::LoadFailed(format!(
-                                    "disk {disk_id:?} zone {zi}: journal replay: {e}; full scan: {e2}"
-                                )));
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            disk_id = ?*disk_id,
-                            zone_index = zi,
-                            error = %e,
-                            "zone load task failed; keeping disk-group non-writable"
-                        );
-                        return Err(ZoneLoadError::LoadFailed(format!(
-                            "disk {disk_id:?} zone {zi}: task join: {e}"
-                        )));
-                    }
-                };
+                let (zone, zone_max_freed_ts) = self
+                    .complete_zone_load(handle.await, *disk_id, zi, dg_id, unit_capacity, bind, strict)
+                    .await?;
                 disk.add_zone(&Arc::new(zone));
                 // Track max freed_ts across all zones for timestamp
                 // source seeding (§8).

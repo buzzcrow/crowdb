@@ -73,6 +73,8 @@ pub struct KeepAlive {
     process_epoch: AtomicU64,
     previous_session: arc_swap::ArcSwapOption<session::Predecessor>,
     exclusion_cursor: AtomicUsize,
+    online_cursor: AtomicUsize,
+    online_running: Arc<AtomicBool>,
     ownership_fencing: bool,
     hw: HardwareClient,
     svc: ServiceRegistryClient,
@@ -142,6 +144,8 @@ impl KeepAlive {
             previous_session: arc_swap::ArcSwapOption::empty(),
             ownership_fencing: false,
             exclusion_cursor: AtomicUsize::new(0),
+            online_cursor: AtomicUsize::new(0),
+            online_running: Arc::new(AtomicBool::new(false)),
             hw,
             svc,
             container,
@@ -265,6 +269,7 @@ impl KeepAlive {
         let (groups_added, groups_removed) = self.reconcile_ownership(&observed);
         let mut outcome = self.reconcile_observed_disks(&observed).await;
         self.confirm_exclusions(&observed).await;
+        self.start_online_validation(&observed).await;
         if let Some(config) = &self.config_handle {
             let allocator = config.load().allocator.clone();
             for disk_group_id in self.container.disk_group_ids() {
@@ -323,6 +328,8 @@ mod heartbeat;
 mod loading;
 #[path = "observation.rs"]
 mod observation;
+#[path = "online.rs"]
+mod online;
 #[path = "reconciliation.rs"]
 mod reconciliation;
 #[path = "session.rs"]

@@ -28,6 +28,7 @@ mod storage_removal;
 pub use storage_removal::DiskRemovalReadiness;
 mod storage_guard;
 mod storage_observation;
+mod storage_online;
 mod storage_page;
 pub use storage_observation::DiskIoObservation;
 

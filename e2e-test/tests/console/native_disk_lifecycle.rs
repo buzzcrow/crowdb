@@ -101,14 +101,7 @@ pub(super) async fn remove_occupied(context: &TestNativeContext) {
         allocation_record(context, &hardware, &key, &segment).await,
         metadata
     );
-    let offset = u64::from(segment.zone_index)
-        * original.geometry.zone_size_units
-        * u64::from(original.geometry.unit_size_bytes)
-        + segment.unit_offset * u64::from(original.geometry.unit_size_bytes);
-    let bytes = crate::common::control::request(json!({"action":"observe-retained-marker", "node":0,
-        "path":original.geometry.device_path,"offset":offset}))
-    .await;
-    assert_eq!(bytes, json!({"matches":true,"length":4096}));
+    verify_retained_marker(&original, &segment).await;
     let rejoined = rejoin_offline(context, &endpoint, &removed).await;
     assert_eq!(hardware.disk_storage(&key).await.unwrap(), Some(original.clone()));
     assert_eq!(
@@ -124,11 +117,73 @@ pub(super) async fn remove_occupied(context: &TestNativeContext) {
     let remaining = allocator.allocate_blocks(allocation()).await.unwrap().segments;
     assert_eq!(remaining.len(), 1);
     assert_ne!(remaining[0].disk_id, Some(key.disk_id));
+    let online = online_retained(context, &endpoint, &rejoined, &io, target).await;
+    assert_eq!(hardware.disk_storage(&key).await.unwrap(), Some(original));
+    assert_eq!(
+        allocation_record(context, &hardware, &key, &segment).await,
+        metadata
+    );
     println!(
         "retained occupied removal: {}",
         json!({"disk_id":key.disk_id.to_display_string(),"operation":removed,
-        "allocation_retained":true,"bytes_retained":true,"rejoin":rejoined,"remaining_allocation":remaining})
+        "allocation_retained":true,"bytes_retained":true,"rejoin":rejoined,"online":online,
+        "online_read_retained_bytes":true,"remaining_allocation":remaining})
     );
+}
+
+async fn online_retained(
+    context: &TestNativeContext,
+    endpoint: &str,
+    rejoined: &Value,
+    io: &DiskioClient,
+    target: SegmentTarget,
+) -> Value {
+    let accepted = context
+        .api(
+            Method::POST,
+            &format!("{endpoint}/online"),
+            json!({"expected_revision":rejoined["state"]["disk_revision"]}),
+            202,
+        )
+        .await;
+    assert_eq!(accepted["state"], "pending");
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let state = context
+                .api(Method::GET, &format!("{endpoint}/lifecycle"), Value::Null, 200)
+                .await;
+            assert_ne!(
+                state["online"]["state"], "failed",
+                "strict retained validation: {state}"
+            );
+            if state["online"]["state"] == "complete" && state["offline"] == false {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("accepted retained validation becomes authoritative Online");
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            match io
+                .read(target, 0, 4096, OperationOptions::within(Duration::from_secs(1)))
+                .await
+            {
+                Ok(bytes) => {
+                    assert_eq!(bytes, Bytes::from(vec![b'Z'; 4096]));
+                    break;
+                }
+                Err(error) => {
+                    eprintln!("retained Online data open pending: {error}");
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("original fsynced bytes become readable after validated Online");
+    accepted
 }
 
 async fn rejoin_offline(context: &TestNativeContext, endpoint: &str, removed: &Value) -> Value {
@@ -256,4 +311,18 @@ async fn allocation_record(
         panic!("committed allocation must remain present")
     };
     value
+}
+
+async fn verify_retained_marker(
+    original: &crowdb_protocol::disk_storage::DiskStorageRecord,
+    segment: &Segment,
+) {
+    let offset = u64::from(segment.zone_index)
+        * original.geometry.zone_size_units
+        * u64::from(original.geometry.unit_size_bytes)
+        + segment.unit_offset * u64::from(original.geometry.unit_size_bytes);
+    let bytes = crate::common::control::request(json!({"action":"observe-retained-marker", "node":0,
+        "path":original.geometry.device_path,"offset":offset}))
+    .await;
+    assert_eq!(bytes, json!({"matches":true,"length":4096}));
 }

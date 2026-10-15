@@ -165,6 +165,9 @@ impl KeepAlive {
         if disk.write_gate.closed() {
             // Administrative exclusion survives stale loaders and observations.
             // Explicit validated recovery must construct a new disk admission.
+            if new_effective == HwStatus::Up {
+                self.restore_validated_online_disk(dg, &disk).await;
+            }
             return;
         }
         // R81: an Init disk's status is owned by the background zone

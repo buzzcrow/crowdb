@@ -4,9 +4,11 @@
 //! Versioned Group-0 backing identity, separate from the existing disk geometry.
 
 mod exclusion;
+mod online;
 mod rejoin;
 mod removal;
 pub use exclusion::{DiskExclusionRecord, DiskExclusionReporter};
+pub use online::{DiskOnlineRecord, DiskOnlineState};
 pub use rejoin::DiskRejoinRecord;
 pub use removal::DiskRemovalRecord;
 

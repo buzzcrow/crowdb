@@ -8,7 +8,9 @@ pub(crate) mod backing;
 pub(crate) mod candidates;
 pub(crate) mod files;
 pub(crate) mod lifecycle;
+pub(crate) mod online;
 pub(crate) mod rejoin;
+mod retained_medium;
 
 use axum::{
     extract::{Path, State},

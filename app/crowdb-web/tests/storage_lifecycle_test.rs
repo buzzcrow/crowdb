@@ -95,6 +95,7 @@ async fn scoped_http_offline_and_remove_require_confirmation_and_reconcile_one_r
     assert_eq!(offline["offline"], true);
     assert!(offline["operation_id"].as_str().unwrap().starts_with("offline/"));
     let revision = offline["disk_revision"].as_str().unwrap();
+    verify_online_requires_original_medium(&fixture, &path, revision).await;
     assert!(offline["remove_conditions"]
         .as_array()
         .unwrap()
@@ -269,5 +270,37 @@ async fn verify_rejoin_requires_original_medium(fixture: &TestStorageApi, path: 
             .unwrap()
             .unwrap()
             .removed
+    );
+}
+
+async fn verify_online_requires_original_medium(fixture: &TestStorageApi, path: &str, revision: &str) {
+    let rejected = request(
+        &fixture.app,
+        "POST",
+        &format!("{path}/online"),
+        Some(json!({"expected_revision": revision})),
+        StatusCode::BAD_GATEWAY,
+    )
+    .await;
+    assert!(rejected["error"]
+        .as_str()
+        .unwrap()
+        .contains("Original medium check failed"));
+    assert!(fixture
+        .hardware
+        .disk_online_operation(&fixture.disk)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        fixture
+            .hardware
+            .get_disk_with_revision(&fixture.disk)
+            .await
+            .unwrap()
+            .unwrap()
+            .1
+            .to_string(),
+        revision
     );
 }

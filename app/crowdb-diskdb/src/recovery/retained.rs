@@ -77,8 +77,11 @@ pub fn validate_retained_zone(
             return Err(invalid("invalid or overlapping live allocation"));
         }
         end = key.unit_offset + u64::from(value.unit_count);
-        // The snapshot may already contain these same busy units.
-        let _ = zone.usage_bits.range_set(offset, value.unit_count);
+        // range_set rolls back on any pre-existing bit. Merge one bit at a time
+        // so a partly represented allocation cannot leave its remaining units free.
+        for bit in offset..offset + value.unit_count {
+            let _ = zone.usage_bits.cas_bit(bit, true);
+        }
         max_timestamp = max_timestamp.max(value.allocation_ts);
     }
     for record in &records.free {

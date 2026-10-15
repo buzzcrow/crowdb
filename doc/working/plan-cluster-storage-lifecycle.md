@@ -688,3 +688,23 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   Four focused tests pass, including real multi-page reads and unchanged snapshot
   bytes after malformed input. DiskDB all-target/all-feature Clippy and fmt pass.
   The loader is not yet wired into Online execution or retained startup.
+- Online now has a versioned, exact-Offline-revision Group-0 authorization and
+  Pending/Failed/Complete outcome. HTTP verifies the original medium before
+  acceptance; current DiskDB executes off the UI connection, one bounded job at
+  a time, after all exclusion proofs. Completion shares Rack CAS with current
+  owner generation, backing and membership. Remove/Rejoin and owner restart
+  invalidate old authorization. Watch subscriptions include lifecycle requests
+  and exclusion acknowledgements. No new locks or on-medium formats are added.
+- Retained startup and background disk-add load honor durable Rejoin/Online
+  markers and never enter fresh initialization or permissive fallback. Validated
+  Online constructs a new Init disk and strict reload; old Arc snapshots keep
+  closed gates. A partial-snapshot overlap regression exposed range_set rollback;
+  retained reconstruction now merges individual busy bits without clearing any.
+  Five live activation tests and five strict loader tests pass. Six protocol
+  cases and the HTTP medium-failure regression pass. Full affected Clippy/fmt
+  pass; the complete DiskDB suite also passes. Committed-image acceptance is
+  pending.
+- Native occupied-disk flow now requests Online after retained Offline Rejoin,
+  waits for authoritative validation, and reads the original fsynced marker
+  through DiskIO, retaining the exact BusyBlock record. Actual container result
+  is pending. Visible Online controls will follow a fresh browser baseline.

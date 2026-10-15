@@ -85,6 +85,17 @@ fn retained_load_preserves_uncertain_occupancy_and_seeds_allocation_timestamps()
 }
 
 #[test]
+fn partially_snapshotted_busy_ranges_remain_fully_occupied() {
+    let mut records = baseline();
+    records.busy.push(busy(299, 3));
+    let (zone, _) = validate_retained_zone(DISK, 0, 9, CAPACITY, 4096, &records, 100).unwrap();
+    assert_eq!(zone.usage_bits.count_set(), 3);
+    for bit in 299..302 {
+        assert!(zone.usage_bits.is_set(bit));
+    }
+}
+
+#[test]
 fn missing_corrupt_and_mismatched_snapshots_are_never_blank_disks() {
     assert!(!validate(&ZoneRecords::default()));
     let mut records = baseline();

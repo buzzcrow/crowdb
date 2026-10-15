@@ -158,3 +158,25 @@ fn rejoin_receipt_retains_the_exact_removed_source_without_initializing_it() {
     receipt.operation_id.push_str("/changed");
     assert!(receipt.validate().is_err());
 }
+
+#[test]
+fn online_authorization_fixes_offline_revision_and_validates_outcome() {
+    use crowdb_protocol::disk_storage::{DiskOnlineRecord, DiskOnlineState};
+    let mut operation = DiskOnlineRecord::new(record(), u64::MAX);
+    operation.validate().unwrap();
+    assert!(operation.operation_id.ends_with(&u64::MAX.to_string()));
+    assert_eq!(
+        serde_json::from_slice::<DiskOnlineRecord>(&serde_json::to_vec(&operation).unwrap()).unwrap(),
+        operation
+    );
+    operation.state = DiskOnlineState::Failed;
+    assert!(operation.validate().is_err());
+    operation.error = Some("invalid existing snapshot".into());
+    operation.validate().unwrap();
+    operation.state = DiskOnlineState::Complete;
+    assert!(operation.validate().is_err());
+    operation.error = None;
+    operation.validate().unwrap();
+    operation.offline_revision = 0;
+    assert!(operation.validate().is_err());
+}

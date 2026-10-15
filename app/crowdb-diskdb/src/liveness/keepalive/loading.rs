@@ -121,12 +121,32 @@ impl KeepAlive {
         let zone_count = disk_value.zone_count;
         let zone_size_units = disk_value.zone_size_units;
         let mut all_ok = true;
-        let fresh = match kv.disk_has_records(bind, &disk_id).await {
-            Ok(has_records) => !has_records,
+        let strict = match kv
+            .disk_requires_retained_validation(&crowdb_protocol::key::DiskKey {
+                rack_id: dg.rack_id,
+                node_id: dg.node_id,
+                disk_group_id: dg.disk_group_id,
+                disk_id,
+            })
+            .await
+        {
+            Ok(strict) => strict,
             Err(error) => {
-                warn!(disk = ?disk_id, error = %error, "disk record discovery failed; quarantining disk");
+                warn!(disk = ?disk_id, %error, "retained recovery authority is unavailable; quarantining disk");
                 all_ok = false;
-                false
+                true
+            }
+        };
+        let fresh = if strict {
+            false
+        } else {
+            match kv.disk_has_records(bind, &disk_id).await {
+                Ok(has_records) => !has_records,
+                Err(error) => {
+                    warn!(disk = ?disk_id, error = %error, "disk record discovery failed; quarantining disk");
+                    all_ok = false;
+                    false
+                }
             }
         };
         let baseline_slot = if fresh {
@@ -149,7 +169,26 @@ impl KeepAlive {
                 break;
             }
             let unit_capacity = unit_capacity_for_zone(&disk_value, zi, zone_count, zone_size_units);
-            let (zone, _max_freed_ts, snapshot_found) = if fresh {
+            let (zone, max_freed_ts, snapshot_found) = if strict {
+                match crate::recovery::retained::load_retained_zone(
+                    &kv,
+                    bind,
+                    disk_id,
+                    zi,
+                    dg.disk_group_id,
+                    unit_capacity,
+                    disk_value.unit_size_bytes,
+                )
+                .await
+                {
+                    Ok((zone, timestamp)) => (zone, timestamp, true),
+                    Err(error) => {
+                        warn!(disk = ?disk_id, zone = zi, %error, "retained metadata validation failed; keeping disk excluded");
+                        all_ok = false;
+                        break;
+                    }
+                }
+            } else if fresh {
                 let zone = crate::model::zone::DdbZone::new(disk_id, zi, dg.disk_group_id, unit_capacity);
                 zone.snapshot_slot
                     .store(baseline_slot, std::sync::atomic::Ordering::Release);
@@ -193,6 +232,7 @@ impl KeepAlive {
                     }
                 }
             };
+            dg.init_allocation_ts_source_after_load(max_freed_ts);
 
             // Attach CAS retry metric if configured.
             let zone = if let Some(ref counter) = cas_retry_metric {

@@ -25,7 +25,7 @@ pub(crate) struct Revision {
 }
 
 impl Revision {
-    fn parse(&self) -> Result<u64, Failure> {
+    pub(super) fn parse(&self) -> Result<u64, Failure> {
         let revision = self
             .expected_revision
             .parse::<u64>()
@@ -51,6 +51,7 @@ pub(crate) struct DiskLifecycle {
     removed_from_revision: Option<String>,
     rejoin_operation_id: Option<String>,
     rejoin_source_removal_operation_id: Option<String>,
+    online: Option<super::online::OnlineOperation>,
 }
 
 #[derive(Serialize)]
@@ -111,6 +112,7 @@ pub(super) async fn observe(hardware: &HardwareClient, key: &DiskKey) -> Result<
             removed_from_revision: Some(receipt.offline_revision.to_string()),
             rejoin_operation_id: None,
             rejoin_source_removal_operation_id: None,
+            online: None,
         });
     }
     let readiness = hardware.disk_removal_readiness(key).await.map_err(failure)?;
@@ -127,6 +129,16 @@ pub(super) async fn observe(hardware: &HardwareClient, key: &DiskKey) -> Result<
         .await
         .map_err(failure)?
         .filter(|receipt| receipt.restored() == backing);
+    let online = hardware
+        .disk_online_operation(key)
+        .await
+        .map_err(failure)?
+        .filter(|operation| {
+            operation.disk == backing
+                && (operation.offline_revision == current.1
+                    || (current.0.status == HwStatus::Up as i32
+                        && operation.state == crowdb_protocol::disk_storage::DiskOnlineState::Complete))
+        });
     Ok(DiskLifecycle {
         version: 1,
         disk_id: key.disk_id.to_display_string(),
@@ -139,6 +151,7 @@ pub(super) async fn observe(hardware: &HardwareClient, key: &DiskKey) -> Result<
         removed_from_revision: None,
         rejoin_operation_id: rejoin.as_ref().map(|receipt| receipt.operation_id.clone()),
         rejoin_source_removal_operation_id: rejoin.map(|receipt| receipt.source.operation_id),
+        online: online.map(Into::into),
     })
 }
 
@@ -175,6 +188,7 @@ pub(crate) async fn offline(
         removed_from_revision: None,
         rejoin_operation_id: None,
         rejoin_source_removal_operation_id: None,
+        online: None,
     }))
 }
 

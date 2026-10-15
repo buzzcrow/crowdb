@@ -12,14 +12,7 @@ use axum::{
     extract::{Path, State},
     Json,
 };
-use crowdb_console_shared::deployment::admission::remote_control;
-use crowdb_protocol::{
-    mgmt::node::{
-        storage::{CheckRetainedDisk, RetainedDiskCondition, RetainedMedium},
-        NodeControl,
-    },
-    DiskIdExt,
-};
+use crowdb_protocol::mgmt::node::storage::RetainedDiskCondition;
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
@@ -54,47 +47,15 @@ pub(crate) async fn rejoin(
         .map_err(|error| err_502(error.to_string()))?
         .filter(|receipt| receipt.operation_id == body.removal_operation_id)
         .ok_or_else(|| err_409("The removal operation changed; inspect the current candidate"))?;
-    let node = super::remote_node(&state, node_id)?;
-    let binding =
-        crate::node::cluster_binding(&state)?.ok_or_else(|| err_409("Rejoin is waiting for Group 0"))?;
-    let observation = remote_control(
-        &node,
-        &NodeControl::CheckRetainedDisk {
-            request: CheckRetainedDisk {
-                version: 1,
-                cluster_id: binding.bootstrap.cluster_id,
-                rack_id: key.rack_id,
-                node_id,
-                disk_group_id: group,
-                disk_id: key.disk_id.to_display_string(),
-                condition: RetainedDiskCondition::Removed {
-                    operation_id: body.removal_operation_id.clone(),
-                },
-            },
+    super::retained_medium::verify(
+        &state,
+        &key,
+        &backing,
+        RetainedDiskCondition::Removed {
+            operation_id: body.removal_operation_id.clone(),
         },
     )
-    .await
-    .map_err(|error| {
-        err_502(format!(
-            "Original medium check failed: {error}; disk membership was not changed"
-        ))
-    })?;
-    let medium: RetainedMedium =
-        serde_json::from_value(observation).map_err(|error| err_502(error.to_string()))?;
-    if medium.version != 1
-        || medium.disk_id != disk
-        || medium.backend != backing.backend
-        || medium.backing_identity != backing.backing_identity
-        || Some(medium.capacity_bytes)
-            != backing
-                .geometry
-                .capacity_units
-                .checked_mul(u64::from(backing.geometry.unit_size_bytes))
-    {
-        return Err(err_409(
-            "Original medium could not be verified; membership was not restored",
-        ));
-    }
+    .await?;
     let outcome = hardware
         .rejoin_disk_storage(&key, &receipt.operation_id)
         .await

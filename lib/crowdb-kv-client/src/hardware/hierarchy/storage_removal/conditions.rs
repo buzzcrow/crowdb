@@ -13,7 +13,10 @@ use crowdb_protocol::{
 use super::super::storage_observation::bounded_inventory;
 
 impl HardwareClient {
-    pub(super) async fn removal_conditions(&self, key: &DiskKey) -> Result<DiskRemovalReadiness> {
+    pub(in crate::hardware::hierarchy) async fn removal_conditions(
+        &self,
+        key: &DiskKey,
+    ) -> Result<DiskRemovalReadiness> {
         let retained = self
             .disk_storage(key)
             .await?
