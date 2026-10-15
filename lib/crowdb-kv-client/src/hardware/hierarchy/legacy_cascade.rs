@@ -32,6 +32,21 @@ impl HardwareClient {
                 "retained disks block parent cascade removal".into(),
             ));
         }
+        let physical_scope = match (node, group) {
+            (Some(node), Some(group)) => DiskGroupKey {
+                rack_id: rack,
+                node_id: node,
+                disk_group_id: group,
+            }
+            .to_path(),
+            (Some(node), None) => NodeKey {
+                rack_id: rack,
+                node_id: node,
+            }
+            .to_path(),
+            _ => rack_path.clone(),
+        };
+        self.reject_legacy_media_deletion(&physical_scope).await?;
         let Some((rack_bytes, revision)) = snapshot else {
             return Err(Error::Server("hardware rack does not exist".into()));
         };

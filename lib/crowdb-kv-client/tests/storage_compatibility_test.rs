@@ -94,7 +94,10 @@ async fn owner_status_write_cannot_resurrect_concurrently_removed_membership() {
     use crowdb_protocol::key::{OwnerMapKey, TextKey};
     let fixture = TestStorage::start().await;
     let hw = &fixture.hardware;
-    let disk = record(9);
+    let mut disk = record(9);
+    // Exercise metadata-only compatibility cleanup. Physical media require the
+    // retained Offline/Remove lifecycle and cannot use this deletion path.
+    disk.geometry.device_path.clear();
     hw.add_disk(1, 2, 3, &disk.disk_id, &disk.geometry).await.unwrap();
     hw.set_owner(1, 2, 3, 7, u64::MAX).await.unwrap();
     let owner = OwnerMapKey {

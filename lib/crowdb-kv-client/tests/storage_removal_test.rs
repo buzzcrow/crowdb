@@ -126,6 +126,17 @@ async fn occupied_removal_retains_interpretation_allocations_and_exact_replay_re
         .conditions
         .is_empty());
     let result = hw.remove_disk_storage(&key, offline.disk_revision).await.unwrap();
+    assert!(
+        hw.reserve_disk_id(&DiskKey {
+            rack_id: 99,
+            node_id: 99,
+            disk_group_id: 99,
+            disk_id: key.disk_id
+        })
+        .await
+        .is_err(),
+        "confirmed removal does not release global disk identity"
+    );
     assert!(hw.get_disk_with_revision(&key).await.unwrap().is_none());
     assert!(hw
         .get_disk_group(1, 2, 3)

@@ -31,6 +31,7 @@ impl HardwareClient {
             let (rack, revision) = self.storage_rack(record.rack_id).await?;
             let mut group = self.storage_parent(record, &rack).await?;
             if self.storage_replay(record, &group).await? {
+                self.reserve_disk_id(&disk_key(record)).await?;
                 return Ok(());
             }
             self.validate_disk_group_storage(
@@ -42,6 +43,7 @@ impl HardwareClient {
             )
             .await?;
             self.check_storage_duplicates(record, None).await?;
+            self.reserve_disk_id(&disk_key(record)).await?;
             group.disk_ids.push(record.disk_id);
             group.disk_ids.sort_unstable_by_key(|id| (id.high, id.low));
             let rack_path = RackKey {

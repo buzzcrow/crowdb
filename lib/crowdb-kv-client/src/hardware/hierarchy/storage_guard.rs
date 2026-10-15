@@ -110,6 +110,7 @@ impl HardwareClient {
                 "retained disks require the Offline/Remove lifecycle; parent deletion is blocked".into(),
             ));
         }
+        self.reject_legacy_media_deletion(target).await?;
         if mutation::read(&self.kv, target).await?.is_none() {
             return Ok(());
         }

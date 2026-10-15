@@ -304,3 +304,88 @@ async fn verify_online_requires_original_medium(fixture: &TestStorageApi, path: 
         revision
     );
 }
+
+#[tokio::test]
+async fn compatibility_delete_cannot_drop_an_unverified_legacy_physical_disk() {
+    use crowdb_protocol::{
+        common::DiskId,
+        key::{DiskGroupKey, DiskKey, TextKey},
+    };
+    let fixture = TestStorageApi::start().await;
+    let key = DiskKey {
+        disk_id: DiskId { high: 90, low: 91 },
+        ..fixture.disk
+    };
+    let original = fixture
+        .hardware
+        .get_disk_with_revision(&fixture.disk)
+        .await
+        .unwrap()
+        .unwrap()
+        .0;
+    let mut group = fixture
+        .hardware
+        .get_disk_group(1, 2, 3)
+        .await
+        .unwrap()
+        .unwrap()
+        .value;
+    group.disk_ids.push(key.disk_id);
+    fixture
+        .hardware
+        .kv()
+        .put(
+            0,
+            0,
+            key.to_path().as_bytes(),
+            &serde_json::to_vec(&original).unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    fixture
+        .hardware
+        .kv()
+        .put(
+            0,
+            0,
+            DiskGroupKey {
+                rack_id: 1,
+                node_id: 2,
+                disk_group_id: 3,
+            }
+            .to_path()
+            .as_bytes(),
+            &serde_json::to_vec(&group).unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    let path = format!(
+        "/api/nodes/2/disk-groups/3/disks/{}",
+        key.disk_id.to_display_string()
+    );
+    let response = request(&fixture.app, "DELETE", &path, None, StatusCode::CONFLICT).await;
+    assert!(response["error"].as_str().unwrap().contains("Offline/Remove"));
+    assert_eq!(
+        fixture
+            .hardware
+            .get_disk_with_revision(&key)
+            .await
+            .unwrap()
+            .unwrap()
+            .0,
+        original
+    );
+    assert_eq!(
+        fixture
+            .hardware
+            .get_disk_group(1, 2, 3)
+            .await
+            .unwrap()
+            .unwrap()
+            .value
+            .disk_ids,
+        group.disk_ids
+    );
+}

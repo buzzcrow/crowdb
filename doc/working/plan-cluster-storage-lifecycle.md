@@ -737,3 +737,22 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   records must not bypass removal through direct deletion or parent cascades.
   Existing compatibility add already rejects restoring a removed disk in the
   same retained scope (`allow_initial=false`); preserve this guard.
+- Global disk-ID reservations now precede managed admission and compatibility
+  publication, including Console's direct Rack-fenced writer. Each versioned
+  reservation fixes one canonical location and survives Remove; interruption
+  reserves identity without creating membership. Missing reservations check
+  legacy/retained locations using advancing 128-key pages, bounded at 65536 keys
+  with no retained full-inventory response. Different Rack CAS domains cannot
+  concurrently publish the same ID. Five live regression tests pass.
+- Legacy physical records with a device path now block direct and parent/cascade
+  deletion even without a retained sidecar. Console's compatibility DELETE also
+  rejects them; a live HTTP regression checks unchanged disk and group records.
+  Full SDK tests/rustdoc, Console hardware/bootstrap tests, two Web lifecycle
+  cases and affected all-target/all-feature Clippy/fmt pass. One older concurrency
+  regression initially used a physical path for metadata-only compatibility
+  deletion; it now explicitly uses an unmapped record, retaining every concurrency
+  and non-resurrection assertion. Actual physical deletion is separately rejected.
+  Updated committed-image acceptance remains part of final verification.
+- Remaining admission work must also retire the Console's unverified legacy
+  physical Create shortcut once supplied-medium provisioning is connected. The
+  trusted low-level SDK bootstrap API still supports existing disk formats.

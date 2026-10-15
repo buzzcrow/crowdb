@@ -15,8 +15,10 @@
 //! See `doc/design/kv/design-crowdb-kv-group0.md` §2.1, §3.
 
 mod disk_exclusion;
+mod disk_identity;
 mod disk_status;
 mod legacy_cascade;
+mod legacy_media;
 mod mutation;
 mod owner_session;
 mod ownership;
@@ -492,6 +494,7 @@ impl HardwareClient {
             disk_group_id: dg_id,
             disk_id: *disk_id,
         };
+        self.reserve_disk_id(&key).await?;
         self.legacy_put(
             rack_id,
             (Some(node_id), Some(dg_id)),

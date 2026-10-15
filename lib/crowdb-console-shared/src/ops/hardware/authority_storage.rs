@@ -308,6 +308,14 @@ pub async fn add_disk_to_group0(
     authority::ready(ctx).await?;
     let rack_id = node_location(&ctx.sysmd().list_nodes().await?, node_id)?;
     let (entry, disk_id, value) = validate_disk_input(input, dg_id, rack_id, node_id)?;
+    ctx.sysmd()
+        .reserve_disk_id(&DiskKey {
+            rack_id,
+            node_id,
+            disk_group_id: dg_id,
+            disk_id,
+        })
+        .await?;
     let group_path = DiskGroupKey {
         rack_id,
         node_id,
@@ -450,6 +458,12 @@ pub async fn remove_disk_from_group0(
             kind: "disk membership".into(),
             id: disk_id.into(),
         })?;
+        if !value.device_path.is_empty() {
+            return Err(Error::Conflict {
+                kind: "legacy physical disk requires verified backing and Offline/Remove lifecycle".into(),
+                id: disk_id.into(),
+            });
+        }
         if !group.disk_ids.contains(&id) {
             return Err(Error::Conflict {
                 kind: "disk membership".into(),

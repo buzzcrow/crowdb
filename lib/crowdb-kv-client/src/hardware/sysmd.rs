@@ -49,6 +49,11 @@ pub struct CrowdbSysmdClient {
 }
 
 impl CrowdbSysmdClient {
+    /// Reserve one global disk ID without admitting or opening its medium.
+    pub async fn reserve_disk_id(&self, key: &crowdb_protocol::key::DiskKey) -> Result<()> {
+        self.hw.reserve_disk_id(key).await
+    }
+
     /// Read retained medium identity without treating it as active membership.
     pub async fn disk_storage(
         &self,
