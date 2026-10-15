@@ -735,6 +735,7 @@ dependencies = [
  "crowdb-console-shared",
  "crowdb-diskdb-client",
  "crowdb-diskio-client",
+ "crowdb-kv",
  "crowdb-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",

@@ -1077,3 +1077,25 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   policy; two existing Iceberg bootstrap cases also pass. Monitor/Web all-target/
   all-feature Clippy, three affected Web cases and repository Rust fmt pass.
   Updated real three-node default setup acceptance remains pending.
+
+- Image `b30c71ed`, config
+  `sha256:df1f5379b718aff6a6d1d6050d8d1e23cbd0b38f218f30b4a80d43d9562734e4`,
+  passes shared catalog provisioning but fails the following S3 credential step
+  in `run-795894c9c9b3481786e50017cc0c54f7`. Read-only inspection of only the
+  non-secret Access Key ID fields confirms two successful nodes persisted distinct
+  IDs for the same hard-coded Console user. `CredentialAuthority::ensure_user`
+  explicitly assumed one writer (lookup then random issuance); concurrent nodes
+  create duplicates and a later lookup fails closed. Preserve fail-closed
+  duplicate handling; reserve one encrypted candidate per user before conditional
+  credential publication. Tests/gates and renewed OCI acceptance remain pending.
+- Credential concurrency fix passes five live Group-0 cases: 16 simultaneous
+  callers share one encrypted candidate and one credential; projection interruption
+  resumes identical bytes; legacy single credentials remain unchanged; existing
+  duplicates and malformed prepared records fail closed; 4097 records exceed the
+  explicit 4096-record read bound and cannot authorize issuance or install a
+  partial cache. All-target/all-feature Access Clippy and repository fmt pass.
+  Initial fixture checks caught equality assertion style and the SDK's transparent
+  scan pagination: a tiny server page budget still returns a complete client scan,
+  so the final case exercises the actual caller limit while retaining its failure
+  assertions. No product timeout, retry, or assertion was relaxed. OCI acceptance
+  with the updated credential authority is next.

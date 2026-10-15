@@ -55,6 +55,7 @@ thiserror = { workspace = true }
 sync_wrapper = { version = "1", features = ["futures"] }
 
 [dev-dependencies]
+crowdb-kv = { path = "../../lib/crowdb-kv" }
 bytes = "1"
 tempfile = "3"
 bincode = "1"

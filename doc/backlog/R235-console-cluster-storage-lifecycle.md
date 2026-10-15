@@ -392,6 +392,15 @@
   conflicting local journals remain visible and are never rewritten or adopted
   by guessing. Existing ready operator catalogs retain identity and policy.
 
+- Concurrent Access bootstrap reuses one user-scoped encrypted credential
+  preparation in Group 0 before publishing its access-key record. Response loss
+  and another node's retry reuse the same candidate; publication is conditional
+  and cannot replace an existing credential. Existing duplicate/disabled users
+  remain visible failures for later operator review, without guessed deletion or
+  credential rotation. Secret generation and encryption keep their existing format.
+  Credential enumeration is bounded at 4096 records; a truncated/timed-out result
+  fails explicitly rather than authorizing new issuance or a partial cache.
+
 **Dependencies**:
 
 - Reuse current durable Group-0 bootstrap exclusion, immutable intent, monitor
