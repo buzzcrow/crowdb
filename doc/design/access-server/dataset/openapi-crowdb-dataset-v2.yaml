@@ -1,0 +1,54 @@
+# Copyright 2026-present Gian <crow.db@outlook.com>
+# Licensed under the Apache License, Version 2.0.
+openapi: 3.1.0
+info:
+  title: CrowDB Dataset control API v2
+  version: 2.0.0
+  description: >-
+    Capability-gated Dataset control operations. Clients must discover required
+    capabilities before mutation. An absent capability is unavailable; clients
+    must not downgrade a v2 mutation to v1. The capability list advertises only
+    implemented operation families. Existing v1 control and binary framing remain
+    available under their original routes.
+servers:
+  - url: /api/dataset/v2
+security:
+  - bearerAuth: []
+paths:
+  /capabilities:
+    get:
+      operationId: datasetCapabilities
+      summary: Discover supported Dataset control operation families
+      responses:
+        '200':
+          description: Supported API version and capability names
+          headers:
+            x-request-id:
+              schema: {type: string}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Capabilities'}
+        '401':
+          description: Missing or invalid configured bearer token
+        '429':
+          description: API admission capacity exhausted
+        '504':
+          description: Request deadline expired
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    Capabilities:
+      type: object
+      required: [api_version, capabilities]
+      properties:
+        api_version:
+          type: integer
+          const: 2
+        capabilities:
+          type: array
+          uniqueItems: true
+          items: {type: string}
+          description: Unknown names may be ignored; required names must be present.

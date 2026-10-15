@@ -125,6 +125,7 @@ Temporary plans live under `doc/working/`; flow analyses live under
 | `doc/design/access-server/dataset/design-crowdb-access-dataset.md`            | Dataset authority, payload lifecycle, REST and SDK.     |
 | `doc/design/access-server/dataset/spec-crowdb-dataset.md`                     | Normative Dataset behavior and compatibility.           |
 | `doc/design/access-server/dataset/openapi-crowdb-dataset-v1.yaml`             | Dataset REST v1 schemas, framing, bounds and retries.   |
+| `doc/design/access-server/dataset/openapi-crowdb-dataset-v2.yaml`             | Dataset REST v2 capability-gated control operations.    |
 | `sdk/README.md`                                                               | Rust/Python SDK installation and resource ownership.    |
 
 Prefer the most specific match. Open a root design only for cross-topic work;

@@ -11,6 +11,7 @@ mod management;
 mod publication;
 mod session;
 mod upload;
+mod v2;
 
 pub(super) use admission::ApiAdmission;
 
@@ -90,6 +91,9 @@ impl DatasetHttpService {
 
     async fn route_api(&self, request: Request<Incoming>) -> ApiResult {
         let parts = decode_path(request.uri().path())?;
+        if parts.get(2).is_some_and(|version| version == "v2") {
+            return self.route_v2(&parts, request).await;
+        }
         if parts.len() < 7
             || parts[..5] != ["api", "dataset", "v1", "namespaces", "dataset-ns"]
             || parts[5] != "datasets"
