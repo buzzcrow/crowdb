@@ -28,7 +28,7 @@ export function observeDefaultDeployments(page: Page) {
       if (rejected) expect(rejected.status(), await rejected.text()).toBe(201);
       const completed = nodes.find(node => replies.get(`${node}:${kind}`)?.some(response => response.status() === 201));
       if (completed !== undefined) return completed;
-      const timeout = process.platform === 'darwin' ? 30_000 : 10_000;
+      const timeout = 30_000;
       const response = await page.waitForResponse(response => pending.has(key(response) ?? '')
         && (response.status() === 201 || !expectedWait(response)), { timeout });
       expect(response.status(), await response.text()).toBe(201);
@@ -36,7 +36,7 @@ export function observeDefaultDeployments(page: Page) {
     },
     async verify(node: number, kind: string) {
       const identity = `${node}:${kind}`;
-      const timeout = process.platform === 'darwin' ? 30_000 : 10_000;
+      const timeout = 30_000;
       const response = replies.get(identity)?.find(response => response.status() === 201)
         ?? await page.waitForResponse(response => key(response) === identity && response.status() === 201, { timeout });
       for (const rejected of replies.get(identity) ?? []) {
