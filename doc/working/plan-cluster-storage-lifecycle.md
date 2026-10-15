@@ -433,3 +433,16 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   KV client, independent of browser/cache warmup. The empty-cache component
   regression verifies hardware capacity directly; affected Web suites (14 cases),
   Clippy and fmt pass. Full browser rerun remains required before visible changes.
+
+- Fifth native run (`a8275727`, `run-31a16b6d6554476e9363c3ff5552cac8`)
+  passes the complete hardware acceptance, durable file creation/restart/activation
+  and all existing browser assertions. Current exact browser baseline is 3.3 s
+  (2026-10-15); image config `c3ab23eb482890308854c687cdd59a314a6bf2ad40a4f069457a8bf1162aba91`.
+  Node workspace and managed-file dialog work now proceeds against that baseline.
+- Node center now shows services/storage and durable file operations, with an
+  explicit Create File Disk dialog (16 GiB preallocated default, sparse advanced,
+  immutable retry), candidate counts and honest stale observations. Registered
+  disk properties read retained backing identity/geometry from Group 0 with exact
+  decimal strings. All 213 UI tests/types and the live authority regression pass.
+  Browser continuation/creation/properties assertions are added; rebuilt-image
+  execution remains required. New test helper was split after Clippy's line limit.

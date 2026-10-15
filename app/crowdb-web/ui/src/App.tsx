@@ -51,6 +51,8 @@ import { buildCrowdbKVServers, crowdbKvServerNodeIds } from './data/crowdbKvServ
 import { isCrowdbKVServerAvailable } from './data/crowdbKvServers';
 import { toUiHealth } from './utils/entityDisplay';
 import { ClusterView } from './views/ClusterView';
+import { NodeWorkspace } from './storage/NodeWorkspace';
+import type { CandidateSummary } from './storage/types';
 import { InitializationProgress } from './shell/InitializationProgress';
 import { AutoJoin } from './shell/AutoJoin';
 import { KvView } from './views/KvView';
@@ -100,6 +102,14 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
   const [rememberedDeployPorts, setRememberedDeployPorts] = useState<{ mgmt: number[]; rpc: number[]; diskdbRpc: number[] }>({ mgmt: [], rpc: [], diskdbRpc: [] });
   const [lastRefreshTime, setLastRefreshTime] = useState<Date>(new Date());
   const [refreshing, setRefreshing] = useState(false);
+  const [candidateSummaries, setCandidateSummaries] = useState<Record<number, CandidateSummary>>({});
+  const observeCandidates = useCallback((nodeId: number, summary: CandidateSummary) => {
+    setCandidateSummaries(previous => {
+      if (JSON.stringify(previous[nodeId]) === JSON.stringify(summary)) return previous;
+      const entries = Object.entries({ ...previous, [nodeId]: summary }).sort((a, b) => b[1].observed_at_ms - a[1].observed_at_ms).slice(0, 64);
+      return Object.fromEntries(entries);
+    });
+  }, []);
   const clusterLayout = useClusterLayout(activeDomain === Domain.Cluster, !!selectedEntity);
   const { sidebarWidth, propertiesWidth: inspectorWidth, setSidebar: setSidebarWidth, setProperties: setInspectorWidth } = clusterLayout;
   const [canvasFocusRequest, setCanvasFocusRequest] = useState<{ targetId: string; subtree: boolean; nonce: number } | null>(null);
@@ -122,6 +132,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
   const { menuState, openMenu, closeMenu } = useContextMenu();
 
   const nodeAuthority = useNodeAuthority(nodeManagement);
+  useEffect(() => { setCandidateSummaries({}); }, [nodeAuthority?.cluster_id]);
   const managementAuthorized = !nodeManagement || nodeAuthority?.available === true;
   const draftEditable = nodeAuthority?.phase === 'unbound_draft';
   const topologyReadonly = readonly || managed || (nodeManagement && !managementAuthorized && !draftEditable);
@@ -157,6 +168,8 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
   const nodeDiskGroups = clusterDiskGroups;
   const diskSelection = scopeForDomain(Domain.Cluster);
   const clusterSelection = scopeForDomain(Domain.Cluster);
+  const workspaceNode = activeDomain === Domain.Cluster && nodeManagement && !managed && clusterSelection?.type === 'Node'
+    ? nodes.find(node => String(node.id) === clusterSelection.id) : undefined;
   useEffect(() => {
     if (managed) return;
     const selected = capacityActive ? diskSelection : physicalActive ? clusterSelection : null;
@@ -520,6 +533,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
         diskdbHealthById={diskdbHealthById}
         diskdbInstanceIdByNodeId={diskdbInstanceIdByNodeId}
         servicePlans={servicePlans.plans}
+        candidateSummaries={candidateSummaries}
       /></div>
 
       {!ownsSidebar && !clusterLayout.hidden && !clusterLayout.overlayNavigation && <PanelDivider fixed side="left" width={sidebarWidth} onResize={setSidebarWidth}
@@ -548,10 +562,10 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
           {nodeManagement && <InitializationProgress readonly={readonly} />}
         </>}
         {(
-          <div hidden={domain !== Domain.Cluster} style={{ display: domain === Domain.Cluster ? 'flex' : 'none' }} className="tw-flex-1 tw-min-h-0 tw-flex-col">{!managed && <div className="tw-px-4 tw-py-2 tw-text-xs tw-bg-panel tw-border-b tw-border-border">Physical topology · Rack → Node → Service · Deploy and manage services here</div>}
+          <div hidden={domain !== Domain.Cluster || !!workspaceNode} style={{ display: domain === Domain.Cluster && !workspaceNode ? 'flex' : 'none' }} className="tw-flex-1 tw-min-h-0 tw-flex-col">{!managed && <div className="tw-px-4 tw-py-2 tw-text-xs tw-bg-panel tw-border-b tw-border-border">Physical topology · Rack → Node → Service · Deploy and manage services here</div>}
           {!clusterInitialized && !loading && !logError && <p className="tw-px-4 tw-py-2 tw-text-xs tw-text-muted" data-testid="bootstrap-state">{nodeManagement ? 'Bootstrap: create a rack, move discovered candidates, then initialize Group 0 in KV. This draft is local until publication.' : 'Bootstrap: add racks and nodes, deploy KV servers, then initialize Group 0 in KV. Changes are saved in the default workspace.'}</p>}
           <div className="tw-flex-1 tw-min-h-0"><ClusterView
-            active={domain === Domain.Cluster}
+            active={domain === Domain.Cluster && !workspaceNode}
             scope={Domain.Cluster}
             allServers={allServers}
             racks={racks}
@@ -571,11 +585,19 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
             onEntityContextMenu={onCanvasContextMenu}
           /></div></div>
         )}
+        {workspaceNode && clusterSelection && <div className="tw-flex-1 tw-min-h-0"><NodeWorkspace
+          key={workspaceNode.id} node={workspaceNode} scope={clusterSelection} capacity={clusterView === 'capacity'}
+          readonly={topologyReadonly} ready={managementAuthorized} inventory={nodeDiskGroups[workspaceNode.id]}
+          hardware={hardwareCapacity} usage={capacityUsage} services={allServers} plan={servicePlans.plans[workspaceNode.id]}
+          loadGroup={loadGroupDisks} onAddGroup={() => setDialog(previous => ({ ...previous, addDiskGroup: { nodeId: workspaceNode.id } }))}
+          onServicePlan={() => setDialog(previous => ({ ...previous, defaultServices: { nodeId: workspaceNode.id } }))}
+          onMenu={onCanvasContextMenu} onCandidates={observeCandidates}
+        /></div>}
         {kvEnabled && (
           <div hidden={domain !== Domain.KV} className="tw-flex-1 tw-min-h-0"><KvView active={domain === Domain.KV} stores={stores} selectedEntity={selectionForDomain(Domain.KV)} readonly={logicalReadonly} backendError={!!logError} loading={logLoading} /></div>
         )}
-        <div hidden={domain !== Domain.Capacity} className="tw-flex-1 tw-min-h-0"><CapacityView
-            active={domain === Domain.Capacity}
+        <div hidden={domain !== Domain.Capacity || !!workspaceNode} className="tw-flex-1 tw-min-h-0"><CapacityView
+            active={domain === Domain.Capacity && !workspaceNode}
             instances={diskdbInstances} usage={capacityUsage} hardwareCapacity={hardwareCapacity}
             scanStatus={capacityScanStatus} loading={capLoading} readonly={topologyReadonly}
             onRefresh={refreshCapacity} selectedEntity={scopeForDomain(Domain.Cluster)}
@@ -593,7 +615,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
       </main>
 
       {!ownsSidebar && <Suspense fallback={null}>
-        <Inspector drawer={clusterLayout.drawer} readonly={domain === Domain.KV ? logicalReadonly : topologyReadonly} allServers={allServers} modules={modules} nodes={nodes} racks={racks} servers={servers} stores={stores} capacityUsage={capacityUsage} hardwareCapacity={hardwareCapacity} diskdbInstances={diskdbInstances} width={inspectorWidth} pendingSelectionRef={pendingSelectionRef} />
+        <Inspector nodeManagement={nodeManagement && !managed} drawer={clusterLayout.drawer} readonly={domain === Domain.KV ? logicalReadonly : topologyReadonly} allServers={allServers} modules={modules} nodes={nodes} racks={racks} servers={servers} stores={stores} capacityUsage={capacityUsage} hardwareCapacity={hardwareCapacity} diskdbInstances={diskdbInstances} width={inspectorWidth} pendingSelectionRef={pendingSelectionRef} />
       </Suspense>}
 
       {selectedEntity && !ownsSidebar && !clusterLayout.drawer && <PanelDivider fixed side="right" width={inspectorWidth} onResize={setInspectorWidth}

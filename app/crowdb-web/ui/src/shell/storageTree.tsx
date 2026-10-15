@@ -5,6 +5,7 @@ import { Boxes, HardDrive } from 'lucide-react';
 import type { TreeNode } from '../components/Tree';
 import type { CapacityUsageResponse, HardwareCapacitySummary } from '../types';
 import type { NodeDiskGroups } from '../data/useCapacityTree';
+import type { CandidateSummary } from '../storage/types';
 
 interface StorageTreeInput {
   rackId: number;
@@ -13,10 +14,11 @@ interface StorageTreeInput {
   hardwareCapacity?: HardwareCapacitySummary | null;
   capacityUsage?: CapacityUsageResponse | null;
   onLoadGroupDisks?: (nodeId: number, groupId: number) => Promise<void>;
+  candidates?: CandidateSummary;
 }
 
 /** Physical disks remain visible regardless of the current DiskDB owner. */
-export function storageTree({ rackId, nodeId, disks: ndg, hardwareCapacity, capacityUsage, onLoadGroupDisks }: StorageTreeInput): TreeNode[] {
+export function storageTree({ rackId, nodeId, disks: ndg, hardwareCapacity, capacityUsage, onLoadGroupDisks, candidates }: StorageTreeInput): TreeNode[] {
   const dgStatusByKey = new Map<string, number>();
   const diskStatusById = new Map<string, number>();
   if (hardwareCapacity?.disk_groups) {
@@ -64,5 +66,9 @@ export function storageTree({ rackId, nodeId, disks: ndg, hardwareCapacity, capa
     });
   }
 
+  children.push({ id: `CANDIDATES-${nodeId}`, rawId: nodeId, type: 'Node', section: 'candidates',
+    label: `Candidates (${candidates?.count ?? '?'})`, parentIds: { rack_id: rackId },
+    title: candidates ? `Observed ${new Date(candidates.observed_at_ms).toLocaleString()}${candidates.stale ? ' · Stale' : ''}` : 'Not observed',
+    icon: <HardDrive className="tw-h-4 tw-w-4 tw-text-muted" /> });
   return children;
 }

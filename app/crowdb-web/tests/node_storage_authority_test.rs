@@ -111,8 +111,9 @@ async fn bound_storage_reads_observe_monitor_publication_without_console_cache_r
             .len(),
         2
     );
+    verify_retained_backing(&app, &hw).await;
     let capacity = read(&app, "/api/hardware/capacity").await;
-    assert_eq!(capacity["disk_groups"][0]["disks"].as_array().unwrap().len(), 2);
+    assert_eq!(capacity["disk_groups"][0]["disks"].as_array().unwrap().len(), 3);
     assert_eq!(read(&app, "/api/nodes/2/disk-groups/7").await["id"], 7);
     assert_eq!(
         read(
@@ -122,4 +123,42 @@ async fn bound_storage_reads_observe_monitor_publication_without_console_cache_r
         .await["disk_id"],
         "0000000000000001-0000000000000002"
     );
+}
+
+async fn verify_retained_backing(app: &axum::Router, hw: &HardwareClient) {
+    let backing_path = "/api/nodes/2/disk-groups/7/disks/ffffffffffffffff-ffffffffffffffff/backing";
+    assert!(read(app, backing_path).await.is_null());
+    let record = crowdb_protocol::disk_storage::DiskStorageRecord {
+        version: 1,
+        operation_id: "backing-observation".into(),
+        rack_id: 1,
+        node_id: 2,
+        disk_group_id: 7,
+        disk_id: DiskId {
+            high: u64::MAX,
+            low: u64::MAX,
+        },
+        backend: crowdb_protocol::mgmt::node::storage::DiskBackend::File,
+        backing_identity: "file:1:9007199254740993".into(),
+        media_type: None,
+        sparse: true,
+        geometry: DiskValue {
+            device_path: "/opt/crowdb/data/disks/backing.img".into(),
+            capacity_units: 4096,
+            unit_size_bytes: 4096,
+            zone_size_units: 1024,
+            zone_count: 4,
+            ..Default::default()
+        },
+        removed: false,
+    };
+    hw.admit_disk_storage(&record).await.unwrap();
+    let backing = read(app, backing_path).await;
+    assert_eq!(backing["backing_identity"], record.backing_identity);
+    assert_eq!(backing["capacity_units"], "4096");
+    assert_eq!(backing["zone_size_units"], "1024");
+    assert!(backing["media_type"].is_null());
+    assert_eq!(backing["backend"], "file");
+    assert_eq!(backing["sparse"], true);
+    assert_eq!(backing["operation_id"], "backing-observation");
 }

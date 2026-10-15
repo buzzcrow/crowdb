@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 import { test, expect } from '../fixtures/realBackend';
 import type { Page, APIRequestContext } from '@playwright/test';
+import { step } from '../fixtures/stepTimer';
 import { diskBranch, diskMenu } from '../fixtures/capacity';
 
 test('native diagnostics: Capacity navigation fetches only opened storage branches', async ({ page }) => {
@@ -30,7 +31,7 @@ test('native diagnostics: Capacity navigation fetches only opened storage branch
   expect(groups.every(node => node === 1)).toBe(true);
 });
 
-// Baseline: 1.3s (2026-10-14).
+// Baseline: 3.3s (2026-10-15), durable native file admission fixture.
 test('native diagnostics: hardware capacity aggregates disks and dashed status updates', async ({ page, request }) => {
   const group = await request.post('/api/nodes/1/disk-groups', {
     data: { id: 591, name: 'test-dg-hwcap', store_id: 1, group_id: 1 },
@@ -105,7 +106,62 @@ test('native diagnostics: hardware capacity aggregates disks and dashed status u
   await page.getByRole('main').getByRole('button', { name: 'Refresh', exact: true }).click();
   await expect(page.getByRole('alert').filter({ hasText: 'hardware inventory' })).toHaveCount(0);
   await expect(disks).toBeVisible();
+  await verifyNodeFileWorkspace(page, request);
 });
+
+async function verifyNodeFileWorkspace(page: Page, request: APIRequestContext) {
+  const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
+  const workspace = page.getByLabel('Node 1 workspace', { exact: true });
+  await step('open Node storage workspace', async () => {
+    await sidebar.getByTestId('tree-node-STORAGE-1').getByRole('button', { name: 'Storage', exact: true }).click();
+    await expect(workspace).toBeVisible();
+    await expect(workspace.getByRole('button', { name: 'Create File Disk', exact: true })).toBeEnabled();
+    await workspace.getByRole('button', { name: 'Create File Disk', exact: true }).click();
+  });
+  const dialog = page.getByRole('dialog', { name: 'Create File Disk', exact: true });
+  await expect(dialog.getByLabel('Capacity (GiB)')).toHaveValue('16');
+  await expect(dialog.getByLabel('Sparse file')).not.toBeChecked();
+  await dialog.getByLabel('Capacity (GiB)').fill('0.015625');
+  await dialog.getByLabel('Disk group').selectOption('592');
+  const accepted = await step('accept durable file operation', async () => {
+    const response = page.waitForResponse(response => new URL(response.url()).pathname === '/api/nodes/1/disk-files' && response.request().method() === 'POST');
+    await dialog.getByRole('button', { name: 'Create and Join', exact: true }).click();
+    const result = await response;
+    expect(result.status(), await result.text()).toBe(202);
+    return await result.json() as { request: { operation_id: string }; path: string };
+  });
+  const operationId = accepted.request.operation_id;
+  await expect(dialog).toHaveCount(0);
+  await expect(workspace.getByRole('article', { name: `File operation ${operationId}`, exact: true })).toBeVisible();
+  // The monitor owns execution while the browser is outside this Node scope.
+  await sidebar.getByRole('button', { name: 'test-dg-hwcap (DG-591)', exact: true }).click();
+  await step('monitor continues file admission outside Node scope', async () => {
+    await expect.poll(async () => {
+      const result = await request.get(`/api/nodes/1/disk-files/${operationId}`);
+      expect(result.ok(), await result.text()).toBe(true);
+      return (await result.json()).phase;
+    }, { intervals: [100], timeout: 3000 }).toBe('registered');
+  });
+  await step('refresh Node membership and inspect backing properties', async () => {
+    await sidebar.getByTestId('tree-node-STORAGE-1').getByRole('button', { name: 'Storage', exact: true }).click();
+    await expect(workspace.getByRole('article', { name: `File operation ${operationId}`, exact: true })).toContainText('Registered · DiskIO verified');
+    const rows = await request.get('/api/nodes/1/disk-groups/592/disks');
+    expect(rows.ok(), await rows.text()).toBe(true);
+    const disk = (await rows.json()).find((item: { device_path: string }) => item.device_path === accepted.path);
+    expect(disk).toBeDefined();
+    const row = workspace.getByRole('article', { name: `Registered disk ${disk.disk_id}`, exact: true });
+    await expect(row).toContainText('Media Unknown');
+    await row.getByRole('button', { name: 'Properties', exact: true }).click();
+    const backing = page.getByRole('region', { name: 'Disk backing properties' });
+    await expect(backing).toContainText(accepted.path);
+    await expect(backing).toContainText(operationId);
+    await expect(backing).toContainText('Preallocated');
+    await expect(backing).toContainText('Unknown');
+    await expect(sidebar.getByTestId('tree-node-CANDIDATES-1')).not.toContainText('(?)');
+    await sidebar.getByTestId('tree-node-CANDIDATES-1').getByRole('button', { name: /Candidates/ }).click();
+    await expect(workspace.getByRole('region', { name: 'Candidate disks' })).toContainText('discovery does not prove blank contents');
+  });
+}
 
 // Baseline: 6.8s (2026-10-12).
 test('native diagnostics: disk maintenance menus route to owners and retain every hardware badge', async ({ page, request }) => {

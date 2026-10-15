@@ -17,6 +17,7 @@ import { serviceOrder, type NodeServicePlan, type ServiceKind } from '../service
 import { domainTabs } from './domainTabs';
 import { CandidateNodes } from './CandidateNodes';
 import { storageTree } from './storageTree';
+import type { CandidateSummary } from '../storage/types';
 
 /** Fixed UI-only datacenter root wrapping the rack/store children. */
 function datacenterRoot(children: TreeNode[]): TreeNode {
@@ -31,6 +32,7 @@ function datacenterRoot(children: TreeNode[]): TreeNode {
 }
 
 interface SidebarProps {
+  candidateSummaries?: Record<number, CandidateSummary>;
   onCandidatesChanged?: () => void;
   nodeManagement?: boolean;
   allServers?: ServerSummary[];
@@ -62,6 +64,7 @@ interface SidebarProps {
 }
 
 export function Sidebar({
+  candidateSummaries = {},
   onCandidatesChanged,
   nodeManagement = false,
   allServers = [],
@@ -159,7 +162,7 @@ export function Sidebar({
                 expandable: !!onLoadNodeDisks,
                 onExpand: () => { void onLoadNodeDisks?.(nodeId); },
                 children: storageTree({ rackId: rack.id, nodeId, disks: nodeDiskGroups[nodeId], hardwareCapacity,
-                  capacityUsage, onLoadGroupDisks }) },
+                  capacityUsage, onLoadGroupDisks, candidates: candidateSummaries[nodeId] }) },
             ],
           };
         }),
@@ -233,7 +236,7 @@ export function Sidebar({
         }),
       };
     }))];
-  }, [allServers, nodeHealthById, nodeStores, serverByNodeId, stores, domain, racks, diskdbInstances, capacityUsage, hardwareCapacity, nodeDiskGroups, diskdbNodeIds, diskdbHealthById, diskdbInstanceIdByNodeId, onLoadNodeDisks, onLoadGroupDisks, servicePlans]);
+  }, [allServers, nodeHealthById, nodeStores, serverByNodeId, stores, domain, racks, diskdbInstances, capacityUsage, hardwareCapacity, nodeDiskGroups, diskdbNodeIds, diskdbHealthById, diskdbInstanceIdByNodeId, onLoadNodeDisks, onLoadGroupDisks, servicePlans, candidateSummaries]);
 
   const expandedIds = useMemo(() => {
     const ids: string[] = [];

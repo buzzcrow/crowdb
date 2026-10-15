@@ -22,6 +22,12 @@ import type {
   StopResult,
   HardwareCapacitySummary,
 } from './types';
+import { inventoryRequests } from './storage/requests';
+
+function inventoryJson<T>(url: string, options?: RequestOptions): Promise<T> {
+  return inventoryRequests.run(`${apiBase}:${managementToken}:${url}`, options?.signal, async signal =>
+    jsonOrThrow(await fetchWithOptions(url, { ...options, signal, skipDeduplication: true })));
+}
 
 /**
  * Flat shape accepted by `POST /api/nodes` (backend `NodeEntry` in
@@ -1126,12 +1132,12 @@ export async function listDiskGroupBindings(): Promise<{ rack_id: number; node_i
 
 /** `GET /api/nodes/:id/disk-groups` — list disk-groups on a node. */
 export async function listNodeDiskGroups(nodeId: number, options?: RequestOptions): Promise<import('./types').DiskGroupEntry[]> {
-  return jsonOrThrow(await fetchWithOptions(`/api/nodes/${encodeURIComponent(nodeId)}/disk-groups`, { ...options, method: 'GET' }));
+  return inventoryJson(`/api/nodes/${encodeURIComponent(nodeId)}/disk-groups`, options);
 }
 
 /** `GET /api/nodes/:id/disk-groups/:dg_id/disks` — list disks in a disk-group. */
 export async function listDisksInGroup(nodeId: number, dgId: number, options?: RequestOptions): Promise<import('./types').DiskEntry[]> {
-  return jsonOrThrow(await fetchWithOptions(`/api/nodes/${encodeURIComponent(nodeId)}/disk-groups/${encodeURIComponent(dgId)}/disks`, { ...options, method: 'GET' }));
+  return inventoryJson(`/api/nodes/${encodeURIComponent(nodeId)}/disk-groups/${encodeURIComponent(dgId)}/disks`, options);
 }
 
 /** `POST /api/nodes/:id/disk-groups` — add a disk-group to a node. */
@@ -1188,4 +1194,23 @@ export interface ServerSummary {
 
 export async function listServers(options?: RequestOptions): Promise<ServerSummary[]> {
   return jsonOrThrow(await fetchWithOptions('/api/servers', { ...options, method: 'GET' }));
+}
+
+export async function nodeDiskInventory(nodeId: number, options?: RequestOptions): Promise<import('./storage/types').DiskInventory> {
+  return inventoryJson(`/api/nodes/${nodeId}/disk-inventory`, options);
+}
+export async function listNodeDiskFiles(nodeId: number, after?: string, options?: RequestOptions): Promise<import('./storage/types').FilePreparationPage> {
+  return inventoryJson(`/api/nodes/${nodeId}/disk-files${qs({ after, limit: 32 })}`, options);
+}
+export async function nodeDiskFile(nodeId: number, id: string, options?: RequestOptions): Promise<import('./storage/types').FilePreparation> {
+  return inventoryJson(`/api/nodes/${nodeId}/disk-files/${encodeURIComponent(id)}`, options);
+}
+export async function createNodeDiskFile(nodeId: number, body: import('./storage/types').CreateFileDiskRequest): Promise<import('./storage/types').FilePreparation> {
+  return jsonOrThrow(await fetchWithOptions(`/api/nodes/${nodeId}/disk-files`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), skipDeduplication: true,
+  }));
+}
+
+export function diskBacking(nodeId: number, groupId: number, diskId: string, options?: RequestOptions): Promise<import('./storage/types').DiskBackingInfo | null> {
+  return inventoryJson(`/api/nodes/${nodeId}/disk-groups/${groupId}/disks/${encodeURIComponent(diskId)}/backing`, options);
 }

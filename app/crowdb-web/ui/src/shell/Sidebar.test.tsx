@@ -124,6 +124,18 @@ describe('Sidebar · Cluster tree projection', () => {
     expect(diskdb.contains(getByText('0123456789ab…'))).toBe(false);
   });
 
+  it('exposes candidate scope with honest unknown and stale observed counts', () => {
+    const onNodeClick = vi.fn();
+    const { getByTestId, getByText } = renderSidebar(Domain.Cluster, {
+      onNodeClick, candidateSummaries: { 10: { count: 2, observed_at_ms: 1234, stale: true } },
+    });
+    fireEvent.click(within(getByTestId('tree-node-STORAGE-10')).getByRole('button', { name: 'Expand' }));
+    fireEvent.click(getByText('Candidates (2)'));
+    expect(onNodeClick.mock.calls[0][0]).toMatchObject({ type: 'Node', section: 'candidates', rawId: 10 });
+    fireEvent.click(within(getByTestId('tree-node-STORAGE-11')).getByRole('button', { name: 'Expand' }));
+    expect(getByText('Candidates (?)')).toBeTruthy();
+  });
+
   it('shows unassigned physical disk groups under Storage', () => {
     const { getByText, getByTestId } = renderSidebar(Domain.Cluster, {
       diskdbInstances: [], diskdbNodeIds: new Set(),

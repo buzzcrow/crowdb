@@ -194,6 +194,10 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/api/cluster/initialization", get(node::initialization::status))
         .route("/api/nodes/:id/disk-inventory", get(node::storage::remote))
         .route(
+            "/api/nodes/:id/disk-groups/:dg_id/disks/:disk_id/backing",
+            get(node::storage::backing::get),
+        )
+        .route(
             "/api/nodes/:id/disk-files",
             get(node::storage::files::list).post(node::storage::files::create),
         )

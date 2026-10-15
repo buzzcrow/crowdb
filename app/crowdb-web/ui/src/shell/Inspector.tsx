@@ -15,6 +15,7 @@ import { ElectionStateRegion, ReadStateRegion } from '../components/ConsensusSta
 import type { ServerSummary } from '../api';
 import { isAuxiliaryKind, serviceDisplayNames } from '../services/client';
 import { ServiceProperties } from '../services/ServiceProperties';
+import { DiskBackingProperties } from '../storage/DiskBackingProperties';
 
 
 type TabId = 'details' | 'activity';
@@ -48,6 +49,7 @@ function displayEntityId(entity: SelectedEntity): string {
 }
 
 interface InspectorProps {
+  nodeManagement?: boolean;
   allServers?: ServerSummary[];
   readonly?: boolean;
   modules?: Record<string, boolean>;
@@ -67,7 +69,7 @@ interface InspectorProps {
  * Right-side inspector. Reacts to SelectionContext: Details + Activity for any
  * selection.
  */
-export function Inspector({ allServers = [], readonly, modules: _modules, nodes = [], racks = [], servers = [], stores = [], capacityUsage = null, hardwareCapacity = null, diskdbInstances = [], width = 320, drawer = false, pendingSelectionRef }: InspectorProps) {
+export function Inspector({ allServers = [], readonly, modules: _modules, nodes = [], racks = [], servers = [], stores = [], capacityUsage = null, hardwareCapacity = null, diskdbInstances = [], width = 320, drawer = false, pendingSelectionRef, nodeManagement = false }: InspectorProps) {
   const { selectedEntity, clearSelection, selectEntity } = useSelection();
   const { setDomain } = useDomain();
   const [activeTab, setActiveTab] = useState<TabId>('details');
@@ -116,7 +118,7 @@ export function Inspector({ allServers = [], readonly, modules: _modules, nodes 
         {activeTab === 'details' && (
           selectedEntity.type === 'Server' && isAuxiliaryKind(selectedEntity.serviceType)
             ? <ServiceProperties service={allServers.find(service => service.id === selectedEntity.id)} />
-            : <DetailsTab entity={selectedEntity} nodes={nodes} racks={racks} servers={servers} stores={stores} capacityUsage={capacityUsage} hardwareCapacity={hardwareCapacity} diskdbInstances={diskdbInstances} selectEntity={selectEntity} setDomain={setDomain} readonly={readonly} pendingSelectionRef={pendingSelectionRef} />
+            : <DetailsTab entity={selectedEntity} nodes={nodes} racks={racks} servers={servers} stores={stores} capacityUsage={capacityUsage} hardwareCapacity={hardwareCapacity} diskdbInstances={diskdbInstances} selectEntity={selectEntity} setDomain={setDomain} readonly={readonly} pendingSelectionRef={pendingSelectionRef} nodeManagement={nodeManagement} />
         )}
         {activeTab === 'activity' && <ActivityLog />}
       </div>
@@ -155,6 +157,7 @@ function Tab({
 }
 
 interface DetailsTabProps {
+  nodeManagement?: boolean;
   entity: SelectedEntity;
   nodes: Node[];
   racks: Rack[];
@@ -169,7 +172,7 @@ interface DetailsTabProps {
   pendingSelectionRef?: MutableRefObject<SelectedEntity | null>;
 }
 
-function DetailsTab({ entity, nodes, racks, servers, stores, capacityUsage, hardwareCapacity, diskdbInstances, selectEntity, setDomain, pendingSelectionRef }: DetailsTabProps) {
+function DetailsTab({ entity, nodes, racks, servers, stores, capacityUsage, hardwareCapacity, diskdbInstances, selectEntity, setDomain, pendingSelectionRef, nodeManagement }: DetailsTabProps) {
   const displayType = entity.type === 'Server'
     ? (entity.serviceType === 'diskdb' ? 'DiskDB' : 'KV')
     : entity.type;
@@ -318,6 +321,8 @@ function DetailsTab({ entity, nodes, racks, servers, stores, capacityUsage, hard
           </div>
         ))}
       </dl>
+      {nodeManagement && entity.type === 'Disk' && entity.parentIds?.node_id !== undefined && entity.parentIds?.disk_group_id !== undefined &&
+        <DiskBackingProperties key={entity.id} nodeId={Number(entity.parentIds.node_id)} groupId={Number(entity.parentIds.disk_group_id)} diskId={entity.id} />}
 
       {dgDisks && dgDisks.length > 0 && (
         <div className="tw-space-y-1">

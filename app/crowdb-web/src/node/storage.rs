@@ -3,6 +3,7 @@
 
 //! Authenticated monitor storage observations, independent of disk registration.
 
+pub(crate) mod backing;
 pub(crate) mod files;
 
 use axum::{
