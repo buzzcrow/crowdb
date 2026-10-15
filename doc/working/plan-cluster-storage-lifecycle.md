@@ -1211,3 +1211,13 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   not hide a loop reassociation between review and final submission. Bulk Join,
   new managed-file v2 receipts, actual-descriptor lineage, UI and raw/containerd
   acceptance remain pending.
+- DiskIO now compares version-2 canonical identity against the actual descriptor:
+  regular files use fstat identity; loop devices read LOOP_GET_STATUS64 and reject
+  sliced/raw-backed associations; ordinary devices must reject that ioctl with
+  ENOTTY and retain exact device identity. An unbound loop is never treated as an
+  independent device. The regular-file regression rejects a changed canonical
+  resource even when host, capacity and opened identity otherwise match.
+  Changed C++ format/tree-lint and full test-cpp pass, artifact
+  `unit/cpp-26766439b819438bb94bf4c9f18b1811` (Tree 543, RPC 56, DiskIO 64,
+  Common 31 and both FFI domains). Actual owned-loop exclusion/reassociation
+  acceptance remains pending and is not inferred from regular-file unit tests.

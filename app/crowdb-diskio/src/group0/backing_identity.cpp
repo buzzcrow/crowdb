@@ -8,8 +8,10 @@
 
 #ifdef __linux__
 #    include <linux/fs.h>
+#    include <linux/loop.h>
 #endif
 
+#include <cerrno>
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
@@ -17,6 +19,29 @@
 
 namespace crowdb::diskio
 {
+namespace
+{
+
+bool matches_resource(int fd, const struct stat &opened, const std::string &expected)
+{
+    if (S_ISREG(opened.st_mode)) {
+        return expected == "file:" + std::to_string(opened.st_dev) + ":" + std::to_string(opened.st_ino);
+    }
+#ifdef __linux__
+    if (S_ISBLK(opened.st_mode)) {
+        struct loop_info64 loop{};
+        if (ioctl(fd, LOOP_GET_STATUS64, &loop) == 0) {
+            return loop.lo_inode != 0 && loop.lo_rdevice == 0 && loop.lo_offset == 0 && loop.lo_sizelimit == 0 &&
+                   expected == "file:" + std::to_string(loop.lo_device) + ":" + std::to_string(loop.lo_inode);
+        }
+        // ENXIO on an unbound loop is not evidence of an independent device.
+        return errno == ENOTTY && expected == "device:" + std::to_string(opened.st_rdev);
+    }
+#endif
+    return false;
+}
+
+} // namespace
 
 bool matches_backing_identity(int fd, const std::string &path, const folly::dynamic &storage)
 {
@@ -53,7 +78,7 @@ bool matches_backing_identity(int fd, const std::string &path, const folly::dyna
             auto *host              = std::getenv("CROWDB_PHYSICAL_HOST_ID");
             if (physical_capacity <= 0 || std::cmp_less(physical_capacity, capacity) || host == nullptr ||
                 physical->at("physical_host_id").asString() != host ||
-                physical->at("resource_identity").asString().empty()) {
+                !matches_resource(fd, opened, physical->at("resource_identity").asString())) {
                 return false;
             }
             capacity = static_cast<uint64_t>(physical_capacity);

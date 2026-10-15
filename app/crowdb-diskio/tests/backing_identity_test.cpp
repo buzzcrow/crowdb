@@ -69,7 +69,10 @@ TEST(BackingIdentity, PhysicalCapacityAndHostAreSeparateFromWholeZoneUsableBytes
     const std::string previous_value = had_previous ? previous : "";
     setenv("CROWDB_PHYSICAL_HOST_ID", "owned-host", 1);
     EXPECT_TRUE(crowdb::diskio::matches_backing_identity(fd, pattern, storage));
-    storage["physical_backing"]["capacity_bytes"] = 8192;
+    storage["physical_backing"]["resource_identity"] = "file:1:2";
+    EXPECT_FALSE(crowdb::diskio::matches_backing_identity(fd, pattern, storage));
+    storage["physical_backing"]["resource_identity"] = identity;
+    storage["physical_backing"]["capacity_bytes"]    = 8192;
     EXPECT_FALSE(crowdb::diskio::matches_backing_identity(fd, pattern, storage));
     storage["physical_backing"]["capacity_bytes"] = 4096;
     EXPECT_FALSE(crowdb::diskio::matches_backing_identity(fd, pattern, storage));
