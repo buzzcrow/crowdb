@@ -8,6 +8,7 @@ mod client;
 mod models;
 mod read;
 mod transfer;
+pub mod v2;
 pub mod wire;
 
 pub use capabilities::{DatasetCapabilities, DatasetHead};

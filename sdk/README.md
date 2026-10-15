@@ -175,3 +175,44 @@ pixi run clean-env && pixi run test-e2e-dataset
 The packaging gate builds an sdist outside the repository and installs its wheel
 in a compiler-free consumer PATH. Root Cargo gates do not cover this workspace;
 SDK and wheel tasks are registered explicitly in CI.
+
+## Dataset control v2
+
+`DatasetClient::control()` returns the typed Rust `v2::ControlClient`, sharing
+HTTP pools, credentials and admission budgets. Every operation checks its server
+capability before sending a request; unsupported mutations never fall back to v1.
+Existing `DatasetClient` methods retain their v1 contracts.
+
+- `OpaqueId` preserves operation/Snapshot/revision IDs; `Generation` is an opaque
+  head precondition. `Decimal` encodes exact u64 values as JSON strings, and
+  `SampleId` preserves binary IDs through canonical base64.
+- `begin_composition`, `edit_composition`, `evaluate_composition` and
+  `prepare_composition` are resumable bounded steps. Keep operation/edit IDs and
+  input revisions. Preparation is ready to publish only when
+  `uploads.publication_ready` is true. Initial Splits publish with the Snapshot.
+- `publish_composition` advances latest; `publish_split` updates only currentSplit
+  on its owning Snapshot. Null expected heads/revisions are explicit. On an
+  unknown outcome, retry the exact request or query `commit_status`; a deliberate
+  retry after a head conflict uses a new attempt and freshly observed generation.
+- `split_members`, `split_history`, `inventory`, `roots`, `children`, `schema` and
+  `samples` return lazy `PageCursor`s. Each `next_page` fetches at most 100 items;
+  it never eagerly collects the Dataset. Persist `continuation()` for scoped
+  resume. Dropping the cursor stops further requests.
+- Read plans pin Snapshot and optional Split revision once. `prepare_read` advances
+  a bounded window; `next_batch` reuses verified streaming framing. Neither preview
+  nor a successful fetch acknowledges data. Call `acknowledge` only after application
+  processing succeeds. `close_read` releases the plan's source protection.
+- `upload_file` performs bounded digest and transfer passes. `upload_reader` accepts
+  caller-owned local/remote readers plus exact length and MD5, checking existing
+  parts against replayed bytes. Reopen the same source from the beginning on retry.
+  Changed data fails integrity checks; source files and remote objects are untouched.
+  This is a reader adapter, not a built-in remote storage/catalog connector.
+- `abandon_composition` and `cleanup_composition` are distinct operations. Run cleanup
+  steps until complete; physical payload deletion remains deferred. Snapshot reclaim
+  similarly reports its current phase and respects latest/stable/retention/leases.
+
+The `split_control` example exercises local file and caller-owned stream ingestion,
+initial Split publication, independent revision publication, historical Split reads,
+frozen child inheritance, paged inspection and explicit acknowledgement. Run it
+against a configured Dataset listener with `CROWDB_DATASET_ENDPOINT`,
+`CROWDB_DATASET_NAME` and `CROWDB_DATASET_READ_TOKEN` set.

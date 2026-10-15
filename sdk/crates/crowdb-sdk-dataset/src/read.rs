@@ -17,6 +17,12 @@ pub struct BatchStream {
     ended: bool,
 }
 impl BatchStream {
+    pub(crate) fn new_v2(transport: ResponseStream) -> Self {
+        Self {
+            decoder: BatchDecoder::for_control_v2(),
+            ..Self::new(transport)
+        }
+    }
     pub(crate) fn new(transport: ResponseStream) -> Self {
         Self {
             transport,

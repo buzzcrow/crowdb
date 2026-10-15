@@ -52,6 +52,7 @@ pub enum BatchEvent {
 /// fetching more bytes. Payload ownership transfers to each emitted event.
 #[derive(Default)]
 pub struct BatchDecoder {
+    control: ControlVersion,
     magic: bool,
     header: Option<Arc<BatchHeader>>,
     field: usize,
@@ -61,10 +62,26 @@ pub struct BatchDecoder {
     failed: bool,
 }
 
+#[derive(Clone, Copy, Default)]
+enum ControlVersion {
+    #[default]
+    V1,
+    V2,
+}
+
 impl BatchDecoder {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Uses the larger binary ID and field-name bounds of control API v2.
+    #[must_use]
+    pub fn for_control_v2() -> Self {
+        Self {
+            control: ControlVersion::V2,
+            ..Self::default()
+        }
     }
 
     /// # Errors
@@ -121,7 +138,7 @@ impl BatchDecoder {
         match kind {
             1 => {
                 let header: BatchHeader = serde_json::from_slice(&body)?;
-                validate_header(&header)?;
+                validate_header(&header, self.control)?;
                 let header = Arc::new(header);
                 self.header = Some(Arc::clone(&header));
                 self.skip_missing();
@@ -206,7 +223,7 @@ impl BatchDecoder {
     }
 }
 
-fn validate_header(header: &BatchHeader) -> Result<(), Error> {
+fn validate_header(header: &BatchHeader, control: ControlVersion) -> Result<(), Error> {
     use base64::{engine::general_purpose::STANDARD, Engine};
     if !valid_id(&header.snapshot) || header.sample_ids.len() > 10_000 || header.fields.len() > 2_560_000 {
         return Err(Error::Integrity);
@@ -215,12 +232,16 @@ fn validate_header(header: &BatchHeader) -> Result<(), Error> {
     if ids.len() != header.sample_ids.len() {
         return Err(Error::Integrity);
     }
+    let (id_limit, field_limit): (usize, usize) = match control {
+        ControlVersion::V1 => (1024, 255),
+        ControlVersion::V2 => (16384, 1024),
+    };
     for id in &header.sample_ids {
-        if id.len() > 1368 {
+        if id.len() > id_limit.div_ceil(3) * 4 {
             return Err(Error::Integrity);
         }
         let bytes = STANDARD.decode(id).map_err(|_| Error::Integrity)?;
-        if bytes.is_empty() || bytes.len() > 1024 || STANDARD.encode(bytes) != *id {
+        if bytes.is_empty() || bytes.len() > id_limit || STANDARD.encode(bytes) != *id {
             return Err(Error::Integrity);
         }
     }
@@ -228,7 +249,7 @@ fn validate_header(header: &BatchHeader) -> Result<(), Error> {
     for field in &header.fields {
         if !ids.contains(&field.sample)
             || field.field.is_empty()
-            || field.field.len() > 255
+            || field.field.len() > field_limit
             || !fields.insert((&field.sample, &field.field))
         {
             return Err(Error::Integrity);

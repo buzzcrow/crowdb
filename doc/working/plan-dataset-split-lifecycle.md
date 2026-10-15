@@ -77,7 +77,7 @@ and Rust/Python SDK contract before Console integration.
   `dataset/api/v2.rs`, `tests/dataset_v2_contract_test.rs`, SDK `capabilities.rs`,
   `tests/capabilities_test.rs`, OpenAPI v2. Exit: HTTP auth/admission and SDK
   old-server/version/feature-unavailable tests pass.
-- [ ] **A2b Define v2 operation contracts**: introduce a
+- [x] **A2b Define v2 operation contracts**: introduce a
   versioned `/api/dataset/v2` control surface for new identity/commit/composition
   semantics; preserve v1 routes and binary framing. New v2 models must reject
   unsupported required fields/versions and advertise required capabilities before
@@ -332,7 +332,7 @@ until its corresponding API and visibility tests pass.
   Files: `dataset/api/v2/`, OpenAPI v2, `tests/dataset_split_contract_test.rs`.
   Exit: direct HTTP fixtures exercise every route and invalid auth/scope/bounds;
   status/preview cannot acknowledge application consumption.
-- [~] **E3 Implement Rust SDK helpers**: typed IDs/models, capabilities, lazy page
+- [x] **E3 Implement Rust SDK helpers**: typed IDs/models, capabilities, lazy page
   iterators, compose/edit/evaluate/prepare/commit, revision editing/history,
   conflict/unknown-outcome identities, Split plans and cancellation. Stream/file
   sources use bounded existing transfer code; do not import repository internals.
@@ -340,7 +340,7 @@ until its corresponding API and visibility tests pass.
   `split.rs`, `composition.rs`, `tests/split_contract_test.rs`, examples.
   Exit: network fixtures verify retries preserve bytes/IDs and no eager all-page
   collection; unsupported v2 capability fails before writes.
-- [ ] **E4 Implement Python parity and source example**: extend PyO3 wrappers,
+- [~] **E4 Implement Python parity and source example**: extend PyO3 wrappers,
   Python models/helpers and packaged wheel exports; reuse Rust state machine.
   Include local import and caller-owned remote-stream adapter examples with exact
   field mappings; require replayable source/reselection for retry, never silently
@@ -977,3 +977,23 @@ failure; record actual failures and add Blocked only when that workflow requires
   the broad clean reported permission errors in unrelated OCI cache, while Rust
   artifacts were successfully cleared. No source or persistent runtime data was
   removed. No native multi-node or browser acceptance is claimed by these tests.
+
+### Typed Rust control SDK
+
+- `DatasetClient::control()` shares the existing transport and provides typed v2
+  lifecycle, inspection, upload, Split and read operations with pre-write capability
+  checks. IDs, head generations, binary Sample IDs and decimal u64s validate exact
+  wire representations. Each mutation preserves caller retry identities.
+- Lazy typed page cursors fetch only on demand, retain continuation on failure and
+  reject repeated/oversized continuation results. Bounded file and caller-reader
+  uploads verify replayed parts, total digest and exact EOF without changing sources.
+  The streaming decoder selects v2 ID/field limits only for v2 read delivery.
+- Five v2 SDK tests cover precision/canonical input, missing capabilities, lazy
+  pagination, identical publication retry bytes and long v2 IDs with unchanged v1
+  bounds. Full Dataset SDK suite passed twelve tests. SDK Clippy and formatting,
+  root Clippy and `git diff --check` passed.
+- Standalone `split_control` connects the public SDK to the real HTTP listener.
+  Local file and replayed stream uploads, initial publication, revision replacement,
+  historical membership/read, explicit ACK, frozen branching, metadata/preview,
+  stable/latest separation and cleanup passed. This still uses an in-memory service
+  store; native multi-node acceptance remains F1.
