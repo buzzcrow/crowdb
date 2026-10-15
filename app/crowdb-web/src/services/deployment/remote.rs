@@ -109,7 +109,7 @@ pub(super) async fn deploy(
     ))
 }
 
-async fn prepare_credentials(
+pub(super) async fn prepare_credentials(
     state: &AppState,
     binding: &crowdb_protocol::mgmt::node::NodeBinding,
     node: &NodeEntry,
@@ -139,7 +139,7 @@ async fn prepare_credentials(
     super::credentials::prepare(state.runtime_root.as_ref(), &spec, &binding.management_seeds).await
 }
 
-async fn configuration(
+pub(super) async fn configuration(
     state: &AppState,
     node: &NodeEntry,
     id: &str,
@@ -196,7 +196,7 @@ fn encode(value: Value) -> Result<String, Failure> {
     toml::to_string_pretty(&value).map_err(|error| err_502(error.to_string()))
 }
 
-fn environment(body: &Deploy, node: &NodeEntry) -> BTreeMap<String, String> {
+pub(super) fn environment(body: &Deploy, node: &NodeEntry) -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
     if matches!(body.kind, Kind::Chunkdb) {
         env.insert(

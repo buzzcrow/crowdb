@@ -1,0 +1,220 @@
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
+
+//! Default files retain their operation, placement and geometry across restarts.
+
+use super::{journal, AcceptedSetup, Result};
+use crate::DeploymentProfile;
+use crowdb_kv_client::{CrowdbKvClient, HardwareClient, KVClusterMetaClient};
+use crowdb_protocol::mgmt::node::{
+    setup::{SetupDiskStatus, SetupStepPhase, SetupStorage},
+    storage::{DiskInput, FileDiskAdmission, FilePreparationPhase, PrepareDiskFile},
+    NodeBinding, NodeControl,
+};
+
+pub(super) async fn advance(
+    profile: &DeploymentProfile,
+    state: &mut AcceptedSetup,
+    binding: &NodeBinding,
+    kv: &std::sync::Arc<CrowdbKvClient>,
+) -> Result<bool> {
+    let SetupStorage::Automatic {
+        capacity_bytes,
+        reserve_bytes,
+        sparse,
+    } = state.request.choices.storage
+    else {
+        return match state.request.choices.storage {
+            SetupStorage::Diskless => Ok(true),
+            _ => Err("supplied media is waiting for verified provisioning".into()),
+        };
+    };
+    let root = &profile.paths.data_root;
+    if state.file.is_none() {
+        let inputs: Vec<DiskInput> =
+            serde_json::from_str(&std::env::var("CROWDB_DISK_INPUTS").unwrap_or_else(|_| "[]".into()))?;
+        let inventory = crate::node::discover_disks(root, &inputs)?;
+        if !inputs.is_empty() || !inventory.disks.is_empty() {
+            return Err("existing or supplied media prevents automatic fallback file creation".into());
+        }
+        let hardware = HardwareClient::from_shared(std::sync::Arc::clone(kv));
+        let rack = hardware
+            .list_nodes()
+            .await?
+            .into_iter()
+            .find(|(_, id, _)| *id == binding.node_id)
+            .ok_or("node hardware is not published")?
+            .0;
+        let (id, data_binding) = select_group(&hardware, kv, rack, binding.node_id).await?;
+        state.storage_binding = Some(data_binding);
+        state.file = Some(PrepareDiskFile {
+            operation_id: uuid::Uuid::new_v4().to_string(),
+            cluster_id: binding.bootstrap.cluster_id.clone(),
+            node_id: binding.node_id,
+            capacity_bytes,
+            reserve_bytes,
+            sparse,
+            admission: Some(FileDiskAdmission {
+                rack_id: rack,
+                disk_group_id: id,
+                unit_size_bytes: 1024 * 1024,
+                zone_size_bytes: capacity_bytes.min(32 * 1024 * 1024 * 1024),
+                media_type: None,
+            }),
+        });
+        journal::save(root, state)?;
+    }
+    let request = state.file.clone().ok_or("default file request missing")?;
+    let placement = request
+        .admission
+        .as_ref()
+        .ok_or("default file placement missing")?;
+    ensure_group(
+        kv,
+        binding,
+        placement.disk_group_id,
+        state.storage_binding.clone(),
+    )
+    .await?;
+    let status = crate::node::storage::file_preparation::status(root, &request.operation_id);
+    let ready = status
+        .as_ref()
+        .is_ok_and(|status| status.phase == FilePreparationPhase::Registered);
+    state.status.disks = vec![disk_status(profile, &request, status.as_ref().ok(), ready)?];
+    if !ready {
+        if status
+            .as_ref()
+            .is_ok_and(|status| status.phase == FilePreparationPhase::Failed)
+        {
+            state.status.disks[0].phase = SetupStepPhase::Failed;
+            return Err("default file preparation failed; explicit retry required".into());
+        }
+        super::super::super::control_node(
+            &profile.paths.run_root.join("node-control.sock"),
+            &NodeControl::PrepareDiskFile { request },
+        )
+        .await?;
+    }
+    Ok(ready)
+}
+
+async fn ensure_group(
+    kv: &std::sync::Arc<CrowdbKvClient>,
+    binding: &NodeBinding,
+    group_id: u64,
+    data_binding: Option<crowdb_protocol::common::BindMapValue>,
+) -> Result<()> {
+    let ctx = crowdb_console_shared::ops::OpContext::with_shared_client_preserving_hint(
+        std::sync::Arc::clone(kv),
+        &binding.management_seeds,
+        crowdb_console_shared::ConsoleConfig::default(),
+    );
+    let groups =
+        crowdb_console_shared::ops::hardware::list_disk_groups_from_group0(&ctx, binding.node_id).await?;
+    if let Some(group) = groups.iter().find(|group| group.id == group_id) {
+        let current = ctx
+            .sysmd()
+            .get_bind(group.rack_id, binding.node_id, group_id)
+            .await?;
+        if !current
+            .as_ref()
+            .zip(data_binding.as_ref())
+            .is_some_and(|(actual, expected)| {
+                actual.store_id == expected.store_id && actual.group_id == expected.group_id
+            })
+        {
+            return Err("managed disk group metadata binding changed; inspect placement before retry".into());
+        }
+        return Ok(());
+    }
+    crowdb_console_shared::ops::hardware::add_disk_group_bound_to_group0(
+        &ctx,
+        binding.node_id,
+        group_id,
+        "Managed storage",
+        data_binding,
+    )
+    .await?;
+    Ok(())
+}
+
+async fn select_group(
+    hardware: &HardwareClient,
+    kv: &std::sync::Arc<CrowdbKvClient>,
+    rack: u64,
+    node: u64,
+) -> Result<(u64, crowdb_protocol::common::BindMapValue)> {
+    let mut groups = hardware.list_disk_groups_on_node(rack, node).await?;
+    groups.sort_unstable_by_key(|group| group.dg_id);
+    for group in groups {
+        match hardware
+            .validate_disk_group_storage(rack, node, group.dg_id, None, 1024 * 1024)
+            .await
+        {
+            Ok(()) => {}
+            Err(crowdb_kv_client::Error::Server(reason))
+                if reason == "DiskGroup media class or allocation unit is incompatible with this disk" =>
+            {
+                continue
+            }
+            Err(error) => return Err(error.into()),
+        }
+        if let Some(binding) = hardware.get_bind(rack, node, group.dg_id).await? {
+            if binding.group_id != 0 {
+                return Ok((
+                    group.dg_id,
+                    crowdb_protocol::common::BindMapValue {
+                        store_id: binding.store_id,
+                        group_id: binding.group_id,
+                    },
+                ));
+            }
+        }
+    }
+    let group = KVClusterMetaClient::from_shared(std::sync::Arc::clone(kv))
+        .list_all_groups()
+        .await?
+        .into_iter()
+        .filter(|group| group.group_id != 0)
+        .min_by_key(|group| (group.store_id, group.group_id))
+        .ok_or("default disk is waiting for an existing ordinary metadata group")?;
+    let id = hardware.allocate_disk_group_id(rack, node).await?;
+    Ok((
+        id,
+        crowdb_protocol::common::BindMapValue {
+            store_id: group.store_id,
+            group_id: group.group_id,
+        },
+    ))
+}
+
+fn disk_status(
+    profile: &DeploymentProfile,
+    request: &PrepareDiskFile,
+    status: Option<&crowdb_protocol::mgmt::node::storage::FilePreparation>,
+    ready: bool,
+) -> Result<SetupDiskStatus> {
+    Ok(SetupDiskStatus {
+        path: profile
+            .paths
+            .data_root
+            .join("disks")
+            .join(format!("managed-{}.img", request.operation_id))
+            .to_string_lossy()
+            .into_owned(),
+        phase: if ready {
+            SetupStepPhase::Ready
+        } else {
+            SetupStepPhase::Preparing
+        },
+        detail: status
+            .and_then(|status| status.error.as_ref())
+            .map(|text| text.chars().take(128).collect()),
+        operation_id: request.operation_id.clone(),
+        disk_id: Some({
+            use crowdb_protocol::DiskIdExt;
+            let (high, low) = uuid::Uuid::parse_str(&request.operation_id)?.as_u64_pair();
+            crowdb_protocol::common::DiskId { high, low }.to_display_string()
+        }),
+    })
+}

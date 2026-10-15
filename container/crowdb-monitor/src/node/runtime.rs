@@ -33,9 +33,12 @@ mod file_admission;
 mod file_preparation;
 mod initialization;
 mod retained_storage;
+mod setup;
 mod storage_health;
 #[cfg(feature = "test-util")]
 pub use initialization::InitializationForTests;
+#[cfg(feature = "test-util")]
+pub use setup::NodeSetupForTests;
 mod preparation;
 pub use ipc::control_node;
 use ipc::read_request;
@@ -119,6 +122,7 @@ pub async fn run_node(config: NodeRuntimeConfig) -> Result<()> {
     let mut file_allocator = file_preparation::FileAllocator::default();
     file_allocator.resume(&root)?;
     let mut storage_health = storage_health::StorageHealth::default();
+    let mut setup = setup::NodeSetup::default();
     let mut heartbeat = tokio::time::interval(Duration::from_secs(1));
     let result = async {
         loop {
@@ -126,12 +130,13 @@ pub async fn run_node(config: NodeRuntimeConfig) -> Result<()> {
                 _ = heartbeat.tick() => {
                     file_allocator.tick(&root)?;
                     storage_health.tick(&root).await;
+                    setup.tick(&profile).await?;
                     health.tick(&profile, &web, &mut processes).await?;
                 }
                 connection = listener.accept() => {
                     let (mut stream, _) = connection?;
                     let reply = match read_request(&mut stream).await {
-                        Ok(request) => match execute(&profile, &mut processes, &mut initialization, &mut file_allocator, request).await {
+                        Ok(request) => match execute(&profile, &mut processes, &mut initialization, &mut file_allocator, &mut setup, request).await {
                             Ok(value) => json!({"ok": true, "value": value}),
                             Err(error) => json!({"ok": false, "error": error.to_string()}),
                         },
@@ -150,6 +155,7 @@ pub async fn run_node(config: NodeRuntimeConfig) -> Result<()> {
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     }.await;
     initialization.stop().await;
+    setup.stop().await;
     storage_health.stop().await;
     file_allocator.stop().await;
     let _ = stop.send(());
@@ -177,10 +183,14 @@ async fn execute(
     processes: &mut ProcessManager,
     initialization: &mut initialization::Initialization,
     file_allocator: &mut file_preparation::FileAllocator,
+    setup: &mut setup::NodeSetup,
     request: NodeControl,
 ) -> Result<Value> {
     let root = &profile.paths.data_root;
     match request {
+        NodeControl::AcceptNodeSetup { request } => Ok(serde_json::to_value(setup.accept(root, request)?)?),
+        NodeControl::NodeSetup => Ok(serde_json::to_value(setup::NodeSetup::status(root)?)?),
+        NodeControl::NodeSetupIntent => Ok(serde_json::to_value(setup::NodeSetup::intent(root)?)?),
         NodeControl::CheckRetainedDisk { request } => Ok(serde_json::to_value(
             retained_storage::check(root, request).await?,
         )?),
@@ -202,11 +212,7 @@ async fn execute(
             initialization.accept(profile, manifest, credentials, create_data_group)
         }
         NodeControl::Initialization => initialization::Initialization::status(root),
-        NodeControl::DiskInventory => {
-            let inputs = std::env::var("CROWDB_DISK_INPUTS").unwrap_or_else(|_| "[]".into());
-            let inputs: Vec<crowdb_protocol::mgmt::node::storage::DiskInput> = serde_json::from_str(&inputs)?;
-            Ok(serde_json::to_value(super::discover_disks(root, &inputs)?)?)
-        }
+        NodeControl::DiskInventory => disk_inventory(root),
         NodeControl::Processes { cluster_id, node_id } => {
             observation::processes(root, processes, &cluster_id, node_id)
         }
@@ -272,6 +278,7 @@ async fn execute(
             if file_allocator.running() {
                 return Err("disk file preparation is still running".into());
             }
+            setup.prepare_cleanup(root, &bootstrap, confirm_delete_system_store)?;
             cleanup::execute(profile, processes, bootstrap, confirm_delete_system_store).await
         }
     }
@@ -371,4 +378,10 @@ fn web_service(profile: &DeploymentProfile, monitor_port: u16) -> Result<Service
             .into_owned(),
     );
     Ok(web)
+}
+
+fn disk_inventory(root: &std::path::Path) -> Result<Value> {
+    let inputs = std::env::var("CROWDB_DISK_INPUTS").unwrap_or_else(|_| "[]".into());
+    let inputs: Vec<crowdb_protocol::mgmt::node::storage::DiskInput> = serde_json::from_str(&inputs)?;
+    Ok(serde_json::to_value(super::discover_disks(root, &inputs)?)?)
 }

@@ -65,6 +65,11 @@ pub struct CandidateSnapshot {
 pub enum NodeControl {
     Identity,
     DiskInventory,
+    AcceptNodeSetup {
+        request: setup::NodeSetupRequest,
+    },
+    NodeSetup,
+    NodeSetupIntent,
     CheckRetainedDisk {
         request: storage::CheckRetainedDisk,
     },

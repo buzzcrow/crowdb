@@ -24,6 +24,8 @@ pub use single::run_single_node;
 
 #[cfg(feature = "test-util")]
 pub use runtime::InitializationForTests;
+#[cfg(feature = "test-util")]
+pub use runtime::NodeSetupForTests;
 pub use runtime::{control_node, run_node, NodeRuntimeConfig};
 #[cfg(feature = "test-util")]
 pub use startup::accept_startup_mode_for_tests;

@@ -39,6 +39,7 @@ ssh-key = "0.6"
 if-addrs = "0.13"
 
 [dev-dependencies]
+crowdb-kv = { path = "../../lib/crowdb-kv" }
 crowdb-monitor = { path = ".", features = ["test-util"] }
 crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi", features = ["test-util"] }
 crowdb-test-harness = { path = "../../lib/crowdb-test-harness" }

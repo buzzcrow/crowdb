@@ -20,6 +20,7 @@ mod chunk_slots;
 mod credentials;
 mod geometry;
 mod launch;
+pub(super) mod planned;
 mod remote;
 
 #[derive(Clone, Copy, Deserialize, Serialize)]

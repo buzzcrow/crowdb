@@ -951,3 +951,19 @@ in one Cluster workspace, preserving existing data and bootstrap exclusion.
   capacity field when implementing that path, with strict retained identity
   validation. Automatic DiskGroup selection must avoid global ID collisions
   because allocation/service APIs address groups by numeric ID.
+
+- Target-monitor setup now accepts one authenticated UUID/admission intent and
+  advances in a bounded background pass. It verifies confirmed Group-0 registry
+  identity before effects, retains default file operation/group/binding, waits
+  for an ordinary metadata group, and reuses compatible bound storage. It uses
+  existing typed Web configuration builders and fixed service Start publication;
+  resolved configurations are persisted before publication. Explicit cleanup
+  fences new passes and waits for an in-flight pass before archiving intent.
+  Five new monitor cases, the full monitor suite, ten affected Web cases,
+  all-target/all-feature Clippy and Rust fmt pass. Admission form/API wiring,
+  supplied provisioning and actual default-plan container proof remain pending.
+- Local disk confirmations now have scoped lifecycle reobservation through the
+  existing shared four-worker budget. A later authoritative Offline supersedes
+  a locally confirmed Online row; failed observations mark last-confirmed state
+  visibly stale. Full-width revision and stale in-flight removal guards retain
+  the latest accepted state. UI and native regression verification is in progress.
