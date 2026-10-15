@@ -9,7 +9,9 @@ info:
     capabilities before mutation. An absent capability is unavailable; clients
     must not downgrade a v2 mutation to v1. The capability list advertises only
     implemented operation families. Existing v1 control and binary framing remain
-    available under their original routes.
+    available under their original routes. Metadata GET routes require
+    bounded-inspection; explicit POST inspection preparation requires
+    inspection-preparation. Query parameters are strict and duplicate keys fail.
 servers:
   - url: /api/dataset/v2
 security:
@@ -56,7 +58,229 @@ paths:
           description: API admission capacity exhausted
         '504':
           description: Request deadline expired
+  /namespaces/dataset-ns/datasets:
+    get:
+      operationId: listDatasets
+      summary: Discover existing Dataset identities
+      parameters:
+        - {$ref: '#/components/parameters/after'}
+        - {$ref: '#/components/parameters/limit'}
+      responses:
+        '200':
+          description: Bounded metadata result; counts and byte lengths are decimal strings.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DatasetPage'}
+        default:
+          $ref: '#/components/responses/InspectionError'
+  /namespaces/dataset-ns/datasets/{dataset}/snapshot-inventory:
+    get:
+      operationId: snapshotInventory
+      summary: List committed Snapshot inventory
+      parameters:
+        - {$ref: '#/components/parameters/dataset'}
+        - {$ref: '#/components/parameters/after'}
+        - {$ref: '#/components/parameters/limit'}
+      responses:
+        '200':
+          description: Bounded metadata result; counts and byte lengths are decimal strings.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SnapshotPage'}
+        default:
+          $ref: '#/components/responses/InspectionError'
+  /namespaces/dataset-ns/datasets/{dataset}/roots:
+    get:
+      operationId: snapshotRoots
+      summary: List committed parentless Snapshot roots
+      parameters:
+        - {$ref: '#/components/parameters/dataset'}
+        - {$ref: '#/components/parameters/after'}
+        - {$ref: '#/components/parameters/limit'}
+      responses:
+        '200':
+          description: Bounded metadata result; counts and byte lengths are decimal strings.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SnapshotPage'}
+        default:
+          $ref: '#/components/responses/InspectionError'
+  /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/children:
+    get:
+      operationId: snapshotChildren
+      summary: List committed children of a concrete Snapshot
+      parameters:
+        - {$ref: '#/components/parameters/dataset'}
+        - {$ref: '#/components/parameters/snapshot'}
+        - {$ref: '#/components/parameters/after'}
+        - {$ref: '#/components/parameters/limit'}
+      responses:
+        '200':
+          description: Bounded metadata result; counts and byte lengths are decimal strings.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SnapshotPage'}
+        default:
+          $ref: '#/components/responses/InspectionError'
+  /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/summary:
+    get:
+      operationId: snapshotSummary
+      summary: Read bounded committed Snapshot metadata
+      parameters:
+        - {$ref: '#/components/parameters/dataset'}
+        - {$ref: '#/components/parameters/snapshot'}
+      responses:
+        '200':
+          description: Bounded metadata result; counts and byte lengths are decimal strings.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SnapshotSummary'}
+        default:
+          $ref: '#/components/responses/InspectionError'
+  /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/schema:
+    get:
+      operationId: snapshotSchema
+      summary: Read an ordered Schema window
+      parameters:
+        - {$ref: '#/components/parameters/dataset'}
+        - {$ref: '#/components/parameters/snapshot'}
+        - {$ref: '#/components/parameters/after'}
+        - {$ref: '#/components/parameters/limit'}
+      responses:
+        '200':
+          description: Bounded metadata result; counts and byte lengths are decimal strings.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SchemaPage'}
+        default:
+          $ref: '#/components/responses/InspectionError'
+  /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/samples:
+    get:
+      operationId: snapshotSamples
+      summary: Read exact binary Sample IDs in byte order
+      parameters:
+        - {$ref: '#/components/parameters/dataset'}
+        - {$ref: '#/components/parameters/snapshot'}
+        - {$ref: '#/components/parameters/after'}
+        - {$ref: '#/components/parameters/limit'}
+      responses:
+        '200':
+          description: Bounded metadata result; counts and byte lengths are decimal strings.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SamplePage'}
+        default:
+          $ref: '#/components/responses/InspectionError'
+  /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/matrix:
+    get:
+      operationId: snapshotMatrix
+      summary: Read effective field metadata without payload access
+      parameters:
+        - {$ref: '#/components/parameters/dataset'}
+        - {$ref: '#/components/parameters/snapshot'}
+        - {$ref: '#/components/parameters/after'}
+        - {$ref: '#/components/parameters/limit'}
+        - in: query
+          name: fields
+          required: true
+          description: JSON-encoded array of 1 to 12 exact field names; continuation binds this projection.
+          schema: {type: string}
+      responses:
+        '200':
+          description: Bounded metadata result; counts and byte lengths are decimal strings.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MatrixPage'}
+        default:
+          $ref: '#/components/responses/InspectionError'
+  /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/contains:
+    get:
+      operationId: snapshotContains
+      summary: Look up exact binary Sample membership
+      parameters:
+        - {$ref: '#/components/parameters/dataset'}
+        - {$ref: '#/components/parameters/snapshot'}
+        - in: query
+          name: sample
+          required: true
+          description: Canonical padded base64 of a nonempty Sample ID, at most 16384 decoded bytes.
+          schema: {type: string}
+      responses:
+        '200':
+          description: Bounded metadata result; counts and byte lengths are decimal strings.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Contains'}
+        default:
+          $ref: '#/components/responses/InspectionError'
+  /namespaces/dataset-ns/datasets/{dataset}/snapshots/{snapshot}/inspection:
+    get:
+      operationId: snapshotInspection
+      summary: Read explicit metadata preparation status
+      parameters:
+        - {$ref: '#/components/parameters/dataset'}
+        - {$ref: '#/components/parameters/snapshot'}
+      responses:
+        '200':
+          description: Bounded metadata result; counts and byte lengths are decimal strings.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/InspectionPreparation'}
+        default:
+          $ref: '#/components/responses/InspectionError'
+    post:
+      operationId: prepareSnapshotInspection
+      summary: Advance one bounded legacy metadata preparation window
+      description: Explicit mutation; retry resumes durable progress. Does not publish data or acknowledge reads.
+      parameters:
+        - {$ref: '#/components/parameters/dataset'}
+        - {$ref: '#/components/parameters/snapshot'}
+      responses:
+        '200':
+          description: Durable preparation progress
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/InspectionPreparation'}
+        default:
+          $ref: '#/components/responses/InspectionError'
 components:
+  parameters:
+    dataset:
+      in: path
+      name: dataset
+      required: true
+      schema: {type: string}
+    snapshot:
+      in: path
+      name: snapshot
+      required: true
+      schema: {type: string, pattern: '^[0-9a-f]{32}$'}
+    after:
+      in: query
+      name: after
+      description: Opaque canonical base64 continuation; preserve query and immutable scope. Empty pages may continue.
+      schema: {type: string, maxLength: 43692}
+    limit:
+      in: query
+      name: limit
+      schema: {type: integer, minimum: 1, maximum: 100, default: 20}
+  responses:
+    InspectionError:
+      description: >-
+        400 invalid or duplicate query; 401 unauthorized; 404 unavailable;
+        409 inspection_not_prepared; 413 read_limit; 422 inspection_unsupported;
+        429 capacity; 499 cancelled; 500 integrity; 503 unavailable; 504 timeout.
+        Unknown query keys are rejected. No error triggers unbounded fallback.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [code, message, request_id, retryable]
+            properties:
+              code: {type: string}
+              message: {type: string}
+              request_id: {type: string}
+              retryable: {type: boolean}
   securitySchemes:
     bearerAuth:
       type: http
@@ -87,3 +311,110 @@ components:
           uniqueItems: true
           items: {type: string}
           description: Unknown names may be ignored; required names must be present.
+    DatasetInfo:
+      type: object
+      required: [id, namespace, name, latest, stable]
+      properties:
+        id: {type: string}
+        namespace: {type: string}
+        name: {type: string}
+        latest: {type: [string, 'null']}
+        stable: {type: [string, 'null']}
+    SnapshotSummary:
+      type: object
+      required: [id, parent, schema_version, field_count, sample_count, manifest_sha256, inspection, reason]
+      properties:
+        id: {type: string}
+        parent: {type: [string, 'null']}
+        schema_version: {type: integer}
+        field_count: {type: integer}
+        sample_count: {type: string, pattern: '^[0-9]+$'}
+        manifest_sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
+        inspection: {enum: [ready, unsupported]}
+        reason: {type: [string, 'null']}
+    FieldDefinition:
+      type: object
+      required: [name, required]
+      properties:
+        name: {type: string}
+        required: {type: boolean}
+    FieldMetadata:
+      type: object
+      required: [name, storage, length, md5, source_snapshot]
+      properties:
+        name: {type: string}
+        storage: {enum: [inline, payload, tombstone]}
+        length: {type: string, pattern: '^[0-9]+$'}
+        md5: {type: [string, 'null']}
+        source_snapshot: {type: string}
+    MatrixRow:
+      type: object
+      required: [id, fields]
+      properties:
+        id: {type: string, description: Canonical padded base64 Sample ID}
+        fields:
+          type: array
+          description: Requested field order; null means missing, distinct from tombstone.
+          items:
+            anyOf:
+              - {$ref: '#/components/schemas/FieldMetadata'}
+              - {type: 'null'}
+    Contains:
+      type: object
+      required: [contains]
+      properties:
+        contains: {type: boolean}
+    InspectionPreparation:
+      type: object
+      required: [snapshot, revision, rows_written, state, reason]
+      properties:
+        snapshot: {type: string}
+        revision: {type: string, pattern: '^[0-9]+$'}
+        rows_written: {type: string, pattern: '^[0-9]+$'}
+        state: {enum: [preparing, ready, unsupported]}
+        reason: {type: [string, 'null']}
+    DatasetPage:
+      type: object
+      required: [entries, after]
+      properties:
+        after: {type: [string, 'null']}
+        entries:
+          type: array
+          maxItems: 100
+          items: {$ref: '#/components/schemas/DatasetInfo'}
+    SnapshotPage:
+      type: object
+      required: [entries, after]
+      properties:
+        after: {type: [string, 'null']}
+        entries:
+          type: array
+          maxItems: 100
+          items: {$ref: '#/components/schemas/SnapshotSummary'}
+    SchemaPage:
+      type: object
+      required: [entries, after]
+      properties:
+        after: {type: [string, 'null']}
+        entries:
+          type: array
+          maxItems: 100
+          items: {$ref: '#/components/schemas/FieldDefinition'}
+    SamplePage:
+      type: object
+      required: [entries, after]
+      properties:
+        after: {type: [string, 'null']}
+        entries:
+          type: array
+          maxItems: 100
+          items: {type: string, description: Canonical padded base64 Sample ID}
+    MatrixPage:
+      type: object
+      required: [entries, after]
+      properties:
+        after: {type: [string, 'null']}
+        entries:
+          type: array
+          maxItems: 100
+          items: {$ref: '#/components/schemas/MatrixRow'}

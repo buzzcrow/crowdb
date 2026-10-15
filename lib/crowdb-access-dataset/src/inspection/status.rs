@@ -9,6 +9,25 @@ use super::{
 use crate::{AuthorityError, DatasetAuthority, DatasetIdentity, ReadCancellation, SnapshotId};
 
 impl DatasetAuthority {
+    /// Reads preparation status only when bounded metadata proves a live commit.
+    /// # Errors
+    /// Returns unavailable publication, unprepared metadata, corruption or read limits.
+    pub async fn committed_inspection_preparation_status(
+        &self,
+        identity: &DatasetIdentity,
+        snapshot: SnapshotId,
+        cancel: &ReadCancellation,
+    ) -> Result<InspectionPreparation, InspectionError> {
+        let mut work = super::work::InspectionWork::new(self.store.as_ref(), cancel, budget(1024 * 1024))?;
+        if !self
+            .inspection_snapshot_committed(identity, snapshot, &mut work)
+            .await?
+        {
+            return Err(AuthorityError::SnapshotNotFound.into());
+        }
+        self.inspection_preparation_status(identity, snapshot, cancel)
+            .await
+    }
     /// Reads preparation state without loading the publication or Manifest.
     /// # Errors
     /// Returns not-prepared, corrupt, unavailable or over-budget storage errors.

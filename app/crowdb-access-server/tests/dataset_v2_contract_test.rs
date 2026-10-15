@@ -30,7 +30,10 @@ async fn capabilities_use_existing_auth_and_do_not_enable_unimplemented_writes()
     assert!(response.headers().contains_key("x-request-id"));
     let value: Value = response.json().await.unwrap();
     assert_eq!(value["api_version"], 2);
-    assert_eq!(value["capabilities"], serde_json::json!(["head-inspection"]));
+    assert_eq!(
+        value["capabilities"],
+        serde_json::json!(["head-inspection", "bounded-inspection", "inspection-preparation"])
+    );
     let response = client.post(&endpoint).bearer_auth("secret").send().await.unwrap();
     assert_eq!(response.status(), 404);
     response.bytes().await.unwrap();

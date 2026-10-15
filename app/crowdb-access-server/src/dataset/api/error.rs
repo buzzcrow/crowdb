@@ -43,7 +43,7 @@ impl ApiError {
     pub(super) fn unauthorized() -> Self {
         Self::new(StatusCode::UNAUTHORIZED, "unauthorized")
     }
-    fn new(status: StatusCode, code: &'static str) -> Self {
+    pub(super) fn new(status: StatusCode, code: &'static str) -> Self {
         Self {
             status,
             code,

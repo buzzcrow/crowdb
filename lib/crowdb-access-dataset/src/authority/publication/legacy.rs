@@ -59,7 +59,10 @@ impl DatasetAuthority {
         Ok(true)
     }
 
-    pub(crate) async fn require_committed_snapshot(
+    /// Checks live publication proof, resolving bounded legacy ancestry when needed.
+    /// # Errors
+    /// Returns unavailable or retired snapshots, corrupt proof or storage limits.
+    pub async fn require_committed_snapshot(
         &self,
         identity: &DatasetIdentity,
         snapshot: SnapshotId,

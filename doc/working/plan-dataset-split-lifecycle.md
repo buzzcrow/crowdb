@@ -296,7 +296,13 @@ until its corresponding API and visibility tests pass.
   and route admission are E2; the durable authority session contract is complete.
   Exit: old read plans decode with old semantics; new plans cannot resume under
   another revision, same-name Split, projection or source; empty set ends normally.
-- [~] **E2 Complete public endpoints**: expose capabilities, head generation,
+- [x] **E2a Expose bounded metadata endpoints**: catalog, roots/inventory,
+  children, summaries, Schema, Samples, projected matrix, exact membership and
+  explicit legacy preparation/status. Files: `dataset/api/v2/{inspection,
+  inspection_models,query}.rs`, `dataset_inspection_contract_test.rs`, OpenAPI.
+  Exit: canonical binary IDs/cursors, bounded strict query handling, commit
+  visibility, auth, metadata provenance and pagination tests pass.
+- [~] **E2b Complete public endpoints**: expose capabilities, head generation,
   discovery/metadata preparation, composition, revision drafts/commit/status/
   history and scoped member/read operations. Suggested v2 route families under
   `/namespaces/{ns}/datasets/{dataset}`: `/head`, `/snapshot-inventory`,
@@ -738,3 +744,25 @@ failure; record actual failures and add Blocked only when that workflow requires
   Its initial fixture incorrectly used v1 publication for a new root; corrected
   it to the candidate/attempt API without changing v1 semantics.
 - `pixi run rs-lint`, `pixi run rs-fmt-check`, `git diff --check`: passed.
+
+### Bounded HTTP metadata verification
+
+- V2 now advertises `bounded-inspection` and `inspection-preparation` alongside
+  head inspection. Routes expose catalog, inventory/roots/children, summary,
+  Schema, IDs, effective field metadata, exact membership and preparation/status.
+  No composition or Split mutation capability is advertised yet.
+- DTOs preserve canonical base64 IDs/cursors, hexadecimal identities/digests and
+  decimal-string counts/lengths. Query parameters reject duplicates, unknown
+  keys, malformed encoding and unsupported bounds. Matrix projections cap at
+  twelve fields; storage reads retain their aggregate item/byte/deadline limits.
+- Public preparation status checks bounded commit evidence. Explicit preparation
+  may resolve legacy ancestry; GET status does not materialize a Manifest.
+- `pixi run clean-env && pixi run cargo test -p crowdb-access-server --test
+  dataset_inspection_contract_test --test dataset_v2_contract_test`: six passed.
+  `cargo test -p crowdb-access-dataset --test inspection_legacy_test --test
+  inspection_visibility_test`: six passed. An initial invocation used a nonexistent
+  preparation test filename; corrected to the actual legacy test target.
+- Root `rs-lint`, `rs-fmt-check` and `git diff --check` passed. OpenAPI routes and
+  DTO schemas are documented; optional standalone YAML parsing was unavailable
+  because neither PyYAML nor the Node yaml package is installed. Validate the
+  complete document with the release documentation tooling before F completion.
