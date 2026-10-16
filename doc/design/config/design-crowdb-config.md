@@ -130,7 +130,7 @@ represented as explicit CLI options and therefore retain the standard
 precedence.
 
 The single-node container uses a named, validated `DeploymentProfile` and
-rendered service configurations. `crowdb-monitor` owns PID 1 supervision,
+rendered service configurations. `crowdb-monitor` owns service supervision,
 dependency order, probes, restart budgets, bounded logs and shutdown. A durable
 bootstrap manifest binds the profile/configuration digest and generated
 credential identity to the mounted data volume. Restart replays completed steps;

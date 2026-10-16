@@ -75,7 +75,8 @@ test.describe('kv ops · put/get/scan/delete', () => {
       await expect(rows).toHaveCount(20);
       await expect(rows).toContainText(Array.from({ length: 20 }, (_, i) => `key-${String(20 + i).padStart(3, '0')}`));
       await page.getByTestId('kv-scan-table').getByText('key-020', { exact: true }).click();
-      await page.getByTestId('domain-capacity').click();
+      await page.getByTestId('domain-cluster').click();
+      await expect(page.getByRole('navigation', { name: 'Cluster views', exact: true })).toBeVisible();
       await page.getByRole('button', { name: 'Back', exact: true }).click();
       await expect(pages).toContainText('Page 2');
       await expect(page.getByRole('region', { name: 'Selected key' })).toContainText('complete value 20');

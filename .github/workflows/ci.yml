@@ -232,6 +232,13 @@ jobs:
       run: |
         pixi run test-access
         pixi run test-access-sdk
+    - name: Check standalone Dataset SDK
+      run: |
+        pixi run check-dataset-sdk-boundary
+        pixi run sdk-fmt-check
+        pixi run sdk-lint
+        pixi run test-dataset-sdk
+        pixi run test-dataset-sdk-python
     - name: Capture runner state on failure
       if: failure()
       run: |

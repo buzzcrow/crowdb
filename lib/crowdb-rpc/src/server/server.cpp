@@ -13,14 +13,29 @@
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <sys/file.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 #include <cerrno>
 #include <cstring>
+#include <mutex>
+#include <string>
+#include <unordered_set>
 
 namespace crowdb::rpc
 {
+
+namespace
+{
+std::mutex                      active_listeners_mutex;
+std::unordered_set<std::string> active_listeners;
+
+std::string listener_key(const std::string &addr, int port)
+{
+    return addr + ":" + std::to_string(port);
+}
+} // namespace
 
 RpcServer::RpcServer(BufferPool *pool, uint32_t io_engines, uint32_t io_workers)
     : pool_(pool),
@@ -48,11 +63,44 @@ bool RpcServer::listen(const std::string &addr, int port)
 {
     listen_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd_ < 0) {
+        const int error = errno;
+        CRB_LOG_ERROR("rpc server socket failed: addr={} port={} errno={} ({})", addr, port, error,
+                      std::strerror(error));
         return false;
     }
 
     int opt = 1;
-    ::setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    if (::setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        const int error = errno;
+        CRB_LOG_ERROR("rpc server SO_REUSEADDR failed; continuing without address reuse: addr={} port={} errno={} ({})",
+                      addr, port, error, std::strerror(error));
+    }
+#ifdef SO_REUSEPORT
+    if (::setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt)) < 0) {
+        const int error = errno;
+        CRB_LOG_ERROR("rpc server SO_REUSEPORT failed: addr={} port={} errno={} ({})", addr, port, error,
+                      std::strerror(error));
+        ::close(listen_fd_);
+        listen_fd_ = -1;
+        return false;
+    }
+#endif
+
+    if (port != 0) {
+        const std::string lock_path = "/tmp/crowdb-rpc-port-" + std::to_string(port) + ".lock";
+        listener_lock_fd_           = ::open(lock_path.c_str(), O_CREAT | O_RDWR, 0600);
+        if (listener_lock_fd_ < 0 || ::flock(listener_lock_fd_, LOCK_EX | LOCK_NB) < 0) {
+            const int error = errno;
+            CRB_LOG_ERROR("rpc server listener lease failed: port={} errno={} ({})", port, error, std::strerror(error));
+            if (listener_lock_fd_ >= 0) {
+                ::close(listener_lock_fd_);
+                listener_lock_fd_ = -1;
+            }
+            ::close(listen_fd_);
+            listen_fd_ = -1;
+            return false;
+        }
+    }
 
     struct sockaddr_in sa{};
     sa.sin_family = AF_INET;
@@ -65,14 +113,27 @@ bool RpcServer::listen(const std::string &addr, int port)
     }
 
     if (::bind(listen_fd_, reinterpret_cast<struct sockaddr *>(&sa), sizeof(sa)) < 0) {
+        const int error = errno;
+        CRB_LOG_ERROR("rpc server bind failed: addr={} port={} errno={} ({})", addr, port, error, std::strerror(error));
         ::close(listen_fd_);
         listen_fd_ = -1;
+        if (listener_lock_fd_ >= 0) {
+            ::close(listener_lock_fd_);
+            listener_lock_fd_ = -1;
+        }
         return false;
     }
 
     if (::listen(listen_fd_, 128) < 0) {
+        const int error = errno;
+        CRB_LOG_ERROR("rpc server listen failed: addr={} port={} errno={} ({})", addr, port, error,
+                      std::strerror(error));
         ::close(listen_fd_);
         listen_fd_ = -1;
+        if (listener_lock_fd_ >= 0) {
+            ::close(listener_lock_fd_);
+            listener_lock_fd_ = -1;
+        }
         return false;
     }
 
@@ -81,6 +142,21 @@ bool RpcServer::listen(const std::string &addr, int port)
     if (::getsockname(listen_fd_, reinterpret_cast<struct sockaddr *>(&bound), &bound_len) == 0) {
         listen_port_ = ntohs(bound.sin_port);
     }
+    const std::string key = listener_key(addr, listen_port_);
+    {
+        std::scoped_lock lock(active_listeners_mutex);
+        if (!active_listeners.insert(key).second) {
+            CRB_LOG_ERROR("rpc server listener already active: addr={} port={}", addr, listen_port_);
+            ::close(listen_fd_);
+            listen_fd_ = -1;
+            if (listener_lock_fd_ >= 0) {
+                ::close(listener_lock_fd_);
+                listener_lock_fd_ = -1;
+            }
+            return false;
+        }
+    }
+    listener_key_ = key;
     CRB_LOG_INFO("rpc server: listening on {}:{}", addr, listen_port_);
 
     // Register built-in handlers.
@@ -116,10 +192,13 @@ void RpcServer::start()
 
 void RpcServer::stop()
 {
-    if (!running_.exchange(false, std::memory_order_acq_rel)) {
+    const bool was_running = running_.exchange(false, std::memory_order_acq_rel);
+    if (!was_running && listener_key_.empty()) {
         return;
     }
-    CRB_LOG_INFO("rpc server: stopping");
+    if (was_running) {
+        CRB_LOG_INFO("rpc server: stopping");
+    }
     // Clear the accept handler before closing the listen fd so the
     // worker doesn't call accept() on a closed fd during shutdown.
     transport_->set_accept_handler(nullptr);
@@ -127,7 +206,18 @@ void RpcServer::stop()
         ::close(listen_fd_);
         listen_fd_ = -1;
     }
-    transport_->stop();
+    if (!listener_key_.empty()) {
+        std::scoped_lock lock(active_listeners_mutex);
+        active_listeners.erase(listener_key_);
+        listener_key_.clear();
+    }
+    if (listener_lock_fd_ >= 0) {
+        ::close(listener_lock_fd_);
+        listener_lock_fd_ = -1;
+    }
+    if (was_running) {
+        transport_->stop();
+    }
 }
 
 void RpcServer::handle_accept(int listen_fd)

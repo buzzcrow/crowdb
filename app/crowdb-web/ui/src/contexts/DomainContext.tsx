@@ -8,10 +8,14 @@ import { captureScroll, cancelScrollRestore } from './navigationScroll';
 import { readVisit, writeVisit } from './browserVisits';
 
 type Capture = () => () => void;
-interface Visit { key: number; domain: Domain; restore: Array<() => void> }
+export type ClusterViewMode = 'topology' | 'capacity';
+export const canonicalDomain = (domain: Domain) => domain === Domain.Capacity ? Domain.Cluster : domain;
+interface Visit { key: number; domain: Domain; clusterView: ClusterViewMode; restore: Array<() => void> }
 interface DomainContextType {
   domain: Domain;
   setDomain: (domain: Domain) => void;
+  clusterView: ClusterViewMode;
+  setClusterView: (view: ClusterViewMode) => void;
   checkpoint: () => void;
   back: () => void;
   forward: () => void;
@@ -23,7 +27,9 @@ interface DomainContextType {
 const DomainContext = createContext<DomainContextType | undefined>(undefined);
 
 export function DomainProvider({ children, initialDomain }: { children: ReactNode; initialDomain?: Domain }) {
-  const [domain, updateDomain] = useState<Domain>(initialDomain ?? Domain.Cluster);
+  const [domain, updateDomain] = useState<Domain>(canonicalDomain(initialDomain ?? Domain.Cluster));
+  const [clusterView, updateClusterView] = useState<ClusterViewMode>(initialDomain === Domain.Capacity ? 'capacity' : 'topology');
+  const currentView = useRef(clusterView); currentView.current = clusterView;
   const [returning, setReturning] = useState(false);
   const session = useRef(randomUUID());
   const visitKey = useRef(0);
@@ -36,7 +42,7 @@ export function DomainProvider({ children, initialDomain }: { children: ReactNod
   const [, setVersion] = useState(0);
   const changed = useCallback(() => setVersion(value => value + 1), []);
   const capture = useCallback((): Visit => ({
-    key: visitKey.current, domain: current.current,
+    key: visitKey.current, domain: current.current, clusterView: currentView.current,
     restore: [...[...(captures.current.get(current.current)?.values() ?? [])].map(read => read()), captureScroll()],
   }), []);
   const checkpoint = useCallback(() => {
@@ -49,17 +55,29 @@ export function DomainProvider({ children, initialDomain }: { children: ReactNod
     previous.current = [...previous.current, capture()].slice(-32);
     next.current = [];
     visitKey.current = ++sequence.current;
-    writeVisit({ session: session.current, key: visitKey.current }, current.current, true);
+    writeVisit({ session: session.current, key: visitKey.current }, current.current, true, currentView.current);
     changed();
   }, [capture, changed]);
   const setDomain = useCallback((target: Domain) => {
-    if (target === current.current) return;
+    const destination = canonicalDomain(target);
+    const view = target === Domain.Capacity ? 'capacity' : currentView.current;
+    if (destination === current.current && view === currentView.current) return;
     checkpoint();
-    current.current = target;
-    updateDomain(target);
+    current.current = destination;
+    currentView.current = view;
+    updateDomain(destination);
+    updateClusterView(view);
+  }, [checkpoint]);
+  const setClusterView = useCallback((view: ClusterViewMode) => {
+    if (current.current === Domain.Cluster && currentView.current === view) return;
+    checkpoint();
+    current.current = Domain.Cluster;
+    currentView.current = view;
+    updateDomain(Domain.Cluster);
+    updateClusterView(view);
   }, [checkpoint]);
   useEffect(() => {
-    writeVisit({ session: session.current, key: visitKey.current }, current.current, false);
+    writeVisit({ session: session.current, key: visitKey.current }, current.current, false, currentView.current);
     const travel = (event: PopStateEvent) => {
       const target = readVisit(event.state);
       if (!target || target.session !== session.current || target.key === visitKey.current) return;
@@ -75,21 +93,24 @@ export function DomainProvider({ children, initialDomain }: { children: ReactNod
       visitKey.current = visit.key;
       current.current = visit.domain;
       updateDomain(visit.domain);
+      currentView.current = visit.clusterView;
+      updateClusterView(visit.clusterView);
       for (const restore of visit.restore) restore();
       changed();
     };
     window.addEventListener('popstate', travel);
     return () => { window.removeEventListener('popstate', travel); cancelScrollRestore(); };
   }, [capture, changed]);
-  useEffect(() => { writeVisit({ session: session.current, key: visitKey.current }, domain, false); }, [domain]);
+  useEffect(() => { writeVisit({ session: session.current, key: visitKey.current }, domain, false, clusterView); }, [domain, clusterView]);
   const back = useCallback(() => { if (previous.current.length) window.history.back(); }, []);
   const forward = useCallback(() => { if (next.current.length) window.history.forward(); }, []);
   const register = useCallback((scope: Domain, id: string, read: Capture) => {
+    scope = canonicalDomain(scope);
     const entries = captures.current.get(scope) ?? new Map<string, Capture>();
     entries.set(id, read); captures.current.set(scope, entries);
     return () => { if (entries.get(id) === read) entries.delete(id); };
   }, []);
-  return <DomainContext.Provider value={{ domain, setDomain, checkpoint, back, forward,
+  return <DomainContext.Provider value={{ domain, setDomain, clusterView, setClusterView, checkpoint, back, forward,
     canBack: previous.current.length > 0, canForward: next.current.length > 0, returning, register }}>
     {children}
   </DomainContext.Provider>;

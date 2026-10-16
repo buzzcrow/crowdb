@@ -24,13 +24,12 @@ test('native diagnostics: auxiliary menus stop and restart the actual typed proc
     await expect(item).toBeVisible();
     await node.click({ button: 'right' });
     await page.getByRole('menuitem', { name: `${prefix}-1 Running`, exact: true }).hover();
-    const stoppedObservation = page.waitForResponse(async response => {
-      if (new URL(response.url()).pathname !== '/api/servers' || !response.ok()) return false;
-      const rows = await response.json();
-      return rows.some((row: { id: string; pid?: number }) => row.id === original.id && !row.pid);
-    });
+    const stopped = page.waitForResponse(response =>
+      new URL(response.url()).pathname === `/api/services/${original.id}/stop`
+      && response.request().method() === 'POST');
     await page.getByRole('menuitem', { name: `Stop ${label}`, exact: true }).click();
-    await stoppedObservation;
+    const stopResponse = await stopped;
+    expect(stopResponse.status(), await stopResponse.text()).toBe(200);
     await expect(page.getByRole('button', { name: 'Refresh', exact: true }).locator('svg')).not.toHaveClass(/tw-animate-spin/);
     await expect.poll(() => alive(original.pid), { intervals: [100] }).toBe(false);
     await expect.poll(async () => {
@@ -68,6 +67,7 @@ test('native diagnostics: auxiliary menus stop and restart the actual typed proc
 });
 
 // Baseline: new native defaults/reopen acceptance (2026-10-04).
+// Baseline: 5.6s (2026-10-16), before adding Dataset listener.
 test('native diagnostics: auxiliary dialogs reopen with unused IDs ports and valid dependencies', async ({ page, request }) => {
   const response = await request.get('/api/deployment-defaults?node_id=1');
   expect(response.ok(), await response.text()).toBe(true);
@@ -86,7 +86,7 @@ test('native diagnostics: auxiliary dialogs reopen with unused IDs ports and val
       await expect(dialog.getByLabel('Instance ID', { exact: true })).toHaveValue(defaults[kind].instance_id);
       expect(servers.some((server: { id: string }) => server.id === `${kind}-${defaults[kind].instance_id}`)).toBe(false);
       const fields = kind === 'diskio' ? [['RPC port', 'rpc_port']] : kind === 'access-server'
-        ? [['Iceberg HTTP port', 'http_port'], ['S3 HTTP port', 's3_port']]
+        ? [['Iceberg HTTP port', 'http_port'], ['S3 HTTP port', 's3_port'], ['Dataset HTTP port', 'dataset_port'], ['Health HTTP port', 'health_port']]
         : [['Management HTTP port', 'http_port'], ['RPC port', 'rpc_port']];
       for (const [field, key] of fields) await expect(dialog.getByLabel(field, { exact: true })).toHaveValue(String(defaults[kind][key]));
       if (kind === 'diskio') await expect(dialog.getByLabel('Disk group', { exact: true })).toHaveValue('1');
@@ -216,6 +216,7 @@ test('native diagnostics: waiting plan resumes when DiskIO prerequisites arrive'
       expect((await request.post(`/api/services/${diskioIds[1]}/restart`, { data: {} })).ok()).toBe(true);
       await expect(dialog.getByRole('listitem').filter({ hasText: 'deploying' })).toHaveCount(1);
       await deployments.verify(1, 'chunk-kv');
+      await expect(dialog.getByRole('listitem').filter({ hasText: 'crowdb-access-server' })).toContainText(/deploying|deployed/);
       await deployments.verify(1, 'access-server');
       await expect.poll(async () => {
         const response = await request.get('/api/service-plans');

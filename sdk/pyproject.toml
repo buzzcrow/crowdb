@@ -1,15 +1,28 @@
+# Copyright 2026-present Gian <crow.db@outlook.com>
+# Licensed under the Apache License, Version 2.0.
 [build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
+requires = ["maturin>=1.15,<2"]
+build-backend = "maturin"
 
 [project]
 name = "crowdb-dataset"
 version = "0.1.0"
-description = "CrowDB Dataset worker and rank iterable adapter"
+description = "CrowDB Dataset HTTP SDK with a Rust core"
+readme = "README.md"
 requires-python = ">=3.10"
+license = "Apache-2.0"
 
-[tool.setuptools]
-package-dir = {"" = "."}
-
-[tool.setuptools.packages.find]
-where = ["."]
+[tool.maturin]
+manifest-path = "crates/crowdb-sdk-python/Cargo.toml"
+python-source = "."
+module-name = "crowdb_dataset._native"
+include = [
+    { path = "contract-fixtures/**/*", format = "sdist" },
+    { path = "README.md", format = "sdist" },
+    { path = "CHANGELOG.md", format = "sdist" },
+    { path = "crates/crowdb-sdk-core/**/*", format = "sdist" },
+    { path = "crates/crowdb-sdk-dataset/**/*", format = "sdist" },
+    { path = "Cargo.toml", format = "sdist" },
+    { path = "Cargo.lock", format = "sdist" },
+    { path = ".cargo/config.toml", format = "sdist" },
+]

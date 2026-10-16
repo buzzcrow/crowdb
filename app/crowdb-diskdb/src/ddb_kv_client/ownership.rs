@@ -5,8 +5,8 @@
 
 use crowdb_kv_client::{BatchOp, Error, GetOutcome, ReadMode, Result};
 use crowdb_protocol::{
-    common::{DiskId, HwStatus, OwnerMapValue},
-    key::{DiskKey, OwnerMapKey, TextKey},
+    common::{DiskId, HwStatus},
+    key::DiskKey,
 };
 use serde::{Deserialize, Serialize};
 
@@ -59,59 +59,23 @@ impl DdbKvClient {
                 )
                 .await;
         };
-        let owner_key = OwnerMapKey {
-            rack_id: fence.rack_id,
-            node_id: fence.node_id,
-            disk_group_id: fence.disk_group_id,
-        }
-        .to_path();
-        let GetOutcome::Found {
-            value: owner,
-            revision,
-        } = self
-            .kv
-            .get(0, 0, owner_key.as_bytes(), ReadMode::Linearizable, None)
-            .await?
-        else {
-            return Err(fenced());
-        };
-        let current: OwnerMapValue =
-            serde_json::from_slice(&owner).map_err(|error| Error::Server(error.to_string()))?;
-        if current.instance_id != fence.instance_id || revision != fence.generation {
+        if (group.rack_id, group.node_id, group.disk_group_id)
+            != (fence.rack_id, fence.node_id, fence.disk_group_id)
+        {
             return Err(fenced());
         }
-        let disk_key = DiskKey {
-            rack_id: fence.rack_id,
-            node_id: fence.node_id,
-            disk_group_id: fence.disk_group_id,
-            disk_id: *disk,
-        }
-        .to_path();
-        let mut value = hardware
-            .get_disk(fence.rack_id, fence.node_id, fence.disk_group_id, disk)
-            .await?
-            .ok_or_else(fenced)?;
-        value.status = HwStatus::Offline as i32;
-        let value = serde_json::to_vec(&value).map_err(|error| Error::Server(error.to_string()))?;
-        self.kv
-            .batch_write_cas(
-                0,
-                0,
-                &[
-                    BatchOp::Put {
-                        key: owner_key.as_bytes().to_vec().into(),
-                        value: owner,
-                    },
-                    BatchOp::Put {
-                        key: disk_key.into_bytes().into(),
-                        value: value.into(),
-                    },
-                ],
-                owner_key.as_bytes(),
-                revision,
+        hardware
+            .mark_disk_offline_if_owned(
+                &DiskKey {
+                    rack_id: fence.rack_id,
+                    node_id: fence.node_id,
+                    disk_group_id: fence.disk_group_id,
+                    disk_id: *disk,
+                },
+                fence.instance_id,
+                fence.generation,
             )
             .await
-            .map(|_| ())
     }
 
     pub fn ownership_fence(&self) -> Option<std::sync::Arc<OwnershipFence>> {
@@ -128,6 +92,7 @@ impl DdbKvClient {
     pub fn for_group(&self, group: &crate::model::disk_group::DdbDiskGroup) -> Self {
         let mut scoped = self.clone();
         scoped.fence = group.ownership_fence();
+        scoped.disks = Some(group.disk_snapshot());
         scoped
     }
 
@@ -161,6 +126,22 @@ impl DdbKvClient {
     }
 
     pub(super) async fn write_owned(
+        &self,
+        bind: Bind,
+        ops: &[BatchOp],
+        record_condition: Option<(&[u8], u64)>,
+    ) -> Result<u64> {
+        let writes = self.admit_disk_writes(ops)?;
+        let outcome = self.write_owned_fenced(bind, ops, record_condition).await;
+        if !matches!(outcome, Err(Error::OutcomeUnknown)) {
+            for write in writes {
+                write.complete();
+            }
+        }
+        outcome
+    }
+
+    async fn write_owned_fenced(
         &self,
         bind: Bind,
         ops: &[BatchOp],

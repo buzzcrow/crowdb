@@ -453,3 +453,11 @@ fn lock_timeout_error_display() {
     let e = LifecycleError::LockTimeout;
     assert!(e.to_string().contains("timed out"));
 }
+
+#[test]
+fn storage_conflict_is_a_lifecycle_state_conflict() {
+    let error = LifecycleError::from(crowdb_chunkdb::storage::StoreError::Conflict);
+    assert!(matches!(error, LifecycleError::StateConflict));
+    let error = LifecycleError::from(crowdb_chunkdb::storage::StoreError::Kv("unavailable".into()));
+    assert!(matches!(error, LifecycleError::Storage(_)));
+}

@@ -161,6 +161,14 @@ layer (chunkdb/diskdb) is responsible for marking a disk as bad and
 stopping new allocations on it. After all in-flight I/O to a failing
 disk drains, no further I/O is sent to it.
 
+Administrative Offline is enforced by Group-0 discovery. A complete valid
+membership observation detaches Offline disks from the active map, rejecting
+new requests while existing handles drain through descriptor retirement. Offline
+disks still contribute their physical DiskGroup identity to the service's
+observation. Bad, Suspect and maintenance states do not by themselves close a
+handle needed for recovery reads. Failed or malformed membership observations
+retain the previous map; missing status or duplicate disk identities are errors.
+
 This keeps diskio simple — it does one thing (data I/O) and reports
 results. Disk health policy lives in diskdb, where it belongs.
 
@@ -390,6 +398,11 @@ after startup, is registered with `DiskIOUring`. Removal unregisters the
 descriptor after draining in-flight work. The first group-0 disk sync runs
 immediately so a restarted service does not advertise an empty `DiskSet` for
 one refresh interval.
+
+Detachment removes the disk from new request lookups first. The synchronization
+owner retains its handle until old map snapshots and all read/write/fsync
+callbacks have released theirs, then unregisters and closes the descriptor.
+Rediscovery waits for this retirement before reopening the same disk identity.
 
 `Zone` holds `{zone_index, base_offset, capacity, state}`. The
 physical offset for an I/O is `zone.base_offset + zone_offset`. Zone

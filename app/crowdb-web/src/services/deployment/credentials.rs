@@ -9,7 +9,12 @@ use crowdb_monitor::{ClientCredentials, ServerCredentials};
 use crate::{error::err_502, services::Failure};
 
 /// Provision before Access starts so its initial credential snapshot includes Console.
-pub(super) async fn prepare(root: &Path, spec: &LocalLaunchSpec, seeds: &[String]) -> Result<(), Failure> {
+pub(super) async fn prepare(
+    root: &Path,
+    spec: &LocalLaunchSpec,
+    seeds: &[String],
+    kv: &crowdb_kv_client::CrowdbKvClient,
+) -> Result<(), Failure> {
     let s3_endpoint = spec
         .env
         .get("CROWDB_S3_PUBLIC_URI")
@@ -22,11 +27,12 @@ pub(super) async fn prepare(root: &Path, spec: &LocalLaunchSpec, seeds: &[String
         .clone();
     let server =
         ServerCredentials::load_existing(root).map_err(|_| err_502("Cluster credentials are unavailable"))?;
-    crowdb_monitor::IcebergBootstrap::ensure_console_catalog(
+    crowdb_monitor::IcebergBootstrap::ensure_shared_console_catalog(
         root,
         Path::new(&spec.program),
         &seeds.join(","),
         &server,
+        kv,
     )
     .await
     .map_err(|error| err_502(format!("Console Iceberg catalog initialization: {error}")))?;

@@ -63,6 +63,17 @@ fn read_keys(path: &Path) -> std::io::Result<String> {
     }
 }
 
+pub(super) fn authorized_operation(root: &Path, operation: &str) -> std::io::Result<bool> {
+    let operation = uuid::Uuid::parse_str(operation).map_err(std::io::Error::other)?;
+    if root.join(format!("ssh/cancelled-{operation}.json")).exists() {
+        return Ok(false);
+    }
+    let marker = format!("crowdb:{operation}");
+    Ok(read_keys(&root.join("ssh/authorized_keys"))?
+        .lines()
+        .any(|line| line.split_whitespace().last() == Some(marker.as_str())))
+}
+
 pub(super) fn host(root: &Path, host: &str, port: u16, public_key: &str) -> std::io::Result<()> {
     if host.is_empty()
         || host.len() > 256

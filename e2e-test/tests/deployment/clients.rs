@@ -115,7 +115,7 @@ async fn verify_public_services(address: &str) {
             .await
             .unwrap()
             .status(),
-        reqwest::StatusCode::NOT_FOUND
+        reqwest::StatusCode::UNAUTHORIZED
     );
 }
 

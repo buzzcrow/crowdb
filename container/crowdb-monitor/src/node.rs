@@ -10,10 +10,33 @@ mod identity;
 mod management;
 mod runtime;
 mod single;
+pub(crate) mod startup;
+mod storage;
+#[cfg(feature = "test-util")]
+pub use storage::blank::verify_blank_medium_for_tests;
+pub use storage::discover_disks;
+#[cfg(feature = "test-util")]
+pub use storage::file_operations::file_operations_for_tests;
+#[cfg(feature = "test-util")]
+pub use storage::file_preparation::{accept_file_for_tests, prepare_file_for_tests};
+#[cfg(feature = "test-util")]
+pub use storage::retained::check_retained_medium_for_tests;
+#[cfg(feature = "test-util")]
+pub use storage::supplied::SuppliedOperationsForTests;
 mod trust;
 pub use single::run_single_node;
 
+#[cfg(feature = "test-util")]
+pub use runtime::prepare_supplied_disk_for_tests;
+#[cfg(feature = "test-util")]
+pub use runtime::publish_file_for_tests;
+#[cfg(feature = "test-util")]
+pub use runtime::InitializationForTests;
+#[cfg(feature = "test-util")]
+pub use runtime::NodeSetupForTests;
 pub use runtime::{control_node, run_node, NodeRuntimeConfig};
+#[cfg(feature = "test-util")]
+pub use startup::accept_startup_mode_for_tests;
 
 pub use management::{serve_node_management, NodeManagementError};
 
@@ -28,3 +51,6 @@ pub(crate) fn write_single_binding(
 ) -> std::io::Result<()> {
     durable::write(&root.join("node-binding.json"), binding)
 }
+
+#[cfg(feature = "test-util")]
+pub use runtime::NodeServiceForTests;

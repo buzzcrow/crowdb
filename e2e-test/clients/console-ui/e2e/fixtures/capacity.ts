@@ -13,6 +13,10 @@ export async function diskBranch(page: Page, node: number, group: number) {
   if (await nodeRow.getAttribute('aria-expanded') !== 'true') {
     await nodeRow.getByRole('button', { name: 'Expand', exact: true }).click();
   }
+  const storageRow = sidebar.getByTestId(`tree-node-STORAGE-${node}`).locator(':scope > [role="treeitem"]');
+  if (await storageRow.getAttribute('aria-expanded') !== 'true') {
+    await storageRow.getByRole('button', { name: 'Expand', exact: true }).click();
+  }
   const groupRow = sidebar.getByTestId(`tree-node-CH-DG-${node}-${group}`).locator(':scope > [role="treeitem"]');
   await expect(groupRow).toBeVisible();
   if (await groupRow.getAttribute('aria-expanded') !== 'true') {

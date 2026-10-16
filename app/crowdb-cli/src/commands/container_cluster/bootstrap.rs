@@ -4,6 +4,7 @@
 use super::state::State;
 use crowdb_console_shared::error::{Error, Result};
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+use crowdb_protocol::mgmt::node::setup::{NodeSetupChoices, SetupStorage};
 use reqwest::{Client, Method};
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
@@ -18,8 +19,18 @@ struct Api {
 
 impl Api {
     async fn request(&self, method: Method, path: &str, body: Option<Value>) -> Result<Value> {
+        self.request_at(&self.web, method, path, body).await
+    }
+
+    async fn request_at(
+        &self,
+        origin: &str,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<Value> {
         let read = method == Method::GET;
-        let mut request = self.client.request(method, format!("{}{path}", self.web));
+        let mut request = self.client.request(method, format!("{origin}{path}"));
         if read {
             request = request.timeout(Duration::from_secs(2));
         }
@@ -71,6 +82,16 @@ pub(super) async fn run(state: &mut State) -> Result<()> {
         )),
     };
     wait_web(&api, state).await?;
+    // This CLI owns fixed node identities and explicitly initializes Group 0.
+    for address in &state.addresses {
+        api.request_at(
+            &format!("http://{address}:9090"),
+            Method::POST,
+            "/api/node/auto-join",
+            Some(json!({"enabled": false})),
+        )
+        .await?;
+    }
     let phase = api.get("/api/node/status").await?;
     if phase["phase"] != "active" {
         prepare(&api, state).await?;
@@ -185,7 +206,21 @@ async fn prepare(api: &Api, state: &mut State) -> Result<()> {
             continue;
         }
         let password = std::env::var("CROWDB_SSH_PASSWORD").unwrap_or_else(|_| "crowdb".into());
-        let record=api.post("/api/node/admit",json!({"discovery_id":discovery,"rack_id":1,"ssh_user":"crowdb","ssh_port":2222,"ssh_password":password})).await?;
+        // The CLI resumes its own fixed storage and service deployment steps.
+        let mut setup = NodeSetupChoices {
+            storage: SetupStorage::Diskless,
+            ..Default::default()
+        };
+        for service in &mut setup.services {
+            service.enabled = false;
+        }
+        let record = api
+            .post(
+                "/api/node/admit",
+                json!({"discovery_id":discovery,"rack_id":1,"ssh_user":"crowdb",
+                    "ssh_port":2222,"ssh_password":password,"setup":setup}),
+            )
+            .await?;
         if record["node_id"] != index + 1 {
             return Err(Error::Config(
                 "container node admission returned a different identity".into(),

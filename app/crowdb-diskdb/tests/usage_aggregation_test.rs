@@ -15,6 +15,26 @@ use crowdb_protocol::diskdb::rpc::{DiskType, DiskValue};
 const UNIT_SIZE: u32 = 1024 * 1024;
 const ZONE_CAP: u32 = 128;
 
+#[test]
+fn unloaded_and_partial_disks_do_not_publish_known_total_usage() {
+    let group = DdbDiskGroup::new(100, 10, 1);
+    let id = DiskId { high: 0, low: 9 };
+    let disk = Arc::new(DdbDisk::new(id, 100, 10, 1, make_disk_value(2)));
+    disk.exclude();
+    group.add_disk(disk.clone());
+    assert!(!group.aggregate_usage().usage_known);
+    disk.add_zone(&Arc::new(DdbZone::new(id, 0, 100, ZONE_CAP)));
+    assert!(!group.aggregate_usage().usage_known);
+    disk.add_zone(&Arc::new(DdbZone::new(id, 1, 100, ZONE_CAP)));
+    assert!(group.aggregate_usage().usage_known);
+    assert_eq!(group.aggregate_usage().busy_bytes, 0);
+    assert_eq!(
+        group.aggregate_usage().allocatable_disk_count,
+        0,
+        "known occupancy does not authorize allocation"
+    );
+}
+
 fn make_disk_value(zone_count: u32) -> DiskValue {
     DiskValue {
         disk_type: DiskType::BlockHdd as i32,

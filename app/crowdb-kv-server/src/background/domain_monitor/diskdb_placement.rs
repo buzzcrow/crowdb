@@ -6,9 +6,10 @@
 use super::{DomainMonitorDriver, DomainMonitorFuture};
 use crate::group0_control_plane::Group0ControlPlane;
 use bytes::Bytes;
+use crowdb_kv::cluster::group_operations::KvGroupMutation;
 use crowdb_protocol::chunk_kv::{DomainFailurePolicy, DomainMonitorDescriptor};
 use crowdb_protocol::common::{BindMapValue, InstanceValue, OwnerMapValue};
-use crowdb_protocol::key::{BindMapKey, DiskGroupKey, InstanceKey, OwnerMapKey, TextKey};
+use crowdb_protocol::key::{BindMapKey, DiskGroupKey, InstanceKey, OwnerMapKey, RackKey, TextKey};
 use std::collections::BTreeMap;
 
 pub struct DiskdbPlacementMonitorDriver;
@@ -147,17 +148,66 @@ async fn assign(
     now: u64,
 ) -> Result<(), String> {
     let value = OwnerMapValue {
+        process_epoch: 0,
         instance_id: instance,
         lease_expiry_ms: now.saturating_add(3_600_000),
     };
-    control
-        .compare_and_put(
-            Bytes::copy_from_slice(key.as_bytes()),
-            Bytes::from(serde_json::to_vec(&value).map_err(|e| e.to_string())?),
-            revision,
-        )
+    let placement = OwnerMapKey::from_path(key).map_err(|error| error.to_string())?;
+    let rack_key = RackKey {
+        rack_id: placement.rack_id,
+    }
+    .to_path();
+    let rack = control
+        .get(rack_key.as_bytes())
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|error| error.to_string())?;
+    let owner = control
+        .get(key.as_bytes())
+        .await
+        .map_err(|error| error.to_string())?;
+    if owner.revision != revision {
+        return Err("DiskGroup owner changed before assignment".into());
+    }
+    let group = DiskGroupKey {
+        rack_id: placement.rack_id,
+        node_id: placement.node_id,
+        disk_group_id: placement.disk_group_id,
+    };
+    if control
+        .get(group.to_path().as_bytes())
+        .await
+        .map_err(|error| error.to_string())?
+        .value
+        .is_none()
+        || !has_data_binding(control, &group).await?
+    {
+        return Err("DiskGroup placement changed before assignment".into());
+    }
+    let value = Bytes::from(serde_json::to_vec(&value).map_err(|error| error.to_string())?);
+    if let Some(rack_value) = rack.value {
+        control
+            .compare_and_batch(
+                &[
+                    KvGroupMutation::Put {
+                        key: Bytes::copy_from_slice(key.as_bytes()),
+                        value,
+                    },
+                    KvGroupMutation::Put {
+                        key: Bytes::copy_from_slice(rack_key.as_bytes()),
+                        value: rack_value,
+                    },
+                ],
+                Bytes::from(rack_key),
+                rack.revision,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+    } else {
+        control
+            .compare_and_put(Bytes::copy_from_slice(key.as_bytes()), value, revision)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
     tracing::info!(
         owner_key = key,
         instance_id = instance,

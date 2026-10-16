@@ -4,6 +4,7 @@
 set -euo pipefail
 [[ $(uname -sm) == "Linux x86_64" ]] || { echo "Linux amd64 build host required; macOS VM backend is reserved" >&2; exit 1; }
 cd "$(git rev-parse --show-toplevel)"
+source_tree=$(python container/oci-image/source_tree.py)
 case "${CROWDB_KEEP_DEBUG_INFO:-0}" in
     0) cmake_debug_args=() ;;
     1)
@@ -21,6 +22,10 @@ cargo build --locked --release --features crowdb-kv-client/ffi \
     -p crowdb-chunkdb -p crowdb-chunk-kv-server \
     -p crowdb-access-server -p crowdb-web
 (cd app/crowdb-web/ui && npm ci --prefer-offline && npm run build)
+if [[ $(python container/oci-image/source_tree.py) != "$source_tree" ]]; then
+    echo 'Source tree changed while building; rebuild the shared OCI image' >&2
+    exit 1
+fi
 
 # Docker receives only the assembled runtime, never the source tree or data.
 staging=$(mktemp -d "$PWD/target/container-runtime.XXXXXX")
@@ -31,6 +36,7 @@ cp -a container/single-node-container/templates "$staging/templates"
 cp container/oci-image/Dockerfile "$staging/"
 cp container/single-node-container/{profile.toml,entrypoint.sh} "$staging/"
 git rev-parse HEAD > "$staging/SOURCE_REVISION"
+printf '%s\n' "$source_tree" > "$staging/SOURCE_TREE"
 cp VERSION "$staging/VERSION"
 rm -rf target/container-runtime
 mv "$staging" target/container-runtime

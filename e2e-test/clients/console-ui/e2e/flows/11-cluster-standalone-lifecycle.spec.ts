@@ -43,7 +43,7 @@ async function mutation(page: Page, row: LiveService, name: string, path: string
 
 async function createEmptyNode(page: Page, request: APIRequestContext) {
   await page.goto('/?domain=Cluster');
-  await page.getByRole('button', { name: 'Add Rack', exact: true }).click();
+  await page.getByRole('region', { name: 'Cluster node workspace', exact: true }).getByRole('button', { name: 'Add Rack', exact: true }).click();
   let dialog = page.getByRole('dialog', { name: 'Add Rack', exact: true });
   await dialog.getByLabel('Rack ID', { exact: true }).fill('1');
   await dialog.getByLabel('Name (optional)', { exact: true }).fill('lifecycle');
@@ -76,8 +76,8 @@ test('standalone release KV lifecycle preserves node records and cascades owned 
   const original = await deploy(page, request);
   noErrors();
   await node.click({ button: 'right' });
-  for (const name of ['Deploy DiskDB', 'Ping', 'Delete Node']) await expect(page.getByRole('menuitem', { name, exact: true })).toBeVisible();
-  for (const name of ['Deploy CrowDB Storage', 'Restart CrowDB Storage', 'Stop CrowDB Storage', 'Add Disk Group']) await expect(page.getByRole('menuitem', { name, exact: true })).toHaveCount(0);
+  for (const name of ['Deploy DiskDB', 'Ping', 'Delete Node', 'Add Disk Group']) await expect(page.getByRole('menuitem', { name, exact: true })).toBeVisible();
+  for (const name of ['Deploy CrowDB Storage', 'Restart CrowDB Storage', 'Stop CrowDB Storage']) await expect(page.getByRole('menuitem', { name, exact: true })).toHaveCount(0);
   await page.keyboard.press('Escape');
   const ping = page.waitForResponse(response => new URL(response.url()).pathname === '/api/nodes/1/ping');
   await diskMenu(page, node, 'Ping');

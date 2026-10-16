@@ -1551,6 +1551,7 @@ fn chunk_type_to_fb(t: ProtoChunkType) -> FBChunkType {
         ProtoChunkType::Stream => FBChunkType::Stream,
         ProtoChunkType::S3 => FBChunkType::S3,
         ProtoChunkType::IcebergTable => FBChunkType::IcebergTable,
+        ProtoChunkType::Dataset => FBChunkType::Dataset,
     }
 }
 

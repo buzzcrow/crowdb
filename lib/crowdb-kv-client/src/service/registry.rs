@@ -12,6 +12,9 @@
 //!
 //! See `doc/design/kv/design-crowdb-kv-group0.md` §4.
 
+mod diskio;
+mod session;
+
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -105,6 +108,9 @@ impl ServiceRegistryClient {
 
     /// Unregister a service instance (clean shutdown).
     pub async fn unregister(&self, service: &str, instance_id: InstanceId) -> Result<()> {
+        if service == "diskio" {
+            return self.unregister_diskio(instance_id).await;
+        }
         let key = InstanceKey {
             service: service.to_string(),
             instance_id,
@@ -234,6 +240,9 @@ impl ServiceRegistryClient {
             key: path.clone(),
             reason: e.to_string(),
         })?;
+        if service == "diskio" {
+            return self.put_diskio_instance(&path, value, &payload).await;
+        }
         self.kv
             .put(G0_STORE, G0_GROUP, path.as_bytes(), &payload, None)
             .await
@@ -255,6 +264,7 @@ impl ServiceRegistryClient {
     ) -> Result<()> {
         let extra = ServiceExtra {
             diskdb: Some(DiskdbExtra {
+                diskio_scope: None,
                 rack_id: None,
                 node_id: None,
                 owned_dg_ids: owned_dg_ids.to_vec(),
@@ -305,6 +315,7 @@ impl ServiceRegistryClient {
     ) -> Result<()> {
         let extra = ServiceExtra {
             diskdb: Some(DiskdbExtra {
+                diskio_scope: None,
                 rack_id: None,
                 node_id: None,
                 owned_dg_ids: owned_dg_ids.to_vec(),
@@ -328,8 +339,37 @@ impl ServiceRegistryClient {
     ) -> Result<()> {
         let extra = ServiceExtra {
             diskdb: Some(DiskdbExtra {
+                diskio_scope: None,
                 rack_id: Some(rack_id),
                 node_id: Some(node_id),
+                owned_dg_ids: owned_dg_ids.to_vec(),
+                group_usages: group_usages.to_vec(),
+            }),
+            kv_server: None,
+            chunk_kv: None,
+        };
+        self.register("diskio", instance_id, rpc_endpoint, &extra).await
+    }
+}
+
+impl ServiceRegistryClient {
+    /// Register the immutable configured scope before a process opens media.
+    pub async fn heartbeat_diskio_scoped(
+        &self,
+        instance_id: InstanceId,
+        rpc_endpoint: &str,
+        scope: &crowdb_protocol::common::DiskioHardwareScope,
+        owned_dg_ids: &[u64],
+        group_usages: &[DiskGroupUsageSummary],
+    ) -> Result<()> {
+        if scope.version != 1 {
+            return Err(Error::Server("unsupported DiskIO scope version".into()));
+        }
+        let extra = ServiceExtra {
+            diskdb: Some(DiskdbExtra {
+                diskio_scope: Some(scope.clone()),
+                rack_id: Some(scope.rack_id),
+                node_id: Some(scope.node_id),
                 owned_dg_ids: owned_dg_ids.to_vec(),
                 group_usages: group_usages.to_vec(),
             }),

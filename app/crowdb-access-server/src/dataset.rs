@@ -1,15 +1,17 @@
 //! Dataset HTTP listener. Framing and authentication live here; read
 //! semantics are delegated to `crowdb-access-dataset`.
 
+mod api;
+mod legacy;
+mod models;
+
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
 
 use crowdb_access_dataset::{
-    AuthorityError, ChunkKvDatasetStore, DatasetAuthority, DatasetManifestResponse, DatasetPublishRequest,
-    DatasetPublishResponse, DatasetReadRequest, DatasetReadService, DatasetReclaimResponse,
-    DatasetRetentionResponse, DatasetScanRequest, DatasetSnapshotRequest, DatasetSnapshotResponse,
-    DatasetSnapshotsResponse, OperationId, ReadTransportError,
+    AuthorityError, ChunkKvDatasetStore, ChunkPayloadStorage, DatasetAuthority, DatasetReadService,
+    DatasetSnapshotRequest, DatasetUploads, UploadedChunkReader,
 };
 use crowdb_chunk_kv_client::{
     ChunkKvClient, ChunkKvRpcTransport, ClientConfig as ChunkKvConfig, Group0ChunkKvRangeCatalogSource,
@@ -19,28 +21,46 @@ use http_body_util::{BodyExt, Full};
 use hyper::body::{Bytes, Incoming};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
-use hyper::{Method, Request, Response, StatusCode};
-use hyper_util::rt::TokioIo;
+use hyper::{Request, Response, StatusCode};
+use hyper_util::rt::{TokioIo, TokioTimer};
 use tokio::net::TcpListener;
 use tokio::task::JoinSet;
 
 const MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
+type DatasetBody = http_body_util::combinators::UnsyncBoxBody<Bytes, BoxError>;
+
+fn body(bytes: Bytes) -> DatasetBody {
+    Full::new(bytes).map_err(|never| match never {}).boxed_unsync()
+}
 
 pub struct DatasetHttpService {
     reads: Arc<DatasetReadService>,
     bearer: Option<Arc<str>>,
     request_timeout: Duration,
+    api_admission: Arc<api::ApiAdmission>,
+    uploads: Option<Arc<DatasetUploads>>,
 }
 
 impl DatasetHttpService {
+    async fn handle(&self, request: Request<Incoming>) -> Response<DatasetBody> {
+        if request.uri().path().starts_with("/api/dataset/") {
+            self.handle_api(request).await
+        } else {
+            self.handle_legacy(request)
+                .await
+                .map(|full| full.map_err(|never| match never {}).boxed_unsync())
+        }
+    }
     #[must_use]
     pub fn new(reads: Arc<DatasetReadService>, request_timeout: Duration) -> Self {
         Self {
             reads,
             bearer: None,
             request_timeout,
+            api_admission: Arc::new(api::ApiAdmission::new(3)),
+            uploads: None,
         }
     }
 
@@ -52,326 +72,18 @@ impl DatasetHttpService {
         self
     }
 
-    async fn handle(&self, request: Request<Incoming>) -> Response<Full<Bytes>> {
-        if !self.authorized(&request) {
-            return response(StatusCode::UNAUTHORIZED, b"unauthorized".to_vec());
-        }
-        if request.method() == Method::POST && request.uri().path() == "/v1/dataset/read" {
-            return self.read(request).await;
-        }
-        if request.method() == Method::POST && request.uri().path() == "/v1/dataset/scan" {
-            return self.scan(request).await;
-        }
-        if request.method() == Method::POST
-            && matches!(
-                request.uri().path(),
-                "/v1/dataset/start-read-plan"
-                    | "/v1/dataset/next-batch"
-                    | "/v1/dataset/save-progress"
-                    | "/v1/dataset/resume"
-            )
-        {
-            return self.scan(request).await;
-        }
-        if request.method() == Method::POST && request.uri().path() == "/v1/dataset/create" {
-            return self.create().await;
-        }
-        if request.method() == Method::GET && request.uri().path() == "/v1/dataset/open" {
-            return self.open().await;
-        }
-        if request.method() == Method::GET && request.uri().path() == "/v1/dataset/latest" {
-            return self.latest().await;
-        }
-        if request.method() == Method::GET && request.uri().path() == "/v1/dataset/snapshots" {
-            return self.snapshots().await;
-        }
-        if request.method() == Method::POST && request.uri().path() == "/v1/dataset/publish" {
-            return self.publish(request).await;
-        }
-        if request.method() == Method::POST && request.uri().path() == "/v1/dataset/prepare" {
-            return self.publish(request).await;
-        }
-        if request.method() == Method::POST && request.uri().path() == "/v1/dataset/retain" {
-            return self.retain(request, true).await;
-        }
-        if request.method() == Method::POST && request.uri().path() == "/v1/dataset/release" {
-            return self.retain(request, false).await;
-        }
-        if request.method() == Method::POST && request.uri().path() == "/v1/dataset/snapshot" {
-            return self.snapshot(request).await;
-        }
-        if request.method() == Method::POST && request.uri().path() == "/v1/dataset/manifest" {
-            return self.manifest(request).await;
-        }
-        if request.method() == Method::POST && request.uri().path() == "/v1/dataset/stable" {
-            return self.stable(request).await;
-        }
-        if request.method() == Method::POST && request.uri().path() == "/v1/dataset/reclaim" {
-            return self.reclaim(request).await;
-        }
-        if request.method() == Method::POST && request.uri().path() == "/v1/dataset/reclaim/status" {
-            return self.reclaim_status(request).await;
-        }
-        if request.method() == Method::POST && request.uri().path() == "/v1/dataset/cancel" {
-            self.reads.cancel();
-            return response(StatusCode::NO_CONTENT, Vec::new());
-        }
-        response(StatusCode::NOT_FOUND, b"not found".to_vec())
+    /// Configures JSON control admission. Each request reserves an 8-MiB
+    /// input and 8-MiB output window; zero disables new API admission.
+    #[must_use]
+    pub fn with_api_capacity(mut self, max_in_flight: usize) -> Self {
+        self.api_admission = Arc::new(api::ApiAdmission::new(max_in_flight));
+        self
     }
 
-    async fn open(&self) -> Response<Full<Bytes>> {
-        match self.reads.authority().get_dataset(self.reads.identity()).await {
-            Ok(record) => encode(StatusCode::OK, &record),
-            Err(_) => response(StatusCode::NOT_FOUND, b"dataset not found".to_vec()),
-        }
-    }
-
-    async fn create(&self) -> Response<Full<Bytes>> {
-        match self
-            .reads
-            .authority()
-            .create_dataset(self.reads.identity().clone())
-            .await
-        {
-            Ok(id) => encode(StatusCode::OK, &id),
-            Err(crowdb_access_dataset::AuthorityError::AlreadyExists) => {
-                response(StatusCode::CONFLICT, b"dataset already exists".to_vec())
-            }
-            Err(_) => response(StatusCode::SERVICE_UNAVAILABLE, b"dataset unavailable".to_vec()),
-        }
-    }
-
-    async fn latest(&self) -> Response<Full<Bytes>> {
-        match self.reads.authority().latest(self.reads.identity()).await {
-            Ok(snapshot) => encode(StatusCode::OK, &snapshot),
-            Err(_) => response(StatusCode::SERVICE_UNAVAILABLE, b"dataset unavailable".to_vec()),
-        }
-    }
-
-    async fn snapshots(&self) -> Response<Full<Bytes>> {
-        match self.reads.authority().list_snapshots(self.reads.identity()).await {
-            Ok(snapshots) => encode(StatusCode::OK, &DatasetSnapshotsResponse { snapshots }),
-            Err(error) => response(status_for_authority(&error), error.to_string().into_bytes()),
-        }
-    }
-
-    async fn publish(&self, request: Request<Incoming>) -> Response<Full<Bytes>> {
-        let body = match tokio::time::timeout(self.request_timeout, request.into_body().collect()).await {
-            Ok(Ok(body)) => body.to_bytes(),
-            _ => return response(StatusCode::REQUEST_TIMEOUT, b"request timeout".to_vec()),
-        };
-        if body.len() > MAX_REQUEST_BYTES {
-            return response(StatusCode::PAYLOAD_TOO_LARGE, b"request too large".to_vec());
-        }
-        let request: DatasetPublishRequest = match bincode::deserialize(&body) {
-            Ok(request) => request,
-            Err(_) => return response(StatusCode::BAD_REQUEST, b"invalid publication request".to_vec()),
-        };
-        if request.validate().is_err() {
-            return response(StatusCode::BAD_REQUEST, b"invalid publication request".to_vec());
-        }
-        let operation = request.operation.unwrap_or_else(OperationId::random);
-        match self
-            .reads
-            .authority()
-            .publish_snapshot_with_operation(
-                self.reads.identity(),
-                request.parent,
-                request.manifest,
-                operation,
-            )
-            .await
-        {
-            Ok(snapshot) => encode(StatusCode::OK, &DatasetPublishResponse { snapshot }),
-            Err(error) => response(status_for_authority(&error), error.to_string().into_bytes()),
-        }
-    }
-
-    async fn retain(&self, request: Request<Incoming>, retain: bool) -> Response<Full<Bytes>> {
-        let body = match tokio::time::timeout(self.request_timeout, request.into_body().collect()).await {
-            Ok(Ok(body)) => body.to_bytes(),
-            _ => return response(StatusCode::REQUEST_TIMEOUT, b"request timeout".to_vec()),
-        };
-        let request: DatasetSnapshotRequest = match bincode::deserialize(&body) {
-            Ok(request) => request,
-            Err(_) => return response(StatusCode::BAD_REQUEST, b"invalid snapshot request".to_vec()),
-        };
-        let result = if retain {
-            self.reads
-                .authority()
-                .retain_snapshot(self.reads.identity(), request.snapshot)
-                .await
-        } else {
-            self.reads
-                .authority()
-                .release_snapshot(self.reads.identity(), request.snapshot)
-                .await
-        };
-        match result {
-            Ok(()) => encode(
-                StatusCode::OK,
-                &DatasetRetentionResponse {
-                    snapshot: request.snapshot,
-                    retained: retain,
-                },
-            ),
-            Err(error) => response(status_for_authority(&error), error.to_string().into_bytes()),
-        }
-    }
-
-    async fn snapshot(&self, request: Request<Incoming>) -> Response<Full<Bytes>> {
-        let Some(request) = decode_snapshot_request(request, self.request_timeout).await else {
-            return response(StatusCode::BAD_REQUEST, b"invalid snapshot request".to_vec());
-        };
-        match self
-            .reads
-            .authority()
-            .get_snapshot(self.reads.identity(), request.snapshot)
-            .await
-        {
-            Ok(snapshot) => encode(StatusCode::OK, &DatasetSnapshotResponse { snapshot }),
-            Err(error) => response(status_for_authority(&error), error.to_string().into_bytes()),
-        }
-    }
-
-    async fn manifest(&self, request: Request<Incoming>) -> Response<Full<Bytes>> {
-        let Some(request) = decode_snapshot_request(request, self.request_timeout).await else {
-            return response(StatusCode::BAD_REQUEST, b"invalid snapshot request".to_vec());
-        };
-        match self
-            .reads
-            .authority()
-            .get_manifest(self.reads.identity(), request.snapshot)
-            .await
-        {
-            Ok(manifest) => encode(StatusCode::OK, &DatasetManifestResponse { manifest }),
-            Err(error) => response(status_for_authority(&error), error.to_string().into_bytes()),
-        }
-    }
-
-    async fn stable(&self, request: Request<Incoming>) -> Response<Full<Bytes>> {
-        let Some(request) = decode_snapshot_request(request, self.request_timeout).await else {
-            return response(StatusCode::BAD_REQUEST, b"invalid snapshot request".to_vec());
-        };
-        match self
-            .reads
-            .authority()
-            .set_stable(self.reads.identity(), request.snapshot)
-            .await
-        {
-            Ok(()) => encode(
-                StatusCode::OK,
-                &DatasetRetentionResponse {
-                    snapshot: request.snapshot,
-                    retained: true,
-                },
-            ),
-            Err(error) => response(status_for_authority(&error), error.to_string().into_bytes()),
-        }
-    }
-
-    async fn reclaim(&self, request: Request<Incoming>) -> Response<Full<Bytes>> {
-        let Some(request) = decode_snapshot_request(request, self.request_timeout).await else {
-            return response(StatusCode::BAD_REQUEST, b"invalid snapshot request".to_vec());
-        };
-        match self
-            .reads
-            .authority()
-            .reclaim_snapshot_metadata(self.reads.identity(), request.snapshot)
-            .await
-        {
-            Ok(()) => encode(
-                StatusCode::OK,
-                &DatasetReclaimResponse {
-                    snapshot: request.snapshot,
-                    reclaimed: true,
-                },
-            ),
-            Err(error) => response(status_for_authority(&error), error.to_string().into_bytes()),
-        }
-    }
-
-    async fn reclaim_status(&self, request: Request<Incoming>) -> Response<Full<Bytes>> {
-        let Some(request) = decode_snapshot_request(request, self.request_timeout).await else {
-            return response(StatusCode::BAD_REQUEST, b"invalid snapshot request".to_vec());
-        };
-        match self
-            .reads
-            .authority()
-            .reclaim_progress(self.reads.identity(), request.snapshot)
-            .await
-        {
-            Ok(progress) => encode(StatusCode::OK, &progress),
-            Err(error) => response(status_for_authority(&error), error.to_string().into_bytes()),
-        }
-    }
-
-    fn authorized(&self, request: &Request<Incoming>) -> bool {
-        let Some(expected) = &self.bearer else { return true };
-        request
-            .headers()
-            .get(hyper::header::AUTHORIZATION)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.strip_prefix("Bearer "))
-            .is_some_and(|value| value.as_bytes() == expected.as_bytes())
-    }
-
-    async fn read(&self, request: Request<Incoming>) -> Response<Full<Bytes>> {
-        let body = match tokio::time::timeout(self.request_timeout, request.into_body().collect()).await {
-            Ok(Ok(body)) => body.to_bytes(),
-            _ => return response(StatusCode::REQUEST_TIMEOUT, b"request timeout".to_vec()),
-        };
-        if body.len() > MAX_REQUEST_BYTES {
-            return response(StatusCode::PAYLOAD_TOO_LARGE, b"request too large".to_vec());
-        }
-        let request: DatasetReadRequest = match bincode::deserialize(&body) {
-            Ok(request) => request,
-            Err(_) => return response(StatusCode::BAD_REQUEST, b"invalid dataset request".to_vec()),
-        };
-        match self.reads.read(request, unix_seconds()).await {
-            Ok(result) => encode(StatusCode::OK, &result),
-            Err(ReadTransportError::WindowFull) => {
-                response(StatusCode::TOO_MANY_REQUESTS, b"read window full".to_vec())
-            }
-            Err(ReadTransportError::Invalid(crowdb_access_dataset::DatasetError::ReadCancelled)) => {
-                response(cancelled_status(), b"dataset read cancelled".to_vec())
-            }
-            Err(ReadTransportError::Invalid(_)) => {
-                response(StatusCode::BAD_REQUEST, b"invalid dataset request".to_vec())
-            }
-            Err(ReadTransportError::Authority(error)) => {
-                response(status_for_authority(&error), error.to_string().into_bytes())
-            }
-        }
-    }
-
-    async fn scan(&self, request: Request<Incoming>) -> Response<Full<Bytes>> {
-        let body = match tokio::time::timeout(self.request_timeout, request.into_body().collect()).await {
-            Ok(Ok(body)) => body.to_bytes(),
-            _ => return response(StatusCode::REQUEST_TIMEOUT, b"request timeout".to_vec()),
-        };
-        if body.len() > MAX_REQUEST_BYTES {
-            return response(StatusCode::PAYLOAD_TOO_LARGE, b"request too large".to_vec());
-        }
-        let request: DatasetScanRequest = match bincode::deserialize(&body) {
-            Ok(request) => request,
-            Err(_) => return response(StatusCode::BAD_REQUEST, b"invalid scan request".to_vec()),
-        };
-        match self.reads.scan(request, unix_seconds()).await {
-            Ok(result) => encode(StatusCode::OK, &result),
-            Err(ReadTransportError::WindowFull) => {
-                response(StatusCode::TOO_MANY_REQUESTS, b"read window full".to_vec())
-            }
-            Err(ReadTransportError::Invalid(crowdb_access_dataset::DatasetError::ReadCancelled)) => {
-                response(cancelled_status(), b"dataset read cancelled".to_vec())
-            }
-            Err(ReadTransportError::Invalid(_)) => {
-                response(StatusCode::BAD_REQUEST, b"invalid scan request".to_vec())
-            }
-            Err(ReadTransportError::Authority(error)) => {
-                response(status_for_authority(&error), error.to_string().into_bytes())
-            }
-        }
+    #[must_use]
+    pub fn with_uploads(mut self, uploads: Arc<DatasetUploads>) -> Self {
+        self.uploads = Some(uploads);
+        self
     }
 }
 
@@ -447,14 +159,22 @@ pub async fn run_with_shutdown(
     if seeds.is_empty() {
         return Err("one or more management seeds are required".into());
     }
-    let control = Arc::new(CrowdbKvClient::new(KvConfig::new(seeds)));
+    let control = Arc::new(CrowdbKvClient::new(KvConfig::new(seeds.clone())));
     let source = Arc::new(Group0ChunkKvRangeCatalogSource::from_shared(Arc::clone(&control)));
     let chunk_config = ChunkKvConfig::default();
     let transport = Arc::new(ChunkKvRpcTransport::new(chunk_config.max_owner_connections, 1, 2));
     let client = Arc::new(ChunkKvClient::new(chunk_config, source, transport)?);
     client.refresh_catalog().await?;
     let store = Arc::new(ChunkKvDatasetStore::new(client));
-    let authority = Arc::new(DatasetAuthority::new(store));
+    let chunks = connect_payloads(seeds, control, access.dataset.max_in_flight).await?;
+    let uploads = Arc::new(DatasetUploads::new(
+        store.clone(),
+        Arc::new(ChunkPayloadStorage::new(chunks.clone())),
+    ));
+    let authority = Arc::new(DatasetAuthority::with_chunk_reader(
+        store,
+        Arc::new(UploadedChunkReader::new((*uploads).clone())),
+    ));
     let identity = crowdb_access_dataset::DatasetIdentity::new(
         crowdb_access_dataset::NamespacePath::root(),
         std::env::var("CROWDB_DATASET_NAME").unwrap_or_else(|_| "default".into()),
@@ -467,16 +187,60 @@ pub async fn run_with_shutdown(
         access.dataset.lease_ttl_seconds,
     )?);
     let mut service =
-        DatasetHttpService::new(reads, Duration::from_secs(access.dataset.request_timeout_seconds));
-    if let Ok(token) = std::env::var("CROWDB_DATASET_READ_TOKEN") {
+        DatasetHttpService::new(reads, Duration::from_secs(access.dataset.request_timeout_seconds))
+            .with_api_capacity(access.dataset.max_in_flight)
+            .with_uploads(Arc::clone(&uploads));
+    let bearer = std::env::var("CROWDB_DATASET_READ_TOKEN").ok().or_else(|| {
+        std::env::var("CROWDB_S3_MASTER_KEY")
+            .ok()
+            .filter(|key| !key.is_empty())
+            .map(|key| crowdb_protocol::dataset_auth::deployment_bearer(&key))
+    });
+    if let Some(token) = bearer {
         if token.is_empty() {
             return Err("CROWDB_DATASET_READ_TOKEN must not be empty".into());
         }
         service = service.with_bearer(Arc::<str>::from(token));
     }
     let listener = TcpListener::bind(address).await?;
-    serve(listener, Arc::new(service), shutdown).await?;
+    let expiry = tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(15));
+        loop {
+            tick.tick().await;
+            if let Err(error) = uploads.expire(unix_seconds()).await {
+                tracing::error!(%error, "Dataset upload cleanup failed; retaining cleanup records for retry");
+            }
+        }
+    });
+    let result = serve(listener, Arc::new(service), shutdown).await;
+    expiry.abort();
+    let _ = expiry.await;
+    chunks.shutdown_small_writes().await?;
+    result?;
     Ok(())
+}
+
+async fn connect_payloads(
+    seeds: Vec<String>,
+    control: Arc<CrowdbKvClient>,
+    capacity: usize,
+) -> Result<crowdb_chunk_client::ChunkIoClient, BoxError> {
+    use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, SmallWritePolicy};
+    let mut small_write = SmallWritePolicy::new(crowdb_protocol::chunkdb::rpc::ChunkType::Dataset);
+    small_write.object_limit = 4 * 1024 * 1024;
+    small_write.max_batch_bytes = 4 * 1024 * 1024;
+    small_write.max_pipelines = capacity.clamp(1, 8);
+    small_write.memory_budget = 128 * 1024 * 1024;
+    Ok(ChunkIoClient::connect_with_kv(
+        ChunkIoClientConfig {
+            management_seeds: seeds,
+            diskio_connections_per_endpoint: 4,
+            diskio_rpc_workers: 2,
+            small_write,
+        },
+        control,
+    )
+    .await?)
 }
 
 /// Runs the Dataset listener until shutdown resolves.
@@ -502,14 +266,24 @@ pub async fn serve(
                         let service = Arc::clone(&service);
                         async move { Ok::<_, Infallible>(service.handle(request).await) }
                     });
-                    let _ = http1::Builder::new().keep_alive(false)
+                    let _ = http1::Builder::new().keep_alive(true)
+                        .timer(TokioTimer::new())
+                        .header_read_timeout(Duration::from_secs(30))
                         .serve_connection(TokioIo::new(stream), handler).await;
                 });
             }
         }
     }
     drop(listener);
-    while connections.join_next().await.is_some() {}
+    if tokio::time::timeout(Duration::from_secs(10), async {
+        while connections.join_next().await.is_some() {}
+    })
+    .await
+    .is_err()
+    {
+        connections.abort_all();
+        while connections.join_next().await.is_some() {}
+    }
     Ok(())
 }
 

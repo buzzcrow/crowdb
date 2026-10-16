@@ -20,6 +20,18 @@ pub trait PartitionTree: Send + Sync {
         limit: usize,
         byte_budget: usize,
     ) -> Result<(Vec<ScanEntry>, bool)>;
+    async fn scan_forward_bounded(
+        &self,
+        _start: Option<&[u8]>,
+        _inclusive: bool,
+        _end: Option<&[u8]>,
+        _limit: usize,
+        _bytes: usize,
+    ) -> Result<(Vec<ScanEntry>, bool)> {
+        Err(ChunkKvError::InvalidRequest(
+            "strict scans unavailable for this tree".into(),
+        ))
+    }
     async fn seek_reverse(
         &self,
         start_key: &[u8],
@@ -293,6 +305,39 @@ impl PartitionTree for CrowdbPartitionTree {
             ),
         };
         let (entries, truncated) = scan.map_err(map_tree_read_error)?;
+        Ok((
+            entries
+                .into_iter()
+                .map(|entry| ScanEntry {
+                    key: entry.key,
+                    value: ValueRevision {
+                        revision: entry.slot,
+                        value: entry.value.to_vec(),
+                    },
+                })
+                .collect(),
+            truncated,
+        ))
+    }
+
+    async fn scan_forward_bounded(
+        &self,
+        start: Option<&[u8]>,
+        inclusive: bool,
+        end: Option<&[u8]>,
+        limit: usize,
+        bytes: usize,
+    ) -> Result<(Vec<ScanEntry>, bool)> {
+        let (entries, truncated) = self
+            .tree
+            .scan_from_bounded(
+                start.unwrap_or_default(),
+                start.is_none() || inclusive,
+                end.unwrap_or_default(),
+                limit,
+                bytes,
+            )
+            .map_err(map_tree_read_error)?;
         Ok((
             entries
                 .into_iter()

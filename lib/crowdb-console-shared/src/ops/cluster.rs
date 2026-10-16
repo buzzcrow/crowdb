@@ -29,7 +29,9 @@ use crate::ops::OpContext;
 
 mod bootstrap;
 mod storage_readiness;
-pub use bootstrap::{init, init_prepared, init_with_intent, InitSummary};
+#[cfg(feature = "test-util")]
+pub use bootstrap::publish_topology_for_tests;
+pub use bootstrap::{init, init_prepared, init_with_intent, initialize_system_replicas, InitSummary};
 use storage_readiness::wait_for_diskdb_registration;
 
 // Bootstrap runs before Group 0 registration exists, so its sealed intent
@@ -623,6 +625,7 @@ async fn local_deploy_diskio(
             .insert(server_id.clone(), deployed.launch.clone());
         expected_owners.insert(30_000 + node.id, (deployed.endpoint.clone(), node.id * 100 + 1));
         ctx.config_mut().add_server(ServerEntry {
+            dataset_origin: None,
             id: server_id,
             url: deployed.endpoint.clone(),
             node_id: Some(node.id),
@@ -747,6 +750,7 @@ pub async fn local_deploy_chunkdb(
             .local_launches
             .insert(server_id.clone(), deployed.launch.clone());
         ctx.config_mut().add_server(ServerEntry {
+            dataset_origin: None,
             id: server_id,
             url: deployed.endpoint.clone(),
             node_id: Some(node.id),
@@ -1091,6 +1095,7 @@ async fn deploy_diskdb_instances(
             .local_launches
             .insert(server_id.clone(), deployed.launch.clone());
         ctx.config_mut().add_server(ServerEntry {
+            dataset_origin: None,
             id: server_id,
             url: deployed.endpoint.clone(),
             node_id: Some(node.id),
@@ -1402,6 +1407,7 @@ async fn deploy_servers(
 
         let mut cfg = ctx.config_mut();
         cfg.add_server(ServerEntry {
+            dataset_origin: None,
             id: nid.to_string(),
             url: deployed.mgmt_url.clone(),
             node_id: Some(*nid),
@@ -1535,6 +1541,7 @@ pub async fn local_deploy_rpc(
     let server_id = format!("rpc-fb-{pid}");
     let mut config = ctx.config_mut();
     config.add_server(ServerEntry {
+        dataset_origin: None,
         id: server_id.clone(),
         url: format!("http://127.0.0.1:{port}"),
         node_id: None,

@@ -43,14 +43,16 @@ does not establish that a native service operation succeeds.
 - [22. S3](#22-s3)
 - [23. Actions and properties](#23-actions-and-properties)
 - [24. E2E organization and timing](#24-e2e-organization-and-timing)
+- [25. Dataset](#25-dataset)
 
 ## 1. Product contract
 
 - **UI-01:** One Console serves one configured cluster. Opening the UI enters
   that cluster directly; no Connect dialog, endpoint input, or access-key form
   precedes ordinary browsing.
-- **UI-02:** The seven top-level tabs are Cluster, KV, Capacity, Chunk, Chunk-KV,
-  Iceberg, and S3. Each has an independent selected resource and query window.
+- **UI-02:** The seven top-level tabs are Cluster, KV, Chunk, Chunk-KV, Iceberg,
+  Dataset and S3. Each has an independent selected resource and query window. Cluster
+  contains Topology and Capacity views sharing selection and tree expansion.
 - **UI-03:** Assume an administrator/root session until UI authentication is
   introduced. Available backend operations remain authoritative; capability
   restrictions are not inferred from a missing login screen.
@@ -84,8 +86,9 @@ provide observable capacity and bitmap fixtures.
   changes preserve that domain's bounded query state and selected identity.
 - **NAV-02:** The left panel selects hierarchy/scope; the center presents the
   selected resource or overview; the right panel presents selected properties.
-- **NAV-03:** Resource selection updates the center without replacing the whole
-  application. Breadcrumbs identify scope; they are navigation, not duplicate
+- **NAV-03:** Cluster row/card selection updates properties without replacing the center
+  scope. Names enter that resource; closing properties retains the work area.
+  Cluster breadcrumbs identify the current physical scope; they are navigation, not duplicate
   Back links for inline details.
 - **NAV-04:** Cross-links identify the exact destination resource. Returning
   restores the originating selection and page. A stale/deleted destination has
@@ -110,18 +113,27 @@ provide observable capacity and bitmap fixtures.
 - **NAV-06:** The center remains usable with the right panel open. Tables and
   diagrams scroll within their work area; action bars and pagination remain
   reachable. Resizing does not reset selection or trigger unbounded refetches.
-- **NAV-07:** Every domain uses the shared Tree appearance and two draggable
-  panel dividers. Left default width is 280 px; properties default is 320 px.
-  Each divider supports pointer and keyboard resizing between 220 and 600 px.
+  Capacity observations retain the last successful inventory, usage and scan
+  independently after a failed refresh. The shared header exposes each source's
+  observation time, cached state and error. Runtime usage is keyed by group/disk
+  scope; an unobserved scope remains unknown instead of borrowing other totals.
+- **NAV-07:** Every domain uses the shared Tree appearance and draggable
+  panel dividers. Left default width is 240 px; properties default is 320 px.
+  Cluster navigation resizes between 200 and 360 px, properties between 280
+  and 480 px, preserving 480 px for the center when space permits. Below
+  1100 px, properties overlays the work area as a dismissible drawer; Escape
+  closes it and restores focus. Navigation can collapse and overlays the work
+  area below 720 px. Other domain dividers retain their 220–600 px bounds.
   Switching domains introduces no panel replacement/slide animation.
-- **NAV-08:** Parent cards in center topology diagrams collapse or expand their
-  children on click while selecting the parent. Children retain their own
+- **NAV-08:** Parent cards in center topology diagrams have separate named controls for
+  opening the resource and collapsing or expanding children. Card bodies inspect
+  without navigating. Children retain their own
   expansion state. Sidebar focus reveals hidden ancestors. Right-click opens
   the entity menu without toggling expansion. Fit All fits visible cards.
   Hiding a topology panel interrupts viewport motion before zero-size geometry
   is observed. Rapid domain switches retain finite coordinates; centering runs
   only in a visible, measured canvas.
-  Cluster initially expands Datacenter/Rack and stops at visible Node cards;
+  The optional Diagram initially expands Datacenter/Rack and stops at visible Node cards;
   service descendants appear when a Node is explicitly expanded.
 
 ## 4. Visual language and service identity
@@ -149,45 +161,47 @@ provide observable capacity and bitmap fixtures.
 ## 5. Cluster
 
 - **CLU-01:** The hierarchy is Datacenter → Rack → Node → service instances. The center
-  topology uses the same hierarchy, identities, and selection as the left tree.
-  Logical Paxos groups are managed in KV; physical storage is managed in Capacity.
+  topology uses physical identities and shares selection with the left tree.
+  The left tree separates each Node into Services and Storage. Physical groups
+  and disks belong under Storage regardless of their DiskDB owner; service
+  instances remain under Services. Logical Paxos groups are managed in KV.
+  Capacity is a Cluster view; legacy Capacity links resolve to Cluster with the
+  Capacity view selected. History retains the view alongside the resource.
 - **CLU-02:** Rack actions include Add Node. A Node context menu independently
   manages each service type and each existing instance, using the same lifecycle
   pattern as KV/DiskDB. It must not route other service types through KV APIs.
-- **CLU-03:** Add Node is one dialog and one submit. Defaults select the current
-  Rack, next available Node ID, valid host settings, and a complete six-service
-  set in order: Access, Chunk-KV, ChunkDB, DiskDB, DiskIO, Paxos-KV.
-  Canonical service types use `paxos-kv`; the legacy `kv` wire value is rejected.
-  Internal cards expose RPC ports; management HTTP stays on loopback and hidden.
-  Access exposes independent Iceberg, S3 and Health HTTP ports.
-  Each service can be disabled independently, including all its listeners.
-- Registration produces an immutable Node identity. The dialog closes after
-  its selected services and listener overrides are durably saved; plan-save
-  failure retains the identity and allows another save without registration.
-  Per-service rows show queued, waiting for dependency, deploying, deployed,
-  or failed, with a specific reason. Closing progress is not another deployment
-  confirmation and does not cancel already accepted work.
-- Waiting deployment steps resume when prerequisites become available while
-  the console session is active. The Node menu reopens/resumes the plan after
-  navigation or reload; deployed instances are reconciled before retry.
-  Waiting plans reevaluate dependencies every ten seconds. Only Paxos-KV can
-  start before Group 0 exists. ChunkDB additionally requires live DiskIO
-  registrations covering every configured disk group and selected DiskIO node.
-- Six-service progress is saved in each Node workspace, with a revision checked
-  on every update. Saving progress must succeed before a deployment starts.
-  Explicit Start/Retry requests queue behind in-flight reconciliation in the
-  same session, then save against its latest completed revision. Timer wakes
-  cannot publish competing progress while that registration is being saved.
-  A competing browser receives a conflict and must reload. Reload turns an
-  interrupted Deploying step into an explicit failure; Retry first checks the
-  registered instance and never repeats a successful deployment. Stopped
-  registered services require their normal Restart action. Removing a Node or
-  resetting the cluster clears its deployment intent. This is durable progress,
-  not an unattended scheduler while the console is closed.
-- A partial failure retains the Node and successful services. Retry operates
-  only on missing/failed steps and retains selected/disabled states and explicit
-  listener overrides while revalidating defaults. It never creates a
-  second Node or a second copy of a successful service.
+- **CLU-03:** Standard OCI Add Node opens the existing candidate flow with its
+  Rack preselected. Verify and review authenticates SSH and reads actual disk
+  inventory without admitting the node or initializing storage. Join and start
+  submits the reviewed choices and accepted preflight identity. Existing accepted
+  or pending-review Rack choices take precedence over a new default.
+- Defaults select Paxos-KV, DiskDB, DiskIO, ChunkDB, Chunk-KV and Access Server.
+  Each service and its listeners can be disabled. Access has independent Iceberg,
+  S3, Dataset and Health ports; DiskDB's related RPC listeners must not overlap. Node
+  admission owns the fixed KV bootstrap listeners. Canonical service type is
+  `paxos-kv`; a legacy `kv` wire value is rejected.
+- With no supplied input, standard setup chooses a 16-GiB preallocated file and
+  1-GiB host reserve. Sparse allocation is explicit. Supplied media retain exact
+  observed identities and capacities; each raw device requires initialization
+  acknowledgement. Diskless setup creates no disk. Invalid supplied choices
+  never fall back to a managed file.
+- The target monitor durably accepts storage and service intent before reporting
+  acceptance. Progress continues after the dialog, Web connection or browser
+  closes; restart resumes the same intent. Node progress polls every two seconds
+  and retains last confirmed rows on observation failure. A completed setup
+  receipt is separate from current service or I/O health.
+- Storage waits for Group 0 and an ordinary metadata binding. Dependent services
+  wait for real prerequisites. A failed disk/service retains successful siblings;
+  explicit retry uses their original operations and fixed placement. Later
+  operator Stop/Restart/Delete commands take precedence over setup replay.
+  Consecutive failed startup/readiness attempts have a durable five-attempt
+  budget per service operation; successful readiness clears that budget.
+- Legacy standalone Add Node retains its one-dialog registration and saved
+  six-service plan. Its session reconciler saves revision-checked progress before
+  deployment, resumes waiting steps while that Console session is active, and
+  requires explicit retry for interrupted deployment. It never duplicates a
+  registered Node or successful service. This session-owned plan is distinct
+  from the standard target monitor's accepted node setup.
 - Internal service health probes the RPC endpoint independently for each
   service. Startup records lacking RPC endpoints use process observation.
   Before its first store exists, PKV reserves but does not bind its RPC port;
@@ -202,6 +216,21 @@ provide observable capacity and bitmap fixtures.
 - **CLU-04:** Cluster readiness is reported by capability: KV quorum, storage,
   Chunk-KV, and Access protocols. A PID or registry entry alone is not Ready.
   Missing prerequisites link to the domain where they can be resolved.
+
+- **CLU-05:** Cluster/Rack Topology defaults to node cards grouped by Rack;
+  Diagram remains available explicitly. Cards show observed health, service
+  readiness, registered capacity, cached candidate/setup summaries and disk
+  alerts. Card bodies inspect properties; names open the Node workspace. Add
+  Node is scoped to its Rack. Capacity uses sortable/filterable node rows with
+  unknown values last in either numeric sort direction. Search, health and
+  observed-candidate filters retain their bounded history state.
+- **CLU-06:** Auto join starts enabled for a new standard workspace and retains
+  an explicit target. Three authenticated eligible nodes are ordered by UUID;
+  the smallest UUID initiates Store 0 / Group 0 with those fixed three voters.
+  Fewer nodes wait. Later admission is nonvoting and never expands/replaces
+  Group-0 voters. Explicit single mode auto-starts the same initialization
+  lifecycle with one local voter. Turning Auto join off stops new triggers;
+  accepted initialization continues and conflicting intents require recovery.
 
 ## 6. Properties and cross-links
 
@@ -221,10 +250,11 @@ provide observable capacity and bitmap fixtures.
 
 - **MODE-01:** Standalone mode exposes administrator topology, service, storage,
   logical KV, and data operations supported by the backend.
-- **MODE-02:** Container mode uses the same seven-domain UI for observation and
-  supported logical/data operations. Cluster topology/deployment mutations and
-  Capacity disk-management mutations are unavailable. Backend enforcement is
-  required as well as disabled/hidden UI controls.
+- **MODE-02:** Standard manual OCI nodes expose authenticated admission and
+  confirmed Group-0 topology/service/storage operations. Explicit single-profile
+  preview mode uses the same seven-domain UI for observation and supported logical/
+  data operations, but rejects physical topology/deployment/storage mutations.
+  Backend enforcement accompanies hidden/disabled controls in either mode.
 - **MODE-03:** Readonly embedding disallows mutations. Every fetch uses the
   configured API prefix. Styles remain scoped to the Console; embedding does
   not change resource identities or connect to another cluster.
@@ -372,7 +402,8 @@ provide observable capacity and bitmap fixtures.
 
 ## 14. DiskGroup and disk management
 
-- **DISK-01:** Capacity hierarchy is Rack → Node → DiskGroup → Disk → Zone.
+- **DISK-01:** The physical tree ends at Disk: Rack → Node → Storage → DiskGroup
+  → Disk. Zones and allocation bitmaps remain in the center workspace.
   DiskGroup creation establishes its authoritative registration, data binding,
   and owner, or reports which prerequisite/step prevents completion.
 - The dialog does not spin indefinitely when Group 0, a data group, or DiskDB
@@ -383,14 +414,45 @@ provide observable capacity and bitmap fixtures.
   and owner instead of allocating another group. Binding can exist before a
   DiskDB service is registered; this partial state names the missing owner
   prerequisite explicitly.
-- **DISK-02:** Disk creation exposes identity, type, device path, capacity, zone
-  size, and allocation unit. Validate consistent geometry and ID uniqueness.
-  Batch rows report per-row outcomes and preserve failed entries for correction.
+- **DISK-02:** Node storage separates registered disks, operation progress and
+  candidates. Create File Disk seals a generated path, capacity, existing group,
+  reserve and allocation mode. Accepted preparation/admission continues on the
+  monitor. Pending/failed outcomes do not count as usable capacity.
+- Join Candidates selects at most 16 eligible supplied media, each with an
+  existing compatible bound DiskGroup and media class. File/device backend and
+  HDD/SSD class are separate. Unverified identity, changed observations, missing
+  mappings and insufficient capacity disable admission and explain why.
+  General initialization consent and per-raw-device acknowledgement are explicit.
+- Bulk Join submits at most four independent operations concurrently. Each row
+  retains its operation and exact reviewed medium across response loss/retry;
+  successful siblings are not resubmitted. Closing stops unsent submissions,
+  while accepted work continues. Durable history pages contain at most 16 rows;
+  the Node workspace retains at most 64 observations and reports partial coverage.
+  Nonzero usable bytes fail without wiping or publishing disk membership.
+- Legacy metadata-only disk editors retain geometry and uniqueness checks; they
+  are separate from verified physical provisioning.
+- Standard-node group menus open Create File Disk, while disk lifecycle links
+  open Node storage. Direct legacy Up/Down/Delete controls are unavailable in
+  that mode. Maintenance diagnostics remain available. A disk row with no observed
+  provisioning receipt reports Unknown media rather than inferring a class from
+  compatibility geometry.
 - **DISK-03:** Distinguish physical location, DiskDB owner instance, and metadata
   Store/Group binding. Neither Node ID nor service ID implies ownership.
 - Owner/status/binding operations are available only when supported and expose
   the resulting authoritative state. Container restrictions apply to all entry
   points, including context menus and direct API requests.
+
+- **DISK-05:** Offline applies exclusion to the current owner and every configured
+  DiskIO participant, then waits for I/O quiescence. Remove requires authoritative
+  Offline and the exact revision/owner evidence. A lost reply is reconciled with
+  Group 0 before showing success. Removed media appear as retained candidates.
+  Rejoin restores their original identity and allocation metadata Offline, then
+  explicit Online validates the retained format and current descriptor. No
+  recovery migration, evacuation or physical file deletion is implied. Missing
+  or replaced registered media remain quarantined; discovery creates no substitute.
+- A retained receipt preserves its parent even after Remove. DiskGroup deletion
+  requires no retained media, owner or metadata binding; empty membership alone
+  does not permit a cascade. Confirmation explains the blocking prerequisites.
 
 ## 15. Capacity
 
@@ -414,8 +476,11 @@ provide observable capacity and bitmap fixtures.
 
 - **CAP-06:** Opening Cluster does not issue DiskDB runtime usage or scan
   requests. Capacity usage is scoped to the selected DiskGroup/Disk when that
-  scope is known; cluster totals explicitly request aggregate observation.
-  Disk inventory belongs to one shared source. Expanding a Node loads its
+  scope is known. Cluster/Rack overviews use cached reports until an explicit
+  Refresh requests a runtime snapshot; opening an overview is not that request.
+  Cached candidate/setup summaries are bounded to 64 nodes and never initiate
+  node-by-node discovery.
+  Disk inventory belongs to one shared source. Expanding a Node's Storage branch loads its
   DiskGroups; expanding/selecting a DiskGroup loads its disks. Selecting a
   linked Disk loads the required ancestor inventory directly. Four workers
   serve opened branches, merging duplicate requests for the same branch.
@@ -423,7 +488,8 @@ provide observable capacity and bitmap fixtures.
   Failed branch refresh retains its known inventory and reports failure.
 - **CAP-07:** The physical tree reads Node health from the service projection;
   it does not ping every Node or fetch a second per-node KV catalog. Capacity
-  Nodes and DiskGroups begin collapsed; Datacenter/Racks remain visible.
+  Storage branches and DiskGroups begin collapsed; Datacenter/Racks/Nodes and
+  Services remain visible.
   Default-service prerequisite inspection is explicit for its selected Node.
 
 ## 16. Loading, failures, and recovery
@@ -447,9 +513,9 @@ provide observable capacity and bitmap fixtures.
 1. Open Cluster directly. Inspect/create Rack and Nodes; add each Node through
    one dialog with six default services and explicit waiting dependencies.
 2. In KV, initialize three-replica Group 0 and create ordinary data groups.
-3. In Capacity, register DiskGroups/disks with owners and bindings; DiskIO becomes
+3. In Cluster’s Capacity view, register DiskGroups/disks with owners and bindings; DiskIO becomes
    ready. Observe capacity and inspect a zone bitmap.
-4. Return to Cluster to verify each service's deployment/readiness and resolve
+4. Select Cluster’s Topology view to verify each service's deployment/readiness and resolve
    dependencies. Inspect logical groups in KV and physical storage in Capacity.
 
 This is a dependency guide, not a blocking wizard. A working capability remains
@@ -481,7 +547,7 @@ plan, never edited out of this specification to make a run pass.
   no hidden fetch-all, invented totals, or selection replacement on page changes.
 - **A11 / failures:** inject unavailable owner/group, malformed API response, stale cursor,
   and slow/unknown mutation outcome; verify §16 and retry without duplication.
-- **A12 / modes:** Container rejects topology/disk mutations through UI and API;
+- **A12 / modes:** Single preview rejects physical topology/disk mutations through UI and API;
   supported admin data operations remain usable. Readonly embedding forbids
   mutations and respects API/style isolation.
 
@@ -674,7 +740,7 @@ Unsupported features are explicit rather than represented as working controls.
 - **ACT-01:** Resource title/path appear first, then one compact Actions strip,
   collapsed by default, then primary content. Expanded Actions name their exact
   operation target. Changing resource closes obsolete action forms.
-- **ACT-02:** KV, Iceberg and S3 use this shared structure and button style.
+- **ACT-02:** KV, Iceberg, Dataset and S3 use this shared structure and button style.
   Ordinary buttons have a visible border; destructive buttons use muted red.
   Refresh, Previous and Next belong with the query/list and do not hide inside
   mutation forms. Readonly/container capabilities apply to every action.
@@ -688,7 +754,7 @@ Unsupported features are explicit rather than represented as working controls.
 
 - **TEST-02:** Page-function specs retain each behavior once: shell `0x`,
   physical lifecycle `1x`, logical KV `2x`, KV data `3x`, inspector/canvas `4x`,
-  Capacity/Chunk/Chunk-KV `5x`, Iceberg `6x`, S3 `7x`, cross-function `9x`.
+  Capacity/Chunk/Chunk-KV `5x`, Iceberg `6x`, S3 `7x`, Dataset `8x`, cross-function `9x`.
   Dedicated creation/reconfiguration specs retain their UI mutations; a smoke
   chain does not repeat every dialog or failure permutation.
 - **TEST-03:** Use separate unit, backend integration and native browser E2E
@@ -706,3 +772,91 @@ Unsupported features are explicit rather than represented as working controls.
   election 10 s, polling every 100 ms. No fixed sleeps. Native large multipart
   and SF=1 loader acceptance run separately from ordinary UI iteration; normal
   smoke data remain small while preserving multi-Strip and pagination cases.
+
+
+## 25. Dataset
+
+Depends on: [Dataset control lifecycle](../access-server/dataset/design-dataset-control.md).
+
+- **DS-01 — Scope:** Dataset is immediately before S3. The fixed `dataset-ns`
+  namespace is a property, not a single-child navigation level. Catalog discovery
+  comes from the configured authority, including SDK-created identities. Empty,
+  missing configuration, unavailable service and denied access remain distinct.
+  Credentials stay on the Console server; no browser endpoint or bearer editor.
+- **DS-02 — Relationships:** left navigation follows declared parent links as a
+  forest. Roots and each parent's children page independently; no ancestry scan
+  or Snapshot-ID sorting reconstructs the tree. Latest and Stable are reference
+  badges. A Snapshot's Splits group is a peer of its children. Samples and Fields
+  remain in the center. Direct Snapshot navigation preserves the exact identity;
+  bounded ancestor discovery reports incomplete paths explicitly.
+- **DS-03 — Combined inspection:** one Samples matrix uses Schema definitions as
+  columns, defaulting to twenty rows and twelve fields. Required/optional is the
+  actual field definition; no inferred type, MIME or nested schema. Header, Sample
+  row and Sample/Field cell selections have separate properties and history.
+  Missing, tombstoned, inline, payload-backed and inherited values are distinct.
+  Known lengths and declared checksums are metadata, not verified payloads.
+- **DS-04 — Bounds:** each catalog/row/column query carries its immutable scope and
+  explicit continuation. A stale continuation requires first-page refresh. Loaded
+  row filtering is labelled local. Opaque binary Sample IDs retain canonical padded
+  base64; valid UTF-8 is only a display/helper encoding. Decimal u64 values remain
+  strings. Navigation retains bounded identities/cursors and scroll, not payloads.
+  Hidden work stops; late responses cannot replace another scope.
+- **DS-05 — Preview:** only the explicit Preview action reads a selected field.
+  Complete verified values of at most 64 KiB render as UTF-8 or hex. Unknown length,
+  missing/tombstoned values, oversized data, integrity failures and cancelled reads
+  never appear as a successful truncated value. Browsing starts no Read Plan.
+- **DS-06 — Local import:** create Dataset, then Import / New Snapshot or Create
+  child. Any published parent may be selected. Preserve all parent data is the
+  default; Replace membership and authority-evaluated Selection are explicit.
+  A Split source freezes Snapshot/revision/name. Schema/member edits, local file
+  mappings and Split policies are reviewed before publication. External sources
+  are SDK-owned and require no connector UI.
+- **DS-07 — Durable publication:** uploads use immutable parts of at most 4 MiB,
+  at most 10000 parts, incremental MD5 and two concurrent requests. Review, Evaluate,
+  Prepare and Publish are distinct stages. Partial evaluation or incomplete import
+  cannot publish. A prepared candidate is immutable; edits require a new operation
+  and explicit abandonment/cleanup of the old one. Only a successful receipt moves
+  latest; stable is independent. Unknown outcomes reconcile operation/attempt IDs.
+  Confirmed head conflicts require explicit review and a new attempt on the same
+  candidate and parent. Closing does not abandon a draft. Reload restores control
+  identities; local File handles must be reselected and match their declared digest.
+- **DS-08 — Split revisions:** author the complete set, including an empty set,
+  with named Selection or deterministic weighted partitions and independent overlap
+  and coverage policies. Inherited membership is frozen and intersected with child
+  membership; new Samples remain unassigned. Explicit reevaluation is separate.
+  Independent Split publication compares the expected revision, preserves historical
+  members, and does not move Dataset latest or create a data Snapshot. History and
+  named membership pages stay pinned to the selected immutable revision.
+- **DS-09 — Lifecycle:** stable, retain, release and reclaim name the exact
+  Snapshot. Backend protection wins over an observed eligibility hint. Reclaim
+  distinguishes unknown, pending logical cleanup and completed retirement; physical
+  cleanup may remain deferred. No Dataset delete or Split-history purge action.
+- **DS-10 — Modes:** `modules.dataset=false` hides the domain and prevents Dataset
+  observation. API prefixes apply to every request. Readonly disables editing and
+  the Console API rejects direct writes; exact matrix POST remains an observation.
+  Managed mode permits supported data operations without enabling topology changes.
+
+Local batch mapping uses version 1 JSON aligned with Sample/Field edit models,
+bounded at 8 MiB and 10000 Sample edits. `schema: null` inherits the parent Schema.
+IDs and inline bytes are canonical base64. File names identify exactly one selected
+local File; they never grant filesystem access. Ambiguous/missing files, duplicate
+Samples/fields and invalid encodings are rejected before upload. A single-Sample
+helper can create this mapping from a UTF-8 ID and text or a selected local file.
+
+```json
+{
+  "version": 1,
+  "schema": {"version": 1, "fields": [{"name": "text", "required": true}]},
+  "samples": [
+    {"kind": "upsert", "id": "c2FtcGxlLTE=", "fields": [
+      {"name": "text", "value": {"kind": "inline", "data": "aGVsbG8="}}
+    ]}
+  ]
+}
+```
+
+A local payload value is `{"kind":"file","file":"selected.bin"}`. An optional
+field tombstone is `{"kind":"tombstone"}`. Removal is
+`{"kind":"remove","id":"c2FtcGxlLTE="}`. Authority composition combines these
+bounded edits with the frozen source; the browser never constructs a partial
+Manifest and labels it complete membership.

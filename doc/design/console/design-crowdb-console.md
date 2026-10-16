@@ -692,6 +692,24 @@ conflicting concurrent writes preserve the existing record. Automatic single-nod
 not expose hardware or process mutations. Manual Docker nodes use the same
 shared hardware operations after confirmed Group 0 publication.
 
+The physical Cluster workspace shares one tree and selection across Topology and
+Capacity. Cluster/Rack node cards and capacity tables reuse bounded observations;
+Node storage owns discovery, accepted file/supplied operations and retained
+candidates. Group 0 defines effective disk membership. Candidate Join validates
+reviewed media and retains one immutable operation per disk; accepted work runs on
+the owning monitor after the browser closes. Offline/Remove/Rejoin retains bytes
+and allocation identity, with exclusion and validation gates before participation.
+Physical discovery is never permission to reinitialize or replace an existing disk.
+
+Concurrent Access deployment reserves one cluster-scoped Console catalog
+Initialize/Activate operation pair in Group 0. Nodes replay that pair; conflicting
+local journals remain visible and are not rewritten. Access credential bootstrap
+also reserves one encrypted user candidate before conditionally publishing its
+access-key record. Response loss/concurrent nodes cannot replace an existing
+credential; duplicate or disabled users require explicit review. Enumeration is
+bounded and rejects truncated/timed-out results instead of authorizing issuance
+from incomplete state. Secrets remain in the established private credential path.
+
 ## 11. Cluster teardown and verification
 
 `cluster destroy` requires the local launch registry. It reads confirmed Group

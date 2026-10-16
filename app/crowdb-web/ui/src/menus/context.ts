@@ -24,6 +24,8 @@ export interface ConsoleDialogState {
 export interface MenuContext {
   readonly: boolean;
   managed: boolean;
+  nodeManagement?: boolean;
+  onManageNodeStorage?: (nodeId: number) => void;
   managementAuthorized: boolean;
   domain: Domain;
   physicalActive: boolean;

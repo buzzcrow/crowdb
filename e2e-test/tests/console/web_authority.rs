@@ -216,7 +216,7 @@ async fn verify_storage_hardware(first: &str, second: &str) {
     let disk = serde_json::json!({
         "disk_id": "0000000000000000-0000000000000009", "disk_type": "Ssd",
         "capacity_bytes": 4096, "zone_size_bytes": 4096, "unit_size_bytes": 4096,
-        "device_path": "/dev/test",
+        "device_path": "",
     });
     assert_eq!(
         hardware_request(second, reqwest::Method::POST, disks, Some(disk), true)
@@ -233,18 +233,17 @@ async fn verify_storage_hardware(first: &str, second: &str) {
             .len(),
         1
     );
-    assert_eq!(
-        hardware_request(
-            first,
-            reqwest::Method::GET,
-            "/api/nodes/9/disk-groups/4/disks/0000000000000000-0000000000000009",
-            None,
-            false
-        )
-        .await
-        .1["device_path"],
-        "/dev/test"
-    );
+    let (status, observed) = hardware_request(
+        first,
+        reqwest::Method::GET,
+        "/api/nodes/9/disk-groups/4/disks/0000000000000000-0000000000000009",
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(observed["disk_id"], "0000000000000000-0000000000000009");
+    assert!(observed.get("device_path").is_none());
     verify_storage_removal(first, second).await;
 }
 

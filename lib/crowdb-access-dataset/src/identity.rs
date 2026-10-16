@@ -47,3 +47,4 @@ macro_rules! identity {
 identity!(DatasetId);
 identity!(SnapshotId);
 identity!(OperationId);
+identity!(SplitRevisionId);

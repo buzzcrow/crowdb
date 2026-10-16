@@ -26,6 +26,8 @@ pub struct DiskdbInstanceInfo {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DiskGroupUsageSummary {
+    #[serde(default)]
+    pub usage_known: bool,
     pub disk_group_id: u64,
     pub capacity_bytes: u64,
     pub busy_bytes: u64,
@@ -46,6 +48,8 @@ pub struct DiskGroupInfoDto {
     pub status: i32,
     pub disk_ids: Vec<String>,
     pub disks: Vec<DiskInfoDto>,
+    #[serde(default)]
+    pub usage_known: bool,
     pub capacity_bytes: u64,
     pub busy_bytes: u64,
     pub free_bytes: u64,
@@ -64,6 +68,8 @@ pub struct DiskInfoDto {
     pub unit_size_bytes: u32,
     pub zone_count: u32,
     pub status: i32,
+    #[serde(default)]
+    pub usage_known: bool,
     pub busy_units: u64,
     pub free_units: u64,
     pub capacity_bytes: u64,

@@ -26,6 +26,16 @@ async fn chunk_ownership_scope() {
 }
 
 #[tokio::test]
+#[ignore = "requires actual allocated zones and host service recovery"]
+async fn storage_windows_and_access_recovery() {
+    let context = TestNativeContext::connect().await;
+    super::native_storage::start(&context).await;
+    let chunks = super::native_chunks::seed(&context).await;
+    let result = crate::common::control::native_browser_with_chunks(chunks).await;
+    assert_eq!(result["passed"], true);
+}
+
+#[tokio::test]
 #[ignore = "requires normal storage and a host browser for owner recovery"]
 async fn journal_identity_and_owner_recovery() {
     browse_storage().await;
@@ -61,7 +71,11 @@ async fn scanner_and_scoped_recalc() {
 #[tokio::test]
 #[ignore = "requires normal DiskDB metadata and a host capacity browser"]
 async fn hardware_capacity_and_dashed_status() {
-    browse_diskdb().await;
+    let context = TestNativeContext::connect().await;
+    super::native_storage::start_diskdb(&context, [128 * 1024; 3]).await;
+    let result = crate::common::control::native_browser().await;
+    assert_eq!(result["passed"], true);
+    super::native_disk_lifecycle::remove_occupied(&context).await;
 }
 
 #[tokio::test]

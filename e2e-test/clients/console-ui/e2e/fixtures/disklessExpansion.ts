@@ -7,6 +7,7 @@ import { waitForLeader } from './localSetup';
 import type { observeDefaultDeployments } from './defaultDeployments';
 import { step } from './stepTimer';
 import { queueFullPlans } from './fullServicePlans';
+import { reviewDisklessCandidate } from './candidateSetup';
 
 type UIContext = { page: Page; request: APIRequestContext; baseURL: string; deployments: ReturnType<typeof observeDefaultDeployments> };
 const disklessNodes = [4, 5, 6];
@@ -24,7 +25,7 @@ export async function disklessExpansion(context: UIContext) {
       const dialog = page.getByRole('dialog', { name: 'Move candidate to cluster' });
       await expect(dialog.getByLabel('SSH user', { exact: true })).toHaveValue('crowdb');
       await expect(dialog.getByLabel('Initial SSH password', { exact: true })).toHaveValue('crowdb');
-      await dialog.getByRole('button', { name: 'Verify and move', exact: true }).click();
+      await reviewDisklessCandidate(dialog);
       await expect(dialog).toHaveCount(0, { timeout: 10_000 });
     }
     await queueFullPlans(request, disklessNodes);

@@ -62,7 +62,7 @@ export function InitClusterDialog({
     setSubmitError('');
     try {
       await initCluster({ nodes: selectedNodeIds, create_data_group: true });
-      success('Cluster initialized successfully');
+      success(preparedNodes ? 'Initialization accepted; the node monitor will continue.' : 'Cluster initialized successfully');
       reset();
       onClose();
       await onSuccess?.();

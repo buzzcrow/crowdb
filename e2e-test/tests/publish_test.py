@@ -63,17 +63,20 @@ class PublishTest(unittest.TestCase):
             (source / "browser").mkdir(parents=True)
             (source / "client-browser.log").write_bytes(b"irrelevant prefix LAST ERROR")
             (source / "browser/trace.zip").write_bytes(b"x" * 20)
+            (source / "browser/deployment-diagnostics.json").write_text('{"nodes":[4],"service":"diskdb"}')
             console = io.StringIO()
             with contextlib.redirect_stdout(console):
                 publish(source, root / "public", text_limit=10, trace_limit=10)
             self.assertEqual((root / "public/client-browser.log").read_bytes(), b"LAST ERROR")
             self.assertFalse((root / "public/browser/trace.zip").exists())
+            self.assertEqual(json.loads((root / "public/browser/deployment-diagnostics.json").read_text())["nodes"], [4])
             summary = json.loads((root / "public/export-summary.json").read_text())
             statuses = {row["path"]: row["status"] for row in summary["files"]}
             self.assertEqual(statuses["client-browser.log"], "truncated")
             self.assertEqual(statuses["browser/trace.zip"], "skipped")
             self.assertEqual(summary["counts"]["truncated"], 1)
             self.assertIn("truncated=1 skipped=1 read_failed=0", console.getvalue())
+            self.assertIn("[DIAGNOSTIC OMISSION] browser/trace.zip: skipped reason=trace size limit", console.getvalue())
 
     def test_job_budget_prioritizes_the_client_error_before_service_logs(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -86,6 +89,8 @@ class PublishTest(unittest.TestCase):
             self.assertEqual((root / "public/client-failure.log").read_bytes(), b"important assertion")
             summary = json.loads((root / "public/export-summary.json").read_text())
             self.assertLessEqual(summary["exported_bytes"], 24)
+            service = next(row for row in summary["files"] if row["path"] == "aaa-service.log")
+            self.assertEqual(service["reason"], "job budget")
             self.assertEqual(summary["exported_bytes"], sum(
                 path.stat().st_size for path in (root / "public").rglob("*")
                 if path.is_file() and path.name != "export-summary.json"))

@@ -60,6 +60,7 @@ struct MockState {
     system_posts: u32,
     data_posts: u32,
     lose_system_response: bool,
+    accepted: Option<crowdb_protocol::mgmt::SystemPrepareRequest>,
 }
 
 struct MockKvServer {
@@ -120,15 +121,38 @@ async fn handle(mut stream: TcpStream, state: &mut MockState) {
                 let mut words = request.split_whitespace();
                 let method = words.next().unwrap();
                 let path = words.next().unwrap();
-                respond(&mut stream, state, method, path).await;
+                let body = &bytes[end + 4..end + 4 + content_length];
+                respond(&mut stream, state, method, path, body).await;
                 return;
             }
         }
     }
 }
 
-async fn respond(stream: &mut TcpStream, state: &mut MockState, method: &str, path: &str) {
+async fn respond(
+    stream: &mut TcpStream,
+    state: &mut MockState,
+    method: &str,
+    path: &str,
+    request_body: &[u8],
+) {
     let (status, body) = match (method, path) {
+        ("GET", "/health") => (200, serde_json::json!({"status":"ok"}).to_string()),
+        ("POST", "/system/prepare") => {
+            let requested: crowdb_protocol::mgmt::SystemPrepareRequest =
+                serde_json::from_slice(request_body).unwrap();
+            if state.accepted.as_ref().is_some_and(|accepted| {
+                accepted.replica_id != requested.replica_id || accepted.bootstrap != requested.bootstrap
+            }) {
+                (
+                    409,
+                    serde_json::json!({"error":"conflicting bootstrap"}).to_string(),
+                )
+            } else {
+                state.accepted = Some(requested);
+                (200, String::from_utf8(request_body.to_vec()).unwrap())
+            }
+        }
         ("GET", "/stores") => {
             let stores = if state.groups.is_empty() {
                 Vec::new()
@@ -151,6 +175,16 @@ async fn respond(stream: &mut TcpStream, state: &mut MockState, method: &str, pa
             (200, serde_json::json!({"ready":true,"leader_id":group.local_replica_id,"voting_replicas":1,"reachable_replicas":1}).to_string())
         }
         ("POST", "/system/init") => {
+            let requested: crowdb_protocol::mgmt::SystemInitRequest =
+                serde_json::from_slice(request_body).unwrap();
+            assert_eq!(
+                requested.bootstrap.as_ref(),
+                state.accepted.as_ref().map(|accepted| &accepted.bootstrap)
+            );
+            assert!(
+                state.accepted.is_some(),
+                "shared initialization must prepare before creating the system group"
+            );
             state.system_posts += 1;
             state.groups.push(GroupSummary {
                 group_id: 0,
@@ -162,7 +196,10 @@ async fn respond(stream: &mut TcpStream, state: &mut MockState, method: &str, pa
                 state.lose_system_response = false;
                 return;
             }
-            (201, "{}".into())
+            (
+                201,
+                serde_json::json!({"store_id":0,"group_id":0,"replica_id":1}).to_string(),
+            )
         }
         ("POST", "/stores/0/groups") => {
             state.data_posts += 1;
@@ -202,6 +239,10 @@ async fn creates_once_then_ready_restart_only_validates() {
         .unwrap();
     let state = server.finish().await;
     assert_eq!((state.system_posts, state.data_posts), (1, 1));
+    assert_eq!(
+        state.accepted.unwrap().bootstrap,
+        ready.manifest().system_bootstrap_identity()
+    );
     let body = fs::read_to_string(root.path().join("log/monitor/monitor.log")).unwrap();
     let entries = body
         .lines()
@@ -266,4 +307,38 @@ async fn conflicting_existing_group_fails_without_mutation() {
         .collect::<Vec<_>>();
     assert_eq!(entries.last().unwrap()["kind"], "bootstrap_failed");
     assert_eq!(entries.last().unwrap()["service"], "kv-group-0-0");
+}
+
+#[tokio::test]
+async fn matching_replica_with_foreign_bootstrap_identity_is_not_adopted() {
+    let root = TestDataRoot::new();
+    let profile = profile();
+    let server = MockKvServer::start(MockState {
+        groups: vec![GroupSummary {
+            group_id: 0,
+            local_replica_id: 1,
+            leader_id: 1,
+            remote_count: 0,
+        }],
+        accepted: Some(crowdb_protocol::mgmt::SystemPrepareRequest {
+            replica_id: 1,
+            bootstrap: crowdb_protocol::mgmt::SystemBootstrapIdentity {
+                cluster_id: Uuid::new_v4().to_string(),
+                operation_id: Uuid::new_v4().to_string(),
+                configuration_digest: "a".repeat(64),
+            },
+        }),
+        ..MockState::default()
+    })
+    .await;
+    let bootstrap = KvBootstrap::new(&server.base_url).unwrap();
+    let mut session = session(&root, &profile);
+    let mut events = monitor_log(&root, &profile).await;
+    assert!(bootstrap
+        .reconcile(&mut session, &profile, &mut events)
+        .await
+        .is_err());
+    assert_eq!(session.manifest().step_complete("kv-group-0-0"), Some(false));
+    let state = server.finish().await;
+    assert_eq!((state.system_posts, state.data_posts), (0, 0));
 }

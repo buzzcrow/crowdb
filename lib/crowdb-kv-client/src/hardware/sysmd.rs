@@ -49,6 +49,31 @@ pub struct CrowdbSysmdClient {
 }
 
 impl CrowdbSysmdClient {
+    /// Reserve one global disk ID without admitting or opening its medium.
+    pub async fn reserve_disk_id(&self, key: &crowdb_protocol::key::DiskKey) -> Result<()> {
+        self.hw.reserve_disk_id(key).await
+    }
+
+    /// Read retained medium identity without treating it as active membership.
+    pub async fn disk_storage(
+        &self,
+        key: &crowdb_protocol::key::DiskKey,
+    ) -> Result<Option<crowdb_protocol::disk_storage::DiskStorageRecord>> {
+        self.hw.disk_storage(key).await
+    }
+
+    /// Retained media prevent parent deletion even after membership removal.
+    pub async fn has_retained_disk_storage(
+        &self,
+        rack_id: u64,
+        node_id: Option<u64>,
+        group_id: Option<u64>,
+    ) -> Result<bool> {
+        self.hw
+            .has_retained_disk_storage(rack_id, node_id, group_id)
+            .await
+    }
+
     /// Build a `CrowdbSysmdClient` from an owned `CrowdbKvClient`.
     /// The client must have its topology seeded with a group-0 leader
     /// endpoint (via `seed_leader(0, 0, endpoint)` or `/topology`
@@ -187,6 +212,10 @@ impl CrowdbSysmdClient {
     }
 
     // ── hardware: disk ──────────────────────────────────────────
+
+    pub async fn reserve_disk_group_id(&self, key: &crowdb_protocol::key::DiskGroupKey) -> Result<()> {
+        self.hw.reserve_disk_group_id(key).await
+    }
 
     pub async fn add_disk(
         &self,

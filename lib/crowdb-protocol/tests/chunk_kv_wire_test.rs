@@ -164,3 +164,42 @@ fn scan_response_round_trip_preserves_items_and_cursor() {
     let (buffer, offset) = encode_point_response(38, 39, &response);
     assert_eq!(decode_point_response(&buffer[offset..]).unwrap(), response);
 }
+
+#[test]
+fn strict_scan_requires_an_explicit_forward_byte_budget() {
+    use crowdb_protocol::chunk_kv_ordered_wire::{decode_bounded_scan_request, encode_bounded_scan_request};
+    let mut request = ScanRequest {
+        routing: routing(),
+        start: Some(b"prefix".to_vec()),
+        end: None,
+        direction: ScanDirection::Forward,
+        limit: 10,
+        continuation: None,
+    };
+    let (buffer, offset) = encode_bounded_scan_request(1, 2, &request, 4096).unwrap();
+    let (decoded, budget) = decode_bounded_scan_request(&buffer[offset..]).unwrap();
+    assert_eq!(decoded.request, request);
+    assert_eq!(budget, 4096);
+    let (legacy, offset) = encode_scan_request(1, 2, &request).unwrap();
+    assert!(decode_bounded_scan_request(&legacy[offset..]).is_err());
+    assert!(encode_bounded_scan_request(1, 2, &request, 0).is_err());
+    request.direction = ScanDirection::Reverse;
+    assert!(encode_bounded_scan_request(1, 2, &request, 4096).is_err());
+}
+
+#[test]
+fn scan_limit_failure_round_trip_is_distinct_from_invalid_request() {
+    let response = ChunkKvResponse {
+        map_revision: 1,
+        journal_position: None,
+        result: Err(RpcFailure {
+            code: ChunkKvRpcErrorCode::ScanLimitExceeded,
+            message: "budget".into(),
+            retry_after_ms: None,
+            latest_map_revision: None,
+            owner_hint: None,
+        }),
+    };
+    let (bytes, offset) = encode_point_response(1, 2, &response);
+    assert_eq!(decode_point_response(&bytes[offset..]).unwrap(), response);
+}

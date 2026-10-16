@@ -44,11 +44,11 @@ describe('Header', () => {
     expect(getByTitle('Cluster health: Healthy')).toBeTruthy();
   });
 
-  it('renders all seven domain toggle buttons', () => {
-    const { getByTestId } = renderHeader();
+  it('renders six domain buttons with Capacity inside Cluster', () => {
+    const { getByTestId, queryByTestId } = renderHeader();
     expect(getByTestId('domain-cluster')).toHaveTextContent('Cluster');
     expect(getByTestId('domain-kv')).toHaveTextContent('PaxosKV');
-    expect(getByTestId('domain-capacity')).toHaveTextContent('Capacity');
+    expect(queryByTestId('domain-capacity')).toBeNull();
     expect(getByTestId('domain-chunk')).toHaveTextContent('Chunk');
     expect(getByTestId('domain-chunk-kv')).toHaveTextContent('ChunkKV');
     expect(getByTestId('domain-iceberg')).toHaveTextContent('Iceberg');
@@ -83,11 +83,9 @@ describe('Header', () => {
     expect(onShowTopology).toHaveBeenCalledOnce();
   });
 
-  it('clicking the Capacity domain button calls onShowCapacity', () => {
-    const onShowCapacity = vi.fn();
-    const { getByTestId } = renderHeader({ onShowCapacity });
-    fireEvent.click(getByTestId('domain-capacity'));
-    expect(onShowCapacity).toHaveBeenCalledOnce();
+  it('marks Cluster active for a legacy Capacity entry', () => {
+    const { getByTestId } = renderHeader({ initialDomain: Domain.Capacity });
+    expect(getByTestId('domain-cluster')).toHaveAttribute('aria-pressed', 'true');
   });
 
   it('clicking refresh calls onRefresh', () => {

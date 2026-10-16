@@ -17,6 +17,11 @@
 #![allow(non_camel_case_types, non_snake_case)]
 #![allow(unsafe_code)]
 
+mod disk_exclusion;
+mod diskio_scope;
+#[cfg(feature = "test-util")]
+pub use disk_exclusion::parse_diskio_exclusions_for_tests;
+
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_void};
 use std::ptr;
@@ -160,20 +165,11 @@ pub unsafe extern "C" fn crowdb_hw_list_disks_in_group(
     let hw = (*(client as *const HardwareClient)).clone();
     spawn_op(callback, user_data, move || async move {
         hw.kv().refresh_topology().await.map_err(|e| e.to_string())?;
-        let disks = hw
-            .list_disks_in_group(rack_id, node_id, dg_id)
+        let entries = hw
+            .disk_io_inventory(rack_id, node_id, Some(dg_id))
             .await
-            .map_err(|e| e.to_string())?;
-        let json_arr: Vec<serde_json::Value> = disks
-            .into_iter()
-            .map(|(did, val)| {
-                serde_json::json!({
-                    "disk_id": {"high": did.high.to_string(), "low": did.low.to_string()},
-                    "value": val,
-                })
-            })
-            .collect();
-        Ok(serde_json::to_string(&json_arr).unwrap_or_else(|_| "[]".to_string()))
+            .map_err(|error| error.to_string())?;
+        serde_json::to_string(&entries).map_err(|error| error.to_string())
     });
 }
 
@@ -193,25 +189,11 @@ pub unsafe extern "C" fn crowdb_hw_list_disks_on_node(
     let hw = (*(client as *const HardwareClient)).clone();
     spawn_op(callback, user_data, move || async move {
         hw.kv().refresh_topology().await.map_err(|e| e.to_string())?;
-        let groups = hw
-            .list_disk_groups_on_node(rack_id, node_id)
+        let entries = hw
+            .disk_io_inventory(rack_id, node_id, None)
             .await
-            .map_err(|e| e.to_string())?;
-        let mut entries = Vec::new();
-        for group in groups {
-            let disks = hw
-                .list_disks_in_group(rack_id, node_id, group.dg_id)
-                .await
-                .map_err(|e| e.to_string())?;
-            for (disk_id, value) in disks {
-                entries.push(serde_json::json!({
-                    "disk_group_id": group.dg_id,
-                    "disk_id": {"high": disk_id.high.to_string(), "low": disk_id.low.to_string()},
-                    "value": value,
-                }));
-            }
-        }
-        serde_json::to_string(&entries).map_err(|e| e.to_string())
+            .map_err(|error| error.to_string())?;
+        serde_json::to_string(&entries).map_err(|error| error.to_string())
     });
 }
 

@@ -4,10 +4,23 @@
 use super::Result;
 use crowdb_protocol::mgmt::node::NodeControl;
 use serde_json::Value;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
+
+pub(super) async fn listener(socket: &Path) -> Result<tokio::net::UnixListener> {
+    if socket.exists() {
+        if UnixStream::connect(socket).await.is_ok() {
+            return Err("node monitor already running".into());
+        }
+        std::fs::remove_file(socket)?;
+    }
+    let listener = tokio::net::UnixListener::bind(socket)?;
+    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
+    Ok(listener)
+}
 
 pub(super) async fn read_request(stream: &mut UnixStream) -> Result<NodeControl> {
     let mut bytes = Vec::new();

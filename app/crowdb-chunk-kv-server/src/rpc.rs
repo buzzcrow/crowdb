@@ -15,7 +15,9 @@ use crowdb_protocol::chunk_kv_group_wire::{
     decode_batch_mutation_request, decode_multi_get_request, encode_batch_mutation_response,
     encode_multi_get_response,
 };
-use crowdb_protocol::chunk_kv_ordered_wire::{decode_scan_request, decode_seek_request};
+use crowdb_protocol::chunk_kv_ordered_wire::{
+    decode_bounded_scan_request, decode_scan_request, decode_seek_request,
+};
 use crowdb_protocol::chunk_kv_wire::{decode_point_request, encode_point_response};
 use crowdb_protocol::fb::FBMsgType;
 use crowdb_rpc_ffi::{Buffer, RpcServer, ServerRequest};
@@ -49,6 +51,11 @@ impl ChunkKvRpcService {
         let response_server = Arc::clone(server);
         server.register_handler(FBMsgType::EChunkKvScanRequest.0 as u16, move |request| {
             rpc_service.handle_scan(request, &response_server);
+        });
+        let rpc_service = Arc::clone(self);
+        let response_server = Arc::clone(server);
+        server.register_handler(FBMsgType::EChunkKvBoundedScanRequest.0 as u16, move |request| {
+            rpc_service.handle_bounded_scan(request, &response_server);
         });
         let rpc_service = Arc::clone(self);
         let response_server = Arc::clone(server);
@@ -134,6 +141,25 @@ impl ChunkKvRpcService {
                 rpc_create_nano,
                 &response,
             );
+        });
+    }
+
+    fn handle_bounded_scan(&self, request: ServerRequest, server: &Arc<RpcServer>) {
+        let service = Arc::clone(&self.service);
+        let server = Arc::clone(server);
+        self.runtime.spawn(async move {
+            let id = request.request_id;
+            let created = request.rpc_create_nano;
+            let response = match decode_bounded_scan_request(request.control()) {
+                Ok((envelope, budget)) if envelope.rpc_request_id == id => {
+                    service
+                        .handle_bounded_scan(envelope.request, budget, wall_time_ms(), service.monotonic_ms())
+                        .await
+                }
+                Ok(_) => invalid_response("RPC frame and control request IDs differ"),
+                Err(error) => invalid_response(&error.to_string()),
+            };
+            submit_response(&server, request.conn_handle, id, created, &response);
         });
     }
 

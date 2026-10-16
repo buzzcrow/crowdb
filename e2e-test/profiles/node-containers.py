@@ -12,7 +12,8 @@ import time
 import urllib.error
 import uuid
 
-from bridge_node import IMAGE, PREFIX, docker, HTTP, origin_for, start_node, cleanup
+from bridge_node import IMAGE, PREFIX, DATA, docker, HTTP, origin_for, start_node, cleanup
+from node_resources import capture as capture_resources
 
 
 def request(origin, path, body=None):
@@ -141,8 +142,14 @@ def main():
         for origin in origins:
             wait(lambda: request(origin, "/api/node/status"), lambda result: result["phase"] == "unbound_draft", "cleanup releases UI binding")
         print("Shared rack mutations, minority gating and explicit cleanup passed", flush=True)
+        scenario("node-default-setup.py").verify(docker, request, wait, names, origins)
+        resources = capture_resources(docker, names, DATA / "node-resources.json")
+        for name, state in resources.items():
+            assert state.get("pids.events") == "max 0", f"{name} exhausted its PID budget: {state}"
+            assert not state.get("OOMKilled", False), f"{name} was OOM killed: {state}"
 
     except Exception:
+        capture_resources(docker, names, DATA / "node-resources.json")
         for name in names:
             try:
                 print(docker("logs", name), flush=True)

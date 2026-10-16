@@ -109,20 +109,39 @@ describe('Sidebar · Cluster tree projection', () => {
     expect(getByText('PKV-10', { exact: true })).toBeTruthy();
   });
 
-  it('renders assigned disk groups and disks under the owning DiskDB service', () => {
-    const { getByTestId, getByText } = renderSidebar(Domain.Cluster);
-    const diskdbSubtree = getByTestId('tree-node-DDB-10');
-    fireEvent.click(within(diskdbSubtree).getByRole('button', { name: 'Expand' }));
-    fireEvent.click(within(getByTestId('tree-node-CL-DG-10-100')).getByRole('button', { name: 'Expand' }));
-    expect(diskdbSubtree.contains(getByText(/Physical Group.*DG-100/))).toBe(true);
-    expect(diskdbSubtree.contains(getByText('0123456789ab…'))).toBe(true);
+  it('keeps physical storage separate from the owning service and loads on expansion', () => {
+    const onLoadNodeDisks = vi.fn().mockResolvedValue(undefined);
+    const { getByTestId, getByText, queryByText } = renderSidebar(Domain.Cluster, { onLoadNodeDisks });
+    const diskdb = getByTestId('tree-node-DDB-10');
+    const storage = getByTestId('tree-node-STORAGE-10');
+    expect(queryByText(/Physical Group.*DG-100/)).toBeNull();
+    expect(onLoadNodeDisks).not.toHaveBeenCalled();
+    fireEvent.click(within(storage).getByRole('button', { name: 'Expand' }));
+    expect(onLoadNodeDisks).toHaveBeenCalledWith(10);
+    fireEvent.click(within(getByTestId('tree-node-CH-DG-10-100')).getByRole('button', { name: 'Expand' }));
+    expect(storage.contains(getByText(/Physical Group.*DG-100/))).toBe(true);
+    expect(storage.contains(getByText('0123456789ab…'))).toBe(true);
+    expect(diskdb.contains(getByText('0123456789ab…'))).toBe(false);
   });
 
-  it('does not render unassigned disk groups', () => {
-    const { queryByText } = renderSidebar(Domain.Cluster, {
-      diskdbInstances: [{ instance_id: '10', rpc_endpoint: '127.0.0.1:29922', last_heartbeat_ms: 1, owned_dg_ids: [], group_usages: [] }],
+  it('exposes candidate scope with honest unknown and stale observed counts', () => {
+    const onNodeClick = vi.fn();
+    const { getByTestId, getByText } = renderSidebar(Domain.Cluster, {
+      onNodeClick, candidateSummaries: { 10: { count: 2, observed_at_ms: 1234, stale: true } },
     });
-    expect(queryByText(/Physical Group.*DG-100/)).toBeNull();
+    fireEvent.click(within(getByTestId('tree-node-STORAGE-10')).getByRole('button', { name: 'Expand' }));
+    fireEvent.click(getByText('Candidates (2)'));
+    expect(onNodeClick.mock.calls[0][0]).toMatchObject({ type: 'Node', section: 'candidates', rawId: 10 });
+    fireEvent.click(within(getByTestId('tree-node-STORAGE-11')).getByRole('button', { name: 'Expand' }));
+    expect(getByText('Candidates (?)')).toBeTruthy();
+  });
+
+  it('shows unassigned physical disk groups under Storage', () => {
+    const { getByText, getByTestId } = renderSidebar(Domain.Cluster, {
+      diskdbInstances: [], diskdbNodeIds: new Set(),
+    });
+    fireEvent.click(within(getByTestId('tree-node-STORAGE-10')).getByRole('button', { name: 'Expand' }));
+    expect(getByText(/Physical Group.*DG-100/)).toBeTruthy();
   });
 });
 
@@ -146,18 +165,15 @@ describe('Sidebar · KV logical projection', () => {
   });
 });
 
-describe('Sidebar · Chunk hierarchy', () => {
-  it('renders node → disk group → disk; DiskDB server is not shown in Capacity view', () => {
-    const { getByText, queryByText, getByTestId } = renderSidebar(Domain.Capacity);
-    fireEvent.click(within(getByTestId('tree-node-N-10')).getByRole('button', { name: 'Expand' }));
+describe('Sidebar · shared Capacity hierarchy', () => {
+  it('retains services and physical storage for legacy Capacity entry', () => {
+    const { getByText, getByTestId } = renderSidebar(Domain.Capacity);
+    fireEvent.click(within(getByTestId('tree-node-STORAGE-10')).getByRole('button', { name: 'Expand' }));
     fireEvent.click(within(getByTestId('tree-node-CH-DG-10-100')).getByRole('button', { name: 'Expand' }));
     expect(getByText('N-10', { exact: true })).toBeTruthy();
-    // Physical disk group is under the node.
     expect(getByText(/Physical Group.*DG-100/)).toBeTruthy();
     expect(getByText('0123456789ab…')).toBeTruthy();
-    // DiskDB is a service item that belongs in the Cluster domain only.
-    expect(queryByText('DDB-10')).toBeNull();
-    // No PKV server item in the Chunk tree.
-    expect(queryByText('PKV-10')).toBeNull();
+    expect(getByText('DDB-10')).toBeTruthy();
+    expect(getByText('PKV-10')).toBeTruthy();
   });
 });

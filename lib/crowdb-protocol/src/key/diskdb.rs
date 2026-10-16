@@ -868,7 +868,13 @@ impl RelocationJournalKey {
 
 /// Group-0 text prefixes that diskdb's `NotifyHandler` should
 /// subscribe to for keepalive-relevant sysdata changes. Each entry
-/// is the `TextKey::prefix_all()` of the corresponding key type
-/// (`OwnerMapKey`, `BindMapKey`, `DiskKey`). Update this list when a
+/// identifies ownership, binding, disk membership or accepted lifecycle work.
+/// Update this list when a
 /// new group-0 key kind becomes keepalive-relevant for diskdb.
-pub const DISKDB_WATCH_PREFIXES: &[&[u8]] = &[b"/hw/dg_owner/", b"/hw/dg_bind/", b"/hw/disk/"];
+pub const DISKDB_WATCH_PREFIXES: &[&[u8]] = &[
+    b"/hw/dg_owner/",
+    b"/hw/dg_bind/",
+    b"/hw/disk/",
+    b"/hw/disk-online/",
+    b"/hw/disk-exclusion/",
+];

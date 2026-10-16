@@ -29,10 +29,17 @@ pub use credentials::{show_client_credentials, ClientCredentials, CredentialErro
 pub use liveness::{probe_liveness, LivenessError, LivenessServer};
 pub use manifest::{BootstrapManifest, BootstrapSession, ManifestError, ManifestState};
 pub use monitor_log::{MonitorEvent, MonitorEventKind, MonitorLog, MonitorLogError};
+#[cfg(feature = "test-util")]
 pub use node::{
-    control_node, run_node, run_single_node, serve_node_management, CandidateCache, DiscoveryConfig,
-    DiscoveryError, NodeDiscovery, NodeIdentity, NodeIdentityError, NodeManagementError, NodeRuntimeConfig,
-    NODE_SERVICE_TYPE,
+    accept_file_for_tests, accept_startup_mode_for_tests, check_retained_medium_for_tests,
+    file_operations_for_tests, prepare_file_for_tests, prepare_supplied_disk_for_tests,
+    publish_file_for_tests, verify_blank_medium_for_tests, InitializationForTests, NodeServiceForTests,
+    NodeSetupForTests, SuppliedOperationsForTests,
+};
+pub use node::{
+    control_node, discover_disks, run_node, run_single_node, serve_node_management, CandidateCache,
+    DiscoveryConfig, DiscoveryError, NodeDiscovery, NodeIdentity, NodeIdentityError, NodeManagementError,
+    NodeRuntimeConfig, NODE_SERVICE_TYPE,
 };
 pub use preview::{preview_step_names, run_preview, PreviewError};
 pub use probe::{ProbeError, ProbeExecutor};

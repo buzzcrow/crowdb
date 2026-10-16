@@ -6,6 +6,7 @@ import { ChevronRight, ChevronDown } from 'lucide-react';
 import { cn } from '../utils/cn';
 import { useSelection } from '../contexts/SelectionContext';
 import { useDomain } from '../contexts/DomainContext';
+import { Domain } from '../types';
 import { HealthBadge, RoleBadge, HwStatusBadge } from './ui/Badge';
 
 export interface TreeNode {
@@ -15,6 +16,7 @@ export interface TreeNode {
   rawId?: string | number;
   label: string;
   title?: string;
+  section?: 'services' | 'storage' | 'candidates';
   selected?: boolean;
   footer?: React.ReactNode;
   type: 'Datacenter' | 'Rack' | 'Node' | 'Server' | 'Store' | 'Group' | 'Replica' | 'DiskGroup' | 'Disk' | 'Partition' | 'Iceberg' | 'S3';
@@ -59,8 +61,9 @@ function TreeNodeComponent({
   onNodeClick,
   onNodeContextMenu,
 }: TreeNodeProps) {
-  const { selectedEntity, selectEntity } = useSelection();
+  const { selectedEntity: inspectedEntity, scopeEntity, selectEntity, inspectEntity } = useSelection();
   const { domain } = useDomain();
+  const selectedEntity = domain === Domain.Cluster ? scopeEntity : inspectedEntity;
   const hasChildren = node.expandable || (!!node.children && node.children.length > 0);
   const isExpanded = expandedIds.has(node.id);
   const entityId = node.rawId ?? node.id;
@@ -68,10 +71,10 @@ function TreeNodeComponent({
     String(node.parentIds?.store_id) === String(selectedEntity?.parentIds?.store_id)
       && (node.type !== 'Replica' || String(node.parentIds?.group_id) === String(selectedEntity?.parentIds?.group_id));
   const isNodeSelected = node.selected ?? (selectedEntity?.type === node.type && selectedEntity.id === String(entityId)
-    && sameOwner && (!node.serviceType || node.serviceType === selectedEntity.serviceType));
+    && sameOwner && node.section === selectedEntity.section && (!node.serviceType || node.serviceType === selectedEntity.serviceType));
 
   const select = useCallback(() => {
-    selectEntity({ type: node.type, id: String(entityId), name: node.label, parentIds: node.parentIds, domain, serviceType: node.serviceType });
+    selectEntity({ type: node.type, id: String(entityId), name: node.label, parentIds: node.parentIds, domain, section: node.section, serviceType: node.serviceType });
   }, [node, entityId, selectEntity, domain]);
 
   const handleSelectClick = useCallback(() => {
@@ -82,10 +85,11 @@ function TreeNodeComponent({
   const handleContextMenu = useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault();
-      select();
+      if (domain === Domain.Cluster) inspectEntity({ type: node.type, id: String(entityId), name: node.label, parentIds: node.parentIds, domain, section: node.section, serviceType: node.serviceType });
+      else select();
       onNodeContextMenu?.(node, e);
     },
-    [select, node, onNodeContextMenu],
+    [select, node, domain, entityId, inspectEntity, onNodeContextMenu],
   );
 
   const handleChevron = useCallback(

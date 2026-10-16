@@ -58,6 +58,8 @@ pub(super) async fn execute(
         "node-binding.json",
         "accepted-node.json",
         "prepared-bootstrap.json",
+        "initialization.json",
+        "initialization-status.json",
     ] {
         match std::fs::remove_file(root.join(name)) {
             Ok(()) => {}

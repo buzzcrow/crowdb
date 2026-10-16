@@ -242,6 +242,7 @@ pub(super) fn proto_chunk_type(fb: FBChunkType) -> Option<ProtoChunkType> {
         FBChunkType::Stream => Some(ProtoChunkType::Stream),
         FBChunkType::S3 => Some(ProtoChunkType::S3),
         FBChunkType::IcebergTable => Some(ProtoChunkType::IcebergTable),
+        FBChunkType::Dataset => Some(ProtoChunkType::Dataset),
         _ => None,
     }
 }
@@ -999,6 +1000,7 @@ pub(super) fn fb_chunk_type(t: ProtoChunkType) -> FBChunkType {
         ProtoChunkType::Stream => FBChunkType::Stream,
         ProtoChunkType::S3 => FBChunkType::S3,
         ProtoChunkType::IcebergTable => FBChunkType::IcebergTable,
+        ProtoChunkType::Dataset => FBChunkType::Dataset,
     }
 }
 

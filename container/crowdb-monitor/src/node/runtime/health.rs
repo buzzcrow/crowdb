@@ -114,9 +114,6 @@ impl NodeHealth {
             if !super::services::pending(profile, &intent, processes)? {
                 continue;
             }
-            if *self.attempts.get(&intent.service_id).unwrap_or(&0) >= 5 {
-                continue;
-            }
             match super::services::execute(profile, processes, intent.clone()).await {
                 Ok(_) => {
                     *self.attempts.entry(intent.service_id).or_default() += 1;

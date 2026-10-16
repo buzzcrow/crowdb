@@ -52,8 +52,9 @@ test('native diagnostics: browser history preserves S3 windows and rejects repla
     const stopped: string[] = [];
     try {
       for (const service of access) {
-        expect((await request.post(`/api/services/${service.id}/stop`, { data: {} })).ok()).toBe(true);
         stopped.push(service.id);
+        const response = await request.post(`/api/services/${service.id}/stop`, { data: {} });
+        expect(response.ok(), await response.text()).toBe(true);
       }
       await locations.getByRole('button', { name: 'Refresh locations', exact: true }).click();
       await expect(locations.getByRole('alert')).toBeVisible();

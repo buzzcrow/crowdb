@@ -73,6 +73,10 @@ fn server_secrets_are_distinct_private_and_stable() {
     );
     let second = ServerCredentials::load_or_create(root.path()).unwrap();
     assert_eq!(second.server_env(), body);
+    assert_eq!(first.dataset_token(), second.dataset_token());
+    assert_eq!(first.dataset_token().len(), 64);
+    assert!(!body.contains(&first.dataset_token()));
+    assert_ne!(first.dataset_token(), first.s3_master_key());
     assert!(show_client_credentials(root.path()).is_err());
 }
 
@@ -87,6 +91,7 @@ fn client_output_excludes_server_only_values_and_cannot_be_replaced() {
     assert!(output.contains("ICEBERG_TOKEN="));
     assert!(!output.contains("CROWDB_S3_MASTER_KEY"));
     assert!(!output.contains("CROWDB_ICEBERG_MANAGE_TOKEN"));
+    assert!(!output.contains(&server.dataset_token()));
     let mut conflicting = client();
     conflicting.access_key_id = "CROW456".into();
     assert!(server.persist_client(&conflicting).is_err());

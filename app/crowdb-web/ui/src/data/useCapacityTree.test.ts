@@ -47,15 +47,40 @@ it('suspends hidden-tab polling and reports partial observation failures', async
   vi.mocked(api.getDiskdbUsage).mockRejectedValueOnce(new Error('DiskDB offline'));
   visibility.mockReturnValue('visible');
   await act(async () => { document.dispatchEvent(new Event('visibilitychange')); await vi.advanceTimersByTimeAsync(0); });
-  expect(result.current.usage).toBeNull();
+  expect(result.current.usage).toEqual({ disk_groups: [] });
+  expect(result.current.observations.find(row => row.source === 'Usage')).toMatchObject({ error: 'DiskDB offline', observedAt: expect.any(Number) });
   expect(result.current.hardwareCapacity).not.toBeNull();
   expect(result.current.error?.message).toContain('usage');
   unmount();
 });
 
+it('retains failed inventory, clears errors after recovery and never reuses another scope usage', async () => {
+  setup();
+  const { result, rerender, unmount } = renderHook(({ diskGroupId }) => useCapacityTree({ diskGroupId }), { initialProps: { diskGroupId: 7 } });
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  const hardware = result.current.hardwareCapacity;
+  vi.mocked(api.getHardwareCapacity).mockRejectedValue(new Error('inventory offline'));
+  vi.mocked(api.getDiskdbUsage).mockRejectedValue(new Error('usage offline'));
+  await act(async () => { await result.current.refresh(); });
+  expect(result.current.hardwareCapacity).toBe(hardware);
+  expect(result.current.usage).toEqual({ disk_groups: [] });
+  rerender({ diskGroupId: 8 });
+  expect(result.current.usage).toBeNull();
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  expect(result.current.usage).toBeNull();
+  expect(result.current.observations.find(row => row.source === 'Usage')).toMatchObject({ error: 'usage offline', observedAt: null });
+  vi.mocked(api.getHardwareCapacity).mockResolvedValue(hardware!);
+  vi.mocked(api.getDiskdbUsage).mockResolvedValue({ disk_groups: [] });
+  await act(async () => { await result.current.refresh(); });
+  expect(result.current.error).toBeNull();
+  expect(result.current.usage).toEqual({ disk_groups: [] });
+  expect(result.current.observations.every(row => row.error === null)).toBe(true);
+  unmount();
+});
+
 it('keeps Cluster inventory free of runtime usage and scopes Disk observations', async () => {
   setup();
-  const { rerender, unmount } = renderHook(({ observeRuntime, diskGroupId, diskId }) => useCapacityTree({ observeRuntime, diskGroupId, diskId }), {
+  const { result, rerender, unmount } = renderHook(({ observeRuntime, diskGroupId, diskId }) => useCapacityTree({ observeRuntime, diskGroupId, diskId }), {
     initialProps: { observeRuntime: false, diskGroupId: undefined as number | undefined, diskId: undefined as string | undefined },
   });
   await act(async () => { await vi.advanceTimersByTimeAsync(0); });
@@ -67,5 +92,24 @@ it('keeps Cluster inventory free of runtime usage and scopes Disk observations',
   await act(async () => { await vi.advanceTimersByTimeAsync(0); });
   expect(api.getDiskdbUsage).toHaveBeenLastCalledWith(7, 'exact-disk', undefined, expect.objectContaining({ signal: expect.any(AbortSignal) }));
   expect(api.getDiskdbScanStatus).toHaveBeenLastCalledWith(7, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+  rerender({ observeRuntime: false, diskGroupId: undefined, diskId: undefined });
+  await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
+  expect(api.getDiskdbUsage).toHaveBeenCalledTimes(1);
+  expect(result.current.usage).toEqual({ disk_groups: [] });
+  expect(result.current.observations.find(row => row.source === 'Usage')).toMatchObject({ cached: true, observedAt: expect.any(Number) });
+  unmount();
+});
+
+it('only probes global runtime on an explicit refresh and then retains that cached observation', async () => {
+  setup();
+  const { result, unmount } = renderHook(() => useCapacityTree({ observeRuntime: false }));
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  expect(api.getDiskdbUsage).not.toHaveBeenCalled();
+  await act(async () => { await result.current.refreshRuntime(); });
+  expect(api.getDiskdbUsage).toHaveBeenCalledTimes(1);
+  expect(result.current.usage).toEqual({ disk_groups: [] });
+  await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
+  expect(api.getDiskdbUsage).toHaveBeenCalledTimes(1);
+  expect(result.current.observations.find(row => row.source === 'Usage')).toMatchObject({ cached: true });
   unmount();
 });

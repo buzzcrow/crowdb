@@ -110,7 +110,7 @@ fn task_index_scope_is_bound_to_partition_identity() {
     use crowdb_protocol::chunk_domain::ChunkDomain;
     use crowdb_protocol::chunk_slot::ChunkSlot;
 
-    for purpose in 1_u64..=6 {
+    for purpose in 1_u64..=7 {
         let partition_id = id(purpose << 56, 12);
         let key = ReadyChunkTaskKey {
             priority_inverse: 0,
@@ -138,5 +138,5 @@ fn task_index_scope_is_bound_to_partition_identity() {
         }
     }
     assert_eq!(ChunkDomain::for_chunk(&id(0, 1)), None);
-    assert_eq!(ChunkDomain::for_chunk(&id(7 << 56, 1)), None);
+    assert_eq!(ChunkDomain::for_chunk(&id(8 << 56, 1)), None);
 }

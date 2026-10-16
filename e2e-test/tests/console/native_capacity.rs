@@ -2,6 +2,13 @@
 // Licensed under the Apache License, Version 2.0.
 
 use super::native_context::TestNativeContext;
+use crowdb_kv_client::HardwareClient;
+use crowdb_protocol::{
+    common::{DiskId, HwStatus},
+    disk_storage::DiskStorageRecord,
+    diskdb::rpc::DiskValue,
+    mgmt::node::storage::DiskBackend,
+};
 use reqwest::Method;
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -19,16 +26,46 @@ pub(super) async fn prepare(context: &TestNativeContext) {
             201,
         )
         .await;
-    context
-        .api(
-            Method::POST,
-            "/api/nodes/1/disk-groups/581/disks",
-            json!({"disk_id":"00000000000000000000000000000581","disk_type":"Hdd",
-                "capacity_bytes":capacity,"zone_size_bytes":32 * 1024u64.pow(3),
-                "unit_size_bytes":128 * 1024,"device_path":"/opt/crowdb/data/capacity-spare.img"}),
-            201,
-        )
-        .await;
+    let backing = &profile["spare_backing"];
+    assert_eq!(backing["path"], "/opt/crowdb/data/disks/capacity-spare.img");
+    assert_eq!(backing["capacity_bytes"], capacity);
+    let hardware = HardwareClient::from_shared(context.kv.clone());
+    let rack_id = hardware
+        .list_nodes()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|(_, node, _)| *node == 1)
+        .unwrap()
+        .0;
+    // This is a fresh, exclusively owned truncated fixture, matching the normal
+    // native fixture's trusted legacy bootstrap rather than a public bypass.
+    let record = DiskStorageRecord {
+        version: 1,
+        physical_backing: None,
+        operation_id: "native-capacity-spare".into(),
+        rack_id,
+        node_id: 1,
+        disk_group_id: 581,
+        disk_id: DiskId { high: 0, low: 0x581 },
+        backend: DiskBackend::File,
+        backing_identity: backing["backing_identity"].as_str().unwrap().into(),
+        media_type: Some(0),
+        sparse: true,
+        removed: false,
+        geometry: DiskValue {
+            disk_type: 0,
+            capacity_units: capacity / (128 * 1024),
+            zone_size_units: 32 * 1024u64.pow(3) / (128 * 1024),
+            unit_size_bytes: 128 * 1024,
+            zone_count: 128,
+            status: HwStatus::Init as i32,
+            device_path: backing["path"].as_str().unwrap().into(),
+        },
+    };
+    record.validate().unwrap();
+    hardware.admit_disk_storage(&record).await.unwrap();
+    hardware.activate_disk_storage(&record).await.unwrap();
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let response = context

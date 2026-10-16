@@ -122,8 +122,12 @@ Temporary plans live under `doc/working/`; flow analyses live under
 | `doc/design/access-server/iceberge/design-crowdb-iceberg.md`                  | Iceberg ID paths, direct files and metadata scale.     |
 | `doc/design/access-server/iceberge/iceberg-table-spec-1.11.0.md`              | Backed-up normative Iceberg table format specification. |
 | `doc/design/access-server/iceberge/iceberg-rest-catalog-open-api-1.11.0.yaml` | Backed-up normative Iceberg REST Catalog OpenAPI.       |
-| `doc/design/access-server/dataset/design-crowdb-access-dataset.md`            | Dataset HTTP, native topology access, and GPU delivery. |
-| `doc/design/access-server/dataset/spec-crowdb-dataset.md`                      | Normative Dataset concepts, behavior, invariants, and compatibility. |
+| `doc/design/access-server/dataset/design-crowdb-access-dataset.md`            | Dataset authority, payload lifecycle, REST and SDK.     |
+| `doc/design/access-server/dataset/design-dataset-control.md`                 | Composition, Split revisions, bounded reads and cleanup. |
+| `doc/design/access-server/dataset/spec-crowdb-dataset.md`                     | Normative Dataset behavior and compatibility.           |
+| `doc/design/access-server/dataset/openapi-crowdb-dataset-v1.yaml`             | Dataset REST v1 schemas, framing, bounds and retries.   |
+| `doc/design/access-server/dataset/openapi-crowdb-dataset-v2.yaml`             | Dataset REST v2 capability-gated control operations.    |
+| `sdk/README.md`                                                               | Rust/Python SDK installation and resource ownership.    |
 
 Prefer the most specific match. Open a root design only for cross-topic work;
 update its row when a permanent document is renamed or materially rescoped.

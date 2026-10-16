@@ -6,6 +6,8 @@ test('native diagnostics: Capacity retains hardware and marks interrupted DDB us
   await page.goto('/?domain=Capacity');
   const totals = page.getByTestId('capacity-summary');
   const panel = totals.locator('..');
+  await expect(totals.getByText('Unknown', { exact: true })).toHaveCount(2);
+  await panel.getByRole('button', { name: 'Refresh', exact: true }).click();
   await expect(totals.getByText('Unknown', { exact: true })).toHaveCount(0);
   expect((await request.post('/api/nodes/1/diskdb/stop', { data: {} })).ok()).toBe(true);
   try {
@@ -14,12 +16,15 @@ test('native diagnostics: Capacity retains hardware and marks interrupted DDB us
     await expect(page.getByRole('alert').filter({ hasText: 'Capacity observation unavailable' })).toBeVisible();
     await panel.getByRole('button', { name: /R-1 / }).click();
     await expect(totals.getByText('Unknown', { exact: true })).toHaveCount(2);
-    await panel.getByRole('button', { name: /N-1 / }).click();
-    await expect(totals.getByText('Unknown', { exact: true })).toHaveCount(2);
-    await panel.getByRole('button', { name: /DG-1 / }).click();
+    await panel.getByRole('table', { name: 'Node capacity' }).getByRole('button', { name: 'N-1', exact: true }).click();
+    const workspace = page.getByLabel('Node 1 workspace', { exact: true });
+    const group = workspace.getByRole('region', { name: 'Disk group 1', exact: true });
+    await expect(group.getByRole('article', { name: /^Registered disk / })).toContainText('Usage unknown');
+    await expect(group).toContainText('80.0 GB');
+    await group.getByRole('button', { name: /DG-1$/ }).click();
     await expect(totals.getByText('Unknown', { exact: true })).toHaveCount(2);
     const disk = panel.getByRole('button', { name: /00000000…/ });
-    await expect(disk).toHaveAttribute('title', /Usage unknown/);
+    await expect(panel.getByRole('article', { name: /^Disk / })).toHaveAttribute('title', /Usage unknown/);
     await disk.click();
     await expect(page.getByTestId('disk-geometry')).toContainText(/80 zones.*Usage unknown/);
     await expect(totals.getByText('Unknown', { exact: true })).toHaveCount(2);
@@ -40,13 +45,15 @@ test('native diagnostics: scanner and scoped recalc show actual completed observ
   await expect(page.getByRole('heading', { name: 'Capacity — Cluster', exact: true })).toBeVisible();
   await expect(panel.getByText('3 instance(s)', { exact: true })).toBeVisible();
   for (const label of ['Total Capacity', 'Busy', 'Free']) {
-    await expect(panel.getByText(label, { exact: true })).toBeVisible();
+    await expect(page.getByTestId('capacity-summary').getByText(label, { exact: true })).toBeVisible();
   }
   await expect(panel.getByRole('button', { name: 'Refresh', exact: true })).toBeVisible();
+  await expect(panel.getByText('Scan status unavailable.', { exact: true })).toBeVisible();
+  await panel.getByRole('button', { name: 'Refresh', exact: true }).click();
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
-  const datacenter = sidebar.getByRole('treeitem').filter({ hasText: /^datacenter$/ });
+  const datacenter = sidebar.getByTestId('tree-node-DC-datacenter').locator(':scope > [role="treeitem"]');
   await expect(datacenter).toBeVisible();
-  await expect(sidebar.getByRole('treeitem').first()).toHaveText(/datacenter/);
+  await expect(datacenter).toHaveText(/datacenter/);
   await datacenter.getByText('datacenter', { exact: true }).click();
   const clusterInspector = page.getByRole('complementary', { name: 'Entity inspector' });
   const field = (name: string) => clusterInspector.locator('dl > div')
@@ -74,8 +81,8 @@ test('native diagnostics: scanner and scoped recalc show actual completed observ
   await expect(panel.getByRole('button', { name: 'Run Scan', exact: true })).toBeEnabled();
   await panel.getByRole('button', { name: /R-1 / }).click();
   await expect(panel.getByText('Scanner', { exact: true })).toHaveCount(0);
-  await panel.getByRole('button', { name: /N-1 / }).click();
-  await panel.getByRole('button', { name: /DG-1 / }).click();
+  await panel.getByRole('table', { name: 'Node capacity' }).getByRole('button', { name: 'N-1', exact: true }).click();
+  await page.getByLabel('Node 1 workspace', { exact: true }).getByRole('region', { name: 'Disk group 1', exact: true }).getByRole('button', { name: /DG-1$/ }).click();
   await expect(page.getByRole('heading', { name: 'Capacity — DG-1', exact: true })).toBeVisible();
   await expect(panel.getByRole('button', { name: /00000000…/ })).toBeVisible();
   await panel.getByRole('button', { name: /00000000…/ }).click();

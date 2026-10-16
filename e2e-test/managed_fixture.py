@@ -88,6 +88,9 @@ class ManagedCluster(Cluster):
         raise AssertionError(f"normal selected release services never became ready: {last}")
 
     def client_configuration(self):
+        manifest = self.command("exec", self.servers[0], "cat",
+                                "/opt/crowdb/data/bootstrap/manifest.json")
+        (self.artifacts / "managed-manifest.json").write_text(manifest)
         config_root = self.artifacts / "runtime-config" / "config"
         config_root.mkdir(parents=True, exist_ok=True)
         for service in ("chunkdb", "chunk-kv"):

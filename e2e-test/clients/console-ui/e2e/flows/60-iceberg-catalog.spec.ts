@@ -185,15 +185,22 @@ test('native diagnostics: unavailable catalog retries the actual Access services
   const stopped: string[] = [];
   try {
     for (const id of ['access-server-1', 'access-server-2', 'access-server-3']) {
-      expect((await request.post(`/api/services/${id}/stop`, { data: {} })).ok()).toBe(true);
+      // A timeout leaves the committed stop outcome unknown; restore it too.
       stopped.push(id);
+      await step(`native Access stop ${id}`, async () => {
+        const response = await request.post(`/api/services/${id}/stop`, { data: {} });
+        expect(response.ok(), await response.text()).toBe(true);
+      });
     }
     await page.goto('/?domain=Iceberg');
     await expect(page.getByRole('button', { name: 'Retry catalog', exact: true })).toBeVisible();
     await expect(page.getByLabel('Catalog write token')).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Create metadata demo', exact: true })).toHaveCount(0);
   } finally {
-    for (const id of stopped) expect((await request.post(`/api/services/${id}/restart`, { data: {} })).ok()).toBe(true);
+    for (const id of stopped) await step(`native Access restore ${id}`, async () => {
+      const response = await request.post(`/api/services/${id}/restart`, { data: {} });
+      expect(response.ok(), await response.text()).toBe(true);
+    });
   }
   await page.getByRole('button', { name: 'Retry catalog', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Retry catalog', exact: true })).toHaveCount(0);

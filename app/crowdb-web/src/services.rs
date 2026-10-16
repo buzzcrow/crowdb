@@ -25,6 +25,10 @@ pub(crate) fn routes() -> axum::Router<crate::state::AppState> {
         .route("/api/chunk-storage-readiness", get(dependencies::storage))
         .route("/api/nodes/:id/service-plan", put(plans::put))
         .route("/api/nodes/:id/services/deploy", post(deployment::deploy))
+        .route(
+            "/api/nodes/:id/setup/prepare-service",
+            post(deployment::planned::prepare),
+        )
         .route("/api/services/:id/restart", post(lifecycle::restart))
         .route("/api/services/:id/stop", post(lifecycle::stop))
         .route("/api/services/:id", delete(lifecycle::delete))

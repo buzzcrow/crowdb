@@ -23,6 +23,7 @@ export function DeployServiceDialog({ nodeId, kind, servers, stores, diskGroups,
   const [httpPort, setHttpPort] = useState(String(base));
   const [rpcPort, setRpcPort] = useState(String(kind === 'diskio' ? base : base + 100));
   const [s3Port, setS3Port] = useState('9091');
+  const [datasetPort, setDatasetPort] = useState('9093');
   const [healthPort, setHealthPort] = useState('9094');
   const [diskGroup, setDiskGroup] = useState(String(diskGroups[0]?.id ?? ''));
   const [store, setStore] = useState(String(stores.find(store => String(store.store_id) !== '0')?.store_id ?? stores[0]?.store_id ?? ''));
@@ -40,11 +41,12 @@ export function DeployServiceDialog({ nodeId, kind, servers, stores, diskGroups,
     setHttpPort(String(value.http_port ?? ''));
     setRpcPort(String(value.rpc_port ?? ''));
     setS3Port(String(value.s3_port ?? ''));
+    setDatasetPort(String(value.dataset_port ?? ''));
     setHealthPort(String(value.health_port ?? ''));
   }, [defaults.values, kind]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const ports = kind === 'diskio' ? [rpcPort] : kind === 'access-server' ? [httpPort, s3Port, healthPort] : [httpPort, rpcPort];
+  const ports = kind === 'diskio' ? [rpcPort] : kind === 'access-server' ? [httpPort, s3Port, datasetPort, healthPort] : [httpPort, rpcPort];
   const valid = /^\d+$/.test(instance) && BigInt(instance) > 0n && BigInt(instance) <= 9223372036854775807n
     && ports.every(port => /^\d+$/.test(port) && Number(port) > 0 && Number(port) <= 65535)
     && new Set(ports.map(Number)).size === ports.length
@@ -57,7 +59,7 @@ export function DeployServiceDialog({ nodeId, kind, servers, stores, diskGroups,
         ...(kind === 'chunkdb' ? { dynamic_ownership: dynamicOwnership } : {}),
         kind, instance_id: instance, test_single_node: testMode,
         ...(kind !== 'diskio' ? { http_port: Number(httpPort) } : {}),
-        ...(kind === 'access-server' ? { s3_port: Number(s3Port), health_port: Number(healthPort) } : { rpc_port: Number(rpcPort) }),
+        ...(kind === 'access-server' ? { s3_port: Number(s3Port), dataset_port: Number(datasetPort), health_port: Number(healthPort) } : { rpc_port: Number(rpcPort) }),
         ...(kind === 'diskio' ? { disk_group_id: Number(diskGroup) } : {}),
         ...(kind === 'chunk-kv' ? { metadata_store_id: Number(store), ...(bootstrap ? { bootstrap_group_id: Number(group) } : {}) } : {}),
       });
@@ -71,6 +73,7 @@ export function DeployServiceDialog({ nodeId, kind, servers, stores, diskGroups,
       {kind !== 'diskio' && <Input label={kind === 'access-server' ? 'Iceberg HTTP port' : 'Management HTTP port'} value={httpPort} onChange={event => setHttpPort(event.target.value)} />}
       {kind !== 'access-server' && <Input label="RPC port" value={rpcPort} onChange={event => setRpcPort(event.target.value)} />}
       {kind === 'access-server' && <Input label="S3 HTTP port" value={s3Port} onChange={event => setS3Port(event.target.value)} />}
+      {kind === 'access-server' && <Input label="Dataset HTTP port" value={datasetPort} onChange={event => setDatasetPort(event.target.value)} />}
       {kind === 'access-server' && <Input label="Health HTTP port" value={healthPort} onChange={event => setHealthPort(event.target.value)} />}
       {kind === 'diskio' && <label className="tw-block tw-text-sm">Disk group<select aria-label="Disk group" className={inputClass} value={diskGroup} onChange={event => setDiskGroup(event.target.value)}>
         <option value="">Select disk group</option>{diskGroups.map(group => <option key={group.id} value={group.id}>DG {group.id} {group.name}</option>)}

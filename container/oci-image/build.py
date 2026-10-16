@@ -37,6 +37,8 @@ def main():
                 content.update(hashlib.file_digest(stream, "sha256").digest())
     runtime_sha256 = content.hexdigest()
     revision = (context / "SOURCE_REVISION").read_text().strip()
+    source_tree_path = context / "SOURCE_TREE"
+    source_tree = source_tree_path.read_text().strip() if source_tree_path.exists() else ""
     version = (context / "VERSION").read_text().strip()
     debug_path = context / "DEBUG_INFO"
     debug_info = debug_path.read_text().strip() if debug_path.exists() else "stripped"
@@ -55,6 +57,7 @@ def main():
             command = [tool("buildctl"), "--addr", address, "build", "--frontend", "dockerfile.v0",
                        "--local", f"context={context}", "--local", f"dockerfile={context}",
                        "--opt", f"platform={args.platform}", "--opt", f"build-arg:SOURCE_REVISION={revision}",
+                       "--opt", f"build-arg:SOURCE_TREE={source_tree}",
                        "--opt", f"build-arg:PREVIEW_VERSION={version}",
                        "--opt", f"build-arg:RUNTIME_SHA256={runtime_sha256}",
                        "--opt", f"build-arg:DEBUG_INFO={debug_info}",
@@ -69,10 +72,12 @@ def main():
                     command += ["--opt", f"build-arg:{name}={value}"]
             subprocess.run(command, check=True)
         result = inspect(temporary)
-        if result["labels"].get("org.opencontainers.image.revision") != revision or result["labels"].get("org.opencontainers.image.version") != version:
+        if (result["labels"].get("org.opencontainers.image.revision") != revision
+                or result["labels"].get("org.opencontainers.image.version") != version
+                or result["labels"].get("org.crowdb.source.tree", "") != source_tree):
             raise ValueError("built image differs from staged source metadata")
         result.pop("config")
-        result.update(revision=revision, version=version, base_image=base, tools=versions,
+        result.update(revision=revision, source_tree=source_tree, version=version, base_image=base, tools=versions,
                       runtime_sha256=runtime_sha256, debug_info=debug_info)
         os.replace(temporary, output)
         receipt_path = Path(directory) / "receipt.json"

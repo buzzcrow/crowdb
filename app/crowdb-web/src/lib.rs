@@ -34,6 +34,12 @@ pub mod state;
 
 pub use state::AppState;
 
+/// Run standard-node automatic admission independently of browser connections.
+#[must_use]
+pub fn start_node_auto_join(state: AppState) -> tokio::task::JoinHandle<()> {
+    node::auto_join::start(state)
+}
+
 /// Build the Axum router used by both the binary and integration tests.
 #[allow(clippy::too_many_lines)]
 pub fn router(state: AppState) -> axum::Router {
@@ -46,6 +52,17 @@ pub fn router(state: AppState) -> axum::Router {
             .route("/healthz", get(health::healthz))
             .route("/api/mode", get(health::mode))
             .route("/api/node/candidates", get(node::candidates))
+            .route("/api/node/disks", get(node::storage::local))
+            .route("/api/cluster/initialization", get(node::initialization::status))
+            .route("/api/nodes/:id/disk-inventory", get(node::storage::remote))
+            .route(
+                "/api/nodes/:id/disk-candidates",
+                get(node::storage::supplied::list).post(node::storage::supplied::create),
+            )
+            .route(
+                "/api/nodes/:id/disk-candidates/:operation_id",
+                get(node::storage::supplied::status),
+            )
             .route("/api/node/admissions", get(node::admissions))
             .route("/api/node/status", get(node::status))
             .route("/api/authority", get(managed::authority))
@@ -181,12 +198,69 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/healthz", get(health::healthz))
         .route("/api/mode", get(health::mode))
         .route("/api/node/candidates", get(node::candidates))
+        .route("/api/node/disks", get(node::storage::local))
+        .route("/api/cluster/initialization", get(node::initialization::status))
+        .route("/api/nodes/:id/disk-inventory", get(node::storage::remote))
+        .route(
+            "/api/nodes/:id/removed-disks",
+            get(node::storage::candidates::list),
+        )
+        .route(
+            "/api/nodes/:id/disk-groups/:dg_id/disks/:disk_id/backing",
+            get(node::storage::backing::get),
+        )
+        .route(
+            "/api/nodes/:id/disk-groups/:dg_id/disks/:disk_id/lifecycle",
+            get(node::storage::lifecycle::status),
+        )
+        .route(
+            "/api/nodes/:id/disk-groups/:dg_id/disks/:disk_id/offline",
+            post(node::storage::lifecycle::offline),
+        )
+        .route(
+            "/api/nodes/:id/disk-groups/:dg_id/disks/:disk_id/removal",
+            post(node::storage::lifecycle::remove),
+        )
+        .route(
+            "/api/nodes/:id/disk-groups/:dg_id/disks/:disk_id/rejoin",
+            post(node::storage::rejoin::rejoin),
+        )
+        .route(
+            "/api/nodes/:id/disk-groups/:dg_id/disks/:disk_id/online",
+            post(node::storage::online::request),
+        )
+        .route(
+            "/api/nodes/:id/disk-files",
+            get(node::storage::files::list).post(node::storage::files::create),
+        )
+        .route(
+            "/api/nodes/:id/disk-files/:operation_id",
+            get(node::storage::files::status),
+        )
+        .route(
+            "/api/nodes/:id/disk-candidates",
+            get(node::storage::supplied::list).post(node::storage::supplied::create),
+        )
+        .route(
+            "/api/nodes/:id/disk-candidates/:operation_id",
+            get(node::storage::supplied::status),
+        )
         .route("/api/node/admissions", get(node::admissions))
         .route("/api/node/admit", post(node::admit))
+        .route("/api/node/preflight", post(node::preflight::prepare))
+        .route("/api/node/preflight/:id", delete(node::preflight::discard))
+        .route(
+            "/api/nodes/:id/setup",
+            get(node::setup::status).post(node::setup::retry),
+        )
         .route("/api/node/update", post(node::update))
         .route("/api/node/cleanup", post(node::cleanup))
         .route("/api/node/cancel", post(node::cancel))
         .route("/api/node/status", get(node::status))
+        .route(
+            "/api/node/auto-join",
+            get(node::auto_join::status).post(node::auto_join::update),
+        )
         // ── Physical tree (A3): rack + node lifecycle ────────────────
         .route(
             "/api/racks",
@@ -364,6 +438,10 @@ pub fn router(state: AppState) -> axum::Router {
         // React SPA fallback.
         .fallback(spa::spa_fallback)
         .layer(axum::middleware::from_fn_with_state(state.clone(), node::guard))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            health::require_editable,
+        ))
         .with_state(state)
         // Propagate `x-crowdb-kv-corr-id` through every request: read it
         // (or mint one), open a task-local scope so outbound clients

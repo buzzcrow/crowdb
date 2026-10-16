@@ -20,6 +20,7 @@ mod chunk_slots;
 mod credentials;
 mod geometry;
 mod launch;
+pub(super) mod planned;
 mod remote;
 
 #[derive(Clone, Copy, Deserialize, Serialize)]
@@ -65,6 +66,8 @@ pub(super) struct Deploy {
     #[serde(default)]
     s3_port: Option<u16>,
     #[serde(default)]
+    dataset_port: Option<u16>,
+    #[serde(default)]
     health_port: Option<u16>,
     #[serde(default)]
     disk_group_id: Option<u64>,
@@ -99,7 +102,7 @@ pub(super) async fn deploy(
     Json(body): Json<Deploy>,
 ) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
     let kind = body.kind.name();
-    let listeners = json!({"http_port":body.http_port,"rpc_port":body.rpc_port,"s3_port":body.s3_port,"health_port":body.health_port});
+    let listeners = json!({"http_port":body.http_port,"rpc_port":body.rpc_port,"s3_port":body.s3_port,"health_port":body.health_port,"dataset_port":body.dataset_port});
     deploy_inner(state, node_id, body).await.map_err(|(status, Json(error))| {
         (status, Json(json!({"error":error.error,"service":kind,"node_id":node_id,"listeners":listeners,"retryable":true})))
     })
@@ -125,10 +128,16 @@ async fn deploy_inner(
         claims.push("access-credentials".into());
     }
     let operation = Operation::claim(&state, claims)?;
-    let ports: Vec<_> = [body.http_port, body.rpc_port, body.s3_port, body.health_port]
-        .into_iter()
-        .flatten()
-        .collect();
+    let ports: Vec<_> = [
+        body.http_port,
+        body.rpc_port,
+        body.s3_port,
+        body.health_port,
+        body.dataset_port,
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     let port_claim = super::defaults::claim_ports(&state, &ports)?;
     let (node, seeds) = inputs(&state, node_id, &id, &body)?;
     if matches!(body.kind, Kind::Chunkdb | Kind::ChunkKv) && !body.test_single_node {
@@ -156,11 +165,14 @@ fn validate(body: &Deploy) -> Result<(), Failure> {
     if body.instance_id == 0 || body.instance_id > (u64::MAX >> 1) {
         return Err(err_400("Instance ID must be in 1..=9223372036854775807"));
     }
-    let ports = match body.kind {
+    let mut ports = match body.kind {
         Kind::Diskio => vec![body.rpc_port],
         Kind::AccessServer => vec![body.http_port, body.s3_port, body.health_port],
         _ => vec![body.http_port, body.rpc_port],
     };
+    if body.dataset_port.is_some() {
+        ports.push(body.dataset_port);
+    }
     if ports.iter().any(|port| port.map_or(true, |port| port == 0))
         || ports.len() != ports.iter().collect::<std::collections::HashSet<_>>().len()
     {
@@ -185,6 +197,7 @@ fn validate(body: &Deploy) -> Result<(), Failure> {
                 || body.stream_chunk_capacity_bytes.is_some()
                 || body.stream_extent_page_entries.is_some()))
         || (!matches!(body.kind, Kind::AccessServer) && body.s3_port.is_some())
+        || (!matches!(body.kind, Kind::AccessServer) && body.dataset_port.is_some())
         || (!matches!(body.kind, Kind::AccessServer) && body.health_port.is_some())
         || (matches!(body.kind, Kind::AccessServer) && body.rpc_port.is_some())
         || (matches!(body.kind, Kind::Diskio) && body.http_port.is_some())
@@ -227,22 +240,33 @@ fn inputs(
         ));
     }
     node.host = "127.0.0.1".into();
-    let requested: Vec<_> = [body.http_port, body.rpc_port, body.s3_port, body.health_port]
-        .into_iter()
-        .flatten()
-        .collect();
+    let requested: Vec<_> = [
+        body.http_port,
+        body.rpc_port,
+        body.s3_port,
+        body.health_port,
+        body.dataset_port,
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     for service in &config.servers {
         let public = config
             .local_launches
             .get(&service.id)
             .into_iter()
             .flat_map(|spec| {
-                ["CROWDB_S3_PUBLIC_URI", "CROWDB_ICEBERG_PUBLIC_URI"]
-                    .into_iter()
-                    .filter_map(|name| spec.env.get(name).map(String::as_str))
+                [
+                    "CROWDB_S3_PUBLIC_URI",
+                    "CROWDB_ICEBERG_PUBLIC_URI",
+                    "CROWDB_DATASET_PUBLIC_URI",
+                ]
+                .into_iter()
+                .filter_map(|name| spec.env.get(name).map(String::as_str))
             });
         let origins = std::iter::once(service.url.as_str())
             .chain(service.rpc_url.as_deref())
+            .chain(service.dataset_origin.as_deref())
             .chain(public);
         for origin in origins {
             let normalized = if origin.contains("://") {

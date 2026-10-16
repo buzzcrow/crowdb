@@ -11,6 +11,9 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+test-util = []
+
 [dependencies]
 crowdb-console-shared = { path = "../../lib/crowdb-console-shared" }
 clap = { version = "4", features = ["derive"] }
@@ -19,9 +22,10 @@ crowdb-diskio-client = { path = "../../lib/crowdb-diskio-client" }
 crowdb-protocol = { path = "../../lib/crowdb-protocol" }
 crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi" }
 flatbuffers = { workspace = true }
+futures = "0.3"
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-rustix = { version = "1", features = ["process"] }
+rustix = { version = "1", features = ["process", "fs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
@@ -35,5 +39,7 @@ ssh-key = "0.6"
 if-addrs = "0.13"
 
 [dev-dependencies]
+crowdb-kv = { path = "../../lib/crowdb-kv" }
+crowdb-monitor = { path = ".", features = ["test-util"] }
 crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi", features = ["test-util"] }
 crowdb-test-harness = { path = "../../lib/crowdb-test-harness" }

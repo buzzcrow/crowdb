@@ -18,7 +18,7 @@ impl ChunkDomain {
     pub fn for_chunk(id: &ChunkId) -> Option<Self> {
         match id.high.to_be_bytes()[0] {
             1..=3 => Some(Self::System),
-            4..=6 => Some(Self::UserData),
+            4..=7 => Some(Self::UserData),
             _ => None,
         }
     }

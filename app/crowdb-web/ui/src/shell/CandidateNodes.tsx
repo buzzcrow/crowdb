@@ -3,7 +3,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { listNodeCandidates, nodeDeploymentStatus, nodeAdmissions, cancelNodeAdmission, type NodeAdmission, type NodeCandidates, type NodeDeploymentStatus } from '../api';
+import { listNodeCandidates, nodeDeploymentStatus, nodeAdmissions, cancelNodeAdmission, discardCandidateReview, type NodeAdmission, type NodeCandidates, type NodeDeploymentStatus } from '../api';
 import { AdmitCandidateDialog } from './AdmitCandidateDialog';
 import { Button } from '../components/ui/Button';
 import { NodeRecoveryDialog } from './NodeRecoveryDialog';
@@ -15,7 +15,7 @@ const labels = {
 };
 
 /** Discovery observations remain separate from the confirmed hardware tree. */
-export function CandidateNodes({ racks, readonly, onChange }: { racks: Rack[]; readonly?: boolean; onChange?: () => void }) {
+export function CandidateNodes({ racks, readonly, onChange, addNodeRequest }: { addNodeRequest?: { rackId: number; nonce: number }; racks: Rack[]; readonly?: boolean; onChange?: () => void }) {
   const section = useRef<HTMLElement>(null);
   const dialogRoot = section.current?.closest('.crowdb-console');
   const [snapshot, setSnapshot] = useState<NodeCandidates>();
@@ -27,6 +27,12 @@ export function CandidateNodes({ racks, readonly, onChange }: { racks: Rack[]; r
   const [selected, setSelected] = useState<string>();
   const [updating, setUpdating] = useState(false);
   const [clusterFilter, setClusterFilter] = useState('all');
+  useEffect(() => {
+    if (!addNodeRequest) return;
+    setClusterFilter('unbound');
+    section.current?.focus();
+    section.current?.scrollIntoView({ block: 'nearest' });
+  }, [addNodeRequest]);
   useEffect(() => {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
@@ -44,8 +50,9 @@ export function CandidateNodes({ racks, readonly, onChange }: { racks: Rack[]; r
     return () => { controller.abort(); clearTimeout(timer); };
   }, []);
 
-  return <section ref={section} aria-label="Candidate nodes" className="tw-border-t tw-border-border tw-p-3 tw-overflow-y-auto tw-max-h-[40vh] tw-shrink-0">
+  return <section ref={section} tabIndex={-1} aria-label="Candidate nodes" className="tw-border-t tw-border-border tw-p-3 tw-overflow-y-auto tw-max-h-[40vh] tw-shrink-0">
     <h3 className="tw-text-sm tw-font-semibold tw-mb-2">Candidate nodes</h3>
+    {addNodeRequest && <p className="tw-text-xs tw-mb-2">Choose a candidate for Rack {addNodeRequest.rackId}; verify access before joining.</p>}
     {deployment && <p data-testid="deployment-phase" className="tw-text-xs tw-text-muted tw-mb-2">{deployment.phase === 'unbound_draft' ? 'Uncommitted local draft' : deployment.phase === 'active' ? 'Active cluster' : deployment.phase === 'authority_unavailable' ? 'Group 0 unavailable · confirmed view is stale' : deployment.phase === 'topology_publishing' ? 'Publishing confirmed topology' : deployment.phase === 'bootstrap_in_progress' ? 'Bootstrap in progress · submitted inputs are fixed' : 'Recovery required'}</p>}
     {deployment?.cluster_id && <p className="tw-text-xs tw-break-all tw-text-muted tw-mb-2">Cluster {deployment.cluster_id}</p>}
     {deployment && ['bootstrap_in_progress', 'topology_publishing'].includes(deployment.phase) && <Button size="sm" disabled={readonly} onClick={() => setRecovery('resume')}>Resume bootstrap</Button>}
@@ -68,6 +75,11 @@ export function CandidateNodes({ racks, readonly, onChange }: { racks: Rack[]; r
         <div className="tw-break-all">{node.advertisement.discovery_id}</div>
         <div className="tw-text-muted">{labels[node.state]}{node.advertisement.discovery_id === snapshot.local.advertisement.discovery_id ? ' · This node' : ''}</div>
         {node.state === 'foreign_cluster' && node.advertisement.monitor_endpoints[0] && <a className="tw-text-accent" href={clusterConsole(node.advertisement.monitor_endpoints[0])} target="_blank" rel="noreferrer">Open this cluster UI</a>}
+        {snapshot.prepared_access?.some(prepared => prepared.discovery_id === node.advertisement.discovery_id) && <div className="tw-text-muted">Access review pending</div>}
+        {snapshot.prepared_access?.filter(prepared => prepared.discovery_id === node.advertisement.discovery_id).map(prepared => <Button key={`review-${prepared.operation_id}`} size="sm" disabled={readonly || unavailable} onClick={async () => {
+          try { await discardCandidateReview(prepared.discovery_id, prepared.operation_id); onChange?.(); }
+          catch (cause) { setActionError(String(cause)); }
+        }}>Discard access review</Button>)}
         {node.advertisement.cluster_id && <div className="tw-break-all tw-text-muted">Cluster {node.advertisement.cluster_id}</div>}
         {node.advertisement.monitor_endpoints.map(endpoint => <div key={endpoint} className="tw-break-all tw-text-muted">{endpoint}</div>)}
         {admissions.some(entry => entry.discovery_id === node.advertisement.discovery_id) && <div className="tw-text-muted">{admissions.find(entry => entry.discovery_id === node.advertisement.discovery_id)?.confirmed ? 'Admitted' : admissions.find(entry => entry.discovery_id === node.advertisement.discovery_id)?.cancelled ? 'Cancelled · cleanup can be retried' : 'Prepared or joining · retry available'}</div>}
@@ -78,7 +90,7 @@ export function CandidateNodes({ racks, readonly, onChange }: { racks: Rack[]; r
     </ul>
     {snapshot?.diagnostics.map((diagnostic, index) => <p key={index} className="tw-text-xs tw-text-muted tw-mt-2">{diagnostic}</p>)}
     {recovery && deployment && dialogRoot && createPortal(<NodeRecoveryDialog status={deployment} cleanup={recovery === 'cleanup'} onClose={() => setRecovery(undefined)} onChange={onChange} />, dialogRoot)}
-    {selected && dialogRoot && createPortal(<AdmitCandidateDialog discoveryId={selected} racks={racks} current={updating ? admissions.find(entry => entry.discovery_id === selected) : undefined} onClose={() => setSelected(undefined)} onSuccess={onChange} />, dialogRoot)}
+    {selected && dialogRoot && createPortal(<AdmitCandidateDialog initialRackId={addNodeRequest?.rackId} discoveryId={selected} racks={racks} preparedNode={snapshot?.prepared_access?.find(entry => entry.discovery_id === selected)} current={updating ? admissions.find(entry => entry.discovery_id === selected) : undefined} onClose={() => setSelected(undefined)} onSuccess={onChange} />, dialogRoot)}
   </section>;
 }
 

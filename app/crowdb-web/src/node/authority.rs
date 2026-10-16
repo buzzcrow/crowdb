@@ -95,6 +95,9 @@ pub(crate) async fn guard(State(state): State<AppState>, request: Request, next:
     }
     let path = request.uri().path().to_owned();
     let mutation = !matches!(*request.method(), Method::GET | Method::HEAD | Method::OPTIONS);
+    if path == "/api/node/auto-join" {
+        return next.run(request).await;
+    }
     if path == "/api/node/cleanup" && mutation {
         return next.run(request).await;
     }
@@ -125,6 +128,16 @@ pub(crate) async fn guard(State(state): State<AppState>, request: Request, next:
                 return error.into_response();
             }
         }
+        if *request.method() == Method::DELETE {
+            if let Some(response) = super::hardware::delete(&state, &path).await {
+                return response;
+            }
+        }
+        if *request.method() == Method::GET {
+            if let Some(response) = super::hardware::read(&state, &path).await {
+                return response;
+            }
+        }
         if mutation
             && path == "/api/cluster/init"
             && !state.runtime_root.join("prepared-bootstrap.json").exists()
@@ -152,8 +165,12 @@ pub(crate) async fn guard(State(state): State<AppState>, request: Request, next:
         }
     } else if mutation {
         let draft = path == "/api/racks" || path.starts_with("/api/racks/");
-        let permitted =
-            path == "/api/node/admit" || path == "/api/node/cancel" || path == "/api/cluster/init" || draft;
+        let permitted = path == "/api/node/admit"
+            || path == "/api/node/preflight"
+            || (path.starts_with("/api/node/preflight/") && *request.method() == Method::DELETE)
+            || path == "/api/node/cancel"
+            || path == "/api/cluster/init"
+            || draft;
         if !permitted {
             return err_409(
                 "Only candidate, rack and Group 0 bootstrap operations are available before publication",

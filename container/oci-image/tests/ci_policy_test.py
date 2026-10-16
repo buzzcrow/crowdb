@@ -55,6 +55,15 @@ class ReleasePolicyTest(unittest.TestCase):
         self.assertNotIn("secrets.", str(workflow))
         self.assertNotIn("id-token", str(workflow))
 
+    def test_release_rejects_an_uncommitted_build_tree_before_remote_publication(self):
+        verified = {"version": "0.3.0", "revision": "revision", "source_tree": "built-tree"}
+        env = {"GITHUB_SHA": "revision", "GITHUB_REF_NAME": "release/0.3.0"}
+        with patch.dict("os.environ", env, clear=True), patch(
+                "publish.subprocess.check_output", return_value="committed-tree\n") as command:
+            with self.assertRaisesRegex(ValueError, "uncommitted source tree"):
+                check_source(verified, "0.3.0")
+            command.assert_called_once_with(["git", "rev-parse", "revision^{tree}"], text=True)
+
 
 if __name__ == "__main__":
     unittest.main()

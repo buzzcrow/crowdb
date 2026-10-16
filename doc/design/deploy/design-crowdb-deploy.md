@@ -172,8 +172,8 @@ its topology is not imported automatically.
 
 Announcements are untrusted hints. The direct handshake and admission policy
 must validate the management peer before privileged actions. Never advertise
-credentials in TXT records. Admission requires explicit operator approval in the UI and authenticated
-management peers; discovery never automatically admits a node. The Cluster
+credentials in TXT records. Admission requires authenticated management peers and
+either an explicit submission or the workspace's enabled Auto join policy. The Cluster
 tab shows a separate Candidate Nodes list below its left-side cluster view.
 Moving a candidate into a cluster opens SSH access and rack selection. Before
 bootstrap this updates only the visibly uncommitted draft; afterward admission
@@ -250,15 +250,31 @@ requires an explicit recovery/decommission procedure, not an automatic timeout.
 ### 6.2 Initialization flow
 
 1. Any UI collects compatible candidates and the operator's rack assignments.
-2. The operator explicitly selects initial Group-0 voting members. Candidate
+2. The operator selects initial Group-0 voting members, or Auto join selects
+   three authenticated eligible candidates in discovery-UUID order. Candidate
    count is not voting-member count; application nodes need not all vote.
-3. Submit a bootstrap identity and immutable initial manifest to selected
-   monitors. Persist compatible preparation before starting replicas.
+3. Submit the bootstrap identity, immutable initial manifest and initial data
+   group choice to the selected member with the smallest discovery UUID. Its
+   monitor durably accepts the request before the UI receives acceptance.
 4. Start the minimum Group-0 services with the fixed manifest. Use existing
    Paxos election and WAL durability, not discovery-cache membership.
 5. Wait for quorum-backed readiness and publish initial metadata idempotently.
 6. Persist/refresh cluster contact information for member UIs. Enable general
    deployment only after initial topology is confirmed.
+
+The accepting monitor executes preparation, initialization, binding and optional
+initial data-group creation independently of the browser and Web request.
+It exposes the operation identity, fixed members, current phase and failure.
+Closing a page or losing its connection does not cancel accepted work. Monitor
+restart resumes interrupted work; a recorded failure requires explicit retry.
+Retry preserves the accepted data-group choice when that option is omitted and
+rejects changed inputs. There is no automatic initiator takeover. Cleanup rejects
+an actively executing initialization.
+
+Monitor peer commands use the node's durable SSH key and the strict host-key
+pins established during mutual admission. Console's separate TOFU store does
+not substitute for those peer pins. Initialization completion is observed from
+the monitor and quorum-backed publication, not inferred from HTTP acceptance.
 
 Bootstrap exclusion is enforced by each target KV server before creating
 store 0 and covers the complete store-0/group-0 initialization sequence. The
@@ -282,6 +298,28 @@ Disjoint selected memberships may create independent clusters; UIs display
 them separately and do not automatically merge their logs or topology.
 
 ### 6.3 Recovery and subsequent admission
+
+Standard node workspaces persist an enabled-by-default Auto join policy. The Web
+backend evaluates it without a browser connection, using the existing authenticated
+admission operation and configured rack assignments. A workspace with no rack waits
+for one. Missing key access remains Needs access; automatic admission does not
+supply a password. Multiple advertised clusters without a configured local draft
+require target selection rather than selecting an arbitrary advertisement.
+
+Before bootstrap, fewer than three eligible nodes remain pending. The first three
+in UUID order form the fixed manifest, and the smallest UUID member's monitor
+executes initialization. Automatic initialization creates only Store 0 / Group 0.
+After publication, admission can add nonvoting nodes but does not replace or expand
+the initial voters. Quorum loss waits for authority recovery. A persisted target
+without its binding is a recovery condition, not permission to create a cluster.
+Turning Auto join off stops new scheduling while accepted monitor work continues.
+
+Startup mode is durable node policy. Standard and explicit single mode cannot
+replace one another by changing an environment variable, including before the
+first successful bootstrap. Concurrent first starts publish only one mode.
+Existing single-profile manifests retain their identity and profile/configuration
+validation. A single discovered node does not imply single mode, and an accepted
+standard bootstrap cannot be reinterpreted as single-profile state.
 
 Restart resumes accepted identity and replica WAL state. Lost multicast does
 not erase stored Group-0 contacts. An interrupted bootstrap reuses its operation
@@ -330,6 +368,58 @@ System replica join uses identified system ownership before creating store 0.
 Generic join cannot bypass an accepted system bootstrap. Independent clusters
 remain separate: operators explicitly clean one cluster, wait for every node's
 cleanup, admit the released nodes to the retained cluster and add voting replicas.
+
+### 6.5 Accepted node setup and storage
+
+Node access review reads authenticated identity and inventory without installing
+peer authorization or granting admission. The browser keeps an initial password
+only in request/session memory. Final admission retains the original review
+operation and sends the selected storage/services to the target monitor.
+
+The monitor persists an immutable `NodeSetupRequest` and sealed placement before
+starting work. Browser disconnect, another Console session and monitor restart
+reuse that intent. Provisional disk discovery grants no membership: only ready
+Group 0 can register disks. Standard default storage is one 16-GiB preallocated
+file with a 1-GiB reserve; supplied or diskless choices never silently fall back.
+Different media classes use compatible independent placement. A chosen missing
+ordinary metadata group remains waiting instead of creating an unrelated group.
+
+Each supplied medium has a stable operation, opened identity, canonical physical
+resource and physical size. Whole-zone logical size excludes any unusable tail.
+The monitor verifies every usable byte while retaining its exact descriptor and
+exclusive raw-device claim through Init publication. DiskIO acquires and validates
+its own descriptor before Online. Nonzero contents fail without a wipe; interrupted
+scans start from zero. Already-Up replay checks its retained receipt and does not
+mistake existing user bytes for a new blank medium.
+
+Global Group-0 physical reservations are sticky across interruption and Remove,
+keyed by physical host and canonical resource. File/loop aliases share the same
+resource. Unknown legacy raw lineage, unknown host or physical membership without
+a backing receipt requires explicit migration. Numeric DiskGroup IDs also have
+retained global placement reservations. Retry never chooses a different group or
+medium after acceptance. Per-disk failures preserve successful siblings.
+
+Offline requires current revision/owner exclusion and I/O quiescence. Remove
+retains backing identity, geometry and allocation metadata. Rejoin restores the
+same disk Offline and requires validated Online. Discovery and restart never
+replace missing/reassociated media or auto-online a restored path. Recovery and
+evacuation remain separate operations.
+Retained receipts also prevent parent deletion after Remove. Group deletion
+requires an unassigned scope with no retained media, rather than silently
+forgetting ownership, bindings or recovery inputs.
+Public HTTP owner/binding routes assign or replace; they do not expose explicit
+unassignment. A scope blocked by these records remains retained. Forgetting media
+and unassigning their parents require a separate explicit operator flow; deletion
+must not emulate that flow with an implicit cascade.
+
+Explicit service Stop/Restart/Delete supersedes old setup intent. Consecutive
+startup/readiness failures have a durable five-attempt budget per operation;
+readiness success resets it. Explicit cluster cleanup retires and drains accepted
+setup/provisioning before deleting system metadata. Cleanup dispatches to at most
+four retained nodes concurrently and saves each result; unreachable nodes stay
+pending under the original confirmed cleanup operation.
+Short-lived monitor control and probe commands do not create service-sized
+worker pools. Service worker settings apply to the long-running node modes.
 
 ## 7. Shared UI and management operations
 

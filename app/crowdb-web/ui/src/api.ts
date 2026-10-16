@@ -22,6 +22,12 @@ import type {
   StopResult,
   HardwareCapacitySummary,
 } from './types';
+import { inventoryRequests } from './storage/requests';
+
+function inventoryJson<T>(url: string, options?: RequestOptions): Promise<T> {
+  return inventoryRequests.run(`${apiBase}:${managementToken}:${url}`, options?.signal, async signal =>
+    jsonOrThrow(await fetchWithOptions(url, { ...options, signal, skipDeduplication: true })));
+}
 
 /**
  * Flat shape accepted by `POST /api/nodes` (backend `NodeEntry` in
@@ -169,6 +175,7 @@ export interface NodeCandidates {
   local: { advertisement: DiscoveredNode['advertisement']; physical_host_id: string; rack_hint: string | null };
   candidates: DiscoveredNode[];
   diagnostics: string[];
+  prepared_access?: PreparedNodeReference[];
 }
 
 export async function listNodeCandidates(options?: RequestOptions): Promise<NodeCandidates> {
@@ -185,6 +192,7 @@ export interface NodeDeploymentStatus {
   cleanup?: { operation_id: string; completed: number[]; pending: number[]; errors: string[] };
 }
 export interface NodeAdmission { discovery_id: string; node_id: number; rack_id: number; host: string; physical_host_id: string; ssh_user: string; ssh_port: number; operation_id: string; confirmed: boolean; cancelled: boolean }
+export type PreparedNodeReference = Pick<NodeAdmission, 'discovery_id' | 'operation_id' | 'rack_id' | 'ssh_user' | 'ssh_port'>;
 export async function nodeAdmissions(options?: RequestOptions): Promise<NodeAdmission[]> {
   return jsonOrThrow(await fetchWithOptions('/api/node/admissions', options));
 }
@@ -197,7 +205,20 @@ export async function cleanupNodeCluster(operationId: string): Promise<{ pending
 export async function nodeDeploymentStatus(options?: RequestOptions): Promise<NodeDeploymentStatus> {
   return jsonOrThrow(await fetchWithOptions('/api/node/status', options));
 }
-export async function admitCandidate(body: { discovery_id: string; rack_id: number; ssh_user: string; ssh_port: number; ssh_password: string | null }): Promise<unknown> {
+export async function prepareCandidate(body: import('./shell/nodeSetup').NodeAdmissionRequest): Promise<import('./shell/nodeSetup').PreparedNodeAccess> {
+  return jsonOrThrow(await fetchWithOptions('/api/node/preflight', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), skipDeduplication: true }));
+}
+export async function discardCandidateReview(discoveryId: string, operationId: string): Promise<void> {
+  const response = await fetchWithOptions(`/api/node/preflight/${encodeURIComponent(discoveryId)}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operation_id: operationId }), skipDeduplication: true });
+  if (!response.ok) await jsonOrThrow(response);
+}
+export function nodeSetupStatus(node: number, options?: RequestOptions): Promise<import('./shell/nodeSetup').NodeSetupStatus | null> {
+  return inventoryJson(`/api/nodes/${node}/setup`, options);
+}
+export async function retryNodeSetup(node: number): Promise<import('./shell/nodeSetup').NodeSetupStatus> {
+  return jsonOrThrow(await fetchWithOptions(`/api/nodes/${node}/setup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', skipDeduplication: true }));
+}
+export async function admitCandidate(body: import('./shell/nodeSetup').NodeAdmissionRequest): Promise<unknown> {
   return jsonOrThrow(await fetchWithOptions('/api/node/admit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), skipDeduplication: true }));
 }export async function updateCandidate(body: { discovery_id: string; rack_id: number; ssh_user: string; ssh_port: number; ssh_password: string | null }): Promise<unknown> {
   return jsonOrThrow(await fetchWithOptions('/api/node/update', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), skipDeduplication: true }));
@@ -608,6 +629,42 @@ export async function removeStore(storeId: string, options?: RequestOptions): Pr
 export interface InitClusterRequest {
   nodes: number[];
   create_data_group?: boolean;
+}
+
+export interface InitializationStatus {
+  phase: 'idle' | 'preparing' | 'initializing' | 'binding' | 'data-group' | 'active' | 'failed';
+  operation_id?: string;
+  members?: number[];
+  error?: string | null;
+}
+
+export async function clusterInitialization(options?: RequestOptions): Promise<InitializationStatus> {
+  return jsonOrThrow(await fetchWithOptions('/api/cluster/initialization', options));
+}
+
+export interface AutoJoinStatus {
+  enabled: boolean;
+  target_cluster_id: string | null;
+  mode: 'standard';
+  required_voters: number;
+  observation: {
+    phase: string;
+    members?: number[];
+    operation_id?: string;
+    error?: string;
+    needs_access?: { discovery_id: string; error?: string }[];
+  };
+}
+
+export async function nodeAutoJoin(options?: RequestOptions): Promise<AutoJoinStatus> {
+  return jsonOrThrow(await fetchWithOptions('/api/node/auto-join', options));
+}
+
+export async function setNodeAutoJoin(enabled: boolean, target?: 'local-draft'): Promise<AutoJoinStatus> {
+  return jsonOrThrow(await fetchWithOptions('/api/node/auto-join', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled, target }), skipDeduplication: true,
+  }));
 }
 
 /**
@@ -1090,12 +1147,12 @@ export async function listDiskGroupBindings(): Promise<{ rack_id: number; node_i
 
 /** `GET /api/nodes/:id/disk-groups` — list disk-groups on a node. */
 export async function listNodeDiskGroups(nodeId: number, options?: RequestOptions): Promise<import('./types').DiskGroupEntry[]> {
-  return jsonOrThrow(await fetchWithOptions(`/api/nodes/${encodeURIComponent(nodeId)}/disk-groups`, { ...options, method: 'GET' }));
+  return inventoryJson(`/api/nodes/${encodeURIComponent(nodeId)}/disk-groups`, options);
 }
 
 /** `GET /api/nodes/:id/disk-groups/:dg_id/disks` — list disks in a disk-group. */
 export async function listDisksInGroup(nodeId: number, dgId: number, options?: RequestOptions): Promise<import('./types').DiskEntry[]> {
-  return jsonOrThrow(await fetchWithOptions(`/api/nodes/${encodeURIComponent(nodeId)}/disk-groups/${encodeURIComponent(dgId)}/disks`, { ...options, method: 'GET' }));
+  return inventoryJson(`/api/nodes/${encodeURIComponent(nodeId)}/disk-groups/${encodeURIComponent(dgId)}/disks`, options);
 }
 
 /** `POST /api/nodes/:id/disk-groups` — add a disk-group to a node. */
@@ -1152,4 +1209,67 @@ export interface ServerSummary {
 
 export async function listServers(options?: RequestOptions): Promise<ServerSummary[]> {
   return jsonOrThrow(await fetchWithOptions('/api/servers', { ...options, method: 'GET' }));
+}
+
+export async function nodeDiskInventory(nodeId: number, options?: RequestOptions): Promise<import('./storage/types').DiskInventory> {
+  return inventoryJson(`/api/nodes/${nodeId}/disk-inventory`, options);
+}
+export async function listNodeDiskFiles(nodeId: number, after?: string, options?: RequestOptions): Promise<import('./storage/types').FilePreparationPage> {
+  return inventoryJson(`/api/nodes/${nodeId}/disk-files${qs({ after, limit: 32 })}`, options);
+}
+export async function nodeDiskFile(nodeId: number, id: string, options?: RequestOptions): Promise<import('./storage/types').FilePreparation> {
+  return inventoryJson(`/api/nodes/${nodeId}/disk-files/${encodeURIComponent(id)}`, options);
+}
+export async function createNodeDiskFile(nodeId: number, body: import('./storage/types').CreateFileDiskRequest): Promise<import('./storage/types').FilePreparation> {
+  return jsonOrThrow(await fetchWithOptions(`/api/nodes/${nodeId}/disk-files`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), skipDeduplication: true,
+  }));
+}
+
+export function diskBacking(nodeId: number, groupId: number, diskId: string, options?: RequestOptions): Promise<import('./storage/types').DiskBackingInfo | null> {
+  return inventoryJson(`/api/nodes/${nodeId}/disk-groups/${groupId}/disks/${encodeURIComponent(diskId)}/backing`, options);
+}
+
+function nodeDiskPath(nodeId: number, groupId: number, diskId: string) {
+  return `/api/nodes/${nodeId}/disk-groups/${groupId}/disks/${encodeURIComponent(diskId)}`;
+}
+export function diskLifecycle(nodeId: number, groupId: number, diskId: string, options?: RequestOptions): Promise<import('./storage/types').DiskLifecycle> {
+  return inventoryJson(`${nodeDiskPath(nodeId, groupId, diskId)}/lifecycle`, options);
+}
+export async function offlineNodeDisk(nodeId: number, groupId: number, diskId: string, revision: string): Promise<import('./storage/types').DiskLifecycle> {
+  return jsonOrThrow(await fetchWithOptions(`${nodeDiskPath(nodeId, groupId, diskId)}/offline`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expected_revision: revision }), skipDeduplication: true,
+  }));
+}
+export async function removeNodeDisk(nodeId: number, groupId: number, diskId: string, revision: string): Promise<import('./storage/types').DiskRemovalOutcome> {
+  return jsonOrThrow(await fetchWithOptions(`${nodeDiskPath(nodeId, groupId, diskId)}/removal`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expected_revision: revision }), skipDeduplication: true,
+  }));
+}
+export function removedNodeDisks(nodeId: number, after?: string, options?: RequestOptions): Promise<import('./storage/types').RemovedDiskPage> {
+  return inventoryJson(`/api/nodes/${nodeId}/removed-disks${qs({ after, limit: 32 })}`, options);
+}
+
+export async function rejoinNodeDisk(nodeId: number, groupId: number, diskId: string, removalOperation: string): Promise<import('./storage/types').DiskRejoinOutcome> {
+  return jsonOrThrow(await fetchWithOptions(`${nodeDiskPath(nodeId, groupId, diskId)}/rejoin`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ removal_operation_id: removalOperation }), skipDeduplication: true,
+  }));
+}
+
+export async function onlineNodeDisk(nodeId: number, groupId: number, diskId: string, revision: string): Promise<import('./storage/types').DiskOnlineOperation> {
+  return jsonOrThrow(await fetchWithOptions(`${nodeDiskPath(nodeId, groupId, diskId)}/online`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expected_revision: revision }), skipDeduplication: true,
+  }));
+}
+
+export async function joinNodeCandidate(node: number, body: import('./storage/types').JoinCandidateRequest): Promise<import('./storage/types').SuppliedOperation> {
+  return jsonOrThrow(await fetchWithOptions(`/api/nodes/${node}/disk-candidates`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), skipDeduplication: true,
+  }));
+}
+export async function listNodeCandidateOperations(node: number, after?: string, options?: RequestOptions): Promise<import('./storage/types').SuppliedOperationPage> {
+  return inventoryJson(`/api/nodes/${node}/disk-candidates${qs({ after, limit: 16 })}`, options);
+}
+export async function nodeCandidateOperation(node: number, id: string, options?: RequestOptions): Promise<import('./storage/types').SuppliedOperation | null> {
+  return inventoryJson(`/api/nodes/${node}/disk-candidates/${encodeURIComponent(id)}`, options);
 }

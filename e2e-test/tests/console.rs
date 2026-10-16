@@ -64,6 +64,8 @@ mod native_browser;
 mod native_capacity;
 mod native_chunks;
 mod native_context;
+mod native_disk_lifecycle;
+mod native_disk_usage;
 mod native_load;
 mod native_recovery;
 mod native_s3;
@@ -74,3 +76,5 @@ mod web_leader_removal;
 mod native_journal;
 
 mod native_geometry;
+
+mod browser_dataset;

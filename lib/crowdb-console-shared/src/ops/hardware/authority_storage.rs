@@ -16,6 +16,9 @@ use crate::ops::OpContext;
 
 const RETRIES: u64 = 10;
 
+mod batch;
+pub use batch::add_disks_to_group0;
+
 async fn rack_revision(ctx: &OpContext, rack_id: u64) -> Result<(String, RackValue, u64)> {
     let path = RackKey { rack_id }.to_path();
     let (value, revision) = required::<RackValue>(ctx, &path, "rack", rack_id.to_string()).await?;
@@ -143,6 +146,13 @@ pub async fn add_disk_group_bound_to_group0(
         disk_group_id: dg_id,
     }
     .to_path();
+    ctx.sysmd()
+        .reserve_disk_group_id(&DiskGroupKey {
+            rack_id,
+            node_id,
+            disk_group_id: dg_id,
+        })
+        .await?;
     let bind_path = BindMapKey {
         rack_id,
         node_id,
@@ -254,6 +264,10 @@ pub async fn remove_disk_group_from_group0(ctx: &OpContext, node_id: u64, dg_id:
             id: dg_id.to_string(),
         })?;
         if !group.disk_ids.is_empty()
+            || ctx
+                .sysmd()
+                .has_retained_disk_storage(rack_id, Some(node_id), Some(dg_id))
+                .await?
             || !ctx
                 .sysmd()
                 .list_disks_in_group(rack_id, node_id, dg_id)
@@ -304,6 +318,14 @@ pub async fn add_disk_to_group0(
     authority::ready(ctx).await?;
     let rack_id = node_location(&ctx.sysmd().list_nodes().await?, node_id)?;
     let (entry, disk_id, value) = validate_disk_input(input, dg_id, rack_id, node_id)?;
+    ctx.sysmd()
+        .reserve_disk_id(&DiskKey {
+            rack_id,
+            node_id,
+            disk_group_id: dg_id,
+            disk_id,
+        })
+        .await?;
     let group_path = DiskGroupKey {
         rack_id,
         node_id,
@@ -321,6 +343,22 @@ pub async fn add_disk_to_group0(
         let (rack_path, rack, revision) = rack_revision(ctx, rack_id).await?;
         let (mut group, _) =
             required::<DiskGroupValue>(ctx, &group_path, "disk_group", dg_id.to_string()).await?;
+        if ctx
+            .sysmd()
+            .disk_storage(&DiskKey {
+                rack_id,
+                node_id,
+                disk_group_id: dg_id,
+                disk_id,
+            })
+            .await?
+            .is_some()
+        {
+            return Err(Error::Conflict {
+                kind: "retained disk requires storage admission or recovery".into(),
+                id: input.disk_id.clone(),
+            });
+        }
         if let Some(actual) = optional::<DiskValue>(ctx, &disk_path).await? {
             if actual == value && group.disk_ids.contains(&disk_id) {
                 return Ok(entry);
@@ -401,6 +439,22 @@ pub async fn remove_disk_from_group0(
     let mut removed = None;
     for attempt in 0..RETRIES {
         let (rack_path, rack, revision) = rack_revision(ctx, rack_id).await?;
+        if ctx
+            .sysmd()
+            .disk_storage(&DiskKey {
+                rack_id,
+                node_id,
+                disk_group_id: dg_id,
+                disk_id: id,
+            })
+            .await?
+            .is_some()
+        {
+            return Err(Error::Conflict {
+                kind: "retained disk requires Offline/Remove lifecycle".into(),
+                id: disk_id.into(),
+            });
+        }
         let (mut group, _) =
             required::<DiskGroupValue>(ctx, &group_path, "disk_group", dg_id.to_string()).await?;
         let current = optional::<DiskValue>(ctx, &disk_path).await?;
@@ -414,6 +468,12 @@ pub async fn remove_disk_from_group0(
             kind: "disk membership".into(),
             id: disk_id.into(),
         })?;
+        if !value.device_path.is_empty() {
+            return Err(Error::Conflict {
+                kind: "legacy physical disk requires verified backing and Offline/Remove lifecycle".into(),
+                id: disk_id.into(),
+            });
+        }
         if !group.disk_ids.contains(&id) {
             return Err(Error::Conflict {
                 kind: "disk membership".into(),

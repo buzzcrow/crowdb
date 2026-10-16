@@ -513,6 +513,7 @@ async fn assert_expanded_topology_converges_ec(data_num: u32, code_num: u32, req
                 capacity / 2
             };
             DiskGroupUsageSummary {
+                usage_known: true,
                 disk_group_id,
                 capacity_bytes: capacity,
                 used_bytes,
@@ -2122,6 +2123,7 @@ async fn cross_domain_rebalance_hands_one_safe_move_to_target_diskdb() {
                 capacity / 2
             };
             DiskGroupUsageSummary {
+                usage_known: true,
                 disk_group_id,
                 capacity_bytes: capacity,
                 used_bytes,
@@ -2264,6 +2266,7 @@ async fn cross_domain_rebalance_hands_one_safe_move_to_target_diskdb() {
     let balanced_summaries: Vec<_> = common::cluster::seeded_dg_ids()
         .into_iter()
         .map(|disk_group_id| DiskGroupUsageSummary {
+            usage_known: true,
             disk_group_id,
             capacity_bytes: capacity,
             used_bytes: capacity / 2,

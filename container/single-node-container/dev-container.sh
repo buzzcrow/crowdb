@@ -8,6 +8,7 @@ cd "$root"
 
 image=${CROWDB_CONTAINER_IMAGE:-crowdb-node:dev}
 name=${CROWDB_CONTAINER_NAME:-crowdb-single-node}
+data_volume=${CROWDB_CONTAINER_DATA_VOLUME:-${name}-data}
 
 usage() {
     echo 'Usage: dev-container.sh {start|clean|inject [container IP|ID|name]}' >&2
@@ -41,19 +42,22 @@ start_container() {
             wait_until_healthy
             return
         fi
-        docker rm "$name" >/dev/null
+        docker start "$name"
+        wait_until_healthy
+        return
     fi
 
     if ! docker run --detach --name "$name" -e CROWDB_STARTUP_MODE=single \
+        --mount "type=volume,source=$data_volume,target=/opt/crowdb/data" \
         --expose 9090 --expose 9091 --expose 9092 --expose 9093 --expose 9094 \
         "$image"; then
         if docker container inspect "$name" >/dev/null 2>&1; then
-            docker rm --force --volumes "$name" >/dev/null
+            docker rm --force "$name" >/dev/null
         fi
         return 1
     fi
     if ! wait_until_healthy; then
-        docker rm --force --volumes "$name" >/dev/null 2>&1 || true
+        docker rm --force "$name" >/dev/null 2>&1 || true
         return 1
     fi
     docker exec "$name" crowdb-monitor credentials show --format env
@@ -132,19 +136,10 @@ inject_container() {
 
 clean_container() {
     if docker container inspect "$name" >/dev/null 2>&1; then
-        docker rm --force --volumes "$name"
+        docker rm --force "$name"
     fi
 
-    # Remove stopped containers created from the selected image.
-    mapfile -t stopped_ids < <(docker ps --all --filter status=exited --filter ancestor="$image" --quiet)
-    if ((${#stopped_ids[@]})); then
-        docker rm --volumes "${stopped_ids[@]}"
-    fi
-    # Dangling images have no tags to identify their original project.
-    # Docker preserves images referenced by any container.
-    docker image prune --force
-    # Docker preserves volumes referenced by running or stopped containers.
-    docker volume prune --all --force
+    echo "Preserved data volume $data_volume; images and other containers were not removed."
 }
 
 case "${1:-}" in

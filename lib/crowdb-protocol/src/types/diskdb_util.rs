@@ -9,7 +9,38 @@
 //! not wire format.
 
 use crate::common::{DiskId, HwStatus};
-use crate::diskdb::rpc::{RecoveryScanProgressValue, ZoneAllocationState, ZoneValue};
+use crate::diskdb::rpc::{DiskInfo, RecoveryScanProgressValue, ZoneAllocationState, ZoneValue};
+
+/// Runtime byte totals cover every zone only after all allocation metadata loads.
+/// An unloaded or partly loaded disk must not be interpreted as empty/free.
+#[must_use]
+pub fn disk_usage_is_complete(disk: &DiskInfo) -> bool {
+    if disk.zone_count == 0 || disk.zone_size_units == 0 || disk.unit_size_bytes == 0 {
+        return false;
+    }
+    let Some(prefix) = u64::from(disk.zone_count - 1).checked_mul(disk.zone_size_units) else {
+        return false;
+    };
+    let Some(last) = disk.capacity_units.checked_sub(prefix) else {
+        return false;
+    };
+    if last == 0 || last > disk.zone_size_units {
+        return false;
+    }
+    let Some(capacity) = prefix
+        .checked_add((last / 64) * 64)
+        .and_then(|units| units.checked_mul(u64::from(disk.unit_size_bytes)))
+    else {
+        return false;
+    };
+    capacity > 0
+        && capacity == disk.capacity_bytes
+        && disk.busy_bytes <= capacity
+        && disk
+            .busy_bytes
+            .checked_add(disk.free_bytes)
+            .is_some_and(|total| total <= capacity)
+}
 
 // ── DiskId helpers ──────────────────────────────────────────────
 

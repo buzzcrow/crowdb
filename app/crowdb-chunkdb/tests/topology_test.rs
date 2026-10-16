@@ -145,6 +145,7 @@ fn in_flight_reservation_is_lock_free_and_released_on_drop() {
     cache.update_disk_group_usage(
         100,
         &DiskGroupUsageSummary {
+            usage_known: true,
             disk_group_id: 100,
             allocatable_capacity_bytes: 1_000,
             allocatable_free_bytes: 900,

@@ -131,6 +131,7 @@ pub async fn deploy(
     };
 
     let entry = ServerEntry {
+        dataset_origin: None,
         id: node_id.to_string(),
         url: deployed.mgmt_url.clone(),
         node_id: Some(node_id),
@@ -275,6 +276,7 @@ pub async fn restart(
         let mut cfg = ctx.config_mut();
         let _ = cfg.remove_server_for_node(node_id);
         let new_entry = ServerEntry {
+            dataset_origin: None,
             id: node_id.to_string(),
             url: deployed.mgmt_url.clone(),
             node_id: Some(node_id),

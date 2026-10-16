@@ -58,6 +58,7 @@ async fn stop_no_pid_not_found() {
     {
         let mut cfg = ctx.config_mut();
         cfg.add_server(ServerEntry {
+            dataset_origin: None,
             id: "10".into(),
             url: "http://127.0.0.1:10000".into(),
             node_id: Some(10),
@@ -84,6 +85,7 @@ async fn list_returns_all_servers() {
     {
         let mut cfg = ctx.config_mut();
         cfg.add_server(ServerEntry {
+            dataset_origin: None,
             id: "10".into(),
             url: "http://127.0.0.1:10000".into(),
             node_id: Some(10),
@@ -119,6 +121,7 @@ async fn delete_with_server_succeeds_when_no_replicas() {
     {
         let mut cfg = ctx.config_mut();
         cfg.add_server(ServerEntry {
+            dataset_origin: None,
             id: "10".into(),
             url: "http://127.0.0.1:10000".into(),
             node_id: Some(10),

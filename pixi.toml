@@ -131,6 +131,11 @@ image-run = "pixi run --manifest-path container/oci-image/pixi.toml -e runtime r
 test-container-e2e = "python e2e-test/run.py"
 test = "python tools/pixi-tasks/test.py"
 test-access-sdk = "python tools/pixi-tasks/test.py unit sdk"
+test-dataset-sdk-python = "python tools/sdk/package.py"
+test-dataset-sdk = "cargo test --manifest-path sdk/Cargo.toml --workspace --locked"
+sdk-fmt-check = "cargo fmt --manifest-path sdk/Cargo.toml --all -- --check"
+sdk-lint = "cargo clippy --manifest-path sdk/Cargo.toml --workspace --all-targets --locked -- -D warnings"
+check-dataset-sdk-boundary = "python tools/ci-checks/check-dataset-sdk-boundary.py"
 test-e2e-kv = "python tools/pixi-tasks/test.py e2e kv"
 test-e2e-diskdb = "python tools/pixi-tasks/test.py e2e diskdb"
 test-e2e-diskio = "python tools/pixi-tasks/test.py e2e diskio"
@@ -172,7 +177,7 @@ rs-fmt-check = '''cargo metadata --format-version 1 --no-deps | jq -r '.workspac
 check-production-dashmap = "python3 tools/ci-checks/check-production-dashmap.py"
 check-version = "python3 tools/ci-checks/check-version.py"
 rs-lint = { cmd = "cargo clippy --all-targets -- -D warnings", depends-on = ["check-production-dashmap", "check-version"] }
-ts-lint = { cmd = "cd app/crowdb-web/ui && npx tsc --noEmit --project tsconfig.e2e.json", depends-on = ["install-ui-deps"] }
+ts-lint = { cmd = "python tools/pixi-tasks/check-console-types.py", depends-on = ["install-ui-deps"] }
 # Full build: C++ libs + release Rust binaries + frontend. Used by
 # run/bench/profile. Tests use build-cpp (C++ tests) or nothing (Rust tests).
 build = { cmd = "bash tools/pixi-tasks/build-release.sh", depends-on = ["build-cpp", "install-ui-deps"] }
@@ -252,3 +257,7 @@ tree-tsan = { cmd = "bash tools/pixi-tasks/tree-tsan.sh" }
 
 # UndefinedBehaviorSanitizer build + tests.
 tree-ubsan = { cmd = "bash tools/pixi-tasks/tree-ubsan.sh" }
+
+[pypi-dependencies]
+maturin = ">=1.15, <2"
+pip = ">=25, <27"

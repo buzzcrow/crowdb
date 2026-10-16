@@ -10,7 +10,7 @@ from pathlib import Path
 
 REPORTS = {"results.json", "timing.json", "identity.json", "client-identity.json",
            "case.json", "endpoints.json", "mounts.json", "s3-node-endpoints.json",
-           "native-endpoints.json"}
+           "native-endpoints.json", "deployment-diagnostics.json"}
 PRIVATE = {"nodes", "client", "clients", "private", "node_modules", "source"}
 TOTAL_LIMIT = 64 * 1024 * 1024
 TEXT_LIMIT = 256 * 1024
@@ -111,12 +111,19 @@ def publish(source, destination, *, total_limit=TOTAL_LIMIT, text_limit=TEXT_LIM
                 output.write_bytes(payload)
                 record.update(status="truncated" if len(payload) < size else "copied",
                               original_text_bytes=size, exported_bytes=len(payload))
+                if len(payload) < size:
+                    record["reason"] = "job budget" if remaining < text_limit else "text size limit"
             if "exported_bytes" in record:
                 used += record["exported_bytes"]
                 copied += 1
         except (OSError, EOFError) as error:
             record.update(status="read_failed", error=str(error))
             print(f"[DIAGNOSTIC READ FAILED] {relative}: {error}", flush=True)
+        if record.get("status") in {"skipped", "truncated"}:
+            print(f"[DIAGNOSTIC OMISSION] {relative}: {record['status']} "
+                  f"reason={record.get('reason', 'text size limit')} "
+                  f"original_bytes={record.get('original_bytes')} "
+                  f"exported_bytes={record.get('exported_bytes', 0)}", flush=True)
         records.append(record)
     counts = Counter(record["status"] for record in records)
     summary = {"exported_bytes": used, "total_limit": total_limit, "text_limit": text_limit,

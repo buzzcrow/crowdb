@@ -63,7 +63,15 @@ fn single_node_preview_has_exact_topology_and_endpoints() {
         Some(&"http://127.0.0.1:10000".to_owned())
     );
     assert_eq!(access_service.args[1], "/opt/crowdb/run/config/access.toml");
-    assert_eq!(access_service.fence_listeners.len(), 3);
+    assert_eq!(
+        access_service.fence_listeners,
+        [
+            "127.0.0.1:9092",
+            "127.0.0.1:9091",
+            "127.0.0.1:9093",
+            "127.0.0.1:9094"
+        ]
+    );
     let access = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-container/templates/access.toml"),
     )
@@ -71,6 +79,11 @@ fn single_node_preview_has_exact_topology_and_endpoints() {
     let access: toml::Value = toml::from_str(&access).unwrap();
     assert_eq!(access["iceberg"]["listen"].as_str(), Some("0.0.0.0:9092"));
     assert_eq!(access["s3"]["listen"].as_str(), Some("0.0.0.0:9091"));
+    assert_eq!(access["dataset"]["listen"].as_str(), Some("0.0.0.0:9093"));
+    assert_eq!(
+        access_service.env.get("CROWDB_DATASET_PUBLIC_URI"),
+        Some(&"http://localhost:9093".to_owned())
+    );
     let web = profile
         .services
         .iter()

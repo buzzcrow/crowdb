@@ -5,6 +5,7 @@
 """Independent cluster cleanup, persistent endpoint changes and voting catch-up."""
 import json
 from bridge_node import start_node, origin_for, browser
+from setup_choices import diskless_setup
 
 
 def verify(docker, request, wait, image, network, names, origins, cluster):
@@ -12,12 +13,14 @@ def verify(docker, request, wait, image, network, names, origins, cluster):
     names.append(name)
     origin = start_node(name)
     snapshot = wait(lambda: request(origin, "/api/node/candidates"), lambda result: bool(result["local"]), "independent node discovery")
+    request(origin, "/api/node/auto-join", {"enabled": False})
     identity = snapshot["local"]["advertisement"]["discovery_id"]
     request(origin, "/api/racks", {"id":1, "name":"independent-rack"})
-    body = {"discovery_id":identity, "rack_id":1, "ssh_user":"crowdb", "ssh_port":2222, "ssh_password":"crowdb"}
+    body = {"discovery_id":identity, "rack_id":1, "ssh_user":"crowdb", "ssh_port":2222, "ssh_password":"crowdb", "setup":diskless_setup()}
     record = request(origin, "/api/node/admit", body)
     request(origin, "/api/cluster/init", {"nodes":[record["node_id"]]})
-    independent = request(origin, "/api/node/status")
+    independent = wait(lambda: request(origin, "/api/node/status"),
+                       lambda result: result["phase"] == "active", "independent cluster publication")
     assert independent["phase"] == "active" and independent["cluster_id"] != cluster, independent
     binding = json.loads(docker("exec", name, "cat", "/opt/crowdb/data/node-binding.json"))
     manifest = json.loads(docker("exec", name, "cat", "/opt/crowdb/data/prepared-bootstrap.json"))

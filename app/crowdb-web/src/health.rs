@@ -33,13 +33,14 @@ pub(crate) async fn require_editable(
     axum::extract::State(state): axum::extract::State<crate::state::AppState>,
     request: axum::extract::Request,
     next: axum::middleware::Next,
-) -> Result<axum::response::Response, axum::http::StatusCode> {
+) -> Result<axum::response::Response, (axum::http::StatusCode, axum::Json<crate::error::ErrorBody>)> {
     let observe = matches!(
         *request.method(),
         axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
     );
-    if state.readonly && !observe {
-        return Err(axum::http::StatusCode::FORBIDDEN);
+    if state.readonly && !observe && !crate::access::dataset::observes(request.method(), request.uri().path())
+    {
+        return Err(crate::error::err_403("Workspace is readonly"));
     }
     Ok(next.run(request).await)
 }

@@ -8,28 +8,40 @@ mod adapter;
 mod authority;
 mod chunk_store;
 mod client;
+pub mod composition;
 mod cursor;
 mod delivery;
 mod error;
 mod identity;
+pub mod inspection;
 mod key;
 mod lease;
 mod manifest;
 mod namespace;
+mod payload;
 mod planner;
 mod publication;
 mod record;
 mod retention;
+mod selection;
 mod shuffle;
+pub mod split;
 mod store;
 mod surface;
 mod transport;
+mod upload;
 mod wire;
+
+pub use payload::{ChunkPayloadStorage, PayloadDurability, PayloadStorage, UploadedChunkReader};
+pub use upload::{
+    DatasetUploads, SnapshotUploadCleanup, UploadError, UploadPart, UploadReclaimError, UploadRecord,
+    UploadState, MAX_UPLOAD_PART_BYTES,
+};
 
 pub use cursor::ReadCursor;
 pub use delivery::DeliveryWindow;
 pub use error::DatasetError;
-pub use identity::{DatasetId, OperationId, SnapshotId};
+pub use identity::{DatasetId, OperationId, SnapshotId, SplitRevisionId};
 pub use key::manifest_partition;
 pub use lease::{ReadLease, DEFAULT_READ_LEASE_SECONDS};
 pub use manifest::{
@@ -37,7 +49,9 @@ pub use manifest::{
 };
 pub use namespace::{DatasetIdentity, NamespacePath, DEFAULT_NAMESPACE};
 pub use planner::{Ordering, ReadFailure, ReadLimits, ReadPlan, RetryPolicy, Selection, MAX_BATCH_SIZE};
-pub use publication::{PublicationState, SnapshotPublication};
+pub use publication::{
+    CommitAttempt, CommitGeneration, CommitTarget, PublicationState, SnapshotPublication, SuccessfulCommit,
+};
 pub use shuffle::{
     GroupShuffle, SampleShuffle, ShuffleSpec, DEFAULT_MAX_SHUFFLE_BYTES, DEFAULT_MAX_SHUFFLE_OBJECTS,
 };
@@ -50,7 +64,10 @@ pub use wire::{
 };
 
 pub use adapter::{BoundedPrefetch, WorkerPartition};
-pub use authority::{AuthorityError, DatasetAuthority, SampleView};
+pub use authority::{
+    AuthorityError, DatasetAuthority, DatasetHead, MetadataCleanupProgress, SampleView, SnapshotLifecycle,
+    SnapshotReclaimError, SnapshotReclaimPhase, SnapshotReclaimStatus,
+};
 pub use chunk_store::{
     unavailable_chunk_reader, ChunkKvDatasetStore, ChunkReadError, ChunkReader, ReadCancellation,
 };
@@ -62,4 +79,12 @@ pub use record::{
 pub use retention::{
     RetentionLease, RetentionLeaseHandle, RetentionLeaseRegistry, RetentionPlan, RetentionPlanner,
 };
-pub use store::{CasOutcome, DatasetStore, StoreError, StoredValue};
+pub use store::{
+    CasOutcome, DatasetStore, MetadataPage, MetadataScan, MetadataScanBudget, StoreError, StoredValue,
+};
+
+mod read_session;
+pub use read_session::{
+    DatasetSessions, ReadPreparation, ReadSession, SessionBatch, SessionPartition, SessionShuffle,
+    SessionSpec, SessionSpecV2, SessionSplit,
+};

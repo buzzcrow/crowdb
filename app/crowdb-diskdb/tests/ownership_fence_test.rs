@@ -3,10 +3,11 @@
 mod common;
 use common::metadata::TestMetadata;
 use crowdb_diskdb::ddb_kv_client::OwnershipFence;
-use crowdb_diskdb::model::disk_group::DdbDiskGroup;
 use crowdb_diskdb::model::zone::DdbZone;
+use crowdb_diskdb::model::{disk::DdbDisk, disk_group::DdbDiskGroup};
 use crowdb_protocol::{
     common::DiskId,
+    diskdb::rpc::DiskValue,
     key::{BinaryKey, ZoneKey},
     ZoneValueExt,
 };
@@ -17,7 +18,6 @@ async fn stale_zone_loader_cannot_mark_a_successor_disk_offline() {
     use crowdb_kv_client::ReadMode;
     use crowdb_protocol::{
         common::{HwStatus, OwnerMapValue},
-        diskdb::rpc::DiskValue,
         key::{OwnerMapKey, TextKey},
     };
     let cluster = TestMetadata::start().await;
@@ -30,6 +30,7 @@ async fn stale_zone_loader_cannot_mark_a_successor_disk_offline() {
     }
     .to_path();
     let owner = serde_json::to_vec(&OwnerMapValue {
+        process_epoch: 0,
         instance_id: 1,
         lease_expiry_ms: u64::MAX,
     })
@@ -79,6 +80,7 @@ async fn stale_zone_loader_cannot_mark_a_successor_disk_offline() {
     })));
     let scoped = kv.for_group(&group);
     let next = serde_json::to_vec(&OwnerMapValue {
+        process_epoch: 0,
         instance_id: 2,
         lease_expiry_ms: u64::MAX,
     })
@@ -104,6 +106,13 @@ async fn handover_rejects_old_writes_and_cannot_reclaim_an_old_generation() {
     };
     let old_group = DdbDiskGroup::new(1, 1, 1);
     old_group.set_ownership_fence(Some(Arc::new(fence.clone())));
+    old_group.add_disk(Arc::new(DdbDisk::new(
+        DiskId::default(),
+        1,
+        1,
+        1,
+        DiskValue::default(),
+    )));
     let old = kv.for_group(&old_group);
     let disk = crowdb_protocol::common::DiskId::default();
     assert!(kv.delete_recovery_scan_progress((0, 1), &disk).await.is_err());
@@ -119,6 +128,7 @@ async fn handover_rejects_old_writes_and_cannot_reclaim_an_old_generation() {
     assert!(kv.claim_ownership((0, 1), &fence).await.is_err());
     let new_group = DdbDiskGroup::new(1, 1, 1);
     new_group.set_ownership_fence(Some(Arc::new(next)));
+    new_group.add_disk(Arc::new(DdbDisk::new(disk, 1, 1, 1, DiskValue::default())));
     let new = kv.for_group(&new_group);
     let results =
         futures::future::join_all((0..8).map(|_| new.delete_recovery_scan_progress((0, 1), &disk))).await;
@@ -141,6 +151,15 @@ async fn concurrent_disk_initialization_persists_every_zone_under_one_owner() {
     kv.claim_ownership((0, 1), &fence).await.unwrap();
     let group = DdbDiskGroup::new(1, 1, 1);
     group.set_ownership_fence(Some(Arc::new(fence)));
+    for id in 1..=8 {
+        group.add_disk(Arc::new(DdbDisk::new(
+            DiskId { high: id, low: 1 },
+            1,
+            1,
+            1,
+            DiskValue::default(),
+        )));
+    }
     let scoped = kv.for_group(&group);
     // One sequential initialization per disk, sharing the DG ownership guard.
     let results = futures::future::join_all((1..=8).map(|id| {
@@ -236,4 +255,49 @@ async fn ordinary_writes_cannot_bypass_ownership_handover() {
         kv.get(0, 1, other, ReadMode::Linearizable, None).await.unwrap(),
         GetOutcome::NotFound
     ));
+}
+
+#[tokio::test]
+async fn restarting_the_same_logical_owner_fences_its_previous_process_writes() {
+    let cluster = TestMetadata::start().await;
+    let kv = cluster.make_ddb_kv_client().with_ownership_fencing();
+    let hw = cluster.make_hardware_client();
+    let svc = cluster.make_service_registry_client();
+    let key = crowdb_protocol::key::OwnerMapKey {
+        rack_id: 1,
+        node_id: 1,
+        disk_group_id: 1,
+    };
+    hw.set_owner(1, 1, 1, 7, u64::MAX).await.unwrap();
+    let first = svc.claim_diskdb_session(7, "first-boot", None, 0).await.unwrap();
+    let generation = hw.claim_owner_process_epoch(&key, 7, first).await.unwrap();
+    let original = OwnershipFence {
+        rack_id: 1,
+        node_id: 1,
+        disk_group_id: 1,
+        instance_id: 7,
+        generation,
+    };
+    kv.claim_ownership((0, 1), &original).await.unwrap();
+    let group = DdbDiskGroup::new(1, 1, 1);
+    group.set_bind((0, 1));
+    group.set_ownership_fence(Some(Arc::new(original.clone())));
+    let disk = DiskId { high: 4, low: 5 };
+    group.add_disk(Arc::new(DdbDisk::new(disk, 1, 1, 1, DiskValue::default())));
+    let old = kv.for_group(&group);
+    old.delete_recovery_scan_progress((0, 1), &disk).await.unwrap();
+    let next = svc
+        .claim_diskdb_session(7, "next-boot", Some("first-boot"), first)
+        .await
+        .unwrap();
+    let generation = hw.claim_owner_process_epoch(&key, 7, next).await.unwrap();
+    assert!(generation > original.generation);
+    let restarted = OwnershipFence {
+        generation,
+        ..original.clone()
+    };
+    kv.claim_ownership((0, 1), &restarted).await.unwrap();
+    assert!(old.delete_recovery_scan_progress((0, 1), &disk).await.is_err());
+    assert!(kv.claim_ownership((0, 1), &original).await.is_err());
+    assert!(hw.claim_owner_process_epoch(&key, 7, first).await.is_err());
 }

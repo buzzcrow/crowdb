@@ -15,7 +15,7 @@ export function useNodeAuthority(enabled: boolean) {
         const status = await nodeDeploymentStatus({ signal: controller.signal });
         if (!controller.signal.aborted) setStatus(status);
       } catch {
-        if (!controller.signal.aborted) setStatus(previous => previous ? { ...previous, available: false, phase: 'authority_unavailable' } : undefined);
+        if (!controller.signal.aborted) setStatus(previous => ({ ...previous, available: false, phase: 'authority_unavailable' }));
       } finally {
         if (!controller.signal.aborted) timer = setTimeout(refresh, 1000);
       }

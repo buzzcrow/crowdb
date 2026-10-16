@@ -21,7 +21,8 @@ class DeploymentClientsCluster(ManagedCluster):
                  for file in ("secrets/server.env", "secrets/client.env", "crash")}
         cwd = {role: self.command("exec", "--user", "crowdb", name, "readlink",
                                  f"/proc/{pid}/cwd").strip()
-               for role, pid in (("monitor", 1), ("kv", status["services"]["kv"]["pid"]))}
+               for role, pid in (("monitor", status["monitor_pid"]),
+                                 ("kv", status["services"]["kv"]["pid"]))}
         info = json.loads(self.command("inspect", name))[0]
         (self.artifacts / "deployment-runtime.json").write_text(json.dumps({
             "modes": modes, "cwd": cwd, "ports": info["HostConfig"]["PortBindings"]}, indent=2))

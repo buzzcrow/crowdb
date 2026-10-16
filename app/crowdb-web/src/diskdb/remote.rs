@@ -16,7 +16,7 @@ pub(super) async fn deploy(
     node_id: u64,
     body: &DeployDiskdbBody,
 ) -> Result<(StatusCode, Json<DiskdbDeployResult>), crate::services::Failure> {
-    let (listen, http, rpc) = super::lifecycle::validate_diskdb_ports(body)?;
+    let (_, _, rpc) = super::lifecycle::validate_diskdb_ports(body)?;
     let binding = crate::node::cluster_binding(state)?.ok_or_else(|| err_409("Node is unbound"))?;
     let mut node = state
         .config
@@ -26,12 +26,7 @@ pub(super) async fn deploy(
         .cloned()
         .ok_or_else(|| err_404("Node not found"))?;
     node.ssh_key = Some(crate::node::node_key_path(state).to_string_lossy().into_owned());
-    let mut configuration = format!("[server]\nrpc_workers = 2\nlisten_addr = {:?}\nhttp_listen_addr = {:?}\nrpc_listen_addr = {:?}\ninstance_id = {:?}\nkv_server_mgmt_seeds = {:?}\n",
-        format!("{}:{listen}", node.host), format!("{}:{http}", node.host), format!("{}:{rpc}", node.host), node_id.to_string(), binding.management_seeds);
-    if let Some(interval) = body.keepalive_interval_secs {
-        writeln!(configuration, "\n[heartbeat]\ninterval_secs = {interval}")
-            .expect("writing configuration to a String cannot fail");
-    }
+    let configuration = configuration(&node, &binding.management_seeds, body)?;
     let intent = NodeServiceIntent {
         cluster_id: binding.bootstrap.cluster_id,
         operation_id: uuid::Uuid::new_v4().to_string(),
@@ -60,6 +55,21 @@ pub(super) async fn deploy(
                 .ok_or_else(|| err_502("Monitor returned no service PID"))?,
         }),
     ))
+}
+
+pub(crate) fn configuration(
+    node: &crowdb_console_shared::config::NodeEntry,
+    seeds: &[String],
+    body: &DeployDiskdbBody,
+) -> Result<String, crate::services::Failure> {
+    let (listen, http, rpc) = super::lifecycle::validate_diskdb_ports(body)?;
+    let mut configuration = format!("[server]\nrpc_workers = 2\nlisten_addr = {:?}\nhttp_listen_addr = {:?}\nrpc_listen_addr = {:?}\ninstance_id = {:?}\nkv_server_mgmt_seeds = {:?}\n",
+        format!("{}:{listen}", node.host), format!("{}:{http}", node.host), format!("{}:{rpc}", node.host), node.id.to_string(), seeds);
+    if let Some(interval) = body.keepalive_interval_secs {
+        writeln!(configuration, "\n[heartbeat]\ninterval_secs = {interval}")
+            .expect("writing configuration to a String cannot fail");
+    }
+    Ok(configuration)
 }
 
 pub(super) async fn restart(

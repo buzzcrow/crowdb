@@ -76,15 +76,18 @@ async fn durable_plan_survives_state_recreation_and_rejects_competing_writers() 
         .iter()
         .map(|kind| ((*kind).to_string(), json!({"state":"waiting"})))
         .collect();
-    let body = json!({"revision":0,"steps":steps,"overrides":{"access-server":{"http_port":9092,"s3_port":9091,"health_port":9094},"paxos-kv":{"http_port":19910,"rpc_port":19920},"diskdb":{"keepalive_interval_secs":3}}});
+    let body = json!({"revision":0,"steps":steps,"overrides":{"access-server":{"http_port":9092,"s3_port":9091,"health_port":9094,"dataset_port":9093},"paxos-kv":{"http_port":19910,"rpc_port":19920},"diskdb":{"keepalive_interval_secs":3}}});
     let (status, saved) = request(&app, "PUT", "/api/nodes/1/service-plan", body.clone()).await;
     assert_eq!(status, StatusCode::OK, "{saved}");
     assert_eq!(saved["revision"], 1);
     let (_, defaults) = request(&app, "GET", "/api/deployment-defaults", Value::Null).await;
     for value in defaults.as_object().unwrap().values() {
-        for field in ["http_port", "rpc_port", "s3_port", "health_port"] {
+        for field in ["http_port", "rpc_port", "s3_port", "health_port", "dataset_port"] {
             if let Some(port) = value[field].as_u64() {
-                assert!(![9091, 9092, 9094, 19910, 19920].contains(&port), "{defaults}");
+                assert!(
+                    ![9091, 9092, 9093, 9094, 19910, 19920].contains(&port),
+                    "{defaults}"
+                );
             }
         }
     }
@@ -131,6 +134,8 @@ async fn plan_rejects_legacy_kinds_and_invalid_listener_configuration() {
         json!({"chunkdb":{"keepalive_interval_secs":3}}),
         json!({"access-server":{"s3_port":9091,"health_port":9091}}),
         json!({"access-server":{"health_port":0}}),
+        json!({"access-server":{"dataset_port":9093,"health_port":9093}}),
+        json!({"chunkdb":{"dataset_port":9093}}),
         json!({"diskio":{"http_port":13010}}),
         json!({"diskdb":{"rpc_port":65534}}),
         json!({"diskdb":{"rpc_port":12000},"diskio":{"rpc_port":12001}}),

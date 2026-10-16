@@ -1,0 +1,163 @@
+<!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
+<!-- Licensed under the Apache License, Version 2.0. -->
+
+# CROWDB - Design: Dataset Control Lifecycle
+
+Depends on: [Dataset architecture](design-crowdb-access-dataset.md).
+Satisfies: [Dataset specification](spec-crowdb-dataset.md).
+Wire contract: [control API v2](openapi-crowdb-dataset-v2.yaml).
+
+This document describes Snapshot composition, whole-set Split revisions and their
+bounded control operations. Payload delivery retains the existing binary framing.
+
+## Table of contents
+
+1. [Identity and authority](#1-identity-and-authority)
+2. [Composition and inheritance](#2-composition-and-inheritance)
+3. [Split evaluation and publication](#3-split-evaluation-and-publication)
+4. [Bounded observation and reads](#4-bounded-observation-and-reads)
+5. [Ownership and cleanup](#5-ownership-and-cleanup)
+6. [Compatibility and invariants](#6-compatibility-and-invariants)
+
+## 1. Identity and authority
+
+A Dataset has opaque latest/stable Snapshot references. A Snapshot may declare any
+committed same-Dataset parent or no parent. Its parent is independent of the head
+generation used for publication CAS. Multiple roots and off-latest branches remain
+discoverable. Prepared records are not committed evidence.
+
+Publication has a candidate identity and a separate caller-owned attempt identity.
+Each attempt binds its target and exact expected head generation. Successful commit
+receipts remain durable and help incomplete publication finalization after restart.
+Retrying a successful historical attempt returns its receipt without rewinding a
+later head. On a head conflict the candidate remains available; an explicit new
+attempt can use a newly observed head without changing its parent or contents.
+
+Each Snapshot owns immutable Split-set revisions and an independently fenced
+currentSplit pointer. Names are scoped to Dataset/Snapshot/revision. Publishing a
+new revision replaces the complete set, including rename/removal; old revisions
+remain readable. An empty set is a revision, distinct from an absent pointer.
+
+## 2. Composition and inheritance
+
+`CompositionRecord` persists the operation, input revision, source, pinned parent
+Split revision, edits, evaluation progress, candidate and ownership state. Edits
+use expected-revision CAS and immutable edit receipts. Historical retries return
+their original draft result; current status is a separate read.
+
+The default source is all parent Samples. Selection filters and a frozen named
+Split can restrict the source, with their intersection when both are present.
+A source S1/r2/train produces a child with parent S1. It copies exact frozen
+membership/provenance, not the future currentSplit value. Inherited Split members
+intersect surviving child IDs; newly added IDs remain unassigned unless explicit
+assignments or reevaluated definitions include them.
+
+Sample upsert replaces the supplied field bindings while preserving other effective
+fields; remove excludes its ID. Effective inherited values are resolved server-side
+and materialized as bindings in the complete child Manifest. Inspection reports the
+child as the binding source after this copy; chunk payloads remain shared. Sparse
+Manifests created through direct publication can still resolve omitted optional
+fields from an ancestor and report that ancestor as the source. An unchanged
+required field must remain represented in the final complete membership. Tombstone, missing and empty inline
+value remain distinct. The current Schema contains only version/name/requiredness.
+
+Evaluation advances revision-bound windows of at most twenty Samples. Durable
+redo windows precede row writes; CAS progress and content bindings prevent stale
+work from becoming the accepted result. Preparation validates the server-assembled
+Manifest, initial Split set and all candidate upload claims before publication.
+The data head transition makes data and initial Splits visible together.
+
+## 3. Split evaluation and publication
+
+Standalone Split drafts pin owner Snapshot and expected current revision at begin.
+Source leases protect effective values while active. Whole-set edits invalidate
+evaluation; prepare requires complete membership and valid overlap/coverage policy.
+Defaults are disjoint and allow-unassigned. Frozen inherited membership is explicit;
+reevaluation is a deliberate definition change.
+
+Predicates support all, explicit IDs, prefix, range, keyword, inline field match and
+boolean composition over the selected universe. Effective optional inheritance and
+tombstones are resolved through metadata. Payload contents are not searched.
+
+Weighted partition uses evaluator version 1: SHA-256 of `crowdb-split-v1\0`, seed
+as u64 big endian, Sample-ID length as u32 big endian, then exact ID bytes. Interpret
+the first eight digest bytes as u64 big endian. Its bucket is
+`(u128(hash) * sum(weights)) >> 64`; ordered cumulative weights select the name.
+Weight sums are checked u32 values. This is deterministic approximate partitioning,
+not a promise of exact cardinality. Overlap/coverage validation remains independent.
+
+Membership pages are immutable and checksum-bound. Preparation persists the whole
+revision before currentSplit CAS. A conflict preserves the candidate and caller
+inputs; retry never silently rebases definitions or overwrites another revision.
+
+## 4. Bounded observation and reads
+
+Inspection projections contain committed summaries, Schema rows, Sample IDs, field
+metadata and separate value bindings. Ordinary inspection and indexed read planning
+do not load a complete Manifest or chunk payload. Inventory and parent/child indexes
+filter visibility through commit evidence, not merely candidate record state.
+
+List pages default to twenty items and cap at one hundred with a 1 MiB metadata
+window. Exact matrices admit twenty IDs by twelve fields. IDs preserve up to 16 KiB
+of binary data; Schema admits up to 256 fields with names up to 1024 bytes. Projection
+and selection use aggregate byte/deadline/cancellation budgets. Native bounded reads
+reject oversized external values before materializing their contents.
+
+Old snapshots without projections require explicit resumable inspection preparation.
+Unsupported or oversized legacy state is reported, never represented as an empty
+Snapshot. Field preview is explicit and capped at 64 KiB under an owned lease; it
+does not create a read plan or acknowledge application consumption.
+
+V2 read planning pins Snapshot and optional Split revision once, intersects Selection
+with Split membership, then orders/shuffles and partitions workers before fetching
+projected payloads. Planning advances twenty-Sample windows with fixed total ID/byte
+limits. Fetch/preview/status never advance the acknowledged cursor; only explicit
+application acknowledgement does so. Cancel releases owned source protection.
+
+## 5. Ownership and cleanup
+
+Uploads are Dataset-scoped and content-verified. Composition registers staging and
+candidate upload IDs durably before claims. Publication is gated on complete ownership
+preparation, including unchanged shared parent uploads. Retiring one owner never
+releases a different owner; permanent owner revocation rejects delayed claims.
+
+Abandonment first fences the draft, then cleanup proceeds in bounded resumable steps.
+Obsolete evaluation pages and candidates use durable cursors. Cleanup seals possible
+late write keys, including currently absent keys, rather than deleting a value and
+allowing a stale CAS(None) writer to recreate it. Edit IDs are registered before
+payload writes so failed admissions can also be retired. Small receipt/fence records
+remain after bulk cleanup to preserve replay and non-resurrection guarantees.
+
+Snapshot reclaim checks latest/stable, retained Snapshots, live children, candidate
+ownership and scoped leases under a terminal owner fence. It retires upload owners,
+Snapshot-scoped Split drafts, possible index writes and ordinary metadata in phases.
+Completion reports logical retirement; physical upload deletion remains deferred
+to its registry cleanup. There is no independent committed Split revision pruning.
+
+`GET snapshots/{snapshot}/reclaim` is bounded, read-only observation. It returns
+publication operation identity where available, latest/stable/retained/read-lease
+facts, and not_started/pending/completed retirement state. Parent reachability is
+explicitly not evaluated in this small read; observed flags are never permission
+to reclaim. Rust/Python `control().lifecycle(snapshot)` share this contract.
+Metadata HTTP reads remain capped at five seconds, while bounded mutation steps
+use their configured mutation deadline (normally 60 seconds).
+
+## 6. Compatibility and invariants
+
+Control v2 exposes strict DTOs and capability discovery. Required null preconditions
+cannot be omitted; u64s use decimal strings; binary IDs use canonical base64. Clients
+check capabilities before mutation and never downgrade a Split-aware operation to v1.
+Existing v1 routes, persisted read interpretation and binary framing remain available.
+Rust and Python control clients share transport/admission/retry/cancellation semantics.
+
+- **I1 — Immutable data:** committed Snapshot content never changes.
+- **I2 — Independent revision:** Split publication cannot move Dataset latest.
+- **I3 — Frozen source:** source revision identity survives later pointer changes.
+- **I4 — Complete publication:** data, initial membership and upload ownership are
+  ready before the visible head transition.
+- **I5 — Exact retry:** a successful attempt cannot create another Snapshot or
+  rewind a later head.
+- **I6 — Bounded work:** page, byte and time budgets constrain underlying storage
+  work as well as response length.
+- **I7 — Terminal retirement:** delayed writers cannot restore retired work or
+  acquire a revoked owner after cleanup.

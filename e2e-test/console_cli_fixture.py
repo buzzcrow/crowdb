@@ -9,7 +9,7 @@ import signal
 import subprocess
 import time
 
-from fixture import Cluster, redact
+from fixture import Cluster, redact, request
 
 LABEL = "org.crowdb.cluster.id"
 ROOT_LABEL = "org.crowdb.cluster.root"
@@ -106,6 +106,7 @@ class CliContainerCluster(Cluster):
         assert before["id"] == after["id"] and before["addresses"] == after["addresses"]
         assert before["diskdb_heartbeat_interval_secs"] == after["diskdb_heartbeat_interval_secs"] == 3
         self.assert_diskdb_cadence()
+        self.file_disks()
         assert binding == self.read_owned("node-binding.json")
         if diskdb is not None:
             assert diskdb == self.read_owned("services/diskdb-1/execution.json"), "confirmed Diskdb execution must survive resume"
@@ -122,14 +123,31 @@ class CliContainerCluster(Cluster):
         self.delete_after_replay = True
 
     def lifecycle(self):
+        files = self.file_disks()
         self.invoke("bucket", "put", "--container", self.run_id, "cli-replay")
         self.invoke("object", "put", "--container", self.run_id, "cli-replay", "witness", "--text", "durable-container-witness")
         self.invoke("cluster", "stop", "--container", self.servers[1])
         assert "Containers: 0/3" in self.invoke("cluster", "status", "--root", str(self.root))
         self.invoke("cluster", "restart", "--container", self.run_id)
         self.assert_diskdb_cadence()
+        assert self.file_disks() == files, "restart must retain the accepted file disk identities"
         assert self.invoke("object", "get", "--container", self.servers[2], "cli-replay", "witness") == "durable-container-witness"
 
+
+    def file_disks(self):
+        observed = []
+        for index, address in enumerate(self.addresses):
+            policy = request(f"http://{address}:9090", "/api/node/auto-join")
+            assert policy["enabled"] is False, policy
+            page = request(f"http://{self.addresses[0]}:9090", f"/api/nodes/{index + 1}/disk-files")
+            assert page["next"] is None and len(page["items"]) == 1, page
+            disk = page["items"][0]
+            assert disk["phase"] == "registered", disk
+            assert disk["request"]["admission"]["disk_group_id"] == index + 1, disk
+            assert disk["request"]["sparse"] is True, disk
+            assert disk["preparation_complete"] and disk["backing_identity"], disk
+            observed.append({key: disk[key] for key in ("request", "path", "backing_identity")})
+        return observed
 
     def assert_diskdb_cadence(self):
         for index in range(3):

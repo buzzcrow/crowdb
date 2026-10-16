@@ -133,6 +133,7 @@ memory_bytes = {o["repair_memory_bytes"]}
         base = ipaddress.ip_address(self.addresses[0])
         endpoints = []
         self.client(self.bundle, "storage-unavailable", "chunkdb::io::unavailable_before_services_start")
+        self.record_storage_start()
         for offset in range(6):
             index = self.chunkdb_index + len(self.service_instances) + offset
             address = str(base + index)
@@ -170,6 +171,9 @@ memory_bytes = {o["repair_memory_bytes"]}
         self.client(self.bundle, "storage-ready", "chunkdb::io::ready")
         return self
 
+    def record_storage_start(self):
+        (self.artifacts / "storage-started-at-ms").write_text(str(time.time_ns() // 1_000_000))
+
     def crash_restart(self):
         started = time.monotonic()
         first = self.chunkdb_index + len(self.service_instances)
@@ -177,6 +181,7 @@ memory_bytes = {o["repair_memory_bytes"]}
         for index in diskio_indices:
             self.command("kill", "--signal", "KILL", self.servers[index])
         super().crash_restart()
+        self.record_storage_start()
         for index in diskio_indices:
             self.command("start", self.servers[index])
         self.client(self.bundle, "storage-ready-recovered", "chunkdb::io::ready")

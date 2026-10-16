@@ -1449,10 +1449,11 @@ void ct_uring_submit_sync(ct_uring *uring, int32_t fd, int32_t data_only, ct_uri
     callback(context, -ENOSYS);
 }
 
-ct_status ct_scan(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t *start_key, size_t sklen,
-                  int has_start_bound, int start_inclusive, const uint8_t *end_key, size_t elen, size_t limit,
-                  size_t byte_budget, int keys_only, uint64_t deadline_ms, int include_tombstones, ct_buf *out_entries,
-                  uint64_t *out_count, int32_t *truncated)
+static ct_status scan_with_budget(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t *start_key,
+                                  size_t sklen, int has_start_bound, int start_inclusive, const uint8_t *end_key,
+                                  size_t elen, size_t limit, size_t byte_budget, int keys_only, uint64_t deadline_ms,
+                                  int include_tombstones, ct_buf *out_entries, uint64_t *out_count, int32_t *truncated,
+                                  bool strict_byte_budget)
 {
     if (t == nullptr || out_entries == nullptr) {
         return static_cast<ct_status>(Code::kInvalidArgument);
@@ -1466,7 +1467,7 @@ ct_status ct_scan(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t 
     Status        s     = t->tree->scan(
         Slice(reinterpret_cast<const char *>(prefix), plen), Slice(reinterpret_cast<const char *>(start_key), sklen),
         Slice(reinterpret_cast<const char *>(end_key), elen), limit, byte_budget, keys_only != 0, deadline_ms, nullptr,
-        &tr, include_tombstones != 0, &packed, &count, has_start_bound != 0, start_inclusive != 0);
+        &tr, include_tombstones != 0, &packed, &count, has_start_bound != 0, start_inclusive != 0, strict_byte_budget);
     if (!s.ok()) {
         return to_status(s);
     }
@@ -1486,6 +1487,29 @@ ct_status ct_scan(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t 
         *truncated = tr ? 1 : 0;
     }
     return static_cast<ct_status>(Code::kOk);
+}
+
+ct_status ct_scan(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t *start_key, size_t sklen,
+                  int has_start_bound, int start_inclusive, const uint8_t *end_key, size_t elen, size_t limit,
+                  size_t byte_budget, int keys_only, uint64_t deadline_ms, int include_tombstones, ct_buf *out_entries,
+                  uint64_t *out_count, int32_t *truncated)
+{
+    return scan_with_budget(t, prefix, plen, start_key, sklen, has_start_bound, start_inclusive, end_key, elen, limit,
+                            byte_budget, keys_only, deadline_ms, include_tombstones, out_entries, out_count, truncated,
+                            false);
+}
+
+ct_status ct_scan_strict(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t *start_key, size_t sklen,
+                         int has_start_bound, int start_inclusive, const uint8_t *end_key, size_t elen, size_t limit,
+                         size_t byte_budget, int keys_only, uint64_t deadline_ms, int include_tombstones,
+                         ct_buf *out_entries, uint64_t *out_count, int32_t *truncated)
+{
+    if (byte_budget == 0) {
+        return static_cast<ct_status>(Code::kInvalidArgument);
+    }
+    return scan_with_budget(t, prefix, plen, start_key, sklen, has_start_bound, start_inclusive, end_key, elen, limit,
+                            byte_budget, keys_only, deadline_ms, include_tombstones, out_entries, out_count, truncated,
+                            true);
 }
 
 ct_status ct_seek_reverse(ct_tree *t, const uint8_t *start_key, size_t sklen, int start_inclusive,

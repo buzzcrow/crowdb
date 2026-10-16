@@ -544,6 +544,7 @@ async fn assert_old_parent_ordered_reads(service: &ChunkKvService) {
         items.iter().map(|item| item.key.as_slice()).collect::<Vec<_>>(),
         [b"t", b"b"]
     );
+    bounded_scan::assert_split_writer_budget(service).await;
 }
 
 async fn assert_old_parent_scan_continuation(service: &ChunkKvService) {
@@ -1330,3 +1331,6 @@ async fn ordered_seek_and_scan_preserve_inclusive_range_start() {
         vec![b"c".as_slice()]
     );
 }
+
+#[path = "server_test/bounded_scan.rs"]
+mod bounded_scan;

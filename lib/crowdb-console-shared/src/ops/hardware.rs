@@ -21,7 +21,7 @@ mod relocation;
 pub use relocation::relocate_node;
 
 pub use authority_storage::{
-    add_disk_group_bound_to_group0, add_disk_group_to_group0, add_disk_to_group0,
+    add_disk_group_bound_to_group0, add_disk_group_to_group0, add_disk_to_group0, add_disks_to_group0,
     list_disk_groups_from_group0, list_disks_from_group0, remove_disk_from_group0,
     remove_disk_group_from_group0,
 };
@@ -413,9 +413,18 @@ fn validate_disk_input(
     }
 
     let unit_size = u64::from(input.unit_size_bytes);
+    if input.capacity_bytes % unit_size != 0 {
+        return Err(Error::Validation {
+            field: "capacity_bytes".into(),
+            message: "capacity_bytes must be a multiple of unit_size_bytes".into(),
+        });
+    }
     let capacity_units = input.capacity_bytes / unit_size;
     let zone_size_units = input.zone_size_bytes / unit_size;
-    let zone_count = u32::try_from(capacity_units / zone_size_units).unwrap_or(u32::MAX);
+    let zone_count = u32::try_from(capacity_units / zone_size_units).map_err(|_| Error::Validation {
+        field: "capacity_bytes".into(),
+        message: "disk zone count exceeds the supported range".into(),
+    })?;
 
     let disk_type_proto = match input.disk_type.as_str() {
         "Hdd" | "BLOCK_HDD" => crowdb_protocol::diskdb::rpc::DiskType::BlockHdd as i32,

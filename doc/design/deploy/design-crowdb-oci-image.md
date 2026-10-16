@@ -54,6 +54,13 @@ layout, configuration and layers; it does not require a particular distribution.
 Ubuntu supplies the existing SSH, certificate, shell and system-library runtime.
 Keep the current runtime dependency checks and UID/GID 10001 data ownership.
 
+Tini runs as PID 1 under both runtimes and reaps adopted orphan processes,
+including SSH session children. It forwards signals to the monitor child, which
+retains ordered service shutdown and the exit status of its own children.
+The monitor does not perform an indiscriminate wait that could consume an owned
+Tokio child status. This uses Tini's standard reaping/signal behavior as documented
+in its [upstream implementation](https://github.com/krallin/tini).
+
 The image contains the same monitor, UI, Rust/C++ servers, shared libraries,
 templates and entrypoint used by both deployment modes. The common
 image defaults to `CROWDB_STARTUP_MODE=manual`: discovery, SSH and UI start, then
@@ -175,6 +182,46 @@ bootstrap. Automatic development usage adds `-e CROWDB_STARTUP_MODE=single`;
 production resource/device arguments are not prerequisites for the simple
 development example. Both use the same image.
 
+The standard monitor accepts private `PrepareDiskFile` requests only for its
+confirmed node/cluster binding with available Group-0 authority. It records the
+request before allocating a generated file asynchronously; control connections
+and service heartbeat processing do not wait for preallocation. One allocation
+runs at a time. `DiskFilePreparation` reports accepted, creating, prepared or
+failed, including the retained backing identity. Preparation alone grants no
+disk membership or usable capacity.
+
+File preparation checks available filesystem space including the requested host
+reserve. Preallocation errors remain failures; sparse allocation must be explicit.
+Retry preserves the original intent and verifies the recorded inode. Completed
+files are never recreated or resized. An existing file without a durable ownership
+receipt is rejected, including after an interruption between creation and receipt
+publication. Cleanup is blocked while allocation runs; shutdown waits for the
+blocking allocator to finish its durable record. New storage still requires
+Group-0 registration and runtime availability confirmation.
+
+Monitor restart preserves a managed file's filesystem/device identity, inode and
+logical size. A preallocated file must remain fully allocated, but its allocated
+block count is an observation rather than identity: filesystem extent metadata
+can grow as services write. Additional allocated metadata does not indicate a
+replacement medium.
+
+The persistent data mount contains node identity, bootstrap/service journals and
+managed disk files. Supplied files and whole block devices use the same container
+disks directory in Docker and containerd, with launcher-verified exact mappings.
+Replacement retains the original sources and identities; invalid inputs never
+trigger managed-file fallback. Standard setup defaults to one 16-GiB preallocated
+file and a 1-GiB host reserve; explicit single mode retains four sparse development
+files. File preallocation failure is not permission for sparse fallback.
+
+Supplied provisioning seals the canonical physical host/resource and physical
+capacity separately from whole-zone usable geometry. A full-file loop device
+shares its backing file's canonical resource; partitions, loop slices and ambiguous
+stacked/virtual lineage are rejected. The monitor reads every usable byte before
+Init membership, and DiskIO verifies its own opened descriptor before Online.
+Reservations survive interruption and removal. Unusable physical tails and
+existing retained data are not rewritten by admission or recovery. Detailed
+operator commands and candidate/rejoin flows live in the operational guide.
+
 Local OCI archive loading is version-dependent and must be tested separately.
 The baseline production contract is registry pull by digest. If a supported
 Docker version needs a Docker archive for offline loading, an explicit import
@@ -255,7 +302,7 @@ support is not established merely by OCI image publication.
   SBOM/provenance; failed gates never publish moving tags.
 - Rootful build and isolated Linux containerd host acceptance use the pinned tool
   matrix in the operational guide. Rootless preflight reports missing host UID/GID
-  helpers; native rootless execution has not yet been accepted on this host.
+  helpers and never silently falls back to a privileged builder.
 - CI publication, remote signing and protected-environment approval are configured;
   live registry acceptance requires a release workflow dispatch.
 - Keep Ubuntu 24.04 and Linux amd64 initially. ARM64, macOS VM execution and

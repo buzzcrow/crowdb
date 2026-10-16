@@ -44,9 +44,9 @@ pub use client::{
 pub use config::{ClientConfig, ReadEndpointPolicy, RetryConfig};
 pub use error::{Error, Result};
 pub use hardware::{
-    ClusterUsage, CrowdbSysmdClient, DiskCapacityEntry, DiskGroupCapacityEntry, DiskRecord,
-    HardwareCapacitySummary, HardwareClient, NodeCapacityEntry, NodeUsage, RackCapacityEntry, RackUsage,
-    SpaceUsageClient,
+    ClusterUsage, CrowdbSysmdClient, DiskCapacityEntry, DiskGroupCapacityEntry, DiskIoObservation,
+    DiskRecord, DiskRemovalReadiness, HardwareCapacitySummary, HardwareClient, NodeCapacityEntry, NodeUsage,
+    RackCapacityEntry, RackUsage, SpaceUsageClient,
 };
 pub use membership::{GroupMembershipClient, GroupMembershipSnapshot};
 pub use metrics::{ClientMetrics, ClientMetricsSnapshot, LeaderChangeEpisode, WindowLatencySnapshot};

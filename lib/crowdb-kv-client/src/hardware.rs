@@ -8,8 +8,8 @@ pub mod space_usage;
 pub mod sysmd;
 
 pub use hierarchy::{
-    DiskCapacityEntry, DiskGroupCapacityEntry, DiskRecord, HardwareCapacitySummary, HardwareClient,
-    NodeCapacityEntry, RackCapacityEntry,
+    DiskCapacityEntry, DiskGroupCapacityEntry, DiskIoObservation, DiskRecord, DiskRemovalReadiness,
+    HardwareCapacitySummary, HardwareClient, NodeCapacityEntry, RackCapacityEntry,
 };
 pub use space_usage::{ClusterUsage, NodeUsage, RackUsage, SpaceUsageClient};
 pub use sysmd::CrowdbSysmdClient;

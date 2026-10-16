@@ -290,8 +290,20 @@ pub struct ChunkKvPartitionLoad {
     pub independently_recoverable: bool,
 }
 
+/// Immutable physical scope of one `DiskIO` process. Group zero denotes all
+/// disk groups on the configured node, matching the existing launcher option.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiskioHardwareScope {
+    pub version: u32,
+    pub rack_id: u64,
+    pub node_id: u64,
+    pub disk_group_id: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct DiskdbExtra {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diskio_scope: Option<DiskioHardwareScope>,
     #[serde(default)]
     pub rack_id: Option<u64>,
     #[serde(default)]
@@ -303,6 +315,8 @@ pub struct DiskdbExtra {
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct DiskGroupUsageSummary {
     pub disk_group_id: u64,
+    #[serde(default)]
+    pub usage_known: bool,
     pub capacity_bytes: u64,
     pub used_bytes: u64,
     pub free_bytes: u64,
@@ -345,6 +359,13 @@ pub struct HostedGroup {
 pub struct OwnerMapValue {
     pub instance_id: u64,
     pub lease_expiry_ms: u64,
+    /// Group-0 revision of the manager process's accepted startup session.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub process_epoch: u64,
+}
+
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]

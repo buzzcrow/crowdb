@@ -4,6 +4,7 @@
 //! Host clients for packaged server domain acceptance.
 
 mod access_dataset;
+mod access_dataset_split;
 mod access_iceberg;
 mod access_s3;
 mod chunk_client;

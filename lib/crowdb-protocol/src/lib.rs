@@ -16,6 +16,7 @@ pub mod chunk_kv_group_wire;
 pub mod chunk_kv_ordered_wire;
 pub mod chunk_kv_wire;
 pub mod chunk_stream;
+pub mod disk_storage;
 pub mod frame;
 pub mod kv_membership;
 
@@ -304,8 +305,8 @@ pub use chunk_task_value::{decode_chunk_task_value, encode_chunk_task_value, Chu
 pub mod fb_wrappers;
 
 pub use crate::types::diskdb_util::{
-    disk_id, effective_status, DiskIdExt, HwStatusExt, RecoveryScanProgressValueExt, ZoneAllocationStateExt,
-    ZoneValueExt, EMPTY_ZONE_BITMAP_LZ4,
+    disk_id, disk_usage_is_complete, effective_status, DiskIdExt, HwStatusExt, RecoveryScanProgressValueExt,
+    ZoneAllocationStateExt, ZoneValueExt, EMPTY_ZONE_BITMAP_LZ4,
 };
 
 pub mod common_type;
@@ -328,6 +329,7 @@ pub use key::{
     TentativeOwnerGraceKey, TextKey, ZoneKey, CROWDB_KEY_MAGIC, DISKDB_WATCH_PREFIXES,
 };
 
+pub mod dataset_auth;
 pub mod sysdata;
 pub use sysdata::{DiskGroupEntry, DiskdbOwnerEntry, KVGroupBindEntry};
 

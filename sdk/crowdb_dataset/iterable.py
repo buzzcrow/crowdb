@@ -1,51 +1,55 @@
-"""Small framework adapter over the Dataset scan contract.
-
-The adapter deliberately depends on a client object with ``scan(plan, cursor)``;
-the Rust HTTP and direct clients can provide that bridge without duplicating
-selection, shuffle, or cursor logic.
-"""
-
-from collections import deque
+# Copyright 2026-present Gian <crow.db@outlook.com>
+# Licensed under the Apache License, Version 2.0.
+"""Server-partitioned batches with explicit application acknowledgement."""
 
 
 class WorkerPartition:
     def __init__(self, worker=0, workers=1, rank=0, world_size=1):
-        if workers < 1 or world_size < 1 or worker < 0 or worker >= workers or rank < 0 or rank >= world_size:
+        if not (0 <= worker < workers <= 65535 and 0 <= rank < world_size <= 65535):
             raise ValueError("invalid worker partition")
-        self.worker = worker
-        self.workers = workers
-        self.rank = rank
-        self.world_size = world_size
+        self.worker, self.workers, self.rank, self.world_size = worker, workers, rank, world_size
 
     def owns(self, index):
         return index % (self.workers * self.world_size) == self.rank * self.workers + self.worker
 
+    def as_dict(self):
+        return {"worker": self.worker, "workers": self.workers,
+                "rank": self.rank, "world_size": self.world_size}
+
+
+class DatasetBatch:
+    def __init__(self, batch, client, session, expected):
+        self.header, self.fields = batch.header, batch.fields
+        self._client, self._session, self._expected = client, session, expected
+        self.acknowledged = False
+
+    def acknowledge(self):
+        progress = self._client.acknowledge(self._session, self._expected, self.header["next"])
+        self.acknowledged = True
+        return progress
+
 
 class DatasetIterable:
-    """Bounded iterable suitable for PyTorch ``IterableDataset`` wrapping."""
+    """Yield bounded DatasetBatch objects; acknowledge each before requesting more.
 
+    Tensor decoding/collation belongs above this adapter. Large fields use
+    next_batch streams directly. Unacknowledged batches replay on resume.
+    """
     def __init__(self, client, plan, *, partition=None, prefetch=1):
-        if prefetch < 1:
-            raise ValueError("prefetch must be positive")
-        self.client = client
-        self.plan = plan
-        self.partition = partition or WorkerPartition()
-        self.prefetch = prefetch
+        if prefetch != 1:
+            raise ValueError("this acknowledged iterator supports one batch in flight")
+        self.client, self.plan = client, dict(plan)
+        self.plan["partition"] = (partition or WorkerPartition()).as_dict()
 
     def __iter__(self):
-        cursor = None
-        index = 0
-        queue = deque()
+        session = self.client.start_read(self.plan)
+        expected = session["acknowledged"]
         while True:
-            response = self.client.scan(self.plan, cursor)
-            for sample in response.samples:
-                if self.partition.owns(index):
-                    if len(queue) >= self.prefetch:
-                        yield queue.popleft()
-                    queue.append(sample)
-                index += 1
-            cursor = response.cursor
-            while queue:
-                yield queue.popleft()
-            if response.end:
+            with self.client.next_batch(session["id"]) as stream:
+                batch = DatasetBatch(stream.batch(), self.client, session["id"], expected)
+            yield batch
+            if not batch.acknowledged:
+                raise RuntimeError("acknowledge the consumed batch before requesting the next batch")
+            expected = batch.header["next"]
+            if batch.header["end"]:
                 return

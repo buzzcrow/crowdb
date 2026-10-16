@@ -45,6 +45,7 @@ test.describe('cluster · registry browser', () => {
       // The rack appears as the datacenter's child.
       await expect(aside.getByText('R-60 (Rack Sixty)')).toBeVisible({ timeout: 3_000 });
 
+      await page.getByRole('button', { name: 'Show diagram', exact: true }).click();
       // The topology canvas also renders the datacenter node at layer 0.
       await expect(page.locator('.react-flow__node').filter({ hasText: 'datacenter' })).toBeVisible({ timeout: 5_000 });
 
@@ -96,7 +97,8 @@ test.describe('cluster · registry browser', () => {
     expect(probes).toEqual([]);
   });
 
-  test('persists an Access-only plan with three independent ports across reload', async ({ page, baseURL }) => {
+  // Baseline: 2.2s (2026-10-16), before adding the fourth listener.
+  test('persists an Access-only plan with four independent ports across reload', async ({ page, baseURL }) => {
     await createRack(baseURL!, { id: 382, name: 'Access plan' });
     await page.goto('/');
     const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
@@ -106,15 +108,15 @@ test.describe('cluster · registry browser', () => {
     await dialog.getByLabel('Node ID', { exact: true }).fill('382');
     for (const kind of ['paxos-kv', 'chunk-kv', 'chunk-db', 'disk-db', 'disk-io']) await dialog.getByRole('checkbox', { name: `crowdb-${kind}`, exact: true }).uncheck();
     const base = 9000;
-    const ports = [base, base + 1, base + 2];
-    for (const [index, label] of ['Iceberg', 'S3', 'Health'].entries()) await dialog.getByLabel(`crowdb-access-server ${label} port`, { exact: true }).fill(String(ports[index]));
+    const ports = [base, base + 1, base + 2, base + 3];
+    for (const [index, label] of ['Iceberg', 'S3', 'Health', 'Dataset'].entries()) await dialog.getByLabel(`crowdb-access-server ${label} port`, { exact: true }).fill(String(ports[index]));
     await dialog.getByRole('button', { name: 'Create Node', exact: true }).click();
     await expect(dialog).toHaveCount(0);
     const api = await apiContext(baseURL!);
     try {
       const read = async () => { const response = await api.get('/api/service-plans'); expect(response.ok()).toBeTruthy(); return (await response.json())['382']; };
       const plan = await read();
-      expect(plan.overrides['access-server']).toMatchObject({ http_port: ports[0], s3_port: ports[1], health_port: ports[2] });
+      expect(plan.overrides['access-server']).toMatchObject({ http_port: ports[0], s3_port: ports[1], health_port: ports[2], dataset_port: ports[3] });
       for (const kind of ['paxos-kv', 'chunk-kv', 'chunkdb', 'diskdb', 'diskio']) expect(plan.steps[kind].state).toBe('disabled');
       await page.reload();
       await expect(aside.getByText('N-382', { exact: true })).toBeVisible();

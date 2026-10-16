@@ -24,6 +24,10 @@ def check_source(verified, tag):
         raise ValueError("release branch/version differs from artifact")
     if revision != verified["revision"]:
         raise ValueError("release source differs from verified artifact")
+    if verified.get("source_tree"):
+        tree = subprocess.check_output(["git", "rev-parse", revision + "^{tree}"], text=True).strip()
+        if verified["source_tree"] != tree:
+            raise ValueError("release artifact contains an uncommitted source tree")
     head = subprocess.check_output(["git", "ls-remote", "origin", "refs/heads/" + branch], text=True).split()[0]
     if head != revision:
         raise ValueError("release branch moved after verification")

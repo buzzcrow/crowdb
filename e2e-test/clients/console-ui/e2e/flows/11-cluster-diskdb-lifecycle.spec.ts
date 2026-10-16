@@ -22,19 +22,19 @@ async function deployDiskDb(page: Page, request: APIRequestContext, kv: LiveServ
   const node = page.getByRole('complementary', { name: 'Cluster tree sidebar' })
     .getByTestId('tree-node-N-1').locator(':scope > [role="treeitem"]');
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
-  await expect(sidebar.getByRole('button', { name: 'Add Rack', exact: true })).toHaveCount(0);
+  await expect(sidebar.getByRole('button', { name: 'Add Rack', exact: true })).toBeVisible();
   await node.click({ button: 'right' });
-  for (const label of ['Add Disk Group', 'Deploy DiskDB']) {
+  for (const label of ['Add Disk Group', 'Deploy DiskDB', 'Delete Node']) {
     await expect(page.getByRole('menuitem', { name: label, exact: true })).toBeVisible();
   }
-  for (const label of ['Add Node', 'Delete Node', 'Restart DiskDB', 'Stop DiskDB']) {
+  for (const label of ['Add Node', 'Restart DiskDB', 'Stop DiskDB']) {
     await expect(page.getByRole('menuitem', { name: label, exact: true })).toHaveCount(0);
   }
   await page.keyboard.press('Escape');
   const rack = sidebar.getByTestId('tree-node-R-1').locator(':scope > [role="treeitem"]');
   await rack.click({ button: 'right' });
   for (const label of ['Add Node', 'Delete Rack']) {
-    await expect(page.getByRole('menuitem', { name: label, exact: true })).toHaveCount(0);
+    await expect(page.getByRole('menuitem', { name: label, exact: true })).toBeVisible();
   }
   await page.keyboard.press('Escape');
   await diskMenu(page, node, 'Deploy DiskDB');

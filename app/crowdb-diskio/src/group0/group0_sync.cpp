@@ -8,7 +8,9 @@
 #include "disk/mem_disk.h"
 #include "disk/null_disk.h"
 #include "engine/uring/uring_engine.h"
+#include "group0/backing_identity.h"
 #include "group0/disk_identity.h"
+#include "group0/disk_membership.h"
 #include "group0/ffi_result.h"
 
 #include <folly/dynamic.h>
@@ -18,23 +20,11 @@
 #include <cstdio>
 #include <cstring>
 #include <thread>
-#include <unordered_set>
 
 namespace crowdb::diskio
 {
 
 // ── Callback context for async FFI ops ────────────────────────────
-
-static bool wait_for_ctx(FfiResult &ctx, uint32_t timeout_ms = 10000)
-{
-    for (uint32_t i = 0; i < timeout_ms / 10; ++i) {
-        if (ctx.done.load(std::memory_order_acquire)) {
-            return true;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    return false;
-}
 
 // ── Group0Sync ────────────────────────────────────────────────────
 
@@ -103,10 +93,35 @@ void Group0Sync::schedule_next_sync()
 
 void Group0Sync::do_sync()
 {
+    release_quiescent_disks();
+    // Register before acquiring any disk handle so exclusion observers cannot
+    // miss a newly starting instance. A failed registration never opens media.
+    if (!registered_) {
+        registered_ = heartbeat();
+        if (!registered_) {
+            return;
+        }
+    }
     if (cfg_.auto_discover_disks) {
         fetch_disks_from_group0();
     }
-    heartbeat();
+    if (heartbeat()) {
+        confirm_exclusions();
+    }
+}
+
+void Group0Sync::release_quiescent_disks()
+{
+    for (const auto &disk : retired_disks_.collect_quiescent()) {
+#ifdef CROWDB_HAVE_LIBURING
+        if (auto uring_engine = std::dynamic_pointer_cast<UringEngine>(engine_);
+            uring_engine != nullptr && disk->fd() >= 0) {
+            uring_engine->uring().unregister_fd(disk->fd());
+        }
+#else
+        (void)disk;
+#endif
+    }
 }
 
 void Group0Sync::fetch_disks_from_group0()
@@ -140,22 +155,25 @@ void Group0Sync::reconcile_disks(const std::string &json)
 {
     // Disk identity words are decimal strings so all 64 bits survive JSON parsing.
     folly::dynamic parsed;
+    DiskMembership membership;
     try {
-        parsed = folly::parseJson(json);
+        parsed     = folly::parseJson(json);
+        membership = DiskMembership::parse(parsed, cfg_.dg_id);
+        exclusions_.observe(parsed, cfg_.dg_id);
     }
     catch (const std::exception &e) {
-        std::fprintf(stderr, "warning: group-0 disk list JSON parse error: %s\n", e.what());
+        std::fprintf(stderr, "warning: group-0 disk membership rejected: %s\n", e.what());
         return;
     }
 
-    if (!parsed.isArray()) {
-        std::fprintf(stderr, "warning: group-0 disk list is not a JSON array\n");
-        return;
+    // Exclude before opening other disks. Old readers and request callbacks
+    // retain detached handles until descriptor unregistration is safe.
+    for (const auto &id : membership.exclude(*disk_set_, retired_disks_)) {
+        std::printf("group-0: excluded disk {%llu,%llu} (Offline or absent)\n",
+                    static_cast<unsigned long long>(id.high), static_cast<unsigned long long>(id.low));
     }
 
     // Collect the disk IDs from group-0 and create/update disks.
-    std::unordered_set<DiskId, DiskIdHash> seen_ids;
-    std::unordered_set<uint64_t>           seen_groups;
     for (const auto &entry : parsed) {
         if (!entry.isObject()) {
             continue;
@@ -173,12 +191,23 @@ void Group0Sync::reconcile_disks(const std::string &json)
             return;
         }
         DiskId did{.high = *high, .low = *low};
-        seen_ids.insert(did);
-        seen_groups.insert(cfg_.dg_id == 0 ? static_cast<uint64_t>(entry["disk_group_id"].asInt()) : cfg_.dg_id);
+        if (!membership.active.contains(did)) {
+            continue;
+        }
+
+        // Do not reopen an identity while callbacks still hold its old handle.
+        if (retired_disks_.contains(did)) {
+            continue;
+        }
 
         // Check if this disk already exists in the DiskSet.
         auto existing = disk_set_->find_disk(did);
         if (existing != nullptr) {
+            if (entry.contains("storage") && !entry.at("storage").isNull() &&
+                !matches_backing_identity(existing->fd(), val_obj.at("device_path").asString(), entry.at("storage"))) {
+                retired_disks_.retire(*disk_set_, did);
+                std::fprintf(stderr, "warning: group-0 disk backing changed; excluding opened disk\n");
+            }
             // Disk already present — no update needed (disks are immutable
             // once opened; zone layout doesn't change at runtime).
             continue;
@@ -214,6 +243,11 @@ void Group0Sync::reconcile_disks(const std::string &json)
         else {
             // Real block device.
             disk = std::make_shared<BlockDisk>(did, device_path, engine_, std::move(zones), true);
+            if (disk->fd() < 0 || (entry.contains("storage") && !entry.at("storage").isNull() &&
+                                   !matches_backing_identity(disk->fd(), device_path, entry.at("storage")))) {
+                std::fprintf(stderr, "warning: group-0 disk open or retained backing validation failed\n");
+                continue;
+            }
         }
 #ifdef CROWDB_HAVE_LIBURING
         // Register the disk's fd with the uring for fd→pipeline routing.
@@ -231,32 +265,14 @@ void Group0Sync::reconcile_disks(const std::string &json)
                     zone_count);
     }
 
-    // Remove disks that are no longer in group-0.
-    // In-flight IO on removed disks completes safely (shared_ptr keeps
-    // the Disk alive); new requests get DiskNotExist.
-    for (const auto &existing_id : disk_set_->disk_ids()) {
-        if (seen_ids.find(existing_id) == seen_ids.end()) {
-#ifdef CROWDB_HAVE_LIBURING
-            auto disk = disk_set_->find_disk(existing_id);
-            if (auto uring_engine = std::dynamic_pointer_cast<UringEngine>(engine_);
-                uring_engine != nullptr && disk != nullptr && disk->fd() >= 0) {
-                uring_engine->uring().unregister_fd(disk->fd());
-            }
-#endif
-            disk_set_->remove_disk(existing_id);
-            std::printf("group-0: removed disk {%llu,%llu} (no longer in group-0)\n",
-                        static_cast<unsigned long long>(existing_id.high),
-                        static_cast<unsigned long long>(existing_id.low));
-        }
-    }
-    owned_dg_ids_.assign(seen_groups.begin(), seen_groups.end());
+    owned_dg_ids_.assign(membership.groups.begin(), membership.groups.end());
     std::sort(owned_dg_ids_.begin(), owned_dg_ids_.end());
 }
 
-void Group0Sync::heartbeat()
+bool Group0Sync::heartbeat()
 {
     if (svc_client_ == nullptr) {
-        return;
+        return false;
     }
 
     // A node-local DiskIO instance may run before any Capacity disk group
@@ -271,15 +287,18 @@ void Group0Sync::heartbeat()
     const std::string dg_ids_json = folly::toJson(groups);
 
     auto ctx = std::make_shared<FfiResult>();
-    crowdb_svc_heartbeat_diskio_at(svc_client_, cfg_.instance_id, cfg_.rpc_endpoint.c_str(), cfg_.rack_id, cfg_.node_id,
-                                   dg_ids_json.c_str(), "[]", complete_ffi_result, retain_ffi_result(ctx));
+    crowdb_svc_heartbeat_diskio_scoped(svc_client_, cfg_.instance_id, cfg_.rpc_endpoint.c_str(), cfg_.rack_id,
+                                       cfg_.node_id, cfg_.dg_id, dg_ids_json.c_str(), "[]", complete_ffi_result,
+                                       retain_ffi_result(ctx));
     if (!wait_for_ctx(*ctx)) {
         std::fprintf(stderr, "warning: group-0 heartbeat timed out\n");
-        return;
+        return false;
     }
     if (ctx->status.load() != 0) {
         std::fprintf(stderr, "warning: group-0 heartbeat failed\n");
+        return false;
     }
+    return true;
 }
 
 } // namespace crowdb::diskio

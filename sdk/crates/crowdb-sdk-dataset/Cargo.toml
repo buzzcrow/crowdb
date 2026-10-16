@@ -1,0 +1,22 @@
+[package]
+name = "crowdb-sdk-dataset"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "CrowDB Dataset HTTP SDK"
+
+[lints]
+workspace = true
+
+[dependencies]
+crowdb-sdk-core = { path = "../crowdb-sdk-core", version = "0.1.0" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+bytes.workspace = true
+md-5 = "0.10"
+hex = "0.4"
+base64 = "0.22"
+uuid = { version = "1", features = ["v4"] }

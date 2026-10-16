@@ -85,7 +85,7 @@ async fn verify_directory(context: &TestNativeContext) {
     );
 }
 
-async fn wait_initial_split(source: &Group0ChunkKvRangeCatalogSource) {
+pub(super) async fn wait_initial_split(source: &Group0ChunkKvRangeCatalogSource) {
     let started = std::time::Instant::now();
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
     loop {

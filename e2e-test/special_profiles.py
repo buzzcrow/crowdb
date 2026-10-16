@@ -11,6 +11,7 @@ import time
 import uuid
 from fixture import docker, redact
 from image_identity import verify_server_sources
+from client import bundle_client
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -25,6 +26,19 @@ def cleanup_owned_host(name, data, image):
             and mount.get("Source") == str(data / "node") for mount in mounts):
         raise ValueError("host cleanup refuses changed image or data ownership")
     docker("rm", "-f", name)
+
+
+def cleanup_owned_media(name, data, image):
+    helper = name + "-media"
+    names = docker("container", "ls", "-a", "--filter", f"name={helper}", "--format", "{{.Names}}")
+    if helper not in names.splitlines():
+        return
+    current = json.loads(docker("inspect", helper))[0]
+    if (current["Image"] != image or current["Config"].get("Labels", {}).get("org.crowdb.e2e.run") != name
+            or not any(mount.get("Destination") == "/owned" and mount.get("Source") == str(data)
+                       for mount in current.get("Mounts", []))):
+        raise ValueError("media cleanup refuses changed image or data ownership")
+    docker("rm", "-f", helper)
 
 
 def run_host(args, parser):
@@ -45,7 +59,8 @@ def run_host(args, parser):
     identity = json.loads(docker("image", "inspect", args.image))[0]
     labels = identity["Config"].get("Labels") or {}
     try:
-        source = verify_server_sources(ROOT, labels.get("org.opencontainers.image.revision"))
+        source = verify_server_sources(ROOT, labels.get("org.opencontainers.image.revision"),
+                                       labels.get("org.crowdb.source.tree") or None)
     except ValueError as error:
         parser.error(str(error))
     run_root = args.artifacts / ("run-" + uuid.uuid4().hex)
@@ -57,9 +72,11 @@ def run_host(args, parser):
         "host_data":str(data), "container_data":"/opt/crowdb/data",
         "core_policy":Path("/proc/sys/kernel/core_pattern").read_text().strip()}, indent=2))
     env = os.environ.copy()
+    client = bundle_client(run_root / "media-client")
     name = "crowdb-e2e-host-" + run_root.name.removeprefix("run-")
     env.update(CROWDB_CONTAINER_IMAGE=identity["Id"], CROWDB_E2E_PROFILE_DATA=str(data),
-               CROWDB_E2E_PROFILE_NAME=name)
+               CROWDB_E2E_PROFILE_NAME=name, CROWDB_MEDIA_CLIENT=str(client),
+               CROWDB_MEDIA_HOST_ID="docker-acceptance-host")
     started = time.monotonic()
     status, code = "failed", None
     print(f"Host deployment profile: exact image {identity['Id']}; artifacts {run_root}", flush=True)
@@ -85,6 +102,7 @@ def run_host(args, parser):
             (run_root / "client-host.log").write_text(redact(stdout))
         try:
             cleanup_owned_host(name, data, identity["Id"])
+            cleanup_owned_media(name, data, identity["Id"])
         except Exception:
             status = "failed"
             raise

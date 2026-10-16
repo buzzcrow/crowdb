@@ -1,7 +1,9 @@
+mod system;
+
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use crowdb_protocol::mgmt::{AddGroupRequest, GroupSummary, StoreListResponse, SystemInitRequest};
+use crowdb_protocol::mgmt::{AddGroupRequest, GroupSummary, StoreListResponse};
 use serde::Deserialize;
 use thiserror::Error;
 use tokio::time::{sleep, Instant};
@@ -18,6 +20,8 @@ const POLL_INTERVAL: Duration = Duration::from_millis(100);
 pub enum KvBootstrapError {
     #[error("KV management request failed: {0}")]
     Http(#[from] reqwest::Error),
+    #[error("system-group initialization failed: {0}")]
+    System(#[from] crowdb_console_shared::error::Error),
     #[error("bootstrap manifest failed: {0}")]
     Manifest(#[from] ManifestError),
     #[error("monitor lifecycle log failed: {0}")]
@@ -121,6 +125,10 @@ impl KvBootstrap {
                 .find(|entry| entry.group_id == group.group_id)
             {
                 verify_group(existing, group)?;
+                if group.role == GroupRole::System {
+                    self.confirm_system_acceptance(group, session.manifest().system_bootstrap_identity())
+                        .await?;
+                }
                 self.wait_ready(group).await?;
                 if !complete {
                     session.complete_step(&name)?;
@@ -169,17 +177,10 @@ impl KvBootstrap {
         group: &GroupProfile,
         bootstrap: crowdb_protocol::mgmt::SystemBootstrapIdentity,
     ) -> Result<(), KvBootstrapError> {
-        let response = if group.role == GroupRole::System {
-            self.client
-                .post(self.url("system/init"))
-                .json(&SystemInitRequest {
-                    replica_id: group.replica_id,
-                    start_election: true,
-                    bootstrap: Some(bootstrap),
-                })
-                .send()
-                .await
-        } else {
+        if group.role == GroupRole::System {
+            return self.initialize_system(group, bootstrap).await;
+        }
+        let response = {
             self.client
                 .post(self.url("stores/0/groups"))
                 .json(&AddGroupRequest {

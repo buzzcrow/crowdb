@@ -38,7 +38,18 @@ async function createCluster({ page, request, baseURL, deployments }: UIContext)
     const initialized = page.waitForResponse(response => response.url().endsWith('/api/cluster/init') && response.request().method() === 'POST', { timeout: 10_000 });
     await dialog.getByRole('button', { name: 'Initialize Cluster', exact: true }).click();
     const response = await initialized;
-    expect(response.status(), await response.text()).toBe(201);
+    expect(response.status(), await response.text()).toBe(202);
+    const accepted = await response.json();
+    expect(accepted.operation_id).toEqual(expect.any(String));
+    expect(accepted.members).toEqual([1, 2, 3]);
+    await expect.poll(async () => {
+      const status = await request.get('/api/cluster/initialization');
+      expect(status.ok(), await status.text()).toBe(true);
+      const progress = await status.json();
+      expect(progress.operation_id).toBe(accepted.operation_id);
+      if (progress.phase === 'failed') throw new Error(`Initialization failed: ${progress.error}`);
+      return progress.phase;
+    }, { timeout: 10_000, intervals: [100] }).toBe('active');
     await waitForLeader(baseURL!, 0, 1, 10_000);
     await expect(dialog).toHaveCount(0);
   });
@@ -65,6 +76,7 @@ async function createCluster({ page, request, baseURL, deployments }: UIContext)
 async function addDisks({ page, request }: UIContext) {
   const sidebar = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
   await step('three-node: disk groups and disks through UI', async () => {
+    await page.getByTestId('domain-cluster').click();
     await page.getByTestId('domain-capacity').click();
     for (const id of [1, 2, 3]) {
       const node = sidebar.getByRole('button', { name: `N-${id}`, exact: true });
@@ -75,7 +87,7 @@ async function addDisks({ page, request }: UIContext) {
       await group.getByLabel('KV group', { exact: true }).selectOption('0/1');
       await group.getByRole('button', { name: 'Create Disk Group', exact: true }).click();
       await expect(group).toHaveCount(0);
-      const branch = sidebar.getByTestId(`tree-node-N-${id}`);
+      const branch = sidebar.getByTestId(`tree-node-STORAGE-${id}`);
       const expand = branch.getByRole('button', { name: 'Expand', exact: true });
       if (await expand.count()) await expand.click();
       await expect.poll(
@@ -83,11 +95,24 @@ async function addDisks({ page, request }: UIContext) {
         { timeout: 5_000, intervals: [100], message: `Disk group DG-${id} appears in the refreshed tree` },
       ).toBeGreaterThan(0);
       await sidebar.getByRole('button', { name: `DG-${id}`, exact: true }).click({ button: 'right' });
-      await page.getByRole('menuitem', { name: 'Add Disk', exact: true }).click();
-      const disks = page.getByRole('dialog', { name: 'Add Disks', exact: true });
-      await disks.getByLabel('Device Path (optional)', { exact: true }).fill(`/opt/crowdb/data/disk-${id}.img`);
-      await disks.getByRole('button', { name: 'Add Disks', exact: true }).click();
+      await page.getByRole('menuitem', { name: 'Create File Disk', exact: true }).click();
+      const disks = page.getByRole('dialog', { name: 'Create File Disk', exact: true });
+      await expect(disks.getByLabel('Disk group')).toHaveValue(String(id));
+      await disks.getByLabel('Capacity (GiB)').fill('4096');
+      await disks.getByText('Advanced allocation', { exact: true }).click();
+      await disks.getByLabel('Sparse file').check();
+      const pending = page.waitForResponse(response => response.request().method() === 'POST'
+        && new URL(response.url()).pathname === `/api/nodes/${id}/disk-files`);
+      await disks.getByRole('button', { name: 'Create and Join', exact: true }).click();
+      const accepted = await pending;
+      expect(accepted.status(), await accepted.text()).toBe(202);
+      const operation = await accepted.json();
       await expect(disks).toHaveCount(0);
+      await expect.poll(async () => {
+        const response = await request.get(`/api/nodes/${id}/disk-files/${operation.request.operation_id}`);
+        expect(response.ok(), await response.text()).toBe(true);
+        return (await response.json()).phase;
+      }, { intervals: [100] }).toBe('registered');
       await expect.poll(async () => {
         const response = await request.get('/api/diskdb/usage');
         expect(response.ok(), await response.text()).toBe(true);

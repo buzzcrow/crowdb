@@ -91,9 +91,24 @@ async fn disk_io_e2e_group0_sync() {
     assert_eq!(rejected.disks, stable.disks);
     assert_eq!(rejected.normal_connections, stable.normal_connections);
     assert_eq!(rejected.priority_connections, stable.priority_connections);
-    svc.unregister("diskio", INSTANCE_ID + 1)
+    assert!(svc.unregister("diskio", INSTANCE_ID + 1).await.is_err());
+    // Retain the pinned physical identity while withdrawing its ownership.
+    let endpoint = svc
+        .read_instance("diskio", INSTANCE_ID)
         .await
-        .expect("remove malformed owner observation");
+        .unwrap()
+        .unwrap()
+        .rpc_endpoint;
+    svc.heartbeat_diskio_at(INSTANCE_ID + 1, &endpoint, RACK_ID, NODE_ID, &[], &[])
+        .await
+        .expect("correct malformed observation and withdraw duplicate ownership");
+    semantic.refresh().await.expect("recover semantic route refresh");
+    assert_eq!(semantic.status().disks, stable.disks);
+    assert_eq!(semantic.status().normal_connections, stable.normal_connections);
+    assert_eq!(
+        semantic.status().priority_connections,
+        stable.priority_connections
+    );
 
     eprintln!("=== group0-sync: adding new disk to group-0 ===");
     let new_disk_id = make_disk_id(0, 42);

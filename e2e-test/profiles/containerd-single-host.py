@@ -29,6 +29,7 @@ def main():
             "--mount","type=bind,source=/etc/ssl/certs,target=/etc/ssl/certs,readonly",
             "--mount",f"type=bind,source={data},target=/opt/crowdb-e2e/data",
             "--mount",f"type=bind,source={archive},target=/opt/crowdb-e2e/archive.tar,readonly",
+            "--mount",f"type=bind,source={os.environ['CROWDB_CONTAINERD_MEDIA_CLIENT']},target=/opt/crowdb-e2e/client,readonly",
             "--mount",f"type=bind,source={archive}.json,target=/opt/crowdb-e2e/archive.tar.json,readonly",
             "--env","CROWDB_CONTAINERD_DATA=/opt/crowdb-e2e/data","--workdir",str(ROOT),
             os.environ["CROWDB_CONTAINERD_HOST_IMAGE"],"/bin/bash","-euc",

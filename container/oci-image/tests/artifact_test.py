@@ -54,6 +54,11 @@ class ArtifactTest(unittest.TestCase):
             result.update(revision="revision", version="version", runtime_sha256="runtime")
             Path(str(path) + ".json").write_text(json.dumps(result))
             self.assertEqual(receipt(path)["platform"], "linux/amd64")
+            result["source_tree"] = "another source tree"
+            Path(str(path) + ".json").write_text(json.dumps(result))
+            with self.assertRaisesRegex(ValueError, "source_tree"):
+                receipt(path)
+            del result["source_tree"]
             result["revision"] = "another revision"
             Path(str(path) + ".json").write_text(json.dumps(result))
             with self.assertRaisesRegex(ValueError, "source metadata"):

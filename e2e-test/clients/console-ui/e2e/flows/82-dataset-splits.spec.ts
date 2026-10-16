@@ -1,0 +1,81 @@
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
+import { test, expect } from '../fixtures/realBackend';
+import { call, datasetPath, openDataset, prepareDraft, publishDraft, publishSplits, seed } from '../fixtures/dataset';
+import { step } from '../fixtures/stepTimer';
+// Baseline: 8.2s (2026-10-16), before concurrent editor and frozen-source coverage.
+test('Dataset native: split_revisions', async ({ page, request, browser, baseURL }) => {
+  const name = `splits-${Date.now()}`;
+  const snapshot = await step('setup', () => seed(request, name, null, 3, 1));
+  await openDataset(page, name); await page.getByRole('button', { name: snapshot, exact: true }).click();
+  await page.getByRole('button', { name: 'Edit Split revision', exact: true }).click();
+  await page.getByRole('button', { name: 'Add selection Split' }).click();
+  await page.getByLabel('Split 1 name').fill('train');
+  await page.getByRole('button', { name: 'Save Split draft' }).click();
+  await expect(page.getByRole('button', { name: 'Evaluate complete membership' })).toBeEnabled();
+  await step('lifecycle poll', () => publishDraft(page, 'Split revision'));
+  const path = `${datasetPath(name)}/snapshots/${snapshot}`;
+  const first = await call(request, `${path}/split-head`);
+  expect((await call(request, `${datasetPath(name)}/head`)).latest).toBe(snapshot);
+  const staleContext = await browser.newContext({ baseURL });
+  const stale = await staleContext.newPage();
+  try {
+    await openDataset(stale, name); await stale.getByRole('button', { name: snapshot, exact: true }).click();
+    await stale.getByRole('button', { name: 'Edit Split revision', exact: true }).click();
+    await expect(stale.getByLabel('Split 1 name')).toHaveValue('train');
+    await stale.getByLabel('Split 1 name').fill('stale');
+    await stale.getByRole('button', { name: 'Save Split draft' }).click();
+    await expect(stale.getByRole('button', { name: 'Evaluate complete membership' })).toBeEnabled();
+    await page.getByRole('button', { name: 'Edit Split revision', exact: true }).click();
+    await expect(page.getByLabel('Split 1 name')).toHaveValue('train');
+    await page.getByLabel('Split 1 name').fill('training');
+    await page.getByRole('button', { name: 'Save Split draft' }).click();
+    await expect(page.getByRole('button', { name: 'Evaluate complete membership' })).toBeEnabled();
+    await publishDraft(page, 'Split revision');
+    await prepareDraft(stale, 'Split revision');
+    await stale.getByRole('button', { name: 'Publish Split revision', exact: true }).click();
+    await expect(stale.getByRole('button', { name: 'Keep stale draft for explicit abandonment' })).toBeEnabled();
+    await stale.getByRole('button', { name: 'Keep stale draft for explicit abandonment' }).click();
+    await stale.getByRole('button', { name: 'Abandon draft' }).click();
+    for (let window = 0; window < 20 && await stale.getByRole('button', { name: 'Edit as new operation' }).count() === 0; window++) {
+      await stale.getByRole('button', { name: 'Advance cleanup' }).click();
+      await expect(stale.getByRole('button', { name: 'Inspect draft status' })).toBeEnabled();
+    }
+    await expect(stale.getByRole('button', { name: 'Edit as new operation' })).toBeEnabled();
+  } finally { await staleContext.close(); }
+  const frozen = (await call(request, `${path}/split-head`)).revision;
+  await page.getByRole('button', { name: 'Split revision history' }).click();
+  await page.getByRole('button', { name: frozen, exact: false }).click();
+  await page.getByRole('button', { name: 'training (3)', exact: true }).click();
+  await page.getByRole('button', { name: 'Create child from Split' }).click();
+  await page.getByLabel('Filter frozen Split membership').check();
+  await page.getByRole('textbox', { name: 'Selection rule', exact: true }).fill(JSON.stringify({ kind: 'explicit', ids: [Buffer.from('sample-00').toString('base64'), Buffer.from('sample-01').toString('base64')] }));
+  // A later revision must not change the already chosen historical source.
+  await publishSplits(request, name, snapshot, [{ name: 'training', origin: { kind: 'evaluated' }, definition: { kind: 'selection', predicate: { kind: 'explicit', ids: [] } } }]);
+  await page.getByRole('button', { name: 'Review mapping' }).click();
+  await page.getByRole('button', { name: 'Save draft and upload local data' }).click();
+  await expect(page.getByRole('button', { name: 'Evaluate complete membership' })).toBeEnabled();
+  await publishDraft(page, 'Snapshot');
+  const child = (await call(request, `${datasetPath(name)}/head`)).latest;
+  expect((await call(request, `${datasetPath(name)}/snapshots/${child}/summary`)).sample_count).toBe('2');
+  const initial = (await call(request, `${datasetPath(name)}/snapshots/${child}/split-head`)).revision;
+  const inherited = await call(request, `${datasetPath(name)}/snapshots/${child}/split-revisions/${initial}`);
+  expect(inherited.splits[0].origin.source.revision).toBe(frozen); expect(inherited.splits[0].count).toBe('2');
+  await openDataset(page, name); await page.getByRole('button', { name: snapshot, exact: true }).click();
+  await page.getByRole('button', { name: 'Split revision history' }).click();
+  await page.getByRole('button', { name: first.revision, exact: false }).click();
+  await page.getByRole('button', { name: 'Edit Split revision', exact: true }).click();
+  await expect(page.getByLabel('Split 1 name')).toHaveValue('train');
+  await page.getByRole('button', { name: 'Close editor', exact: true }).click();
+  await page.getByRole('button', { name: 'Go to current Split revision', exact: true }).click();
+  await page.getByRole('button', { name: 'Edit Split revision', exact: true }).click();
+  await expect(page.getByLabel('Split 1 name')).toHaveValue('training');
+  await page.getByRole('button', { name: 'Remove training', exact: true }).click();
+  await page.getByRole('button', { name: 'Save Split draft' }).click();
+  await expect(page.getByRole('button', { name: 'Evaluate complete membership' })).toBeEnabled();
+  await publishDraft(page, 'Split revision');
+  const second = await call(request, `${path}/split-head`); expect(second.revision).not.toBe(first.revision);
+  expect((await call(request, `${path}/split-revisions/${second.revision}`)).splits).toEqual([]);
+  expect((await call(request, `${path}/split-revisions/${first.revision}/splits/train/members`)).entries).toHaveLength(3);
+  expect((await call(request, `${datasetPath(name)}/head`)).latest).toBe(child);
+});

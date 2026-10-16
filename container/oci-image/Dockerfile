@@ -1,16 +1,18 @@
 FROM ubuntu:24.04@sha256:496754492fb28b4d3049432f2ca787449331e23fb14f0dd3fffea86bf5a93eb4
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates openssh-server util-linux curl && rm -rf /var/lib/apt/lists/* \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates openssh-server util-linux curl tini && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 crowdb \
     && useradd --system --uid 10001 --gid 10001 --home-dir /opt/crowdb --shell /bin/sh crowdb \
     && echo 'crowdb:crowdb' | chpasswd \
     && mkdir -p /run/sshd
 ARG SOURCE_REVISION
+ARG SOURCE_TREE
 ARG RUNTIME_SHA256
 ARG PREVIEW_VERSION
 ARG DEBUG_INFO=stripped
 RUN --mount=type=bind,source=.,target=/staged,ro \
     test -n "$SOURCE_REVISION" && test -n "$PREVIEW_VERSION" \
     && test "$(cat /staged/SOURCE_REVISION)" = "$SOURCE_REVISION" \
+    && { test -z "$SOURCE_TREE" || test "$(cat /staged/SOURCE_TREE)" = "$SOURCE_TREE"; } \
     && test "$(cat /staged/VERSION)" = "$PREVIEW_VERSION" \
     && mkdir -p /opt/crowdb/etc /opt/crowdb/data /opt/crowdb/run \
     && cp -a /staged/bin /staged/lib /staged/ui /opt/crowdb/ \
@@ -31,6 +33,7 @@ LABEL org.opencontainers.image.title="CROWDB Node" \
       org.opencontainers.image.authors="Gian <crow.db@outlook.com>" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.revision="$SOURCE_REVISION" \
+      org.crowdb.source.tree="$SOURCE_TREE" \
       org.opencontainers.image.version="$PREVIEW_VERSION" \
       org.crowdb.runtime.sha256="$RUNTIME_SHA256" \
       org.crowdb.debug-info="$DEBUG_INFO" \
@@ -43,4 +46,4 @@ USER root
 VOLUME ["/opt/crowdb/data"]
 EXPOSE 9090 9091 9092 9095 2222
 STOPSIGNAL SIGTERM
-ENTRYPOINT ["/opt/crowdb/bin/entrypoint"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/opt/crowdb/bin/entrypoint"]

@@ -317,7 +317,7 @@ class Crowdbtree
     Status scan(Slice prefix, Slice start_after, Slice end_key, size_t limit, size_t byte_budget, bool keys_only,
                 uint64_t deadline_ms, std::vector<scan_entry> *out, bool *truncated, bool include_tombstones = false,
                 ScanPackedBuf *out_packed = nullptr, size_t *out_count = nullptr, bool has_start_bound = false,
-                bool start_inclusive = false) const;
+                bool start_inclusive = false, bool strict_byte_budget = false) const;
 
     // Resolve the greatest live key <= `start_key`, or < it when `inclusive`
     // is false, while merging L0 and L1 under one epoch guard. `begin_key` is

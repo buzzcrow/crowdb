@@ -44,6 +44,7 @@ fn build_topology(racks: &[(u64, &[u64])]) -> TopologyCache {
 
 fn usage(dg_id: u64, capacity_bytes: u64, used_bytes: u64) -> DiskGroupUsageSummary {
     DiskGroupUsageSummary {
+        usage_known: true,
         disk_group_id: dg_id,
         capacity_bytes,
         used_bytes,

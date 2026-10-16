@@ -6,6 +6,7 @@
 pub mod lifecycle;
 pub mod proxy;
 mod remote;
+pub(crate) use remote::configuration as planned_configuration;
 
 pub use lifecycle::*;
 pub use proxy::*;

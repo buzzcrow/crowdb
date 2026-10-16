@@ -6,10 +6,10 @@ use crowdb_protocol::chunkdb::rpc::ChunkType;
 
 #[test]
 fn retired_and_unknown_chunk_types_are_not_supported() {
-    for value in [0, -1, 7, i32::MAX] {
+    for value in [0, -1, 8, i32::MAX] {
         assert!(ChunkType::try_from(value).is_err());
     }
-    for value in 1..=6 {
+    for value in 1..=7 {
         assert_eq!(i32::from(ChunkType::try_from(value).unwrap()), value);
     }
 }

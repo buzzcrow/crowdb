@@ -9,6 +9,53 @@ use crowdb_protocol::diskdb::rpc::{ZoneAllocationState, ZoneValue};
 use crowdb_protocol::key::{BinaryKey, RelocationJournalKey, TentativeOwnerGraceKey};
 use crowdb_protocol::{DiskIdExt, HwStatusExt, UsageBitmap, ZoneAllocationStateExt, ZoneValueExt};
 
+#[test]
+fn runtime_usage_requires_complete_represented_geometry_not_zero_or_partial_loads() {
+    use crowdb_protocol::{disk_usage_is_complete, diskdb::rpc::DiskInfo};
+    let mut disk = DiskInfo {
+        capacity_units: 256,
+        zone_size_units: 128,
+        zone_count: 2,
+        unit_size_bytes: 4096,
+        ..Default::default()
+    };
+    assert!(!disk_usage_is_complete(&disk));
+    disk.capacity_bytes = 128 * 4096;
+    disk.free_bytes = disk.capacity_bytes;
+    assert!(!disk_usage_is_complete(&disk));
+    disk.capacity_bytes = 256 * 4096;
+    disk.free_bytes = disk.capacity_bytes;
+    assert!(disk_usage_is_complete(&disk));
+    disk.busy_bytes = 1;
+    assert!(!disk_usage_is_complete(&disk));
+    disk.busy_bytes = 0;
+    disk.capacity_units = 255;
+    disk.capacity_bytes = 192 * 4096;
+    disk.free_bytes = disk.capacity_bytes;
+    assert!(
+        disk_usage_is_complete(&disk),
+        "legacy last-zone rounding remains supported"
+    );
+    disk.capacity_units = u64::MAX;
+    disk.zone_size_units = u64::MAX;
+    disk.zone_count = 3;
+    assert!(!disk_usage_is_complete(&disk));
+}
+
+#[test]
+fn legacy_heartbeat_without_coverage_does_not_claim_known_usage() {
+    use crowdb_protocol::common::DiskGroupUsageSummary;
+    let legacy = serde_json::json!({"disk_group_id":1,"capacity_bytes":0,"used_bytes":0,"free_bytes":0,
+        "disk_count":1,"allocatable_disk_count":0});
+    let mut summary: DiskGroupUsageSummary = serde_json::from_value(legacy).unwrap();
+    assert!(!summary.usage_known);
+    summary.usage_known = true;
+    assert_eq!(
+        serde_json::from_value::<DiskGroupUsageSummary>(serde_json::to_value(&summary).unwrap()).unwrap(),
+        summary
+    );
+}
+
 // ── HwStatus ────────────────────────────────────────────────────
 
 #[test]
@@ -268,4 +315,16 @@ fn unsupported_zone_record_is_rejected() {
     assert!(ZoneValue::from_bytes(&bincode::serialize(&value).unwrap()).is_err());
     value.bitmap_codec = 2;
     assert!(ZoneValue::from_bytes(&value.to_bytes()).is_err());
+}
+
+#[test]
+fn legacy_owner_defaults_to_no_process_epoch_without_changing_its_encoding() {
+    let legacy = br#"{"instance_id":7,"lease_expiry_ms":99}"#;
+    let mut owner: crowdb_protocol::common::OwnerMapValue = serde_json::from_slice(legacy).unwrap();
+    assert_eq!(owner.process_epoch, 0);
+    assert_eq!(serde_json::to_vec(&owner).unwrap(), legacy);
+    owner.process_epoch = 42;
+    let restored: crowdb_protocol::common::OwnerMapValue =
+        serde_json::from_slice(&serde_json::to_vec(&owner).unwrap()).unwrap();
+    assert_eq!(restored.process_epoch, 42);
 }

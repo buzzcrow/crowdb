@@ -47,6 +47,19 @@ impl KeepAlive {
         owner: crowdb_protocol::DiskdbOwnerEntry,
         bind: (u64, u64),
     ) -> Option<ObservedDiskGroup> {
+        let fence = if self.ownership_fencing {
+            let result = self.claim_observed_owner(&owner, bind).await;
+            match result {
+                Ok(fence) => Some(fence),
+                Err(error) => {
+                    warn!(%error, "DiskGroup ownership fence could not be acquired");
+                    self.record_observation_failure();
+                    return None;
+                }
+            }
+        } else {
+            None
+        };
         let node = match self.hw.get_node(owner.rack_id, owner.node_id).await {
             Ok(Some(node)) => node,
             Ok(None) => {
@@ -103,19 +116,6 @@ impl KeepAlive {
             self.record_observation_failure();
             return None;
         };
-        let fence = if self.ownership_fencing {
-            let result = self.claim_observed_owner(&owner, bind).await;
-            match result {
-                Ok(fence) => Some(fence),
-                Err(error) => {
-                    warn!(%error, "DiskGroup ownership fence could not be acquired");
-                    self.record_observation_failure();
-                    return None;
-                }
-            }
-        } else {
-            None
-        };
         Some(ObservedDiskGroup {
             fence,
             owner,
@@ -131,36 +131,26 @@ impl KeepAlive {
         owner: &crowdb_protocol::DiskdbOwnerEntry,
         bind: (u64, u64),
     ) -> crowdb_kv_client::Result<std::sync::Arc<crate::ddb_kv_client::OwnershipFence>> {
-        use crowdb_kv_client::{GetOutcome, ReadMode};
-        use crowdb_protocol::key::{OwnerMapKey, TextKey};
-        let key = OwnerMapKey {
-            rack_id: owner.rack_id,
-            node_id: owner.node_id,
-            disk_group_id: owner.dg_id,
-        }
-        .to_path();
-
-        let GetOutcome::Found { value, revision } = self
+        use crowdb_protocol::key::OwnerMapKey;
+        let epoch = self.ensure_process_session().await?;
+        let generation = self
             .hw
-            .kv()
-            .get(0, 0, key.as_bytes(), ReadMode::Linearizable, None)
-            .await?
-        else {
-            return Err(crowdb_kv_client::Error::Server("owner disappeared".into()));
-        };
-        let current: crowdb_protocol::common::OwnerMapValue =
-            serde_json::from_slice(&value).map_err(|e| crowdb_kv_client::Error::Server(e.to_string()))?;
-        if current.instance_id != self.container.instance_id {
-            return Err(crowdb_kv_client::Error::Server(
-                "owner changed during observation".into(),
-            ));
-        }
+            .claim_owner_process_epoch(
+                &OwnerMapKey {
+                    rack_id: owner.rack_id,
+                    node_id: owner.node_id,
+                    disk_group_id: owner.dg_id,
+                },
+                self.container.instance_id,
+                epoch,
+            )
+            .await?;
         let fence = crate::ddb_kv_client::OwnershipFence {
             rack_id: owner.rack_id,
             node_id: owner.node_id,
             disk_group_id: owner.dg_id,
-            instance_id: current.instance_id,
-            generation: revision,
+            instance_id: self.container.instance_id,
+            generation,
         };
         crate::ddb_kv_client::DdbKvClient::from_shared(self.hw.shared_kv())
             .claim_ownership(bind, &fence)

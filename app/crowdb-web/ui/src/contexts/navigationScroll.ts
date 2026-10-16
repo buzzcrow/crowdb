@@ -8,23 +8,28 @@ export function captureScroll(): () => void {
     .map(element => ({ id: element.dataset.navigationScroll!, top: element.scrollTop, left: element.scrollLeft }));
   return () => {
     cancelRestore?.();
-    const pending = new Map(positions.map(position => [position.id, position]));
+    if (!positions.length) return;
     let frame = 0;
-    const stop = () => { observer.disconnect(); cancelAnimationFrame(frame); clearTimeout(deadline); if (cancelRestore === stop) cancelRestore = undefined; };
+    const inputs = ['pointerdown', 'wheel', 'touchstart', 'keydown'] as const;
+    const stop = () => {
+      observer.disconnect(); cancelAnimationFrame(frame); clearTimeout(deadline);
+      for (const input of inputs) document.removeEventListener(input, stop, true);
+      if (cancelRestore === stop) cancelRestore = undefined;
+    };
     const apply = () => {
-      for (const [id, position] of pending) {
+      for (const position of positions) {
         const element = [...document.querySelectorAll<HTMLElement>('[data-navigation-scroll]')]
-          .find(candidate => candidate.dataset.navigationScroll === id && candidate.getClientRects().length > 0);
+          .find(candidate => candidate.dataset.navigationScroll === position.id && candidate.getClientRects().length > 0);
         if (!element) continue;
         element.scrollTop = position.top; element.scrollLeft = position.left;
-        if (Math.abs(element.scrollTop - position.top) < 1 && Math.abs(element.scrollLeft - position.left) < 1) pending.delete(id);
       }
-      if (!pending.size) stop();
     };
-    // Refetched pages may not yet have their final scroll height at first paint.
+    // Later refetches can clamp a position that initially restored correctly.
+    // Keep observing until the existing deadline, or until the user interacts.
     const observer = new MutationObserver(() => { cancelAnimationFrame(frame); frame = requestAnimationFrame(apply); });
     const deadline = setTimeout(stop, 5000);
-    observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    for (const input of inputs) document.addEventListener(input, stop, { capture: true, passive: true });
     cancelRestore = stop;
     frame = requestAnimationFrame(apply);
   };

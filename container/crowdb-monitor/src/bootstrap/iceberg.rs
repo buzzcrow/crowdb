@@ -12,6 +12,7 @@ use crate::{
 };
 
 mod console;
+mod shared_console;
 
 const INITIALIZE: &str = "iceberg-initialize";
 const ACTIVATE: &str = "iceberg-activate";
@@ -31,6 +32,8 @@ pub enum IcebergBootstrapError {
     Io(#[from] std::io::Error),
     #[error("Iceberg bootstrap manifest failed: {0}")]
     Manifest(#[from] ManifestError),
+    #[error("Iceberg bootstrap authority failed: {0}")]
+    Authority(#[from] crowdb_kv_client::Error),
     #[error("monitor lifecycle log failed: {0}")]
     MonitorLog(#[from] MonitorLogError),
 }
@@ -74,6 +77,40 @@ impl IcebergBootstrap {
             },
         )
         .await
+    }
+
+    /// Share immutable initialization/activation identities across node backends.
+    ///
+    /// # Errors
+    /// Rejects changed local identities, malformed authority and uncertain commands.
+    pub async fn ensure_shared_console_catalog(
+        root: &std::path::Path,
+        program: &std::path::Path,
+        seeds: &str,
+        credentials: &ServerCredentials,
+        kv: &crowdb_kv_client::CrowdbKvClient,
+    ) -> Result<(), IcebergBootstrapError> {
+        let operations = shared_console::operations(root, kv).await?;
+        console::ensure_with_operations(
+            root,
+            &ManagementCommand {
+                program,
+                seeds,
+                credentials,
+            },
+            Some(operations),
+        )
+        .await
+    }
+
+    #[cfg(feature = "test-util")]
+    /// # Errors
+    /// Propagates the production journal and Group-0 reservation errors.
+    pub async fn shared_console_operations_for_tests(
+        root: &std::path::Path,
+        kv: &crowdb_kv_client::CrowdbKvClient,
+    ) -> Result<(Uuid, Uuid), IcebergBootstrapError> {
+        shared_console::operations(root, kv).await
     }
 
     /// # Errors

@@ -54,3 +54,17 @@ it('aborts unfinished branch requests on exit and ignores late data', async () =
   await waitFor(() => expect(result.current.inventory).toEqual({}));
   unmount();
 });
+
+it('refreshes membership after an older in-flight observation settles', async () => {
+  let finish!: (value: []) => void;
+  vi.mocked(api.listDisksInGroup).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; })).mockResolvedValueOnce([]);
+  const { result } = renderHook(() => useDiskInventory(true));
+  let current!: Promise<void>; let committed!: Promise<void>;
+  act(() => {
+    current = result.current.loadGroup(1, 7);
+    committed = result.current.loadGroup(1, 7, true);
+  });
+  expect(api.listDisksInGroup).toHaveBeenCalledTimes(1);
+  await act(async () => { finish([]); await current; await committed; });
+  expect(api.listDisksInGroup).toHaveBeenCalledTimes(2);
+});

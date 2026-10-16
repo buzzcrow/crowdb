@@ -9,16 +9,16 @@ requirements and their temporary execution plans are removed during the final
 live in the linked document; implementation follows
 [`implement-requirement`](../../.agents/skills/implement-requirement/SKILL.md).
 
-**Next R number: R235** — R231 through R233 are reserved by other workstreams.
+**Next R number: R238** — R221 and R234 are reserved by other workstreams.
 
 ## Dataset and access
 
+- **[R233](R233-sdk-local-cache-checkpoint.md)** — optional local disk read cache
+  and recoverable checkpoint staging with explicit remote durability.
+  **Area:** SDK. **Complexity:** High. **Status:** Deferred until dedicated HTTP workload measurements.
 - **[R220](R220-dataset-fat-client-plan.md)** — Dataset SDK fat-client direct
   access and optimization contract. **Area:** Dataset SDK. **Complexity:** High.
   **Status:** Deferred until the core Dataset contract has workload measurements.
-
-## Console and service control
-
 
 ## Access server and external data
 

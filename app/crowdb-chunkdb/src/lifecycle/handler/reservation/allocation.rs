@@ -196,7 +196,11 @@ impl LifecycleHandler {
                 spec,
                 PendingReservation { chunk, group, permit },
             )
-            .await?;
+            .await
+            .map_err(|error| {
+                guard.invalidate();
+                error
+            })?;
         guard.refresh(mutation.chunk.clone());
         Ok(mutation)
     }

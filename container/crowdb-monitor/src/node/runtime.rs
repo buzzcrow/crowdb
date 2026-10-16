@@ -4,7 +4,6 @@
 //! Node-first process ownership and authenticated private control.
 
 use std::collections::BTreeMap;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -13,12 +12,12 @@ use crowdb_protocol::mgmt::SystemBootstrapIdentity;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::AsyncWriteExt;
-use tokio::net::{UnixListener, UnixStream};
 
 use super::{durable, serve_node_management, trust, DiscoveryConfig, NodeIdentity};
 use crate::{DeploymentProfile, ProcessManager, ServiceProfile};
 
 mod cleanup;
+mod control;
 mod health;
 mod ipc;
 mod kv;
@@ -28,6 +27,22 @@ mod services;
 use kv::start_kv;
 mod admission;
 mod credentials;
+mod file_activation;
+mod file_admission;
+#[cfg(feature = "test-util")]
+pub use file_admission::publish_file_for_tests;
+mod file_preparation;
+mod initialization;
+mod retained_storage;
+mod setup;
+mod storage_health;
+mod supplied_storage;
+#[cfg(feature = "test-util")]
+pub use initialization::InitializationForTests;
+#[cfg(feature = "test-util")]
+pub use setup::NodeSetupForTests;
+#[cfg(feature = "test-util")]
+pub use supplied_storage::prepare_supplied_disk_for_tests;
 mod preparation;
 pub use ipc::control_node;
 use ipc::read_request;
@@ -59,18 +74,12 @@ pub(super) struct AcceptedNode {
 pub async fn run_node(config: NodeRuntimeConfig) -> Result<()> {
     let profile = kv::node_profile(&config)?;
     let root = profile.paths.data_root.clone();
+    super::startup::accept(&root, super::startup::Mode::Standard)?;
     NodeIdentity::load_or_create(&root)?;
     std::fs::create_dir_all(&profile.paths.run_root)?;
     std::fs::create_dir_all(&profile.paths.log_root)?;
     let socket = profile.paths.run_root.join("node-control.sock");
-    if socket.exists() {
-        if UnixStream::connect(&socket).await.is_ok() {
-            return Err("node monitor already running".into());
-        }
-        std::fs::remove_file(&socket)?;
-    }
-    let listener = UnixListener::bind(&socket)?;
-    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
+    let listener = ipc::listener(&socket).await?;
     let _liveness = crate::LivenessServer::start(&profile.paths.run_root)?;
     let mut health = health::NodeHealth::new(&profile)?;
     let mut processes = ProcessManager::new(profile.paths.log_root.clone(), profile.logs.clone()).await?;
@@ -105,17 +114,29 @@ pub async fn run_node(config: NodeRuntimeConfig) -> Result<()> {
         .await
     });
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let mut initialization = initialization::Initialization::default();
+    initialization.resume(&profile)?;
+    let mut file_allocator = file_preparation::FileAllocator::default();
+    file_allocator.resume(&root)?;
+    let mut supplied_storage = supplied_storage::SuppliedStorage::default();
+    supplied_storage.resume(&root)?;
+    let mut storage_health = storage_health::StorageHealth::default();
+    let mut setup = setup::NodeSetup::default();
     let mut heartbeat = tokio::time::interval(Duration::from_secs(1));
     let result = async {
         loop {
             tokio::select! {
                 _ = heartbeat.tick() => {
+                    file_allocator.tick(&root)?;
+                    supplied_storage.tick(&root)?;
+                    storage_health.tick(&root).await;
+                    setup.tick(&profile).await?;
                     health.tick(&profile, &web, &mut processes).await?;
                 }
                 connection = listener.accept() => {
                     let (mut stream, _) = connection?;
                     let reply = match read_request(&mut stream).await {
-                        Ok(request) => match execute(&profile, &mut processes, request).await {
+                        Ok(request) => match control::execute(&profile, &mut processes, &mut initialization, &mut file_allocator, &mut supplied_storage, &mut setup, request).await {
                             Ok(value) => json!({"ok": true, "value": value}),
                             Err(error) => json!({"ok": false, "error": error.to_string()}),
                         },
@@ -133,99 +154,29 @@ pub async fn run_node(config: NodeRuntimeConfig) -> Result<()> {
         }
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     }.await;
+    initialization.stop().await;
+    setup.stop().await;
+    storage_health.stop().await;
+    file_allocator.stop().await;
+    supplied_storage.stop().await;
     let _ = stop.send(());
     if !discovery.is_finished() {
         discovery.await??;
     }
-    let mut order = vec!["web".into(), "kv".into()];
-    order.extend(
-        services::retained(&profile)?
-            .into_iter()
-            .map(|intent| intent.service_id),
-    );
-    processes.stop_all(&order, Duration::from_secs(10)).await?;
+    stop_services(&profile, &mut processes).await?;
     std::fs::remove_file(socket)?;
     result
 }
 
-async fn execute(
-    profile: &DeploymentProfile,
-    processes: &mut ProcessManager,
-    request: NodeControl,
-) -> Result<Value> {
-    let root = &profile.paths.data_root;
-    match request {
-        NodeControl::Processes { cluster_id, node_id } => {
-            observation::processes(root, processes, &cluster_id, node_id)
-        }
-        NodeControl::ProvisionServiceCredentials {
-            bootstrap,
-            credentials,
-        } => credentials::provision(root, &bootstrap, &credentials),
-        NodeControl::ServiceCredentials { cluster_id } => credentials::read(root, &cluster_id).await,
-        NodeControl::Service { intent } => services::execute(profile, processes, intent).await,
-        NodeControl::CancelAdmission {
-            bootstrap,
-            node_id,
-            admission,
-        } => admission::cancel(profile, processes, bootstrap, node_id, admission).await,
-        NodeControl::Identity => Ok(json!({"discovery_id": NodeIdentity::load_or_create(root)?.uuid(),
-            "public_key": std::fs::read_to_string(root.join("ssh/id_ed25519.pub"))?,
-            "host_key": std::fs::read_to_string(root.join("ssh/ssh_host_ed25519_key.pub"))?})),
-        NodeControl::InstallKey {
-            operation_id,
-            public_key,
-        } => {
-            authorize_bound(root).await?;
-            trust::install(root, &operation_id, &public_key)?;
-            Ok(json!({}))
-        }
-        NodeControl::RemoveKey { operation_id } => {
-            trust::remove(root, &operation_id)?;
-            Ok(json!({}))
-        }
-        NodeControl::TrustHost {
-            host,
-            port,
-            public_key,
-        } => {
-            authorize_bound(root).await?;
-            trust::host(root, &host, port, &public_key)?;
-            Ok(json!({}))
-        }
-        NodeControl::StartKv {
-            node_id,
-            bootstrap,
-            manifest,
-            credentials,
-            admission,
-        } => {
-            if let Some(grant) = &admission {
-                admission::validate(root, &bootstrap, node_id, grant, false).await?;
-            }
-            authorize_bound(root).await?;
-            if root.join("node-binding.json").exists()
-                && services::desired(profile).await?.iter().any(|intent| {
-                    intent.kind == "kv"
-                        && matches!(
-                            intent.action,
-                            crowdb_protocol::mgmt::node::NodeServiceAction::Stop
-                                | crowdb_protocol::mgmt::node::NodeServiceAction::Delete
-                        )
-                })
-            {
-                return Err("KV is stopped by the current cluster intent".into());
-            }
-            let accepted = preparation::accept(root, node_id, bootstrap, manifest, credentials, admission)?;
-            start_kv(profile, processes, &accepted).await?;
-            Ok(json!({"node_id": node_id, "management_port": 10000, "rpc_port": 10100}))
-        }
-        NodeControl::Bind { binding } => kv::bind(profile, processes, binding).await,
-        NodeControl::Cleanup {
-            bootstrap,
-            confirm_delete_system_store,
-        } => cleanup::execute(profile, processes, bootstrap, confirm_delete_system_store).await,
-    }
+async fn stop_services(profile: &DeploymentProfile, processes: &mut ProcessManager) -> Result<()> {
+    let mut order = vec!["web".into(), "kv".into()];
+    order.extend(
+        services::retained(profile)?
+            .into_iter()
+            .map(|intent| intent.service_id),
+    );
+    processes.stop_all(&order, Duration::from_secs(10)).await?;
+    Ok(())
 }
 
 async fn authorize_bound(root: &std::path::Path) -> Result<()> {
@@ -323,3 +274,12 @@ fn web_service(profile: &DeploymentProfile, monitor_port: u16) -> Result<Service
     );
     Ok(web)
 }
+
+fn disk_inventory(root: &std::path::Path) -> Result<Value> {
+    let inputs = std::env::var("CROWDB_DISK_INPUTS").unwrap_or_else(|_| "[]".into());
+    let inputs: Vec<crowdb_protocol::mgmt::node::storage::DiskInput> = serde_json::from_str(&inputs)?;
+    Ok(serde_json::to_value(super::discover_disks(root, &inputs)?)?)
+}
+
+#[cfg(feature = "test-util")]
+pub use services::NodeServiceForTests;

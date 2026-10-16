@@ -164,6 +164,9 @@ fn project(intent: &NodeServiceIntent) -> Option<ServerEntry> {
         },
     );
     entry.node_id = Some(intent.node_id);
+    if intent.kind == "access" {
+        entry.dataset_origin = intent.environment.get("CROWDB_DATASET_PUBLIC_URI").cloned();
+    }
     entry.service_type = kind;
     entry.rpc_url = diskio_address
         .clone()

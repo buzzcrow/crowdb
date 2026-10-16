@@ -69,6 +69,7 @@ enum FBChunkType : int16 {
     Stream = 4,
     S3 = 5,
     IcebergTable = 6,
+    Dataset = 7,
 }
 
 // ── Strip types ──────────────────────────────────────────────────

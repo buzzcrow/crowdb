@@ -5,6 +5,9 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod setup;
+pub mod storage;
+
 pub const NODE_PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -61,6 +64,42 @@ pub struct CandidateSnapshot {
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NodeControl {
     Identity,
+    DiskInventory,
+    AcceptNodeSetup {
+        request: setup::NodeSetupRequest,
+    },
+    NodeSetup,
+    NodeSetupIntent,
+    CheckRetainedDisk {
+        request: storage::CheckRetainedDisk,
+    },
+    PrepareDiskFile {
+        request: storage::PrepareDiskFile,
+    },
+    PrepareSuppliedDisk {
+        request: storage::PrepareSuppliedDisk,
+    },
+    SuppliedDiskPreparation {
+        operation_id: String,
+    },
+    SuppliedDiskPreparations {
+        after: Option<String>,
+        limit: u32,
+    },
+    DiskFilePreparation {
+        operation_id: String,
+    },
+    DiskFilePreparations {
+        after: Option<String>,
+        limit: u32,
+    },
+    Initialize {
+        manifest: serde_json::Value,
+        credentials: NodeServiceCredentials,
+        #[serde(default)]
+        create_data_group: Option<bool>,
+    },
+    Initialization,
     Processes {
         cluster_id: String,
         node_id: u64,

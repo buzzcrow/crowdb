@@ -184,6 +184,9 @@ impl TestStack {
     pub async fn repair_metrics(&self) -> serde_json::Value {
         self.metrics("repair_metrics").await
     }
+    pub async fn conversion_metrics(&self) -> serde_json::Value {
+        self.metrics("conversion_metrics").await
+    }
     pub async fn wait_for_conversion_active(&self) {
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {

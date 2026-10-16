@@ -10,6 +10,8 @@ use crowdb_access_s3::auth::{
 };
 use crowdb_kv_client::{CrowdbKvClient, Error as KvError, ReadMode};
 
+mod ensure;
+
 const CREDENTIAL_PREFIX: &[u8] = b"crowdb/s3/credential/";
 const CREATE_ATTEMPTS: usize = 8;
 
@@ -32,6 +34,8 @@ pub enum CredentialAuthorityError {
     InvalidKey,
     #[error("S3 user has multiple credential records")]
     DuplicateUser,
+    #[error("S3 user credential preparation is malformed or belongs to another user")]
+    InvalidUserPreparation,
     #[error("S3 user credential is disabled or malformed")]
     InvalidUserCredential,
 }
@@ -68,20 +72,6 @@ impl CredentialAuthority {
         Err(CredentialAuthorityError::Collision)
     }
 
-    /// Reuses an existing credential for a single-writer bootstrap, including
-    /// after an issuance response is lost. Never creates a second credential
-    /// when the user's durable record is already present.
-    ///
-    /// # Errors
-    ///
-    /// Fails closed on duplicate or invalid user records and storage errors.
-    pub async fn ensure_user(&self, user: &[u8]) -> Result<IssuedUserToken, CredentialAuthorityError> {
-        match self.lookup_user(user).await? {
-            Some(token) => Ok(token),
-            None => self.issue_user(user).await,
-        }
-    }
-
     /// Reads one user's credential without creating durable state.
     ///
     /// # Errors
@@ -102,13 +92,16 @@ impl CredentialAuthority {
                 CREDENTIAL_PREFIX,
                 b"",
                 b"",
-                u32::MAX,
+                4096,
                 ReadMode::Linearizable,
                 None,
                 false,
                 None,
             )
             .await?;
+        if outcome.truncated || outcome.timed_out {
+            return Err(KvError::Server("S3 credential inventory is incomplete".into()).into());
+        }
         let mut found = None;
         for (key, value) in outcome.items {
             let access_key = key
@@ -151,13 +144,16 @@ impl CredentialAuthority {
                 CREDENTIAL_PREFIX,
                 b"",
                 b"",
-                u32::MAX,
+                4096,
                 ReadMode::Linearizable,
                 None,
                 false,
                 None,
             )
             .await?;
+        if outcome.truncated || outcome.timed_out {
+            return Err(KvError::Server("S3 credential inventory is incomplete".into()).into());
+        }
         let mut credentials = Vec::with_capacity(outcome.items.len());
         for (key, value) in outcome.items {
             let access_key = key

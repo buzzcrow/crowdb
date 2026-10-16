@@ -1463,6 +1463,7 @@ pub async fn http_add_disk(
     Path((node_id, dg_id)): Path<(NodeId, DiskGroupId)>,
     Json(body): Json<AddDiskBody>,
 ) -> Result<(StatusCode, Json<DiskEntry>), (StatusCode, Json<ErrorBody>)> {
+    crate::physical::disk::validate_metadata_only(&state, [&body.device_path])?;
     let ctx = state.op_context().await.map_err(|e| err_502(format!("{e}")))?;
     let input = ops::hardware::AddDiskInput {
         disk_id: body.disk_id,
@@ -1472,19 +1473,16 @@ pub async fn http_add_disk(
         unit_size_bytes: body.unit_size_bytes,
         device_path: body.device_path,
     };
-    let entry = ops::hardware::add_disk(&ctx, node_id, dg_id, &input)
+    let entry = ops::hardware::add_disk_to_group0(&ctx, node_id, dg_id, &input)
         .await
         .map_err(map_config_err)?;
-    crate::physical::disk::persist_added(&state, std::slice::from_ref(&entry))?;
+    crate::physical::disk::persist_added(&state, std::slice::from_ref(&entry)).await?;
     Ok((StatusCode::CREATED, Json(entry)))
 }
 
-/// `POST /api/nodes/:node_id/disk-groups/:dg_id/disks/batch` —
-/// add multiple disks in one request (R77). Validates all inputs
-/// and checks for duplicates (against config and within the batch)
-/// before mutating config; best-effort sysdata sync per disk.
-/// Atomic all-or-nothing on the config mutation: if any `add_disk`
-/// fails, the ones already added are rolled back.
+/// `POST /api/nodes/:node_id/disk-groups/:dg_id/disks/batch`.
+/// Validate all inputs and commit disk records with their parent membership
+/// under one Group-0 hierarchy revision before reporting success.
 ///
 /// # Panics
 /// Panics if the `RwLock` is poisoned.
@@ -1498,6 +1496,7 @@ pub async fn http_add_disks_batch(
     Path((node_id, dg_id)): Path<(NodeId, DiskGroupId)>,
     Json(body): Json<AddDisksBatchBody>,
 ) -> Result<(StatusCode, Json<AddDisksBatchResult>), (StatusCode, Json<ErrorBody>)> {
+    crate::physical::disk::validate_metadata_only(&state, body.disks.iter().map(|disk| &disk.device_path))?;
     let ctx = state.op_context().await.map_err(|e| err_502(format!("{e}")))?;
     let inputs: Vec<ops::hardware::AddDiskInput> = body
         .disks
@@ -1511,10 +1510,10 @@ pub async fn http_add_disks_batch(
             device_path: d.device_path,
         })
         .collect();
-    let added = ops::hardware::add_disks_batch(&ctx, node_id, dg_id, &inputs)
+    let added = ops::hardware::add_disks_to_group0(&ctx, node_id, dg_id, &inputs)
         .await
         .map_err(map_config_err)?;
-    crate::physical::disk::persist_added(&state, &added)?;
+    crate::physical::disk::persist_added(&state, &added).await?;
     Ok((
         StatusCode::CREATED,
         Json(AddDisksBatchResult {

@@ -19,6 +19,7 @@ use crate::error::{err_400, err_502, ErrorBody};
 use crate::state::AppState;
 
 mod credentials;
+pub(crate) mod dataset;
 mod inspection;
 mod signing;
 
@@ -40,6 +41,7 @@ fn protocol_environment(protocol: &str) -> Option<&'static str> {
     match protocol {
         "s3" => Some("CROWDB_S3_PUBLIC_URI"),
         "iceberg" => Some("CROWDB_ICEBERG_PUBLIC_URI"),
+        "dataset" => Some("CROWDB_DATASET_PUBLIC_URI"),
         _ => None,
     }
 }
@@ -84,9 +86,11 @@ fn origin(state: &AppState, protocol: &str) -> Result<Option<String>, ApiError> 
 pub(crate) async fn connections(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
     let iceberg = origin(&state, "iceberg")?;
     let reader = crate::services::access::reader(&state, iceberg.as_deref()).map_err(err_502)?;
-    Ok(Json(json!({"iceberg":iceberg,"s3":origin(&state,"s3")?,
+    Ok(Json(
+        json!({"iceberg":iceberg,"s3":origin(&state,"s3")?,"dataset":origin(&state,"dataset")?,
         "iceberg_ready":reader.is_some() && iceberg.is_some(),
-        "configurable":!state.managed_mode,"max_request_bytes":BODY_LIMIT})))
+        "configurable":!state.managed_mode,"max_request_bytes":BODY_LIMIT}),
+    ))
 }
 
 pub(crate) async fn client_credentials(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
@@ -122,11 +126,11 @@ pub(crate) async fn configure(
     State(state): State<AppState>,
     Json(connection): Json<Connection>,
 ) -> Result<Json<Value>, ApiError> {
-    if connection.protocol == "iceberg" {
+    if matches!(connection.protocol.as_str(), "iceberg" | "dataset") {
         return Err((
             StatusCode::CONFLICT,
             Json(ErrorBody {
-                error: "Iceberg is bound to this Console deployment".into(),
+                error: "This protocol is bound to this Console deployment".into(),
             }),
         ));
     }
@@ -173,6 +177,9 @@ pub(crate) async fn proxy(
     request: Request,
 ) -> Result<Response, ApiError> {
     let protocol = &parameters[0];
+    if protocol == "dataset" {
+        return dataset::proxy(state, request).await;
+    }
     let target = origin(&state, protocol)?.ok_or_else(|| err_502("Access endpoint is not configured"))?;
     let prefix = format!("/api/access/{protocol}");
     let path = request.uri().path().strip_prefix(&prefix).unwrap_or("");

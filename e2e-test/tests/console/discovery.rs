@@ -30,6 +30,7 @@ async fn discover_registered_diskdb_instance() {
         "127.0.0.1:11000",
         &[1, 2],
         &[DiskGroupUsageSummary {
+            usage_known: true,
             disk_group_id: 1,
             capacity_bytes: 1000,
             used_bytes: 0,
@@ -250,6 +251,7 @@ async fn expired_instance_filtered() {
             diskdb: Some(DiskdbExtra {
                 rack_id: None,
                 node_id: None,
+                diskio_scope: None,
                 owned_dg_ids: vec![1],
                 group_usages: vec![],
             }),

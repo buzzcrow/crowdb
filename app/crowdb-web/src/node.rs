@@ -4,10 +4,16 @@
 //! Local monitor observations, separate from confirmed cluster topology.
 
 mod admission;
+pub(crate) mod auto_join;
+pub(crate) mod preflight;
+pub(crate) mod setup;
 mod update;
 pub(crate) use update::update;
 mod authority;
+mod hardware;
+pub(crate) mod initialization;
 mod preparation;
+pub(crate) mod storage;
 pub(crate) use admission::binding as cluster_binding;
 pub(crate) use admission::{admissions, admit, control_socket, node_key_path, records, save};
 pub(crate) use authority::{guard, status};
@@ -24,6 +30,7 @@ pub(crate) struct NodeCandidates {
     pub local: NodeHandshake,
     pub candidates: Vec<CandidateNode>,
     pub diagnostics: Vec<String>,
+    pub prepared_access: Vec<preflight::PreparedCandidate>,
 }
 
 pub(crate) async fn candidates(State(state): State<AppState>) -> Result<Json<NodeCandidates>, StatusCode> {
@@ -60,10 +67,12 @@ pub(crate) async fn candidates(State(state): State<AppState>) -> Result<Json<Nod
             },
         );
     }
+    let prepared_access = preflight::summaries(&state, &candidates).map_err(|(status, _)| status)?;
     Ok(Json(NodeCandidates {
         local,
         candidates,
         diagnostics: snapshot.discovery_diagnostics,
+        prepared_access,
     }))
 }
 

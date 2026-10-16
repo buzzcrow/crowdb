@@ -36,6 +36,7 @@ interface DiskViewProps {
   usage: CapacityUsageResponse | null;
   hardwareCapacity: HardwareCapacitySummary | null;
   readonly?: boolean;
+  onManageDisk?: () => void;
   onRefresh?: () => Promise<void>;
 }
 
@@ -48,6 +49,7 @@ export function DiskView({
   usage,
   hardwareCapacity,
   readonly,
+  onManageDisk,
   onRefresh,
 }: DiskViewProps) {
   const { success, error } = useToast();
@@ -180,7 +182,7 @@ export function DiskView({
             >
               {actionLoading?.startsWith(`rebuild-${diskId}`) ? '…' : 'Rebuild'}
             </button>
-            <button
+            {onManageDisk ? <button onClick={onManageDisk} className="tw-px-2 tw-py-1 tw-text-xs tw-border tw-border-border tw-rounded">Manage disk</button> : <><button
               onClick={() => handleSetStatus('Down')}
               disabled={actionLoading?.startsWith(`setstatus-${diskId}`)}
               className="tw-px-2 tw-py-1 tw-text-xs tw-bg-panel tw-border tw-border-border tw-rounded hover:tw-bg-bg disabled:tw-opacity-50"
@@ -194,6 +196,7 @@ export function DiskView({
             >
               Up
             </button>
+            </>}
           </div>
         )}
       </div>

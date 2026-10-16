@@ -62,7 +62,7 @@ pub async fn seed_runtime_chunks(
     use crowdb_protocol::common::ChunkId;
     let mut expected = Vec::new();
     let mut foreign = Vec::new();
-    for purpose in 1_u64..=6 {
+    for purpose in 1_u64..=7 {
         for owned in [true, false] {
             let id = (1..10_000)
                 .map(|low| ChunkId {

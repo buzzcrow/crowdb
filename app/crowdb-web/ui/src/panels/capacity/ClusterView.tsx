@@ -8,12 +8,15 @@ import type {
   HardwareCapacitySummary,
 } from '../../types';
 import { CapacityBar } from './CapacityBar';
+import { CapacityRow } from './CapacityRow';
 import { observeCapacity } from './observation';
 
 interface ClusterViewProps {
   usage: CapacityUsageResponse | null;
   hardwareCapacity: HardwareCapacitySummary | null;
   onSelectRack: (rackId: number) => void;
+  selectedId?: string;
+  onInspectRack?: (rackId: number) => void;
 }
 
 interface RackAgg {
@@ -22,7 +25,7 @@ interface RackAgg {
   dgCount: number;
 }
 
-export function ClusterView({ usage, hardwareCapacity, onSelectRack }: ClusterViewProps) {
+export function ClusterView({ usage, hardwareCapacity, onSelectRack, onInspectRack, selectedId }: ClusterViewProps) {
   const racks = useMemo<RackAgg[]>(() => {
     const hwRacks = hardwareCapacity?.racks ?? [];
     const groups = (hardwareCapacity ? hardwareCapacity.disk_groups : (usage?.disk_groups ?? []));
@@ -42,10 +45,9 @@ export function ClusterView({ usage, hardwareCapacity, onSelectRack }: ClusterVi
     <div className="tw-space-y-2">
       <div className="tw-text-xs tw-text-muted tw-uppercase">Racks ({racks.length})</div>
       {racks.map((r) => (
-        <button
-          key={r.rackId}
-          onClick={() => onSelectRack(r.rackId)}
-          className="tw-w-full tw-flex tw-items-center tw-justify-between tw-p-3 tw-bg-panel tw-rounded-lg hover:tw-bg-bg/50 tw-text-left"
+        <CapacityRow selected={selectedId === String(r.rackId)} key={r.rackId} label={`R-${r.rackId}`}
+          onOpen={() => onSelectRack(r.rackId)} onInspect={() => onInspectRack?.(r.rackId)}
+          details={<CapacityBar {...observeCapacity(hardwareCapacity, usage, { rackId: r.rackId })} barWidth="tw-w-32" />}
         >
           <div className="tw-flex tw-items-center tw-gap-2 tw-flex-1 tw-min-w-0">
             <FolderTree className="tw-h-4 tw-w-4 tw-text-muted tw-shrink-0" />
@@ -57,8 +59,7 @@ export function ClusterView({ usage, hardwareCapacity, onSelectRack }: ClusterVi
               </div>
             </div>
           </div>
-          <CapacityBar {...observeCapacity(hardwareCapacity, usage, { rackId: r.rackId })} barWidth="tw-w-32" />
-        </button>
+        </CapacityRow>
       ))}
     </div>
   );

@@ -168,6 +168,7 @@ impl BootstrapSession {
             return invalid("data root must be an existing absolute directory");
         }
         let profile_digest = digest_hex(profile_bytes);
+        crate::node::startup::validate(data_root, crate::node::startup::Mode::Single)?;
         let config_digest = digest_hex(config_bytes);
         let directory = data_root.join("bootstrap");
         let path = directory.join("manifest.json");
@@ -189,7 +190,10 @@ impl BootstrapSession {
             return Ok(Self { directory, manifest });
         }
         if fs::read_dir(data_root)?.any(|entry| match entry {
-            Ok(entry) => !matches!(entry.file_name().to_str(), Some("node-identity" | "ssh")),
+            Ok(entry) => !matches!(
+                entry.file_name().to_str(),
+                Some("node-identity" | "ssh" | "startup-mode.json")
+            ),
             Err(_) => true,
         }) {
             return invalid("non-empty data root has no bootstrap manifest");

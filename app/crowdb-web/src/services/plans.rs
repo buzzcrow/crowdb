@@ -76,6 +76,8 @@ struct ListenerOverrides {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "health_port")]
     health: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "dataset_port")]
+    dataset: Option<u16>,
 }
 
 fn valid_overrides(overrides: &BTreeMap<String, ListenerOverrides>) -> bool {
@@ -84,11 +86,12 @@ fn valid_overrides(overrides: &BTreeMap<String, ListenerOverrides>) -> bool {
         KINDS.contains(&kind.as_str())
             && (kind == "chunkdb" || value.dynamic_ownership.is_none())
             && (kind == "diskdb" || value.keepalive_interval_secs.is_none())
-            && (kind == "access-server" || (value.s3.is_none() && value.health.is_none()))
+            && (kind == "access-server"
+                || (value.s3.is_none() && value.health.is_none() && value.dataset.is_none()))
             && (kind != "access-server" || value.rpc.is_none())
             && (!matches!(kind.as_str(), "diskdb" | "diskio") || value.http.is_none())
             && (kind != "diskdb" || value.rpc.map_or(true, |port| port <= 65533))
-            && [value.http, value.rpc, value.s3, value.health]
+            && [value.http, value.rpc, value.s3, value.health, value.dataset]
                 .into_iter()
                 .flatten()
                 .all(|port| port != 0 && ports.insert(port))
@@ -246,7 +249,7 @@ pub(super) fn reserved_ports(state: &AppState) -> Result<Vec<u16>, Failure> {
                     .is_some_and(|step| !matches!(step.state, StepState::Disabled))
                 {
                     ports.extend(
-                        [value.http, value.rpc, value.s3, value.health]
+                        [value.http, value.rpc, value.s3, value.health, value.dataset]
                             .into_iter()
                             .flatten(),
                     );

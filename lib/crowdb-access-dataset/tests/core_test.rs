@@ -1,16 +1,22 @@
+#[path = "common/dataset_store.rs"]
+mod dataset_store;
+#[path = "common/publication.rs"]
+mod publication;
 use async_trait::async_trait;
+use crowdb_access_dataset::DatasetStore;
 use crowdb_access_dataset::{
-    AuthorityError, CasOutcome, DatasetError, DatasetIdentity, DatasetStore, FieldDefinition, FieldLocator,
-    FieldRecord, ManifestRecord, NamespacePath, OperationId, PublicationState, SampleRecord, SchemaRecord,
-    SnapshotId, SnapshotPublication, StoredValue,
+    AuthorityError, DatasetError, DatasetIdentity, FieldDefinition, FieldLocator, FieldRecord,
+    ManifestRecord, NamespacePath, OperationId, PublicationState, SampleRecord, SchemaRecord, SnapshotId,
+    SnapshotPublication,
 };
 use crowdb_access_dataset::{
     DatasetReadRequest, DeliveryWindow, GroupShuffle, Ordering, ReadCursor, ReadFailure, ReadLease,
     ReadLimits, ReadPlan, ReadSurface, RetryPolicy, SampleShuffle, Selection, ShuffleSpec,
 };
+use dataset_store::TestDatasetStore as MemoryStore;
 use md5::{Digest, Md5};
-use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use publication::publication_manifest;
+use std::sync::Arc;
 
 fn md5_digest(payload: &[u8]) -> [u8; 16] {
     let mut digest = Md5::new();
@@ -43,82 +49,6 @@ impl crowdb_access_dataset::ChunkReader for TestChunkReader {
         let start = usize::try_from(range.start).unwrap();
         let end = usize::try_from(range.end).unwrap();
         Ok(self.payload[start..end].to_vec())
-    }
-}
-
-fn publication_manifest(marker: u8) -> Vec<u8> {
-    let value = vec![marker];
-    let manifest = ManifestRecord {
-        version: 1,
-        snapshot: SnapshotId::from_bytes(&[marker; 16]).unwrap(),
-        schema: SchemaRecord {
-            version: 1,
-            fields: vec![FieldDefinition {
-                name: "marker".into(),
-                required: true,
-            }],
-        },
-        samples: vec![SampleRecord {
-            sample_id: format!("sample-{marker}").into_bytes(),
-            fields: vec![FieldRecord {
-                name: "marker".into(),
-                value: FieldLocator::Inline {
-                    md5: md5_digest(&value),
-                    value,
-                },
-            }],
-        }],
-    };
-    bincode::serialize(&manifest).unwrap()
-}
-
-#[derive(Default)]
-struct MemoryStore {
-    values: Mutex<BTreeMap<Vec<u8>, StoredValue>>,
-    fail_snapshot_write: Mutex<bool>,
-}
-
-impl MemoryStore {
-    fn fail_next_snapshot_write(&self) {
-        *self.fail_snapshot_write.lock().unwrap() = true;
-    }
-}
-
-#[async_trait]
-impl DatasetStore for MemoryStore {
-    async fn get(&self, key: &[u8]) -> Result<Option<StoredValue>, crowdb_access_dataset::StoreError> {
-        Ok(self.values.lock().unwrap().get(key).cloned())
-    }
-
-    async fn compare_exchange(
-        &self,
-        key: &[u8],
-        expected: Option<&[u8]>,
-        value: &[u8],
-    ) -> Result<CasOutcome, crowdb_access_dataset::StoreError> {
-        if key.starts_with(b"DS\0S\0") && *self.fail_snapshot_write.lock().unwrap() {
-            *self.fail_snapshot_write.lock().unwrap() = false;
-            return Err(crowdb_access_dataset::StoreError::Rejected);
-        }
-        let mut values = self.values.lock().unwrap();
-        let current = values.get(key).cloned();
-        if current.as_ref().map(|entry| entry.bytes.as_slice()) != expected {
-            return Ok(CasOutcome::Conflict(current));
-        }
-        let revision = current.as_ref().map_or(1, |entry| entry.revision + 1);
-        values.insert(
-            key.to_vec(),
-            StoredValue {
-                bytes: value.to_vec(),
-                revision,
-            },
-        );
-        Ok(CasOutcome::Applied(revision))
-    }
-
-    async fn delete(&self, key: &[u8]) -> Result<(), crowdb_access_dataset::StoreError> {
-        self.values.lock().unwrap().remove(key);
-        Ok(())
     }
 }
 
@@ -570,7 +500,15 @@ async fn authority_persists_snapshot_bound_manifest_partitions_idempotently() {
         crowdb_access_dataset::ReclaimState::Pending
     );
     authority
-        .acquire_snapshot_read(&identity, snapshot, 10, 60)
+        .acquire_snapshot_read(
+            &identity,
+            snapshot,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+            60,
+        )
         .await
         .unwrap();
     assert!(matches!(

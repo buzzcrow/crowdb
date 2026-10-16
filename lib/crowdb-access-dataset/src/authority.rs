@@ -1,3 +1,16 @@
+mod access;
+pub use access::{
+    MetadataCleanupProgress, SnapshotLifecycle, SnapshotReclaimError, SnapshotReclaimPhase,
+    SnapshotReclaimStatus,
+};
+mod discovery;
+mod head;
+mod projection;
+
+pub use head::DatasetHead;
+use head::{decode_head, encode_head};
+mod publication;
+
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
@@ -7,9 +20,7 @@ use crate::manifest::{ManifestPartition, ManifestRecord};
 use crate::record::{DatasetRecord, HeadRecord, ManifestBinding, SnapshotRecord};
 use crate::store::{CasOutcome, DatasetStore, StoreError};
 use crate::ReadCursor;
-use crate::{
-    DatasetError, DatasetId, DatasetIdentity, OperationId, PublicationState, SnapshotId, SnapshotPublication,
-};
+use crate::{DatasetError, DatasetId, DatasetIdentity, PublicationState, SnapshotId, SnapshotPublication};
 
 const RECORD_VERSION: u16 = 1;
 
@@ -56,7 +67,7 @@ pub enum AuthorityError {
 }
 
 pub struct DatasetAuthority {
-    store: Arc<dyn DatasetStore>,
+    pub(crate) store: Arc<dyn DatasetStore>,
     chunk_reader: Arc<dyn ChunkReader>,
 }
 
@@ -118,315 +129,13 @@ impl DatasetAuthority {
             .get(&key::dataset(identity)?)
             .await?
             .ok_or(AuthorityError::NotFound)?;
-        decode(&value.bytes)
-    }
-
-    /// # Errors
-    /// Rejects missing Dataset, invalid Manifest, invalid parent, duplicate
-    /// candidate, or a publication/head race.
-    pub async fn publish_snapshot(
-        &self,
-        identity: &DatasetIdentity,
-        parent: Option<SnapshotId>,
-        manifest: Vec<u8>,
-    ) -> Result<SnapshotId, AuthorityError> {
-        self.publish_snapshot_with_operation(identity, parent, manifest, OperationId::random())
-            .await
-    }
-
-    /// Publishes or recovers one complete Manifest publication using its
-    /// durable operation token. The operation is visible through `latest` only
-    /// after all Manifest partitions, the binding, and the Published record are
-    /// durable.
-    ///
-    /// # Errors
-    /// Rejects missing Dataset, invalid Manifest, invalid parent, duplicate
-    /// candidate, or a publication/head race.
-    #[allow(clippy::too_many_lines)]
-    pub async fn publish_snapshot_with_operation(
-        &self,
-        identity: &DatasetIdentity,
-        parent: Option<SnapshotId>,
-        manifest_bytes: Vec<u8>,
-        operation: OperationId,
-    ) -> Result<SnapshotId, AuthorityError> {
-        self.get_dataset(identity).await?;
-        let mut manifest = match decode_manifest(&manifest_bytes) {
-            Ok(manifest) => manifest,
-            Err(AuthorityError::Invalid(DatasetError::InvalidManifest)) => {
-                return self
-                    .prepare_opaque_snapshot(identity, parent, manifest_bytes, operation)
-                    .await;
-            }
-            Err(error) => return Err(error),
-        };
-        if manifest.samples.is_empty() {
-            return Err(DatasetError::InvalidManifest.into());
+        let mut dataset: DatasetRecord = decode(&value.bytes)?;
+        if let Some(head) = self.store.get(&key::head(identity)?).await? {
+            let head = decode_head(&head.bytes)?;
+            dataset.latest = head.latest;
+            dataset.stable = head.stable;
         }
-        manifest.validate()?;
-        let operation_key = key::operation(identity, operation)?;
-        let snapshot = if let Some(value) = self.store.get(&operation_key).await? {
-            SnapshotId::from_bytes(&value.bytes)?
-        } else {
-            let current_latest = self.current_latest(identity).await?;
-            if current_latest != parent {
-                return Err(AuthorityError::ParentConflict);
-            }
-            let snapshot = SnapshotId::random();
-            match self
-                .store
-                .compare_exchange(&operation_key, None, snapshot.as_bytes())
-                .await?
-            {
-                CasOutcome::Applied(_) => snapshot,
-                CasOutcome::Conflict(Some(value)) => SnapshotId::from_bytes(&value.bytes)?,
-                CasOutcome::Conflict(None) => return Err(AuthorityError::Corrupt),
-            }
-        };
-
-        manifest.snapshot = snapshot;
-        manifest.validate()?;
-        self.validate_parent(identity, parent).await?;
-
-        let snapshot_key = key::snapshot(identity, snapshot)?;
-        let prepared = SnapshotPublication {
-            snapshot,
-            parent,
-            operation,
-            manifest: manifest_bytes.clone(),
-            state: PublicationState::Prepared,
-        };
-        prepared.validate()?;
-        let prepared_bytes = encode(&SnapshotRecord {
-            publication: prepared.clone(),
-        })?;
-        match self.store.get(&snapshot_key).await? {
-            Some(value) => {
-                let existing: SnapshotRecord = decode(&value.bytes)?;
-                if existing.publication.operation != operation
-                    || existing.publication.parent != parent
-                    || existing.publication.manifest != manifest_bytes
-                {
-                    return Err(AuthorityError::AlreadyExists);
-                }
-                if existing.publication.state == PublicationState::Aborted {
-                    return Err(AuthorityError::Invalid(DatasetError::InvalidPublicationState));
-                }
-            }
-            None => match self
-                .store
-                .compare_exchange(&snapshot_key, None, &prepared_bytes)
-                .await?
-            {
-                CasOutcome::Applied(_) => {}
-                CasOutcome::Conflict(_) => return Err(AuthorityError::AlreadyExists),
-            },
-        }
-
-        self.persist_manifest_parts(identity, snapshot, &manifest).await?;
-        let published = SnapshotPublication {
-            state: PublicationState::Published,
-            ..prepared
-        };
-        let published_bytes = encode(&SnapshotRecord {
-            publication: published,
-        })?;
-        match self.store.get(&snapshot_key).await? {
-            Some(value) => {
-                let existing: SnapshotRecord = decode(&value.bytes)?;
-                if existing.publication.state == PublicationState::Prepared {
-                    match self
-                        .store
-                        .compare_exchange(&snapshot_key, Some(&value.bytes), &published_bytes)
-                        .await?
-                    {
-                        CasOutcome::Applied(_) => {}
-                        CasOutcome::Conflict(_) => return Err(AuthorityError::HeadConflict),
-                    }
-                } else if existing.publication.state != PublicationState::Published {
-                    return Err(AuthorityError::Invalid(DatasetError::InvalidPublicationState));
-                }
-            }
-            None => return Err(AuthorityError::Corrupt),
-        }
-        self.advance_head(identity, None, parent, snapshot).await
-    }
-
-    async fn current_latest(&self, identity: &DatasetIdentity) -> Result<Option<SnapshotId>, AuthorityError> {
-        Ok(self
-            .store
-            .get(&key::head(identity)?)
-            .await?
-            .map(|value| decode::<HeadRecord>(&value.bytes))
-            .transpose()?
-            .and_then(|head| head.latest))
-    }
-
-    async fn prepare_opaque_snapshot(
-        &self,
-        identity: &DatasetIdentity,
-        parent: Option<SnapshotId>,
-        manifest: Vec<u8>,
-        operation: OperationId,
-    ) -> Result<SnapshotId, AuthorityError> {
-        let operation_key = key::operation(identity, operation)?;
-        if let Some(value) = self.store.get(&operation_key).await? {
-            let snapshot = SnapshotId::from_bytes(&value.bytes)?;
-            if let Some(value) = self.store.get(&key::snapshot(identity, snapshot)?).await? {
-                let record: SnapshotRecord = decode(&value.bytes)?;
-                if record.publication.parent != parent || record.publication.manifest != manifest {
-                    return Err(AuthorityError::AlreadyExists);
-                }
-                return Ok(snapshot);
-            }
-            let publication = SnapshotPublication {
-                snapshot,
-                parent,
-                operation,
-                manifest,
-                state: PublicationState::Prepared,
-            };
-            publication.validate()?;
-            let bytes = encode(&SnapshotRecord { publication })?;
-            match self
-                .store
-                .compare_exchange(&key::snapshot(identity, snapshot)?, None, &bytes)
-                .await?
-            {
-                CasOutcome::Applied(_) => return Ok(snapshot),
-                CasOutcome::Conflict(_) => return Err(AuthorityError::AlreadyExists),
-            }
-        }
-        if self.current_latest(identity).await? != parent {
-            return Err(AuthorityError::ParentConflict);
-        }
-        let snapshot = SnapshotId::random();
-        match self
-            .store
-            .compare_exchange(&operation_key, None, snapshot.as_bytes())
-            .await?
-        {
-            CasOutcome::Applied(_) => {}
-            CasOutcome::Conflict(Some(value)) => return Ok(SnapshotId::from_bytes(&value.bytes)?),
-            CasOutcome::Conflict(None) => return Err(AuthorityError::Corrupt),
-        }
-        let publication = SnapshotPublication {
-            snapshot,
-            parent,
-            operation,
-            manifest,
-            state: PublicationState::Prepared,
-        };
-        publication.validate()?;
-        let bytes = encode(&SnapshotRecord { publication })?;
-        match self
-            .store
-            .compare_exchange(&key::snapshot(identity, snapshot)?, None, &bytes)
-            .await?
-        {
-            CasOutcome::Applied(_) => Ok(snapshot),
-            CasOutcome::Conflict(_) => Err(AuthorityError::AlreadyExists),
-        }
-    }
-
-    async fn validate_parent(
-        &self,
-        identity: &DatasetIdentity,
-        parent: Option<SnapshotId>,
-    ) -> Result<(), AuthorityError> {
-        let Some(parent) = parent else { return Ok(()) };
-        let value = self
-            .store
-            .get(&key::snapshot(identity, parent)?)
-            .await?
-            .ok_or(AuthorityError::SnapshotNotFound)?;
-        let record: SnapshotRecord = decode(&value.bytes)?;
-        if record.publication.state != PublicationState::Published {
-            return Err(AuthorityError::ParentConflict);
-        }
-        let binding = self
-            .store
-            .get(&key::manifest_binding(identity, parent)?)
-            .await?
-            .ok_or(AuthorityError::Corrupt)?;
-        let binding: ManifestBinding = decode(&binding.bytes)?;
-        if binding.snapshot != parent || binding.partitions == 0 {
-            return Err(AuthorityError::Corrupt);
-        }
-        Ok(())
-    }
-
-    async fn persist_manifest_parts(
-        &self,
-        identity: &DatasetIdentity,
-        snapshot: SnapshotId,
-        manifest: &ManifestRecord,
-    ) -> Result<u32, AuthorityError> {
-        let partitions = manifest.partition(1024)?;
-        if partitions.is_empty() {
-            return Err(DatasetError::InvalidManifest.into());
-        }
-        for partition in &partitions {
-            let partition_key = key::manifest_partition(identity, snapshot, partition.partition)?;
-            let bytes = encode(partition)?;
-            match self.store.compare_exchange(&partition_key, None, &bytes).await? {
-                CasOutcome::Applied(_) => {}
-                CasOutcome::Conflict(Some(existing)) if existing.bytes == bytes => {}
-                CasOutcome::Conflict(_) => return Err(AuthorityError::AlreadyExists),
-            }
-        }
-        let binding = encode(&ManifestBinding {
-            snapshot,
-            partitions: u32::try_from(partitions.len()).map_err(|_| DatasetError::InvalidManifest)?,
-        })?;
-        let binding_key = key::manifest_binding(identity, snapshot)?;
-        match self.store.compare_exchange(&binding_key, None, &binding).await? {
-            CasOutcome::Applied(_) => {}
-            CasOutcome::Conflict(Some(existing)) if existing.bytes == binding => {}
-            CasOutcome::Conflict(_) => return Err(AuthorityError::AlreadyExists),
-        }
-        Ok(decode::<ManifestBinding>(&binding)?.partitions)
-    }
-
-    async fn advance_head(
-        &self,
-        identity: &DatasetIdentity,
-        stable: Option<SnapshotId>,
-        expected_parent: Option<SnapshotId>,
-        snapshot: SnapshotId,
-    ) -> Result<SnapshotId, AuthorityError> {
-        let current_head = self.store.get(&key::head(identity)?).await?;
-        let current_latest = current_head
-            .as_ref()
-            .map(|value| decode::<HeadRecord>(&value.bytes))
-            .transpose()?
-            .and_then(|head| head.latest);
-        if current_latest == Some(snapshot) {
-            return Ok(snapshot);
-        }
-        if current_latest != expected_parent {
-            return Err(AuthorityError::ParentConflict);
-        }
-        let stable = stable.or_else(|| {
-            current_head.as_ref().and_then(|value| {
-                decode::<HeadRecord>(&value.bytes)
-                    .ok()
-                    .and_then(|head| head.stable)
-            })
-        });
-        let new_head = encode(&HeadRecord {
-            latest: Some(snapshot),
-            stable,
-        })?;
-        let old_head = current_head.as_ref().map(|value| value.bytes.as_slice());
-        match self
-            .store
-            .compare_exchange(&key::head(identity)?, old_head, &new_head)
-            .await?
-        {
-            CasOutcome::Applied(_) => Ok(snapshot),
-            CasOutcome::Conflict(_) => Err(AuthorityError::HeadConflict),
-        }
+        Ok(dataset)
     }
 
     /// # Errors
@@ -436,7 +145,7 @@ impl DatasetAuthority {
             self.get_dataset(identity).await?;
             return Ok(None);
         };
-        Ok(decode::<HeadRecord>(&value.bytes)?.latest)
+        Ok(decode_head(&value.bytes)?.latest)
     }
 
     /// Retains a published snapshot until the matching release operation.
@@ -458,13 +167,16 @@ impl DatasetAuthority {
         if record.publication.state != PublicationState::Published {
             return Err(AuthorityError::SnapshotNotFound);
         }
+        self.ensure_snapshot_live(identity, snapshot).await?;
         let marker = encode(&snapshot)?;
         match self
             .store
             .compare_exchange(&key::retention(identity, snapshot)?, None, &marker)
             .await?
         {
-            CasOutcome::Applied(_) | CasOutcome::Conflict(Some(_)) => Ok(()),
+            CasOutcome::Applied(_) | CasOutcome::Conflict(Some(_)) => {
+                self.ensure_snapshot_live(identity, snapshot).await
+            }
             CasOutcome::Conflict(None) => Err(AuthorityError::Corrupt),
         }
     }
@@ -492,11 +204,15 @@ impl DatasetAuthority {
         snapshot: SnapshotId,
     ) -> Result<(), AuthorityError> {
         self.get_snapshot(identity, snapshot).await?;
+        self.require_committed_snapshot(identity, snapshot).await?;
         let key = key::head(identity)?;
         let current = self.store.get(&key).await?;
+        if let Some(current) = &current {
+            self.help_head_commit(identity, current).await?;
+        }
         let mut head = current
             .as_ref()
-            .map(|value| decode::<HeadRecord>(&value.bytes))
+            .map(|value| decode_head(&value.bytes))
             .transpose()?
             .unwrap_or(HeadRecord {
                 latest: None,
@@ -505,90 +221,13 @@ impl DatasetAuthority {
         if head.stable == Some(snapshot) {
             return Ok(());
         }
+        self.ensure_snapshot_live(identity, snapshot).await?;
         head.stable = Some(snapshot);
-        let bytes = encode(&head)?;
+        let bytes = encode_head(head)?;
         let expected = current.as_ref().map(|value| value.bytes.as_slice());
         match self.store.compare_exchange(&key, expected, &bytes).await? {
             CasOutcome::Applied(_) => Ok(()),
             CasOutcome::Conflict(_) => Err(AuthorityError::HeadConflict),
-        }
-    }
-
-    /// Increments the active-read count for one Dataset/Snapshot lease using
-    /// a CAS record. Expired records are treated as zero.
-    ///
-    /// # Errors
-    /// Returns invalid lease configuration, storage, or malformed lease data.
-    pub async fn acquire_snapshot_read(
-        &self,
-        identity: &DatasetIdentity,
-        snapshot: SnapshotId,
-        now_seconds: u64,
-        ttl_seconds: u64,
-    ) -> Result<(), AuthorityError> {
-        if ttl_seconds == 0 {
-            return Err(DatasetError::InvalidManifest.into());
-        }
-        let key = key::read_lease(identity, snapshot)?;
-        loop {
-            let current = self.store.get(&key).await?;
-            let (active, expected) = match current.as_ref() {
-                Some(value) => {
-                    let record: crate::ActiveReadLease = decode(&value.bytes)?;
-                    if now_seconds >= record.deadline {
-                        (0, Some(value.bytes.as_slice()))
-                    } else {
-                        (record.active, Some(value.bytes.as_slice()))
-                    }
-                }
-                None => (0, None),
-            };
-            let record = crate::ActiveReadLease {
-                snapshot,
-                active: active.saturating_add(1),
-                deadline: now_seconds.saturating_add(ttl_seconds),
-            };
-            match self
-                .store
-                .compare_exchange(&key, expected, &encode(&record)?)
-                .await?
-            {
-                CasOutcome::Applied(_) => return Ok(()),
-                CasOutcome::Conflict(_) => {}
-            }
-        }
-    }
-
-    /// Decrements one active-read lease. Releasing a missing/expired record is idempotent.
-    ///
-    /// # Errors
-    /// Returns storage or malformed lease data errors.
-    pub async fn release_snapshot_read(
-        &self,
-        identity: &DatasetIdentity,
-        snapshot: SnapshotId,
-    ) -> Result<(), AuthorityError> {
-        let key = key::read_lease(identity, snapshot)?;
-        loop {
-            let Some(current) = self.store.get(&key).await? else {
-                return Ok(());
-            };
-            let mut record: crate::ActiveReadLease = decode(&current.bytes)?;
-            if record.active == 0 {
-                return Ok(());
-            }
-            record.active -= 1;
-            let result = if record.active == 0 {
-                self.store.delete(&key).await.map(|()| CasOutcome::Applied(0))
-            } else {
-                self.store
-                    .compare_exchange(&key, Some(&current.bytes), &encode(&record)?)
-                    .await
-            };
-            match result? {
-                CasOutcome::Applied(_) => return Ok(()),
-                CasOutcome::Conflict(_) => {}
-            }
         }
     }
 
@@ -725,6 +364,10 @@ impl DatasetAuthority {
             CasOutcome::Conflict(Some(existing)) if existing.bytes == binding => {}
             CasOutcome::Conflict(_) => return Err(AuthorityError::AlreadyExists),
         }
+        self.persist_inspection_index(identity, snapshot_record.publication.parent, manifest)
+            .await?;
+        self.bind_completed_manifest(identity, &snapshot_record, manifest)
+            .await?;
         if snapshot_record.publication.state == PublicationState::Prepared {
             let published = SnapshotRecord {
                 publication: SnapshotPublication {
@@ -891,55 +534,22 @@ impl DatasetAuthority {
         identity: &DatasetIdentity,
         snapshot: SnapshotId,
     ) -> Result<(), AuthorityError> {
-        if self.has_active_snapshot_read(identity, snapshot).await? {
-            return Err(AuthorityError::SnapshotProtected);
-        }
-        let head = self.store.get(&key::head(identity)?).await?;
-        if let Some(head) = head {
-            let head: HeadRecord = decode(&head.bytes)?;
-            if head.latest == Some(snapshot) || head.stable == Some(snapshot) {
-                return Err(AuthorityError::SnapshotProtected);
+        let cancel = ReadCancellation::new();
+        let work = async {
+            for _ in 0..64 {
+                if self
+                    .reclaim_snapshot_metadata_step(identity, snapshot, &cancel)
+                    .await?
+                    .complete
+                {
+                    return Ok(());
+                }
             }
-        }
-        if self
-            .store
-            .get(&key::retention(identity, snapshot)?)
-            .await?
-            .is_some()
-        {
-            return Err(AuthorityError::SnapshotProtected);
-        }
-        if self.snapshot_reachable_from_head(identity, snapshot).await? {
-            return Err(AuthorityError::SnapshotProtected);
-        }
-        if let Some(binding) = self
-            .store
-            .get(&key::manifest_binding(identity, snapshot)?)
-            .await?
-        {
-            let binding: ManifestBinding = decode(&binding.bytes)?;
-            for partition in 0..binding.partitions {
-                self.store
-                    .delete(&key::manifest_partition(identity, snapshot, partition)?)
-                    .await?;
-            }
-            self.store
-                .delete(&key::manifest_binding(identity, snapshot)?)
-                .await?;
-        }
-        self.store.delete(&key::snapshot(identity, snapshot)?).await?;
-        let progress = crate::ReclaimProgress {
-            snapshot,
-            state: crate::ReclaimState::Completed,
-            chunks_reclaimed: 0,
+            Err(AuthorityError::Invalid(DatasetError::ReadLimitExceeded))
         };
-        let progress_key = key::reclaim_progress(identity, snapshot)?;
-        let bytes = encode(&progress)?;
-        match self.store.compare_exchange(&progress_key, None, &bytes).await? {
-            CasOutcome::Applied(_) | CasOutcome::Conflict(Some(_)) => {}
-            CasOutcome::Conflict(None) => return Err(AuthorityError::Corrupt),
-        }
-        Ok(())
+        tokio::time::timeout(std::time::Duration::from_secs(30), work)
+            .await
+            .map_err(|_| AuthorityError::Invalid(DatasetError::ReadLimitExceeded))?
     }
 
     /// Returns durable reclaim progress, defaulting to pending for an unseen snapshot.
@@ -973,7 +583,7 @@ impl DatasetAuthority {
         let Some(head) = self.store.get(&key::head(identity)?).await? else {
             return Ok(false);
         };
-        let head: HeadRecord = decode(&head.bytes)?;
+        let head = decode_head(&head.bytes)?;
         let mut current = head.latest;
         let mut seen = HashSet::new();
         while let Some(snapshot) = current {
@@ -989,18 +599,6 @@ impl DatasetAuthority {
             current = decode::<SnapshotRecord>(&value.bytes)?.publication.parent;
         }
         Ok(false)
-    }
-
-    async fn has_active_snapshot_read(
-        &self,
-        identity: &DatasetIdentity,
-        snapshot: SnapshotId,
-    ) -> Result<bool, AuthorityError> {
-        let Some(value) = self.store.get(&key::read_lease(identity, snapshot)?).await? else {
-            return Ok(false);
-        };
-        let record: crate::ActiveReadLease = decode(&value.bytes)?;
-        Ok(record.active != 0)
     }
 
     /// Resolves one field using copy-on-write snapshot ancestry. The first

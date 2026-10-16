@@ -1,11 +1,11 @@
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
 <!-- Licensed under the Apache License, Version 2.0. -->
 
-# CROWDB Dataset Specification
+# CROWDB - Design: Dataset Specification
 
 This document is the normative Dataset contract. It defines the objects,
 identities, state transitions, observable behavior, and compatibility rules
-shared by Dataset authorities, HTTP clients, native clients, and future SDKs.
+shared by Dataset authorities, HTTP clients, native clients, and SDKs.
 The implementation design is described in
 [Design: Dataset](design-crowdb-access-dataset.md); when the two documents
 appear to disagree, this specification is authoritative.
@@ -47,6 +47,8 @@ The following terms have one meaning throughout this specification:
   tombstone explicitly hides an inherited value.
 - **Locator** identifies payload bytes. Inline values are stored in metadata;
   chunk locators are opaque strings interpreted only by the chunk subsystem.
+- **Split revision** is an immutable complete set of named subsets, definitions,
+  membership and policies owned by one Snapshot. currentSplit is its mutable pointer.
 - **Selection** identifies samples from one Snapshot.
 - **Read Plan** binds a Selection, ordering, projection, batching, and optional
   shuffle to one immutable Snapshot.
@@ -71,6 +73,9 @@ the resolved Snapshot ID and never stores a mutable name in its place.
 A Snapshot has zero or one declared parent. Parentage is explicit; ID ordering
 never implies ancestry. A child may add, replace, or tombstone samples and
 fields while inheriting all values not overridden by its visible parent chain.
+Any committed same-Dataset Snapshot may be the parent, independently of latest.
+Multiple parentless roots are permitted. Sample IDs are opaque bytes, represented
+as canonical padded base64 in JSON; they MUST NOT be normalized as text or paths.
 
 ## 3. Dataset records
 
@@ -97,6 +102,9 @@ are an internal representation; readers observe one logical Manifest.
 The Dataset authority provides these operations. Each operation is scoped by a
 Dataset identity; operations that take a Snapshot ID MUST use the immutable ID,
 not `latest` or `stable` as an implicit mutable reference.
+The table summarizes the legacy publication/read surface. Control v2 adds bounded
+catalog/tree inspection, composition drafts and independent Split revisions as
+specified below and in its versioned OpenAPI contract.
 
 | Operation | Input | Successful result |
 | --- | --- | --- |
@@ -130,9 +138,11 @@ fields, invalid checksums, invalid parent references, and incomplete or
 inconsistent partition metadata.
 
 Within one Snapshot, `(sample_id, field_name)` has at most one value. A Schema
-field can be required or optional. A required field removed by a child must be
-represented by a tombstone or an explicitly compatible schema transition;
-readers never silently combine incompatible schemas.
+field can be required or optional. Required field names MUST remain in a child schema. Removing an inherited
+value requires an explicit tombstone; readers never silently combine
+incompatible schemas. A Manifest declares the complete current sample
+membership: omitted samples disappear, while surviving samples may inherit
+omitted optional fields through their declared parent.
 
 A Field value is exactly one of:
 
@@ -141,7 +151,9 @@ A Field value is exactly one of:
   chunk subsystem, and the declared digest.
 - **Tombstone**: an explicit deletion marker with no payload.
 
-Readers verify the declared digest before returning bytes. External S3 or
+Materialized reads verify the declared field digest before success. Streaming
+reads return verified frames; whole-field integrity is established at field end
+and partial output must be discarded if completion fails. External S3 or
 Iceberg references are provenance and input metadata; they do not transfer
 ownership of those systems' objects to Dataset.
 
@@ -160,14 +172,29 @@ The authority MUST perform publication in this order:
 5. Persist the published Snapshot record.
 6. Advance `latest` atomically to the complete Snapshot.
 
-A failure before step 5 leaves the candidate invisible and recoverable by the
-same operation token. A reader of `latest` MUST see either the previous
+Prepare completes the durable candidate without advancing latest. A failure
+before step 5 leaves the candidate invisible and recoverable by the same
+operation token. The Published record may exist before step 6 succeeds; an
+operation status alone is not proof that the head advanced. A successful Publish
+completes the head transition. Retry identical content to finish an ambiguous
+outcome; retries of historical publication MUST NOT rewind a newer head. A reader of `latest` MUST see either the previous
 complete Snapshot or the new complete Snapshot, never a prepared or partial
 Manifest.
 
 `stable` may be set only to an existing published Snapshot. Publishing a new
 Snapshot never changes `stable` implicitly. A published Snapshot remains
-addressable by ID until reclamation removes its metadata under Section 8.
+addressable by ID until reclamation removes its metadata under Section 9.
+
+Control v2 separates candidate creation from publication attempts. An attempt MUST
+bind the exact candidate and expected opaque head generation. Initial Split
+membership and candidate upload ownership MUST be ready before the head transition.
+A successful attempt MUST have a durable recoverable receipt. Retry of a historical
+success MUST NOT rewind latest. A head conflict preserves the candidate and parent;
+a reviewed retry uses a new attempt with a newly observed generation.
+
+Publishing an independent Split revision MUST update only its Snapshot's currentSplit
+pointer with an expected revision/head CAS. It MUST NOT create a data Snapshot or
+change latest/stable. Old revisions remain addressable until owner reclamation.
 
 ## 7. Selection, plans, and cursors
 
@@ -180,6 +207,9 @@ A Read Plan contains the resolved Snapshot ID, Selection, ordering, projection,
 batch size, and optional deterministic shuffle parameters. The plan identity
 includes all of those values. A plan cannot be resumed with a different
 Snapshot, Selection, projection, ordering, or shuffle configuration.
+Control v2 additionally pins a selected Split revision/name. Membership filtering
+precedes shuffle and worker partitioning, which precede payload reads. A currentSplit
+change MUST NOT alter an admitted plan or composition source.
 
 A Cursor is either at the start or contains a plan-bound group and offset. The
 caller acknowledges a batch by persisting the next Cursor. A failed or
@@ -198,9 +228,11 @@ Requested sample and projection order is preserved unless the plan explicitly
 requests another ordering. Unknown samples, invalid projections, checksum
 mismatches, and malformed cursors are errors.
 
-Each admitted read increments the active-read lease for its Dataset and
-Snapshot. Normal completion, cancellation, and explicit close release the
-lease. A bounded inactivity TTL expires a disconnected lease; the expiry is a
+Each admitted transfer owns a unique scoped active-read lease for its Dataset
+and Snapshot. Normal completion, cancellation, and explicit close release that
+lease without releasing another reader's lease. Streaming renews its lease
+while bytes are in flight. Transport-owned buffers retain protection and
+admission through delivery or drop. A bounded inactivity TTL expires a disconnected lease; the expiry is a
 GC safety policy, not a publication or cursor transition.
 
 HTTP and native reads use the same authority semantics. Transport framing,
@@ -211,8 +243,8 @@ equivalent.
 ## 9. Retention and reclamation
 
 `retain` and `release` apply to an immutable Snapshot ID. The latest Snapshot,
-stable Snapshot, retained Snapshots, parent-reachable history, and Snapshots
-with active-read leases are protected from reclamation.
+stable Snapshot, retained Snapshots, parents of live committed Snapshots on any
+branch, and Snapshots with active-read leases are protected from reclamation.
 
 Reclamation is idempotent. It removes only unreachable Dataset-owned metadata
 and payload references. A payload shared by two retained or readable
@@ -226,6 +258,31 @@ that status and do not double-delete a payload.
 
 ## 10. HTTP and native surfaces
 
+The versioned public wire schemas, resource paths, binary framing and retry
+contract are defined by [Dataset HTTP API v1](openapi-crowdb-dataset-v1.yaml) and
+[Dataset control API v2](openapi-crowdb-dataset-v2.yaml).
+The public surface uses JSON control records and binary payload streams;
+persisted authority bincode records are not public DTOs.
+
+Control v2 MUST negotiate capabilities before mutation and MUST NOT downgrade
+Split-aware inputs to v1. Required nullable preconditions MUST be supplied explicitly.
+Unsigned 64-bit control values use canonical decimal strings. Legacy routes and
+read-plan interpretations remain compatible; binary framing is unchanged.
+
+Composition is durable and revision-CAS edited. Parent data defaults to all Samples;
+Selection, frozen named Split and their intersection can restrict it. Source
+S1/r2/train creates a child with parent S1 and frozen source membership. Inherited
+Splits intersect surviving IDs; new IDs are unassigned until explicit assignment or
+reevaluation. Defaults are disjoint/allow-unassigned/frozen inheritance. Weighted
+partition follows the versioned SHA-256 algorithm in the
+[control lifecycle](design-dataset-control.md#3-split-evaluation-and-publication).
+
+Inspection MUST bound underlying metadata work, not merely paginate a fully loaded
+Manifest. Committed inventory/children, Schema, Samples and projected field metadata
+are separate bounded reads. Legacy inspection preparation is explicit and resumable;
+unsupported state MUST NOT appear as an empty result. Preview is opt-in, capped at
+64 KiB and MUST NOT acknowledge read consumption.
+
 The HTTP surface is the portable wire contract. It exposes Dataset creation and
 opening, latest and Snapshot inspection, publication and preparation, Manifest
 retrieval, retention, stable selection, reclamation status, bounded reads, read
@@ -234,6 +291,32 @@ plans, progress, resume, and cancellation.
 The native surface exposes the same operations through typed calls. Every
 operation identifies the Dataset explicitly or through a bound service and
 carries a Snapshot ID where the operation is Snapshot-scoped.
+
+HTTP uploads MUST use a Dataset-scoped opaque session ID, declared length,
+part size and MD5. Numbered parts are immutable: identical retries reuse the
+receipt; divergent bytes conflict. Declared part sizes are 1 byte through 4 MiB;
+the final part may be shorter. At most 10000 parts are accepted. Completion
+independently verifies part lengths/digests and the whole digest before producing a completed reference.
+Preparation rejects incomplete, aborted or foreign references. Claimed payloads
+remain protected until every candidate/Snapshot owner is released. Unowned
+sessions expire; physical cleanup may remain pending and MUST report that state.
+
+Public read handles bind the resolved immutable Snapshot, selection, projection,
+shuffle and worker partition. Fetch MUST NOT acknowledge consumption. The caller
+explicitly acknowledges an issued next cursor; repeating that acknowledgement
+is idempotent. Progress inspection MUST NOT fetch another batch. Resume restores
+acknowledged progress. Closing one handle MUST NOT cancel another. Worker
+partitioning executes before payload fetching. A v1 plan selects at most 100000
+IDs; JSON metadata and binary headers are capped at 8 MiB. Large fields stream
+rather than being materialized as a whole batch.
+
+Binary frame integrity is established at each frame, field integrity at field
+end, and successful batch completion requires the batch terminator followed by
+HTTP EOF. A caller-owned writer may contain a verified prefix on failure and
+MUST discard partial output. File convenience downloads expose their destination
+only after successful verification. SDK cancellation propagates to the same
+Rust operation and returns producer resources; caller-retained completed data
+has its own application lifetime.
 
 A configured HTTP bearer credential protects all Dataset routes. Deployments
 that need separate management and data policies may enforce that distinction at

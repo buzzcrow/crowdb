@@ -256,7 +256,7 @@ impl Default for DatasetConfig {
     fn default() -> Self {
         Self {
             listen: None,
-            max_in_flight: 3,
+            max_in_flight: 8,
             max_batch_size: 10_000,
             request_timeout_seconds: 60,
             lease_ttl_seconds: 60,

@@ -2,6 +2,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{DatasetError, OperationId, SnapshotId};
 
+mod commit;
+pub use commit::{CommitAttempt, CommitGeneration, CommitTarget, SuccessfulCommit};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum PublicationState {
     Prepared,

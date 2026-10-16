@@ -11,14 +11,23 @@
 //!   - `POST .../disks/batch` → 3 valid, 1 malformed, duplicate ids, missing dg
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
-use crowdb_console_shared::{ConsoleConfig, DiskGroupEntry, NodeEntry, RackEntry};
+#[path = "common/memory_kv.rs"]
+mod memory_kv;
+
+use crowdb_console_shared::{ConsoleConfig, DiskGroupEntry, NodeEntry, RackEntry, ServerEntry};
+use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient};
+use crowdb_protocol::{
+    common::{NodeValue, RackValue},
+    diskdb::rpc::DiskGroupValue,
+};
 use crowdb_web::{router, AppState};
 use serde_json::{json, Value};
 
 async fn spawn_web() -> SocketAddr {
-    spawn_web_with_config(ConsoleConfig::default()).await
+    spawn_web_with_config(ConsoleConfig::default(), false).await
 }
 
 async fn spawn_web_with_disk_group(rack_id: u64, node_id: u64, dg_id: u64) -> SocketAddr {
@@ -49,10 +58,68 @@ async fn spawn_web_with_disk_group(rack_id: u64, node_id: u64, dg_id: u64) -> So
             name: String::new(),
         })
         .unwrap();
-    spawn_web_with_config(config).await
+    spawn_web_with_config(config, true).await
 }
 
-async fn spawn_web_with_config(cfg: ConsoleConfig) -> SocketAddr {
+async fn spawn_web_with_config(mut cfg: ConsoleConfig, with_group0: bool) -> SocketAddr {
+    let cluster = if with_group0 {
+        Some(memory_kv::TestKvCluster::start().await)
+    } else {
+        None
+    };
+    let kv = if let Some(cluster) = &cluster {
+        cfg.servers
+            .push(ServerEntry::new("metadata", &cluster.mgmt_endpoints[0]));
+        let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
+            cluster.mgmt_endpoints.clone(),
+        )));
+        kv.seed_leader(0, 0, cluster.group0_leader_endpoint.clone());
+        let hardware = HardwareClient::from_shared(kv.clone());
+        for rack in &cfg.racks {
+            hardware
+                .add_rack(
+                    rack.id,
+                    &RackValue {
+                        node_ids: cfg
+                            .nodes
+                            .iter()
+                            .filter(|node| node.rack_id == rack.id)
+                            .map(|node| node.id)
+                            .collect(),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        for node in &cfg.nodes {
+            hardware
+                .add_node(
+                    node.rack_id,
+                    node.id,
+                    &NodeValue {
+                        disk_group_ids: cfg
+                            .disk_groups
+                            .iter()
+                            .filter(|group| group.node_id == node.id)
+                            .map(|group| group.id)
+                            .collect(),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        for group in &cfg.disk_groups {
+            hardware
+                .add_disk_group(group.rack_id, group.node_id, group.id, &DiskGroupValue::default())
+                .await
+                .unwrap();
+        }
+        Some(kv)
+    } else {
+        None
+    };
     let addr_bind = SocketAddr::from(([127, 0, 0, 1], 0));
     let listener = tokio::net::TcpListener::bind(addr_bind).await.expect("bind");
     let addr = listener.local_addr().expect("local_addr");
@@ -67,7 +134,9 @@ async fn spawn_web_with_config(cfg: ConsoleConfig) -> SocketAddr {
     std::fs::create_dir_all(&dir).unwrap();
     let cfg_path = dir.join("console.toml");
     let state = AppState::with_config(cfg, Some(cfg_path));
+    *state.kv_client.write().await = kv;
     tokio::spawn(async move {
+        let _cluster = cluster;
         axum::serve(listener, router(state)).await.unwrap();
     });
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -252,7 +321,7 @@ async fn batch_disk_add_rejects_duplicate_ids_within_batch() {
 
 #[tokio::test]
 async fn batch_disk_add_returns_404_for_missing_disk_group() {
-    let addr = spawn_web().await;
+    let addr = spawn_web_with_config(ConsoleConfig::default(), true).await;
     let base = format!("http://{addr}");
     let client = reqwest::Client::new();
 

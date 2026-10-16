@@ -128,7 +128,16 @@ fn intended_records(ctx: &OpContext, store_nodes: &[u64], members: &[(u64, u64)]
             &RackKey { rack_id: rack.id },
             RackValue {
                 status: HwStatus::Up as i32,
-                node_ids: Vec::new(),
+                node_ids: {
+                    let mut ids: Vec<_> = config
+                        .nodes
+                        .iter()
+                        .filter(|node| node.rack_id == rack.id)
+                        .map(|node| node.id)
+                        .collect();
+                    ids.sort_unstable();
+                    ids
+                },
                 name: rack.name.clone(),
             },
         )?);

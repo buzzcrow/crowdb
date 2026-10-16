@@ -222,6 +222,7 @@ export enum Domain {
   Chunk = 'Chunk',
   ChunkKV = 'Chunk-KV',
   Iceberg = 'Iceberg',
+  Dataset = 'Dataset',
   S3 = 'S3'
 }
 
@@ -320,6 +321,7 @@ export interface CapacityUsageResponse {
 }
 
 export interface DiskGroupInfoDto {
+  usage_known?: boolean;
   rack_id: number;
   node_id: number;
   disk_group_id: number;
@@ -333,6 +335,7 @@ export interface DiskGroupInfoDto {
 }
 
 export interface DiskInfoDto {
+  usage_known?: boolean;
   rack_id: number;
   node_id: number;
   disk_group_id: number;

@@ -12,6 +12,9 @@ import tempfile
 import time
 import urllib.request
 from pathlib import Path
+from setup_choices import diskless_setup
+from node_resources import verify_reaping, verify_stopped
+from supplied_media import Media, provision as provision_media, remove_and_rejoin, wait_for_descriptors
 
 OCI = Path(__file__).resolve().parents[2] / "container/oci-image"
 
@@ -43,22 +46,32 @@ def wait(action, predicate, description, seconds=120):
 
 
 def scenario(runtime, image, data, secret, mode):
+    media = Media(data.parent / "supplied-media") if mode == "manual" else None
+    media_state = None
     command = [sys.executable, str(OCI / "run-node.py"),
                "--runtime", "containerd", "--address", runtime.command[2], "--snapshotter", "native", "--image", image,
                "--name", "crowdb-node", "--network", "host", "--data-root", str(data),
                "--physical-host-id", "containerd-acceptance-host", "--interface", "eth0",
                "--cpu-shares", "1024", "--worker-threads", "1", "--memory-mib", "1024", "--password-file", str(secret), "--startup-mode", mode]
-    subprocess.run(command, check=True, timeout=90)
+    if media:
+        command.extend(media.arguments())
     try:
+        subprocess.run(command, check=True, timeout=90)
+        verify_reaping(runtime.invoke, "crowdb-node", wait)
         if mode == "manual":
             snapshot = wait(lambda: request("/api/node/candidates"), lambda s: bool(s["local"]), "local discovery")
+            owner = runtime.invoke("exec", "crowdb-node", "stat", "-c", "%u:%a", "/opt/crowdb/data/disks").strip()
+            assert owner.split(":")[0] == "10001", f"supplied-media parent owner/mode: {owner}"
+            runtime.invoke("exec", "--user", "10001:10001", "crowdb-node", "test", "-w", "/opt/crowdb/data/disks")
             discovery_id = snapshot["local"]["advertisement"]["discovery_id"]
             request("/api/racks", {"id": 1, "name": "containerd-rack"})
             node = request("/api/node/admit", {"discovery_id": discovery_id, "rack_id": 1,
-                                              "ssh_user": "crowdb", "ssh_port": 2222, "ssh_password": "containerd-test"})
+                                              "ssh_user": "crowdb", "ssh_port": 2222, "ssh_password": "containerd-test", "setup": diskless_setup()})
             request("/api/cluster/init", {"nodes": [node["node_id"]]})
             state = wait(lambda: request("/api/node/status"), lambda s: s["phase"] == "active", "Group 0 bootstrap")
             cluster = state["cluster_id"]
+            media_state = provision_media(media, data, node["node_id"], cluster, request, wait)
+            remove_and_rejoin(media, media_state, runtime, request, wait)
             wait(lambda: runtime.invoke("exec", "crowdb-node", "crowdb-monitor", "readiness"), lambda _: True, "manual readiness")
         else:
             wait(lambda: runtime.invoke("exec", "crowdb-node", "crowdb-monitor", "readiness"), lambda _: True, "automatic readiness", 240)
@@ -72,12 +85,21 @@ def scenario(runtime, image, data, secret, mode):
                 raise AssertionError("single-node mode accepted a management mutation")
         key = runtime.invoke("exec", "crowdb-node", "cat", "/opt/crowdb/data/ssh/id_ed25519.pub")
         runtime.invoke("stop", "--time", "30", "crowdb-node")
+        verify_stopped(runtime.invoke, "crowdb-node")
         runtime.invoke("rm", "crowdb-node")
         subprocess.run(command, check=True, timeout=90)
         if mode == "manual":
             restored = wait(lambda: request("/api/node/status"), lambda s: s["phase"] == "active", "persisted cluster")
             assert restored["cluster_id"] == cluster
             assert request("/api/node/candidates")["local"]["advertisement"]["discovery_id"] == discovery_id
+            wait(lambda: request("/api/servers"),
+                 lambda services: any(row["service_type"] == "diskio" and row["health"] == "up" for row in services),
+                 "retained DiskIO process readiness", 10)
+            wait_for_descriptors(media, media_state, runtime, request, wait)
+            media.probe(media_state, "verify")
+            assert not media.exclusive_available()
+            media.verify_tails()
+            print("containerd supplied file/raw: fsync/read, Offline claim release, Remove/Rejoin and recreated-container persistence passed", flush=True)
         else:
             wait(lambda: runtime.invoke("exec", "crowdb-node", "crowdb-monitor", "readiness"), lambda _: True, "persisted single-node readiness", 240)
         assert runtime.invoke("exec", "crowdb-node", "cat", "/opt/crowdb/data/ssh/id_ed25519.pub") == key
@@ -85,10 +107,18 @@ def scenario(runtime, image, data, secret, mode):
         print(f"containerd {mode}: host network, resource limits, initialization and persisted identity passed", flush=True)
     finally:
         try:
+            group = next(line.split(":", 2)[2] for line in Path("/proc/self/cgroup").read_text().splitlines() if line.startswith("0::"))
+            print("Owned host memory events: " + (Path("/sys/fs/cgroup") / group.lstrip("/") / "memory.events").read_text(), flush=True)
+        except (OSError, StopIteration) as error:
+            print(f"Owned host memory diagnostic unavailable: {error}", flush=True)
+        try:
             print(runtime.invoke("logs", "crowdb-node"), flush=True)
             runtime.invoke("rm", "-f", "crowdb-node")
         except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as error:
             print(f"containerd diagnostic/cleanup: {error}", flush=True)
+        finally:
+            if media:
+                media.close()
 
 
 def main():

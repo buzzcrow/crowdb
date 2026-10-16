@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 import { test, expect } from '../fixtures/realBackend';
 import { diskMenu, diskBranch } from '../fixtures/capacity';
+import { step } from '../fixtures/stepTimer';
 import type { APIRequestContext } from '@playwright/test';
 
 async function json(request: APIRequestContext, path: string) {
@@ -20,7 +21,7 @@ test('native capacity: disk-group CRUD and explicit owner binding use mounted st
       .replicas.filter((replica: { role: string }) => replica.role === 'leader').length,
     { timeout: 10_000, intervals: [100] }).toBe(1);
   }
-  const deployed = await request.post('/api/nodes/1/diskdb/deploy', { data: { rpc_port: 7100 } });
+  const deployed = await request.post('/api/nodes/1/diskdb/deploy', { data: { rpc_port: 7100, keepalive_interval_secs: 1 } });
   expect(deployed.ok(), await deployed.text()).toBe(true);
   let instance = '';
   await expect.poll(async () => {
@@ -43,7 +44,7 @@ test('native capacity: disk-group CRUD and explicit owner binding use mounted st
   await create.getByRole('combobox', { name: 'KV group', exact: true }).selectOption('0/1');
   await create.getByRole('button', { name: 'Create Disk Group', exact: true }).click();
   await expect(create).toHaveCount(0);
-  await node.getByRole('button', { name: 'Expand', exact: true }).click();
+  await sidebar.getByTestId('tree-node-STORAGE-1').getByRole('button', { name: 'Expand', exact: true }).click();
   const group = sidebar.getByTestId('tree-node-CH-DG-1-520').locator(':scope > [role="treeitem"]');
   await expect(group).toContainText('mounted CRUD');
   expect(await json(request, '/api/nodes/1/disk-groups'))
@@ -55,28 +56,11 @@ test('native capacity: disk-group CRUD and explicit owner binding use mounted st
     .not.toContain(Number(await id.inputValue()));
   await page.keyboard.press('Escape');
   await group.click({ button: 'right' });
-  for (const name of ['Add Disk', 'Change Status', 'Delete Disk Group']) {
+  for (const name of ['Create File Disk', 'Manage node storage', 'Delete Disk Group']) {
     await expect(page.getByRole('menuitem', { name, exact: true })).toBeVisible();
   }
   for (const name of ['Trigger Consistency Scan', 'Recalc Usage']) {
     await expect(page.getByRole('menuitem', { name, exact: true })).toHaveCount(0);
-  }
-  await page.keyboard.press('Escape');
-  await diskMenu(page, group, 'Add Disk');
-  const add = page.getByRole('dialog', { name: 'Add Disks', exact: true });
-  await expect(add.getByLabel('Disk Size (TiB)')).toHaveValue('4');
-  await expect(add.getByLabel('Zone Size (GiB)')).toHaveValue('32');
-  for (const name of ['Disk Size (GiB)', 'Zone Size (MiB)']) await expect(add.getByLabel(name)).toHaveCount(0);
-  const diskId = '0000000000000001-0000000000000520';
-  await add.getByLabel('Disk ID (UUID)').fill(diskId);
-  await add.getByLabel('Device Path (optional)').fill('/opt/crowdb/data/capacity-spare.img');
-  await add.getByRole('button', { name: 'Add Disks', exact: true }).click();
-  await expect(add).toHaveCount(0, { timeout: 10_000 });
-  const branch = await diskBranch(page, 1, 520);
-  expect(branch.id).toBe(diskId);
-  await branch.disk.click({ button: 'right' });
-  for (const name of ['Compact Zones', 'Rebuild Bitmap', 'Trigger Consistency Scan', 'Recalc Usage', 'Change Status', 'Delete Disk']) {
-    await expect(page.getByRole('menuitem', { name, exact: true })).toBeVisible();
   }
   await page.keyboard.press('Escape');
   await diskMenu(page, group, 'Assign to DiskDB');
@@ -92,22 +76,64 @@ test('native capacity: disk-group CRUD and explicit owner binding use mounted st
   expect(await json(request, '/api/hardware/disk-group-bindings')).toEqual(expect.arrayContaining([
     expect.objectContaining({ node_id: 1, dg_id: 520, store_id: 0, group_id: 2 }),
   ]));
-  await expect.poll(async () => (await json(request, '/api/diskdb/usage')).disk_groups
-    .find((row: { disk_group_id: number }) => row.disk_group_id === 520)?.capacity_bytes ?? 0,
-  { timeout: 30_000, intervals: [100] }).toBe(4 * 1024 ** 4);
+  await step('deploy actual DiskIO for the bound group', async () => {
+    const defaults = (await json(request, '/api/deployment-defaults?node_id=1')).diskio;
+    const response = await request.post('/api/nodes/1/services/deploy', { data: {
+      ...defaults, kind: 'diskio', instance_id: '1', disk_group_id: 520,
+      rpc_port: 7200, test_single_node: false,
+    } });
+    expect(response.status(), await response.text()).toBe(201);
+  });
+  const accepted = await step('create a managed file through the group menu', async () => {
+    await diskMenu(page, group, 'Create File Disk');
+    const add = page.getByRole('dialog', { name: 'Create File Disk', exact: true });
+    await expect(add.getByLabel('Capacity (GiB)')).toHaveValue('16');
+    await expect(add.getByLabel('Disk group')).toHaveValue('520');
+    await expect(add.getByLabel('Sparse file')).not.toBeChecked();
+    await add.getByLabel('Capacity (GiB)').fill('0.0625');
+    const pending = page.waitForResponse(response => response.request().method() === 'POST'
+      && new URL(response.url()).pathname === '/api/nodes/1/disk-files');
+    await add.getByRole('button', { name: 'Create and Join', exact: true }).click();
+    const response = await pending;
+    expect(response.status(), await response.text()).toBe(202);
+    await expect(add).toHaveCount(0);
+    return response.json();
+  });
+  await step('observe durable registration and actual capacity', async () => {
+    await expect.poll(async () => (await json(request,
+      `/api/nodes/1/disk-files/${accepted.request.operation_id}`)).phase,
+    { intervals: [100] }).toBe('registered');
+    await expect.poll(async () => (await json(request, '/api/diskdb/usage')).disk_groups
+      .find((row: { disk_group_id: number }) => row.disk_group_id === 520)?.capacity_bytes ?? 0,
+    { intervals: [100] }).toBe(64 * 1024 ** 2);
+    const disks = await json(request, '/api/nodes/1/disk-groups/520/disks');
+    expect(disks).toHaveLength(1);
+    expect(disks[0]).toMatchObject({ device_path: accepted.path, capacity_bytes: 64 * 1024 ** 2 });
+    expect(accepted.path).toBe(`/opt/crowdb/data/disks/managed-${accepted.request.operation_id}.img`);
+  });
   await page.goto('/?domain=Capacity');
-  await expect(page.getByTestId('capacity-summary').locator(':scope > div')
-    .filter({ hasText: 'Total Capacity' }).getByText('4.0 TB', { exact: true })).toBeVisible();
-  const refreshed = await diskBranch(page, 1, 520);
-  await diskMenu(page, refreshed.group, 'Delete Disk Group');
+  const branch = await diskBranch(page, 1, 520);
+  await branch.disk.click({ button: 'right' });
+  for (const name of ['Compact Zones', 'Rebuild Bitmap', 'Trigger Consistency Scan', 'Recalc Usage', 'Manage node storage']) {
+    await expect(page.getByRole('menuitem', { name, exact: true })).toBeVisible();
+  }
+  for (const name of ['Change Status', 'Delete Disk']) {
+    await expect(page.getByRole('menuitem', { name, exact: true })).toHaveCount(0);
+  }
+  await page.keyboard.press('Escape');
+  await diskMenu(page, branch.group, 'Delete Disk Group');
   const remove = page.getByRole('dialog', { name: /Delete Disk Group/ });
+  await expect(remove).toContainText('Removed disks still retain their group');
+  const rejected = page.waitForResponse(response => response.request().method() === 'DELETE'
+    && new URL(response.url()).pathname === '/api/nodes/1/disk-groups/520');
   await remove.getByRole('button', { name: 'Delete Disk Group', exact: true })
     .evaluate(element => (element as HTMLElement).click());
-  await expect(sidebar.getByTestId('tree-node-CH-DG-1-520')).toHaveCount(0, { timeout: 10_000 });
-  expect(await json(request, '/api/nodes/1/disk-groups')).toEqual([]);
-  const deletedDisks = await request.get('/api/nodes/1/disk-groups/520/disks');
-  if (deletedDisks.ok()) expect(await deletedDisks.json()).toEqual([]);
-  else expect(deletedDisks.status()).toBe(404);
+  expect((await rejected).status()).toBe(409);
+  expect(await json(request, '/api/nodes/1/disk-groups'))
+    .toEqual(expect.arrayContaining([expect.objectContaining({ id: 520 })]));
+  expect(await json(request, '/api/nodes/1/disk-groups/520/disks'))
+    .toEqual(expect.arrayContaining([expect.objectContaining({ disk_id: branch.id, device_path: accepted.path })]));
+
 });
 
 // Baseline: 5.8s (2026-10-12).
@@ -120,6 +146,11 @@ test('KV binding recommends the least loaded group and initialization creates Gr
   await expect(init.getByRole('checkbox', { checked: true })).toHaveCount(3);
   await init.getByRole('button', { name: 'Initialize Cluster', exact: true }).click();
   await expect(init).toHaveCount(0, { timeout: 10_000 });
+  await page.getByTestId('domain-cluster').click();
+  await step('observe accepted initialization completion', async () => {
+    await expect(page.getByRole('region', { name: 'Cluster initialization' }).getByRole('status'))
+      .toHaveText('Initialization complete', { timeout: 10_000 });
+  });
   const group = await request.get('/api/stores/0/groups/1');
   expect(group.ok(), await group.text()).toBe(true);
   await page.getByTestId('domain-capacity').click();
@@ -139,7 +170,7 @@ test('KV binding recommends the least loaded group and initialization creates Gr
   await expect(dialog).toHaveCount(0);
   expect(await (await request.get('/api/nodes/1/disk-groups')).json())
     .toEqual(expect.arrayContaining([expect.objectContaining({ id: 591 })]));
-  await node.getByRole('button', { name: 'Expand', exact: true }).click();
+  await sidebar.getByTestId('tree-node-STORAGE-1').getByRole('button', { name: 'Expand', exact: true }).click();
   await expect(sidebar.getByRole('button', { name: 'DG-591', exact: true })).toBeVisible();
   const added = await request.post('/api/stores/0/groups', {
     data: { group_id: 2, replica_id: 1, nodes: [1, 2, 3] },
@@ -178,8 +209,9 @@ test('KV binding recommends the least loaded group and initialization creates Gr
   expect((await servers.json()).filter((row: { service_type: string }) => row.service_type === 'diskdb')).toHaveLength(0);
   await page.goto('/?domain=Cluster');
   await expect(sidebar.getByRole('button', { name: 'DG-593', exact: true })).toHaveCount(0);
+  await page.getByTestId('domain-cluster').click();
   await page.getByTestId('domain-capacity').click();
-  const physical = sidebar.getByTestId('tree-node-N-1').locator(':scope > [role="treeitem"]');
+  const physical = sidebar.getByTestId('tree-node-STORAGE-1').locator(':scope > [role="treeitem"]');
   if (await physical.getAttribute('aria-expanded') !== 'true') {
     await physical.getByRole('button', { name: 'Expand', exact: true }).click();
   }

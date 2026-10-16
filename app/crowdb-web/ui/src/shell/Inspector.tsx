@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 import { observeCapacity } from '../panels/capacity/observation';
-import { useState, useMemo, type MutableRefObject } from 'react';
+import { useState, useMemo, useEffect, useRef, type MutableRefObject } from 'react';
 import { X, Info, ListChecks, ExternalLink } from 'lucide-react';
 import { useSelection, SelectedEntity } from '../contexts/SelectionContext';
 import { useDomain } from '../contexts/DomainContext';
@@ -15,6 +15,7 @@ import { ElectionStateRegion, ReadStateRegion } from '../components/ConsensusSta
 import type { ServerSummary } from '../api';
 import { isAuxiliaryKind, serviceDisplayNames } from '../services/client';
 import { ServiceProperties } from '../services/ServiceProperties';
+import { DiskBackingProperties } from '../storage/DiskBackingProperties';
 
 
 type TabId = 'details' | 'activity';
@@ -48,6 +49,7 @@ function displayEntityId(entity: SelectedEntity): string {
 }
 
 interface InspectorProps {
+  nodeManagement?: boolean;
   allServers?: ServerSummary[];
   readonly?: boolean;
   modules?: Record<string, boolean>;
@@ -59,6 +61,7 @@ interface InspectorProps {
   hardwareCapacity?: HardwareCapacitySummary | null;
   diskdbInstances?: DiskdbInstanceInfo[];
   width?: number;
+  drawer?: boolean;
   pendingSelectionRef?: MutableRefObject<SelectedEntity | null>;
 }
 
@@ -66,10 +69,18 @@ interface InspectorProps {
  * Right-side inspector. Reacts to SelectionContext: Details + Activity for any
  * selection.
  */
-export function Inspector({ allServers = [], readonly, modules: _modules, nodes = [], racks = [], servers = [], stores = [], capacityUsage = null, hardwareCapacity = null, diskdbInstances = [], width = 320, pendingSelectionRef }: InspectorProps) {
+export function Inspector({ allServers = [], readonly, modules: _modules, nodes = [], racks = [], servers = [], stores = [], capacityUsage = null, hardwareCapacity = null, diskdbInstances = [], width = 320, drawer = false, pendingSelectionRef, nodeManagement = false }: InspectorProps) {
   const { selectedEntity, clearSelection, selectEntity } = useSelection();
   const { setDomain } = useDomain();
   const [activeTab, setActiveTab] = useState<TabId>('details');
+  const closeButton = useRef<HTMLButtonElement>(null);
+  const open = !!selectedEntity;
+  useEffect(() => {
+    if (!drawer || !open) return;
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    closeButton.current?.focus();
+    return () => { if (previous?.isConnected) previous.focus(); };
+  }, [drawer, open]);
 
   if (!selectedEntity) return null;
 
@@ -83,6 +94,8 @@ export function Inspector({ allServers = [], readonly, modules: _modules, nodes 
       className="tw-fixed tw-right-0 tw-top-14 tw-bottom-0 tw-bg-panel tw-border-l tw-border-border tw-flex tw-flex-col tw-z-30 tw-shadow-2xl"
       style={{ width }}
       aria-label="Entity inspector"
+      data-layout={drawer ? 'drawer' : 'panel'}
+      onKeyDown={event => { if (drawer && event.key === 'Escape') { event.stopPropagation(); clearSelection(); } }}
     >
       <div className="tw-flex tw-items-start tw-justify-between tw-gap-2 tw-px-4 tw-py-3 tw-border-b tw-border-border">
         <div className="tw-flex-1 tw-min-w-0">
@@ -91,7 +104,7 @@ export function Inspector({ allServers = [], readonly, modules: _modules, nodes 
             {displayName}
           </div>
         </div>
-        <button onClick={clearSelection} className="tw-text-muted hover:tw-text-text" aria-label="Close inspector">
+        <button ref={closeButton} onClick={clearSelection} className="tw-text-muted hover:tw-text-text" aria-label="Close inspector">
           <X className="tw-h-4 tw-w-4" />
         </button>
       </div>
@@ -105,7 +118,7 @@ export function Inspector({ allServers = [], readonly, modules: _modules, nodes 
         {activeTab === 'details' && (
           selectedEntity.type === 'Server' && isAuxiliaryKind(selectedEntity.serviceType)
             ? <ServiceProperties service={allServers.find(service => service.id === selectedEntity.id)} />
-            : <DetailsTab entity={selectedEntity} nodes={nodes} racks={racks} servers={servers} stores={stores} capacityUsage={capacityUsage} hardwareCapacity={hardwareCapacity} diskdbInstances={diskdbInstances} selectEntity={selectEntity} setDomain={setDomain} readonly={readonly} pendingSelectionRef={pendingSelectionRef} />
+            : <DetailsTab entity={selectedEntity} nodes={nodes} racks={racks} servers={servers} stores={stores} capacityUsage={capacityUsage} hardwareCapacity={hardwareCapacity} diskdbInstances={diskdbInstances} selectEntity={selectEntity} setDomain={setDomain} readonly={readonly} pendingSelectionRef={pendingSelectionRef} nodeManagement={nodeManagement} />
         )}
         {activeTab === 'activity' && <ActivityLog />}
       </div>
@@ -144,6 +157,7 @@ function Tab({
 }
 
 interface DetailsTabProps {
+  nodeManagement?: boolean;
   entity: SelectedEntity;
   nodes: Node[];
   racks: Rack[];
@@ -158,7 +172,7 @@ interface DetailsTabProps {
   pendingSelectionRef?: MutableRefObject<SelectedEntity | null>;
 }
 
-function DetailsTab({ entity, nodes, racks, servers, stores, capacityUsage, hardwareCapacity, diskdbInstances, selectEntity, setDomain, pendingSelectionRef }: DetailsTabProps) {
+function DetailsTab({ entity, nodes, racks, servers, stores, capacityUsage, hardwareCapacity, diskdbInstances, selectEntity, setDomain, pendingSelectionRef, nodeManagement }: DetailsTabProps) {
   const displayType = entity.type === 'Server'
     ? (entity.serviceType === 'diskdb' ? 'DiskDB' : 'KV')
     : entity.type;
@@ -212,7 +226,6 @@ function DetailsTab({ entity, nodes, racks, servers, stores, capacityUsage, hard
 
     // In Physical view, only show capacity for DiskGroup and Disk
     // (rack/node/datacenter capacity is a Capacity-view concept).
-    if (entity.domain === Domain.Cluster && entity.type !== 'DiskGroup' && entity.type !== 'Disk') return null;
 
     if (!['Datacenter', 'Rack', 'Node', 'DiskGroup', 'Disk'].includes(entity.type)) return null;
     return observeCapacity(hardwareCapacity, capacityUsage, {
@@ -308,6 +321,8 @@ function DetailsTab({ entity, nodes, racks, servers, stores, capacityUsage, hard
           </div>
         ))}
       </dl>
+      {nodeManagement && entity.type === 'Disk' && entity.parentIds?.node_id !== undefined && entity.parentIds?.disk_group_id !== undefined &&
+        <DiskBackingProperties observationKey={entity} key={entity.id} nodeId={Number(entity.parentIds.node_id)} groupId={Number(entity.parentIds.disk_group_id)} diskId={entity.id} />}
 
       {dgDisks && dgDisks.length > 0 && (
         <div className="tw-space-y-1">

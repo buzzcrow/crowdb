@@ -12,7 +12,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use arc_swap::ArcSwap;
 use bytes::Bytes;
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient, ServiceRegistryClient};
+use crowdb_kv_client::{HardwareClient, ServiceRegistryClient};
 use crowdb_rpc_ffi::{
     ConnectionPoolError, ConnectionPoolIndex, OwnedClientRoute, RpcError, RpcServer, SelectedConnection,
 };
@@ -21,6 +21,7 @@ use crate::client::{DiskIoRetCode, WireClient, WireError, WireWriteTarget};
 use crate::topology::{self, DiskRoute};
 use crate::{DiskId, DiskioError, DiskioResult, DiskioStatus, SegmentTarget};
 
+mod connection;
 mod native_routes;
 pub use native_routes::NativeDiskRouteResolver;
 mod write_views;
@@ -275,6 +276,7 @@ pub struct DiskioClient {
     config: DiskioClientConfig,
     service: Option<ServiceRegistryClient>,
     hardware: Option<HardwareClient>,
+    scope: Option<crowdb_protocol::key::DiskKey>,
     wire: Arc<WireClient>,
     server: Arc<RpcServer>,
     normal: ConnectionPoolIndex,
@@ -295,6 +297,13 @@ impl std::fmt::Debug for DiskioClient {
 }
 
 impl DiskioClient {
+    /// Classify an actual wire return code without broadening ordinary read retries.
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn classify_read_error_for_tests(error: WireError) -> DiskioError {
+        Self::classify_wire(error, OperationKind::Read)
+    }
+
     /// Connect a semantic client to an injected static route set.
     ///
     /// # Errors
@@ -327,6 +336,7 @@ impl DiskioClient {
             counters: Counters::default(),
             service: None,
             hardware: None,
+            scope: None,
             config,
         };
         let mut disk_routes = HashMap::with_capacity(routes.len());
@@ -365,67 +375,6 @@ impl DiskioClient {
         Ok(client)
     }
 
-    /// Connect using only group-0 management seeds.
-    ///
-    /// # Errors
-    ///
-    /// Returns an input, control-plane, topology, or connection error.
-    pub async fn connect(config: DiskioClientConfig) -> DiskioResult<Self> {
-        config.validate(true)?;
-        let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
-            config.management_seeds.clone(),
-        )));
-        kv.refresh_topology()
-            .await
-            .map_err(|error| DiskioError::TopologyUnavailable(error.to_string()))?;
-        Self::connect_with_clients(
-            ServiceRegistryClient::from_shared(Arc::clone(&kv)),
-            HardwareClient::from_shared(kv),
-            config,
-        )
-        .await
-    }
-
-    /// Connect with injected group-0 service and hardware clients.
-    ///
-    /// # Errors
-    ///
-    /// Returns an input, topology, RPC startup, or endpoint connection error.
-    pub async fn connect_with_clients(
-        service: ServiceRegistryClient,
-        hardware: HardwareClient,
-        config: DiskioClientConfig,
-    ) -> DiskioResult<Self> {
-        config.validate(false)?;
-        let server = Arc::new(RpcServer::with_engines(None, 1, config.rpc_workers));
-        server.set_send_queue_capacity(config.send_queue_capacity);
-        server
-            .listen("127.0.0.1", 0)
-            .map_err(|error| DiskioError::TransportUnavailable(format!("start RPC client: {error}")))?;
-        server.start();
-        let client = Self {
-            wire: Arc::new(WireClient::with_completion_capacity(config.max_pending_calls)),
-            server,
-            normal: ConnectionPoolIndex::new(
-                config.normal_connections_per_endpoint,
-                Some(config.max_endpoints),
-            ),
-            priority: ConnectionPoolIndex::new(
-                config.priority_connections_per_endpoint,
-                Some(config.max_endpoints),
-            ),
-            routes: ArcSwap::from_pointee(RouteSnapshot::empty()),
-            next_route_generation: AtomicU64::new(1),
-            last_topology_refresh_ms: AtomicU64::new(0),
-            counters: Counters::default(),
-            service: Some(service),
-            hardware: Some(hardware),
-            config,
-        };
-        client.refresh().await?;
-        Ok(client)
-    }
-
     /// Rebuild and atomically publish one complete authoritative route generation.
     ///
     /// # Errors
@@ -440,7 +389,11 @@ impl DiskioClient {
         let hardware = self.hardware.as_ref().ok_or_else(|| {
             DiskioError::TopologyUnavailable("static test topology cannot be refreshed".into())
         })?;
-        let draft = topology::discover(service, hardware).await?;
+        let draft = if let Some(scope) = &self.scope {
+            topology::discover_disk(service, hardware, scope).await?
+        } else {
+            topology::discover(service, hardware).await?
+        };
         let generation = self.publish_draft(&observed, draft)?;
         self.last_topology_refresh_ms
             .store(unix_time_ms(), Ordering::Release);
@@ -665,7 +618,11 @@ impl DiskioClient {
                     return Ok(());
                 }
                 Err(DiskioError::PartialWrite) => return Err(DiskioError::PartialWrite),
-                Err(error @ (DiskioError::DiskFailure(_) | DiskioError::InvalidInput(_))) => {
+                Err(
+                    error @ (DiskioError::DiskFailure(_)
+                    | DiskioError::DiskNotFound
+                    | DiskioError::InvalidInput(_)),
+                ) => {
                     return Err(error);
                 }
                 Err(error) => {
@@ -888,7 +845,7 @@ impl DiskioClient {
                 .await
             {
                 Ok(()) => return Ok(()),
-                Err(error @ DiskioError::DiskFailure(_)) => {
+                Err(error @ (DiskioError::DiskFailure(_) | DiskioError::DiskNotFound)) => {
                     return if durability_context {
                         Err(DiskioError::DurabilityFailure(error.to_string()))
                     } else {
@@ -978,6 +935,7 @@ impl DiskioClient {
             }
             WireError::Rpc(error) => DiskioError::Protocol(error.to_string()),
             WireError::Protocol(message) => DiskioError::Protocol(message),
+            WireError::IoError(DiskIoRetCode::DiskNotExist) => DiskioError::DiskNotFound,
             WireError::IoError(DiskIoRetCode::PartialWrite) => DiskioError::PartialWrite,
             WireError::IoError(DiskIoRetCode::InvalidAlignment) => {
                 DiskioError::InvalidInput("DiskIO rejected address alignment".into())

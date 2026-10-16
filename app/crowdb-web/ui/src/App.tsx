@@ -1,9 +1,12 @@
 import { PanelDivider } from './components/PanelDivider';
+import { ClusterViewSwitch } from './shell/ClusterViewSwitch';
+import { ClusterBreadcrumb } from './shell/ClusterBreadcrumb';
+import { useClusterLayout } from './shell/useClusterLayout';
+import { CapacityObservations } from './shell/CapacityObservations';
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
 import { Suspense, useState, useCallback, useMemo, lazy, useEffect, useRef } from 'react';
-import type { CenterPanelMode } from './shell/Header';
 import { DomainProvider, useDomain } from './contexts/DomainContext';
 import { SelectionProvider, useSelection, type SelectedEntity } from './contexts/SelectionContext';
 import { ToastProvider, useToast } from './contexts/ToastContext';
@@ -48,11 +51,20 @@ import { buildCrowdbKVServers, crowdbKvServerNodeIds } from './data/crowdbKvServ
 import { isCrowdbKVServerAvailable } from './data/crowdbKvServers';
 import { toUiHealth } from './utils/entityDisplay';
 import { ClusterView } from './views/ClusterView';
+import { ClusterOverview } from './storage/ClusterOverview';
+import { CreateFileDiskDialog } from './storage/CreateFileDiskDialog';
+import { useNavigationSnapshot } from './contexts/DomainContext';
+import { NodeWorkspace } from './storage/NodeWorkspace';
+import type { NodeSetupSummary } from './shell/nodeSetup';
+import type { CandidateSummary } from './storage/types';
+import { InitializationProgress } from './shell/InitializationProgress';
+import { AutoJoin } from './shell/AutoJoin';
 import { KvView } from './views/KvView';
 import { CapacityView } from './views/CapacityView';
 import { ChunkBrowser } from './chunk/ChunkBrowser';
 import { ChunkKvView } from './chunk-kv/ChunkKvView';
 import { IcebergView } from './views/IcebergView';
+import { DatasetView } from './views/DatasetView';
 import { S3View } from './views/S3View';
 
 const Inspector = lazy(() => import('./shell/Inspector').then((m) => ({ default: m.Inspector })));
@@ -65,7 +77,7 @@ export interface CrowdbConsoleProps {
   /** Hide all mutating controls. */
   readonly?: boolean;
   /** Opt feature areas in/out. */
-  modules?: Partial<Record<'racks' | 'nodes' | 'stores' | 'groups' | 'replicas' | 'kv' | 'activity', boolean>>;
+  modules?: Partial<Record<'racks' | 'nodes' | 'stores' | 'groups' | 'replicas' | 'kv' | 'activity' | 'dataset', boolean>>;
   /** Initial domain (default Cluster). */
   initialDomain?: Domain;
   /** Container topology is immutable; native data credentials remain independent. */
@@ -76,8 +88,17 @@ export interface CrowdbConsoleProps {
 }
 
 function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, managed = false, nodeManagement = false }: CrowdbConsoleProps) {
-  const { domain, setDomain } = useDomain();
-  const { selectedEntity, selectionForDomain, selectEntity, clearSelection } = useSelection();
+  const { domain: activeDomain, clusterView, setClusterView, setDomain } = useDomain();
+  const { selectedEntity, scopeEntity, scopeForDomain, selectionForDomain, selectEntity, clearSelection } = useSelection();
+  const [diagram, setDiagram] = useState(false);
+  const [addNodeRequest, setAddNodeRequest] = useState<{ rackId: number; nonce: number }>();
+  useNavigationSnapshot(Domain.Cluster, 'cluster-diagram', () => {
+    const saved = diagram; return () => setDiagram(saved);
+  });
+  const overviewScope = !scopeEntity || scopeEntity.type === 'Datacenter' || scopeEntity.type === 'Rack';
+  const storageDetail = scopeEntity?.type === 'Disk' || scopeEntity?.type === 'DiskGroup';
+  const domain = activeDomain === Domain.Cluster && (clusterView === 'capacity' || storageDetail)
+    ? Domain.Capacity : activeDomain;
   const { success, error } = useToast();
   const { log } = useActivity();
 
@@ -92,9 +113,21 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
   const [rememberedDeployPorts, setRememberedDeployPorts] = useState<{ mgmt: number[]; rpc: number[]; diskdbRpc: number[] }>({ mgmt: [], rpc: [], diskdbRpc: [] });
   const [lastRefreshTime, setLastRefreshTime] = useState<Date>(new Date());
   const [refreshing, setRefreshing] = useState(false);
-  const [centerPanel, setCenterPanel] = useState<CenterPanelMode>('topology');
-  const [sidebarWidth, setSidebarWidth] = useState(280);
-  const [inspectorWidth, setInspectorWidth] = useState(320);
+  const [candidateSummaries, setCandidateSummaries] = useState<Record<number, CandidateSummary>>({});
+  const [setupSummaries, setSetupSummaries] = useState<Record<number, NodeSetupSummary>>({});
+  const observeSetup = useCallback((nodeId: number, summary: NodeSetupSummary) => {
+    setSetupSummaries(previous => Object.fromEntries(Object.entries({ ...previous, [nodeId]: summary })
+      .sort((a, b) => b[1].observed_at_ms - a[1].observed_at_ms).slice(0, 64)));
+  }, []);
+  const observeCandidates = useCallback((nodeId: number, summary: CandidateSummary) => {
+    setCandidateSummaries(previous => {
+      if (JSON.stringify(previous[nodeId]) === JSON.stringify(summary)) return previous;
+      const entries = Object.entries({ ...previous, [nodeId]: summary }).sort((a, b) => b[1].observed_at_ms - a[1].observed_at_ms).slice(0, 64);
+      return Object.fromEntries(entries);
+    });
+  }, []);
+  const clusterLayout = useClusterLayout(activeDomain === Domain.Cluster, !!selectedEntity);
+  const { sidebarWidth, propertiesWidth: inspectorWidth, setSidebar: setSidebarWidth, setProperties: setInspectorWidth } = clusterLayout;
   const [canvasFocusRequest, setCanvasFocusRequest] = useState<{ targetId: string; subtree: boolean; nonce: number } | null>(null);
   // Cross-jumps replace the destination scope once. Manual switches retain
   // each domain's selection.
@@ -115,11 +148,12 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
   const { menuState, openMenu, closeMenu } = useContextMenu();
 
   const nodeAuthority = useNodeAuthority(nodeManagement);
+  useEffect(() => { setCandidateSummaries({}); setSetupSummaries({}); }, [nodeAuthority?.cluster_id]);
   const managementAuthorized = !nodeManagement || nodeAuthority?.available === true;
   const draftEditable = nodeAuthority?.phase === 'unbound_draft';
   const topologyReadonly = readonly || managed || (nodeManagement && !managementAuthorized && !draftEditable);
-  const logicalReadonly = readonly;
-  const ownsSidebar = domain === Domain.Iceberg || domain === Domain.S3 || (domain === Domain.Chunk || domain === Domain.ChunkKV);
+  const logicalReadonly = readonly || (nodeManagement && !managementAuthorized && !draftEditable);
+  const ownsSidebar = domain === Domain.Dataset || domain === Domain.Iceberg || domain === Domain.S3 || (domain === Domain.Chunk || domain === Domain.ChunkKV);
   const physicalActive = domain === Domain.Cluster;
   const capacityActive = domain === Domain.Capacity;
   const { racks, nodes, services: managedServers, nodeStores, nodeHealthById, nodeDiskGroups: clusterDiskGroups, loadNodeDisks, loadGroupDisks, loading: physLoading, error: physError, refresh: refreshPhysical } = useClusterTree({
@@ -136,20 +170,22 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
     pollIntervalActive: 1000,
     pollIntervalInactive: 30000,
   });
-  const { instances: diskdbInstances, usage: capacityUsage, hardwareCapacity, scanStatus: capacityScanStatus, loading: capLoading, error: capError, refresh: refreshCapacity,  } = useCapacityTree({
+  const { instances: diskdbInstances, usage: capacityUsage, hardwareCapacity, scanStatus: capacityScanStatus, loading: capLoading, error: capError, refresh: refreshCapacity, refreshRuntime: observeCapacityRuntime, observations: capacityObservations } = useCapacityTree({
     enabled: domain === Domain.Capacity || domain === Domain.Cluster,
-    observeRuntime: capacityActive,
-    diskGroupId: selectionForDomain(Domain.Capacity)?.parentIds?.disk_group_id !== undefined
-      ? Number(selectionForDomain(Domain.Capacity)!.parentIds!.disk_group_id)
-      : selectionForDomain(Domain.Capacity)?.type === 'DiskGroup' ? Number(selectionForDomain(Domain.Capacity)!.id) : undefined,
-    diskId: selectionForDomain(Domain.Capacity)?.type === 'Disk' ? selectionForDomain(Domain.Capacity)!.id : undefined,
+    observeRuntime: capacityActive && (scopeEntity?.type === 'DiskGroup' || scopeEntity?.type === 'Disk'),
+    diskGroupId: scopeForDomain(Domain.Cluster)?.parentIds?.disk_group_id !== undefined
+      ? Number(scopeForDomain(Domain.Cluster)!.parentIds!.disk_group_id)
+      : scopeForDomain(Domain.Cluster)?.type === 'DiskGroup' ? Number(scopeForDomain(Domain.Cluster)!.id) : undefined,
+    diskId: scopeForDomain(Domain.Cluster)?.type === 'Disk' ? scopeForDomain(Domain.Cluster)!.id : undefined,
     pollIntervalActive: 5000,
     pollIntervalInactive: 30000,
   });
 
   const nodeDiskGroups = clusterDiskGroups;
-  const diskSelection = selectionForDomain(Domain.Capacity);
-  const clusterSelection = selectionForDomain(Domain.Cluster);
+  const diskSelection = scopeForDomain(Domain.Cluster);
+  const clusterSelection = scopeForDomain(Domain.Cluster);
+  const workspaceNode = activeDomain === Domain.Cluster && nodeManagement && !managed && clusterSelection?.type === 'Node'
+    ? nodes.find(node => String(node.id) === clusterSelection.id) : undefined;
   useEffect(() => {
     if (managed) return;
     const selected = capacityActive ? diskSelection : physicalActive ? clusterSelection : null;
@@ -295,14 +331,19 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
           await runMutation('Reset Cluster', 'all', async () => {
             await servicePlans.stop();
             await resetCluster();
-            clearSelection();
+            selectEntity(null, false);
           });
         },
       },
     }));
-  }, [runMutation, clearSelection]);
+  }, [runMutation, selectEntity]);
 
-  const menuContext = { readonly, managed, managementAuthorized, domain, physicalActive, modules, requestDelete, runMutation, serverNodeIds, diskdbNodeIds, allServers, setDialog, capacityUsage };
+  const openNodeStorage = useCallback((nodeId: number) => {
+    const node = nodes.find(node => node.id === nodeId);
+    if (node) selectEntity({ domain: Domain.Cluster, type: 'Node', id: String(node.id), parentIds: { rack_id: node.rack_id }, section: 'storage' });
+  }, [nodes, selectEntity]);
+  const manageNodeStorage = nodeManagement && !managed ? openNodeStorage : undefined;
+  const menuContext = { readonly, managed, nodeManagement, onManageNodeStorage: manageNodeStorage, managementAuthorized, domain: activeDomain, physicalActive: activeDomain === Domain.Cluster, modules, requestDelete, runMutation, serverNodeIds, diskdbNodeIds, allServers, setDialog, capacityUsage };
   const buildMenuItems = useClusterMenus(menuContext);
   const buildCapacityMenuItems = useCapacityMenus(menuContext);
 
@@ -316,7 +357,7 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
         label: node.label,
         serviceType: node.serviceType,
       };
-      const items = capacityActive ? buildCapacityMenuItems(target) : buildMenuItems(target);
+      const items = target.type === 'Disk' || target.type === 'DiskGroup' ? buildCapacityMenuItems(target) : buildMenuItems(target);
       if (items.length > 0) openMenu(event, items);
     },
     [buildMenuItems, buildCapacityMenuItems, capacityActive, openMenu],
@@ -324,15 +365,16 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
 
   const onCanvasContextMenu = useCallback(
     (target: MenuTarget, event: React.MouseEvent) => {
-      const items = capacityActive ? buildCapacityMenuItems(target) : buildMenuItems(target);
+      const items = target.type === 'Disk' || target.type === 'DiskGroup' ? buildCapacityMenuItems(target) : buildMenuItems(target);
       if (items.length > 0) openMenu(event, items);
     },
     [buildMenuItems, buildCapacityMenuItems, capacityActive, openMenu],
   );
 
   const onTreeNodeClick = useCallback((node: TreeNode) => {
-    setCanvasFocusRequest({ targetId: node.id, subtree: true, nonce: Date.now() });
-  }, []);
+    if (node.section) setClusterView(node.section === 'services' ? 'topology' : 'capacity');
+    setCanvasFocusRequest({ targetId: node.section ? `N-${node.rawId}` : node.id, subtree: true, nonce: Date.now() });
+  }, [setClusterView]);
 
   const handleAdd = useCallback(() => {
     if (readonly || (nodeManagement && !managementAuthorized && !draftEditable)) return;
@@ -469,29 +511,25 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
     return info;
   }, [groups, nodes]);
 
+  if (nodeManagement && !nodeAuthority) {
+    return <div role="status" className="tw-p-6 tw-text-muted">Loading cluster authority…</div>;
+  }
+
   return (
     <div className="tw-min-h-screen tw-bg-bg tw-text-text crowdb-console">
       <Header
+        datasetEnabled={modules?.dataset !== false}
         clusterHealth={clusterHealth}
         onRefresh={handleRefresh}
         refreshing={refreshing}
         onShowTopology={() => {}}
-        onShowCapacity={() => { if (centerPanel !== 'chunk') setCenterPanel('capacity'); }}
         onResetCluster={topologyReadonly || nodeManagement ? undefined : handleResetCluster}
       />
 
       {managed && <MonitorSummary apiPrefix={apiPrefix} />}
 
-      {dataError && (
-        <div
-          role="alert"
-          className="tw-fixed tw-top-16 tw-left-1/2 -tw-translate-x-1/2 tw-z-50 tw-bg-failed/10 tw-border tw-border-failed/30 tw-text-failed tw-px-4 tw-py-2 tw-rounded-md tw-text-sm tw-shadow-lg"
-        >
-          {domain === Domain.Capacity ? `${dataError.message} — retrying` : 'Backend unreachable — retrying'}
-        </div>
-      )}
-
-      <div hidden={ownsSidebar}><Sidebar
+      <div hidden={ownsSidebar || clusterLayout.hidden}><Sidebar
+        addNodeRequest={addNodeRequest}
         onCandidatesChanged={handleRefresh}
         nodeManagement={nodeManagement}
         allServers={allServers}
@@ -518,29 +556,59 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
         diskdbHealthById={diskdbHealthById}
         diskdbInstanceIdByNodeId={diskdbInstanceIdByNodeId}
         servicePlans={servicePlans.plans}
+        candidateSummaries={candidateSummaries}
       /></div>
 
-      {!ownsSidebar && <PanelDivider fixed side="left" width={sidebarWidth} onResize={setSidebarWidth} />}
+      {!ownsSidebar && !clusterLayout.hidden && !clusterLayout.overlayNavigation && <PanelDivider fixed side="left" width={sidebarWidth} onResize={setSidebarWidth}
+        min={activeDomain === Domain.Cluster ? 200 : 220} max={clusterLayout.sidebarMax} />}
 
       <main
         className="tw-mt-14 tw-h-[calc(100vh-3.5rem)] tw-flex tw-flex-col tw-min-h-0"
         style={{
-          marginLeft: ownsSidebar ? 0 : sidebarWidth,
-          marginRight: selectedEntity && !ownsSidebar ? inspectorWidth : 0,
+          marginLeft: ownsSidebar || clusterLayout.hidden || clusterLayout.overlayNavigation ? 0 : sidebarWidth,
+          marginRight: selectedEntity && !ownsSidebar && !clusterLayout.drawer ? inspectorWidth : 0,
         }}
       >
+        {dataError && <div role="alert" className="tw-shrink-0 tw-border-b tw-border-failed/30 tw-bg-failed/10 tw-px-4 tw-py-2 tw-text-sm tw-text-failed">
+          {domain === Domain.Capacity ? `${dataError.message} — retrying` : 'Backend unreachable — retrying'}
+        </div>}
+        {activeDomain === Domain.Cluster && <>
+          <button className="tw-self-start tw-px-4 tw-py-1 tw-text-xs tw-text-accent" aria-expanded={!clusterLayout.hidden}
+            style={{ marginLeft: clusterLayout.overlayNavigation && !clusterLayout.hidden ? sidebarWidth : 0 }}
+            onClick={() => clusterLayout.setCollapsed(!clusterLayout.collapsed)}>
+            {clusterLayout.hidden ? 'Show navigation' : 'Hide navigation'}
+          </button>
+          <ClusterBreadcrumb />
+          <CapacityObservations observations={capacityObservations} />
+          {!storageDetail && <ClusterViewSwitch />}
+          {overviewScope && domain === Domain.Cluster && <div className="tw-px-4 tw-py-1 tw-text-sm">
+            <button aria-pressed={diagram} onClick={() => setDiagram(value => !value)}>{diagram ? 'Show node cards' : 'Show diagram'}</button>
+          </div>}
+          {nodeManagement && !managed && <AutoJoin readonly={readonly} />}
+          {nodeManagement && <InitializationProgress readonly={readonly} />}
+        </>}
+        {activeDomain === Domain.Cluster && <div hidden={!overviewScope || domain !== Domain.Cluster || diagram} className="tw-flex-1 tw-min-h-0">
+          <ClusterOverview racks={racks} nodes={nodes} services={allServers} nodeHealthById={nodeHealthById}
+            hardware={hardwareCapacity} usage={capacityUsage} candidates={candidateSummaries} setups={setupSummaries} capacity={false}
+            candidateWorkspace={nodeManagement && !managed}
+            readonly={topologyReadonly} onAddRack={() => setDialog(previous => ({ ...previous, addRack: true }))}
+            onAddNode={rackId => {
+              if (nodeManagement) { clusterLayout.setCollapsed(false); setAddNodeRequest({ rackId, nonce: Date.now() }); }
+              else setDialog(previous => ({ ...previous, addNode: { rackId } }));
+            }} />
+        </div>}
         {(
-          <div hidden={domain !== Domain.Cluster} style={{ display: domain === Domain.Cluster ? 'flex' : 'none' }} className="tw-flex-1 tw-min-h-0 tw-flex-col">{!managed && <div className="tw-px-4 tw-py-2 tw-text-xs tw-bg-panel tw-border-b tw-border-border">Physical topology · Rack → Node → Service · Deploy and manage services here</div>}
+          <div hidden={domain !== Domain.Cluster || !!workspaceNode || (overviewScope && !diagram)} style={{ display: domain === Domain.Cluster && !workspaceNode && (!overviewScope || diagram) ? 'flex' : 'none' }} className="tw-flex-1 tw-min-h-0 tw-flex-col">{!managed && <div className="tw-px-4 tw-py-2 tw-text-xs tw-bg-panel tw-border-b tw-border-border">Physical topology · Rack → Node → Service · Deploy and manage services here</div>}
           {!clusterInitialized && !loading && !logError && <p className="tw-px-4 tw-py-2 tw-text-xs tw-text-muted" data-testid="bootstrap-state">{nodeManagement ? 'Bootstrap: create a rack, move discovered candidates, then initialize Group 0 in KV. This draft is local until publication.' : 'Bootstrap: add racks and nodes, deploy KV servers, then initialize Group 0 in KV. Changes are saved in the default workspace.'}</p>}
           <div className="tw-flex-1 tw-min-h-0"><ClusterView
-            active={domain === Domain.Cluster}
+            active={domain === Domain.Cluster && !workspaceNode && (!overviewScope || diagram)}
             scope={Domain.Cluster}
             allServers={allServers}
             racks={racks}
             nodes={nodes}
             servers={servers}
             stores={stores}
-            viewportWidthKey={selectedEntity && !ownsSidebar ? inspectorWidth : 0}
+            viewportWidthKey={selectedEntity && !ownsSidebar && !clusterLayout.drawer ? inspectorWidth : 0}
             nodeStores={nodeStores}
             nodeHealthById={nodeHealthById}
             diskdbNodeIds={diskdbNodeIds}
@@ -553,14 +621,34 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
             onEntityContextMenu={onCanvasContextMenu}
           /></div></div>
         )}
+        {workspaceNode && clusterSelection && <div className="tw-flex-1 tw-min-h-0"><NodeWorkspace
+          key={workspaceNode.id} node={workspaceNode} scope={clusterSelection} capacity={clusterView === 'capacity'}
+          readonly={topologyReadonly} ready={managementAuthorized} inventory={nodeDiskGroups[workspaceNode.id]}
+          setupEnabled={nodeManagement && !managed} onSetupObserved={observeSetup}
+          hardware={hardwareCapacity} usage={capacityUsage} services={allServers} plan={servicePlans.plans[workspaceNode.id]}
+          loadGroup={loadGroupDisks} onAddGroup={() => setDialog(previous => ({ ...previous, addDiskGroup: { nodeId: workspaceNode.id } }))}
+          onServicePlan={() => setDialog(previous => ({ ...previous, defaultServices: { nodeId: workspaceNode.id } }))}
+          onMenu={onCanvasContextMenu} onCandidates={observeCandidates}
+        /></div>}
         {kvEnabled && (
           <div hidden={domain !== Domain.KV} className="tw-flex-1 tw-min-h-0"><KvView active={domain === Domain.KV} stores={stores} selectedEntity={selectionForDomain(Domain.KV)} readonly={logicalReadonly} backendError={!!logError} loading={logLoading} /></div>
         )}
-        <div hidden={domain !== Domain.Capacity} className="tw-flex-1 tw-min-h-0"><CapacityView
-            active={domain === Domain.Capacity}
+        <div hidden={domain !== Domain.Capacity || !!workspaceNode} className="tw-flex-1 tw-min-h-0"><CapacityView
+            active={domain === Domain.Capacity && !workspaceNode}
             instances={diskdbInstances} usage={capacityUsage} hardwareCapacity={hardwareCapacity}
             scanStatus={capacityScanStatus} loading={capLoading} readonly={topologyReadonly}
-            onRefresh={refreshCapacity} selectedEntity={selectionForDomain(Domain.Capacity)}
+            onManageDisk={manageNodeStorage && clusterSelection?.type === 'Disk' ? () => manageNodeStorage(Number(clusterSelection.parentIds?.node_id)) : undefined}
+            overview={overviewScope ? <>
+          <ClusterOverview racks={racks} nodes={nodes} services={allServers} nodeHealthById={nodeHealthById}
+            hardware={hardwareCapacity} usage={capacityUsage} candidates={candidateSummaries} setups={setupSummaries} capacity
+            candidateWorkspace={nodeManagement && !managed}
+            readonly={topologyReadonly} onAddRack={() => setDialog(previous => ({ ...previous, addRack: true }))}
+            onAddNode={rackId => {
+              if (nodeManagement) { clusterLayout.setCollapsed(false); setAddNodeRequest({ rackId, nonce: Date.now() }); }
+              else setDialog(previous => ({ ...previous, addNode: { rackId } }));
+            }} />
+            </> : undefined}
+            onRefresh={overviewScope ? observeCapacityRuntime : refreshCapacity} selectedEntity={scopeForDomain(Domain.Cluster)}
           /></div>
         <div data-testid="chunk-page" hidden={domain !== Domain.Chunk} className="tw-flex-1 tw-min-h-0"><ChunkBrowser stores={stores} racks={racks} nodes={nodes} servers={allServers} active={domain === Domain.Chunk} openRequest={chunkRequest}
           onPlacement={entity => { pendingSelectionRef.current = entity; setDomain(entity.domain); }}
@@ -570,15 +658,17 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
           onChunk={id => { setChunkRequest(previous => ({ id, nonce: (previous?.nonce ?? 0) + 1 })); setDomain(Domain.Chunk); }}
         /></div>
         <div hidden={domain !== Domain.Iceberg} className="tw-flex-1 tw-min-h-0"><IcebergView active={domain === Domain.Iceberg} readonly={readonly} /></div>
+        {modules?.dataset !== false && <div hidden={domain !== Domain.Dataset} className="tw-flex-1 tw-min-h-0"><DatasetView active={domain === Domain.Dataset} readonly={readonly} showActivity={modules?.activity !== false} /></div>}
         <div hidden={domain !== Domain.S3} className="tw-flex-1 tw-min-h-0"><S3View active={domain === Domain.S3} readonly={readonly}
           onChunk={id => { setChunkRequest(previous => ({ id, nonce: (previous?.nonce ?? 0) + 1 })); setDomain(Domain.Chunk); }} /></div>
       </main>
 
       {!ownsSidebar && <Suspense fallback={null}>
-        <Inspector readonly={domain === Domain.KV ? logicalReadonly : topologyReadonly} allServers={allServers} modules={modules} nodes={nodes} racks={racks} servers={servers} stores={stores} capacityUsage={capacityUsage} hardwareCapacity={hardwareCapacity} diskdbInstances={diskdbInstances} width={inspectorWidth} pendingSelectionRef={pendingSelectionRef} />
+        <Inspector nodeManagement={nodeManagement && !managed} drawer={clusterLayout.drawer} readonly={domain === Domain.KV ? logicalReadonly : topologyReadonly} allServers={allServers} modules={modules} nodes={nodes} racks={racks} servers={servers} stores={stores} capacityUsage={capacityUsage} hardwareCapacity={hardwareCapacity} diskdbInstances={diskdbInstances} width={inspectorWidth} pendingSelectionRef={pendingSelectionRef} />
       </Suspense>}
 
-      {selectedEntity && !ownsSidebar && <PanelDivider fixed side="right" width={inspectorWidth} onResize={setInspectorWidth} />}
+      {selectedEntity && !ownsSidebar && !clusterLayout.drawer && <PanelDivider fixed side="right" width={inspectorWidth} onResize={setInspectorWidth}
+        min={activeDomain === Domain.Cluster ? 280 : 220} max={clusterLayout.propertiesMax} />}
 
       {menuState && <ContextMenu items={menuState.items} position={menuState.position} onClose={closeMenu} />}
 
@@ -691,7 +781,13 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent, ma
         />
       )}
       {dialog.addDisk && (
-        <AddDiskDialog
+        nodeManagement && !managed ? <CreateFileDiskDialog nodeId={dialog.addDisk.nodeId}
+          groups={nodeDiskGroups[dialog.addDisk.nodeId]?.diskGroups ?? []} groupId={dialog.addDisk.dgId} available={null}
+          onClose={closeDialogs} onAccepted={() => {
+            const node = nodes.find(node => node.id === dialog.addDisk!.nodeId);
+            closeDialogs();
+            if (node) selectEntity({ domain: Domain.Cluster, type: 'Node', id: String(node.id), parentIds: { rack_id: node.rack_id }, section: 'storage' });
+          }} /> : <AddDiskDialog
           isOpen
           onClose={closeDialogs}
           nodeId={dialog.addDisk.nodeId}
@@ -797,7 +893,7 @@ export default function App(props: CrowdbConsoleProps = {}) {
   if (mode === 'bare-metal-pending') return <div role="alert" className="tw-p-6 tw-text-muted">Bare-metal deployment management is not available yet.</div>;
 
   return (
-    <DomainProvider initialDomain={props.initialDomain}>
+    <DomainProvider initialDomain={props.initialDomain === Domain.Dataset && props.modules?.dataset === false ? Domain.Cluster : props.initialDomain}>
       <SelectionProvider>
         <ToastProvider>
           <ActivityProvider>

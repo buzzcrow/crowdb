@@ -23,9 +23,9 @@ export function useDiskInventory(enabled: boolean) {
   const pump = useCallback(() => {
     while (running.current < 4 && queue.current.length) queue.current.shift()!();
   }, []);
-  const schedule = useCallback((identity: string, operation: (signal: AbortSignal) => Promise<void>) => {
+  const schedule = useCallback((identity: string, operation: (signal: AbortSignal) => Promise<void>, fresh = false): Promise<void> => {
     const existing = pending.current.get(identity);
-    if (existing) return existing;
+    if (existing) return fresh ? existing.then(() => schedule(identity, operation)) : existing;
     const signal = controller.current.signal;
     let finish!: () => void;
     const result = new Promise<void>(resolve => { finish = resolve; });
@@ -49,7 +49,7 @@ export function useDiskInventory(enabled: boolean) {
       setInventory(previous => ({ ...previous, [nodeId]: { diskGroups, disksByDg: previous[nodeId]?.disksByDg ?? {} } }));
     });
   }, [schedule]);
-  const loadGroup = useCallback((nodeId: number, groupId: number) => {
+  const loadGroup = useCallback((nodeId: number, groupId: number, fresh = false) => {
     openedGroups.current.set(`${nodeId}:${groupId}`, [nodeId, groupId]);
     return schedule(`group:${nodeId}:${groupId}`, async signal => {
       const disks = await listDisksInGroup(nodeId, groupId, { signal });
@@ -58,7 +58,7 @@ export function useDiskInventory(enabled: boolean) {
         const node = previous[nodeId] ?? { diskGroups: [], disksByDg: {} };
         return { ...previous, [nodeId]: { ...node, disksByDg: { ...node.disksByDg, [groupId]: disks } } };
       });
-    });
+    }, fresh);
   }, [schedule]);
   const refresh = useCallback(async () => {
     await Promise.all([...openedNodes.current].map(loadNode));

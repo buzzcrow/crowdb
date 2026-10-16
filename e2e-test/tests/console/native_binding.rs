@@ -90,7 +90,7 @@ async fn prepare_binding(context: &TestNativeContext, hardware: &HardwareClient)
     assert!(hardware.get_owner(1, 1, 1).await.unwrap().is_none());
 }
 
-async fn start_storage(context: &TestNativeContext) {
+async fn start_storage(context: &TestNativeContext, hardware: &HardwareClient) {
     for node in 1..=3 {
         context
             .api(
@@ -103,18 +103,11 @@ async fn start_storage(context: &TestNativeContext) {
     }
     for node in 1..=3 {
         disk_group(context, node).await;
-        let capacity = (if node == 1 { 80 } else { 8 }) * 1024u64.pow(3);
-        context
-            .api(
-                Method::POST,
-                &format!("/api/nodes/{node}/disk-groups/{node}/disks"),
-                json!({"disk_id":format!("{node:032x}"),"disk_type":"Hdd","capacity_bytes":capacity,
-                "zone_size_bytes":1024u64.pow(3),"unit_size_bytes":128*1024,
-                "device_path":format!("/opt/crowdb/data/disk-{node}.img")}),
-                201,
-            )
-            .await;
     }
+    // Repair an empty group before media admission seals its binding.
+    wait_owner(hardware, 3).await;
+    repair(context, hardware, 3, 0).await;
+    super::native_storage::disks(context, [128 * 1024; 3]).await;
 }
 
 async fn verify_bindings(context: &TestNativeContext, hardware: &HardwareClient) {
@@ -125,15 +118,16 @@ async fn verify_bindings(context: &TestNativeContext, hardware: &HardwareClient)
         assert_eq!((binding.store_id, binding.group_id), (store, 1));
         let previous = hardware.get_owner(1, node, node).await.unwrap().unwrap();
         if node == 3 {
-            repair(context, hardware, node, store).await;
+            let error = hardware.remove_bind(1, node, node).await.unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("retained disks require the Offline/Remove lifecycle"));
         }
         disk_group(context, node).await;
         wait_owner(hardware, node).await;
         let renewed = hardware.get_owner(1, node, node).await.unwrap().unwrap();
         assert_eq!((renewed.rack_id, renewed.node_id, renewed.dg_id), (1, node, node));
-        if node != 3 {
-            assert_eq!(renewed.instance_id, previous.instance_id);
-        }
+        assert_eq!(renewed.instance_id, previous.instance_id);
         let binding = hardware.get_bind(1, node, node).await.unwrap().unwrap();
         assert_eq!((binding.store_id, binding.group_id), (store, 1));
         assert!(renewed.lease_expiry_ms >= previous.lease_expiry_ms);
@@ -146,6 +140,6 @@ async fn prebound_groups_acquire_live_owners_and_require_explicit_binding_repair
     let context = TestNativeContext::connect().await;
     let hardware = HardwareClient::from_shared(context.kv.clone());
     prepare_binding(&context, &hardware).await;
-    start_storage(&context).await;
+    start_storage(&context, &hardware).await;
     verify_bindings(&context, &hardware).await;
 }

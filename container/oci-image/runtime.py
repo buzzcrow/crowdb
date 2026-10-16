@@ -9,6 +9,7 @@ import subprocess
 import uuid
 
 from builder import tool
+from storage import inputs, record_inputs, runtime_arguments, validate_retained_inputs
 
 OWNER = "org.crowdb.launcher"
 
@@ -65,6 +66,10 @@ class Runtime:
                 raise RuntimeError("container does not share this host network namespace")
 
     def create(self, args):
+        disks = inputs(args)
+        if getattr(args, "startup_mode", "manual") == "single" and disks:
+            raise ValueError("single startup uses fixed preview disks; supplied media require manual mode")
+        validate_retained_inputs(args.data_root, disks)
         token = str(uuid.uuid4())
         shares = getattr(args, "cpu_shares", None)
         cpu_args = ["--cpu-shares", str(shares)] if shares is not None else ["--cpus", str(args.cpus)]
@@ -82,8 +87,7 @@ class Runtime:
         if args.password_file:
             command += ["--mount", f"type=bind,source={args.password_file},target=/run/crowdb-ssh-password,readonly",
                         "-e", "CROWDB_SSH_PASSWORD_FILE=/run/crowdb-ssh-password"]
-        for device in args.device:
-            command += ["--device", f"{device}:{device}:rwm"]
+        command += runtime_arguments(disks)
         if args.seed:
             command += ["-e", "CROWDB_DISCOVERY_SEEDS=" + ",".join(args.seed)]
         if args.ui_port:
@@ -91,15 +95,25 @@ class Runtime:
         try:
             container = self.invoke(*command, args.image).strip()
             self.verify(container, args.cpus, args.memory_mib, args.network == "host", shares)
-            for device in args.device:
+            for disk in disks:
+                kind = "-f" if disk["backend"] == "file" else "-b"
                 self.invoke("exec", "--user", "10001:10001", container, "sh", "-c",
-                            'test -b "$1" && test -r "$1" && test -w "$1"', "sh", device)
+                            'test "$1" "$2" && test -r "$2" && test -w "$2"', "sh", kind, disk["path"])
+            # Single bootstrap requires a pristine root before its manifest is
+            # accepted. An empty external-mapping receipt must not race it.
+            if args.startup_mode != "single":
+                record_inputs(args.data_root, disks)
             return container
         except BaseException:
             # A failed create can leave a container; only this operation owns it.
             try:
                 current = self.inspect(args.name)
                 if current.get("Config", {}).get("Labels", {}).get(OWNER) == token:
+                    print(f"Startup failure state: {json.dumps(current.get('State', {}))}", flush=True)
+                    try:
+                        print(self.invoke("logs", args.name), flush=True)
+                    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as log_error:
+                        print(f"Startup failure logs unavailable: {log_error}", flush=True)
                     self.invoke("rm", "-f", args.name)
             except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as cleanup_error:
                 print(f"Inspect/cleanup after launch failure: {cleanup_error}", flush=True)

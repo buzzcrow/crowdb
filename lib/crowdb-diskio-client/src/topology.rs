@@ -49,6 +49,7 @@ pub fn validate_topology_for_tests(
         last_heartbeat_ms: 1,
         extra: Some(ServiceExtra {
             diskdb: Some(DiskdbExtra {
+                diskio_scope: None,
                 rack_id: instance.rack_id,
                 node_id: instance.node_id,
                 owned_dg_ids: instance.disk_group_ids,
@@ -99,11 +100,53 @@ pub(crate) async fn discover(
         .read_all_diskio_instances()
         .await
         .map_err(|error| DiskioError::TopologyUnavailable(format!("read DiskIO instances: {error}")))?;
-    let disks = hardware
+    let mut disks = hardware
         .list_all_disks()
         .await
         .map_err(|error| DiskioError::TopologyUnavailable(format!("read hardware disks: {error}")))?;
+    disks.retain(|disk| {
+        !matches!(
+            crowdb_protocol::common::HwStatus::try_from(disk.value.status),
+            Ok(crowdb_protocol::common::HwStatus::Init | crowdb_protocol::common::HwStatus::Offline)
+        )
+    });
     build(instances.into_iter().map(|(_, value)| value), disks)
+}
+
+pub(crate) async fn discover_disk(
+    service: &ServiceRegistryClient,
+    hardware: &HardwareClient,
+    key: &crowdb_protocol::key::DiskKey,
+) -> DiskioResult<TopologyDraft> {
+    let value = hardware
+        .get_disk(key.rack_id, key.node_id, key.disk_group_id, &key.disk_id)
+        .await
+        .map_err(|error| DiskioError::TopologyUnavailable(error.to_string()))?
+        .ok_or_else(|| DiskioError::TopologyUnavailable("administrative disk membership missing".into()))?;
+    let instances = service
+        .read_all_diskio_instances()
+        .await
+        .map_err(|error| DiskioError::TopologyUnavailable(error.to_string()))?;
+    let owners = instances
+        .into_iter()
+        .map(|(_, instance)| instance)
+        .filter(|instance| {
+            instance
+                .extra
+                .as_ref()
+                .and_then(|extra| extra.diskdb.as_ref())
+                .is_some_and(|extra| extra.owned_dg_ids.contains(&key.disk_group_id))
+        });
+    build(
+        owners,
+        vec![DiskRecord {
+            rack_id: key.rack_id,
+            node_id: key.node_id,
+            disk_group_id: key.disk_group_id,
+            disk_id: key.disk_id,
+            value,
+        }],
+    )
 }
 
 fn build(
@@ -157,7 +200,7 @@ fn build(
     let mut endpoints = HashSet::new();
     for disk in disks {
         let owner = owners.get(&disk.disk_group_id).ok_or_else(|| {
-            DiskioError::TopologyInconsistent(format!(
+            DiskioError::TopologyUnavailable(format!(
                 "disk group {} has no live DiskIO owner",
                 disk.disk_group_id
             ))

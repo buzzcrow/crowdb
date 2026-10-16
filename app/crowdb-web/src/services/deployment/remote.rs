@@ -93,6 +93,9 @@ pub(super) async fn deploy(
     entry.node_id = Some(node_id);
     entry.rpc_url = body.rpc_port.map(|port| format!("{host}:{port}"));
     entry.rest_port = body.http_port;
+    if matches!(body.kind, Kind::AccessServer) {
+        entry.dataset_origin = body.dataset_port.map(|port| format!("http://{host}:{port}"));
+    }
     entry.rpc_port = body.rpc_port;
     entry.auto_start = true;
     {
@@ -109,7 +112,7 @@ pub(super) async fn deploy(
     ))
 }
 
-async fn prepare_credentials(
+pub(super) async fn prepare_credentials(
     state: &AppState,
     binding: &crowdb_protocol::mgmt::node::NodeBinding,
     node: &NodeEntry,
@@ -136,10 +139,16 @@ async fn prepare_credentials(
         env_file: None,
         readiness_url: None,
     };
-    super::credentials::prepare(state.runtime_root.as_ref(), &spec, &binding.management_seeds).await
+    super::credentials::prepare(
+        state.runtime_root.as_ref(),
+        &spec,
+        &binding.management_seeds,
+        state.kv_client().await.as_ref(),
+    )
+    .await
 }
 
-async fn configuration(
+pub(super) async fn configuration(
     state: &AppState,
     node: &NodeEntry,
     id: &str,
@@ -196,7 +205,7 @@ fn encode(value: Value) -> Result<String, Failure> {
     toml::to_string_pretty(&value).map_err(|error| err_502(error.to_string()))
 }
 
-fn environment(body: &Deploy, node: &NodeEntry) -> BTreeMap<String, String> {
+pub(super) fn environment(body: &Deploy, node: &NodeEntry) -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
     if matches!(body.kind, Kind::Chunkdb) {
         env.insert(
@@ -214,6 +223,12 @@ fn environment(body: &Deploy, node: &NodeEntry) -> BTreeMap<String, String> {
             "CROWDB_ICEBERG_PUBLIC_URI".into(),
             format!("http://{}:{}", node.host, body.http_port.unwrap()),
         );
+        if let Some(port) = body.dataset_port {
+            env.insert(
+                "CROWDB_DATASET_PUBLIC_URI".into(),
+                format!("http://{}:{port}", node.host),
+            );
+        }
         env.insert(
             "CROWDB_S3_PUBLIC_URI".into(),
             format!("http://{}:{}", node.host, body.s3_port.unwrap()),

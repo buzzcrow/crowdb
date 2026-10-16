@@ -26,7 +26,7 @@ from deployment_clients_fixture import DeploymentClientsCluster
 from deployment_failure_fixture import DeploymentFailureCluster
 from deployment_anonymous_fixture import AnonymousReleaseCluster
 from deployment_browser_fixture import DeploymentBrowserCluster
-from deployment_listener_fixture import OccupiedAccessCluster
+from deployment_listener_fixture import FixedListenerAccessCluster
 from console_fixture import ConsoleCluster
 from console_access_fixture import AccessDeploymentCluster
 from console_lifetime_fixture import DisposableWebCluster
@@ -69,6 +69,7 @@ class Case:
     storage_backend: str = "mem"
     chunk_kv_empty_catalog: bool = False
     sdk_client: bool = False
+    dataset_sdk: bool = False
     s3_recovery: str | None = None
     s3_script: str | None = None
     s3_language: str | None = None
@@ -89,7 +90,9 @@ class Case:
     native_admission_count: int | None = None
     native_diskless_nodes: tuple = ()
     native_spare_disk_gib: int = 0
+    native_supplied_candidates: bool = False
     native_bootstrap: bool = True
+    native_auto_bootstrap: bool = False
     native_observations: bool = False
     native_browser: str | None = None
     shell_browser: str | None = None
@@ -168,8 +171,8 @@ DISKDB_CASES = (
 
 DEPLOYMENT_CASES = (
     Case("deployment.balance", "deployment::balance::single_node_disables_local_chunk_kv_split_planning", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
-    Case("deployment.listeners", "deployment::listeners::occupied_s3_listener_terminates_combined_access", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
-    Case("deployment.listeners", "deployment::listeners::occupied_iceberg_listener_terminates_combined_access", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
+    Case("deployment.listeners", "deployment::listeners::fixed_s3_listener_recovers_after_explicit_termination", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
+    Case("deployment.listeners", "deployment::listeners::fixed_iceberg_listener_recovers_after_explicit_termination", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
     Case("deployment.browser", "deployment::browser::readonly_release_ui_preserves_domains_and_live_authority", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
     Case("deployment.anonymous", "deployment::anonymous::default_anonymous_volume_is_ready_and_monitor_death_exits_container", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
     Case("deployment.failures", "deployment::failures::restart_exhaustion_exits_the_container", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web"), client_timeout=540),
@@ -360,6 +363,12 @@ ICEBERG_CASES = (
     Case("iceberg.namespace", "access_iceberg::namespace::namespace_functional_crud_survives_native_storage_and_listener_restart"),
 )
 CONSOLE_OPERATION_CASES = (
+    Case("console.native.browser.dataset", "console::browser_dataset::browse", native_client=True, client_timeout=360),
+    Case("console.native.browser.dataset", "console::browser_dataset::import", native_client=True, client_timeout=360),
+    Case("console.native.browser.dataset", "console::browser_dataset::split_revisions", native_client=True, client_timeout=360),
+    Case("console.native.browser.dataset", "console::browser_dataset::recovery", native_client=True, client_timeout=360),
+    Case("console.native.browser.dataset", "console::browser_dataset::capabilities", native_client=True, client_timeout=360),
+
     Case("console.native.browser.six-node", "console::browser_data::six_node_round_trips", native_browser="UI creates three storage nodes, adds three diskless nodes, then KV, S3 and Iceberg persist real data", native_disk_gib=(4096, 4096, 4096, 8, 8, 8), native_zone_gib=(32, 32, 32, 1, 1, 1), native_admission_count=3, native_diskless_nodes=(4, 5, 6), native_bootstrap=False, native_observations=True, client_timeout=600),
     Case("console.native.browser.topology", "console::browser_topology::multi_rack_leaders", native_browser="native topology: three racks grow one replica and retain three complete leaders", native_rack_ids=(1, 2, 3)),
     Case("console.native.browser.topology", "console::browser_topology::independent_subsets", native_browser="native topology: overlapping three-voter subsets retain independent keys and scans", native_disk_gib=(80, 8, 8, 8, 8), native_zone_gib=(1, 1, 1, 1, 1)),
@@ -369,7 +378,7 @@ CONSOLE_OPERATION_CASES = (
     Case("console.browser.registry", "console::browser_registry::selected_services_before_group0", shell_browser="persists all six selected services but starts only PKV before Group 0", shell_observations=True),
     Case("console.browser.discovery", "console::browser_discovery::stale_provider_observations", shell_browser="discovery: release monitor observations remain visible and stale after provider loss"),
     Case("console.native.geometry", "console::native_geometry::mixed_units_reject_consumers_without_starting_services", native_client=True),
-    Case("console.native.browser.hardware", "console::native_browser::hardware_capacity_and_dashed_status", native_client=True, client_timeout=360),
+    Case("console.native.browser.hardware", "console::native_browser::hardware_capacity_and_dashed_status", native_client=True, native_auto_bootstrap=True, native_supplied_candidates=True, client_timeout=360),
     Case("console.native.browser.maintenance", "console::native_browser::disk_maintenance_and_status_badges", native_client=True, client_timeout=360),
     Case("console.native.browser.disk", "console::native_browser::disk_inspector_and_selection", native_client=True, native_disk_gib=(4096, 8, 8), native_zone_gib=(32, 1, 1), native_spare_disk_gib=4096, client_timeout=360),
     Case("console.native.browser.binding", "console::browser_capacity::binding_recommendations", native_browser="KV binding recommends the least loaded group and initialization creates Group 1", native_bootstrap=False),
@@ -381,6 +390,7 @@ CONSOLE_OPERATION_CASES = (
     Case("console.native.browser.defaults", "console::native_browser::auxiliary_dialog_defaults", native_client=True, client_timeout=360),
     Case("console.native.browser.plan", "console::native_browser::interrupted_plan_reconciliation", native_client=True, client_timeout=360),
     Case("console.native.browser.prerequisites", "console::native_browser::waiting_plan_prerequisites", native_client=True, client_timeout=360),
+    Case("console.native.browser.storage-windows", "console::native_browser::storage_windows_and_access_recovery", native_client=True, native_disk_gib=(80, 256, 256), client_timeout=360),
     Case("console.native.browser.scanner", "console::native_browser::scanner_and_scoped_recalc", native_client=True, client_timeout=360),
     Case("console.native.browser.journal-windows", "console::native_browser::large_journal_pagination_and_restart", native_client=True, client_timeout=480),
     Case("console.native.recovery", "console::native_recovery::all_typed_restarts_preserve_objects_and_keep_one_live_process", native_client=True),
@@ -412,11 +422,11 @@ CONSOLE_OPERATION_CASES = (
     Case("console.browser.registry", "console::browser_registry::empty", shell_browser="renders the SPA shell against a real empty backend"),
     Case("console.browser.registry", "console::browser_registry::datacenter", shell_browser="datacenter root wraps racks; Add Rack from datacenter context menu"),
     Case("console.browser.registry", "console::browser_registry::ownership_scope", shell_browser="keeps Cluster and unprovisioned Chunk selections free of ownership probes"),
-    Case("console.browser.registry", "console::browser_registry::access_plan", shell_browser="persists an Access-only plan with three independent ports across reload"),
+    Case("console.browser.registry", "console::browser_registry::access_plan", shell_browser="persists an Access-only plan with four independent ports across reload"),
     Case("console.browser.registry", "console::browser_registry::slot_warning", shell_browser="fixed-slot warning stays healthy and persists across reload"),
     Case("console.browser.shell", "console::shell::embedding", shell_browser="embedding honors apiPrefix, readonly, and module opt-out"),
     Case("console.browser.shell", "console::shell::backend_unavailable", shell_browser="shows an alert when backend API requests fail"),
-    Case("console.browser.shell", "console::shell::domain_toggle", shell_browser="domain toggle switches between all seven domains"),
+    Case("console.browser.shell", "console::shell::domain_toggle", shell_browser="domain toggle switches between seven domains and shared Cluster views"),
     Case("console.web.standalone", "console::web_diskio_discovery::diskio_discovers_disk_groups_created_after_web_deployment"),
     Case("console.web.wal", "console::web_leader_removal::remove_leader_from_five_node_group_elects_new_leader", stores=(0, 0, 0, 0, 0)),
     Case("console.web.wal", "console::web_leader_removal::remove_unreachable_leader_retains_group0_membership", stores=(0, 0, 0, 0, 0), preserve_network=True),
@@ -520,6 +530,9 @@ CONSOLE_OPERATION_CASES = (
 )
 
 DATASET_CASES = (
+    Case("dataset.sdk", "dataset::sdk_real_payload_restart",dataset_sdk=True,client_timeout=600),
+    Case("dataset.sdk", "dataset::sdk_split_revision_round_trip",dataset_sdk=True,client_timeout=600),
+    Case("dataset.http", "access_dataset_split::split_commit_restart_preserves_candidates_receipts_and_historical_members",client_timeout=600),
     Case("dataset.http", "access_dataset::listener_authenticates_and_serves_create_open"),
     Case("dataset.http", "access_dataset::publish_persist_restart_and_scan_round_trip"),
 )
@@ -622,7 +635,9 @@ def allocate_cluster(case, image, artifacts, bundle, data_root):
         return NativeConsoleCluster(image, artifacts, bundle, disk_gib=case.native_disk_gib,
                                     zone_gib=case.native_zone_gib,
                                     spare_disk_gib=case.native_spare_disk_gib,
+                                    supplied_candidates=case.native_supplied_candidates,
                                     bootstrap=case.native_bootstrap,
+                                    auto_bootstrap=case.native_auto_bootstrap,
                                     rack_ids=case.native_rack_ids,
                                     admission_count=case.native_admission_count,
                                     diskless_nodes=case.native_diskless_nodes,
@@ -649,8 +664,8 @@ def allocate_cluster(case, image, artifacts, bundle, data_root):
     if case.scope == "console.web.standalone":
         return StandaloneWebCluster(image, artifacts, rejected="malformed" in case.name, data_root=data_root)
     if case.scope == "deployment.listeners":
-        protocol = "iceberg" if "occupied_iceberg" in case.name else "s3"
-        return OccupiedAccessCluster(image, artifacts, protocol, services=case.service_selection, data_root=data_root)
+        protocol = "iceberg" if "fixed_iceberg" in case.name else "s3"
+        return FixedListenerAccessCluster(image, artifacts, protocol, services=case.service_selection, data_root=data_root)
     if case.scope == "deployment.browser":
         return DeploymentBrowserCluster(image, artifacts, bundle, services=case.service_selection, data_root=data_root)
     if case.scope == "deployment.anonymous":
@@ -759,6 +774,11 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
                 cluster.language_client(case.s3_language)
             elif case.s3_script:
                 cluster.script_client(case.s3_script)
+            elif case.dataset_sdk:
+                if case.name == "dataset::sdk_split_revision_round_trip":
+                    cluster.sdk_split_roundtrip()
+                else:
+                    cluster.sdk_roundtrip()
             elif case.sdk_client:
                 cluster.sdk_client(case.name.rsplit("::", 1)[-1])
             elif case.restart:

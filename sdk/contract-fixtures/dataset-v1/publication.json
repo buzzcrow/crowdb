@@ -1,0 +1,23 @@
+{
+  "operation": "01010101010101010101010101010101",
+  "parent": null,
+  "manifest": {
+    "schema": [
+      {
+        "name": "value",
+        "required": true
+      }
+    ],
+    "samples": [
+      {
+        "id": "c2FtcGxl",
+        "fields": {
+          "value": {
+            "kind": "inline",
+            "data": "aGVsbG8="
+          }
+        }
+      }
+    ]
+  }
+}
