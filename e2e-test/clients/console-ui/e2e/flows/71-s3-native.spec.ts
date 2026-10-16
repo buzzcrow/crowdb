@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 import { test, expect } from '../fixtures/realBackend';
 import { step } from '../fixtures/stepTimer';
+import { bucketFailure, bucketReply } from '../fixtures/bucketDiagnostics';
 
 // Large transfer acceptance is separate from routine page behavior tests.
 // Baseline: 5.3s (2026-10-04); normal three-node fixture, actual multipart acceptance.
@@ -11,15 +12,28 @@ test('S3 native multipart upload, HEAD, bounded preview and full round trip', as
   const bucketPath = `/api/access/s3/${bucket}`;
   const objectPath = `${bucketPath}/multipart%20a/%E4%B8%AD%E6%96%87.txt`;
   const bytes = Buffer.alloc(9 * 1024 * 1024, 'x');
+  let created: ReturnType<typeof bucketReply>;
   await step('native bucket setup', async () => {
+    const started = Date.now();
     const response = await request.put(bucketPath);
-    expect(response.status(), await response.text()).toBe(200);
+    const body = await response.text();
+    created = bucketReply(response, started, body);
+    expect(response.status(), body).toBe(200);
   });
   try {
     await step('native post-create bucket discovery', async () => {
+      const started = Date.now();
       const response = await request.get('/api/access/s3/');
-      expect(response.status(), await response.text()).toBe(200);
-      expect(await response.text()).toContain(`<Name>${bucket}</Name>`);
+      const body = await response.text();
+      const listed = bucketReply(response, started, body);
+      console.log(`[S3 BUCKET CREATE/LIST] ${JSON.stringify({ bucket, created, listed })}`);
+      try {
+        expect(response.status(), body).toBe(200);
+        expect(body).toContain(`<Name>${bucket}</Name>`);
+      } catch (error) {
+        await bucketFailure(request, bucketPath, { bucket, created, listed });
+        throw error;
+      }
     });
     await step('native S3 DOM setup', async () => {
       await page.goto('/?domain=S3');
