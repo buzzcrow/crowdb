@@ -6,6 +6,8 @@ use crowdb_diskio_client::{DiskId, DiskioClient, DiskioClientConfig, Durability,
 use crowdb_kv_client::{HardwareClient, ServiceRegistryClient};
 use std::time::{Duration, Instant};
 
+mod readiness;
+
 pub(super) async fn client() -> DiskioClient {
     DiskioClient::connect_with_clients(
         ServiceRegistryClient::new(crate::common::hardware::kv_client()),
@@ -30,19 +32,17 @@ async fn unavailable_before_services_start() {
 #[tokio::test]
 #[ignore = "requires the owned storage container fixture"]
 async fn ready() {
+    let artifacts = std::path::PathBuf::from(std::env::var("CROWDB_E2E_ARTIFACTS").unwrap());
+    let started_at_ms = std::fs::read_to_string(artifacts.join("storage-started-at-ms"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    let service = ServiceRegistryClient::new(crate::common::hardware::kv_client());
+    let hardware = HardwareClient::new(crate::common::hardware::kv_client());
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
-        let result = DiskioClient::connect_with_clients(
-            ServiceRegistryClient::new(crate::common::hardware::kv_client()),
-            HardwareClient::new(crate::common::hardware::kv_client()),
-            DiskioClientConfig::default(),
-        )
-        .await;
-        match result {
-            Ok(client) => {
-                assert_eq!(client.status().disks, 18);
-                return;
-            }
+        match readiness::probe(&service, &hardware, started_at_ms).await {
+            Ok(()) => return,
             Err(error) => assert!(Instant::now() < deadline, "storage discovery failed: {error}"),
         }
         tokio::time::sleep(Duration::from_millis(100)).await;

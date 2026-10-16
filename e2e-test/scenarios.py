@@ -26,7 +26,7 @@ from deployment_clients_fixture import DeploymentClientsCluster
 from deployment_failure_fixture import DeploymentFailureCluster
 from deployment_anonymous_fixture import AnonymousReleaseCluster
 from deployment_browser_fixture import DeploymentBrowserCluster
-from deployment_listener_fixture import OccupiedAccessCluster
+from deployment_listener_fixture import FixedListenerAccessCluster
 from console_fixture import ConsoleCluster
 from console_access_fixture import AccessDeploymentCluster
 from console_lifetime_fixture import DisposableWebCluster
@@ -171,8 +171,8 @@ DISKDB_CASES = (
 
 DEPLOYMENT_CASES = (
     Case("deployment.balance", "deployment::balance::single_node_disables_local_chunk_kv_split_planning", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
-    Case("deployment.listeners", "deployment::listeners::occupied_s3_listener_terminates_combined_access", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
-    Case("deployment.listeners", "deployment::listeners::occupied_iceberg_listener_terminates_combined_access", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
+    Case("deployment.listeners", "deployment::listeners::fixed_s3_listener_recovers_after_explicit_termination", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
+    Case("deployment.listeners", "deployment::listeners::fixed_iceberg_listener_recovers_after_explicit_termination", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
     Case("deployment.browser", "deployment::browser::readonly_release_ui_preserves_domains_and_live_authority", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
     Case("deployment.anonymous", "deployment::anonymous::default_anonymous_volume_is_ready_and_monitor_death_exits_container", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
     Case("deployment.failures", "deployment::failures::restart_exhaustion_exits_the_container", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web"), client_timeout=540),
@@ -664,8 +664,8 @@ def allocate_cluster(case, image, artifacts, bundle, data_root):
     if case.scope == "console.web.standalone":
         return StandaloneWebCluster(image, artifacts, rejected="malformed" in case.name, data_root=data_root)
     if case.scope == "deployment.listeners":
-        protocol = "iceberg" if "occupied_iceberg" in case.name else "s3"
-        return OccupiedAccessCluster(image, artifacts, protocol, services=case.service_selection, data_root=data_root)
+        protocol = "iceberg" if "fixed_iceberg" in case.name else "s3"
+        return FixedListenerAccessCluster(image, artifacts, protocol, services=case.service_selection, data_root=data_root)
     if case.scope == "deployment.browser":
         return DeploymentBrowserCluster(image, artifacts, bundle, services=case.service_selection, data_root=data_root)
     if case.scope == "deployment.anonymous":

@@ -92,6 +92,8 @@ class RpcServer
 
     int                                listen_fd_   = -1;
     int                                listen_port_ = 0;
+    std::string                        listener_key_;
+    int                                listener_lock_fd_ = -1;
     std::atomic<bool>                  running_{false};
     std::shared_ptr<std::atomic<bool>> alive_{std::make_shared<std::atomic<bool>>(true)};
 

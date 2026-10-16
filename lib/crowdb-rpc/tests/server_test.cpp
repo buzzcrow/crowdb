@@ -160,3 +160,19 @@ TEST(RpcServerTest, MultipleConnections)
     }
     server.stop();
 }
+
+TEST(RpcServerTest, StoppedServerRebindsImmediatelyAndActiveDuplicateIsRejected)
+{
+    RpcServer first;
+    ASSERT_TRUE(first.listen("127.0.0.1", 0));
+    const int port = first.listen_port();
+    ASSERT_GT(port, 0);
+
+    RpcServer duplicate;
+    EXPECT_FALSE(duplicate.listen("127.0.0.1", port));
+
+    first.stop();
+    RpcServer replacement;
+    ASSERT_TRUE(replacement.listen("127.0.0.1", port));
+    EXPECT_EQ(replacement.listen_port(), port);
+}

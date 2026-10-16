@@ -5,8 +5,8 @@ import unittest
 from scenarios import select_cases, case_nodes, case_resources
 
 
-class OccupiedListenerBudgetTest(unittest.TestCase):
-    def test_second_release_process_is_reserved_alongside_full_node_and_host_client(self):
+class FixedListenerRecoveryBudgetTest(unittest.TestCase):
+    def test_release_node_and_host_client_budget_is_preserved(self):
         cases = select_cases(scope="deployment.listeners")
         self.assertEqual(len(cases), 2)
         for case in cases:

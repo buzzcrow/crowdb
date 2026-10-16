@@ -1,14 +1,12 @@
 # Copyright 2026-present Gian <crow.db@outlook.com>
 # Licensed under the Apache License, Version 2.0.
-"""Require combined access startup to exit when one protocol listener is occupied."""
+"""Verify fixed Access listeners recover through the monitor retry plan."""
 
 import json
-import time
-from allocation import node_data
 from managed_fixture import ManagedCluster
 
 
-class OccupiedAccessCluster(ManagedCluster):
+class FixedListenerAccessCluster(ManagedCluster):
     def __init__(self, image, artifacts, protocol, services, **kwargs):
         super().__init__(image, artifacts, services=services, **kwargs)
         self.protocol = protocol
@@ -16,37 +14,21 @@ class OccupiedAccessCluster(ManagedCluster):
     def start(self):
         super().start()
         config = self.command("exec", self.servers[0], "cat", "/opt/crowdb/run/config/access.toml")
-        old, new = (("0.0.0.0:9092", "127.0.0.1:18080") if self.protocol == "s3"
-                    else ("0.0.0.0:9091", "127.0.0.1:18181"))
-        if old not in config:
-            raise AssertionError("unoccupied protocol listener must be relocated")
-        path = self.artifacts / "occupied-access.toml"
-        path.write_text(config.replace(old, new))
-        private = self.artifacts / "server.env"
-        private.touch(mode=0o600)
-        private.write_text(self.command("exec", self.servers[0], "cat",
-                                       "/opt/crowdb/data/secrets/server.env"))
-        data = node_data(self, 1, prepare_logs=False)
-        name = self.run_id + "-occupied-access"
-        self.containers.append(name)
-        self.command("run", "-d", "--name", name, "--label", f"org.crowdb.e2e.run={self.run_id}",
-            "--network", "container:" + self.servers[0], "--cpu-shares", "1024", "--env", "TOKIO_WORKER_THREADS=1", "--memory", "512m",
-            "--pids-limit", "256", "--ulimit", "core=-1", "--env-file", str(private),
-            "--env", "CROWDB_ACCESS_LOG_DIR=/opt/crowdb/data/log/access",
-            "--env", "CROWDB_ACCESS_HEALTH_LISTEN=127.0.0.1:19094",
-            "--env", "CROWDB_ICEBERG_PUBLIC_URI=http://127.0.0.1:9092",
-            "--env", "CROWDB_S3_PUBLIC_URI=http://127.0.0.1:9091",
-            "--mount", f"type=bind,source={data},target=/opt/crowdb/data",
-            "--mount", f"type=bind,source={path},target=/opt/crowdb/etc/occupied-access.toml,readonly",
-            self.image, "server", "access", "--config", "/opt/crowdb/etc/occupied-access.toml")
-        deadline = time.monotonic() + 30
-        while time.monotonic() < deadline:
-            state = json.loads(self.command("inspect", name))[0]["State"]
-            if state["Status"] == "exited":
-                self.command("exec", self.servers[0], "/opt/crowdb/bin/crowdb-monitor", "readiness")
-                (self.artifacts / "listener-failure.json").write_text(json.dumps({
-                    "state": state, "log": self.command("logs", name),
-                    "protocol": self.protocol}, indent=2))
-                return self
-            time.sleep(0.1)
-        raise AssertionError("combined access listener failure did not terminate within 30 seconds")
+        expected = {"s3": "0.0.0.0:9091", "iceberg": "0.0.0.0:9092"}[self.protocol]
+        if expected not in config:
+            raise AssertionError(f"{self.protocol} listener was not kept on its fixed port {expected}")
+        before = self.monitor_status()["services"]["access"]
+        result = self.control({"action": "recover-service", "node": 0,
+                               "service": "access", "signal": "KILL"})
+        after = result["after"]
+        if after["generation"] <= before["generation"] or after["pid"] == before["pid"]:
+            raise AssertionError("monitor did not schedule a new Access process")
+        if json.loads(self.command("inspect", self.servers[0]))[0]["NetworkSettings"]["Networks"][self.run_id]["IPAddress"] != self.addresses[0]:
+            raise AssertionError("Access recovery changed the owned node identity")
+        recovered_config = self.command("exec", self.servers[0], "cat", "/opt/crowdb/run/config/access.toml")
+        if expected not in recovered_config:
+            raise AssertionError(f"{self.protocol} listener changed after retry")
+        (self.artifacts / "listener-recovery.json").write_text(json.dumps({
+            "protocol": self.protocol, "before": before, "after": after,
+            "fixed_listener": expected, "event": result["event"]}, indent=2))
+        return self

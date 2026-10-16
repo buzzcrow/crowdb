@@ -1,24 +1,25 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-fn verify(protocol: &str) {
+fn verify(protocol: &str, port: &str) {
     let root = std::path::PathBuf::from(std::env::var("CROWDB_E2E_ARTIFACTS").unwrap());
     let result: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(root.join("listener-failure.json")).unwrap()).unwrap();
+        serde_json::from_slice(&std::fs::read(root.join("listener-recovery.json")).unwrap()).unwrap();
     assert_eq!(result["protocol"], protocol);
-    assert_eq!(result["state"]["Status"], "exited");
-    assert_ne!(result["state"]["ExitCode"], 0);
-    assert!(result["log"].as_str().unwrap().contains("Address already in use"));
+    assert_eq!(result["fixed_listener"], port);
+    assert_eq!(result["event"], "child_exited");
+    assert!(result["after"]["generation"] > result["before"]["generation"]);
+    assert_ne!(result["after"]["pid"], result["before"]["pid"]);
 }
 
 #[test]
-#[ignore = "requires an owned occupied S3 listener release profile"]
-fn occupied_s3_listener_terminates_combined_access() {
-    verify("s3");
+#[ignore = "requires an owned fixed-listener release profile"]
+fn fixed_s3_listener_recovers_after_explicit_termination() {
+    verify("s3", "0.0.0.0:9091");
 }
 
 #[test]
-#[ignore = "requires an owned occupied Iceberg listener release profile"]
-fn occupied_iceberg_listener_terminates_combined_access() {
-    verify("iceberg");
+#[ignore = "requires an owned fixed-listener release profile"]
+fn fixed_iceberg_listener_recovers_after_explicit_termination() {
+    verify("iceberg", "0.0.0.0:9092");
 }
