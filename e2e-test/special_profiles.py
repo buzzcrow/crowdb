@@ -59,7 +59,8 @@ def run_host(args, parser):
     identity = json.loads(docker("image", "inspect", args.image))[0]
     labels = identity["Config"].get("Labels") or {}
     try:
-        source = verify_server_sources(ROOT, labels.get("org.opencontainers.image.revision"))
+        source = verify_server_sources(ROOT, labels.get("org.opencontainers.image.revision"),
+                                       labels.get("org.crowdb.source.tree") or None)
     except ValueError as error:
         parser.error(str(error))
     run_root = args.artifacts / ("run-" + uuid.uuid4().hex)

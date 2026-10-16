@@ -17,11 +17,7 @@ async function occupyDiskdbPort(request: APIRequestContext) {
   expect(group.status(), await group.text()).toBe(201);
   const added = await request.post('/api/nodes/1/disk-groups', { data: { id: 1, store_id: 0, group_id: 1 } });
   expect(added.status(), await added.text()).toBe(201);
-  const disk = await request.post('/api/nodes/1/disk-groups/1/disks', { data: {
-    disk_id: '0000000000000001-0000000000000001', disk_type: 'Hdd', capacity_bytes: 80 * 1024 ** 3,
-    zone_size_bytes: 1024 ** 3, unit_size_bytes: 1024 ** 2, device_path: '/opt/crowdb/data/disks/disk-1.img',
-  } });
-  expect(disk.status(), await disk.text()).toBe(201);
+  // Port ownership needs the actual DiskIO listener, without admitting media.
   const defaults = await json(request, '/api/deployment-defaults?node_id=1');
   const deployed = await request.post('/api/nodes/1/services/deploy', { data: {
     ...defaults.diskio, kind: 'diskio', instance_id: '99', rpc_port: 7102, disk_group_id: 1, test_single_node: false,

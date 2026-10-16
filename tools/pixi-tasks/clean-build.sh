@@ -41,7 +41,7 @@ sudo rm -rf -- "$PIXI_PROJECT_ROOT/.crowdb-runtime"
 
 # ── Rust build artifacts ──
 echo "[clean] cargo clean"
-cargo clean
+sudo env "PATH=$PATH" "$(command -v cargo)" clean
 echo "[clean] tarpaulin report"
 sudo rm -f tarpaulin-report.html
 

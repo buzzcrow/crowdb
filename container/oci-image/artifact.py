@@ -84,6 +84,8 @@ def receipt(path):
                        ("runtime_sha256", "org.crowdb.runtime.sha256")):
         if saved[key] != result["labels"][label]:
             raise ValueError(f"artifact source metadata mismatch: {key}")
+    if saved.get("source_tree", "") != result["labels"].get("org.crowdb.source.tree", ""):
+        raise ValueError("artifact source metadata mismatch: source_tree")
     return saved
 
 

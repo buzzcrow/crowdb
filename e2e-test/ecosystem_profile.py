@@ -40,7 +40,8 @@ def run_profile(args, parser):
         parser.error(f"ecosystem requires a Linux daemon with {cpus:g} CPU / {memory} MiB")
     image = json.loads(docker("image", "inspect", args.image))[0]
     labels = image["Config"].get("Labels") or {}
-    sources = verify_server_sources(ROOT, labels.get("org.opencontainers.image.revision"))
+    sources = verify_server_sources(ROOT, labels.get("org.opencontainers.image.revision"),
+                                    labels.get("org.crowdb.source.tree") or None)
     run_root = args.artifacts / ("run-" + uuid.uuid4().hex)
     run_root.mkdir(parents=True)
     data = (args.data_root / run_root.name / "ecosystem" if args.data_root else

@@ -169,7 +169,8 @@ def main():
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     labels = identity["Config"].get("Labels") or {}
     try:
-        source_identity = verify_server_sources(ROOT, labels.get("org.opencontainers.image.revision"))
+        source_identity = verify_server_sources(ROOT, labels.get("org.opencontainers.image.revision"),
+                                                labels.get("org.crowdb.source.tree") or None)
     except ValueError as error:
         parser.error(str(error))
     args.artifacts.mkdir(parents=True, exist_ok=True)

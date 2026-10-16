@@ -48,7 +48,8 @@ fn fixture(root: &Path) -> (DeploymentProfile, PreparedBootstrap, NodeServiceCre
 
 #[tokio::test]
 async fn accepted_initialization_survives_connection_lifetime_and_resumes_fixed_intent() {
-    let directory = crowdb_test_harness::test_dirs::tempdir_in_test_data("monitor-initialization");
+    // Leave room for the CI checkout prefix within the Unix socket path limit.
+    let directory = crowdb_test_harness::test_dirs::tempdir_in_test_data("init");
     let root = directory.path();
     let (profile, operation, credentials) = fixture(root);
     let listener = tokio::net::UnixListener::bind(profile.paths.run_root.join("node-control.sock")).unwrap();

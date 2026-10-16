@@ -24,7 +24,8 @@ async fn control_client_does_not_create_a_service_worker_pool() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut observations = Vec::new();
     for workers in ["1", "64"] {
-        let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("monitor-control-cli");
+        // Keep the socket pathname short enough for CI checkout prefixes.
+        let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("control");
         let socket = root.path().join("control.sock");
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();
         let child = tokio::process::Command::new(env!("CARGO_BIN_EXE_crowdb-monitor"))

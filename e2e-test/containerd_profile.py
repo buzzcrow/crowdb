@@ -59,7 +59,7 @@ def run_profile(args, parser):
     spec.loader.exec_module(artifact)
     archive = args.archive.resolve()
     verified = artifact.receipt(archive)
-    source = verify_server_sources(ROOT, verified["revision"])
+    source = verify_server_sources(ROOT, verified["revision"], verified.get("source_tree") or None)
     run_root = args.artifacts / ("run-" + uuid.uuid4().hex)
     run_root.mkdir(parents=True)
     data = (args.data_root / run_root.name / "containerd" if args.data_root else

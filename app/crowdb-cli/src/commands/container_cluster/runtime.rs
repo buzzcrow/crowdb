@@ -159,10 +159,6 @@ pub(super) async fn ensure_nodes(state: &State) -> Result<()> {
         }
         let data = state.data(index);
         std::fs::create_dir_all(&data)?;
-        let disk = data.join("disk.img");
-        if !disk.exists() {
-            std::fs::File::create(&disk)?.set_len(16 * 1024 * 1024 * 1024)?;
-        }
         super::maintenance::run(
             state,
             &format!("prepare-{index}"),

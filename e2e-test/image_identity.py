@@ -4,6 +4,7 @@
 
 import re
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -22,6 +23,7 @@ SERVER_PATHS = (
     ":(exclude)container/single-node-container/README.md",
     # Host development/cleanup commands are not read or packaged by staging.
     ":(exclude)container/single-node-container/dev-container.sh",
+    ":(exclude)tools/pixi-tasks/clean-build.sh",
     ":(exclude)container/oci-image/README.md",
     # Host launch resource flags do not enter the release artifact (stage.sh).
     ":(exclude)container/oci-image/runtime.py",
@@ -178,7 +180,7 @@ def lock_matches(before, after, manifests):
         k: v for k, v in after.items() if k != "package"}
 
 
-def verify_server_sources(root, revision):
+def verify_server_sources(root, revision, source_tree=None):
     if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
         raise ValueError("release image needs a full source revision label")
 
@@ -187,35 +189,53 @@ def verify_server_sources(root, revision):
 
     try:
         git("rev-parse", "--verify", revision + "^{commit}")
-        changed = git("diff", "--name-only", revision, "--", *SERVER_PATHS)
-        untracked = git("ls-files", "--others", "--exclude-standard", "--", *SERVER_PATHS)
+        source = revision
+        comparison = [source]
+        if source_tree is not None:
+            if not isinstance(source_tree, str) or not re.fullmatch(r"[0-9a-f]{40}", source_tree):
+                raise ValueError("release image source tree label is invalid")
+            if git("rev-parse", "--verify", source_tree + "^{tree}") != source_tree:
+                raise ValueError("release image source tree label must identify a tree")
+            tool = Path(__file__).resolve().parents[1] / "container/oci-image/source_tree.py"
+            current_tree = subprocess.check_output([sys.executable, str(tool), str(root)], text=True).strip()
+            source = source_tree
+            comparison = [source, current_tree]
+            changed = git("diff", "--name-only", *comparison, "--", *SERVER_PATHS)
+            untracked = ""
+        else:
+            changed = git("diff", "--name-only", source, "--", *SERVER_PATHS)
+            untracked = git("ls-files", "--others", "--exclude-standard", "--", *SERVER_PATHS)
+        added = set(git("diff", "--name-only", "--diff-filter=A", *comparison, "--", *SERVER_PATHS).splitlines())
     except subprocess.CalledProcessError as error:
         raise ValueError("image source revision cannot be verified locally; rebuild the shared OCI image") from error
     manifests = {}
     for path in changed.splitlines():
-        if path.endswith("Cargo.toml") and Path(root, path).is_file():
-            pair = (tomllib.loads(git("show", f"{revision}:{path}")),
+        if path not in added and path.endswith("Cargo.toml") and Path(root, path).is_file():
+            pair = (tomllib.loads(git("show", f"{source}:{path}")),
                     tomllib.loads(Path(root, path).read_text()))
             name = pair[0].get("package", {}).get("name")
             if name:
                 manifests[name] = pair
     runtime_changes = []
     for path in changed.splitlines():
+        if path in added:
+            runtime_changes.append(path)
+            continue
         current = Path(root, path)
         if path == "pixi.toml" and current.is_file():
-            before = tomllib.loads(git("show", f"{revision}:{path}"))
+            before = tomllib.loads(git("show", f"{source}:{path}"))
             after = tomllib.loads(current.read_text())
             before = production_pixi_manifest(before)
             after = production_pixi_manifest(after)
             if before == after:
                 continue
         if path == "Cargo.lock" and current.is_file():
-            before = tomllib.loads(git("show", f"{revision}:{path}"))
+            before = tomllib.loads(git("show", f"{source}:{path}"))
             after = tomllib.loads(current.read_text())
             if lock_matches(before, after, manifests):
                 continue
         if path.endswith("Cargo.toml") and current.is_file():
-            before = tomllib.loads(git("show", f"{revision}:{path}"))
+            before = tomllib.loads(git("show", f"{source}:{path}"))
             after = tomllib.loads(current.read_text())
             if production_manifest(before) == production_manifest(after):
                 continue
@@ -224,5 +244,6 @@ def verify_server_sources(root, revision):
     if changed or untracked:
         raise ValueError("release server sources differ from the image; rebuild the shared OCI image:\n" +
                          "\n".join(filter(None, [changed, untracked])))
-    return {"image_revision": revision, "client_revision": git("rev-parse", "HEAD"),
+    return {"image_revision": revision, "image_source_tree": source_tree,
+            "client_revision": git("rev-parse", "HEAD"),
             "server_sources_match": True}

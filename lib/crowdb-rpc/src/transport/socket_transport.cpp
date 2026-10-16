@@ -272,6 +272,12 @@ void Worker::process_writable(const EngineEvent &ev, ClosedConnections &closed_f
 {
     if (ev.conn != nullptr && ev.conn->is_open()) {
         // ev.fd is the write fd (dup'd). try_send uses it.
+        // Retire the delivered interest before releasing send ownership.
+        // Disarming afterward can erase a concurrent producer's re-arm.
+        // One-shot events have already consumed their write interest.
+        if (!engine_->oneshot()) {
+            engine_->disarm_write(ev.fd, ev.conn);
+        }
         bool all_sent = on_writable_impl(ev.conn, ev.fd, stats_);
         if (!ev.conn->is_open()) {
             // Connection closed during write (hard error).
@@ -281,19 +287,9 @@ void Worker::process_writable(const EngineEvent &ev, ClosedConnections &closed_f
             close_connection_fds(engine_, ev.conn, transport_);
             closed_fds.emplace_back(rfd, ev.conn->id());
         }
-        else if (all_sent) {
-            // Queue empty — disarm write (MOD with 0 events).
-            // Read fd is independent — no need to re-arm read.
-            engine_->disarm_write(ev.fd, ev.conn);
-        }
-        else {
+        else if (!all_sent) {
             // EAGAIN/partial — re-arm write for retry.
-            // Non-oneshot: level-triggered EPOLLOUT stays
-            // armed, no MOD needed (kernel only fires when
-            // socket becomes writable again).
-            if (engine_->oneshot()) {
-                engine_->arm_write(ev.fd, ev.conn);
-            }
+            engine_->arm_write(ev.fd, ev.conn);
         }
     }
 }

@@ -95,11 +95,24 @@ async function addDisks({ page, request }: UIContext) {
         { timeout: 5_000, intervals: [100], message: `Disk group DG-${id} appears in the refreshed tree` },
       ).toBeGreaterThan(0);
       await sidebar.getByRole('button', { name: `DG-${id}`, exact: true }).click({ button: 'right' });
-      await page.getByRole('menuitem', { name: 'Add Disk', exact: true }).click();
-      const disks = page.getByRole('dialog', { name: 'Add Disks', exact: true });
-      await disks.getByLabel('Device Path (optional)', { exact: true }).fill(`/opt/crowdb/data/disks/disk-${id}.img`);
-      await disks.getByRole('button', { name: 'Add Disks', exact: true }).click();
+      await page.getByRole('menuitem', { name: 'Create File Disk', exact: true }).click();
+      const disks = page.getByRole('dialog', { name: 'Create File Disk', exact: true });
+      await expect(disks.getByLabel('Disk group')).toHaveValue(String(id));
+      await disks.getByLabel('Capacity (GiB)').fill('4096');
+      await disks.getByText('Advanced allocation', { exact: true }).click();
+      await disks.getByLabel('Sparse file').check();
+      const pending = page.waitForResponse(response => response.request().method() === 'POST'
+        && new URL(response.url()).pathname === `/api/nodes/${id}/disk-files`);
+      await disks.getByRole('button', { name: 'Create and Join', exact: true }).click();
+      const accepted = await pending;
+      expect(accepted.status(), await accepted.text()).toBe(202);
+      const operation = await accepted.json();
       await expect(disks).toHaveCount(0);
+      await expect.poll(async () => {
+        const response = await request.get(`/api/nodes/${id}/disk-files/${operation.request.operation_id}`);
+        expect(response.ok(), await response.text()).toBe(true);
+        return (await response.json()).phase;
+      }, { intervals: [100] }).toBe('registered');
       await expect.poll(async () => {
         const response = await request.get('/api/diskdb/usage');
         expect(response.ok(), await response.text()).toBe(true);

@@ -30,7 +30,8 @@ struct TestSetup {
 
 impl TestSetup {
     fn new() -> Self {
-        let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("supplied-node-setup");
+        // Keep the socket pathname short enough for CI checkout prefixes.
+        let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("supplied");
         fs::create_dir(root.path().join("disks")).unwrap();
         for name in ["first", "second", "third"] {
             fs::File::create(root.path().join("disks").join(name))

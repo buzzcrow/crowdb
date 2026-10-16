@@ -230,7 +230,8 @@ async fn two_consoles_share_disk_groups_and_disks_without_local_topology() {
         capacity_bytes: 4096,
         zone_size_bytes: 4096,
         unit_size_bytes: 4096,
-        device_path: "/dev/test".into(),
+        // This fixture owns metadata only, with no physical medium to remove.
+        device_path: String::new(),
     };
     hardware::add_disk_to_group0(&first, 12, 5, &disk).await.unwrap();
     hardware::add_disk_to_group0(&second, 12, 5, &disk).await.unwrap();

@@ -240,6 +240,9 @@ class ImageIdentityTest(unittest.TestCase):
         (directory / "README.md").write_text("operator instructions\n")
         (directory / "dev-container.sh").write_text("host development container helper\n")
         (directory / "entrypoint.sh").write_text("release runtime\n")
+        cleanup = self.root / "tools/pixi-tasks/clean-build.sh"
+        cleanup.parent.mkdir(parents=True, exist_ok=True)
+        cleanup.write_text("host build cleanup\n")
         self.commit()
         revision = self.git("rev-parse", "HEAD")
         (oci / "runtime.py").write_text("host CPU shares commands\n")
@@ -247,6 +250,7 @@ class ImageIdentityTest(unittest.TestCase):
         (oci / "README.md").write_text("root containerd acceptance instructions\n")
         (directory / "README.md").write_text("new service-selection instructions\n")
         (directory / "dev-container.sh").write_text("changed host cleanup command\n")
+        cleanup.write_text("privileged host build cleanup\n")
         self.assertTrue(verify_server_sources(self.root, revision)["server_sources_match"])
         (oci / "Dockerfile").write_text("changed image recipe\n")
         with self.assertRaisesRegex(ValueError, "Dockerfile"):

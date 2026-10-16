@@ -4,6 +4,8 @@
 use super::{json, Api, Duration, Error, Instant, Result, State, Value};
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient, ServiceRegistryClient};
 
+mod files;
+
 pub(super) async fn prepare(api: &Api, state: &mut State) -> Result<()> {
     let groups = api.get("/api/stores/0/groups").await?;
     if !array(&groups, "Store groups")?
@@ -45,7 +47,7 @@ pub(super) async fn prepare(api: &Api, state: &mut State) -> Result<()> {
             .ok_or_else(|| Error::Config("disk inventory is invalid".into()))?
             .is_empty()
         {
-            api.post(&format!("/api/nodes/{node}/disk-groups/{node}/disks"),json!({"disk_id":format!("{node:032x}"),"disk_type":"Hdd","capacity_bytes":16u64*1024*1024*1024,"zone_size_bytes":1024u64*1024*1024,"unit_size_bytes":128*1024,"device_path":"/opt/crowdb/data/disk.img"})).await?;
+            files::prepare(api, state, node).await?;
         }
     }
     wait_http(api, &state.addresses, 7101, "/ready", "Diskdb").await?;

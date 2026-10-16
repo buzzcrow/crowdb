@@ -230,7 +230,8 @@ async fn default_file_waits_for_metadata_then_reuses_one_durable_request_and_gro
         common::{GroupValue, NodeValue, RackValue},
         key::{KvGroupKey, TextKey},
     };
-    let directory = crowdb_test_harness::test_dirs::tempdir_in_test_data("node-setup-default");
+    // Keep the socket pathname short enough for CI checkout prefixes.
+    let directory = crowdb_test_harness::test_dirs::tempdir_in_test_data("setup");
     let root = directory.path();
     let mut intent = request(root);
     for service in &mut intent.choices.services {
@@ -346,7 +347,8 @@ async fn observe_file_requests(
 async fn service_failure_budget_survives_restart_and_yields_to_a_new_operator_command() {
     use crowdb_monitor::NodeServiceForTests;
     use crowdb_protocol::mgmt::node::{NodeServiceAction, NodeServiceIntent};
-    let directory = crowdb_test_harness::test_dirs::tempdir_in_test_data("node-service-budget");
+    // Keep the socket pathname short enough for CI checkout prefixes.
+    let directory = crowdb_test_harness::test_dirs::tempdir_in_test_data("budget");
     let root = directory.path();
     let mut request = request(root);
     request.choices.storage = SetupStorage::Diskless;

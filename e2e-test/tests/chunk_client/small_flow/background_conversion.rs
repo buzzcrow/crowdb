@@ -164,8 +164,15 @@ async fn chunkdb_restart_recovers_an_inflight_conversion_claim() {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })
-    .await
-    .expect("restarted chunkdb did not recover conversion task");
+    .await;
+    let recovered = match recovered {
+        Ok(chunk) => chunk,
+        Err(error) => panic!(
+            "restarted chunkdb did not recover conversion task: {error}; chunk={:?}; metrics={}",
+            stack.query_chunk(&locations[0]).await,
+            stack.conversion_metrics().await
+        ),
+    };
     assert_eq!(recovered.strips.len(), 2);
     for (group, strip) in recovered.strips.iter().enumerate() {
         let Some(Strip::EcStrip(ec)) = &strip.strip else {

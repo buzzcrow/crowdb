@@ -11,77 +11,108 @@ redacted diagnostics stay in the recorded artifact roots.
 
 Linux Docker bridge; clients run on the host and use inspected container IPs
 and fixed ports. Wall times include startup, clients and teardown, excluding
-shared builds. Record complete domain runs, including failures. Current Console
-and Deployment baselines use two case slots. New runs use 1024 CPU shares per
-container without a CPU quota; complete native nodes retain 2048 MiB / 512 PIDs. Exact image and resource settings stay in run artifacts.
+shared builds. Record complete domain runs, including failures. Requested
+concurrency and actual case capacity are recorded separately. New runs use 1024
+CPU shares per container without a CPU quota; complete native nodes retain
+2048 MiB / 512 PIDs. Exact image and resource settings stay in run artifacts.
 
 ### Container domains
 
 | Domain       | Date       | Passed / failed / skipped | Wall s   | Previous s |
 | ------------ | ---------- | ------------------------- | -------- | ---------- |
-| KV           | 2026-10-13 | 50 / 0 / 0                | 126.685  | 96.977     |
-| Diskdb       | 2026-10-13 | 5 / 0 / 0                 | 12.679   | 17.637     |
-| Diskio       | 2026-10-13 | 8 / 0 / 0                 | 27.230   | 21.935     |
-| Chunkdb      | 2026-10-13 | 11 / 0 / 0                | 87.330   | 148.686    |
-| Chunk client | 2026-10-13 | 40 / 0 / 0                | 349.746  | 642.098    |
-| Chunk stream | 2026-10-13 | 4 / 0 / 0                 | 42.558   | 69.960     |
-| Chunk-KV     | 2026-10-13 | 2 / 0 / 0                 | 30.160   | 37.811     |
-| S3           | 2026-10-13 | 43 / 0 / 0                | 877.167  | 1545.602   |
-| Iceberg      | 2026-10-13 | 32 / 0 / 0                | 2187.829 | 1762.795   |
-| Dataset      | 2026-10-13 | 2 / 0 / 0                 | 23.609   | 35.568     |
-| Console      | 2026-10-13 | 153 / 0 / 0               | 2223.972 | 2075.462   |
-| Deployment   | 2026-10-13 | 33 / 0 / 0                | 310.503  | 314.358    |
+| KV           | 2026-10-16 | 50 / 0 / 0                | 167.177  | 126.685    |
+| Diskdb       | 2026-10-16 | 5 / 0 / 0                 | 12.531   | 12.679     |
+| Diskio       | 2026-10-16 | 8 / 0 / 0                 | 20.851   | 27.230     |
+| Chunkdb      | 2026-10-16 | 11 / 0 / 0                | 145.752  | 87.330     |
+| Chunk client | 2026-10-16 | 40 / 0 / 0                | 538.994  | 349.746    |
+| Chunk stream | 2026-10-16 | 4 / 0 / 0                 | 60.849   | 42.558     |
+| Chunk-KV     | 2026-10-16 | 2 / 0 / 0                 | 35.266   | 30.160     |
+| S3           | 2026-10-16 | 43 / 0 / 0                | 1009.182 | 877.167    |
+| Iceberg      | 2026-10-16 | 32 / 0 / 0                | 1984.972 | 2187.829   |
+| Dataset      | 2026-10-16 | 5 / 0 / 0                 | 121.596  | 23.609     |
+| Console      | 2026-10-16 | 159 / 0 / 0               | 3211.651 | 2223.972   |
+| Deployment   | 2026-10-16 | 33 / 0 / 0                | 307.108  | 310.503    |
 
-- All domains pass on the `9c0f8805` debug release. Iceberg uses one case slot
-  under the 4-CPU / 16384-MiB budget, including the original approximately
-  20-minute retirement grace; its previous baseline used two slots. This
-  concurrency difference prevents a direct performance comparison. CPU shares
-  apply throughout the rerun; worker limits were introduced during that run.
-  The final one-worker configuration also passes focused concurrent PUT and
-  all six special profiles. Diagnostics: `/tmp/crowdb-r230-shares-public`.
-- Special profiles pass on the final image: bridge SSH 148.600 s, Linux host
-  7.759 s, containerd host/cluster 111.815 / 112.784 s, five-engine Iceberg
-  127.531 s and Python/DuckDB 20.458 s. New runs use CPU shares and one Tokio
-  worker per service.
+- The 2026-10-16 full run completed on the working tree based on `664f04a1`:
+  all twelve domains passed, with 392 scenario executions and no failures or
+  skips. KV includes four additional isolation/recovery probes beyond the
+  388 named flows. The first ten domains used optimized, stripped image
+  `5ede9f3a4f76` and source tree `03c0eb9e7f40`; Console and Deployment used
+  image `7a176ef2218b` and source tree `8bba22a39c62` after the UI repair.
+  Container wall time uses `timings.scenarios_wall`, excluding shared client
+  and image builds. Each task requests two case slots and a 4-CPU admission
+  budget; per-domain memory budgets and actual slot capacity stay in artifacts.
+- Previous rows used the `9c0f8805` debug release. Iceberg uses one case slot
+  and includes the approximately 20-minute retirement grace in both runs. Build
+  profile, cache state and concurrency differences prevent direct performance
+  comparison. Historical diagnostics: `/tmp/crowdb-r230-shares-public`.
+- Historical special profiles passed on that earlier image: bridge SSH
+  148.600 s, Linux host 7.759 s, containerd host/cluster 111.815 / 112.784 s,
+  five-engine Iceberg 127.531 s and Python/DuckDB 20.458 s. These profiles
+  are separate from the standard twelve-domain full suite.
+- Current container results and logs:
+  `.crowdb-runtime/artifacts/measure-tests/20261016T031530.418485Z/` and
+  `.crowdb-runtime/artifacts/measure-tests/20261016T054410.910103Z/`.
+  Consolidated verification and source/resource identities:
+  `.crowdb-runtime/artifacts/measure-tests/20261016T031530.418485Z/full-test-summary.json`.
+- The first full attempt exposed a lost RPC write-interest rearm during
+  ChunkDB conversion recovery. Its Chunk Client result was 39 passed / 1 failed.
+  After fixing the event ordering, the complete domain passes 40 / 0 with the
+  original timeout. Initial diagnostics remain under
+  `.crowdb-runtime/artifacts/measure-tests/20261016T014707.773546Z/`.
+- The next full Console attempt completed 159 flows with 152 passed / 7 failed.
+  It exposed stale storage/menu contracts, an authority recovery ordering gap
+  in a browser test and a scroll restoration race. After repair, the complete
+  Console and Deployment reruns passed 159 / 0 and 33 / 0 respectively
+  under `.crowdb-runtime/artifacts/measure-tests/20261016T054410.910103Z/`,
+  using image `7a176ef2218b` and source tree `8bba22a39c62`. The runtime source
+  difference from the earlier image is confined to UI scroll restoration.
 
 ### Component tests
 
 One row per owning domain, combining its Rust/C++ packages and SDK protocol
-peers. Wall times include compilation inside each component command; the shared
-C++ prerequisite build is excluded. Cache state affects comparisons. All gates
-pass without skipped cases; UI also passes its lint/type checks.
+peers. The 2026-10-16 component run passes all 4,658 cases, including an explicit run
+of the installed-wheel Dataset Split HTTP test skipped by the standard Access
+task. All twelve container domains also pass.
+
+Wall times include compilation inside each component command; the shared C++
+prerequisite and OCI builds are excluded. The shared image was rebuilt after the RPC fix,
+and component tasks ran sequentially with existing compilation caches. Cache
+state and dependency recompilation affect comparisons.
 
 | Domain              | Date       | Passed / failed / skipped | Wall s  | Previous s |
 | ------------------- | ---------- | ------------------------- | ------- | ---------- |
-| access              | 2026-10-13 | 117 / 0 / 0               | 125.050 | —          |
-| chunk-client        | 2026-10-13 | 125 / 0 / 0               | 41.324  | —          |
-| chunk-kv            | 2026-10-13 | 148 / 0 / 0               | 213.867 | —          |
-| chunk-stream        | 2026-10-13 | 50 / 0 / 0                | 26.958  | —          |
-| chunkdb             | 2026-10-13 | 158 / 0 / 0               | 113.006 | —          |
-| common              | 2026-10-13 | 112 / 0 / 0               | 12.033  | —          |
-| console             | 2026-10-13 | 264 / 0 / 0               | 190.015 | —          |
-| console-ui          | 2026-10-13 | 183 / 0 / 0               | 17.968  | —          |
-| dataset             | 2026-10-13 | 37 / 0 / 0                | 7.199   | —          |
-| deployment          | 2026-10-13 | 75 / 0 / 0                | 45.902  | —          |
-| diskdb              | 2026-10-13 | 183 / 0 / 0               | 40.249  | —          |
-| diskio              | 2026-10-13 | 58 / 0 / 0                | 20.891  | —          |
-| iceberg             | 2026-10-13 | 716 / 0 / 0               | 359.299 | —          |
-| kv                  | 2026-10-13 | 738 / 0 / 0               | 144.680 | —          |
-| protocol            | 2026-10-13 | 221 / 0 / 0               | 23.567  | —          |
-| rpc                 | 2026-10-13 | 81 / 0 / 0                | 4.793   | —          |
-| s3                  | 2026-10-13 | 114 / 0 / 0               | 13.606  | —          |
-| test-infrastructure | 2026-10-13 | 138 / 0 / 0               | 5.041   | —          |
-| tree                | 2026-10-13 | 598 / 0 / 0               | 70.605  | —          |
+| access              | 2026-10-16 | 154 / 0 / 0               | 209.090 | 125.050    |
+| chunk-client        | 2026-10-16 | 125 / 0 / 0               | 13.000  | 41.324     |
+| chunk-kv            | 2026-10-16 | 153 / 0 / 0               | 46.565  | 213.867    |
+| chunk-stream        | 2026-10-16 | 50 / 0 / 0                | 12.421  | 26.958     |
+| chunkdb             | 2026-10-16 | 160 / 0 / 0               | 137.869 | 113.006    |
+| common              | 2026-10-16 | 112 / 0 / 0               | 10.097  | 12.033     |
+| console             | 2026-10-16 | 293 / 0 / 0               | 177.636 | 190.015    |
+| console-ui          | 2026-10-16 | 275 / 0 / 0               | 18.570  | 17.968     |
+| dataset             | 2026-10-16 | 175 / 0 / 0               | 83.589  | 7.199      |
+| deployment          | 2026-10-16 | 130 / 0 / 0               | 89.446  | 45.902     |
+| diskdb              | 2026-10-16 | 201 / 0 / 0               | 37.024  | 40.249     |
+| diskio              | 2026-10-16 | 70 / 0 / 0                | 9.451   | 20.891     |
+| iceberg             | 2026-10-16 | 741 / 0 / 0               | 352.876 | 359.299    |
+| kv                  | 2026-10-16 | 790 / 0 / 0               | 92.181  | 144.680    |
+| protocol            | 2026-10-16 | 240 / 0 / 0               | 9.585   | 23.567     |
+| rpc                 | 2026-10-16 | 83 / 0 / 0                | 77.733  | 4.793      |
+| s3                  | 2026-10-16 | 114 / 0 / 0               | 9.400   | 13.606     |
+| test-infrastructure | 2026-10-16 | 191 / 0 / 0               | 7.779   | 5.041      |
+| tree                | 2026-10-16 | 601 / 0 / 0               | 69.870  | 70.605     |
 
-- The C++ gate retains 765 cases and removes 205 repeated Common/RPC executions
-  inherited through nested CTest projects. S3 benchmark workload accounting now
-  uses a deterministic protocol peer; its 200-operation and result assertions
-  remain, without a host production-server launcher.
-- Test infrastructure includes Rust, fixture/dispatch and OCI checks.
-  CI ownership covers 28 packages and 379 named flows.
-- Measurements: `.crowdb-runtime/artifacts/unit/` and
-  `.crowdb-runtime/artifacts/measure-tests/`. The earlier Access whole-task
-  baseline was 481.483 s; the unified task now passes 1051 cases in 378.41 s.
+- C++/FFI passes 779 cases. Common/RPC cases inherited through nested CTest
+  projects are counted only under their owning project.
+- Dataset includes the standalone SDK workspace and ten installed Python wheel
+  consumer tests. The SDK source-distribution build reruns the same twenty Rust
+  tests; those repeated executions are not counted twice.
+- Test infrastructure includes four Rust cases, 155 fixture/dispatch cases and
+  32 OCI checks. CI ownership covers 28 packages and 388 named container flows.
+- UI passes its type checks. Workspace Rust fmt/Clippy, standalone SDK boundary,
+  fmt/Clippy and CI test-task coverage checks pass.
+- Component command logs: `.crowdb-runtime/artifacts/unit/`. Aggregated results:
+  `.crowdb-runtime/artifacts/measure-tests/20261016T031530.418485Z/component-summary.json`.
 
 ## amd5950
 

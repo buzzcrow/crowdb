@@ -122,6 +122,7 @@ test('native diagnostics: hardware capacity aggregates disks and dashed status u
   await page.getByRole('main').getByRole('button', { name: 'Refresh', exact: true }).click();
   await expect(page.getByRole('alert').filter({ hasText: 'hardware inventory' })).toHaveCount(0);
   await expect(disks).toBeVisible();
+  await expect(sidebar.getByRole('button', { name: 'Add Rack', exact: true })).toBeVisible();
   await verifyNodeFileWorkspace(page, request);
   await verifySuppliedCandidates(page, request);
 });

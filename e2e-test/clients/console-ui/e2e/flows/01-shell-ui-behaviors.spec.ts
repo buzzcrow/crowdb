@@ -92,7 +92,9 @@ test('shell defaults and tree interactions distinguish live and stopped release 
   await expect(storage).toHaveAttribute('aria-expanded', 'false');
   await page.getByTestId('domain-capacity').click();
   await expect(node).toHaveAttribute('aria-selected', 'true');
-  await expect(page.getByRole('heading', { name: 'Capacity — Node 3', exact: true })).toBeVisible();
+  await expect(page.getByLabel('Node 3 workspace', { exact: true })).toBeVisible();
+  await expect(page.getByRole('navigation', { name: 'Cluster scope' })
+    .getByRole('button', { name: 'N-3', exact: true })).toHaveAttribute('aria-current', 'page');
   await expect(sidebar.getByTestId('tree-node-SERVICES-3')).toBeVisible();
   await storage.getByRole('button', { name: 'Expand', exact: true }).click();
   await expect(storage).toHaveAttribute('aria-expanded', 'true');

@@ -13,8 +13,9 @@ async fn degraded_ec_recovers_protection_and_exact_bytes_after_node_returns() {
     let (client, io) = super::super::conversion::clients().await;
     let hw = HardwareClient::new(crate::common::hardware::kv_client());
     assert_eq!(crate::common::control::node("kill", 4).await["Running"], false);
+    // Maintenance withholds placement capacity while preserving admitted media.
     for index in 2..6 {
-        hw.set_node_status(100 + index, 10 + index, HwStatus::Offline)
+        hw.set_node_status(100 + index, 10 + index, HwStatus::Maintenance)
             .await
             .unwrap();
     }
@@ -70,7 +71,7 @@ async fn degraded_ec_recovers_protection_and_exact_bytes_after_node_returns() {
             .placement_repair_required
     );
     hw.set_node_status(102, 12, HwStatus::Up).await.unwrap();
-    let repaired = repaired(&client, id).await;
+    let repaired = repaired(&client, &tasks, id).await;
     let assessment = repaired.strips[0].placement_assessment.as_ref().unwrap();
     assert!(assessment.rack_protected && assessment.node_protected && assessment.disk_protected);
     let Strip::EcStrip(ec) = repaired.strips[0].strip.as_ref().unwrap() else {
@@ -119,6 +120,7 @@ async fn attempted(
 
 async fn repaired(
     client: &crowdb_chunkdb_client::ChunkdbClient,
+    tasks: &crowdb_chunkdb::task::TaskStore,
     id: crowdb_protocol::common::ChunkId,
 ) -> crowdb_protocol::chunkdb::rpc::Chunk {
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -132,10 +134,10 @@ async fn repaired(
         if !current.strips[0].placement_repair_required {
             return current;
         }
-        assert!(
-            Instant::now() < deadline,
-            "node return did not repair placement: {current:?}"
-        );
+        if Instant::now() >= deadline {
+            let pending = tasks.list_partition(&id).await.unwrap();
+            panic!("node return did not repair placement: {current:?}; tasks: {pending:?}");
+        }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }

@@ -67,7 +67,8 @@ def run_profile(args, parser):
         parser.error(f"bridge admission requires a Linux daemon with {cpus:g} CPU / {memory} MiB")
     identity = json.loads(docker("image", "inspect", args.image))[0]
     labels = identity["Config"].get("Labels") or {}
-    source = verify_server_sources(ROOT, labels.get("org.opencontainers.image.revision"))
+    source = verify_server_sources(ROOT, labels.get("org.opencontainers.image.revision"),
+                                   labels.get("org.crowdb.source.tree") or None)
     run_root = args.artifacts / ("run-" + uuid.uuid4().hex)
     run_root.mkdir(parents=True)
     data = (args.data_root / run_root.name / "admission" if args.data_root else
