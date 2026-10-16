@@ -8,7 +8,9 @@ fn verify(protocol: &str, port: &str) {
     assert_eq!(result["protocol"], protocol);
     assert_eq!(result["fixed_listener"], port);
     assert_eq!(result["event"], "child_exited");
-    assert!(result["after"]["generation"] > result["before"]["generation"]);
+    let before_generation = result["before"]["generation"].as_u64().unwrap();
+    let after_generation = result["after"]["generation"].as_u64().unwrap();
+    assert!(after_generation > before_generation);
     assert_ne!(result["after"]["pid"], result["before"]["pid"]);
 }
 
