@@ -195,6 +195,7 @@ struct WorkerState {
     extents: Vec<Extent>,
     mirror_shadow: MirrorShadow,
     stalled: bool,
+    last_unavailable_log: Option<Instant>,
     metrics: Arc<StreamMetrics>,
 }
 
@@ -505,6 +506,7 @@ impl ChunkStream {
             extents,
             mirror_shadow: MirrorShadow::default(),
             stalled: false,
+            last_unavailable_log: None,
             metrics: Arc::clone(&metrics),
         };
         tokio::spawn(run_worker(state, receiver));
@@ -1210,7 +1212,7 @@ async fn prepare_active_for_append(state: &mut WorkerState, first_len: usize) ->
                     return Err(error);
                 }
                 Err(error) => {
-                    tracing::warn!(%error, "chunk-stream allocation remains unavailable");
+                    state.log_unavailable("allocate", &error);
                     tokio::time::sleep(Duration::from_millis(100)).await;
                     continue;
                 }
@@ -1230,13 +1232,33 @@ async fn prepare_active_for_append(state: &mut WorkerState, first_len: usize) ->
                 return Err(error);
             }
             Err(error) => {
-                tracing::warn!(%error, "chunk-stream growth remains unavailable");
+                state.log_unavailable("grow", &error);
                 match rollover(state).await {
                     Ok(()) if fits_active(state, first_len) => return Ok(()),
                     Err(StreamError::StaleWriter) => return Err(StreamError::StaleWriter),
                     _ => tokio::time::sleep(Duration::from_millis(100)).await,
                 }
             }
+        }
+    }
+}
+
+impl WorkerState {
+    fn log_unavailable(&mut self, stage: &'static str, error: &StreamError) {
+        let now = Instant::now();
+        let should_log = self
+            .last_unavailable_log
+            .map_or(true, |last| now.duration_since(last) >= Duration::from_secs(1));
+        if should_log {
+            self.last_unavailable_log = Some(now);
+            tracing::warn!(
+                stream_high = self.stream_name.high,
+                stream_low = self.stream_name.low,
+                writer_epoch = self.writer_epoch,
+                stage,
+                %error,
+                "chunk-stream storage remains unavailable; retrying"
+            );
         }
     }
 }

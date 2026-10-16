@@ -16,6 +16,30 @@ from unittest.mock import patch
 
 
 class FailureLogsTest(unittest.TestCase):
+    def test_transient_warning_only_logs_do_not_become_failure_summaries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifacts = root / "artifacts"
+            artifacts.mkdir()
+            data = root / "node1"
+            logs = data / "log" / "chunk-kv-1"
+            logs.mkdir(parents=True)
+            (logs / "server.log").write_text(
+                "2026-10-16T12:00:00Z  WARN worker: retrying error=connection refused\n")
+            (logs / "service.log").write_text(
+                "[2026-10-16 12:00:00] [warning] retrying connection\n")
+            (artifacts / "prepare-inspect.error").write_text(
+                "Error: No such container: prepare\n")
+            output = io.StringIO()
+            with patch.dict("os.environ", {"CROWDB_E2E_PRINT_SERVICE_ERRORS": "1"}), \
+                 contextlib.redirect_stdout(output):
+                print_failure(artifacts, [data], "case", RuntimeError("browser failed"), redact)
+            text = output.getvalue()
+            self.assertIn("[FAILED CASE] case", text)
+            self.assertNotIn("FAILURE SUMMARY", text)
+            self.assertNotIn("retrying", text)
+            self.assertNotIn("No such container", text)
+
     def test_service_errors_stacks_raw_stderr_and_archives_are_redacted(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
