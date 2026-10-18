@@ -44,6 +44,11 @@ validation includes executing the single-node multi-container OCI profiles
 against a built `crowdb:test` image. Physical
 multi-node validation is deferred to [the separate follow-up plan](plan-rdma-multi-node.md).
 
+The C++ unit/integration gate and Rust FFI tests pass after the teardown and
+completion-error changes; `tree-lint` completes with the repository's existing
+clang-tidy warning set. The OCI profiles remain environment-dependent because
+the image requires a prepared data volume and discovery profile.
+
 ## R239 status checkpoint
 
 Completed:
