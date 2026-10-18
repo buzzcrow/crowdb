@@ -23,9 +23,11 @@ The CQ path now uses one transport-wide shared CQ for all QPs. Its completion
 channel is registered with one epoll engine; the worker drains completions with
 a bounded busy-poll budget and rearms notification after the queue is idle.
 Epoll is therefore only the wakeup path, while completion dispatch remains in
-the CQ drain. Stop now wakes the owning engine, CQ polling counters are exposed,
-and CM disconnect events close and retire their connection pools before QP/ID
-teardown. Capability handshake bytes
+the CQ drain. Stop now wakes the owning engine, CQ polling and completion-error
+counters are exposed, and CM disconnect events close and retire their connection
+pools before QP/ID teardown. The OCI runner now also has an unprivileged
+shared-HCA profile with explicit verbs/CM devices, IPC_LOCK, and bounded
+memlock. Capability handshake bytes
 have a fixed wire representation with round-trip tests. Negotiated capability
 exchange through the existing TCP handshake, common transport path
 selection/fallback, receive repost after owner release, and two-peer OCI E2E
@@ -140,8 +142,8 @@ Remaining:
 - [ ] **Reject mixed completion**: after any payload submission, fail the stream
   on uncertainty and never enqueue a TCP suffix.
 - [ ] **Add metrics**: posted receives, fallback count, quarantined bytes, CQ
-  poll/empty-poll counts, and CM disconnects are exposed; QP state, CQ depth,
-  and RNR/retry counters remain.
+  poll/empty-poll counts, CM disconnects, flush, local-protection, retry, and
+  remote-access errors are exposed; QP state, CQ depth, and RNR counters remain.
 
 ## Tests
 

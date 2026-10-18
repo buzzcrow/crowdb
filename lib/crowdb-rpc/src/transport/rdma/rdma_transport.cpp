@@ -883,6 +883,27 @@ bool RdmaTransport::prime_receive(const std::shared_ptr<Connection> &connection)
     return true;
 }
 
+void RdmaTransport::record_completion_error(const ibv_wc &wc)
+{
+    stats_.cq_errors.fetch_add(1, std::memory_order_relaxed);
+    switch (wc.status) {
+    case IBV_WC_WR_FLUSH_ERR:
+        stats_.flush_errors.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case IBV_WC_LOC_PROT_ERR:
+        stats_.local_protection_errors.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case IBV_WC_RETRY_EXC_ERR:
+        stats_.retry_exceeded_errors.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case IBV_WC_REM_ACCESS_ERR:
+        stats_.remote_access_errors.fetch_add(1, std::memory_order_relaxed);
+        break;
+    default:
+        break;
+    }
+}
+
 void RdmaTransport::release_completed_receive(ibv_wc &wc)
 {
 
@@ -890,7 +911,7 @@ void RdmaTransport::release_completed_receive(ibv_wc &wc)
     if (work == nullptr)
         return;
     auto quarantine_and_release = [&] {
-        stats_.cq_errors.fetch_add(1, std::memory_order_relaxed);
+        record_completion_error(wc);
         work->conn->close();
         (void)work->slot->quarantine();
         work->slot->release();
@@ -969,7 +990,7 @@ void RdmaTransport::release_completed_frame(ibv_wc &wc)
         return;
 
     if (wc.status != IBV_WC_SUCCESS) {
-        stats_.cq_errors.fetch_add(1, std::memory_order_relaxed);
+        record_completion_error(wc);
         // A failed SEND makes the stream uncertain; do not allow a TCP
         // suffix to be appended to this RDMA connection.
         if (frame->control != nullptr)

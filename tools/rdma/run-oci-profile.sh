@@ -17,11 +17,13 @@ fi
 
 if [[ -z "$profile" || "$profile" == "-h" || "$profile" == "--help" ]]; then
     cat >&2 <<'USAGE'
-usage: run-oci-profile.sh tcp-only|shared-hca [image]
+usage: run-oci-profile.sh tcp-only|shared-hca|shared-hca-unprivileged [image]
 
 tcp-only  starts one container without RDMA devices or RDMA capability.
 shared-hca starts one privileged host-network container using the shared HCA;
            invoke it once per logical container on the physical host.
+shared-hca-unprivileged starts without --privileged and grants only the
+                    verbs/CM devices, IPC_LOCK, and a bounded memlock limit.
 USAGE
     exit 2
 fi
@@ -38,6 +40,22 @@ case "$profile" in
         ;;
     shared-hca)
         exec docker run --rm --network=host --privileged --ulimit memlock=-1 \
+            -e CROWDB_RDMA_ENABLED=1 \
+            -e CROWDB_RDMA_SHARED_HCA=1 \
+            -e CROWDB_PORT_OFFSET="$port_offset" \
+            -e CROWDB_RDMA_E2E_PORT="$rdma_cm_port" \
+            "${rdma_source_env[@]}" \
+            -e CROWDB_STARTUP_MODE="$startup_mode" \
+            -e CROWDB_MANAGEMENT_INTERFACE="$management_interface" \
+            -e CROWDB_RDMA_DEVICE="${CROWDB_RDMA_DEVICE:-mlx5_0}" \
+            -e CROWDB_RDMA_PORT="${CROWDB_RDMA_PORT:-1}" \
+            "$image"
+        ;;
+    shared-hca-unprivileged)
+        exec docker run --rm --network=host \
+            --device /dev/infiniband/uverbs0 \
+            --device /dev/infiniband/rdma_cm \
+            --cap-add IPC_LOCK --ulimit memlock=67108864:67108864 \
             -e CROWDB_RDMA_ENABLED=1 \
             -e CROWDB_RDMA_SHARED_HCA=1 \
             -e CROWDB_PORT_OFFSET="$port_offset" \

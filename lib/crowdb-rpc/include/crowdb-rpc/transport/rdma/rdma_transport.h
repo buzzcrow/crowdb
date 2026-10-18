@@ -80,6 +80,10 @@ class RdmaTransport : public Transport
         std::atomic<uint64_t> cq_polls{0};
         std::atomic<uint64_t> cq_empty_polls{0};
         std::atomic<uint64_t> cm_disconnects{0};
+        std::atomic<uint64_t> flush_errors{0};
+        std::atomic<uint64_t> local_protection_errors{0};
+        std::atomic<uint64_t> retry_exceeded_errors{0};
+        std::atomic<uint64_t> remote_access_errors{0};
     };
 
     RdmaTransport();
@@ -177,6 +181,7 @@ class RdmaTransport : public Transport
 
     void        release_completed_frame(struct ibv_wc &wc);
     void        release_completed_receive(struct ibv_wc &wc);
+    void        record_completion_error(const struct ibv_wc &wc);
     static void repost_frame_release(void *context, Buffer *data);
 };
 
