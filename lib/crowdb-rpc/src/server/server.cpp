@@ -180,7 +180,8 @@ void RpcServer::start()
     }
     CRB_LOG_INFO("rpc server: starting");
     if (const char *enabled = std::getenv("CROWDB_RDMA_ENABLED");
-        enabled != nullptr && std::strcmp(enabled, "1") == 0) {
+        enabled != nullptr && std::strcmp(enabled, "1") == 0 &&
+        !(std::getenv("CROWDB_RDMA_LISTEN") != nullptr && std::strcmp(std::getenv("CROWDB_RDMA_LISTEN"), "0") == 0)) {
         transport_->set_rdma_accept_handler([this](const std::shared_ptr<Connection> &conn) {
             transport_->attach_rdma_connection(
                 conn, [this](Frame *frame, Connection *c) { dispatch(frame, c); },

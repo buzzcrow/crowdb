@@ -34,6 +34,9 @@ pub struct RpcArgs {
     /// fb-server port to connect to.
     #[arg(long)]
     pub server_port: u16,
+    /// Address used for the TCP handshake and RDMA CM connection.
+    #[arg(long, default_value = "127.0.0.1")]
+    pub server_host: String,
     /// Enable TCP Nagle (coalesce small frames per writev).
     #[arg(long, default_value_t = false)]
     pub enable_nagle: bool,

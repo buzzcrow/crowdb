@@ -54,12 +54,12 @@ pub async fn run(log_dir: &Path, args: RpcArgs) -> ExitCode {
     // Connect `connections` connections to the fb-server.
     let mut conns: Vec<Connection> = Vec::with_capacity(args.connections.max(1));
     for _ in 0..args.connections.max(1) {
-        match server.connect("127.0.0.1", i32::from(args.server_port)) {
+        match server.connect(&args.server_host, i32::from(args.server_port)) {
             Ok(c) => conns.push(c),
             Err(e) => {
                 eprintln!(
-                    "error: connect to fb-server 127.0.0.1:{} failed: {e}",
-                    args.server_port
+                    "error: connect to fb-server {}:{} failed: {e}",
+                    args.server_host, args.server_port
                 );
                 server.stop();
                 return ExitCode::from(2);

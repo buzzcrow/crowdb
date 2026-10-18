@@ -7,7 +7,7 @@
 // until SIGTERM/SIGINT. On shutdown, prints transport stats to stdout
 // as key=value lines (parsed by the CLI bench runner).
 //
-// Usage: crowdb-rpc-fb-server [--port=18080] [--io-engines=1] [--io-workers=1]
+// Usage: crowdb-rpc-fb-server [--host=127.0.0.1] [--port=18080] [--io-engines=1] [--io-workers=1]
 //        [--enable-nagle] [--logdir=<path>] [--metrics-interval=5]
 // Short aliases: -p -e -w -n -l -m (e.g. -p=18080 -e=2 -w=4).
 // The default log directory is below the workspace runtime root.
@@ -36,6 +36,7 @@ static void on_signal(int /*signo*/)
 // gflags has no native alias support, so short forms (-p, -e, etc.) are
 // separate flags forwarded to the long ones after parse (see main).
 DEFINE_int32(port, 18080, "Listen port");
+DEFINE_string(host, "127.0.0.1", "Listen address");
 DEFINE_int32(p, 18080, "Alias for --port");
 DEFINE_uint32(io_engines, 1, "Independent epoll instances (round-robin). >1 parallelizes event queues.");
 DEFINE_uint32(e, 1, "Alias for --io_engines");
@@ -109,7 +110,7 @@ int main(int argc, char *argv[])
     crowdb_rpc_server_set_event_write(server, FLAGS_event_write ? 1 : 0);
     crowdb_rpc_server_set_send_queue_capacity(server, FLAGS_send_queue_capacity);
 
-    if (crowdb_rpc_server_listen(server, "127.0.0.1", FLAGS_port) != CROWDB_RPC_OK) {
+    if (crowdb_rpc_server_listen(server, FLAGS_host.c_str(), FLAGS_port) != CROWDB_RPC_OK) {
         std::fprintf(stderr, "error: failed to listen on port %d\n", FLAGS_port);
         crowdb_rpc_server_destroy(server);
         return 1;

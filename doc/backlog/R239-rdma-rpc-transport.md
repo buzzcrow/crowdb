@@ -83,6 +83,11 @@ without changing request semantics.
   completes CM/QP/send/receive/repost without invoking `sudo`, loading modules,
   moving links, or entering host namespaces. Invariant: privileged host setup
   is separated from unprivileged application execution. E2E test.
+- Given the RDMA benchmark runner uses the same echo workload as the TCP
+  regression benchmark, when it runs on a prepared HCA, it reports throughput,
+  latency percentiles, and errors for matching concurrency cases. Invariant:
+  transport regressions and large flow bugs are visible before downstream use.
+  Benchmark test.
 - Given an application linked against `crowdb-rpc`, when deployment provides
   verbs/rdmacm libraries, HCA device access, memlock, and peer reachability,
   the application uses the ordinary RPC API and the library selects RDMA or
