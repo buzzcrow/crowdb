@@ -9,6 +9,12 @@ startup_mode="${CROWDB_STARTUP_MODE:-single}"
 management_interface="${CROWDB_MANAGEMENT_INTERFACE:-eth0}"
 port_offset="${CROWDB_PORT_OFFSET:-0}"
 rdma_cm_port=$((19101 + port_offset))
+rdma_source_addr="${CROWDB_RDMA_SOURCE_ADDR:-}"
+rdma_source_env=()
+if [[ -n "$rdma_source_addr" ]]; then
+    rdma_source_env=(-e "CROWDB_RDMA_SOURCE_ADDR=$rdma_source_addr")
+fi
+
 if [[ -z "$profile" || "$profile" == "-h" || "$profile" == "--help" ]]; then
     cat >&2 <<'USAGE'
 usage: run-oci-profile.sh tcp-only|shared-hca [image]
@@ -36,6 +42,7 @@ case "$profile" in
             -e CROWDB_RDMA_SHARED_HCA=1 \
             -e CROWDB_PORT_OFFSET="$port_offset" \
             -e CROWDB_RDMA_E2E_PORT="$rdma_cm_port" \
+            "${rdma_source_env[@]}" \
             -e CROWDB_STARTUP_MODE="$startup_mode" \
             -e CROWDB_MANAGEMENT_INTERFACE="$management_interface" \
             -e CROWDB_RDMA_DEVICE="${CROWDB_RDMA_DEVICE:-mlx5_0}" \

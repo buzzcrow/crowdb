@@ -76,6 +76,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let target = std::env::var("TARGET").unwrap_or_default();
     let is_linux = target.contains("linux");
     let is_macos = target.contains("darwin");
+    let have_rdma = is_linux
+        && conda_prefix.as_ref().is_some_and(|prefix| {
+            prefix.join("include/infiniband/verbs.h").is_file()
+                && prefix.join("include/rdma/rdma_cma.h").is_file()
+                && (prefix.join("lib/libibverbs.so").is_file()
+                    || prefix.join("lib/libibverbs.so.1").is_file())
+                && (prefix.join("lib/librdmacm.so").is_file() || prefix.join("lib/librdmacm.so.1").is_file())
+        });
 
     sources.retain(|p| {
         let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
@@ -85,10 +93,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if name == "kqueue_engine.cpp" && !is_macos {
             return false;
         }
-        // RDMA stubs — excluded unless CROWDB_RPC_HAVE_RDMA is set.
-        if (name == "rdma_transport.cpp" || name == "rdma_buffer_pool.cpp")
-            && std::env::var("CROWDB_RPC_HAVE_RDMA").is_err()
-        {
+        // RDMA sources are included only when the Linux build environment
+        // provides both verbs and rdmacm headers/libraries.
+        if (name == "rdma_transport.cpp" || name == "rdma_buffer_pool.cpp") && !have_rdma {
             return false;
         }
         true
@@ -115,6 +122,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Enable spdlog in the C++ build (gates CR_LOG_* macros).
     if have_spdlog {
         build.define("CROWDB_HAVE_SPDLOG", "1");
+    }
+    if have_rdma {
+        build.define("CROWDB_RPC_HAVE_RDMA", "1");
+        if let Some(prefix) = &conda_prefix {
+            build.include(prefix.join("include"));
+            println!("cargo:rustc-link-search=native={}", prefix.join("lib").display());
+        }
+        println!("cargo:rustc-link-lib=dylib=ibverbs");
+        println!("cargo:rustc-link-lib=dylib=rdmacm");
     }
 
     // AddressSanitizer + LeakSanitizer (gated by CROWDB_ASAN=1).

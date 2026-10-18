@@ -172,6 +172,8 @@ RdmaTransport::RdmaTransport()
     ibv_device **devices      = ibv_get_device_list(&device_count);
     if (devices == nullptr || device_count == 0) {
 
+        CRB_LOG_WARN("rdma init: no verbs devices count={} errno={}", device_count, errno);
+
         if (devices != nullptr) {
             ibv_free_device_list(devices);
         }
@@ -194,6 +196,8 @@ RdmaTransport::RdmaTransport()
         }
         if (selected == nullptr) {
 
+            CRB_LOG_WARN("rdma init: requested device not found name={} count={}", requested_device, device_count);
+
             ibv_free_device_list(devices);
             return;
         }
@@ -202,10 +206,16 @@ RdmaTransport::RdmaTransport()
     ibv_free_device_list(devices);
     if (context_ == nullptr) {
 
+        CRB_LOG_WARN("rdma init: ibv_open_device failed name={} errno={}",
+                     requested_device == nullptr ? "default" : requested_device, errno);
+
         return;
     }
     ibv_port_attr port_attributes{};
     if (ibv_query_port(context_, port_, &port_attributes) != 0 || port_attributes.state != IBV_PORT_ACTIVE) {
+
+        CRB_LOG_WARN("rdma init: port unavailable port={} state={} errno={}", port_,
+                     static_cast<unsigned>(port_attributes.state), errno);
 
         ibv_close_device(context_);
         context_ = nullptr;
@@ -214,12 +224,16 @@ RdmaTransport::RdmaTransport()
     pd_ = ibv_alloc_pd(context_);
     if (pd_ == nullptr) {
 
+        CRB_LOG_WARN("rdma init: ibv_alloc_pd failed errno={}", errno);
+
         ibv_close_device(context_);
         context_ = nullptr;
         return;
     }
     comp_channel_ = ibv_create_comp_channel(context_);
     if (comp_channel_ == nullptr) {
+
+        CRB_LOG_WARN("rdma init: ibv_create_comp_channel failed errno={}", errno);
 
         ibv_dealloc_pd(pd_);
         pd_ = nullptr;
@@ -232,6 +246,8 @@ RdmaTransport::RdmaTransport()
         ::fcntl(comp_channel_->fd, F_SETFL, channel_flags | O_NONBLOCK);
     cq_ = ibv_create_cq(context_, 2048, this, comp_channel_, 0);
     if (cq_ == nullptr || ibv_req_notify_cq(cq_, 0) != 0) {
+
+        CRB_LOG_WARN("rdma init: CQ setup failed cq={} errno={}", static_cast<void *>(cq_), errno);
 
         if (cq_ != nullptr)
             ibv_destroy_cq(cq_);
@@ -655,8 +671,12 @@ std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int 
 
 bool RdmaTransport::listen(const std::string &addr, int port)
 {
-    if (pd_ == nullptr || addr.empty() || port <= 0 || port > 65535 || listen_id_ != nullptr)
+    if (pd_ == nullptr || addr.empty() || port <= 0 || port > 65535 || listen_id_ != nullptr) {
+
+        CRB_LOG_WARN("rdma listen: transport unavailable pd={} addr={} port={} existing_listener={}",
+                     static_cast<void *>(pd_), addr, port, listen_id_ != nullptr);
         return false;
+    }
     if (cm_channel_ == nullptr)
         cm_channel_ = rdma_create_event_channel();
     if (cm_channel_ == nullptr || rdma_create_id(cm_channel_, &listen_id_, this, RDMA_PS_TCP) != 0) {

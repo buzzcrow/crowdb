@@ -874,7 +874,17 @@ std::shared_ptr<Connection> SocketTransport::connect(const std::string &addr, in
 {
 #ifdef CROWDB_RPC_HAVE_RDMA
     if (rdma_transport_ != nullptr) {
-        if (auto rdma_conn = rdma_transport_->connect(addr, port); rdma_conn != nullptr) {
+        int rdma_port = port;
+        if (const char *offset_env = std::getenv("CROWDB_PORT_OFFSET"); offset_env != nullptr && *offset_env != '\0') {
+            char *end         = nullptr;
+            errno             = 0;
+            const long offset = std::strtol(offset_env, &end, 10);
+            if (errno == 0 && end != offset_env && *end == '\0' && offset >= 0 && offset <= 65535 - port)
+                rdma_port += static_cast<int>(offset);
+            else
+                CRB_LOG_WARN("connect: invalid RDMA port offset value={}", offset_env);
+        }
+        if (auto rdma_conn = rdma_transport_->connect(addr, rdma_port); rdma_conn != nullptr) {
             for (auto &engine : engines_)
                 rdma_transport_->register_events(engine.get());
             register_conn(rdma_conn);
