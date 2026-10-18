@@ -13,6 +13,16 @@ pub struct Buffer {
     handle: sys::crowdb_rpc_buffer_t,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct BufferLeaseMetadata {
+    pub request_id: u64,
+    pub stream_id: u64,
+    pub sequence: u64,
+    pub logical_offset: u64,
+    pub capacity: u32,
+    pub registration_id: u32,
+}
+
 /// An immutable, bounded scatter/gather data payload.
 ///
 /// Every view owns its underlying allocation until the RPC transport finishes
@@ -164,6 +174,37 @@ impl Buffer {
                 std::slice::from_raw_parts(ptr, len as usize)
             }
         }
+    }
+
+    #[must_use]
+    pub fn lease_metadata(&self) -> BufferLeaseMetadata {
+        unsafe {
+            BufferLeaseMetadata {
+                request_id: sys::crowdb_rpc_buffer_request_id(self.handle),
+                stream_id: sys::crowdb_rpc_buffer_stream_id(self.handle),
+                sequence: sys::crowdb_rpc_buffer_sequence(self.handle),
+                logical_offset: sys::crowdb_rpc_buffer_logical_offset(self.handle),
+                capacity: sys::crowdb_rpc_buffer_capacity(self.handle),
+                registration_id: sys::crowdb_rpc_buffer_registration_id(self.handle),
+            }
+        }
+    }
+
+    pub fn set_lease_metadata(&mut self, metadata: BufferLeaseMetadata, registration_id: u32) {
+        unsafe {
+            sys::crowdb_rpc_buffer_set_metadata(
+                self.handle,
+                metadata.request_id,
+                metadata.stream_id,
+                metadata.sequence,
+                metadata.logical_offset,
+                registration_id,
+            );
+        }
+    }
+
+    pub fn quarantine(&mut self) -> bool {
+        !self.handle.is_null() && unsafe { sys::crowdb_rpc_buffer_quarantine(self.handle) != 0 }
     }
 
     /// Take ownership of the handle (prevents Drop from releasing it).

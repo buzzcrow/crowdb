@@ -110,6 +110,61 @@ uint32_t crowdb_rpc_buffer_len(crowdb_rpc_buffer_t buf)
     }
 }
 
+uint32_t crowdb_rpc_buffer_capacity(crowdb_rpc_buffer_t buf)
+{
+    return (buf != nullptr && buf->buf != nullptr) ? buf->buf->capacity : 0;
+}
+
+uint64_t crowdb_rpc_buffer_request_id(crowdb_rpc_buffer_t buf)
+{
+    return (buf != nullptr && buf->buf != nullptr) ? buf->buf->request_id : 0;
+}
+
+uint64_t crowdb_rpc_buffer_stream_id(crowdb_rpc_buffer_t buf)
+{
+    return (buf != nullptr && buf->buf != nullptr) ? buf->buf->stream_id : 0;
+}
+
+uint64_t crowdb_rpc_buffer_sequence(crowdb_rpc_buffer_t buf)
+{
+    return (buf != nullptr && buf->buf != nullptr) ? buf->buf->sequence : 0;
+}
+
+uint64_t crowdb_rpc_buffer_logical_offset(crowdb_rpc_buffer_t buf)
+{
+    return (buf != nullptr && buf->buf != nullptr) ? buf->buf->logical_offset : 0;
+}
+
+uint32_t crowdb_rpc_buffer_registration_id(crowdb_rpc_buffer_t buf)
+{
+    return (buf != nullptr && buf->buf != nullptr) ? buf->buf->registration_id : 0;
+}
+
+void crowdb_rpc_buffer_set_metadata(crowdb_rpc_buffer_t buf, uint64_t request_id,
+                                    uint64_t stream_id, uint64_t sequence,
+                                    uint64_t logical_offset, uint32_t registration_id)
+{
+    if (buf != nullptr && buf->buf != nullptr) {
+        buf->buf->set_metadata(request_id, stream_id, sequence, logical_offset, registration_id);
+    }
+}
+
+int crowdb_rpc_buffer_transition(crowdb_rpc_buffer_t buf, int from, int to)
+{
+    if (buf == nullptr || buf->buf == nullptr || from < 0 || from > 6 || to < 0 || to > 6) {
+        return 0;
+    }
+    return buf->buf->transition(static_cast<crowdb::rpc::BufferOwnership>(from),
+                                static_cast<crowdb::rpc::BufferOwnership>(to))
+               ? 1
+               : 0;
+}
+
+int crowdb_rpc_buffer_quarantine(crowdb_rpc_buffer_t buf)
+{
+    return (buf != nullptr && buf->buf != nullptr && buf->buf->quarantine()) ? 1 : 0;
+}
+
 bool crowdb_rpc_buffer_detach(crowdb_rpc_buffer_t buf)
 {
     try {

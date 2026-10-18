@@ -33,6 +33,8 @@ class EpollEngine : public SocketEngine
 
     void add_listen_fd(int fd) override;
     void remove_listen_fd(int fd) override;
+    void add_external_fd(int fd, uint64_t tag) override;
+    void remove_external_fd(int fd) override;
     void add_connection(int read_fd, int write_fd, Connection *conn) override;
     void remove_connection(int read_fd, int write_fd) override;
     void arm_read(int read_fd, Connection *conn) override;
@@ -55,6 +57,7 @@ class EpollEngine : public SocketEngine
     // fd → Connection* map (only used for add/remove; wait() uses data.ptr).
     std::mutex                            conn_mu_;
     std::unordered_map<int, Connection *> connections_;
+    std::unordered_map<int, uint64_t>      external_fds_;
 
     void mod_fd(int fd, uint32_t events, Connection *conn) const;
     void mod_fd_write(int fd, uint32_t events, Connection *conn) const;

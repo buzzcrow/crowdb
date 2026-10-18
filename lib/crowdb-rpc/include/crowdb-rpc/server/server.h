@@ -92,6 +92,7 @@ class RpcServer
 
     int                                listen_fd_   = -1;
     int                                listen_port_ = 0;
+    std::string                        listen_addr_;
     std::string                        listener_key_;
     int                                listener_lock_fd_ = -1;
     std::atomic<bool>                  running_{false};

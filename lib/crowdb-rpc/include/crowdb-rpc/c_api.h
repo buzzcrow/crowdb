@@ -37,6 +37,17 @@ crowdb_rpc_buffer_t crowdb_rpc_buffer_alloc(crowdb_rpc_pool_t pool, uint32_t cap
 void                crowdb_rpc_buffer_write(crowdb_rpc_buffer_t buf, const uint8_t *data, uint32_t len);
 const uint8_t      *crowdb_rpc_buffer_data(crowdb_rpc_buffer_t buf);
 uint32_t            crowdb_rpc_buffer_len(crowdb_rpc_buffer_t buf);
+uint32_t            crowdb_rpc_buffer_capacity(crowdb_rpc_buffer_t buf);
+uint64_t            crowdb_rpc_buffer_request_id(crowdb_rpc_buffer_t buf);
+uint64_t            crowdb_rpc_buffer_stream_id(crowdb_rpc_buffer_t buf);
+uint64_t            crowdb_rpc_buffer_sequence(crowdb_rpc_buffer_t buf);
+uint64_t            crowdb_rpc_buffer_logical_offset(crowdb_rpc_buffer_t buf);
+uint32_t            crowdb_rpc_buffer_registration_id(crowdb_rpc_buffer_t buf);
+void                crowdb_rpc_buffer_set_metadata(crowdb_rpc_buffer_t buf, uint64_t request_id,
+                                                    uint64_t stream_id, uint64_t sequence,
+                                                    uint64_t logical_offset, uint32_t registration_id);
+int                 crowdb_rpc_buffer_transition(crowdb_rpc_buffer_t buf, int from, int to);
+int                 crowdb_rpc_buffer_quarantine(crowdb_rpc_buffer_t buf);
 bool                crowdb_rpc_buffer_detach(crowdb_rpc_buffer_t buf);
 crowdb_rpc_buffer_t crowdb_rpc_buffer_ref(crowdb_rpc_buffer_t buf);
 void                crowdb_rpc_buffer_release(crowdb_rpc_buffer_t buf);

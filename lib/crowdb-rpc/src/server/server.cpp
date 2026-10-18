@@ -7,6 +7,7 @@
 #include "crowdb-rpc/client/client.h" // RpcClient, RpcError (for request_client_ + fail_all)
 #include "crowdb-rpc/rpc_metrics.h"
 #include "crowdb-rpc/server/handler.h"
+#include "crowdb-rpc/transport/rdma/rdma_capability.h"
 #include "msg_type_generated.h"
 
 #include <arpa/inet.h>
@@ -18,6 +19,7 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -61,7 +63,8 @@ RpcServer::~RpcServer()
 
 bool RpcServer::listen(const std::string &addr, int port)
 {
-    listen_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
+    listen_addr_ = addr.empty() ? "0.0.0.0" : addr;
+    listen_fd_   = ::socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd_ < 0) {
         const int error = errno;
         CRB_LOG_ERROR("rpc server socket failed: addr={} port={} errno={} ({})", addr, port, error,
@@ -176,6 +179,21 @@ void RpcServer::start()
         return;
     }
     CRB_LOG_INFO("rpc server: starting");
+    if (const char *enabled = std::getenv("CROWDB_RDMA_ENABLED");
+        enabled != nullptr && std::strcmp(enabled, "1") == 0) {
+        transport_->set_rdma_accept_handler([this](const std::shared_ptr<Connection> &conn) {
+            transport_->attach_rdma_connection(
+                conn,
+                [this](Frame *frame, Connection *c) { dispatch(frame, c); },
+                [this](Connection *c) {
+                    if (request_client_ != nullptr)
+                        request_client_->fail_all(c, RpcError::ConnectionClosed);
+                });
+            transport_->send_rdma_handshake(conn);
+        });
+        if (!transport_->listen_rdma(listen_addr_, listen_port_))
+            CRB_LOG_WARN("rpc server: RDMA listener unavailable; TCP remains active");
+    }
     transport_->start();
     // Register the listen fd with the I/O worker's epoll loop instead of
     // a dedicated acceptor thread. The worker's epoll loop is already
@@ -267,6 +285,7 @@ void RpcServer::handle_accept(int listen_fd)
                     request_client_->fail_all(c, RpcError::ConnectionClosed);
                 }
             });
+        transport_->send_rdma_handshake(conn);
         CRB_LOG_INFO("rpc server: connection accepted {}:{} -> conn_id={}", peer_ip, peer_port,
                      static_cast<long long>(conn->id()));
     }
@@ -276,6 +295,14 @@ void RpcServer::dispatch(Frame *frame, Connection *conn)
 {
     uint16_t msg_type   = frame->header.msg_type;
     bool     is_one_way = (frame->header.flags & FLAG_ONE_WAY) != 0;
+
+    if (msg_type == RDMA_HANDSHAKE_MSG_TYPE) {
+        RdmaEndpointCapability capability;
+        if (parse_rdma_handshake(frame->control, &capability))
+            conn->set_peer_capability(capability);
+        delete frame;
+        return;
+    }
 
     // Try request dispatch first — if a handler is registered for
     // this msg_type, dispatch as a request. This ensures request

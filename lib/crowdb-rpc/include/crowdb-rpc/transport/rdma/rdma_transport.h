@@ -6,6 +6,7 @@
 #include "crowdb-rpc/buffer.h"
 #include "crowdb-rpc/connection.h"
 #include "crowdb-rpc/transport.h"
+#include "crowdb-rpc/transport/rdma/rdma_capability.h"
 
 #ifdef CROWDB_RPC_HAVE_RDMA
 
@@ -19,14 +20,18 @@
 #    include <thread>
 #    include <unordered_map>
 #    include <vector>
+#    include <functional>
 
 namespace crowdb::rpc
 {
 
+class SocketEngine;
+
 // RdmaBufferPool: allocates buffers from ibv_mr-registered memory.
 // The pool pre-registers a large memory region and carves out buffers
 // from it, avoiding per-buffer ibv_reg_mr calls (which are expensive).
-// Each buffer's `mr` field points to the sub-region's MR.
+// Every buffer is a slice of the single MR, so registration is bounded by the
+// pool region and deregistration happens exactly once at pool shutdown.
 class RdmaBufferPool : public BufferPool
 {
   public:
@@ -39,13 +44,17 @@ class RdmaBufferPool : public BufferPool
 
   private:
     struct ibv_pd *pd_;
-    struct ibv_mr *mr_;
+    struct ibv_mr *mr_     = nullptr;
+    void          *region_ = nullptr;
     uint32_t       mr_size_;
     uint32_t       max_buffers_;
     uint32_t       outstanding_ = 0;
+    uint32_t       next_offset_ = 0;
 
     std::mutex                                          mu_;
     std::unordered_map<uint32_t, std::vector<Buffer *>> free_list_;
+    std::vector<Buffer *>                               quarantine_;
+    std::vector<Buffer *>                               all_buffers_;
 
     Buffer *alloc_fresh(uint32_t capacity);
 };
@@ -56,37 +65,114 @@ class RdmaBufferPool : public BufferPool
 class RdmaTransport : public Transport
 {
   public:
+    using ConnectionHandler = std::function<void(std::shared_ptr<Connection>)>;
+    struct Stats
+    {
+        std::atomic<uint64_t> sends{0};
+        std::atomic<uint64_t> receives{0};
+        std::atomic<uint64_t> cq_errors{0};
+        std::atomic<uint64_t> fallback_count{0};
+        std::atomic<uint64_t> posted_receives{0};
+        std::atomic<uint64_t> quarantined_bytes{0};
+    };
+
     RdmaTransport();
     ~RdmaTransport() override;
 
     bool    submit(Connection *conn, OutFrame *frame) override;
+    bool    post_receive(Connection *conn, Buffer *control, Buffer *data);
     Buffer *register_buffer(Buffer *buf) override;
     void    shutdown() override;
 
     // RDMA-specific: connect to a peer endpoint.
     // Returns a new Connection on success, nullptr on failure.
-    static std::shared_ptr<Connection> connect(const std::string &addr, int port);
+    std::shared_ptr<Connection> connect(const std::string &addr, int port);
 
     // RDMA-specific: listen on an endpoint (server side).
-    static bool listen(const std::string &addr, int port);
+    bool listen(const std::string &addr, int port);
 
-    // Start the CQ poll loop on worker threads.
-    void start();
-    void stop();
+    // Accept one pending CM request and create an RC QP-backed connection.
+    // The caller owns the returned logical connection and should register it
+    // with the common RPC worker before submitting frames.
+    std::shared_ptr<Connection> accept();
+
+    // Enable completion handling. CQ draining is driven by the epoll worker.
+    void              start();
+    void              stop();
+    [[nodiscard]] int completion_fd() const;
+    [[nodiscard]] int cm_event_fd() const;
+    int               drain_cq(uint32_t max_completions = 32);
+    void              register_events(SocketEngine *engine);
+    int               handle_external_event(uint64_t tag, uint32_t max_completions = 32);
+    void              set_connection_handler(ConnectionHandler handler)
+    {
+        connection_handler_ = std::move(handler);
+    }
+
+    [[nodiscard]] const Stats &stats() const
+    {
+        return stats_;
+    }
+
+    Stats &stats()
+    {
+        return stats_;
+    }
+
+    [[nodiscard]] bool ready() const
+    {
+        return context_ != nullptr && pd_ != nullptr && cq_ != nullptr;
+    }
 
   private:
-    struct ibv_context        *context_    = nullptr;
-    struct ibv_pd             *pd_         = nullptr;
-    struct rdma_event_channel *cm_channel_ = nullptr;
-    struct rdma_cm_id         *listen_id_  = nullptr;
+    struct ibv_context              *context_      = nullptr;
+    struct ibv_pd                   *pd_           = nullptr;
+    struct ibv_comp_channel         *comp_channel_ = nullptr;
+    struct ibv_cq                   *cq_           = nullptr;
+    struct rdma_event_channel       *cm_channel_   = nullptr;
+    struct rdma_cm_id               *listen_id_    = nullptr;
+    uint8_t                          port_         = 1;
+    std::vector<struct rdma_cm_id *> cm_ids_;
+    std::unordered_map<struct rdma_cm_id *, struct ibv_cq *> cm_cqs_;
+    std::unordered_map<struct rdma_cm_id *, struct ibv_comp_channel *> cm_channels_;
+    SocketEngine *event_engine_ = nullptr;
+    std::mutex                       cm_mu_;
 
     std::unique_ptr<RdmaBufferPool> send_pool_;
     std::unique_ptr<RdmaBufferPool> recv_pool_;
+    ConnectionHandler               connection_handler_;
 
     std::atomic<bool> running_{false};
-    std::thread       cq_thread_;
 
-    void cq_loop();
+    bool prime_receive(const std::shared_ptr<Connection> &connection);
+    Stats             stats_;
+
+    struct ReceiveWork
+    {
+        Connection *conn;
+        Buffer     *control;
+        Buffer     *data;
+    };
+
+    struct RepostContext
+    {
+        RdmaTransport *transport;
+        Connection    *connection;
+        Buffer        *control;
+        Buffer        *data;
+    };
+
+    struct ConnectionPools
+    {
+        std::unique_ptr<RdmaBufferPool> send;
+        std::unique_ptr<RdmaBufferPool> recv;
+    };
+
+    std::unordered_map<struct rdma_cm_id *, std::unique_ptr<ConnectionPools>> cm_pools_;
+
+    void        release_completed_frame(struct ibv_wc &wc);
+    void        release_completed_receive(struct ibv_wc &wc);
+    static void repost_frame_release(void *context, Buffer *data);
 };
 
 } // namespace crowdb::rpc

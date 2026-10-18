@@ -23,6 +23,7 @@ namespace crowdb::rpc
 // references Worker for the owner-worker back-pointer.
 class SocketTransport;
 class Worker;
+class Frame;
 
 // ── TransportStats: aggregation + latency counters ────────────────
 //
@@ -97,9 +98,10 @@ enum class SocketEvent {
     Readable,
     Writable,
     Error,
-    Notify, // cross-thread submit wakeup
-    Timer,  // scheduled task deadline
-    Accept, // listen socket ready (acceptor only)
+    Notify,   // cross-thread submit wakeup
+    Timer,    // scheduled task deadline
+    Accept,   // listen socket ready (acceptor only)
+    External, // transport-owned event descriptor (for example RDMA CM/CQ)
 };
 
 struct EngineEvent
@@ -109,6 +111,7 @@ struct EngineEvent
     Connection *conn;              // resolved and retained by the worker before dispatch
     int64_t     connection_id = 0; // kernel events carry identity, never an owning pointer
     bool        write_side    = false;
+    uint64_t    external_tag  = 0;
 };
 
 class SocketEngine
@@ -152,6 +155,19 @@ class SocketEngine
 
     // Remove a listen socket from the event loop.
     virtual void remove_listen_fd(int fd)
+    {
+        (void)fd;
+    }
+
+    // Register transport-owned descriptors such as an RDMA completion or CM
+    // channel. The engine only reports readiness; the owner drains it.
+    virtual void add_external_fd(int fd, uint64_t tag)
+    {
+        (void)fd;
+        (void)tag;
+    }
+
+    virtual void remove_external_fd(int fd)
     {
         (void)fd;
     }
@@ -356,6 +372,14 @@ class SocketTransport : public Transport
     // (nullptr on failure). The connection can both send and receive.
     std::shared_ptr<Connection> connect(const std::string &addr, int port);
 
+    // Attach an RDMA connection to the common callback/registry lifecycle.
+    void attach_rdma_connection(const std::shared_ptr<Connection> &conn,
+                                Connection::OnFrameCallback on_frame = {},
+                                Connection::OnCloseCallback on_close = {});
+
+    using RdmaAcceptHandler = std::function<void(const std::shared_ptr<Connection> &)>;
+    void set_rdma_accept_handler(RdmaAcceptHandler handler);
+
     // Register a connection in the live-connection registry. Called
     // when a connection is created. The registry holds a weak_ptr so
     // that submit() on a stale handle returns false instead of crashing.
@@ -465,8 +489,25 @@ class SocketTransport : public Transport
     // registered accept handler with the listen fd.
     void on_accept(int listen_fd);
 
+    void set_external_handler(std::function<void(uint64_t)> handler)
+    {
+        external_handler_ = std::move(handler);
+    }
+
+    void on_external(uint64_t tag)
+    {
+        if (external_handler_)
+            external_handler_(tag);
+    }
+
+    bool send_rdma_handshake(const std::shared_ptr<Connection> &conn);
+    bool listen_rdma(const std::string &addr, int port);
+
   private:
-    BufferPool                                *pool_;
+    BufferPool *pool_;
+#ifdef CROWDB_RPC_HAVE_RDMA
+    std::unique_ptr<class RdmaTransport> rdma_transport_;
+#endif
     std::vector<std::unique_ptr<Worker>>       workers_;
     std::vector<std::unique_ptr<SocketEngine>> engines_; // transport owns all engines
     std::atomic<size_t>                        next_worker_{0};
@@ -491,7 +532,9 @@ class SocketTransport : public Transport
 
     // Accept handler — called by a worker thread when the listen fd
     // is readable. Set by the server via set_accept_handler.
-    std::function<void(int)> accept_handler_;
+    std::function<void(int)>      accept_handler_;
+    std::function<void(uint64_t)> external_handler_;
+    RdmaAcceptHandler             rdma_accept_handler_;
 
     // Connection registry: maps raw Connection* to shared_ptr, so
     // submit() can safely access connections from arbitrary threads

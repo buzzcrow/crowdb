@@ -9,7 +9,10 @@
 #include <memory>
 
 using crowdb::rpc::Buffer;
+using crowdb::rpc::BufferCapacityClass;
+using crowdb::rpc::BufferOwnership;
 using crowdb::rpc::BufferType;
+using crowdb::rpc::RegisteredBufferPool;
 using crowdb::rpc::SystemBufferPool;
 
 TEST(BufferTest, AllocReturnsValidBuffer)
@@ -102,4 +105,48 @@ TEST(BufferTest, DetachedReceiveBufferOutlivesPoolWithoutCopy)
 
     EXPECT_EQ(std::memcmp(buf->data, data, 4), 0);
     buf->release();
+}
+
+TEST(BufferTest, RegisteredPoolRoundsClassesAndEnforcesByteBudget)
+{
+    RegisteredBufferPool pool(crowdb::rpc::RDMA_METADATA_CAPACITY, 4, 7);
+    Buffer              *metadata = pool.alloc(1024);
+    ASSERT_NE(metadata, nullptr);
+    EXPECT_EQ(metadata->capacity, crowdb::rpc::RDMA_CONTROL_CAPACITY);
+    EXPECT_EQ(metadata->capacity_class, BufferCapacityClass::Control);
+    EXPECT_EQ(metadata->registration_id, 7U);
+    EXPECT_EQ(pool.alloc(crowdb::rpc::RDMA_METADATA_CAPACITY), nullptr);
+    metadata->release();
+    Buffer *reused = pool.alloc(512);
+    ASSERT_NE(reused, nullptr);
+    reused->release();
+}
+
+TEST(BufferTest, RegisteredLeaseOwnershipAndQuarantine)
+{
+    RegisteredBufferPool pool(2 * crowdb::rpc::RDMA_CONTROL_CAPACITY, 2);
+    Buffer              *buf = pool.alloc(1);
+    ASSERT_NE(buf, nullptr);
+    EXPECT_TRUE(buf->transition(BufferOwnership::Available, BufferOwnership::PostedReceive));
+    EXPECT_TRUE(buf->transition(BufferOwnership::PostedReceive, BufferOwnership::ReceiveInFlight));
+    EXPECT_TRUE(buf->transition(BufferOwnership::ReceiveInFlight, BufferOwnership::CallerOwned));
+    EXPECT_FALSE(buf->transition(BufferOwnership::ReceiveInFlight, BufferOwnership::Available));
+    EXPECT_TRUE(buf->quarantine());
+    buf->release();
+    EXPECT_EQ(pool.quarantined_bytes(), crowdb::rpc::RDMA_CONTROL_CAPACITY);
+    Buffer *other = pool.alloc(1);
+    ASSERT_NE(other, nullptr);
+    EXPECT_NE(other, buf);
+    other->release();
+    Buffer *reused = pool.alloc(1);
+    ASSERT_NE(reused, nullptr);
+    EXPECT_EQ(reused, other);
+    reused->release();
+}
+
+TEST(BufferTest, RegisteredCapacityRejectsUnsupportedValues)
+{
+    RegisteredBufferPool pool(8 * crowdb::rpc::RDMA_DATAPATH_CAPACITY, 8);
+    EXPECT_EQ(pool.alloc(crowdb::rpc::RDMA_DATAPATH_CAPACITY + 1), nullptr);
+    EXPECT_EQ(pool.alloc(0), nullptr);
 }

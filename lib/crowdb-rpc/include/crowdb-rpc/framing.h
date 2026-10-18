@@ -48,10 +48,12 @@ struct Header
 struct Frame
 {
     Header   header;
-    uint64_t request_id           = 0;       // extracted from control during parse
-    uint64_t rpc_create_nano      = 0;       // extracted from control during parse
-    uint64_t response_create_nano = 0;       // extracted from control during parse (responses only)
-    Buffer  *data_buf             = nullptr; // pool-allocated; nullptr if control-only
+    uint64_t request_id                        = 0;       // extracted from control during parse
+    uint64_t rpc_create_nano                   = 0;       // extracted from control during parse
+    uint64_t response_create_nano              = 0;       // extracted from control during parse (responses only)
+    Buffer  *data_buf                          = nullptr; // pool-allocated; nullptr if control-only
+    void (*release_callback)(void *, Buffer *) = nullptr;
+    void *release_context                      = nullptr;
 
     // Raw control message bytes (flatbuffer). Populated for all frames with
     // msg_size > 0. Common handlers (ping, unknown) use only request_id +
@@ -61,6 +63,8 @@ struct Frame
 
     ~Frame()
     {
+        if (release_callback != nullptr)
+            release_callback(release_context, data_buf);
         if (data_buf != nullptr) {
             data_buf->release();
         }

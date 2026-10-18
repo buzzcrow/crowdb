@@ -42,7 +42,7 @@ def main():
     parser.add_argument("--authfile", type=Path)
     args = parser.parse_args()
     archive = args.archive.resolve()
-    receipt(archive)
+    verified = receipt(archive)
     if args.operation == "publish":
         if args.authfile is None or not args.authfile.is_file() or args.authfile.stat().st_mode & 0o077:
             parser.error("publication requires a private registry authfile")
@@ -56,8 +56,12 @@ def main():
                         f"docker-archive:{converted}:{args.image}"], check=True)
         subprocess.run(["docker", "load", "--input", str(converted)], check=True)
         image = json.loads(subprocess.check_output(["docker", "image", "inspect", args.image], text=True))[0]
-        if image["Id"] != inspect(archive)["config_digest"]:
-            raise RuntimeError("imported Docker image config digest differs from the OCI artifact")
+        # Docker's local image store rebuilds the manifest and therefore gives
+        # the imported image a new image ID.  The config itself is the stable
+        # part of the OCI artifact that must survive conversion.
+        expected_config = inspect(archive)["config"]
+        if image.get("Config") != expected_config:
+            raise RuntimeError("imported Docker image config differs from the OCI artifact")
 
 
 if __name__ == "__main__":

@@ -5,6 +5,12 @@
 #include "crowdb-rpc/framing.h"
 #include "crowdb-rpc/transport/socket_transport.h"
 
+#ifdef __linux__
+#    include "crowdb-rpc/transport/epoll/epoll_engine.h"
+
+#    include <sys/eventfd.h>
+#endif
+
 #include <fcntl.h>
 #include <gtest/gtest.h>
 #include <netinet/in.h>
@@ -95,6 +101,29 @@ TEST_F(TransportLoopbackTest, StopWakesIdleWorker)
 
     EXPECT_LT(elapsed, std::chrono::milliseconds(500));
 }
+
+#ifdef __linux__
+TEST(EpollEngineTest, ExternalDescriptorWakesAndReportsTag)
+{
+    crowdb::rpc::EpollEngine engine;
+    ASSERT_EQ(engine.init(), 0);
+    const int fd = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    ASSERT_GE(fd, 0);
+    engine.add_external_fd(fd, 0x55AA);
+    uint64_t one = 1;
+    ASSERT_EQ(::write(fd, &one, sizeof(one)), static_cast<ssize_t>(sizeof(one)));
+
+    crowdb::rpc::EngineEvent event{};
+    ASSERT_EQ(engine.wait(&event, 1, 1000), 1);
+    EXPECT_EQ(event.type, crowdb::rpc::SocketEvent::External);
+    EXPECT_EQ(event.fd, fd);
+    EXPECT_EQ(event.external_tag, 0x55AAU);
+
+    engine.remove_external_fd(fd);
+    ::close(fd);
+    engine.shutdown();
+}
+#endif
 
 TEST_F(TransportLoopbackTest, StopClosesRegisteredConnectionDescriptors)
 {

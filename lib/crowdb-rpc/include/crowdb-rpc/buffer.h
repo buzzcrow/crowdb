@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <cstring>
@@ -19,6 +20,25 @@ enum class BufferType : uint8_t {
     Registered,
 };
 
+enum class BufferOwnership : uint8_t {
+    Available,
+    PostedReceive,
+    ReceiveInFlight,
+    SendInFlight,
+    DiskOwned,
+    CallerOwned,
+    Quarantined,
+};
+
+enum class BufferCapacityClass : uint8_t { Control, Metadata, Aggregate, Datapath };
+
+constexpr uint32_t RDMA_CONTROL_CAPACITY   = 1U << 10;
+constexpr uint32_t RDMA_METADATA_CAPACITY  = 64U << 10;
+constexpr uint32_t RDMA_AGGREGATE_CAPACITY = 256U << 10;
+constexpr uint32_t RDMA_DATAPATH_CAPACITY  = 1U << 20;
+
+[[nodiscard]] bool classify_rdma_capacity(uint32_t requested, BufferCapacityClass *out, uint32_t *capacity);
+
 // A ref-counted, pool-owned byte buffer. The buffer is allocated from a
 // BufferPool, written once, then shared across consumers via ref(). Each
 // consumer calls release() when done; the buffer recycles to the pool when
@@ -30,12 +50,22 @@ enum class BufferType : uint8_t {
 // recycle to pool when ref == 0.
 struct Buffer
 {
-    uint8_t              *data     = nullptr;
-    uint32_t              len      = 0; // bytes written (payload length)
-    uint32_t              capacity = 0; // allocated capacity
-    BufferType            type     = BufferType::System;
-    class BufferPool     *pool     = nullptr;
-    std::atomic<int32_t> *ref      = nullptr; // shared refcount (pool-allocated or standalone)
+    uint8_t                     *data     = nullptr;
+    uint32_t                     len      = 0; // bytes written (payload length)
+    uint32_t                     capacity = 0; // allocated capacity
+    BufferType                   type     = BufferType::System;
+    class BufferPool            *pool     = nullptr;
+    std::atomic<int32_t>        *ref      = nullptr; // shared refcount (pool-allocated or standalone)
+    std::atomic<BufferOwnership> ownership{BufferOwnership::Available};
+    BufferCapacityClass          capacity_class  = BufferCapacityClass::Control;
+    uint64_t                     request_id      = 0;
+    uint64_t                     stream_id       = 0;
+    uint64_t                     sequence        = 0;
+    uint64_t                     logical_offset  = 0;
+    uint32_t                     registration_id = 0;
+    uint32_t                     registration_key = 0;
+    uintptr_t                    registration_handle = 0;
+    Buffer                      *next_pool       = nullptr;
 
     // External free callback: when set, release() calls free_cb(free_ctx)
     // instead of freeing `data` directly. Used for zero-copy buffers that
@@ -52,6 +82,10 @@ struct Buffer
 
     // Decrement refcount. On ref == 0, recycle to pool or call free_cb.
     void release();
+
+    [[nodiscard]] bool transition(BufferOwnership from, BufferOwnership to);
+    [[nodiscard]] bool quarantine();
+    void set_metadata(uint64_t request, uint64_t stream, uint64_t seq, uint64_t offset, uint32_t registration);
 };
 
 // BufferPool allocates and recycles Buffer objects. The pool reuses
@@ -98,6 +132,52 @@ class SystemBufferPool : public BufferPool
   private:
     uint32_t              max_buffers_;
     std::atomic<uint32_t> outstanding_{0}; // in-use buffers (allocated, not yet freed)
+};
+
+// Bounded registered-memory abstraction. The pool remains usable without an
+// RDMA device; a transport may attach registration metadata later.
+class RegisteredBufferPool : public BufferPool
+{
+  public:
+    RegisteredBufferPool(uint64_t max_bytes, uint32_t max_buffers = 1024, uint32_t registration_id = 0);
+    ~RegisteredBufferPool() override;
+
+    Buffer *alloc(uint32_t capacity) override;
+    void    recycle(Buffer *buf) override;
+
+    [[nodiscard]] uint64_t committed_bytes() const
+    {
+        return committed_bytes_.load();
+    }
+
+    [[nodiscard]] uint64_t quarantined_bytes() const
+    {
+        return quarantined_bytes_.load();
+    }
+
+    [[nodiscard]] uint32_t registration_id() const
+    {
+        return registration_id_;
+    }
+
+  private:
+    static constexpr size_t                        CLASS_COUNT = 4;
+    uint64_t                                       max_bytes_;
+    uint32_t                                       max_buffers_;
+    uint32_t                                       registration_id_;
+    std::atomic<uint64_t>                          committed_bytes_{0};
+    std::atomic<uint32_t>                          outstanding_{0};
+    std::array<std::atomic<Buffer *>, CLASS_COUNT> free_heads_{};
+    std::atomic<Buffer *>                          quarantine_head_{nullptr};
+    std::atomic<uint64_t>                          quarantined_bytes_{0};
+
+    static size_t index(BufferCapacityClass cls)
+    {
+        return static_cast<size_t>(cls);
+    }
+
+    Buffer *pop(std::atomic<Buffer *> &head);
+    void    push(std::atomic<Buffer *> &head, Buffer *buf);
 };
 
 } // namespace crowdb::rpc

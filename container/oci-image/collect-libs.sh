@@ -10,6 +10,17 @@ case "${CROWDB_KEEP_DEBUG_INFO:-0}" in
 esac
 mkdir -p "$output/bin" "$output/lib"
 
+# libibverbs loads HCA providers (mlx5, efa, ... ) dynamically, so they do
+# not appear in ldd output. Keep the provider ABI matched with the pixi
+# libibverbs runtime instead of relying on the base image's older providers.
+provider_root="$build_root/.pixi/envs/default/lib/libibverbs"
+provider_config="$build_root/.pixi/envs/default/etc/libibverbs.d"
+if [[ -d "$provider_root" && -d "$provider_config" ]]; then
+    mkdir -p "$output/lib/libibverbs" "$output/etc/libibverbs.d"
+    cp -a "$provider_root"/*.so "$output/lib/libibverbs/"
+    cp -a "$provider_config"/*.driver "$output/etc/libibverbs.d/"
+fi
+
 for binary in \
     crowdb-monitor crowdb-kv-server crowdb-diskdb crowdb-diskio \
     crowdb-chunkdb crowdb-chunk-kv-server crowdb-access-server \
@@ -41,6 +52,12 @@ for binary in "$output"/bin/*; do
             continue
         fi
         resolved_path=$(readlink -f "$path")
+        # Use Ubuntu's libibverbs/librdmacm in the image so the apt-provided
+        # providers and config directory remain ABI-matched. The pixi copies
+        # are build-time dependencies and would otherwise shadow them.
+        if [[ "$name" == libibverbs.so* || "$name" == librdmacm.so* ]]; then
+            continue
+        fi
         case "$resolved_path" in
             "$build_root/.pixi/envs/default/lib/"*|"$build_root/target/release/"*)
                 if ! cp -L "$resolved_path" "$output/lib/$name"; then
@@ -61,12 +78,14 @@ if [[ ! -f "$output/lib/libcrypto.so.3" ]]; then
     exit 1
 fi
 for library in "$output"/lib/*; do
+    [[ -f "$library" ]] || continue
     patchelf --set-rpath '/opt/crowdb/lib' "$library"
 done
 rm "$output/dependencies.txt"
 
 if [[ "$debug_info" == stripped ]]; then
     for artifact in "$output"/bin/* "$output"/lib/*; do
+        [[ -f "$artifact" ]] || continue
         strip --strip-debug "$artifact"
     done
 fi

@@ -8,6 +8,7 @@
 #include "crowdb-rpc/connection_callback.h"
 #include "crowdb-rpc/framing.h"
 #include "crowdb-rpc/transport.h"
+#include "crowdb-rpc/transport/rdma/rdma_capability.h"
 
 #include <sys/uio.h>
 
@@ -23,6 +24,8 @@ namespace crowdb::rpc
 // Lock-free bounded MPSC ring buffer for the per-connection send queue.
 // Alias of the shared crowdb-common primitive specialized for OutFrame*.
 using SendQueue = crowdb::common::MpscQueue<OutFrame *>;
+
+enum class ConnectionPath : uint8_t { Tcp, Rdma };
 
 // Forward declaration — Connection::try_send records latency here.
 struct TransportStats;
@@ -51,6 +54,32 @@ class Connection : public std::enable_shared_from_this<Connection>
     [[nodiscard]] int64_t id() const
     {
         return id_;
+    }
+
+    [[nodiscard]] ConnectionPath path() const
+    {
+        return path_;
+    }
+
+    void set_path(ConnectionPath path)
+    {
+        path_ = path;
+    }
+
+    [[nodiscard]] bool peer_handshake_received() const
+    {
+        return peer_handshake_received_.load(std::memory_order_acquire);
+    }
+
+    void set_peer_capability(const RdmaEndpointCapability &capability)
+    {
+        peer_capability_ = capability;
+        peer_handshake_received_.store(true, std::memory_order_release);
+    }
+
+    [[nodiscard]] const RdmaEndpointCapability &peer_capability() const
+    {
+        return peer_capability_;
     }
 
     [[nodiscard]] const std::string &name() const
@@ -221,10 +250,13 @@ class Connection : public std::enable_shared_from_this<Connection>
     }
 
   private:
-    int64_t     id_;
-    std::string name_;
-    BufferPool *pool_;
-    FrameParser parser_;
+    int64_t                id_;
+    std::string            name_;
+    BufferPool            *pool_;
+    ConnectionPath         path_ = ConnectionPath::Tcp;
+    std::atomic<bool>      peer_handshake_received_{false};
+    RdmaEndpointCapability peer_capability_;
+    FrameParser            parser_;
 
     static constexpr uint32_t SOCKET_CLOSED = uint32_t{1} << 31;
     std::atomic<uint32_t>     socket_users_{0};

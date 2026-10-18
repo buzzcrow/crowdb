@@ -124,6 +124,22 @@ extern "C" {
     pub fn crowdb_rpc_buffer_write(buf: crowdb_rpc_buffer_t, data: *const u8, len: u32);
     pub fn crowdb_rpc_buffer_data(buf: crowdb_rpc_buffer_t) -> *const u8;
     pub fn crowdb_rpc_buffer_len(buf: crowdb_rpc_buffer_t) -> u32;
+    pub fn crowdb_rpc_buffer_capacity(buf: crowdb_rpc_buffer_t) -> u32;
+    pub fn crowdb_rpc_buffer_request_id(buf: crowdb_rpc_buffer_t) -> u64;
+    pub fn crowdb_rpc_buffer_stream_id(buf: crowdb_rpc_buffer_t) -> u64;
+    pub fn crowdb_rpc_buffer_sequence(buf: crowdb_rpc_buffer_t) -> u64;
+    pub fn crowdb_rpc_buffer_logical_offset(buf: crowdb_rpc_buffer_t) -> u64;
+    pub fn crowdb_rpc_buffer_registration_id(buf: crowdb_rpc_buffer_t) -> u32;
+    pub fn crowdb_rpc_buffer_set_metadata(
+        buf: crowdb_rpc_buffer_t,
+        request_id: u64,
+        stream_id: u64,
+        sequence: u64,
+        logical_offset: u64,
+        registration_id: u32,
+    );
+    pub fn crowdb_rpc_buffer_transition(buf: crowdb_rpc_buffer_t, from: i32, to: i32) -> i32;
+    pub fn crowdb_rpc_buffer_quarantine(buf: crowdb_rpc_buffer_t) -> i32;
     pub fn crowdb_rpc_buffer_detach(buf: crowdb_rpc_buffer_t) -> bool;
     pub fn crowdb_rpc_buffer_ref(buf: crowdb_rpc_buffer_t) -> crowdb_rpc_buffer_t;
     pub fn crowdb_rpc_buffer_release(buf: crowdb_rpc_buffer_t);
