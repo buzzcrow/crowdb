@@ -40,7 +40,7 @@ void crowdb::rpc::invoke_c_handler(crowdb_rpc_handler_fn callback, void *user_da
     const uint8_t *data_ptr    = nullptr;
     uint32_t       data_len    = 0;
     if (request->data_buf != nullptr && request->data_buf->len > 0) {
-        data_ptr = request->data_buf->data;
+        data_ptr = request->data_buf->payload_data();
         data_len = request->data_buf->len;
     }
     void *conn_handle  = static_cast<void *>(conn);

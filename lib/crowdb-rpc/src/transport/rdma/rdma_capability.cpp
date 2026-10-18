@@ -70,32 +70,6 @@ bool parse_rdma_handshake(std::span<const uint8_t> bytes, RdmaEndpointCapability
     return true;
 }
 
-bool build_rdma_frame_sges(const Buffer *control, const Buffer *data, RdmaFrameSges *out)
-{
-    if (control == nullptr || out == nullptr || control->data == nullptr || control->len > RDMA_CONTROL_CAPACITY ||
-        control->len > control->capacity) {
-        return false;
-    }
-    out->entries[0] = {.address = reinterpret_cast<uintptr_t>(control->data),
-                       .length  = control->len,
-                       .lkey    = control->registration_key};
-    out->count      = 1;
-    if (data == nullptr || data->len == 0)
-        return true;
-    if (data->data == nullptr || data->len > data->capacity)
-        return false;
-    BufferCapacityClass cls;
-    uint32_t            capacity;
-    if (!classify_rdma_capacity(data->capacity, &cls, &capacity))
-        return false;
-    (void)cls;
-    (void)capacity;
-    out->entries[1] = {
-        .address = reinterpret_cast<uintptr_t>(data->data), .length = data->len, .lkey = data->registration_key};
-    out->count = 2;
-    return true;
-}
-
 bool validate_rdma_capability(const RdmaEndpointCapability &capability, uint16_t expected_protocol,
                               uint64_t expected_generation, const std::string &expected_device)
 {

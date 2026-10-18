@@ -57,15 +57,37 @@ struct Buffer
     class BufferPool            *pool     = nullptr;
     std::atomic<int32_t>        *ref      = nullptr; // shared refcount (pool-allocated or standalone)
     std::atomic<BufferOwnership> ownership{BufferOwnership::Available};
-    BufferCapacityClass          capacity_class  = BufferCapacityClass::Control;
-    uint64_t                     request_id      = 0;
-    uint64_t                     stream_id       = 0;
-    uint64_t                     sequence        = 0;
-    uint64_t                     logical_offset  = 0;
-    uint32_t                     registration_id = 0;
-    uint32_t                     registration_key = 0;
+    BufferCapacityClass          capacity_class      = BufferCapacityClass::Control;
+    uint64_t                     request_id          = 0;
+    uint64_t                     stream_id           = 0;
+    uint64_t                     sequence            = 0;
+    uint64_t                     logical_offset      = 0;
+    uint32_t                     registration_id     = 0;
+    uint32_t                     registration_key    = 0;
     uintptr_t                    registration_handle = 0;
-    Buffer                      *next_pool       = nullptr;
+    uint8_t                     *allocation_data     = nullptr;
+    uint32_t                     allocation_capacity = 0;
+    uint32_t                     view_offset         = 0;
+    Buffer                      *next_pool           = nullptr;
+
+    void reset_view()
+    {
+        if (allocation_data != nullptr) {
+            data        = allocation_data;
+            capacity    = allocation_capacity;
+            view_offset = 0;
+        }
+    }
+
+    [[nodiscard]] uint8_t *payload_data()
+    {
+        return data == nullptr ? nullptr : data + view_offset;
+    }
+
+    [[nodiscard]] const uint8_t *payload_data() const
+    {
+        return data == nullptr ? nullptr : data + view_offset;
+    }
 
     // External free callback: when set, release() calls free_cb(free_ctx)
     // instead of freeing `data` directly. Used for zero-copy buffers that

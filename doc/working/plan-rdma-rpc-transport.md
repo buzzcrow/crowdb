@@ -16,7 +16,7 @@ The transport foundation now includes validated endpoint capability data
 (protocol, generation, device, GID, port, and supported capacity classes),
 explicit RDMA path states, and a pre-payload-only TCP fallback predicate.
 Implemented since this checkpoint: active/passive RDMA-CM setup, RC QP
-creation, two-SGE SEND construction, bounded receive posting, completion-channel
+creation, one-MR arena-backed wire slots, one-SGE SEND/RECV posting, bounded receive posting, completion-channel
 polling with CQ acknowledgement, error quarantine, validated receive-frame
 dispatch into `Connection::on_frame`, and epoll external-fd registration.
 The CQ path is now drained by an epoll worker through `completion_fd()` and
@@ -52,6 +52,8 @@ Completed:
   status, and clean client/server exit;
 - actual `RpcServer`/`RpcClient` worker-path request/response round trip with
   sequential frames and clean teardown;
+- contiguous one-SGE wire-slot send/receive flow with 128B, 1KiB, and 4KiB
+  payload benchmark smoke tests reporting zero errors;
 - non-root runner selection and the library consumer/deployment contract.
 
 Remaining:
@@ -105,11 +107,12 @@ Remaining:
 
 ## Phase 4: frame submission and completion
 
-- [x] **Build two-SGE WRs**: map the 1 KiB control buffer and selected data
-  buffer to one SEND WR. Inline control only when the configured device limit
-  allows; never concatenate control and data in the CPU.
-- [x] **Post receives**: prepost control/data receive buffers, associate each
-  with a stable `wr_id`, and replenish only after the owner releases it.
+- [x] **Build one-SGE wire slots**: allocate one fixed-size registered slot
+  from the send ring, copy header/control/payload contiguously, and post one
+  SEND SGE with the actual wire length. Reject messages larger than the slot.
+- [x] **Post one-slot receives**: prepost one full registered receive slot per
+  receive ring entry, associate each with a stable `wr_id`, and replenish only
+  after the owner releases it.
 - [ ] **Resolve WR identity**: `wr_id` must identify connection, request ID,
   stream ID, sequence, logical offset, buffers, and ownership state. Handle
   success, flush, local protection, retry, and remote access errors distinctly.
@@ -132,7 +135,7 @@ Unit tests:
 
 - endpoint capability and generation validation;
 - connection-state transitions and illegal TCP-to-RDMA upgrade;
-- frame class/length validation and two-SGE construction;
+- frame class/length validation and one-SGE wire-slot construction;
 - `wr_id` mapping and completion state transitions;
 - fallback boundary and request-ID reuse rules.
 
@@ -141,7 +144,7 @@ Integration tests:
 - RDMA-disabled build and host selects TCP without CM calls;
 - mocked CM/CQ setup, reconnect, CQ error, flush completion, and shutdown;
 - epoll external event wakes worker and drains all current CQ completions;
-- send/receive sequence preserves exact control/data lengths;
+- send/receive sequence preserves exact control/data lengths inside one slot;
 - pre-payload failure retries idempotent request on TCP;
 - partial payload failure never appends TCP data.
 

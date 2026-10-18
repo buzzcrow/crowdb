@@ -27,6 +27,8 @@ namespace crowdb::rpc
 
 class SocketEngine;
 
+constexpr uint32_t RDMA_WIRE_SLOT_CAPACITY = RDMA_DATAPATH_CAPACITY;
+
 // RdmaBufferPool: allocates buffers from ibv_mr-registered memory.
 // The pool pre-registers a large memory region and carves out buffers
 // from it, avoiding per-buffer ibv_reg_mr calls (which are expensive).
@@ -81,7 +83,7 @@ class RdmaTransport : public Transport
     ~RdmaTransport() override;
 
     bool    submit(Connection *conn, OutFrame *frame) override;
-    bool    post_receive(Connection *conn, Buffer *control, Buffer *data);
+    bool    post_receive(Connection *conn, Buffer *slot);
     Buffer *register_buffer(Buffer *buf) override;
     void    shutdown() override;
 
@@ -153,16 +155,14 @@ class RdmaTransport : public Transport
     struct ReceiveWork
     {
         Connection *conn;
-        Buffer     *control;
-        Buffer     *data;
+        Buffer     *slot;
     };
 
     struct RepostContext
     {
         RdmaTransport *transport;
         Connection    *connection;
-        Buffer        *control;
-        Buffer        *data;
+        Buffer        *slot;
     };
 
     struct ConnectionPools

@@ -79,26 +79,3 @@ TEST(RdmaCapabilityTest, SetupFailureCanFallbackBeforePayload)
     EXPECT_TRUE(state.fallback_to_tcp());
     EXPECT_EQ(state.state(), RdmaPathState::TcpFallback);
 }
-
-TEST(RdmaCapabilityTest, BuildsControlAndDataSgesWithoutConcatenation)
-{
-    SystemBufferPool pool(2);
-    auto            *control = pool.alloc(1024);
-    auto            *data    = pool.alloc(64U << 10);
-    ASSERT_NE(control, nullptr);
-    ASSERT_NE(data, nullptr);
-    const uint8_t control_bytes[] = {1, 2};
-    const uint8_t data_bytes[]    = {3, 4, 5};
-    control->write(control_bytes, sizeof(control_bytes));
-    data->write(data_bytes, sizeof(data_bytes));
-
-    crowdb::rpc::RdmaFrameSges sges;
-    ASSERT_TRUE(crowdb::rpc::build_rdma_frame_sges(control, data, &sges));
-    EXPECT_EQ(sges.count, 2);
-    EXPECT_EQ(sges.entries[0].address, reinterpret_cast<uintptr_t>(control->data));
-    EXPECT_EQ(sges.entries[0].length, sizeof(control_bytes));
-    EXPECT_EQ(sges.entries[1].address, reinterpret_cast<uintptr_t>(data->data));
-    EXPECT_EQ(sges.entries[1].length, sizeof(data_bytes));
-    data->release();
-    control->release();
-}

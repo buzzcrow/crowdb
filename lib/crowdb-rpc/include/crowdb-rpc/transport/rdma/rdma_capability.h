@@ -43,21 +43,6 @@ serialize_rdma_handshake(const RdmaEndpointCapability &capability);
 
 [[nodiscard]] bool parse_rdma_handshake(std::span<const uint8_t> bytes, RdmaEndpointCapability *out);
 
-struct RdmaSge
-{
-    uintptr_t address = 0;
-    uint32_t  length  = 0;
-    uint32_t  lkey    = 0;
-};
-
-struct RdmaFrameSges
-{
-    std::array<RdmaSge, 2> entries{};
-    uint8_t                count = 0;
-};
-
-[[nodiscard]] bool build_rdma_frame_sges(const Buffer *control, const Buffer *data, RdmaFrameSges *out);
-
 [[nodiscard]] bool validate_rdma_capability(const RdmaEndpointCapability &capability, uint16_t expected_protocol,
                                             uint64_t expected_generation, const std::string &expected_device);
 

@@ -15,8 +15,8 @@ established TCP connection.
 
 - [1. Scope and goals](#1-scope-and-goals)
 - [2. Endpoint discovery and path selection](#2-endpoint-discovery-and-path-selection)
-- [3. Message and aggregation model](#3-message-and-aggregation-model)
-- [4. Registered buffers and ownership](#4-registered-buffers-and-ownership)
+- [3. Message and wire-slot model](#3-message-and-wire-slot-model)
+- [4. Registered arenas and slot ownership](#4-registered-arenas-and-slot-ownership)
 - [5. Event and completion model](#5-event-and-completion-model)
 - [6. Failure and fallback](#6-failure-and-fallback)
 - [7. Service interactions](#7-service-interactions)
@@ -53,49 +53,59 @@ one-way fallback. The path is selected before the first payload. TCP is chosen
 when RDMA setup fails before payload submission; an established TCP connection
 is never upgraded to RDMA.
 
-## 3. Message and aggregation model
+## 3. Message and wire-slot model
 
 ChunkIO and Chunk-KV retain ownership of aggregation and flush policy. RDMA
 receives an already aggregated buffer and transmits it without additional
-waiting or coalescing. A data message has:
+waiting or coalescing. The RDMA wire representation is contiguous inside one
+fixed-size wire slot:
 
 ```text
-SGE 0: 1 KiB control block
-SGE 1: selected data buffer
+[common RPC header][control metadata][payload][unused slot bytes]
 ```
 
-The control block contains the common RPC header and control metadata. The
-selected data capacity is 64 KiB for metadata, 256 KiB for aggregated
-Chunk-KV results, or 1 MiB for the S3/HTTP/DiskIO datapath. The actual payload
-length is carried in the header. A logical result larger than the selected
-capacity is an ordered sequence identified by request ID, stream ID, sequence,
-logical offset, and START/DATA/END/ERROR flags.
+The common header carries the control and payload lengths. The complete wire
+length must not exceed the slot capacity. A logical result larger than the
+selected capacity is an ordered sequence identified by request ID, stream ID,
+sequence, logical offset, and START/DATA/END/ERROR flags.
 
-The two-SGE layout is intentional. It keeps control and data ownership clear
-and avoids CPU concatenation. A sender may inline the small control block when
-the device permits it; receive buffers retain the two-SGE layout.
+Each SEND uses one SGE pointing at the slot and the actual wire length. Each
+RECV is posted with one SGE pointing at a complete receive slot and its full
+capacity. The sender and receiver do not share addresses and do not need equal
+ring counts; the receive slot is a bounded window for incoming messages. One
+SGE on each side keeps the wire layout independent of sender SGE boundaries.
 
-## 4. Registered buffers and ownership
+The transport may copy caller-owned control and payload buffers into the slot
+before posting SEND. This copy is the transport boundary needed to make the
+wire message contiguous; it is not an additional application-level message or
+aggregation step.
 
-Each process has a bounded registered host-memory budget. Data classes and the
-control pool are shared by streams; a stream does not reserve a private set of
-buffers for its lifetime. A buffer moves through these states:
+## 4. Registered arenas and slot ownership
+
+Each connection owns a bounded registered arena. The arena is registered once
+and split into fixed-size slots; individual slots do not call `ibv_reg_mr` or
+`ibv_dereg_mr`. Send and receive rings contain descriptors for slots in their
+respective arenas. A stream does not reserve a private set of slots for its
+lifetime. A slot moves through these states:
 
 ```text
-available -> posted_receive -> receive_in_flight -> caller_owned
-available -> send_in_flight -> available
-receive_in_flight -> disk_owned -> available
+send_free -> send_in_flight -> send_free
+receive_free -> posted_receive -> receive_in_flight -> caller_owned
+caller_owned -> receive_free
 any uncertain state -> quarantined
 ```
 
-The owner that receives a completed SDK buffer must explicitly release its
-lease. DiskIO reposts a receive buffer only after its asynchronous disk write
-completes. An uncertain completion is quarantined until connection quiescence.
-Registered memory is not reused merely because a deadline expired.
+The SEND completion returns a send slot to the send ring. A receive completion
+transfers the slot to the Frame owner after header and length validation. The
+Frame owner explicitly releases the slot; only then is it posted again to the
+receive ring. DiskIO reposts a receive slot only after its asynchronous disk
+write completes. An uncertain completion quarantines the slot until connection
+quiescence. Registered memory is not reused merely because a deadline expired.
 
-Posted receives are the implicit data credits. Buffer exhaustion, a full SDK
-lease budget, or a full DiskIO write queue applies backpressure to the existing
-producer or aggregation layer. RDMA adds no application-level credit message.
+Posted receive slots are the implicit data credits. Buffer exhaustion, a full
+SDK lease budget, or a full DiskIO write queue applies backpressure to the
+existing producer or aggregation layer. RDMA adds no application-level credit
+message. A slot is never posted twice concurrently.
 
 ## 5. Event and completion model
 
@@ -146,33 +156,35 @@ changing the lease contract.
 The transport configuration supplies defaults when the transport is created:
 
 ```toml
-stream_buffer_size = "1MiB"
-chunk_kv_metadata_buffer_size = "64KiB"
-chunk_kv_aggregate_buffer_size = "256KiB"
-rpc_control_block_size = "1KiB"
-rdma_registered_bytes = "64MiB"
-rdma_max_inflight_bytes = "32MiB"
+rdma_wire_slot_size = "1MiB"
+rdma_send_slot_count = 64
+rdma_receive_slot_count = 64
+rdma_registered_bytes = "128MiB"
 ```
 
-The effective pool counts are bounded by registered bytes, receive depth, send
-depth, DiskIO queue bytes, and SDK-held bytes. A configured class is a capacity
-limit, not a required wire length.
+The effective slot counts are bounded by registered bytes, QP send/receive
+depth, DiskIO queue bytes, and SDK-held slots. A configured slot size is a
+capacity limit, not a required wire length; SEND uses the actual message
+length while RECV posts the full slot capacity. Services may select a smaller
+slot class only when the complete wire message fits that class.
 
 ## 9. Correctness invariants
 
 - **I1:** A message is published only after its control header and payload
-  length pass validation for the negotiated class.
-- **I2:** A buffer has exactly one owner and is not reused before transport,
+  length pass validation and the complete wire length fits one slot.
+- **I2:** A slot has exactly one owner and is not reused before transport,
   disk, and caller access have completed.
 - **I3:** Posted receive capacity is the bounded receive window; no unbounded
-  allocation replaces a missing buffer.
+  allocation or second post replaces a missing slot.
 - **I4:** A logical stream publishes messages in sequence order and never mixes
   bytes from TCP and a partially completed RDMA stream.
 - **I5:** The shared request ID and generation prevent an ambiguous retry from
   being mistaken for a distinct operation.
 - **I6:** FFI completion never transfers a buffer whose ownership or length is
   unresolved.
-- **I7:** Unsupported RDMA leaves the TCP service usable and does not require
+- **I7:** A SEND uses one contiguous registered slot and a RECV uses one
+  complete posted slot; sender SGE boundaries never define receiver parsing.
+- **I8:** Unsupported RDMA leaves the TCP service usable and does not require
   RDMA libraries or devices at runtime.
 
 ## 10. Scope boundary

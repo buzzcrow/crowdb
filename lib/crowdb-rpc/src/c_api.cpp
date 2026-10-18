@@ -90,7 +90,7 @@ const uint8_t *crowdb_rpc_buffer_data(crowdb_rpc_buffer_t buf)
         if (buf == nullptr || buf->buf == nullptr) {
             return nullptr;
         }
-        return buf->buf->data;
+        return buf->buf->payload_data();
     }
     catch (...) {
         return nullptr;
@@ -140,8 +140,7 @@ uint32_t crowdb_rpc_buffer_registration_id(crowdb_rpc_buffer_t buf)
     return (buf != nullptr && buf->buf != nullptr) ? buf->buf->registration_id : 0;
 }
 
-void crowdb_rpc_buffer_set_metadata(crowdb_rpc_buffer_t buf, uint64_t request_id,
-                                    uint64_t stream_id, uint64_t sequence,
+void crowdb_rpc_buffer_set_metadata(crowdb_rpc_buffer_t buf, uint64_t request_id, uint64_t stream_id, uint64_t sequence,
                                     uint64_t logical_offset, uint32_t registration_id)
 {
     if (buf != nullptr && buf->buf != nullptr) {
@@ -156,8 +155,8 @@ int crowdb_rpc_buffer_transition(crowdb_rpc_buffer_t buf, int from, int to)
     }
     return buf->buf->transition(static_cast<crowdb::rpc::BufferOwnership>(from),
                                 static_cast<crowdb::rpc::BufferOwnership>(to))
-               ? 1
-               : 0;
+             ? 1
+             : 0;
 }
 
 int crowdb_rpc_buffer_quarantine(crowdb_rpc_buffer_t buf)
@@ -904,7 +903,7 @@ static crowdb::rpc::OutFrame *echo_handler(crowdb::rpc::Frame *request, crowdb::
     if (request->data_buf != nullptr && request->data_buf->len > 0) {
         resp_data = pool->alloc(request->data_buf->len);
         if (resp_data != nullptr) {
-            std::memcpy(resp_data->data, request->data_buf->data, request->data_buf->len);
+            std::memcpy(resp_data->data, request->data_buf->payload_data(), request->data_buf->len);
             resp_data->write(resp_data->data, request->data_buf->len);
         }
     }
@@ -927,6 +926,7 @@ void crowdb_rpc_server_register_echo_handler(crowdb_rpc_server_t server, uint16_
     catch (...) {
     }
 }
+
 
 // ── Logging ───────────────────────────────────────────────────────
 

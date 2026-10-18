@@ -14,8 +14,10 @@ without changing request semantics.
 ## Solution
 
 1. Add an RC SEND/RECV transport behind the common RPC `Transport` interface.
-   Data messages use one 1 KiB control SGE and one selected data SGE; no CPU
-   concatenation is introduced.
+   Each message is copied into one fixed-size registered wire slot and sent
+   with one SGE. Receive slots are pre-posted from a registered arena and are
+   reused only after Frame ownership is released. The complete wire message
+   must fit the slot capacity.
 2. Use service discovery for coarse RDMA capability and TCP handshake for the
    current CM endpoint, device/GID identity, capability generation, protocol
    version, and supported data classes. Local configuration and probing can
@@ -57,7 +59,8 @@ without changing request semantics.
 ## Acceptance
 
 - Given both peers advertise RDMA, when the TCP handshake completes, the
-  client establishes the negotiated RC path and sends a valid two-SGE frame.
+  client establishes the negotiated RC path and sends a valid one-SGE wire
+  slot.
   Invariant: shared RPC framing. Integration test.
 - Given no RDMA capability or local RDMA configuration, when a connection is
   created, TCP is selected without an RDMA attempt. Invariant: optional RDMA.

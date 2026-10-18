@@ -113,6 +113,8 @@ Buffer *RdmaBufferPool::alloc_fresh(uint32_t capacity)
 
     buf->data                = static_cast<uint8_t *>(region_) + aligned_offset;
     buf->len                 = 0;
+    buf->allocation_data     = buf->data;
+    buf->allocation_capacity = capacity;
     buf->registration_handle = reinterpret_cast<uintptr_t>(mr_);
     buf->registration_key    = mr_->lkey;
     next_offset_             = aligned_offset + capacity;
@@ -133,6 +135,7 @@ Buffer *RdmaBufferPool::alloc(uint32_t capacity)
     if (it != free_list_.end() && !it->second.empty()) {
         Buffer *buf = it->second.back();
         it->second.pop_back();
+        buf->reset_view();
         buf->len = 0;
         buf->ref->store(1, std::memory_order_relaxed);
         buf->capacity_class = cls;
@@ -152,6 +155,7 @@ void RdmaBufferPool::recycle(Buffer *buf)
 {
     {
         std::scoped_lock lock(mu_);
+        buf->reset_view();
         if (buf->ownership.load(std::memory_order_acquire) == BufferOwnership::Quarantined) {
             quarantine_.push_back(buf);
         }
@@ -302,9 +306,9 @@ bool RdmaTransport::submit(Connection *conn, OutFrame *frame)
         return false;
     }
 
-    // SEND carries the RPC wire header and control message in one registered
-    // control SGE. TCP serializes the header in writev; RDMA must materialize
-    // the same bytes before posting the WR while keeping data in its own SGE.
+    // TCP serializes the header and buffers independently. RDMA materializes
+    // the complete wire message in one registered slot so the receiver can
+    // post and recycle one contiguous buffer.
     Buffer        *source_control = frame->control;
     const uint32_t control_len    = source_control->len;
     if (source_control->data == nullptr || control_len > source_control->capacity ||
@@ -313,116 +317,90 @@ bool RdmaTransport::submit(Connection *conn, OutFrame *frame)
                      source_control->capacity);
         return false;
     }
-    Buffer *wire_control = pools->send->alloc(RDMA_CONTROL_CAPACITY);
-    if (wire_control == nullptr)
+    Buffer *slot = pools->send->alloc(RDMA_WIRE_SLOT_CAPACITY);
+    if (slot == nullptr)
         return false;
+    const uint32_t data_len = frame->data == nullptr ? 0 : frame->data->len;
+    const uint64_t wire_len = static_cast<uint64_t>(HEADER_SIZE) + control_len + data_len;
+    if (wire_len > slot->capacity) {
+        slot->release();
+        CRB_LOG_WARN("rdma send: message exceeds wire slot control_len={} data_len={} capacity={}", control_len,
+                     data_len, slot->capacity);
+        return false;
+    }
     frame->header.msg_size  = control_len;
-    frame->header.data_size = frame->data == nullptr ? 0 : frame->data->len;
-    serialize_header(wire_control->data, frame->header);
+    frame->header.data_size = data_len;
+    serialize_header(slot->data, frame->header);
     if (control_len != 0)
-        std::memcpy(wire_control->data + HEADER_SIZE, source_control->data, control_len);
-    wire_control->len            = HEADER_SIZE + control_len;
-    wire_control->request_id     = source_control->request_id;
-    wire_control->stream_id      = source_control->stream_id;
-    wire_control->sequence       = source_control->sequence;
-    wire_control->logical_offset = source_control->logical_offset;
-    frame->control               = wire_control;
-    source_control->release();
-
-    if (frame->data != nullptr && frame->data->len > frame->data->capacity) {
-        frame->control->release();
-        frame->control = nullptr;
-        return false;
-    }
-    if (frame->data != nullptr && frame->data->len == 0) {
-        frame->data->release();
-        frame->data = nullptr;
-    }
-    if (frame->data != nullptr && frame->data->type != BufferType::Registered) {
-        Buffer *source_data = frame->data;
-        Buffer *registered  = register_buffer(source_data);
-        if (registered == nullptr) {
-            frame->control->release();
-            frame->control = nullptr;
-            source_data->release();
-            frame->data = nullptr;
+        std::memcpy(slot->data + HEADER_SIZE, source_control->data, control_len);
+    if (data_len != 0) {
+        if (frame->data->payload_data() == nullptr || data_len > frame->data->capacity) {
+            slot->release();
+            CRB_LOG_WARN("rdma send: data buffer exceeds capacity len={} capacity={}", data_len, frame->data->capacity);
             return false;
         }
-        frame->data = registered;
-        source_data->release();
+        std::memcpy(slot->data + HEADER_SIZE + control_len, frame->data->payload_data(), data_len);
     }
+    slot->len            = static_cast<uint32_t>(wire_len);
+    slot->request_id     = source_control->request_id;
+    slot->stream_id      = source_control->stream_id;
+    slot->sequence       = source_control->sequence;
+    slot->logical_offset = source_control->logical_offset;
 
-    RdmaFrameSges frame_sges;
-    if (!build_rdma_frame_sges(frame->control, frame->data, &frame_sges)) {
-        return false;
-    }
-    ibv_sge sges[2]{};
-    for (uint8_t i = 0; i < frame_sges.count; ++i) {
-        sges[i].addr   = frame_sges.entries[i].address;
-        sges[i].length = frame_sges.entries[i].length;
-        sges[i].lkey   = frame_sges.entries[i].lkey;
-    }
+    ibv_sge sge{};
+    sge.addr   = reinterpret_cast<uintptr_t>(slot->data);
+    sge.length = slot->len;
+    sge.lkey   = slot->registration_key;
     ibv_send_wr wr{};
     wr.wr_id         = reinterpret_cast<uintptr_t>(frame);
-    wr.sg_list       = sges;
-    wr.num_sge       = frame_sges.count;
+    wr.sg_list       = &sge;
+    wr.num_sge       = 1;
     wr.opcode        = IBV_WR_SEND;
     wr.send_flags    = IBV_SEND_SIGNALED;
     ibv_send_wr *bad = nullptr;
     if (ibv_post_send(reinterpret_cast<ibv_qp *>(conn->transport_handle), &wr, &bad) != 0) {
         CRB_LOG_WARN("rdma send: post failed qp={} errno={}", reinterpret_cast<void *>(conn->transport_handle), errno);
+        slot->release();
         return false;
     }
+
+    source_control->release();
+    if (frame->data != nullptr)
+        frame->data->release();
+    frame->control = slot;
+    frame->data    = nullptr;
 
     stats_.sends.fetch_add(1, std::memory_order_relaxed);
     return true;
 }
 
-bool RdmaTransport::post_receive(Connection *conn, Buffer *control, Buffer *data)
+bool RdmaTransport::post_receive(Connection *conn, Buffer *slot)
 {
-    if (conn == nullptr || control == nullptr || control->data == nullptr || cq_ == nullptr ||
-        conn->transport_handle == 0 || control->capacity < RDMA_CONTROL_CAPACITY) {
+    if (conn == nullptr || slot == nullptr || slot->data == nullptr || cq_ == nullptr || conn->transport_handle == 0 ||
+        slot->capacity < RDMA_WIRE_SLOT_CAPACITY) {
         return false;
     }
-    ibv_sge sges[2]{};
-    sges[0].addr   = reinterpret_cast<uintptr_t>(control->data);
-    sges[0].length = control->capacity;
-    sges[0].lkey   = control->registration_key;
-    int num_sge    = 1;
-    if (data != nullptr) {
-        if (data->data == nullptr || data->capacity == 0)
-            return false;
-        sges[1].addr   = reinterpret_cast<uintptr_t>(data->data);
-        sges[1].length = data->capacity;
-        sges[1].lkey   = data->registration_key;
-        num_sge        = 2;
-    }
-    auto work = std::make_unique<ReceiveWork>(ReceiveWork{conn, control, data});
-    control->ref_clone();
-    if (data != nullptr)
-        data->ref_clone();
+    ibv_sge sge{};
+    sge.addr   = reinterpret_cast<uintptr_t>(slot->data);
+    sge.length = slot->capacity;
+    sge.lkey   = slot->registration_key;
+    auto work  = std::make_unique<ReceiveWork>(ReceiveWork{conn, slot});
+    slot->ref_clone();
     ibv_recv_wr wr{};
-    wr.wr_id                    = reinterpret_cast<uintptr_t>(work.get()) | 1U;
-    wr.sg_list                  = sges;
-    wr.num_sge                  = num_sge;
-    ibv_recv_wr *bad            = nullptr;
-    const bool   control_posted = control->transition(BufferOwnership::Available, BufferOwnership::PostedReceive);
-    const bool   data_posted    = data == nullptr ||
-                                  data->transition(BufferOwnership::Available, BufferOwnership::PostedReceive) ||
-                                  data->transition(BufferOwnership::CallerOwned, BufferOwnership::PostedReceive);
-    int          post_rc        = -1;
-    if (control_posted && data_posted)
+    wr.wr_id                 = reinterpret_cast<uintptr_t>(work.get()) | 1U;
+    wr.sg_list               = &sge;
+    wr.num_sge               = 1;
+    ibv_recv_wr *bad         = nullptr;
+    const bool   slot_posted = slot->transition(BufferOwnership::Available, BufferOwnership::PostedReceive) ||
+                               slot->transition(BufferOwnership::CallerOwned, BufferOwnership::PostedReceive);
+    int          post_rc     = -1;
+    if (slot_posted)
         post_rc = ibv_post_recv(reinterpret_cast<ibv_qp *>(conn->transport_handle), &wr, &bad);
-    if (!control_posted || !data_posted || post_rc != 0) {
-        CRB_LOG_WARN("rdma receive: post failed rc={} control_state={} data_state={}", post_rc,
-                     static_cast<unsigned>(control->ownership.load(std::memory_order_relaxed)),
-                     data == nullptr ? 0U : static_cast<unsigned>(data->ownership.load(std::memory_order_relaxed)));
-        control->ownership.store(BufferOwnership::Available, std::memory_order_release);
-        if (data != nullptr)
-            data->ownership.store(BufferOwnership::Available, std::memory_order_release);
-        control->release();
-        if (data != nullptr)
-            data->release();
+    if (!slot_posted || post_rc != 0) {
+        CRB_LOG_WARN("rdma receive: post failed rc={} slot_state={}", post_rc,
+                     static_cast<unsigned>(slot->ownership.load(std::memory_order_relaxed)));
+        slot->ownership.store(BufferOwnership::Available, std::memory_order_release);
+        slot->release();
         return false;
     }
 
@@ -443,7 +421,7 @@ Buffer *RdmaTransport::register_buffer(Buffer *buf)
     if (registered == nullptr) {
         return nullptr;
     }
-    std::memcpy(registered->data, buf->data, buf->len);
+    std::memcpy(registered->data, buf->payload_data(), buf->len);
     registered->len            = buf->len;
     registered->request_id     = buf->request_id;
     registered->stream_id      = buf->stream_id;
@@ -957,26 +935,17 @@ bool RdmaTransport::prime_receive(const std::shared_ptr<Connection> &connection)
     constexpr uint32_t kInitialReceiveDepth = 8;
     BufferPool        *pool                 = connection->pool();
     for (uint32_t i = 0; i < kInitialReceiveDepth; ++i) {
-        Buffer *control = pool->alloc(RDMA_CONTROL_CAPACITY);
-        Buffer *data    = pool->alloc(1U << 20);
-        if (control == nullptr || data == nullptr) {
-
-            if (control != nullptr)
-                control->release();
-            if (data != nullptr)
-                data->release();
+        Buffer *slot = pool->alloc(RDMA_WIRE_SLOT_CAPACITY);
+        if (slot == nullptr) {
             return false;
         }
-        if (!post_receive(connection.get(), control, data)) {
-
-            control->release();
-            data->release();
+        if (!post_receive(connection.get(), slot)) {
+            slot->release();
             return false;
         }
-        // post_receive retains the work-request references; release the caller
-        // references so the completion owns the pair until it is consumed.
-        control->release();
-        data->release();
+        // post_receive retains the work-request reference; the completion
+        // owns the slot after the caller reference is released.
+        slot->release();
     }
     return true;
 }
@@ -990,12 +959,8 @@ void RdmaTransport::release_completed_receive(ibv_wc &wc)
     auto quarantine_and_release = [&] {
         stats_.cq_errors.fetch_add(1, std::memory_order_relaxed);
         work->conn->close();
-        (void)work->control->quarantine();
-        if (work->data != nullptr)
-            (void)work->data->quarantine();
-        work->control->release();
-        if (work->data != nullptr)
-            work->data->release();
+        (void)work->slot->quarantine();
+        work->slot->release();
         delete work;
     };
     if (wc.status != IBV_WC_SUCCESS) {
@@ -1005,89 +970,62 @@ void RdmaTransport::release_completed_receive(ibv_wc &wc)
         quarantine_and_release();
         return;
     }
-    if (!work->control->transition(BufferOwnership::PostedReceive, BufferOwnership::ReceiveInFlight) ||
-        (work->data != nullptr &&
-         !work->data->transition(BufferOwnership::PostedReceive, BufferOwnership::ReceiveInFlight))) {
+    if (!work->slot->transition(BufferOwnership::PostedReceive, BufferOwnership::ReceiveInFlight)) {
         quarantine_and_release();
         return;
     }
-    const uint32_t control_bytes = work->control->capacity;
-    if (control_bytes < HEADER_SIZE) {
-        CRB_LOG_WARN("rdma receive: control capacity too small capacity={} header={}", control_bytes, HEADER_SIZE);
+    const uint32_t slot_capacity = work->slot->capacity;
+    if (slot_capacity < HEADER_SIZE) {
+        CRB_LOG_WARN("rdma receive: slot capacity too small capacity={} header={}", slot_capacity, HEADER_SIZE);
         quarantine_and_release();
         return;
     }
-    const Header   header         = parse_header(work->control->data);
+    const Header   header         = parse_header(work->slot->data);
     const uint32_t control_end    = static_cast<uint32_t>(HEADER_SIZE) + header.msg_size;
     const uint64_t expected_bytes = static_cast<uint64_t>(control_end) + header.data_size;
     if (header.magic != MAGIC || header.msg_offset < HEADER_SIZE ||
-        static_cast<uint32_t>(header.msg_offset) + header.msg_size > control_bytes || expected_bytes > wc.byte_len ||
-        (header.data_size > 0 && (work->data == nullptr || header.data_size > work->data->capacity))) {
+        static_cast<uint32_t>(header.msg_offset) + header.msg_size > slot_capacity || expected_bytes > wc.byte_len ||
+        expected_bytes > slot_capacity) {
         CRB_LOG_WARN(
             "rdma receive: invalid frame magic={} type={} msg_size={} data_size={} offset={} capacity={} byte_len={}",
-            header.magic, header.msg_type, header.msg_size, header.data_size, header.msg_offset, control_bytes,
+            header.magic, header.msg_type, header.msg_size, header.data_size, header.msg_offset, slot_capacity,
             wc.byte_len);
         quarantine_and_release();
         return;
     }
 
-    work->control->len = control_end;
-    if (work->data != nullptr)
-        work->data->len = header.data_size;
     auto *frame   = new Frame;
     frame->header = header;
     if (header.msg_size != 0) {
-        frame->control.assign(work->control->data + header.msg_offset,
-                              work->control->data + header.msg_offset + header.msg_size);
-        extract_control_fields(work->control->data + header.msg_offset, header.msg_size, frame->request_id,
+        frame->control.assign(work->slot->data + header.msg_offset,
+                              work->slot->data + header.msg_offset + header.msg_size);
+        extract_control_fields(work->slot->data + header.msg_offset, header.msg_size, frame->request_id,
                                frame->rpc_create_nano, frame->response_create_nano);
     }
-    if (work->data != nullptr && header.data_size != 0) {
-        if (!work->data->transition(BufferOwnership::ReceiveInFlight, BufferOwnership::CallerOwned)) {
-            delete frame;
-            quarantine_and_release();
-            return;
-        }
-        frame->data_buf = work->data;
-        work->data      = nullptr;
-    }
-    Buffer *repost_control  = work->control->ref_clone();
-    Buffer *repost_data     = (header.data_size == 0 && work->data != nullptr) ? work->data->ref_clone() : nullptr;
-    auto   *repost          = new RepostContext{this, work->conn, repost_control, repost_data};
+    work->slot->view_offset = control_end;
+    work->slot->capacity    = slot_capacity - control_end;
+    work->slot->len         = header.data_size;
+    work->slot->ownership.store(BufferOwnership::CallerOwned, std::memory_order_release);
+    frame->data_buf         = work->slot;
+    Buffer *repost_slot     = work->slot->ref_clone();
+    auto   *repost          = new RepostContext{this, work->conn, repost_slot};
     frame->release_callback = &RdmaTransport::repost_frame_release;
     frame->release_context  = repost;
-    work->control->ownership.store(BufferOwnership::Available, std::memory_order_release);
-    if (work->data != nullptr && header.data_size == 0)
-        work->data->ownership.store(BufferOwnership::Available, std::memory_order_release);
-    work->control->release();
-    if (work->data != nullptr && header.data_size != 0)
-        work->data = nullptr;
-    if (work->data != nullptr)
-        work->data->release();
     work->conn->on_frame(frame);
     stats_.receives.fetch_add(1, std::memory_order_relaxed);
     delete work;
 }
 
-void RdmaTransport::repost_frame_release(void *context, Buffer *data)
+void RdmaTransport::repost_frame_release(void *context, Buffer *)
 {
     auto *repost = static_cast<RepostContext *>(context);
     if (repost == nullptr)
         return;
-    Buffer *receive_data = data != nullptr ? data : repost->data;
-    if (repost->transport == nullptr ||
-        !repost->transport->post_receive(repost->connection, repost->control, receive_data)) {
-        repost->control->release();
-        if (receive_data != nullptr && receive_data != data)
-            receive_data->release();
-    }
-    else {
-        // The callback owns the caller references while post_receive owns
-        // the WR references.
-        repost->control->release();
-        if (receive_data != nullptr && receive_data != data)
-            receive_data->release();
-    }
+    repost->slot->reset_view();
+    repost->slot->ownership.store(BufferOwnership::Available, std::memory_order_release);
+    if (repost->transport != nullptr)
+        (void)repost->transport->post_receive(repost->connection, repost->slot);
+    repost->slot->release();
     delete repost;
 }
 
