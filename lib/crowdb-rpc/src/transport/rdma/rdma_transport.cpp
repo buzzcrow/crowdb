@@ -657,8 +657,26 @@ std::shared_ptr<Connection> RdmaTransport::accept()
     if (rdma_get_cm_event(cm_channel_, &event) != 0 || event->event != RDMA_CM_EVENT_CONNECT_REQUEST) {
         if (event != nullptr) {
             rdma_cm_id *event_id = event->id;
+            const int event_type = event->event;
             rdma_ack_cm_event(event);
             if (event_id != nullptr && event_id != listen_id_) {
+                std::shared_ptr<Connection> closed_connection;
+                {
+                    std::scoped_lock lock(cm_mu_);
+                    if (auto it = cm_connections_.find(event_id); it != cm_connections_.end()) {
+                        closed_connection = it->second;
+                        cm_connections_.erase(it);
+                    }
+                    if (auto it = cm_pools_.find(event_id); it != cm_pools_.end()) {
+                        retired_pools_.push_back(std::move(it->second));
+                        cm_pools_.erase(it);
+                    }
+                    cm_ids_.erase(std::remove(cm_ids_.begin(), cm_ids_.end(), event_id), cm_ids_.end());
+                }
+                if (closed_connection != nullptr)
+                    closed_connection->close();
+                if (event_type == RDMA_CM_EVENT_DISCONNECTED || event_type == RDMA_CM_EVENT_CONNECT_ERROR)
+                    stats_.cm_disconnects.fetch_add(1, std::memory_order_relaxed);
                 if (event_id->qp != nullptr)
                     rdma_destroy_qp(event_id);
                 rdma_destroy_id(event_id);
@@ -747,6 +765,8 @@ void RdmaTransport::start()
 void RdmaTransport::stop()
 {
     running_.store(false, std::memory_order_release);
+    if (event_engine_ != nullptr)
+        event_engine_->notify_worker();
 }
 
 int RdmaTransport::completion_fd() const
@@ -761,6 +781,7 @@ int RdmaTransport::cm_event_fd() const
 
 int RdmaTransport::drain_cq(uint32_t max_completions)
 {
+    stats_.cq_polls.fetch_add(1, std::memory_order_relaxed);
     uint32_t               drained          = 0;
     uint32_t               empty_polls      = 0;
     constexpr uint32_t     kEmptyPollBudget = 50000;
@@ -772,6 +793,7 @@ int RdmaTransport::drain_cq(uint32_t max_completions)
             if (batch < 0)
                 break;
             if (batch == 0) {
+                stats_.cq_empty_polls.fetch_add(1, std::memory_order_relaxed);
                 if (++empty_polls >= kEmptyPollBudget)
                     break;
                 continue;

@@ -77,6 +77,9 @@ class RdmaTransport : public Transport
         std::atomic<uint64_t> fallback_count{0};
         std::atomic<uint64_t> posted_receives{0};
         std::atomic<uint64_t> quarantined_bytes{0};
+        std::atomic<uint64_t> cq_polls{0};
+        std::atomic<uint64_t> cq_empty_polls{0};
+        std::atomic<uint64_t> cm_disconnects{0};
     };
 
     RdmaTransport();
@@ -170,6 +173,7 @@ class RdmaTransport : public Transport
     };
 
     std::unordered_map<struct rdma_cm_id *, std::unique_ptr<ConnectionPools>> cm_pools_;
+    std::vector<std::unique_ptr<ConnectionPools>> retired_pools_;
 
     void        release_completed_frame(struct ibv_wc &wc);
     void        release_completed_receive(struct ibv_wc &wc);

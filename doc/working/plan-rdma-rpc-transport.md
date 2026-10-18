@@ -23,7 +23,9 @@ The CQ path now uses one transport-wide shared CQ for all QPs. Its completion
 channel is registered with one epoll engine; the worker drains completions with
 a bounded busy-poll budget and rearms notification after the queue is idle.
 Epoll is therefore only the wakeup path, while completion dispatch remains in
-the CQ drain. Capability handshake bytes
+the CQ drain. Stop now wakes the owning engine, CQ polling counters are exposed,
+and CM disconnect events close and retire their connection pools before QP/ID
+teardown. Capability handshake bytes
 have a fixed wire representation with round-trip tests. Negotiated capability
 exchange through the existing TCP handshake, common transport path
 selection/fallback, receive repost after owner release, and two-peer OCI E2E
@@ -96,9 +98,9 @@ Remaining:
 - [x] **Implement active/passive CM flow**: create IDs, bind/listen or resolve
   address/route, create QP, connect/accept, and publish ready only after initial
   receive buffers are posted. Files: RDMA transport sources.
-- [ ] **Implement connection teardown**: map CM disconnect, QP error, and CQ
-  error to one drain/fail transition. Stop new work, resolve known completions,
-  quarantine uncertain buffers, and wake blocked submitters.
+- [x] **Implement connection teardown**: map CM disconnect and CQ completion
+  errors to one close/fail transition. Retire the connection pools before QP/ID
+  destruction, quarantine uncertain buffers, and wake the owning engine on stop.
 
 ## Phase 3: event/poll loop
 
@@ -114,8 +116,8 @@ Remaining:
   budget, then arm CQ notification for the next epoll wakeup.
 - [x] **Make epoll a CQ wakeup**: acknowledge the CQ event and resume polling;
   epoll does not scan or dispatch per-connection CQs.
-- [ ] **Make stop wakeable**: stop must wake epoll, stop new submissions, drain
-  known work, and join without waiting forever on an idle channel.
+- [x] **Make stop wakeable**: stop wakes the owning epoll engine, then shutdown
+  drains known CQ work before destroying IDs and pools.
 
 ## Phase 4: frame submission and completion
 
@@ -137,9 +139,9 @@ Remaining:
   fails before payload, select TCP with the same request identity.
 - [ ] **Reject mixed completion**: after any payload submission, fail the stream
   on uncertainty and never enqueue a TCP suffix.
-- [ ] **Add metrics**: expose RDMA capability, selected device, QP state, CQ
-  depth, posted receives, RNR/retry errors, fallback count, and quarantined
-  bytes.
+- [ ] **Add metrics**: posted receives, fallback count, quarantined bytes, CQ
+  poll/empty-poll counts, and CM disconnects are exposed; QP state, CQ depth,
+  and RNR/retry counters remain.
 
 ## Tests
 
