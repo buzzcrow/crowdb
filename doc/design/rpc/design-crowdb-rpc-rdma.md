@@ -107,20 +107,38 @@ SDK lease budget, or a full DiskIO write queue applies backpressure to the
 existing producer or aggregation layer. RDMA adds no application-level credit
 message. A slot is never posted twice concurrently.
 
-## 5. Event and completion model
+## 5. Shared CQ and completion model
 
-The RDMA completion-channel fd and RDMA-CM event fd are registered with the
-existing epoll engine. Epoll provides wakeups; the RPC worker then:
+Connections share a bounded CQ pool. Each CQ owns one completion channel and
+is assigned to a polling worker. Every QP uses the same shared CQ for SEND and
+RECV completions. The CQ maps `qp_num` to the owning RPC connection; a
+completion never requires scanning every connection CQ.
 
-1. acknowledges and re-arms the channel event;
-2. drains CM events and updates connection state;
-3. polls bounded batches from the CQ;
-4. resolves each work request through its `wr_id` record;
-5. dispatches frame completion or buffer ownership transfer.
+The polling worker is the primary completion path:
+
+1. polls the assigned CQ in a bounded busy-poll loop;
+2. dispatches all currently available completions;
+3. after the configured empty-poll budget, arms CQ notification with
+   `ibv_req_notify_cq`;
+4. polls once more to close the notification race;
+5. registers the CQ completion fd with epoll only while idle.
+
+Epoll is a wakeup path, not the completion processor. When the CQ completion
+fd becomes readable, the worker acknowledges the event, removes the idle
+state, and returns to polling. The RDMA-CM event fd follows the same worker
+ownership rule but remains a connection-management event source.
+
+The worker processes a CQ batch as follows:
+
+1. resolves the completion's `qp_num` to a connection;
+2. resolves the work request through its stable `wr_id` record;
+3. dispatches SEND or RECV completion;
+4. returns or quarantines the slot according to completion status.
 
 The RPC library controls polling. FFI receives only a completion callback or a
-buffer lease after C++ has validated the frame and resolved ownership. There is
-no independent RDMA polling thread in the default path.
+buffer lease after C++ has validated the frame and resolved ownership. A
+connection does not own a CQ or completion channel; it owns only its QP and
+slot rings.
 
 ## 6. Failure and fallback
 
@@ -159,6 +177,8 @@ The transport configuration supplies defaults when the transport is created:
 rdma_wire_slot_size = "1MiB"
 rdma_send_slot_count = 64
 rdma_receive_slot_count = 64
+rdma_cq_count = 4
+rdma_poll_empty_budget = 50000
 rdma_registered_bytes = "128MiB"
 ```
 
@@ -184,7 +204,11 @@ slot class only when the complete wire message fits that class.
   unresolved.
 - **I7:** A SEND uses one contiguous registered slot and a RECV uses one
   complete posted slot; sender SGE boundaries never define receiver parsing.
-- **I8:** Unsupported RDMA leaves the TCP service usable and does not require
+- **I8:** Every QP is assigned to exactly one shared CQ, and every shared CQ is
+  polled by exactly one worker at a time.
+- **I9:** Epoll notification only wakes an idle CQ polling worker; completion
+  dispatch occurs in the polling worker.
+- **I10:** Unsupported RDMA leaves the TCP service usable and does not require
   RDMA libraries or devices at runtime.
 
 ## 10. Scope boundary

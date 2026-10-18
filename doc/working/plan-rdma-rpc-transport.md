@@ -16,7 +16,7 @@ The transport foundation now includes validated endpoint capability data
 (protocol, generation, device, GID, port, and supported capacity classes),
 explicit RDMA path states, and a pre-payload-only TCP fallback predicate.
 Implemented since this checkpoint: active/passive RDMA-CM setup, RC QP
-creation, one-MR arena-backed wire slots, one-SGE SEND/RECV posting, bounded receive posting, completion-channel
+creation, one-MR arena-backed wire slots, one-SGE SEND/RECV posting, bounded receive posting, and the initial completion-channel
 polling with CQ acknowledgement, error quarantine, validated receive-frame
 dispatch into `Connection::on_frame`, and epoll external-fd registration.
 The CQ path is now drained by an epoll worker through `completion_fd()` and
@@ -42,12 +42,11 @@ multi-node validation is deferred to [the separate follow-up plan](plan-rdma-mul
 Completed:
 
 - active and passive RDMA-CM address, route, connect, and accept flow;
-- connection-level PD, CQ, completion channel, and registered send/receive
-  pools;
+- connection-level PD and registered send/receive slot pools;
 - initial receive posting, CQ completion dispatch, owner-release repost, and
   RNR retry configuration;
 - RDMA-to-TCP capability negotiation and pre-payload fallback wiring;
-- epoll registration for CM, transport CQ, and connection CQ events;
+- epoll registration for CM and CQ wakeup events;
 - live HCA local-loop CM/QP/send/receive E2E with all frames received and clean CQ
   status, and clean client/server exit;
 - actual `RpcServer`/`RpcClient` worker-path request/response round trip with
@@ -63,6 +62,10 @@ Remaining:
 - run the single-node HCA local-loop multi-container OCI profile against the built image;
 - remove temporary hardware diagnostics, normalize failure logging, and run
   the full C++ format/tree-lint gates.
+- replace per-connection CQs with a shared CQ pool and polling workers;
+- make epoll CQ notifications wake idle polling workers instead of dispatching
+  completions directly;
+- rerun all RDMA benchmark concurrency and payload cases after the CQ change.
 
 ## Phase 1: common transport seam
 
@@ -99,9 +102,12 @@ Remaining:
   `lib/crowdb-rpc/src/transport/epoll/epoll_engine.cpp`.
 - [ ] **Drain CM events**: acknowledge all received CM events, update the
   connection state, and re-arm the CM channel where required.
-- [x] **Drain CQ events**: acknowledge and re-arm completion notifications, then
-  poll bounded batches until the current CQ work is drained or the worker
-  budget is reached. No independent polling thread.
+- [ ] **Create shared CQ pool**: allocate a bounded CQ/channel set and assign
+  each QP to one CQ by round-robin worker ownership.
+- [ ] **Add CQ polling workers**: busy-poll each shared CQ within an empty-poll
+  budget, then arm CQ notification and hand the fd to epoll while idle.
+- [ ] **Make epoll a CQ wakeup**: acknowledge the CQ event and resume polling;
+  epoll must not scan or dispatch every connection CQ.
 - [ ] **Make stop wakeable**: stop must wake epoll, stop new submissions, drain
   known work, and join without waiting forever on an idle channel.
 
@@ -143,6 +149,8 @@ Integration tests:
 
 - RDMA-disabled build and host selects TCP without CM calls;
 - mocked CM/CQ setup, reconnect, CQ error, flush completion, and shutdown;
+- multiple connections sharing one CQ pool preserve completion ownership and
+  request correlation;
 - epoll external event wakes worker and drains all current CQ completions;
 - send/receive sequence preserves exact control/data lengths inside one slot;
 - pre-payload failure retries idempotent request on TCP;
