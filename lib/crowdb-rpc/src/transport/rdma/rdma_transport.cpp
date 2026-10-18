@@ -338,6 +338,19 @@ bool RdmaTransport::submit(Connection *conn, OutFrame *frame)
         frame->data->release();
         frame->data = nullptr;
     }
+    if (frame->data != nullptr && frame->data->type != BufferType::Registered) {
+        Buffer *source_data = frame->data;
+        Buffer *registered  = register_buffer(source_data);
+        if (registered == nullptr) {
+            frame->control->release();
+            frame->control = nullptr;
+            source_data->release();
+            frame->data = nullptr;
+            return false;
+        }
+        frame->data = registered;
+        source_data->release();
+    }
 
     RdmaFrameSges frame_sges;
     if (!build_rdma_frame_sges(frame->control, frame->data, &frame_sges)) {
@@ -768,6 +781,7 @@ std::shared_ptr<Connection> RdmaTransport::accept()
     const int accept_rc        = rdma_accept(id, &params);
 
     if (accept_rc != 0) {
+        CRB_LOG_WARN("rdma accept: rdma_accept failed errno={}", errno);
         rdma_destroy_qp(id);
         ibv_destroy_cq(connection_cq);
         ibv_destroy_comp_channel(connection_channel);
@@ -778,6 +792,8 @@ std::shared_ptr<Connection> RdmaTransport::accept()
     const int event_rc = wait_cm_event(cm_channel_, &event, 5000) ? 0 : -1;
 
     if (event_rc != 0 || event == nullptr || event->event != RDMA_CM_EVENT_ESTABLISHED) {
+        CRB_LOG_WARN("rdma accept: ESTABLISHED missing event={} status={} errno={}",
+                     event == nullptr ? -1 : event->event, event == nullptr ? 0 : event->status, errno);
         if (event != nullptr)
             rdma_ack_cm_event(event);
         rdma_destroy_qp(id);
