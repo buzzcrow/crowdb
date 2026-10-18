@@ -1,6 +1,23 @@
 #!/usr/bin/env bash
 # RDMA RPC echo benchmark. Mirrors bench-rpc-regression.sh with an HCA-backed
 # connection so transport throughput and latency can be compared directly.
+#
+# Baseline (2026-10-18, HCA rocep35s0f0:1, 3s per case, 0 errors):
+#   payload  workers/connections  ops/s       avg-us  p50-us  p99-us
+#   128 B    1/1                  43,161      22.1    65      65
+#   128 B    4/4                 441,779     143.6   124     215
+#   128 B    8/8                 732,084     695.0   675     917
+#   128 B   16/32              1,186,876     832.9   419   5,439
+#   1 KiB    1/1                  43,003      22.2    65      65
+#   1 KiB    4/4                 414,466     153.2   136     221
+#   1 KiB    8/8                 707,931     718.3   704     954
+#   1 KiB   16/32              1,120,659     882.5   448   6,193
+#   4 KiB    1/1                  39,625      24.0    65      65
+#   4 KiB    4/4                 376,107     168.8   149     266
+#   4 KiB    8/8                 582,940     872.2   811   1,810
+#   4 KiB   16/32                834,076   1,184.5   606   6,881
+# These are reference values for the shared-CQ implementation; reruns should
+# record the exact HCA, duration, payload, and worker/connection configuration.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
