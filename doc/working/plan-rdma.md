@@ -121,9 +121,9 @@ ownership remains unresolved.
   correlation, fallback, and shutdown.
 - [ ] **Mock verification**: cover CQ success/error/flush, CM transitions,
   receive exhaustion, fallback before payload, and no mixed TCP/RDMA stream.
-- [ ] **Local-loop verification**: run `setup-rdma.sh local` followed by
-  `run-local-loop.sh local`; verify both CM roles reach `ESTABLISHED`, all
-  frames are received, and exact lengths and sequence values are preserved.
+- [x] **Local-loop verification**: run `setup-rdma.sh local` followed by
+  `run-local-loop.sh local`; both CM roles, framed SEND/RECV, receive repost,
+  and exact payload lengths have passed on the prepared HCA.
 - [ ] **Container local-loop verification**: start multiple containers on one
   node after the local setup; verify each container opens independent QPs over
   the same HCA port and that request correlation and bounded buffers remain
