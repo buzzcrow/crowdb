@@ -69,8 +69,9 @@ Remaining:
 - move CQ draining to a dedicated polling worker if engine worker contention
   becomes measurable;
 - rerun all RDMA benchmark concurrency and payload cases after the CQ change.
-  Completed on the local HCA at 128B with 0 errors for 1, 4, 8, and 32
-  connections; the 4-connection case reached about 442k ops/s.
+  Completed on the local HCA at 128B, 1KiB, and 4KiB with 0 errors for 1, 4,
+  8, and 32 connections. The 4-connection cases reached about 442k ops/s
+  (128B), 414k ops/s (1KiB), and 376k ops/s (4KiB).
 
 ## Phase 1: common transport seam
 
