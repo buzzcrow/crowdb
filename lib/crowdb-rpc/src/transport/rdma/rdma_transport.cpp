@@ -446,16 +446,6 @@ void RdmaTransport::shutdown()
         for (rdma_cm_id *id : cm_ids_) {
             if (id->qp != nullptr)
                 rdma_destroy_qp(id);
-            if (auto it = cm_cqs_.find(id); it != cm_cqs_.end()) {
-                ibv_destroy_cq(it->second);
-                cm_cqs_.erase(it);
-            }
-            if (auto it = cm_channels_.find(id); it != cm_channels_.end()) {
-                if (event_engine_ != nullptr)
-                    event_engine_->remove_external_fd(it->second->fd);
-                ibv_destroy_comp_channel(it->second);
-                cm_channels_.erase(it);
-            }
             rdma_destroy_id(id);
         }
         cm_ids_.clear();
@@ -554,37 +544,14 @@ std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int 
     }
     rdma_ack_cm_event(event);
 
-    ibv_comp_channel *connection_channel = ibv_create_comp_channel(id->verbs);
-    if (connection_channel != nullptr)
-        make_nonblocking(connection_channel->fd);
-    ibv_cq *connection_cq =
-        connection_channel == nullptr ? nullptr : ibv_create_cq(id->verbs, 2048, nullptr, connection_channel, 0);
-
-    if (connection_cq == nullptr) {
-
-        if (connection_channel != nullptr)
-            ibv_destroy_comp_channel(connection_channel);
-        rdma_destroy_id(id);
-        return nullptr;
-    }
-    if (ibv_req_notify_cq(connection_cq, 0) != 0) {
-        CRB_LOG_WARN("rdma connect: arm connection CQ notifications failed errno={}", errno);
-        ibv_destroy_cq(connection_cq);
-        ibv_destroy_comp_channel(connection_channel);
-        rdma_destroy_id(id);
-        return nullptr;
-    }
     ibv_device_attr device_attributes{};
     if (ibv_query_device(id->verbs, &device_attributes) != 0) {
-
-        ibv_destroy_cq(connection_cq);
-        ibv_destroy_comp_channel(connection_channel);
         rdma_destroy_id(id);
         return nullptr;
     }
     ibv_qp_init_attr qp_attr{};
-    qp_attr.send_cq             = connection_cq;
-    qp_attr.recv_cq             = connection_cq;
+    qp_attr.send_cq             = cq_;
+    qp_attr.recv_cq             = cq_;
     qp_attr.qp_type             = IBV_QPT_RC;
     qp_attr.cap.max_send_wr     = std::min<uint32_t>(1024, device_attributes.max_qp_wr);
     qp_attr.cap.max_recv_wr     = std::min<uint32_t>(1024, device_attributes.max_qp_wr);
@@ -596,8 +563,6 @@ std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int 
 
     if (rdma_create_qp(id, id->pd, &qp_attr) != 0) {
 
-        ibv_destroy_cq(connection_cq);
-        ibv_destroy_comp_channel(connection_channel);
         rdma_destroy_id(id);
         return nullptr;
     }
@@ -610,8 +575,6 @@ std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int 
 
         CRB_LOG_WARN("rdma connect: rdma_connect failed addr={} errno={}", addr, errno);
         rdma_destroy_qp(id);
-        ibv_destroy_cq(connection_cq);
-        ibv_destroy_comp_channel(connection_channel);
         rdma_destroy_id(id);
         return nullptr;
     }
@@ -622,7 +585,6 @@ std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int 
         if (event != nullptr)
             rdma_ack_cm_event(event);
         rdma_destroy_qp(id);
-        ibv_destroy_cq(connection_cq);
         rdma_destroy_id(id);
         return nullptr;
     }
@@ -632,8 +594,6 @@ std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int 
     pools->recv = std::make_unique<RdmaBufferPool>(id->pd, 64U << 20, 1024);
     if (pools->send == nullptr || pools->recv == nullptr) {
         rdma_destroy_qp(id);
-        ibv_destroy_cq(connection_cq);
-        ibv_destroy_comp_channel(connection_channel);
         rdma_destroy_id(id);
         return nullptr;
     }
@@ -651,11 +611,7 @@ std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int 
         std::scoped_lock lock(cm_mu_);
         cm_ids_.push_back(id);
         cm_connections_.emplace(id, connection);
-        cm_cqs_.emplace(id, connection_cq);
-        cm_channels_.emplace(id, connection_channel);
         cm_pools_.emplace(id, std::move(pools));
-        if (event_engine_ != nullptr)
-            event_engine_->add_external_fd(connection_channel->fd, 3);
     }
     return connection;
 }
@@ -713,29 +669,9 @@ std::shared_ptr<Connection> RdmaTransport::accept()
     rdma_cm_id *id = event->id;
     rdma_ack_cm_event(event);
 
-    ibv_comp_channel *connection_channel = ibv_create_comp_channel(id->verbs);
-    if (connection_channel != nullptr)
-        make_nonblocking(connection_channel->fd);
-    ibv_cq *connection_cq =
-        connection_channel == nullptr ? nullptr : ibv_create_cq(id->verbs, 2048, nullptr, connection_channel, 0);
-
-    if (connection_cq == nullptr) {
-
-        if (connection_channel != nullptr)
-            ibv_destroy_comp_channel(connection_channel);
-        rdma_destroy_id(id);
-        return nullptr;
-    }
-    if (ibv_req_notify_cq(connection_cq, 0) != 0) {
-        CRB_LOG_WARN("rdma accept: arm connection CQ notifications failed errno={}", errno);
-        ibv_destroy_cq(connection_cq);
-        ibv_destroy_comp_channel(connection_channel);
-        rdma_destroy_id(id);
-        return nullptr;
-    }
     ibv_qp_init_attr qp_attr{};
-    qp_attr.send_cq             = connection_cq;
-    qp_attr.recv_cq             = connection_cq;
+    qp_attr.send_cq             = cq_;
+    qp_attr.recv_cq             = cq_;
     qp_attr.qp_type             = IBV_QPT_RC;
     qp_attr.cap.max_send_wr     = 1024;
     qp_attr.cap.max_recv_wr     = 1024;
@@ -746,8 +682,6 @@ std::shared_ptr<Connection> RdmaTransport::accept()
     qp_attr.qp_context          = id;
 
     if (rdma_create_qp(id, id->pd, &qp_attr) != 0) {
-        ibv_destroy_cq(connection_cq);
-        ibv_destroy_comp_channel(connection_channel);
         rdma_destroy_id(id);
         return nullptr;
     }
@@ -761,8 +695,6 @@ std::shared_ptr<Connection> RdmaTransport::accept()
     if (accept_rc != 0) {
         CRB_LOG_WARN("rdma accept: rdma_accept failed errno={}", errno);
         rdma_destroy_qp(id);
-        ibv_destroy_cq(connection_cq);
-        ibv_destroy_comp_channel(connection_channel);
         rdma_destroy_id(id);
         return nullptr;
     }
@@ -775,8 +707,6 @@ std::shared_ptr<Connection> RdmaTransport::accept()
         if (event != nullptr)
             rdma_ack_cm_event(event);
         rdma_destroy_qp(id);
-        ibv_destroy_cq(connection_cq);
-        ibv_destroy_comp_channel(connection_channel);
         rdma_destroy_id(id);
         return nullptr;
     }
@@ -787,8 +717,6 @@ std::shared_ptr<Connection> RdmaTransport::accept()
     pools->recv = std::make_unique<RdmaBufferPool>(id->pd, 64U << 20, 1024);
     if (pools->send == nullptr || pools->recv == nullptr) {
         rdma_destroy_qp(id);
-        ibv_destroy_cq(connection_cq);
-        ibv_destroy_comp_channel(connection_channel);
         rdma_destroy_id(id);
         return nullptr;
     }
@@ -798,8 +726,6 @@ std::shared_ptr<Connection> RdmaTransport::accept()
     connection->transport_handle = reinterpret_cast<uint64_t>(id->qp);
     if (!prime_receive(connection)) {
         rdma_destroy_qp(id);
-        ibv_destroy_cq(connection_cq);
-        ibv_destroy_comp_channel(connection_channel);
         rdma_destroy_id(id);
         return nullptr;
     }
@@ -808,11 +734,7 @@ std::shared_ptr<Connection> RdmaTransport::accept()
         std::scoped_lock lock(cm_mu_);
         cm_ids_.push_back(id);
         cm_connections_.emplace(id, connection);
-        cm_cqs_.emplace(id, connection_cq);
-        cm_channels_.emplace(id, connection_channel);
         cm_pools_.emplace(id, std::move(pools));
-        if (event_engine_ != nullptr)
-            event_engine_->add_external_fd(connection_channel->fd, 3);
     }
     return connection;
 }
@@ -839,14 +761,22 @@ int RdmaTransport::cm_event_fd() const
 
 int RdmaTransport::drain_cq(uint32_t max_completions)
 {
-    uint32_t               drained = 0;
+    uint32_t               drained          = 0;
+    uint32_t               empty_polls      = 0;
+    constexpr uint32_t     kEmptyPollBudget = 50000;
     std::array<ibv_wc, 32> completions{};
     auto                   poll_one = [&](ibv_cq *cq) {
         while (drained < max_completions && cq != nullptr) {
             const int batch = ibv_poll_cq(cq, static_cast<int>(std::min<uint32_t>(32, max_completions - drained)),
                                           completions.data());
-            if (batch <= 0)
+            if (batch < 0)
                 break;
+            if (batch == 0) {
+                if (++empty_polls >= kEmptyPollBudget)
+                    break;
+                continue;
+            }
+            empty_polls = 0;
             for (int i = 0; i < batch; ++i) {
                 const auto opcode = completions[static_cast<size_t>(i)].opcode;
                 const auto wr_id  = completions[static_cast<size_t>(i)].wr_id;
@@ -865,18 +795,9 @@ int RdmaTransport::drain_cq(uint32_t max_completions)
         void   *context  = nullptr;
         if (ibv_get_cq_event(comp_channel_, &event_cq, &context) == 0) {
             ibv_ack_cq_events(event_cq, 1);
-            ibv_req_notify_cq(event_cq, 0);
-            poll_one(event_cq);
         }
-    }
-    {
-        std::scoped_lock lock(cm_mu_);
-        for (const auto &[id, cq] : cm_cqs_) {
-            (void)id;
-            poll_one(cq);
-            if (drained >= max_completions)
-                break;
-        }
+        poll_one(cq_);
+        (void)ibv_req_notify_cq(cq_, 0);
     }
     return static_cast<int>(drained);
 }
@@ -884,6 +805,11 @@ int RdmaTransport::drain_cq(uint32_t max_completions)
 void RdmaTransport::register_events(SocketEngine *engine)
 {
     if (engine == nullptr)
+        return;
+    // A shared CQ has one completion channel. Register that channel with one
+    // epoll engine only; registering the same fd in every engine causes
+    // duplicate wakeups and lets different workers race the CQ event.
+    if (event_engine_ != nullptr && event_engine_ != engine)
         return;
     event_engine_ = engine;
     if (completion_fd() >= 0)
@@ -907,21 +833,6 @@ int RdmaTransport::handle_external_event(uint64_t tag, uint32_t max_completions)
                 connection_handler_(connection);
         }
         return accepted;
-    }
-    if (tag == 3) {
-        {
-            std::scoped_lock lock(cm_mu_);
-            for (const auto &[id, channel] : cm_channels_) {
-                (void)id;
-                ibv_cq *event_cq = nullptr;
-                void   *context  = nullptr;
-                if (ibv_get_cq_event(channel, &event_cq, &context) == 0) {
-                    ibv_ack_cq_events(event_cq, 1);
-                    (void)ibv_req_notify_cq(event_cq, 0);
-                }
-            }
-        }
-        return drain_cq(max_completions);
     }
     return 0;
 }

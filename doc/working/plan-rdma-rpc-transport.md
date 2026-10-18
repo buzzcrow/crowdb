@@ -19,8 +19,11 @@ Implemented since this checkpoint: active/passive RDMA-CM setup, RC QP
 creation, one-MR arena-backed wire slots, one-SGE SEND/RECV posting, bounded receive posting, and the initial completion-channel
 polling with CQ acknowledgement, error quarantine, validated receive-frame
 dispatch into `Connection::on_frame`, and epoll external-fd registration.
-The CQ path is now drained by an epoll worker through `completion_fd()` and
-`drain_cq()` rather than a private polling thread. Capability handshake bytes
+The CQ path now uses one transport-wide shared CQ for all QPs. Its completion
+channel is registered with one epoll engine; the worker drains completions with
+a bounded busy-poll budget and rearms notification after the queue is idle.
+Epoll is therefore only the wakeup path, while completion dispatch remains in
+the CQ drain. Capability handshake bytes
 have a fixed wire representation with round-trip tests. Negotiated capability
 exchange through the existing TCP handshake, common transport path
 selection/fallback, receive repost after owner release, and two-peer OCI E2E
@@ -62,10 +65,12 @@ Remaining:
 - run the single-node HCA local-loop multi-container OCI profile against the built image;
 - remove temporary hardware diagnostics, normalize failure logging, and run
   the full C++ format/tree-lint gates.
-- replace per-connection CQs with a shared CQ pool and polling workers;
-- make epoll CQ notifications wake idle polling workers instead of dispatching
-  completions directly;
+- add a configurable multi-CQ pool when one shared CQ becomes a bottleneck;
+- move CQ draining to a dedicated polling worker if engine worker contention
+  becomes measurable;
 - rerun all RDMA benchmark concurrency and payload cases after the CQ change.
+  Completed on the local HCA at 128B with 0 errors for 1, 4, 8, and 32
+  connections; the 4-connection case reached about 442k ops/s.
 
 ## Phase 1: common transport seam
 
@@ -102,12 +107,12 @@ Remaining:
   `lib/crowdb-rpc/src/transport/epoll/epoll_engine.cpp`.
 - [ ] **Drain CM events**: acknowledge all received CM events, update the
   connection state, and re-arm the CM channel where required.
-- [ ] **Create shared CQ pool**: allocate a bounded CQ/channel set and assign
-  each QP to one CQ by round-robin worker ownership.
-- [ ] **Add CQ polling workers**: busy-poll each shared CQ within an empty-poll
-  budget, then arm CQ notification and hand the fd to epoll while idle.
-- [ ] **Make epoll a CQ wakeup**: acknowledge the CQ event and resume polling;
-  epoll must not scan or dispatch every connection CQ.
+- [x] **Create shared CQ**: all QPs use the transport-wide CQ and completion
+  channel, so multiple connections share one completion stream.
+- [x] **Add bounded CQ polling**: drain the shared CQ with an empty-poll
+  budget, then arm CQ notification for the next epoll wakeup.
+- [x] **Make epoll a CQ wakeup**: acknowledge the CQ event and resume polling;
+  epoll does not scan or dispatch per-connection CQs.
 - [ ] **Make stop wakeable**: stop must wake epoll, stop new submissions, drain
   known work, and join without waiting forever on an idle channel.
 

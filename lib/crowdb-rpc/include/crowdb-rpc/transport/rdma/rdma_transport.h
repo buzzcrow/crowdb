@@ -104,9 +104,9 @@ class RdmaTransport : public Transport
     void              stop();
     [[nodiscard]] int completion_fd() const;
     [[nodiscard]] int cm_event_fd() const;
-    int               drain_cq(uint32_t max_completions = 32);
+    int               drain_cq(uint32_t max_completions = 256);
     void              register_events(SocketEngine *engine);
-    int               handle_external_event(uint64_t tag, uint32_t max_completions = 32);
+    int               handle_external_event(uint64_t tag, uint32_t max_completions = 256);
 
     void set_connection_handler(ConnectionHandler handler)
     {
@@ -138,8 +138,6 @@ class RdmaTransport : public Transport
     uint8_t                                                              port_         = 1;
     std::vector<struct rdma_cm_id *>                                     cm_ids_;
     std::unordered_map<struct rdma_cm_id *, std::shared_ptr<Connection>> cm_connections_;
-    std::unordered_map<struct rdma_cm_id *, struct ibv_cq *>             cm_cqs_;
-    std::unordered_map<struct rdma_cm_id *, struct ibv_comp_channel *>   cm_channels_;
     SocketEngine                                                        *event_engine_ = nullptr;
     std::mutex                                                           cm_mu_;
 
