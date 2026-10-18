@@ -874,15 +874,33 @@ std::shared_ptr<Connection> SocketTransport::connect(const std::string &addr, in
 {
 #ifdef CROWDB_RPC_HAVE_RDMA
     if (rdma_transport_ != nullptr) {
-        int rdma_port = port;
-        if (const char *offset_env = std::getenv("CROWDB_PORT_OFFSET"); offset_env != nullptr && *offset_env != '\0') {
-            char *end         = nullptr;
-            errno             = 0;
-            const long offset = std::strtol(offset_env, &end, 10);
-            if (errno == 0 && end != offset_env && *end == '\0' && offset >= 0 && offset <= 65535 - port)
-                rdma_port += static_cast<int>(offset);
-            else
-                CRB_LOG_WARN("connect: invalid RDMA port offset value={}", offset_env);
+        int  rdma_port          = port;
+        bool explicit_rdma_port = false;
+        if (const char *port_env = std::getenv("CROWDB_RDMA_E2E_PORT"); port_env != nullptr && *port_env != '\0') {
+            char *end             = nullptr;
+            errno                 = 0;
+            const long configured = std::strtol(port_env, &end, 10);
+            if (errno == 0 && end != port_env && *end == '\0' && configured > 0 && configured <= 65535) {
+                rdma_port          = static_cast<int>(configured);
+                explicit_rdma_port = true;
+            }
+            else {
+                CRB_LOG_WARN("connect: invalid RDMA CM port value={}", port_env);
+            }
+        }
+        if (!explicit_rdma_port) {
+            const char *offset_env = std::getenv("CROWDB_PORT_OFFSET");
+            if (offset_env == nullptr || *offset_env == '\0')
+                offset_env = nullptr;
+            if (offset_env != nullptr) {
+                char *end         = nullptr;
+                errno             = 0;
+                const long offset = std::strtol(offset_env, &end, 10);
+                if (errno == 0 && end != offset_env && *end == '\0' && offset >= 0 && offset <= 65535 - port)
+                    rdma_port += static_cast<int>(offset);
+                else
+                    CRB_LOG_WARN("connect: invalid RDMA port offset value={}", offset_env);
+            }
         }
         if (auto rdma_conn = rdma_transport_->connect(addr, rdma_port); rdma_conn != nullptr) {
             for (auto &engine : engines_)

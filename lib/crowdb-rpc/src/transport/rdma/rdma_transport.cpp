@@ -999,6 +999,9 @@ void RdmaTransport::release_completed_receive(ibv_wc &wc)
         delete work;
     };
     if (wc.status != IBV_WC_SUCCESS) {
+        CRB_LOG_WARN("rdma receive: completion failed status={} vendor_err={} opcode={}",
+                     static_cast<unsigned>(wc.status), static_cast<unsigned>(wc.vendor_err),
+                     static_cast<unsigned>(wc.opcode));
         quarantine_and_release();
         return;
     }
