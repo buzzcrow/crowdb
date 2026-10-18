@@ -31,19 +31,21 @@ without changing request semantics.
    with TCP bytes.
 6. Provide OCI image test profiles. The image contains `libibverbs`,
    `librdmacm`, and the provider libraries; the host supplies the kernel RDMA
-   driver and HCA devices. The first hardware profile uses two containers with
-   `--network=host`, `--privileged`, and `--ulimit memlock=-1`, pinning the
-   client to HCA 0 and DiskIO to HCA 1 through transport configuration. A
-   later restricted profile maps only the required `/dev/infiniband` devices
-   and uses `IPC_LOCK` plus a bounded memlock limit.
-7. Keep three E2E topology profiles. The TCP-only profile exposes no RDMA
-   devices and verifies that capability discovery avoids all RDMA attempts. The
-   two-HCA profile runs client and DiskIO containers over the two connected
-   physical ports. The shared-HCA profile runs multiple logical node
-   containers on one host and verifies multiple QPs and fallback, while
-   explicitly not claiming physical NIC isolation. More than two physical
-   nodes require a shared RDMA fabric, switch, SR-IOV VFs, or a software RDMA
-   device; additional containers alone do not create physical RDMA nodes.
+   driver and HCA devices. The current hardware profile runs multiple
+   containers on one physical host with `--network=host`, `--privileged`, and
+   `--ulimit memlock=-1`, sharing one configured HCA and opening independent
+   QPs. A later restricted profile maps only the required `/dev/infiniband`
+   devices and uses `IPC_LOCK` plus a bounded memlock limit.
+7. Keep two current E2E topology profiles. The TCP-only profile exposes no
+   RDMA devices and verifies that capability discovery avoids all RDMA
+   attempts. The shared-HCA profile runs multiple logical containers on one
+   physical host and verifies multiple QPs and fallback. Physical multi-node
+   topology is tracked by a separate follow-up plan and is outside R239 scope.
+8. Use host networking for the current container profile. Every container
+   receives one `CROWDB_PORT_OFFSET`; each service applies that same offset to
+   its documented default port. The RDMA HCA device and physical HCA port are
+   shared and are not offset. The default RDMA CM service port is `19101`, so
+   the effective port is `19101 + CROWDB_PORT_OFFSET`.
 
 ## Dependencies
 
@@ -72,12 +74,9 @@ without changing request semantics.
 - Given an OCI image with no RDMA devices, when the TCP-only profile starts,
   service discovery selects TCP without attempting RDMA. Invariant: optional
   capability. E2E test.
-- Given two connected host HCA ports, when the two-HCA profile starts client and
-  DiskIO containers, each endpoint uses its configured local HCA and completes
-  an RDMA stream. Invariant: explicit device selection. E2E test.
 - Given multiple containers sharing one HCA, when the shared-HCA profile opens
   multiple logical connections, each QP remains correlated and bounded, while
-  the test reports shared hardware rather than physical node isolation.
+  the test reports a single physical host rather than physical node isolation.
   Invariant: topology declaration matches test claim. E2E test.
 - Given a prepared OCI runtime with the required RDMA devices and memlock
   limit, when the RPC flow runs as a non-root application user, the container
@@ -108,6 +107,9 @@ docker run --rm --network=host --privileged --ulimit memlock=-1 \
   crowdb:test
 ```
 
-The second endpoint uses its own device and local address. The restricted
-container profile is a follow-up hardening step after the two-HCA profile
-passes.
+The second container uses the same physical host HCA and its own logical
+connection. The restricted container profile is a follow-up hardening step
+after the shared-HCA profile passes. Physical multi-node execution is specified
+in the separate follow-up plan. With host networking, each container must use
+a distinct port offset; the offset applies to TCP/RPC and RDMA CM service
+ports, while `CROWDB_RDMA_PORT` remains the HCA physical port number.

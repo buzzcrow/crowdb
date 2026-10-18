@@ -14,13 +14,13 @@
 #    include <rdma/rdma_cma.h>
 
 #    include <atomic>
+#    include <functional>
 #    include <memory>
 #    include <mutex>
 #    include <string>
 #    include <thread>
 #    include <unordered_map>
 #    include <vector>
-#    include <functional>
 
 namespace crowdb::rpc
 {
@@ -66,6 +66,7 @@ class RdmaTransport : public Transport
 {
   public:
     using ConnectionHandler = std::function<void(std::shared_ptr<Connection>)>;
+
     struct Stats
     {
         std::atomic<uint64_t> sends{0};
@@ -104,7 +105,8 @@ class RdmaTransport : public Transport
     int               drain_cq(uint32_t max_completions = 32);
     void              register_events(SocketEngine *engine);
     int               handle_external_event(uint64_t tag, uint32_t max_completions = 32);
-    void              set_connection_handler(ConnectionHandler handler)
+
+    void set_connection_handler(ConnectionHandler handler)
     {
         connection_handler_ = std::move(handler);
     }
@@ -125,18 +127,19 @@ class RdmaTransport : public Transport
     }
 
   private:
-    struct ibv_context              *context_      = nullptr;
-    struct ibv_pd                   *pd_           = nullptr;
-    struct ibv_comp_channel         *comp_channel_ = nullptr;
-    struct ibv_cq                   *cq_           = nullptr;
-    struct rdma_event_channel       *cm_channel_   = nullptr;
-    struct rdma_cm_id               *listen_id_    = nullptr;
-    uint8_t                          port_         = 1;
-    std::vector<struct rdma_cm_id *> cm_ids_;
-    std::unordered_map<struct rdma_cm_id *, struct ibv_cq *> cm_cqs_;
-    std::unordered_map<struct rdma_cm_id *, struct ibv_comp_channel *> cm_channels_;
-    SocketEngine *event_engine_ = nullptr;
-    std::mutex                       cm_mu_;
+    struct ibv_context                                                  *context_      = nullptr;
+    struct ibv_pd                                                       *pd_           = nullptr;
+    struct ibv_comp_channel                                             *comp_channel_ = nullptr;
+    struct ibv_cq                                                       *cq_           = nullptr;
+    struct rdma_event_channel                                           *cm_channel_   = nullptr;
+    struct rdma_cm_id                                                   *listen_id_    = nullptr;
+    uint8_t                                                              port_         = 1;
+    std::vector<struct rdma_cm_id *>                                     cm_ids_;
+    std::unordered_map<struct rdma_cm_id *, std::shared_ptr<Connection>> cm_connections_;
+    std::unordered_map<struct rdma_cm_id *, struct ibv_cq *>             cm_cqs_;
+    std::unordered_map<struct rdma_cm_id *, struct ibv_comp_channel *>   cm_channels_;
+    SocketEngine                                                        *event_engine_ = nullptr;
+    std::mutex                                                           cm_mu_;
 
     std::unique_ptr<RdmaBufferPool> send_pool_;
     std::unique_ptr<RdmaBufferPool> recv_pool_;
@@ -144,8 +147,8 @@ class RdmaTransport : public Transport
 
     std::atomic<bool> running_{false};
 
-    bool prime_receive(const std::shared_ptr<Connection> &connection);
-    Stats             stats_;
+    bool  prime_receive(const std::shared_ptr<Connection> &connection);
+    Stats stats_;
 
     struct ReceiveWork
     {

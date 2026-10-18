@@ -29,9 +29,13 @@ capability frame, connections retain the peer capability, RDMA-enabled
 connections are selected before TCP fallback, and completed RDMA frames retain
 their buffers until the owning `Frame` is destroyed, then repost the receive
 pair. The live host HCA local-loop CM/QP/send/receive flow now passes, including
-receive repost and connection-level CQ handling. Remaining validation includes
-executing the OCI profiles against a built `crowdb:test` image and exercising
-the actual RPC worker path.
+receive repost and connection-level CQ handling. The actual `RpcServer`/
+`RpcClient` worker path now passes a live request/response round trip with
+multiple sequential frames on one QP, including CQ wakeup, frame dispatch,
+request correlation, response completion, and clean teardown. Remaining
+validation includes executing the single-node multi-container OCI profiles
+against a built `crowdb:test` image. Physical
+multi-node validation is deferred to [the separate follow-up plan](plan-rdma-multi-node.md).
 
 ## R239 status checkpoint
 
@@ -46,18 +50,15 @@ Completed:
 - epoll registration for CM, transport CQ, and connection CQ events;
 - live HCA local-loop CM/QP/send/receive E2E with all frames received and clean CQ
   status, and clean client/server exit;
+- actual `RpcServer`/`RpcClient` worker-path request/response round trip with
+  sequential frames and clean teardown;
 - non-root runner selection and the library consumer/deployment contract.
 
 Remaining:
 
-- run the same flow through the actual `RpcServer`/`RpcClient` worker path,
-  including frame dispatch and request correlation rather than the transport
-  harness only;
 - add mock/integration coverage for CM disconnect, QP error, CQ flush/error,
   epoll wakeup, and pre-payload TCP fallback;
-- exercise multiple sequential frames on one QP to verify receive repost and
-  buffer reuse under the worker;
-- run single-node HCA local-loop multi-container and physical multi-node OCI profiles against the built image;
+- run the single-node HCA local-loop multi-container OCI profile against the built image;
 - remove temporary hardware diagnostics, normalize failure logging, and run
   the full C++ format/tree-lint gates.
 
@@ -78,10 +79,10 @@ Remaining:
 
 ## Phase 2: CM and QP lifecycle
 
-- [ ] **Implement device selection**: select configured HCA, port, local
+- [x] **Implement device selection**: select configured HCA, port, local
   address, and GID; fail closed to TCP when local probing finds no usable
   device. Files: `rdma_transport.h/.cpp` and configuration adapter.
-- [ ] **Implement active/passive CM flow**: create IDs, bind/listen or resolve
+- [x] **Implement active/passive CM flow**: create IDs, bind/listen or resolve
   address/route, create QP, connect/accept, and publish ready only after initial
   receive buffers are posted. Files: RDMA transport sources.
 - [ ] **Implement connection teardown**: map CM disconnect, QP error, and CQ
@@ -90,13 +91,13 @@ Remaining:
 
 ## Phase 3: event/poll loop
 
-- [ ] **Extend epoll registration**: add external event-fd registration and
+- [x] **Extend epoll registration**: add external event-fd registration and
   removal to the existing `EpollEngine` without changing TCP readiness rules.
   Files: `lib/crowdb-rpc/include/crowdb-rpc/transport/epoll/epoll_engine.h`,
   `lib/crowdb-rpc/src/transport/epoll/epoll_engine.cpp`.
 - [ ] **Drain CM events**: acknowledge all received CM events, update the
   connection state, and re-arm the CM channel where required.
-- [ ] **Drain CQ events**: acknowledge and re-arm completion notifications, then
+- [x] **Drain CQ events**: acknowledge and re-arm completion notifications, then
   poll bounded batches until the current CQ work is drained or the worker
   budget is reached. No independent polling thread.
 - [ ] **Make stop wakeable**: stop must wake epoll, stop new submissions, drain
@@ -104,15 +105,15 @@ Remaining:
 
 ## Phase 4: frame submission and completion
 
-- [ ] **Build two-SGE WRs**: map the 1 KiB control buffer and selected data
+- [x] **Build two-SGE WRs**: map the 1 KiB control buffer and selected data
   buffer to one SEND WR. Inline control only when the configured device limit
   allows; never concatenate control and data in the CPU.
-- [ ] **Post receives**: prepost control/data receive buffers, associate each
+- [x] **Post receives**: prepost control/data receive buffers, associate each
   with a stable `wr_id`, and replenish only after the owner releases it.
 - [ ] **Resolve WR identity**: `wr_id` must identify connection, request ID,
   stream ID, sequence, logical offset, buffers, and ownership state. Handle
   success, flush, local protection, retry, and remote access errors distinctly.
-- [ ] **Dispatch common callbacks**: validate lengths and class before parser
+- [x] **Dispatch common callbacks**: validate lengths and class before parser
   publication, then invoke the existing C++ completion path and FFI callback.
 
 ## Phase 5: fallback and observability
@@ -147,8 +148,7 @@ Integration tests:
 E2E tests:
 
 - TCP-only OCI profile;
-- single-node HCA local-loop profile with multiple QPs;
-- physical multi-node profile with one RDMA NIC bound per container.
+- single-node HCA local-loop profile with multiple containers sharing one HCA.
 - non-root OCI profile: host prepares RDMA and network topology, the container
   receives only the required `/dev/infiniband` devices and memlock allowance,
   and the RPC flow runs as the application user without `sudo`, module loads,
@@ -163,7 +163,7 @@ E2E tests:
 - `lib/crowdb-rpc/include/crowdb-rpc/transport/rdma/rdma_transport.h`
 - `lib/crowdb-rpc/src/transport/rdma/rdma_transport.cpp`
 - `lib/crowdb-rpc/tests/` transport, fallback, and event-loop tests
-- OCI image and E2E runner configuration
+- OCI image and single-node multi-container E2E runner configuration
 
 ## Verification gates
 
@@ -195,9 +195,9 @@ tools/rdma/run-local-loop.sh local
 ```
 
 Multiple containers on one node use the same HCA local-loop model and open
-independent QPs. Multi-node OCI runs use the same application contract, with
-each container bound to the RDMA NIC on its own physical node. No namespace
-operation is part of the test or application path.
+independent QPs. Physical multi-node OCI runs are outside this plan and are
+specified in the separate follow-up plan. No namespace operation is part of
+the test or application path.
 
 ## Library consumer contract
 
@@ -219,6 +219,11 @@ The application layer only supplies the normal RPC endpoint configuration. The
 library discovers usable devices and selects RDMA before TCP when the peer
 advertises compatible capability. `CROWDB_RDMA_DEVICE`, `CROWDB_RDMA_PORT`, and
 `CROWDB_RDMA_SOURCE_ADDR` are deployment overrides, not required API calls.
+For host-network multi-container runs, deployment also supplies one
+`CROWDB_PORT_OFFSET` per container. The library and service launchers apply the
+same offset to every default TCP/RPC and RDMA CM service port; the HCA physical
+port selected by `CROWDB_RDMA_PORT` is unchanged. The default RDMA CM service
+port is `19101`.
 When any local capability, CM, QP, or pre-payload setup step is unavailable,
 the library reports the reason and uses TCP without requiring application code
 changes. After payload submission, the connection fails as one stream and does

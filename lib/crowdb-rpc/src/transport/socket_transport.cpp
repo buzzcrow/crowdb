@@ -594,6 +594,10 @@ SocketTransport::SocketTransport(uint32_t num_workers, BufferPool *pool) : Socke
 SocketTransport::~SocketTransport()
 {
     stop();
+#ifdef CROWDB_RPC_HAVE_RDMA
+    if (rdma_transport_ != nullptr)
+        rdma_transport_->shutdown();
+#endif
 }
 
 void SocketTransport::start()
@@ -931,8 +935,7 @@ std::shared_ptr<Connection> SocketTransport::connect(const std::string &addr, in
 }
 
 void SocketTransport::attach_rdma_connection(const std::shared_ptr<Connection> &conn,
-                                              Connection::OnFrameCallback on_frame,
-                                              Connection::OnCloseCallback on_close)
+                                             Connection::OnFrameCallback on_frame, Connection::OnCloseCallback on_close)
 {
     if (conn == nullptr)
         return;
@@ -940,7 +943,7 @@ void SocketTransport::attach_rdma_connection(const std::shared_ptr<Connection> &
     conn->set_on_close(std::move(on_close));
     register_conn(conn);
     if (!workers_.empty()) {
-        Worker *worker = get_worker();
+        Worker *worker  = get_worker();
         conn->io_worker = worker;
         conn->io_engine = worker == nullptr ? nullptr : worker->engine();
     }

@@ -1,33 +1,33 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-#include "crowdb-rpc/transport/rdma/rdma_transport.h"
 #include "crowdb-rpc/client/client.h"
 #include "crowdb-rpc/server/message.h"
 #include "crowdb-rpc/server/server.h"
+#include "crowdb-rpc/transport/rdma/rdma_transport.h"
 #include "crowdb-rpc/transport/socket_transport.h"
 
 #ifdef CROWDB_RPC_HAVE_RDMA
 
+#    include <execinfo.h>
 #    include <gtest/gtest.h>
+#    include <unistd.h>
 
 #    include <algorithm>
-#    include <cstdint>
-#    include <cstring>
-#    include <thread>
 #    include <chrono>
 #    include <csignal>
+#    include <cstdint>
 #    include <cstdlib>
-#    include <execinfo.h>
+#    include <cstring>
 #    include <mutex>
-#    include <unistd.h>
+#    include <thread>
 
 namespace
 {
 void rdma_test_crash_handler(int signal_number)
 {
-    void *frames[64];
-    const int count = ::backtrace(frames, 64);
+    void      *frames[64];
+    const int  count    = ::backtrace(frames, 64);
     const char prefix[] = "R239 RDMA crash backtrace:\n";
     (void)::write(STDERR_FILENO, prefix, sizeof(prefix) - 1);
     ::backtrace_symbols_fd(frames, count, STDERR_FILENO);
@@ -42,7 +42,7 @@ void install_rdma_test_crash_handler()
         std::signal(SIGABRT, rdma_test_crash_handler);
     });
 }
-}
+} // namespace
 
 struct WorkerCompletion
 {
@@ -51,7 +51,7 @@ struct WorkerCompletion
 };
 
 extern "C" void rdma_worker_completion(uint64_t, crowdb_rpc_buffer_t control, crowdb_rpc_buffer_t data,
-                                        crowdb_rpc_status status, void *opaque)
+                                       crowdb_rpc_status status, void *opaque)
 {
     auto *state = static_cast<WorkerCompletion *>(opaque);
     (status == CROWDB_RPC_OK ? state->completed : state->failed).fetch_add(1, std::memory_order_relaxed);
@@ -66,15 +66,15 @@ using crowdb::rpc::BufferOwnership;
 using crowdb::rpc::Connection;
 using crowdb::rpc::Frame;
 using crowdb::rpc::Header;
+using crowdb::rpc::HEADER_SIZE;
 using crowdb::rpc::OutFrame;
 using crowdb::rpc::RdmaBufferPool;
 using crowdb::rpc::RdmaTransport;
 using crowdb::rpc::RpcClient;
 using crowdb::rpc::RpcServer;
+using crowdb::rpc::serialize_header;
 using crowdb::rpc::SocketTransport;
 using crowdb::rpc::SystemBufferPool;
-using crowdb::rpc::HEADER_SIZE;
-using crowdb::rpc::serialize_header;
 
 TEST(RdmaBufferPoolTest, SlicesOneRegisteredRegion)
 {
@@ -134,16 +134,15 @@ TEST(RdmaBufferPoolTest, TransportCopiesSystemBufferIntoRegisteredPool)
 
 TEST(RdmaHardwareTest, CompleteCmQpSendReceiveFlow)
 {
-    constexpr uint64_t kFrameCount = 8;
+    constexpr uint64_t kFrameCount        = 8;
     constexpr int      kTimeoutIterations = 500;
     if (std::getenv("CROWDB_RDMA_E2E") == nullptr)
         GTEST_SKIP() << "set CROWDB_RDMA_E2E=1 to run against a live HCA";
     install_rdma_test_crash_handler();
-    const char *address = std::getenv("CROWDB_RDMA_E2E_LISTEN_ADDR");
+    const char *address         = std::getenv("CROWDB_RDMA_E2E_LISTEN_ADDR");
     const char *connect_address = std::getenv("CROWDB_RDMA_E2E_CONNECT_ADDR");
-    const int   port    = std::getenv("CROWDB_RDMA_E2E_PORT") == nullptr
-                              ? 19100
-                              : std::atoi(std::getenv("CROWDB_RDMA_E2E_PORT"));
+    const int   port =
+        std::getenv("CROWDB_RDMA_E2E_PORT") == nullptr ? 19100 : std::atoi(std::getenv("CROWDB_RDMA_E2E_PORT"));
     ASSERT_NE(address, nullptr);
     if (connect_address == nullptr)
         connect_address = address;
@@ -193,11 +192,11 @@ TEST(RdmaHardwareTest, CompleteCmQpSendReceiveFlow)
             Header header;
             header.msg_type = static_cast<uint16_t>(1 + sequence);
             serialize_header(raw->data, header);
-            raw->len = HEADER_SIZE;
+            raw->len        = HEADER_SIZE;
             Buffer *control = client.register_buffer(raw);
             ASSERT_NE(control, nullptr);
-            auto *frame = new OutFrame;
-            frame->header = header;
+            auto *frame    = new OutFrame;
+            frame->header  = header;
             frame->control = control;
             ASSERT_TRUE(client.submit(outgoing.get(), frame));
             raw->release();
@@ -217,14 +216,14 @@ TEST(RdmaHardwareTest, CompleteCmQpSendReceiveFlow)
     client.start();
 
     std::shared_ptr<crowdb::rpc::Connection> accepted;
-    std::thread accept_thread([&] {
+    std::thread                              accept_thread([&] {
         for (int i = 0; i < 200 && accepted == nullptr; ++i) {
             accepted = server.accept();
             if (accepted == nullptr)
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     });
-    auto outgoing = client.connect(connect_address, port);
+    auto                                     outgoing = client.connect(connect_address, port);
     accept_thread.join();
     ASSERT_NE(outgoing, nullptr);
     ASSERT_NE(accepted, nullptr);
@@ -238,12 +237,12 @@ TEST(RdmaHardwareTest, CompleteCmQpSendReceiveFlow)
     Header header;
     header.msg_type = 1;
     serialize_header(raw->data, header);
-    raw->len = HEADER_SIZE;
+    raw->len        = HEADER_SIZE;
     Buffer *control = client.register_buffer(raw);
     ASSERT_NE(control, nullptr);
-    auto *frame       = new OutFrame;
-    frame->header     = header;
-    frame->control    = control;
+    auto *frame    = new OutFrame;
+    frame->header  = header;
+    frame->control = control;
     ASSERT_TRUE(client.submit(outgoing.get(), frame));
     raw->release();
 
@@ -264,21 +263,27 @@ TEST(RdmaHardwareTest, RpcServerClientWorkerRoundTrip)
         GTEST_SKIP() << "set CROWDB_RDMA_RPC_E2E=1 to run the worker flow";
     install_rdma_test_crash_handler();
     const char *address = std::getenv("CROWDB_RDMA_E2E_LISTEN_ADDR");
-    const char *role = std::getenv("CROWDB_RDMA_E2E_ROLE");
+    const char *role    = std::getenv("CROWDB_RDMA_E2E_ROLE");
     ASSERT_NE(address, nullptr);
-    const int port = std::getenv("CROWDB_RDMA_E2E_PORT") == nullptr ? 19101 :
-                     std::atoi(std::getenv("CROWDB_RDMA_E2E_PORT"));
-    constexpr uint32_t kRequests = 8;
+    const int port =
+        std::getenv("CROWDB_RDMA_E2E_PORT") == nullptr ? 19101 : std::atoi(std::getenv("CROWDB_RDMA_E2E_PORT"));
+    constexpr uint32_t kRequests    = 8;
     constexpr uint16_t kMessageType = 239;
 
     if (role != nullptr && std::strcmp(role, "server") == 0) {
         RpcServer server;
         ASSERT_TRUE(server.listen(address, port));
         std::atomic<uint32_t> received{0};
-        server.register_handler(kMessageType, [&received](Frame *frame, Connection *) {
+        server.register_handler(kMessageType, [&received, &server](Frame *frame, Connection *) {
             received.fetch_add(1, std::memory_order_relaxed);
+            OutFrame *response        = new OutFrame;
+            response->request_id      = frame->request_id;
+            response->header.msg_type = static_cast<uint16_t>(kMessageType);
+            response->control =
+                crowdb::rpc::build_ping_response(server.pool(), frame->request_id, frame->rpc_create_nano, 0);
+            response->header.msg_size = response->control == nullptr ? 0 : response->control->len;
             delete frame;
-            return static_cast<OutFrame *>(nullptr);
+            return response;
         });
         server.start();
         for (int i = 0; i < 100 && received.load(std::memory_order_relaxed) < kRequests; ++i)

@@ -13,8 +13,8 @@ backlogs [R238](../backlog/R238-rdma-registered-buffer-foundation.md),
 
 Goal: implement the host-memory RDMA SEND/RECV path end to end, with RDMA as
 the preferred connection path, TCP as the one-way fallback, shared aggregation
-semantics, bounded buffer leases, and automated OCI verification using HCA local
-loop on one node and one RDMA NIC per container across physical nodes.
+semantics, bounded buffer leases, and automated OCI verification using a
+single-node HCA local-loop with multiple containers.
 
 ## Current implementation status
 
@@ -48,12 +48,15 @@ the formal design first.
 - Use `setup-rdma.sh local` as the standard host setup. A single node runs
   client and server through the same HCA port and local IP; multiple containers
   on that node use the same local-loop model and open independent QPs.
-- For physical multi-node tests, each container is bound to the RDMA NIC on its
-  own node. The test harness supplies the selected device and address; it does
-  not move links into network namespaces.
 - Treat `run-local-loop.sh local` as the smoke test for every local hardware
-  setup. Promote the same test flow to a multi-node container test by changing
-  only the endpoint placement and device binding.
+  setup. The current acceptance scope is one physical node with multiple
+  containers sharing the configured HCA and opening independent QPs.
+- Use host networking only for the multi-container profile. Assign each
+  container a `CROWDB_PORT_OFFSET`; apply it uniformly to all default
+  TCP/RPC and RDMA CM service ports, while keeping the HCA physical port
+  unchanged.
+- Physical multi-node testing is deferred to [the separate follow-up plan](plan-rdma-multi-node.md)
+  and is not part of the current backlog scope.
 
 ## Dependency graph
 
@@ -80,13 +83,13 @@ lease contract from R238 is stable.
 - [x] **Lock hardware test model**: use `setup-rdma.sh local` and
   `run-local-loop.sh local` for single-node validation; do not use namespace
   setup in product or acceptance tests. Multiple containers on one node share
-  the local HCA loop, while multi-node containers bind one NIC per node.
+  the local HCA loop and open independent QPs.
 - [ ] **Record baseline**: run the existing TCP RPC, Access Server, DiskIO, and
   Chunk-KV gates before modifying production code. Root files: affected crate
   manifests and CI configuration.
 - [ ] **Confirm host capabilities**: record `ibv_devices`, `rdma link`, the
   selected HCA port, GID/IP mapping, and whether the local HCA loop is usable.
-  For multi-node runs, record one selected NIC and address per container.
+  Record the container-to-QP mapping for the single-node shared-HCA run.
   Do not treat an unavailable host device as an implementation failure.
 - [ ] **Lock configuration names**: agree on RDMA enablement, device/port/local
   address, control/data class defaults, registered bytes, receive depth, and
@@ -161,17 +164,13 @@ and the caller-controlled lease lifetime is visible and testable through FFI.
 
 - [ ] **TCP-only profile**: run OCI containers without RDMA devices and assert
   service discovery skips RDMA entirely.
-- [ ] **Single-node HCA local-loop profile**: run `setup-rdma.sh local`, start
-  one or more containers on the node, and run the client/server flow against
-  the same HCA port. Assert multiple QPs, request correlation, bounded buffers,
-  and TCP fallback.
-- [ ] **Physical multi-node profile**: start one or more containers per node,
-  bind each container to that node's RDMA NIC, and run the same RPC/data-path
-  corpus across the fabric. No network namespace setup is part of this profile.
-- [ ] **Automated topology selection**: make the test runner execute the
-  TCP-only and local-loop profiles automatically when their prerequisites are
-  present, and schedule the physical multi-node profile only when its node/NIC
-  inventory is available.
+- [ ] **Single-node multi-container profile**: run `setup-rdma.sh local`, start
+  multiple containers on one physical host, share the configured HCA, and
+  assert independent QPs, request correlation, bounded buffers, and TCP
+  fallback.
+- [ ] **Automated local topology selection**: make the test runner execute the
+  TCP-only and single-node local-loop profiles when their prerequisites are
+  present.
 
 Exit condition: every profile reports its topology, RDMA capability, selected
 device, selected path, fallback count, buffer pressure, and final result.
@@ -188,9 +187,9 @@ device, selected path, fallback count, buffer pressure, and final result.
   queue bytes, and SDK-held bytes remain within configuration.
 - [ ] **Capability optionality**: a host or OCI container without RDMA remains
   a supported TCP deployment.
-- [ ] **NIC ownership**: each physical-node container receives one explicit
-  RDMA device/address mapping; no test depends on moving a link or entering a
-  network namespace.
+- [ ] **NIC ownership**: each single-node container uses the explicitly
+  configured shared HCA; no test depends on moving a link or entering a network
+  namespace.
 - [ ] **Shared identity**: request ID, generation, stream sequence, and logical
   offset retain their meaning across TCP and RDMA.
 
@@ -211,10 +210,9 @@ pixi run tree-lint
 ```
 
 OCI E2E verification must run the TCP-only and single-node HCA local-loop
-profiles when their prerequisites are available. The physical multi-node
-profile reuses the same test corpus with one RDMA NIC bound per container and
-is run when the node inventory is available. Namespace profiles are not part
-of acceptance.
+multi-container profiles when their prerequisites are available. Physical
+multi-node verification is outside this plan and is covered by the separate
+follow-up plan. Namespace profiles are not part of acceptance.
 
 ## Test and setup files
 

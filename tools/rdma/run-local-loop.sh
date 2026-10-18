@@ -7,7 +7,8 @@ root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 pixi_bin=${PIXI_BIN:-/home/cj/.pixi/bin/pixi}
 test_bin=${CROWDB_RDMA_TEST_BIN:-$root_dir/lib/crowdb-rpc/build/crowdb_rpc_tests}
 mode=${1:-local}
-port=${CROWDB_RDMA_E2E_PORT:-19101}
+port_offset=${CROWDB_PORT_OFFSET:-0}
+port=${CROWDB_RDMA_E2E_PORT:-$((19101 + port_offset))}
 filter=${CROWDB_RDMA_E2E_FILTER:-RdmaHardwareTest.CompleteCmQpSendReceiveFlow}
 server_pid=""
 

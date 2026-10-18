@@ -3,8 +3,8 @@
 
 #include "crowdb-rpc/transport/rdma/rdma_transport.h"
 
-#include "crowdb-rpc/transport/socket_transport.h"
 #include "crowdb-common/log.h"
+#include "crowdb-rpc/transport/socket_transport.h"
 
 #ifdef CROWDB_RPC_HAVE_RDMA
 
@@ -16,8 +16,10 @@
 
 #    include <algorithm>
 #    include <cassert>
+#    include <chrono>
 #    include <cstdlib>
 #    include <cstring>
+#    include <thread>
 
 namespace crowdb::rpc
 {
@@ -42,7 +44,7 @@ bool wait_cm_event(rdma_event_channel *channel, rdma_cm_event **event, int timeo
         return false;
     return rdma_get_cm_event(channel, event) == 0;
 }
-}
+} // namespace
 
 // ── RdmaBufferPool ────────────────────────────────────────────────
 
@@ -169,7 +171,7 @@ RdmaTransport::RdmaTransport()
     int          device_count = 0;
     ibv_device **devices      = ibv_get_device_list(&device_count);
     if (devices == nullptr || device_count == 0) {
-        std::fprintf(stderr, "rdma init: no ibv devices count=%d errno=%d\\n", device_count, errno);
+
         if (devices != nullptr) {
             ibv_free_device_list(devices);
         }
@@ -191,8 +193,7 @@ RdmaTransport::RdmaTransport()
             }
         }
         if (selected == nullptr) {
-            std::fprintf(stderr, "rdma init: requested device not found name=%s count=%d\\n", requested_device,
-                         device_count);
+
             ibv_free_device_list(devices);
             return;
         }
@@ -200,28 +201,26 @@ RdmaTransport::RdmaTransport()
     context_ = ibv_open_device(selected);
     ibv_free_device_list(devices);
     if (context_ == nullptr) {
-        std::fprintf(stderr, "rdma init: ibv_open_device failed name=%s errno=%d\\n",
-                     requested_device == nullptr ? "default" : requested_device, errno);
+
         return;
     }
     ibv_port_attr port_attributes{};
     if (ibv_query_port(context_, port_, &port_attributes) != 0 || port_attributes.state != IBV_PORT_ACTIVE) {
-        std::fprintf(stderr, "rdma init: port unavailable port=%u state=%u errno=%d\\n", port_,
-                     port_attributes.state, errno);
+
         ibv_close_device(context_);
         context_ = nullptr;
         return;
     }
     pd_ = ibv_alloc_pd(context_);
     if (pd_ == nullptr) {
-        std::fprintf(stderr, "rdma init: ibv_alloc_pd failed errno=%d\\n", errno);
+
         ibv_close_device(context_);
         context_ = nullptr;
         return;
     }
     comp_channel_ = ibv_create_comp_channel(context_);
     if (comp_channel_ == nullptr) {
-        std::fprintf(stderr, "rdma init: ibv_create_comp_channel failed errno=%d\\n", errno);
+
         ibv_dealloc_pd(pd_);
         pd_ = nullptr;
         ibv_close_device(context_);
@@ -233,7 +232,7 @@ RdmaTransport::RdmaTransport()
         ::fcntl(comp_channel_->fd, F_SETFL, channel_flags | O_NONBLOCK);
     cq_ = ibv_create_cq(context_, 2048, this, comp_channel_, 0);
     if (cq_ == nullptr || ibv_req_notify_cq(cq_, 0) != 0) {
-        std::fprintf(stderr, "rdma init: CQ setup failed cq=%p errno=%d\\n", static_cast<void *>(cq_), errno);
+
         if (cq_ != nullptr)
             ibv_destroy_cq(cq_);
         cq_ = nullptr;
@@ -279,20 +278,51 @@ bool RdmaTransport::submit(Connection *conn, OutFrame *frame)
         conn->transport_handle == 0) {
         return false;
     }
-    auto *pools = static_cast<ConnectionPools *>(conn->user_data);
-    if (pools != nullptr && pools->send != nullptr && frame->control->pool != pools->send.get()) {
-        Buffer *copy = pools->send->alloc(frame->control->len);
-        if (copy == nullptr)
-            return false;
-        std::memcpy(copy->data, frame->control->data, frame->control->len);
-        copy->len = frame->control->len;
-        copy->request_id = frame->control->request_id;
-        copy->stream_id = frame->control->stream_id;
-        copy->sequence = frame->control->sequence;
-        copy->logical_offset = frame->control->logical_offset;
-        frame->control->release();
-        frame->control = copy;
+    if (frame->data_views() > 1) {
+        return false;
     }
+    auto *pools = static_cast<ConnectionPools *>(conn->user_data);
+    if (pools == nullptr || pools->send == nullptr) {
+        return false;
+    }
+
+    // SEND carries the RPC wire header and control message in one registered
+    // control SGE. TCP serializes the header in writev; RDMA must materialize
+    // the same bytes before posting the WR while keeping data in its own SGE.
+    Buffer        *source_control = frame->control;
+    const uint32_t control_len    = source_control->len;
+    if (source_control->data == nullptr || control_len > source_control->capacity ||
+        control_len > RDMA_CONTROL_CAPACITY - HEADER_SIZE) {
+        CRB_LOG_WARN("rdma send: control buffer exceeds wire capacity len={} capacity={}", control_len,
+                     source_control->capacity);
+        return false;
+    }
+    Buffer *wire_control = pools->send->alloc(RDMA_CONTROL_CAPACITY);
+    if (wire_control == nullptr)
+        return false;
+    frame->header.msg_size  = control_len;
+    frame->header.data_size = frame->data == nullptr ? 0 : frame->data->len;
+    serialize_header(wire_control->data, frame->header);
+    if (control_len != 0)
+        std::memcpy(wire_control->data + HEADER_SIZE, source_control->data, control_len);
+    wire_control->len            = HEADER_SIZE + control_len;
+    wire_control->request_id     = source_control->request_id;
+    wire_control->stream_id      = source_control->stream_id;
+    wire_control->sequence       = source_control->sequence;
+    wire_control->logical_offset = source_control->logical_offset;
+    frame->control               = wire_control;
+    source_control->release();
+
+    if (frame->data != nullptr && frame->data->len > frame->data->capacity) {
+        frame->control->release();
+        frame->control = nullptr;
+        return false;
+    }
+    if (frame->data != nullptr && frame->data->len == 0) {
+        frame->data->release();
+        frame->data = nullptr;
+    }
+
     RdmaFrameSges frame_sges;
     if (!build_rdma_frame_sges(frame->control, frame->data, &frame_sges)) {
         return false;
@@ -311,12 +341,10 @@ bool RdmaTransport::submit(Connection *conn, OutFrame *frame)
     wr.send_flags    = IBV_SEND_SIGNALED;
     ibv_send_wr *bad = nullptr;
     if (ibv_post_send(reinterpret_cast<ibv_qp *>(conn->transport_handle), &wr, &bad) != 0) {
-        std::fprintf(stderr, "rdma send: ibv_post_send failed qp=%p errno=%d\n",
-                     reinterpret_cast<void *>(conn->transport_handle), errno);
+        CRB_LOG_WARN("rdma send: post failed qp={} errno={}", reinterpret_cast<void *>(conn->transport_handle), errno);
         return false;
     }
-    std::fprintf(stderr, "rdma send: posted qp=%p frame=%p\n",
-                 reinterpret_cast<void *>(conn->transport_handle), static_cast<void *>(frame));
+
     stats_.sends.fetch_add(1, std::memory_order_relaxed);
     return true;
 }
@@ -353,12 +381,11 @@ bool RdmaTransport::post_receive(Connection *conn, Buffer *control, Buffer *data
     const bool   data_posted    = data == nullptr ||
                                   data->transition(BufferOwnership::Available, BufferOwnership::PostedReceive) ||
                                   data->transition(BufferOwnership::CallerOwned, BufferOwnership::PostedReceive);
-    int post_rc = -1;
+    int          post_rc        = -1;
     if (control_posted && data_posted)
         post_rc = ibv_post_recv(reinterpret_cast<ibv_qp *>(conn->transport_handle), &wr, &bad);
     if (!control_posted || !data_posted || post_rc != 0) {
-        std::fprintf(stderr, "rdma receive: ibv_post_recv failed qp=%p rc=%d errno=%d bad=%p control_state=%u data_state=%u\n",
-                     reinterpret_cast<void *>(conn->transport_handle), post_rc, errno, static_cast<void *>(bad),
+        CRB_LOG_WARN("rdma receive: post failed rc={} control_state={} data_state={}", post_rc,
                      static_cast<unsigned>(control->ownership.load(std::memory_order_relaxed)),
                      data == nullptr ? 0U : static_cast<unsigned>(data->ownership.load(std::memory_order_relaxed)));
         control->ownership.store(BufferOwnership::Available, std::memory_order_release);
@@ -369,8 +396,7 @@ bool RdmaTransport::post_receive(Connection *conn, Buffer *control, Buffer *data
             data->release();
         return false;
     }
-    std::fprintf(stderr, "rdma receive: posted qp=%p wr_id=%#lx\n",
-                 reinterpret_cast<void *>(conn->transport_handle), static_cast<unsigned long>(wr.wr_id));
+
     stats_.posted_receives.fetch_add(1, std::memory_order_relaxed);
     work.release();
     return true;
@@ -399,6 +425,14 @@ Buffer *RdmaTransport::register_buffer(Buffer *buf)
 
 void RdmaTransport::shutdown()
 {
+    // A QP may still own SEND or flushed receive WRs after the worker stops.
+    // Drain bounded CQ batches before destroying the IDs so provider teardown
+    // never observes live completion objects.
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        const int drained = drain_cq(256);
+        if (drained == 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
     stop();
     {
         std::scoped_lock lock(cm_mu_);
@@ -418,6 +452,7 @@ void RdmaTransport::shutdown()
             rdma_destroy_id(id);
         }
         cm_ids_.clear();
+        cm_connections_.clear();
         cm_pools_.clear();
     }
     if (listen_id_ != nullptr) {
@@ -435,22 +470,21 @@ void RdmaTransport::shutdown()
 std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int port)
 {
     if (pd_ == nullptr || cq_ == nullptr || addr.empty() || port <= 0 || port > 65535) {
-        std::fprintf(stderr, "rdma connect: transport unavailable pd=%p cq=%p addr=%s port=%d\\n",
-                     static_cast<void *>(pd_), static_cast<void *>(cq_), addr.c_str(), port);
-        CRB_LOG_WARN("rdma connect: transport unavailable pd={} cq={} addr={} port={}",
-                     static_cast<const void *>(pd_), static_cast<const void *>(cq_), addr, port);
+
+        CRB_LOG_WARN("rdma connect: transport unavailable pd={} cq={} addr={} port={}", static_cast<const void *>(pd_),
+                     static_cast<const void *>(cq_), addr, port);
         return nullptr;
     }
     if (cm_channel_ == nullptr)
         cm_channel_ = rdma_create_event_channel();
     if (cm_channel_ == nullptr) {
-        std::fprintf(stderr, "rdma connect: create event channel failed errno=%d\\n", errno);
+
         return nullptr;
     }
     make_nonblocking(cm_channel_->fd);
     rdma_cm_id *id = nullptr;
     if (rdma_create_id(cm_channel_, &id, this, RDMA_PS_TCP) != 0) {
-        std::fprintf(stderr, "rdma connect: create id failed errno=%d\\n", errno);
+
         return nullptr;
     }
     sockaddr_in destination{};
@@ -462,7 +496,7 @@ std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int 
         return nullptr;
     }
     sockaddr_in source{};
-    sockaddr *source_address = nullptr;
+    sockaddr   *source_address = nullptr;
     if (const char *source_env = std::getenv("CROWDB_RDMA_SOURCE_ADDR"); source_env != nullptr && *source_env != '\0') {
         source.sin_family = AF_INET;
         if (::inet_pton(AF_INET, source_env, &source.sin_addr) != 1) {
@@ -472,7 +506,7 @@ std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int 
         }
         source_address = reinterpret_cast<sockaddr *>(&source);
         if (rdma_bind_addr(id, source_address) != 0) {
-            std::fprintf(stderr, "rdma connect: bind source failed source=%s errno=%d\\n", source_env, errno);
+
             CRB_LOG_WARN("rdma connect: bind source failed source={} errno={}", source_env, errno);
             rdma_destroy_id(id);
             return nullptr;
@@ -481,14 +515,14 @@ std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int 
     // When a source address was explicitly bound above, librdmacm expects a
     // null source here; passing it twice can fail immediately with EINVAL.
     if (rdma_resolve_addr(id, nullptr, reinterpret_cast<sockaddr *>(&destination), 2000) != 0) {
-        std::fprintf(stderr, "rdma connect: resolve_addr failed addr=%s errno=%d\\n", addr.c_str(), errno);
+
         CRB_LOG_WARN("rdma connect: resolve_addr failed addr={} port={} errno={}", addr, port, errno);
         rdma_destroy_id(id);
         return nullptr;
     }
     rdma_cm_event *event = nullptr;
     if (!wait_cm_event(cm_channel_, &event, 3000) || event == nullptr || event->event != RDMA_CM_EVENT_ADDR_RESOLVED) {
-        std::fprintf(stderr, "rdma connect: ADDR_RESOLVED missing event=%d errno=%d\n", event == nullptr ? -1 : event->event, errno);
+
         CRB_LOG_WARN("rdma connect: ADDR_RESOLVED missing addr={} event={} errno={}", addr,
                      event == nullptr ? -1 : event->event, errno);
         if (event != nullptr)
@@ -503,7 +537,7 @@ std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int 
         return nullptr;
     }
     if (!wait_cm_event(cm_channel_, &event, 3000) || event == nullptr || event->event != RDMA_CM_EVENT_ROUTE_RESOLVED) {
-        std::fprintf(stderr, "rdma connect: ROUTE_RESOLVED missing event=%d errno=%d\n", event == nullptr ? -1 : event->event, errno);
+
         CRB_LOG_WARN("rdma connect: ROUTE_RESOLVED missing addr={} event={} errno={}", addr,
                      event == nullptr ? -1 : event->event, errno);
         if (event != nullptr)
@@ -512,51 +546,49 @@ std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int 
         return nullptr;
     }
     rdma_ack_cm_event(event);
-    std::fprintf(stderr, "rdma connect: creating connection CQ verbs=%p\n", static_cast<void *>(id->verbs));
+
     ibv_comp_channel *connection_channel = ibv_create_comp_channel(id->verbs);
     if (connection_channel != nullptr)
         make_nonblocking(connection_channel->fd);
-    ibv_cq *connection_cq = connection_channel == nullptr
-                                ? nullptr
-                                : ibv_create_cq(id->verbs, 2048, nullptr, connection_channel, 0);
-    std::fprintf(stderr, "rdma connect: connection CQ=%p errno=%d\n", static_cast<void *>(connection_cq), errno);
+    ibv_cq *connection_cq =
+        connection_channel == nullptr ? nullptr : ibv_create_cq(id->verbs, 2048, nullptr, connection_channel, 0);
+
     if (connection_cq == nullptr) {
-        std::fprintf(stderr, "rdma connect: create CM CQ failed errno=%d\n", errno);
+
         if (connection_channel != nullptr)
             ibv_destroy_comp_channel(connection_channel);
         rdma_destroy_id(id);
         return nullptr;
     }
+    if (ibv_req_notify_cq(connection_cq, 0) != 0) {
+        CRB_LOG_WARN("rdma connect: arm connection CQ notifications failed errno={}", errno);
+        ibv_destroy_cq(connection_cq);
+        ibv_destroy_comp_channel(connection_channel);
+        rdma_destroy_id(id);
+        return nullptr;
+    }
     ibv_device_attr device_attributes{};
     if (ibv_query_device(id->verbs, &device_attributes) != 0) {
-        std::fprintf(stderr, "rdma connect: query device failed errno=%d\n", errno);
+
         ibv_destroy_cq(connection_cq);
         ibv_destroy_comp_channel(connection_channel);
         rdma_destroy_id(id);
         return nullptr;
     }
     ibv_qp_init_attr qp_attr{};
-    qp_attr.send_cq          = connection_cq;
-    qp_attr.recv_cq          = connection_cq;
-    qp_attr.qp_type          = IBV_QPT_RC;
-    qp_attr.cap.max_send_wr  = std::min<uint32_t>(1024, device_attributes.max_qp_wr);
-    qp_attr.cap.max_recv_wr  = std::min<uint32_t>(1024, device_attributes.max_qp_wr);
-    qp_attr.cap.max_send_sge = std::min<uint32_t>(2, device_attributes.max_sge);
-    qp_attr.cap.max_recv_sge = std::min<uint32_t>(2, device_attributes.max_sge);
+    qp_attr.send_cq             = connection_cq;
+    qp_attr.recv_cq             = connection_cq;
+    qp_attr.qp_type             = IBV_QPT_RC;
+    qp_attr.cap.max_send_wr     = std::min<uint32_t>(1024, device_attributes.max_qp_wr);
+    qp_attr.cap.max_recv_wr     = std::min<uint32_t>(1024, device_attributes.max_qp_wr);
+    qp_attr.cap.max_send_sge    = std::min<uint32_t>(2, device_attributes.max_sge);
+    qp_attr.cap.max_recv_sge    = std::min<uint32_t>(2, device_attributes.max_sge);
     qp_attr.cap.max_inline_data = 0;
-    qp_attr.sq_sig_all         = 1;
-    qp_attr.qp_context         = id;
-    std::fprintf(stderr, "rdma connect: qp caps send_wr=%u recv_wr=%u send_sge=%u recv_sge=%u max_wr=%u max_sge=%u verbs_match=%d\n",
-                 qp_attr.cap.max_send_wr, qp_attr.cap.max_recv_wr, qp_attr.cap.max_send_sge,
-                 qp_attr.cap.max_recv_sge, device_attributes.max_qp_wr, device_attributes.max_sge,
-                 id->verbs == context_ ? 1 : 0);
-    std::fprintf(stderr, "rdma connect: selected=%s transport=%s\n",
-                 id->verbs == nullptr || id->verbs->device == nullptr ? "unknown" : ibv_get_device_name(id->verbs->device),
-                 context_ == nullptr || context_->device == nullptr ? "unknown" : ibv_get_device_name(context_->device));
-    std::fprintf(stderr, "rdma connect: creating QP id=%p pd=%p cq=%p\n", static_cast<void *>(id),
-                 static_cast<void *>(id->pd), static_cast<void *>(connection_cq));
+    qp_attr.sq_sig_all          = 1;
+    qp_attr.qp_context          = id;
+
     if (rdma_create_qp(id, id->pd, &qp_attr) != 0) {
-        std::fprintf(stderr, "rdma connect: create qp failed errno=%d\n", errno);
+
         ibv_destroy_cq(connection_cq);
         ibv_destroy_comp_channel(connection_channel);
         rdma_destroy_id(id);
@@ -568,7 +600,7 @@ std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int 
     params.retry_count         = 7;
     params.rnr_retry_count     = 7;
     if (rdma_connect(id, &params) != 0) {
-        std::fprintf(stderr, "rdma connect: rdma_connect failed addr=%s errno=%d\n", addr.c_str(), errno);
+
         CRB_LOG_WARN("rdma connect: rdma_connect failed addr={} errno={}", addr, errno);
         rdma_destroy_qp(id);
         ibv_destroy_cq(connection_cq);
@@ -577,8 +609,7 @@ std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int 
         return nullptr;
     }
     if (!wait_cm_event(cm_channel_, &event, 5000) || event == nullptr || event->event != RDMA_CM_EVENT_ESTABLISHED) {
-        std::fprintf(stderr, "rdma connect: ESTABLISHED missing event=%d status=%d errno=%d\n",
-                     event == nullptr ? -1 : event->event, event == nullptr ? 0 : event->status, errno);
+
         CRB_LOG_WARN("rdma connect: ESTABLISHED missing addr={} event={} status={} errno={}", addr,
                      event == nullptr ? -1 : event->event, event == nullptr ? 0 : event->status, errno);
         if (event != nullptr)
@@ -589,7 +620,7 @@ std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int 
         return nullptr;
     }
     rdma_ack_cm_event(event);
-    auto pools = std::make_unique<ConnectionPools>();
+    auto pools  = std::make_unique<ConnectionPools>();
     pools->send = std::make_unique<RdmaBufferPool>(id->pd, 64U << 20, 1024);
     pools->recv = std::make_unique<RdmaBufferPool>(id->pd, 64U << 20, 1024);
     if (pools->send == nullptr || pools->recv == nullptr) {
@@ -599,12 +630,12 @@ std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int 
         rdma_destroy_id(id);
         return nullptr;
     }
-    auto connection = std::make_shared<Connection>(reinterpret_cast<int64_t>(id), addr, pools->recv.get());
+    auto connection       = std::make_shared<Connection>(reinterpret_cast<int64_t>(id), addr, pools->recv.get());
     connection->user_data = pools.get();
     connection->set_path(ConnectionPath::Rdma);
     connection->transport_handle = reinterpret_cast<uint64_t>(id->qp);
     if (!prime_receive(connection)) {
-        std::fprintf(stderr, "rdma connect: prime_receive failed after ESTABLISHED errno=%d\n", errno);
+
         rdma_destroy_qp(id);
         rdma_destroy_id(id);
         return nullptr;
@@ -612,6 +643,7 @@ std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int 
     {
         std::scoped_lock lock(cm_mu_);
         cm_ids_.push_back(id);
+        cm_connections_.emplace(id, connection);
         cm_cqs_.emplace(id, connection_cq);
         cm_channels_.emplace(id, connection_channel);
         cm_pools_.emplace(id, std::move(pools));
@@ -669,34 +701,39 @@ std::shared_ptr<Connection> RdmaTransport::accept()
     }
     rdma_cm_id *id = event->id;
     rdma_ack_cm_event(event);
-    std::fprintf(stderr, "rdma accept: creating connection CQ verbs=%p\n", static_cast<void *>(id->verbs));
+
     ibv_comp_channel *connection_channel = ibv_create_comp_channel(id->verbs);
     if (connection_channel != nullptr)
         make_nonblocking(connection_channel->fd);
-    ibv_cq *connection_cq = connection_channel == nullptr
-                                ? nullptr
-                                : ibv_create_cq(id->verbs, 2048, nullptr, connection_channel, 0);
-    std::fprintf(stderr, "rdma accept: connection CQ=%p errno=%d\n", static_cast<void *>(connection_cq), errno);
+    ibv_cq *connection_cq =
+        connection_channel == nullptr ? nullptr : ibv_create_cq(id->verbs, 2048, nullptr, connection_channel, 0);
+
     if (connection_cq == nullptr) {
-        std::fprintf(stderr, "rdma accept: create CM CQ failed errno=%d\n", errno);
+
         if (connection_channel != nullptr)
             ibv_destroy_comp_channel(connection_channel);
         rdma_destroy_id(id);
         return nullptr;
     }
+    if (ibv_req_notify_cq(connection_cq, 0) != 0) {
+        CRB_LOG_WARN("rdma accept: arm connection CQ notifications failed errno={}", errno);
+        ibv_destroy_cq(connection_cq);
+        ibv_destroy_comp_channel(connection_channel);
+        rdma_destroy_id(id);
+        return nullptr;
+    }
     ibv_qp_init_attr qp_attr{};
-    qp_attr.send_cq          = connection_cq;
-    qp_attr.recv_cq          = connection_cq;
-    qp_attr.qp_type          = IBV_QPT_RC;
-    qp_attr.cap.max_send_wr  = 1024;
-    qp_attr.cap.max_recv_wr  = 1024;
-    qp_attr.cap.max_send_sge = 2;
-    qp_attr.cap.max_recv_sge = 2;
+    qp_attr.send_cq             = connection_cq;
+    qp_attr.recv_cq             = connection_cq;
+    qp_attr.qp_type             = IBV_QPT_RC;
+    qp_attr.cap.max_send_wr     = 1024;
+    qp_attr.cap.max_recv_wr     = 1024;
+    qp_attr.cap.max_send_sge    = 2;
+    qp_attr.cap.max_recv_sge    = 2;
     qp_attr.cap.max_inline_data = 0;
-    qp_attr.sq_sig_all         = 1;
-    qp_attr.qp_context         = id;
-    std::fprintf(stderr, "rdma accept: creating QP id=%p pd=%p cq=%p\n", static_cast<void *>(id),
-                 static_cast<void *>(id->pd), static_cast<void *>(connection_cq));
+    qp_attr.sq_sig_all          = 1;
+    qp_attr.qp_context          = id;
+
     if (rdma_create_qp(id, id->pd, &qp_attr) != 0) {
         ibv_destroy_cq(connection_cq);
         ibv_destroy_comp_channel(connection_channel);
@@ -708,8 +745,8 @@ std::shared_ptr<Connection> RdmaTransport::accept()
     params.responder_resources = 1;
     params.retry_count         = 7;
     params.rnr_retry_count     = 7;
-    const int accept_rc = rdma_accept(id, &params);
-    std::fprintf(stderr, "rdma accept: rdma_accept rc=%d errno=%d\n", accept_rc, errno);
+    const int accept_rc        = rdma_accept(id, &params);
+
     if (accept_rc != 0) {
         rdma_destroy_qp(id);
         ibv_destroy_cq(connection_cq);
@@ -717,12 +754,10 @@ std::shared_ptr<Connection> RdmaTransport::accept()
         rdma_destroy_id(id);
         return nullptr;
     }
-    event = nullptr;
+    event              = nullptr;
     const int event_rc = wait_cm_event(cm_channel_, &event, 5000) ? 0 : -1;
-    std::fprintf(stderr, "rdma accept: completion event rc=%d event=%d status=%d errno=%d\n", event_rc,
-                 event == nullptr ? -1 : event->event, event == nullptr ? 0 : event->status, errno);
-    if (event_rc != 0 || event == nullptr ||
-        event->event != RDMA_CM_EVENT_ESTABLISHED) {
+
+    if (event_rc != 0 || event == nullptr || event->event != RDMA_CM_EVENT_ESTABLISHED) {
         if (event != nullptr)
             rdma_ack_cm_event(event);
         rdma_destroy_qp(id);
@@ -732,8 +767,8 @@ std::shared_ptr<Connection> RdmaTransport::accept()
         return nullptr;
     }
     rdma_ack_cm_event(event);
-    std::fprintf(stderr, "rdma accept: established, priming receive\n");
-    auto pools = std::make_unique<ConnectionPools>();
+
+    auto pools  = std::make_unique<ConnectionPools>();
     pools->send = std::make_unique<RdmaBufferPool>(id->pd, 64U << 20, 1024);
     pools->recv = std::make_unique<RdmaBufferPool>(id->pd, 64U << 20, 1024);
     if (pools->send == nullptr || pools->recv == nullptr) {
@@ -743,7 +778,7 @@ std::shared_ptr<Connection> RdmaTransport::accept()
         rdma_destroy_id(id);
         return nullptr;
     }
-    auto connection = std::make_shared<Connection>(reinterpret_cast<int64_t>(id), "rdma-peer", pools->recv.get());
+    auto connection       = std::make_shared<Connection>(reinterpret_cast<int64_t>(id), "rdma-peer", pools->recv.get());
     connection->user_data = pools.get();
     connection->set_path(ConnectionPath::Rdma);
     connection->transport_handle = reinterpret_cast<uint64_t>(id->qp);
@@ -754,10 +789,11 @@ std::shared_ptr<Connection> RdmaTransport::accept()
         rdma_destroy_id(id);
         return nullptr;
     }
-    std::fprintf(stderr, "rdma accept: receive primed\n");
+
     {
         std::scoped_lock lock(cm_mu_);
         cm_ids_.push_back(id);
+        cm_connections_.emplace(id, connection);
         cm_cqs_.emplace(id, connection_cq);
         cm_channels_.emplace(id, connection_channel);
         cm_pools_.emplace(id, std::move(pools));
@@ -789,11 +825,9 @@ int RdmaTransport::cm_event_fd() const
 
 int RdmaTransport::drain_cq(uint32_t max_completions)
 {
-    if (!running_.load(std::memory_order_acquire))
-        return 0;
     uint32_t               drained = 0;
     std::array<ibv_wc, 32> completions{};
-    auto poll_one = [&](ibv_cq *cq) {
+    auto                   poll_one = [&](ibv_cq *cq) {
         while (drained < max_completions && cq != nullptr) {
             const int batch = ibv_poll_cq(cq, static_cast<int>(std::min<uint32_t>(32, max_completions - drained)),
                                           completions.data());
@@ -801,16 +835,12 @@ int RdmaTransport::drain_cq(uint32_t max_completions)
                 break;
             for (int i = 0; i < batch; ++i) {
                 const auto opcode = completions[static_cast<size_t>(i)].opcode;
-                const auto wr_id = completions[static_cast<size_t>(i)].wr_id;
+                const auto wr_id  = completions[static_cast<size_t>(i)].wr_id;
                 if ((wr_id & uintptr_t{1}) != 0 || opcode == IBV_WC_RECV || opcode == IBV_WC_RECV_RDMA_WITH_IMM)
                     release_completed_receive(completions[static_cast<size_t>(i)]);
                 else if (opcode == IBV_WC_SEND)
                     release_completed_frame(completions[static_cast<size_t>(i)]);
                 else {
-                    std::fprintf(stderr, "rdma completion: unknown opcode=%u status=%u wr_id=%#lx\n",
-                                 static_cast<unsigned>(opcode),
-                                 static_cast<unsigned>(completions[static_cast<size_t>(i)].status),
-                                 static_cast<unsigned long>(completions[static_cast<size_t>(i)].wr_id));
                 }
             }
             drained += static_cast<uint32_t>(batch);
@@ -870,7 +900,7 @@ int RdmaTransport::handle_external_event(uint64_t tag, uint32_t max_completions)
             for (const auto &[id, channel] : cm_channels_) {
                 (void)id;
                 ibv_cq *event_cq = nullptr;
-                void *context = nullptr;
+                void   *context  = nullptr;
                 if (ibv_get_cq_event(channel, &event_cq, &context) == 0) {
                     ibv_ack_cq_events(event_cq, 1);
                     (void)ibv_req_notify_cq(event_cq, 0);
@@ -884,19 +914,17 @@ int RdmaTransport::handle_external_event(uint64_t tag, uint32_t max_completions)
 
 bool RdmaTransport::prime_receive(const std::shared_ptr<Connection> &connection)
 {
-    if (connection == nullptr || connection->pool() == nullptr)
-    {
-        std::fprintf(stderr, "rdma receive: missing connection/pool\\n");
+    if (connection == nullptr || connection->pool() == nullptr) {
+
         return false;
     }
     constexpr uint32_t kInitialReceiveDepth = 8;
-    BufferPool *pool = connection->pool();
+    BufferPool        *pool                 = connection->pool();
     for (uint32_t i = 0; i < kInitialReceiveDepth; ++i) {
         Buffer *control = pool->alloc(RDMA_CONTROL_CAPACITY);
         Buffer *data    = pool->alloc(1U << 20);
         if (control == nullptr || data == nullptr) {
-            std::fprintf(stderr, "rdma receive: buffer allocation failed depth=%u control=%p data=%p\\n", i,
-                         static_cast<void *>(control), static_cast<void *>(data));
+
             if (control != nullptr)
                 control->release();
             if (data != nullptr)
@@ -904,7 +932,7 @@ bool RdmaTransport::prime_receive(const std::shared_ptr<Connection> &connection)
             return false;
         }
         if (!post_receive(connection.get(), control, data)) {
-            std::fprintf(stderr, "rdma receive: initial ibv_post_recv failed depth=%u errno=%d\\n", i, errno);
+
             control->release();
             data->release();
             return false;
@@ -919,9 +947,7 @@ bool RdmaTransport::prime_receive(const std::shared_ptr<Connection> &connection)
 
 void RdmaTransport::release_completed_receive(ibv_wc &wc)
 {
-    std::fprintf(stderr, "rdma receive completion: wr_id=%#lx status=%u opcode=%u byte_len=%u\n",
-                 static_cast<unsigned long>(wc.wr_id), static_cast<unsigned>(wc.status),
-                 static_cast<unsigned>(wc.opcode), wc.byte_len);
+
     auto *work = reinterpret_cast<ReceiveWork *>(wc.wr_id & ~uintptr_t{1});
     if (work == nullptr)
         return;
@@ -948,6 +974,7 @@ void RdmaTransport::release_completed_receive(ibv_wc &wc)
     }
     const uint32_t control_bytes = work->control->capacity;
     if (control_bytes < HEADER_SIZE) {
+        CRB_LOG_WARN("rdma receive: control capacity too small capacity={} header={}", control_bytes, HEADER_SIZE);
         quarantine_and_release();
         return;
     }
@@ -957,6 +984,10 @@ void RdmaTransport::release_completed_receive(ibv_wc &wc)
     if (header.magic != MAGIC || header.msg_offset < HEADER_SIZE ||
         static_cast<uint32_t>(header.msg_offset) + header.msg_size > control_bytes || expected_bytes > wc.byte_len ||
         (header.data_size > 0 && (work->data == nullptr || header.data_size > work->data->capacity))) {
+        CRB_LOG_WARN(
+            "rdma receive: invalid frame magic={} type={} msg_size={} data_size={} offset={} capacity={} byte_len={}",
+            header.magic, header.msg_type, header.msg_size, header.data_size, header.msg_offset, control_bytes,
+            wc.byte_len);
         quarantine_and_release();
         return;
     }
@@ -1026,9 +1057,7 @@ void RdmaTransport::release_completed_frame(ibv_wc &wc)
     auto *frame = reinterpret_cast<OutFrame *>(wc.wr_id);
     if (frame == nullptr)
         return;
-    std::fprintf(stderr, "rdma send completion: wr_id=%#lx status=%u frame=%p control=%p\n",
-                 static_cast<unsigned long>(wc.wr_id), static_cast<unsigned>(wc.status),
-                 static_cast<void *>(frame), static_cast<void *>(frame->control));
+
     if (wc.status != IBV_WC_SUCCESS) {
         stats_.cq_errors.fetch_add(1, std::memory_order_relaxed);
         // A failed SEND makes the stream uncertain; do not allow a TCP
