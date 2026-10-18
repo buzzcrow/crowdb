@@ -219,6 +219,21 @@ void RpcServer::start()
                 }
             }
         }
+        if (rdma_port != 0) {
+            if (const char *slot_env = std::getenv("CROWDB_RDMA_SERVICE_SLOT");
+                slot_env != nullptr && *slot_env != '\0') {
+                char *end       = nullptr;
+                errno           = 0;
+                const long slot = std::strtol(slot_env, &end, 10);
+                if (errno != 0 || end == slot_env || *end != '\0' || slot < 0 || slot > 65535 - rdma_port) {
+                    CRB_LOG_WARN("rpc server: invalid RDMA service slot value={}", slot_env);
+                    rdma_port = 0;
+                }
+                else {
+                    rdma_port += static_cast<int>(slot);
+                }
+            }
+        }
         const char *rdma_addr = std::getenv("CROWDB_RDMA_SOURCE_ADDR");
         if (rdma_port == 0 || !transport_->listen_rdma(rdma_addr == nullptr ? listen_addr_ : rdma_addr, rdma_port))
             CRB_LOG_WARN("rpc server: RDMA listener unavailable; TCP remains active");

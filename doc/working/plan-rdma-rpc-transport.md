@@ -221,9 +221,10 @@ advertises compatible capability. `CROWDB_RDMA_DEVICE`, `CROWDB_RDMA_PORT`, and
 `CROWDB_RDMA_SOURCE_ADDR` are deployment overrides, not required API calls.
 For host-network multi-container runs, deployment also supplies one
 `CROWDB_PORT_OFFSET` per container. The library and service launchers apply the
-same offset to every default TCP/RPC and RDMA CM service port; the HCA physical
-port selected by `CROWDB_RDMA_PORT` is unchanged. The default RDMA CM service
-port is `19101`.
+same offset to every default TCP/RPC and RDMA CM service port; each colocated
+RPC service adds its stable `CROWDB_RDMA_SERVICE_SLOT` to the CM port so
+services do not contend for one listener. The HCA physical port selected by
+`CROWDB_RDMA_PORT` is unchanged. The default RDMA CM service port is `19101`.
 When any local capability, CM, QP, or pre-payload setup step is unavailable,
 the library reports the reason and uses TCP without requiring application code
 changes. After payload submission, the connection fails as one stream and does

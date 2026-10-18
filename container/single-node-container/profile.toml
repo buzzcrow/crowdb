@@ -87,6 +87,7 @@ port = 9090
 
 [[services]]
 id = "kv"
+env = { CROWDB_RDMA_SERVICE_SLOT = "1" }
 program = "/opt/crowdb/bin/crowdb-kv-server"
 args = ["--root", "/opt/crowdb/data/kv/node-1", "--config", "/opt/crowdb/run/config/kv.toml", "--management-port", "10000", "--ports", "10100,10101", "--instance-id", "1", "--node-id", "1", "--binding-monitor-interval", "1", "--log-dir", "/opt/crowdb/data/log/kv", "--log"]
 dependencies = []
@@ -104,6 +105,7 @@ backoff_max_ms = 5000
 
 [[services]]
 id = "diskdb"
+env = { CROWDB_RDMA_SERVICE_SLOT = "2" }
 program = "/opt/crowdb/bin/crowdb-diskdb"
 args = ["--config", "/opt/crowdb/run/config/diskdb.toml", "--log-dir", "/opt/crowdb/data/log/diskdb", "--log"]
 dependencies = ["kv"]
@@ -121,6 +123,7 @@ backoff_max_ms = 5000
 
 [[services]]
 id = "diskio"
+env = { CROWDB_RDMA_SERVICE_SLOT = "3" }
 program = "/opt/crowdb/bin/crowdb-diskio"
 args = ["--config", "/opt/crowdb/run/config/diskio.toml"]
 dependencies = ["kv", "diskdb"]
@@ -138,6 +141,7 @@ backoff_max_ms = 5000
 
 [[services]]
 id = "chunkdb"
+env = { CROWDB_RDMA_SERVICE_SLOT = "4" }
 program = "/opt/crowdb/bin/crowdb-chunkdb"
 args = ["--config", "/opt/crowdb/run/config/chunkdb.toml", "--log-dir", "/opt/crowdb/data/log/chunkdb", "--log"]
 dependencies = ["kv", "diskdb", "diskio"]
@@ -155,6 +159,7 @@ backoff_max_ms = 5000
 
 [[services]]
 id = "chunk-kv"
+env = { CROWDB_RDMA_SERVICE_SLOT = "5" }
 program = "/opt/crowdb/bin/crowdb-chunk-kv-server"
 args = ["--config", "/opt/crowdb/run/config/chunk-kv.toml", "--log-dir", "/opt/crowdb/data/log/chunk-kv", "--log"]
 dependencies = ["kv", "chunkdb", "diskio"]
@@ -174,7 +179,7 @@ backoff_max_ms = 5000
 id = "access"
 program = "/opt/crowdb/bin/crowdb-access-server"
 args = ["--config", "/opt/crowdb/run/config/access.toml"]
-env = { CROWDB_S3_PUBLIC_URI = "http://localhost:9091", CROWDB_S3_REGION = "us-east-1", CROWDB_ICEBERG_PUBLIC_URI = "http://localhost:9092", CROWDB_DATASET_PUBLIC_URI = "http://localhost:9093", CROWDB_ICEBERG_GC_ENABLED = "0", CROWDB_MANAGEMENT_SEEDS = "http://127.0.0.1:10000", CROWDB_ACCESS_HEALTH_LISTEN = "127.0.0.1:9094", CROWDB_ACCESS_LOG_DIR = "/opt/crowdb/data/log/access" }
+env = { CROWDB_S3_PUBLIC_URI = "http://localhost:9091", CROWDB_S3_REGION = "us-east-1", CROWDB_ICEBERG_PUBLIC_URI = "http://localhost:9092", CROWDB_DATASET_PUBLIC_URI = "http://localhost:9093", CROWDB_ICEBERG_GC_ENABLED = "0", CROWDB_MANAGEMENT_SEEDS = "http://127.0.0.1:10000", CROWDB_ACCESS_HEALTH_LISTEN = "127.0.0.1:9094", CROWDB_ACCESS_LOG_DIR = "/opt/crowdb/data/log/access", CROWDB_RDMA_SERVICE_SLOT = "6" }
 dependencies = ["kv", "chunk-kv", "chunkdb", "diskio"]
 fence_listeners = ["127.0.0.1:9092", "127.0.0.1:9091", "127.0.0.1:9093", "127.0.0.1:9094"]
 config_template = "/opt/crowdb/etc/templates/access.toml"
@@ -196,6 +201,7 @@ backoff_max_ms = 5000
 
 [[services]]
 id = "web"
+env = { CROWDB_RDMA_SERVICE_SLOT = "7" }
 program = "/opt/crowdb/bin/crowdb-web"
 args = ["--config", "/opt/crowdb/run/config/crowdb-web.toml", "--node-monitor", "http://127.0.0.1:9095"]
 dependencies = ["access"]
