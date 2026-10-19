@@ -5,6 +5,9 @@
 
 #include "crowdb-rpc/connection.h"
 #include "crowdb-rpc/transport.h"
+#ifdef CROWDB_RPC_HAVE_RDMA
+#    include "crowdb-rpc/transport/rdma/rdma_transport.h"
+#endif
 
 #include <folly/concurrency/ConcurrentHashMap.h>
 
@@ -323,7 +326,11 @@ class SocketTransport : public Transport
   public:
     // Multi-engine ctor: io_engines independent epoll/kqueue instances,
     // with io_workers total workers (per-engine = io_workers / io_engines).
-    SocketTransport(uint32_t io_engines, uint32_t io_workers, BufferPool *pool = nullptr);
+    SocketTransport(uint32_t io_engines, uint32_t io_workers, BufferPool *pool = nullptr
+#ifdef CROWDB_RPC_HAVE_RDMA
+                    , RdmaConfig rdma_config = {}
+#endif
+    );
     // Deprecated alias: maps to (1, num_workers). Kept for backward compat.
     SocketTransport(uint32_t num_workers, BufferPool *pool);
     ~SocketTransport() override;
@@ -507,6 +514,7 @@ class SocketTransport : public Transport
     BufferPool *pool_;
 #ifdef CROWDB_RPC_HAVE_RDMA
     std::unique_ptr<class RdmaTransport> rdma_transport_;
+    RdmaConfig                              rdma_config_;
 #endif
     std::vector<std::unique_ptr<Worker>>       workers_;
     std::vector<std::unique_ptr<SocketEngine>> engines_; // transport owns all engines

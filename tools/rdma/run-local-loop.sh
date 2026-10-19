@@ -108,16 +108,15 @@ if [[ "$mode" == local ]]; then
     device=${CROWDB_RDMA_DEVICE:-$(first_device)}
     netdev=${CROWDB_RDMA_LOCAL_IF:-$(device_netdev "$device")}
     netdev=${netdev:-$(root_netdev_for_device "$device")}
-    address=${CROWDB_RDMA_LOCAL_ADDR:-$(addr_for root "$netdev")}
+    client_addr=${CROWDB_RDMA_LOCAL_ADDR:-$(addr_for root "$netdev")}
+    server_addr=${CROWDB_RDMA_LOCAL_SERVER_ADDR:-$client_addr}
     [[ -n "$device" ]] || die "could not discover an RDMA device"
     [[ -n "$netdev" ]] || die "could not find the local Ethernet netdev"
-    [[ -n "$address" ]] || die "could not find an IPv4 address on $netdev"
+    [[ -n "$client_addr" && -n "$server_addr" ]] || die "could not find local RDMA addresses"
     client_ns=root
     server_ns=root
     client_device=$device
     server_device=$device
-    client_addr=$address
-    server_addr=$address
     client_if=$netdev
     server_if=$netdev
 else

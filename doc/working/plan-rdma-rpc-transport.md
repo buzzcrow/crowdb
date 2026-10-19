@@ -46,8 +46,12 @@ multi-node validation is deferred to [the separate follow-up plan](plan-rdma-mul
 
 The C++ unit/integration gate and Rust FFI tests pass after the teardown and
 completion-error changes; `tree-lint` completes with the repository's existing
-clang-tidy warning set. The OCI profiles remain environment-dependent because
-the image requires a prepared data volume and discovery profile.
+clang-tidy warning set. The OCI runner now mounts a named data volume and uses
+the configured RDMA local interface by default. TCP-only and unprivileged
+shared-HCA startup smoke tests both reached the container readiness message;
+the unprivileged smoke correctly fell back to TCP because this container host
+did not expose a usable HCA device. A privileged multi-container HCA run still
+requires the prepared local-loop topology.
 
 ## R239 status checkpoint
 

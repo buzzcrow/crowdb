@@ -539,7 +539,11 @@ static bool on_writable_impl(Connection *conn, int fd, TransportStats *stats)
 
 // ── SocketTransport ───────────────────────────────────────────────
 
-SocketTransport::SocketTransport(uint32_t io_engines, uint32_t io_workers, BufferPool *pool) : pool_(pool)
+SocketTransport::SocketTransport(uint32_t io_engines, uint32_t io_workers, BufferPool *pool
+#ifdef CROWDB_RPC_HAVE_RDMA
+                                 , RdmaConfig rdma_config
+#endif
+                                 ) : pool_(pool)
 {
     assert(io_engines >= 1 && io_workers >= 1);
     assert(io_workers % io_engines == 0);
@@ -547,9 +551,10 @@ SocketTransport::SocketTransport(uint32_t io_engines, uint32_t io_workers, Buffe
         pool_ = new SystemBufferPool(); // own a default pool
     }
 #ifdef CROWDB_RPC_HAVE_RDMA
+    rdma_config_ = std::move(rdma_config);
     if (const char *enabled = std::getenv("CROWDB_RDMA_ENABLED");
         enabled != nullptr && std::strcmp(enabled, "1") == 0) {
-        rdma_transport_ = std::make_unique<RdmaTransport>();
+        rdma_transport_ = std::make_unique<RdmaTransport>(rdma_config_);
     }
 #endif
     // Create N independent engines, each with M workers. When M>1, the

@@ -29,6 +29,23 @@ class SocketEngine;
 
 constexpr uint32_t RDMA_WIRE_SLOT_CAPACITY = RDMA_DATAPATH_CAPACITY;
 
+struct RdmaConfig
+{
+    std::string device;
+    uint8_t     port                  = 1;
+    uint32_t    cq_depth              = 2048;
+    uint32_t    buffer_region_bytes   = 64U << 20;
+    uint32_t    buffer_ring_depth     = 1024;
+    uint32_t    qp_max_send_wr       = 1024;
+    uint32_t    qp_max_recv_wr       = 1024;
+    uint32_t    qp_max_send_sge      = 2;
+    uint32_t    qp_max_recv_sge      = 2;
+    uint32_t    poll_batch           = 256;
+    uint32_t    poll_empty_budget    = 256;
+    uint8_t     retry_count           = 7;
+    uint8_t     rnr_retry_count       = 7;
+};
+
 // RdmaBufferPool: allocates buffers from ibv_mr-registered memory.
 // The pool pre-registers a large memory region and carves out buffers
 // from it, avoiding per-buffer ibv_reg_mr calls (which are expensive).
@@ -86,7 +103,7 @@ class RdmaTransport : public Transport
         std::atomic<uint64_t> remote_access_errors{0};
     };
 
-    RdmaTransport();
+    explicit RdmaTransport(RdmaConfig config = {});
     ~RdmaTransport() override;
 
     bool    submit(Connection *conn, OutFrame *frame) override;
@@ -111,9 +128,9 @@ class RdmaTransport : public Transport
     void              stop();
     [[nodiscard]] int completion_fd() const;
     [[nodiscard]] int cm_event_fd() const;
-    int               drain_cq(uint32_t max_completions = 256);
+    int               drain_cq(uint32_t max_completions = 0);
     void              register_events(SocketEngine *engine);
-    int               handle_external_event(uint64_t tag, uint32_t max_completions = 256);
+    int               handle_external_event(uint64_t tag, uint32_t max_completions = 0);
 
     void set_connection_handler(ConnectionHandler handler)
     {
@@ -132,16 +149,20 @@ class RdmaTransport : public Transport
 
     [[nodiscard]] bool ready() const
     {
-        return context_ != nullptr && pd_ != nullptr && cq_ != nullptr;
+        return capability_available_;
     }
 
   private:
+    RdmaConfig                                                           config_;
+    bool                                                                  capability_available_ = false;
     struct ibv_context                                                  *context_      = nullptr;
+    bool                                                                  owns_context_ = true;
     struct ibv_pd                                                       *pd_           = nullptr;
     struct ibv_comp_channel                                             *comp_channel_ = nullptr;
     struct ibv_cq                                                       *cq_           = nullptr;
     struct rdma_event_channel                                           *cm_channel_   = nullptr;
     struct rdma_cm_id                                                   *listen_id_    = nullptr;
+    std::string                                                           requested_device_;
     uint8_t                                                              port_         = 1;
     std::vector<struct rdma_cm_id *>                                     cm_ids_;
     std::unordered_map<struct rdma_cm_id *, std::shared_ptr<Connection>> cm_connections_;
@@ -183,6 +204,7 @@ class RdmaTransport : public Transport
     void        release_completed_receive(struct ibv_wc &wc);
     void        record_completion_error(const struct ibv_wc &wc);
     static void repost_frame_release(void *context, Buffer *data);
+    bool        adopt_cm_context(struct ibv_context *context);
 };
 
 } // namespace crowdb::rpc
