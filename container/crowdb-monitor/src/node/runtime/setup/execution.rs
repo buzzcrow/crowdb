@@ -85,6 +85,15 @@ async fn advance(profile: &DeploymentProfile, state: &mut AcceptedSetup) -> Resu
     // Storage and service prerequisites progress independently. In particular,
     // file preparation may wait for DiskIO while DiskIO is still starting.
     let disk_ready = storage::advance(profile, state, &binding, &kv).await;
+    if state
+        .status
+        .disks
+        .iter()
+        .any(|step| step.phase == crowdb_protocol::mgmt::node::setup::SetupStepPhase::Failed)
+    {
+        state.status.phase = NodeSetupPhase::Failed;
+        return disk_ready.map(|_| ());
+    }
     let services_ready = services::advance(profile, state, &binding, &kv).await;
     let services_ready = services_ready?;
     if state

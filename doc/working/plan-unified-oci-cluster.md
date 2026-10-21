@@ -213,7 +213,7 @@ removal until the complete direct-container path passes A01/A03/A25.
   `container/crowdb-monitor/src/node/runtime/setup/execution/storage.rs`,
   `app/crowdb-web/src/services/deployment/remote.rs`,
   `app/crowdb-web/src/services/deployment/launch.rs`.
-- [~] **T12 — Advance disks and services without circular waiting**: preserve
+- [x] **T12 — Advance disks and services without circular waiting**: preserve
   interleaved storage/service passes, gate on publication versus runtime Online
   separately, and reuse disk preparation receipts. Persist every effect's input
   and operation first. Propagate terminal allocation/inode/geometry failures and
@@ -223,7 +223,7 @@ removal until the complete direct-container path passes A01/A03/A25.
   `container/crowdb-monitor/src/node/runtime/setup/execution/storage.rs`,
   `container/crowdb-monitor/src/node/runtime/setup/execution/services.rs`,
   monitor setup/storage tests.
-- [ ] **T13 — Preserve later operator intent**: keep `publish_planned_start`
+- [~] **T13 — Preserve later operator intent**: keep `publish_planned_start`
   conditional on the accepted service operation; retain retired-operation fences
   and separate journal completion from live health. Test stop/delete/reconfigure
   races against old retries and monitor/Web restart. Done when old setup never
@@ -710,6 +710,15 @@ do not mark unexecuted acceptance passed.
   The local storage guide now records counts, geometry and zero node budget.
   These mounted-executable diagnostics establish geometry and persistence;
   packaged final-image and runtime acceptance remain pending.
+- Automatic file preparation now makes a terminal disk failure terminal for
+  the node setup before further service submission. Explicit retry consumes
+  one durable disk-operation authorization and preserves the original file
+  request; supplied and automatic media share bounded retry validation.
+  A real reserve-space rejection regression proves no file creation, sparse
+  fallback, automatic retry or operation replacement. Its explicit retry fails
+  with the same request and requires renewed consent. All 25 affected monitor
+  setup/file tests pass, including durable inode/size failures and service restart
+  budgets. Monitor all-target clippy and Rust formatting pass.
 
 ## Consolidated file ownership
 

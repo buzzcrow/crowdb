@@ -30,7 +30,7 @@ pub(super) struct AcceptedSetup {
     #[serde(default)]
     pub(super) supplied: Vec<AcceptedSupplied>,
     #[serde(default)]
-    pub(super) retry_supplied: std::collections::BTreeSet<String>,
+    pub(super) retry_disks: std::collections::BTreeSet<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -45,6 +45,7 @@ pub(super) fn read(root: &Path) -> Result<Option<AcceptedSetup>> {
     if let Some(current) = &current {
         current.request.validate()?;
         validate_policy(root, &current.request.choices)?;
+        validate_retries(current)?;
         supplied::validate(current)?;
         validate_status(&current.status)?;
         for identity in [&current.request.discovery_id, &current.request.operation_id] {
@@ -64,9 +65,25 @@ pub(super) fn read(root: &Path) -> Result<Option<AcceptedSetup>> {
 }
 
 pub(super) fn save(root: &Path, state: &AcceptedSetup) -> Result<()> {
+    validate_retries(state)?;
     supplied::validate(state)?;
     validate_status(&state.status)?;
     durable::write(&root.join("node-setup.json"), state)?;
+    Ok(())
+}
+
+fn validate_retries(state: &AcceptedSetup) -> Result<()> {
+    if state.retry_disks.len() > 64
+        || state.retry_disks.iter().any(|id| {
+            !state.file.as_ref().is_some_and(|file| file.operation_id == *id)
+                && !state
+                    .supplied
+                    .iter()
+                    .any(|disk| disk.request.record.operation_id == *id)
+        })
+    {
+        return Err("retry references an unselected disk operation".into());
+    }
     Ok(())
 }
 
@@ -168,7 +185,7 @@ pub(super) fn accept_with_inputs(
             storage_binding: None,
             supplied_observations,
             supplied: Vec::new(),
-            retry_supplied: std::collections::BTreeSet::new(),
+            retry_disks: std::collections::BTreeSet::new(),
         },
     )?;
     Ok(status)
@@ -196,7 +213,7 @@ fn replay(root: &Path, current: &mut AcceptedSetup, running: bool) -> Result<Nod
         }
         for disk in &mut current.status.disks {
             if disk.phase == SetupStepPhase::Failed {
-                current.retry_supplied.insert(disk.operation_id.clone());
+                current.retry_disks.insert(disk.operation_id.clone());
                 disk.phase = SetupStepPhase::Pending;
                 disk.detail = None;
             }

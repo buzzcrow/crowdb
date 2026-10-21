@@ -83,19 +83,33 @@ pub(super) async fn advance(
         state.storage_binding.clone(),
     )
     .await?;
+    advance_file(profile, state, request).await
+}
+
+async fn advance_file(
+    profile: &DeploymentProfile,
+    state: &mut AcceptedSetup,
+    request: PrepareDiskFile,
+) -> Result<bool> {
+    let root = &profile.paths.data_root;
     let status = crate::node::storage::file_preparation::status(root, &request.operation_id);
+    let retry = state.retry_disks.remove(&request.operation_id);
     let ready = status
         .as_ref()
         .is_ok_and(|status| status.phase == FilePreparationPhase::Registered);
     state.status.disks = vec![disk_status(profile, &request, status.as_ref().ok(), ready)?];
     if !ready {
-        if status
-            .as_ref()
-            .is_ok_and(|status| status.phase == FilePreparationPhase::Failed)
+        if !retry
+            && status
+                .as_ref()
+                .is_ok_and(|status| status.phase == FilePreparationPhase::Failed)
         {
             state.status.disks[0].phase = SetupStepPhase::Failed;
             return Err("default file preparation failed; explicit retry required".into());
         }
+        // Persist consumption before dispatch. Reconcile the same operation on
+        // a lost reply; a terminal failure needs another explicit retry.
+        journal::save(root, state)?;
         super::super::super::control_node(
             &profile.paths.run_root.join("node-control.sock"),
             &NodeControl::PrepareDiskFile { request },

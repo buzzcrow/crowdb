@@ -312,7 +312,7 @@ async fn failed_medium_keeps_successful_siblings_and_only_explicit_retry_dispatc
     assert_eq!(observer.await.unwrap(), vec![requests[1].clone()]);
     let state: serde_json::Value =
         serde_json::from_slice(&fs::read(test.root.path().join("node-setup.json")).unwrap()).unwrap();
-    assert!(state["retry_supplied"].as_array().unwrap().is_empty());
+    assert!(state["retry_disks"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]
