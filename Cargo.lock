@@ -890,6 +890,7 @@ dependencies = [
  "crowdb-chunkdb",
  "crowdb-chunkdb-client",
  "crowdb-common",
+ "crowdb-console-shared",
  "crowdb-diskdb",
  "crowdb-diskdb-client",
  "crowdb-diskio-client",

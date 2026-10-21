@@ -23,7 +23,7 @@ async fn mixed_units_reject_consumers_without_starting_services() {
             .await[kind]
             .clone();
         body["kind"] = json!(kind);
-        body["test_single_node"] = json!(false);
+        body["local_deployment"] = json!(false);
         body["http_port"] = json!(http);
         body["rpc_port"] = json!(rpc);
         if kind == "chunk-kv" {

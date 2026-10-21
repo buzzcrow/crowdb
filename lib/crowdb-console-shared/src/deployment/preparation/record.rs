@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_protocol::mgmt::SystemBootstrapIdentity;
+use crowdb_protocol::{chunk_kv::Id128, chunk_stream::StreamName, mgmt::SystemBootstrapIdentity};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -39,12 +39,24 @@ pub struct DefaultStorageBinding {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct DefaultChunkKvBootstrap {
+    pub node_id: u64,
+    pub partition_id: Id128,
+    pub tree_id: u64,
+    pub stream_name: StreamName,
+    pub owner_epoch: u64,
+    pub metadata_group_id: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DefaultPreparation {
     pub version: u32,
     pub bootstrap: SystemBootstrapIdentity,
     pub operation_id: String,
     pub metadata: DefaultMetadataGroup,
     pub storage: Vec<DefaultStorageBinding>,
+    pub chunk_kv: DefaultChunkKvBootstrap,
     /// Reference only; access secrets are never included in progress/status.
     pub credential_ref: String,
     pub retired: bool,
@@ -63,6 +75,11 @@ impl DefaultPreparation {
             ));
         }
         let config = bootstrap.intent.to_config();
+        let (high, low) = Uuid::parse_str(&operation_id)
+            .map_err(|_| Error::Config("default preparation operation is invalid".into()))?
+            .as_u64_pair();
+        let high = (high & i64::MAX as u64).max(1);
+        let low = (low & i64::MAX as u64).max(1);
         let mut replicas = Vec::new();
         let mut storage = Vec::new();
         for (index, node_id) in members.iter().enumerate() {
@@ -92,6 +109,14 @@ impl DefaultPreparation {
                 replicas,
             },
             storage,
+            chunk_kv: DefaultChunkKvBootstrap {
+                node_id: members[0],
+                partition_id: Id128 { high, low },
+                tree_id: low,
+                stream_name: StreamName { high, low: low ^ 1 },
+                owner_epoch: 1,
+                metadata_group_id: 1,
+            },
             retired: false,
         })
     }

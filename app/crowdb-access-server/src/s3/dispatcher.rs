@@ -132,9 +132,9 @@ impl S3Dispatcher {
                     "application/json",
                     format!(
                         concat!(
-                            r#"{{"ready":{},"listener":"{}","metadata":"{}","chunks":"{}",#,
-                            r#""native_pool":"{}","cleanup":"{}","authentication":"{}",#,
-                            r#""native_retained_bytes":{},"native_budget_bytes":{},#,
+                            r#"{{"ready":{},"listener":"{}","metadata":"{}","chunks":"{}","#,
+                            r#""native_pool":"{}","cleanup":"{}","authentication":"{}","#,
+                            r#""native_retained_bytes":{},"native_budget_bytes":{},"#,
                             r#""cleanup_backlog":{},"cleanup_backlog_limit":{}}}"#
                         ),
                         ready,

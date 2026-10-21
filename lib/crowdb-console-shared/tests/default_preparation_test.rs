@@ -62,6 +62,18 @@ async fn simultaneous_runners_converge_on_one_fixed_mapping_and_credential_refer
         );
     }
     assert!(winner.credential_ref.ends_with(&winner.operation_id));
+    assert_eq!(winner.chunk_kv.node_id, 2);
+    assert_eq!(winner.chunk_kv.metadata_group_id, winner.metadata.group_id);
+    assert_eq!(winner.chunk_kv.owner_epoch, 1);
+    assert_ne!(
+        winner.chunk_kv.partition_id,
+        crowdb_protocol::chunk_kv::Id128::default()
+    );
+    assert_ne!(
+        winner.chunk_kv.stream_name,
+        crowdb_protocol::chunk_stream::StreamName::default()
+    );
+    assert_ne!(winner.chunk_kv.tree_id, 0);
     let before = snapshot(&authority).await.unwrap();
     assert_eq!(
         preparation::reserve(&authority.ctx, &authority.bootstrap.identity)
@@ -93,6 +105,7 @@ async fn singleton_uses_admitted_node_identity_and_read_does_not_reserve() {
         .unwrap();
     assert_eq!(winner.metadata.replicas[0].node_id, 42);
     assert_eq!(winner.storage[0].node_id, 42);
+    assert_eq!(winner.chunk_kv.node_id, 42);
     let before = snapshot(&authority).await.unwrap();
     let recovered = preparation::read(&authority.ctx, &authority.bootstrap.identity)
         .await

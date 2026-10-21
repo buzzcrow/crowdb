@@ -115,7 +115,7 @@ impl RuntimeContext {
         let relocation = Arc::new(RelocationCoordinator::new(Arc::clone(&task_manager)));
         let conversion = Arc::new(
             ConversionCoordinator::new(Arc::clone(&handler), Arc::clone(&task_store))
-                .with_enabled(config.deployment.mode != DeploymentMode::TestSingleNode)
+                .with_enabled(config.deployment.mode != DeploymentMode::Local)
                 .with_wake(task_manager.wake_handle())
                 .with_policy(
                     config.conversion.data_num,

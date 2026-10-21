@@ -797,7 +797,7 @@ async fn validate_voting_topology(kv: &Arc<CrowdbKvClient>, mode: DeploymentMode
         let nodes = voters.remove(&(store_id, group_id)).unwrap_or_default();
         let valid = match mode {
             DeploymentMode::Production => nodes.len() >= 3,
-            DeploymentMode::TestSingleNode => nodes.len() == 1,
+            DeploymentMode::Local => matches!(nodes.len(), 1 | 3),
             DeploymentMode::TestUnsafePlacement => {
                 unreachable!("test fixtures bypass voting topology validation")
             }

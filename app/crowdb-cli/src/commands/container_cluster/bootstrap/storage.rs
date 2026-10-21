@@ -155,7 +155,7 @@ pub(super) async fn services(api: &Api, state: &mut State) -> Result<()> {
                 let mut body = defaults[kind].clone();
                 body["kind"] = json!(kind);
                 body["instance_id"] = json!(node.to_string());
-                body["test_single_node"] = json!(false);
+                body["local_deployment"] = json!(false);
                 if let Some(port) = http {
                     body["http_port"] = json!(port);
                 }

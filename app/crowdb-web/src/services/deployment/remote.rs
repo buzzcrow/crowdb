@@ -33,7 +33,7 @@ pub(super) async fn deploy(
     let id = format!("{}-{}", body.kind.name(), body.instance_id);
     let _operation =
         crate::services::Operation::claim(state, vec![format!("node/{node_id}"), format!("service/{id}")])?;
-    if matches!(body.kind, Kind::Chunkdb | Kind::ChunkKv) && !body.test_single_node {
+    if matches!(body.kind, Kind::Chunkdb | Kind::ChunkKv) && !body.local() {
         super::geometry::validate(state).await?;
         if let Some(reason) = crate::services::dependencies::storage_wait_reason(state).await {
             return Err(err_409(reason));
@@ -160,12 +160,13 @@ pub(super) async fn configuration(
             super::chunk_slots::prepare(state, body.instance_id, body.dynamic_ownership).await?;
             Ok(lifecycle::chunkdb_config(
                 &ChunkdbDeployRequest {
+                    local_deployment: body.local(),
                     server_id: id.into(),
                     instance_id: body.instance_id,
                     http_port: body.http_port.unwrap(),
                     rpc_port: body.rpc_port.unwrap(),
                     kv_server_mgmt_seeds: seeds.to_vec(),
-                    allow_unsafe_ec: body.test_single_node,
+                    allow_unsafe_ec: false,
                     dynamic_ownership: body.dynamic_ownership,
                     rpc_workers: None,
                     kv_connections: None,

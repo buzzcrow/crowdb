@@ -5,7 +5,7 @@
 
 use crowdb_protocol::mgmt::SystemBootstrapIdentity;
 
-use super::{DefaultMetadataGroup, DefaultPreparation, DefaultStorageBinding};
+use super::{DefaultChunkKvBootstrap, DefaultMetadataGroup, DefaultPreparation, DefaultStorageBinding};
 use crate::{
     error::{Error, Result},
     ops::OpContext,
@@ -43,6 +43,17 @@ pub async fn metadata_binding(
     identity: &SystemBootstrapIdentity,
 ) -> Result<DefaultMetadataGroup> {
     Ok(active(ctx, identity).await?.metadata)
+}
+
+/// Resolve the single initial catalog creator and durable partition identities.
+///
+/// # Errors
+/// Rejects absent, retired or conflicting default preparation and metadata.
+pub async fn chunk_kv_binding(
+    ctx: &OpContext,
+    identity: &SystemBootstrapIdentity,
+) -> Result<DefaultChunkKvBootstrap> {
+    Ok(active(ctx, identity).await?.chunk_kv)
 }
 
 /// Resolve one admitted node's storage metadata and initial disk-group reservation.

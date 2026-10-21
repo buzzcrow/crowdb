@@ -13,6 +13,7 @@ pub(in crate::node::runtime) async fn execute(
     intent: NodeServiceIntent,
 ) -> Result<Value> {
     validate(&intent)?;
+    super::policy::validate(&profile.paths.data_root, &intent)?;
     let binding: NodeBinding =
         durable::read(&profile.paths.data_root.join("node-binding.json"))?.ok_or("node is unbound")?;
     if binding.node_id != intent.node_id || binding.bootstrap.cluster_id != intent.cluster_id {
@@ -109,11 +110,15 @@ async fn apply(
             processes.pid("kv")
         } else {
             let mut service = service(profile, &intent.kind)?;
+            let physical_host = service.env.get("CROWDB_PHYSICAL_HOST_ID").cloned();
             service.id.clone_from(&intent.service_id);
             let config = directory.join("service.toml");
             durable::write_bytes(&config, intent.configuration.as_bytes())?;
             service.args = vec!["--config".into(), config.to_string_lossy().into_owned()];
             service.env = intent.environment.clone();
+            if let Some(host) = physical_host {
+                service.env.insert("CROWDB_PHYSICAL_HOST_ID".into(), host);
+            }
             let logs = profile.paths.log_root.join(&intent.service_id);
             if matches!(intent.kind.as_str(), "diskdb" | "chunkdb" | "chunk-kv") {
                 service

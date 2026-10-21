@@ -121,10 +121,13 @@ mod restart;
 pub use restart::restart_local_service;
 mod native;
 pub use native::prepare_native_launch;
+mod chunkdb;
+pub use chunkdb::chunkdb_config;
 
 /// Inputs for a local `ChunkDB` deployment.
 #[derive(Debug, Clone)]
 pub struct ChunkdbDeployRequest {
+    pub local_deployment: bool,
     pub dynamic_ownership: bool,
     pub server_id: String,
     pub instance_id: u64,
@@ -1308,46 +1311,6 @@ pub async fn deploy_chunkdb_local(
             readiness_url: Some(management),
         },
     })
-}
-
-/// Render the node-specific `ChunkDB` configuration after deployment input validation.
-#[must_use]
-pub fn chunkdb_config(req: &ChunkdbDeployRequest, node: &NodeEntry) -> String {
-    let seeds = req
-        .kv_server_mgmt_seeds
-        .iter()
-        .map(|seed| format!("{seed:?}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let deployment_mode = if req.allow_unsafe_ec {
-        "test_unsafe_placement"
-    } else {
-        "production"
-    };
-    let placement_mode = if req.allow_unsafe_ec {
-        "unsafe_colocated"
-    } else {
-        "protected"
-    };
-    format!(
-        "service_ownership = \"{}\"\n\n[deployment]\nmode = \"{}\"\n\n[server]\nrpc_workers = {}\nhttp_listen_addr = \"{}:{}\"\nrpc_listen_addr = \"{}:{}\"\ninstance_id = \"{}\"\nkv_server_mgmt_seeds = [{}]\nkeepalive_interval_secs = 1\nkv_pool_size = {}\nkv_rpc_workers = {}\ndiskdb_pool_size = {}\ndiskdb_rpc_workers = {}\n\n[topology]\nrefresh_interval_secs = 1\n\n[range_guard]\nallow_all_when_empty = false\n\n[lifecycle]\ncache_capacity = 10000\nsweep_chunk_lock_interval_secs = 60\nlock_hold_warn_threshold_ms = 1000\n\n[placement]\nmode = \"{}\"\nallow_unsafe_ec = {}\nallow_degraded_failure_domains = {}\n",
-        if req.dynamic_ownership { "dynamic" } else { "fixed" },
-        deployment_mode,
-        req.rpc_workers.unwrap_or(2),
-        node.host,
-        req.http_port,
-        node.host,
-        req.rpc_port,
-        req.instance_id,
-        seeds,
-        req.kv_connections.unwrap_or(1),
-        req.kv_client_rpc_workers.unwrap_or(2),
-        req.diskdb_connections.unwrap_or(1),
-        req.diskdb_client_rpc_workers.unwrap_or(2),
-        placement_mode,
-        req.allow_unsafe_ec,
-        req.allow_unsafe_ec,
-    )
 }
 
 fn chunkdb_launch_args(req: &ChunkdbDeployRequest, config_path: &Path, log_dir: &Path) -> Vec<String> {

@@ -776,13 +776,15 @@ fn task_value() -> ChunkTaskValue {
     }
 }
 
+#[path = "full_stack/local_layout.rs"]
+mod local_layout;
 #[path = "common/reservation_prefetch.rs"]
 mod reservation_prefetch;
 
 struct CompleteTaskHandler;
 
 #[tokio::test]
-async fn explicit_single_node_mode_rejects_ec_and_extra_copies() {
+async fn local_mode_rejects_ec_and_unsupported_mirror_geometry() {
     let cluster = KvCluster::start_pinned().await;
     seed_hardware(&cluster.make_hardware_client()).await;
     let _diskdb = DiskdbServer::start(&cluster).await;
@@ -792,7 +794,7 @@ async fn explicit_single_node_mode_rejects_ec_and_extra_copies() {
         Arc::clone(&harness.allocator),
         harness.topology.clone(),
     )
-    .with_deployment_mode(DeploymentMode::TestSingleNode)
+    .with_deployment_mode(DeploymentMode::Local)
     .with_locks(Arc::new(ChunkLockMap::new(
         10_000,
         Arc::new(LifecycleMetrics::new()),
@@ -800,7 +802,7 @@ async fn explicit_single_node_mode_rejects_ec_and_extra_copies() {
     )));
     for (strip_type, copies, size_kb) in [
         (StripType::Ec, 0, 1024),
-        (StripType::Mirror, 2, 1024),
+        (StripType::Mirror, 3, 1024),
         (StripType::Mirror, 1, 512),
     ] {
         assert!(matches!(
@@ -834,7 +836,7 @@ async fn explicit_single_node_mode_rejects_ec_and_extra_copies() {
         lease_generation: 1,
         lease_ms: 30_000,
     };
-    for copies in [0, 2] {
+    for copies in [0, 3] {
         let group = crowdb_protocol::generate_chunk_id(ChunkType::S3 as u8).to_proto();
         assert!(matches!(
             handler
@@ -865,19 +867,20 @@ async fn explicit_single_node_mode_rejects_ec_and_extra_copies() {
     };
     mirror.segments.push(mirror.segments[0]);
     let operation = crowdb_protocol::generate_chunk_id(ChunkType::S3 as u8).to_proto();
-    assert!(matches!(
-        handler
-            .replace_chunk_strip_range(
-                &id,
-                chunk.modify_ts,
-                0,
-                &chunk.strips,
-                &[invalid_replacement],
-                operation,
-            )
-            .await,
-        Err(LifecycleError::InvalidRequest(_))
-    ));
+    let replacement = handler
+        .replace_chunk_strip_range(
+            &id,
+            chunk.modify_ts,
+            0,
+            &chunk.strips,
+            &[invalid_replacement],
+            operation,
+        )
+        .await;
+    assert!(
+        matches!(&replacement, Err(LifecycleError::InvalidRequest(_))),
+        "{replacement:?}"
+    );
     assert_single_node_reservation(&handler, &id, fence).await;
 }
 

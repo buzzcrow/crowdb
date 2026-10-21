@@ -9,6 +9,11 @@ use std::{collections::BTreeMap, time::Duration};
 
 pub(super) fn node_profile(config: &super::NodeRuntimeConfig) -> Result<DeploymentProfile> {
     let mut profile = DeploymentProfile::load(&config.profile)?;
+    for service in &mut profile.services {
+        service
+            .env
+            .insert("CROWDB_PHYSICAL_HOST_ID".into(), config.physical_host_id.clone());
+    }
     let address = config
         .discovery
         .addresses

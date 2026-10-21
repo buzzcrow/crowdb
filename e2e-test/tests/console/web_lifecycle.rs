@@ -109,7 +109,7 @@ async fn prepare_storage(http: &Client, base: &str) {
         json!({"disk_id":"0000000000000000-0000000000000901","disk_type":"Hdd","capacity_bytes":16_777_216,"zone_size_bytes":8_388_608,"unit_size_bytes":4096}),
         StatusCode::CREATED).await;
     post(http, base, "/api/nodes/1/services/deploy",
-        json!({"kind":"diskio","instance_id":"902","rpc_port":7200,"disk_group_id":1,"test_single_node":true}),
+        json!({"kind":"diskio","instance_id":"902","rpc_port":7200,"disk_group_id":1,"local_deployment":true}),
         StatusCode::CREATED).await;
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {

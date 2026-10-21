@@ -24,6 +24,8 @@ use crowdb_protocol::mgmt::node::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+mod catalog;
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Prepare {
@@ -171,8 +173,9 @@ async fn build(
         if selected.kind == SetupServiceKind::ChunkKv {
             metadata(state, binding, &mut choices).await?;
         }
-        let body: super::Deploy =
+        let mut body: super::Deploy =
             serde_json::from_value(choices).map_err(|error| err_400(error.to_string()))?;
+        super::policy::apply(state, &mut body)?;
         super::validate(&body)?;
         if matches!(
             selected.kind,
@@ -191,10 +194,14 @@ async fn build(
         if selected.kind == SetupServiceKind::AccessServer {
             super::remote::prepare_credentials(state, binding, &node, &body).await?;
         }
-        (
-            super::remote::configuration(state, &node, &id, &binding.management_seeds, &body).await?,
-            super::remote::environment(&body, &node),
-        )
+        let configuration =
+            super::remote::configuration(state, &node, &id, &binding.management_seeds, &body).await?;
+        let configuration = if selected.kind == SetupServiceKind::ChunkKv {
+            catalog::configure(state, binding, configuration).await?
+        } else {
+            configuration
+        };
+        (configuration, super::remote::environment(&body, &node))
     };
     Ok(NodeServiceIntent {
         cluster_id: binding.bootstrap.cluster_id.clone(),
@@ -225,6 +232,5 @@ async fn metadata(state: &AppState, binding: &NodeBinding, choices: &mut Value) 
         .await
         .map_err(map_config_err)?;
     choices["metadata_store_id"] = json!(group.store_id);
-    choices["bootstrap_group_id"] = json!(group.group_id);
     Ok(())
 }

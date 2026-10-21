@@ -91,7 +91,7 @@ impl RuntimeContext {
                     Arc::clone(&task_manager),
                 )),
             ];
-            if config.deployment.mode != DeploymentMode::TestSingleNode {
+            if config.deployment.mode != DeploymentMode::Local {
                 task_handlers.push(conversion_task_handler);
             }
             let executor = Arc::new(

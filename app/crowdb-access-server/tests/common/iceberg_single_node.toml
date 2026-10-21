@@ -1,5 +1,5 @@
 [deployment]
-mode = "test_single_node"
+mode = "local"
 max_node_failures = 0
 
 [small_write]

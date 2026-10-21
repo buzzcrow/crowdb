@@ -2,7 +2,7 @@
 # Secrets stay in /opt/crowdb/data/secrets/server.env.
 
 [deployment]
-mode = "test_single_node"
+mode = "local"
 max_node_failures = 0
 
 [common]

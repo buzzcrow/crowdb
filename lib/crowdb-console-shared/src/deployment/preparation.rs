@@ -5,9 +5,11 @@
 
 mod binding;
 mod record;
-pub use binding::{metadata_binding, storage_binding};
+pub use binding::{chunk_kv_binding, metadata_binding, storage_binding};
 
-pub use record::{DefaultMetadataGroup, DefaultPreparation, DefaultReplica, DefaultStorageBinding};
+pub use record::{
+    DefaultChunkKvBootstrap, DefaultMetadataGroup, DefaultPreparation, DefaultReplica, DefaultStorageBinding,
+};
 
 use crowdb_kv_client::{Error as KvError, GetOutcome, ReadMode};
 use crowdb_protocol::mgmt::SystemBootstrapIdentity;

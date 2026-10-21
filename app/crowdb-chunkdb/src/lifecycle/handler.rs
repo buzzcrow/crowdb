@@ -40,6 +40,7 @@ use crate::storage::{ChunkStore, StoreError};
 use crate::task::TaskStore;
 use crate::topology::TopologyCache;
 
+use super::replacement::validate_replacement_geometry;
 use super::state::{ChunkState, StateTransitionError};
 
 /// Default lock wait time for `LockPolicy::default()`.
@@ -273,15 +274,15 @@ impl LifecycleHandler {
             ));
         }
         match self.deployment_mode {
-            Some(DeploymentMode::TestSingleNode) => {
+            Some(DeploymentMode::Local) => {
                 if strip_type != ProtoStripType::Mirror
-                    || copy_count != 1
+                    || !matches!(copy_count, 1 | 2)
                     || data_num != 0
                     || code_num != 0
                     || capacity_kb != 1024
                 {
                     return Err(LifecycleError::InvalidRequest(
-                        "test_single_node requires 1 MiB mirror strips with one copy each".into(),
+                        "local requires 1 MiB mirror strips with one or two copies".into(),
                     ));
                 }
             }
@@ -1367,9 +1368,9 @@ impl LifecycleHandler {
         data_num: u32,
         code_num: u32,
     ) -> Result<ChunkStrip, LifecycleError> {
-        if self.deployment_mode == Some(crate::chunkdb_config::DeploymentMode::TestSingleNode) {
+        if self.deployment_mode == Some(crate::chunkdb_config::DeploymentMode::Local) {
             return Err(LifecycleError::InvalidRequest(
-                "test_single_node disables mirror-to-EC conversion".into(),
+                "local disables mirror-to-EC conversion".into(),
             ));
         }
         self.check_range(chunk_id)?;
@@ -1740,7 +1741,7 @@ impl LifecycleHandler {
 }
 
 /// Extract all segments from a strip (mirror or EC).
-fn extract_segments(strip: &ChunkStrip) -> Vec<crowdb_protocol::diskdb::rpc::Segment> {
+pub(super) fn extract_segments(strip: &ChunkStrip) -> Vec<crowdb_protocol::diskdb::rpc::Segment> {
     use crowdb_protocol::chunkdb::rpc::Strip;
     match &strip.strip {
         Some(Strip::MirrorStrip(m)) => m.segments.clone(),
@@ -1778,82 +1779,6 @@ fn conversion_unit_count(old: &[ChunkStrip], chunk_id: &ChunkId) -> Result<u32, 
         ));
     }
     Ok(unit_count)
-}
-
-fn validate_replacement_geometry(
-    old: &[ChunkStrip],
-    replacement: &[ChunkStrip],
-    chunk_id: &ChunkId,
-) -> Result<(), LifecycleError> {
-    let old_capacity: u32 = old.iter().map(|strip| strip.capacity).sum();
-    let new_capacity: u32 = replacement.iter().map(|strip| strip.capacity).sum();
-    if old_capacity != new_capacity
-        || old[0].chunk_offset != replacement[0].chunk_offset
-        || old[0].strip_sequence != replacement[0].strip_sequence
-    {
-        return Err(LifecycleError::InvalidRequest(
-            "replacement must preserve first offset, first sequence, and total capacity".into(),
-        ));
-    }
-    if replacement
-        .iter()
-        .flat_map(extract_segments)
-        .any(|segment| segment.owner_chunk.as_ref() != Some(chunk_id) || segment.unit_count == 0)
-    {
-        return Err(LifecycleError::InvalidRequest(
-            "replacement segments must be non-empty and owned by the chunk".into(),
-        ));
-    }
-    let mut expected_offset = replacement[0].chunk_offset;
-    for strip in replacement {
-        if strip.capacity == 0 || strip.unit_kb == 0 || strip.chunk_offset != expected_offset {
-            return Err(LifecycleError::InvalidRequest(
-                "replacement strips must be non-empty and contiguous".into(),
-            ));
-        }
-        expected_offset = expected_offset
-            .checked_add(strip.capacity)
-            .ok_or_else(|| LifecycleError::InvalidRequest("replacement strip range overflows u32".into()))?;
-        let segments = extract_segments(strip);
-        let shape_is_valid = match &strip.strip {
-            Some(Strip::MirrorStrip(_)) => {
-                !segments.is_empty()
-                    && segments
-                        .iter()
-                        .all(|segment| segment.unit_count.saturating_mul(strip.unit_kb) == strip.capacity)
-            }
-            Some(Strip::EcStrip(ec)) => {
-                ec.data_num > 0
-                    && ec.code_num > 0
-                    && segments.len()
-                        == usize::try_from(ec.data_num.saturating_add(ec.code_num)).unwrap_or(usize::MAX)
-                    && segments.iter().all(|segment| {
-                        segment
-                            .unit_count
-                            .saturating_mul(strip.unit_kb)
-                            .saturating_mul(ec.data_num)
-                            == strip.capacity
-                    })
-            }
-            None => false,
-        };
-        if !shape_is_valid {
-            return Err(LifecycleError::InvalidRequest(
-                "replacement strip has invalid mirror or EC geometry".into(),
-            ));
-        }
-        let segment_set: HashSet<_> = segments.into_iter().collect();
-        if strip
-            .unavailable_segments
-            .iter()
-            .any(|segment| !segment_set.contains(segment))
-        {
-            return Err(LifecycleError::InvalidRequest(
-                "unavailable replicas must belong to the replacement strip".into(),
-            ));
-        }
-    }
-    Ok(())
 }
 
 fn validate_replacement_sequences(

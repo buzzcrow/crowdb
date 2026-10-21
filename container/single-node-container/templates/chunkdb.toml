@@ -3,7 +3,7 @@ service_instances = [1]
 storage_groups = [{ store_id = 0, group_id = 1 }]
 
 [deployment]
-mode = "test_single_node"
+mode = "local"
 max_node_failures = 0
 
 [server]

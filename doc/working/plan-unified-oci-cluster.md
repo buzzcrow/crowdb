@@ -10,8 +10,9 @@ Upstream: [R243](../backlog/R243-deploy-unified-oci-cluster.md),
 Goal: direct runtime startup, CLI startup and Docker-only Pixi shortcuts use
 one editable, recoverable node lifecycle and the same cluster readiness contract.
 
-Status: startup policy and typed current-readiness foundations are implemented
-and verified. Direct-container/runtime acceptance has not started. Preserve existing worktree changes,
+Status: startup policy, shared metadata ownership and local service placement are
+implemented. Diagnostic container startup has started; formal artifact and protocol
+acceptance remain outstanding. Preserve existing worktree changes,
 including the Pixi/CI/container-guide edits that predate this refinement.
 C1–C8 and A01–A31 below refer to the upstream contracts and acceptance cases.
 This plan is temporary and is removed after requirement completion.
@@ -609,8 +610,49 @@ do not mark unexecuted acceptance passed.
   application startup, geometry and protocol acceptance remain T11–T15/T31 work.
 - Full `pixi run cargo test -p crowdb-monitor` passed after metadata integration
   and the setup fixture's committed-authority upgrade.
-- No direct application Docker, Compose, native containerd or protocol-access acceptance has
-  run yet. No end-to-end or hardware capability is marked verified.
+- No formal image, Compose or native-containerd acceptance has run yet. Diagnostic
+  application results below are not substituted for artifact/runtime acceptance.
+- T11 now has one release-supported `local` service mode: one-node defaults use
+  mirror copies 1; three-node defaults use mirror copies 2. Each node accepts one
+  sparse 16-GiB file, a 16-GiB zone, 1-MiB allocation units and a 1-GiB backing
+  reserve. Mirror-to-EC conversion is disabled. The declared physical-node
+  failure budget is 0, including the colocated three-container case; truthful
+  shared-host identity is retained. Real file-backed protocol I/O is still required.
+- ChunkDB's 38 full-stack tests passed, including distinct one/two-copy allocation
+  and rejection of overlapping replacement extents. Nine native configuration
+  tests and ten Access configuration tests passed. Full monitor/Web suites,
+  affected all-target clippy and CLI/E2E compilation passed before the subsequent
+  shared catalog-owner change. The new catalog-owner change has its focused
+  seven preparation/eight metadata tests passing; remaining gates are pending.
+- An explicitly diagnostic Docker container mounted current debug monitor/Web/KV/
+  ChunkDB/Access executables over an existing image. It admitted itself, initialized
+  Group 0 and ordinary metadata, created one sparse 16-GiB file, and started
+  DiskDB/DiskIO. ChunkDB then failed to parse a partial `[conversion]` table.
+  The parser now supplies its normal field defaults, with a focused regression
+  test passing. This run is not formal image acceptance and its failed state is
+  retained until diagnostic cleanup; it did not pass storage/protocol readiness.
+- The accepted preparation now also fixes one initial Chunk-KV owner and partition,
+  tree and stream IDs. Planned services on other nodes only recover the shared
+  catalog; Web recreation cannot generate competing bootstrap identities.
+- Native containerd exists on this host, but the current user cannot access its
+  root-owned socket and passwordless sudo is unavailable. Docker-free native
+  host acceptance remains unverified; no Docker-hosted substitute is counted.
+- A fresh diagnostic node with current executables now reaches historical setup
+  Ready and registers its file-backed disk. DiskIO required propagation of the
+  monitor's resolved physical-host input into child environment; this is now
+  retained when an accepted service intent replaces profile environment.
+  S3 signed bucket creation and 128-byte/2-MiB put/get checksum checks passed;
+  authenticated Iceberg namespace create/load and Dataset create/open passed.
+  Dataset open returned 59 protocol bytes; no JSON representation was assumed.
+  No secrets were printed. Restart, three-node copies and advertised host-port
+  overrides are still pending. The Access ready response had malformed raw-string
+  JSON; ready/unready JSON parsing regression tests now pass with the fix.
+- After catalog ownership and physical-host propagation, seven shared preparation,
+  eight shared metadata, eleven monitor setup, three shared-catalog, seven Web
+  formation, three Web target and six Web service lifecycle tests passed. The
+  generated ChunkDB configuration is now tested through the actual native
+  `ChunkdbConfig` parser/validator, rather than only generic TOML. Affected
+  all-target clippy/fmt and Access configuration/service tests also pass.
 
 ## Consolidated file ownership
 

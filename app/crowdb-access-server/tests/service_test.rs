@@ -213,6 +213,10 @@ mod s3_dispatcher {
         let not_ready = request(health_address, "GET /_crowdb/health/ready HTTP/1.1").await;
         assert!(not_ready.starts_with("HTTP/1.1 503"));
         assert!(not_ready.contains(r#""cleanup":"unavailable""#));
+        let body: serde_json::Value =
+            serde_json::from_str(not_ready.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(body["ready"], false);
+        assert_eq!(body["cleanup"], "unavailable");
 
         let data_on_health = request(health_address, "GET /bucket/key HTTP/1.1").await;
         assert!(data_on_health.starts_with("HTTP/1.1 404"));
@@ -231,6 +235,9 @@ mod s3_dispatcher {
         let ready = request(health_address, "GET /_crowdb/health/ready HTTP/1.1").await;
         assert!(ready.starts_with("HTTP/1.1 200"));
         assert!(ready.contains(r#""ready":true"#));
+        let body: serde_json::Value = serde_json::from_str(ready.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(body["ready"], true);
+        assert_eq!(body["authentication"], "ready");
         let exported = request(address, "GET /_crowdb/metrics HTTP/1.1").await;
         assert!(exported.starts_with("HTTP/1.1 200"));
         assert!(exported.contains(r#"crowdb_s3_requests_total{operation="put_object",outcome="success"} 0"#));
