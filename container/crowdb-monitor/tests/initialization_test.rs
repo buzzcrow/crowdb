@@ -13,10 +13,9 @@ use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 fn fixture(root: &Path) -> (DeploymentProfile, PreparedBootstrap, NodeServiceCredentials) {
-    let mut profile = DeploymentProfile::load(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-container/profile.toml"),
-    )
-    .unwrap();
+    let mut profile =
+        DeploymentProfile::load(Path::new(env!("CARGO_MANIFEST_DIR")).join("../oci-image/node-profile.toml"))
+            .unwrap();
     profile.paths.data_root = root.to_path_buf();
     profile.paths.run_root = root.join("run");
     std::fs::create_dir(&profile.paths.run_root).unwrap();

@@ -3,7 +3,7 @@
 
 use crowdb_monitor::{
     disk_step_names, hardware_step_names, iceberg_step_names, kv_step_names, logical_step_names,
-    preview_step_names, s3_step_names, DeploymentProfile,
+    preview_step_names_for_tests, s3_step_names, DeploymentProfile,
 };
 use std::path::Path;
 
@@ -26,7 +26,7 @@ fn complete_profile_preserves_the_durable_bootstrap_order() {
         .chain(s3_step_names().map(str::to_owned))
         .chain(iceberg_step_names().map(str::to_owned))
         .collect();
-    assert_eq!(preview_step_names(&profile).unwrap(), expected);
+    assert_eq!(preview_step_names_for_tests(&profile).unwrap(), expected);
 }
 
 #[test]
@@ -48,7 +48,7 @@ fn kv_and_storage_subsets_exclude_unselected_bootstrap_contracts() {
             expected.extend(hardware_step_names());
         }
         expected.extend(logical_step_names().map(str::to_owned));
-        assert_eq!(preview_step_names(&profile).unwrap(), expected);
+        assert_eq!(preview_step_names_for_tests(&profile).unwrap(), expected);
     }
 }
 
@@ -57,7 +57,7 @@ fn unknown_services_and_missing_runtime_dependency_edges_are_rejected() {
     let mut unknown = profile();
     unknown.services.last_mut().unwrap().id = "unknown".into();
     unknown.validate().unwrap();
-    assert!(preview_step_names(&unknown).is_err());
+    assert!(preview_step_names_for_tests(&unknown).is_err());
     let mut missing = profile();
     missing
         .services
@@ -67,7 +67,7 @@ fn unknown_services_and_missing_runtime_dependency_edges_are_rejected() {
         .dependencies
         .clear();
     missing.validate().unwrap();
-    assert!(preview_step_names(&missing).is_err());
+    assert!(preview_step_names_for_tests(&missing).is_err());
     let mut absent = profile();
     absent
         .services
@@ -79,7 +79,7 @@ fn unknown_services_and_missing_runtime_dependency_edges_are_rejected() {
         .unwrap()
         .dependencies = vec!["kv".into()];
     absent.validate().unwrap();
-    assert!(preview_step_names(&absent).is_err());
+    assert!(preview_step_names_for_tests(&absent).is_err());
 }
 
 #[test]
@@ -91,7 +91,7 @@ fn incompatible_management_seed_and_durable_root_fail_preflight() {
         .unwrap()
         .env
         .insert("CROWDB_MANAGEMENT_SEEDS".into(), "http://127.0.0.1:1".into());
-    assert!(preview_step_names(&seed).is_err());
+    assert!(preview_step_names_for_tests(&seed).is_err());
     let mut root = profile();
     let kv = root
         .services
@@ -100,5 +100,5 @@ fn incompatible_management_seed_and_durable_root_fail_preflight() {
         .unwrap();
     let index = kv.args.iter().position(|argument| argument == "--root").unwrap();
     kv.args[index + 1] = "/tmp/foreign-kv".into();
-    assert!(preview_step_names(&root).is_err());
+    assert!(preview_step_names_for_tests(&root).is_err());
 }

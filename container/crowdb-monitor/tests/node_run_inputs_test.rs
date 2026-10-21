@@ -9,7 +9,7 @@ use crowdb_protocol::mgmt::node::deployment::NodeDeploymentOverrides;
 fn profile(root: &Path) -> std::path::PathBuf {
     let install = root.join("install");
     fs::create_dir_all(install.join("data")).unwrap();
-    let template = Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-container/profile.toml");
+    let template = Path::new(env!("CARGO_MANIFEST_DIR")).join("../oci-image/node-profile.toml");
     let text = fs::read_to_string(template)
         .unwrap()
         .replace("/opt/crowdb", install.to_str().unwrap());

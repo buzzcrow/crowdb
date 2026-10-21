@@ -85,7 +85,7 @@ impl TestSetup {
         )
         .unwrap();
         let mut profile = DeploymentProfile::load(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-container/profile.toml"),
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../oci-image/node-profile.toml"),
         )
         .unwrap();
         profile.paths.data_root = root.path().to_path_buf();

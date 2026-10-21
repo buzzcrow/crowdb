@@ -182,6 +182,29 @@ impl DeploymentProfile {
         validation::validate(self)
     }
 
+    /// Validate the software catalog before node-owned policy and topology effects.
+    ///
+    /// # Errors
+    /// Rejects preset media/membership and missing or extra service programs.
+    pub fn validate_node_catalog(&self) -> Result<(), ProfileError> {
+        self.validate()?;
+        let expected = ["kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web"];
+        if !self.nodes.is_empty()
+            || !self.groups.is_empty()
+            || !self.disks.is_empty()
+            || self.services.len() != expected.len()
+            || self
+                .services
+                .iter()
+                .any(|service| !expected.contains(&service.id.as_str()))
+        {
+            return Err(ProfileError::Invalid(
+                "node profile requires the complete service catalog without preset topology or media".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// # Errors
     /// Returns an error when the profile or its service dependencies are invalid.
     pub fn services_in_start_order(&self) -> Result<Vec<&ServiceProfile>, ProfileError> {

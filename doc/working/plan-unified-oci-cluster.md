@@ -749,6 +749,24 @@ do not mark unexecuted acceptance passed.
   Stop/start retains identity, operations and complete credentials, and all
   three protocols retain their bytes. Console uses internal node origins and
   reports editable node mode. The packaged final-image gate remains pending.
+- T15 removes the monitor `--mode` argument and container single/manual branch.
+  Obsolete `CROWDB_STARTUP_MODE` now fails with replacement inputs. The packaged
+  software catalog is `container/oci-image/node-profile.toml`, without prescribed
+  membership, media, service arguments or rendered configurations; management
+  has no Access dependency. The image no longer packages the readonly template.
+  Catalog validation accepts wholly absent topology, still rejects partial
+  topology, and requires exactly the supported seven program entries. Preview
+  orchestration is test-only and the duplicate discovery/single launcher is
+  removed. Existing component bootstrap fixtures remain until caller migration.
+  Normal bootstrap's fixed KV ports are now explicitly validated; unsupported
+  overrides cannot be accepted then silently ignored.
+- Three catalog/removed-argument, seven input, initialization/setup/service-policy
+  and retained component tests pass (38 cases); eight entrypoint boundary cases
+  cover accepted local/production credentials, rejected input ordering, retained
+  credential corruption and both obsolete modes. Affected clippy/format pass.
+  Existing diagnostic one/three clusters report editable node mode: creating an
+  empty rack through one UI backend and removing it through another succeeds.
+  A rebuilt packaged catalog image is still required before T15 is complete.
 
 ## Consolidated file ownership
 

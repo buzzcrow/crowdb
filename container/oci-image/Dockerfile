@@ -16,7 +16,6 @@ RUN --mount=type=bind,source=.,target=/staged,ro \
     && test "$(cat /staged/VERSION)" = "$PREVIEW_VERSION" \
     && mkdir -p /opt/crowdb/etc /opt/crowdb/data /opt/crowdb/run \
     && cp -a /staged/bin /staged/lib /staged/ui /opt/crowdb/ \
-    && cp -a /staged/templates /opt/crowdb/etc/ \
     && cp /staged/profile.toml /opt/crowdb/etc/profile.toml \
     && cp /staged/entrypoint.sh /opt/crowdb/bin/entrypoint \
     && chown -R crowdb:crowdb /opt/crowdb/data /opt/crowdb/run \
@@ -37,13 +36,12 @@ LABEL org.opencontainers.image.title="CROWDB Node" \
       org.opencontainers.image.version="$PREVIEW_VERSION" \
       org.crowdb.runtime.sha256="$RUNTIME_SHA256" \
       org.crowdb.debug-info="$DEBUG_INFO" \
-      org.crowdb.startup.default="manual"
-ENV CROWDB_STARTUP_MODE="manual" \
-    PATH="/opt/crowdb/bin:${PATH}" \
+      org.crowdb.startup.default="local"
+ENV PATH="/opt/crowdb/bin:${PATH}" \
     LD_LIBRARY_PATH="/opt/crowdb/lib" \
     CROWDB_RUNTIME_ROOT="/opt/crowdb/run"
 USER root
 VOLUME ["/opt/crowdb/data"]
-EXPOSE 9090 9091 9092 9095 2222
+EXPOSE 9090 9091 9092 9093 9095 2222
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["/usr/bin/tini", "--", "/opt/crowdb/bin/entrypoint"]

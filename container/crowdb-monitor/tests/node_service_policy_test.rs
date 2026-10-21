@@ -16,7 +16,7 @@ async fn production_service_intents_cannot_activate_local_placement_or_single_co
     };
     crowdb_monitor::accept_node_policy(root.path(), &inputs, &NodeDeploymentOverrides::default()).unwrap();
     let mut profile = DeploymentProfile::load(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-container/profile.toml"),
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../oci-image/node-profile.toml"),
     )
     .unwrap();
     profile.paths.data_root = root.path().to_path_buf();

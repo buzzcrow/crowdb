@@ -78,6 +78,9 @@ fn validate_paths(profile: &DeploymentProfile) -> Result<(), ProfileError> {
 }
 
 fn validate_topology(profile: &DeploymentProfile) -> Result<(), ProfileError> {
+    if profile.nodes.is_empty() && profile.groups.is_empty() && profile.disks.is_empty() {
+        return Ok(());
+    }
     if profile.nodes.is_empty() || profile.groups.is_empty() || profile.disks.is_empty() {
         return invalid("nodes, groups, and disks must be non-empty");
     }

@@ -76,7 +76,7 @@ pub enum PreviewError {
 /// Describe the durable bootstrap sequence for a validated release service set.
 /// # Errors
 /// Rejects invalid profiles, unknown services and missing runtime dependencies.
-pub fn preview_step_names(profile: &DeploymentProfile) -> Result<Vec<String>, PreviewError> {
+pub fn preview_step_names_for_tests(profile: &DeploymentProfile) -> Result<Vec<String>, PreviewError> {
     profile.validate()?;
     if profile.name != PROFILE_NAME {
         return Err(PreviewError::Invalid("unsupported automatic startup profile"));
@@ -88,7 +88,7 @@ pub fn preview_step_names(profile: &DeploymentProfile) -> Result<Vec<String>, Pr
 
 /// # Errors
 /// Fails closed on incompatible durable state or any unready child.
-pub async fn run_preview(profile_path: &Path) -> Result<(), PreviewError> {
+pub async fn run_preview_for_tests(profile_path: &Path) -> Result<(), PreviewError> {
     let profile_bytes = fs::read(profile_path)?;
     let mut profile = DeploymentProfile::parse(
         std::str::from_utf8(&profile_bytes).map_err(|_| PreviewError::Invalid("profile is not UTF-8"))?,
@@ -100,7 +100,7 @@ pub async fn run_preview(profile_path: &Path) -> Result<(), PreviewError> {
     }
     apply_public_uri_overrides(&mut profile);
     let config_bytes = config_digest_input(&profile)?;
-    let steps = preview_step_names(&profile)?;
+    let steps = preview_step_names_for_tests(&profile)?;
     let management_seed = management_seed(&profile)?;
     let step_refs = steps.iter().map(String::as_str).collect::<Vec<_>>();
     let mut session = BootstrapSession::open(

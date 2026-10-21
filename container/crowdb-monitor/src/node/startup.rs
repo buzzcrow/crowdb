@@ -71,6 +71,7 @@ pub(crate) fn validate(root: &Path, mode: Mode) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "test-util")]
 pub(crate) fn accept(root: &Path, mode: Mode) -> io::Result<()> {
     validate(root, mode)?;
     let path = root.join("startup-mode.json");

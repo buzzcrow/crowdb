@@ -42,10 +42,9 @@ pub async fn prepare(
         .unwrap();
     let authority = super::node_setup::TestAuthority::start(root, &request).await;
     publish_storage(&authority).await;
-    let mut profile = DeploymentProfile::load(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../single-node-container/profile.toml"),
-    )
-    .unwrap();
+    let mut profile =
+        DeploymentProfile::load(Path::new(env!("CARGO_MANIFEST_DIR")).join("../oci-image/node-profile.toml"))
+            .unwrap();
     profile.paths.data_root = root.to_path_buf();
     profile.paths.run_root = root.join("run");
     std::fs::create_dir(&profile.paths.run_root).unwrap();

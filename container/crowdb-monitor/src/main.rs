@@ -170,9 +170,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
 fn validate_profile(path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let profile = DeploymentProfile::load(path)?;
-    if profile.name == "single-node-container" {
-        crowdb_monitor::preview_step_names(&profile)?;
-    }
+    profile.validate_node_catalog()?;
     println!("{}", profile.name);
     Ok(())
 }

@@ -44,7 +44,11 @@ set +e
 /bin/sh /entrypoint-under-test
 result=$?
 set -e
-if test "$CROWDB_TEST_REJECT" = 1; then
+if test "$CROWDB_TEST_OBSOLETE" != 0; then
+    test "$result" != 0
+    test ! -e /opt/crowdb/data/ssh
+    test ! -e /opt/crowdb/data/node-policy.json
+elif test "$CROWDB_TEST_REJECT" = 1; then
     test "$result" != 0
     test ! -e /opt/crowdb/data/ssh
     test ! -e /opt/crowdb/data/disks
@@ -76,7 +80,7 @@ def invoke(*arguments):
     return subprocess.run(["docker", *arguments], text=True, capture_output=True, timeout=30)
 
 
-def run_case(image, entrypoint, mode, supplied, reject, corrupt=False):
+def run_case(image, entrypoint, mode, supplied, reject, corrupt=False, obsolete=""):
     name = "crowdb-entrypoint-policy-" + uuid.uuid4().hex[:12]
     secret = secrets.token_urlsafe(24) if supplied else "crowdb"
     with tempfile.TemporaryDirectory(prefix="crowdb-entrypoint-policy-") as directory:
@@ -99,7 +103,9 @@ def run_case(image, entrypoint, mode, supplied, reject, corrupt=False):
             arguments += ["--mount", f"type=bind,source={source},target={target},readonly"]
         for key, value in (("CROWDB_TEST_MODE", mode), ("CROWDB_TEST_REJECT", int(reject)),
                            ("CROWDB_TEST_PASSWORD", int(supplied)),
-                           ("CROWDB_TEST_CORRUPT", int(corrupt))):
+                           ("CROWDB_TEST_CORRUPT", int(corrupt)),
+                           ("CROWDB_STARTUP_MODE", obsolete),
+                           ("CROWDB_TEST_OBSOLETE", obsolete or "0")):
             arguments += ["--env", f"{key}={value}"]
         if supplied:
             arguments += ["--env", "CROWDB_SSH_PASSWORD_FILE=/run/test-password"]
@@ -131,6 +137,8 @@ def main():
                                    ("production", True, False)):
         run_case(args.image, entrypoint, mode, supplied, reject)
     run_case(args.image, entrypoint, "local", False, False, corrupt=True)
+    for obsolete in ("single", "manual"):
+        run_case(args.image, entrypoint, "local", False, False, obsolete=obsolete)
     print("Entrypoint boundary checks passed; this does not certify application startup or image content.", flush=True)
 
 

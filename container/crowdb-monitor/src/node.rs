@@ -9,7 +9,6 @@ mod durable;
 mod identity;
 mod management;
 mod runtime;
-mod single;
 pub(crate) mod startup;
 mod storage;
 #[cfg(feature = "test-util")]
@@ -24,7 +23,6 @@ pub use storage::retained::check_retained_medium_for_tests;
 #[cfg(feature = "test-util")]
 pub use storage::supplied::SuppliedOperationsForTests;
 mod trust;
-pub use single::run_single_node;
 
 #[cfg(feature = "test-util")]
 pub use runtime::prepare_supplied_disk_for_tests;
@@ -46,6 +44,7 @@ pub use discovery::{DiscoveryConfig, DiscoveryError, NodeDiscovery, NODE_SERVICE
 
 pub use identity::{NodeIdentity, NodeIdentityError};
 
+#[cfg(feature = "test-util")]
 pub(crate) fn write_single_binding(
     root: &std::path::Path,
     binding: &crowdb_protocol::mgmt::node::NodeBinding,

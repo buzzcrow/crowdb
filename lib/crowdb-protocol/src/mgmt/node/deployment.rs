@@ -141,6 +141,11 @@ impl NodeDeploymentPolicy {
         }
         for service in self.setup.services.iter().filter(|service| service.enabled) {
             let ports = &service.listeners;
+            if service.kind == SetupServiceKind::PaxosKv
+                && (ports.http_port != Some(10000) || ports.rpc_port != Some(10100))
+            {
+                return Err("bootstrap KV requires management port 10000 and RPC port 10100");
+            }
             if [
                 ports.http_port,
                 ports.rpc_port,

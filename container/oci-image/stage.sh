@@ -32,9 +32,9 @@ staging=$(mktemp -d "$PWD/target/container-runtime.XXXXXX")
 trap 'rm -rf "$staging"' EXIT
 bash container/oci-image/collect-libs.sh "$staging"
 cp -a app/crowdb-web/ui/dist "$staging/ui"
-cp -a container/single-node-container/templates "$staging/templates"
 cp container/oci-image/Dockerfile "$staging/"
-cp container/single-node-container/{profile.toml,entrypoint.sh} "$staging/"
+cp container/oci-image/node-profile.toml "$staging/profile.toml"
+cp container/single-node-container/entrypoint.sh "$staging/"
 git rev-parse HEAD > "$staging/SOURCE_REVISION"
 printf '%s\n' "$source_tree" > "$staging/SOURCE_TREE"
 cp VERSION "$staging/VERSION"

@@ -9,6 +9,7 @@ use std::{collections::BTreeMap, time::Duration};
 
 pub(super) fn node_profile(config: &super::NodeRuntimeConfig) -> Result<DeploymentProfile> {
     let mut profile = DeploymentProfile::load(&config.profile)?;
+    profile.validate_node_catalog()?;
     for service in &mut profile.services {
         service
             .env

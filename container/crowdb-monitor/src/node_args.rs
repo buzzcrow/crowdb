@@ -21,8 +21,6 @@ enum Mode {
 pub(crate) struct NodeRunArgs {
     #[arg(long, default_value = "/opt/crowdb/etc/profile.toml")]
     profile: PathBuf,
-    #[arg(long, value_parser = ["single", "manual"])]
-    mode: Option<String>,
     #[arg(long, default_value = "eth0")]
     interface: Vec<String>,
     #[arg(long, env = "CROWDB_PHYSICAL_HOST_ID")]
@@ -47,7 +45,6 @@ pub(crate) struct NodeRunArgs {
 
 pub(crate) async fn run(args: NodeRunArgs) -> Result<(), Box<dyn std::error::Error>> {
     let inputs = resolve(&args)?;
-    let legacy_single = args.mode.as_deref() == Some("single");
     let addresses = if_addrs::get_if_addrs()?
         .into_iter()
         .filter(|address| args.interface.contains(&address.name))
@@ -70,21 +67,11 @@ pub(crate) async fn run(args: NodeRunArgs) -> Result<(), Box<dyn std::error::Err
         },
         physical_host_id: inputs.physical_host_id,
     };
-    let result = if legacy_single {
-        if inputs.explicit != NodeDeploymentOverrides::default() || args.deployment_config.is_some() {
-            return Err("single-profile mode cannot accept normal deployment inputs".into());
-        }
-        crowdb_monitor::run_single_node(config).await
-    } else {
-        crowdb_monitor::run_node_with_inputs(config, &inputs.file, &inputs.explicit).await
-    };
+    let result = crowdb_monitor::run_node_with_inputs(config, &inputs.file, &inputs.explicit).await;
     result.map_err(|error| error.to_string().into())
 }
 
 pub(crate) fn accept(args: &NodeRunArgs) -> Result<&'static str, Box<dyn std::error::Error>> {
-    if args.mode.as_deref() == Some("single") {
-        return Err("single-profile mode cannot accept normal deployment inputs".into());
-    }
     let inputs = resolve(args)?;
     let policy = crowdb_monitor::accept_node_policy(&inputs.data_root, &inputs.file, &inputs.explicit)?;
     Ok(match policy.mode {
@@ -117,12 +104,8 @@ fn resolve(args: &NodeRunArgs) -> Result<ResolvedInputs, Box<dyn std::error::Err
         ..Default::default()
     };
     let profile = DeploymentProfile::load(&args.profile)?;
-    let legacy_single = args.mode.as_deref() == Some("single");
-    let accepted = if legacy_single {
-        None
-    } else {
-        crowdb_monitor::read_node_policy(&profile.paths.data_root)?
-    };
+    profile.validate_node_catalog()?;
+    let accepted = crowdb_monitor::read_node_policy(&profile.paths.data_root)?;
     let selected = explicit.resolve(&file, accepted.as_ref())?;
     let physical_host_id = physical_host(args.physical_host_id.clone(), &selected)?;
     Ok(ResolvedInputs {

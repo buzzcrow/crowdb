@@ -184,6 +184,18 @@ fn invalid_policies_are_rejected_before_any_resolution_can_replace_them() {
         policy.setup.services[5].listeners.dataset_port = Some(reserved);
         assert!(policy.validate().is_err());
     }
+    for (http, rpc) in [(10001, 10100), (10000, 10102)] {
+        let mut policy = NodeDeploymentPolicy::default();
+        let kv = policy
+            .setup
+            .services
+            .iter_mut()
+            .find(|service| service.kind == SetupServiceKind::PaxosKv)
+            .unwrap();
+        kv.listeners.http_port = Some(http);
+        kv.listeners.rpc_port = Some(rpc);
+        assert!(policy.validate().unwrap_err().contains("bootstrap KV"));
+    }
 }
 
 #[test]
