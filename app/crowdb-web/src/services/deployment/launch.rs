@@ -182,6 +182,9 @@ pub(super) async fn chunk_kv_config(
         "http_advertise_addr":format!("{}:{}",node.host,body.http_port.unwrap()),
         "group0_mgmt_seeds":seeds, "storage":{"metadata_store_id":store,"stream_mirror_copies":if body.local() {body.local_copies()} else {2}},
     });
+    if body.local() {
+        config["storage"]["tree_strip_capacity_bytes"] = json!(1024 * 1024);
+    }
     if let Some(bytes) = body.stream_chunk_capacity_bytes {
         config["storage"]["stream_chunk_capacity_bytes"] = json!(bytes);
     }

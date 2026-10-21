@@ -187,6 +187,7 @@ pub struct StorageConfig {
     pub stream_writer_lease_ms: u64,
     pub stream_mirror_copies: u32,
     pub tree_chunk_capacity_bytes: u64,
+    pub tree_strip_capacity_bytes: u32,
     pub stream_chunk_capacity_bytes: u64,
     /// Maximum sealed extents per immutable stream directory page.
     pub stream_extent_page_entries: usize,
@@ -201,6 +202,7 @@ impl Default for StorageConfig {
             stream_writer_lease_ms: 30_000,
             stream_mirror_copies: 2,
             tree_chunk_capacity_bytes: 256 * 1024 * 1024,
+            tree_strip_capacity_bytes: 0,
             stream_chunk_capacity_bytes: 256 * 1024 * 1024,
             stream_extent_page_entries: 1_024,
             diskio_connections_per_endpoint: 1,
@@ -215,6 +217,9 @@ impl StorageConfig {
             || self.stream_mirror_copies == 0
             || self.stream_mirror_copies > 5
             || !(1024 * 1024..=256 * 1024 * 1024).contains(&self.tree_chunk_capacity_bytes)
+            || self.tree_strip_capacity_bytes != 0
+                && (!(1024 * 1024..=256 * 1024 * 1024).contains(&self.tree_strip_capacity_bytes)
+                    || self.tree_strip_capacity_bytes % (1024 * 1024) != 0)
             || !(1024 * 1024..=256 * 1024 * 1024).contains(&self.stream_chunk_capacity_bytes)
             || self.stream_extent_page_entries == 0
             || self.diskio_connections_per_endpoint == 0

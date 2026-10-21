@@ -266,6 +266,17 @@ impl Default for DatasetConfig {
 
 impl AccessConfig {
     #[must_use]
+    pub fn dataset_small_write(&self) -> SmallWritePolicy {
+        let accepted = self.small_write.policy();
+        let mut policy = SmallWritePolicy::new(crowdb_protocol::chunkdb::rpc::ChunkType::Dataset);
+        policy.mirror_copies = accepted.mirror_copies;
+        policy.conversion_enabled = accepted.conversion_enabled;
+        policy.conversion_data_num = accepted.conversion_data_num;
+        policy.conversion_code_num = accepted.conversion_code_num;
+        policy
+    }
+
+    #[must_use]
     pub fn s3_small_write(&self) -> &SmallWriteConfig {
         self.s3.small_write.as_ref().unwrap_or(&self.small_write)
     }

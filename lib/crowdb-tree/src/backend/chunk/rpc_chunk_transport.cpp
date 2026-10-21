@@ -9,6 +9,8 @@
 #include "crowdb-rpc/c_api.h"
 #include "diskio_generated.h"
 #include "msg_type_generated.h"
+#include "rpc_chunk_allocation.h"
+#include "rpc_chunk_result.h"
 #include "rpc_chunk_route.h"
 
 #include <algorithm>
@@ -36,58 +38,6 @@ using crowdb::chunkdb::proto::FBChunkState_Sealed;
 using crowdb::chunkdb::proto::FBStripType_Mirror;
 using crowdb::rpc::proto::FBInt128;
 
-struct RpcResult
-{
-    crowdb_rpc_status   status  = CROWDB_RPC_ERR_CONN_ERROR;
-    crowdb_rpc_buffer_t control = nullptr;
-    crowdb_rpc_buffer_t data    = nullptr;
-
-    RpcResult()                             = default;
-    RpcResult(const RpcResult &)            = delete;
-    RpcResult &operator=(const RpcResult &) = delete;
-
-    RpcResult(RpcResult &&other) noexcept
-        : status(other.status),
-          control(std::exchange(other.control, nullptr)),
-          data(std::exchange(other.data, nullptr))
-    {
-    }
-
-    RpcResult &operator=(RpcResult &&other) noexcept
-    {
-        if (this != &other) {
-            release();
-            status  = other.status;
-            control = std::exchange(other.control, nullptr);
-            data    = std::exchange(other.data, nullptr);
-        }
-        return *this;
-    }
-
-    ~RpcResult()
-    {
-        release();
-    }
-
-    void release()
-    {
-        if (control != nullptr) {
-            crowdb_rpc_buffer_release(control);
-            control = nullptr;
-        }
-        if (data != nullptr) {
-            crowdb_rpc_buffer_release(data);
-            data = nullptr;
-        }
-    }
-};
-
-struct RpcCallState
-{
-    std::atomic<bool> done{false};
-    RpcResult         result;
-};
-
 uint64_t monotonic_nanos()
 {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
@@ -108,17 +58,6 @@ uint64_t monotonic_millis()
 
 inline constexpr uint64_t kLivenessRenewalMs   = 12U * 60U * 1000U;
 inline constexpr uint64_t kLivenessSelfFenceMs = 13U * 60U * 1000U;
-
-void rpc_complete(uint64_t /*unused*/, crowdb_rpc_buffer_t control, crowdb_rpc_buffer_t data, crowdb_rpc_status status,
-                  void *context)
-{
-    auto *state           = static_cast<RpcCallState *>(context);
-    state->result.status  = status;
-    state->result.control = control;
-    state->result.data    = data;
-    state->done.store(true, std::memory_order_release);
-    state->done.notify_one();
-}
 
 Status call_rpc(const ct_chunk_rpc_route &route, uint64_t request_id, uint16_t message_type,
                 const std::vector<uint8_t> &control, const uint8_t *data, size_t data_length, RpcResult *out)
@@ -279,8 +218,8 @@ struct RpcChunkTransport::Impl
 
     [[nodiscard]] bool valid() const
     {
-        return options.mirror_copies <= kMaxMirrorCopies && chunkdb_routes.valid() &&
-               (disk_resolver.valid() || !disk_routes.empty());
+        return options.mirror_copies <= kMaxMirrorCopies && options.strip_capacity_bytes % 1024 == 0 &&
+               chunkdb_routes.valid() && (disk_resolver.valid() || !disk_routes.empty());
     }
 
     template <typename Response>
@@ -532,13 +471,13 @@ struct RpcChunkTransport::Impl
         return status;
     }
 
-    RpcChunkRouteResolver                                    chunkdb_routes;
-    RpcChunkRouteResolver                                    disk_resolver;
-    ct_chunk_rpc_transport_options                           options;
-    std::vector<ct_chunk_rpc_disk_route>                     disk_routes;
-    inline static std::atomic<uint64_t>                      request_ids{1};
+    RpcChunkRouteResolver                       chunkdb_routes;
+    RpcChunkRouteResolver                       disk_resolver;
+    ct_chunk_rpc_transport_options              options;
+    std::vector<ct_chunk_rpc_disk_route>        disk_routes;
+    inline static std::atomic<uint64_t>         request_ids{1};
     mutable AtomicSharedPtr<const RemoteChunks> chunks;
-    std::jthread                                             liveness_thread;
+    std::jthread                                liveness_thread;
 };
 
 struct RpcChunkTransport::Impl::AsyncWrite
@@ -686,15 +625,13 @@ Status RpcChunkTransport::allocate_mirror_chunk(uint64_t logical_capacity, uint6
         logical_capacity > std::numeric_limits<uint32_t>::max()) {
         return Status::invalid_argument("tree chunk RPC allocation arguments are invalid");
     }
-    constexpr uint64_t kMiB           = 1024U * 1024U;
-    const uint64_t     request_id     = impl_->next_request_id();
-    const bool         single_copy    = impl_->options.mirror_copies == 1;
-    const auto         granularity_kb = single_copy ? 1024U : static_cast<uint32_t>((logical_capacity + 1023) / 1024);
-    const auto         strip_count    = single_copy ? static_cast<uint32_t>((logical_capacity + kMiB - 1) / kMiB) : 1U;
+    const uint64_t request_id = impl_->next_request_id();
+    const auto     geometry =
+        rpc_chunk_allocation(logical_capacity, impl_->options.strip_capacity_bytes, impl_->options.mirror_copies);
     flatbuffers::FlatBufferBuilder builder;
     auto                           request = crowdb::chunkdb::proto::CreateFBAllocateChunkRequest(
-        builder, request_id, monotonic_nanos(), nullptr, granularity_kb, strip_count, FBStripType_Mirror, 0, 0,
-        impl_->options.mirror_copies == 0 ? 2 : impl_->options.mirror_copies,
+        builder, request_id, monotonic_nanos(), nullptr, geometry.granularity_kb, geometry.strip_count,
+        FBStripType_Mirror, 0, 0, impl_->options.mirror_copies == 0 ? 2 : impl_->options.mirror_copies,
         static_cast<crowdb::chunkdb::proto::FBChunkType>(purpose), owner_epoch, impl_->options.writer_lease_ms);
     builder.Finish(request);
     std::vector<uint8_t> control(builder.GetBufferPointer(), builder.GetBufferPointer() + builder.GetSize());

@@ -198,7 +198,7 @@ removal until the complete direct-container path passes A01/A03/A25.
   removal cannot redirect/revive setup (A22, A23). Files:
   `container/crowdb-monitor/src/node/runtime/setup/execution/storage.rs`,
   `app/crowdb-web/src/services/deployment/planned.rs`, setup/planned-service tests.
-- [~] **T11 — Fix local storage geometry and placement**: derive and persist the
+- [x] **T11 — Fix local storage geometry and placement**: derive and persist the
   smallest supported file-count/geometry and mirror/EC configuration for one and
   three nodes. Start from existing 16-GiB local sparse media and supported test
   policies; verify whether the single profile's four files are needed before
@@ -213,7 +213,7 @@ removal until the complete direct-container path passes A01/A03/A25.
   `container/crowdb-monitor/src/node/runtime/setup/execution/storage.rs`,
   `app/crowdb-web/src/services/deployment/remote.rs`,
   `app/crowdb-web/src/services/deployment/launch.rs`.
-- [ ] **T12 — Advance disks and services without circular waiting**: preserve
+- [~] **T12 — Advance disks and services without circular waiting**: preserve
   interleaved storage/service passes, gate on publication versus runtime Online
   separately, and reuse disk preparation receipts. Persist every effect's input
   and operation first. Propagate terminal allocation/inode/geometry failures and
@@ -668,6 +668,48 @@ do not mark unexecuted acceptance passed.
   ownership and real reservation of each accepted location. Three-node startup
   and two-copy I/O must be rerun with this correction; no failed fixture is reset
   or adopted as a successful cluster.
+- With distinct groups all three diagnostic disks registered, exposing the next
+  first divergence in native tree checkpointing: only single-copy tree transports
+  requested 1-MiB strips; two-copy transports requested a whole large strip.
+  `tree_strip_capacity_bytes` now persists the local 1-MiB choice through the
+  Rust/C ABI into the native RPC allocator, independently of mirror count.
+  Zero keeps the existing production automatic geometry. The large RPC source
+  was split into allocation geometry and owned-result helpers without new locks
+  or unsafe exceptions. Seven Chunk-KV config tests, 49 chunk-RPC-enabled Rust
+  FFI tests, six focused native RPC transport tests and full `pixi run test-cpp`
+  passed. Full and affected-file tree-lint exited 0; an introduced test-only
+  parentheses warning was fixed and affected-file tree-lint is now clean.
+- Dataset payload writers now derive mirror/conversion geometry from accepted
+  Access choices while retaining their Dataset chunk purpose and bounded pool.
+  Ten Access config tests pass, including one/two-copy Dataset policy assertions.
+- A verified OCI artifact built from `f85587ec` was imported under the separate
+  `crowdb-node:unified-baseline` tag. Its OCI digest is
+  `sha256:59b485f54545bec7c37867fe34f426f5e6f11c994fc9bef55acda0c732d3bdcf`
+  and Docker config ID is
+  `sha256:54816b0eefebf99c0b3fd2f0f68bb3cbca7147eeab926d9563f45d7b7fc0d375`.
+  One fresh direct container reached setup Ready without executable mounts or
+  host initialization. S3 128-byte/2-MiB checksums, Iceberg namespace create/load,
+  Dataset create/open, and a 2-MiB Dataset upload/snapshot/payload-read checksum
+  passed. Its ready response parses as JSON. This artifact predates the global
+  group/explicit tree-strip changes; it is not final three-node acceptance.
+- The next three-node diagnostic attempt exposed an unrelated-scope blocker
+  before admission: the old runner counted every discovered bound cluster after
+  the scoped selector had already filtered candidates. That redundant global
+  target gate is removed; scoped fresh formation advances despite other
+  cluster scopes on the same bridge. Eight formation regressions pass.
+- All three independent diagnostic containers now reach setup Ready with one
+  cluster UUID and three distinct disk groups. Each member passes S3 128-byte
+  and 2-MiB checksums, Iceberg namespace reads, Dataset identity reads, and a
+  2-MiB Dataset snapshot/payload checksum. Three-node stop/start preserves node
+  and cluster identity, private credentials and every disk/setup/service
+  operation. Post-restart cross-node protocol reads pass.
+- Placement inspection covers 92 chunks and 4,431 strips across three disks:
+  two copies per strip, 1-MiB units, nonoverlapping extents, and truthful false
+  disk/node/rack protection. Local unsafe placement permits colocated copies;
+  distinct disks per strip were an invalid test assumption, not the contract.
+  The local storage guide now records counts, geometry and zero node budget.
+  These mounted-executable diagnostics establish geometry and persistence;
+  packaged final-image and runtime acceptance remain pending.
 
 ## Consolidated file ownership
 

@@ -55,6 +55,12 @@ pub struct ChunkKvStorage {
     metadata_store_id: u64,
 }
 
+struct TreeStorageGeometry {
+    mirror_copies: u32,
+    chunk_capacity_bytes: u64,
+    strip_capacity_bytes: u32,
+}
+
 impl ChunkKvStorage {
     /// Discovers KV, `ChunkDB`, and `DiskIO` endpoints and creates the shared
     /// stream runtime used by hosted partitions.
@@ -77,13 +83,16 @@ impl ChunkKvStorage {
         )
         .await
         .map_err(|error| StorageRuntimeError::ChunkIo(error.to_string()))?;
-        Self::from_parts_with_mirror_copies(
+        Self::from_parts_with_geometry(
             kv,
             chunk_io,
             config.storage.metadata_store_id,
             config.storage.stream_writer_lease_ms,
-            config.storage.stream_mirror_copies,
-            config.storage.tree_chunk_capacity_bytes,
+            TreeStorageGeometry {
+                mirror_copies: config.storage.stream_mirror_copies,
+                chunk_capacity_bytes: config.storage.tree_chunk_capacity_bytes,
+                strip_capacity_bytes: config.storage.tree_strip_capacity_bytes,
+            },
             StreamConfig {
                 chunk_capacity_bytes: config.storage.stream_chunk_capacity_bytes,
                 extent_page_entries: config.storage.stream_extent_page_entries,
@@ -93,13 +102,12 @@ impl ChunkKvStorage {
         .await
     }
 
-    async fn from_parts_with_mirror_copies(
+    async fn from_parts_with_geometry(
         kv: Arc<CrowdbKvClient>,
         chunk_io: ChunkIoClient,
         metadata_store_id: u64,
         writer_lease_ms: u64,
-        stream_mirror_copies: u32,
-        tree_chunk_capacity_bytes: u64,
+        tree: TreeStorageGeometry,
         stream_config: StreamConfig,
     ) -> Result<Self, StorageRuntimeError> {
         let streams = Arc::new(
@@ -109,20 +117,11 @@ impl ChunkKvStorage {
                 writer_lease_ms,
                 ChunkReadPolicy::default(),
                 stream_config,
-                stream_mirror_copies,
+                tree.mirror_copies,
             )
             .map_err(|error| StorageRuntimeError::Stream(error.to_string()))?,
         );
-        Self::assemble(
-            kv,
-            chunk_io,
-            streams,
-            metadata_store_id,
-            writer_lease_ms,
-            stream_mirror_copies,
-            tree_chunk_capacity_bytes,
-        )
-        .await
+        Self::assemble(kv, chunk_io, streams, metadata_store_id, writer_lease_ms, tree).await
     }
 
     /// Assembles production adapters from already connected process clients.
@@ -137,13 +136,16 @@ impl ChunkKvStorage {
         writer_lease_ms: u64,
         stream_mirror_copies: u32,
     ) -> Result<Self, StorageRuntimeError> {
-        Self::from_parts_with_mirror_copies(
+        Self::from_parts_with_geometry(
             kv,
             chunk_io,
             metadata_store_id,
             writer_lease_ms,
-            stream_mirror_copies,
-            256 * 1024 * 1024,
+            TreeStorageGeometry {
+                mirror_copies: stream_mirror_copies,
+                chunk_capacity_bytes: 256 * 1024 * 1024,
+                strip_capacity_bytes: 0,
+            },
             StreamConfig::default(),
         )
         .await
@@ -155,8 +157,7 @@ impl ChunkKvStorage {
         streams: Arc<ProductionStreamRuntime>,
         metadata_store_id: u64,
         writer_lease_ms: u64,
-        mirror_copies: u32,
-        tree_chunk_capacity_bytes: u64,
+        tree: TreeStorageGeometry,
     ) -> Result<Self, StorageRuntimeError> {
         let (chunkdb, disks) = chunk_io
             .native_storage_routes(writer_lease_ms)
@@ -177,7 +178,8 @@ impl ChunkKvStorage {
                 writer_lease_ms,
                 rpc_timeout_ms: writer_lease_ms,
                 completion_capacity: 1_024,
-                mirror_copies,
+                mirror_copies: tree.mirror_copies,
+                strip_capacity_bytes: tree.strip_capacity_bytes,
             })
             .map_err(|error| StorageRuntimeError::Tree(error.to_string()))?,
         );
@@ -186,8 +188,8 @@ impl ChunkKvStorage {
             chunk_io,
             streams,
             tree_transport,
-            tree_mirror_copies: mirror_copies,
-            tree_chunk_capacity_bytes,
+            tree_mirror_copies: tree.mirror_copies,
+            tree_chunk_capacity_bytes: tree.chunk_capacity_bytes,
             metadata_store_id,
         })
     }

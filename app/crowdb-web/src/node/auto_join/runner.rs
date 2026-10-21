@@ -139,18 +139,6 @@ async fn admit_candidates(
             .iter()
             .any(|candidate| candidate.advertisement.discovery_id == *id)
     });
-    if !bound && config.nodes.is_empty() && !super::read(state)?.local_draft_selected {
-        let clusters: std::collections::BTreeSet<_> = snapshot
-            .candidates
-            .iter()
-            .filter_map(|candidate| candidate.advertisement.cluster_id.as_ref())
-            .collect();
-        if clusters.len() > 1 {
-            return Ok(
-                json!({"phase": "needs-target", "error": "Open the intended cluster Console or select nodes for this local draft"}),
-            );
-        }
-    }
     let mut eligible = Vec::new();
     let mut needs_access = Vec::new();
     for candidate in candidates {

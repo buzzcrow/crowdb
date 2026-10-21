@@ -84,6 +84,30 @@ async fn production_does_not_enable_local_convenience_admission() {
 }
 
 #[tokio::test]
+async fn unrelated_bound_clusters_do_not_block_fresh_scoped_formation() {
+    for voters in [1, 3] {
+        let expected = policy(voters, DeploymentMode::Local);
+        let mut peers: Vec<_> = ["foreign-a", "foreign-b"]
+            .map(|cluster| {
+                let mut foreign = expected.formation();
+                foreign.cluster = cluster.into();
+                (foreign, CandidateState::ForeignCluster)
+            })
+            .into();
+        peers.extend((1..voters).map(|_| (expected.formation(), CandidateState::Unbound)));
+        let fixture = TestFormationFixture::start(expected, peers, 1).await;
+        let report = fixture.observation().await;
+        assert_eq!(report["phase"], "failed", "{report}");
+        assert!(
+            report["error"].as_str().unwrap().contains("credential"),
+            "{report}"
+        );
+        assert!(!fixture.root.join("accepted-node.json").exists());
+        assert!(fixture.state.config.read().unwrap().nodes.is_empty());
+    }
+}
+
+#[tokio::test]
 async fn missing_exposed_empty_or_corrupt_local_credentials_never_fall_back_to_a_password() {
     for password in [
         None,

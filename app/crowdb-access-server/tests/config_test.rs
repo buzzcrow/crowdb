@@ -177,6 +177,13 @@ fn local_one_and_three_node_mirrors_are_explicit_and_never_relax_production() {
         config.iceberg.large_mirror_copies = Some(copies);
         config.validate().unwrap();
         assert_eq!(config.deployment.mode, DeploymentMode::Local);
+        let dataset = config.dataset_small_write();
+        assert_eq!(dataset.mirror_copies, copies);
+        assert_eq!(
+            dataset.chunk_type,
+            crowdb_protocol::chunkdb::rpc::ChunkType::Dataset
+        );
+        assert!(!dataset.conversion_enabled);
         config.small_write.conversion_enabled = true;
         assert!(config.validate().is_err());
         config.small_write.conversion_enabled = false;

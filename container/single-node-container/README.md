@@ -6,6 +6,28 @@
 This page describes building and running CROWDB from source on a Linux amd64
 development or CI host.
 
+## Node-first local storage policy
+
+The node-first local policy accepts one or three initial voters. Each member
+prepares one sparse 16-GiB file with a 16-GiB zone, 1-MiB allocation units and
+a 1-GiB free-space reserve. These are test media; sparse capacity does not
+reserve physical host space. Production does not fall back to this policy.
+
+- One-node writes use one mirror copy; three-node writes use two copies.
+- Tree, stream and Access payload allocation uses 1-MiB mirror strips. Tree
+  chunk capacity remains independent of strip capacity.
+- Mirror-to-EC conversion is disabled, including Dataset payload writes.
+- Local placement declares zero physical-node failure tolerance. Colocated
+  containers retain the same physical-host identity. The explicit local
+  placement allowance can put two copies on separate extents of the same
+  disk; copy count does not promise disk, node or rack protection. Inspect
+  each strip's placement assessment for its actual protection.
+- Accepted media and operation identities survive restart. Failed preparation
+  is retained for diagnosis; restarting is not permission to replace its data.
+
+The legacy profile and command examples below are being migrated to this
+node-first lifecycle.
+
 The public single-container Web template explicitly sets `readonly = true`.
 Docker Web otherwise defaults to writable logical and Access operations; physical
 management remains unavailable. To use writable Web internally, mount a normal

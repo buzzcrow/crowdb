@@ -242,7 +242,8 @@ struct ct_chunk_rpc_transport_options
     uint64_t                       writer_lease_ms;
     uint64_t                       rpc_timeout_ms; // 0 => 30 seconds
     uint32_t                       completion_capacity;
-    uint32_t                       mirror_copies; // 0 => 2
+    uint32_t                       mirror_copies;        // 0 => 2
+    uint32_t                       strip_capacity_bytes; // 0 => automatic
     ct_chunk_rpc_resolver          chunkdb_resolver;
     ct_chunk_rpc_resolver          disk_resolver;
 };

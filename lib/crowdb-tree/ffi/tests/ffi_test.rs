@@ -153,6 +153,7 @@ fn owned_chunk_rpc_transport_retains_route_handles() {
         rpc_timeout_ms: 1_000,
         completion_capacity: 32,
         mirror_copies: 0,
+        strip_capacity_bytes: 0,
     })
     .unwrap();
     let store = PageStore::open_chunk(
