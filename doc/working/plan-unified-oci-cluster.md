@@ -223,7 +223,7 @@ removal until the complete direct-container path passes A01/A03/A25.
   `container/crowdb-monitor/src/node/runtime/setup/execution/storage.rs`,
   `container/crowdb-monitor/src/node/runtime/setup/execution/services.rs`,
   monitor setup/storage tests.
-- [~] **T13 — Preserve later operator intent**: keep `publish_planned_start`
+- [x] **T13 — Preserve later operator intent**: keep `publish_planned_start`
   conditional on the accepted service operation; retain retired-operation fences
   and separate journal completion from live health. Test stop/delete/reconfigure
   races against old retries and monitor/Web restart. Done when old setup never
@@ -231,7 +231,7 @@ removal until the complete direct-container path passes A01/A03/A25.
   `lib/crowdb-console-shared/src/deployment/services/planned_start.rs`,
   `container/crowdb-monitor/src/node/runtime/setup/`,
   `app/crowdb-web/src/services/deployment/planned.rs`, corresponding `tests/`.
-- [ ] **T14 — Align access listeners, URIs and credentials**: set default local
+- [~] **T14 — Align access listeners, URIs and credentials**: set default local
   UI/S3/Iceberg/Dataset ports to 9090/9091/9092/9093, explicitly enable Dataset,
   and separate internal bind addresses from public URI overrides. Reuse one
   accepted cluster credential set across members/recreation through existing
@@ -719,6 +719,14 @@ do not mark unexecuted acceptance passed.
   with the same request and requires renewed consent. All 25 affected monitor
   setup/file tests pass, including durable inode/size failures and service restart
   budgets. Monitor all-target clippy and Rust formatting pass.
+- A monitor integration regression now resumes an old setup after a later
+  Stop/Delete/Restart/new Start configuration, then recreates its setup manager
+  and reaccepts the original plan. Every later committed intent remains intact;
+  the historical service step retains its old operation and reports an operator
+  override warning. All twelve node-setup and four planned-start authority tests
+  pass, including competing first publishers and revision-preserving replay.
+  Historical completion remains separate from live readiness; current evidence
+  collection is still T16. Monitor all-target clippy and formatting pass.
 
 ## Consolidated file ownership
 

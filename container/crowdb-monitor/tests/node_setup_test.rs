@@ -6,6 +6,8 @@ use crowdb_protocol::mgmt::node::setup::{NodeSetupPhase, NodeSetupRequest, Setup
 use std::path::Path;
 #[path = "common/node_setup.rs"]
 mod node_setup;
+#[path = "common/node_setup_control.rs"]
+mod node_setup_control;
 #[path = "common/node_setup_groups.rs"]
 mod node_setup_groups;
 
@@ -415,6 +417,60 @@ fn profile(root: &Path) -> DeploymentProfile {
     .unwrap();
     profile.paths.data_root = root.to_path_buf();
     profile
+}
+
+#[tokio::test]
+async fn recreated_setup_never_replaces_later_stop_delete_restart_or_reconfiguration() {
+    use crowdb_protocol::mgmt::node::setup::{SetupServiceKind, SetupStepPhase};
+    use crowdb_protocol::mgmt::node::NodeServiceAction;
+    for action in [
+        NodeServiceAction::Stop,
+        NodeServiceAction::Delete,
+        NodeServiceAction::Restart,
+        NodeServiceAction::Start,
+    ] {
+        let directory = crowdb_test_harness::test_dirs::tempdir_in_test_data("intent");
+        let root = directory.path();
+        let mut request = request(root);
+        request.choices.storage = SetupStorage::Diskless;
+        for service in &mut request.choices.services {
+            service.enabled = service.kind == SetupServiceKind::Chunkdb;
+        }
+        authorize(root, &request);
+        NodeSetupForTests::default()
+            .accept_for_tests(root, request.clone())
+            .unwrap();
+        let authority = node_setup::TestAuthority::start(root, &request).await;
+        let (original, newer) = node_setup_control::newer_intent(root, &authority, action).await;
+        let mut profile = profile(root);
+        profile.paths.run_root = root.join("run");
+        let observe = node_setup_control::processes_once(&profile.paths.run_root);
+        NodeSetupForTests::advance_for_tests(profile.clone())
+            .await
+            .unwrap();
+        observe.await.unwrap();
+        let status = NodeSetupForTests::status_for_tests(root).unwrap().unwrap();
+        let step = status
+            .services
+            .iter()
+            .find(|step| step.kind == SetupServiceKind::Chunkdb)
+            .unwrap();
+        assert_eq!(step.phase, SetupStepPhase::Warning);
+        assert_eq!(step.operation_id.as_deref(), Some(original.as_str()));
+        assert!(step.detail.as_ref().unwrap().contains("operator command"));
+        // Historical plan completion is not a health assertion. Recreation and
+        // exact acceptance cannot turn this newer command into the old Start.
+        NodeSetupForTests::default()
+            .accept_for_tests(root, request)
+            .unwrap();
+        NodeSetupForTests::advance_for_tests(profile).await.unwrap();
+        assert_eq!(
+            crowdb_console_shared::deployment::services::current(&authority.kv, 2, "chunkdb-2")
+                .await
+                .unwrap(),
+            Some(newer)
+        );
+    }
 }
 
 async fn observe_file_requests(
