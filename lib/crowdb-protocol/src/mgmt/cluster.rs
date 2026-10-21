@@ -5,6 +5,17 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Confirmed application identity and native management seeds for remote attach.
+/// Reading this record grants no ownership of the hosting runtime resources.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClusterTargetIdentity {
+    pub version: u32,
+    pub cluster_id: String,
+    pub group0_management_endpoints: Vec<String>,
+    pub group0_rpc_endpoints: Vec<String>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ClusterPhase {

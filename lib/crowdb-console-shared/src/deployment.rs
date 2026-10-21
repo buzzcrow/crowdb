@@ -8,5 +8,6 @@ mod bootstrap;
 pub mod node_update;
 pub mod registry;
 pub mod services;
+pub mod target;
 
 pub use bootstrap::{PreparedBootstrap, CLUSTER_KEY};

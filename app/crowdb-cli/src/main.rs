@@ -45,6 +45,17 @@ use commands::{
 #[derive(Parser, Debug)]
 #[command(name = "crowdb-cli", version, about = "CrowDB cluster console (CLI)")]
 struct Cli {
+    /// Select a saved application cluster binding.
+    #[arg(long, global = true, env = "CROWDB_CLUSTER", conflicts_with_all = ["system_ip", "system_port"])]
+    cluster: Option<String>,
+
+    /// Console management origin; repeat to verify multiple cluster members.
+    #[arg(long = "management-endpoint", global = true, conflicts_with_all = ["system_ip", "system_port"])]
+    management_endpoints: Vec<String>,
+
+    #[arg(skip)]
+    target: Option<crowdb_console_shared::deployment::target::ResolvedClusterTarget>,
+
     /// Versioned bare-metal launch registry; process identity is stored separately.
     #[arg(long, global = true, value_name = "PATH")]
     registry: Option<PathBuf>,
@@ -253,6 +264,10 @@ fn shell_quote(value: &str) -> String {
 }
 
 async fn dispatch(mut cli: Cli) -> ExitCode {
+    cli.target = match commands::cluster::target::resolve(&cli).await {
+        Ok(target) => target,
+        Err(code) => return code,
+    };
     let command = std::mem::replace(
         &mut cli.command,
         Domain::Cluster {

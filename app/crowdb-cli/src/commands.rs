@@ -42,6 +42,33 @@ pub(crate) async fn authority_context(cli: &Cli) -> Result<OpContext, ExitCode> 
             ExitCode::from(2)
         })?;
     }
+    let (management, rpc) = group0_connection(cli).await?;
+    Ok(OpContext::new(
+        rpc,
+        management,
+        crowdb_console_shared::ConsoleConfig::default(),
+    ))
+}
+
+pub(crate) async fn group0_connection(cli: &Cli) -> Result<(Vec<String>, String), ExitCode> {
+    if let Some(target) = &cli.target {
+        target.require_native_transport().await.map_err(|error| {
+            eprintln!("error: cluster native transport: {error}");
+            ExitCode::from(2)
+        })?;
+        let native = crowdb_kv_client::CrowdbKvClient::new(crowdb_kv_client::ClientConfig::new(
+            target.identity.group0_management_endpoints.clone(),
+        ));
+        native.seed_leader(0, 0, target.identity.group0_rpc_endpoints[0].clone());
+        target.verify_native_authority(&native).await.map_err(|error| {
+            eprintln!("error: cluster native identity: {error}");
+            ExitCode::from(2)
+        })?;
+        return Ok((
+            target.identity.group0_management_endpoints.clone(),
+            target.identity.group0_rpc_endpoints[0].clone(),
+        ));
+    }
     let mgmt_url = format!("http://{}:{}", cli.system_ip, cli.system_port);
     let group0_endpoint = match crowdb_console_shared::clients::http::ServerClient::new(&mgmt_url) {
         Ok(client) => client
@@ -53,9 +80,5 @@ pub(crate) async fn authority_context(cli: &Cli) -> Result<OpContext, ExitCode> 
         Err(_) => None,
     }
     .unwrap_or_else(|| format!("{}:{}", cli.system_ip, cli.system_port));
-    Ok(OpContext::new(
-        group0_endpoint,
-        vec![mgmt_url],
-        crowdb_console_shared::ConsoleConfig::default(),
-    ))
+    Ok((vec![mgmt_url], group0_endpoint))
 }

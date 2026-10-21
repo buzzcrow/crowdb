@@ -102,7 +102,7 @@ Dependency: finish T01–T04 before enabling new automatic side effects.
   `lib/crowdb-protocol/src/mgmt/node.rs`,
   `lib/crowdb-protocol/src/mgmt/node/setup.rs`,
   `container/crowdb-monitor/src/node/startup.rs`, owning crate `tests/`.
-- [~] **T02 — Resolve direct node inputs**: parse local/production mode, initial
+- [x] **T02 — Resolve direct node inputs**: parse local/production mode, initial
   voters, common scope, storage choices and required listeners once in monitor
   startup. Entrypoint forwards inputs instead of maintaining a competing mode
   detector. Keep one-node defaults with only image/volume/ports; three-node
@@ -122,7 +122,7 @@ Dependency: finish T01–T04 before enabling new automatic side effects.
   aggregate examples cover every state and unknown fact (A15, A26, A27). Files:
   `lib/crowdb-protocol/src/mgmt/`, `lib/crowdb-protocol/tests/`,
   `lib/crowdb-console-shared/src/ops/cluster.rs`.
-- [ ] **T04 — Implement one target resolver**: add a cluster-target module returning
+- [~] **T04 — Implement one target resolver**: add a cluster-target module returning
   validated cluster identity, management endpoints and optional runtime ownership.
   Expose global `--cluster` and repeatable `--management-endpoint` inputs; resolve
   CLI overrides before saved configuration. A named binding plus explicit endpoints
@@ -540,11 +540,20 @@ do not mark unexecuted acceptance passed.
   policy-only acceptance, retained production mode, and rejected missing,
   exposed, empty or invalid local credentials. Affected fmt and all-target
   monitor/Web clippy gates passed.
-- Five Docker entrypoint boundary cases passed using the current entrypoint
+- Six Docker entrypoint boundary cases passed using the current entrypoint
   mounted over an existing image and a stub monitor: policy rejection before
   keys, private local default/explicit credentials, and production refusal without
-  explicit credentials. This verifies shell ordering only, not application
+  explicit credentials, plus rejection of an empty retained local credential
+  without resetting it to the default. This verifies shell ordering only, not application
   startup or the content of a newly built image.
+- T04 has a common bounded target resolver and a read-only
+  `/api/cluster/target` endpoint backed by a linearizable Group-0 identity read.
+  Eight shared tests, three real-Group-0 Web component tests and four CLI target
+  rejection tests passed. Explicit targets now feed KV logical/data operations,
+  hardware operations, and KV/DiskDB/ChunkDB/ChunkIO workloads; native transport
+  must confirm the same committed UUID before use. Runtime-owned bindings fail
+  closed until T19 supplies current runtime endpoint/context validation; S3
+  attachment and the final command-tree migration remain under T26/T27.
 - No direct application Docker, Compose, native containerd or protocol-access acceptance has
   run yet. No end-to-end or hardware capability is marked verified.
 

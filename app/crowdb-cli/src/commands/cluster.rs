@@ -5,6 +5,7 @@
 //! topology, plus hardware subcommands (rack/node/disk-group/disk).
 
 pub mod hardware;
+pub(crate) mod target;
 
 pub(crate) use hardware::{
     run_disk_group_verb, run_disk_verb, run_node_verb, run_rack_verb, DiskGroupVerb, DiskVerb, NodeVerb,

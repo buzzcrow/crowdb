@@ -35,7 +35,7 @@ async fn connect(
     diskio_connections_per_endpoint: usize,
     diskio_rpc_workers: u32,
 ) -> Result<ChunkIoClient, ExitCode> {
-    let seeds = vec![format!("http://{}:{}", cli.system_ip, cli.system_port)];
+    let (seeds, _) = crate::commands::group0_connection(cli).await?;
     ChunkIoClient::connect(ChunkIoClientConfig {
         management_seeds: seeds,
         diskio_connections_per_endpoint,

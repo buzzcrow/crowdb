@@ -48,22 +48,7 @@ pub(crate) async fn build_kv_client(
     read_endpoint_policy: ReadEndpointPolicy,
     tunables: &KvClientTunables,
 ) -> Result<CrowdbKvClient, ExitCode> {
-    let seed = format!("http://{}:{}", cli.system_ip, cli.system_port);
-    let server = crowdb_console_shared::clients::http::ServerClient::new(&seed).map_err(|error| {
-        eprintln!("bench kv client: {error}");
-        ExitCode::from(2)
-    })?;
-    let effective_g0 = server
-        .topology()
-        .await
-        .ok()
-        .and_then(|stores| stores.into_iter().find(|store| store.store_id == 0))
-        .and_then(|store| store.listen_addr)
-        .ok_or_else(|| {
-            eprintln!("bench kv client: Group 0 endpoint unavailable at {seed}");
-            ExitCode::from(2)
-        })?;
-    let seeds = vec![seed];
+    let (seeds, effective_g0) = crate::commands::group0_connection(cli).await?;
 
     let mut client_config = ClientConfig::new(seeds);
     client_config.read_endpoint_policy = read_endpoint_policy;

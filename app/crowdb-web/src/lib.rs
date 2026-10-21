@@ -65,6 +65,7 @@ pub fn router(state: AppState) -> axum::Router {
             )
             .route("/api/node/admissions", get(node::admissions))
             .route("/api/node/status", get(node::status))
+            .route("/api/cluster/target", get(node::target::identity))
             .route("/api/authority", get(managed::authority))
             .route("/api/preview", get(managed::snapshot))
             .route("/api/chunk-kv/catalog", get(chunk_kv::catalog))
@@ -257,6 +258,7 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/api/node/cleanup", post(node::cleanup))
         .route("/api/node/cancel", post(node::cancel))
         .route("/api/node/status", get(node::status))
+        .route("/api/cluster/target", get(node::target::identity))
         .route(
             "/api/node/auto-join",
             get(node::auto_join::status).post(node::auto_join::update),

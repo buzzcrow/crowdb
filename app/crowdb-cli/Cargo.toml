@@ -45,12 +45,17 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 quick-xml = "0.38"
 
 [dev-dependencies]
+uuid = { version = "1", features = ["v4"] }
 crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi", features = ["test-util"] }
 crowdb-test-harness = { path = "../../lib/crowdb-test-harness" }
 
 [[test]]
 name = "cluster_cli_test"
 path = "tests/cluster_cli_test.rs"
+
+[[test]]
+name = "cluster_target_test"
+path = "tests/cluster_target_test.rs"
 
 [[test]]
 name = "launch_registry_cli_test"
