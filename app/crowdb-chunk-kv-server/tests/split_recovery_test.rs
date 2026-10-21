@@ -78,6 +78,22 @@ async fn committed_split_proves_both_recovered_writers_and_rejects_mismatches() 
 }
 
 #[tokio::test]
+async fn committed_split_recovers_both_writers_after_the_same_owner_changes_address() {
+    let transition = transition();
+    for retained in [true, false] {
+        let mut entry = entry(&transition, retained);
+        entry.owner.rpc_endpoint = "192.0.2.12:7401".into();
+        let partition = recovered(&entry).await;
+        let service = ChunkKvService::new(1, 4).unwrap();
+        install(&service, &entry, &partition);
+        service
+            .activate_recovered_split_partition(entry.partition_id, entry.owner_epoch, &transition)
+            .unwrap();
+        assert_eq!(partition.lifecycle(), PartitionLifecycle::Serving);
+    }
+}
+
+#[tokio::test]
 async fn materialized_split_half_recovers_while_sibling_keeps_the_transition_marker() {
     let transition = transition();
     for retained in [true, false] {

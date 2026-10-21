@@ -1068,6 +1068,30 @@ do not mark unexecuted acceptance passed.
   through their own Pixi environment (the root Python lacks PyYAML).
   The task-graph check passes for 28 packages and 388 container flows after
   replacing removed root wrapper calls with internal build/import commands.
+- Packaged `local-clean-g`, cluster
+  `e88f28d5-0e54-49bb-b4dc-8f9bf2020620`, passes fresh S3, 2-MiB Dataset and
+  PyIceberg three-row I/O through the actual root Pixi run/clean commands.
+  Default clean removes its owned container and bridge while retaining data;
+  reserving the old subnet forces recreate from `172.18.0.2` to `172.19.0.2`.
+  The keepalive fix restores binding/service addresses and actual Access
+  readiness within 120 seconds, and stable identity/credentials/storage checks
+  pass. First retained S3 GET still fails with `RemoteDisconnected`.
+  Native Chunk-KV rejects activation with
+  `committed split does not prove this serving assignment`: the current catalog
+  carries the recovered endpoint but the immutable split proof carries the old
+  endpoint for the same owner instance. Split/transfer activation, prepared tree
+  publication and balance completion now compare stable owner instance IDs;
+  all existing epoch, range, artifact, phase and transition fences remain exact.
+  Split regression covers both retained and child writers at a changed address;
+  transfer activation also runs with a changed target endpoint. Twenty-two
+  Chunk-KV and nineteen domain/balance cases plus both all-target clippy and
+  formatting gates pass. Packaged validation of this fix is pending.
+  OCI digest `sha256:bb020a20fed4e4ae8edacc7afb02b0158435345846b5875a2d176fa843d25b5b`,
+  source `428b6cbcf4b201e71fbb5f917556be23df2f2c21`, runtime
+  `d59eec9bd31136d9d4a598982aaf4601cf244c8f2235f53b8f0cafc27fc0fdbf`.
+  Evidence is private under `.crowdb-runtime/artifacts/local-clean-g/`;
+  teardown removed its container and both test bridges, preserving its volume
+  and receipt. No networks remain beyond Docker bridge/host/none.
 
 ## Previous verification boundary
 

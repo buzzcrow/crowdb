@@ -73,7 +73,7 @@ impl ChunkKvService {
         if transition.phase != SplitPhase::CatalogCommitted
             || entry.transition_id != Some(transition.transition_id)
             || entry.range != range
-            || &entry.owner != owner
+            || entry.owner.instance_id != owner.instance_id
             || owner.instance_id != self.instance_id
             || epoch != owner_epoch
             || entry.owner_epoch != epoch
@@ -166,7 +166,7 @@ impl ChunkKvService {
             && entry.transition_id == Some(transition.transition_id)
             && transition.partition_id == partition_id
             && transition.range == entry.range
-            && transition.target == entry.owner
+            && transition.target.instance_id == entry.owner.instance_id
             && transition.target.instance_id == self.instance_id
             && transition.target_epoch == owner_epoch
             && transition.target_epoch == entry.owner_epoch

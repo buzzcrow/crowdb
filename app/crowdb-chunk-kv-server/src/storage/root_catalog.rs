@@ -156,7 +156,7 @@ impl KvRootCatalogStore {
         let assigned = pages.iter().flat_map(|page| &page.entries).any(|entry| {
             entry.partition_id == prepared.partition_id
                 && entry.range == prepared.range
-                && entry.owner == prepared.owner
+                && entry.owner.instance_id == prepared.owner.instance_id
                 && entry.owner_epoch == prepared.owner_epoch
                 && entry.artifact.tree_id == prepared.artifact.tree_id
                 && entry.artifact.stream_name == prepared.artifact.stream_name

@@ -65,7 +65,7 @@ pub async fn plan(control: &Group0ControlPlane, descriptor: &DomainMonitorDescri
                 && entry.transition_id == Some(transition.transition_id)
                 && entry.partition_id == transition.partition_id
                 && entry.range == transition.range
-                && entry.owner == transition.target
+                && entry.owner.instance_id == transition.target.instance_id
                 && entry.owner_epoch == transition.target_epoch
                 && entry.artifact == transition.target_artifact
         });

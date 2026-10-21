@@ -746,7 +746,10 @@ async fn committed_transfer_activates_a_recovered_overlay() {
         entries: vec![ChunkKvRangeCatalogEntry {
             partition_id: transition.partition_id,
             range: transition.range.clone(),
-            owner: transition.target.clone(),
+            owner: crowdb_protocol::chunk_kv::OwnerDescriptor {
+                rpc_endpoint: "192.0.2.12:7401".into(),
+                ..transition.target.clone()
+            },
             owner_epoch: transition.target_epoch,
             state: ChunkKvRangeCatalogPartitionState::Serving,
             artifact: transition.target_artifact.clone(),
