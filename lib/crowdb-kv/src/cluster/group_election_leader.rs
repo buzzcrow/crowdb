@@ -341,6 +341,35 @@ impl PxGroup {
         outcome
     }
 
+    fn start_leader_recovery(
+        self: &Arc<Self>,
+        cfg: &PxElectionConfig,
+        tenure_cancel: &CancellationToken,
+    ) -> Option<tokio::task::JoinHandle<()>> {
+        if let Some(handoff) = self.pending_leader_handoff.lock().take() {
+            let group_for_task = self.clone();
+            let cfg_for_task = *cfg;
+            let cancel_for_task = tenure_cancel.clone();
+            Some(tokio::spawn(
+                async move {
+                    group_for_task
+                        .run_bulk_phase1(
+                            handoff.term,
+                            handoff.peer_floor,
+                            handoff.peer_ceiling,
+                            cfg_for_task,
+                            cancel_for_task,
+                        )
+                        .await;
+                }
+                .instrument(tracing::Span::current()),
+            ))
+        } else {
+            self.leader_read_ready.store(true, Ordering::Release);
+            None
+        }
+    }
+
     /// Leader-state inner loop: tick heartbeats + lease bookkeeping
     /// until step-down (higher term, lease unrenewable, admin) or
     /// driver cancel.
@@ -398,27 +427,7 @@ impl PxGroup {
 
         // Consume the handoff stashed by finalize_leader and spawn bulk
         // Phase 1 on the per-tenure cancel token.
-        if let Some(handoff) = self.pending_leader_handoff.lock().take() {
-            let group_for_task = self.clone();
-            let cfg_for_task = *cfg;
-            let cancel_for_task = tenure_cancel.clone();
-            tokio::spawn(
-                async move {
-                    group_for_task
-                        .run_bulk_phase1(
-                            handoff.term,
-                            handoff.peer_floor,
-                            handoff.peer_ceiling,
-                            cfg_for_task,
-                            cancel_for_task,
-                        )
-                        .await;
-                }
-                .instrument(tracing::Span::current()),
-            );
-        } else {
-            self.leader_read_ready.store(true, Ordering::Release);
-        }
+        let recovery_task = self.start_leader_recovery(cfg, &tenure_cancel);
 
         // Establish the first quorum heartbeat before waiting on the ticker.
         // This makes lease readiness deterministic when the election driver
@@ -455,6 +464,17 @@ impl PxGroup {
             }
             if cancel.is_cancelled() {
                 tenure_cancel.cancel();
+                return;
+            }
+            // A failed recovery or an uncertain conditional proposal closes
+            // reads for the entire tenure. Heartbeats alone cannot resolve
+            // that uncertainty; a new election must recover the accepted log.
+            if recovery_task
+                .as_ref()
+                .map_or(true, tokio::task::JoinHandle::is_finished)
+                && !self.leader_read_ready()
+            {
+                self.step_down(&tenure_cancel, leader_term, StepDownReason::RecoveryIncomplete);
                 return;
             }
             tokio::select! {

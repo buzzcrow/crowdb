@@ -341,6 +341,7 @@ impl LeaderElection for PxGroup {
 pub(crate) enum StepDownReason {
     HigherTerm(u64),
     LeaseUnrenewable,
+    RecoveryIncomplete,
     Admin,
 }
 
@@ -421,15 +422,17 @@ impl PxGroup {
                     h.step_downs_lease.inc();
                 }
             }
-            StepDownReason::Admin => {
-                // Counted synchronously when the strict-fence request is
-                // accepted so status agrees with the API response.
+            StepDownReason::RecoveryIncomplete | StepDownReason::Admin => {
+                // Administrative step-downs are counted when accepted; failed
+                // recovery is neither a lease expiry nor a higher-term event.
             }
         }
         tenure_cancel.cancel();
         let target_term = match reason {
             StepDownReason::HigherTerm(t) => t.max(my_term),
-            StepDownReason::LeaseUnrenewable | StepDownReason::Admin => my_term,
+            StepDownReason::LeaseUnrenewable | StepDownReason::RecoveryIncomplete | StepDownReason::Admin => {
+                my_term
+            }
         };
         // `become_follower` clears the local replica's believed leader id
         // so observers reading `group.leader_id` after this point see

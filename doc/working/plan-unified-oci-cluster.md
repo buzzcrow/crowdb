@@ -882,6 +882,22 @@ do not mark unexecuted acceptance passed.
   previously failed fixture; do not silently bootstrap trust from advertisements
   for its existing roots. Record A32/A33 evidence and applicable gates.
 
+- Packaged recovery image `224e6dfd` passed fresh one/three-node S3, Dataset and
+  PyIceberg I/O; singleton retained restart also passed. Three-node whole-cluster
+  restart changed every IP and failed actual Access readiness at the unchanged
+  120-second deadline (attempt 1). Pinned member proofs and native routes recovered,
+  but Group-0 linearizable reads remained closed despite a healthy heartbeat lease.
+  The first logged divergence was a failed conditional proposal at slot 1009 after
+  routes temporarily became unavailable. Conditional proposal failure correctly
+  poisoned read readiness, but the leader kept renewing its lease indefinitely.
+  Fix the upstream liveness transition: completed/failed recovery or subsequent
+  uncertain conditional writes must yield that tenure to a new election, retaining
+  the read fence until accepted-log recovery succeeds. A three-node regression
+  drops an admitted owner proposal while peers remain healthy and verifies a newer
+  recovered tenure can commit again. Also return committed registry addresses in
+  the cluster target API rather than immutable bootstrap addresses. Packaged
+  changed-IP acceptance remains unverified until the rebuilt image passes.
+
 ## Consolidated file ownership
 
 - Typed policy/status: `lib/crowdb-protocol/src/mgmt/` and `tests/`.
@@ -897,3 +913,6 @@ do not mark unexecuted acceptance passed.
 - Acceptance and documentation: `e2e-test/`,
   `tools/ci-checks/check-ci-test-tasks.py`, root/OCI deployment designs,
   container/ecosystem/benchmark guides and `tools/README.md`.
+- Recovery-tenure and target-address fixes pass all 123 KV group tests, all five
+  consensus RPC tests, all five cluster-target tests, affected all-target clippy
+  with `test-util`, formatting and whitespace checks.

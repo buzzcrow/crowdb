@@ -134,3 +134,41 @@ async fn node_observation_does_not_recover_or_copy_a_pending_deployment() {
         0
     );
 }
+
+#[tokio::test]
+async fn target_uses_confirmed_current_addresses_without_rewriting_the_manifest() {
+    use crowdb_console_shared::deployment::registry::{NodeRecord, NodeRegistry, NODES_KEY};
+    let fixture = TestClusterTarget::start().await;
+    let before = committed(&fixture).await;
+    let registry = NodeRegistry {
+        cluster_id: fixture.prepared.identity.cluster_id.clone(),
+        nodes: vec![NodeRecord {
+            discovery_id: uuid::Uuid::new_v4().to_string(),
+            node_id: 2,
+            physical_host_id: "test-host".into(),
+            rack_id: 1,
+            host: "192.0.2.99".into(),
+            ssh_port: 22,
+            ssh_user: "operator".into(),
+            operation_id: uuid::Uuid::new_v4().to_string(),
+            confirmed: true,
+            cancelled: false,
+        }],
+    };
+    fixture
+        .kv
+        .put(0, 0, NODES_KEY, &serde_json::to_vec(&registry).unwrap(), None)
+        .await
+        .unwrap();
+    let (status, value) = get(fixture.state.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    assert!(value["group0_management_endpoints"][0]
+        .as_str()
+        .unwrap()
+        .starts_with("http://192.0.2.99:"));
+    assert!(value["group0_rpc_endpoints"][0]
+        .as_str()
+        .unwrap()
+        .starts_with("192.0.2.99:"));
+    assert_eq!(committed(&fixture).await, before);
+}
