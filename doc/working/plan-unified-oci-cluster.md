@@ -122,7 +122,7 @@ Dependency: finish T01–T04 before enabling new automatic side effects.
   aggregate examples cover every state and unknown fact (A15, A26, A27). Files:
   `lib/crowdb-protocol/src/mgmt/`, `lib/crowdb-protocol/tests/`,
   `lib/crowdb-console-shared/src/ops/cluster.rs`.
-- [~] **T04 — Implement one target resolver**: add a cluster-target module returning
+- [ ] **T04 — Implement one target resolver**: add a cluster-target module returning
   validated cluster identity, management endpoints and optional runtime ownership.
   Expose global `--cluster` and repeatable `--management-endpoint` inputs; resolve
   CLI overrides before saved configuration. A named binding plus explicit endpoints
@@ -171,7 +171,7 @@ removal until the complete direct-container path passes A01/A03/A25.
   `app/crowdb-web/src/node/initialization.rs`,
   `container/crowdb-monitor/src/node/runtime/initialization/`,
   `container/crowdb-monitor/tests/initialization_test.rs`.
-- [ ] **T08 — Commit default preparation identity**: introduce a focused shared
+- [~] **T08 — Commit default preparation identity**: introduce a focused shared
   preparation record under existing deployment ownership, conditional on current
   Group-0 authority. Seal ordinary group/replica mapping, disk-group bindings and
   shared credential reference once; scope it by accepted cluster identity and
@@ -554,6 +554,15 @@ do not mark unexecuted acceptance passed.
   must confirm the same committed UUID before use. Runtime-owned bindings fail
   closed until T19 supplies current runtime endpoint/context validation; S3
   attachment and the final command-tree migration remain under T26/T27.
+- T08 now reserves one Group-0 default preparation record with fixed ordinary
+  metadata replicas, per-node disk-group bindings and an operation-qualified
+  shared credential reference. Seven tests passed against a real in-memory
+  Group 0: eight concurrent runners converge, another runner with no local
+  configuration recovers the winner, incompatible existing membership/bindings
+  are rejected, malformed records remain unchanged, and retirement is durable.
+  This record API is not yet wired to automatic resource creation; T09/T10 must
+  verify native ownership and exact consumer bindings before enabling it.
+  Explicit lost-response fault injection remains in the creation/replay tests.
 - No direct application Docker, Compose, native containerd or protocol-access acceptance has
   run yet. No end-to-end or hardware capability is marked verified.
 

@@ -6,6 +6,7 @@
 pub mod admission;
 mod bootstrap;
 pub mod node_update;
+pub mod preparation;
 pub mod registry;
 pub mod services;
 pub mod target;
