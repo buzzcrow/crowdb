@@ -103,3 +103,32 @@ fn cli_explicit_targets_conflict_with_legacy_system_address_flags() {
     );
     assert!(error.contains("cannot be used with"), "{error}");
 }
+
+#[test]
+fn retained_workloads_require_a_target_before_any_runtime_or_native_effect() {
+    for args in [
+        vec!["bench", "kv", "prepare", "--keys", "1"],
+        vec!["bench", "diskdb", "allocate"],
+        vec!["bench", "chunkdb", "allocate"],
+        vec!["bench", "chunkio", "write"],
+        vec!["bench", "s3", "write", "--operations", "1"],
+    ] {
+        let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("bench-no-target");
+        let output = Command::new(env!("CARGO_BIN_EXE_crowdb-cli"))
+            .env("CROWDB_RUNTIME_ROOT", root.path())
+            .env("CROWDB_CONTAINER_RUNTIME", "/path/not/executed")
+            .env_remove("CROWDB_CLUSTER")
+            .env_remove("CROWDB_SYSTEM_IP")
+            .env_remove("CROWDB_SYSTEM_PORT")
+            .args(&args)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("select --cluster or --management-endpoint before a workload"),
+            "{args:?}: {error}"
+        );
+        assert!(!root.path().join("persistent").exists());
+    }
+}

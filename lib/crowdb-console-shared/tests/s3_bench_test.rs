@@ -5,7 +5,6 @@ use std::time::Duration;
 
 use axum::{body::Body, extract::Request, http::StatusCode, response::Response, Router};
 use crowdb_console_shared::ops::s3_bench::{self, MixWeights, S3BenchConfig, S3BenchWorkload};
-use crowdb_test_harness::test_dirs::TestDir;
 
 #[test]
 fn mixed_weights_are_case_insensitive_and_deterministic() {
@@ -35,7 +34,7 @@ fn mixed_weights_reject_ambiguous_or_invalid_terms() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn memory_mix_exercises_every_s3_operation() {
+async fn attached_mix_exercises_every_s3_operation_without_local_lifecycle() {
     // Workload accounting is a component proof; real S3 flows have container owners.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
@@ -44,11 +43,8 @@ async fn memory_mix_exercises_every_s3_operation() {
             .await
             .unwrap();
     });
-    let runtime = TestDir::new("s3-memory-bench").expect("create benchmark runtime");
-    let work_dir = runtime.path().to_path_buf();
-    let result = s3_bench::run_workload_for_tests(
+    let result = s3_bench::run(
         S3BenchConfig {
-            work_dir,
             workload: S3BenchWorkload::Mix,
             object_size: 1024,
             dataset_objects: 8,
@@ -57,14 +53,14 @@ async fn memory_mix_exercises_every_s3_operation() {
             duration: Duration::from_secs(10),
             warmup_operations: 4,
             seed: 7,
-            memory_budget_bytes: 2 * 1024 * 1024 * 1024,
+            max_dataset_bytes: 2 * 1024 * 1024 * 1024,
             list_limit: 4,
             mix: MixWeights::default(),
         },
-        endpoint,
+        crowdb_console_shared::ops::s3::S3HttpClient::new(endpoint).unwrap(),
     )
     .await
-    .expect("memory S3 benchmark");
+    .expect("attached S3 benchmark");
     peer.abort();
     assert_eq!(result.total_operations, 200);
     assert_eq!(result.total_errors, 0);
@@ -72,7 +68,7 @@ async fn memory_mix_exercises_every_s3_operation() {
     assert!(result.by_operation.read.is_some());
     assert!(result.by_operation.range_read.is_some());
     assert!(result.by_operation.list.is_some());
-    assert_eq!(result.backing.diskio, "mem");
+    assert!(result.bucket.starts_with("crowdb-bench-"));
     assert!(!result.object_bytes_verified);
 }
 

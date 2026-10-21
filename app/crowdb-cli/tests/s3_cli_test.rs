@@ -103,7 +103,7 @@ fn mock_http_once(response_content_type: &str, response_body: &[u8]) -> (String,
 }
 
 #[test]
-fn s3_benchmark_exposes_all_memory_workloads() {
+fn s3_benchmark_exposes_attached_workloads_without_deployment_flags() {
     for workload in ["write", "read", "range-read", "list", "mix"] {
         let output = cli()
             .args(["bench", "s3", workload, "--help"])
@@ -115,8 +115,9 @@ fn s3_benchmark_exposes_all_memory_workloads() {
             String::from_utf8_lossy(&output.stderr)
         );
         let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(stdout.contains("--memory-budget-bytes"));
+        assert!(stdout.contains("--max-dataset-bytes"));
         assert!(stdout.contains("--operations"));
+        assert!(!stdout.contains("--work-dir"));
     }
 }
 

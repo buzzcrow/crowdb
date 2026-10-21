@@ -32,6 +32,7 @@ struct TaskResult {
     latency_ns: Vec<u64>,
 }
 
+#[derive(Clone)]
 struct TaskContext {
     mixed: bool,
     client: Arc<DiskdbClient>,
@@ -83,9 +84,18 @@ pub async fn run(cli: &Cli, verb: DiskdbBenchVerb) -> ExitCode {
         eprintln!("no owned disk-groups discovered");
         return ExitCode::FAILURE;
     }
-    if let Err(error) = validate_topology(&client, &groups).await {
+    if let Err(error) = validate_topology(&client, &groups, args.unit_size_bytes).await {
         eprintln!("invalid diskdb benchmark topology: {error}");
         return ExitCode::FAILURE;
+    }
+    let mixed = matches!(verb, DiskdbBenchVerb::Mix(_));
+    if mixed {
+        // Both endpoints of the space comparison must include prior frees.
+        // The final compaction also consumes frees predating this invocation.
+        if let Err(error) = compact_all(&client, &groups).await {
+            eprintln!("diskdb baseline compaction failed: {error}");
+            return ExitCode::FAILURE;
+        }
     }
     let baseline = match busy_bytes(&client, &groups).await {
         Ok(value) => value,
@@ -94,7 +104,6 @@ pub async fn run(cli: &Cli, verb: DiskdbBenchVerb) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let mixed = matches!(verb, DiskdbBenchVerb::Mix(_));
     let mut metrics = BenchMetrics::new(&cli.log_dir, args.metrics_interval);
     metrics.start();
     let (sender, receiver) = crossbeam_channel::unbounded::<Segment>();
@@ -104,36 +113,24 @@ pub async fn run(cli: &Cli, verb: DiskdbBenchVerb) -> ExitCode {
     let sequence = Arc::new(AtomicU64::new(1));
     let deadline = Instant::now() + Duration::from_secs(args.duration_secs);
     let started = Instant::now();
-    let mut handles = Vec::with_capacity(args.concurrency);
-    for task_id in 0..args.concurrency {
-        let client = Arc::clone(&client);
-        let groups = Arc::clone(&groups);
-        let args = args.clone();
-        let sender = sender.clone();
-        let receiver = receiver.clone();
-        let stop = Arc::clone(&stop);
-        let sequence = Arc::clone(&sequence);
-        let compacting = Arc::clone(&compacting);
-        let in_flight = Arc::clone(&in_flight);
-        let recorder = Arc::clone(&metrics.recorder);
-        handles.push(tokio::spawn(run_task(
-            task_id,
-            TaskContext {
-                mixed,
-                client,
-                groups,
-                args,
-                sender,
-                receiver,
-                stop,
-                compacting,
-                in_flight,
-                sequence,
-                recorder,
-                deadline,
-            },
-        )));
-    }
+    let context = TaskContext {
+        mixed,
+        client: Arc::clone(&client),
+        groups: Arc::clone(&groups),
+        args: args.clone(),
+        sender: sender.clone(),
+        receiver: receiver.clone(),
+        stop,
+        compacting,
+        in_flight,
+        sequence,
+        recorder: Arc::clone(&metrics.recorder),
+        deadline,
+    };
+    let handles = (0..args.concurrency)
+        .map(|task_id| tokio::spawn(run_task(task_id, context.clone())))
+        .collect();
+    drop(context);
     drop(sender);
     let mut total = collect_results(handles).await;
     let elapsed = started.elapsed();
@@ -216,8 +213,7 @@ fn report(total: &mut TaskResult, input: &ReportInput<'_>) -> ExitCode {
         .unwrap_or(0);
     let stop_reason = if total.exhausted { "exhausted" } else { "deadline" };
     println!(
-        "diskdb bench mode={:?} workload={} stop={} elapsed={:.3}s ops={} ops_per_sec={} allocated={} freed={} live={} errors={} avg_us={} p50_us={} p99_us={} busy_delta={} expected_delta={}",
-        input.args.mode,
+        "diskdb bench workload={} stop={} elapsed={:.3}s ops={} ops_per_sec={} allocated={} freed={} live={} errors={} avg_us={} p50_us={} p99_us={} baseline_busy={} final_busy={} busy_delta={} expected_delta={}",
         if input.mixed { "mix-70-30" } else { "allocate" },
         stop_reason,
         elapsed.as_secs_f64(),
@@ -234,6 +230,8 @@ fn report(total: &mut TaskResult, input: &ReportInput<'_>) -> ExitCode {
         },
         percentile(&total.latency_ns, 50) / 1_000,
         percentile(&total.latency_ns, 99) / 1_000,
+        input.baseline,
+        input.final_busy,
         actual_delta,
         expected_delta,
     );
@@ -390,23 +388,31 @@ async fn busy_bytes(client: &DiskdbClient, groups: &[u64]) -> Result<u64, Diskdb
     Ok(total)
 }
 
-async fn validate_topology(client: &DiskdbClient, groups: &[u64]) -> Result<(), DiskdbClientError> {
-    if groups.len() != 3 {
-        return Err(DiskdbClientError::Rpc(format!(
-            "expected 3 disk-groups, found {}",
-            groups.len()
-        )));
-    }
+async fn validate_topology(
+    client: &DiskdbClient,
+    groups: &[u64],
+    unit_size: u64,
+) -> Result<(), DiskdbClientError> {
     for group in groups {
         let response = client.query_disk_group(*group).await?;
-        let disks = response
-            .disk_groups
-            .iter()
-            .map(|entry| entry.disks.len())
-            .sum::<usize>();
-        if disks != 4 {
+        if response.disk_groups.len() != 1 || response.disk_groups[0].disk_group_id != *group {
             return Err(DiskdbClientError::Rpc(format!(
-                "disk-group {group} must contain 4 disks, found {disks}"
+                "disk-group {group} did not return its current geometry"
+            )));
+        }
+        let current = &response.disk_groups[0];
+        if current.disks.is_empty() || current.allocatable_disk_count == 0 || current.free_bytes == 0 {
+            return Err(DiskdbClientError::Rpc(format!(
+                "disk-group {group} has no allocatable storage"
+            )));
+        }
+        if current
+            .disks
+            .iter()
+            .any(|disk| u64::from(disk.unit_size_bytes) != unit_size)
+        {
+            return Err(DiskdbClientError::Rpc(format!(
+                "disk-group {group} unit size differs from requested accounting unit {unit_size}"
             )));
         }
     }

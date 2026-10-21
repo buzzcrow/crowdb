@@ -43,9 +43,6 @@ pub enum S3BenchVerb {
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct S3Args {
-    /// Empty directory used for the invocation-owned memory cluster.
-    #[arg(long)]
-    pub work_dir: std::path::PathBuf,
     #[arg(long, default_value_t = 4 * 1024)]
     pub object_size: usize,
     #[arg(long, default_value_t = 128)]
@@ -62,7 +59,7 @@ pub struct S3Args {
     #[arg(long, default_value_t = 1)]
     pub seed: u64,
     #[arg(long, default_value_t = 2 * 1024 * 1024 * 1024)]
-    pub memory_budget_bytes: u64,
+    pub max_dataset_bytes: u64,
     #[arg(long, default_value_t = 100)]
     pub list_limit: usize,
     #[arg(long, default_value = "w20R70RR5L5")]
@@ -112,6 +109,9 @@ pub struct ChunkioArgs {
     pub data_num: usize,
     #[arg(long, default_value_t = 1)]
     pub code_num: usize,
+    /// Use large mirror strips instead of EC, with the selected copy count.
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..=5))]
+    pub mirror_copies: Option<u32>,
     #[arg(long, default_value_t = 1)]
     pub seed: u8,
     #[arg(long, default_value_t = 1)]
@@ -199,6 +199,9 @@ pub struct ChunkioReadArgs {
     pub data_num: usize,
     #[arg(long, default_value_t = 1)]
     pub code_num: usize,
+    /// Use large mirror strips instead of EC, with the selected copy count.
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..=5))]
+    pub mirror_copies: Option<u32>,
     #[arg(long, default_value_t = 1)]
     pub seed: u8,
     #[arg(long, default_value_t = 1)]
@@ -281,21 +284,12 @@ pub struct DiskdbArgs {
     /// Expected unit size, used for space verification.
     #[arg(long, default_value_t = 1_048_576)]
     pub unit_size_bytes: u64,
-    /// Storage mode configured by cluster initialization.
-    #[arg(long, value_enum, default_value_t = DiskdbBenchMode::Mem)]
-    pub mode: DiskdbBenchMode,
     /// Deterministic workload seed.
     #[arg(long, default_value_t = 1)]
     pub seed: u64,
     /// Metrics flush interval in seconds. 0 disables the metrics log.
     #[arg(long, default_value_t = 1)]
     pub metrics_interval: u64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-pub enum DiskdbBenchMode {
-    Mem,
-    Block,
 }
 
 #[derive(Subcommand, Debug)]

@@ -1,10 +1,9 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Bounded S3 workloads over an invocation-owned memory-backed mini-cluster.
+//! Bounded S3 workloads attached to an existing selected cluster.
 
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -13,9 +12,7 @@ use reqwest::Method;
 use serde::Serialize;
 
 use crate::error::{Error, Result};
-use crate::ops::s3::{self, S3HttpClient};
-
-const BENCH_BUCKET: &str = "crowdb-memory-bench";
+use crate::ops::s3::S3HttpClient;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum S3BenchWorkload {
@@ -28,7 +25,6 @@ pub enum S3BenchWorkload {
 
 #[derive(Debug, Clone)]
 pub struct S3BenchConfig {
-    pub work_dir: PathBuf,
     pub workload: S3BenchWorkload,
     pub object_size: usize,
     pub dataset_objects: usize,
@@ -37,7 +33,7 @@ pub struct S3BenchConfig {
     pub duration: Duration,
     pub warmup_operations: u64,
     pub seed: u64,
-    pub memory_budget_bytes: u64,
+    pub max_dataset_bytes: u64,
     pub list_limit: usize,
     pub mix: MixWeights,
 }
@@ -145,21 +141,12 @@ pub struct S3BenchResult {
     pub warmup_operations: u64,
     pub object_size: usize,
     pub dataset_objects: usize,
-    pub memory_budget_bytes: u64,
+    pub max_dataset_bytes: u64,
     pub estimated_dataset_bytes: u64,
-    pub peak_resident_bytes: u64,
-    pub backing: S3BenchBacking,
+    pub bucket: String,
     pub failures: S3BenchFailures,
     pub by_operation: S3BenchOperations,
     pub object_bytes_verified: bool,
-}
-
-#[derive(Debug, Serialize)]
-pub struct S3BenchBacking {
-    pub kv: &'static str,
-    pub wal: &'static str,
-    pub diskio: &'static str,
-    pub chunk_kv: &'static str,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -203,18 +190,30 @@ struct OperationAccumulator {
     latencies_us: Vec<u64>,
 }
 
-/// Start an invocation-owned memory cluster, run one workload, and stop it.
+#[derive(Clone)]
+struct Invocation {
+    config: S3BenchConfig,
+    bucket: String,
+}
+
+impl std::ops::Deref for Invocation {
+    type Target = S3BenchConfig;
+    fn deref(&self) -> &Self::Target {
+        &self.config
+    }
+}
+
+/// Run against an already selected S3 endpoint, using one private workload bucket.
 ///
 /// # Errors
-/// Returns validation, cluster startup, request-path, or cleanup errors.
-pub async fn run(config: S3BenchConfig) -> Result<S3BenchResult> {
+/// Returns validation or request-path errors; never starts or stops services.
+pub async fn run(config: S3BenchConfig, client: S3HttpClient) -> Result<S3BenchResult> {
     let estimated_dataset_bytes = validate_workload(&config)?;
-    s3::start_memory(&config.work_dir, config.memory_budget_bytes).await?;
-    let outcome = run_attached(&config, estimated_dataset_bytes).await;
-    let stop_result = s3::stop(&config.work_dir);
-    let result = outcome?;
-    stop_result?;
-    Ok(result)
+    let invocation = Invocation {
+        config,
+        bucket: format!("crowdb-bench-{}", uuid::Uuid::new_v4().simple()),
+    };
+    run_requests(&invocation, estimated_dataset_bytes, client).await
 }
 
 fn validate_workload(config: &S3BenchConfig) -> Result<u64> {
@@ -223,48 +222,26 @@ fn validate_workload(config: &S3BenchConfig) -> Result<u64> {
         .ok()
         .and_then(|size| size.checked_mul(u64::try_from(config.dataset_objects).ok()?))
         .ok_or_else(|| validation("dataset", "dataset size overflow"))?;
-    if estimated_dataset_bytes > config.memory_budget_bytes / 2 {
+    if estimated_dataset_bytes > config.max_dataset_bytes {
         return Err(validation(
-            "memory_budget_bytes",
-            "prepared dataset exceeds half of the memory budget",
+            "max_dataset_bytes",
+            "prepared dataset exceeds its declared byte bound",
         ));
     }
     Ok(estimated_dataset_bytes)
 }
 
-async fn run_attached(config: &S3BenchConfig, estimated_dataset_bytes: u64) -> Result<S3BenchResult> {
-    let client = S3HttpClient::from_data_dir(&config.work_dir)?;
-    run_requests(config, estimated_dataset_bytes, client).await
-}
-
-/// Exercise the workload driver against a deterministic HTTP protocol peer.
-///
-/// # Errors
-/// Returns configuration, HTTP or workload validation errors.
-#[cfg(feature = "test-util")]
-pub async fn run_workload_for_tests(config: S3BenchConfig, endpoint: String) -> Result<S3BenchResult> {
-    let estimated_dataset_bytes = validate_workload(&config)?;
-    run_requests(&config, estimated_dataset_bytes, S3HttpClient::new(endpoint)?).await
-}
-
 async fn run_requests(
-    config: &S3BenchConfig,
+    config: &Invocation,
     estimated_dataset_bytes: u64,
     client: S3HttpClient,
 ) -> Result<S3BenchResult> {
     client
-        .request(Method::PUT, Some(BENCH_BUCKET), None, &[], None, None)
+        .request(Method::PUT, Some(&config.bucket), None, &[], None, None)
         .await?;
     prepare_dataset(&client, config).await?;
     let warmup_writes = run_warmup(&client, config).await?;
 
-    let sampling = Arc::new(AtomicBool::new(true));
-    let peak_resident = Arc::new(AtomicU64::new(cluster_resident_bytes(&config.work_dir)));
-    let sampler = tokio::spawn(sample_cluster_resident(
-        config.work_dir.clone(),
-        Arc::clone(&sampling),
-        Arc::clone(&peak_resident),
-    ));
     let admitted = Arc::new(AtomicU64::new(0));
     let deadline = Instant::now() + config.duration;
     let start = Instant::now();
@@ -285,25 +262,12 @@ async fn run_requests(
         );
     }
     let duration_ms = elapsed_ms(start);
-    sampling.store(false, Ordering::Release);
-    sampler.await.map_err(|error| Error::Config(error.to_string()))?;
-    let peak_resident_bytes = peak_resident.load(Ordering::Acquire);
     cleanup(&client, &combined.written_operations, &warmup_writes, config).await?;
-    if peak_resident_bytes > config.memory_budget_bytes {
-        return Err(validation(
-            "memory_budget_bytes",
-            &format!(
-                "cluster peak resident bytes {peak_resident_bytes} exceeded budget {}",
-                config.memory_budget_bytes
-            ),
-        ));
-    }
     Ok(build_result(
         config,
         combined,
         duration_ms,
         estimated_dataset_bytes,
-        peak_resident_bytes,
     ))
 }
 
@@ -323,7 +287,7 @@ fn validate_config(config: &S3BenchConfig) -> Result<()> {
     Ok(())
 }
 
-async fn prepare_dataset(client: &S3HttpClient, config: &S3BenchConfig) -> Result<()> {
+async fn prepare_dataset(client: &S3HttpClient, config: &Invocation) -> Result<()> {
     if config.workload == S3BenchWorkload::Write {
         return Ok(());
     }
@@ -332,7 +296,7 @@ async fn prepare_dataset(client: &S3HttpClient, config: &S3BenchConfig) -> Resul
         client
             .request(
                 Method::PUT,
-                Some(BENCH_BUCKET),
+                Some(&config.bucket),
                 Some(&dataset_key(index)),
                 &[],
                 Some(body.clone()),
@@ -343,7 +307,7 @@ async fn prepare_dataset(client: &S3HttpClient, config: &S3BenchConfig) -> Resul
     Ok(())
 }
 
-async fn run_warmup(client: &S3HttpClient, config: &S3BenchConfig) -> Result<Vec<u64>> {
+async fn run_warmup(client: &S3HttpClient, config: &Invocation) -> Result<Vec<u64>> {
     let mut written_operations = Vec::new();
     for index in 0..config.warmup_operations {
         let workload = selected_workload(config.workload, config.mix, config.seed ^ index);
@@ -357,7 +321,7 @@ async fn run_warmup(client: &S3HttpClient, config: &S3BenchConfig) -> Result<Vec
 
 async fn run_worker(
     client: S3HttpClient,
-    config: S3BenchConfig,
+    config: Invocation,
     admitted: Arc<AtomicU64>,
     deadline: Instant,
     worker: usize,
@@ -392,7 +356,7 @@ async fn run_worker(
 
 async fn execute(
     client: &S3HttpClient,
-    config: &S3BenchConfig,
+    config: &Invocation,
     workload: S3BenchWorkload,
     operation: u64,
     warmup: bool,
@@ -407,7 +371,7 @@ async fn execute(
             client
                 .request(
                     Method::PUT,
-                    Some(BENCH_BUCKET),
+                    Some(&config.bucket),
                     Some(&key),
                     &[],
                     Some(deterministic_body(config.object_size, config.seed ^ operation)),
@@ -418,7 +382,7 @@ async fn execute(
         S3BenchWorkload::Read => {
             let key = dataset_key(dataset_index(operation, config.dataset_objects));
             let (_, body) = client
-                .request(Method::GET, Some(BENCH_BUCKET), Some(&key), &[], None, None)
+                .request(Method::GET, Some(&config.bucket), Some(&key), &[], None, None)
                 .await?;
             if body.len() != config.object_size {
                 return Err(validation("read", "response length differs from prepared object"));
@@ -432,7 +396,7 @@ async fn execute(
             let (_, body) = client
                 .request(
                     Method::GET,
-                    Some(BENCH_BUCKET),
+                    Some(&config.bucket),
                     Some(&key),
                     &[],
                     None,
@@ -453,7 +417,7 @@ async fn execute(
                 ("max-keys", config.list_limit.to_string()),
             ];
             let (_, body) = client
-                .request(Method::GET, Some(BENCH_BUCKET), None, &query, None, None)
+                .request(Method::GET, Some(&config.bucket), None, &query, None, None)
                 .await?;
             validate_list(&body)?;
         }
@@ -466,7 +430,7 @@ async fn cleanup(
     client: &S3HttpClient,
     written_operations: &[u64],
     warmup_writes: &[u64],
-    config: &S3BenchConfig,
+    config: &Invocation,
 ) -> Result<()> {
     let mut keys =
         Vec::with_capacity(config.dataset_objects + written_operations.len() + warmup_writes.len());
@@ -483,7 +447,8 @@ async fn cleanup(
     );
     let results = stream::iter(keys.into_iter().map(|key| {
         let client = client.clone();
-        async move { delete_key(&client, &key).await }
+        let bucket = &config.bucket;
+        async move { delete_key(&client, bucket, &key).await }
     }))
     .buffer_unordered(config.concurrency)
     .collect::<Vec<_>>()
@@ -492,14 +457,14 @@ async fn cleanup(
         result?;
     }
     client
-        .request(Method::DELETE, Some(BENCH_BUCKET), None, &[], None, None)
+        .request(Method::DELETE, Some(&config.bucket), None, &[], None, None)
         .await?;
     Ok(())
 }
 
-async fn delete_key(client: &S3HttpClient, key: &str) -> Result<()> {
+async fn delete_key(client: &S3HttpClient, bucket: &str, key: &str) -> Result<()> {
     client
-        .request(Method::DELETE, Some(BENCH_BUCKET), Some(key), &[], None, None)
+        .request(Method::DELETE, Some(bucket), Some(key), &[], None, None)
         .await?;
     Ok(())
 }
@@ -532,11 +497,10 @@ fn xml_values<'a>(xml: &'a str, tag: &str) -> Vec<&'a str> {
 }
 
 fn build_result(
-    config: &S3BenchConfig,
+    config: &Invocation,
     mut stats: WorkerStats,
     duration_ms: u64,
     estimated_dataset_bytes: u64,
-    peak_resident_bytes: u64,
 ) -> S3BenchResult {
     let total_operations = stats.operations.iter().map(|op| op.attempts).sum();
     let total_errors = stats.operations.iter().map(|op| op.attempts - op.successes).sum();
@@ -563,15 +527,9 @@ fn build_result(
         warmup_operations: config.warmup_operations,
         object_size: config.object_size,
         dataset_objects: config.dataset_objects,
-        memory_budget_bytes: config.memory_budget_bytes,
+        max_dataset_bytes: config.max_dataset_bytes,
         estimated_dataset_bytes,
-        peak_resident_bytes,
-        backing: S3BenchBacking {
-            kv: "mem-block",
-            wal: "mem-block",
-            diskio: "mem",
-            chunk_kv: "mem",
-        },
+        bucket: config.bucket.clone(),
         failures: stats.failures,
         by_operation,
         object_bytes_verified: false,
@@ -681,32 +639,6 @@ fn percentile(sorted: &[u64], percentile: usize) -> u64 {
 
 fn elapsed_ms(start: Instant) -> u64 {
     u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
-}
-
-fn cluster_resident_bytes(data_dir: &std::path::Path) -> u64 {
-    s3::load(data_dir).map_or(0, |(config, _)| {
-        config
-            .servers
-            .iter()
-            .filter_map(|server| server.pid)
-            .filter_map(process_resident_bytes)
-            .sum()
-    })
-}
-
-async fn sample_cluster_resident(data_dir: PathBuf, sampling: Arc<AtomicBool>, peak: Arc<AtomicU64>) {
-    while sampling.load(Ordering::Acquire) {
-        peak.fetch_max(cluster_resident_bytes(&data_dir), Ordering::AcqRel);
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    peak.fetch_max(cluster_resident_bytes(&data_dir), Ordering::AcqRel);
-}
-
-fn process_resident_bytes(pid: u32) -> Option<u64> {
-    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
-    let line = status.lines().find(|line| line.starts_with("VmRSS:"))?;
-    let kib = line.split_ascii_whitespace().nth(1)?.parse::<u64>().ok()?;
-    kib.checked_mul(1024)
 }
 
 fn validation(field: &str, message: &str) -> Error {

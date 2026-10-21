@@ -10,9 +10,9 @@ Run commands through `pixi run`. Read only the directory relevant to the task.
   `unit GROUP`, `e2e DOMAIN`, `profile NAME`, or `all`. Container lifecycle
   remains owned by `e2e-test/run.py`. Component runs retain phase logs and wall
   times under `.crowdb-runtime/artifacts/unit/`.
-  `clean` stops all CROWDB services owned by the current user, then removes
-  the complete runtime tree and build output. `clean-env` stops only recorded
-  ephemeral processes and preserves persistent clusters.
+  `clean-env` stops only recorded ephemeral processes and preserves persistent
+  clusters. `oci-clean --cluster NAME` removes owned containers and unused
+  bridges; data deletion requires explicit `--delete-data`.
 - **`ci-checks/`** — version consistency, production concurrency-container
   policy and package-to-Pixi-to-CI coverage. `task_graph.py` follows task calls
   through shell scripts; it is shared with timing collection.

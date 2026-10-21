@@ -3,9 +3,9 @@
 
 //! Selected S3 endpoint transport, independent of runtime/process lifecycle.
 
-use super::{http_error, load, sign_request, S3HttpExchange, S3HttpRequest};
+use super::{sign_request, S3HttpExchange, S3HttpRequest};
 use crate::error::{Error, Result};
-use std::{path::Path, time::Duration};
+use std::time::Duration;
 
 const BODY_PREVIEW_LIMIT: usize = 64 * 1024;
 
@@ -61,15 +61,6 @@ impl S3HttpClient {
         let mut client = Self::new(origins[0].clone())?;
         client.credentials = Some(credentials);
         Ok(client)
-    }
-
-    /// Load the endpoint persisted for a mini-cluster.
-    ///
-    /// # Errors
-    /// Returns an error when the cluster record or HTTP client is invalid.
-    pub fn from_data_dir(data_dir: &Path) -> Result<Self> {
-        let (_, record) = load(data_dir)?;
-        Self::new(record.endpoint)
     }
 
     /// Send one S3 request, optionally with an inclusive byte range.
@@ -268,4 +259,11 @@ fn require_host(request: &mut reqwest::Request) -> Result<()> {
         request.headers_mut().insert(reqwest::header::HOST, value);
     }
     Ok(())
+}
+
+fn http_error(error: &reqwest::Error) -> Error {
+    Error::UpstreamRpc {
+        node_id: "s3".into(),
+        status: error.to_string(),
+    }
 }

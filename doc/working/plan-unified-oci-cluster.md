@@ -374,7 +374,7 @@ Dependency: T04/T18/T19 and the direct path pass before deleting old executors.
   `app/crowdb-cli/src/commands.rs`, `app/crowdb-cli/src/commands/cluster.rs`,
   `app/crowdb-cli/src/commands/s3.rs`,
   `app/crowdb-cli/src/commands/container_cluster/`.
-- [ ] **T27 — Remove benchmark deployment effects**: migrate KV/DiskDB/ChunkDB/
+- [x] **T27 — Remove benchmark deployment effects**: migrate KV/DiskDB/ChunkDB/
   ChunkIO/S3 workloads to T04. `bench kv prepare` writes declared data only;
   remove `s3_bench::run`'s `start_memory/stop`, require selected access endpoint
   and credentials, and preserve workload measurement/client workers. Validate
@@ -1573,3 +1573,52 @@ do not mark unexecuted acceptance passed.
   bounded helpers. The only new test correction was matching Clap's precise
   `unexpected argument` message for the removed root flag. No runtime behavior
   or assertion of removal was relaxed.
+
+## Attached workloads and removal of native S3 fixture deployment
+
+- T27 is implemented. KV/DiskDB/ChunkDB/ChunkIO/S3 workloads require a common
+  selected cluster before native connection or data writes; unavailable/mixed
+  targets never start services or use implicit localhost. KV prepare no longer
+  writes its undeclared warmup key. Workload workers/measurement remain intact.
+- S3 benchmark uses the selected cluster's signed native client and a unique
+  invocation bucket. Remove its work-directory/memory-cluster controls, invented
+  backend/RSS claims and every start/stop/reset call. The declared dataset bound
+  is `--max-dataset-bytes`. Remove the now-unreferenced shared native mini-cluster
+  implementation and local launch format; the transport is a small facade plus
+  client/exchange/signing children. Old tests solely exercising the retired
+  native format are replaced by ownership/persistence tests on current host
+  receipts, S3 target-before-upload tests and native transport validation.
+- Actual one/three-node checks run KV prepare and all five S3 workloads. Before/
+  after snapshots match container IDs/images/PIDs, service identities/PIDs,
+  current operation IDs and members. No invocation benchmark bucket remains.
+  Private records are under `.crowdb-runtime/artifacts/cli-workloads-c714c857/`.
+- Actual three-node native KV read/write, DiskDB allocate/mix, ChunkDB allocate/
+  mix and ChunkIO large/small writes pass after matching the declared local
+  layout. Service PIDs remain unchanged. DiskDB no longer assumes three groups
+  with four disks, and verifies returned group identity, allocatable capacity
+  and accounting units. Remove the caller-supplied pretend backend mode.
+- Initial ChunkDB command used unsupported 64 KiB local strips. The precise
+  capability rejection exposed mirror requests incorrectly carrying EC widths;
+  encode only the chosen placement shape. Existing ChunkIO mirror support is
+  exposed through `--mirror-copies`; local checks use 1 MiB blocks. No server
+  policy, placement safety or readiness assertion is weakened.
+- DiskDB mix initially passed RPC accounting but failed strict busy-space delta.
+  Diagnosis: its final compaction included frees predating its baseline; owner
+  scanner logs show 24-hour grace and no reclamation, ruling out the earlier
+  scanner hypothesis. Apply existing pending frees once before taking the mixed
+  baseline. Retain exact delta/uniqueness/error checks and report baseline/final
+  busy bytes. New opt-in process regression first creates/frees 256 MiB and
+  asserts the pending state, then runs the ordinary attached benchmark. Removing
+  normalization reproduces failure with baseline 2468347904, final 2260729856,
+  delta 0, expected 60817408; restoring it passes. T32 must register this opt-in
+  fixture in CI rather than count default ignored execution as coverage.
+- Focused workload/target/transport suites and affected all-target lint pass.
+  The opt-in process regression runs explicitly with
+  `CROWDB_TEST_CLUSTER_MANAGEMENT_ENDPOINT=http://127.0.0.1:21700 pixi run cargo
+  test -p crowdb-cli --test cluster_workloads_test -- --ignored --nocapture`.
+- T19 resumes as the sole active task. Host/containerd CLI, trust extension,
+  remaining legacy process/RPC tooling migration, registered acceptance and
+  final permanent-design cleanup still remain. Native rootful containerd access
+  remains unavailable: host socket is root:root 0660 and `sudo -n true` requires
+  a password. The pinned nerdctl 2.4.1 environment installs/executes, which is
+  tool availability only and is not A31 deployment acceptance.

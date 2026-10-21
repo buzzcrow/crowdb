@@ -89,3 +89,7 @@ path = "tests/cluster_status_test.rs"
 [[test]]
 name = "cluster_lifecycle_test"
 path = "tests/cluster_lifecycle_test.rs"
+
+[[test]]
+name = "cluster_workloads_test"
+path = "tests/cluster_workloads_test.rs"

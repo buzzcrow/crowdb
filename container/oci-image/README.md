@@ -140,6 +140,27 @@ They require no Docker socket or local deployment directory. HTTP diagnostics
 redact authorization and session tokens. The CLI has no S3-specific cluster
 lifecycle or container cleanup command.
 
+Workloads attach to the same selected cluster. They never start, stop, reset or
+provision it. Native KV/storage clients additionally need network reachability
+to the advertised RPC addresses; HTTP-only port forwarding is insufficient.
+
+```bash
+pixi run crowdb-cli --cluster demo-three bench kv prepare --store 0 --group 1 --keys 100
+pixi run crowdb-cli --cluster demo-three bench s3 mix --operations 100 --dataset-objects 8
+pixi run crowdb-cli --cluster demo-three bench diskdb mix --duration-secs 2 --concurrency 1
+pixi run crowdb-cli --cluster demo-three bench chunkdb allocate --duration-secs 2 --copy-count 1
+pixi run crowdb-cli --cluster demo-three bench chunkio write --objects 1 --duration-secs 2 \
+  --mirror-copies 1 --block-size 1048576 --chunk-size 16777216 --prefetch-chunks 1
+```
+
+The local storage policy accepts 1 MiB mirror strips with one or two copies.
+Use the deployment's supported layout explicitly; a benchmark never changes
+that policy. DiskDB checks current disk-group geometry and accounting units
+instead of requiring a fixed group/disk count. `bench kv prepare` writes only
+its declared keys. S3 workloads use a fresh bucket per invocation and delete
+only that workload's objects/bucket. `--max-dataset-bytes` bounds the prepared
+dataset; benchmark output does not claim remote memory usage or backend type.
+
 ## Direct Docker and Compose
 
 A direct single-container cluster needs a volume and four published ports:

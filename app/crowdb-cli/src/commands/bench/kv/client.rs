@@ -38,7 +38,7 @@ impl Default for KvClientTunables {
     }
 }
 
-/// Build a `CrowdbKvClient` from `--system-*` with the given
+/// Build a `CrowdbKvClient` from the resolved cluster target with the given
 /// `read_endpoint_policy`.
 ///
 /// # Errors
