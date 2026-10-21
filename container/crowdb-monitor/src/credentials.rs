@@ -136,6 +136,11 @@ impl ServerCredentials {
         &self.iceberg_manage_token
     }
 
+    #[must_use]
+    pub fn iceberg_read_token(&self) -> &str {
+        &self.iceberg_read_token
+    }
+
     /// # Errors
     /// Requires an existing client file to match the authoritative user and endpoints.
     pub fn verify_client(&self, client: &ClientCredentials) -> Result<(), CredentialError> {

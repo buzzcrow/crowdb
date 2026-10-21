@@ -794,6 +794,14 @@ do not mark unexecuted acceptance passed.
   replacement as unknown, even when another instance of that kind is healthy.
   Three new monitor observation, two status and nine reducer tests pass, with
   affected all-target clippy/format. Aggregate collection/API/CLI remain pending.
+- Node Web observation now exposes bounded current local evidence and concurrent
+  non-mutating S3, authenticated Iceberg and authenticated Dataset probes.
+  Protocol facts require the current Access operation and current local service
+  health; listeners, response bodies and deadlines are bounded. Server secrets
+  remain local. The observation route bypasses deployment recovery middleware.
+  Four protocol probe tests and four target/observation route tests pass;
+  affected all-target clippy and formatting pass. Aggregate collection remains
+  pending; this does not complete T16 or resolve the retained-address choice.
 
 ## Open Questions
 

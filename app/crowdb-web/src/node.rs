@@ -12,6 +12,7 @@ pub(crate) use update::update;
 mod authority;
 mod hardware;
 pub(crate) mod initialization;
+pub(crate) mod observation;
 mod preparation;
 pub(crate) mod storage;
 pub(crate) mod target;

@@ -17,6 +17,7 @@ pub struct NodeRuntimeObservation {
     pub setup: Option<NodeSetupStatus>,
     pub observed_at_unix_ms: u64,
     pub services: Vec<NodeServiceObservation>,
+    pub protocols: Vec<crate::mgmt::cluster::DependencyObservation>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

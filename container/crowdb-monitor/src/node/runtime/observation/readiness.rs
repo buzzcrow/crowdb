@@ -33,5 +33,6 @@ pub(in crate::node::runtime) fn observe(
         setup: setup::NodeSetup::status(root)?,
         observed_at_unix_ms: now,
         services,
+        protocols: Vec::new(),
     })
 }

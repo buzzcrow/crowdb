@@ -34,6 +34,9 @@ pub mod state;
 
 pub use state::AppState;
 
+#[cfg(feature = "test-util")]
+pub use node::observation::protocol_probe_for_tests;
+
 /// Run standard-node automatic admission independently of browser connections.
 #[must_use]
 pub fn start_node_auto_join(state: AppState) -> tokio::task::JoinHandle<()> {
@@ -66,6 +69,7 @@ pub fn router(state: AppState) -> axum::Router {
             .route("/api/node/admissions", get(node::admissions))
             .route("/api/node/status", get(node::status))
             .route("/api/cluster/target", get(node::target::identity))
+            .route("/api/cluster/node-observation", get(node::observation::read))
             .route("/api/authority", get(managed::authority))
             .route("/api/preview", get(managed::snapshot))
             .route("/api/chunk-kv/catalog", get(chunk_kv::catalog))
@@ -259,6 +263,7 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/api/node/cancel", post(node::cancel))
         .route("/api/node/status", get(node::status))
         .route("/api/cluster/target", get(node::target::identity))
+        .route("/api/cluster/node-observation", get(node::observation::read))
         .route(
             "/api/node/auto-join",
             get(node::auto_join::status).post(node::auto_join::update),

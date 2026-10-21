@@ -87,7 +87,7 @@ async fn bootstrap_status(operation: &PreparedBootstrap) -> Value {
 }
 
 pub(crate) async fn guard(State(state): State<AppState>, request: Request, next: Next) -> Response {
-    if *request.method() == Method::GET && request.uri().path() == "/api/cluster/target" {
+    if observation_request(&request) {
         return next.run(request).await;
     }
     if state.node_monitor_url.is_none() {
@@ -185,6 +185,14 @@ pub(crate) async fn guard(State(state): State<AppState>, request: Request, next:
         }
     }
     next.run(request).await
+}
+
+fn observation_request(request: &Request) -> bool {
+    *request.method() == Method::GET
+        && matches!(
+            request.uri().path(),
+            "/api/cluster/target" | "/api/cluster/node-observation"
+        )
 }
 
 fn reconcile_cleanup(state: &AppState) -> Result<(), Failure> {

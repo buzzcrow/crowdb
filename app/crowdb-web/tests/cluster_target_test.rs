@@ -105,3 +105,32 @@ async fn absent_or_corrupt_publication_cannot_report_an_accepted_local_uuid_as_c
     let (status, error) = get(fixture.state.clone()).await;
     assert_eq!(status, StatusCode::CONFLICT, "{error}");
 }
+
+#[tokio::test]
+async fn node_observation_does_not_recover_or_copy_a_pending_deployment() {
+    let fixture = TestClusterTarget::start().await;
+    std::fs::write(
+        fixture.root.path().join("prepared-bootstrap.json"),
+        serde_json::to_vec(&fixture.prepared).unwrap(),
+    )
+    .unwrap();
+    crowdb_monitor::ServerCredentials::load_or_create(fixture.root.path()).unwrap();
+    let before = committed(&fixture).await;
+    let response = crowdb_web::router(fixture.state.clone())
+        .oneshot(
+            Request::builder()
+                .uri("/api/cluster/node-observation")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(committed(&fixture).await, before);
+    assert_eq!(
+        std::fs::read_dir(fixture.root.path().join("console"))
+            .unwrap()
+            .count(),
+        0
+    );
+}
