@@ -48,10 +48,15 @@ pub(super) async fn create_local(
 }
 
 async fn verify_creation(client: &ServerClient, store_id: u64, request: &AddGroupRequest) -> Result<()> {
-    if request.deployment.is_none() {
-        return Ok(());
-    }
-    let actual = client.group_creation(store_id, request.group_id).await?;
+    let actual = match client.group_creation(store_id, request.group_id).await {
+        Ok(actual) => actual,
+        Err(Error::UpstreamRpc { status, .. })
+            if request.deployment.is_none() && status.contains("HTTP 404") =>
+        {
+            return Ok(())
+        }
+        Err(error) => return Err(error),
+    };
     if actual.version != 1
         || actual.store_id != store_id
         || actual.group_id != request.group_id

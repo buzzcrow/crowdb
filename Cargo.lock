@@ -990,6 +990,7 @@ dependencies = [
  "crowdb-console-shared",
  "crowdb-kv",
  "crowdb-kv-client",
+ "crowdb-kv-server",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
  "crowdb-test-harness",

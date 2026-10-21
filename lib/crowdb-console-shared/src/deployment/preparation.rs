@@ -18,6 +18,45 @@ use crate::{
 
 pub const DEFAULT_PREPARATION_KEY: &[u8] = b"/deployment/default-preparation";
 
+pub(crate) async fn check_group_creation(ctx: &OpContext, store: u64, group: u64) -> Result<()> {
+    if for_group(ctx, store, group)
+        .await?
+        .is_some_and(|current| !current.retired)
+    {
+        return Err(Error::Config(
+            "group is reserved by accepted default preparation".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) async fn retire_group(ctx: &OpContext, store: u64, group: u64) -> Result<()> {
+    if let Some(current) = for_group(ctx, store, group).await? {
+        retire(ctx, &current.bootstrap, &current.operation_id).await?;
+    }
+    Ok(())
+}
+
+async fn for_group(ctx: &OpContext, store: u64, group: u64) -> Result<Option<DefaultPreparation>> {
+    if (store, group) != (0, 1) {
+        return Ok(None);
+    }
+    let GetOutcome::Found { value, .. } = ctx
+        .kv()
+        .get(0, 0, DEFAULT_PREPARATION_KEY, ReadMode::Linearizable, None)
+        .await?
+    else {
+        return Ok(None);
+    };
+    if value.len() > 32768 {
+        return Err(Error::Config("default preparation exceeds its size bound".into()));
+    }
+    let current: DefaultPreparation = serde_json::from_slice(&value).map_err(config_error)?;
+    let bootstrap = confirmed(ctx, &current.bootstrap).await?;
+    current.validate(&bootstrap)?;
+    Ok(Some(current))
+}
+
 /// Reserve fixed identities before creating any ordinary group, disks or services.
 ///
 /// # Errors

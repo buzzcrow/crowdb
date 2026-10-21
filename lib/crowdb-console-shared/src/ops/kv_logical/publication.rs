@@ -34,29 +34,14 @@ pub(super) async fn group(
     let authority = ctx.membership();
     let mut complete_members = Vec::with_capacity(members.len());
     for (node_id, replica_id) in members {
-        let endpoint = ctx
-            .sysmd()
-            .read_all_kv_server_instances()
-            .await?
-            .into_iter()
-            .find_map(|(_, instance)| {
-                (instance
-                    .extra
-                    .as_ref()
-                    .and_then(|extra| extra.kv_server.as_ref())
-                    .and_then(|server| server.node_id)
-                    == Some(*node_id))
-                .then_some(instance.rpc_endpoint)
-            });
-        let endpoint = match endpoint {
-            Some(endpoint) => endpoint,
-            None => super::rpc_endpoint_for_store(ctx, *node_id, store_id)
-                .await
-                .ok_or_else(|| Error::Validation {
-                    field: "members.endpoint".into(),
-                    message: format!("node {node_id} has no KV endpoint for store {store_id}"),
-                })?,
-        };
+        // KV registrations advertise HTTP management origins. Resolve the
+        // store listener before publishing a native membership endpoint.
+        let endpoint = super::rpc_endpoint_for_store(ctx, *node_id, store_id)
+            .await
+            .ok_or_else(|| Error::Validation {
+                field: "members.endpoint".into(),
+                message: format!("node {node_id} has no KV endpoint for store {store_id}"),
+            })?;
         complete_members.push(GroupMember {
             replica_id: *replica_id,
             node_id: *node_id,
@@ -72,7 +57,18 @@ pub(super) async fn group(
     let value = GroupValue { store_id, group_id };
     let mut replicas: Vec<_> = members
         .iter()
-        .map(|(node_id, replica_id)| replica_value(store_id, group_id, *replica_id, *node_id))
+        .map(|(node_id, replica_id)| {
+            let mut value = replica_value(store_id, group_id, *replica_id, *node_id);
+            if let Some(member) = installing
+                .record()
+                .members
+                .iter()
+                .find(|member| member.replica_id == *replica_id)
+            {
+                value.endpoint.clone_from(&member.endpoint);
+            }
+            value
+        })
         .collect();
     replicas.sort_unstable_by_key(|replica| replica.replica_id);
     let mut batch = vec![put(&key, &value)?];

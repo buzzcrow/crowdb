@@ -14,7 +14,7 @@ use std::sync::Arc;
 pub struct TestPreparationAuthority {
     pub ctx: OpContext,
     pub bootstrap: PreparedBootstrap,
-    store: Arc<PxKvStore>,
+    pub store: Arc<PxKvStore>,
     _root: crowdb_test_harness::test_dirs::TestDir,
 }
 

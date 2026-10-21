@@ -572,6 +572,22 @@ do not mark unexecuted acceptance passed.
   protocol/monitor/shared/Web/server all-target clippy passed. Shared replay
   tests cover unknown creation replies and foreign/retired owner rejection.
   Automatic metadata creation and consumer migration are still pending.
+- The shared T09 executor now creates, wires and publishes only its accepted
+  native group and performs a linearizable read before declaring it readable.
+  Seven focused integration tests passed with real native management/WAL paths:
+  one and three ordinary replicas, retained data on replay, native transport
+  addresses distinct from HTTP registration, unowned/missing replica rejection,
+  explicit deletion retirement, and preservation of later operator membership.
+  Three-replica tests use a pinned in-memory Group-0 authority and are not the
+  three-voter Group-0/container acceptance proof. Projection validation was
+  corrected to match authoritative native endpoints after two initial tests
+  exposed empty endpoint assumptions. Shared replay/publication suites and the
+  affected all-target clippy gate pass. Wiring this executor into normal node
+  setup and migrating storage consumers remain T09/T10 work.
+- Full `pixi run cargo test -p crowdb-console-shared` passed after the shared
+  executor and publication fixes, together with its fmt and all-target clippy
+  gates. Existing local launch, bootstrap replay, membership, S3 and service
+  intent tests remain passing.
 - No direct application Docker, Compose, native containerd or protocol-access acceptance has
   run yet. No end-to-end or hardware capability is marked verified.
 
