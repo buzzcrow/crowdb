@@ -101,9 +101,11 @@ path through the shared `ops` module:
 - **Web**: `user → crowdb-web (Axum) → shared (ops module) → group-0 sysdata + crowdb-kv-server`
 - **CLI**: `user → crowdb-cli → shared (ops module) → group-0 sysdata + crowdb-kv-server mgmt`
 
-Both frontends build an `OpContext` with Group 0 discovery seeds. The CLI
-uses `--system-ip` and `--system-port`; production Web uses a versioned process
-configuration. Both read confirmed hardware and logical records through Group 0
+Both frontends build an `OpContext` with Group 0 discovery seeds. Attached CLI
+commands select `--cluster` or `--management-endpoint`, verify the confirmed
+cluster UUID through the management origin, then verify the same UUID through
+native Group 0 before hardware/KV operations and native workloads. Production
+Web uses a versioned process configuration. Both read confirmed hardware and logical records through Group 0
 and resolve node management endpoints from live registration. The process
 launch registry is local to each bare-metal console. Docker process state is
 owned by `crowdb-monitor`.
@@ -145,8 +147,8 @@ call.
 - The web SPA **does not** reimplement business logic; it calls
   `shared` via the Axum backend, never `crowdb-kv-server` directly.
 - Both frontends build an `OpContext` and call `shared`'s `ops`
-  module directly — the CLI from `--system-ip` / `--system-port` global
-  flags, the web backend via `AppState::op_context()` (sharing the
+  module directly — the CLI from its verified application target,
+  the web backend via `AppState::op_context()` (sharing the
   cached `CrowdbKvClient` and Group 0 management seeds).
 - Shared hardware and logical operations provide the same authority and
   conditional publication rules to both frontends. Deployment-mode policy
@@ -439,14 +441,19 @@ backend-facing contract here:
 
 - Binary: `crowdb-cli` (four-domain structure: `crowdb-cli <domain> <verb>`).
 - Parser: `clap` derive; one module per domain under `commands/`.
-- **Direct-to-system-group call path.** Every verb builds an `OpContext`
-  seeded with `--system-ip` / `--system-port` (any system-group management
-  endpoint) and talks directly to system metadata via `CrowdbSysmdClient` and to
-  individual `crowdb-kv-server` mgmt APIs via `ServerClient`. There is
-  no `crowdb-web` intermediary. Leader discovery is automatic. The global
-  connection flags are `--system-ip` (default `127.0.0.1`, env
-  `CROWDB_SYSTEM_IP`) and `--system-port` (default system-group management
-  port, env `CROWDB_SYSTEM_PORT`).
+- Hardware, logical KV, S3 and workload commands require `--cluster` or
+  `--management-endpoint`. Every selected origin must report the same confirmed
+  UUID; a saved binding also pins that UUID. Missing, conflicting or unreachable
+  targets fail before data access without a localhost or process-registry
+  fallback. Native consumers additionally check transport reachability and the
+  committed Group-0 UUID before building their `OpContext`. Metadata operations
+  then use `CrowdbSysmdClient` and node management APIs directly. Signed S3
+  clients obtain credentials from the selected management origin.
+- Attached commands never read a launch registry or create a runtime receipt.
+  Endpoint-only attachment cannot start or stop containers. Runtime lifecycle
+  requires a named local ownership receipt; application identity alone does not
+  authorize it. Legacy process executors retain a separate system-address and
+  registry context until removed.
 - Output is console-first and human-readable. Every invocation identifies the
   copyable command and final result. HTTP operations show request/response
   headers and body disposition; JSON and XML response bodies are pretty

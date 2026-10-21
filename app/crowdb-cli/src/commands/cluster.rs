@@ -18,7 +18,7 @@ use std::process::ExitCode;
 
 use clap::Subcommand;
 
-use crate::commands::authority_context;
+use crate::commands::{authority_context, legacy_authority_context};
 use crate::Cli;
 
 async fn local_deploy_context(
@@ -34,7 +34,7 @@ async fn local_deploy_context(
             crowdb_console_shared::ConsoleConfig::default(),
         ));
     }
-    let ctx = authority_context(cli).await?;
+    let ctx = legacy_authority_context(cli).await?;
     {
         let racks = crowdb_console_shared::ops::hardware::list_racks_from_group0(&ctx)
             .await
@@ -246,7 +246,7 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                 eprintln!("error: cluster init requires --registry and a versioned bootstrap file");
                 return ExitCode::from(2);
             };
-            let ctx = match authority_context(cli).await {
+            let ctx = match legacy_authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
@@ -558,7 +558,7 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                     return ExitCode::from(2);
                 }
             };
-            let ctx = match authority_context(cli).await {
+            let ctx = match legacy_authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };
@@ -610,7 +610,7 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
             } else {
                 None
             };
-            let ctx = match authority_context(cli).await {
+            let ctx = match legacy_authority_context(cli).await {
                 Ok(c) => c,
                 Err(c) => return c,
             };

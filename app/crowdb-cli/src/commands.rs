@@ -29,16 +29,8 @@ use crowdb_console_shared::ops::OpContext;
 
 use crate::Cli;
 
-/// Build a Group 0 context for hardware operations without reading the old
-/// local console state. The CLI endpoint is a discovery seed, while the
-/// optional launch registry is validated only as local process policy.
+/// Build a Group 0 context from the verified application target.
 pub(crate) async fn authority_context(cli: &Cli) -> Result<OpContext, ExitCode> {
-    if let Some(path) = &cli.registry {
-        crowdb_console_shared::config::web::LaunchRegistry::load(path).map_err(|error| {
-            eprintln!("error: load launch registry: {error}");
-            ExitCode::from(2)
-        })?;
-    }
     let (management, rpc) = group0_connection(cli).await?;
     Ok(OpContext::new(
         rpc,
@@ -47,25 +39,46 @@ pub(crate) async fn authority_context(cli: &Cli) -> Result<OpContext, ExitCode> 
     ))
 }
 
-pub(crate) async fn group0_connection(cli: &Cli) -> Result<(Vec<String>, String), ExitCode> {
-    if let Some(target) = &cli.target {
-        target.require_native_transport().await.map_err(|error| {
-            eprintln!("error: cluster native transport: {error}");
+/// Isolate process-deployment callers until their public executors are retired.
+pub(crate) async fn legacy_authority_context(cli: &Cli) -> Result<OpContext, ExitCode> {
+    if let Some(path) = &cli.registry {
+        crowdb_console_shared::config::web::LaunchRegistry::load(path).map_err(|error| {
+            eprintln!("error: load launch registry: {error}");
             ExitCode::from(2)
         })?;
-        let native = crowdb_kv_client::CrowdbKvClient::new(crowdb_kv_client::ClientConfig::new(
-            target.identity.group0_management_endpoints.clone(),
-        ));
-        native.seed_leader(0, 0, target.identity.group0_rpc_endpoints[0].clone());
-        target.verify_native_authority(&native).await.map_err(|error| {
-            eprintln!("error: cluster native identity: {error}");
-            ExitCode::from(2)
-        })?;
-        return Ok((
-            target.identity.group0_management_endpoints.clone(),
-            target.identity.group0_rpc_endpoints[0].clone(),
-        ));
     }
+    let (management, rpc) = legacy_group0_connection(cli).await;
+    Ok(OpContext::new(
+        rpc,
+        management,
+        crowdb_console_shared::ConsoleConfig::default(),
+    ))
+}
+
+pub(crate) async fn group0_connection(cli: &Cli) -> Result<(Vec<String>, String), ExitCode> {
+    let target = cli.target.as_ref().ok_or_else(|| {
+        eprintln!("error: select --cluster or --management-endpoint before a cluster operation or workload");
+        ExitCode::from(2)
+    })?;
+    target.require_native_transport().await.map_err(|error| {
+        eprintln!("error: cluster native transport: {error}");
+        ExitCode::from(2)
+    })?;
+    let native = crowdb_kv_client::CrowdbKvClient::new(crowdb_kv_client::ClientConfig::new(
+        target.identity.group0_management_endpoints.clone(),
+    ));
+    native.seed_leader(0, 0, target.identity.group0_rpc_endpoints[0].clone());
+    target.verify_native_authority(&native).await.map_err(|error| {
+        eprintln!("error: cluster native identity: {error}");
+        ExitCode::from(2)
+    })?;
+    Ok((
+        target.identity.group0_management_endpoints.clone(),
+        target.identity.group0_rpc_endpoints[0].clone(),
+    ))
+}
+
+async fn legacy_group0_connection(cli: &Cli) -> (Vec<String>, String) {
     let mgmt_url = format!("http://{}:{}", cli.system_ip, cli.system_port);
     let group0_endpoint = match crowdb_console_shared::clients::http::ServerClient::new(&mgmt_url) {
         Ok(client) => client
@@ -77,5 +90,5 @@ pub(crate) async fn group0_connection(cli: &Cli) -> Result<(Vec<String>, String)
         Err(_) => None,
     }
     .unwrap_or_else(|| format!("{}:{}", cli.system_ip, cli.system_port));
-    Ok((vec![mgmt_url], group0_endpoint))
+    (vec![mgmt_url], group0_endpoint)
 }

@@ -72,9 +72,13 @@ class ImageIdentityTest(unittest.TestCase):
         source = self.root / "app/crowdb-cli/src/commands/cluster/local/docker.rs"
         source.parent.mkdir(parents=True)
         source.write_text("host lifecycle\n")
+        registry = self.root / "app/crowdb-cli/src/commands/kv/server/registry.rs"
+        registry.parent.mkdir(parents=True)
+        registry.write_text("host process controls\n")
         self.commit()
         revision = self.git("rev-parse", "HEAD")
         source.write_text("changed host lifecycle\n")
+        registry.write_text("isolated host process controls\n")
         self.assertTrue(verify_server_sources(self.root, revision)["server_sources_match"])
         shared = self.root / "lib/crowdb-console-shared/src/deployment.rs"
         shared.parent.mkdir(parents=True)

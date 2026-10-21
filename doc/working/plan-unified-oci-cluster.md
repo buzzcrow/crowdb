@@ -103,12 +103,31 @@ Existing implementation can be reused; these are the outstanding parts.
 
 - [~] **T04 — Finish common target coverage** (A14/A28).
   Named/endpoint-only UUID-checked targeting and native signed S3/workloads work.
-  Remove remaining legacy logical-command address/registry fallback with T29.
+  All retained hardware/KV/S3/workload commands now require a selected target
+  before dispatch. Their Group-0 connection has no system-address fallback and
+  never loads a launch registry. Remaining process executors use an explicitly
+  separate legacy context pending T29; they cannot accept attached targets.
+  The 15-family negative matrix covers missing selection with a listening
+  legacy endpoint, conflicting UUIDs, unreachable management and native RPC.
+  - [x] T04a: common dispatch/connection coverage and registered plain-Docker
+    three-node attachment. Saved and endpoint-only targets, native KV/S3 reads
+    on every node, fixed processes/containers, no runtime receipt and rejected
+    endpoint-only stop pass. The fixture declares reachable public protocol URIs.
+    32 affected CLI tests, all-target clippy, fmt and 159 fixture tests pass;
+    CI inventory verifies 390 named flows (execution is separate).
+  - [ ] T04b: migrate the old system-address/registry CLI E2E callers together
+    with T29 before certifying complete retained-command acceptance. The useful
+    hardware, logical topology and KV round-trip cases still use the old
+    direct-only fixture; the new acceptance does not certify those old paths.
   Owners: CLI `commands/cluster/target.rs`, `commands.rs`, shared deployment target.
 - [ ] **T05–T07 — Finish formation negatives and interruption coverage**
   (A03–A05/A19–A21). One/three-node normal startup works. Verify missing/extra/
   duplicate/foreign peers, incompatible credentials/policies, simultaneous
   coordinators, sealed-manifest conflicts and lost replies without rebootstrap.
+  A concrete diagnostic gap found during T04 fixture setup: invalid discovery
+  seed URLs reuse `NodeManagementError::PhysicalHost`, incorrectly reporting
+  physical-host identity. Split the diagnostic and validate seeds before node
+  effects; include malformed/credential-bearing seeds without leaking values.
   Owners: Web auto-join/initialization, shared bootstrap/admission, monitor tests.
 - [ ] **T15 — Complete editable startup acceptance** (A01/A02).
   Management starts while setup is pending. Migrate remaining readonly/legacy
@@ -213,6 +232,21 @@ Existing implementation can be reused; these are the outstanding parts.
   Final timing is pass (140.18 seconds including owned cleanup); containers,
   bridge and successful disposable volumes were removed.
 
+- T04a evidence: `.crowdb-runtime/artifacts/r243-t04-registered-5/`.
+  Registered `console::cli_container::plain_docker_target_attachment` passed on
+  image S after server-source verification. Direct Docker startup (no CLI
+  deployment) configured three local nodes, discovery HTTP origins, the actual
+  Docker physical-host ID and reachable S3/Iceberg/Dataset public URIs.
+  Exact fixture `crowdb-e2e-68137577a49041d1a1c6c493a216719a`, cluster UUID
+  `2a9b695e-a927-4205-845d-4ff5ae97deca`; final status pass in 55.63 seconds.
+  `attachment-proof.json` records three KV and three S3 reads, unchanged container
+  IDs/image IDs/service PIDs, and absence of a runtime ownership receipt.
+  Containers and the owned bridge were removed; bind-mounted evidence is retained.
+  Earlier attempts remain under `r243-t04-registered{,-2,-3,-4}`: pre-created
+  logs violated fresh-root admission; malformed discovery URLs were mislabeled
+  as a physical-host error; missing public URIs advertised container localhost.
+  These fixture input defects were corrected without changing startup checks,
+  adding retries or extending deadlines. Failed node data was retained.
 - Previous F02 image: `crowdb-node:r243-r`; archive `target/crowdb-r243-r.oci.tar`.
   Source tree `67269b7a179cfa4ddc8aaa12a740ac3155f29f1f` at `00b3fe00`;
   server source identity verified before running the registered cases.

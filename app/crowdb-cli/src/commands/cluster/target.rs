@@ -22,9 +22,9 @@ pub(crate) async fn resolve(cli: &Cli) -> Result<Option<ResolvedClusterTarget>, 
         return Ok(None);
     }
     if cli.cluster.is_none() && cli.management_endpoints.is_empty() {
-        if matches!(&cli.command, crate::Domain::Bench { .. }) {
+        if supports_attachment(&cli.command) {
             return Err(failure(
-                "select --cluster or --management-endpoint before a workload",
+                "select --cluster or --management-endpoint before a cluster operation or workload",
             ));
         }
         return Ok(None);
@@ -38,11 +38,20 @@ pub(crate) async fn resolve(cli: &Cli) -> Result<Option<ResolvedClusterTarget>, 
 }
 
 fn validate_command(command: &crate::Domain) -> Result<(), ExitCode> {
+    if !supports_attachment(command) {
+        return Err(failure(
+            "this operation does not support application target attachment",
+        ));
+    }
+    Ok(())
+}
+
+fn supports_attachment(command: &crate::Domain) -> bool {
     use crate::{
         commands::{BenchVerb, ClusterVerb},
         Domain, KvVerb,
     };
-    let supported = matches!(
+    matches!(
         command,
         Domain::Cluster {
             verb: ClusterVerb::Status { .. }
@@ -62,13 +71,7 @@ fn validate_command(command: &crate::Domain) -> Result<(), ExitCode> {
                     | BenchVerb::Chunkio(_)
                     | BenchVerb::S3(_)
             }
-    );
-    if !supported {
-        return Err(failure(
-            "this operation does not support application target attachment",
-        ));
-    }
-    Ok(())
+    )
 }
 
 pub(super) fn load(name: &str) -> Result<ClusterTargetBinding, String> {

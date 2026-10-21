@@ -36,6 +36,7 @@ from console_bootstrap_fixture import BootstrapWebCluster
 from console_shell_fixture import ShellBrowserCluster
 from console_discovery_browser_fixture import DiscoveryBrowserCluster
 from console_cli_fixture import CliContainerCluster
+from console_cli_target import CliAttachedCluster
 from console_native_fixture import NativeConsoleCluster
 from console_standalone_fixture import StandaloneWebCluster
 from console_registry_fixture import RegistryWebCluster
@@ -411,6 +412,7 @@ CONSOLE_OPERATION_CASES = (
     Case("console.cli.container", "console::cli_container::confirmed_group_zero_replay", cli_replay="bound"),
     Case("console.cli.container", "console::cli_container::confirmed_storage_replay", cli_replay="storage"),
     Case("console.cli.container", "console::cli_container::terminal_chunk_writer_recovery", cli_replay="terminal-writer"),
+    Case("console.cli.container", "console::cli_container::plain_docker_target_attachment", cli_replay="attachment"),
     Case("console.managed", "console::managed::authority_outage", console_browser="Managed native authority outage hides stale topology and retains monitor observation"),
     Case("console.managed", "console::managed::hardware_and_user_flows", console_browser="Managed native KV, Iceberg, S3 and Chunk operations retain hardware boundaries"),
     Case("console.browser.kv", "console::browser_kv::pagination", shell_browser="Group selection opens data directly; pages replace rows and expose complete values"),
@@ -644,6 +646,8 @@ def allocate_cluster(case, image, artifacts, bundle, data_root):
                                     diskless_nodes=case.native_diskless_nodes,
                                     data_root=data_root)
     if case.cli_replay:
+        if case.cli_replay == "attachment":
+            return CliAttachedCluster(image, artifacts, bundle, data_root=data_root)
         return CliContainerCluster(image, artifacts, bundle, checkpoint=case.cli_replay, data_root=data_root)
     if case.shell_browser:
         return ShellBrowserCluster(image, artifacts, bundle, data_root=data_root)

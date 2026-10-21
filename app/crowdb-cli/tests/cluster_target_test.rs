@@ -4,8 +4,12 @@
 #[path = "common/cluster_target.rs"]
 mod common;
 
+#[path = "common/target_commands.rs"]
+mod operations;
+
 use common::TestTargetServer;
 use crowdb_console_shared::deployment::target::ClusterTargetBinding;
+use operations::{test_operations, test_rejected_operation};
 use std::{os::unix::fs::PermissionsExt, path::Path, process::Command};
 
 fn run(root: &Path, selected: &[&str]) -> String {
@@ -40,17 +44,23 @@ async fn cli_mixed_identities_reject_a_workload_before_native_connect() {
     let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("cli-target-mixed");
     let left = TestTargetServer::start(&uuid::Uuid::new_v4().to_string()).await;
     let right = TestTargetServer::start(&uuid::Uuid::new_v4().to_string()).await;
-    let error = run(
-        root.path(),
-        &[
-            "--management-endpoint",
-            &left.origin,
-            "--management-endpoint",
-            &right.origin,
-        ],
-    );
-    assert!(error.contains("disagree on cluster identity"), "{error}");
-    assert!(!error.contains("native transport"), "{error}");
+    for args in test_operations() {
+        let error = test_rejected_operation(
+            root.path(),
+            &[
+                "--management-endpoint",
+                &left.origin,
+                "--management-endpoint",
+                &right.origin,
+            ],
+            &args,
+        );
+        assert!(
+            error.contains("disagree on cluster identity"),
+            "{args:?}: {error}"
+        );
+        assert!(!error.contains("native transport"), "{error}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -126,9 +136,71 @@ fn retained_workloads_require_a_target_before_any_runtime_or_native_effect() {
         assert_eq!(output.status.code(), Some(2));
         let error = String::from_utf8_lossy(&output.stderr);
         assert!(
-            error.contains("select --cluster or --management-endpoint before a workload"),
+            error
+                .contains("select --cluster or --management-endpoint before a cluster operation or workload"),
             "{args:?}: {error}"
         );
         assert!(!root.path().join("persistent").exists());
+    }
+}
+
+#[test]
+fn every_attached_operation_rejects_legacy_address_fallback_before_connecting() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port().to_string();
+    for args in test_operations() {
+        let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("operation-no-target");
+        let error = test_rejected_operation(
+            root.path(),
+            &["--system-ip", "127.0.0.1", "--system-port", &port],
+            &args,
+        );
+        assert!(
+            error.contains("select --cluster or --management-endpoint"),
+            "{args:?}: {error}"
+        );
+    }
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
+#[test]
+fn every_attached_operation_rejects_an_unreachable_management_target() {
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}", closed.local_addr().unwrap());
+    drop(closed);
+    for args in test_operations() {
+        let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("operation-unreachable");
+        let error = test_rejected_operation(root.path(), &["--management-endpoint", &endpoint], &args);
+        assert!(
+            error.contains("management endpoint is unavailable"),
+            "{args:?}: {error}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_operations_reject_unreachable_rpc_without_reading_a_launch_registry() {
+    let server = TestTargetServer::start(&uuid::Uuid::new_v4().to_string()).await;
+    for args in test_operations().into_iter().filter(|args| !args.contains(&"s3")) {
+        let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("operation-native");
+        let error = test_rejected_operation(
+            root.path(),
+            &[
+                "--management-endpoint",
+                &server.origin,
+                "--registry",
+                "/missing/launches.toml",
+            ],
+            &args,
+        );
+        assert!(
+            error.contains("native RPC endpoint is unreachable"),
+            "{args:?}: {error}"
+        );
+        assert!(!error.contains("load launch registry"), "{error}");
     }
 }

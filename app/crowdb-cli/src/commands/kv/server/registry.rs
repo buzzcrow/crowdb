@@ -77,7 +77,7 @@ async fn execute(cli: &Cli, path: &Path, verb: KvServerVerb) -> Result<()> {
             println!("stopped kv on node {node}");
         }
         KvServerVerb::Delete { .. } => {
-            let ctx = crate::commands::authority_context(cli)
+            let ctx = crate::commands::legacy_authority_context(cli)
                 .await
                 .map_err(|_| Error::Config("cannot initialize authority client".into()))?;
             if ctx
