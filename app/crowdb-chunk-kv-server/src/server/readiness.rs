@@ -59,7 +59,8 @@ impl ChunkKvService {
             .authorize(catalog_generation, entry.partition_id, entry.owner_epoch, now)
             .map_err(|error| {
                 format!(
-                    "Owned range serving authority is unavailable for catalog generation {catalog_generation}: {error:?}"
+                    "Owned range serving authority is unavailable for catalog generation {catalog_generation}: {error:?}; writer recovery required: {:?}",
+                    self.recovery_required()
                 )
             })?;
         let routing = RequestRouting {

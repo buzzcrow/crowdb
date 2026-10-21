@@ -206,7 +206,7 @@ async fn disk_rpc_reports_effective_status() {
         kv.clone(),
         StorageDefaults::default(),
         Arc::new(ZoneLoader::new(kv.clone(), 4)),
-        Arc::new(RecalcEngine::new(kv, container)),
+        Arc::new(RecalcEngine::new(kv, container.clone())),
         ScanState::new(),
         Arc::new(DiskdbMetrics::disabled()),
         Arc::new(ArcSwap::from_pointee(DdbConfig::default())),
@@ -247,5 +247,40 @@ async fn disk_rpc_reports_effective_status() {
             status as i32
         );
     }
+    container.set_lifecycle_phase(crowdb_diskdb::liveness::lifecycle::StartupPhase::Up);
+    for member in dg.disk_snapshot().iter() {
+        if member.disk_id == disk.disk_id {
+            drop(member.write_gate.enter().unwrap());
+        } else {
+            member.exclude();
+        }
+    }
+    let request = crowdb_protocol::diskdb::rpc::AllocateBlocksRequest {
+        disk_group_id: DG,
+        unit_count: 1,
+        count: 1,
+        owner_chunk: Some(crowdb_protocol::common::ChunkId { high: 7, low: 8 }),
+        ..Default::default()
+    };
+    let error = transport.allocate_blocks(&endpoint, &request).await.unwrap_err();
+    assert!(
+        matches!(error, crowdb_diskdb_client::DiskdbClientError::Unreachable(_)),
+        "{error}"
+    );
+    let detail = error.to_string();
+    assert!(detail.contains("allocatable_disks=0/2"), "{detail}");
+    assert!(detail.contains("write_outcome_unknown=true"), "{detail}");
+    assert!(detail.contains("free_bytes=1048576"), "{detail}");
+
+    let full = make_dg();
+    full.allocate_blocks_reusing_disks(1, ZONE_CAP * ZONE_COUNT * 2, &[], 100, ZONE_ROTATE)
+        .unwrap();
+    container.replace_disk_group(&full);
+    let error = transport.allocate_blocks(&endpoint, &request).await.unwrap_err();
+    assert!(
+        matches!(error, crowdb_diskdb_client::DiskdbClientError::NoSpace(_)),
+        "{error}"
+    );
+    assert!(error.to_string().contains("free_bytes=0"), "{error}");
     server.stop();
 }

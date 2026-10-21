@@ -86,7 +86,6 @@ impl OwnedChunk {
             .mirror_flow
             .write_views(
                 &mut self.chunk,
-                self.cursor,
                 strip.strip_sequence,
                 block_offset,
                 views,

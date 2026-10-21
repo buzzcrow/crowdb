@@ -35,6 +35,8 @@ pub struct ReadyResponse {
     /// `true` when `phase == "up"` and not degraded — ready to serve
     /// mutating RPCs. Convenience flag for load-balancer probes.
     pub ready: bool,
+    /// Disks whose uncertain persistence requires a newly fenced reconstruction.
+    pub recovery_required: Vec<crate::liveness::recovery::UncertainDiskWrite>,
 }
 
 /// Build the health router bound to the given container.
@@ -52,7 +54,8 @@ pub fn router(container: Arc<DdbDiskGroupContainer>) -> Router {
 async fn ready(State(state): State<HealthState>) -> (StatusCode, Json<ReadyResponse>) {
     let phase = state.container.lifecycle_phase();
     let degraded = state.container.is_degraded();
-    let ready = phase == StartupPhase::Up && !degraded;
+    let recovery_required = crate::liveness::recovery::uncertain_writes(&state.container);
+    let ready = phase == StartupPhase::Up && !degraded && recovery_required.is_empty();
     let code = if ready {
         StatusCode::OK
     } else {
@@ -64,6 +67,7 @@ async fn ready(State(state): State<HealthState>) -> (StatusCode, Json<ReadyRespo
             phase: phase.as_str(),
             degraded,
             ready,
+            recovery_required,
         }),
     )
 }

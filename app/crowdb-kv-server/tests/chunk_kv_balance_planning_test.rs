@@ -23,6 +23,66 @@ struct TestBalancePlanning {
 }
 
 #[tokio::test]
+async fn dead_owner_transfer_cannot_fence_an_active_split_parent() {
+    use crowdb_protocol::chunk_kv::{SplitPhase, SplitTransition};
+    use crowdb_protocol::common::InstanceValue;
+    use crowdb_protocol::key::InstanceKey;
+    let fixture = TestBalancePlanning::new().await;
+    balance_planning::recent_split(&fixture.control).await;
+    let rows = fixture
+        .control
+        .scan_all_prefix(Bytes::from(ChunkKvSplitKey::text_prefix_all()), 16)
+        .await
+        .unwrap();
+    let mut split: SplitTransition = serde_json::from_slice(&rows[0].value).unwrap();
+    split.phase = SplitPhase::ParentPreparing;
+    split.failure = None;
+    split.validate().unwrap();
+    fixture
+        .control
+        .compare_and_put(
+            rows[0].key.clone(),
+            Bytes::from(serde_json::to_vec(&split).unwrap()),
+            rows[0].revision,
+        )
+        .await
+        .unwrap();
+    let path = InstanceKey {
+        service: "chunk-kv".into(),
+        instance_id: 1,
+    }
+    .to_path();
+    let row = fixture.control.get(path.as_bytes()).await.unwrap();
+    let mut instance: InstanceValue = serde_json::from_slice(row.value.as_deref().unwrap()).unwrap();
+    instance.last_heartbeat_ms = 0;
+    fixture
+        .control
+        .compare_and_put(
+            Bytes::from(path),
+            Bytes::from(serde_json::to_vec(&instance).unwrap()),
+            row.revision,
+        )
+        .await
+        .unwrap();
+    fixture.tick().await;
+    assert!(
+        fixture
+            .control
+            .scan_all_prefix(Bytes::from(ChunkKvTransferKey::text_prefix_all()), 16,)
+            .await
+            .unwrap()
+            .is_empty(),
+        "a competing transfer would fence the recovering split's WAL"
+    );
+    let persisted = fixture.control.get(&rows[0].key).await.unwrap();
+    let persisted: SplitTransition = serde_json::from_slice(persisted.value.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        persisted, split,
+        "unavailability must not abort or rewrite the split proof"
+    );
+}
+
+#[tokio::test]
 async fn recent_split_attempt_does_not_postpone_first_placement() {
     let fixture = TestBalancePlanning::new().await;
     balance_planning::recent_split(&fixture.control).await;

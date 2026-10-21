@@ -508,7 +508,13 @@ async fn main() -> std::process::ExitCode {
     let app = management_router(ManagementState::new(Arc::clone(&service)));
     let serving = axum::serve(listener, app)
         .with_graceful_shutdown(async move {
-            shutdown_signal().await;
+            tokio::select! {
+                () = shutdown_signal() => {},
+                partitions = shutdown_service.wait_for_recovery() => {
+                    error!(?partitions,
+                        "writer outcome requires durable replay; stopping for supervisor restart without reopening uncertain handles");
+                }
+            }
             shutdown_service.begin_drain();
             shutdown_rpc.stop();
             info!("chunk KV service admission drained");

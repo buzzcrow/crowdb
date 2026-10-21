@@ -267,6 +267,8 @@ impl DiskdbRpcService {
 
 #[path = "admin.rs"]
 mod admin;
+#[path = "allocation_failure.rs"]
+mod allocation_failure;
 #[path = "mutations.rs"]
 mod mutations;
 #[path = "queries.rs"]

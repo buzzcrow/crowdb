@@ -18,7 +18,6 @@ impl MirrorStripFlow {
     pub(super) async fn repair(
         &self,
         chunk: &mut Chunk,
-        committed_cursor: u64,
         strip_sequence: u32,
         failed: Segment,
         image: Bytes,
@@ -29,7 +28,7 @@ impl MirrorStripFlow {
             metrics.active_repairs.fetch_add(1, Ordering::Relaxed);
         }
         let result = self
-            .try_repair(chunk, committed_cursor, strip_sequence, failed, image, unit_bytes)
+            .try_repair(chunk, strip_sequence, failed, image, unit_bytes)
             .await;
         if let Some(metrics) = &self.metrics {
             let elapsed = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
@@ -46,7 +45,6 @@ impl MirrorStripFlow {
     async fn try_repair(
         &self,
         chunk: &mut Chunk,
-        committed_cursor: u64,
         strip_sequence: u32,
         failed: Segment,
         image: Bytes,
@@ -182,8 +180,9 @@ impl MirrorStripFlow {
         if let Some(metrics) = &self.metrics {
             metrics.exhausted_repairs.fetch_add(1, Ordering::Relaxed);
         }
-        self.mark_unavailable(chunk, committed_cursor, strip_sequence, failed)
-            .await?;
+        // Transport/write uncertainty does not prove corruption of the already
+        // acknowledged prefix. Keep its locations readable; complete frame
+        // verification is the authority for durable corruption markers.
         Err(IoError::ReplicaRepairExhausted(last_error))
     }
 
@@ -284,47 +283,5 @@ impl MirrorStripFlow {
                 segment: Some(replacement),
             })
             .await;
-    }
-
-    async fn mark_unavailable(
-        &self,
-        chunk: &mut Chunk,
-        committed_cursor: u64,
-        strip_sequence: u32,
-        failed: Segment,
-    ) -> Result<()> {
-        let strip_index = chunk
-            .strips
-            .iter()
-            .position(|strip| strip.strip_sequence == strip_sequence)
-            .ok_or_else(|| IoError::MetadataConflict("failed strip disappeared".into()))?;
-        let old = chunk.strips[strip_index].clone();
-        let strip_start = u64::from(old.chunk_offset) * 1024;
-        if committed_cursor <= strip_start {
-            return Ok(());
-        }
-        let mut degraded = old.clone();
-        if !degraded.unavailable_segments.contains(&failed) {
-            degraded.unavailable_segments.push(failed);
-        }
-        let operation_id = ChunkId {
-            high: self.writer_epoch ^ chunk.modify_ts ^ u64::MAX,
-            low: u64::from(strip_sequence) ^ failed.unit_offset,
-        };
-        let response = self
-            .allocator
-            .replace_chunk_strip_range(ReplaceChunkStripRangeRequest {
-                chunk_id: chunk.id,
-                expected_modify_ts: chunk.modify_ts,
-                start_index: u32::try_from(strip_index).unwrap_or(u32::MAX),
-                old_strips: vec![old],
-                replacement_strips: vec![degraded],
-                operation_id: Some(operation_id),
-            })
-            .await?;
-        *chunk = response
-            .chunk
-            .ok_or_else(|| IoError::MetadataConflict("degraded marker returned no chunk".into()))?;
-        Ok(())
     }
 }

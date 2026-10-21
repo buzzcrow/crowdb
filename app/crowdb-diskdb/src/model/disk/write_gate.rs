@@ -34,6 +34,11 @@ impl DiskWriteGate {
         self.0.load(Ordering::Acquire) & CLOSED != 0
     }
 
+    /// A cancelled or unconfirmed persistence still needs authoritative recovery.
+    pub fn outcome_unknown(&self) -> bool {
+        self.0.load(Ordering::Acquire) & UNCERTAIN != 0
+    }
+
     /// An acknowledgement may only follow this exact closed, drained state.
     pub fn quiescent(&self) -> bool {
         self.0.load(Ordering::Acquire) == CLOSED

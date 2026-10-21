@@ -547,6 +547,7 @@ impl DdbDiskGroup {
         let mut busy_bytes = 0u64;
         let mut allocatable_capacity_bytes = 0u64;
         let mut allocatable_busy_bytes = 0u64;
+        let mut allocatable_disk_count = 0u32;
         let mut disk_usages: Vec<DiskUsage> = Vec::with_capacity(disks_guard.len());
         let mut usage_known = true;
         for disk in disks_guard.iter() {
@@ -556,11 +557,10 @@ impl DdbDiskGroup {
                 && u.capacity_bytes > 0;
             capacity_bytes += u.capacity_bytes;
             busy_bytes += u.busy_bytes;
-            if membership
-                .allocating
-                .iter()
-                .any(|candidate| candidate.disk_id == disk.disk_id)
-            {
+            // Administrative closure or an unknown write can change a gate
+            // before the next membership refresh. Report current admission.
+            if disk.allocatable() {
+                allocatable_disk_count += 1;
                 allocatable_capacity_bytes += u.capacity_bytes;
                 allocatable_busy_bytes += u.busy_bytes;
             }
@@ -568,8 +568,6 @@ impl DdbDiskGroup {
         }
         #[allow(clippy::cast_possible_truncation)]
         let disk_count = disks_guard.len() as u32;
-        #[allow(clippy::cast_possible_truncation)]
-        let allocatable_disk_count = self.membership.load().allocating.len() as u32;
         let free_bytes = capacity_bytes.saturating_sub(busy_bytes);
         let allocatable_free_bytes = allocatable_capacity_bytes.saturating_sub(allocatable_busy_bytes);
         DiskGroupUsage {

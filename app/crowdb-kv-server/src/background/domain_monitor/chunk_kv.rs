@@ -94,6 +94,17 @@ async fn plan_dead_owner_transfer(
             transitioning_partitions.insert(transition.partition_id);
         }
     }
+    // A split may already have durable child authority even while the old
+    // parent remains published. A competing transfer cannot infer its recovery
+    // boundary from the parent catalog entry alone.
+    for (split, _) in read_splits(control).await? {
+        if !matches!(split.phase, SplitPhase::CatalogCommitted | SplitPhase::Aborted) {
+            transitioning_partitions.insert(split.parent_id);
+            transitioning_partitions.insert(split.child.partition_id);
+            busy_owners.insert(split.parent_owner.instance_id);
+            busy_owners.insert(split.child.owner.instance_id);
+        }
+    }
     let healthy_before = now_ms.saturating_sub(descriptor.suspect_after_ms);
     let dead_before = now_ms.saturating_sub(descriptor.dead_after_ms);
     let mut targets: Vec<_> = instances

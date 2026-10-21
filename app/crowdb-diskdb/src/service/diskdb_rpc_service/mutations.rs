@@ -317,7 +317,10 @@ impl DiskdbRpcService {
                 }
                 Err(AllocError::NoSpace) => {
                     metrics.allocate_errors_total.inc();
-                    metrics.allocate_no_space_errors.inc();
+                    let (code, message) = super::allocation_failure::describe(&params);
+                    if code == FBDiskdbRetCode::NoSpace {
+                        metrics.allocate_no_space_errors.inc();
+                    }
                     let disks = params.dg.disk_snapshot();
                     let diagnostics: Vec<_> = disks
                         .iter()
@@ -348,15 +351,10 @@ impl DiskdbRpcService {
                         requested_units_per_block = params.unit_count,
                         allow_disk_reuse = params.allow_disk_reuse,
                         ?diagnostics,
-                        "diskdb allocation has no space after compaction fallback"
+                        %message,
+                        "diskdb allocation failed after compaction fallback"
                     );
-                    let ctrl = build_allocate_response(
-                        req_id,
-                        create_nano,
-                        FBDiskdbRetCode::NoSpace,
-                        Some("no space available"),
-                        &[],
-                    );
+                    let ctrl = build_allocate_response(req_id, create_nano, code, Some(&message), &[]);
                     submit_fb_response(&server, conn_handle, ctrl, msg_type, req_id);
                 }
                 Err(AllocError::Persistence) => {

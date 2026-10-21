@@ -1499,3 +1499,6 @@ async fn direct_mirror_chunk_writer_accepts_protected_degraded_layout() {
     )
     .is_err());
 }
+
+#[path = "small_object_test/prefix_recovery.rs"]
+mod prefix_recovery;

@@ -479,10 +479,14 @@ async fn main() {
             .expect("HTTP health server error");
     });
 
-    // Wait for shutdown signal.
     let rpc_server_stop = Arc::clone(&rpc_server);
-    shutdown_signal().await;
-    info!("received shutdown signal");
+    tokio::select! {
+        () = shutdown_signal() => info!("received shutdown signal"),
+        writes = crowdb_diskdb::liveness::recovery::wait_required(&container) => {
+            error!(?writes,
+                "metadata write outcome is unknown; stopping for supervisor restart under a new fenced process session");
+        }
+    }
     rpc_service.close_free_admission().await;
     rpc_server_stop.stop();
     stop.notify_waiters();

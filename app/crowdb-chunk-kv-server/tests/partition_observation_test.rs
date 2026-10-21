@@ -358,3 +358,65 @@ async fn native_page_partition() -> (Arc<crowdb_chunk_kv::CrowdbPartitionTree>, 
     .unwrap();
     (tree, partition)
 }
+
+#[tokio::test]
+async fn terminal_apply_uncertainty_requests_restart_without_reactivating_writer() {
+    use crowdb_chunk_kv::{ChunkKvError, MutationOperation, PartitionLifecycle, RequestId};
+    let service = ChunkKvService::new(7, 8).unwrap();
+    let (head, page) = catalog();
+    service.install_catalog(&head, &[page]).unwrap();
+    assert!(
+        service.recovery_required().is_empty(),
+        "idle instance needs no restart"
+    );
+    let tree = Arc::new(MemoryPartitionTree::with_tree_id(1));
+    let partition = Partition::open(
+        PartitionId {
+            high: ID.high,
+            low: ID.low,
+        },
+        PartitionRange::default(),
+        u64::MAX,
+        PartitionConfig::default(),
+        tree.clone(),
+        Arc::new(journal().await),
+    )
+    .unwrap();
+    service.install_partition(&partition).unwrap();
+    assert!(service.recovery_required().is_empty());
+    tree.fail_next_apply();
+    assert_eq!(
+        partition
+            .mutate(
+                u64::MAX,
+                RequestId {
+                    client_high: 7,
+                    client_low: 8,
+                    client_sequence: 1
+                },
+                MutationOperation::Put {
+                    key: b"key".to_vec(),
+                    value: b"value".to_vec()
+                }
+            )
+            .await,
+        Err(ChunkKvError::ApplyStateUnknown)
+    );
+    let failed = tokio::time::timeout(std::time::Duration::from_secs(2), service.wait_for_recovery())
+        .await
+        .unwrap();
+    assert_eq!(failed.len(), 1);
+    assert_eq!(failed[0].partition_id, ID);
+    assert_eq!(failed[0].owner_epoch, u64::MAX);
+    assert_eq!(failed[0].lifecycle, PartitionLifecycle::Recovering);
+    assert_eq!((failed[0].durable_seq, failed[0].applied_seq), (1, 0));
+    assert!(service.health(0).range_readiness[0].detail.contains("Recovering"));
+    assert!(service.activate_recovered_partition(ID, u64::MAX).is_err());
+    assert_eq!(partition.lifecycle(), PartitionLifecycle::Recovering);
+    service.begin_drain();
+    assert_eq!(
+        service.recovery_required(),
+        failed,
+        "drain cannot erase replay evidence"
+    );
+}

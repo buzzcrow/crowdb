@@ -85,7 +85,6 @@ impl MirrorStripFlow {
     pub async fn write(
         &self,
         chunk: &mut Chunk,
-        committed_cursor: u64,
         strip_sequence: u32,
         block_offset: u64,
         data: Bytes,
@@ -94,7 +93,6 @@ impl MirrorStripFlow {
     ) -> Result<()> {
         self.write_views(
             chunk,
-            committed_cursor,
             strip_sequence,
             block_offset,
             vec![data],
@@ -108,7 +106,6 @@ impl MirrorStripFlow {
     pub async fn write_views(
         &self,
         chunk: &mut Chunk,
-        committed_cursor: u64,
         strip_sequence: u32,
         block_offset: u64,
         data: Vec<Bytes>,
@@ -177,15 +174,8 @@ impl MirrorStripFlow {
             image.freeze()
         };
         for segment in failed {
-            self.repair(
-                chunk,
-                committed_cursor,
-                strip_sequence,
-                segment,
-                repair_image.clone(),
-                unit_bytes,
-            )
-            .await?;
+            self.repair(chunk, strip_sequence, segment, repair_image.clone(), unit_bytes)
+                .await?;
         }
         Ok(())
     }

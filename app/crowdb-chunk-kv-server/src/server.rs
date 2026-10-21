@@ -34,6 +34,7 @@ mod load_sampling;
 mod observation;
 mod prepared_transfer;
 mod readiness;
+mod recovery;
 pub use readiness::RangeReadiness;
 mod reconcile;
 mod routing;
@@ -347,8 +348,13 @@ impl ChunkKvService {
             })
             .count();
         let range_readiness = self.assignment_readiness(&catalog, now_monotonic_ms);
-        let ready = lifecycle == ServerLifecycle::Serving && range_readiness.iter().all(|range| range.ready);
-        let detail = if range_readiness.is_empty() && ready {
+        let recovery_required = self.recovery_required();
+        let ready = lifecycle == ServerLifecycle::Serving
+            && range_readiness.iter().all(|range| range.ready)
+            && recovery_required.is_empty();
+        let detail = if !recovery_required.is_empty() {
+            format!("Writer outcome requires durable replay before serving: {recovery_required:?}")
+        } else if range_readiness.is_empty() && ready {
             format!("Idle stateless instance: catalog generation {catalog_generation} loaded, no tree-range ownership assigned")
         } else {
             format!("Instance lifecycle {lifecycle:?}; catalog generation {catalog_generation}; {} owned tree ranges, {} ready", range_readiness.len(), range_readiness.iter().filter(|range| range.ready).count())

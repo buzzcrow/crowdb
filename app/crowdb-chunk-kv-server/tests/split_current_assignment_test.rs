@@ -129,17 +129,8 @@ async fn write(partition: &Partition, sequence: u64, value: &[u8]) {
 async fn current_assignment_supersedes_historical_split_dispatcher() {
     let storage = TestSplitStorage::new();
     let id = PartitionId { high: 90, low: 1 };
-    let (parent, _) = storage
-        .partition(
-            id,
-            PartitionRange {
-                start: Some(Vec::new()),
-                end: None,
-            },
-            1,
-            Arc::new(MemoryPartitionTree::with_tree_id(90)),
-        )
-        .await;
+    let parent_tree = Arc::new(MemoryPartitionTree::with_tree_id(90));
+    let parent = open_parent(&storage, id, &parent_tree).await;
     write(&parent, 1, b"old-view").await;
     let service = ChunkKvService::new(1, 8).unwrap();
     publish(&service, 1, std::slice::from_ref(&parent));
@@ -227,4 +218,58 @@ async fn current_assignment_supersedes_historical_split_dispatcher() {
         };
         assert_eq!(value.value, b"current-view");
     }
+    assert_failed_compatibility_writer_requires_recovery(&service, &parent, &parent_tree).await;
+}
+
+async fn assert_failed_compatibility_writer_requires_recovery(
+    service: &ChunkKvService,
+    parent: &Partition,
+    parent_tree: &MemoryPartitionTree,
+) {
+    assert!(service.recovery_required().is_empty());
+    parent_tree.fail_next_apply();
+    let result = parent
+        .mutate(
+            1,
+            RequestId {
+                client_high: 1,
+                client_low: 1,
+                client_sequence: 99,
+            },
+            MutationOperation::Put {
+                key: b"b".to_vec(),
+                value: b"uncertain".to_vec(),
+            },
+        )
+        .await;
+    assert_eq!(result, Err(crowdb_chunk_kv::ChunkKvError::ApplyStateUnknown));
+    let failed = service.recovery_required();
+    assert!(
+        !failed.is_empty(),
+        "historical dispatch writers must not hide terminal uncertainty"
+    );
+    assert!(failed
+        .iter()
+        .any(|writer| writer.partition_id == entry(parent).partition_id));
+    assert!(!service.health(50100).ready);
+    assert!(service.health(50100).detail.contains("durable replay"));
+}
+
+async fn open_parent(
+    storage: &TestSplitStorage,
+    id: PartitionId,
+    tree: &Arc<MemoryPartitionTree>,
+) -> Partition {
+    storage
+        .partition(
+            id,
+            PartitionRange {
+                start: Some(Vec::new()),
+                end: None,
+            },
+            1,
+            tree.clone(),
+        )
+        .await
+        .0
 }

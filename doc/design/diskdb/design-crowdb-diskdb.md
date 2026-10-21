@@ -455,6 +455,27 @@ Transitions:
 - Offline ↔ Maintenance (operator).
 - Offline → Up (operator).
 
+An unknown or cancelled durable metadata write closes its `DiskWriteGate`.
+The local disk then reports Offline even if Group 0 still records Up; this
+is unresolved persistence, not evidence of exhausted capacity. `/ready` returns
+503 with the affected DiskGroup, disk and `metadata-write-outcome-unknown` reason.
+Health reads only observe this state.
+
+The process recovery watcher detects that uncertainty, drains the service and
+stops. The monitor supervises the existing Start/Restart intent and launches a
+new process. Its process session advances the owner generation and claims the
+data-group fence before reconstructing allocation state from durable records.
+Old process writes remain fenced and old disk snapshots retain their closed
+gates. Recovery never clears an uncertain gate or treats uncertain occupied
+space as free. Administrative Offline without an unknown write does not trigger
+this process recovery; its explicit Online authorization remains required.
+
+Usage reports derive allocatable disk count and bytes from current disk gates,
+independently of the cached allocation membership. Allocation failures with no
+currently usable disks return Unavailable, including group/disk state, unknown
+write state and capacity counters. NoSpace describes insufficient eligible
+space or placement on usable disks.
+
 diskdb's first major component:
 - **Sync with group 0** (fixed 10 s interval, same on success and
   failure — no error back-off in v1): fetch latest metadata; update

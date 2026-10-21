@@ -66,6 +66,12 @@ before planning; it is never represented as an empty cluster. A supervisor
 restarts failed tasks from durable state and a new leader resumes outstanding
 transitions.
 
+An unfinished split reserves both partition identities and participating owners
+against automatic dead-owner transfer, as it does against ordinary balancing.
+The published parent alone cannot prove that a competing transfer may claim its
+WAL: durable split handoff can precede catalog publication. Owner restart resumes
+that split; heartbeat expiry never authorizes discarding its recovery state.
+
 Normal service discovery filters expired registrations. Monitor observation
 uses the raw scan, preserving expired entries and heartbeat timestamps so
 absence cannot be confused with owner death. The default heartbeat is two
@@ -620,6 +626,19 @@ operations retain handles and finish before bounded checkpoint/drain work.
 Catalog refresh recovers every new or changed local assignment first, then
 replaces the catalog and hosted-partition snapshots; unchanged exact-epoch
 handles remain live and departed assignments are dropped.
+An unknown journal or post-journal apply outcome moves the affected writer to
+`Recovering`, closing its admission and excluding it from serving grants.
+An unchanged catalog cannot repair that terminal handle. The process detects
+this state, clears authority, stops RPC admission and exits so its supervisor
+can relaunch it. The successor reloads the durable catalog, tree checkpoint,
+complete WAL and persisted split/transfer proofs before obtaining a fresh grant.
+No uncertainty flag is cleared in place and no recovery artifact is deleted.
+Diagnostics identify the partition, owner epoch and durable/applied sequences;
+ordinary `Prepared` activation and idle instances do not trigger a restart.
+The recovery check includes prepared transfer targets and retained split
+dispatchers with both ingress writers, even after a newer catalog replaces their
+assignments. Current-range readiness cannot hide terminal uncertainty in a
+compatibility route that remains reachable by older client references.
 Catalog-head watch notifications trigger reconciliation immediately and check
 the matching serving grant afterward. Instance-specific grant notifications
 install authority without reopening or rescanning catalog assignments.

@@ -390,7 +390,6 @@ impl StreamChunkStore for ProductionStreamChunkStore {
             let result = flow
                 .write(
                     &mut chunk,
-                    physical_offset,
                     strip.strip_sequence,
                     image.block_offset,
                     image.data.clone(),
