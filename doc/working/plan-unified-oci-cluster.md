@@ -820,6 +820,30 @@ do not mark unexecuted acceptance passed.
   even while Group 0 has no quorum). Asked in chat after reproducing whole-cluster
   restart failure. Do not decide this by pinning fixture IPs or changing test order.
 
+
+## Blocked
+
+- **T15 retained-member addressing decision:** packaged three-node restart in
+  a different order reproduces quorum loss after Docker reassigns IPs. The
+  precise failure and preserved fixture identity are recorded above. This is
+  a missing support-boundary decision, not a reason to retry the same test or
+  discard its data. The existing authenticated node-update path requires
+  current Group-0 authority and cannot recover this full-outage case.
+- Alternative 1: give each container its own retained DNS name and support
+  hostname advertisement separately from listener bind addresses. Docker DNS
+  resolves current IPs; no peer list or fixed IP is required. Direct Docker
+  and Compose examples must preserve that container's name on recreation.
+- Alternative 2: require no stable name and add authenticated retained-member
+  endpoint recovery without current quorum. This needs a durable trust and
+  membership proof so discovery cannot reassign a peer's identity or bootstrap
+  another cluster. It changes the recovery contract and has separate negative
+  acceptance coverage.
+- Asked the user to choose; silence is not a decision. Both approaches preserve
+  retained UUIDs, credentials and data. Do not implement either addressing
+  contract before the answer. Independent node/protocol observation and member
+  projection changes are committed and gated; full collection and CLI exposure
+  remain unfinished. The requirement and T15 remain incomplete.
+
 ## Consolidated file ownership
 
 - Typed policy/status: `lib/crowdb-protocol/src/mgmt/` and `tests/`.
