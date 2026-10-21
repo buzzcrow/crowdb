@@ -26,10 +26,15 @@ impl Drop for TestStatusServer {
 }
 impl TestStatusServer {
     async fn start(cluster_id: String, ready_after: usize, invalid: bool) -> Self {
-        Self::with_failures(cluster_id, ready_after, invalid, None, false).await
+        let identities = if ready_after > 0 && ready_after != usize::MAX {
+            vec![None, Some(cluster_id)]
+        } else {
+            vec![Some(cluster_id)]
+        };
+        Self::with_failures(identities, ready_after, invalid, None, false).await
     }
     async fn with_failures(
-        cluster_id: String,
+        identities: Vec<Option<String>>,
         ready_after: usize,
         invalid: bool,
         unavailable_after: Option<usize>,
@@ -42,7 +47,7 @@ impl TestStatusServer {
             "/api/cluster/status",
             get(move || {
                 let seen = Arc::clone(&seen);
-                let cluster_id = cluster_id.clone();
+                let identities = identities.clone();
                 async move {
                     let now =
                         u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis())
@@ -55,11 +60,13 @@ impl TestStatusServer {
                         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                     }
                     let ready = count >= ready_after;
+                    let cluster_id = identities[count.min(identities.len() - 1)].clone();
+                    let bound = cluster_id.is_some();
                     let observation = ClusterObservation {
                         version: if invalid { 2 } else { 1 },
                         cluster: NodeDeploymentPolicy::default().cluster,
-                        cluster_id: Some(cluster_id),
-                        bound: true,
+                        cluster_id,
+                        bound,
                         initial_voters: 1,
                         policy: Some(NodeDeploymentPolicy::default()),
                         observed_at_unix_ms: now,
@@ -161,7 +168,7 @@ async fn invalid_reports_and_mixed_cluster_origins_return_two_and_no_json() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_lost_endpoint_after_a_valid_observation_remains_an_unmet_readiness_report() {
     let server = TestStatusServer::with_failures(
-        uuid::Uuid::new_v4().to_string(),
+        vec![Some(uuid::Uuid::new_v4().to_string())],
         usize::MAX,
         false,
         Some(1),
@@ -182,8 +189,12 @@ async fn a_lost_endpoint_after_a_valid_observation_remains_an_unmet_readiness_re
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn slow_selected_origins_share_the_caller_deadline_and_never_multiply_it() {
-    let left = TestStatusServer::with_failures(uuid::Uuid::new_v4().to_string(), 0, false, None, true).await;
-    let right = TestStatusServer::with_failures(uuid::Uuid::new_v4().to_string(), 0, false, None, true).await;
+    let left =
+        TestStatusServer::with_failures(vec![Some(uuid::Uuid::new_v4().to_string())], 0, false, None, true)
+            .await;
+    let right =
+        TestStatusServer::with_failures(vec![Some(uuid::Uuid::new_v4().to_string())], 0, false, None, true)
+            .await;
     let started = std::time::Instant::now();
     let output = run(
         &[&left.origin, &right.origin],
@@ -192,4 +203,23 @@ async fn slow_selected_origins_share_the_caller_deadline_and_never_multiply_it()
     assert_eq!(output.status.code(), Some(2));
     assert!(output.stdout.is_empty());
     assert!(started.elapsed() < std::time::Duration::from_secs(3));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn accepted_identity_cannot_change_after_an_unbound_observation_gap() {
+    let server = TestStatusServer::with_failures(
+        vec![
+            Some(uuid::Uuid::new_v4().to_string()),
+            None,
+            Some(uuid::Uuid::new_v4().to_string()),
+        ],
+        usize::MAX,
+        false,
+        None,
+        false,
+    )
+    .await;
+    let output = run(&[&server.origin], &["check", "--json", "--wait", "2"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("disagree on identity"));
 }

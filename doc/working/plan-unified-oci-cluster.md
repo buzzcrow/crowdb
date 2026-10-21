@@ -1290,3 +1290,18 @@ do not mark unexecuted acceptance passed.
   report. Five real CLI process cases pass, including two stalled origins sharing
   one second, delayed readiness, and an origin disappearing after a valid report.
   Applicable shared/Web/CLI all-target clippy and formatting pass.
+
+- Packaged aggregate attempt J: one and three nodes both reach the new status
+  endpoint, but the host check incorrectly rejects the legitimate unbound-to-
+  accepted UUID transition. This is a client observation bug, not evidence of
+  a foreign cluster. Initial failed logs are retained under
+  `.crowdb-runtime/artifacts/status-{1,3}-j/`; both finally paths remove their
+  containers and bridges and retain data/receipts. No data reset or budget change.
+  This is resumed packaged attempt 4 (the two topology variants share one cause).
+- Fix: keep a separate first-accepted UUID anchor across polling rounds; absence
+  before acceptance is allowed, but a different accepted UUID remains a conflict,
+  including after an intervening unbound response. Six real CLI tests pass.
+  Resume the exact retained J fixtures with the corrected host client, comparing
+  persisted node identities before/after; node image and startup policy unchanged.
+  J source `ac56e25f2d563a453b81575aeea69d4cf45c788c`, OCI
+  `sha256:60ba2bc71ba3190eb50f44f482b884def4e035cc775ca2c0edf1c17a60a29df0`.

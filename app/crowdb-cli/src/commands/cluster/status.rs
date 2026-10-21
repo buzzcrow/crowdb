@@ -67,13 +67,22 @@ async fn observe(cli: &Cli, check: bool, wait: u64, timeout: u64) -> Result<Clus
         }))
         .ok_or("wait exceeds the supported clock range")?;
     let mut last = None;
+    let mut known_identity = binding.as_ref().map(|binding| binding.cluster_id.clone());
     loop {
         let request_deadline = deadline.min(
             Instant::now()
                 .checked_add(budget)
                 .ok_or("timeout exceeds the supported clock range")?,
         );
-        last = round(&client, &origins, binding.as_ref(), request_deadline, last).await?;
+        last = round(
+            &client,
+            &origins,
+            binding.as_ref(),
+            request_deadline,
+            last,
+            &mut known_identity,
+        )
+        .await?;
         if last
             .as_ref()
             .is_some_and(|report| report.phase == ClusterPhase::Ready)
@@ -96,6 +105,7 @@ async fn round(
     binding: Option<&target::ClusterTargetBinding>,
     deadline: Instant,
     last: Option<ClusterStatus>,
+    known_identity: &mut Option<String>,
 ) -> Result<Option<ClusterStatus>, String> {
     let replies =
         futures::future::join_all(origins.iter().map(|origin| read(client, origin, deadline))).await;
@@ -110,14 +120,18 @@ async fn round(
             }
             Err(ReadError::Invalid(reason)) => return Err(reason.into()),
         };
-        if binding.is_some_and(|binding| {
-            report.observation.cluster_id.as_ref() != Some(&binding.cluster_id)
-                || report.observation.cluster != binding.name
-        }) || selected.as_ref().or(last.as_ref()).is_some_and(|seen| {
-            seen.observation.cluster_id != report.observation.cluster_id
-                || seen.observation.cluster != report.observation.cluster
-        }) {
+        let current = report.observation.cluster_id.as_ref();
+        if current.is_some_and(|current| known_identity.as_ref().is_some_and(|known| known != current))
+            || binding.is_some_and(|binding| report.observation.cluster != binding.name)
+            || selected
+                .as_ref()
+                .or(last.as_ref())
+                .is_some_and(|seen| seen.observation.cluster != report.observation.cluster)
+        {
             return Err("selected cluster and management endpoints disagree on identity".into());
+        }
+        if known_identity.is_none() {
+            known_identity.clone_from(&report.observation.cluster_id);
         }
         if selected
             .as_ref()
