@@ -21,6 +21,34 @@ pub struct BufferLeaseMetadata {
     pub logical_offset: u64,
     pub capacity: u32,
     pub registration_id: u32,
+    pub ownership: BufferOwnership,
+}
+
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum BufferOwnership {
+    #[default]
+    Available = 0,
+    PostedReceive = 1,
+    ReceiveInFlight = 2,
+    SendInFlight = 3,
+    DiskOwned = 4,
+    CallerOwned = 5,
+    Quarantined = 6,
+}
+
+impl BufferOwnership {
+    fn from_raw(value: i32) -> Self {
+        match value {
+            0 => Self::Available,
+            1 => Self::PostedReceive,
+            2 => Self::ReceiveInFlight,
+            3 => Self::SendInFlight,
+            4 => Self::DiskOwned,
+            5 => Self::CallerOwned,
+            _ => Self::Quarantined,
+        }
+    }
 }
 
 /// An immutable, bounded scatter/gather data payload.
@@ -186,8 +214,18 @@ impl Buffer {
                 logical_offset: sys::crowdb_rpc_buffer_logical_offset(self.handle),
                 capacity: sys::crowdb_rpc_buffer_capacity(self.handle),
                 registration_id: sys::crowdb_rpc_buffer_registration_id(self.handle),
+                ownership: BufferOwnership::from_raw(sys::crowdb_rpc_buffer_ownership(self.handle)),
             }
         }
+    }
+
+    pub fn ownership(&self) -> BufferOwnership {
+        BufferOwnership::from_raw(unsafe { sys::crowdb_rpc_buffer_ownership(self.handle) })
+    }
+
+    pub fn transition(&mut self, from: BufferOwnership, to: BufferOwnership) -> bool {
+        !self.handle.is_null()
+            && unsafe { sys::crowdb_rpc_buffer_transition(self.handle, from as i32, to as i32) != 0 }
     }
 
     pub fn set_lease_metadata(&mut self, metadata: BufferLeaseMetadata, registration_id: u32) {

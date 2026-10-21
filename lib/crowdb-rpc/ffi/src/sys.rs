@@ -130,6 +130,7 @@ extern "C" {
     pub fn crowdb_rpc_buffer_sequence(buf: crowdb_rpc_buffer_t) -> u64;
     pub fn crowdb_rpc_buffer_logical_offset(buf: crowdb_rpc_buffer_t) -> u64;
     pub fn crowdb_rpc_buffer_registration_id(buf: crowdb_rpc_buffer_t) -> u32;
+    pub fn crowdb_rpc_buffer_ownership(buf: crowdb_rpc_buffer_t) -> i32;
     pub fn crowdb_rpc_buffer_set_metadata(
         buf: crowdb_rpc_buffer_t,
         request_id: u64,

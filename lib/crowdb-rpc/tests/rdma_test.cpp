@@ -68,6 +68,7 @@ using crowdb::rpc::Frame;
 using crowdb::rpc::Header;
 using crowdb::rpc::HEADER_SIZE;
 using crowdb::rpc::OutFrame;
+using crowdb::rpc::RdmaConfig;
 using crowdb::rpc::RdmaBufferPool;
 using crowdb::rpc::RdmaTransport;
 using crowdb::rpc::RpcClient;
@@ -130,6 +131,24 @@ TEST(RdmaBufferPoolTest, TransportCopiesSystemBufferIntoRegisteredPool)
     EXPECT_EQ(std::memcmp(registered->data, payload, sizeof(payload)), 0);
     registered->release();
     source->release();
+}
+
+TEST(RdmaBufferPoolTest, RegistrationFailureLeavesSystemPoolUsable)
+{
+    RdmaConfig config;
+    config.device = "crowdb-device-that-does-not-exist";
+    RdmaTransport    transport(config);
+    SystemBufferPool system_pool(1);
+    Buffer          *source = system_pool.alloc(32);
+    ASSERT_NE(source, nullptr);
+    source->write("tcp", 3);
+    EXPECT_EQ(transport.register_buffer(source), nullptr);
+    EXPECT_EQ(source->len, 3U);
+    EXPECT_EQ(std::memcmp(source->data, "tcp", 3), 0);
+    source->release();
+    Buffer *reused = system_pool.alloc(32);
+    ASSERT_NE(reused, nullptr);
+    reused->release();
 }
 
 TEST(RdmaHardwareTest, CompleteCmQpSendReceiveFlow)

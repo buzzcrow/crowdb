@@ -69,6 +69,7 @@ struct Buffer
     uint32_t                     allocation_capacity = 0;
     uint32_t                     view_offset         = 0;
     Buffer                      *next_pool           = nullptr;
+    Buffer                      *next_all            = nullptr;
 
     void reset_view()
     {
@@ -166,6 +167,7 @@ class RegisteredBufferPool : public BufferPool
 
     Buffer *alloc(uint32_t capacity) override;
     void    recycle(Buffer *buf) override;
+    bool    detach(Buffer *buf) override;
 
     [[nodiscard]] uint64_t committed_bytes() const
     {

@@ -16,7 +16,10 @@ Capacity classes, ownership states, lease metadata, bounded atomic admission,
 lock-free freelists, quarantine exclusion, and C/Rust metadata accessors are
 implemented in `buffer.h`, `buffer.cpp`, `c_api.h`, and the FFI buffer wrapper.
 The pool is device-independent so TCP-only builds retain the bounded contract.
-Verbs MR attachment, transport handoff, and shutdown integration remain open.
+The verbs MR arena and basic send/receive handoff are complete. Its allocation
+and recycle path uses bounded atomic class freelists and an atomic arena bump
+pointer; owner transitions, premature-release quarantine, inflight shutdown
+quarantine, and FFI ownership accessors now use the common contract.
 
 The verbs pool now pre-registers one region and carves aligned capacity-class
 slices from it. Each lease records the region MR handle and lkey, and
@@ -25,50 +28,50 @@ shutdown.
 
 ## Phase 1: inventory and contract
 
-- [ ] **Map existing buffer ownership**: document the current `Buffer`,
+- [x] **Map existing buffer ownership**: document the current `Buffer`,
   `BufferPool`, `OutFrame`, callback, and FFI ownership transitions before
   adding registration. Files: `lib/crowdb-rpc/include/crowdb-rpc/buffer.h`,
   `lib/crowdb-rpc/include/crowdb-rpc/transport.h`,
   `lib/crowdb-rpc/include/crowdb-rpc/connection.h`,
   `lib/crowdb-rpc/ffi/src/sys.rs`.
-- [ ] **Define capacity classes**: add named constants/configuration for 64 KiB,
+- [x] **Define capacity classes**: add named constants/configuration for 64 KiB,
   256 KiB, and 1 MiB data capacities plus the 1 KiB control capacity. Reject
   zero, overflowed, and unsupported capacities before pool admission. Files:
   `lib/crowdb-rpc/include/crowdb-rpc/buffer.h`, configuration headers, and
   corresponding Rust FFI types.
-- [ ] **Define lease metadata**: specify request ID, stream ID, sequence,
+- [x] **Define lease metadata**: specify request ID, stream ID, sequence,
   logical offset, actual length, capacity, registration identity, and release
   state. Keep the handle opaque across FFI. Files: buffer and FFI headers,
   `lib/crowdb-rpc/ffi/src/sys.rs`.
 
 ## Phase 2: registered pool
 
-- [ ] **Implement device registration owner**: create and destroy a pool for a
-  protection domain, registered region, lkey, and device identity. Registration
-  failure must leave the TCP pool usable. Files:
-  `lib/crowdb-rpc/include/crowdb-rpc/transport/rdma/rdma_buffer_pool.h`,
-  `lib/crowdb-rpc/src/transport/rdma/rdma_buffer_pool.cpp`.
-- [ ] **Implement class freelists**: carve buffers from bounded registered
-  regions instead of registering every allocation. Keep control and data pools
-  separate, enforce total bytes and class counts, and avoid an unbounded
-  fallback allocation. Files: same pool files and pool tests.
-- [ ] **Implement ownership transitions**: make acquire, post, complete, disk
-  handoff, caller release, and quarantine explicit operations. Reject a second
-  release or recycle before completion. Files: pool/lease implementation.
-- [ ] **Implement shutdown and quarantine**: drain known operations, mark
-  uncertain buffers quarantined, and deregister only after no device access can
-  remain. Files: pool, connection shutdown, and test fixtures.
-- [ ] **Review hot-path synchronization**: keep allocation/recycle compatible
-  with the repository's lock-free rule; isolate lifecycle-only coordination and
-  record any unavoidable synchronization boundary. Files: pool implementation.
+- [x] **Unify device registration owner**: make the verbs-backed arena use the
+  common registration identity and failure contract while retaining one MR per
+  arena. Registration failure must leave TCP allocation usable. Files:
+  `lib/crowdb-rpc/include/crowdb-rpc/transport/rdma/rdma_transport.h` and
+  `lib/crowdb-rpc/src/transport/rdma/rdma_transport.cpp`.
+- [x] **Unify class freelists**: carve all four classes from bounded registered
+  regions, preserve the byte and slot budgets, and avoid a separate pool path
+  with different recycle semantics. Files: same pool files and pool tests.
+- [x] **Complete ownership transitions**: make acquire, post, completion, disk
+  handoff, caller release, and quarantine explicit at every async boundary;
+  reject a second release or recycle before completion. Files: pool,
+  transport completion paths, and ownership tests.
+- [x] **Complete shutdown and quarantine**: drain known operations, keep
+  uncertain buffers out of reuse until connection quiescence, and deregister
+  only after device access ends. Files: pool, connection shutdown, and tests.
+- [x] **Review hot-path synchronization**: keep allocation/recycle lock-free;
+  lifecycle destruction is separate from the atomic freelists. Files: pool
+  implementation.
 
 ## Phase 3: FFI lease surface
 
-- [ ] **Expose lease accessors**: return opaque handle, data pointer, actual
+- [x] **Expose lease accessors**: return opaque handle, data pointer, actual
   length, capacity, sequence, and logical offset without exposing verbs structs.
   Files: `lib/crowdb-rpc/ffi/src/sys.rs`, `client.rs`, `server.rs`, and C ABI
   declarations.
-- [ ] **Enforce release ordering**: caller release returns a buffer only after
+- [x] **Enforce release ordering**: caller release returns a buffer only after
   the C++ owner confirms completion; Rust must not retain a dereferenceable
   view after release. Files: FFI wrapper and ownership tests.
 
@@ -99,8 +102,8 @@ E2E tests:
 ## Consolidated files
 
 - `lib/crowdb-rpc/include/crowdb-rpc/buffer.h`
-- `lib/crowdb-rpc/include/crowdb-rpc/transport/rdma/rdma_buffer_pool.h`
-- `lib/crowdb-rpc/src/transport/rdma/rdma_buffer_pool.cpp`
+- `lib/crowdb-rpc/include/crowdb-rpc/transport/rdma/rdma_transport.h`
+- `lib/crowdb-rpc/src/transport/rdma/rdma_transport.cpp`
 - `lib/crowdb-rpc/ffi/src/sys.rs`
 - `lib/crowdb-rpc/ffi/src/client.rs`
 - `lib/crowdb-rpc/ffi/src/server.rs`
@@ -116,5 +119,5 @@ pixi run tree-lint
 ```
 
 Completion requires all ownership, budget, shutdown, and TCP-only tests to
-pass. Do not begin R239 transport work while the pool can recycle an uncertain
-buffer.
+pass. R238 is complete once the recorded gates below pass; R239 transport work
+may consume the stable lease contract.

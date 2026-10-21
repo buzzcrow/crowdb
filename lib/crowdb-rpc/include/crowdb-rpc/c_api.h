@@ -43,6 +43,7 @@ uint64_t            crowdb_rpc_buffer_stream_id(crowdb_rpc_buffer_t buf);
 uint64_t            crowdb_rpc_buffer_sequence(crowdb_rpc_buffer_t buf);
 uint64_t            crowdb_rpc_buffer_logical_offset(crowdb_rpc_buffer_t buf);
 uint32_t            crowdb_rpc_buffer_registration_id(crowdb_rpc_buffer_t buf);
+int                 crowdb_rpc_buffer_ownership(crowdb_rpc_buffer_t buf);
 void                crowdb_rpc_buffer_set_metadata(crowdb_rpc_buffer_t buf, uint64_t request_id,
                                                     uint64_t stream_id, uint64_t sequence,
                                                     uint64_t logical_offset, uint32_t registration_id);

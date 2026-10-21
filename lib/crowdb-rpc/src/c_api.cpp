@@ -140,6 +140,13 @@ uint32_t crowdb_rpc_buffer_registration_id(crowdb_rpc_buffer_t buf)
     return (buf != nullptr && buf->buf != nullptr) ? buf->buf->registration_id : 0;
 }
 
+int crowdb_rpc_buffer_ownership(crowdb_rpc_buffer_t buf)
+{
+    return (buf != nullptr && buf->buf != nullptr)
+               ? static_cast<int>(buf->buf->ownership.load(std::memory_order_acquire))
+               : -1;
+}
+
 void crowdb_rpc_buffer_set_metadata(crowdb_rpc_buffer_t buf, uint64_t request_id, uint64_t stream_id, uint64_t sequence,
                                     uint64_t logical_offset, uint32_t registration_id)
 {
@@ -184,8 +191,7 @@ crowdb_rpc_buffer_t crowdb_rpc_buffer_ref(crowdb_rpc_buffer_t buf)
         if (buf == nullptr || buf->buf == nullptr) {
             return nullptr;
         }
-        buf->buf->ref_clone();
-        return buf;
+        return buf->buf->ref_clone() == nullptr ? nullptr : buf;
     }
     catch (...) {
         return nullptr;

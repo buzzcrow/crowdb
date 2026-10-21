@@ -12,7 +12,7 @@ composition and one-way RDMA-to-TCP fallback.
 
 ## Progress
 
-The transport foundation now includes validated endpoint capability data
+The transport implementation now includes validated endpoint capability data
 (protocol, generation, device, GID, port, and supported capacity classes),
 explicit RDMA path states, and a pre-payload-only TCP fallback predicate.
 Implemented since this checkpoint: active/passive RDMA-CM setup, RC QP
@@ -40,8 +40,9 @@ receive repost and connection-level CQ handling. The actual `RpcServer`/
 `RpcClient` worker path now passes a live request/response round trip with
 multiple sequential frames on one QP, including CQ wakeup, frame dispatch,
 request correlation, response completion, and clean teardown. Remaining
-validation includes executing the single-node multi-container OCI profiles
-against a built `crowdb:test` image. Physical
+acceptance includes failure-injection coverage, pre-payload TCP fallback proof,
+stable completion ownership mapping, and executing the single-node
+multi-container OCI profiles against a built `crowdb:test` image. Physical
 multi-node validation is deferred to [the separate follow-up plan](plan-rdma-multi-node.md).
 
 The C++ unit/integration gate and Rust FFI tests pass after the teardown and
@@ -71,32 +72,35 @@ Completed:
   payload benchmark smoke tests reporting zero errors;
 - non-root runner selection and the library consumer/deployment contract.
 
-Remaining:
+Remaining implementation and acceptance work:
 
 - add mock/integration coverage for CM disconnect, QP error, CQ flush/error,
-  epoll wakeup, and pre-payload TCP fallback;
-- run the single-node HCA local-loop multi-container OCI profile against the built image;
+  epoll wakeup, receive exhaustion, and pre-payload TCP fallback;
+- make each completion's `wr_id` resolve a stable connection/request/slot
+  owner and test success, flush, protection, retry, and remote-access errors;
+- run the single-node HCA local-loop multi-container OCI profile against the
+  built image;
 - remove temporary hardware diagnostics, normalize failure logging, and run
-  the full C++ format/tree-lint gates.
-- add a configurable multi-CQ pool when one shared CQ becomes a bottleneck;
-- move CQ draining to a dedicated polling worker if engine worker contention
-  becomes measurable;
-- rerun all RDMA benchmark concurrency and payload cases after the CQ change.
+  the full C++ format/tree-lint gates;
+- keep multi-CQ and a dedicated polling worker as follow-up performance work;
+  they are not R239 blockers unless the acceptance profile shows contention;
+- rerun the RDMA benchmark concurrency and payload cases after the acceptance
+  changes.
   Completed on the local HCA at 128B, 1KiB, and 4KiB with 0 errors for 1, 4,
   8, and 32 connections. The 4-connection cases reached about 442k ops/s
   (128B), 414k ops/s (1KiB), and 376k ops/s (4KiB).
 
 ## Phase 1: common transport seam
 
-- [ ] **Trace TCP submission**: map `Transport::submit`, `Connection`,
+- [x] **Trace TCP submission**: map `Transport::submit`, `Connection`,
   `OutFrame`, parser dispatch, completion callbacks, and connection shutdown.
   Files: `lib/crowdb-rpc/include/crowdb-rpc/transport.h`, `connection.h`,
   `out_frame.h`, TCP transport and worker sources.
-- [ ] **Add RDMA capability state**: define unavailable, probing, connecting,
+- [x] **Add RDMA capability state**: define unavailable, probing, connecting,
   ready, draining, failed, and TCP-fallback states. Keep path state per logical
   connection and prevent TCP-to-RDMA upgrade. Files: transport/connection
   headers and state tests.
-- [ ] **Define endpoint handshake data**: represent coarse discovery result,
+- [x] **Define endpoint handshake data**: represent coarse discovery result,
   CM address/port, GID/device identity, capability generation, protocol
   version, and supported data classes. Validate stale generation and peer
   identity before CM setup. Files: RPC control schema and endpoint config.
@@ -138,7 +142,7 @@ Remaining:
 - [x] **Post one-slot receives**: prepost one full registered receive slot per
   receive ring entry, associate each with a stable `wr_id`, and replenish only
   after the owner releases it.
-- [ ] **Resolve WR identity**: `wr_id` must identify connection, request ID,
+- [~] **Resolve WR identity**: `wr_id` must identify connection, request ID,
   stream ID, sequence, logical offset, buffers, and ownership state. Handle
   success, flush, local protection, retry, and remote access errors distinctly.
 - [x] **Dispatch common callbacks**: validate lengths and class before parser
@@ -146,11 +150,11 @@ Remaining:
 
 ## Phase 5: fallback and observability
 
-- [ ] **Implement pre-payload fallback**: if CM/QP setup or first submission
+- [~] **Implement pre-payload fallback**: if CM/QP setup or first submission
   fails before payload, select TCP with the same request identity.
-- [ ] **Reject mixed completion**: after any payload submission, fail the stream
+- [x] **Reject mixed completion**: after any payload submission, fail the stream
   on uncertainty and never enqueue a TCP suffix.
-- [ ] **Add metrics**: posted receives, fallback count, quarantined bytes, CQ
+- [x] **Add metrics**: posted receives, fallback count, quarantined bytes, CQ
   poll/empty-poll counts, CM disconnects, flush, local-protection, retry, and
   remote-access errors are exposed; QP state, CQ depth, and RNR counters remain.
 

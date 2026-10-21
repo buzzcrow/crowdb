@@ -18,12 +18,14 @@ single-node HCA local-loop with multiple containers.
 
 ## Current implementation status
 
-R238 foundation work has started. The common RPC buffer layer now has the four
-capacity classes, bounded registered-buffer admission, explicit ownership
-transitions, quarantine handling, and C/Rust lease metadata accessors. The
-host setup and local-loop smoke test are now explicit: `setup-rdma.sh local`
-prepares one HCA port, and `run-local-loop.sh local` drives both roles on that
-port. Namespace setup is outside the supported test model.
+R238 is complete. The common RPC buffer layer and verbs-backed per-connection
+arenas share the four capacity classes, bounded admission, explicit owner
+transitions, safe release ordering, quarantine handling, shutdown quarantine,
+and C/Rust lease metadata accessors. R239's transport path is implemented and
+passes the prepared HCA
+local-loop plus the real `RpcServer`/`RpcClient` worker round trip. Its
+requirement is still open because the fault-injection, pre-payload fallback,
+multi-container, and final gate cases have not all passed.
 
 This is the root plan. The five child plans contain implementation details;
 only this plan controls phase order, cross-backlog decisions, and final
@@ -74,6 +76,17 @@ datapath Chunk-KV/access
 R242 fat client SDK and FFI lease
 ```
 
+## Immediate implementation order
+
+1. Finish the R238 foundation contract and its gates. Do not add new R239
+   transport behavior until the common and verbs-backed pools agree on class,
+   ownership, quarantine, and shutdown semantics.
+2. Close R239 acceptance gaps: injectable CM/CQ failure coverage, stable
+   `wr_id` ownership mapping, pre-payload retry on TCP, partial-transfer
+   isolation, and the single-node multi-container OCI profile.
+3. Run the R238/R239 handoff gates and then start R240 and R241 in parallel.
+   R242 remains downstream of R241 and the stable FFI lease surface.
+
 R240 and R241 may run in parallel after R239 passes its transport acceptance.
 R242 starts only after R241 establishes the access semantics and after the FFI
 lease contract from R238 is stable.
@@ -104,11 +117,17 @@ TCP-only profile and build/mocked tests.
 
 ## Phase 1: R238 registered buffers
 
-- [ ] **Execute R238 child plan**: implement classes, budgets, lease metadata,
-  ownership transitions, quarantine, and shutdown.
-- [ ] **Run R238 gates**: unit and integration tests pass with RDMA disabled
-  and enabled build configurations.
-- [ ] **Review handoff**: verify that R239 can obtain control/data buffers and
+- [x] **Close R238 pool contract**: align `RegisteredBufferPool` and the
+  verbs-backed `RdmaBufferPool` on the four classes, lease metadata, owner
+  transitions, quarantine accounting, and bounded shutdown. Keep registration
+  optional and do not introduce a new lock on the allocation/recycle path.
+  Files: `lib/crowdb-rpc/include/crowdb-rpc/buffer.h`,
+  `lib/crowdb-rpc/src/buffer.cpp`, and
+  `lib/crowdb-rpc/src/transport/rdma/rdma_transport.*`.
+- [x] **Run R238 gates**: unit and integration tests pass with RDMA disabled
+  and enabled build configurations, including registration failure and
+  uncertain completion cases.
+- [x] **Review handoff**: verify that R239 can obtain control/data buffers and
   that every asynchronous owner has a release transition.
 
 Exit condition: no buffer can be recycled while transport, disk, or caller
@@ -116,11 +135,9 @@ ownership remains unresolved.
 
 ## Phase 2: R239 common RDMA RPC
 
-- [ ] **Execute R239 child plan**: implement endpoint capability exchange, CM
-  and QP lifecycle, two-SGE SEND/RECV, epoll/CQ event composition, request
-  correlation, fallback, and shutdown.
-- [ ] **Mock verification**: cover CQ success/error/flush, CM transitions,
-  receive exhaustion, fallback before payload, and no mixed TCP/RDMA stream.
+- [ ] **Close R239 acceptance**: add mock/integration coverage for CQ
+  success/error/flush, CM disconnect/QP error, receive exhaustion, stable
+  `wr_id` ownership, pre-payload fallback, and no mixed TCP/RDMA stream.
 - [x] **Local-loop verification**: run `setup-rdma.sh local` followed by
   `run-local-loop.sh local`; both CM roles, framed SEND/RECV, receive repost,
   and exact payload lengths have passed on the prepared HCA.

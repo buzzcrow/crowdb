@@ -2,7 +2,34 @@
 // Licensed under the Apache License, Version 2.0.
 
 use bytes::Bytes;
-use crowdb_rpc_ffi::{Buffer, BufferChain, BufferChainError, BufferPool};
+use crowdb_rpc_ffi::{Buffer, BufferChain, BufferChainError, BufferOwnership, BufferPool};
+
+#[test]
+fn lease_metadata_includes_registration_and_owner_state() {
+    let pool = BufferPool::new(1);
+    let mut buffer = pool.alloc_buffer(32).expect("pool allocation");
+    buffer.set_lease_metadata(
+        crowdb_rpc_ffi::BufferLeaseMetadata {
+            request_id: 7,
+            stream_id: 9,
+            sequence: 11,
+            logical_offset: 13,
+            capacity: 0,
+            registration_id: 0,
+            ownership: BufferOwnership::Available,
+        },
+        42,
+    );
+    let metadata = buffer.lease_metadata();
+    assert_eq!(metadata.request_id, 7);
+    assert_eq!(metadata.stream_id, 9);
+    assert_eq!(metadata.sequence, 11);
+    assert_eq!(metadata.logical_offset, 13);
+    assert_eq!(metadata.registration_id, 42);
+    assert_eq!(metadata.ownership, BufferOwnership::Available);
+    assert!(buffer.transition(BufferOwnership::Available, BufferOwnership::CallerOwned));
+    assert_eq!(buffer.ownership(), BufferOwnership::CallerOwned);
+}
 
 #[test]
 fn detached_read_buffer_survives_pool_and_keeps_pointer() {

@@ -150,3 +150,42 @@ TEST(BufferTest, RegisteredCapacityRejectsUnsupportedValues)
     EXPECT_EQ(pool.alloc(crowdb::rpc::RDMA_DATAPATH_CAPACITY + 1), nullptr);
     EXPECT_EQ(pool.alloc(0), nullptr);
 }
+
+TEST(BufferTest, RegisteredPoolRejectsPrematureRecycle)
+{
+    RegisteredBufferPool pool(2 * crowdb::rpc::RDMA_CONTROL_CAPACITY, 2);
+    Buffer              *buf = pool.alloc(1);
+    ASSERT_NE(buf, nullptr);
+    ASSERT_TRUE(buf->transition(BufferOwnership::Available, BufferOwnership::DiskOwned));
+
+    buf->release();
+    EXPECT_EQ(pool.quarantined_bytes(), crowdb::rpc::RDMA_CONTROL_CAPACITY);
+
+    Buffer *replacement = pool.alloc(1);
+    ASSERT_NE(replacement, nullptr);
+    EXPECT_NE(replacement, buf);
+    replacement->release();
+}
+
+TEST(BufferTest, RegisteredPoolDetachTransfersReleaseToCaller)
+{
+    RegisteredBufferPool pool(2 * crowdb::rpc::RDMA_CONTROL_CAPACITY, 2);
+    Buffer              *buf = pool.alloc(1);
+    ASSERT_NE(buf, nullptr);
+    ASSERT_TRUE(pool.detach(buf));
+    EXPECT_EQ(buf->pool, nullptr);
+    EXPECT_FALSE(pool.detach(buf));
+    buf->release();
+}
+
+TEST(BufferTest, ReleasedRegisteredBufferCannotBeReleasedTwice)
+{
+    RegisteredBufferPool pool(crowdb::rpc::RDMA_CONTROL_CAPACITY, 1);
+    Buffer              *buf = pool.alloc(1);
+    ASSERT_NE(buf, nullptr);
+    buf->release();
+    buf->release();
+    Buffer *reused = pool.alloc(1);
+    ASSERT_EQ(reused, buf);
+    reused->release();
+}

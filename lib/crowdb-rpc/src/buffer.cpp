@@ -49,13 +49,28 @@ void Buffer::write(const void *src, uint32_t n)
 Buffer *Buffer::ref_clone()
 {
     assert(ref != nullptr && "Buffer::ref_clone on released buffer");
-    ref->fetch_add(1, std::memory_order_relaxed);
+    int32_t count = ref->load(std::memory_order_acquire);
+    while (count > 0 &&
+           !ref->compare_exchange_weak(count, count + 1, std::memory_order_acq_rel,
+                                       std::memory_order_acquire)) {
+    }
+    if (count <= 0)
+        return nullptr;
     return this;
 }
 
 void Buffer::release()
 {
-    if (ref->fetch_sub(1, std::memory_order_acq_rel) == 1) {
+    if (ref == nullptr)
+        return;
+    int32_t count = ref->load(std::memory_order_acquire);
+    while (count > 0 &&
+           !ref->compare_exchange_weak(count, count - 1, std::memory_order_acq_rel,
+                                       std::memory_order_acquire)) {
+    }
+    if (count == 0 || count < 0)
+        return;
+    if (count == 1) {
         // Last reference — recycle to pool, call external free, or free
         // standalone.
         if (free_cb != nullptr) {
@@ -153,7 +168,10 @@ void SystemBufferPool::recycle(Buffer *buf)
 
 bool SystemBufferPool::detach(Buffer *buf)
 {
-    if (buf == nullptr || buf->pool != this || buf->ref->load(std::memory_order_acquire) != 1) {
+    const BufferOwnership state = buf == nullptr ? BufferOwnership::Quarantined
+                                                  : buf->ownership.load(std::memory_order_acquire);
+    if (buf == nullptr || buf->pool != this || buf->ref->load(std::memory_order_acquire) != 1 ||
+        (state != BufferOwnership::Available && state != BufferOwnership::CallerOwned)) {
         return false;
     }
     buf->pool = nullptr;
@@ -253,6 +271,10 @@ Buffer *RegisteredBufferPool::alloc(uint32_t requested)
 void RegisteredBufferPool::recycle(Buffer *buf)
 {
     outstanding_.fetch_sub(1, std::memory_order_acq_rel);
+    const BufferOwnership state = buf->ownership.load(std::memory_order_acquire);
+    if (state != BufferOwnership::Available && state != BufferOwnership::Quarantined) {
+        (void)buf->quarantine();
+    }
     if (buf->ownership.load(std::memory_order_acquire) == BufferOwnership::Quarantined) {
         quarantined_bytes_.fetch_add(buf->capacity, std::memory_order_acq_rel);
         push(quarantine_head_, buf);
@@ -261,6 +283,19 @@ void RegisteredBufferPool::recycle(Buffer *buf)
     buf->len = 0;
     buf->ownership.store(BufferOwnership::Available, std::memory_order_release);
     push(free_heads_[index(buf->capacity_class)], buf);
+}
+
+bool RegisteredBufferPool::detach(Buffer *buf)
+{
+    const BufferOwnership state = buf == nullptr ? BufferOwnership::Quarantined
+                                                  : buf->ownership.load(std::memory_order_acquire);
+    if (buf == nullptr || buf->pool != this || buf->ref == nullptr ||
+        buf->ref->load(std::memory_order_acquire) != 1 ||
+        (state != BufferOwnership::Available && state != BufferOwnership::CallerOwned))
+        return false;
+    buf->pool = nullptr;
+    outstanding_.fetch_sub(1, std::memory_order_acq_rel);
+    return true;
 }
 
 } // namespace crowdb::rpc

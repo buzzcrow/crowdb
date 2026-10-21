@@ -50,7 +50,9 @@ struct RdmaConfig
 // The pool pre-registers a large memory region and carves out buffers
 // from it, avoiding per-buffer ibv_reg_mr calls (which are expensive).
 // Every buffer is a slice of the single MR, so registration is bounded by the
-// pool region and deregistration happens exactly once at pool shutdown.
+// pool region and deregistration happens exactly once at pool shutdown. Class
+// freelists and arena admission are atomic; shutdown is the only lifecycle
+// operation that walks the full allocation list.
 class RdmaBufferPool : public BufferPool
 {
   public:
@@ -61,21 +63,35 @@ class RdmaBufferPool : public BufferPool
     Buffer *alloc(uint32_t capacity) override;
     void    recycle(Buffer *buf) override;
 
+    [[nodiscard]] uint64_t quarantined_bytes() const
+    {
+        return quarantined_bytes_.load(std::memory_order_acquire);
+    }
+
+    [[nodiscard]] bool quiescent() const
+    {
+        return outstanding_.load(std::memory_order_acquire) == 0;
+    }
+
+    void quarantine_inflight();
+
   private:
     struct ibv_pd *pd_;
     struct ibv_mr *mr_     = nullptr;
     void          *region_ = nullptr;
     uint32_t       mr_size_;
     uint32_t       max_buffers_;
-    uint32_t       outstanding_ = 0;
-    uint32_t       next_offset_ = 0;
-
-    std::mutex                                          mu_;
-    std::unordered_map<uint32_t, std::vector<Buffer *>> free_list_;
-    std::vector<Buffer *>                               quarantine_;
-    std::vector<Buffer *>                               all_buffers_;
+    std::atomic<uint32_t>                outstanding_{0};
+    std::atomic<uint32_t>                next_offset_{0};
+    std::array<std::atomic<Buffer *>, 4> free_heads_{};
+    std::atomic<Buffer *>                quarantine_head_{nullptr};
+    std::atomic<Buffer *>                all_head_{nullptr};
+    std::atomic<uint64_t>                 quarantined_bytes_{0};
 
     Buffer *alloc_fresh(uint32_t capacity);
+    Buffer *pop(std::atomic<Buffer *> &head);
+    void    push(std::atomic<Buffer *> &head, Buffer *buf);
+    bool    reserve_outstanding();
 };
 
 // RdmaTransport: RDMA transport using libibverbs + librdmacm.
