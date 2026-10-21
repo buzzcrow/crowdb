@@ -69,7 +69,7 @@ class ImageIdentityTest(unittest.TestCase):
             verify_server_sources(self.root, revision)
 
     def test_host_container_cli_does_not_exempt_shared_deployment_or_runtime_inputs(self):
-        source = self.root / "app/crowdb-cli/src/commands/container_cluster/runtime.rs"
+        source = self.root / "app/crowdb-cli/src/commands/cluster/local/docker.rs"
         source.parent.mkdir(parents=True)
         source.write_text("host lifecycle\n")
         self.commit()

@@ -288,3 +288,39 @@ fn invalid_topology_and_symlinked_receipts_fail_before_docker() {
     test.run(None, &["start", "--wait", "0"], 2);
     assert_eq!(test.state()["calls"], json!([]));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn foreign_network_and_changed_container_configuration_are_never_adopted() {
+    let test = TestDocker::new();
+    let (port, server) = serve("local", 1, true).await;
+    test.run(
+        None,
+        &["start", "--port-base", &port.to_string(), "--wait", "0"],
+        0,
+    );
+    test.run(None, &["stop"], 0);
+    let original = test.state();
+    for foreign_network in [true, false] {
+        let mut state = original.clone();
+        state["calls"] = json!([]);
+        if foreign_network {
+            state["network"]["crowdb-local"]["Labels"]["org.crowdb.cluster.owner"] = json!("foreign");
+        } else {
+            state["container"]["crowdb-local-1"]["HostConfig"]["Memory"] = json!(512);
+        }
+        test.save(&state);
+        test.run(None, &["start", "--wait", "0"], 2);
+        assert_eq!(
+            test.state()["container"]["crowdb-local-1"]["State"]["Running"],
+            false
+        );
+        assert!(test.state()["calls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|args| args[0] != "start"
+                && args[0] != "run"
+                && args.get(1).and_then(Value::as_str) != Some("create")));
+    }
+    server.abort();
+}

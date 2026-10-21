@@ -78,8 +78,9 @@ SERVER_PATHS = (
     # Host CLI lifecycle is not built or packaged by release staging.
     ":(exclude)app/crowdb-cli/src/commands.rs",
     ":(exclude)app/crowdb-cli/src/commands/s3.rs",
-    ":(exclude)app/crowdb-cli/src/commands/container_cluster.rs",
-    ":(glob,exclude)app/crowdb-cli/src/commands/container_cluster/**",
+    ":(glob,exclude)app/crowdb-cli/src/commands/s3/**",
+    ":(exclude)app/crowdb-cli/src/commands/cluster.rs",
+    ":(glob,exclude)app/crowdb-cli/src/commands/cluster/**",
     # Audited host-only crate: every consumer uses a dev-dependency. A new
     # runtime/build dependency changes its owning manifest and rejects reuse.
     ":(exclude)lib/crowdb-test-harness/Cargo.toml",

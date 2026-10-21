@@ -50,8 +50,13 @@ fn validate_command(command: &crate::Domain) -> Result<(), ExitCode> {
         } | Domain::Kv {
             verb: KvVerb::Store(_) | KvVerb::Group(_) | KvVerb::Replica(_) | KvVerb::Data(_)
         } | Domain::Chunk { .. }
+            | Domain::S3 { .. }
             | Domain::Bench {
-                verb: BenchVerb::Kv(_) | BenchVerb::Diskdb(_) | BenchVerb::Chunkdb(_) | BenchVerb::Chunkio(_)
+                verb: BenchVerb::Kv(_)
+                    | BenchVerb::Diskdb(_)
+                    | BenchVerb::Chunkdb(_)
+                    | BenchVerb::Chunkio(_)
+                    | BenchVerb::S3(_)
             }
     );
     if !supported {

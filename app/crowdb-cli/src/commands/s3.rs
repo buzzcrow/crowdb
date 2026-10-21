@@ -2,23 +2,24 @@
 // Licensed under the Apache License, Version 2.0.
 
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Subcommand;
-use quick_xml::{Reader, Writer};
 use rand::RngCore;
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use reqwest::Method;
 
 use crate::Cli;
+use crowdb_console_shared::ops::s3::S3HttpClient;
+
+mod output;
+mod target;
+use output::{format_structured_body, print_body_preview, print_exchange};
+pub(super) use target::client;
 
 #[derive(Subcommand, Debug)]
 pub enum S3Verb {
-    Cluster {
-        #[command(subcommand)]
-        verb: S3ClusterVerb,
-    },
     Bucket {
         #[command(subcommand)]
         verb: S3BucketVerb,
@@ -30,64 +31,18 @@ pub enum S3Verb {
 }
 
 #[derive(Subcommand, Debug)]
-pub enum S3ClusterVerb {
-    /// Create or resume an owned three-node release-container cluster.
-    Start {
-        #[command(flatten)]
-        target: super::container_cluster::Target,
-        #[arg(long, env = "CROWDB_CONTAINER_IMAGE")]
-        image: Option<String>,
-        /// Relative CPU weight per container (1 CPU = 1024 shares), without a hard quota.
-        #[arg(long)]
-        node_cpus: Option<f64>,
-        #[arg(long)]
-        memory_mib: Option<u64>,
-        /// `DiskDB` discovery and heartbeat cadence, recorded for every restart.
-        #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
-        diskdb_heartbeat_interval_secs: Option<u32>,
-    },
-    Status {
-        #[command(flatten)]
-        target: super::container_cluster::Target,
-    },
-    /// Stop the cluster containers and preserve their mounted data.
-    Stop {
-        #[command(flatten)]
-        target: super::container_cluster::Target,
-    },
-    Restart {
-        #[command(flatten)]
-        target: super::container_cluster::Target,
-    },
-    /// Remove only this cluster's containers, network and data.
-    Delete {
-        #[command(flatten)]
-        target: super::container_cluster::Target,
-    },
-}
-
-#[derive(Subcommand, Debug)]
 pub enum S3BucketVerb {
     #[command(alias = "add")]
     Put {
-        #[command(flatten)]
-        target: super::container_cluster::Target,
         bucket: String,
     },
     #[command(alias = "remove")]
     Delete {
-        #[command(flatten)]
-        target: super::container_cluster::Target,
         bucket: String,
     },
-    List {
-        #[command(flatten)]
-        target: super::container_cluster::Target,
-    },
+    List {},
     #[command(alias = "inspect")]
     Get {
-        #[command(flatten)]
-        target: super::container_cluster::Target,
         bucket: String,
     },
 }
@@ -95,8 +50,6 @@ pub enum S3BucketVerb {
 #[derive(Subcommand, Debug)]
 pub enum S3ObjectVerb {
     Put {
-        #[command(flatten)]
-        target: super::container_cluster::Target,
         bucket: String,
         key: String,
         /// Read object content from a file. Reads stdin when no source is set.
@@ -110,8 +63,6 @@ pub enum S3ObjectVerb {
         random_size: Option<usize>,
     },
     Get {
-        #[command(flatten)]
-        target: super::container_cluster::Target,
         bucket: String,
         key: String,
         #[arg(long)]
@@ -121,21 +72,15 @@ pub enum S3ObjectVerb {
         range: Option<(u64, u64)>,
     },
     Delete {
-        #[command(flatten)]
-        target: super::container_cluster::Target,
         bucket: String,
         key: String,
     },
     #[command(alias = "inspect")]
     Head {
-        #[command(flatten)]
-        target: super::container_cluster::Target,
         bucket: String,
         key: String,
     },
     List {
-        #[command(flatten)]
-        target: super::container_cluster::Target,
         bucket: String,
         #[arg(long)]
         prefix: Option<String>,
@@ -147,10 +92,12 @@ pub enum S3ObjectVerb {
 }
 
 pub async fn run_s3_verb(cli: &Cli, verb: S3Verb) -> ExitCode {
-    let result = match verb {
-        S3Verb::Cluster { verb } => return run_cluster(cli, verb).await,
-        S3Verb::Bucket { verb } => run_bucket(verb).await,
-        S3Verb::Object { verb } => run_object(verb).await,
+    let result = match client(cli).await {
+        Ok(client) => match verb {
+            S3Verb::Bucket { verb } => run_bucket(&client, verb).await,
+            S3Verb::Object { verb } => run_object(&client, verb).await,
+        },
+        Err(error) => Err(error),
     };
     match result {
         Ok(Some(bytes)) => std::io::stdout().write_all(&bytes).map_or_else(
@@ -168,108 +115,57 @@ pub async fn run_s3_verb(cli: &Cli, verb: S3Verb) -> ExitCode {
     }
 }
 
-async fn run_cluster(_cli: &Cli, verb: S3ClusterVerb) -> ExitCode {
-    use super::container_cluster;
-    let result = match verb {
-        S3ClusterVerb::Start {
-            target,
-            image,
-            node_cpus,
-            memory_mib,
-            diskdb_heartbeat_interval_secs,
-        } => {
-            container_cluster::start(
-                &target,
-                image.as_deref(),
-                node_cpus,
-                memory_mib,
-                diskdb_heartbeat_interval_secs,
-            )
-            .await
-        }
-        S3ClusterVerb::Status { target } => container_cluster::status(&target).await,
-        S3ClusterVerb::Stop { target } => container_cluster::stop(&target).await,
-        S3ClusterVerb::Restart { target } => container_cluster::restart(&target).await,
-        S3ClusterVerb::Delete { target } => container_cluster::delete(&target).await,
+async fn run_bucket(
+    client: &S3HttpClient,
+    verb: S3BucketVerb,
+) -> crowdb_console_shared::error::Result<Option<Vec<u8>>> {
+    let (method, bucket) = match verb {
+        S3BucketVerb::Put { bucket } => (Method::PUT, Some(bucket)),
+        S3BucketVerb::Delete { bucket } => (Method::DELETE, Some(bucket)),
+        S3BucketVerb::List {} => (Method::GET, None),
+        S3BucketVerb::Get { bucket } => (Method::GET, Some(bucket)),
     };
-    match result {
-        Ok(status) => {
-            println!("Container cluster: {}", status.container);
-            println!("  S3 endpoint: {}", status.endpoint);
-            println!("  Web console: {}", status.web);
-            println!("  Containers: {}/{}", status.running, status.total);
-            println!("  Image: {}", status.image);
-            println!("  Root: {}", status.root.display());
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            eprintln!("error: {error}");
-            ExitCode::from(2)
-        }
-    }
-}
-
-async fn run_bucket(verb: S3BucketVerb) -> crowdb_console_shared::error::Result<Option<Vec<u8>>> {
-    let (target, method, bucket) = match verb {
-        S3BucketVerb::Put { target, bucket } => (target, Method::PUT, Some(bucket)),
-        S3BucketVerb::Delete { target, bucket } => (target, Method::DELETE, Some(bucket)),
-        S3BucketVerb::List { target } => (target, Method::GET, None),
-        S3BucketVerb::Get { target, bucket } => (target, Method::GET, Some(bucket)),
-    };
-    let root = super::container_cluster::resolve(&target, false).await?;
-    let body = send_request(&root, method, bucket.as_deref(), None, &[], None, None).await?;
+    let body = send_request(client, method, bucket.as_deref(), None, &[], None, None).await?;
     Ok((!body.is_empty()).then_some(body))
 }
 
-async fn run_object(verb: S3ObjectVerb) -> crowdb_console_shared::error::Result<Option<Vec<u8>>> {
-    use super::container_cluster::resolve;
+async fn run_object(
+    client: &S3HttpClient,
+    verb: S3ObjectVerb,
+) -> crowdb_console_shared::error::Result<Option<Vec<u8>>> {
     match verb {
         S3ObjectVerb::Put {
-            target,
             bucket,
             key,
             file,
             text,
             random_size,
-        } => {
-            let root = resolve(&target, false).await?;
-            put_object(&root, &bucket, &key, file, text, random_size).await
-        }
+        } => put_object(client, &bucket, &key, file, text, random_size).await,
         S3ObjectVerb::Get {
-            target,
             bucket,
             key,
             output,
             range,
-        } => {
-            let root = resolve(&target, false).await?;
-            get_object(&root, &bucket, &key, output, range).await
-        }
-        S3ObjectVerb::Delete { target, bucket, key } => {
-            let root = resolve(&target, false).await?;
-            send_request(&root, Method::DELETE, Some(&bucket), Some(&key), &[], None, None).await?;
+        } => get_object(client, &bucket, &key, output, range).await,
+        S3ObjectVerb::Delete { bucket, key } => {
+            send_request(client, Method::DELETE, Some(&bucket), Some(&key), &[], None, None).await?;
             Ok(None)
         }
-        S3ObjectVerb::Head { target, bucket, key } => {
-            let root = resolve(&target, false).await?;
-            send_request(&root, Method::HEAD, Some(&bucket), Some(&key), &[], None, None).await?;
+        S3ObjectVerb::Head { bucket, key } => {
+            send_request(client, Method::HEAD, Some(&bucket), Some(&key), &[], None, None).await?;
             Ok(None)
         }
         S3ObjectVerb::List {
-            target,
             bucket,
             prefix,
             limit,
             continuation,
-        } => {
-            let root = resolve(&target, false).await?;
-            list_objects(&root, &bucket, prefix, limit, continuation).await
-        }
+        } => list_objects(client, &bucket, prefix, limit, continuation).await,
     }
 }
 
 async fn put_object(
-    root: &Path,
+    client: &S3HttpClient,
     bucket: &str,
     key: &str,
     file: Option<PathBuf>,
@@ -294,7 +190,7 @@ async fn put_object(
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static(content_type));
     send_request_with_headers(
-        root,
+        client,
         Method::PUT,
         Some(bucket),
         Some(key),
@@ -308,13 +204,13 @@ async fn put_object(
 }
 
 async fn get_object(
-    root: &Path,
+    client: &S3HttpClient,
     bucket: &str,
     key: &str,
     output: Option<PathBuf>,
     range: Option<(u64, u64)>,
 ) -> crowdb_console_shared::error::Result<Option<Vec<u8>>> {
-    let body = send_request(root, Method::GET, Some(bucket), Some(key), &[], None, range).await?;
+    let body = send_request(client, Method::GET, Some(bucket), Some(key), &[], None, range).await?;
     if let Some(path) = output {
         std::fs::write(path, body)?;
         Ok(None)
@@ -323,7 +219,7 @@ async fn get_object(
     }
 }
 
-fn parse_range(value: &str) -> Result<(u64, u64), String> {
+fn parse_range(value: &str) -> std::result::Result<(u64, u64), String> {
     let (start, end) = value
         .split_once('-')
         .ok_or_else(|| "range must use START-END".to_string())?;
@@ -338,7 +234,7 @@ fn parse_range(value: &str) -> Result<(u64, u64), String> {
 }
 
 async fn list_objects(
-    root: &Path,
+    client: &S3HttpClient,
     bucket: &str,
     prefix: Option<String>,
     limit: Option<usize>,
@@ -354,12 +250,12 @@ async fn list_objects(
     if let Some(value) = continuation {
         query.push(("continuation-token", value));
     }
-    let body = send_request(root, Method::GET, Some(bucket), None, &query, None, None).await?;
+    let body = send_request(client, Method::GET, Some(bucket), None, &query, None, None).await?;
     Ok(Some(body))
 }
 
 async fn send_request(
-    root: &Path,
+    client: &S3HttpClient,
     method: Method,
     bucket: Option<&str>,
     object: Option<&str>,
@@ -367,12 +263,22 @@ async fn send_request(
     body: Option<Vec<u8>>,
     range: Option<(u64, u64)>,
 ) -> crowdb_console_shared::error::Result<Vec<u8>> {
-    send_request_with_headers(root, method, bucket, object, query, body, range, HeaderMap::new()).await
+    send_request_with_headers(
+        client,
+        method,
+        bucket,
+        object,
+        query,
+        body,
+        range,
+        HeaderMap::new(),
+    )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn send_request_with_headers(
-    root: &Path,
+    client: &S3HttpClient,
     method: Method,
     bucket: Option<&str>,
     object: Option<&str>,
@@ -381,10 +287,9 @@ async fn send_request_with_headers(
     range: Option<(u64, u64)>,
     headers: HeaderMap,
 ) -> crowdb_console_shared::error::Result<Vec<u8>> {
-    let exchange = crowdb_console_shared::ops::s3::request_exchange_with_headers(
-        root, method, bucket, object, query, body, range, headers,
-    )
-    .await?;
+    let exchange = client
+        .request_exchange_with_headers(method, bucket, object, query, body, range, headers)
+        .await?;
     print_exchange(&exchange);
     let content_type = exchange.response_headers.get(CONTENT_TYPE).cloned();
     if !exchange.status.is_success() {
@@ -399,146 +304,4 @@ async fn send_request_with_headers(
     }
     let (_, body) = exchange.into_result()?;
     Ok(format_structured_body(content_type.as_ref(), body))
-}
-
-fn print_exchange(exchange: &crowdb_console_shared::ops::s3::S3HttpExchange) {
-    eprintln!(
-        "\x1b[1;34mHTTP REQUEST\x1b[0m\n> {} {}",
-        exchange.request.method, exchange.request.url
-    );
-    print_headers('>', &exchange.request.headers);
-    match exchange.request.body_bytes {
-        None => eprintln!("> body: none"),
-        Some(bytes) => {
-            if let Some(preview) = &exchange.request.body_preview {
-                eprintln!("\x1b[35m> body: text ({bytes} bytes)\x1b[0m");
-                print_body_preview('>', preview, exchange.request.body_preview_truncated);
-            } else {
-                eprintln!("\x1b[35m> body: binary ({bytes} bytes, not shown)\x1b[0m");
-            }
-        }
-    }
-
-    eprintln!("\x1b[1;34mHTTP RESPONSE\x1b[0m\n< {}", exchange.status);
-    print_headers('<', &exchange.response_headers);
-    let body = &exchange.response_body;
-    if body.is_empty() {
-        eprintln!("\x1b[35m< body: none\x1b[0m");
-    } else {
-        let kind = body_kind(exchange.response_headers.get(CONTENT_TYPE), body);
-        match kind {
-            BodyKind::Json => eprintln!(
-                "\x1b[35m< body: JSON ({} bytes, formatted on stdout)\x1b[0m",
-                body.len()
-            ),
-            BodyKind::Xml => eprintln!(
-                "\x1b[35m< body: XML ({} bytes, formatted on stdout)\x1b[0m",
-                body.len()
-            ),
-            BodyKind::Text => eprintln!(
-                "\x1b[35m< body: text ({} bytes, written to stdout)\x1b[0m",
-                body.len()
-            ),
-            BodyKind::Binary => eprintln!(
-                "\x1b[35m< body: binary ({} bytes, not shown in trace)\x1b[0m",
-                body.len()
-            ),
-        }
-    }
-}
-
-fn print_body_preview(prefix: char, body: &[u8], truncated: bool) {
-    let text = String::from_utf8_lossy(body);
-    for line in text.lines() {
-        eprintln!("\x1b[35m{prefix} | {line}\x1b[0m");
-    }
-    if truncated {
-        eprintln!("\x1b[35m{prefix} | ... preview truncated at 65536 bytes\x1b[0m");
-    }
-}
-
-fn print_headers(prefix: char, headers: &HeaderMap) {
-    if headers.is_empty() {
-        eprintln!("{prefix} headers: none");
-        return;
-    }
-    let mut values = headers
-        .iter()
-        .map(|(name, value)| {
-            let value = if matches!(name.as_str(), "authorization" | "cookie" | "set-cookie") {
-                "<redacted>".to_string()
-            } else {
-                value
-                    .to_str()
-                    .map_or_else(|_| "<non-UTF-8>".to_string(), ToOwned::to_owned)
-            };
-            (name.as_str(), value)
-        })
-        .collect::<Vec<_>>();
-    values.sort_unstable_by(|left, right| left.0.cmp(right.0));
-    for (name, value) in values {
-        eprintln!("{prefix} {name}: {value}");
-    }
-}
-
-#[derive(Clone, Copy)]
-enum BodyKind {
-    Json,
-    Xml,
-    Text,
-    Binary,
-}
-
-fn body_kind(content_type: Option<&reqwest::header::HeaderValue>, body: &[u8]) -> BodyKind {
-    let media_type = content_type
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if media_type.contains("json") {
-        return BodyKind::Json;
-    }
-    if media_type.contains("xml") {
-        return BodyKind::Xml;
-    }
-    if media_type.starts_with("text/") {
-        return BodyKind::Text;
-    }
-    match body.iter().find(|byte| !byte.is_ascii_whitespace()) {
-        Some(b'{' | b'[') => BodyKind::Json,
-        Some(b'<') => BodyKind::Xml,
-        _ if std::str::from_utf8(body).is_ok() && !media_type.contains("octet-stream") => BodyKind::Text,
-        _ => BodyKind::Binary,
-    }
-}
-
-fn format_structured_body(content_type: Option<&reqwest::header::HeaderValue>, body: Vec<u8>) -> Vec<u8> {
-    match body_kind(content_type, &body) {
-        BodyKind::Json => serde_json::from_slice::<serde_json::Value>(&body)
-            .ok()
-            .and_then(|value| serde_json::to_vec_pretty(&value).ok())
-            .map_or(body, with_trailing_newline),
-        BodyKind::Xml => format_xml(&body).map_or(body, with_trailing_newline),
-        BodyKind::Text | BodyKind::Binary => body,
-    }
-}
-
-fn format_xml(body: &[u8]) -> Option<Vec<u8>> {
-    let mut reader = Reader::from_reader(body);
-    let mut writer = Writer::new_with_indent(Vec::new(), b' ', 2);
-    let mut buffer = Vec::new();
-    loop {
-        match reader.read_event_into(&mut buffer).ok()? {
-            quick_xml::events::Event::Eof => break,
-            event => writer.write_event(event.into_owned()).ok()?,
-        }
-        buffer.clear();
-    }
-    Some(writer.into_inner())
-}
-
-fn with_trailing_newline(mut body: Vec<u8>) -> Vec<u8> {
-    if !body.ends_with(b"\n") {
-        body.push(b'\n');
-    }
-    body
 }

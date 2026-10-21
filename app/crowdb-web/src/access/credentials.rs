@@ -40,12 +40,7 @@ pub(super) fn dataset(state: &AppState) -> Result<String, String> {
         .map_err(|_| "Dataset credential is not configured on the Console server".into())
 }
 
-pub(super) struct S3Credentials {
-    pub access: String,
-    pub secret: String,
-    pub region: String,
-    pub session: Option<String>,
-}
+pub(super) use crowdb_console_shared::ops::s3::S3Credentials;
 
 pub(super) fn s3(state: &AppState, target: &str) -> Result<S3Credentials, String> {
     if let (Ok(access), Ok(secret)) = (

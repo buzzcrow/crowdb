@@ -95,7 +95,9 @@ volumes and restart inputs unless `--delete-data` is explicit. Image cleanup
 only considers dangling CROWDB images, preserving retained cluster references
 and images used by any running or stopped container. Attached or relabelled
 networks and volumes referenced elsewhere are rejected. No global prune runs.
-These host scripts invoke Docker directly and require no CLI binary or records.
+These host scripts invoke Docker directly and require no CLI binary or application
+target binding. Explicit data deletion also removes a matching optional CLI
+target binding; a binding with different ownership is rejected before deletion.
 
 One node and three nodes use the same editable monitor lifecycle. Local mode
 prepares test storage and all access services. An incomplete three-node start
@@ -103,6 +105,40 @@ waits for peers; it never falls back to singleton bootstrap. Each node retains
 its identity, SSH keys, cluster binding and accepted setup in its own volume.
 Discovery uses mDNS/DNS-SD; no DNS server installation or peer list is required.
 Advertisements supply hints; pinned SSH identity verifies new member addresses.
+
+## Common CLI lifecycle and application targets
+
+The CLI can create the same local Docker clusters and wait for complete
+application readiness. It shares host ownership receipts with the shortcuts;
+neither entry point implements a separate bootstrap or storage deployment.
+
+```bash
+pixi run crowdb-cli --cluster demo cluster start
+pixi run crowdb-cli --cluster demo-three cluster start --nodes 3 --port-base 9190
+pixi run crowdb-cli --cluster demo-three cluster check --wait 180 --json
+pixi run crowdb-cli --cluster demo-three cluster stop
+pixi run crowdb-cli --cluster demo-three cluster start
+pixi run crowdb-cli --cluster demo-three s3 bucket put example
+pixi run crowdb-cli --cluster demo-three s3 object put example hello.txt --text hello
+pixi run crowdb-cli --management-endpoint http://127.0.0.1:9190 s3 object get example hello.txt
+pixi run oci-clean --cluster demo-three --delete-data
+```
+
+Use the built `crowdb-cli` executable on PATH, or substitute its absolute path
+after `pixi run`. Start defaults to cluster `local`, one node, 1 CPU, 1536 MiB,
+and console port 9090. It accepts `--image`, `--cpus`, `--memory-mib` and
+`--port-base` before sealing the first launch inputs. Subsequent starts verify
+those inputs and resume existing state. `--wait` bounds readiness observation;
+an unmet check returns 1 and leaves accepted work resumable.
+
+Status/check and application commands need only management HTTP access. A named
+CLI target pins the observed cluster UUID; explicit management endpoints must
+agree with that UUID and with one another. An unavailable selected endpoint
+does not fall back to localhost. S3 commands retrieve the selected cluster's
+published S3 endpoint and credentials, then issue signed native S3 requests.
+They require no Docker socket or local deployment directory. HTTP diagnostics
+redact authorization and session tokens. The CLI has no S3-specific cluster
+lifecycle or container cleanup command.
 
 ## Direct Docker and Compose
 

@@ -10,9 +10,10 @@ Upstream: [R243](../backlog/R243-deploy-unified-oci-cluster.md),
 Goal: direct runtime startup, CLI startup and Docker-only Pixi shortcuts use
 one editable, recoverable node lifecycle and the same cluster readiness contract.
 
-Status: startup policy, shared metadata ownership and local service placement are
-implemented. Diagnostic container startup has started; formal artifact and protocol
-acceptance remain outstanding. Preserve existing worktree changes,
+Status: startup policy, shared preparation, aggregate readiness, independent Docker
+shortcuts, common local CLI lifecycle and S3 attachment are implemented and have
+focused verification. Host/containerd CLI, admitted-member trust extension,
+remaining workload/legacy migration and registered acceptance are outstanding. Preserve existing worktree changes,
 including the Pixi/CI/container-guide edits that predate this refinement.
 C1–C8 and A01–A31 below refer to the upstream contracts and acceptance cases.
 This plan is temporary and is removed after requirement completion.
@@ -271,7 +272,7 @@ removal until the complete direct-container path passes A01/A03/A25.
   initializing/waiting and remote runtime unknown (A15, A26). Files:
   `lib/crowdb-console-shared/src/ops/cluster/`,
   `lib/crowdb-console-shared/tests/`.
-- [ ] **T18 — Expose bounded status/check**: add `--json` and `check --wait SECONDS`.
+- [x] **T18 — Expose bounded status/check**: add `--json` and `check --wait SECONDS`.
   Status takes one bounded observation; check with zero wait observes once,
   otherwise shares one monotonic deadline across requests, retries and polling.
   Default observation budget is 10 seconds and per-request timeout is capped by
@@ -309,7 +310,7 @@ removal until the complete direct-container path passes A01/A03/A25.
 Dependency: T14/T19 establish the node and ownership inputs. Scripts may share
 runtime-format utilities, but must not invoke CLI or require its records.
 
-- [ ] **T21 — Separate build/load from run**: keep `oci-build` as the root build
+- [x] **T21 — Separate build/load from run**: keep `oci-build` as the root build
   entry, preserve Docker-free OCI/receipt construction and explicit runtime load.
   Remove implicit build dependencies from all run aliases and migrate internal
   CI staging/verification callers without removing their checks. Done when a
@@ -317,7 +318,7 @@ runtime-format utilities, but must not invoke CLI or require its records.
   cargo/compiler/download/build (A10, A11, A17). Files: `pixi.toml`,
   `container/oci-image/image-build.sh`, `container/oci-image/transfer.py`,
   `container/single-node-container/build.sh`, `.github/workflows/`.
-- [ ] **T22 — Implement Docker run one/three**: expose `oci-run`, `oci-run-1c`,
+- [x] **T22 — Implement Docker run one/three**: expose `oci-run`, `oci-run-1c`,
   `oci-run-3c` with `--cluster`, a default local name and explicit published-port
   overrides. Use independent volumes and a dedicated bridge per three-node
   cluster; publish distinct member UIs. Persist host-owned inputs/token before
@@ -326,13 +327,13 @@ runtime-format utilities, but must not invoke CLI or require its records.
   endpoints. Done when no CLI binary/record exists and starts still work (A07,
   A10, A11, A29). Files: `container/single-node-container/dev-container.sh` or
   replacement under `container/oci-image/`, `pixi.toml`, runtime-script tests.
-- [ ] **T23 — Implement scoped stop**: add `oci-stop --cluster NAME` and explicit
+- [x] **T23 — Implement scoped stop**: add `oci-stop --cluster NAME` and explicit
   `--all`; verify ownership/endpoint before stopping. Retain containers, volumes,
   mappings and accepted topology. Treat already stopped/missing resources as
   idempotent but propagate daemon/permission errors. Done when stopping one
   scope never affects another and subsequent run resumes (A07, A11, A29).
   Files: host Docker script, `pixi.toml`, `container/oci-image/tests/`.
-- [ ] **T24 — Implement conservative clean**: add scoped/explicit-all clean and
+- [x] **T24 — Implement conservative clean**: add scoped/explicit-all clean and
   explicit `--delete-data`; no CLI container-clean command. Preserve data and
   reuse metadata by default. Validate exact owned paths/volumes, reject symlink
   escape, recheck network/image references including stopped containers and
@@ -364,7 +365,7 @@ runtime-format utilities, but must not invoke CLI or require its records.
 
 Dependency: T04/T18/T19 and the direct path pass before deleting old executors.
 
-- [ ] **T26 — Promote cluster lifecycle**: expose `cluster start/stop/status/check`
+- [x] **T26 — Promote cluster lifecycle**: expose `cluster start/stop/status/check`
   through the common resolver; migrate S3 bucket/object target selection; remove
   `s3 cluster` and its private bootstrap/storage executor. Keep logical store,
   group, replica and working storage maintenance operations. Done when common
@@ -1521,3 +1522,54 @@ do not mark unexecuted acceptance passed.
   Three-node and retained-resume verification are in progress. This image predates
   the latest finalizer guard, so this is lifecycle verification against existing
   application packaging, not evidence of a rebuilt current-tree artifact.
+
+## Common lifecycle retained verification and S3 migration
+
+- Actual Docker one-node and three-node `cluster start` both reach aggregate
+  Ready using the loaded `status-k` image. Stop/resume preserves the respective
+  UUIDs `1c90dd70-efe5-462a-b4c1-59c26761595c` and
+  `2267a85f-c6b6-46df-bd1e-0558e17f3cab`. Stopping the singleton leaves the
+  three-node cluster's aggregate check Ready. Private reports are retained under
+  `.crowdb-runtime/artifacts/cli-lifecycle-306e106f/`.
+- Each cluster stores an 18-byte object and a 2 MiB deterministic binary through
+  the migrated S3 commands. Whole-cluster stop/resume returns Ready, then the
+  binary reads back byte-for-byte with SHA256
+  `91d3beb88a9b2f778a6c44a1c53b63d3c79931845a9aef84b3fb414610bd1938`.
+  An alternate three-node member serves the retained read. These first payload
+  checks used the Console's signed S3 forwarding path while native signing was
+  being extracted; native signed CLI acceptance is tracked separately below.
+- S3 bucket/object now use the common resolved target; remove public `s3 cluster`
+  and all seven CLI private lifecycle/bootstrap/storage modules. Their obsolete
+  tests are replaced by common lifecycle interruption/context/ownership/port/mount
+  validation plus the independent host cleanup suite. Heartbeat-specific legacy
+  deployment flags and root/container selectors have no compatibility aliases.
+- Extract the existing SigV4 signer into shared S3 transport. Console probes and
+  forwarding retain the same signer; CLI fetches bounded credentials from the
+  UUID-validated management target before opening an upload, then sends signed
+  native S3 requests. Redact authorization/session tokens and mark their header
+  values sensitive. No local runtime, root record or environment credential
+  fallback is needed for remote attachment.
+- Update image-provenance exclusions to the current host-only CLI modules;
+  shared/server implementation and dependency edges remain guarded. All 19
+  provenance tests pass with `PYTHONPATH=e2e-test`; an initial invocation without
+  that module path failed import before running any case.
+- Remaining migration includes attach-only S3 benchmark, other benchmark fixture
+  effects, public bare-metal/component launch trees, registered lifecycle E2E,
+  admitted-member trust extension and actual native containerd host acceptance.
+
+- Final native signed CLI verification: both existing clusters accept a 2 MiB
+  native upload and return retained 2 MiB bytes through their published S3 ports,
+  including the third member's management-selected credentials. Authorization
+  is redacted in traces. Independent `oci-clean` removes the three-node bridge
+  and containers, retains data/binding, and common CLI recreation reaches Ready
+  with the same UUID and payload. Docker reused the old subnet, so this last
+  case does not prove changed-address recovery.
+- Missing-image `oci-run` fails with the actionable build/load instruction and
+  creates no accepted launch receipt. T18/T21–T24/T26 are now marked verified;
+  registered combined acceptance remains T30–T35, not silently counted complete.
+- Final focused gates: ten CLI S3 cases, ten Console Access routing cases, four
+  protocol observations and the five common lifecycle/four target cases pass;
+  affected all-target clippy passes after extracting request construction into
+  bounded helpers. The only new test correction was matching Clap's precise
+  `unexpected argument` message for the removed root flag. No runtime behavior
+  or assertion of removal was relaxed.
