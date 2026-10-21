@@ -47,6 +47,7 @@ pub struct PxRpcTransport {
     rpc: Arc<RpcClient>,
     connections: ConnectionPoolIndex,
     next_req_id: AtomicU64,
+    cluster_id: Option<String>,
 }
 
 impl std::fmt::Debug for PxRpcTransport {
@@ -94,6 +95,7 @@ impl PxRpcTransport {
             rpc,
             connections: ConnectionPoolIndex::new(pool_size, None),
             next_req_id: AtomicU64::new(1),
+            cluster_id: std::env::var("CROWDB_KV_CLUSTER_ID").ok(),
         }
     }
 
@@ -142,16 +144,19 @@ impl PxRpcTransport {
     /// Send a `Prepare` request via crowdb-rpc.
     pub async fn send_prepare(
         &self,
-        rpc_endpoint: &str,
+        destination: ReplicaDestination<'_>,
         slot: u64,
         ballot: PxBallot,
         term: u64,
         group_id: u64,
         membership_epoch: u64,
     ) -> Result<PxPrepareReply, PxReplicaError> {
+        let rpc_endpoint = destination.endpoint;
+        let target_replica_id = destination.replica_id;
         let req_id = self.next_id();
         let conn = self.conn_for(rpc_endpoint)?;
         let mut builder = FlatBufferBuilder::new();
+        let target_cluster_id = self.cluster_id.as_deref().map(|id| builder.create_string(id));
         let args = FBPrepareRequestArgs {
             id: req_id,
             rpc_create_nano: 0,
@@ -162,6 +167,8 @@ impl PxRpcTransport {
             term,
             group_id,
             membership_epoch,
+            target_replica_id,
+            target_cluster_id,
         };
         let req = FBPrepareRequest::create(&mut builder, &args);
         builder.finish(req, None);
@@ -215,11 +222,13 @@ impl PxRpcTransport {
     /// Send a unary `Accept` request via crowdb-rpc.
     pub async fn send_accept(
         &self,
-        rpc_endpoint: &str,
+        destination: ReplicaDestination<'_>,
         entry: &PxLogEntry,
         group_id: u64,
         membership_epoch: u64,
     ) -> Result<PxAcceptReply, PxReplicaError> {
+        let rpc_endpoint = destination.endpoint;
+        let target_replica_id = destination.replica_id;
         let req_id = self.next_id();
         let conn = self.conn_for(rpc_endpoint)?;
         let mut builder = FlatBufferBuilder::new();
@@ -234,6 +243,7 @@ impl PxRpcTransport {
                 payload: Some(payload),
             },
         );
+        let target_cluster_id = self.cluster_id.as_deref().map(|id| builder.create_string(id));
         let args = FBAcceptRequestArgs {
             id: req_id,
             rpc_create_nano: 0,
@@ -245,6 +255,8 @@ impl PxRpcTransport {
             value: Some(value),
             group_id,
             membership_epoch,
+            target_replica_id,
+            target_cluster_id,
         };
         let req = FBAcceptRequest::create(&mut builder, &args);
         builder.finish(req, None);
@@ -290,13 +302,16 @@ impl PxRpcTransport {
     /// Send a `PreVote` request via crowdb-rpc.
     pub async fn send_pre_vote(
         &self,
-        rpc_endpoint: &str,
+        destination: ReplicaDestination<'_>,
         req: VoteRequestPayload,
         group_id: u64,
     ) -> Result<VoteReply, PxReplicaError> {
+        let rpc_endpoint = destination.endpoint;
+        let target_replica_id = destination.replica_id;
         let req_id = self.next_id();
         let conn = self.conn_for(rpc_endpoint)?;
         let mut builder = FlatBufferBuilder::new();
+        let target_cluster_id = self.cluster_id.as_deref().map(|id| builder.create_string(id));
         let args = FBPreVoteRequestArgs {
             id: req_id,
             rpc_create_nano: 0,
@@ -306,6 +321,8 @@ impl PxRpcTransport {
             candidate_id: req.candidate_id,
             accepted_log_tip_slot: req.accepted_log_tip_slot,
             accepted_log_tip_term: req.accepted_log_tip_term,
+            target_replica_id,
+            target_cluster_id,
         };
         let fb_req = FBPreVoteRequest::create(&mut builder, &args);
         builder.finish(fb_req, None);
@@ -338,13 +355,16 @@ impl PxRpcTransport {
     /// Send a `RequestVote` request via crowdb-rpc.
     pub async fn send_request_vote(
         &self,
-        rpc_endpoint: &str,
+        destination: ReplicaDestination<'_>,
         req: VoteRequestPayload,
         group_id: u64,
     ) -> Result<VoteReply, PxReplicaError> {
+        let rpc_endpoint = destination.endpoint;
+        let target_replica_id = destination.replica_id;
         let req_id = self.next_id();
         let conn = self.conn_for(rpc_endpoint)?;
         let mut builder = FlatBufferBuilder::new();
+        let target_cluster_id = self.cluster_id.as_deref().map(|id| builder.create_string(id));
         let args = FBRequestVoteRequestArgs {
             id: req_id,
             rpc_create_nano: 0,
@@ -354,6 +374,8 @@ impl PxRpcTransport {
             candidate_id: req.candidate_id,
             accepted_log_tip_slot: req.accepted_log_tip_slot,
             accepted_log_tip_term: req.accepted_log_tip_term,
+            target_replica_id,
+            target_cluster_id,
         };
         let fb_req = FBRequestVoteRequest::create(&mut builder, &args);
         builder.finish(fb_req, None);
@@ -386,13 +408,16 @@ impl PxRpcTransport {
     /// Send a `Heartbeat` request via crowdb-rpc.
     pub async fn send_heartbeat(
         &self,
-        rpc_endpoint: &str,
+        destination: ReplicaDestination<'_>,
         req: HeartbeatRequestPayload,
         group_id: u64,
     ) -> Result<HeartbeatReply, PxReplicaError> {
+        let rpc_endpoint = destination.endpoint;
+        let target_replica_id = destination.replica_id;
         let req_id = self.next_id();
         let conn = self.conn_for(rpc_endpoint)?;
         let mut builder = FlatBufferBuilder::new();
+        let target_cluster_id = self.cluster_id.as_deref().map(|id| builder.create_string(id));
         let args = FBHeartbeatRequestArgs {
             id: req_id,
             rpc_create_nano: 0,
@@ -405,6 +430,8 @@ impl PxRpcTransport {
             committed_safe_slot: req.committed_safe_slot,
             lease_grant_until_ms_mono: req.lease_grant_until_ms_mono,
             t_send_ms_mono: req.t_send_ms_mono,
+            target_replica_id,
+            target_cluster_id,
         };
         let fb_req = FBHeartbeatRequest::create(&mut builder, &args);
         builder.finish(fb_req, None);
@@ -439,14 +466,17 @@ impl PxRpcTransport {
     /// Send a `StepDown` request via crowdb-rpc.
     pub async fn send_step_down(
         &self,
-        rpc_endpoint: &str,
+        destination: ReplicaDestination<'_>,
         req: &StepDownRequestPayload,
         group_id: u64,
     ) -> Result<StepDownReply, PxReplicaError> {
+        let rpc_endpoint = destination.endpoint;
+        let target_replica_id = destination.replica_id;
         let req_id = self.next_id();
         let conn = self.conn_for(rpc_endpoint)?;
         let mut builder = FlatBufferBuilder::new();
         let reason = builder.create_string(&req.reason);
+        let target_cluster_id = self.cluster_id.as_deref().map(|id| builder.create_string(id));
         let args = FBStepDownRequestArgs {
             id: req_id,
             rpc_create_nano: 0,
@@ -455,6 +485,8 @@ impl PxRpcTransport {
             term: req.term,
             target_leader_id: req.target_leader_id,
             reason: Some(reason),
+            target_replica_id,
+            target_cluster_id,
         };
         let fb_req = FBStepDownRequest::create(&mut builder, &args);
         builder.finish(fb_req, None);
@@ -485,15 +517,18 @@ impl PxRpcTransport {
     /// Send a `FetchGap` request via crowdb-rpc.
     pub async fn send_fetch_gap(
         &self,
-        rpc_endpoint: &str,
+        destination: ReplicaDestination<'_>,
         group_id: u64,
         slot: u64,
         term: u64,
         leader_id: u64,
     ) -> Result<FetchGapReply, PxReplicaError> {
+        let rpc_endpoint = destination.endpoint;
+        let target_replica_id = destination.replica_id;
         let req_id = self.next_id();
         let conn = self.conn_for(rpc_endpoint)?;
         let mut builder = FlatBufferBuilder::new();
+        let target_cluster_id = self.cluster_id.as_deref().map(|id| builder.create_string(id));
         let args = FBFetchGapRequestArgs {
             id: req_id,
             rpc_create_nano: 0,
@@ -502,6 +537,8 @@ impl PxRpcTransport {
             slot,
             term,
             leader_id,
+            target_replica_id,
+            target_cluster_id,
         };
         let fb_req = FBFetchGapRequest::create(&mut builder, &args);
         builder.finish(fb_req, None);
@@ -537,16 +574,19 @@ impl PxRpcTransport {
     /// reply is expected — the frame is sent with no completion callback.
     pub fn send_chosen(
         &self,
-        rpc_endpoint: &str,
+        destination: ReplicaDestination<'_>,
         group_id: u64,
         slot: u64,
         term: u64,
         leader_id: u64,
         ballot_round: u64,
     ) -> Result<(), PxReplicaError> {
+        let rpc_endpoint = destination.endpoint;
+        let target_replica_id = destination.replica_id;
         let req_id = self.next_id();
         let conn = self.conn_for(rpc_endpoint)?;
         let mut builder = FlatBufferBuilder::new();
+        let target_cluster_id = self.cluster_id.as_deref().map(|id| builder.create_string(id));
         let args = FBChosenNotificationArgs {
             id: req_id,
             rpc_create_nano: 0,
@@ -556,6 +596,8 @@ impl PxRpcTransport {
             term,
             leader_id,
             ballot_round,
+            target_replica_id,
+            target_cluster_id,
         };
         let fb_req = FBChosenNotification::create(&mut builder, &args);
         builder.finish(fb_req, None);
@@ -579,7 +621,7 @@ impl PxRpcTransport {
     #[allow(clippy::too_many_arguments)]
     pub fn send_batch_chosen(
         &self,
-        rpc_endpoint: &str,
+        destination: ReplicaDestination<'_>,
         group_id: u64,
         start_slot: u64,
         end_slot: u64,
@@ -587,9 +629,12 @@ impl PxRpcTransport {
         leader_id: u64,
         ballot_round: u64,
     ) -> Result<(), PxReplicaError> {
+        let rpc_endpoint = destination.endpoint;
+        let target_replica_id = destination.replica_id;
         let req_id = self.next_id();
         let conn = self.conn_for(rpc_endpoint)?;
         let mut builder = FlatBufferBuilder::new();
+        let target_cluster_id = self.cluster_id.as_deref().map(|id| builder.create_string(id));
         let args = FBBatchChosenNotificationArgs {
             id: req_id,
             rpc_create_nano: 0,
@@ -600,6 +645,8 @@ impl PxRpcTransport {
             term,
             leader_id,
             ballot_round,
+            target_replica_id,
+            target_cluster_id,
         };
         let fb_req = FBBatchChosenNotification::create(&mut builder, &args);
         builder.finish(fb_req, None);
@@ -928,81 +975,10 @@ pub(crate) enum SnapshotTransferError {
     Protocol(String),
 }
 
-// ── Error mapping ────────────────────────────────────────────────
+mod connection;
+use connection::{
+    check_ret_code, check_snapshot_ret_code, normalize_endpoint, parse_endpoint,
+    rpc_error_invalidates_connection, rpc_error_to_px,
+};
 
-fn rpc_error_to_px(e: RpcError) -> PxReplicaError {
-    match e {
-        RpcError::Timeout => PxReplicaError::Timeout("crowdb-rpc deadline expired".into()),
-        RpcError::SendQueueFull => PxReplicaError::Backpressure("crowdb-rpc send queues are full".into()),
-        RpcError::ConnectionClosed | RpcError::ConnectionError | RpcError::AllDown => {
-            PxReplicaError::Transport(format!("crowdb-rpc error: {e:?}"))
-        }
-        RpcError::Ok | RpcError::RegistrationFailed | RpcError::InvalidArg | RpcError::Unknown(_) => {
-            PxReplicaError::Internal(format!("crowdb-rpc error: {e:?}"))
-        }
-    }
-}
-
-fn rpc_error_invalidates_connection(e: RpcError) -> bool {
-    matches!(e, RpcError::ConnectionClosed | RpcError::ConnectionError)
-}
-
-fn check_ret_code(code: FBKvRetCode, msg: Option<&str>) -> Result<(), PxReplicaError> {
-    match code {
-        FBKvRetCode::Success => Ok(()),
-        FBKvRetCode::NotFound => Err(PxReplicaError::GroupNotFound(0)),
-        FBKvRetCode::Unavailable => Err(PxReplicaError::ShuttingDown),
-        FBKvRetCode::Internal | FBKvRetCode::InvalidArgument => {
-            Err(PxReplicaError::Internal(msg.unwrap_or("internal error").into()))
-        }
-        _ => Err(PxReplicaError::Internal(format!("unknown ret_code: {code:?}"))),
-    }
-}
-
-fn check_snapshot_ret_code(code: FBKvRetCode, msg: Option<&str>) -> Result<(), SnapshotTransferError> {
-    let message = msg.unwrap_or("remote snapshot failure").to_string();
-    match code {
-        FBKvRetCode::Success => Ok(()),
-        FBKvRetCode::SnapshotNotFound | FBKvRetCode::NotFound => {
-            Err(SnapshotTransferError::NotFound(message))
-        }
-        FBKvRetCode::SnapshotExpired => Err(SnapshotTransferError::Expired(message)),
-        FBKvRetCode::SnapshotInvalidOffset => Err(SnapshotTransferError::InvalidOffset(message)),
-        FBKvRetCode::SnapshotBackpressure => Err(SnapshotTransferError::Backpressure(message)),
-        FBKvRetCode::SnapshotTopologyChanged => Err(SnapshotTransferError::TopologyChanged(message)),
-        FBKvRetCode::SnapshotIntegrity => Err(SnapshotTransferError::Integrity(message)),
-        FBKvRetCode::Unavailable => Err(SnapshotTransferError::Transport(PxReplicaError::ShuttingDown)),
-        FBKvRetCode::Internal | FBKvRetCode::InvalidArgument => Err(SnapshotTransferError::Protocol(message)),
-        _ => Err(SnapshotTransferError::Protocol(format!(
-            "unknown ret_code: {code:?}"
-        ))),
-    }
-}
-
-// ── Endpoint parsing ─────────────────────────────────────────────
-
-/// Normalize a service-registry endpoint: prepend `http://` if no
-/// scheme, rewrite `0.0.0.0` to `127.0.0.1`.
-fn normalize_endpoint(endpoint: &str) -> String {
-    let with_scheme = if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
-        endpoint.to_string()
-    } else {
-        format!("http://{endpoint}")
-    };
-    with_scheme.replacen("://0.0.0.0:", "://127.0.0.1:", 1)
-}
-
-/// Parse `http://host:port` into `(host, port)`.
-fn parse_endpoint(endpoint: &str) -> Result<(String, i32), String> {
-    let without_scheme = endpoint
-        .strip_prefix("http://")
-        .or_else(|| endpoint.strip_prefix("https://"))
-        .unwrap_or(endpoint);
-    let (host, port_str) = without_scheme
-        .rsplit_once(':')
-        .ok_or_else(|| format!("invalid endpoint: {endpoint}"))?;
-    let port: i32 = port_str
-        .parse()
-        .map_err(|_| format!("invalid port in endpoint: {endpoint}"))?;
-    Ok((host.to_string(), port))
-}
+pub use connection::ReplicaDestination;

@@ -151,6 +151,7 @@ pub(super) async fn add_remote_replicas(
             format!("failed to persist membership before publication: {error}"),
         ));
     }
+    let _ = crate::recovery::member_routes::apply(&new_group, &state.config.config_root, sid);
     store.add_group(new_group);
 
     info!(
@@ -270,6 +271,7 @@ pub(super) async fn remove_remote_replica(
             format!("failed to persist membership before publication: {error}"),
         ));
     }
+    let _ = crate::recovery::member_routes::apply(&new_group, &state.config.config_root, sid);
     store.add_group(new_group);
 
     info!(
@@ -387,6 +389,7 @@ pub(super) async fn batch_add_remote_replicas(
             format!("failed to persist membership before publication: {error}"),
         ));
     }
+    let _ = crate::recovery::member_routes::apply(&new_group, &state.config.config_root, sid);
     store.add_group(new_group);
 
     info!(

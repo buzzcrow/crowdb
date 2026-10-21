@@ -111,6 +111,8 @@ async fn malformed_accept_request_is_rejected_by_rpc_boundary() {
         term: 0,
         group_id: 1,
         membership_epoch: 0,
+        target_replica_id: 0,
+        target_cluster_id: None,
     };
     let req = FBPrepareRequest::create(&mut builder, &args);
     builder.finish(req, None);
@@ -144,6 +146,8 @@ async fn malformed_accept_request_is_rejected_by_rpc_boundary() {
         value: None,
         group_id: 1,
         membership_epoch: 0,
+        target_replica_id: 0,
+        target_cluster_id: None,
     };
     let req = FBAcceptRequest::create(&mut builder, &args);
     builder.finish(req, None);

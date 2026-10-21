@@ -392,8 +392,15 @@ Recovery proceeds independently of Group-0 availability:
    or bootstrap identity. Endpoint replacement invalidates old connections and
    applies to subsequent reconnects; mappings use node/replica identity, not a
    global old-IP-to-new-IP substitution.
+   Restored replicas fence old routes before their election drivers start.
+   Consensus requests identify their intended cluster and replica; a reachable
+   process at a reused address cannot contribute another replica's response.
 5. Once quorum returns, normal authorized operations publish updated addresses
    in Group 0. Local endpoint evidence never authorizes a management mutation.
+   Committed replica-to-node ownership is retained locally for subsequent
+   recovery. Internal service listeners and management contacts change through
+   conditional new service operations; later stop/delete commands win. Public
+   client URIs are independent of these internal addresses.
 
 This permits all members to restart with changed IPs at once. Neither stable DNS
 names nor fixed IPs nor a complete peer-address list is required. Multicast must

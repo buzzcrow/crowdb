@@ -112,7 +112,16 @@ pub(crate) async fn run_fetchgap_driver(
                 };
                 let result = tokio::time::timeout(
                     rpc_timeout_clone,
-                    transport.send_fetch_gap(&rpc_endpoint_clone, group_id, slot, term, leader_id),
+                    transport.send_fetch_gap(
+                        crate::rpc::ReplicaDestination {
+                            endpoint: &rpc_endpoint_clone,
+                            replica_id: leader_id,
+                        },
+                        group_id,
+                        slot,
+                        term,
+                        leader_id,
+                    ),
                 )
                 .await
                 .map_err(|_| {

@@ -3,6 +3,9 @@
 
 //! Identity-bound trust for rediscovery; addresses are never trust anchors.
 
+mod endpoints;
+mod services;
+pub use services::rebind_service;
 mod persistence;
 
 use std::collections::BTreeSet;

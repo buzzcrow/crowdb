@@ -87,6 +87,54 @@ impl CrowdbRpcCluster {
 }
 
 #[tokio::test]
+async fn recovered_routes_preserve_membership_and_reject_reused_peer_addresses() {
+    let cluster = start_crowdb_rpc_cluster().await;
+    let group = cluster.leader.get_group(1).unwrap();
+    let before: Vec<_> = group
+        .remote_replica_info()
+        .into_iter()
+        .map(|(id, endpoint, voting)| (id, endpoint.to_owned(), voting))
+        .collect();
+    let quorum = group.quorum();
+    let wrong = cluster.leader.listen_addr().unwrap();
+    group.set_recovery_routes(&std::collections::BTreeMap::from([(2, wrong)]));
+    let remote = group.get_remote_replica(2).unwrap();
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            remote.send_prepare(91, PxBallot::new(5, 1), 0, 1, 0)
+        )
+        .await
+        .is_err(),
+        "a live endpoint hosting another replica must not contribute a promise"
+    );
+    group.set_recovery_routes(&std::collections::BTreeMap::new());
+    assert!(
+        remote
+            .send_prepare(92, PxBallot::new(5, 1), 0, 1, 0)
+            .await
+            .is_err(),
+        "missing proof cannot fall back to the original IP"
+    );
+    group.set_recovery_routes(&std::collections::BTreeMap::from([(
+        2,
+        cluster.follower.listen_addr().unwrap(),
+    )]));
+    assert!(remote
+        .send_prepare(93, PxBallot::new(5, 1), 0, 1, 0)
+        .await
+        .is_ok());
+    let after: Vec<_> = group
+        .remote_replica_info()
+        .into_iter()
+        .map(|(id, endpoint, voting)| (id, endpoint.to_owned(), voting))
+        .collect();
+    assert_eq!(before, after);
+    assert_eq!(group.quorum(), quorum);
+    cluster.shutdown().await;
+}
+
+#[tokio::test]
 async fn crowdb_rpc_prepare_accept_roundtrip() {
     let cluster = start_crowdb_rpc_cluster().await;
 

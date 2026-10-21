@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod deployment;
 pub mod observation;
+pub mod recovery;
 pub mod setup;
 pub mod storage;
 
@@ -76,6 +77,7 @@ pub enum NodeControl {
     NodeSetup,
     NodeSetupIntent,
     RuntimeObservation,
+    RecoveryIdentity,
     PrepareBootstrap {
         node_id: u64,
         bootstrap: super::SystemBootstrapIdentity,

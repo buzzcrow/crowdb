@@ -13,6 +13,61 @@ use ssh_key::PublicKey;
 
 use super::{durable, AcceptedNode, Result};
 use crate::NodeIdentity;
+mod discovery;
+mod owners;
+mod publication;
+pub(super) use discovery::start;
+#[cfg(feature = "test-util")]
+pub use discovery::unique_member_endpoints_for_tests;
+
+pub(super) fn publish_local(root: &Path, addresses: &[std::net::IpAddr]) -> Result<()> {
+    durable::write(
+        &root.join("node-endpoint.json"),
+        &crowdb_protocol::mgmt::node::recovery::MemberEndpoint {
+            discovery_id: NodeIdentity::load_existing(root)?.uuid().to_string(),
+            node_id: 0,
+            boot_id: uuid::Uuid::new_v4().to_string(),
+            addresses: addresses.to_vec(),
+        },
+    )?;
+    Ok(())
+}
+
+pub(super) fn identity(root: &Path) -> Result<crowdb_protocol::mgmt::node::recovery::MemberRecoveryIdentity> {
+    use crowdb_protocol::mgmt::node::{
+        recovery::{MemberEndpoint, MemberRecoveryIdentity},
+        NodeBinding,
+    };
+    let accepted: AcceptedNode =
+        durable::read(&root.join("accepted-node.json"))?.ok_or("node is not prepared")?;
+    check(root, &accepted)?;
+    if super::admission::is_cancelled(root, &accepted)
+        || root
+            .join(format!(
+                "retired-bootstrap-{}.json",
+                accepted.bootstrap.operation_id
+            ))
+            .exists()
+    {
+        return Err("member identity is retired".into());
+    }
+    let mut endpoint: MemberEndpoint =
+        durable::read(&root.join("node-endpoint.json"))?.ok_or("node endpoint is absent")?;
+    endpoint.node_id = accepted.node_id;
+    if endpoint.discovery_id != NodeIdentity::load_existing(root)?.uuid().to_string() {
+        return Err("local endpoint identity differs".into());
+    }
+    let binding = durable::read(&root.join("node-binding.json"))?.unwrap_or(NodeBinding {
+        node_id: accepted.node_id,
+        bootstrap: accepted.bootstrap.clone(),
+        management_seeds: Vec::new(),
+    });
+    Ok(MemberRecoveryIdentity {
+        version: 1,
+        binding,
+        endpoint,
+    })
+}
 
 pub(super) fn capture(root: &Path, operation: &PreparedBootstrap) -> Result<MemberTrust> {
     operation.validate()?;
@@ -77,6 +132,32 @@ pub(super) fn accept(root: &Path, trust: &MemberTrust) -> Result<()> {
         return Err("member trust differs from authenticated admission keys".into());
     }
     trust.seal(&root.join("member-trust.json"))?;
+    let group = crowdb_protocol::mgmt::node::recovery::RecoveryGroup {
+        store_id: 0,
+        group_id: 0,
+        deployment: None,
+        members: operation
+            .intent
+            .members()
+            .iter()
+            .enumerate()
+            .map(
+                |(index, node)| crowdb_protocol::mgmt::node::recovery::RecoveryReplica {
+                    replica_id: index as u64 + 1,
+                    node_id: *node,
+                },
+            )
+            .collect(),
+    };
+    if !root.join("recovery-groups.json").exists() {
+        durable::write(
+            &root.join("recovery-groups.json"),
+            &crowdb_protocol::mgmt::node::recovery::RecoveryGroups {
+                bootstrap: operation.identity,
+                groups: vec![group],
+            },
+        )?;
+    }
     Ok(())
 }
 

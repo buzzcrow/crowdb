@@ -51,6 +51,8 @@ mod recovery;
 pub use ipc::control_node;
 use ipc::read_request;
 #[cfg(feature = "test-util")]
+pub use recovery::unique_member_endpoints_for_tests;
+#[cfg(feature = "test-util")]
 pub use recovery::{accept_member_trust_for_tests, check_member_trust_for_tests};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -114,6 +116,8 @@ pub async fn run_node_with_inputs(
     let mut processes = ProcessManager::new(profile.paths.log_root.clone(), profile.logs.clone()).await?;
     let web = web_service(&profile, config.bind.port())?;
     processes.start(&web, &BTreeMap::new()).await?;
+    recovery::publish_local(&root, &config.discovery.addresses)?;
+    let endpoint_recovery = recovery::start(root.clone(), config.bind.port());
     kv::resume(&profile, &mut processes).await?;
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let discovery_root = root.clone();
@@ -170,6 +174,7 @@ pub async fn run_node_with_inputs(
         }
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     }.await;
+    drop(endpoint_recovery);
     initialization.stop().await;
     setup.stop().await;
     storage_health.stop().await;

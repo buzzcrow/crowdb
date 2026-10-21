@@ -40,7 +40,9 @@ async fn observe(state: &AppState) -> Result<NodeRuntimeObservation, Failure> {
         return Err(err_409("Local monitor observation identity is invalid"));
     }
     if let Some(binding) = &observation.binding {
-        if super::cluster_binding(state)?.as_ref() != Some(binding) {
+        if !super::cluster_binding(state)?.as_ref().is_some_and(|current| {
+            current.node_id == binding.node_id && current.bootstrap == binding.bootstrap
+        }) {
             return Err(err_409("Bound node and monitor observation identities differ"));
         }
         let intents = tokio::time::timeout(Duration::from_secs(1), async {

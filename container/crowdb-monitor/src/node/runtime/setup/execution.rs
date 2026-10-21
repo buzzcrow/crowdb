@@ -46,10 +46,9 @@ async fn advance(profile: &DeploymentProfile, state: &mut AcceptedSetup) -> Resu
             binding.bootstrap.operation_id
         ))
         .exists()
-        || state
-            .binding
-            .as_ref()
-            .is_some_and(|accepted| accepted != &binding)
+        || state.binding.as_ref().is_some_and(|accepted| {
+            accepted.node_id != binding.node_id || accepted.bootstrap != binding.bootstrap
+        })
         || !crate::node::trust::authorized_operation(root, &state.request.operation_id)?
     {
         state.status.phase = NodeSetupPhase::Failed;
@@ -79,7 +78,7 @@ async fn advance(profile: &DeploymentProfile, state: &mut AcceptedSetup) -> Resu
     state.status.cluster_id = Some(binding.bootstrap.cluster_id.clone());
     state.status.phase = NodeSetupPhase::Running;
     journal::save(root, state)?;
-    if crate::node::read_node_policy(root)?.is_some() && !metadata::ready(&binding, &kv).await? {
+    if crate::node::read_node_policy(root)?.is_some() && !metadata::ready(root, &binding, &kv).await? {
         return Ok(());
     }
     // Storage and service prerequisites progress independently. In particular,

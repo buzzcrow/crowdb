@@ -9,6 +9,29 @@ use crowdb_test_harness::test_dirs::tempdir_in_test_data;
 mod trust;
 
 #[test]
+fn duplicate_authenticated_incarnations_remove_the_route_in_any_order() {
+    use crowdb_protocol::mgmt::node::recovery::MemberEndpoint;
+    let first = MemberEndpoint {
+        node_id: 1,
+        discovery_id: uuid::Uuid::new_v4().to_string(),
+        boot_id: uuid::Uuid::new_v4().to_string(),
+        addresses: vec!["192.0.2.1".parse().unwrap()],
+    };
+    let mut cloned = first.clone();
+    cloned.boot_id = uuid::Uuid::new_v4().to_string();
+    cloned.addresses = vec!["192.0.2.2".parse().unwrap()];
+    for records in [vec![first.clone(), cloned.clone()], vec![cloned, first.clone()]] {
+        let (members, conflicts) = crowdb_monitor::unique_member_endpoints_for_tests(records);
+        assert!(members.is_empty());
+        assert_eq!(conflicts, vec![first.discovery_id.clone()]);
+    }
+    let (members, conflicts) =
+        crowdb_monitor::unique_member_endpoints_for_tests(vec![first.clone(), first.clone()]);
+    assert_eq!(members, vec![first]);
+    assert!(conflicts.is_empty());
+}
+
+#[test]
 fn bootstrap_trust_requires_every_previously_authenticated_key() {
     let dir = tempdir_in_test_data("monitor-member-trust");
     let root = dir.path();

@@ -31,6 +31,8 @@ pub use runtime::publish_file_for_tests;
 #[cfg(feature = "test-util")]
 pub use runtime::runtime_observation_for_tests;
 #[cfg(feature = "test-util")]
+pub use runtime::unique_member_endpoints_for_tests;
+#[cfg(feature = "test-util")]
 pub use runtime::InitializationForTests;
 #[cfg(feature = "test-util")]
 pub use runtime::NodeSetupForTests;

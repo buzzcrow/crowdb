@@ -28,6 +28,7 @@ pub(super) async fn execute(
         NodeControl::RuntimeObservation => {
             Ok(serde_json::to_value(observation::runtime(profile, processes)?)?)
         }
+        NodeControl::RecoveryIdentity => Ok(serde_json::to_value(super::recovery::identity(root)?)?),
         NodeControl::CheckRetainedDisk { request } => Ok(serde_json::to_value(
             retained_storage::check(root, request).await?,
         )?),

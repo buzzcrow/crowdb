@@ -48,6 +48,10 @@ name = "group_creation_test"
 path = "tests/group_creation_test.rs"
 
 [[test]]
+name = "member_routes_test"
+path = "tests/member_routes_test.rs"
+
+[[test]]
 name = "chunk_dynamic_monitor_test"
 path = "tests/chunk_dynamic_monitor_test.rs"
 

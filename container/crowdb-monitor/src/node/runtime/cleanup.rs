@@ -59,6 +59,9 @@ pub(super) async fn execute(
         "accepted-node.json",
         "prepared-bootstrap.json",
         "member-trust.json",
+        "member-endpoints.json",
+        "recovery-groups.json",
+        "service-address.json",
         "initialization.json",
         "initialization-status.json",
     ] {

@@ -184,6 +184,43 @@ async fn valid_host_key_cannot_claim_another_cluster_or_member() {
 }
 
 #[tokio::test]
+async fn authenticated_endpoint_requires_the_contacted_address_and_live_incarnation() {
+    use crowdb_protocol::mgmt::node::recovery::{MemberEndpoint, MemberRecoveryIdentity};
+    let dir = tempdir_in_test_data("member-current-address");
+    let key = KeyPair::generate_ed25519().unwrap();
+    let host = KeyPair::generate_ed25519().unwrap();
+    let trust = recovery::trust(&host);
+    let identity = MemberRecoveryIdentity {
+        version: 1,
+        binding: recovery::observation(&trust).binding.unwrap(),
+        endpoint: MemberEndpoint {
+            node_id: 1,
+            discovery_id: trust.members[0].discovery_id.clone(),
+            boot_id: uuid::Uuid::new_v4().to_string(),
+            addresses: vec!["127.0.0.1".parse().unwrap()],
+        },
+    };
+    for variant in 0..4 {
+        let mut reply = identity.clone();
+        match variant {
+            1 => reply.endpoint.addresses = vec!["127.0.0.2".parse().unwrap()],
+            2 => reply.endpoint.boot_id = uuid::Uuid::nil().to_string(),
+            3 => reply.binding.bootstrap.cluster_id = uuid::Uuid::new_v4().to_string(),
+            _ => {}
+        }
+        let server = ssh_server::TestSshServer::start_with_host_key(
+            key.clone_public_key().unwrap(),
+            Some(serde_json::to_vec(&reply).unwrap()),
+            host.clone(),
+        )
+        .await;
+        let node = recovery::node(server.port, &dir.path().join("key"), &key);
+        let result = trust.endpoint(&node).await;
+        assert_eq!(result.is_ok(), variant == 0, "variant {variant}: {result:?}");
+    }
+}
+
+#[tokio::test]
 async fn pinned_control_rejects_oversized_malformed_and_password_fallback() {
     let dir = tempdir_in_test_data("member-recovery-reply");
     let key = KeyPair::generate_ed25519().unwrap();
@@ -207,4 +244,58 @@ async fn pinned_control_rejects_oversized_malformed_and_password_fallback() {
         .unwrap_err()
         .to_string()
         .contains("local key"));
+}
+
+#[test]
+fn address_rebind_updates_only_owned_internal_listeners() {
+    let source = r#"
+http_advertise_addr = "192.0.2.1:7400"
+[server]
+bind_address = "192.0.2.1"
+kv_server_mgmt_seeds = ["http://192.0.2.1:10000"]
+rpc_listen_addr = "192.0.2.1:7102"
+http_listen_addr = "0.0.0.0:7101"
+[s3]
+listen = "192.0.2.1:9091"
+public_uri = "http://192.0.2.1:49091"
+[dataset]
+listen = "192.0.2.8:9093"
+"#;
+    let result = crowdb_console_shared::deployment::recovery::rebind_service(
+        source,
+        "192.0.2.1".parse().unwrap(),
+        "192.0.2.2".parse().unwrap(),
+        &["http://192.0.2.2:10000".into()],
+    )
+    .unwrap();
+    let config: toml::Value = toml::from_str(&result).unwrap();
+    assert_eq!(
+        config["server"]["kv_server_mgmt_seeds"][0].as_str(),
+        Some("http://192.0.2.2:10000")
+    );
+    assert_eq!(config["server"]["bind_address"].as_str(), Some("192.0.2.2"));
+    assert_eq!(
+        config["server"]["rpc_listen_addr"].as_str(),
+        Some("192.0.2.2:7102")
+    );
+    assert_eq!(
+        config["server"]["http_listen_addr"].as_str(),
+        Some("0.0.0.0:7101")
+    );
+    assert_eq!(config["s3"]["listen"].as_str(), Some("192.0.2.2:9091"));
+    assert_eq!(
+        config["s3"]["public_uri"].as_str(),
+        Some("http://192.0.2.1:49091")
+    );
+    assert_eq!(config["dataset"]["listen"].as_str(), Some("192.0.2.8:9093"));
+    assert_eq!(
+        crowdb_console_shared::deployment::recovery::rebind_service(
+            &result,
+            "192.0.2.1".parse().unwrap(),
+            "192.0.2.2".parse().unwrap(),
+            &["http://192.0.2.2:10000".into()],
+        )
+        .unwrap(),
+        result
+    );
 }

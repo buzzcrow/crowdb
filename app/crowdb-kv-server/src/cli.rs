@@ -26,6 +26,9 @@ pub struct Cli {
     /// (fixed on-disk layout). Required on every start.
     #[arg(long)]
     pub root: std::path::PathBuf,
+    /// Owning monitor root for authenticated member address recovery.
+    #[arg(long)]
+    pub node_recovery_root: Option<std::path::PathBuf>,
 
     /// Optional TOML config for startup tunables in first-boot and restore modes.
     /// When omitted, tunables use `CrowDBConfig::default()`.

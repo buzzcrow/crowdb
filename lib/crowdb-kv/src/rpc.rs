@@ -25,7 +25,7 @@ pub(crate) mod snapshot_registry;
 pub(crate) use kv_rpc_service::{KvClientRpcForwarder, KvRpcService};
 #[allow(unused_imports)]
 pub(crate) use px_rpc_service::PxRpcService;
-pub use px_rpc_transport::PxRpcTransport;
+pub use px_rpc_transport::{PxRpcTransport, ReplicaDestination};
 
 // Re-export the flatbuffer KV client request/response types so the
 // server handler (`kv_rpc_service.rs`) can reference them via

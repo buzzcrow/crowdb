@@ -132,6 +132,10 @@ async fn main() {
         None => CrowDBConfig::default(),
     };
     config.apply_root(&args.root);
+    if let Some(root) = &args.node_recovery_root {
+        crowdb_kv_server::recovery::member_routes::configure(&config.config_root, root)
+            .expect("invalid monitor member recovery source");
+    }
 
     // CLI tunable overrides.
     config.wal_backend = args.wal_backend.clone();
@@ -158,6 +162,7 @@ async fn main() {
             )),
     );
 
+    let _member_routes = crowdb_kv_server::recovery::member_routes::start(Arc::clone(&registry));
     // Spawn a config file watcher for diff logging. Only when --config is
     // passed; with no toml there is nothing to watch.
     let watcher_old_config = Arc::new(std::sync::Mutex::new(config));

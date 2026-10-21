@@ -106,6 +106,10 @@ pub(super) async fn start_kv(
         processes.stop("kv", Duration::from_secs(5)).await?;
     }
     let mut kv = service(profile, "kv")?;
+    kv.env.insert(
+        "CROWDB_KV_CLUSTER_ID".into(),
+        accepted.bootstrap.cluster_id.clone(),
+    );
     let root = profile
         .paths
         .data_root
@@ -113,6 +117,8 @@ pub(super) async fn start_kv(
         .join(format!("node-{}", accepted.node_id));
     std::fs::create_dir_all(&root)?;
     kv.args = vec![
+        "--node-recovery-root".into(),
+        profile.paths.data_root.to_string_lossy().into_owned(),
         "--root".into(),
         root.to_string_lossy().into_owned(),
         "--management-port".into(),

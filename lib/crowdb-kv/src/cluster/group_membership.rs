@@ -277,7 +277,7 @@ impl PxGroup {
         // Existing Real entry: update in place.
         if let Some(RemoteReplicaKind::Real(remote)) = self.remote_replicas.get_mut(idx) {
             let old_endpoint = remote.endpoint.clone();
-            endpoint.clone_into(&mut remote.endpoint);
+            remote.set_configured_endpoint(endpoint);
             return Some(old_endpoint);
         }
 

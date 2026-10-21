@@ -232,5 +232,8 @@ pub async fn create_group_with_wal(
         .saturating_add(1)
         .max(1);
     group.set_next_slot(next_slot);
+    if let Err(error) = super::member_routes::apply(&group, &config.config_root, store_id) {
+        tracing::debug!(store_id, group_id, %error, "restored member routes are blocked pending verification");
+    }
     Ok(group)
 }

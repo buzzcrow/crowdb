@@ -4,6 +4,7 @@
 //! Boot, disk restore, group-0 reconciliation, and group rebuild.
 
 pub mod group_rebuild;
+pub mod member_routes;
 pub mod reconcile;
 pub mod restore;
 pub mod startup;

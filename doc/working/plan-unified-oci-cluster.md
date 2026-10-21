@@ -841,8 +841,30 @@ do not mark unexecuted acceptance passed.
   Shared `MemberTrust::observe` and `remote_control_pinned` now verify SSH host
   identity without reading/writing the address-keyed TOFU store or using password
   fallback, then match the returned durable binding. Replies are bounded to
-  64 KiB and the complete operation to ten seconds. Live discovery-loop wiring,
-  current endpoint facts and duplicate authenticated claimant handling remain.
+  64 KiB and the complete operation to ten seconds. Discovery-loop and native
+  route consumption are now connected as described below; packaged acceptance
+  is still pending.
+  Follow-up implementation now runs monitor-owned rediscovery independently of
+  quorum, verifies `RecoveryIdentity` through the pinned SSH channel and publishes
+  bounded boot-scoped endpoint snapshots. Duplicate authenticated incarnations
+  remove the route. Native restore and membership rebuild fence unverified
+  endpoints before election drivers start; an ArcSwap route view changes only
+  connections, retaining canonical membership, voting flags and WAL. Consensus
+  requests carry their intended replica and cluster, preventing a reused IP from
+  supplying another member's reply. Existing RPC code was split by protocol
+  responsibility before extending its dispatch boundary.
+  Quorum-backed publication reuses `node_update`, captures committed physical
+  replica owners and conditionally rebinds current service listeners/contact
+  seeds. Each changed intent gets a new operation through CAS; stop/delete and
+  concurrent operator changes retain precedence. Client public URIs remain
+  unchanged. Refreshed contact seeds preserve the binding's node/bootstrap
+  identity. Packaged-image acceptance and admission trust extension still remain.
+  Focused gates pass: 122 group tests, five RPC cases including deliberate live
+  address reuse, five monitor trust/duplicate-identity cases, three initialization
+  cases, twelve setup cases, one native route case, six reconcile cases, four
+  restore cases and nine shared recovery cases. Affected all-target clippy and
+  Rust formatting pass. The raw malformed-frame test was updated for the new
+  consensus destination fields; its rejection behavior remains covered.
   Verification: complete `crowdb-monitor` suite passes, including the new ordered
   bootstrap and four monitor trust cases. Seven shared recovery cases and the
   existing SSH launch case pass. Shared/protocol/monitor/Web all-target clippy
