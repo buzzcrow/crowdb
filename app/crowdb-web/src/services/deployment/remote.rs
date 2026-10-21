@@ -60,7 +60,7 @@ pub(super) async fn deploy(
         },
         action: NodeServiceAction::Start,
         configuration,
-        environment: environment(body, &node),
+        environment: owned_environment(state, body, &node)?,
     };
     let result = match crowdb_console_shared::deployment::services::execute(
         state.kv_client().await.as_ref(),
@@ -94,7 +94,15 @@ pub(super) async fn deploy(
     entry.rpc_url = body.rpc_port.map(|port| format!("{host}:{port}"));
     entry.rest_port = body.http_port;
     if matches!(body.kind, Kind::AccessServer) {
-        entry.dataset_origin = body.dataset_port.map(|port| format!("http://{host}:{port}"));
+        entry.access_origins.insert("iceberg".into(), entry.url.clone());
+        entry
+            .access_origins
+            .insert("s3".into(), format!("http://{host}:{}", body.s3_port.unwrap()));
+        if let Some(port) = body.dataset_port {
+            entry
+                .access_origins
+                .insert("dataset".into(), format!("http://{host}:{port}"));
+        }
     }
     entry.rpc_port = body.rpc_port;
     entry.auto_start = true;
@@ -135,7 +143,7 @@ pub(super) async fn prepare_credentials(
         program: "/opt/crowdb/bin/crowdb-access-server".into(),
         args: Vec::new(),
         workdir: state.runtime_root.to_string_lossy().into_owned(),
-        env: environment(body, node),
+        env: owned_environment(state, body, node)?,
         env_file: None,
         readiness_url: None,
     };
@@ -204,6 +212,28 @@ pub(super) async fn configuration(
 fn encode(value: Value) -> Result<String, Failure> {
     let value = toml::Value::try_from(value).map_err(|error| err_502(error.to_string()))?;
     toml::to_string_pretty(&value).map_err(|error| err_502(error.to_string()))
+}
+
+pub(super) fn owned_environment(
+    state: &AppState,
+    body: &Deploy,
+    node: &NodeEntry,
+) -> Result<BTreeMap<String, String>, Failure> {
+    let mut env = environment(body, node);
+    if matches!(body.kind, Kind::AccessServer)
+        && crate::node::cluster_binding(state)?.is_some_and(|binding| binding.node_id == node.id)
+    {
+        let root = state
+            .runtime_root
+            .parent()
+            .ok_or_else(|| err_409("Node root is absent"))?;
+        if let Some(policy) =
+            crowdb_monitor::read_node_policy(root).map_err(|error| err_502(error.to_string()))?
+        {
+            env.extend(policy.public_access.environment());
+        }
+    }
+    Ok(env)
 }
 
 pub(super) fn environment(body: &Deploy, node: &NodeEntry) -> BTreeMap<String, String> {

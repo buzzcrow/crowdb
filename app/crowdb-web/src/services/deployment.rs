@@ -287,7 +287,7 @@ fn inputs(
             });
         let origins = std::iter::once(service.url.as_str())
             .chain(service.rpc_url.as_deref())
-            .chain(service.dataset_origin.as_deref())
+            .chain(service.access_origins.values().map(String::as_str))
             .chain(public);
         for origin in origins {
             let normalized = if origin.contains("://") {

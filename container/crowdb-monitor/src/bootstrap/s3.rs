@@ -116,6 +116,7 @@ impl S3Bootstrap {
         let (access_key_id, secret_access_key) = parse_token(&output.stdout)?;
         let client = ClientCredentials {
             s3_endpoint,
+            dataset_endpoint: service.env.get("CROWDB_DATASET_PUBLIC_URI").cloned(),
             iceberg_endpoint,
             region: service
                 .env

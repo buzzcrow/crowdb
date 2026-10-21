@@ -28,6 +28,26 @@ reserve physical host space. Production does not fall back to this policy.
 The legacy profile and command examples below are being migrated to this
 node-first lifecycle.
 
+The node-first local client origins default to `http://127.0.0.1` on ports
+9091 (S3), 9092 (Iceberg) and 9093 (Dataset). When publishing different host
+ports or addresses, supply `CROWDB_S3_PUBLIC_URI`, `CROWDB_ICEBERG_PUBLIC_URI`
+and `CROWDB_DATASET_PUBLIC_URI` to each node. These HTTP origins are sealed in
+the node policy before startup; omitted restart values retain the accepted
+origins. Internal discovery, service listeners and Console requests continue
+to use node addresses. The node does not inspect the Docker socket for NAT.
+
+Read client credentials explicitly with:
+
+```sh
+pixi run docker exec NODE crowdb-monitor credentials show --format env
+```
+
+This exports S3 credentials, the Iceberg writer token and the Dataset bearer
+with their public origins. The private client file is
+`/opt/crowdb/data/console/secrets/client.env`; it has mode `0600`. Server master
+keys stay in the protected server files. Do not put client credential output
+into logs or cluster status.
+
 The public single-container Web template explicitly sets `readonly = true`.
 Docker Web otherwise defaults to writable logical and Access operations; physical
 management remains unavailable. To use writable Web internally, mount a normal

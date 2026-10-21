@@ -8,7 +8,7 @@ use std::{fs, io::Read, path::PathBuf};
 use clap::{Args, ValueEnum};
 use crowdb_monitor::{DeploymentProfile, DiscoveryConfig, NodeRuntimeConfig};
 use crowdb_protocol::mgmt::node::deployment::{
-    DeploymentMode, NodeDeploymentOverrides, NodeDeploymentPolicy,
+    DeploymentMode, NodeDeploymentOverrides, NodeDeploymentPolicy, PublicAccessUris,
 };
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -37,6 +37,12 @@ pub(crate) struct NodeRunArgs {
     /// Initial voting count; accepted membership is never automatically resized.
     #[arg(long, env = "CROWDB_INITIAL_VOTERS")]
     initial_voters: Option<u8>,
+    #[arg(long, env = "CROWDB_S3_PUBLIC_URI")]
+    s3_public_uri: Option<String>,
+    #[arg(long, env = "CROWDB_ICEBERG_PUBLIC_URI")]
+    iceberg_public_uri: Option<String>,
+    #[arg(long, env = "CROWDB_DATASET_PUBLIC_URI")]
+    dataset_public_uri: Option<String>,
 }
 
 pub(crate) async fn run(args: NodeRunArgs) -> Result<(), Box<dyn std::error::Error>> {
@@ -103,6 +109,11 @@ fn resolve(args: &NodeRunArgs) -> Result<ResolvedInputs, Box<dyn std::error::Err
         }),
         cluster: args.cluster.clone(),
         initial_voters: args.initial_voters,
+        public_access: PublicAccessUris {
+            s3: args.s3_public_uri.clone(),
+            iceberg: args.iceberg_public_uri.clone(),
+            dataset: args.dataset_public_uri.clone(),
+        },
         ..Default::default()
     };
     let profile = DeploymentProfile::load(&args.profile)?;

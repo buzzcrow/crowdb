@@ -6,6 +6,9 @@
 use super::setup::{NodeSetupChoices, SetupService, SetupServiceKind, SetupStorage};
 use serde::{Deserialize, Serialize};
 
+mod public_access;
+pub use public_access::PublicAccessUris;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DeploymentMode {
@@ -43,6 +46,7 @@ pub struct NodeDeploymentPolicy {
     pub cluster: String,
     pub initial_voters: u8,
     pub setup: NodeSetupChoices,
+    pub public_access: PublicAccessUris,
 }
 
 /// Explicit inputs from a configuration file or command/environment overrides.
@@ -55,6 +59,8 @@ pub struct NodeDeploymentOverrides {
     pub initial_voters: Option<u8>,
     pub storage: Option<SetupStorage>,
     pub services: Option<Vec<SetupService>>,
+    #[serde(default)]
+    pub public_access: PublicAccessUris,
 }
 
 impl Default for NodeDeploymentPolicy {
@@ -94,6 +100,11 @@ impl Default for NodeDeploymentPolicy {
             cluster: "default".into(),
             initial_voters: 1,
             setup,
+            public_access: PublicAccessUris {
+                s3: Some("http://127.0.0.1:9091".into()),
+                iceberg: Some("http://127.0.0.1:9092".into()),
+                dataset: Some("http://127.0.0.1:9093".into()),
+            },
         }
     }
 }
@@ -159,6 +170,7 @@ impl NodeDeploymentPolicy {
                 return Err("accepted service listeners must be explicit");
             }
         }
+        self.public_access.validate()?;
         self.setup.validate()
     }
 }
@@ -195,6 +207,7 @@ impl NodeDeploymentOverrides {
         let mut policy = accepted.cloned().unwrap_or_default();
         if accepted.is_none() && self.mode.or(file.mode) == Some(DeploymentMode::Production) {
             policy.mode = DeploymentMode::Production;
+            policy.public_access = PublicAccessUris::default();
             policy.setup.storage = NodeSetupChoices::default().storage;
         }
         for inputs in [file, self] {
@@ -208,6 +221,7 @@ impl NodeDeploymentOverrides {
     }
 
     fn apply(&self, policy: &mut NodeDeploymentPolicy) {
+        self.public_access.apply(&mut policy.public_access);
         if let Some(version) = self.version {
             policy.version = version;
         }

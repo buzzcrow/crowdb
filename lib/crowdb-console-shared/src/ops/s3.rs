@@ -882,7 +882,7 @@ fn namespace_error(error: impl std::fmt::Display) -> Error {
 
 fn server_entry(id: &str, service_type: ServiceType, rest_port: u16, rpc_port: u16, pid: u32) -> ServerEntry {
     ServerEntry {
-        dataset_origin: None,
+        access_origins: std::collections::BTreeMap::new(),
         id: id.into(),
         url: format!("http://127.0.0.1:{rest_port}"),
         node_id: None,

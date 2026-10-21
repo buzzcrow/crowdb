@@ -259,7 +259,7 @@ impl BootstrapIntent {
                 .servers
                 .iter()
                 .map(|server| ServerEntry {
-                    dataset_origin: None,
+                    access_origins: std::collections::BTreeMap::new(),
                     id: server.id.clone(),
                     url: server.management_url.clone(),
                     node_id: Some(server.node_id),

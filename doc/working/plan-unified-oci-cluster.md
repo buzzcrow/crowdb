@@ -231,7 +231,7 @@ removal until the complete direct-container path passes A01/A03/A25.
   `lib/crowdb-console-shared/src/deployment/services/planned_start.rs`,
   `container/crowdb-monitor/src/node/runtime/setup/`,
   `app/crowdb-web/src/services/deployment/planned.rs`, corresponding `tests/`.
-- [~] **T14 — Align access listeners, URIs and credentials**: set default local
+- [x] **T14 — Align access listeners, URIs and credentials**: set default local
   UI/S3/Iceberg/Dataset ports to 9090/9091/9092/9093, explicitly enable Dataset,
   and separate internal bind addresses from public URI overrides. Reuse one
   accepted cluster credential set across members/recreation through existing
@@ -242,7 +242,7 @@ removal until the complete direct-container path passes A01/A03/A25.
   `app/crowdb-web/src/services/deployment/remote.rs`,
   `container/single-node-container/profile.toml`,
   `container/crowdb-monitor/src/node/runtime/setup/execution/services.rs`.
-- [ ] **T15 — Enable normal editable startup**: start management during pending
+- [~] **T15 — Enable normal editable startup**: start management during pending
   setup, select the normal lifecycle for both node counts and remove deployment-
   derived readonly checks after caller migration. Preserve actual authorization,
   consistency checks and operator controls; do not invent UI role management.
@@ -727,6 +727,28 @@ do not mark unexecuted acceptance passed.
   pass, including competing first publishers and revision-preserving replay.
   Historical completion remains separate from live readiness; current evidence
   collection is still T16. Monitor all-target clippy and formatting pass.
+- T14 now seals per-node public S3/Iceberg/Dataset origins, with explicit
+  argument/environment > TOML > accepted-value precedence and strict origin
+  validation. Fresh local origins use host loopback/default ports; production
+  derives internal defaults unless explicitly configured. Console projections
+  retain a separate protocol-origin map from current internal listeners, so
+  custom published ports do not reroute server-side proxy traffic through NAT.
+  Dataset credentials are included in the private client export and explicit
+  node credential command resolves its Console-owned file. Eight protocol,
+  seven input-precedence and seven credential tests pass. Web protocol/proxy
+  and lifecycle suites (18 cases) and affected clippy pass. Full monitor runtime
+  tests pass; its doctest dependency lookup failed during concurrent Cargo
+  builds, then passed when rerun serially. Full protocol tests and 16 affected
+  Console configuration/topology tests pass.
+- A fresh diagnostic node with explicit host ports 29090–29093 reaches Ready.
+  Host-side S3 128-byte/2-MiB and Dataset 2-MiB snapshot checksums pass. PyIceberg
+  creates/appends/scans three Parquet rows, reads metadata through delegated
+  FileIO, and confirms its vended S3 endpoint is the configured host Iceberg
+  origin. Logical `s3://iceberg/...` object names are expected; reachability
+  comes from vended FileIO configuration, not the logical URI's bucket name.
+  Stop/start retains identity, operations and complete credentials, and all
+  three protocols retain their bytes. Console uses internal node origins and
+  reports editable node mode. The packaged final-image gate remains pending.
 
 ## Consolidated file ownership
 

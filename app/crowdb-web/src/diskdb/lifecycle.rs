@@ -164,7 +164,7 @@ async fn deploy_diskdb(
         .map_err(|e| err_502(format!("diskdb deploy: {e}")))?;
 
     let entry = crowdb_console_shared::config::ServerEntry {
-        dataset_origin: None,
+        access_origins: std::collections::BTreeMap::new(),
         id: format!("diskdb-{node_id}"),
         // DiskDB has no public HTTP management URL; retain its RPC endpoint
         // as the service URL and endpoint for persisted topology metadata.
@@ -291,7 +291,7 @@ async fn restart_diskdb(
         .map_err(|e| err_502(format!("diskdb redeploy (restart): {e}")))?;
 
     let new_entry = crowdb_console_shared::config::ServerEntry {
-        dataset_origin: None,
+        access_origins: std::collections::BTreeMap::new(),
         id: entry.id.clone(),
         // DiskDB has no public HTTP management URL; retain its RPC endpoint
         // as the service URL and endpoint for persisted topology metadata.

@@ -65,6 +65,11 @@ fn validate_origin(origin: &str) -> Result<String, ApiError> {
 
 fn origin(state: &AppState, protocol: &str) -> Result<Option<String>, ApiError> {
     let environment = protocol_environment(protocol).ok_or_else(|| err_400("Unknown Access protocol"))?;
+    if state.node_monitor_url.is_some() {
+        if let Some(value) = crate::services::access::origin(state, protocol) {
+            return validate_origin(&value).map(Some);
+        }
+    }
     if let Ok(value) = std::env::var(environment) {
         return validate_origin(&value).map(Some);
     }
@@ -112,6 +117,10 @@ pub(crate) async fn client_credentials(State(state): State<AppState>) -> Result<
         "iceberg": {
             "uri": value("ICEBERG_URI"),
             "token": value("ICEBERG_TOKEN")
+        },
+        "dataset": {
+            "uri": value("DATASET_URI"),
+            "token": value("DATASET_TOKEN")
         }
     })))
 }

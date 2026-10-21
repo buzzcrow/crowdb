@@ -20,12 +20,16 @@ pub(crate) fn origin(state: &AppState, protocol: &str) -> Option<String> {
     if local.is_some() {
         return local;
     }
+    if let Some(origin) = config
+        .servers
+        .iter()
+        .filter(|service| service.service_type == ServiceType::AccessServer)
+        .find_map(|service| service.access_origins.get(protocol).cloned())
+    {
+        return Some(origin);
+    }
     if protocol == "dataset" {
-        return config
-            .servers
-            .iter()
-            .filter(|service| service.service_type == ServiceType::AccessServer)
-            .find_map(|service| service.dataset_origin.clone());
+        return None;
     }
     // Remote node launches have no local process specification. Their normal
     // provisioning persists the client origins alongside cluster credentials.

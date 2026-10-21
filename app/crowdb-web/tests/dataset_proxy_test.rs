@@ -40,7 +40,7 @@ async fn fixture(readonly: bool) -> (axum::Router, tokio::task::JoinHandle<()>) 
     let mut config = ConsoleConfig::default();
     let mut entry = ServerEntry::new("access-1", "http://127.0.0.1:1");
     entry.service_type = ServiceType::AccessServer;
-    entry.dataset_origin = Some(origin);
+    entry.access_origins.insert("dataset".into(), origin);
     config.servers.push(entry);
     let mut state = AppState::with_runtime_root(config, root);
     state.readonly = readonly;

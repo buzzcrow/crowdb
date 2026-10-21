@@ -201,7 +201,10 @@ async fn build(
         } else {
             configuration
         };
-        (configuration, super::remote::environment(&body, &node))
+        (
+            configuration,
+            super::remote::owned_environment(state, &body, &node)?,
+        )
     };
     Ok(NodeServiceIntent {
         cluster_id: binding.bootstrap.cluster_id.clone(),

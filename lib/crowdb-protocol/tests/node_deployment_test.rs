@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crowdb_protocol::mgmt::node::{
-    deployment::{DeploymentMode, NodeDeploymentOverrides, NodeDeploymentPolicy},
+    deployment::{DeploymentMode, NodeDeploymentOverrides, NodeDeploymentPolicy, PublicAccessUris},
     setup::{SetupServiceKind, SetupStorage},
 };
 
@@ -28,6 +28,65 @@ fn fresh_local_policy_has_one_voter_and_all_public_access_listeners() {
     assert_eq!(access.listeners.s3_port, Some(9091));
     assert_eq!(access.listeners.http_port, Some(9092));
     assert_eq!(access.listeners.dataset_port, Some(9093));
+}
+
+#[test]
+fn public_origins_resolve_per_field_and_survive_omitted_restart_inputs() {
+    let file = NodeDeploymentOverrides {
+        public_access: PublicAccessUris {
+            s3: Some("http://127.0.0.1:19091".into()),
+            iceberg: Some("https://catalog.example.test".into()),
+            dataset: None,
+        },
+        ..Default::default()
+    };
+    let explicit = NodeDeploymentOverrides {
+        public_access: PublicAccessUris {
+            s3: Some("http://[::1]:29091".into()),
+            dataset: Some("http://127.0.0.1:19093".into()),
+            iceberg: None,
+        },
+        ..Default::default()
+    };
+    let accepted = explicit.resolve(&file, None).unwrap();
+    assert_eq!(accepted.public_access.s3, explicit.public_access.s3);
+    assert_eq!(accepted.public_access.iceberg, file.public_access.iceberg);
+    let omitted = NodeDeploymentOverrides::default();
+    assert_eq!(omitted.resolve(&omitted, Some(&accepted)).unwrap(), accepted);
+    assert!(file.resolve(&omitted, Some(&accepted)).is_err());
+    let environment = accepted.public_access.environment();
+    assert_eq!(environment["CROWDB_DATASET_PUBLIC_URI"], "http://127.0.0.1:19093");
+    assert_eq!(environment.len(), 3);
+    assert_eq!(accepted.setup, NodeDeploymentPolicy::default().setup);
+}
+
+#[test]
+fn malformed_or_secret_bearing_public_origins_never_resolve() {
+    for uri in [
+        "",
+        "http:example.test",
+        "http://",
+        "ftp://example.test",
+        "http://user:password@example.test",
+        "http://example.test/path",
+        "http://example.test?token=secret",
+        "http://example.test#fragment",
+        "http://example.test\n",
+        "http://example.test:99999",
+        "http://example.test\\path",
+    ] {
+        let inputs = NodeDeploymentOverrides {
+            public_access: PublicAccessUris {
+                s3: Some(uri.into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(
+            inputs.resolve(&NodeDeploymentOverrides::default(), None).is_err(),
+            "{uri:?}"
+        );
+    }
 }
 
 #[test]

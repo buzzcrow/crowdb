@@ -165,7 +165,13 @@ fn project(intent: &NodeServiceIntent) -> Option<ServerEntry> {
     );
     entry.node_id = Some(intent.node_id);
     if intent.kind == "access" {
-        entry.dataset_origin = intent.environment.get("CROWDB_DATASET_PUBLIC_URI").cloned();
+        for protocol in ["s3", "iceberg", "dataset"] {
+            if let Some(address) = lookup(&value, &[protocol, "listen"]) {
+                entry
+                    .access_origins
+                    .insert(protocol.into(), format!("http://{address}"));
+            }
+        }
     }
     entry.service_type = kind;
     entry.rpc_url = diskio_address

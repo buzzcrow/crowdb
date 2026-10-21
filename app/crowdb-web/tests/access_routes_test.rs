@@ -11,6 +11,71 @@ use crowdb_web::{router, AppState};
 use tower::ServiceExt;
 
 #[tokio::test]
+async fn node_proxy_uses_internal_listeners_while_exporting_separate_public_client_origins() {
+    let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("split-origins");
+    let credentials = crowdb_monitor::ServerCredentials::load_or_create(root.path()).unwrap();
+    credentials
+        .persist_client(&crowdb_monitor::ClientCredentials {
+            s3_endpoint: "http://public.example.test:19091".into(),
+            iceberg_endpoint: "http://public.example.test:19092".into(),
+            dataset_endpoint: Some("http://public.example.test:19093".into()),
+            region: "us-east-1".into(),
+            access_key_id: "AKIDEXAMPLE".into(),
+            secret_access_key: "server-secret".into(),
+        })
+        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let internal = format!("http://{}", listener.local_addr().unwrap());
+    let upstream = axum::Router::new()
+        .route("/", any(|| async { "internal-service" }))
+        .route("/*path", any(|| async { "internal-service" }));
+    let task = tokio::spawn(async move {
+        axum::serve(listener, upstream).await.unwrap();
+    });
+    let mut config = ConsoleConfig::default();
+    let mut entry = ServerEntry::new("access-1", internal.clone());
+    entry.node_id = Some(1);
+    entry.service_type = ServiceType::AccessServer;
+    for protocol in ["s3", "iceberg", "dataset"] {
+        entry.access_origins.insert(protocol.into(), internal.clone());
+    }
+    config.servers.push(entry);
+    let state = AppState::with_runtime_root(config, root.path().to_owned())
+        .with_node_monitor("http://127.0.0.1:1")
+        .unwrap();
+    let app = router(state);
+    for path in ["/api/access/s3", "/api/access/iceberg/v1/namespaces"] {
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        assert_eq!(
+            axum::body::to_bytes(response.into_body(), 100).await.unwrap(),
+            "internal-service"
+        );
+    }
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/access/credentials")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+    let clients: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(clients["s3"]["endpoint"], "http://public.example.test:19091");
+    assert_eq!(clients["iceberg"]["uri"], "http://public.example.test:19092");
+    assert_eq!(clients["dataset"]["uri"], "http://public.example.test:19093");
+    assert_eq!(clients["dataset"]["token"], credentials.dataset_token());
+    assert!(!String::from_utf8_lossy(&bytes).contains(credentials.s3_master_key()));
+    task.abort();
+}
+
+#[tokio::test]
 async fn native_deployment_resolves_cluster_origins_and_private_reader() {
     let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("native-access-origin");
     crowdb_monitor::ServerCredentials::load_or_create(root.path()).unwrap();
@@ -96,6 +161,7 @@ fn configured(origin: &str) -> axum::Router {
         .persist_client(&crowdb_monitor::ClientCredentials {
             s3_endpoint: origin.into(),
             iceberg_endpoint: origin.into(),
+            dataset_endpoint: None,
             region: "us-east-1".into(),
             access_key_id: "AKIDEXAMPLE".into(),
             secret_access_key: "server-secret".into(),
@@ -116,6 +182,7 @@ async fn remote_deployment_resolves_persisted_origins_without_local_launches() {
         .persist_client(&crowdb_monitor::ClientCredentials {
             s3_endpoint: "http://192.0.2.10:9001".into(),
             iceberg_endpoint: "http://192.0.2.10:9000".into(),
+            dataset_endpoint: None,
             region: "us-east-1".into(),
             access_key_id: "test-client".into(),
             secret_access_key: "private-test-secret".into(),

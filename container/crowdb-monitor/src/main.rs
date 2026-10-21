@@ -157,7 +157,12 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     data_root,
                 },
         } => {
-            print!("{}", show_client_credentials(&data_root)?);
+            let credential_root = if crowdb_monitor::read_node_policy(&data_root)?.is_some() {
+                data_root.join("console")
+            } else {
+                data_root
+            };
+            print!("{}", show_client_credentials(&credential_root)?);
         }
     }
     Ok(())

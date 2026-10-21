@@ -26,7 +26,7 @@ fn occupied(config: &ConsoleConfig) -> HashSet<u16> {
         ports.extend(port(&server.url));
         ports.extend(server.rpc_url.as_deref().and_then(port));
         ports.extend(server.rest_port);
-        ports.extend(server.dataset_origin.as_deref().and_then(port));
+        ports.extend(server.access_origins.values().filter_map(|origin| port(origin)));
         ports.extend(server.rpc_port);
         if server.service_type == ServiceType::Diskdb {
             if let Some(rpc) = server.rpc_url.as_deref().and_then(port) {

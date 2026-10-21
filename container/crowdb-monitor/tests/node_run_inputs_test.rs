@@ -27,10 +27,57 @@ fn command(profile: &Path) -> Command {
         "CROWDB_CLUSTER",
         "CROWDB_INITIAL_VOTERS",
         "CROWDB_PHYSICAL_HOST_ID",
+        "CROWDB_S3_PUBLIC_URI",
+        "CROWDB_ICEBERG_PUBLIC_URI",
+        "CROWDB_DATASET_PUBLIC_URI",
     ] {
         command.env_remove(name);
     }
     command
+}
+
+#[test]
+fn public_uri_flags_override_environment_before_acceptance_and_changed_restarts_fail() {
+    let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("public-origin");
+    let profile = profile(root.path());
+    let output = command(&profile)
+        .arg("--s3-public-uri")
+        .arg("http://127.0.0.1:19091")
+        .env("CROWDB_S3_PUBLIC_URI", "http://user:password@invalid")
+        .args(["--initial-voters", "2"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("initial voters"));
+    let mut accept = Command::new(env!("CARGO_BIN_EXE_crowdb-monitor"));
+    accept
+        .args(["accept-policy", "--profile"])
+        .arg(&profile)
+        .env("CROWDB_S3_PUBLIC_URI", "http://127.0.0.1:19091")
+        .env("CROWDB_ICEBERG_PUBLIC_URI", "http://127.0.0.1:19092")
+        .env("CROWDB_DATASET_PUBLIC_URI", "http://127.0.0.1:19093");
+    let output = accept.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let data = root.path().join("install/data");
+    let before = fs::read(data.join("node-policy.json")).unwrap();
+    let policy = crowdb_monitor::read_node_policy(&data).unwrap().unwrap();
+    assert_eq!(
+        policy.public_access.dataset.as_deref(),
+        Some("http://127.0.0.1:19093")
+    );
+    let output = command(&profile)
+        .arg("--dataset-public-uri")
+        .arg("http://127.0.0.1:29093")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("accepted node policy"));
+    assert_eq!(fs::read(data.join("node-policy.json")).unwrap(), before);
+    assert_eq!(fs::read_dir(data).unwrap().count(), 1);
 }
 
 #[test]

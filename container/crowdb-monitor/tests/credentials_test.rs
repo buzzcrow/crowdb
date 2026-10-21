@@ -37,6 +37,7 @@ fn client() -> ClientCredentials {
     ClientCredentials {
         s3_endpoint: "http://localhost:16000".into(),
         iceberg_endpoint: "http://localhost:8181".into(),
+        dataset_endpoint: None,
         region: "us-east-1".into(),
         access_key_id: "CROW123".into(),
         secret_access_key: "secret_123".into(),
@@ -138,6 +139,28 @@ fn invalid_client_values_are_not_persisted() {
 }
 
 #[test]
+fn dataset_client_origin_and_bearer_are_private_stable_and_validated() {
+    let root = TestDataRoot::new();
+    let server = ServerCredentials::load_or_create(root.path()).unwrap();
+    let mut client = client();
+    client.dataset_endpoint = Some("http://[::1]:19093".into());
+    server.persist_client(&client).unwrap();
+    let original = show_client_credentials(root.path()).unwrap();
+    assert!(original.contains("DATASET_URI=http://[::1]:19093\n"));
+    assert!(original.contains(&format!("DATASET_TOKEN={}\n", server.dataset_token())));
+    assert!(!original.contains(server.s3_master_key()));
+    assert!(!original.contains(server.iceberg_manage_token()));
+    let restored = ServerCredentials::load_existing(root.path()).unwrap();
+    restored.verify_client(&client).unwrap();
+    restored.persist_client(&client).unwrap();
+    assert_eq!(show_client_credentials(root.path()).unwrap(), original);
+    let path = root.path().join("secrets/client.env");
+    let corrupt = original.replace(&server.dataset_token(), "invalid-token");
+    fs::write(&path, corrupt).unwrap();
+    assert!(show_client_credentials(root.path()).is_err());
+}
+
+#[test]
 fn explicit_cli_prints_only_client_file() {
     let root = TestDataRoot::new();
     let server = ServerCredentials::load_or_create(root.path()).unwrap();
@@ -154,4 +177,29 @@ fn explicit_cli_prints_only_client_file() {
         show_client_credentials(root.path()).unwrap().as_bytes()
     );
     assert!(!String::from_utf8_lossy(&output.stdout).contains("CROWDB_S3_MASTER_KEY"));
+}
+
+#[test]
+fn node_cli_uses_the_owned_console_client_file_without_exporting_node_server_secrets() {
+    let root = TestDataRoot::new();
+    let inputs = crowdb_protocol::mgmt::node::deployment::NodeDeploymentOverrides::default();
+    crowdb_monitor::accept_node_policy(root.path(), &inputs, &inputs).unwrap();
+    let console = root.path().join("console");
+    fs::create_dir(&console).unwrap();
+    let server = ServerCredentials::load_or_create(&console).unwrap();
+    let mut client = client();
+    client.dataset_endpoint = Some("http://127.0.0.1:19093".into());
+    server.persist_client(&client).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_crowdb-monitor"))
+        .args(["credentials", "show", "--format", "env", "--data-root"])
+        .arg(root.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        output.stdout,
+        show_client_credentials(&console).unwrap().as_bytes()
+    );
+    assert!(!String::from_utf8_lossy(&output.stdout).contains(server.s3_master_key()));
 }
