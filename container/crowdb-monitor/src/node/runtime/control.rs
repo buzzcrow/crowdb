@@ -25,6 +25,9 @@ pub(super) async fn execute(
         NodeControl::AcceptNodeSetup { request } => Ok(serde_json::to_value(setup.accept(root, request)?)?),
         NodeControl::NodeSetup => Ok(serde_json::to_value(setup::NodeSetup::status(root)?)?),
         NodeControl::NodeSetupIntent => Ok(serde_json::to_value(setup::NodeSetup::intent(root)?)?),
+        NodeControl::RuntimeObservation => {
+            Ok(serde_json::to_value(observation::runtime(profile, processes)?)?)
+        }
         NodeControl::CheckRetainedDisk { request } => Ok(serde_json::to_value(
             retained_storage::check(root, request).await?,
         )?),
@@ -60,28 +63,10 @@ pub(super) async fn execute(
             node_id,
             admission,
         } => admission::cancel(profile, processes, bootstrap, node_id, admission).await,
-        NodeControl::Identity => identity(root),
-        NodeControl::InstallKey {
-            operation_id,
-            public_key,
-        } => {
-            authorize_bound(root).await?;
-            trust::install(root, &operation_id, &public_key)?;
-            Ok(json!({}))
-        }
-        NodeControl::RemoveKey { operation_id } => {
-            trust::remove(root, &operation_id)?;
-            Ok(json!({}))
-        }
-        NodeControl::TrustHost {
-            host,
-            port,
-            public_key,
-        } => {
-            authorize_bound(root).await?;
-            trust::host(root, &host, port, &public_key)?;
-            Ok(json!({}))
-        }
+        request @ (NodeControl::Identity
+        | NodeControl::InstallKey { .. }
+        | NodeControl::RemoveKey { .. }
+        | NodeControl::TrustHost { .. }) => keys(root, request).await,
         NodeControl::StartKv {
             node_id,
             bootstrap,
@@ -152,4 +137,32 @@ fn identity(root: &std::path::Path) -> Result<Value> {
     Ok(json!({"discovery_id": NodeIdentity::load_or_create(root)?.uuid(),
         "public_key": std::fs::read_to_string(root.join("ssh/id_ed25519.pub"))?,
         "host_key": std::fs::read_to_string(root.join("ssh/ssh_host_ed25519_key.pub"))?}))
+}
+
+async fn keys(root: &std::path::Path, request: NodeControl) -> Result<Value> {
+    match request {
+        NodeControl::Identity => identity(root),
+        NodeControl::InstallKey {
+            operation_id,
+            public_key,
+        } => {
+            authorize_bound(root).await?;
+            trust::install(root, &operation_id, &public_key)?;
+            Ok(json!({}))
+        }
+        NodeControl::RemoveKey { operation_id } => {
+            trust::remove(root, &operation_id)?;
+            Ok(json!({}))
+        }
+        NodeControl::TrustHost {
+            host,
+            port,
+            public_key,
+        } => {
+            authorize_bound(root).await?;
+            trust::host(root, &host, port, &public_key)?;
+            Ok(json!({}))
+        }
+        _ => Err("unsupported key control request".into()),
+    }
 }

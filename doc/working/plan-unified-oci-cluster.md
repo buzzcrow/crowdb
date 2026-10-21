@@ -767,6 +767,42 @@ do not mark unexecuted acceptance passed.
   Existing diagnostic one/three clusters report editable node mode: creating an
   empty rack through one UI backend and removing it through another succeeds.
   A rebuilt packaged catalog image is still required before T15 is complete.
+- The rebuilt artifact from `e39a3e0d` has OCI digest
+  `sha256:b998cec62985252a949b59e7785a535b62150c6e9604e8b9d17563a51e7c7460`
+  and config digest
+  `sha256:d93df1c146478b9d95b1af6128485613936f52c7d30c89ec547bcc6515706c25`.
+  Fresh named-volume one/three clusters on separate owned bridges pass actual
+  S3, Dataset and delegated Iceberg/Parquet I/O through their published ports,
+  without executable mounts or host bootstrap. Three independent starts use
+  order 3/1/2 and no peer list. New single-node management mutation passes.
+- Whole-three-container stop/start in order 1/2/3 exposes a real recovery gap:
+  Docker reassigns bridge IPs in start order. Node 1/2/3 now own
+  `172.20.0.2/.3/.4`, while their retained transport mapping belongs to the old
+  3/1/2 start order. Native Group 0 and Group 1 repeatedly fail to gather quorum;
+  authoritative target observations return 502 on all three members. Existing
+  authenticated node-update requires live Group 0 and cannot repair this case.
+  The failed volumes and credentials remain intact. Do not count this restart as
+  passing, pin test IPs, reorder the test to preserve IPs or extend timeouts.
+  T15 remains active; repair authenticated retained-member transport recovery
+  before declaring the packaged lifecycle complete. Preliminary T16 observation
+  code is paused while this first divergence is resolved.
+- Independent T16 work now exposes a typed private monitor observation without
+  provisioning: it pairs live owned processes, fresh health and exact executed
+  operation IDs; reports intentional stop and exhausted restart budgets; and
+  omits execution error contents. Missing identity/status is never repaired.
+  The reducer also treats a required superseded observation without its own
+  replacement as unknown, even when another instance of that kind is healthy.
+  Three new monitor observation, two status and nine reducer tests pass, with
+  affected all-target clippy/format. Aggregate collection/API/CLI remain pending.
+
+## Open Questions
+
+- Retained bridge addressing after Docker reallocates IPs: choose stable
+  per-container DNS names (no peer list or fixed IP; add hostname handling to
+  transport/bind builders), or automatic recovery of arbitrary address changes
+  with no stable name (requires authenticated retained-member address recovery
+  even while Group 0 has no quorum). Asked in chat after reproducing whole-cluster
+  restart failure. Do not decide this by pinning fixture IPs or changing test order.
 
 ## Consolidated file ownership
 

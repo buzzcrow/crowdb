@@ -24,8 +24,10 @@ mod test_support;
 #[cfg(feature = "test-util")]
 pub use test_support::NodeServiceForTests;
 mod execution;
+mod observation;
 mod policy;
 pub(super) use execution::execute;
+pub(super) use observation::observe;
 
 pub(super) fn retained(profile: &DeploymentProfile) -> Result<Vec<NodeServiceIntent>> {
     let directory = profile.paths.data_root.join("services");

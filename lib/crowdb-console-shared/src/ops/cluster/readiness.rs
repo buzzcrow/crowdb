@@ -69,6 +69,19 @@ fn collect(observation: &ClusterObservation, now_unix_ms: u64) -> Evidence {
                 "operation-superseded",
                 "Historical operation does not describe current readiness",
             ));
+            let replacement = observation.dependencies.iter().any(|current| {
+                current.id == fact.id
+                    && current.kind == fact.kind
+                    && current.operation_id == fact.current_operation_id
+                    && current.operation_id == current.current_operation_id
+            });
+            if !replacement && fact.required && fact.kind != DependencyKind::Runtime {
+                evidence
+                    .states
+                    .entry(fact.kind)
+                    .or_default()
+                    .push(DependencyState::Unknown);
+            }
             continue;
         }
         if !identities.insert(&fact.id) {

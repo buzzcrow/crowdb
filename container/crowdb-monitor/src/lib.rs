@@ -34,8 +34,8 @@ pub use monitor_log::{MonitorEvent, MonitorEventKind, MonitorLog, MonitorLogErro
 pub use node::{
     accept_file_for_tests, accept_startup_mode_for_tests, check_retained_medium_for_tests,
     file_operations_for_tests, prepare_file_for_tests, prepare_supplied_disk_for_tests,
-    publish_file_for_tests, verify_blank_medium_for_tests, InitializationForTests, NodeServiceForTests,
-    NodeSetupForTests, SuppliedOperationsForTests,
+    publish_file_for_tests, runtime_observation_for_tests, verify_blank_medium_for_tests,
+    InitializationForTests, NodeServiceForTests, NodeSetupForTests, SuppliedOperationsForTests,
 };
 pub use node::{
     accept_node_policy, control_node, discover_disks, read_node_policy, run_node, run_node_with_inputs,

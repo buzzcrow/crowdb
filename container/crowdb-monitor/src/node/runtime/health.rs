@@ -82,6 +82,10 @@ impl NodeHealth {
                 self.status.services.insert(
                     id.clone(),
                     ServiceStatus {
+                        operation_id: retained
+                            .iter()
+                            .find(|intent| intent.service_id == *id || (id == "kv" && intent.kind == "kv"))
+                            .map(|intent| intent.operation_id.clone()),
                         pid: processes.pid(id),
                         generation: 1 + u64::from(*self.attempts.get(id.as_str()).unwrap_or(&0)),
                         healthy,

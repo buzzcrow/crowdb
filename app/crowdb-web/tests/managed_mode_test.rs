@@ -235,6 +235,7 @@ async fn managed_snapshot_uses_group0_and_monitor_without_local_fallback() {
     status.services.insert(
         "diskio".into(),
         ServiceStatus {
+            operation_id: None,
             pid: Some(123),
             generation: 2,
             healthy: true,

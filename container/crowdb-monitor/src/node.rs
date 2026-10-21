@@ -29,6 +29,8 @@ pub use runtime::prepare_supplied_disk_for_tests;
 #[cfg(feature = "test-util")]
 pub use runtime::publish_file_for_tests;
 #[cfg(feature = "test-util")]
+pub use runtime::runtime_observation_for_tests;
+#[cfg(feature = "test-util")]
 pub use runtime::InitializationForTests;
 #[cfg(feature = "test-util")]
 pub use runtime::NodeSetupForTests;

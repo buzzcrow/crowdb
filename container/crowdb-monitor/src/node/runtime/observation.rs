@@ -9,6 +9,19 @@ use serde_json::{json, Value};
 use super::{durable, Result};
 use crate::ProcessManager;
 
+mod readiness;
+pub(super) use readiness::observe as runtime;
+
+/// # Errors
+/// Uses the production read-only projection without starting monitor workers.
+#[cfg(feature = "test-util")]
+pub fn runtime_observation_for_tests(
+    profile: &crate::DeploymentProfile,
+    manager: &mut ProcessManager,
+) -> Result<crowdb_protocol::mgmt::node::observation::NodeRuntimeObservation> {
+    runtime(profile, manager)
+}
+
 pub(super) fn processes(
     root: &Path,
     manager: &mut ProcessManager,

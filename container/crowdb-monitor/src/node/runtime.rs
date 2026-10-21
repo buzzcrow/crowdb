@@ -23,6 +23,8 @@ mod health;
 mod ipc;
 mod kv;
 mod observation;
+#[cfg(feature = "test-util")]
+pub use observation::runtime_observation_for_tests;
 mod probes;
 mod services;
 use kv::start_kv;

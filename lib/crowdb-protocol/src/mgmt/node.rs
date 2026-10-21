@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 pub mod deployment;
+pub mod observation;
 pub mod setup;
 pub mod storage;
 
@@ -74,6 +75,7 @@ pub enum NodeControl {
     },
     NodeSetup,
     NodeSetupIntent,
+    RuntimeObservation,
     CheckRetainedDisk {
         request: storage::CheckRetainedDisk,
     },

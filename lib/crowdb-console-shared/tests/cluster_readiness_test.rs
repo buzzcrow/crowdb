@@ -101,6 +101,22 @@ fn superseded_failure_cannot_poison_a_recovered_dependency() {
 }
 
 #[test]
+fn another_ready_instance_cannot_replace_missing_current_evidence() {
+    let mut input = observation();
+    let mut pending = fact(DependencyKind::Service);
+    pending.id = "service/another-node".into();
+    pending.operation_id = Some("old".into());
+    pending.current_operation_id = Some("new".into());
+    input.dependencies.push(pending);
+    let report = reduce(input, 1000);
+    assert_eq!(report.phase, ClusterPhase::Degraded);
+    assert!(report
+        .reasons
+        .iter()
+        .any(|reason| reason.dependency == "service/another-node"));
+}
+
+#[test]
 fn bound_quorum_loss_is_unavailable_but_prebootstrap_missing_voters_are_waiting() {
     let mut input = observation();
     input.dependencies[0].state = DependencyState::Unknown;
