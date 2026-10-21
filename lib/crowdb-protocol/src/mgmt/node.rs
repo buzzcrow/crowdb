@@ -76,6 +76,15 @@ pub enum NodeControl {
     NodeSetup,
     NodeSetupIntent,
     RuntimeObservation,
+    PrepareBootstrap {
+        node_id: u64,
+        bootstrap: super::SystemBootstrapIdentity,
+        manifest: serde_json::Value,
+        credentials: NodeServiceCredentials,
+    },
+    AcceptMemberTrust {
+        trust: serde_json::Value,
+    },
     CheckRetainedDisk {
         request: storage::CheckRetainedDisk,
     },

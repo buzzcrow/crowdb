@@ -7,6 +7,29 @@ use crowdb_protocol::mgmt::node::NodeBinding;
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, time::Duration};
 
+pub(super) fn resume_allowed(profile: &DeploymentProfile, accepted: &AcceptedNode) -> Result<bool> {
+    let root = &profile.paths.data_root;
+    Ok(accepted.prepared
+        && !super::admission::is_cancelled(root, accepted)
+        && !root
+            .join(format!(
+                "retired-bootstrap-{}.json",
+                accepted.bootstrap.operation_id
+            ))
+            .exists()
+        && !super::services::kv_paused(profile)?
+        && super::recovery::ready(root, accepted)?)
+}
+
+pub(super) async fn resume(profile: &DeploymentProfile, processes: &mut ProcessManager) -> Result<()> {
+    if let Some(accepted) = durable::read(&profile.paths.data_root.join("accepted-node.json"))? {
+        if resume_allowed(profile, &accepted)? {
+            start_kv(profile, processes, &accepted).await?;
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn node_profile(config: &super::NodeRuntimeConfig) -> Result<DeploymentProfile> {
     let mut profile = DeploymentProfile::load(&config.profile)?;
     profile.validate_node_catalog()?;
@@ -75,6 +98,7 @@ pub(super) async fn start_kv(
     processes: &mut ProcessManager,
     accepted: &AcceptedNode,
 ) -> Result<()> {
+    super::recovery::check(&profile.paths.data_root, accepted)?;
     if processes.owns("kv") && processes.alive("kv")? {
         return Ok(());
     }

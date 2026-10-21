@@ -106,6 +106,28 @@ impl Session {
     /// Returns `Error::UpstreamRpc` for any russh / auth failure, with the
     /// `host:port` as the synthetic server id.
     pub(crate) async fn connect(node: &NodeEntry, creds: &SshCreds) -> Result<Self> {
+        Self::connect_verified(
+            node,
+            creds,
+            HostVerification::Address(known_hosts_store_for_session()?),
+        )
+        .await
+    }
+
+    /// Connect using an accepted node's key without consulting or changing TOFU.
+    pub(crate) async fn connect_pinned(
+        node: &NodeEntry,
+        creds: &SshCreds,
+        expected: PublicKey,
+    ) -> Result<Self> {
+        Self::connect_verified(node, creds, HostVerification::Member(expected)).await
+    }
+
+    async fn connect_verified(
+        node: &NodeEntry,
+        creds: &SshCreds,
+        verification: HostVerification,
+    ) -> Result<Self> {
         if node.ssh_user.is_empty() {
             return Err(Error::Validation {
                 field: "ssh_user".into(),
@@ -120,14 +142,9 @@ impl Session {
             ..Default::default()
         });
 
-        // Resolve a process-shared known_hosts store; if no path can
-        // be determined (no $HOME and no $CROWDB_KV_KNOWN_HOSTS) we fall
-        // back to a strict-reject ephemeral store so we never silently
-        // accept arbitrary keys.
-        let store = known_hosts_store_for_session()?;
         let handler = ClientHandler {
             host_id: id.clone(),
-            store,
+            verification,
         };
 
         let mut handle = client::connect(config, addr, handler)
@@ -166,6 +183,10 @@ impl Session {
     /// # Errors
     /// `Error::UpstreamRpc` for channel / exec / IO failures.
     pub(crate) async fn exec(&mut self, command: &str) -> Result<ExecOutput> {
+        self.exec_bounded(command, usize::MAX).await
+    }
+
+    pub(crate) async fn exec_bounded(&mut self, command: &str, max_bytes: usize) -> Result<ExecOutput> {
         let id = "<ssh>".to_string();
         let mut channel = self
             .handle
@@ -179,6 +200,13 @@ impl Session {
         let mut exit = None;
 
         while let Some(msg) = channel.wait().await {
+            let incoming = match &msg {
+                ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. } => data.len(),
+                _ => 0,
+            };
+            if stdout.len().saturating_add(stderr.len()).saturating_add(incoming) > max_bytes {
+                return Err(Error::Config("SSH command output exceeds its bound".into()));
+            }
             match msg {
                 ChannelMsg::Data { ref data } => stdout.extend_from_slice(data),
                 ChannelMsg::ExtendedData { ref data, ext } => {
@@ -241,7 +269,12 @@ fn ssh_err(id: &str, e: &impl std::fmt::Display) -> Error {
 
 struct ClientHandler {
     host_id: String,
-    store: Arc<KnownHostsStore>,
+    verification: HostVerification,
+}
+
+enum HostVerification {
+    Address(Arc<KnownHostsStore>),
+    Member(PublicKey),
 }
 
 #[async_trait::async_trait]
@@ -252,8 +285,13 @@ impl client::Handler for ClientHandler {
         &mut self,
         server_public_key: &PublicKey,
     ) -> std::result::Result<bool, Self::Error> {
+        let HostVerification::Address(store) = &self.verification else {
+            return Ok(
+                matches!(&self.verification, HostVerification::Member(expected) if expected == server_public_key),
+            );
+        };
         let presented = KeyRecord::from_public_key(server_public_key);
-        match self.store.check_or_insert(&self.host_id, &presented) {
+        match store.check_or_insert(&self.host_id, &presented) {
             Ok(KnownHostsOutcome::Known | KnownHostsOutcome::InsertedTofu) => Ok(true),
             Ok(KnownHostsOutcome::Mismatch { expected, got }) => {
                 warn!(

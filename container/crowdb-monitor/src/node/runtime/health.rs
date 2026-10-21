@@ -42,14 +42,7 @@ impl NodeHealth {
         if let Some(accepted) =
             durable::read::<AcceptedNode>(&profile.paths.data_root.join("accepted-node.json"))?
         {
-            let retired = profile.paths.data_root.join(format!(
-                "retired-bootstrap-{}.json",
-                accepted.bootstrap.operation_id
-            ));
-            if accepted.prepared
-                && !super::admission::is_cancelled(&profile.paths.data_root, &accepted)
-                && !retired.exists()
-                && !super::services::kv_paused(profile)?
+            if super::kv::resume_allowed(profile, &accepted)?
                 && (!processes.owns("kv") || !processes.alive("kv")?)
             {
                 self.restart_allowed("kv")?;

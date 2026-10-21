@@ -811,38 +811,54 @@ do not mark unexecuted acceptance passed.
   Seven member projection and nine reducer tests pass; shared all-target clippy
   and formatting pass. Collection of live native authority/storage remains T16.
 
-## Open Questions
+## Accepted member address recovery
 
-- Retained bridge addressing after Docker reallocates IPs: choose stable
-  per-container DNS names (no peer list or fixed IP; add hostname handling to
-  transport/bind builders), or automatic recovery of arbitrary address changes
-  with no stable name (requires authenticated retained-member address recovery
-  even while Group 0 has no quorum). Asked in chat after reproducing whole-cluster
-  restart failure. Do not decide this by pinning fixture IPs or changing test order.
-
-
-## Blocked
-
-- **T15 retained-member addressing decision:** packaged three-node restart in
-  a different order reproduces quorum loss after Docker reassigns IPs. The
-  precise failure and preserved fixture identity are recorded above. This is
-  a missing support-boundary decision, not a reason to retry the same test or
-  discard its data. The existing authenticated node-update path requires
-  current Group-0 authority and cannot recover this full-outage case.
-- Alternative 1: give each container its own retained DNS name and support
-  hostname advertisement separately from listener bind addresses. Docker DNS
-  resolves current IPs; no peer list or fixed IP is required. Direct Docker
-  and Compose examples must preserve that container's name on recreation.
-- Alternative 2: require no stable name and add authenticated retained-member
-  endpoint recovery without current quorum. This needs a durable trust and
-  membership proof so discovery cannot reassign a peer's identity or bootstrap
-  another cluster. It changes the recovery contract and has separate negative
-  acceptance coverage.
-- Asked the user to choose; silence is not a decision. Both approaches preserve
-  retained UUIDs, credentials and data. Do not implement either addressing
-  contract before the answer. Independent node/protocol observation and member
-  projection changes are committed and gated; full collection and CLI exposure
-  remain unfinished. The requirement and T15 remain incomplete.
+- The user selected existing mDNS/DNS-SD plus identity-bound SSH recovery.
+  Stable DNS names and fixed IPs are not prerequisites. See deployment design
+  section 6.4 and acceptance A32/A33; the previous addressing decision is resolved.
+- T15 remains active until a packaged three-node fixture with accepted member
+  trust recovers after all nodes restart in a different order with reassigned
+  IPs. Preserve the earlier negative fixture's volumes, UUIDs, data and failure
+  evidence. No compatibility migration or replacement trust from advertisements
+  is authorized for those older roots.
+- [ ] **T15a — Seal member trust**: bind cluster/bootstrap identity, discovery
+  UUID, numeric ID and Ed25519 SSH host key in a validated local recovery record.
+  Reuse authenticated bootstrap/admission to establish it before replica start;
+  retries are immutable, missing/corrupt trust fails closed, and retirement or
+  cancellation prevents reuse. Files: shared deployment recovery module,
+  bootstrap preparation, monitor private control and peer trust tests.
+  Initial bootstrap now seals all selected member pins before issuing StartKv;
+  each monitor checks its own host key and every prior authenticated peer pin.
+  Startup/health resume wait for sealed trust and reject corrupt pins or a
+  changed local host key. Explicit bootstrap cleanup removes the matching trust
+  record with its other local bootstrap records. Subsequent admission/revocation
+  trust distribution is still pending; do not mark this task complete yet.
+- [ ] **T15b — Verify rediscovered endpoints**: use an expected host-key SSH
+  connection independent of the address-keyed TOFU cache; compare the peer's
+  durable binding and return bounded current endpoint facts. Reject foreign
+  identities, changed keys and duplicate live claims. Files: shared SSH transport,
+  monitor management/control and recovery loop; authentication integration tests.
+  Shared `MemberTrust::observe` and `remote_control_pinned` now verify SSH host
+  identity without reading/writing the address-keyed TOFU store or using password
+  fallback, then match the returned durable binding. Replies are bounded to
+  64 KiB and the complete operation to ten seconds. Live discovery-loop wiring,
+  current endpoint facts and duplicate authenticated claimant handling remain.
+  Verification: complete `crowdb-monitor` suite passes, including the new ordered
+  bootstrap and four monitor trust cases. Seven shared recovery cases and the
+  existing SSH launch case pass. Shared/protocol/monitor/Web all-target clippy
+  with test-util and Rust formatting pass. No packaged image or changed-IP
+  recovery acceptance is claimed for these foundation changes.
+- [ ] **T15c — Route existing replicas by identity**: propagate only verified
+  endpoint replacements to current replica connections without rewriting accepted
+  membership/WAL/bootstrap manifests. Handle whole-cluster IP permutations,
+  invalidate old connections and recover before Group-0 availability. Reconcile
+  published addresses only through normal committed operations after quorum.
+  Files: KV transport endpoint resolution, monitor recovery and caller wiring.
+- [ ] **T15d — Exercise retained recovery**: focused positive/negative trust and
+  routing tests, then a fresh packaged three-node fixture with persisted I/O,
+  changed-order whole-cluster restart and no executable mounts. Preserve the
+  previously failed fixture; do not silently bootstrap trust from advertisements
+  for its existing roots. Record A32/A33 evidence and applicable gates.
 
 ## Consolidated file ownership
 

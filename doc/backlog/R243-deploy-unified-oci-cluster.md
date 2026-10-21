@@ -314,6 +314,15 @@ the working plan owns type names, file placement and execution order.
   Multiple already-bound cluster UUIDs never trigger automatic merge or reset.
   UUID sorting alone is not a distributed exclusion mechanism: reuse and verify
   accepted-manifest fencing under concurrent coordinators and partial visibility.
+  Retain cluster UUID, discovery UUID, numeric node ID and Ed25519 SSH host-key
+  bindings through existing authenticated bootstrap/admission. Reuse those local
+  bindings to verify rediscovered members at changed IPs without Group-0 quorum.
+  Discovery is only a hint: require a pinned-key SSH handshake and matching peer
+  binding before using its current endpoints. Recover existing replica routes,
+  never votes or membership; publish addresses through normal authority after
+  quorum returns. Do not require stable DNS names, fixed IPs or a peer list.
+  Missing trust, changed keys, foreign bindings and duplicate authenticated live
+  claimants fail closed. Multicast scope and seed fallback remain unchanged.
 
 - **C3 — Own cluster-wide preparation once.** After Group-0 authority is available,
   create one durable default preparation intent through existing committed/CAS
@@ -536,7 +545,7 @@ the working plan owns type names, file placement and execution order.
   expressed without Docker sockets, IDs or CLI-owned bootstrap state.
   Invariant: portable, reviewable deployment contract. Integration test.
 
-Cases A18–A31 cover the additional negative and recovery paths of C1–C8;
+Cases A18–A33 cover the additional negative and recovery paths of C1–C8;
 the plan maps these stable acceptance IDs to tasks and test owners.
 
 - **A18.** Given a retained accepted policy, omit overrides and restart with changed image
@@ -609,10 +618,24 @@ the plan maps these stable acceptance IDs to tasks and test owners.
   separately from Docker-provisioned disposable-host tests. Invariant: runtime
   independence demonstrated by actual environment. E2E test.
 
+- **A32.** Given a ready three-node cluster with retained data and identity-bound
+  SSH trust, stop every container and restart in a different order with changed
+  IPs and no stable names or peer list; authenticated rediscovery restores the
+  original replica routes, quorum, UUIDs, credentials and S3/Iceberg/Dataset data.
+  Repeat on host networking within a working multicast scope. Invariant: C2,
+  identity-bound recovery without current quorum. E2E test.
+- **A33.** Given retained member trust, advertise a copied node-id with another
+  key, a foreign bootstrap, a cancelled member or duplicate authenticated live
+  identities; recovery refuses the candidate without replacing trust, expanding
+  votes or resetting state. Missing/corrupt trust cannot fall back to TOFU.
+  Verify successful address recovery changes neither accepted membership nor
+  bootstrap inputs. Invariant: C2, recovery grants no membership authority.
+  Integration test.
+
 Run these gates for the implemented scope; runtime E2E results must state the
 actual hosts, runtime and image digest. No RDMA hardware qualification gate is
 required. Existing profile names below are entry points to migrate, not evidence
-that the new cases already exist. Phase 6 must register A01–A31 in the appropriate
+that the new cases already exist. Phase 6 must register A01–A33 in the appropriate
 fixture/test suites and CI jobs. A31 additionally requires a recorded Docker-free
 host run; Docker-hosted profile results cannot substitute for it:
 

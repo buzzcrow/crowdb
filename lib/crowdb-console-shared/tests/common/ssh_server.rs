@@ -21,10 +21,18 @@ impl Drop for TestSshServer {
 
 impl TestSshServer {
     pub async fn start(key: PublicKey) -> Self {
+        Self::start_with_reply(key, None).await
+    }
+
+    pub async fn start_with_reply(key: PublicKey, reply: Option<Vec<u8>>) -> Self {
+        Self::start_with_host_key(key, reply, KeyPair::generate_ed25519().unwrap()).await
+    }
+
+    pub async fn start_with_host_key(key: PublicKey, reply: Option<Vec<u8>>, host: KeyPair) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let config = Arc::new(russh::server::Config {
-            keys: vec![KeyPair::generate_ed25519().unwrap()],
+            keys: vec![host],
             ..Default::default()
         });
         let server = tokio::spawn(async move {
@@ -34,7 +42,7 @@ impl TestSshServer {
                     accepted = listener.accept() => {
                         let (stream, _) = accepted.unwrap();
                         let config = config.clone();
-                        let handler = TestHandler { key: key.clone() };
+                        let handler = TestHandler { key: key.clone(), reply: reply.clone() };
                         sessions.spawn(async move {
                             if let Ok(session) = russh::server::run_stream(config, stream, handler).await {
                                 let _ = session.await;
@@ -51,6 +59,7 @@ impl TestSshServer {
 
 struct TestHandler {
     key: PublicKey,
+    reply: Option<Vec<u8>>,
 }
 
 #[async_trait]
@@ -78,6 +87,13 @@ impl Handler for TestHandler {
         session: &mut Session,
     ) -> Result<(), Self::Error> {
         session.channel_success(channel);
+        if let Some(reply) = &self.reply {
+            session.data(channel, CryptoVec::from_slice(reply));
+            session.exit_status_request(channel, 0);
+            session.eof(channel);
+            session.close(channel);
+            return Ok(());
+        }
         let output = tokio::process::Command::new("/bin/sh")
             .args(["-c", &String::from_utf8_lossy(data)])
             .output()

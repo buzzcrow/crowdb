@@ -39,14 +39,10 @@ pub(super) async fn execute(
         | NodeControl::DiskFilePreparations { .. }) => {
             storage(root, file_allocator, supplied_storage, request).await
         }
-        NodeControl::Initialize {
-            manifest,
-            credentials,
-            create_data_group,
-        } => {
-            authorize_bound(root).await?;
-            initialization.accept(profile, manifest, credentials, create_data_group)
-        }
+        request @ (NodeControl::Initialize { .. }
+        | NodeControl::PrepareBootstrap { .. }
+        | NodeControl::AcceptMemberTrust { .. }
+        | NodeControl::StartKv { .. }) => bootstrap(profile, processes, initialization, request).await,
         NodeControl::Initialization => initialization::Initialization::status(root),
         NodeControl::DiskInventory => disk_inventory(root),
         NodeControl::Processes { cluster_id, node_id } => {
@@ -67,22 +63,6 @@ pub(super) async fn execute(
         | NodeControl::InstallKey { .. }
         | NodeControl::RemoveKey { .. }
         | NodeControl::TrustHost { .. }) => keys(root, request).await,
-        NodeControl::StartKv {
-            node_id,
-            bootstrap,
-            manifest,
-            credentials,
-            admission,
-        } => {
-            if let Some(grant) = &admission {
-                admission::validate(root, &bootstrap, node_id, grant, false).await?;
-            }
-            authorize_bound(root).await?;
-            kv::ensure_start_allowed(profile).await?;
-            let accepted = preparation::accept(root, node_id, bootstrap, manifest, credentials, admission)?;
-            start_kv(profile, processes, &accepted).await?;
-            Ok(json!({"node_id": node_id, "management_port": 10000, "rpc_port": 10100}))
-        }
         NodeControl::Bind { binding } => kv::bind(profile, processes, binding).await,
         NodeControl::Cleanup {
             bootstrap,
@@ -101,6 +81,57 @@ pub(super) async fn execute(
             setup.prepare_cleanup(root, &bootstrap, confirm_delete_system_store)?;
             cleanup::execute(profile, processes, bootstrap, confirm_delete_system_store).await
         }
+    }
+}
+
+async fn bootstrap(
+    profile: &DeploymentProfile,
+    processes: &mut ProcessManager,
+    initialization: &mut initialization::Initialization,
+    request: NodeControl,
+) -> Result<Value> {
+    let root = &profile.paths.data_root;
+    match request {
+        NodeControl::Initialize {
+            manifest,
+            credentials,
+            create_data_group,
+        } => {
+            authorize_bound(root).await?;
+            initialization.accept(profile, manifest, credentials, create_data_group)
+        }
+        NodeControl::PrepareBootstrap {
+            node_id,
+            bootstrap,
+            manifest,
+            credentials,
+        } => {
+            authorize_bound(root).await?;
+            preparation::accept(root, node_id, bootstrap, Some(manifest), Some(credentials), None)?;
+            Ok(json!({}))
+        }
+        NodeControl::AcceptMemberTrust { trust } => {
+            authorize_bound(root).await?;
+            super::recovery::accept(root, &serde_json::from_value(trust)?)?;
+            Ok(json!({}))
+        }
+        NodeControl::StartKv {
+            node_id,
+            bootstrap,
+            manifest,
+            credentials,
+            admission,
+        } => {
+            if let Some(grant) = &admission {
+                admission::validate(root, &bootstrap, node_id, grant, false).await?;
+            }
+            authorize_bound(root).await?;
+            kv::ensure_start_allowed(profile).await?;
+            let accepted = preparation::accept(root, node_id, bootstrap, manifest, credentials, admission)?;
+            start_kv(profile, processes, &accepted).await?;
+            Ok(json!({"node_id": node_id, "management_port": 10000, "rpc_port": 10100}))
+        }
+        _ => Err("unsupported bootstrap control request".into()),
     }
 }
 

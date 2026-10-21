@@ -47,8 +47,11 @@ pub use setup::NodeSetupForTests;
 #[cfg(feature = "test-util")]
 pub use supplied_storage::prepare_supplied_disk_for_tests;
 mod preparation;
+mod recovery;
 pub use ipc::control_node;
 use ipc::read_request;
+#[cfg(feature = "test-util")]
+pub use recovery::{accept_member_trust_for_tests, check_member_trust_for_tests};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -111,20 +114,7 @@ pub async fn run_node_with_inputs(
     let mut processes = ProcessManager::new(profile.paths.log_root.clone(), profile.logs.clone()).await?;
     let web = web_service(&profile, config.bind.port())?;
     processes.start(&web, &BTreeMap::new()).await?;
-    if let Some(accepted) = durable::read::<AcceptedNode>(&root.join("accepted-node.json"))? {
-        if accepted.prepared
-            && !admission::is_cancelled(&root, &accepted)
-            && !services::kv_paused(&profile)?
-            && !root
-                .join(format!(
-                    "retired-bootstrap-{}.json",
-                    accepted.bootstrap.operation_id
-                ))
-                .exists()
-        {
-            start_kv(&profile, &mut processes, &accepted).await?;
-        }
-    }
+    kv::resume(&profile, &mut processes).await?;
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let discovery_root = root.clone();
     let mut discovery = tokio::spawn(async move {

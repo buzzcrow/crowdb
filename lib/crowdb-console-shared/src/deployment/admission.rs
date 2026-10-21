@@ -61,6 +61,34 @@ pub async fn remote_control(node: &NodeEntry, command: &NodeControl) -> Result<V
     Ok(replies.remove(0))
 }
 
+/// Authenticate an already accepted member at a rediscovered address.
+/// Never falls back to passwords or learns a replacement host key.
+///
+/// # Errors
+/// Rejects missing local keys, mismatched host identity and bounded SSH failures.
+pub async fn remote_control_pinned(
+    node: &NodeEntry,
+    member: &super::recovery::TrustedMember,
+    command: &NodeControl,
+) -> Result<Value> {
+    if node.id != member.node_id || node.ssh_password.is_some() || node.ssh_key.is_none() {
+        return Err(Error::Config(
+            "pinned member control requires its identity and local key".into(),
+        ));
+    }
+    let creds = SshCreds::resolve(node)?;
+    let key = member.key()?;
+    let operation = async {
+        let mut session = Session::connect_pinned(node, &creds, key).await?;
+        let result = control(&mut session, command).await;
+        session.close().await;
+        result
+    };
+    tokio::time::timeout(Duration::from_secs(10), operation)
+        .await
+        .map_err(|_| Error::Config("pinned member control timed out".into()))?
+}
+
 /// Execute ordered commands through one authenticated session, stopping at the
 /// first rejection and retaining already completed durable stages for retry.
 ///
@@ -273,7 +301,7 @@ async fn control(session: &mut Session, request: &NodeControl) -> Result<Value> 
         "LD_LIBRARY_PATH=/opt/crowdb/lib /opt/crowdb/bin/crowdb-monitor control --json {}",
         quote(&json)
     );
-    let output = tokio::time::timeout(Duration::from_secs(45), session.exec(&command))
+    let output = tokio::time::timeout(Duration::from_secs(45), session.exec_bounded(&command, 65536))
         .await
         .map_err(config_error)??;
     if !output.success() {

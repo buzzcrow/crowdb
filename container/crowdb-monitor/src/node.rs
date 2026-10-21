@@ -34,6 +34,8 @@ pub use runtime::runtime_observation_for_tests;
 pub use runtime::InitializationForTests;
 #[cfg(feature = "test-util")]
 pub use runtime::NodeSetupForTests;
+#[cfg(feature = "test-util")]
+pub use runtime::{accept_member_trust_for_tests, check_member_trust_for_tests};
 pub use runtime::{control_node, run_node, run_node_with_inputs, NodeRuntimeConfig};
 #[cfg(feature = "test-util")]
 pub use startup::accept_startup_mode_for_tests;

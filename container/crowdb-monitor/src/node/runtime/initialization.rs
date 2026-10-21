@@ -157,6 +157,7 @@ async fn execute(profile: &DeploymentProfile, request: &Request, local: u64) -> 
     let root = &profile.paths.data_root;
     let operation = &request.operation;
     let credentials = ServerCredentials::load_existing(root)?.server_env();
+    prepare_members(profile, operation, local, &credentials).await?;
     let results = futures::future::join_all(operation.intent.members().iter().map(async |member| {
         control(
             profile,
@@ -215,6 +216,53 @@ async fn execute(profile: &DeploymentProfile, request: &Request, local: u64) -> 
         ensure_data_group(&ctx, operation.intent.members()).await?;
     }
     progress(root, request, "active", None)
+}
+
+async fn prepare_members(
+    profile: &DeploymentProfile,
+    operation: &PreparedBootstrap,
+    local: u64,
+    credentials: &str,
+) -> Result<()> {
+    let prepares = futures::future::join_all(operation.intent.members().iter().map(async |member| {
+        control(
+            profile,
+            operation,
+            local,
+            *member,
+            NodeControl::PrepareBootstrap {
+                node_id: *member,
+                bootstrap: operation.identity.clone(),
+                manifest: serde_json::to_value(operation)?,
+                credentials: NodeServiceCredentials {
+                    environment: credentials.to_owned(),
+                },
+            },
+        )
+        .await
+    }))
+    .await;
+    for result in prepares {
+        result?;
+    }
+    let trust = super::recovery::capture(&profile.paths.data_root, operation)?;
+    let pins = futures::future::join_all(operation.intent.members().iter().map(async |member| {
+        control(
+            profile,
+            operation,
+            local,
+            *member,
+            NodeControl::AcceptMemberTrust {
+                trust: serde_json::to_value(&trust)?,
+            },
+        )
+        .await
+    }))
+    .await;
+    for result in pins {
+        result?;
+    }
+    Ok(())
 }
 
 async fn ensure_data_group(ctx: &OpContext, nodes: &[u64]) -> Result<()> {

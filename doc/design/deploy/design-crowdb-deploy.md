@@ -119,6 +119,10 @@ change either identity. Duplicate live UUID claims are identity conflicts.
 - **I8 — Bootstrap gate:** only Group-0 prerequisite processes and Group-0
   initialization run before the shared information platform is ready. Other
   deployment requires committed initial topology.
+- **I9 — Identity-bound address recovery:** a changed address is usable only
+  after the peer proves possession of the SSH host private key pinned to its
+  accepted cluster UUID, discovery UUID and numeric node ID. Discovery cannot
+  change this binding or the accepted voting membership.
 
 ## 4. Node discovery
 
@@ -353,7 +357,59 @@ SSH connection/authentication has a ten-second bound; bidirectional proof has a
 twenty-second bound. Passwords are discarded, sessions are reused during setup,
 and only public keys cross nodes.
 
-### 6.4 Voting replica admission
+### 6.4 Authenticated member address recovery
+
+Node identity survives changes to management and data addresses. Each accepted
+member has a durable binding between cluster UUID, discovery UUID, numeric node
+ID and its Ed25519 SSH host public key. The SSH login key authenticates a caller;
+the SSH host key authenticates the peer. Both private keys remain on their owning
+node's persistent volume. Address recovery reuses SSH and does not introduce a
+CA, certificate service or custom signature protocol.
+
+Initial trust is established by the existing bootstrap/admission procedure on
+the deployment's trusted management network. Local test credentials are a
+convenience, not production identity verification. An mDNS announcement alone
+cannot establish trust. Before bootstrap replicas start, each selected member
+durably accepts the same member-to-host-key bindings alongside its fixed
+manifest. Subsequent admissions and revocations use committed Group-0 authority;
+participants retain the applicable bindings locally for recovery without quorum.
+Discovery cannot promote a pending admission or revive a removed member. Missing
+or corrupt trust records fail closed; a new address never triggers first-use
+trust or automatic key replacement for an existing identity.
+
+Recovery proceeds independently of Group-0 availability:
+
+1. mDNS/DNS-SD or a configured seed reveals a candidate's current management
+   endpoint. Its advertised UUIDs and node ID are untrusted lookup hints.
+2. The monitor selects an already accepted member binding and opens SSH to that
+   address with the expected host key, rather than trusting the IP's previous
+   occupant or accepting a new key. SSH proves possession of the private key.
+3. Through that authenticated connection, the monitor reads the peer's durable
+   discovery identity and cluster/bootstrap binding. All must match the accepted
+   member, and the verified reply supplies that member's current endpoints.
+4. The local transport uses the verified endpoints for the same replica IDs in
+   the existing groups. It does not change votes, membership, WAL, rack placement
+   or bootstrap identity. Endpoint replacement invalidates old connections and
+   applies to subsequent reconnects; mappings use node/replica identity, not a
+   global old-IP-to-new-IP substitution.
+5. Once quorum returns, normal authorized operations publish updated addresses
+   in Group 0. Local endpoint evidence never authorizes a management mutation.
+
+This permits all members to restart with changed IPs at once. Neither stable DNS
+names nor fixed IPs nor a complete peer-address list is required. Multicast must
+reach the selected management scope; across discovery boundaries, seed discovery
+remains necessary. Docker bridge DNS is optional and host networking uses the
+same monitor discovery and SSH verification path.
+
+A changed key, foreign cluster/bootstrap, unknown member or conflicting live
+claims is rejected and reported. An unverified advertisement cannot overwrite a
+verified endpoint. Duplicate authenticated live claimants for one identity stop
+automatic selection; a copied data volume is not a new node. Recovery has bounded
+handshake timeouts and retains the last accepted identity on failure. Key rotation,
+lost-identity replacement and removal remain explicit authority-controlled work;
+they are never inferred from address changes or discovery expiry.
+
+### 6.5 Voting replica admission
 
 Node admission grants hardware/service management access; it does not add a voter.
 Adding a replica uses `JoinGroupRequest` to import a snapshot from a confirmed
@@ -369,7 +425,7 @@ Generic join cannot bypass an accepted system bootstrap. Independent clusters
 remain separate: operators explicitly clean one cluster, wait for every node's
 cleanup, admit the released nodes to the retained cluster and add voting replicas.
 
-### 6.5 Accepted node setup and storage
+### 6.6 Accepted node setup and storage
 
 Node access review reads authenticated identity and inventory without installing
 peer authorization or granting admission. The browser keeps an initial password
