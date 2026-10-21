@@ -55,6 +55,9 @@ impl DomainMonitorDriver for ChunkKvRangeMonitorDriver {
         descriptor: &'a DomainMonitorDescriptor,
     ) -> DomainMonitorFuture<'a> {
         Box::pin(async move {
+            if catalog::refresh_endpoints(control, descriptor).await? {
+                return Ok(());
+            }
             plan_dead_owner_transfer(control, descriptor).await?;
             advance_dead_owner_exclusion(control, descriptor).await?;
             balance::plan(control, descriptor).await?;

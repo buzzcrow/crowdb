@@ -326,3 +326,36 @@ async fn cutover_rejects_unprepared_or_stale_transition() {
         Err(ChunkKvRangeCatalogError::TransitionConflict)
     );
 }
+
+#[tokio::test]
+async fn fixed_transfer_accepts_recovered_source_address_with_the_same_owner() {
+    let (store, _, mut pages) = seeded_catalog().await;
+    pages[0].generation = 2;
+    pages[0].entries[0].owner.rpc_endpoint = "192.0.2.101:7401".into();
+    pages[0].seal().unwrap();
+    let mut rebound = head(2, &pages);
+    rebound.previous_generation = Some(1);
+    rebound.seal().unwrap();
+    let publisher = ChunkKvRangeCatalogPublisher::new(store.clone());
+    publisher.publish(rebound, pages).await.unwrap();
+    let mut transition = prepared_transfer();
+    transition.phase = TransferPhase::TargetCatchingUp;
+    transition.catchup_proof = None;
+    transition.validate().unwrap();
+    let cutover = ChunkKvRangeCatalogCutover::new(store.clone());
+    assert_eq!(cutover.publish_transfer(&transition).await.unwrap(), 3);
+    let (_, current_pages) = publisher.load_current().await.unwrap().unwrap();
+    let entry = &current_pages[0].entries[0];
+    assert_eq!(entry.owner, transition.target);
+    assert_eq!(entry.owner_epoch, transition.target_epoch);
+    assert_eq!(entry.artifact, transition.target_artifact);
+    let mut moved = current_pages;
+    moved[0].generation = 4;
+    moved[0].entries[0].owner.rpc_endpoint = "192.0.2.102:7401".into();
+    moved[0].seal().unwrap();
+    let mut rebound = head(4, &moved);
+    rebound.previous_generation = Some(3);
+    rebound.seal().unwrap();
+    publisher.publish(rebound, moved).await.unwrap();
+    assert_eq!(cutover.publish_transfer(&transition).await.unwrap(), 4);
+}

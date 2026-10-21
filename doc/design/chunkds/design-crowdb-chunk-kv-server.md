@@ -42,6 +42,15 @@ immutable snapshot when a new head or page is absent, corrupt, incomplete, or
 regressing. Unchanged pages may be referenced by later heads through their
 original page generation.
 
+An owner's connection address may change without transferring its partitions.
+Under the Group-0 leader fence, a fresh instance registration advertising the
+same hosted partition and owner epoch may publish an address-only successor.
+The partition, range, owner instance ID, epoch, tree, stream and transition
+remain unchanged, and old pages remain immutable. A recovering owner may update
+its route, but receives no serving authority until normal recovery and grant
+checks succeed. Fixed transition comparisons use owner instance identity rather
+than requiring its historical connection address.
+
 ## 2. Domain Monitors
 
 `EnsureDomainMonitor` carries a persisted descriptor with domain and registry

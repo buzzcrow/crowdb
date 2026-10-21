@@ -14,6 +14,9 @@ use crowdb_protocol::key::{ChunkKvRangeCatalogHeadKey, ChunkKvRangeCatalogPageKe
 
 use crate::group0_control_plane::Group0ControlPlane;
 
+mod endpoints;
+pub(super) use endpoints::refresh as refresh_endpoints;
+
 pub struct VersionedRangeCatalog {
     pub head: ChunkKvRangeCatalogHead,
     pub pages: Vec<ChunkKvRangeCatalogPage>,
@@ -99,7 +102,7 @@ pub async fn publish_transfer(
     )?;
     let source = |entry: &ChunkKvRangeCatalogEntry| {
         let source_serving = transfer_source_matches(entry, transition);
-        let target_catching_up = entry.owner == transition.target
+        let target_catching_up = entry.owner.instance_id == transition.target.instance_id
             && entry.owner_epoch == transition.target_epoch
             && entry.state == ChunkKvRangeCatalogPartitionState::TargetCatchingUp
             && entry.artifact == transition.target_artifact
@@ -119,7 +122,7 @@ pub async fn publish_transfer(
 fn transfer_source_matches(entry: &ChunkKvRangeCatalogEntry, transition: &TransferTransition) -> bool {
     entry.partition_id == transition.partition_id
         && entry.range == transition.range
-        && entry.owner == transition.source
+        && entry.owner.instance_id == transition.source.instance_id
         && entry.owner_epoch == transition.source_epoch
         && entry.state == ChunkKvRangeCatalogPartitionState::Serving
         && entry.artifact == transition.artifact
@@ -329,7 +332,7 @@ pub async fn publish_split(
     let parent = |entry: &ChunkKvRangeCatalogEntry| {
         entry.partition_id == transition.parent_id
             && entry.range == transition.parent_range
-            && entry.owner == transition.parent_owner
+            && entry.owner.instance_id == transition.parent_owner.instance_id
             && entry.owner_epoch == transition.parent_epoch
             && entry.state == ChunkKvRangeCatalogPartitionState::Serving
             && entry.artifact == transition.parent_artifact
@@ -536,7 +539,12 @@ fn published_assignment_matches(
     current: &ChunkKvRangeCatalogEntry,
     desired: &ChunkKvRangeCatalogEntry,
 ) -> bool {
-    if current == desired {
+    // Connections may move while ownership and the fixed transition stay intact.
+    let mut current = current.clone();
+    if current.owner.instance_id == desired.owner.instance_id {
+        current.owner.rpc_endpoint.clone_from(&desired.owner.rpc_endpoint);
+    }
+    if current == *desired {
         return true;
     }
     // Materialization may advance the catalog after publication but before its
@@ -549,7 +557,7 @@ fn published_assignment_matches(
     {
         return false;
     }
-    let mut materialized = current.clone();
+    let mut materialized = current;
     materialized
         .artifact
         .tail_overlay

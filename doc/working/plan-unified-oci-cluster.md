@@ -898,6 +898,38 @@ do not mark unexecuted acceptance passed.
   the cluster target API rather than immutable bootstrap addresses. Packaged
   changed-IP acceptance remains unverified until the rebuilt image passes.
 
+- Rebuilt packaged fixture uses commit `9e7d4ab2`, OCI digest
+  `sha256:71c9edd0d5607315a82cfe7306d7c90d8844ea6c272084f82e73404bcf7d4c7e`,
+  source tree `33820a07fe338b97d22e857d855097cfcaaa28de` and runtime SHA-256
+  `7894c8e38dc8d4740c60b15262147f495de791ea1f3ffc3f0131d246a9310f0e`.
+  Archive: `target/crowdb-member-recovery-b.oci.tar`; Docker image:
+  `crowdb-node:member-recovery-b`. Independent start order 3/1/2, fixture
+  `crowdb-recovery-b-three-{1,2,3}`, no executable mounts or peer list. The original
+  failing fixture and its data volumes remain intact. Fresh/restart verification
+  is running; this image identity alone is not acceptance evidence.
+
+- Packaged changed-IP attempt 2 (`9e7d4ab2`) restored linearizable Group-0
+  authority, committed every node's new address and passed the 120-second actual
+  Access listener check with unchanged UUIDs, credentials, setup/storage inputs
+  and trust. It still failed the first retained S3 read with `RemoteDisconnected`.
+  Thus neither the listener check nor this image is accepted as complete recovery.
+  Diagnosis: `/api/chunk-kv/catalog` generation 6 still routes instance 1 to its
+  original `.3` and instance 2 to its original `.2`, while their live observations
+  correctly report `.2` and `.4`. Publish address-only catalog successors through
+  the existing leader-fenced Group-0 monitor, requiring a fresh instance heartbeat
+  with the same hosted partition and epoch, even while recovery is pending;
+  this changes routes, not serving authority. Keep immutable old pages and every
+  ownership/data/transition input; comparison with fixed transition owners uses
+  instance identity rather than an obsolete connection address. Chunk-KV startup
+  also reported `tree read failed: Internal`; keep that observation for further
+  diagnosis if current catalog routes do not restore real retained I/O.
+- Address-only catalog publication passes all 14 domain-monitor tests, six
+  catalog persistence tests, four cutover cases (including changed-source address
+  and changed-target retry), three split recovery cases and two transfer-storage
+  cases. Affected all-target clippy and Rust formatting pass. The initial new
+  fixture accidentally reused a helper that always asserts split creation; it
+  now creates the intended one-partition control-plane fixture directly.
+
 ## Consolidated file ownership
 
 - Typed policy/status: `lib/crowdb-protocol/src/mgmt/` and `tests/`.

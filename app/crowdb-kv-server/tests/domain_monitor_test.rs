@@ -31,6 +31,8 @@ use crowdb_protocol::key::{
 
 #[path = "common/catalog_publication.rs"]
 mod catalog_publication;
+#[path = "common/endpoint_publication.rs"]
+mod endpoint_publication;
 
 struct CountingDriver {
     ticks: Arc<AtomicUsize>,

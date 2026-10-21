@@ -49,7 +49,7 @@ impl ChunkKvRangeCatalogCutover {
             .await?
             .ok_or(ChunkKvRangeCatalogError::TransitionConflict)?;
         let desired = transfer_entry(transition);
-        if exact_entries(&pages, |entry| entry == &desired) == 1 {
+        if exact_entries(&pages, |entry| same_assignment(entry, &desired)) == 1 {
             reject_reused_transition_id(&pages, transition.transition_id, 1)?;
             return Ok(head.generation);
         }
@@ -59,12 +59,12 @@ impl ChunkKvRangeCatalogCutover {
         );
         reject_reused_transition_id(&pages, transition.transition_id, usize::from(advancing))?;
         let source = |entry: &ChunkKvRangeCatalogEntry| {
-            let source_serving = entry.owner == transition.source
+            let source_serving = entry.owner.instance_id == transition.source.instance_id
                 && entry.owner_epoch == transition.source_epoch
                 && entry.state == ChunkKvRangeCatalogPartitionState::Serving
                 && entry.artifact == transition.artifact
                 && entry.transition_id.is_none();
-            let target_catching_up = entry.owner == transition.target
+            let target_catching_up = entry.owner.instance_id == transition.target.instance_id
                 && entry.owner_epoch == transition.target_epoch
                 && entry.state == ChunkKvRangeCatalogPartitionState::TargetCatchingUp
                 && entry.artifact == transition.target_artifact
@@ -106,7 +106,7 @@ impl ChunkKvRangeCatalogCutover {
         let desired = split_entries(transition);
         if desired
             .iter()
-            .all(|wanted| exact_entries(&pages, |entry| entry == wanted) == 1)
+            .all(|wanted| exact_entries(&pages, |entry| same_assignment(entry, wanted)) == 1)
         {
             reject_reused_transition_id(&pages, transition.transition_id, 2)?;
             return Ok(head.generation);
@@ -115,7 +115,7 @@ impl ChunkKvRangeCatalogCutover {
         let parent = |entry: &ChunkKvRangeCatalogEntry| {
             entry.partition_id == transition.parent_id
                 && entry.range == transition.parent_range
-                && entry.owner == transition.parent_owner
+                && entry.owner.instance_id == transition.parent_owner.instance_id
                 && entry.owner_epoch == transition.parent_epoch
                 && entry.state == ChunkKvRangeCatalogPartitionState::Serving
                 && entry.artifact == transition.parent_artifact
@@ -126,6 +126,15 @@ impl ChunkKvRangeCatalogCutover {
         self.publisher.publish(next_head, next_pages).await?;
         Ok(generation)
     }
+}
+
+fn same_assignment(current: &ChunkKvRangeCatalogEntry, expected: &ChunkKvRangeCatalogEntry) -> bool {
+    let mut current = current.clone();
+    current
+        .owner
+        .rpc_endpoint
+        .clone_from(&expected.owner.rpc_endpoint);
+    current == *expected
 }
 
 fn transfer_entry(transition: &TransferTransition) -> ChunkKvRangeCatalogEntry {
