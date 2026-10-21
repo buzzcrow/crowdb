@@ -35,6 +35,11 @@ esac
 
 CHECK = """#!/bin/sh
 set -eu
+if test "$CROWDB_TEST_CORRUPT" = 1; then
+    mkdir -p /opt/crowdb/data/ssh
+    touch /opt/crowdb/data/ssh/local-admission-password
+    chmod 600 /opt/crowdb/data/ssh/local-admission-password
+fi
 set +e
 /bin/sh /entrypoint-under-test
 result=$?
@@ -44,6 +49,10 @@ if test "$CROWDB_TEST_REJECT" = 1; then
     test ! -e /opt/crowdb/data/ssh
     test ! -e /opt/crowdb/data/disks
     test ! -e /opt/crowdb/data/node-policy.json
+elif test "$CROWDB_TEST_CORRUPT" = 1; then
+    test "$result" != 0
+    test ! -s /opt/crowdb/data/ssh/local-admission-password
+    test ! -e /opt/crowdb/data/ssh/id_ed25519
 elif test "$CROWDB_TEST_MODE" = production && test "$CROWDB_TEST_PASSWORD" = 0; then
     test "$result" != 0
     test ! -e /opt/crowdb/data/ssh/id_ed25519
@@ -67,7 +76,7 @@ def invoke(*arguments):
     return subprocess.run(["docker", *arguments], text=True, capture_output=True, timeout=30)
 
 
-def run_case(image, entrypoint, mode, supplied, reject):
+def run_case(image, entrypoint, mode, supplied, reject, corrupt=False):
     name = "crowdb-entrypoint-policy-" + uuid.uuid4().hex[:12]
     secret = secrets.token_urlsafe(24) if supplied else "crowdb"
     with tempfile.TemporaryDirectory(prefix="crowdb-entrypoint-policy-") as directory:
@@ -89,7 +98,8 @@ def run_case(image, entrypoint, mode, supplied, reject):
                                (password, "/run/test-password")):
             arguments += ["--mount", f"type=bind,source={source},target={target},readonly"]
         for key, value in (("CROWDB_TEST_MODE", mode), ("CROWDB_TEST_REJECT", int(reject)),
-                           ("CROWDB_TEST_PASSWORD", int(supplied))):
+                           ("CROWDB_TEST_PASSWORD", int(supplied)),
+                           ("CROWDB_TEST_CORRUPT", int(corrupt))):
             arguments += ["--env", f"{key}={value}"]
         if supplied:
             arguments += ["--env", "CROWDB_SSH_PASSWORD_FILE=/run/test-password"]
@@ -100,7 +110,7 @@ def run_case(image, entrypoint, mode, supplied, reject):
                 raise RuntimeError(f"case mode={mode} supplied={supplied} reject={reject}:\n{output}")
             if secret != "crowdb" and secret in result.stdout + result.stderr:
                 raise RuntimeError("entrypoint exposed a private SSH credential")
-            print(f"PASS entrypoint mode={mode} supplied={supplied} reject={reject}", flush=True)
+            print(f"PASS entrypoint mode={mode} supplied={supplied} reject={reject} corrupt={corrupt}", flush=True)
         finally:
             inspected = invoke("container", "inspect", name)
             if inspected.returncode == 0:
@@ -120,6 +130,7 @@ def main():
                                    ("local", True, False), ("production", False, False),
                                    ("production", True, False)):
         run_case(args.image, entrypoint, mode, supplied, reject)
+    run_case(args.image, entrypoint, "local", False, False, corrupt=True)
     print("Entrypoint boundary checks passed; this does not certify application startup or image content.", flush=True)
 
 

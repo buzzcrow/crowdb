@@ -96,9 +96,16 @@ if test "$mode" = manual && test "$accepted_mode" = local; then
         echo 'Local admission credential must be a regular private file.' >&2
         exit 1
     fi
+    if test -f "$local_password"; then
+        test -s "$local_password" && test "$(stat -c %s "$local_password")" -le 4096 &&
+            test "$(stat -c %a "$local_password")" = 600 || {
+                echo 'Retained local admission credential is empty, oversized or not private.' >&2
+                exit 1
+            }
+    fi
     if test -z "${CROWDB_SSH_PASSWORD:-}" && test -f "$local_password"; then
-        test "$(stat -c %a "$local_password")" = 600 || { echo 'Local admission credential must have mode 0600.' >&2; exit 1; }
         CROWDB_SSH_PASSWORD=$(cat "$local_password")
+        test -n "$CROWDB_SSH_PASSWORD" || { echo 'Retained local admission credential is invalid.' >&2; exit 1; }
     fi
     CROWDB_SSH_PASSWORD=${CROWDB_SSH_PASSWORD:-crowdb}
     password_tmp=$(mktemp /opt/crowdb/data/ssh/.local-admission.XXXXXX)
