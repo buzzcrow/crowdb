@@ -181,3 +181,22 @@ fn validated_identity_conflict_is_terminal_even_before_first_bootstrap() {
     input.dependencies.push(conflict);
     assert_eq!(reduce(input, 1000).phase, ClusterPhase::Failed);
 }
+
+#[test]
+fn missing_execution_is_not_reported_as_a_superseded_operation() {
+    let mut input = observation();
+    input.dependencies[4].operation_id = None;
+    input.dependencies[4].current_operation_id = Some("current-start".into());
+    let report = reduce(input, 1000);
+    assert_ne!(report.phase, ClusterPhase::Ready);
+    let reason = report
+        .reasons
+        .iter()
+        .find(|reason| reason.code == "operation-observation-missing")
+        .unwrap();
+    assert!(reason.detail.contains("current-start"));
+    assert!(!report
+        .reasons
+        .iter()
+        .any(|reason| reason.code == "operation-superseded"));
+}

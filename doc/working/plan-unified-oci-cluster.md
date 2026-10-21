@@ -1393,7 +1393,7 @@ do not mark unexecuted acceptance passed.
 - [x] **Protocol observation**: use the existing SigV4 signer and retained S3
   client credentials for bounded, non-mutating ListBuckets; preserve protocol
   status and causes instead of replacing them with a generic aggregate error.
-- [~] **Retained-state verification**: inspect the same retained J volumes and
+- [ ] **Retained-state verification**: inspect the same retained J volumes and
   current range ownership/recovery; compare aggregate status with actual protocol
   I/O. Every fixture must remove its containers and owned bridges in finally.
 
@@ -1435,3 +1435,51 @@ do not mark unexecuted acceptance passed.
   three monitor observation cases pass. Earlier Access proxy suite (ten cases)
   also passes. All-target clippy for protocol/shared/Web/CLI/Chunk-KV/monitor
   and affected Rust formatting pass. Packaged readiness remains unverified.
+
+- Packaged image K built from `faf512a0d5f1aac064a7e6204db3054bbb96f95a`,
+  source tree `749f35f7bd4b691d7d95c1e8f9011868f2f27b87`, OCI digest
+  `sha256:39c4bcc1063baf75c549deb9690db6814ac28370c690f785deb1d3c02b5535f6`,
+  Docker config ID
+  `sha256:034ace52fedc69b502cc527ca815d7052ceb589a4e7f9f48affa44d4e4f609d5`.
+  New one-node UUID `7cb61b9d-1aa5-4b69-9072-ef91c154d0c6` and three-node
+  UUID `592ef264-7732-4553-acb8-b87ac7b3c2aa` both pass actual aggregate
+  fresh/whole-stop/restart checks, S3 128-byte/2-MiB reads and writes,
+  Iceberg namespace checks and 2-MiB Dataset checksum retention on every node.
+  This pipeline does not include a PyIceberg row commit/read. Finally clean
+  deleted only these successful disposable volumes/receipts and owned bridges.
+  Private evidence is under `.crowdb-runtime/artifacts/status-{1,3}-k/`.
+- K replacement on the retained J volumes confirms all expected storage layers
+  Ready, but the complete check fails at 180 seconds: singleton range recovery
+  never installs a catalog; three-node ChunkDB/Access include exhausted prior
+  service attempts. Owned ranges that recover report their exact epochs and
+  active writers. Preserve `.crowdb-runtime/artifacts/status-{1,3}-k-retained/`.
+  No retained volume, operation counter or identity was reset. The earlier
+  inspector used loopback for an IP-bound Chunk-KV listener, so its connection
+  failure/deadline alone was not a valid service-readiness assertion.
+- Confirmed persisted data-loss evidence: a read-only ordinary-group lookup of
+  singleton chunk `0301a15e921cd349db9800ac8096c550` reports Deleted, no strips,
+  no sealed timestamp, and acknowledged cursor 131174. The old finalizer has a
+  reproducible unsafe path: zero readable frames causes deletion despite that
+  acknowledged cursor. A focused test using normal allocation/cursor advancement
+  failed with that exact destructive completion. Retain the raw record under
+  `.crowdb-runtime/artifacts/deleted-tree-chunks-k/singleton-record.json`.
+- [x] **Finalizer acknowledged-data retention**: reject deletion or truncation
+  whenever the scan boundary is below the persisted acknowledged cursor; keep
+  layout and report both cursors and chunk ID. Verify empty cleanup, complete
+  readable frames and unreadable acknowledged data. This prevents future
+  destructive finalization; it cannot reconstruct already freed data. The
+  original cause of the old unreadable frame has not yet been isolated.
+- [x] **Unavailable observation diagnostics**: distinguish absent execution
+  observations from genuinely superseded operations and identify local monitor
+  observation failure explicitly instead of reporting only missing service facts.
+- Finalizer regression is now green for an unreadable acknowledged chunk and a
+  readable PageIndex frame through the DiskIO protocol adapter. Existing empty
+  cleanup, deadline-index and request-age cases also pass. The test DiskIO stub
+  now serves byte ranges within written blocks so header/body scans exercise
+  its real read contract. Ten reducer and six Web target/observation cases pass;
+  all-target affected clippy and formatting pass. The packaged K image predates
+  this finalizer guard and the last missing-observation diagnostic refinement.
+- The full affected ChunkDB pinned component suite also passes all 38 cases
+  after the shared DiskIO stub's byte-range correction. Docker inventory again
+  has no running fixture containers and only the default bridge/host/none
+  networks. Original failed J volumes and immutable image receipts remain.

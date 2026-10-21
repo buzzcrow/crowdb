@@ -219,6 +219,11 @@ async fn cluster_status_is_observational_when_the_monitor_control_socket_is_unav
     let report: ClusterStatus = serde_json::from_slice(&body).unwrap();
     assert_ne!(report.phase, ClusterPhase::Ready);
     assert!(report
+        .reasons
+        .iter()
+        .any(|reason| reason.code == "node-observation-unavailable"
+            && reason.detail.contains("current execution and protocol health")));
+    assert!(report
         .observation
         .dependencies
         .iter()

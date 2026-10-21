@@ -69,10 +69,29 @@ fn collect_evidence(observation: &ClusterObservation, now_unix_ms: u64) -> Evide
     let mut identities = std::collections::BTreeSet::new();
     for fact in &observation.dependencies {
         if fact.operation_id != fact.current_operation_id {
+            let (code, explanation) = match (&fact.operation_id, &fact.current_operation_id) {
+                (None, Some(_)) => (
+                    "operation-observation-missing",
+                    "No executed-operation observation is available",
+                ),
+                (Some(_), None) => (
+                    "current-operation-unavailable",
+                    "Current committed operation is unavailable",
+                ),
+                _ => (
+                    "operation-superseded",
+                    "Historical operation does not describe current readiness",
+                ),
+            };
             evidence.reasons.push(reason(
                 &fact.id,
-                "operation-superseded",
-                "Historical operation does not describe current readiness",
+                code,
+                &format!(
+                    "{explanation}; observed operation {}; current operation {}; {}",
+                    fact.operation_id.as_deref().unwrap_or("none"),
+                    fact.current_operation_id.as_deref().unwrap_or("none"),
+                    fact.detail
+                ),
             ));
             let replacement = observation.dependencies.iter().any(|current| {
                 current.id == fact.id

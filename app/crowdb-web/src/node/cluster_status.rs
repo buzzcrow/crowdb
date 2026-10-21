@@ -13,7 +13,10 @@ use crowdb_console_shared::{
     ConsoleConfig,
 };
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
-use crowdb_protocol::mgmt::{cluster::ClusterStatus, node::observation::NodeRuntimeObservation};
+use crowdb_protocol::mgmt::{
+    cluster::{ClusterStatus, DependencyKind, DependencyObservation, DependencyState, ReadinessReason},
+    node::observation::NodeRuntimeObservation,
+};
 use std::{
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -25,9 +28,9 @@ pub(crate) async fn read(State(state): State<AppState>) -> Result<Json<ClusterSt
     if state.node_monitor_url.is_none() {
         return Err(err_409("Cluster observation requires an owning node monitor"));
     }
-    let local = match super::observation::read(State(state.clone())).await {
-        Ok(Json(local)) => local,
-        Err(error) if error.0 == StatusCode::BAD_GATEWAY => retained(&state)?,
+    let (local, failure) = match super::observation::read(State(state.clone())).await {
+        Ok(Json(local)) => (local, None),
+        Err(error) if error.0 == StatusCode::BAD_GATEWAY => (retained(&state)?, Some(error.1 .0.error)),
         Err(error) => return Err(error),
     };
     let seeds = local
@@ -36,10 +39,36 @@ pub(crate) async fn read(State(state): State<AppState>) -> Result<Json<ClusterSt
         .map_or_else(Vec::new, |binding| binding.management_seeds.clone());
     let client = Arc::new(CrowdbKvClient::new(ClientConfig::new(seeds.clone())));
     let context = OpContext::with_shared_client_preserving_hint(client, &seeds, ConsoleConfig::default());
-    readiness::collect(&context, local)
+    let id = local.binding.as_ref().map_or_else(
+        || "local-node/observation".into(),
+        |binding| format!("node/{}/observation", binding.node_id),
+    );
+    let mut report = readiness::collect(&context, local)
         .await
-        .map(Json)
-        .map_err(|_| err_409("Cluster observation identity or policy is invalid"))
+        .map_err(|_| err_409("Cluster observation identity or policy is invalid"))?;
+    if let Some(failure) = failure {
+        let detail = format!("Local monitor/runtime observation failed: {failure}; retained identity is available, but current execution and protocol health could not be observed");
+        report.observation.dependencies.push(DependencyObservation {
+            id: id.clone(),
+            kind: DependencyKind::Member,
+            required: true,
+            state: DependencyState::Unknown,
+            detail: detail.clone(),
+            observed_at_unix_ms: report.observation.observed_at_unix_ms,
+            max_age_ms: 3000,
+            revision: None,
+            operation_id: None,
+            current_operation_id: None,
+            reason: Some(ReadinessReason {
+                dependency: id,
+                code: "node-observation-unavailable".into(),
+                detail,
+            }),
+        });
+        let observed_at = report.observation.observed_at_unix_ms;
+        report = readiness::reduce(report.observation, observed_at);
+    }
+    Ok(Json(report))
 }
 
 fn retained(state: &AppState) -> Result<NodeRuntimeObservation, Failure> {
