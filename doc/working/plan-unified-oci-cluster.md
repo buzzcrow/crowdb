@@ -989,6 +989,16 @@ do not mark unexecuted acceptance passed.
   checks. Offline roots, changed SSH keys, missing/corrupt trust and retirement
   remain rejected. No handshake or freshness deadline was increased.
 
+- Fifth fixture: commit `4f18d012`, OCI digest
+  `sha256:a51dcb1da0553386653c879dda7c0920f3985af2fac61adbf640c14b93d8f5ec`,
+  source tree `849a30e9189ebaf6d64fb05653c21493eafc7431`, runtime SHA-256
+  `503a355e789c78ba3a5bbd64541f1d23745d3dc810300f9c85ddcd66bce6fb0a`.
+  Archive `target/crowdb-member-recovery-e.oci.tar`, image
+  `crowdb-node:member-recovery-e`, fixture `crowdb-recovery-e-three-{1,2,3}`.
+  Same accepted-operation identity, fresh S3/Dataset/PyIceberg I/O and retained
+  changed-order restart pipeline, with unchanged deadlines. Running; no
+  acceptance result is claimed yet. Preserve preceding failed fixtures.
+
 ## Consolidated file ownership
 
 - Typed policy/status: `lib/crowdb-protocol/src/mgmt/` and `tests/`.
@@ -1007,3 +1017,82 @@ do not mark unexecuted acceptance passed.
 - Recovery-tenure and target-address fixes pass all 123 KV group tests, all five
   consensus RPC tests, all five cluster-target tests, affected all-target clippy
   with `test-util`, formatting and whitespace checks.
+
+## Blocked
+
+- The packaged automatic-formation / retained-IP recovery pipeline has failed
+  after five root-cause-driven attempts. Stop requirement execution here under
+  the implementation skill's retry boundary. Do not mark T15 or A32 complete,
+  reset test data, increase request/readiness bounds or start a sixth fixture
+  without the user's direction. There is no new product-design decision yet;
+  the needed direction is whether to continue the storage-bootstrap investigation.
+- Committed fixes and focused gates:
+  - `9e7d4ab2`: uncertain-leader reelection and current cluster target addresses;
+    123 KV group, five consensus RPC and five target API cases pass.
+  - `bebf5d14`: address-only Chunk-KV catalog successors and fixed-transition
+    owner identity matching; 14 domain-monitor, six catalog, four cutover,
+    three split recovery and two transfer-storage cases pass.
+  - `71be016a`: incomplete discovery cannot supersede unchanged fresh service
+    contacts. Six member recovery, three initialization and twelve setup cases
+    pass at that commit.
+  - `4f18d012`: live identity reads bypass serialized lifecycle IPC. Seven
+    member recovery, three initialization and twelve setup cases pass, including
+    a real monitor CLI invocation with an unavailable lifecycle socket.
+  - Applicable all-target clippy, Rust formatting and whitespace gates pass.
+    The user's original nine dirty files were preserved outside these commits.
+- Packaged attempts, all without executable mounts or peer lists:
+  - Attempt 1, `224e6dfd`, `crowdb-recovery-three-*`: initial protocol I/O passes;
+    whole restart changes all IPs but actual Access readiness fails at 120 seconds.
+    Authenticated routes recover; an uncertain conditional proposal permanently
+    closes leader reads while heartbeats continue. Fixed by `9e7d4ab2`.
+  - Attempt 2, `9e7d4ab2`, `crowdb-recovery-b-three-*`: fresh complete protocol
+    I/O passes. Whole restart changes every IP, preserves node/cluster/storage/
+    credential/trust identity and restores committed addresses and target API.
+    First retained S3 read fails with `RemoteDisconnected`; catalog owner
+    endpoints still reference old IPs. Fixed by `bebf5d14`; native tree Internal
+    errors also appeared, so retained data acceptance is still unproven.
+  - Attempt 3, `bebf5d14`, `crowdb-recovery-c-three-*`: fresh 128-byte and 2-MiB
+    S3 reads pass on all members. Initial Iceberg namespace POST times out at
+    the original 15 seconds before any restart. Automatic seed shrinking
+    supersedes fresh DiskDB/DiskIO/ChunkDB/Chunk-KV service operations despite
+    unchanged IPs and disrupts those services. Fixed by `71be016a`.
+  - Attempt 4, `71be016a`, `crowdb-recovery-d-three-*`: fresh setup exceeds the
+    unchanged 180-second bound. Serialized service readiness waits suppress SSH
+    RecoveryIdentity replies; only self proofs remain and all native peer routes
+    become blocked. Independent monitor liveness responds in 0.141 seconds but
+    lifecycle identity control exceeds a five-second diagnostic bound. Fixed
+    by `4f18d012`, retaining all trust and expiry checks.
+  - Attempt 5, `4f18d012`, `crowdb-recovery-e-three-*`: all three identity commands
+    respond in 121–135 ms during startup and Group-0 target reads remain available.
+    Fresh setup fails on node 1 / container 2: Chunk-KV exits with status 1 and
+    exhausts its five durable service-start attempts. The pipeline stops before
+    fresh protocol I/O and before any whole-cluster restart; no A32 acceptance.
+- Exact final error:
+  - `failed to bootstrap initial chunk KV partition`
+  - `failed to configure chunk stream: internal stream invariant failed: stream
+    chunk IO failed: chunk allocation failed: internal error: allocation failed:
+    diskdb allocate failed for disk_group 1: diskdb has no space: no space available`
+  - Earlier in the same startup: `diskdb server unreachable: no endpoint for
+    disk_group 1: no endpoint cached for disk_group 1`.
+  - Setup: `service startup exhausted its restart budget; inspect service logs
+    and use explicit service controls`.
+- Reproduction pipeline (each command is run through Pixi):
+  - `python /tmp/crowdb-recovery-e-start.py three`
+  - `python /tmp/crowdb-unified-watch.py crowdb-recovery-e-three-1
+    crowdb-recovery-e-three-2 crowdb-recovery-e-three-3` — fails as above.
+  - Subsequent accepted-operation, S3, Dataset, PyIceberg, changed-order restart
+    and retained-I/O steps were not reached and must not be reported as passing.
+  - Exact archive and image receipt are recorded above. All five fixture sets,
+    their volumes and immutable images remain intact.
+- Private durable diagnostic artifacts:
+  `.crowdb-runtime/artifacts/member-recovery-e/` contains all final fixture
+  service logs, accepted setup/binding, endpoint and replica ownership evidence,
+  container/image metadata and copies of every reproduction script. Directory
+  mode is 0700 and files are 0600. No server/client credentials were printed.
+- Next bounded investigation, if authorized: follow the first unavailable DiskDB
+  route into initial Chunk-KV root/stream allocation and its durable restart
+  behavior. Determine whether logical capacity, leaked or repeated bootstrap
+  reservations, or endpoint publication ordering explains the later NoSpace.
+  These are hypotheses, not a confirmed allocator root cause. Preserve existing
+  volumes and use the fixed operation identity; do not mask it with a larger
+  file, another retry or a longer readiness deadline.
