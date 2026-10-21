@@ -253,7 +253,7 @@ removal until the complete direct-container path passes A01/A03/A25.
 
 ## Phase 3: observational status and runtime operations
 
-- [~] **T16 — Collect current dependency evidence**: combine committed topology,
+- [ ] **T16 — Collect current dependency evidence**: combine committed topology,
   setup operations, current service intent, live ownership/capacity and each
   protocol readiness probe. Timestamp facts and bound endpoint requests; do not
   treat historical Ready/Warning or a PID as health. Verify cluster identity
@@ -1305,3 +1305,76 @@ do not mark unexecuted acceptance passed.
   persisted node identities before/after; node image and startup policy unchanged.
   J source `ac56e25f2d563a453b81575aeea69d4cf45c788c`, OCI
   `sha256:60ba2bc71ba3190eb50f44f482b884def4e035cc775ca2c0edf1c17a60a29df0`.
+
+## Blocked
+
+- The resumed packaged verification has now failed five root-cause-driven
+  attempts. Stop implementation and packaged retries under the requirement
+  skill until the user explicitly resumes. There is no new product-design
+  choice; permission to continue investigation is the requested direction.
+- Resumed failure sequence (positive intermediate gates do not erase evidence):
+  1. F singleton clean/recreate: local KV registration used only old seeds;
+     fixed by rediscovering current local management authority.
+  2. G singleton retained S3: recovered split proof compared address-bearing
+     owner descriptors; fixed by stable instance identity comparisons.
+  3. H Compose whole restart: dependent Access processes exhausted their launch
+     budgets while remote DiskIO owners were recovering; fixed by dependency
+     gates, verified by the complete Compose I retained I/O pipeline.
+  4. J actual aggregate one/three-node check: the host client rejected first
+     acceptance of a previously unbound UUID; fixed by a separate accepted UUID
+     anchor, with six real CLI process regression cases passing.
+  5. Resume the exact J data volumes using the corrected host client and the
+     unchanged image. Both checks form valid unhealthy reports and exit 1 after
+     their original 180-second bound. No readiness/data assertions were weakened.
+- Exact failed commands, each through Pixi:
+  - `python /tmp/crowdb-status-j-resume.py 1`
+  - `python /tmp/crowdb-status-j-resume.py 3`
+  - Internally these run `target/debug/crowdb-cli --management-endpoint
+    http://127.0.0.1:61300 cluster check --wait 180 --json`, or the three origins
+    on ports 62300/62310/62320. The failing case is `resumed-initial`, exit 1.
+- Observed failures:
+  - S3: `required-protocol-not-ready` on every member. A direct read-only probe
+    confirms `GET :9091/_crowdb/health/ready` returns HTTP 403, while the actual
+    Access health listener on 9094 reports ready. The current Web probe assumes
+    an unauthenticated JSON health surface on the S3 data listener; that is not
+    this listener's contract. Use an authenticated, non-mutating S3 request with
+    the retained client credentials; do not bypass S3 authentication or count
+    the separate health listener as proof of the S3 listener.
+  - Storage: `storage-placement-owner-capacity-not-ready` for every expected
+    initial disk group. The specific failing hierarchy/binding/lease/capacity
+    predicate has not yet been isolated. Read the actual authoritative records
+    and compare each predicate; do not mark absent evidence ready.
+  - Three nodes additionally retain `node/3/service/chunk-kv-3` as not ready.
+    Reconcile the executed operation, current HTTP readiness, catalog assignment
+    and writer lifecycle before deciding whether recovery or observation is wrong.
+  - The singleton final report also contains `management-origin-unavailable`
+    at the deadline. This is typed origin-loss evidence, not proof that its
+    native Group-0 quorum was permanently lost.
+- Retained identities: singleton UUID `4322f9a8-5497-4c0c-9f9b-6d7111270b2e`;
+  three-node UUID `d9fc5287-e552-4b30-957d-a20ea160dd44`. Before resuming, read
+  each retained volume's node identity through a read-only, network-none helper;
+  no volume was reset or reformatted. The pipeline did not reach new S3/Dataset
+  writes, retained-I/O checks or final successful disposable-volume deletion.
+- Finally teardown removed all four containers and both owned bridges. Docker
+  again lists only bridge/host/none. Data volumes, private launch receipts and
+  the immutable J image remain available. Complete reports, stderr, service
+  logs, image receipt and reproduction scripts are private under
+  `.crowdb-runtime/artifacts/status-1-j-resumed/` and
+  `.crowdb-runtime/artifacts/status-3-j-resumed/`; initial failure evidence is
+  retained separately under the corresponding paths without `-resumed`.
+- Finished coherent changes are committed through `0d1b8abf`. The independent
+  Docker shortcuts, safe bridge cleanup, Compose I retained data recovery,
+  dependency waiting, typed status/check and stricter Chunk-KV readiness remain
+  in the tree. They do not constitute completion of this requirement.
+- Unfinished common Docker lifecycle work is preserved in Git stash
+  `Preserve unfinished common Docker lifecycle implementation` (currently
+  `stash@{0}`): only this work's CLI Cargo change and three unreferenced private
+  local runtime/state modules. It is not wired into public commands, compiled
+  or claimed verified. Inspect the stash identity before applying on resume.
+  The user's pre-existing `dev-container.sh` and ecosystem README modifications
+  remain untouched in the working tree.
+- After explicit resumption: fix the S3 probe and isolate storage/Chunk-KV
+  readiness against retained J data; then finish common lifecycle/CLI workload
+  migration, admitted-member trust extension, native containerd host acceptance,
+  registered E2E and documentation cleanup. Do not remove this requirement or
+  its backlog entry until all acceptance criteria are met.

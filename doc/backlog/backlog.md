@@ -17,6 +17,8 @@ live in the linked document; implementation follows
   direct Docker one/three-container startup, Docker/containerd runtime adapters,
   namespace-scoped CLI/Pixi lifecycle, cluster readiness and deployment cleanup.
   **Area:** deployment / monitor / CLI / console. **Complexity:** High.
+  **Status:** blocked after five resumed packaged verification failures;
+  retained diagnostics and the continuation boundary are recorded in the working plan.
   Kubernetes scheduling remains future work; the node contract stays portable.
 
 ## Dataset and access
