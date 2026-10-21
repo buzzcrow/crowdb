@@ -37,6 +37,11 @@ enum Command {
         #[command(flatten)]
         args: node_args::NodeRunArgs,
     },
+    /// Seal startup policy before the container creates its SSH identity.
+    AcceptPolicy {
+        #[command(flatten)]
+        args: node_args::NodeRunArgs,
+    },
     Control {
         #[arg(long, default_value = "/opt/crowdb/run/node-control.sock")]
         socket: PathBuf,
@@ -125,6 +130,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             .await?;
         }
         Command::Run { args } => node_args::run(args).await?,
+        Command::AcceptPolicy { args } => println!("{}", node_args::accept(&args)?),
         Command::Control { socket, json } => {
             if json.len() > 65536 {
                 return Err("control request exceeds limit".into());

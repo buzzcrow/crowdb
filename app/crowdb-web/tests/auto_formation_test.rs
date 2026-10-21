@@ -82,3 +82,24 @@ async fn production_does_not_enable_local_convenience_admission() {
     assert_eq!(report["phase"], "disabled");
     fixture.assert_no_admission();
 }
+
+#[tokio::test]
+async fn missing_exposed_empty_or_corrupt_local_credentials_never_fall_back_to_a_password() {
+    for password in [
+        None,
+        Some((b"never-emit-secret".as_slice(), 0o644)),
+        Some((b"".as_slice(), 0o600)),
+        Some(([0xff].as_slice(), 0o600)),
+    ] {
+        let fixture =
+            TestFormationFixture::with_password(policy(1, DeploymentMode::Local), vec![], 1, password).await;
+        let report = fixture.observation().await;
+        assert_eq!(report["phase"], "failed", "{report}");
+        assert!(!report.to_string().contains("never-emit-secret"));
+        assert!(!fixture
+            .root
+            .join("console/admission-00000000-0000-4000-8000-000000000001.json")
+            .exists());
+        assert!(!fixture.root.join("accepted-node.json").exists());
+    }
+}

@@ -521,8 +521,10 @@ do not mark unexecuted acceptance passed.
 - Affected format check and
   `pixi run cargo clippy -p crowdb-protocol -p crowdb-monitor -p crowdb-console-shared --all-targets -- -D warnings`
   passed. Compile/lint findings were fixed without suppressed diagnostics.
-- T02 currently parses monitor flags/environment and bounded TOML policy inputs;
-  entrypoint migration and production credential preflight remain to implement.
+- T02 parses monitor flags/environment and bounded TOML policy inputs. The
+  entrypoint now accepts the policy before preparing SSH identities and uses the
+  accepted mode for credential preflight. Private local admission credentials
+  survive restart and are read by the formation worker without logging values.
   Existing single-profile paths remain until their callers migrate under T15/T29.
 - Scoped formation is implemented: discovery publishes nonsecret policy hints,
   candidate classification rejects mismatched mode/scope/count, incomplete local
@@ -534,7 +536,16 @@ do not mark unexecuted acceptance passed.
   monitor candidate/management tests passed. Full `pixi run cargo test -p crowdb-web`
   passed, plus affected fmt and
   `pixi run cargo clippy -p crowdb-protocol -p crowdb-monitor -p crowdb-web --all-targets -- -D warnings`.
-- No direct Docker, Compose, native containerd or protocol-access acceptance has
+- Six monitor CLI input tests and seven Web formation tests passed, including
+  policy-only acceptance, retained production mode, and rejected missing,
+  exposed, empty or invalid local credentials. Affected fmt and all-target
+  monitor/Web clippy gates passed.
+- Five Docker entrypoint boundary cases passed using the current entrypoint
+  mounted over an existing image and a stub monitor: policy rejection before
+  keys, private local default/explicit credentials, and production refusal without
+  explicit credentials. This verifies shell ordering only, not application
+  startup or the content of a newly built image.
+- No direct application Docker, Compose, native containerd or protocol-access acceptance has
   run yet. No end-to-end or hardware capability is marked verified.
 
 ## Consolidated file ownership

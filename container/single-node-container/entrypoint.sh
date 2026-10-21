@@ -65,11 +65,12 @@ if test -n "$previous" && test "$previous" != "$mode"; then
     echo 'Startup mode differs from persistent node policy; restore the original mode.' >&2
     exit 1
 fi
-if test "$mode" = manual && test -z "${CROWDB_PHYSICAL_HOST_ID:-}"; then
-    echo 'Manual mode requires CROWDB_PHYSICAL_HOST_ID' >&2
-    exit 1
-fi
+accepted_mode=${CROWDB_DEPLOYMENT_MODE:-local}
 if test "$mode" = manual; then
+    accepted_mode=$(setpriv --reuid=crowdb --regid=crowdb --init-groups \
+        /opt/crowdb/bin/crowdb-monitor accept-policy --profile "$profile")
+    CROWDB_DEPLOYMENT_MODE=$accepted_mode
+    export CROWDB_DEPLOYMENT_MODE
     disks=/opt/crowdb/data/disks
     if test -L "$disks" || { test -e "$disks" && ! test -d "$disks"; }; then
         echo 'Disk directory must be a real directory, not a symlink or file.' >&2
@@ -78,15 +79,38 @@ if test "$mode" = manual; then
     mkdir -p "$disks"
     chown -h crowdb:crowdb "$disks"
 fi
+if test -L /opt/crowdb/data/ssh || { test -e /opt/crowdb/data/ssh && ! test -d /opt/crowdb/data/ssh; }; then
+    echo 'SSH identity directory must be a real directory.' >&2
+    exit 1
+fi
+mkdir -p /opt/crowdb/data/ssh
+chmod 700 /opt/crowdb/data/ssh
 ssh_password_auth=yes
 if test -n "${CROWDB_SSH_PASSWORD_FILE:-}"; then
     test -f "$CROWDB_SSH_PASSWORD_FILE" || { echo 'SSH password file missing' >&2; exit 1; }
     CROWDB_SSH_PASSWORD=$(cat "$CROWDB_SSH_PASSWORD_FILE")
 fi
+if test "$mode" = manual && test "$accepted_mode" = local; then
+    local_password=/opt/crowdb/data/ssh/local-admission-password
+    if test -L "$local_password" || { test -e "$local_password" && ! test -f "$local_password"; }; then
+        echo 'Local admission credential must be a regular private file.' >&2
+        exit 1
+    fi
+    if test -z "${CROWDB_SSH_PASSWORD:-}" && test -f "$local_password"; then
+        test "$(stat -c %a "$local_password")" = 600 || { echo 'Local admission credential must have mode 0600.' >&2; exit 1; }
+        CROWDB_SSH_PASSWORD=$(cat "$local_password")
+    fi
+    CROWDB_SSH_PASSWORD=${CROWDB_SSH_PASSWORD:-crowdb}
+    password_tmp=$(mktemp /opt/crowdb/data/ssh/.local-admission.XXXXXX)
+    printf '%s' "$CROWDB_SSH_PASSWORD" > "$password_tmp"
+    chmod 600 "$password_tmp"
+    chown crowdb:crowdb "$password_tmp"
+    mv "$password_tmp" "$local_password"
+fi
 if test -n "${CROWDB_SSH_PASSWORD:-}"; then
     printf 'crowdb:%s\n' "$CROWDB_SSH_PASSWORD" | chpasswd
     unset CROWDB_SSH_PASSWORD
-elif test "${CROWDB_DEPLOYMENT_MODE:-test}" = production; then
+elif test "$accepted_mode" = production; then
     if ! test -s /opt/crowdb/data/ssh/authorized_keys; then
         echo 'Production requires explicit SSH credentials or preinstalled authorized_keys' >&2
         exit 1
@@ -121,8 +145,7 @@ Subsystem sftp internal-sftp
 EOF
 /usr/sbin/sshd -f /opt/crowdb/run/sshd_config
 if test "$mode" = manual; then
-    test -n "${CROWDB_PHYSICAL_HOST_ID:-}" || { echo 'Manual mode requires CROWDB_PHYSICAL_HOST_ID' >&2; exit 1; }
     exec setpriv --reuid=crowdb --regid=crowdb --init-groups /opt/crowdb/bin/crowdb-monitor run \
-        --profile "$profile" --mode manual --interface "${CROWDB_MANAGEMENT_INTERFACE:-eth0}" --physical-host-id "$CROWDB_PHYSICAL_HOST_ID"
+        --profile "$profile" --interface "${CROWDB_MANAGEMENT_INTERFACE:-eth0}"
 fi
 exec setpriv --reuid=crowdb --regid=crowdb --init-groups /opt/crowdb/bin/crowdb-monitor run --profile "$profile" --mode single

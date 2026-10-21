@@ -32,6 +32,16 @@ impl TestFormationFixture {
         peers: Vec<(FormationPolicy, CandidateState)>,
         local_id: u64,
     ) -> Self {
+        Self::with_password(policy, peers, local_id, None).await
+    }
+
+    pub async fn with_password(
+        policy: NodeDeploymentPolicy,
+        peers: Vec<(FormationPolicy, CandidateState)>,
+        local_id: u64,
+        password: Option<(&[u8], u32)>,
+    ) -> Self {
+        use std::os::unix::fs::PermissionsExt;
         let root = std::env::temp_dir().join(format!("crowdb-formation-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
         let inputs = NodeDeploymentOverrides {
@@ -43,6 +53,12 @@ impl TestFormationFixture {
             ..Default::default()
         };
         crowdb_monitor::accept_node_policy(&root, &NodeDeploymentOverrides::default(), &inputs).unwrap();
+        if let Some((bytes, mode)) = password {
+            std::fs::create_dir(root.join("ssh")).unwrap();
+            let path = root.join("ssh/local-admission-password");
+            std::fs::write(&path, bytes).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+        }
         std::fs::create_dir(root.join("console")).unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());

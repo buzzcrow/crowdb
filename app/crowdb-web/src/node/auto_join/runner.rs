@@ -220,7 +220,7 @@ async fn admit_candidate(
     let deployment = super::deployment(state)?;
     // Only compatible local formation can use the documented test credential.
     let password = if deployment.mode == DeploymentMode::Local {
-        Some("crowdb".into())
+        Some(super::formation::local_password(state)?)
     } else {
         None
     };

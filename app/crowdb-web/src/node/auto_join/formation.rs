@@ -8,6 +8,7 @@ use crowdb_protocol::mgmt::node::{
     deployment::{DeploymentMode, NodeDeploymentPolicy},
     CandidateNode, CandidateState,
 };
+use std::{io::Read, os::unix::fs::PermissionsExt};
 
 use super::Failure;
 use crate::{
@@ -84,6 +85,38 @@ pub(super) async fn prepare_local_rack(
         let _ = crate::lifecycle::http_add_rack(State(state.clone()), Json(request)).await?;
     }
     Ok(())
+}
+
+pub(super) fn local_password(state: &AppState) -> Result<String, Failure> {
+    let root = state
+        .runtime_root
+        .parent()
+        .ok_or_else(|| err_409("Node data root is absent"))?;
+    let path = root.join("ssh/local-admission-password");
+    let metadata = std::fs::symlink_metadata(&path).map_err(|_| {
+        err_409(
+            "Local admission credential is unavailable; prepare the node through its container entrypoint",
+        )
+    })?;
+    if !metadata.file_type().is_file()
+        || metadata.permissions().mode() & 0o777 != 0o600
+        || metadata.len() == 0
+        || metadata.len() > 4096
+    {
+        return Err(err_409(
+            "Local admission credential must be a bounded private regular file",
+        ));
+    }
+    let mut password = String::new();
+    std::fs::File::open(path)
+        .map_err(|_| err_502("Cannot read local admission credential"))?
+        .take(4097)
+        .read_to_string(&mut password)
+        .map_err(|_| err_502("Cannot read local admission credential"))?;
+    if password.is_empty() || password.len() > 4096 {
+        return Err(err_409("Invalid local admission credential length"));
+    }
+    Ok(password)
 }
 
 pub(super) fn waiting_for_peers(

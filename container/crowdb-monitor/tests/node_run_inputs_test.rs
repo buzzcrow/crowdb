@@ -115,3 +115,82 @@ fn unknown_file_version_and_corrupt_inputs_do_not_acquire_policy() {
         assert_eq!(fs::read_dir(root.path().join("install/data")).unwrap().count(), 0);
     }
 }
+
+#[test]
+fn container_preflight_seals_policy_without_generating_keys_identity_or_storage() {
+    let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("node-cli-preflight");
+    let profile = profile(root.path());
+    let invoke = |voters: Option<&str>| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_crowdb-monitor"));
+        command.args(["accept-policy", "--profile"]).arg(&profile);
+        for name in [
+            "CROWDB_NODE_POLICY_FILE",
+            "CROWDB_DEPLOYMENT_MODE",
+            "CROWDB_CLUSTER",
+            "CROWDB_INITIAL_VOTERS",
+            "CROWDB_PHYSICAL_HOST_ID",
+        ] {
+            command.env_remove(name);
+        }
+        if let Some(voters) = voters {
+            command.args(["--initial-voters", voters]);
+        }
+        command.output().unwrap()
+    };
+    let output = invoke(Some("3"));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"local\n");
+    let data = root.path().join("install/data");
+    assert_eq!(fs::read_dir(&data).unwrap().count(), 1);
+    let before = fs::read(data.join("node-policy.json")).unwrap();
+    assert!(invoke(None).status.success());
+    assert!(!invoke(Some("1")).status.success());
+    assert_eq!(fs::read(data.join("node-policy.json")).unwrap(), before);
+    assert_eq!(fs::read_dir(data).unwrap().count(), 1);
+}
+
+#[test]
+fn container_preflight_returns_retained_production_mode_without_a_local_fallback() {
+    let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("node-cli-preflight-production");
+    let profile = profile(root.path());
+    let config = root.path().join("node.toml");
+    fs::write(&config, "mode = 'production'\ninitial_voters = 3\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_crowdb-monitor"))
+        .args(["accept-policy", "--profile"])
+        .arg(&profile)
+        .arg("--deployment-config")
+        .arg(&config)
+        .args(["--physical-host-id", "real-host"])
+        .env_remove("CROWDB_DEPLOYMENT_MODE")
+        .env_remove("CROWDB_CLUSTER")
+        .env_remove("CROWDB_INITIAL_VOTERS")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"production\n");
+    let output = Command::new(env!("CARGO_BIN_EXE_crowdb-monitor"))
+        .args(["accept-policy", "--profile"])
+        .arg(&profile)
+        .args(["--physical-host-id", "real-host"])
+        .env_remove("CROWDB_DEPLOYMENT_MODE")
+        .env_remove("CROWDB_CLUSTER")
+        .env_remove("CROWDB_INITIAL_VOTERS")
+        .env_remove("CROWDB_NODE_POLICY_FILE")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"production\n");
+    assert_eq!(fs::read_dir(root.path().join("install/data")).unwrap().count(), 1);
+}

@@ -3,7 +3,7 @@
 
 //! Resolve startup sources once before handing accepted inputs to the node owner.
 
-use std::{fs, path::PathBuf};
+use std::{fs, io::Read, path::PathBuf};
 
 use clap::{Args, ValueEnum};
 use crowdb_monitor::{DeploymentProfile, DiscoveryConfig, NodeRuntimeConfig};
@@ -40,25 +40,8 @@ pub(crate) struct NodeRunArgs {
 }
 
 pub(crate) async fn run(args: NodeRunArgs) -> Result<(), Box<dyn std::error::Error>> {
-    let file = read_inputs(args.deployment_config.as_deref())?;
-    let explicit = NodeDeploymentOverrides {
-        mode: args.deployment_mode.map(|mode| match mode {
-            Mode::Local => DeploymentMode::Local,
-            Mode::Production => DeploymentMode::Production,
-        }),
-        cluster: args.cluster,
-        initial_voters: args.initial_voters,
-        ..Default::default()
-    };
-    let profile = DeploymentProfile::load(&args.profile)?;
+    let inputs = resolve(&args)?;
     let legacy_single = args.mode.as_deref() == Some("single");
-    let accepted = if legacy_single {
-        None
-    } else {
-        crowdb_monitor::read_node_policy(&profile.paths.data_root)?
-    };
-    let selected = explicit.resolve(&file, accepted.as_ref())?;
-    let physical_host_id = physical_host(args.physical_host_id, &selected)?;
     let addresses = if_addrs::get_if_addrs()?
         .into_iter()
         .filter(|address| args.interface.contains(&address.name))
@@ -79,17 +62,64 @@ pub(crate) async fn run(args: NodeRunArgs) -> Result<(), Box<dyn std::error::Err
                 .map(str::to_owned)
                 .collect(),
         },
-        physical_host_id,
+        physical_host_id: inputs.physical_host_id,
     };
     let result = if legacy_single {
-        if explicit != NodeDeploymentOverrides::default() || args.deployment_config.is_some() {
+        if inputs.explicit != NodeDeploymentOverrides::default() || args.deployment_config.is_some() {
             return Err("single-profile mode cannot accept normal deployment inputs".into());
         }
         crowdb_monitor::run_single_node(config).await
     } else {
-        crowdb_monitor::run_node_with_inputs(config, &file, &explicit).await
+        crowdb_monitor::run_node_with_inputs(config, &inputs.file, &inputs.explicit).await
     };
     result.map_err(|error| error.to_string().into())
+}
+
+pub(crate) fn accept(args: &NodeRunArgs) -> Result<&'static str, Box<dyn std::error::Error>> {
+    if args.mode.as_deref() == Some("single") {
+        return Err("single-profile mode cannot accept normal deployment inputs".into());
+    }
+    let inputs = resolve(args)?;
+    let policy = crowdb_monitor::accept_node_policy(&inputs.data_root, &inputs.file, &inputs.explicit)?;
+    Ok(match policy.mode {
+        DeploymentMode::Local => "local",
+        DeploymentMode::Production => "production",
+    })
+}
+
+struct ResolvedInputs {
+    data_root: PathBuf,
+    file: NodeDeploymentOverrides,
+    explicit: NodeDeploymentOverrides,
+    physical_host_id: String,
+}
+
+fn resolve(args: &NodeRunArgs) -> Result<ResolvedInputs, Box<dyn std::error::Error>> {
+    let file = read_inputs(args.deployment_config.as_deref())?;
+    let explicit = NodeDeploymentOverrides {
+        mode: args.deployment_mode.map(|mode| match mode {
+            Mode::Local => DeploymentMode::Local,
+            Mode::Production => DeploymentMode::Production,
+        }),
+        cluster: args.cluster.clone(),
+        initial_voters: args.initial_voters,
+        ..Default::default()
+    };
+    let profile = DeploymentProfile::load(&args.profile)?;
+    let legacy_single = args.mode.as_deref() == Some("single");
+    let accepted = if legacy_single {
+        None
+    } else {
+        crowdb_monitor::read_node_policy(&profile.paths.data_root)?
+    };
+    let selected = explicit.resolve(&file, accepted.as_ref())?;
+    let physical_host_id = physical_host(args.physical_host_id.clone(), &selected)?;
+    Ok(ResolvedInputs {
+        data_root: profile.paths.data_root,
+        file,
+        explicit,
+        physical_host_id,
+    })
 }
 
 fn physical_host(value: Option<String>, policy: &NodeDeploymentPolicy) -> Result<String, &'static str> {
@@ -111,5 +141,10 @@ fn read_inputs(
     if !metadata.file_type().is_file() || metadata.len() > 32768 {
         return Err("node deployment configuration must be a bounded regular TOML file".into());
     }
-    Ok(toml::from_str(&fs::read_to_string(path)?)?)
+    let mut content = String::new();
+    fs::File::open(path)?.take(32769).read_to_string(&mut content)?;
+    if content.len() > 32768 {
+        return Err("node deployment configuration exceeds its size bound".into());
+    }
+    Ok(toml::from_str(&content)?)
 }
