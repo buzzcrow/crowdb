@@ -481,8 +481,12 @@ and unassigning their parents require a separate explicit operator flow; deletio
 must not emulate that flow with an implicit cascade.
 
 Explicit service Stop/Restart/Delete supersedes old setup intent. Consecutive
-startup/readiness failures have a durable five-attempt budget per operation;
-readiness success resets it. Explicit cluster cleanup retires and drains accepted
+process launches have a durable five-attempt budget per operation; readiness
+success resets it. A bounded readiness observation that expires while the
+same operation's process is alive retains that process and its attempt count.
+Further observations continue startup without stopping or launching it again,
+including on the fifth launch. A new explicit operation can supersede it.
+Explicit cluster cleanup retires and drains accepted
 setup/provisioning before deleting system metadata. Cleanup dispatches to at most
 four retained nodes concurrently and saves each result; unreachable nodes stay
 pending under the original confirmed cleanup operation.

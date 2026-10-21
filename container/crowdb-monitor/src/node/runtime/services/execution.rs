@@ -30,12 +30,18 @@ pub(in crate::node::runtime) async fn execute(
     std::fs::create_dir_all(&directory)?;
     let state = directory.join("execution.json");
     let mut attempts = 0;
+    let mut continuing = false;
     if let Some(previous) = durable::read::<Execution>(&state)? {
         if previous.intent.operation_id == intent.operation_id {
             if previous.intent != intent {
                 return Err("operation identity reused with other inputs".into());
             }
             attempts = previous.attempts;
+            continuing = matches!(
+                intent.action,
+                NodeServiceAction::Start | NodeServiceAction::Restart
+            ) && processes.owns(process_id)
+                && processes.alive(process_id)?;
             if previous.complete
                 && (previous.pid.is_none() || (processes.owns(process_id) && processes.alive(process_id)?))
             {
@@ -46,7 +52,8 @@ pub(in crate::node::runtime) async fn execute(
     if matches!(
         intent.action,
         NodeServiceAction::Start | NodeServiceAction::Restart
-    ) {
+    ) && !continuing
+    {
         if attempts >= 5 {
             return Err(
                 "service operation exceeded its durable restart budget; use explicit service controls".into(),
@@ -64,10 +71,20 @@ pub(in crate::node::runtime) async fn execute(
             error: None,
         },
     )?;
-    let result = apply(profile, processes, &binding, &intent, process_id, &directory).await;
+    let result = if continuing {
+        wait_ready(profile, processes, &intent)
+            .await
+            .map(|()| processes.pid(process_id))
+    } else {
+        apply(profile, processes, &binding, &intent, process_id, &directory).await
+    };
     let (complete, pid, error) = match &result {
         Ok(pid) => (true, *pid, None),
-        Err(error) => (false, None, Some(bounded_error(&error.to_string()))),
+        Err(error) => (
+            false,
+            processes.pid(process_id),
+            Some(bounded_error(&error.to_string())),
+        ),
     };
     durable::write(
         &state,

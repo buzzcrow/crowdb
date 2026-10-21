@@ -44,7 +44,7 @@ impl NodeServiceForTests {
 
     /// # Errors
     /// Propagates bounded failure observation errors.
-    pub fn failures_for_tests(&self) -> Result<Value> {
-        failures(&self.profile.paths.data_root)
+    pub fn failures_for_tests(&mut self) -> Result<Value> {
+        failures(&self.profile.paths.data_root, &self.processes.live_pids()?)
     }
 }

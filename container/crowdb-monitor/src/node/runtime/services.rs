@@ -121,7 +121,14 @@ pub(super) fn pending(
     if previous.intent != *intent {
         return Ok(true);
     }
+    let id = if intent.kind == "kv" {
+        "kv"
+    } else {
+        &intent.service_id
+    };
+    let alive = processes.owns(id) && processes.alive(id)?;
     if previous.attempts >= 5
+        && !alive
         && matches!(
             intent.action,
             NodeServiceAction::Start | NodeServiceAction::Restart
@@ -132,22 +139,20 @@ pub(super) fn pending(
     if !previous.complete {
         return Ok(true);
     }
-    let id = if intent.kind == "kv" {
-        "kv"
-    } else {
-        &intent.service_id
-    };
     Ok(matches!(
         intent.action,
         NodeServiceAction::Start | NodeServiceAction::Restart
-    ) && (!processes.owns(id) || !processes.alive(id)?))
+    ) && !alive)
 }
 
 fn bounded_error(error: &str) -> String {
     error.chars().take(128).collect()
 }
 
-pub(super) fn failures(root: &std::path::Path) -> Result<Value> {
+pub(super) fn failures(
+    root: &std::path::Path,
+    live: &std::collections::BTreeMap<String, u32>,
+) -> Result<Value> {
     let directory = root.join("services");
     let mut failures = serde_json::Map::new();
     if !directory.exists() {
@@ -160,6 +165,12 @@ pub(super) fn failures(root: &std::path::Path) -> Result<Value> {
         }
         if let Some(execution) = durable::read::<Execution>(&entry.path().join("execution.json"))? {
             if let Some(error) = execution.error {
+                let process = if execution.intent.kind == "kv" {
+                    "kv"
+                } else {
+                    &execution.intent.service_id
+                };
+                let alive = execution.pid.is_some() && execution.pid == live.get(process).copied();
                 if failures.len() >= 64 {
                     return Err("service failure observation exceeds bound".into());
                 }
@@ -167,7 +178,7 @@ pub(super) fn failures(root: &std::path::Path) -> Result<Value> {
                     execution.intent.service_id,
                     serde_json::json!({
                         "operation_id":execution.intent.operation_id, "attempts":execution.attempts,
-                        "error":bounded_error(&error), "exhausted":execution.attempts >= 5,
+                        "error":bounded_error(&error), "exhausted":execution.attempts >= 5 && !alive,
                     }),
                 );
             }

@@ -78,7 +78,11 @@ fn executed(
         && matches!(intent.action, NodeServiceAction::Stop | NodeServiceAction::Delete)
     {
         DependencyState::Stopped
-    } else if !execution.complete && execution.attempts >= 5 && execution.error.is_some() {
+    } else if !execution.complete
+        && execution.attempts >= 5
+        && execution.error.is_some()
+        && !live.contains_key(process)
+    {
         DependencyState::Failed
     } else if execution.complete && current.is_some_and(|status| status.healthy) {
         DependencyState::Ready

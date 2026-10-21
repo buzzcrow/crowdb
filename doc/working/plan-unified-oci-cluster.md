@@ -1018,7 +1018,21 @@ do not mark unexecuted acceptance passed.
   consensus RPC tests, all five cluster-target tests, affected all-target clippy
   with `test-util`, formatting and whitespace checks.
 
-## Blocked
+## Previous verification boundary
+
+- The user resumed execution with “完成 R243”. Continue the storage-bootstrap
+  investigation and remaining implementation tasks; the five attempts below
+  remain historical evidence. The resumed packaged-attempt count starts at zero.
+- Resumed diagnosis: DiskDB's final NoSpace diagnostic reports an Offline disk
+  with 14,878 contiguous free units, not exhausted capacity. Its write gate
+  closes after uncertain persistence. Before that, monitor kills live Chunk-KV
+  bootstrap processes at consecutive ten-second readiness boundaries, starting
+  new PIDs while storage initialization is in progress. Separate same-operation
+  readiness continuation from process restart: preserve PID/attempts, count only
+  actual launches, and keep a still-live fifth launch observable. A real-process
+  regression crosses the unchanged ten-second probe bound and then becomes ready
+  with the same PID; existing failed-launch budget and explicit-intent tests pass.
+  This fixes the demonstrated interruption; packaged storage success is pending.
 
 - The packaged automatic-formation / retained-IP recovery pipeline has failed
   after five root-cause-driven attempts. Stop requirement execution here under
