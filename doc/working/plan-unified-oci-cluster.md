@@ -524,6 +524,16 @@ do not mark unexecuted acceptance passed.
 - T02 currently parses monitor flags/environment and bounded TOML policy inputs;
   entrypoint migration and production credential preflight remain to implement.
   Existing single-profile paths remain until their callers migrate under T15/T29.
+- Scoped formation is implemented: discovery publishes nonsecret policy hints,
+  candidate classification rejects mismatched mode/scope/count, incomplete local
+  formation does not admit partial nodes, and only the UUID-ordered coordinator
+  starts fresh admission. Production defaults Auto join off; accepted clusters
+  do not automatically admit later discoveries. T05/T06/T07 remain unchecked
+  pending positive SSH/bootstrap, restart and late-peer acceptance.
+- Six new Web formation tests, the existing Auto join/candidate suites and
+  monitor candidate/management tests passed. Full `pixi run cargo test -p crowdb-web`
+  passed, plus affected fmt and
+  `pixi run cargo clippy -p crowdb-protocol -p crowdb-monitor -p crowdb-web --all-targets -- -D warnings`.
 - No direct Docker, Compose, native containerd or protocol-access acceptance has
   run yet. No end-to-end or hardware capability is marked verified.
 

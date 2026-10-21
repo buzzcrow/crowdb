@@ -23,6 +23,7 @@ async fn local_candidate_is_shown_before_any_kv_server_exists() {
             protocol_version: NODE_PROTOCOL_VERSION,
             monitor_endpoints: vec![endpoint.clone()],
             cluster_id: None,
+            formation: None,
         },
         physical_host_id: "one-host".into(),
         rack_hint: None,

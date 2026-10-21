@@ -11,6 +11,7 @@ fn node() -> NodeAdvertisement {
         protocol_version: NODE_PROTOCOL_VERSION,
         monitor_endpoints: vec!["http://192.0.2.1:9093".into()],
         cluster_id: None,
+        formation: None,
     }
 }
 
@@ -61,4 +62,40 @@ fn malformed_metadata_is_not_a_candidate() {
     peer.monitor_endpoints = vec!["http://user:password@192.0.2.1:9093".into()];
     assert!(!cache.observe("b".into(), peer));
     assert!(cache.snapshot(&node()).is_empty());
+}
+
+#[test]
+fn scope_mode_and_initial_count_are_checked_before_a_peer_is_eligible() {
+    use crowdb_protocol::mgmt::node::deployment::{DeploymentMode, NodeDeploymentPolicy};
+    let mut local = node();
+    local.formation = Some(NodeDeploymentPolicy::default().formation());
+    let mut cache = CandidateCache::default();
+    let mut peer = node();
+    peer.formation.clone_from(&local.formation);
+    cache.observe("peer".into(), peer.clone());
+    assert_eq!(cache.snapshot(&local)[0].state, CandidateState::Unbound);
+    for policy in [
+        None,
+        Some(crowdb_protocol::mgmt::node::deployment::FormationPolicy {
+            cluster: "other".into(),
+            ..local.formation.clone().unwrap()
+        }),
+        Some(crowdb_protocol::mgmt::node::deployment::FormationPolicy {
+            mode: DeploymentMode::Production,
+            ..local.formation.clone().unwrap()
+        }),
+        Some(crowdb_protocol::mgmt::node::deployment::FormationPolicy {
+            initial_voters: 3,
+            ..local.formation.clone().unwrap()
+        }),
+    ] {
+        peer.formation = policy;
+        assert!(cache.observe("peer".into(), peer.clone()));
+        assert_eq!(cache.snapshot(&local)[0].state, CandidateState::Incompatible);
+    }
+    peer.formation = Some(crowdb_protocol::mgmt::node::deployment::FormationPolicy {
+        version: 99,
+        ..local.formation.unwrap()
+    });
+    assert!(!cache.observe("invalid".into(), peer));
 }

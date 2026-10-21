@@ -12,6 +12,74 @@ use tokio::sync::oneshot;
 use uuid::Uuid;
 
 #[tokio::test]
+async fn management_advertises_accepted_formation_without_storage_preparation() {
+    let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("node-management-policy");
+    let inputs = crowdb_protocol::mgmt::node::deployment::NodeDeploymentOverrides {
+        cluster: Some("discovery-scope".into()),
+        initial_voters: Some(3),
+        ..Default::default()
+    };
+    let policy = crowdb_monitor::accept_node_policy(
+        root.path(),
+        &crowdb_protocol::mgmt::node::deployment::NodeDeploymentOverrides::default(),
+        &inputs,
+    )
+    .unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let bind = listener.local_addr().unwrap();
+    drop(listener);
+    let config = DiscoveryConfig {
+        seeds: vec![],
+        interfaces: vec!["lo".into()],
+        addresses: vec![bind.ip()],
+        monitor_port: bind.port(),
+        cluster_id: None,
+    };
+    let (stop, stopped) = oneshot::channel();
+    let data_root = root.path().to_path_buf();
+    let server = tokio::spawn(async move {
+        serve_node_management(&data_root, bind, &config, "shared-host".into(), async {
+            let _ = stopped.await;
+        })
+        .await
+    });
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(1))
+        .build()
+        .unwrap();
+    let handshake = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            assert!(
+                !server.is_finished(),
+                "management exited before policy advertisement"
+            );
+            if let Ok(reply) = client.get(format!("http://{bind}/node")).send().await {
+                break reply
+                    .error_for_status()
+                    .unwrap()
+                    .json::<NodeHandshake>()
+                    .await
+                    .unwrap();
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(handshake.advertisement.formation, Some(policy.formation()));
+    assert_eq!(handshake.advertisement.cluster_id, None);
+    assert!(!root.path().join("disks").exists());
+    assert!(!root.path().join("accepted-node.json").exists());
+    stop.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
 async fn management_exposes_persistent_identity_and_requires_physical_host() {
     let root = std::env::temp_dir().join(format!("crowdb-node-management-{}", Uuid::new_v4()));
     fs::create_dir(&root).unwrap();
@@ -188,6 +256,7 @@ async fn test_seed() -> (String, String, tokio::task::JoinHandle<()>, oneshot::S
             protocol_version: NODE_PROTOCOL_VERSION,
             monitor_endpoints: vec![seed.clone()],
             cluster_id: None,
+            formation: None,
         },
         physical_host_id: "seed-only-host".into(),
         rack_hint: None,

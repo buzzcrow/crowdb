@@ -15,7 +15,20 @@ use tower::ServiceExt;
 struct TestWorkspace(std::path::PathBuf);
 impl TestWorkspace {
     fn new() -> Self {
+        Self::with_voters(1)
+    }
+    fn with_voters(voters: u8) -> Self {
         let root = std::env::temp_dir().join(format!("crowdb-auto-join-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        crowdb_monitor::accept_node_policy(
+            &root,
+            &crowdb_protocol::mgmt::node::deployment::NodeDeploymentOverrides::default(),
+            &crowdb_protocol::mgmt::node::deployment::NodeDeploymentOverrides {
+                initial_voters: Some(voters),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         std::fs::create_dir_all(root.join("console")).unwrap();
         Self(root)
     }
@@ -23,6 +36,12 @@ impl TestWorkspace {
         AppState::with_runtime_root(ConsoleConfig::default(), self.0.join("console"))
             .with_node_monitor("http://127.0.0.1:1")
             .unwrap()
+    }
+    fn formation(&self) -> crowdb_protocol::mgmt::node::deployment::FormationPolicy {
+        crowdb_monitor::read_node_policy(&self.0)
+            .unwrap()
+            .unwrap()
+            .formation()
     }
 }
 impl Drop for TestWorkspace {
@@ -52,7 +71,7 @@ async fn default_enabled_policy_survives_disable_and_restart_without_touching_ac
     let (status, policy) = request(router(workspace.state()), None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(policy["enabled"], true);
-    assert_eq!(policy["required_voters"], 3);
+    assert_eq!(policy["required_voters"], 1);
     let (status, _) = request(router(workspace.state()), Some(json!({"enabled": false}))).await;
     assert_eq!(status, StatusCode::OK);
     let state = workspace.state();
@@ -145,7 +164,8 @@ async fn two_authenticated_nodes_wait_in_uuid_order_without_initializing() {
         CandidateNode, CandidateSnapshot, CandidateState, NodeAdvertisement, NodeHandshake, NodeHardware,
         NODE_PROTOCOL_VERSION,
     };
-    let workspace = TestWorkspace::new();
+    let workspace = TestWorkspace::with_voters(3);
+    let formation = workspace.formation();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
     let mut config = ConsoleConfig::default();
@@ -191,6 +211,7 @@ async fn two_authenticated_nodes_wait_in_uuid_order_without_initializing() {
                 protocol_version: NODE_PROTOCOL_VERSION,
                 monitor_endpoints: vec![endpoint.clone()],
                 cluster_id: None,
+                formation: Some(formation.clone()),
             },
             state: CandidateState::Unbound,
         });

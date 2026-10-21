@@ -18,6 +18,8 @@ pub struct NodeAdvertisement {
     pub protocol_version: u32,
     pub monitor_endpoints: Vec<String>,
     pub cluster_id: Option<String>,
+    #[serde(default)]
+    pub formation: Option<deployment::FormationPolicy>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

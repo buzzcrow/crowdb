@@ -25,6 +25,10 @@ impl CandidateCache {
                 .cluster_id
                 .as_ref()
                 .is_some_and(|id| Uuid::parse_str(id).is_err())
+            || advertisement
+                .formation
+                .as_ref()
+                .is_some_and(|policy| policy.validate().is_err())
             || advertisement.monitor_endpoints.is_empty()
             || advertisement.monitor_endpoints.len() > MAX_ENDPOINTS
             || advertisement
@@ -61,7 +65,9 @@ impl CandidateCache {
             let conflict = local_identity || observations.iter().any(|observation| *observation != first);
             let state = if conflict {
                 CandidateState::IdentityConflict
-            } else if first.protocol_version != NODE_PROTOCOL_VERSION {
+            } else if first.protocol_version != NODE_PROTOCOL_VERSION
+                || (local.formation.is_some() && first.formation != local.formation)
+            {
                 CandidateState::Incompatible
             } else {
                 match (&first.cluster_id, &local.cluster_id) {

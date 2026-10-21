@@ -45,6 +45,7 @@ pub async fn serve_node_management(
     if physical_host_id.is_empty() || physical_host_id.len() > 256 {
         return Err(NodeManagementError::PhysicalHost);
     }
+    let formation = super::read_node_policy(root)?.map(|policy| policy.formation());
     let identity = NodeIdentity::load_or_create(root)?;
     let listener = tokio::net::TcpListener::bind(bind).await?;
     if listener.local_addr()?.port() != config.monitor_port {
@@ -56,6 +57,9 @@ pub async fn serve_node_management(
     }
     validate_seeds(&config.seeds)?;
     let mut discovery = NodeDiscovery::start(identity, config)?;
+    if let Some(formation) = formation {
+        discovery.set_formation(formation)?;
+    }
     let seed_client = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())

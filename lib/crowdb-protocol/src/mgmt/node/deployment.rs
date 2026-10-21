@@ -13,6 +13,27 @@ pub enum DeploymentMode {
     Production,
 }
 
+/// Untrusted discovery hints. Admission still authenticates the actual peer.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FormationPolicy {
+    pub version: u32,
+    pub mode: DeploymentMode,
+    pub cluster: String,
+    pub initial_voters: u8,
+}
+
+impl FormationPolicy {
+    /// # Errors
+    /// Rejects unsupported versions, malformed scopes and voter counts.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.version != 1 || !matches!(self.initial_voters, 1 | 3) || !valid_cluster(&self.cluster) {
+            return Err("invalid node formation policy");
+        }
+        Ok(())
+    }
+}
+
 /// Sealed before admission; omitted restart inputs retain these values.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -78,6 +99,16 @@ impl Default for NodeDeploymentPolicy {
 }
 
 impl NodeDeploymentPolicy {
+    #[must_use]
+    pub fn formation(&self) -> FormationPolicy {
+        FormationPolicy {
+            version: self.version,
+            mode: self.mode,
+            cluster: self.cluster.clone(),
+            initial_voters: self.initial_voters,
+        }
+    }
+
     /// Check the entire accepted input before performing node effects.
     ///
     /// # Errors
@@ -89,14 +120,7 @@ impl NodeDeploymentPolicy {
         if !matches!(self.initial_voters, 1 | 3) {
             return Err("initial voters must be one or three");
         }
-        if self.cluster.is_empty()
-            || self.cluster.len() > 48
-            || !self.cluster.as_bytes()[0].is_ascii_alphanumeric()
-            || !self
-                .cluster
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"_.-".contains(&byte))
-        {
+        if !valid_cluster(&self.cluster) {
             return Err("cluster scope must contain 1 to 48 name characters");
         }
         if self.mode == DeploymentMode::Production
@@ -137,6 +161,15 @@ impl NodeDeploymentPolicy {
         }
         self.setup.validate()
     }
+}
+
+fn valid_cluster(cluster: &str) -> bool {
+    !cluster.is_empty()
+        && cluster.len() <= 48
+        && cluster.as_bytes()[0].is_ascii_alphanumeric()
+        && cluster
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_.-".contains(&byte))
 }
 
 impl NodeDeploymentOverrides {
