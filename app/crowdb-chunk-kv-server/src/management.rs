@@ -152,7 +152,7 @@ fn health_response(state: &ManagementState) -> HealthResponse {
         catalog_generation: health.catalog_generation,
         hosted_partitions: health.partitions.len(),
         serving_partitions: health.serving_partitions,
-        ready: health.lifecycle == ServerLifecycle::Serving,
+        ready: health.ready,
     }
 }
 

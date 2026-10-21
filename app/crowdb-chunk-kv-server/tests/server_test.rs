@@ -721,6 +721,28 @@ async fn matching_grant_activation_promotes_a_replayed_partition() {
     service
         .install_catalog_and_reconcile(&head, &[page], std::slice::from_ref(&partition))
         .unwrap();
+    let mut grant = ServingGrant {
+        instance_id: INSTANCE_ID,
+        lease_sequence: 1,
+        catalog_generation: 1,
+        issued_at_ms: 1_000,
+        expires_at_ms: 13_000,
+        assignments: vec![ServingAssignment {
+            partition_id: Id128 { high: 1, low: 3 },
+            owner_epoch: EPOCH,
+        }],
+        assignment_digest: [0; 32],
+    };
+    grant.seal();
+    service
+        .authority()
+        .install(grant, &policy(), 1_000, 50_000)
+        .unwrap();
+    assert_eq!(service.health(50_100).lifecycle, ServerLifecycle::Serving);
+    assert!(
+        !service.health(50_100).ready,
+        "a live grant cannot make an inactive writer ready"
+    );
     assert_eq!(partition.snapshot().lifecycle, PartitionLifecycle::Prepared);
     assert!(!service.registry_observation(1_024, 0).hosted[0].recovering);
     assert!(matches!(
@@ -734,6 +756,11 @@ async fn matching_grant_activation_promotes_a_replayed_partition() {
         .unwrap();
 
     assert_eq!(partition.snapshot().lifecycle, PartitionLifecycle::Serving);
+    assert!(service.health(50_100).ready);
+    assert!(
+        !service.health(65_000).ready,
+        "expired authority cannot report ready"
+    );
 }
 
 #[tokio::test]
@@ -820,6 +847,10 @@ async fn matching_grant_refresh_keeps_a_preparing_parent_active() {
         .unwrap();
 
     assert_eq!(partition.snapshot().lifecycle, PartitionLifecycle::SplitPreparing);
+    assert!(
+        service.health(50_100).ready,
+        "an active split dispatcher still serves its published range"
+    );
     assert!(
         !service.registry_observation(1_024, 0).hosted[0].recovering,
         "a preparing parent must remain eligible for serving-grant renewal"

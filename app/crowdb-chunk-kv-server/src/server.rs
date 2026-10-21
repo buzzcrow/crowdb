@@ -33,6 +33,7 @@ use assignments::{local_partition_for_entry, partition_matches_entry};
 mod load_sampling;
 mod observation;
 mod prepared_transfer;
+mod readiness;
 mod reconcile;
 mod routing;
 mod scan;
@@ -71,6 +72,7 @@ pub struct ServerHealth {
     pub catalog_generation: u64,
     pub partitions: Vec<HostedPartitionHealth>,
     pub serving_partitions: usize,
+    pub ready: bool,
 }
 
 #[derive(Debug, Error)]
@@ -345,6 +347,8 @@ impl ChunkKvService {
             catalog_generation,
             partitions,
             serving_partitions,
+            ready: lifecycle == ServerLifecycle::Serving
+                && self.assignments_ready(&catalog, now_monotonic_ms),
         }
     }
 

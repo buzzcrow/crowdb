@@ -1274,3 +1274,10 @@ do not mark unexecuted acceptance passed.
   report and mixed origins two, with an unusable Docker socket. Shared/Web/CLI
   all-target clippy passes. Packaged positive aggregate readiness, exact startup
   integration and remaining CLI migration are not yet verified.
+
+- Chunk-KV readiness fix: a live grant and catalog generation alone cannot make
+  replayed Prepared writers ready. HTTP readiness additionally resolves every
+  current local assignment through the normal dispatcher and requires an active
+  writer with valid authority. Active online split dispatch remains eligible;
+  expired authority and inactive recovered partitions do not. Fourteen real
+  server tests pass, including activation, split continuation and grant expiry.
