@@ -67,17 +67,17 @@ class Runtime:
 
     def create(self, args):
         disks = inputs(args)
-        if getattr(args, "startup_mode", "manual") == "single" and disks:
-            raise ValueError("single startup uses fixed preview disks; supplied media require manual mode")
         validate_retained_inputs(args.data_root, disks)
         token = str(uuid.uuid4())
         shares = getattr(args, "cpu_shares", None)
         cpu_args = ["--cpu-shares", str(shares)] if shares is not None else ["--cpus", str(args.cpus)]
         command = ["run", "-d", "--name", args.name, "--label", f"{OWNER}={token}",
+                   "--label", f"org.crowdb.cluster={args.cluster}",
                    "--network", args.network, *cpu_args, "--memory", f"{args.memory_mib}m",
                    "--restart", "unless-stopped", "--cgroupns", "private",
                    "--mount", f"type=bind,source={args.data_root},target=/opt/crowdb/data",
-                   "-e", f"CROWDB_STARTUP_MODE={args.startup_mode}",
+                   "-e", f"CROWDB_CLUSTER={args.cluster}",
+                   "-e", f"CROWDB_INITIAL_VOTERS={args.initial_voters}",
                    "-e", "CROWDB_DEPLOYMENT_MODE=production",
                    "-e", f"CROWDB_PHYSICAL_HOST_ID={args.physical_host_id}",
                    "-e", f"CROWDB_MANAGEMENT_INTERFACE={args.interface}"]
@@ -99,10 +99,7 @@ class Runtime:
                 kind = "-f" if disk["backend"] == "file" else "-b"
                 self.invoke("exec", "--user", "10001:10001", container, "sh", "-c",
                             'test "$1" "$2" && test -r "$2" && test -w "$2"', "sh", kind, disk["path"])
-            # Single bootstrap requires a pristine root before its manifest is
-            # accepted. An empty external-mapping receipt must not race it.
-            if args.startup_mode != "single":
-                record_inputs(args.data_root, disks)
+            record_inputs(args.data_root, disks)
             return container
         except BaseException:
             # A failed create can leave a container; only this operation owns it.

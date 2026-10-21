@@ -1237,3 +1237,13 @@ do not mark unexecuted acceptance passed.
   holds DiskDB readiness unavailable, proves no ChunkDB execution/budget is
   created, then exposes readiness and completes the same accepted operation.
   Both readiness regression cases pass; monitor all-target clippy passes.
+
+- Host runtime launcher migration: removed obsolete startup-mode inputs and
+  environment; Docker and containerd now pass the common cluster and initial
+  voter policy to the normal node entrypoint. One/three use identical supplied
+  media mapping and retained declarations. Containerd namespace derives from
+  the cluster (`crowdb-<cluster>`). Host interface existence and occupied fixed
+  TCP listeners fail before container launch. All 42 OCI Python cases pass,
+  including a real occupied socket and one/three supplied-media preservation.
+  Native containerd full preparation/retained protocol acceptance remains pending;
+  the installed root-owned socket is inaccessible to this unprivileged account.

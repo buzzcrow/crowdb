@@ -192,7 +192,7 @@ explicit configuration, inherited by services as `TOKIO_WORKER_THREADS`.
 
 
 ```bash
-pixi run --manifest-path container/oci-image/pixi.toml -e runtime run --runtime docker \
+pixi run --manifest-path container/oci-image/pixi.toml -e runtime run --runtime docker --cluster production --initial-voters 3 \
   --image docker.io/crowdb/crowdb-node@sha256:<verified-manifest-digest> \
   --name crowdb-node --network host --cpus 2 --memory-mib 1024 \
   --data-root /var/lib/crowdb --physical-host-id host-one --interface eno1 \
@@ -211,7 +211,7 @@ For containerd, install the separate locked runtime environment:
 
 ```bash
 pixi install --locked --manifest-path container/oci-image/pixi.toml -e runtime
-pixi run --manifest-path container/oci-image/pixi.toml -e runtime run --runtime containerd \
+pixi run --manifest-path container/oci-image/pixi.toml -e runtime run --runtime containerd --cluster production --initial-voters 3 \
   --address /run/crowdb-containerd/containerd.sock \
   --image docker.io/crowdb/crowdb-node@sha256:<verified-manifest-digest> \
   --name crowdb-node --network host --cpus 2 --memory-mib 1024 \
@@ -220,7 +220,8 @@ pixi run --manifest-path container/oci-image/pixi.toml -e runtime run --runtime 
 ```
 
 The host administrator starts containerd separately. Initial support is rootful
-Linux, cgroup v2, namespace `crowdb`, and host networking. `k8s.io` is rejected.
+Linux, cgroup v2 and host networking. The cluster name maps to the containerd
+namespace `crowdb-<cluster>`; runtime namespace is not a separate cluster selector.
 The default snapshotter is overlayfs; use `--snapshotter native` where overlayfs
 is unavailable. No Docker daemon, runtime socket mount or CNI plugin is needed.
 The tested tool versions are containerd 2.4.1, nerdctl 2.4.1 and runc 1.4.3.
