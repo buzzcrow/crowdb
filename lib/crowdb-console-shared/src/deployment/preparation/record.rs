@@ -30,6 +30,8 @@ pub struct DefaultMetadataGroup {
 pub struct DefaultStorageBinding {
     pub rack_id: u64,
     pub node_id: u64,
+    /// Initial automatic-medium placement. Supplied media retain compatible
+    /// per-class placement in the target's sealed journal under this metadata.
     pub disk_group_id: u64,
     pub store_id: u64,
     pub group_id: u64,

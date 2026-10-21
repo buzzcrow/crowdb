@@ -141,9 +141,10 @@ async fn prepare(
                 &hardware,
                 kv,
                 node.rack_id,
-                binding.node_id,
+                binding,
                 medium.media_type,
                 &excluded,
+                false,
             )
             .await?;
             excluded.insert(group.0);

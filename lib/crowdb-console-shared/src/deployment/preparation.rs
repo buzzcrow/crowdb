@@ -3,7 +3,9 @@
 
 //! One Group-0-owned default preparation, shared by all authorized node runners.
 
+mod binding;
 mod record;
+pub use binding::{metadata_binding, storage_binding};
 
 pub use record::{DefaultMetadataGroup, DefaultPreparation, DefaultReplica, DefaultStorageBinding};
 

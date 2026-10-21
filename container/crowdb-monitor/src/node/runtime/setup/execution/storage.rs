@@ -5,7 +5,7 @@
 
 use super::{journal, AcceptedSetup, Result};
 use crate::DeploymentProfile;
-use crowdb_kv_client::{CrowdbKvClient, HardwareClient, KVClusterMetaClient};
+use crowdb_kv_client::{CrowdbKvClient, HardwareClient};
 use crowdb_protocol::mgmt::node::{
     setup::{SetupDiskStatus, SetupStepPhase, SetupStorage},
     storage::{DiskInput, FileDiskAdmission, FilePreparationPhase, PrepareDiskFile},
@@ -47,9 +47,10 @@ pub(super) async fn advance(
             &hardware,
             kv,
             rack,
-            binding.node_id,
+            binding,
             None,
             &std::collections::BTreeSet::new(),
+            true,
         )
         .await?;
         state.storage_binding = Some(data_binding);
@@ -117,6 +118,14 @@ pub(super) async fn ensure_group(
     );
     let groups =
         crowdb_console_shared::ops::hardware::list_disk_groups_from_group0(&ctx, binding.node_id).await?;
+    let metadata =
+        crowdb_console_shared::deployment::preparation::metadata_binding(&ctx, &binding.bootstrap).await?;
+    if !data_binding
+        .as_ref()
+        .is_some_and(|data| data.store_id == metadata.store_id && data.group_id == metadata.group_id)
+    {
+        return Err("managed disk metadata differs from accepted default binding".into());
+    }
     if let Some(group) = groups.iter().find(|group| group.id == group_id) {
         let current = ctx
             .sysmd()
@@ -148,14 +157,24 @@ pub(super) async fn select_group(
     hardware: &HardwareClient,
     kv: &std::sync::Arc<CrowdbKvClient>,
     rack: u64,
-    node: u64,
+    binding: &NodeBinding,
     media_type: Option<i32>,
     excluded: &std::collections::BTreeSet<u64>,
+    automatic: bool,
 ) -> Result<(u64, crowdb_protocol::common::BindMapValue)> {
+    let node = binding.node_id;
+    let ctx = crowdb_console_shared::ops::OpContext::with_shared_client_preserving_hint(
+        std::sync::Arc::clone(kv),
+        &binding.management_seeds,
+        crowdb_console_shared::ConsoleConfig::default(),
+    );
+    let accepted =
+        crowdb_console_shared::deployment::preparation::storage_binding(&ctx, &binding.bootstrap, rack, node)
+            .await?;
     let mut groups = hardware.list_disk_groups_on_node(rack, node).await?;
     groups.sort_unstable_by_key(|group| group.dg_id);
     for group in groups {
-        if excluded.contains(&group.dg_id) {
+        if excluded.contains(&group.dg_id) || automatic && group.dg_id != accepted.disk_group_id {
             continue;
         }
         match hardware
@@ -166,12 +185,15 @@ pub(super) async fn select_group(
             Err(crowdb_kv_client::Error::Server(reason))
                 if reason == "DiskGroup media class or allocation unit is incompatible with this disk" =>
             {
-                continue
+                if automatic {
+                    return Err("reserved disk group has incompatible media geometry".into());
+                }
+                continue;
             }
             Err(error) => return Err(error.into()),
         }
         if let Some(binding) = hardware.get_bind(rack, node, group.dg_id).await? {
-            if binding.group_id != 0 {
+            if binding.store_id == accepted.store_id && binding.group_id == accepted.group_id {
                 return Ok((
                     group.dg_id,
                     crowdb_protocol::common::BindMapValue {
@@ -179,22 +201,23 @@ pub(super) async fn select_group(
                         group_id: binding.group_id,
                     },
                 ));
+            } else if automatic {
+                return Err("reserved disk group has a conflicting metadata binding".into());
             }
+        } else if automatic {
+            return Err("reserved disk group has no accepted metadata binding".into());
         }
     }
-    let group = KVClusterMetaClient::from_shared(std::sync::Arc::clone(kv))
-        .list_all_groups()
-        .await?
-        .into_iter()
-        .filter(|group| group.group_id != 0)
-        .min_by_key(|group| (group.store_id, group.group_id))
-        .ok_or("default disk is waiting for an existing ordinary metadata group")?;
-    let id = hardware.allocate_disk_group_id(rack, node).await?;
+    let id = if automatic {
+        accepted.disk_group_id
+    } else {
+        hardware.allocate_disk_group_id(rack, node).await?
+    };
     Ok((
         id,
         crowdb_protocol::common::BindMapValue {
-            store_id: group.store_id,
-            group_id: group.group_id,
+            store_id: accepted.store_id,
+            group_id: accepted.group_id,
         },
     ))
 }

@@ -3,6 +3,12 @@
 
 use axum::{extract::State, routing::get, Json, Router};
 use crowdb_console_shared::deployment::registry::{NodeRecord, NodeRegistry, NODES_KEY};
+use crowdb_console_shared::{
+    config::{NodeEntry, RackEntry, ServerEntry},
+    deployment::{preparation, PreparedBootstrap},
+    ops::OpContext,
+    ConsoleConfig,
+};
 use crowdb_kv::cluster::{
     group::PxGroup, kv_server::KvServer, PxKvStore, PxLocalReplica, PxLocalReplicaRole,
 };
@@ -39,14 +45,11 @@ impl TestAuthority {
         });
         let kv = CrowdbKvClient::new(ClientConfig::new(vec![seed.clone()]));
         kv.seed_leader(0, 0, store.listen_addr().unwrap().to_string());
+        let bootstrap = bootstrap(root, &kv, &seed, &store.listen_addr().unwrap().to_string()).await;
         let binding = NodeBinding {
             node_id: 2,
             management_seeds: vec![seed],
-            bootstrap: crowdb_protocol::mgmt::SystemBootstrapIdentity {
-                cluster_id: uuid::Uuid::new_v4().to_string(),
-                operation_id: uuid::Uuid::new_v4().to_string(),
-                configuration_digest: "fixture".into(),
-            },
+            bootstrap: bootstrap.identity,
         };
         let registry = NodeRegistry {
             cluster_id: binding.bootstrap.cluster_id.clone(),
@@ -63,15 +66,6 @@ impl TestAuthority {
                 cancelled: false,
             }],
         };
-        kv.put(
-            0,
-            0,
-            b"/deployment/cluster",
-            &serde_json::to_vec(&serde_json::json!({"identity":binding.bootstrap})).unwrap(),
-            None,
-        )
-        .await
-        .unwrap();
         kv.put(0, 0, NODES_KEY, &serde_json::to_vec(&registry).unwrap(), None)
             .await
             .unwrap();
@@ -86,6 +80,43 @@ impl TestAuthority {
             registry,
         }
     }
+}
+
+async fn bootstrap(root: &Path, kv: &CrowdbKvClient, management: &str, rpc: &str) -> PreparedBootstrap {
+    let mut server = ServerEntry::new("kv-2", management);
+    server.node_id = Some(2);
+    server.rpc_url = Some(rpc.into());
+    let config = ConsoleConfig {
+        racks: vec![RackEntry {
+            id: 1,
+            name: "owned-rack".into(),
+        }],
+        nodes: vec![NodeEntry {
+            id: 2,
+            rack_id: 1,
+            host: "127.0.0.1".into(),
+            ssh_port: 22,
+            ssh_user: "crowdb".into(),
+            ssh_credential_ref: None,
+            ssh_key: None,
+            ssh_password: None,
+        }],
+        servers: vec![server],
+        ..Default::default()
+    };
+    let prepared = PreparedBootstrap::open(&root.join("fixture-bootstrap.json"), &config, &[2]).unwrap();
+    kv.put(
+        0,
+        0,
+        b"/deployment/cluster",
+        &serde_json::to_vec(&prepared).unwrap(),
+        None,
+    )
+    .await
+    .unwrap();
+    let ctx = OpContext::new(rpc.into(), vec![management.into()], config);
+    preparation::reserve(&ctx, &prepared.identity).await.unwrap();
+    prepared
 }
 
 impl Drop for TestAuthority {

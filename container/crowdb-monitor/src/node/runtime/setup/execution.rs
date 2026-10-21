@@ -13,6 +13,7 @@ use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
 use crowdb_protocol::mgmt::node::{setup::NodeSetupPhase, NodeBinding};
 use std::time::Duration;
 
+mod metadata;
 mod services;
 mod storage;
 mod supplied;
@@ -78,6 +79,9 @@ async fn advance(profile: &DeploymentProfile, state: &mut AcceptedSetup) -> Resu
     state.status.cluster_id = Some(binding.bootstrap.cluster_id.clone());
     state.status.phase = NodeSetupPhase::Running;
     journal::save(root, state)?;
+    if crate::node::read_node_policy(root)?.is_some() && !metadata::ready(&binding, &kv).await? {
+        return Ok(());
+    }
     // Storage and service prerequisites progress independently. In particular,
     // file preparation may wait for DiskIO while DiskIO is still starting.
     let disk_ready = storage::advance(profile, state, &binding, &kv).await;

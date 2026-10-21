@@ -6,6 +6,8 @@ use crowdb_protocol::mgmt::node::setup::{NodeSetupPhase, NodeSetupRequest, Setup
 use std::path::Path;
 #[path = "common/node_setup.rs"]
 mod node_setup;
+#[path = "common/node_setup_groups.rs"]
+mod node_setup_groups;
 
 fn request(root: &Path) -> NodeSetupRequest {
     NodeSetupRequest {
@@ -254,10 +256,7 @@ async fn explicit_cleanup_retires_only_the_matching_setup_and_never_replays_it()
 #[tokio::test]
 async fn default_file_waits_for_metadata_then_reuses_one_durable_request_and_group() {
     use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient};
-    use crowdb_protocol::{
-        common::{GroupValue, NodeValue, RackValue},
-        key::{KvGroupKey, TextKey},
-    };
+    use crowdb_protocol::common::{NodeValue, RackValue};
     // Keep the socket pathname short enough for CI checkout prefixes.
     let directory = crowdb_test_harness::test_dirs::tempdir_in_test_data("setup");
     let root = directory.path();
@@ -284,6 +283,7 @@ async fn default_file_waits_for_metadata_then_reuses_one_durable_request_and_gro
         .await
         .unwrap();
     hardware.add_node(1, 2, &NodeValue::default()).await.unwrap();
+    node_setup_groups::publish_group(&authority, 8).await;
     let mut profile = profile(root);
     profile.paths.run_root = root.join("run");
     NodeSetupForTests::advance_for_tests(profile.clone())
@@ -294,26 +294,7 @@ async fn default_file_waits_for_metadata_then_reuses_one_durable_request_and_gro
     assert!(waiting.error.unwrap().contains("ordinary metadata group"));
     assert!(hardware.list_disk_groups_on_node(1, 2).await.unwrap().is_empty());
     assert!(!root.join("disks").exists());
-    authority
-        .kv
-        .put(
-            0,
-            0,
-            KvGroupKey {
-                store_id: 0,
-                group_id: 1,
-            }
-            .to_path()
-            .as_bytes(),
-            &serde_json::to_vec(&GroupValue {
-                store_id: 0,
-                group_id: 1,
-            })
-            .unwrap(),
-            None,
-        )
-        .await
-        .unwrap();
+    node_setup_groups::publish_group(&authority, 1).await;
     std::fs::create_dir(&profile.paths.run_root).unwrap();
     let listener = tokio::net::UnixListener::bind(profile.paths.run_root.join("node-control.sock")).unwrap();
     let observe = tokio::spawn(observe_file_requests(listener));
@@ -340,6 +321,91 @@ async fn default_file_waits_for_metadata_then_reuses_one_durable_request_and_gro
         .unwrap()
         .unwrap();
     assert_eq!((binding.store_id, binding.group_id), (0, 1));
+}
+
+#[tokio::test]
+async fn a_conflicting_reserved_disk_group_binding_cannot_redirect_default_storage() {
+    use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient};
+    use crowdb_protocol::{
+        common::{NodeValue, RackValue},
+        diskdb::rpc::DiskGroupValue,
+    };
+    let directory = crowdb_test_harness::test_dirs::tempdir_in_test_data("setup-binding");
+    let root = directory.path();
+    let mut intent = request(root);
+    for service in &mut intent.choices.services {
+        service.enabled = false;
+    }
+    authorize(root, &intent);
+    NodeSetupForTests::default()
+        .accept_for_tests(root, intent.clone())
+        .unwrap();
+    let authority = node_setup::TestAuthority::start(root, &intent).await;
+    node_setup_groups::publish_group(&authority, 1).await;
+    node_setup_groups::publish_group(&authority, 8).await;
+    let hardware = HardwareClient::new(CrowdbKvClient::new(ClientConfig::new(
+        authority.binding.management_seeds.clone(),
+    )));
+    hardware
+        .add_rack(
+            1,
+            &RackValue {
+                node_ids: vec![2],
+                ..RackValue::default()
+            },
+        )
+        .await
+        .unwrap();
+    hardware
+        .add_node(
+            1,
+            2,
+            &NodeValue {
+                disk_group_ids: vec![1],
+                ..NodeValue::default()
+            },
+        )
+        .await
+        .unwrap();
+    hardware
+        .add_disk_group(1, 2, 1, &DiskGroupValue::default())
+        .await
+        .unwrap();
+    hardware.set_bind(1, 2, 1, 0, 8).await.unwrap();
+    NodeSetupForTests::advance_for_tests(profile(root)).await.unwrap();
+    let observed = NodeSetupForTests::status_for_tests(root).unwrap().unwrap();
+    assert!(observed.error.unwrap().contains("conflicting metadata binding"));
+    assert!(!root.join("disks").exists());
+    let journal: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("node-setup.json")).unwrap()).unwrap();
+    assert!(journal["file"].is_null());
+    assert_eq!(hardware.get_bind(1, 2, 1).await.unwrap().unwrap().group_id, 8);
+    assert_eq!(hardware.list_disk_groups_on_node(1, 2).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn normal_setup_defers_disks_and_service_commands_until_owned_metadata_is_available() {
+    let directory = crowdb_test_harness::test_dirs::tempdir_in_test_data("setup-metadata-gate");
+    let root = directory.path();
+    let inputs = crowdb_protocol::mgmt::node::deployment::NodeDeploymentOverrides::default();
+    let policy = crowdb_monitor::accept_node_policy(root, &inputs, &inputs).unwrap();
+    let mut intent = request(root);
+    intent.choices = policy.setup;
+    authorize(root, &intent);
+    NodeSetupForTests::default()
+        .accept_for_tests(root, intent.clone())
+        .unwrap();
+    let _authority = node_setup::TestAuthority::start(root, &intent).await;
+    NodeSetupForTests::advance_for_tests(profile(root)).await.unwrap();
+    let observed = NodeSetupForTests::status_for_tests(root).unwrap().unwrap();
+    assert_eq!(observed.phase, NodeSetupPhase::Running);
+    assert!(observed.error.unwrap().contains("live kv-server"));
+    assert!(observed
+        .services
+        .iter()
+        .all(|step| step.phase == crowdb_protocol::mgmt::node::setup::SetupStepPhase::Pending));
+    assert!(observed.disks.is_empty());
+    assert!(!root.join("disks").exists());
 }
 
 fn profile(root: &Path) -> DeploymentProfile {

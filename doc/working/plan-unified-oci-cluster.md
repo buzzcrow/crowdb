@@ -180,7 +180,7 @@ removal until the complete direct-container path passes A01/A03/A25.
   before mutation (A05, A22). Files:
   `lib/crowdb-console-shared/src/deployment/`,
   `lib/crowdb-console-shared/src/ops/cluster/`, corresponding `tests/`.
-- [~] **T09 — Create and recover the ordinary metadata group**: replace CLI-only
+- [x] **T09 — Create and recover the ordinary metadata group**: replace CLI-only
   Group 1 creation with an authorized operation driven by T08. Derive replicas
   from admitted membership; persist chosen IDs before effects. Verify matching
   existing group/binding, leader/readability and publication before dependent
@@ -190,14 +190,14 @@ removal until the complete direct-container path passes A01/A03/A25.
   `lib/crowdb-console-shared/src/ops/kv_logical/`,
   `lib/crowdb-console-shared/src/ops/cluster/`,
   `container/crowdb-monitor/src/node/runtime/setup/`.
-- [ ] **T10 — Pin consumers to the accepted metadata binding**: replace first-group
+- [x] **T10 — Pin consumers to the accepted metadata binding**: replace first-group
   selection in storage and planned Chunk-KV with T08's exact mapping. Validate
   binding on replay; honor retirement/deletion instead of selecting another
   group or recreating deleted defaults. Done when unrelated groups and explicit
   removal cannot redirect/revive setup (A22, A23). Files:
   `container/crowdb-monitor/src/node/runtime/setup/execution/storage.rs`,
   `app/crowdb-web/src/services/deployment/planned.rs`, setup/planned-service tests.
-- [ ] **T11 — Fix local storage geometry and placement**: derive and persist the
+- [~] **T11 — Fix local storage geometry and placement**: derive and persist the
   smallest supported file-count/geometry and mirror/EC configuration for one and
   three nodes. Start from existing 16-GiB local sparse media and supported test
   policies; verify whether the single profile's four files are needed before
@@ -597,6 +597,18 @@ do not mark unexecuted acceptance passed.
   multi-container admission remains under T06 acceptance.
 - Full `pixi run cargo test -p crowdb-web` also passed after target-owned setup
   policy resolution and authenticated formation checks.
+- Normal node setup now resumes shared metadata before disks/services. Storage
+  and planned Chunk-KV resolve the accepted binding instead of scanning for a
+  first ordinary group; retired/missing metadata never redirects to another
+  group. Automatic media retain the accepted initial disk-group ID; supplied
+  media keep their sealed compatible per-class scopes under that same metadata.
+  Eleven monitor setup tests, four supplied-media tests, three catalog authority
+  tests and eight shared metadata tests pass, including unrelated-group,
+  conflicting reserved binding, retirement and pre-service metadata gating.
+  Affected shared/monitor/Web all-target clippy and fmt gates pass. Packaged
+  application startup, geometry and protocol acceptance remain T11–T15/T31 work.
+- Full `pixi run cargo test -p crowdb-monitor` passed after metadata integration
+  and the setup fixture's committed-authority upgrade.
 - No direct application Docker, Compose, native containerd or protocol-access acceptance has
   run yet. No end-to-end or hardware capability is marked verified.
 

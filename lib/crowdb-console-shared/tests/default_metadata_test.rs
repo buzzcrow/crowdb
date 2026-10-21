@@ -214,3 +214,63 @@ async fn a_later_operator_membership_change_is_never_replaced_by_initial_default
     );
     assert!(fixture.stores[0].get_group(1).is_some());
 }
+
+#[tokio::test]
+async fn consumers_resolve_only_the_accepted_group_and_refuse_missing_or_retired_bindings() {
+    use crowdb_protocol::{
+        common::GroupValue,
+        key::{KvGroupKey, TextKey},
+    };
+    let fixture = TestDefaultMetadata::start(&[2]).await;
+    let ctx = &fixture.authority.ctx;
+    ctx.kv()
+        .put(
+            0,
+            0,
+            KvGroupKey {
+                store_id: 0,
+                group_id: 8,
+            }
+            .to_path()
+            .as_bytes(),
+            &serde_json::to_vec(&GroupValue {
+                store_id: 0,
+                group_id: 8,
+            })
+            .unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(preparation::metadata_binding(ctx, &fixture.accepted.bootstrap)
+        .await
+        .is_err());
+    ready(&fixture).await;
+    let metadata = preparation::metadata_binding(ctx, &fixture.accepted.bootstrap)
+        .await
+        .unwrap();
+    assert_eq!((metadata.store_id, metadata.group_id), (0, 1));
+    let storage = preparation::storage_binding(ctx, &fixture.accepted.bootstrap, 4, 2)
+        .await
+        .unwrap();
+    assert_eq!(
+        (storage.disk_group_id, storage.store_id, storage.group_id),
+        (1, 0, 1)
+    );
+    assert!(
+        preparation::storage_binding(ctx, &fixture.accepted.bootstrap, 9, 2)
+            .await
+            .is_err()
+    );
+    preparation::retire(ctx, &fixture.accepted.bootstrap, &fixture.accepted.operation_id)
+        .await
+        .unwrap();
+    assert!(preparation::metadata_binding(ctx, &fixture.accepted.bootstrap)
+        .await
+        .is_err());
+    assert!(
+        preparation::storage_binding(ctx, &fixture.accepted.bootstrap, 4, 2)
+            .await
+            .is_err()
+    );
+}
