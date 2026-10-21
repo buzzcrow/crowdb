@@ -1,9 +1,9 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! `crowdb-cli` CLI entrypoint (R126 restructure).
+//! `crowdb-cli` CLI entrypoint.
 //!
-//! Four top-level domains: `cluster`, `kv`, `chunk`, `bench`. The CLI
+//! Cluster operations, logical KV operations and attached workloads. The CLI
 //! talks directly to the system group via `CrowdbSysmdClient`
 //! and to individual `crowdb-kv-server` management APIs — no
 //! `crowdb-web` intermediary. The connection target can be any system-group
@@ -36,10 +36,9 @@ use clap::{Parser, Subcommand};
 use crowdb_protocol::KV_SERVER_MGMT_BASE;
 
 use commands::{
-    run_bench_verb, run_chunk_diskdb_verb, run_chunk_stub_verb, run_cluster_verb, run_group_verb,
-    run_kv_data_verb, run_kv_server_verb, run_port_alloc, run_replica_verb, run_s3_verb, run_store_verb,
-    BenchVerb, ChunkDiskdbVerb, ChunkStubVerb, ClusterVerb, GroupVerb, KvDataVerb, KvServerVerb,
-    PortAllocArgs, ReplicaVerb, S3Verb, StoreVerb,
+    run_bench_verb, run_cluster_verb, run_group_verb, run_kv_data_verb, run_kv_server_verb, run_port_alloc,
+    run_replica_verb, run_s3_verb, run_store_verb, BenchVerb, ClusterVerb, GroupVerb, KvDataVerb,
+    KvServerVerb, PortAllocArgs, ReplicaVerb, S3Verb, StoreVerb,
 };
 
 #[derive(Parser, Debug)]
@@ -115,11 +114,6 @@ enum Domain {
         #[command(subcommand)]
         verb: KvVerb,
     },
-    /// Chunk storage service cluster.
-    Chunk {
-        #[command(subcommand)]
-        verb: ChunkVerb,
-    },
     /// Load injection only.
     Bench {
         #[command(subcommand)]
@@ -151,14 +145,6 @@ enum KvVerb {
     Replica(ReplicaVerb),
     #[command(subcommand)]
     Data(KvDataVerb),
-}
-
-#[derive(Subcommand, Debug)]
-enum ChunkVerb {
-    #[command(subcommand)]
-    Diskdb(ChunkDiskdbVerb),
-    #[command(subcommand)]
-    Stub(ChunkStubVerb),
 }
 
 fn main() -> ExitCode {
@@ -285,10 +271,6 @@ async fn dispatch(mut cli: Cli) -> ExitCode {
             KvVerb::Group(gv) => run_group_verb(&cli, gv).await,
             KvVerb::Replica(rv) => run_replica_verb(&cli, rv).await,
             KvVerb::Data(dv) => run_kv_data_verb(&cli, dv).await,
-        },
-        Domain::Chunk { verb } => match verb {
-            ChunkVerb::Diskdb(dv) => run_chunk_diskdb_verb(&cli, dv).await,
-            ChunkVerb::Stub(sv) => run_chunk_stub_verb(&cli, sv).await,
         },
         Domain::Bench { verb } => run_bench_verb(&cli, verb).await,
         Domain::S3 { verb } => run_s3_verb(&cli, verb).await,

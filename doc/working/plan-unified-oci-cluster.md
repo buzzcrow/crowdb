@@ -1656,3 +1656,25 @@ do not mark unexecuted acceptance passed.
   checks do not repair intent. Explicit restart restores Ready. Private reports:
   `.crowdb-runtime/artifacts/r243-l-current-health/`. Registered acceptance and
   other protocol/host recovery coverage remain T30–T34.
+
+
+## CLI process tree and acceptance fixture migration
+
+- T29 removes the old `chunk` tree: process deploy/start/restart/stop aliases,
+  unimplemented storage maintenance/data placeholders and endpoint-printing
+  pseudo inventory. Current service evidence lives in `cluster status`; actual
+  DiskDB/ChunkDB/ChunkIO measurements remain under `bench`. No meaningful
+  maintenance implementation or workload worker is removed. A CLI contract case
+  rejects the removed tree and `bench rpc`, and checks all five retained
+  measurement families remain discoverable. CLI/target tests, fmt and affected
+  all-target clippy pass.
+- The common CLI container fixture migration is in progress. A real three-node
+  Group-0-bound interruption/resume, persisted S3 write, stop/resume, retained
+  file-disk identities and alternate-member check pass. The storage checkpoint
+  reaches Ready, but first S3 bucket creation returns HTTP 503. Collected logs
+  show data-group quorum churn and a DiskDB no-space report. This is a new
+  unresolved first divergence, not hidden with caller retries or accepted as
+  completion. Evidence is under `.crowdb-runtime/artifacts/r243-common-cli-replay/`;
+  the original failed fixture removed its owned resources after log collection.
+  Subsequent failed fixtures now retain data/receipts while removing bridges and
+  containers for diagnosis. Continue diagnosis before committing this fixture.

@@ -59,3 +59,20 @@ fn benchmark_replaces_its_previous_log_directory() {
         let _ = fs::remove_dir_all(root);
     }
 }
+
+#[test]
+fn retired_storage_process_commands_are_absent_and_measurements_remain() {
+    let cli = crowdb_cli_bin();
+    for arguments in [vec!["chunk", "--help"], vec!["bench", "rpc", "--help"]] {
+        let output = Command::new(&cli).args(&arguments).output().unwrap();
+        assert_eq!(output.status.code(), Some(2), "{arguments:?}: {output:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("unrecognized subcommand"));
+    }
+    for family in ["kv", "diskdb", "chunkdb", "chunkio", "s3"] {
+        let output = Command::new(&cli)
+            .args(["bench", family, "--help"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{family}: {output:?}");
+    }
+}

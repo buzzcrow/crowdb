@@ -54,8 +54,7 @@ fn validate_command(command: &crate::Domain) -> Result<(), ExitCode> {
                 | ClusterVerb::Disk { .. }
         } | Domain::Kv {
             verb: KvVerb::Store(_) | KvVerb::Group(_) | KvVerb::Replica(_) | KvVerb::Data(_)
-        } | Domain::Chunk { .. }
-            | Domain::S3 { .. }
+        } | Domain::S3 { .. }
             | Domain::Bench {
                 verb: BenchVerb::Kv(_)
                     | BenchVerb::Diskdb(_)
