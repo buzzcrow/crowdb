@@ -27,7 +27,7 @@ mod inspection;
 pub use inspection::{ObjectInspector, OBJECT_LOCATIONS_PATH};
 mod health;
 mod operations;
-pub use health::AccessHealthHandler;
+pub use health::{AccessHealthHandler, HealthObserver};
 
 pub use crate::http_receive::install_body_receive_provider;
 pub use crate::multipart_complete::{CompletePart, CompleteRequestError, CompleteSelection};

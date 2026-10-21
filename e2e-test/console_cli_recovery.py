@@ -48,6 +48,8 @@ def pause_and_write(cluster, pauses):
             time.sleep(40)
             unavailable = health_snapshot(cluster, "paused")
             assert all(value.get("ready") is False for value in unavailable), unavailable
+            assert all(value.get("observation", {}).get("state") == "current"
+                       for value in unavailable), unavailable
         finally:
             for identity, pid in pauses:
                 signal_diskio(cluster, identity, pid, "CONT")
@@ -88,6 +90,7 @@ def terminal_writer_recovery(cluster, cluster_id):
     assert report["phase"] == "ready" and report["observation"]["cluster_id"] == cluster_id, report
     recovery_seconds = time.monotonic() - started
     assert all(value.get("ready") is True for value in health), health
+    assert all(value.get("observation", {}).get("state") == "current" for value in health), health
     assert inputs == cluster.state(), "fault recovery changed accepted launch inputs"
     assert identities == [cluster.inspect_owned(name)["Id"] for name in cluster.servers]
     after = request(origin, "/api/servers")
@@ -120,4 +123,5 @@ def terminal_writer_recovery(cluster, cluster_id):
         "cluster_id": cluster_id, "old_pids": old, "new_pids": new, "restarted": restarted,
         "access_pids": access(after), "recovery_seconds": recovery_seconds,
         "retained_reads": 3, "new_reads": 3}, indent=2))
-    print("PASS automatic durable replay and Access recovery", restarted, flush=True)
+    cluster.current_readiness(cluster_id)
+    print("PASS automatic durable replay, cached Access recovery and operator stop fencing", restarted, flush=True)

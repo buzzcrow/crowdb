@@ -1,116 +1,83 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{dependencies, full_body, HandlerFuture, ResponseBody, S3Dispatcher, S3HttpHandler};
-use crowdb_access_s3::metrics::{DependencyHealth, S3HealthSnapshot};
+//! Health queries only read the backend sampler's latest immutable evidence.
+
+mod observation;
+pub(in crate::s3) use observation::HealthObservations;
+pub use observation::HealthObserver;
+
+use super::{full_body, HandlerFuture, ResponseBody, S3Dispatcher, S3HttpHandler};
+use crowdb_access_s3::metrics::S3Readiness;
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
+use observation::{HealthObservation, MAX_AGE};
 use serde_json::json;
 use std::sync::Arc;
 
-/// Dedicated health surface sharing the data listener's dependency state.
+/// Dedicated health surface sharing the data listener's backend observations.
 pub struct AccessHealthHandler(pub Arc<S3Dispatcher>);
 
 impl S3HttpHandler for AccessHealthHandler {
     fn handle(&self, request: Request<Incoming>) -> HandlerFuture {
-        let dispatcher = Arc::clone(&self.0);
-        Box::pin(async move {
-            let response = match request.uri().path() {
-                "/_crowdb/health/ready" if matches!(*request.method(), Method::GET | Method::HEAD) => Some(
-                    dispatcher
-                        .readiness_response(request.method() == Method::HEAD)
-                        .await,
-                ),
-                "/_crowdb/health/live" => dispatcher.operational_response(&request),
-                _ => None,
-            };
-            Ok(response.unwrap_or_else(|| {
-                Response::builder()
-                    .status(StatusCode::NOT_FOUND)
-                    .body(full_body(hyper::body::Bytes::new()))
-                    .expect("static health response")
-            }))
-        })
-    }
-}
-
-impl S3Dispatcher {
-    async fn readiness_response(&self, head_only: bool) -> Response<ResponseBody> {
-        let observed = tokio::time::timeout(
-            std::time::Duration::from_millis(800),
-            Arc::clone(&self.operations).observe_dependencies(),
-        )
-        .await
-        .unwrap_or_else(|_| {
-            Some(super::StorageReadiness {
-                metadata: Err("Dependency observation exceeded its 800 ms deadline".into()),
-                chunks: Err("Dependency observation exceeded its 800 ms deadline".into()),
-            })
-        });
-        let mut snapshot = self
-            .health
-            .snapshot(&self.metrics, self.body_allocator.as_deref());
-        let mut details = serde_json::Map::new();
-        if let Some(observed) = observed {
-            snapshot.readiness.metadata = dependencies::health(&observed.metadata);
-            snapshot.readiness.chunks = dependencies::health(&observed.chunks);
-            for (name, result) in [("metadata", observed.metadata), ("chunks", observed.chunks)] {
-                details.insert(
-                    name.into(),
-                    json!(match result {
-                        Ok(detail) | Err(detail) => detail,
-                    }),
-                );
+        let response = match request.uri().path() {
+            "/_crowdb/health/ready" if matches!(*request.method(), Method::GET | Method::HEAD) => {
+                let observed = self.0.observations.latest.load_full();
+                Some(readiness_response(
+                    observed.as_deref(),
+                    self.0.health.is_live(),
+                    request.method() == Method::HEAD,
+                ))
             }
+            "/_crowdb/health/live" => self.0.operational_response(&request),
+            _ => None,
         }
-        if let Some(ready) = self.authenticator.is_ready() {
-            snapshot.readiness.authentication = if ready {
-                DependencyHealth::Ready
-            } else {
-                DependencyHealth::Unavailable
-            };
-        }
-        readiness_response(snapshot, &details, head_only)
+        .unwrap_or_else(|| {
+            Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(full_body(hyper::body::Bytes::new()))
+                .expect("static health response")
+        });
+        Box::pin(async move { Ok(response) })
     }
 }
 
 fn readiness_response(
-    snapshot: S3HealthSnapshot,
-    details: &serde_json::Map<String, serde_json::Value>,
+    observed: Option<&HealthObservation>,
+    live: bool,
     head_only: bool,
 ) -> Response<ResponseBody> {
-    let readiness = snapshot.readiness;
-    let ready = snapshot.live && readiness.is_ready();
-    let mut reasons = Vec::new();
-    if !snapshot.live {
-        reasons.push("live");
-    }
-    for (name, state) in [
-        ("listener", readiness.listener),
-        ("metadata", readiness.metadata),
-        ("chunks", readiness.chunks),
-        ("native_pool", readiness.native_pool),
-        ("cleanup", readiness.cleanup),
-        ("authentication", readiness.authentication),
-    ] {
-        if !state.can_admit() {
-            reasons.push(name);
-        }
-    }
+    let age = observed.map(|value| value.started.elapsed());
+    let current = age.is_some_and(|age| age <= MAX_AGE);
+    let state = if current {
+        "current"
+    } else if observed.is_some() {
+        "expired"
+    } else {
+        "pending"
+    };
+    let snapshot = observed.map(|value| value.health);
+    let readiness = snapshot
+        .filter(|_| current)
+        .map_or_else(S3Readiness::unknown, |health| health.readiness);
+    let ready = live && current && readiness.is_ready();
+    let reasons = failure_reasons(readiness, live, current, observed.is_some());
     let body = json!({
-        "ready": ready,
-        "live": snapshot.live,
-        "listener": readiness.listener.as_str(),
-        "metadata": readiness.metadata.as_str(),
-        "chunks": readiness.chunks.as_str(),
-        "native_pool": readiness.native_pool.as_str(),
-        "cleanup": readiness.cleanup.as_str(),
-        "authentication": readiness.authentication.as_str(),
-        "native_retained_bytes": snapshot.native_retained_bytes,
-        "native_budget_bytes": snapshot.native_budget_bytes,
-        "cleanup_backlog": snapshot.cleanup_backlog,
-        "cleanup_backlog_limit": snapshot.cleanup_backlog_limit,
-        "reasons": reasons,
-        "details": details,
+        "ready": ready, "live": live,
+        "listener": readiness.listener.as_str(), "metadata": readiness.metadata.as_str(),
+        "chunks": readiness.chunks.as_str(), "native_pool": readiness.native_pool.as_str(),
+        "cleanup": readiness.cleanup.as_str(), "authentication": readiness.authentication.as_str(),
+        "native_retained_bytes": snapshot.map(|value| value.native_retained_bytes),
+        "native_budget_bytes": snapshot.map(|value| value.native_budget_bytes),
+        "cleanup_backlog": snapshot.map(|value| value.cleanup_backlog),
+        "cleanup_backlog_limit": snapshot.map(|value| value.cleanup_backlog_limit),
+        "reasons": reasons, "details": observed.map(|value| &value.details),
+        "observation": {
+            "state": state,
+            "checked_at_unix_ms": observed.map(|value| value.checked_at_unix_ms),
+            "age_ms": age.map(|value| u64::try_from(value.as_millis()).unwrap_or(u64::MAX)),
+            "max_age_ms": u64::try_from(MAX_AGE.as_millis()).unwrap_or(u64::MAX),
+            "generation": observed.map_or(0, |value| value.generation),
+        },
     });
     Response::builder()
         .status(if ready {
@@ -125,4 +92,31 @@ fn readiness_response(
             body.to_string().into()
         }))
         .expect("static health response")
+}
+
+fn failure_reasons(readiness: S3Readiness, live: bool, current: bool, observed: bool) -> Vec<&'static str> {
+    let mut reasons = Vec::new();
+    if !live {
+        reasons.push("live");
+    }
+    if !current {
+        reasons.push(if observed {
+            "observation-expired"
+        } else {
+            "observation-pending"
+        });
+    }
+    for (name, dependency) in [
+        ("listener", readiness.listener),
+        ("metadata", readiness.metadata),
+        ("chunks", readiness.chunks),
+        ("native_pool", readiness.native_pool),
+        ("cleanup", readiness.cleanup),
+        ("authentication", readiness.authentication),
+    ] {
+        if !dependency.can_admit() {
+            reasons.push(name);
+        }
+    }
+    reasons
 }

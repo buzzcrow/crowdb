@@ -32,7 +32,11 @@ pub mod spa;
 mod standalone;
 pub mod state;
 
+pub use node::observation::{start_node_observer, NodeObserver};
 pub use state::AppState;
+
+#[cfg(feature = "test-util")]
+pub use node::observation::{node_observation_time_for_tests, start_node_observer_for_tests};
 
 #[cfg(feature = "test-util")]
 pub use node::observation::protocol_probe_for_tests;

@@ -5,6 +5,9 @@
 
 mod protocols;
 mod services;
+mod worker;
+pub(crate) use worker::NodeObservations;
+pub use worker::{start_node_observer, NodeObserver};
 
 use crate::{
     error::{err_409, err_502},
@@ -21,10 +24,20 @@ pub(crate) async fn read(State(state): State<AppState>) -> Result<Json<NodeRunti
     if state.node_monitor_url.is_none() {
         return Err(err_409("Node observation requires an owning monitor"));
     }
-    tokio::time::timeout(Duration::from_secs(3), observe(&state))
-        .await
-        .map_err(|_| err_502("Node observation deadline elapsed"))?
-        .map(Json)
+    let observed = state
+        .node_observations
+        .latest
+        .load_full()
+        .ok_or_else(|| err_502("Backend node observation is pending"))?;
+    if observed.started.elapsed() > Duration::from_secs(3) {
+        return Err(err_502(
+            "Backend node observation expired; current health is unknown",
+        ));
+    }
+    match &observed.result {
+        Ok(value) => Ok(Json(value.clone())),
+        Err((status, error)) => Err((*status, Json(crate::error::ErrorBody { error: error.clone() }))),
+    }
 }
 
 async fn observe(state: &AppState) -> Result<NodeRuntimeObservation, Failure> {
@@ -47,7 +60,9 @@ async fn observe(state: &AppState) -> Result<NodeRuntimeObservation, Failure> {
             return Err(err_409("Bound node and monitor observation identities differ"));
         }
         let intents = tokio::time::timeout(Duration::from_secs(1), async {
-            service_intents::list(state.kv_client().await.as_ref()).await
+            let kv = state.kv_client().await;
+            kv.set_mgmt_seeds(binding.management_seeds.clone());
+            service_intents::list(kv.as_ref()).await
         })
         .await
         .ok()
@@ -97,4 +112,33 @@ pub async fn service_detail_for_tests(
     intent: &crowdb_protocol::mgmt::node::NodeServiceIntent,
 ) -> Result<String, String> {
     services::read(state, intent).await
+}
+
+/// Start the production sampling loop with an injected observation source.
+///
+/// # Errors
+/// Rejects a duplicate worker or a state without an owning node monitor.
+#[cfg(feature = "test-util")]
+pub fn start_node_observer_for_tests<F, Fut>(
+    state: &AppState,
+    source: F,
+) -> Result<NodeObserver, &'static str>
+where
+    F: Fn() -> Fut + Send + 'static,
+    Fut:
+        std::future::Future<Output = Result<NodeRuntimeObservation, (axum::http::StatusCode, String)>> + Send,
+{
+    worker::start(state, source)
+}
+
+#[cfg(feature = "test-util")]
+#[must_use]
+pub fn node_observation_time_for_tests(state: &AppState) -> Option<u64> {
+    state
+        .node_observations
+        .latest
+        .load()
+        .as_ref()
+        .and_then(|observed| observed.result.as_ref().ok())
+        .map(|value| value.observed_at_unix_ms)
 }

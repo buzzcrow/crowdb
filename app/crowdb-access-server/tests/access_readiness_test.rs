@@ -2,142 +2,38 @@
 // Licensed under the Apache License, Version 2.0.
 #![cfg(feature = "s3")]
 
+#[path = "common/access_health.rs"]
+mod fixture;
+use crowdb_access_s3::auth::{
+    AuthError, CredentialCache, RawAuthRequest, RequestAuthenticator, SigV4Verifier,
+    TrustedNetworkAuthenticator,
+};
+use fixture::TestHealth;
+use serde_json::Value;
 use std::{
-    sync::{
-        atomic::{AtomicU8, Ordering},
-        Arc,
-    },
+    sync::{atomic::Ordering, Arc},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use crowdb_access_s3::{
-    auth::{CredentialCache, RequestAuthenticator, SigV4Verifier, TrustedNetworkAuthenticator},
-    metrics::{DependencyHealth, S3Health, S3Metrics},
-    route::S3Route,
-};
-use crowdb_access_server::s3::{
-    serve, AccessHealthHandler, DependencyProbeFuture, S3Dispatcher, S3Operations, S3OperationsFuture,
-    StorageReadiness,
-};
-use hyper::{body::Incoming, Request};
-use serde_json::Value;
-
-struct TestDependencies(AtomicU8);
-
-impl S3Operations for TestDependencies {
-    fn observe_dependencies(self: Arc<Self>) -> DependencyProbeFuture {
-        Box::pin(async move {
-            let phase = self.0.load(Ordering::Relaxed);
-            if phase == 3 {
-                std::future::pending::<()>().await;
-            }
-            Some(StorageReadiness {
-                metadata: if phase == 1 {
-                    Err("metadata owner unavailable".into())
-                } else {
-                    Ok("current routed read".into())
-                },
-                chunks: if phase == 2 {
-                    Err("physical disk read failed".into())
-                } else {
-                    Ok("current disk reads".into())
-                },
-            })
-        })
-    }
-
-    fn execute(
-        self: Arc<Self>,
-        _: S3Route,
-        _: Request<Incoming>,
-        _: String,
-        _: String,
-    ) -> S3OperationsFuture {
-        panic!("readiness must not dispatch application operations");
-    }
-}
-
-struct TestHealth {
-    url: String,
-    task: tokio::task::JoinHandle<std::io::Result<()>>,
-    operations: Arc<TestDependencies>,
-    health: Arc<S3Health>,
-    metrics: Arc<S3Metrics>,
-}
-
-impl TestHealth {
-    async fn new(authenticator: Arc<dyn RequestAuthenticator>) -> Self {
-        let operations = Arc::new(TestDependencies(AtomicU8::new(1)));
-        let health = Arc::new(S3Health::starting(1));
-        health.set_listener(DependencyHealth::Ready);
-        let metrics = Arc::new(S3Metrics::default());
-        let dispatcher = Arc::new(
-            S3Dispatcher::new(
-                authenticator,
-                operations.clone(),
-                metrics.clone(),
-                "test".into(),
-                false,
-            )
-            .with_health(health.clone()),
-        );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}/_crowdb/health/ready", listener.local_addr().unwrap());
-        let task = tokio::spawn(serve(
-            listener,
-            Arc::new(AccessHealthHandler(dispatcher)),
-            std::future::pending(),
-        ));
-        Self {
-            url,
-            task,
-            operations,
-            health,
-            metrics,
-        }
-    }
-
-    async fn read(&self, status: u16) -> Value {
-        let response = reqwest::Client::builder()
-            .no_proxy()
-            .build()
-            .unwrap()
-            .get(&self.url)
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status().as_u16(), status);
-        serde_json::from_slice(&response.bytes().await.unwrap()).unwrap()
-    }
-}
-
-impl Drop for TestHealth {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
 #[tokio::test]
-async fn current_readiness_recovers_without_application_traffic_and_preserves_stop() {
-    let fixture = TestHealth::new(Arc::new(TrustedNetworkAuthenticator::new())).await;
+async fn backend_recovers_without_queries_and_preserves_stop() {
+    let fixture = TestHealth::new(Arc::new(TrustedNetworkAuthenticator::new()), 1, true).await;
     let failed = fixture.read(503).await;
     assert_eq!(failed["metadata"], "unavailable");
     assert_eq!(failed["chunks"], "ready");
     assert_eq!(failed["details"]["metadata"], "metadata owner unavailable");
-    fixture.operations.0.store(2, Ordering::Relaxed);
+    let generation = fixture.generation();
+    fixture.operations.phase.store(2, Ordering::Relaxed);
+    fixture.after(generation).await;
     let failed = fixture.read(503).await;
     assert_eq!(failed["metadata"], "ready");
     assert_eq!(failed["chunks"], "unavailable");
-    fixture.operations.0.store(0, Ordering::Relaxed);
+    let generation = fixture.generation();
+    fixture.operations.phase.store(0, Ordering::Relaxed);
+    fixture.after(generation).await;
     assert_eq!(fixture.read(200).await["ready"], true);
-    // Fresh evidence is response-local; request outcomes cannot overwrite it.
-    assert_eq!(
-        fixture.health.snapshot(&fixture.metrics, None).readiness.chunks,
-        DependencyHealth::Unavailable
-    );
     fixture.health.stop();
     let stopped = fixture.read(503).await;
-    assert_eq!(stopped["ready"], false);
     assert!(stopped["reasons"]
         .as_array()
         .unwrap()
@@ -145,38 +41,110 @@ async fn current_readiness_recovers_without_application_traffic_and_preserves_st
 }
 
 #[tokio::test]
-async fn stalled_observations_fail_closed_within_the_health_budget() {
-    let fixture = TestHealth::new(Arc::new(TrustedNetworkAuthenticator::new())).await;
-    fixture.operations.0.store(3, Ordering::Relaxed);
+async fn pending_and_expired_evidence_remain_unknown_and_queries_never_probe() {
+    let mut fixture = TestHealth::new(Arc::new(TrustedNetworkAuthenticator::new()), 0, false).await;
+    let pending = fixture.read(503).await;
+    assert_eq!(pending["metadata"], "unknown");
+    assert_eq!(pending["observation"]["state"], "pending");
+    assert_eq!(fixture.operations.calls.load(Ordering::Relaxed), 0);
+    fixture.observer = Some(fixture.dispatcher.start_health_observer().unwrap());
+    fixture.after(0).await;
+    let before = fixture.read(200).await;
+    fixture.observer.take();
+    tokio::task::yield_now().await;
+    let calls = fixture.operations.calls.load(Ordering::Relaxed);
+    let reads = futures::future::join_all((0..32).map(|_| fixture.read(200))).await;
+    for read in reads {
+        assert_eq!(
+            read["observation"]["generation"],
+            before["observation"]["generation"]
+        );
+    }
+    assert_eq!(fixture.operations.calls.load(Ordering::Relaxed), calls);
+    tokio::time::sleep(Duration::from_millis(3050)).await;
+    let expired = fixture.read(503).await;
+    assert_eq!(expired["metadata"], "unknown");
+    assert_eq!(expired["chunks"], "unknown");
+    assert_eq!(expired["observation"]["state"], "expired");
+    assert_eq!(
+        expired["observation"]["checked_at_unix_ms"],
+        before["observation"]["checked_at_unix_ms"]
+    );
+    assert_eq!(fixture.operations.calls.load(Ordering::Relaxed), calls);
+}
+
+#[tokio::test]
+async fn stalled_sampler_is_bounded_single_flight_and_queries_stay_fast() {
+    let mut fixture = TestHealth::new(Arc::new(TrustedNetworkAuthenticator::new()), 3, true).await;
+    assert!(fixture.dispatcher.start_health_observer().is_err());
     let started = Instant::now();
     let failed = fixture.read(503).await;
-    assert!(started.elapsed() < Duration::from_millis(1500));
-    assert_eq!(failed["metadata"], "unavailable");
-    assert_eq!(failed["chunks"], "unavailable");
+    assert!(started.elapsed() < Duration::from_millis(500));
     assert!(failed["details"]["metadata"]
         .as_str()
         .unwrap()
         .contains("deadline"));
+    let generation = fixture.generation();
+    fixture.after(generation).await;
+    assert_eq!(fixture.operations.peak.load(Ordering::Relaxed), 1);
+    fixture.observer.take();
+    tokio::task::yield_now().await;
+    assert_eq!(fixture.operations.in_flight.load(Ordering::Relaxed), 0);
 }
 
 #[tokio::test]
-async fn credential_refresh_and_cleanup_are_observed_without_authenticating_a_request() {
+async fn credential_refresh_and_cleanup_update_in_background() {
     let cache = Arc::new(CredentialCache::new(90));
-    let fixture = TestHealth::new(Arc::new(SigV4Verifier::new(
-        cache.clone(),
-        "us-east-1".into(),
-        900,
-    )))
+    let fixture = TestHealth::new(
+        Arc::new(SigV4Verifier::new(cache.clone(), "us-east-1".into(), 900)),
+        0,
+        true,
+    )
     .await;
-    fixture.operations.0.store(0, Ordering::Relaxed);
     assert_eq!(fixture.read(503).await["authentication"], "unavailable");
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
     cache.install([], now - 91).unwrap();
+    let generation = fixture.generation();
+    fixture.after(generation).await;
     assert_eq!(fixture.read(503).await["authentication"], "unavailable");
+    let generation = fixture.generation();
     cache.install([], now).unwrap();
+    fixture.after(generation).await;
     assert_eq!(fixture.read(200).await["authentication"], "ready");
+    let generation = fixture.generation();
     fixture.metrics.enqueue_cleanup(2);
-    let backlog = fixture.read(503).await;
-    assert_eq!(backlog["cleanup"], "unavailable");
-    assert_eq!(backlog["cleanup_backlog"], 2);
+    fixture.after(generation).await;
+    assert_eq!(fixture.read(503).await["cleanup"], "unavailable");
+    let generation = fixture.generation();
+    fixture.metrics.complete_cleanup(2);
+    fixture.after(generation).await;
+    assert_eq!(fixture.read(200).await["cleanup"], "ready");
+}
+
+struct TestUnavailableAuthenticator;
+#[async_trait::async_trait]
+impl RequestAuthenticator for TestUnavailableAuthenticator {
+    fn is_ready(&self) -> Option<bool> {
+        Some(true)
+    }
+    async fn authenticate(&self, _: RawAuthRequest<'_>) -> Result<(), AuthError> {
+        Err(AuthError::Unavailable)
+    }
+}
+#[tokio::test]
+async fn business_request_failure_cannot_change_cached_health() {
+    let mut fixture = TestHealth::new(Arc::new(TestUnavailableAuthenticator), 0, true).await;
+    fixture.observer.take();
+    let before = fixture.read(200).await;
+    fixture.business_failure().await;
+    let after = fixture.read(200).await;
+    assert_eq!(before["authentication"], after["authentication"]);
+    assert_eq!(
+        before["observation"]["generation"],
+        after["observation"]["generation"]
+    );
+    assert_eq!(
+        before["observation"]["checked_at_unix_ms"],
+        after["observation"]["checked_at_unix_ms"]
+    );
 }

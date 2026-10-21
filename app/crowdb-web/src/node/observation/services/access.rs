@@ -61,15 +61,16 @@ pub(super) async fn read(state: &AppState, intent: &NodeServiceIntent) -> Result
         .map(|name| {
             let value = body[name]
                 .as_str()
-                .filter(|value| ["ready", "busy", "unavailable"].contains(value))
+                .filter(|value| ["ready", "busy", "unavailable", "unknown"].contains(value))
                 .ok_or_else(|| format!("Access readiness has no valid {name} state"))?;
             Ok(format!("{name}={value}"))
         })
         .collect::<Result<Vec<_>, String>>()?;
     Ok(format!(
-        "Access readiness HTTP {status}: {}; details: {}; cleanup backlog: {}/{}",
+        "Access readiness HTTP {status}: {}; details: {}; observation: {}; cleanup backlog: {}/{}",
         flags.join(", "),
         body["details"],
+        body["observation"],
         body["cleanup_backlog"],
         body["cleanup_backlog_limit"]
     ))

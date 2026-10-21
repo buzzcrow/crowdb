@@ -13,7 +13,8 @@ readiness, attached workloads and scoped cleanup.
   acceptance work below. The sustained all-DiskIO recovery case now passes;
   this does not certify every runtime, protocol or formation/recovery acceptance.
 - 2026-10-22: user authorized continuation past the prior retry limit and asked
-  for diagnosis of the long-standing failure. F02 is the scope of this continuation.
+  for diagnosis of the long-standing failure. User subsequently requested F03
+  and explicitly authorized continuing other R243 tasks afterward, starting T04.
 - Branch `task-stable`; local commits only, no push authorized.
   Earlier storage fixes: `532af33e`; common CLI fixture: `be0efd32`.
 - Failed fixture data/logs and earlier retained J/L data remain preserved.
@@ -22,6 +23,28 @@ readiness, attached workloads and scoped cleanup.
 - Preserve user edits in `container/single-node-container/dev-container.sh` and
   `e2e-test/clients/ecosystem/README.md`; exclude them from requirement commits.
 - No compatibility requirement. RDMA uses host networking.
+- [x] **F03 — Separate background health sampling from status reads** (A15/A26/A27).
+  User requires backend-owned health snapshots: frontend/business request failures
+  cannot mutate global health; querying health must not trigger dependency I/O.
+  One Access worker samples every second with an 800 ms bound and publishes an
+  immutable snapshot through ArcSwap. Successful observations replace failures;
+  after three seconds evidence expires to Unknown, never automatically Ready.
+  Stop remains an immediate lifecycle fence. Worker lifetime follows the listener;
+  concurrent worker starts are fenced without locks.
+  Web protocol reads and service diagnostics also move to one independent backend
+  sampler; node-observation reads only return its current snapshot, preserving
+  original timestamps and operation IDs. Aggregate current-intent fencing remains.
+  Files: Access `s3/health{,/observation}.rs`, dispatcher/main wiring;
+  shared S3 health enum; Web node worker/state/main and Access diagnostics;
+  Access/Web health cache tests and design.
+  Unit/integration: query bursts add zero probes, independent recovery without
+  reads, one worker/in-flight probe, expiry/pending Unknown, stop and teardown.
+  Verified: 23 affected Rust integration tests, 159 Python fixture tests,
+  Rust fmt and Access/S3/Web all-target clippy pass. Registered sustained
+  all-DiskIO fault passed on image S: independent cached health recovered in
+  5.13 seconds, retained old/new reads passed on all members without Access
+  restart, and explicit DiskIO stop/restart correctly fenced cached evidence.
+  The final fixture status is pass; independent owned cleanup completed.
 - [x] **F02 — Verify current Access readiness after backend recovery** (A15/A23/A26/A27).
   Independent dedicated endpoint samples confirmed stale metadata/chunks
   Unavailable after backend recovery; listener/authentication/native-pool/cleanup
@@ -78,7 +101,7 @@ end-to-end recovery rounds. Harness setup failures are excluded from this count.
 Only mark tasks complete after their acceptance is registered and verified.
 Existing implementation can be reused; these are the outstanding parts.
 
-- [ ] **T04 — Finish common target coverage** (A14/A28).
+- [~] **T04 — Finish common target coverage** (A14/A28).
   Named/endpoint-only UUID-checked targeting and native signed S3/workloads work.
   Remove remaining legacy logical-command address/registry fallback with T29.
   Owners: CLI `commands/cluster/target.rs`, `commands.rs`, shared deployment target.
@@ -172,13 +195,31 @@ Existing implementation can be reused; these are the outstanding parts.
 
 ## Verification and retained resources
 
-- Current image: `crowdb-node:r243-r`; archive `target/crowdb-r243-r.oci.tar`.
+- Current F03 image: `crowdb-node:r243-s`; archive `target/crowdb-r243-s.oci.tar`.
+  Source tree `f7e0b5d52ead45c8ae5047e0d8739bf7ef9c8326` at `14b117df`;
+  server source identity verified before the registered run.
+  OCI `sha256:e8391da241365b4978ff90adcc7ffec93c185539c63b64886ebd3930a6721fca`;
+  Docker `sha256:1fb4a4cdb532cc11ef5dc5c15859c56408bcd5b6c499e08907931e80880a1056`.
+  Archive SHA256 `43146f2464e1e100c6e74df9591e5d8dc65a8e3d40288fd379e523f64b814039`.
+- F03 evidence: `.crowdb-runtime/artifacts/r243-s-registered/`.
+  Registered `console::cli_container::terminal_chunk_writer_recovery` passed
+  through `scenarios.run_cases` on local Docker Linux bridge, three one-CPU
+  containers, prebuilt `target/debug` common CLI bundle. Exact fixture
+  `crowdb-e2e-6bdd60ea399742bcbad80e10ea141d04`, cluster UUID
+  `1776530c-327e-45c8-a083-c2251e722eee`. Recovery took 5.13 seconds after
+  the sustained outage; one terminal ChunkKV writer replayed, all Access PIDs
+  remained fixed, and old/new object reads passed on all three members.
+  Explicit operator stop/restart also passed against cached observations.
+  Final timing is pass (140.18 seconds including owned cleanup); containers,
+  bridge and successful disposable volumes were removed.
+
+- Previous F02 image: `crowdb-node:r243-r`; archive `target/crowdb-r243-r.oci.tar`.
   Source tree `67269b7a179cfa4ddc8aaa12a740ac3155f29f1f` at `00b3fe00`;
   server source identity verified before running the registered cases.
   OCI `sha256:273e479c530e3fc31b4c7ec7ab08ff92360433d6d2a26e582d679d9aa4604ad1`;
   Docker `sha256:f11c3022d57cb530de351addac125e29d52e9a242562e4b0e6de2bf91c1617b4`.
   Archive SHA256 `ab647f26b6081876bd1d781c28a28068c3c45edea2314f5861f8b1fefd47d92f`.
-- Current evidence: `.crowdb-runtime/artifacts/r243-r-registered/`. Exact registered
+- Previous F02 evidence: `.crowdb-runtime/artifacts/r243-r-registered/`. Exact registered
   `console.cli.container` cases execute through `scenarios.run_cases`, using a
   prebuilt common CLI bundle in `target/debug` (not the full RPC client bundle).
   Docker Linux bridge on this local Linux host; three one-CPU node containers.

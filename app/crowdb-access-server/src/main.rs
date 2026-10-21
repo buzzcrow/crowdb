@@ -234,6 +234,7 @@ async fn run_s3(
         let health_listener = bind_health_listener(access_config).await?;
         let health_handler = Arc::new(AccessHealthHandler(Arc::clone(&handler)));
         health.set_listener(DependencyHealth::Ready);
+        let health_observer = handler.start_health_observer()?;
         let serve_result = crowdb_access_server::listeners::serve_s3(
             serve(listener, handler, wait_for_shutdown(shutdown.clone())),
             serve(health_listener, health_handler, wait_for_shutdown(shutdown)),
@@ -241,6 +242,7 @@ async fn run_s3(
         )
         .await;
         health.stop();
+        drop(health_observer);
         expiry_task.abort();
         let shutdown_result = chunks.shutdown_small_writes().await;
         if let Some(task) = credential_refresh {

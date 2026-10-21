@@ -570,6 +570,11 @@ impl S3Health {
     }
 
     #[must_use]
+    pub fn is_live(&self) -> bool {
+        self.live.load(Ordering::Acquire)
+    }
+
+    #[must_use]
     pub fn snapshot(&self, metrics: &S3Metrics, native: Option<&NativeBodyAllocator>) -> S3HealthSnapshot {
         let native_metrics = native.map(NativeBodyAllocator::metrics_snapshot);
         let native_pool = native_metrics.map_or(DependencyHealth::Ready, |snapshot| {
@@ -626,6 +631,18 @@ pub struct S3Readiness {
 
 impl S3Readiness {
     #[must_use]
+    pub const fn unknown() -> Self {
+        Self {
+            listener: DependencyHealth::Unknown,
+            metadata: DependencyHealth::Unknown,
+            chunks: DependencyHealth::Unknown,
+            native_pool: DependencyHealth::Unknown,
+            cleanup: DependencyHealth::Unknown,
+            authentication: DependencyHealth::Unknown,
+        }
+    }
+
+    #[must_use]
     pub const fn is_ready(self) -> bool {
         self.listener.can_admit()
             && self.metadata.can_admit()
@@ -642,12 +659,13 @@ pub enum DependencyHealth {
     Ready,
     Busy,
     Unavailable,
+    Unknown,
 }
 
 impl DependencyHealth {
     #[must_use]
     pub const fn can_admit(self) -> bool {
-        !matches!(self, Self::Unavailable)
+        matches!(self, Self::Ready | Self::Busy)
     }
 
     #[must_use]
@@ -656,6 +674,7 @@ impl DependencyHealth {
             Self::Ready => "ready",
             Self::Busy => "busy",
             Self::Unavailable => "unavailable",
+            Self::Unknown => "unknown",
         }
     }
 }
@@ -664,6 +683,7 @@ fn load_health(value: &AtomicU8) -> DependencyHealth {
     match value.load(Ordering::Acquire) {
         value if value == DependencyHealth::Ready as u8 => DependencyHealth::Ready,
         value if value == DependencyHealth::Busy as u8 => DependencyHealth::Busy,
+        value if value == DependencyHealth::Unknown as u8 => DependencyHealth::Unknown,
         _ => DependencyHealth::Unavailable,
     }
 }

@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use crowdb_access_s3::auth::{AuthError, RawAuthRequest, RequestAuthenticator};
 use crowdb_access_s3::error::{S3Error, S3ErrorCode};
-use crowdb_access_s3::metrics::{DependencyHealth, OutcomeClass, RequestMeasurement, S3Health, S3Metrics};
+use crowdb_access_s3::metrics::{OutcomeClass, RequestMeasurement, S3Health, S3Metrics};
 use crowdb_access_s3::native_buffer::NativeBodyAllocator;
 use crowdb_access_s3::route::{classify_request, RouteError, S3Operation};
 use crowdb_chunk_client::ChunkIoClient;
@@ -30,6 +30,7 @@ pub struct S3Dispatcher {
     pub(super) body_allocator: Option<Arc<NativeBodyAllocator>>,
     chunk_metrics: Option<Arc<ChunkIoClient>>,
     pub(super) health: Arc<S3Health>,
+    pub(super) observations: Arc<super::health::HealthObservations>,
     next_request_id: AtomicU64,
     object_inspector: Option<Arc<super::ObjectInspector>>,
 }
@@ -53,6 +54,7 @@ impl S3Dispatcher {
             body_allocator: None,
             chunk_metrics: None,
             health: Arc::new(S3Health::ready(u64::MAX)),
+            observations: Arc::default(),
             next_request_id: AtomicU64::new(1),
             object_inspector: None,
         }
@@ -103,21 +105,15 @@ impl S3Dispatcher {
         if request.method() != Method::GET && request.method() != Method::HEAD {
             return None;
         }
-        let snapshot = self
-            .health
-            .snapshot(&self.metrics, self.body_allocator.as_deref());
         let (status, content_type, body) = match request.uri().path() {
             "/_crowdb/health/live" => {
-                let status = if snapshot.live {
+                let live = self.health.is_live();
+                let status = if live {
                     StatusCode::OK
                 } else {
                     StatusCode::SERVICE_UNAVAILABLE
                 };
-                (
-                    status,
-                    "application/json",
-                    format!(r#"{{"live":{}}}"#, snapshot.live),
-                )
+                (status, "application/json", format!(r#"{{"live":{live}}}"#))
             }
             "/_crowdb/metrics" => (
                 StatusCode::OK,
@@ -166,7 +162,6 @@ impl S3Dispatcher {
         let request_id = self.request_id();
         let trusted_network = self.trusted_network;
         let body_receive_provider_factory = self.body_receive_provider_factory.clone();
-        let health = Arc::clone(&self.health);
         Box::pin(async move {
             let started = Instant::now();
             let _in_flight = metrics.begin_request();
@@ -175,9 +170,6 @@ impl S3Dispatcher {
             let head_only = request.method() == Method::HEAD;
             let authentication_started = Instant::now();
             if let Err(error) = authenticate_request(authenticator.as_ref(), &mut request).await {
-                if matches!(error, AuthError::Unavailable) {
-                    health.set_authentication(DependencyHealth::Unavailable);
-                }
                 let (code, outcome) = auth_error_outcome(error);
                 metrics.finish_predispatch(outcome, elapsed_ns(started));
                 return Ok(error_response(
@@ -185,7 +177,6 @@ impl S3Dispatcher {
                     head_only,
                 ));
             }
-            health.set_authentication(DependencyHealth::Ready);
             let authentication_latency_ns = elapsed_ns(authentication_started);
             if trusted_network {
                 metrics.record_trusted_auth_bypass();
