@@ -740,8 +740,13 @@ stored in chunk metadata. The owner self-fences before that authority can
 expire. The task scanner reads due task-index entries only, never scans the
 chunk table. After claim and the shared request-age/skew safety window, it
 parses frames from offset zero and seals at the last complete verified frame,
-or deletes an empty chunk. A restarted owner always allocates a new Active
-chunk.
+or deletes an empty chunk. A scan must reach at least the persisted
+`acknowledged_cursor` before sealing or deleting. An unreadable or invalid
+frame before that cursor is incomplete evidence: retain the Active chunk and
+all physical segments, and report the scanned boundary, acknowledged cursor
+and chunk identity for diagnosis. Zero readable frames cannot prove emptiness
+when bytes have already been acknowledged. A restarted owner always allocates
+a new Active chunk.
 
 ## 10. Per-Chunk-ID Lifecycle Lock + Chunk Cache
 

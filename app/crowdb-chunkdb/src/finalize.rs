@@ -84,6 +84,19 @@ impl TaskHandler for FinalizeChunkTaskHandler {
                     };
                 }
             };
+            // A failed frame scan cannot revoke bytes already acknowledged to
+            // readers. Preserve their physical layout until a complete scan is
+            // available, including when the first frame is currently unreadable.
+            if boundary < chunk.acknowledged_cursor {
+                return TaskOutcome::Retry {
+                    delay_ms: 1_000,
+                    error_code: 5,
+                    error: format!(
+                        "chunk {chunk_id:?}: scanned frame boundary {boundary} is below acknowledged cursor {}; retaining data and layout; inspect frame integrity and DiskIO reads",
+                        chunk.acknowledged_cursor
+                    ),
+                };
+            }
             if boundary == 0 {
                 return match self.lifecycle.delete_chunk(&chunk_id).await {
                     Ok(_) => TaskOutcome::Complete,

@@ -120,17 +120,7 @@ fn response(kind: u16, ctrl: &[u8], data: Vec<u8>, blocks: &Blocks) -> (Vec<u8>,
         builder.finish(reply, None);
     } else if kind == FBMsgType::EDiskReadRequest.0 as u16 {
         let request = flatbuffers::root::<FBDiskReadRequest>(ctrl).unwrap();
-        payload = blocks
-            .lock()
-            .unwrap()
-            .get(&(
-                request.disk_id().unwrap().0,
-                request.zone_index(),
-                request.zone_offset(),
-            ))
-            .cloned()
-            .unwrap_or_else(|| vec![0; request.size() as usize]);
-        assert_eq!(payload.len(), request.size() as usize);
+        payload = read_blocks(blocks, &request);
         let reply = FBDiskReadResponse::create(
             &mut builder,
             &FBDiskReadResponseArgs {
@@ -162,4 +152,24 @@ fn response(kind: u16, ctrl: &[u8], data: Vec<u8>, blocks: &Blocks) -> (Vec<u8>,
         builder.finish(reply, None);
     }
     (builder.finished_data().to_vec(), payload)
+}
+
+fn read_blocks(blocks: &Blocks, request: &FBDiskReadRequest<'_>) -> Vec<u8> {
+    let mut bytes = vec![0; request.size() as usize];
+    let start = request.zone_offset();
+    let end = start + u64::from(request.size());
+    for ((disk, zone, offset), data) in blocks.lock().unwrap().iter() {
+        if *disk != request.disk_id().unwrap().0 || *zone != request.zone_index() {
+            continue;
+        }
+        let begin = start.max(*offset);
+        let finish = end.min(*offset + u64::try_from(data.len()).unwrap());
+        if begin < finish {
+            let target = usize::try_from(begin - start).unwrap();
+            let source = usize::try_from(begin - offset).unwrap();
+            let length = usize::try_from(finish - begin).unwrap();
+            bytes[target..target + length].copy_from_slice(&data[source..source + length]);
+        }
+    }
+    bytes
 }
