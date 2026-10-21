@@ -44,7 +44,7 @@ pub(super) fn begin(state: &RegistryArc) -> Result<BootstrapExecution, Managemen
         .map_err(|_| {
             err_json(
                 StatusCode::CONFLICT,
-                "system bootstrap is executing; retry the same operation",
+                "node group initialization is executing; retry the same operation",
             )
         })?;
     Ok(BootstrapExecution(Arc::clone(&state.registry)))

@@ -314,6 +314,7 @@ pub async fn add_group(
                         AddGroupInitialRole::Follower
                     }),
                     start_election: Some(single),
+                    deployment: None,
                 };
                 group_wiring::create_local(&client, store_id, &req)
                     .await

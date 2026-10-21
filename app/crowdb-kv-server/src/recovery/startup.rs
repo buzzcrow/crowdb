@@ -178,6 +178,7 @@ pub async fn create_group_with_wal(
     wal_backend: Arc<IoBackend>,
     crowtree_backend: CrowdbTreeBackend,
 ) -> io::Result<PxGroup> {
+    crate::mgmt::group_creation::check_restore(&config.config_root, store_id, group_id, replica_id)?;
     persist_creation_identity(&config.config_root, store_id, group_id, replica_id).await?;
     let mut wal_config = WalConfig::with_root(store_wal_root(&config.wal_root, store_id));
     if std::env::var("CROWDB_KV_WAL_TEXT").as_deref() == Ok("1") {

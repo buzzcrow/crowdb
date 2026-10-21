@@ -204,11 +204,9 @@ pub(super) async fn add_group(
     Path(sid): Path<u64>,
     Json(req): Json<AddGroupRequest>,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
-    let _system_execution = if sid == 0 && req.group_id == 0 {
-        Some(super::system_bootstrap::begin(&state)?)
-    } else {
-        None
-    };
+    // Reuse the existing node-local initialization exclusion for ordinary
+    // creation too; duplicate runners may submit the same sealed operation.
+    let _execution = super::system_bootstrap::begin(&state)?;
     if sid == 0 && req.group_id == 0 && super::system_bootstrap::has_owner(&state)? {
         return Err(err_json(
             StatusCode::CONFLICT,
@@ -219,6 +217,7 @@ pub(super) async fn add_group(
         .get_store(sid)
         .ok_or_else(|| err_json(StatusCode::NOT_FOUND, format!("store {sid} not found")))?;
 
+    super::group_creation::accept(&state, sid, &req).await?;
     if store.get_group(req.group_id).is_some() {
         return Err(err_json(
             StatusCode::CONFLICT,
@@ -470,6 +469,7 @@ pub(super) async fn remove_group(
     Path((sid, gid)): Path<(u64, u64)>,
     headers: HeaderMap,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
+    let _execution = super::system_bootstrap::begin(&state)?;
     let store = state
         .get_store(sid)
         .ok_or_else(|| err_json(StatusCode::NOT_FOUND, format!("store {sid} not found")))?;
@@ -493,6 +493,7 @@ pub(super) async fn remove_group(
         ));
     }
     info!(s = sid, g = gid, "removing PxGroup via management API");
+    super::group_creation::retire(&state, sid, gid)?;
     if !store.remove_group(gid) {
         return Err(err_json(
             StatusCode::NOT_FOUND,
@@ -522,6 +523,8 @@ pub(super) async fn remove_group(
     if let Err(e) = node_config_store.remove_group(sid, gid).await {
         tracing::warn!(s = sid, g = gid, error = %e, "failed to update node_config; continuing");
     }
+
+    super::group_creation::finish_removal(&state, sid, gid)?;
 
     info!(
         s = sid,

@@ -96,6 +96,29 @@ pub struct AddGroupRequest {
     /// driver with a correct quorum. `None` keeps the default (start driver).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_election: Option<bool>,
+    /// Cluster-owned creation must match this durable operation on every retry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment: Option<GroupDeploymentIdentity>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct GroupDeploymentIdentity {
+    pub cluster_id: String,
+    pub operation_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct GroupCreationStatus {
+    pub version: u32,
+    pub store_id: u64,
+    pub group_id: u64,
+    pub replica_id: u64,
+    pub deployment: Option<GroupDeploymentIdentity>,
+    pub retired: bool,
 }
 
 /// `GET /stores/{sid}/groups` item.

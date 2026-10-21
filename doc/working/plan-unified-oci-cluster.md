@@ -171,7 +171,7 @@ removal until the complete direct-container path passes A01/A03/A25.
   `app/crowdb-web/src/node/initialization.rs`,
   `container/crowdb-monitor/src/node/runtime/initialization/`,
   `container/crowdb-monitor/tests/initialization_test.rs`.
-- [~] **T08 — Commit default preparation identity**: introduce a focused shared
+- [x] **T08 — Commit default preparation identity**: introduce a focused shared
   preparation record under existing deployment ownership, conditional on current
   Group-0 authority. Seal ordinary group/replica mapping, disk-group bindings and
   shared credential reference once; scope it by accepted cluster identity and
@@ -180,7 +180,7 @@ removal until the complete direct-container path passes A01/A03/A25.
   before mutation (A05, A22). Files:
   `lib/crowdb-console-shared/src/deployment/`,
   `lib/crowdb-console-shared/src/ops/cluster/`, corresponding `tests/`.
-- [ ] **T09 — Create and recover the ordinary metadata group**: replace CLI-only
+- [~] **T09 — Create and recover the ordinary metadata group**: replace CLI-only
   Group 1 creation with an authorized operation driven by T08. Derive replicas
   from admitted membership; persist chosen IDs before effects. Verify matching
   existing group/binding, leader/readability and publication before dependent
@@ -563,6 +563,15 @@ do not mark unexecuted acceptance passed.
   This record API is not yet wired to automatic resource creation; T09/T10 must
   verify native ownership and exact consumer bindings before enabling it.
   Explicit lost-response fault injection remains in the creation/replay tests.
+- T09 native creation now persists a private operation-qualified owner before WAL
+  or engine effects. Default retries compare that owner, not just replica ID;
+  explicit removal retains a default-operation tombstone and the recovery entry
+  point rejects retired or mismatched replicas. It reuses the existing node
+  initialization atomic exclusion, without a new lock. Five native-management
+  ownership tests and four existing WAL/startup tests passed; affected
+  protocol/monitor/shared/Web/server all-target clippy passed. Shared replay
+  tests cover unknown creation replies and foreign/retired owner rejection.
+  Automatic metadata creation and consumer migration are still pending.
 - No direct application Docker, Compose, native containerd or protocol-access acceptance has
   run yet. No end-to-end or hardware capability is marked verified.
 
