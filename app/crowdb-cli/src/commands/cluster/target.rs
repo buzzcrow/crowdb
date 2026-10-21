@@ -22,8 +22,7 @@ pub(crate) async fn resolve(cli: &Cli) -> Result<Option<ResolvedClusterTarget>, 
         return Ok(None);
     }
     if cli.cluster.is_none() && cli.management_endpoints.is_empty() {
-        if matches!(&cli.command, crate::Domain::Bench { verb } if !matches!(verb, crate::commands::BenchVerb::Rpc(_)))
-        {
+        if matches!(&cli.command, crate::Domain::Bench { .. }) {
             return Err(failure(
                 "select --cluster or --management-endpoint before a workload",
             ));

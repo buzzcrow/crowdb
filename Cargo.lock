@@ -1242,6 +1242,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "crowdb-rpc-test"
+version = "0.3.0"
+dependencies = [
+ "clap",
+ "crowdb-chunk-client",
+ "crowdb-common",
+ "crowdb-protocol",
+ "crowdb-rpc-ffi",
+ "crowdb-test-harness",
+ "flatbuffers",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "crowdb-test-harness"
 version = "0.3.0"
 dependencies = [

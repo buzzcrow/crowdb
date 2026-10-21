@@ -1,0 +1,25 @@
+[package]
+name = "crowdb-rpc-test"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = { workspace = true }
+flatbuffers = { workspace = true }
+crowdb-common = { path = "../../lib/crowdb-common/rust" }
+crowdb-protocol = { path = "../../lib/crowdb-protocol" }
+crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi" }
+crowdb-chunk-client = { path = "../../lib/crowdb-chunk-client" }
+
+[dev-dependencies]
+crowdb-test-harness = { path = "../../lib/crowdb-test-harness" }

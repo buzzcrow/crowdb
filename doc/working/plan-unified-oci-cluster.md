@@ -284,7 +284,7 @@ removal until the complete direct-container path passes A01/A03/A25.
   Done when slow endpoints cannot multiply the deadline (A15, A27). Files:
   `app/crowdb-cli/src/commands/cluster.rs`,
   `app/crowdb-cli/tests/`, shared status API/tests.
-- [~] **T19 — Extract runtime-owned lifecycle**: move creation/start/stop from
+- [ ] **T19 — Extract runtime-owned lifecycle**: move creation/start/stop from
   S3-specific state/runtime into the common cluster domain. Record endpoint/context,
   ownership token, exact resource/mount/image/policy inputs and eventual observed
   cluster UUID. Recover partial creation by verified ownership; conflicting
@@ -383,7 +383,7 @@ Dependency: T04/T18/T19 and the direct path pass before deleting old executors.
   A14, A28). Files: `app/crowdb-cli/src/commands/bench/`,
   `lib/crowdb-console-shared/src/ops/s3_bench.rs`,
   `lib/crowdb-console-shared/src/ops/s3.rs`, benchmark tests.
-- [ ] **T28 — Move RPC lifecycle to test tooling**: migrate reusable measurement
+- [x] **T28 — Move RPC lifecycle to test tooling**: migrate reusable measurement
   code and explicit echo server/client fixtures before deleting public `bench rpc`
   and `local-deploy -t rpc`. Keep regression/sanitizer result semantics and normal
   application transport workers. Done when RPC tooling owns start/stop and runs
@@ -391,7 +391,7 @@ Dependency: T04/T18/T19 and the direct path pass before deleting old executors.
   `app/crowdb-cli/src/commands/bench/rpc.rs`, `lib/crowdb-rpc/`,
   `tools/benchmark/bench-rpc-regression.sh`,
   `tools/cpp-checks/sanitize-regression.sh`.
-- [ ] **T29 — Migrate indirect callers and remove dead public paths**: enumerate
+- [~] **T29 — Migrate indirect callers and remove dead public paths**: enumerate
   the full clap tree and follow dispatch/shared-library callers. Remove `launch`,
   public `--registry`, `cluster local-deploy`, process-oriented destroy/clean,
   `kv server`, storage process controls and not-implemented placeholders. Move
@@ -1622,3 +1622,37 @@ do not mark unexecuted acceptance passed.
   remains unavailable: host socket is root:root 0660 and `sudo -n true` requires
   a password. The pinned nerdctl 2.4.1 environment installs/executes, which is
   tool availability only and is not A31 deployment acceptance.
+
+
+## Independent RPC transport tooling and retained address recovery
+
+- T28 moves the real echo client into workspace package `crowdb-rpc-test` and
+  gives its foreground Python fixture ownership of the actual C++ echo server.
+  Remove `bench rpc`, the RPC local-deploy variant and its now-unused shared
+  launcher. Regression sweeps preserve scheduler, worker, connection, Nagle,
+  latency and zero-error result controls; the sanitizer RPC section uses the
+  same fixture with separate server/client sanitizer reports. Other native
+  sanitizer deployment sections remain T29 work, not claimed verified here.
+- Real echo integration tests pass for coroutine and Tokio; invalid worker
+  geometry is rejected before process creation. Explicit ASan/LSan builds of
+  server and Rust FFI pass both schedulers with positive operations and zero
+  errors; no sanitizer reports are produced. Restore ordinary debug artifacts
+  and rerun both tests. Focused release regression runs both modes for one second
+  and preserves the TSV result. Affected all-target clippy, Rust formatting,
+  shell syntax and the 29-package CI ownership check pass.
+- Image `crowdb-node:r243-l` was built from source 3443f430 before the RPC-tool
+  edits, OCI manifest sha256:467f87c817580b6391eb650b60727d56224f44e1eb49fecb91202f8462438e4c,
+  Docker config ID sha256:753c210195113f8080085aada1fa4d79b26eb0e0c5434658cd7ef57fa8e72091.
+  Fresh one/three-node clusters reach Ready. Retain three-node volumes, remove
+  owned containers/bridge, reserve the old subnet temporarily, and recreate:
+  all three IPs change from 172.19.0.{2,3,4} to 172.20.0.{2,3,4}. UUID
+  fa9b326e-7d0e-4173-83d6-ddaacd0fdb2f, accepted-node/trust/public-key hashes,
+  credentials and image IDs remain identical. Every member returns the same
+  acknowledged 2 MiB payload. Remove the temporary reservation bridge in finally.
+  Private evidence: `.crowdb-runtime/artifacts/r243-l-address-recovery/`.
+- Stop required DiskIO through the management service API. Endpoint-only bounded
+  check exits 1 with dependency `node/1/service/diskio-1` and exact committed-stop
+  reason. Re-observation preserves the operation ID and stopped state, proving
+  checks do not repair intent. Explicit restart restores Ready. Private reports:
+  `.crowdb-runtime/artifacts/r243-l-current-health/`. Registered acceptance and
+  other protocol/host recovery coverage remain T30–T34.

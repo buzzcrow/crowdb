@@ -82,27 +82,13 @@ pub enum ClusterVerb {
     },
     /// Deploy a local N-node KV cluster on 127.0.0.1 (forks
     /// `crowdb-kv-server` on each node, bootstraps group 0).
-    /// With `-t rpc`, deploys a standalone crowdb-rpc-fb-server (echo)
-    /// for RPC regression bench.
     #[command(name = "local-deploy")]
     LocalDeploy {
         #[arg(short = 'n', long, default_value_t = 3)]
         nodes: usize,
-        /// Service type: `kv`, `diskdb`, `chunkdb`, `combined`, or `rpc`.
+        /// Service type: `kv`, `diskdb`, `chunkdb`, or `combined`.
         #[arg(short = 't', long, default_value = "kv")]
         service_type: String,
-        /// [rpc] Listen port. 0 = auto-allocate.
-        #[arg(long, default_value_t = 0)]
-        rpc_port: u16,
-        /// [rpc] Independent epoll instances (round-robin).
-        #[arg(long, default_value_t = 1)]
-        io_engines: u32,
-        /// [rpc] Total I/O worker threads.
-        #[arg(long, default_value_t = 1)]
-        io_workers: u32,
-        /// [rpc] Enable Nagle's algorithm (disable `TCP_NODELAY`).
-        #[arg(long, default_value_t = false)]
-        enable_nagle: bool,
         /// [kv] `--rpc-workers` for the spawned server. 0 = server default (2).
         #[arg(long, default_value_t = 0)]
         rpc_workers: u32,
@@ -313,10 +299,6 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
         ClusterVerb::LocalDeploy {
             nodes,
             service_type,
-            rpc_port,
-            io_engines,
-            io_workers,
-            enable_nagle,
             rpc_workers,
             diskio_rpc_workers,
             diskio_dummy_disk_type,
@@ -473,39 +455,6 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                     }
                     Err(e) => {
                         eprintln!("error: local-deploy: {e}");
-                        ExitCode::from(2)
-                    }
-                }
-            }
-            "rpc" => {
-                let ctx = match local_deploy_context(cli, false).await {
-                    Ok(c) => c,
-                    Err(c) => return c,
-                };
-                let rpc_cfg = crowdb_console_shared::ops::cluster::RpcDeployConfig {
-                    port: rpc_port,
-                    io_engines,
-                    io_workers,
-                    enable_nagle,
-                    ..Default::default()
-                };
-                let workspace = deploy_workspace(cli);
-                match crowdb_console_shared::ops::cluster::local_deploy_rpc(
-                    &ctx,
-                    &rpc_cfg,
-                    workspace.as_deref(),
-                )
-                .await
-                {
-                    Ok(summary) => {
-                        println!(
-                            "local-deploy rpc: port={}, pid={}, io_engines={}, io_workers={}, nagle={}",
-                            summary.port, summary.pid, summary.io_engines, summary.io_workers, summary.nagle
-                        );
-                        ExitCode::SUCCESS
-                    }
-                    Err(e) => {
-                        eprintln!("error: local-deploy rpc: {e}");
                         ExitCode::from(2)
                     }
                 }

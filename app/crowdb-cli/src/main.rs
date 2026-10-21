@@ -89,7 +89,6 @@ impl Cli {
         match &self.command {
             Domain::Bench { verb } => Some(match verb {
                 BenchVerb::Kv(_) => "bench-kv",
-                BenchVerb::Rpc(_) => "bench-rpc",
                 BenchVerb::Diskdb(_) => "bench-diskdb",
                 BenchVerb::Chunkdb(_) => "bench-chunkdb",
                 BenchVerb::Chunkio(_) => "bench-chunkio",

@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 COMPONENT_PACKAGES = {
-    "test-cpp": {"crowdb-tree-ffi", "crowdb-rpc-ffi"},
+    "test-cpp": {"crowdb-tree-ffi", "crowdb-rpc-ffi", "crowdb-rpc-test"},
     "test-core": {
         "crowdb-common", "crowdb-test-harness", "crowdb-protocol",
         "crowdb-kv", "crowdb-kv-client",

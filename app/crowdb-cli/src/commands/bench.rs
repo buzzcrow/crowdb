@@ -15,7 +15,6 @@ pub mod kv;
 pub mod loader;
 pub mod metrics;
 pub mod result;
-pub mod rpc;
 pub mod s3;
 pub mod verb;
 

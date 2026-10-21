@@ -100,8 +100,11 @@ rm -f ${RUNTIME_DIR}/sanitize-unexpected-asan-sanitize-* 2>/dev/null || true
 
 # --- Phase 1: Build with ASan + LSan enabled ---
 echo "=== building with CROWDB_ASAN=1 (debug) ==="
-CROWDB_ASAN=1 pixi run -- cargo build -p crowdb-cli -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb
+CROWDB_ASAN=1 pixi run -- cargo build -p crowdb-cli -p crowdb-rpc-test -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb
 pixi run -- cmake --build app/crowdb-diskio/build -j
+RPC_ASAN_BUILD="$RUNTIME_DIR/rpc-server-build"
+pixi run cmake -S lib/crowdb-rpc -B "$RPC_ASAN_BUILD" -DCMAKE_BUILD_TYPE=Debug -DCROWDB_RPC_SANITIZER=address
+pixi run cmake --build "$RPC_ASAN_BUILD" -j 4 --target crowdb-rpc-fb-server
 
 # Verify the binary exists.
 if [ ! -x "$CROWDB_CLI" ]; then
@@ -523,93 +526,18 @@ run_chunkio_bench() {
     echo -e "$label\t$ops_s\t$errors\t$leak_status" >> "$RESULTS_FILE"
 }
 
-# deploy_rpc_server <name> <io_workers>
-# Deploy a standalone RPC echo server under ASan.
-deploy_rpc_server() {
-    local name="$1" workers="${2:-1}"
-    local config_file="${RUNTIME_DIR}/sanitize-reg-${name}.toml"
-    echo "=== deploying RPC server '$name' ==="
-    rm -f "$config_file"
-    local log_prefix="${RUNTIME_DIR}/asan-sanitize-deploy-${name}"
-    rm -f "${log_prefix}."* 2>/dev/null || true
-    local output
-    output=$(asan_cli "$log_prefix" --config "$config_file" \
-        cluster local-deploy -t rpc \
-        --io-engines 1 --io-workers "$workers" 2>&1) || true
-    echo "$config_file" > "${RUNTIME_DIR}/sanitize-reg-${name}.cfgpath"
-    local port
-    port=$(echo "$output" | grep -oP 'port=\K[0-9]+' | head -1)
-    if [ -z "$port" ]; then
-        echo "    ERROR: could not parse port from deploy output"
-        echo "$output" | tail -5
-        return 1
-    fi
-    echo "$port" > "${RUNTIME_DIR}/sanitize-reg-${name}.port"
-    echo "    RPC server on port=$port"
-    local logs
-    logs=$(ls "${log_prefix}."* 2>/dev/null || true)
-    if [ -n "$logs" ]; then
-        for log in $logs; do
-            local summary bytes
-            summary=$(grep "SUMMARY:" "$log" 2>/dev/null || echo "(no summary)")
-            bytes=$(echo "$summary" | grep -oP '\d+(?= byte)' | head -1 || echo "?")
-            if is_known_tokio_deploy_noise "$log"; then
-                echo "    deploy process: known tokio child-process noise ($bytes bytes) — OK"
-                rm -f "$log"
-            else
-                echo "    deploy process: UNEXPECTED leak — $summary"
-                mv "$log" "${RUNTIME_DIR}/sanitize-unexpected-$(basename "$log")"
-                GATE_FAILED=1
-            fi
-        done
-    fi
-}
-
-# teardown_rpc_server <name>
-# Destroy the standalone RPC server, check for leaks.
-teardown_rpc_server() {
-    local name="$1"
-    local config_file
-    config_file=$(cat "${RUNTIME_DIR}/sanitize-reg-${name}.cfgpath" 2>/dev/null || echo "")
-    if [ -n "$config_file" ] && [ -f "$config_file" ]; then
-        local log_prefix="${RUNTIME_DIR}/asan-sanitize-destroy-${name}"
-        rm -f "${log_prefix}."* 2>/dev/null || true
-        asan_cli "$log_prefix" --config "$config_file" \
-            cluster destroy 2>&1 | tail -2 || true
-        if ! check_asan_logs "$log_prefix" "destroy-process"; then
-            GATE_FAILED=1
-        fi
-        local service_log_prefix="${RUNTIME_DIR}/asan-sanitize-deploy-${name}"
-        if ! check_asan_logs "$service_log_prefix" "rpc-server-shutdown"; then
-            GATE_FAILED=1
-        fi
-        rm -f "$config_file" "${RUNTIME_DIR}/sanitize-reg-${name}.cfgpath" \
-              "${RUNTIME_DIR}/sanitize-reg-${name}.port"
-    fi
-}
-
 # run_rpc_bench <deploy_name> <threads> <conn> <label>
 # Runs an RPC echo bench under ASan and checks for leaks.
 run_rpc_bench() {
     local deploy="$1" threads="$2" conn="$3" label="$4"
     echo ">>> $label ..."
-    local config_file
-    config_file=$(cat "${RUNTIME_DIR}/sanitize-reg-${deploy}.cfgpath" 2>/dev/null || echo "")
-    local port
-    port=$(cat "${RUNTIME_DIR}/sanitize-reg-${deploy}.port" 2>/dev/null || echo "")
-    if [ -z "$config_file" ] || [ ! -f "$config_file" ] || [ -z "$port" ]; then
-        echo "    ERROR: no config/port for deploy '$deploy'"
-        echo -e "$label\t0\t0\tFAIL" >> "$RESULTS_FILE"
-        return
-    fi
     local log_prefix="${RUNTIME_DIR}/asan-sanitize-${label}"
-    rm -f "${log_prefix}."* 2>/dev/null || true
-    local output rc
-    if output=$(asan_cli "$log_prefix" --config "$config_file" \
-        bench rpc --duration-secs "$DURATION" \
-        --loader-num "$threads" --connections "$conn" \
-        --value-size 128 --io-engines 1 --io-workers 1 \
-        --mode coroutine --server-port "$port" --json 2>&1); then
+    local output rc=0
+    if output=$(pixi run python tools/rpc-test/run.py \
+        --client target/debug/crowdb-rpc-test --server "$RPC_ASAN_BUILD/crowdb-rpc-fb-server" --log-dir "$RUNTIME_DIR/rpc-$label" \
+        --asan-runtime "$LIBASAN" --asan-log-prefix "$log_prefix" \
+        --duration-secs "$DURATION" --loader-num "$threads" --connections "$conn" \
+        --value-size 128 --io-engines 1 --io-workers 1 --mode coroutine --metrics-interval 1); then
         rc=0
     else
         rc=$?
@@ -621,18 +549,15 @@ run_rpc_bench() {
         errors=$(echo "$json" | jq -r '.total_errors')
     fi
     local leak_status="PASS"
-    local logs
-    logs=$(ls "${log_prefix}."* 2>/dev/null || true)
-    if [ -n "$logs" ]; then
-        leak_status="FAIL(leaks)"
-        for log in $logs; do
-            local summary
-            summary=$(grep "SUMMARY:" "$log" 2>/dev/null || echo "(no summary)")
-            echo "    LEAK: $summary"
-        done
-    fi
+    local log
+    for log in "${log_prefix}-client."* "${log_prefix}-server."*; do
+        if [ -f "$log" ]; then
+            leak_status="FAIL(leaks)"
+            echo "    sanitizer report: $log" >&2
+            cat "$log" >&2
+        fi
+    done
     leak_status=$(bench_status "$leak_status" "$rc" "$errors" "$ops_s")
-    rm -f "${log_prefix}."* 2>/dev/null || true
     echo "    ops/s=$ops_s err=$errors leak_check=$leak_status"
     echo -e "$label\t$ops_s\t$errors\t$leak_status" >> "$RESULTS_FILE"
 }
@@ -853,7 +778,6 @@ teardown_cluster "$COMBINED_DEPLOY"
 # --- Phase 2c: RPC echo (standalone server) ---
 
 RPC_DEPLOY="sanitize-reg-rpc-$$-$(date +%s)"
-deploy_rpc_server "$RPC_DEPLOY" 1
 
 # RPC echo: raw crowdb-rpc echo throughput under ASan.
 echo "=== rpc ==="
@@ -861,7 +785,6 @@ run_rpc_bench "$RPC_DEPLOY" 1 1 "rpc_1t_1c"
 run_rpc_bench "$RPC_DEPLOY" 64 4 "rpc_64t_4c"
 
 # Teardown: destroy RPC server, check shutdown leaks.
-teardown_rpc_server "$RPC_DEPLOY"
 
 echo "=== DONE ==="
 echo "Results in $RESULTS_FILE"
@@ -869,7 +792,7 @@ column -t -s$'\t' "$RESULTS_FILE"
 
 # --- Phase 3: Rebuild WITHOUT ASan to restore the default debug binary ---
 echo "=== rebuilding without CROWDB_ASAN (restore default debug binary) ==="
-pixi run -- cargo build -p crowdb-cli -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb
+pixi run -- cargo build -p crowdb-cli -p crowdb-rpc-test -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb
 
 # Final summary: check for any FAIL in the results.
 if [ "$GATE_FAILED" -ne 0 ] || grep -q "FAIL" "$RESULTS_FILE"; then

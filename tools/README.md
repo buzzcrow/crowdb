@@ -24,6 +24,8 @@ Run commands through `pixi run`. Read only the directory relevant to the task.
   isolation probes. The `tree-link-isolation/` sources belong to that probe.
 - **`benchmark/`** — repeatable performance regressions, shared result handling,
   leak inspection and KV write sentinel checks.
+- **[`rpc-test/`](rpc-test/README.md)** — real echo transport measurements and
+  owned server fixtures, including both client schedulers and sanitizer runs.
 - **`profiling/`** — perf setup and write-path flamegraphs.
 
 Common entry points:

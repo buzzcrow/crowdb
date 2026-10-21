@@ -10,14 +10,12 @@ use clap::{Subcommand, ValueEnum};
 
 use crate::Cli;
 
-/// Top-level `bench` verb: either an RPC echo workload or a KV workload.
+/// Workloads attached to a selected application cluster.
 #[derive(Subcommand, Debug)]
 pub enum BenchVerb {
     /// KV-layer workload (prepare / read / write / scan / clean).
     #[command(subcommand)]
     Kv(KvBenchVerb),
-    /// Raw crowdb-rpc echo throughput benchmark against a fb-server.
-    Rpc(RpcArgs),
     /// Distributed disk-block allocation benchmark.
     #[command(subcommand)]
     Diskdb(DiskdbBenchVerb),
@@ -27,7 +25,7 @@ pub enum BenchVerb {
     /// End-to-end chunk data IO benchmark.
     #[command(subcommand)]
     Chunkio(ChunkioBenchVerb),
-    /// S3 HTTP workloads over an invocation-owned memory cluster.
+    /// Authenticated S3 HTTP workloads on the selected cluster.
     #[command(subcommand)]
     S3(S3BenchVerb),
 }
@@ -305,40 +303,6 @@ pub enum KvBenchVerb {
 }
 
 #[derive(clap::Args, Debug)]
-pub struct RpcArgs {
-    /// Run duration in seconds.
-    #[arg(long, default_value_t = 10)]
-    pub duration_secs: u64,
-    /// Number of loader coroutines / tasks.
-    #[arg(long, default_value_t = 1)]
-    pub loader_num: usize,
-    /// Number of client connections to the fb-server.
-    #[arg(long, default_value_t = 1)]
-    pub connections: usize,
-    /// Echo payload size in bytes.
-    #[arg(long, default_value_t = 128)]
-    pub value_size: usize,
-    /// Client transport I/O engines (must match the fb-server).
-    #[arg(long, default_value_t = 1)]
-    pub io_engines: u32,
-    /// Client transport I/O worker threads (must match the fb-server).
-    #[arg(long, default_value_t = 1)]
-    pub io_workers: u32,
-    /// Concurrency model: `coroutine` (C++ coroutines) or `tokio`.
-    #[arg(long, value_enum, default_value_t = BenchMode::Coroutine)]
-    pub mode: BenchMode,
-    /// fb-server port to connect to.
-    #[arg(long)]
-    pub server_port: u16,
-    /// Enable TCP Nagle (coalesce small frames per writev).
-    #[arg(long, default_value_t = false)]
-    pub enable_nagle: bool,
-    /// Metrics flush interval in seconds. 0 disables the metrics log.
-    #[arg(long, default_value_t = 1)]
-    pub metrics_interval: u64,
-}
-
-#[derive(clap::Args, Debug)]
 pub struct PrepareArgs {
     /// Number of keys to write into the target store/group.
     #[arg(long, default_value_t = 100_000)]
@@ -477,12 +441,6 @@ pub struct ScanArgs {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-pub enum BenchMode {
-    Coroutine,
-    Tokio,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum BenchReadMode {
     Linearizable,
     Minslot,
@@ -508,7 +466,6 @@ pub enum BenchScanDirection {
 
 pub async fn run_bench_verb(cli: &Cli, verb: BenchVerb) -> ExitCode {
     match verb {
-        BenchVerb::Rpc(args) => super::rpc::run(cli, args).await,
         BenchVerb::Diskdb(verb) => super::disk::db::run(cli, verb).await,
         BenchVerb::Chunkdb(verb) => super::chunk::run(cli, verb).await,
         BenchVerb::Chunkio(verb) => super::io::run(cli, verb).await,

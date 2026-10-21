@@ -21,7 +21,7 @@ RUST_GROUPS = {
     "access": ("access-multipart", "access-s3", "access-iceberg", "access-server",
                "access-dataset", "monitor"),
     "console": ("console-shared", "cli", "web"),
-    "cpp": ("tree-ffi", "rpc-ffi"),
+    "cpp": ("tree-ffi", "rpc-ffi", "rpc-test"),
 }
 DOMAINS = ("kv", "diskdb", "diskio", "chunkdb", "chunk-stream", "chunk-client",
            "chunk-kv", "s3", "iceberg", "dataset", "console", "deployment")

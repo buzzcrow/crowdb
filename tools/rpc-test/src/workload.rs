@@ -1,10 +1,10 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! `bench rpc` — crowdb-rpc echo throughput benchmark.
+//! Standalone test transport measurement over the real crowdb-rpc echo server.
 //!
 //! Connects to a standalone `crowdb-rpc-fb-server` (deployed via
-//! `cluster local-deploy -t rpc`) and fires `msg_type=100` echo
+//! the owning test fixture) and fires `msg_type=100` echo
 //! requests at it for `--duration-secs`. Two concurrency models:
 //!
 //! - `coroutine` (default): C++ coroutines via
@@ -30,16 +30,16 @@ use crowdb_rpc_ffi::co_bench::{co_spawn, CoBenchHandler};
 use crowdb_rpc_ffi::{Buffer, Connection, RpcClient, RpcError, RpcServer};
 use flatbuffers::FlatBufferBuilder;
 
+use super::args::{BenchMode, RpcArgs};
 use super::loader::{run_workload, BenchRecorder};
 use super::metrics::BenchMetrics;
 use super::result::{BenchOps, BenchResult};
-use super::verb::{BenchMode, RpcArgs};
-use crate::Cli;
+use std::path::Path;
 
 /// Echo `msg_type` registered on the fb-server (`fb_server.cpp`).
 const ECHO_MSG_TYPE: u16 = 100;
 
-pub async fn run(cli: &Cli, args: RpcArgs) -> ExitCode {
+pub async fn run(log_dir: &Path, args: RpcArgs) -> ExitCode {
     let data_bytes = vec![0xAB; args.value_size.max(1)];
 
     // Client-side server for connection management.
@@ -76,7 +76,7 @@ pub async fn run(cli: &Cli, args: RpcArgs) -> ExitCode {
     client.set_completion_pool_size(next_pow2(loaders_u32));
     client.start_reaper(30_000_000_000, 1_000_000_000);
 
-    let mut metrics = BenchMetrics::new(&cli.log_dir, args.metrics_interval);
+    let mut metrics = BenchMetrics::new(log_dir, args.metrics_interval);
     metrics.start();
 
     let duration = Duration::from_secs(args.duration_secs);
@@ -138,7 +138,11 @@ pub async fn run(cli: &Cli, args: RpcArgs) -> ExitCode {
     };
     let json = serde_json::to_value(&result).unwrap_or_default();
     tracing::info!(report = %json, "bench_report");
-    println!("{result}");
+    if args.json {
+        println!("{json}");
+    } else {
+        println!("{result}");
+    }
     if result.total_ops > 0 && result.total_errors == 0 {
         ExitCode::SUCCESS
     } else {

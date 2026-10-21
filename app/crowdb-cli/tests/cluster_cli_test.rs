@@ -38,25 +38,17 @@ fn benchmark_replaces_its_previous_log_directory() {
         eprintln!("skipping: crowdb-cli binary not built ({})", cli.display());
         return;
     }
-    for mode in ["coroutine", "tokio"] {
-        let root = tempdir(&format!("bench-latest-log-{mode}"));
-        let log_dir = root.join(".crowdb-runtime/artifacts/cli/bench-rpc");
+    for iteration in 0..2 {
+        let root = tempdir(&format!("bench-latest-log-{iteration}"));
+        let log_dir = root.join(".crowdb-runtime/artifacts/cli/bench-s3");
         fs::create_dir_all(&log_dir).expect("create old benchmark log dir");
         fs::write(log_dir.join("old-run.marker"), b"old").expect("write old marker");
 
         let output = Command::new(&cli)
             .current_dir(&root)
             .env("CROWDB_RUNTIME_ROOT", root.join(".crowdb-runtime"))
-            .args([
-                "bench",
-                "rpc",
-                "--server-port",
-                "1",
-                "--metrics-interval",
-                "0",
-                "--mode",
-                mode,
-            ])
+            .env_remove("CROWDB_CLUSTER")
+            .args(["bench", "s3", "write", "--operations", "1"])
             .output()
             .expect("run benchmark against closed port");
         assert!(!output.status.success());

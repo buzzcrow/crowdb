@@ -25,6 +25,7 @@ members = [
     "app/crowdb-access-server",
     "container/crowdb-monitor",
     "e2e-test",
+    "tools/rpc-test",
     "lib/crowdb-access-s3",
     "lib/crowdb-access-iceberg",
     "lib/crowdb-access-dataset",
