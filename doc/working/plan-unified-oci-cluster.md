@@ -340,6 +340,16 @@ runtime-format utilities, but must not invoke CLI or require its records.
   races without force/prune or substring matching. Done when negative ownership
   tests and clean/recreate preserve data/credentials (A07, A11, A16, A30). Files:
   host Docker script, `container/oci-image/tests/`, `pixi.toml`.
+  The user explicitly reiterated that bridge networks must be cleaned along with
+  containers. On resuming, all 34 prior diagnostic containers were already
+  stopped. Saved their inspections and network inventory privately under
+  `.crowdb-runtime/artifacts/unified-oci-cleanup/`, verified the exact
+  `org.crowdb.test=unified-oci` ownership label again, removed those stopped
+  containers without volume deletion, then removed all nine owned empty bridges.
+  Docker now has only its standard bridge/host/none networks. Retained data
+  volumes, image artifacts and previous private failure logs remain available.
+  Future acceptance teardown must capture evidence and remove its owned bridge
+  on both success and failure; do not accumulate diagnostic networks again.
 - [ ] **T25 — Add executable reference examples**: one direct Docker command for
   one node; network creation plus three independent commands for three nodes;
   matching Compose examples. Use identical policies, ports, volumes and credential
@@ -1017,6 +1027,47 @@ do not mark unexecuted acceptance passed.
 - Recovery-tenure and target-address fixes pass all 123 KV group tests, all five
   consensus RPC tests, all five cluster-target tests, affected all-target clippy
   with `test-util`, formatting and whitespace checks.
+
+## Resumed verification
+
+- `87b51516` preserves a live service across bounded readiness observations.
+  Sixteen monitor cases, all-target clippy, formatting and whitespace gates pass.
+- Packaged three-node fixture `crowdb-recovery-f-three-*` passes fresh S3
+  128-byte/2-MiB reads on every member, 2-MiB Dataset publish/read checksums,
+  and PyIceberg metadata/Parquet reads of three rows through each public origin.
+  Whole stop/start in a different order changes every address:
+  node 2 `.3 -> .2`, node 3 `.4 -> .3`, node 1 `.2 -> .4` on `172.18.0.0/16`.
+  Actual Access readiness returns within the unchanged 120-second bound;
+  node identities, cluster, storage, credentials and SSH trust remain stable.
+  All retained S3, Dataset and PyIceberg checks pass on all three members.
+  Cluster UUID: `98eca62b-e8c1-455c-aa9e-d9b837205a85`.
+  OCI digest: `sha256:f5c451cae5e988f8ebbf8f7be8de0771b5835a32942b9dc49b8277964d330426`;
+  source tree `0b2af14423075a48e50fe5fc856273616c907560`, runtime
+  `102cf4daba1bc39bc09a2364fe7a69399918c421ed5bbf39377098a3d6e295ee`.
+  Private logs, setup/trust/ownership records and receipt are retained in
+  `.crowdb-runtime/artifacts/member-recovery-f/`; all three containers and their
+  bridge were removed after capture, preserving volumes. Host-network and
+  negative identity acceptance remain pending; this does not complete A32/A33.
+- The new Docker-only helper's fresh singleton `local-clean-check` passes S3
+  and namespace/Dataset-open I/O, and clean removes its container and bridge
+  while preserving the private receipt and volume. Recreate changes the bridge
+  from `172.19.0.2` to `172.18.0.2` and fails actual readiness at 120 seconds.
+  Cluster UUID `b327e64e-42f2-4835-9457-ee15b32eed7d` and volume
+  `crowdb-local-clean-check-1-data` remain intact; failed recreation was cleaned
+  without deleting data. The node-local Group 0 is a healthy leader, but native
+  KV keepalive uses only retained management seeds on the old bridge and cannot
+  republish its new service address. Normal endpoint publication then waits on
+  that stale registration. This is independent of native consensus routing.
+  Keepalive now also includes its current own management endpoint, preserving
+  retained peer seeds and all quorum/identity checks. A real singleton RPC test
+  with unreachable retained seeds publishes the new address in 0.12 seconds;
+  packaged verification is pending. No timeout or restart budget was increased.
+- Docker helper negative tests cover foreign/relabelled and attached bridges,
+  changed daemon, foreign named resources, referenced volumes, immutable/private
+  receipts and shared/retained image protection. OCI Python tests pass 39 cases
+  through their own Pixi environment (the root Python lacks PyYAML).
+  The task-graph check passes for 28 packages and 388 container flows after
+  replacing removed root wrapper calls with internal build/import commands.
 
 ## Previous verification boundary
 

@@ -44,11 +44,17 @@ impl KeepAliveLoop {
         // Before Group 0 exists, this node can seed its own RPC endpoint.
         // Once Group 0 exists, use its management seeds for discovery.
         let bootstrap_local = group0_management_seeds.is_empty();
-        let mgmt_seeds = if bootstrap_local {
+        let mut mgmt_seeds = if bootstrap_local {
             vec![rpc_endpoint.clone()]
         } else {
             group0_management_seeds
         };
+        // The local management listener survives a complete address change.
+        // Retained peer seeds can all be unreachable before the first fresh
+        // registration enables normal committed endpoint publication.
+        if !mgmt_seeds.contains(&rpc_endpoint) {
+            mgmt_seeds.insert(0, rpc_endpoint.clone());
+        }
         let handle = tokio::spawn(async move {
             let kv_client = CrowdbKvClient::new(ClientConfig::new(mgmt_seeds.clone()));
             if bootstrap_local {

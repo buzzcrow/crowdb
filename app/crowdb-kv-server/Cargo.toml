@@ -44,6 +44,10 @@ crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi", features = ["test-util"] }
 crowdb-test-harness = { path = "../../lib/crowdb-test-harness" }
 
 [[test]]
+name = "keepalive_recovery_test"
+path = "tests/keepalive_recovery_test.rs"
+
+[[test]]
 name = "group_creation_test"
 path = "tests/group_creation_test.rs"
 
