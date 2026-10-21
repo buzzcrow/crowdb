@@ -38,7 +38,7 @@ jobs:
           pixi-version: latest
       - uses: Swatinem/rust-cache@v2
       - name: Build formal release image
-        run: pixi run build-single-node-container
+        run: pixi run oci-build --load
       - name: Prepare locked clients
         run: |
           pixi install --locked -e iceberg-ecosystem

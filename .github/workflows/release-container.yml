@@ -50,7 +50,7 @@ jobs:
         pixi run sudo apt-get clean
         pixi run df -h /
     - name: Stage runtime without a container daemon
-      run: pixi run stage-single-node-container
+      run: pixi run bash container/oci-image/stage.sh
     - name: Install locked standalone builder
       run: pixi install --locked --manifest-path container/oci-image/pixi.toml
     - name: Build OCI without Docker
@@ -89,7 +89,7 @@ jobs:
         name: verified-oci-image
         path: target
     - name: Import exact OCI artifact into Docker
-      run: pixi run image-import "$PWD/target/crowdb.oci.tar" --image crowdb-node:dev
+      run: pixi run --manifest-path container/oci-image/pixi.toml import "$PWD/target/crowdb.oci.tar" --image crowdb-node:dev
     - name: Verify Docker startup and recovery
       env:
         CROWDB_PREVIEW_TEST_ARTIFACTS: ${{ runner.temp }}/crowdb-preview-artifacts
@@ -181,7 +181,7 @@ jobs:
         pixi run sudo apt-get update
         pixi run sudo apt-get install -y protobuf-compiler
     - name: Import the shared verified image
-      run: pixi run image-import "$PWD/target/crowdb.oci.tar" --image crowdb-node:dev
+      run: pixi run --manifest-path container/oci-image/pixi.toml import "$PWD/target/crowdb.oci.tar" --image crowdb-node:dev
     - name: Verify centralized KV fixtures and protocol layer
       run: |
         pixi run test-container-e2e-fixture

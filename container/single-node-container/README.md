@@ -1,10 +1,12 @@
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
 <!-- Licensed under the Apache License, Version 2.0. -->
 
-# Node container deployment and single-node development
+# Local node storage and client usage
 
-This page describes building and running CROWDB from source on a Linux amd64
-development or CI host.
+One node is a topology case of the normal editable cluster lifecycle. For image
+builds, named Docker shortcuts, independent Docker commands and Compose, use the
+[shared OCI guide](../oci-image/README.md). The old manual/single startup mode
+selector is removed; use the accepted deployment mode and initial voter policy.
 
 ## Node-first local storage policy
 
@@ -24,9 +26,6 @@ reserve physical host space. Production does not fall back to this policy.
   each strip's placement assessment for its actual protection.
 - Accepted media and operation identities survive restart. Failed preparation
   is retained for diagnosis; restarting is not permission to replace its data.
-
-The legacy profile and command examples below are being migrated to this
-node-first lifecycle.
 
 The node-first local client origins default to `http://127.0.0.1` on ports
 9091 (S3), 9092 (Iceberg) and 9093 (Dataset). When publishing different host
@@ -48,250 +47,23 @@ with their public origins. The private client file is
 keys stay in the protected server files. Do not put client credential output
 into logs or cluster status.
 
-The public single-container Web template explicitly sets `readonly = true`.
-Docker Web otherwise defaults to writable logical and Access operations; physical
-management remains unavailable. To use writable Web internally, mount a normal
-Web template with `readonly = false` at
-`/opt/crowdb/etc/templates/crowdb-web.toml`. The same release image renders that
-configuration at startup; no rebuild is required. `/api/mode` reports readonly
-and the browser disables write controls when it is enabled.
+## Client listeners and readiness
 
-## Service selection and inspectable data
+The same Access service exposes S3 at 9091, Iceberg at 9092 and Dataset at 9093.
+The Web UI listens at 9090. Publish these ports when using a bridge. A listener
+or an old completed setup record is not proof of current storage availability.
 
-The same release image supports the complete managed profile, a mounted profile
-for an explicitly selected service set, or one standalone server. Service
-selection does not rebuild the image. Without a command, the usual startup
-mode and complete bundled profile apply. To supply a validated profile, mount
-it read-only and set `CROWDB_PROFILE_PATH` to its container path; the monitor
-validates the profile and its dependency graph before startup. The automatic
-`single-node-container` profile supports selecting `kv`, `diskdb`, `diskio`,
-`chunkdb`, `chunk-kv`, `access` and `web` through its `services` list. Keep each
-selected service's declared dependencies selected. KV is required; KV-only skips
-disk creation, while profiles without Access skip S3 and Iceberg initialization.
-Unknown services and missing dependencies fail before node identity/discovery or
-SSH startup. Restore with the same profile and templates: durable bootstrap
-identity rejects changed selections rather than adopting existing data.
+Use the client origins returned by the credential command. Iceberg metadata and
+Parquet URLs and Dataset payload references must be reachable from the client;
+changing Docker port mappings without changing the accepted public origins
+before first startup produces unreachable references. Internal service addresses
+remain independent of public origins.
 
-Standalone services use the normal entrypoint command `server SERVICE [arguments]`.
-Supported services are `kv`, `diskdb`, `diskio`, `chunkdb`, `chunk-kv`, `access`
-and `web`; arguments are the corresponding released server's CLI arguments.
-This starts only that server, without monitor automatic recovery or SSH. Supply
-its required external dependencies explicitly. Unknown services fail; an existing
-managed-node data root cannot be switched to standalone mode.
-
-```sh
-pixi run docker run --name kv-node --network my-owned-bridge \
-  --mount type=bind,source=/absolute/node-data,target=/opt/crowdb/data \
-  --ulimit core=-1 crowdb-node:dev server kv \
-  --root /opt/crowdb/data/kv --management-port 7000 --ports 7001..7011 \
-  --stores 0 --groups 1 --replica 1 --log-dir /opt/crowdb/data/log/kv --log
-```
-
-Use different host data directories per node/cluster. Data and service logs are
-locally readable under that mount; relative kernel core patterns use
-`data/crash` as the standalone process working directory. Host core collectors
-still follow host policy; see the crash debugging section below. Preserve the
-matching binary/debug information when inspecting a dump.
-
-Set `CROWDB_KEEP_DEBUG_INFO=1` while running `pixi run stage-single-node-container`
-to retain debug information in the release-optimized Rust and C++ binaries.
-The normal OCI build records `org.crowdb.debug-info` and the receipt's
-`debug_info` mode. Build once and reuse its immutable image for every selected
-service set; default packaging continues to strip debug information.
-
-This profile explicitly selects `test_single_node`. KV groups have one voter;
-chunk writes use one 1 MiB mirror copy with no EC or conversion. The profile
-provides no data protection, and a failed copy returns an I/O error. Production
-requires at least three voting nodes and protected placement.
-
-The profile keeps chunk capacity separate from strip size. Tree chunks use
-`storage.tree_chunk_capacity_bytes` in `chunk-kv.toml`; a 16 MiB tree chunk
-contains multiple 1 MiB mirror strips. Stream chunks use
-`storage.stream_chunk_capacity_bytes`. S3 and Iceberg each accept their own
-`s3.small_write.chunk_capacity_bytes` or
-`iceberg.small_write.chunk_capacity_bytes` and large `max_chunk_size` values
-in `access.toml`. The shared `small_write` section remains a fallback. The
-profile also sets RPC worker and client connection counts explicitly so local
-resource use can be tuned without changing production defaults.
-
-```sh
-pixi run build-single-node-container
-pixi run test-single-node-container
-```
-
-For an interactive local container workflow, use:
-
-```sh
-pixi run start-container
-pixi run inject-container
-pixi run clean-container
-```
-
-`start-container` builds the image, starts `crowdb-single-node`, exposes
-ports 9090–9094 on the container network, waits for readiness, and prints client
-credentials. It uses the named volume `crowdb-single-node-data` by default;
-set `CROWDB_CONTAINER_DATA_VOLUME` to choose another. Starting an existing
-stopped container preserves its original mounts, including older anonymous
-volumes. `inject-container` loads TPC-H SF1 into native Iceberg and copies its
-Parquet files to the container's S3 endpoint as an independent benchmark copy.
-The S3 report's bucket and keys are not Iceberg locations or backing storage;
-Iceberg manifests use the native listener's returned table-scoped URLs.
-The loader retains its data and
-reports under `.crowdb-runtime/artifacts/tpc-loader/`. `clean-container`
-removes only the selected container and retains its data volumes. It does not
-prune images, other containers or unrelated volumes. Recreating the container
-with the same named volume retains its data. Set
-`CROWDB_CONTAINER_IMAGE` or `CROWDB_CONTAINER_NAME` to select another image or
-container name.
-
-`inject-container` discovers running CROWDB containers by their image metadata
-or CROWDB image name. If exactly one is running, it uses that container. With
-multiple candidates it lists their IDs, names, images and IP addresses and exits
-without loading data. Select one explicitly (also supported through
-`CROWDB_CONTAINER_NAME`):
-
-```sh
-pixi run inject-container crowdb-single-node
-pixi run inject-container 671a2e13b8ba
-pixi run inject-container 172.17.0.2
-```
-
-- Compilation runs on the host with the locked repository dependencies. Cargo
-  and CMake reuse existing build outputs; npm uses its local download cache.
-- The build stages release programs, their required shared libraries, UI and
-  deployment files under `target/container-runtime`. Existing runtime data and
-  credentials are never part of the Docker context.
-- Standalone Pixi-managed BuildKit packages these files into the pinned Ubuntu OCI image. It
-  does not install Pixi or compilers, compile source, or use a custom base image.
-- Packaging checks dynamic linkage inside Ubuntu and verifies the staged
-  revision/version against image metadata. A different host ABI must pass these
-  checks and the container tests before its artifacts can be used.
-- The default local image is `crowdb-node:dev`. Set
-  `CROWDB_CONTAINER_IMAGE` to build and test a separate candidate tag.
-
-`pixi run stage-single-node-container` produces the runtime directory without
-building a Docker image. Work on a `release/<version>` branch whose `VERSION`
-matches the branch name, such as `release/0.2.2`. After pushing each candidate
-commit, select that branch in the GitHub Actions manual run form, or dispatch
-it from a clean checkout that matches the remote branch:
-
-```sh
-pixi run -- python tools/release.py --dry-run
-pixi run -- python tools/release.py --execute
-```
-
-After the image passes container verification, publication updates eight tags
-to the same image digest:
-
-- `crowdb/crowdb-node:<version>` and `crowdb/crowdb-node:latest` (canonical).
-- `crowdb/crowdb-iceberg:<version>` and `crowdb/crowdb-iceberg:latest`.
-- `crowdb/crowdb-s3:<version>` and `crowdb/crowdb-s3:latest`.
-- `crowdb/crowdb-dataset:<version>` and `crowdb/crowdb-dataset:latest`.
-
-The node repository is the default entry point for manual cluster setup.
-Iceberg, S3 and Dataset names are the single-node usage entry points. All four
-contain the same runtime, including one Access Server listening on Iceberg
-port 9092 and S3 port 9091. Publish the ports needed by the client; using both
-interfaces requires only one container. The container verification runs boto3,
-AWS CLI and PyIceberg clients against that runtime, including reads after recovery
-and persisted-volume restart.
-
-Rerunning publication from an older release branch also updates all four `latest`
-tags, so use the newest release branch for moving tags.
-
-The script only dispatches the workflow; it does not change files or push.
-The dry run does not contact GitHub.
-
-The workflow builds and tests the container, then waits for DockerHub environment approval.
-Before publishing, it checks that the remote branch still points to the same
-commit. A newer branch commit requires a new run. Each successful run replaces
-all four repositories' version and `latest` tags and signs the digest in each
-repository. It does not
-create a Git tag or GitHub Release. Fix a failed candidate on the release
-branch and run the workflow again.
-
-The workflow constructs one OCI artifact without Docker, verifies that artifact
-on Docker and containerd, then copies its exact graph to the registry. Publishing
-preserves the verified digest and attaches signatures, SBOM and provenance.
-
-## Public ports
-
-The default host mappings match the container listener ports:
-
-- Console: `9090:9090`, optional.
-- S3: `9091:9091`.
-- Iceberg catalog and native FileIO: `9092:9092`.
-
-The `crowdb/crowdb-dataset` name reserves the single-node Dataset usage entry
-point. Port `9093` is reserved for future Dataset access; the current image does
-not listen on it. Publishing this alias does not enable a Dataset service.
-
-Publish only the interfaces needed by the client. The generated default client
-addresses use `localhost` with these ports. An Iceberg deployment with a different
-host name or mapped port must also configure its advertised public URI; changing
-the catalog connection URI alone does not change delegated FileIO endpoints.
-The Access Server runs as the existing unprivileged user without a low-port
-binding capability.
-
-For a local host workflow, map the three client-facing ports. The profile's
-loopback addresses then match the host mappings, including delegated Iceberg
-FileIO locations:
-
-```sh
-pixi run docker run -d --name crowdb-iceberg -e CROWDB_STARTUP_MODE=single \
-  --mount type=volume,source=crowdb-iceberg-data,target=/opt/crowdb/data \
-  -p 127.0.0.1:9090:9090 \
-  -p 127.0.0.1:9091:9091 \
-  -p 127.0.0.1:9092:9092 \
-  crowdb/crowdb-iceberg:latest
-```
-
-For a different reachable address or a client on the same Docker network, set
-`CROWDB_S3_PUBLIC_URI` and `CROWDB_ICEBERG_PUBLIC_URI` at startup. The monitor
-passes those values to the access service instead of the profile defaults.
-
-## S3 container usage
-
-Start the S3 single-node entry point with a named data volume and map host port 9091
-to the container's S3 port 9091:
-
-```sh
-pixi run docker run -d --name crowdb-s3 -e CROWDB_STARTUP_MODE=single \
-  --mount type=volume,source=crowdb-s3-data,target=/opt/crowdb/data \
-  -p 127.0.0.1:9091:9091 \
-  crowdb/crowdb-s3:latest
-pixi run docker exec crowdb-s3 crowdb-monitor readiness
-```
-
-Wait for the readiness probe to succeed, then obtain the generated client credentials:
-
-```sh
-pixi run docker exec crowdb-s3 crowdb-monitor credentials show --format env
-```
-
-Configure boto3 with endpoint `http://127.0.0.1:9091`, the displayed AWS
-credentials and region, and path-style addressing:
-
-```python
-import boto3
-from botocore.config import Config
-
-client = boto3.client(
-    "s3",
-    endpoint_url="http://127.0.0.1:9091",
-    config=Config(s3={"addressing_style": "path"}),
-)
-client.create_bucket(Bucket="example")
-client.put_object(Bucket="example", Key="hello.txt", Body=b"hello")
-print(client.get_object(Bucket="example", Key="hello.txt")["Body"].read())
-```
-
-Set `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_DEFAULT_REGION`
-in the client's environment using the displayed values before running this
-example. To use Iceberg from the same container, also map container port 9092.
-The single-node examples explicitly select the development profile described above.
-Image names do not change startup mode: use `CROWDB_STARTUP_MODE=single` for
-automatic initialization; the default is manual cluster setup.
+All members of one local cluster share the accepted client credential set.
+Retain each member's own data volume across stop, clean and image replacement.
+Default `oci-clean` removes the containers and their unused owned bridge;
+`--delete-data` additionally deletes the selected helper's owned volumes.
+Ordinary `docker compose down` also preserves its named volumes.
 
 ## Tested S3 client recipes
 
@@ -350,151 +122,15 @@ available.
   ListBuckets CreationDate is a stable Unix-epoch placeholder. ListObjectsV2
   supports `encoding-type=url` for keys requiring XML-safe encoding.
 
-## Tested Iceberg ecosystem recipes
+## Iceberg and Dataset clients
 
-The [verified client matrix](../../e2e-test/clients/ecosystem/README.md) covers PyIceberg 0.11.1,
-Arrow 25.0.0, pandas 3.0.6, Polars 1.35.2, DuckDB 1.4.3, Spark 3.5.6 and Flink
-1.20.2 with Iceberg 1.11.0, and Trino 483 pinned by image digest. Each listed
-profile passed against the actual container, including selected rows after a
-persisted-volume restart. Spark/Flink mutation and Python snapshot handoff are
-separate from merely discovering a catalog.
+The [Iceberg ecosystem guide](../../e2e-test/clients/ecosystem/README.md) describes
+locked PyIceberg and external ecosystem clients. PyIceberg tests write real
+metadata/Parquet objects and read them through each node's configured public
+origin. Dataset has its own bearer token and REST namespace; use its returned
+payload references rather than constructing storage URLs.
 
-```sh
-pixi run build-single-node-container
-pixi run -e iceberg-ecosystem test-iceberg-container-ecosystem
-```
-
-The **Iceberg container ecosystem** GitHub Actions workflow runs only by manual
-`workflow_dispatch`, like the Rust Iceberg and optional S3 language SDK workflows.
-It defaults to the complete `all` matrix and offers a Python/DuckDB diagnostic
-profile. The environment and task are outside default tests and CI dependencies.
-Reports contain pinned versions, image/source identity and redacted diagnostics;
-the fixture removes owned containers/networks and retains mounted data/logs on success and failure.
-
-The [fixture recipes](../../e2e-test/clients/ecosystem/README.md#connection-recipes) define exact
-REST, delegated FileIO, endpoint and classpath setup. Trino explicitly uses the
-Iceberg/FileIO origin with path-style S3 access and vended table credentials.
-The matrix selects Parquet/v2. It does not establish ORC, arbitrary engine
-operations, Kafka Connect ingestion, an untested BI tool, production storage or
-upgrade compatibility. Performance follow-ups and known diagnostic observations
-remain in the [Access acceptance guide](../../app/crowdb-access-server/tests/README.md).
-
-## Crash collection boundary
-
-For host configuration, restoring its collector, and GDB commands for both
-container and bare-metal cores, see the
-[crash debugging guide](../../doc/dev/crash_debugging.md).
-
-The image does not configure the host's Linux core collector. Inspect
-`/proc/sys/kernel/core_pattern` on the Docker host before expecting a dump in
-the mounted data volume. A leading `|` sends a crash to a host-side collector;
-relative `core` or `core.*` patterns write in the crashing process's working
-directory. The container runs the monitor and managed children from the private
-`/opt/crowdb/data/crash` directory. On monitor startup and after a child is
-reaped, it removes older regular `core` files and keeps the newest one.
-The directory has mode `0700`; symlinks named `core.*` are not followed or
-deleted. This is one-core retention, not a promise that the host creates a
-volume file. Other relative filename patterns are outside this retention rule.
-
-For a host with a relative `core` pattern, add a size bound to `docker run`:
-
-```sh
---ulimit core=1073741824:1073741824
-```
-
-The example bounds each core to 1 GiB. A small bound may truncate a dump and
-make some stack frames unavailable. Core collection can also be suppressed by
-the host's dumpability policy, including for executables with file capabilities.
-The container never changes `core_pattern` or the host's dumpability policy.
-
-- On a systemd-coredump host, use `coredumpctl list crowdb-kv-server` to find
-  the host report, then `coredumpctl --output=/private/core dump
-  crowdb-kv-server` as an authorized host user to export it. Check that the
-  result is readable and nonempty before symbolization.
-- On an Ubuntu Apport host, find the matching report in `/var/crash` on the
-  Docker host. Create a private directory, then run `sudo apport-unpack
-  /var/crash/REPORT.crash /private/crowdb-core/unpacked`. The extracted
-  `CoreDump` is the file to pass to the symbolizer. Apport reports may be
-  readable only by the host administrator; preserve the private permissions
-  when granting the debugging user access. A pipe pattern does not create a
-  volume file. Apport may fail to resolve a CROWDB executable because its
-  `/opt/crowdb/bin` path exists only inside the container; it may also ignore
-  executables outside host distribution packages. Check the host's Apport log
-  when no report appears.
-  If the report or `CoreDump` is absent, collection is unavailable for that
-  crash; do not substitute a log or an unrelated dump.
-- On Docker Desktop, inspect the Linux VM's collector. The desktop host's
-  native crash directory is not the container's core directory.
-
-Core dumps can contain credentials and user data. Keep exports in a private
-directory and do not attach them to ordinary logs or issues. The release image
-contains stripped binaries, so a core may give only a limited stack trace.
-No host collector change is required by the image build.
-
-Collector behavior follows the [Linux core pattern documentation](https://docs.kernel.org/admin-guide/sysctl/kernel.html),
-[systemd-coredump manual](https://www.freedesktop.org/software/systemd/man/250/systemd-coredump.socket.html),
-and [Ubuntu Apport documentation](https://ubuntu.com/project/docs/contributors/debugging/apport/).
-
-## Manual multi-node Docker deployment
-
-The same Linux amd64 image supports `CROWDB_STARTUP_MODE=manual`. Each node starts
-SSH on 2222, monitor discovery/control and Web on 9090. KV and application servers
-start through cluster preparation and shared management. Default startup is manual for one or more nodes. Explicit `single` selects
-automatic initialization with virtual disks and disabled editing.
-
-For an isolated bridge test using the system Docker installation:
-
-```bash
-pixi run docker network create crowdb-nodes
-pixi run docker run -d --name node-one --network crowdb-nodes --cpus 2 --memory 1g \
-  --mount type=volume,source=node-one-data,target=/opt/crowdb/data \
-  -e CROWDB_STARTUP_MODE=manual -e CROWDB_PHYSICAL_HOST_ID=test-host \
-  -p 127.0.0.1:19090:9090 crowdb-node:dev
-```
-
-Repeat with distinct names, volumes and published UI ports. No peer list is needed
-on a multicast-capable bridge. Open a UI, create a rack, move candidates with SSH
-access and initialize selected nodes. The test login is `crowdb` / `crowdb`;
-production uses an explicit password file or preinstalled authorized keys. Every
-node keeps its own Ed25519 private key. Public keys, authorized keys and SSH host
-keys persist under the mounted root; initialization passwords are never persisted
-in console or Group 0 records. Ports advertised to peers are container addresses,
-not the browser's published host ports.
-
-Production Linux host networking uses an immutable image digest, explicit resource
-limits, management interface, physical host identity and persistent directory
-owned by uid 10001. Run the launcher through Pixi:
-
-```bash
-pixi run python container/single-node-container/run-node.py \
-  --image sha256:<verified-local-image-digest> --name crowdb-node --network host \
-  --data-root /var/lib/crowdb --physical-host-id host-one --interface eno1 \
-  --cpus 2 --memory-mib 1024 --password-file /private/ssh-password
-```
-
-The password file must be private and absolute. Existing key access can omit it.
-Permitted block devices use explicit `--device` arguments and must allow read/write
-access for container uid/gid 10001; configure that access on the host before launch.
-`--seed` supplies monitor addresses when multicast is unavailable. The launcher
-validates Docker resources,
-image architecture/digest, mounts and credentials; no runtime socket is mounted
-inside nodes. Host networking uses UI port 9090 directly. Container recreation and
-image upgrades preserve the same persistent root. System Docker and Pixi-managed containerd/nerdctl use the same OCI image.
-See the [shared image guide](../oci-image/README.md) for Docker-free build,
-rootless host prerequisites, lightweight runtime startup and daemon supervision.
-Existing build/start helpers require system Docker for local import/start and
-explicitly select automatic single-node startup.
-
-Acceptance harnesses use the same pinned image:
-
-```bash
-pixi run test-container-e2e --profile bridge-admission --concurrency 1 --node-cpus 0.5 --cpus 4 --memory-mib 6144
-pixi run python container/single-node-container/tests/host-node.py
-```
-
-Set `CROWDB_CONTAINER_IMAGE` to its immutable local image ID. Bridge acceptance
-covers independent clusters, cross-UI bootstrap recovery, SSH cancellation, quorum
-loss, stale commands, persistent endpoint/rack updates, voting catch-up and partial
-cleanup. The host harness checks explicit credentials/resources and persisted
-identity/key recovery. The existing container suite covers automatic single-node
-clients, browser behavior, crash/hang recovery and invalid persistent inputs.
+The OCI image carries the same server binaries for all protocols. It neither
+mounts the Docker socket nor delegates bootstrap or storage preparation to the
+host CLI. Monitor-owned accepted operations continue after the launching shell
+or browser exits. Changing an image does not reset node identity or storage.

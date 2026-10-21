@@ -305,7 +305,7 @@ jobs:
         name: verified-oci-image
         path: target
     - name: Import shared release image
-      run: pixi run image-import "$PWD/target/crowdb.oci.tar" --image crowdb-node:dev
+      run: pixi run --manifest-path container/oci-image/pixi.toml import "$PWD/target/crowdb.oci.tar" --image crowdb-node:dev
     - name: Run complete S3 acceptance
       run: pixi run test-e2e-s3
     - name: Capture runner state on failure
@@ -374,7 +374,7 @@ jobs:
         name: verified-oci-image
         path: target
     - name: Import shared release image
-      run: pixi run image-import "$PWD/target/crowdb.oci.tar" --image crowdb-node:dev
+      run: pixi run --manifest-path container/oci-image/pixi.toml import "$PWD/target/crowdb.oci.tar" --image crowdb-node:dev
     - name: Run Iceberg acceptance
       env:
         E2E_PARTITION: ${{ matrix.partition }}
@@ -597,7 +597,7 @@ jobs:
         pixi run sudo apt-get update
         pixi run sudo apt-get install -y protobuf-compiler
     - name: Import the shared verified image
-      run: pixi run image-import "$PWD/target/crowdb.oci.tar" --image crowdb-node:dev
+      run: pixi run --manifest-path container/oci-image/pixi.toml import "$PWD/target/crowdb.oci.tar" --image crowdb-node:dev
     - name: Verify centralized KV fixtures and protocol layer
       run: |
         pixi run test-container-e2e-fixture
@@ -650,7 +650,7 @@ jobs:
         name: verified-oci-image
         path: target
     - name: Import formal release image
-      run: pixi run image-import target/crowdb.oci.tar --image crowdb-node:dev
+      run: pixi run --manifest-path container/oci-image/pixi.toml import target/crowdb.oci.tar --image crowdb-node:dev
     - name: Verify installed system browser
       run: |
         for b in /snap/bin/chromium /usr/bin/chromium /usr/bin/chromium-browser /usr/bin/google-chrome /usr/bin/google-chrome-stable /usr/bin/microsoft-edge; do
@@ -709,7 +709,7 @@ jobs:
         pixi run sudo apt-get update
         pixi run sudo apt-get install -y protobuf-compiler
     - name: Import shared release image
-      run: pixi run image-import "$PWD/target/crowdb.oci.tar" --image crowdb-node:dev
+      run: pixi run --manifest-path container/oci-image/pixi.toml import "$PWD/target/crowdb.oci.tar" --image crowdb-node:dev
     - name: Verify container domain
       env:
         E2E_DOMAINS: ${{ matrix.domains }}

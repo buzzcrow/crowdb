@@ -11,13 +11,13 @@ socket or containerd service. Running the image is a separate operation.
 ## Build and import
 
 ```bash
-pixi run image-build --output target/crowdb.oci.tar
-pixi run image-inspect target/crowdb.oci.tar --receipt
+pixi run oci-build --output target/crowdb.oci.tar
+pixi run --manifest-path container/oci-image/pixi.toml inspect target/crowdb.oci.tar --receipt
 # Optional import into the system Docker image store:
-pixi run image-import target/crowdb.oci.tar --image crowdb-node:dev
+pixi run --manifest-path container/oci-image/pixi.toml import target/crowdb.oci.tar --image crowdb-node:dev
 ```
 
-`image-build` compiles/stages with the repository environment, then selects the
+`oci-build` compiles/stages with the repository environment, then selects the
 locked standalone builder environment. `--staged` reuses an existing
 `target/container-runtime`. Unsupported platforms fail before compilation.
 Only Linux amd64 is enabled; macOS will compile inside a Linux VM backend.
@@ -33,7 +33,7 @@ Both rootless build/import and the explicit rootful recipe are supported.
 If rootless prerequisites are unavailable, an administrator can explicitly run:
 
 ```bash
-pixi run stage-single-node-container
+pixi run bash container/oci-image/stage.sh
 pixi install --locked --manifest-path container/oci-image/pixi.toml
 pixi run sudo "$(command -v pixi)" run --as-is \
   --manifest-path container/oci-image/pixi.toml build --privileged \
@@ -61,36 +61,121 @@ processes and forwards stop signals to the monitor; the monitor retains service
 shutdown ordering and child exit ownership. No runtime-specific `--init` flag is
 needed. Do not replace the image entrypoint with the monitor for normal nodes.
 
-## Startup policies
+## Local cluster shortcuts
 
-The image defaults to `CROWDB_STARTUP_MODE=manual`: discovery, SSH and UI start.
-Operators authenticate and admit candidates into the cluster. Auto join defaults
-to enabled: three eligible admitted nodes are ordered by UUID, and the smallest
-UUID's monitor initializes Store 0 / Group 0 with those three voters. Membership
-is then fixed; later admitted nodes do not automatically become Group-0 voters.
-Disable Auto join to submit initialization through the UI instead. Accepted
-initialization continues in the monitor after the UI closes; inspect its progress
-or retry the same operation after a reported failure.
-
-Storage preparation is separate from effective Group-0 disk membership. Configure
-and verify each disk's placement, metadata binding, owner and DiskIO availability.
-A single admitted node in standard mode does not imply the single-node policy.
-
-Explicit `CROWDB_STARTUP_MODE=single` creates virtual disks and initializes the
-existing development profile automatically. UI editing and backend mutations
-are disabled. Both policies use the same image. Existing single-node development
-helpers select `single` explicitly. Persisted bootstrap/admission records reject
-incompatible policy changes; do not change modes on a populated data directory.
-
-For a local automatic Docker container:
+Build and load once, then run a named cluster:
 
 ```bash
-pixi run docker run -d --name crowdb-single --cpus 2 --memory 1g \
-  -e CROWDB_STARTUP_MODE=single -p 9090:9090 -p 9091:9091 -p 9092:9092 \
-  --mount type=volume,source=crowdb-data,target=/opt/crowdb/data \
-  crowdb-node:dev
-pixi run docker exec crowdb-single crowdb-monitor readiness
+pixi run oci-build --load
+pixi run oci-run --cluster demo
+# Explicit equivalent of oci-run:
+pixi run oci-run-1c --cluster demo
+# Use a different name and port range for a three-container cluster:
+pixi run oci-run-3c --cluster demo-three --port-base 9190
+pixi run oci-stop --cluster demo-three
+pixi run oci-run-3c --cluster demo-three
+pixi run oci-clean --cluster demo-three
+# Recreate containers and bridge with the original volumes and accepted policy:
+pixi run oci-run-3c --cluster demo-three
+# Explicitly delete the owned data too:
+pixi run oci-clean --cluster demo-three --delete-data
 ```
+
+Run never compiles, downloads or pulls an image. It accepts `--image`, `--cpus`,
+`--memory-mib` and `--port-base` on first creation, and retains those inputs.
+A different node count or conflicting input requires another cluster name.
+Ports for each node are UI/S3/Iceberg/Dataset at base/base+1/base+2/base+3;
+subsequent members add 10 and 20. All published ports bind to `127.0.0.1`.
+Names default to `local`; global stop/clean requires explicit `--all`.
+
+Host receipts live in `.crowdb-runtime/persistent/oci-clusters/`. The shortcuts
+verify the Docker daemon/context and exact ownership labels before effects.
+Clean stops and removes owned containers and unused owned bridges. It keeps
+volumes and restart inputs unless `--delete-data` is explicit. Image cleanup
+only considers dangling CROWDB images, preserving retained cluster references
+and images used by any running or stopped container. Attached or relabelled
+networks and volumes referenced elsewhere are rejected. No global prune runs.
+These host scripts invoke Docker directly and require no CLI binary or records.
+
+One node and three nodes use the same editable monitor lifecycle. Local mode
+prepares test storage and all access services. An incomplete three-node start
+waits for peers; it never falls back to singleton bootstrap. Each node retains
+its identity, SSH keys, cluster binding and accepted setup in its own volume.
+Discovery uses mDNS/DNS-SD; no DNS server installation or peer list is required.
+Advertisements supply hints; pinned SSH identity verifies new member addresses.
+
+## Direct Docker and Compose
+
+A direct single-container cluster needs a volume and four published ports:
+
+```bash
+pixi run docker run -d --name crowdb-one --cpus 1 --memory 1536m \
+  -p 127.0.0.1:9090:9090 -p 127.0.0.1:9091:9091 \
+  -p 127.0.0.1:9092:9092 -p 127.0.0.1:9093:9093 \
+  --mount type=volume,source=crowdb-one-data,target=/opt/crowdb/data \
+  crowdb-node:dev
+```
+
+For three nodes, create a dedicated bridge and execute these commands separately
+in any order. No node addresses or membership list are supplied:
+
+```bash
+pixi run docker network create crowdb-demo
+pixi run docker run -d --name crowdb-demo-1 --network crowdb-demo --cpus 1 --memory 1536m \
+  -e CROWDB_CLUSTER=demo -e CROWDB_INITIAL_VOTERS=3 \
+  -e CROWDB_S3_PUBLIC_URI=http://127.0.0.1:9091 \
+  -e CROWDB_ICEBERG_PUBLIC_URI=http://127.0.0.1:9092 \
+  -e CROWDB_DATASET_PUBLIC_URI=http://127.0.0.1:9093 \
+  -p 127.0.0.1:9090:9090 -p 127.0.0.1:9091:9091 \
+  -p 127.0.0.1:9092:9092 -p 127.0.0.1:9093:9093 \
+  --mount type=volume,source=crowdb-demo-1-data,target=/opt/crowdb/data crowdb-node:dev
+pixi run docker run -d --name crowdb-demo-2 --network crowdb-demo --cpus 1 --memory 1536m \
+  -e CROWDB_CLUSTER=demo -e CROWDB_INITIAL_VOTERS=3 \
+  -e CROWDB_S3_PUBLIC_URI=http://127.0.0.1:9101 \
+  -e CROWDB_ICEBERG_PUBLIC_URI=http://127.0.0.1:9102 \
+  -e CROWDB_DATASET_PUBLIC_URI=http://127.0.0.1:9103 \
+  -p 127.0.0.1:9100:9090 -p 127.0.0.1:9101:9091 \
+  -p 127.0.0.1:9102:9092 -p 127.0.0.1:9103:9093 \
+  --mount type=volume,source=crowdb-demo-2-data,target=/opt/crowdb/data crowdb-node:dev
+pixi run docker run -d --name crowdb-demo-3 --network crowdb-demo --cpus 1 --memory 1536m \
+  -e CROWDB_CLUSTER=demo -e CROWDB_INITIAL_VOTERS=3 \
+  -e CROWDB_S3_PUBLIC_URI=http://127.0.0.1:9111 \
+  -e CROWDB_ICEBERG_PUBLIC_URI=http://127.0.0.1:9112 \
+  -e CROWDB_DATASET_PUBLIC_URI=http://127.0.0.1:9113 \
+  -p 127.0.0.1:9110:9090 -p 127.0.0.1:9111:9091 \
+  -p 127.0.0.1:9112:9092 -p 127.0.0.1:9113:9093 \
+  --mount type=volume,source=crowdb-demo-3-data,target=/opt/crowdb/data crowdb-node:dev
+```
+
+Equivalent Compose examples are [compose.yaml](compose.yaml) and
+[compose-three.yaml](compose-three.yaml):
+
+```bash
+pixi run docker compose -f container/oci-image/compose.yaml up -d
+pixi run docker compose -f container/oci-image/compose.yaml down
+pixi run docker compose -f container/oci-image/compose-three.yaml up -d
+pixi run docker compose -f container/oci-image/compose-three.yaml down
+```
+
+`down` removes the Compose containers and network, preserving named volumes.
+Set `CROWDB_IMAGE` to select the loaded image and `CROWDB_CLUSTER` to isolate
+another project. Change the port variables shown in each file before starting
+another project concurrently. Keep accepted public origins unchanged on reuse.
+Plain Docker and Compose resources have their own ownership; Pixi clean does
+not adopt them. Use Docker/Compose stop/remove/down for those resources and
+remove each dedicated bridge after its containers are removed.
+
+Read progress and credentials explicitly with standard Docker tools:
+
+```bash
+pixi run docker logs crowdb-one
+pixi run docker exec crowdb-one crowdb-monitor credentials show --format env
+```
+
+The credential command prints S3, Iceberg and Dataset client values and their
+public origins. Keep that output private. Setup completion is historical;
+protocol availability requires current services and storage to be ready.
+See [local storage and client details](../single-node-container/README.md).
 
 ## Linux host deployment
 
@@ -107,7 +192,7 @@ explicit configuration, inherited by services as `TOKIO_WORKER_THREADS`.
 
 
 ```bash
-pixi run image-run --runtime docker \
+pixi run --manifest-path container/oci-image/pixi.toml -e runtime run --runtime docker \
   --image docker.io/crowdb/crowdb-node@sha256:<verified-manifest-digest> \
   --name crowdb-node --network host --cpus 2 --memory-mib 1024 \
   --data-root /var/lib/crowdb --physical-host-id host-one --interface eno1 \
@@ -126,7 +211,7 @@ For containerd, install the separate locked runtime environment:
 
 ```bash
 pixi install --locked --manifest-path container/oci-image/pixi.toml -e runtime
-pixi run image-run --runtime containerd \
+pixi run --manifest-path container/oci-image/pixi.toml -e runtime run --runtime containerd \
   --address /run/crowdb-containerd/containerd.sock \
   --image docker.io/crowdb/crowdb-node@sha256:<verified-manifest-digest> \
   --name crowdb-node --network host --cpus 2 --memory-mib 1024 \
@@ -202,17 +287,11 @@ daemon; containerd's restart plugin and `unless-stopped` policy recover exited
 nodes. Monitor supervises the child services. Readiness failure alone never
 restarts or reinitializes the whole node.
 
-```bash
-pixi run image-ctl --runtime containerd --address /run/crowdb-containerd/containerd.sock logs crowdb-node
-pixi run image-ctl --runtime containerd --address /run/crowdb-containerd/containerd.sock readiness crowdb-node
-pixi run image-ctl --runtime containerd --address /run/crowdb-containerd/containerd.sock stop crowdb-node
-pixi run image-ctl --runtime containerd --address /run/crowdb-containerd/containerd.sock remove crowdb-node
-```
-
-The lifecycle helper accepts launcher-owned containers only; `remove` requires a
-stopped node and does not remove data or images. Recreate with `image-run` and the
-same root/host identity to retain UUID, SSH keys and cluster binding. `restart`
-and `liveness` are also available. Use `--runtime docker` for the same operations.
+Use standard runtime tools to inspect, read logs, execute probes, stop and remove
+nodes. For containerd select its address and namespace on `nerdctl`; for Docker
+use its selected context. Removing a stopped container does not delete its
+external data. Host networking uses one node per host with the fixed listener
+ports; RDMA uses this host-network path.
 
 ## CI and acceptance
 
@@ -222,8 +301,7 @@ matching successful image digests allow publication. The protected publish job
 copies the graph with digest preservation, verifies the remote digest, signs it,
 and attaches SPDX SBOM and SLSA provenance before updating `latest`. The canonical repository is `crowdb/crowdb-node`; the
 `crowdb/crowdb-iceberg`, `crowdb/crowdb-s3` and `crowdb/crowdb-dataset` repositories
-are single-node usage aliases of that image. Their examples explicitly set
-`CROWDB_STARTUP_MODE=single`; image names alone do not select startup mode.
+are single-node usage aliases of that image. Image names do not select a different lifecycle or UI permission policy.
 The Dataset alias uses the same image. Dataset access runs through the
 `server access dataset serve` entry point with the versioned REST API and
 Dataset-specific chunk storage. No second Docker image is published.

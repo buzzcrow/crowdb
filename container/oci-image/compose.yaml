@@ -1,0 +1,24 @@
+# Copyright 2026-present Gian <crow.db@outlook.com>
+# Licensed under the Apache License, Version 2.0.
+name: crowdb-${CROWDB_CLUSTER:-local}
+services:
+  node:
+    image: ${CROWDB_IMAGE:-crowdb-node:dev}
+    pull_policy: never
+    cpus: 1
+    mem_limit: 1536m
+    environment:
+      CROWDB_CLUSTER: ${CROWDB_CLUSTER:-local}
+      CROWDB_INITIAL_VOTERS: "1"
+      CROWDB_S3_PUBLIC_URI: http://127.0.0.1:${CROWDB_S3_PORT:-9091}
+      CROWDB_ICEBERG_PUBLIC_URI: http://127.0.0.1:${CROWDB_ICEBERG_PORT:-9092}
+      CROWDB_DATASET_PUBLIC_URI: http://127.0.0.1:${CROWDB_DATASET_PORT:-9093}
+    ports:
+      - "127.0.0.1:${CROWDB_UI_PORT:-9090}:9090"
+      - "127.0.0.1:${CROWDB_S3_PORT:-9091}:9091"
+      - "127.0.0.1:${CROWDB_ICEBERG_PORT:-9092}:9092"
+      - "127.0.0.1:${CROWDB_DATASET_PORT:-9093}:9093"
+    volumes:
+      - node-data:/opt/crowdb/data
+volumes:
+  node-data:

@@ -1185,3 +1185,46 @@ do not mark unexecuted acceptance passed.
   These are hypotheses, not a confirmed allocator root cause. Preserve existing
   volumes and use the fixed operation identity; do not mask it with a larger
   file, another retry or a longer readiness deadline.
+
+## Docker shortcut verification
+
+- Implemented Docker-only `oci-run`, `oci-run-1c`, `oci-run-3c`, scoped/global
+  stop and clean with private immutable launch receipts and exact daemon,
+  ownership-label and canonical resource-name checks. Cleanup removes owned
+  containers and empty bridges, retains data and restart inputs by default,
+  and only removes unreferenced dangling CROWDB images. Explicit `--delete-data`
+  removes disposable owned volumes and receipts. No force removal or prune.
+- All 41 OCI Python cases pass, including foreign ownership, attached bridge,
+  changed daemon/input, copied labels on unknown names, referenced volume and
+  stopped-container/retained-image protection. Both Compose configurations
+  validate. CI task inventory passes (28 packages, 388 named flows).
+- Packaged image H: source revision `7d31e6847976a6ee83c1c989d766177298a66076`,
+  OCI `sha256:1549859a566ba50ef76316a9fcb1866550583d4ca3ab87f65bbc569ce608e0b3`,
+  local image `sha256:f4fac666dfecf8659baf7b4d4a3277d9bf6048ac80a148783c10b5349e5781a0`.
+  Actual `oci-build --staged --load-image` and packaged image smoke pass.
+- `local-clean-h`: root helper starts one node; fresh and retained S3 (128 B,
+  2 MiB), 2 MiB Dataset and PyIceberg (three rows) pass. Clean removes container
+  and bridge while retaining volume/receipt. Recreate changes the observed IP
+  from 172.18.0.2 to 172.20.0.2 and preserves node/cluster identity, SSH trust,
+  credentials, setup and storage. Actual Access readiness recovers within the
+  unchanged 120 seconds. Final explicit disposable-data cleanup also passes.
+  UUID `cb643ec6-130a-49e8-a484-6cc8ef580c09`; private evidence:
+  `.crowdb-runtime/artifacts/local-clean-h/`.
+- `pixi-three-h`: root three-node helper fresh startup, per-node S3 read/write,
+  Iceberg namespace and Dataset open pass. Scoped stop retains resources; run
+  resumes the same cluster, all three Access readiness checks and retained I/O
+  pass. Final cleanup removes owned containers, bridge and disposable volumes.
+  UUID `7b850443-ed60-4a9b-afdd-790c2afac341`; private evidence:
+  `.crowdb-runtime/artifacts/pixi-three-h/`.
+- Compose H: fresh three-node formation, S3, full Dataset and PyIceberg pass.
+  Whole stop/up then fails the unchanged 120-second actual Access readiness
+  bound on node 3. Logs show the first launch binding an old address, followed
+  by rapid Access exits while DiskIO topology has no live owner, exhausting
+  the operation launch budget. Investigate upstream recovery dependency gates;
+  do not increase the deadline or launch budget. This is resumed failed packaged
+  attempt 3. Finally teardown removed all three containers and the Compose
+  bridge, retaining failed-state volumes and private logs under
+  `.crowdb-runtime/artifacts/compose-check-h-9f4e12/`.
+- Remaining: registered E2E migration and Compose retained recovery; common CLI
+  lifecycle/status, native containerd host acceptance, admitted-member trust
+  extension and negative identity recovery are still unfinished.
