@@ -60,3 +60,6 @@ pub(crate) fn write_single_binding(
 
 #[cfg(feature = "test-util")]
 pub use runtime::NodeServiceForTests;
+
+#[cfg(feature = "test-util")]
+pub use runtime::rebind_recovery_services_for_tests;

@@ -213,3 +213,6 @@ pub fn check_member_trust_for_tests(root: &Path) -> Result<()> {
     let accepted = durable::read(&root.join("accepted-node.json"))?.ok_or("missing accepted node")?;
     check(root, &accepted)
 }
+
+#[cfg(feature = "test-util")]
+pub use publication::rebind_recovery_services_for_tests;

@@ -304,3 +304,6 @@ fn disk_inventory(root: &std::path::Path) -> Result<Value> {
 
 #[cfg(feature = "test-util")]
 pub use services::NodeServiceForTests;
+
+#[cfg(feature = "test-util")]
+pub use recovery::rebind_recovery_services_for_tests;

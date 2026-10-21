@@ -930,6 +930,32 @@ do not mark unexecuted acceptance passed.
   fixture accidentally reused a helper that always asserts split creation; it
   now creates the intended one-partition control-plane fixture directly.
 
+- Third packaged fixture uses commit `bebf5d14`, OCI digest
+  `sha256:6ddca82a345972c6d1118cb5d2af3b86a7af6278f194b1d54cb7b055504e8ef6`,
+  source tree `3041c5b36edf2031e9bbb2b8e8438a9f67c4125a` and runtime SHA-256
+  `710703ad84d10fb9e59d8e595f2f1868065bfc003f93cebf4da03075bf3f7a78`.
+  Archive `target/crowdb-member-recovery-c.oci.tar`, image
+  `crowdb-node:member-recovery-c`, fixture `crowdb-recovery-c-three-{1,2,3}`.
+  Same independent 3/1/2 start and 1/2/3 whole restart; no executable mounts.
+  Verification is running; prior failed fixtures remain intact.
+
+- Packaged attempt 3 (`bebf5d14`) passed fresh S3 128-byte and 2-MiB reads
+  on all three members, then timed out creating the first Iceberg namespace at
+  the unchanged 15-second request bound, before whole-cluster restart. Preserve
+  fixture `crowdb-recovery-c-three-*`; no changed-IP acceptance is claimed.
+  The earliest confirmed disruption is automatic replacement of fresh accepted
+  DiskDB/DiskIO/ChunkDB/Chunk-KV service operations on nodes 1 and 2 while their
+  IPs never changed. Incomplete SSH discovery evidence shrank management seeds,
+  which the address recovery publisher mistook for configuration changes and
+  restarted those services. Preserve accepted contacts when the own address is
+  unchanged and discovery is incomplete; a real own-address change can still
+  publish a reachable subset, followed by the full set once verified. A focused
+  regression exercises this branch with no reachable authority and verifies no
+  contact or service-state writes. All six trust/recovery tests, three ordered
+  initialization tests and twelve setup tests pass, together with monitor
+  all-target clippy and formatting. A new packaged fixture must also preserve
+  original service operation IDs throughout fresh startup before doing I/O.
+
 ## Consolidated file ownership
 
 - Typed policy/status: `lib/crowdb-protocol/src/mgmt/` and `tests/`.

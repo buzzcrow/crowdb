@@ -105,3 +105,36 @@ fn missing_preparation_and_corrupt_trust_fail_closed() {
         "\"corrupt\""
     );
 }
+
+#[tokio::test]
+async fn incomplete_endpoint_proof_does_not_rebind_unchanged_fresh_services() {
+    let dir = tempdir_in_test_data("monitor-partial-discovery-contacts");
+    let root = dir.path();
+    let _ = trust::fixture(root);
+    let operation =
+        crowdb_console_shared::deployment::PreparedBootstrap::load(&root.join("prepared-bootstrap.json"))
+            .unwrap();
+    let seeds = ["http://192.0.2.1:10000".to_owned()];
+    let binding = crowdb_protocol::mgmt::node::NodeBinding {
+        node_id: 1,
+        bootstrap: operation.identity.clone(),
+        management_seeds: (1..=3).map(|n| format!("http://192.0.2.{n}:10000")).collect(),
+    };
+    trust::write(&root.join("node-binding.json"), &binding);
+    let original = std::fs::read(root.join("node-binding.json")).unwrap();
+    // Even with no reachable Group-0 endpoint, unchanged addresses and a
+    // partial proof must leave accepted contacts and service operations alone.
+    assert!(!crowdb_monitor::rebind_recovery_services_for_tests(
+        root,
+        &operation,
+        1,
+        "192.0.2.1",
+        &seeds,
+        false,
+    )
+    .await
+    .unwrap());
+    assert_eq!(std::fs::read(root.join("node-binding.json")).unwrap(), original);
+    assert!(!root.join("service-address.json").exists());
+    assert!(!root.join("services").exists());
+}

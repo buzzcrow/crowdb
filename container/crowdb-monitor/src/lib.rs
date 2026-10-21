@@ -56,3 +56,6 @@ pub use profile::{
 pub use render::{render_configs, RenderError, RenderedConfig};
 pub use status::{MonitorPhase, MonitorStatus, ServiceStatus, StatusError, StatusStore};
 pub use supervisor::{Supervisor, SupervisorError};
+
+#[cfg(feature = "test-util")]
+pub use node::rebind_recovery_services_for_tests;

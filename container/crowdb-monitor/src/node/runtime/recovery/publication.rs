@@ -84,7 +84,23 @@ pub(super) async fn reconcile(
         node_update::apply(&ctx, &operation.identity.cluster_id, record).await?;
     }
     super::owners::capture(root, &ctx, &operation.identity, local.node_id).await?;
-    rebind(root, &client, operation, local.node_id, &current, &seeds).await?;
+    let complete = config
+        .nodes
+        .iter()
+        .all(|node| endpoints.members.iter().any(|member| member.node_id == node.id));
+    if !rebind(
+        root,
+        &client,
+        operation,
+        local.node_id,
+        &current,
+        &seeds,
+        complete,
+    )
+    .await?
+    {
+        return Ok(());
+    }
     if let Some(mut binding) =
         durable::read::<crowdb_protocol::mgmt::node::NodeBinding>(&root.join("node-binding.json"))?
     {
@@ -106,7 +122,8 @@ async fn rebind(
     node: u64,
     current: &str,
     seeds: &[String],
-) -> Result<()> {
+    complete: bool,
+) -> Result<bool> {
     let path = root.join("service-address.json");
     let old: String = durable::read(&path)?.unwrap_or(
         operation
@@ -119,12 +136,17 @@ async fn rebind(
     );
     let binding: Option<crowdb_protocol::mgmt::node::NodeBinding> =
         durable::read(&root.join("node-binding.json"))?;
+    // A partial discovery round is not an address change. In particular,
+    // never disrupt fresh services merely because one SSH proof is pending.
+    // Own-address changes can publish a reachable subset; later complete
+    // evidence refreshes the full contacts without oscillating on lost probes.
     if old == current
-        && binding
-            .as_ref()
-            .is_some_and(|binding| binding.management_seeds == seeds)
+        && (!complete
+            || binding
+                .as_ref()
+                .is_some_and(|binding| binding.management_seeds == seeds))
     {
-        return Ok(());
+        return Ok(false);
     }
     for intent in services::list(client).await? {
         if intent.node_id != node
@@ -160,5 +182,22 @@ async fn rebind(
             .await?;
     }
     durable::write(&path, &current)?;
-    Ok(())
+    Ok(true)
+}
+
+#[cfg(feature = "test-util")]
+/// Exercise contact publication with no reachable authority.
+///
+/// # Errors
+/// Propagates any attempted authority access or retained-state failure.
+pub async fn rebind_recovery_services_for_tests(
+    root: &Path,
+    operation: &PreparedBootstrap,
+    node: u64,
+    current: &str,
+    seeds: &[String],
+    complete: bool,
+) -> Result<bool> {
+    let client = CrowdbKvClient::new(ClientConfig::new(vec!["http://127.0.0.1:9".into()]));
+    rebind(root, &client, operation, node, current, seeds, complete).await
 }
