@@ -1228,3 +1228,12 @@ do not mark unexecuted acceptance passed.
 - Remaining: registered E2E migration and Compose retained recovery; common CLI
   lifecycle/status, native containerd host acceptance, admitted-member trust
   extension and negative identity recovery are still unfinished.
+
+- Compose recovery fix: monitor recovery checks the profile dependency DAG against
+  committed local intents and live readiness probes before launching dependents.
+  DiskIO consumers also require a successful complete topology connection, so
+  a local listener cannot spend five Access launches while a remote owner is
+  still recovering. Stop/Delete bypass this gate. A real authority/process test
+  holds DiskDB readiness unavailable, proves no ChunkDB execution/budget is
+  created, then exposes readiness and completes the same accepted operation.
+  Both readiness regression cases pass; monitor all-target clippy passes.

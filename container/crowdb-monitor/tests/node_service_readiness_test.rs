@@ -28,6 +28,7 @@ async fn readiness_timeout_preserves_the_live_process_and_start_budget() {
     profile.paths.log_root = root.join("log");
     profile.paths.run_root = root.join("run");
     std::fs::create_dir_all(&profile.paths.log_root).unwrap();
+    std::fs::create_dir_all(&profile.paths.run_root).unwrap();
     let program = root.join("starting-service");
     std::fs::write(&program, "#!/bin/sh\nexec sleep 60\n").unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -96,4 +97,110 @@ async fn readiness_timeout_preserves_the_live_process_and_start_budget() {
         .unwrap();
     worker.execute_for_tests(intent).await.unwrap();
     server.abort();
+}
+
+#[tokio::test]
+async fn recovery_waits_for_live_dependencies_without_consuming_launches() {
+    // Use the real Group-0 authority and process manager for recovery.
+
+    let directory = crowdb_test_harness::test_dirs::tempdir_in_test_data("service-dependencies");
+    let data = directory.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let root = data.as_path();
+    let request = NodeSetupRequest {
+        version: 1,
+        discovery_id: NodeIdentity::load_or_create(root).unwrap().uuid().to_string(),
+        operation_id: uuid::Uuid::new_v4().to_string(),
+        choices: crowdb_protocol::mgmt::node::setup::NodeSetupChoices::default(),
+    };
+    let authority = node_setup::TestAuthority::start(root, &request).await;
+    let mut profile = DeploymentProfile::load(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../oci-image/node-profile.toml"),
+    )
+    .unwrap();
+    profile.paths.data_root = root.to_path_buf();
+    profile.paths.log_root = root.join("log");
+    profile.paths.install_root = directory.path().to_path_buf();
+    profile.paths.bin_root = directory.path().join("bin");
+    profile.paths.template_root = directory.path().join("templates");
+    profile.paths.run_root = directory.path().join("run");
+    std::fs::create_dir_all(&profile.paths.bin_root).unwrap();
+    std::fs::create_dir_all(&profile.paths.log_root).unwrap();
+    std::fs::create_dir_all(&profile.paths.run_root).unwrap();
+    let program = profile.paths.bin_root.join("starting-service");
+    std::fs::write(&program, "#!/bin/sh\nexec sleep 60\n").unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    for service in &mut profile.services {
+        service.program = program.clone();
+        if service.id == "chunkdb" {
+            service.dependencies = vec!["diskdb".into()];
+        }
+    }
+    let mut listeners = Vec::new();
+    let mut intents = Vec::new();
+    for kind in ["diskdb", "chunkdb"] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let intent = NodeServiceIntent {
+            cluster_id: authority.binding.bootstrap.cluster_id.clone(),
+            operation_id: uuid::Uuid::new_v4().to_string(),
+            node_id: authority.binding.node_id,
+            service_id: format!("{kind}-2"),
+            kind: kind.into(),
+            action: NodeServiceAction::Start,
+            configuration: format!(
+                "[server]\nhttp_listen_addr = '{}'\n",
+                listener.local_addr().unwrap()
+            ),
+            environment: std::collections::BTreeMap::default(),
+        };
+        let key = format!("/deployment/services/2/{}", intent.service_id);
+        authority
+            .kv
+            .put(0, 0, key.as_bytes(), &serde_json::to_vec(&intent).unwrap(), None)
+            .await
+            .unwrap();
+        listeners.push(listener);
+        intents.push(intent);
+    }
+    profile.validate().unwrap();
+    let mut worker = NodeServiceForTests::new_for_tests(profile).await.unwrap();
+    worker.reconcile_for_tests().await.unwrap();
+    assert!(
+        !root.join("services/chunkdb-2/execution.json").exists(),
+        "waiting for a dependency must not launch a process or consume its budget"
+    );
+    let servers: Vec<_> = listeners
+        .into_iter()
+        .map(|listener| {
+            tokio::spawn(async move {
+                axum::serve(
+                    listener,
+                    axum::Router::new().route("/ready", axum::routing::get(|| async { "ready" })),
+                )
+                .await
+                .unwrap();
+            })
+        })
+        .collect();
+    worker.reconcile_for_tests().await.unwrap();
+    let execution: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("services/chunkdb-2/execution.json")).unwrap())
+            .unwrap();
+    assert_eq!(execution["complete"], true);
+    assert_eq!(execution["intent"]["operation_id"], intents[1].operation_id);
+    assert!(execution["pid"].is_number());
+    for mut intent in intents {
+        intent.action = NodeServiceAction::Stop;
+        intent.operation_id = uuid::Uuid::new_v4().to_string();
+        let key = format!("/deployment/services/2/{}", intent.service_id);
+        authority
+            .kv
+            .put(0, 0, key.as_bytes(), &serde_json::to_vec(&intent).unwrap(), None)
+            .await
+            .unwrap();
+    }
+    worker.reconcile_for_tests().await.unwrap();
+    for server in servers {
+        server.abort();
+    }
 }

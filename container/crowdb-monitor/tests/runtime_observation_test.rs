@@ -81,7 +81,7 @@ async fn stale_health_and_terminal_failures_are_distinct_and_do_not_export_error
     );
     fixture.save(false, 5, Some("private-error-sentinel"));
     let report = runtime_observation_for_tests(&fixture.profile, &mut fixture.manager).unwrap();
-    assert_eq!(report.services[0].state, DependencyState::Failed);
+    assert_eq!(report.services[0].state, DependencyState::Initializing);
     assert!(!serde_json::to_string(&report)
         .unwrap()
         .contains("private-error-sentinel"));
@@ -90,6 +90,11 @@ async fn stale_health_and_terminal_failures_are_distinct_and_do_not_export_error
         .stop("chunkdb-1", Duration::from_secs(1))
         .await
         .unwrap();
+    let report = runtime_observation_for_tests(&fixture.profile, &mut fixture.manager).unwrap();
+    assert_eq!(report.services[0].state, DependencyState::Failed);
+    assert!(!serde_json::to_string(&report)
+        .unwrap()
+        .contains("private-error-sentinel"));
 }
 
 #[tokio::test]

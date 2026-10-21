@@ -23,7 +23,9 @@ pub(super) struct Execution {
 mod test_support;
 #[cfg(feature = "test-util")]
 pub use test_support::NodeServiceForTests;
+mod dependencies;
 mod execution;
+pub(super) use dependencies::ready as dependencies_ready;
 mod observation;
 mod policy;
 pub(super) use execution::execute;

@@ -96,7 +96,7 @@ impl NodeHealth {
         Ok(())
     }
 
-    async fn reconcile_services(
+    pub(in crate::node::runtime) async fn reconcile_services(
         &mut self,
         profile: &DeploymentProfile,
         processes: &mut ProcessManager,
@@ -104,16 +104,24 @@ impl NodeHealth {
         if !profile.paths.data_root.join("node-binding.json").exists() {
             return Ok(());
         }
-        let Ok(intents) = super::services::desired(profile).await else {
-            return Ok(());
+        let intents = match super::services::desired(profile).await {
+            Ok(intents) => intents,
+            Err(error) => {
+                tracing::debug!(%error, "service recovery awaits committed intents");
+                return Ok(());
+            }
         };
-        for intent in intents {
-            if !super::services::pending(profile, &intent, processes)? {
+        for intent in &intents {
+            if !super::services::pending(profile, intent, processes)? {
+                continue;
+            }
+            if let Err(error) = super::services::dependencies_ready(profile, intent, &intents).await {
+                tracing::debug!(service = %intent.service_id, %error, "service recovery waits for dependencies");
                 continue;
             }
             match super::services::execute(profile, processes, intent.clone()).await {
                 Ok(_) => {
-                    *self.attempts.entry(intent.service_id).or_default() += 1;
+                    *self.attempts.entry(intent.service_id.clone()).or_default() += 1;
                 }
                 Err(error) => eprintln!("service recovery deferred for {}: {error}", intent.service_id),
             }

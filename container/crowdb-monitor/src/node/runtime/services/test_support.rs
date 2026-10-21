@@ -36,6 +36,16 @@ impl NodeServiceForTests {
         execute(&self.profile, &mut self.processes, intent).await
     }
 
+    /// Reconcile committed recovery intents through the production dependency gate.
+    ///
+    /// # Errors
+    /// Propagates authority, journal and process observation errors.
+    pub async fn reconcile_for_tests(&mut self) -> Result<()> {
+        super::super::health::NodeHealth::new(&self.profile)?
+            .reconcile_services(&self.profile, &mut self.processes)
+            .await
+    }
+
     /// # Errors
     /// Propagates production journal and process observation errors.
     pub fn pending_for_tests(&mut self, intent: &NodeServiceIntent) -> Result<bool> {
