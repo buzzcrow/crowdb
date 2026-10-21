@@ -50,7 +50,7 @@ async fn simultaneous_runners_converge_on_one_fixed_mapping_and_credential_refer
         vec![(2, 1), (7, 2), (9, 3)]
     );
     assert_eq!(winner.storage.len(), 3);
-    for binding in &winner.storage {
+    for (index, binding) in winner.storage.iter().enumerate() {
         assert_eq!(
             (
                 binding.rack_id,
@@ -58,7 +58,7 @@ async fn simultaneous_runners_converge_on_one_fixed_mapping_and_credential_refer
                 binding.store_id,
                 binding.group_id
             ),
-            (4, 1, 0, 1)
+            (4, index as u64 + 1, 0, 1)
         );
     }
     assert!(winner.credential_ref.ends_with(&winner.operation_id));
@@ -83,6 +83,46 @@ async fn simultaneous_runners_converge_on_one_fixed_mapping_and_credential_refer
     );
     assert_eq!(snapshot(&authority).await.unwrap(), before);
     assert!(authority.ctx.sysmd().get_group(0, 1).await.unwrap().is_none());
+    assert!(authority
+        .ctx
+        .sysmd()
+        .get_disk_group(4, 2, 1)
+        .await
+        .unwrap()
+        .is_none());
+    for binding in &winner.storage {
+        authority
+            .ctx
+            .sysmd()
+            .reserve_disk_group_id(&crowdb_protocol::key::DiskGroupKey {
+                rack_id: binding.rack_id,
+                node_id: binding.node_id,
+                disk_group_id: binding.disk_group_id,
+            })
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn global_disk_group_reservations_cannot_be_adopted_from_another_node_or_retired_location() {
+    let authority = TestPreparationAuthority::start(&[2, 7, 9]).await;
+    let foreign = crowdb_protocol::key::DiskGroupKey {
+        rack_id: 8,
+        node_id: 42,
+        disk_group_id: 2,
+    };
+    authority
+        .ctx
+        .sysmd()
+        .reserve_disk_group_id(&foreign)
+        .await
+        .unwrap();
+    let error = preparation::reserve(&authority.ctx, &authority.bootstrap.identity)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("global owner"), "{error}");
+    assert!(snapshot(&authority).await.is_none());
     assert!(authority
         .ctx
         .sysmd()

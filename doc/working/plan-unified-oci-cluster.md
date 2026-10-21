@@ -653,6 +653,21 @@ do not mark unexecuted acceptance passed.
   generated ChunkDB configuration is now tested through the actual native
   `ChunkdbConfig` parser/validator, rather than only generic TOML. Affected
   all-target clippy/fmt and Access configuration/service tests also pass.
+- The diagnostic singleton also passed stop/start persistence: node/cluster
+  identities, complete private server/client credential files, disk/setup IDs,
+  both S3 payload checksums, the Iceberg namespace and Dataset open identity
+  remained unchanged. This was the mounted-executable fixture, not the packaged
+  image. Its current geometry therefore has file-backed one-node evidence.
+- Three independently invoked diagnostic containers discovered/admitted each
+  other and established one three-voter Group 0 without a configured node list.
+  Their first storage pass exposed a global-ID bug: every accepted node had
+  disk-group 1, so the global placement reservation rejected two nodes and the
+  initial Chunk-KV checkpoint could not complete. The accepted mapping now uses
+  distinct IDs 1/2/3 and checks preexisting global reservations before acceptance.
+  Eight preparation/eight metadata tests pass, including foreign/retired global
+  ownership and real reservation of each accepted location. Three-node startup
+  and two-copy I/O must be rerun with this correction; no failed fixture is reset
+  or adopted as a successful cluster.
 
 ## Consolidated file ownership
 

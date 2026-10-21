@@ -191,6 +191,23 @@ async fn read_record(
 }
 
 async fn check_unowned_objects(ctx: &OpContext, candidate: &DefaultPreparation) -> Result<()> {
+    let groups = ctx.sysmd().list_disk_groups().await?;
+    for binding in &candidate.storage {
+        let reservation =
+            crowdb_protocol::disk_storage::DiskGroupIdReservation::key_for(binding.disk_group_id);
+        if groups.iter().any(|group| group.dg_id == binding.disk_group_id)
+            || matches!(
+                ctx.kv()
+                    .get(0, 0, reservation.as_bytes(), ReadMode::Linearizable, None)
+                    .await?,
+                GetOutcome::Found { .. }
+            )
+        {
+            return Err(Error::Config(
+                "default disk group ID already has a global owner".into(),
+            ));
+        }
+    }
     let metadata = &candidate.metadata;
     if ctx
         .membership()

@@ -93,7 +93,7 @@ impl DefaultPreparation {
             storage.push(DefaultStorageBinding {
                 rack_id: node.rack_id,
                 node_id: *node_id,
-                disk_group_id: 1,
+                disk_group_id: index as u64 + 1,
                 store_id: 0,
                 group_id: 1,
             });
