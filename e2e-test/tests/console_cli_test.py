@@ -5,9 +5,9 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
-from console_cli_fixture import CliContainerCluster, LABEL, ROOT_LABEL
+from console_cli_fixture import CliContainerCluster, LABEL, OWNER_LABEL
 
 
 class CliOwnershipTest(unittest.TestCase):
@@ -16,10 +16,11 @@ class CliOwnershipTest(unittest.TestCase):
         cluster.servers = ["owned"]
         cluster.root = Path("/owned/root")
         cluster.image = "immutable-image"
-        cluster.state = lambda: {"id": "expected-owner"}
+        cluster.run_id = "expected-cluster"
+        cluster.state = lambda: {"owner": "expected-owner", "image_id": cluster.image}
         cluster.command = Mock(return_value=json.dumps([{
             "Image": cluster.image,
-            "Config": {"Labels": {LABEL: "foreign", ROOT_LABEL: str(cluster.root)}}}]))
+            "Config": {"Labels": {LABEL: "foreign", OWNER_LABEL: "expected-owner"}}}]))
         with self.assertRaisesRegex(ValueError, "ownership"):
             cluster.read_owned("node-binding.json")
         cluster.command.assert_called_once_with("inspect", "owned")
@@ -32,16 +33,29 @@ class CliOwnershipTest(unittest.TestCase):
                 cluster.read_owned(path)
         cluster.command.assert_not_called()
 
-    def test_cleanup_rechecks_listed_ownership_before_removal(self):
+    def test_cleanup_uses_independent_host_operation_with_case_scope(self):
         with tempfile.TemporaryDirectory() as directory:
             cluster = CliContainerCluster("image", Path(directory), Path(directory))
-            cluster.start()
-            (cluster.root / "container-cluster.json").write_text(json.dumps({"id": "owner"}))
-            cluster.command = Mock(side_effect=["unexpected-member", json.dumps([{
-                "Config": {"Labels": {LABEL: "foreign", ROOT_LABEL: str(cluster.root)}}}])])
-            with self.assertRaisesRegex(AssertionError, "ownership"):
+            cluster.timings["status"] = "pass"
+            with patch("console_cli_fixture.subprocess.run") as run:
+                run.return_value.returncode = 0
                 cluster.close()
-            self.assertFalse(any("rm" in call.args for call in cluster.command.call_args_list))
+            arguments = run.call_args.args[0]
+            self.assertTrue(arguments[1].endswith("container/oci-image/docker-local.py"))
+            self.assertEqual(arguments[2:], ["clean", "--cluster", cluster.run_id, "--delete-data"])
+            self.assertEqual(run.call_args.kwargs["env"]["CROWDB_RUNTIME_ROOT"], str(cluster.root))
+            self.assertTrue(cluster.closed)
+
+    def test_failed_cleanup_preserves_retry_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cluster = CliContainerCluster("image", Path(directory), Path(directory))
+            with patch("console_cli_fixture.subprocess.run") as run:
+                run.return_value.returncode = 1
+                run.return_value.stdout = ""
+                run.return_value.stderr = "daemon unavailable"
+                with self.assertRaisesRegex(RuntimeError, "daemon unavailable"):
+                    cluster.close()
+            self.assertFalse(cluster.closed)
 
     def test_recovery_observation_rejects_invalid_node_before_inspection(self):
         cluster = object.__new__(CliContainerCluster)

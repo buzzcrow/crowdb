@@ -1,82 +1,95 @@
 # Copyright 2026-present Gian <crow.db@outlook.com>
 # Licensed under the Apache License, Version 2.0.
-"""Host CLI recovery against three owned formal release containers."""
+"""Common CLI interruption/recovery against ordinary OCI node startup."""
 
 import json
-import tomllib
 import os
+from pathlib import Path
 import signal
 import subprocess
 import time
 
 from fixture import Cluster, redact, request
 
-LABEL = "org.crowdb.cluster.id"
-ROOT_LABEL = "org.crowdb.cluster.root"
+LABEL = "org.crowdb.cluster"
+OWNER_LABEL = "org.crowdb.cluster.owner"
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class CliContainerCluster(Cluster):
     def __init__(self, image, artifacts, bundle, checkpoint=None, **kwargs):
         super().__init__(image, artifacts, node_count=3, wire_replicas=False, **kwargs)
-        self.bundle = bundle
-        self.root = (self.data_root / "cluster").resolve()
+        self.bundle = Path(bundle).resolve()
+        self.root = (self.data_root / "runtime").resolve()
         self.phase_number = 0
         self.checkpoint = checkpoint
-        self.delete_after_replay = False
-
-    def start(self):
-        self.root.mkdir(parents=True)
-        if self.checkpoint is not None:
-            self.interrupt(self.checkpoint)
-            self.refresh()
-        return self
-
-    def arguments(self, *arguments):
-        return [str(self.bundle / "crowdb-cli"), "s3", *arguments]
+        self.port_base = None
 
     def environment(self):
-        return dict(os.environ, NO_PROXY="*", no_proxy="*")
+        return dict(os.environ, CROWDB_RUNTIME_ROOT=str(self.root), NO_PROXY="*", no_proxy="*")
 
-    def invoke(self, *arguments):
+    def arguments(self, *arguments):
+        return [str(self.bundle / "crowdb-cli"), "--cluster", self.run_id, *arguments]
+
+    def invoke(self, *arguments, endpoint=None, expected_exit=0):
         self.phase_number += 1
         started = time.monotonic()
-        result = subprocess.run(self.arguments(*arguments), env=self.environment(),
-                                capture_output=True, text=True, timeout=180)
+        command = self.arguments(*arguments) if endpoint is None else [
+            str(self.bundle / "crowdb-cli"), "--management-endpoint", endpoint, *arguments]
+        result = subprocess.run(command, env=self.environment(),
+                                capture_output=True, text=True, timeout=210)
         output = result.stdout + result.stderr
         (self.artifacts / f"client-cli-{self.phase_number}.log").write_text(redact(output))
         (self.artifacts / f"client-cli-{self.phase_number}.json").write_text(json.dumps({
             "case": self.case_name, "phase": ".".join(arguments[:2]), "execution": "host",
             "seconds": time.monotonic() - started, "exit_code": result.returncode}, indent=2))
-        if result.returncode:
+        if result.returncode != expected_exit:
+            print(output, flush=True)
             raise AssertionError(output)
         return result.stdout
 
     def state(self):
-        return json.loads((self.root / "container-cluster.json").read_text())
+        return json.loads((self.root / "persistent/oci-clusters" / f"{self.run_id}.json").read_text())
+
+    def start_arguments(self):
+        return ("cluster", "start", "--nodes", "3", "--image", self.image,
+                "--cpus", str(self.node_cpus), "--memory-mib", "2048",
+                "--port-base", str(self.port_base), "--wait", "180", "--json")
+
+    def start(self):
+        self.root.mkdir(parents=True, mode=0o700)
+        # Claims belong to this live runner in the shared allocator. Receipt roots
+        # remain per case; separate roots must not allocate overlapping host ports.
+        result = subprocess.run([str(self.bundle / "crowdb-cli"), "port-alloc",
+            "--service", "web", "--count", "24", "--owner-pid", str(os.getpid())],
+            capture_output=True, text=True, timeout=10, check=True)
+        ports = [int(port) for port in result.stdout.split()]
+        if len(ports) != 24 or ports != list(range(ports[0], ports[0] + 24)):
+            raise AssertionError("CLI fixture needs 24 contiguous published ports")
+        self.port_base = ports[0]
+        self.interrupt(self.checkpoint)
+        self.refresh()
+        return self
 
     def interrupt(self, checkpoint):
-        relative = os.path.relpath(self.root, os.getcwd())
-        arguments = self.arguments("cluster", "start", "--root", relative,
-            "--container", self.run_id, "--image", self.image,
-            "--node-cpus", str(self.node_cpus), "--memory-mib", "2048",
-            "--diskdb-heartbeat-interval-secs", "3")
+        if checkpoint not in ("bound", "storage"):
+            raise ValueError("unsupported common CLI recovery checkpoint")
         log = self.artifacts / "client-interrupted-start.log"
         interrupted_at = time.monotonic()
         with log.open("w") as output:
-            process = subprocess.Popen(arguments, env=self.environment(), stdout=output, stderr=output)
+            process = subprocess.Popen(self.arguments(*self.start_arguments()), env=self.environment(),
+                                       stdout=output, stderr=output)
             try:
-                deadline = time.monotonic() + 90
+                deadline = time.monotonic() + 180
                 while True:
                     if process.poll() is not None:
                         raise AssertionError(f"CLI ended before {checkpoint}: {log.read_text()}")
-                    path = self.root / "container-cluster.json"
-                    state = json.loads(path.read_text()) if path.exists() else {}
-                    if state.get("phase") == checkpoint:
+                    if self.checkpoint_reached(checkpoint):
                         process.send_signal(signal.SIGSTOP)
                         break
                     if time.monotonic() >= deadline:
-                        raise AssertionError(f"CLI never reached {checkpoint}: {state}")
-                    time.sleep(0.01)
+                        raise AssertionError(f"CLI never reached {checkpoint}: {log.read_text()}")
+                    time.sleep(0.02)
             finally:
                 if process.poll() is None:
                     process.kill()
@@ -87,142 +100,172 @@ class CliContainerCluster(Cluster):
             "ok": True, "result": {"checkpoint": checkpoint, "signal": "SIGKILL",
             "exit_code": process.returncode}, "seconds": time.monotonic() - interrupted_at}, indent=2))
 
+    def checkpoint_reached(self, checkpoint):
+        receipt = self.root / "persistent/oci-clusters" / f"{self.run_id}.json"
+        if not receipt.exists():
+            return False
+        self.refresh()
+        if len(self.servers) != 3:
+            return False
+        path = "node-binding.json" if checkpoint == "bound" else "diskdb-execution"
+        try:
+            value = self.read_owned(path)
+        except RuntimeError:
+            return False  # The monitor has not published this checkpoint yet.
+        return bool(value.get("bootstrap")) if checkpoint == "bound" else bool(value.get("complete"))
+
     def replay(self, checkpoint):
         if checkpoint != self.checkpoint:
             raise ValueError("CLI recovery checkpoint was not prepared before client dispatch")
-        assert (self.root / "s3-mini-cluster.initializing.json").is_file()
-        assert (self.root / "s3-local-state.toml").is_file()
-        assert not (self.root / "console.toml").exists()
         before = self.state()
-        self.refresh()
         binding = self.read_owned("node-binding.json")
-        diskdb = self.read_owned("services/diskdb-1/execution.json") if checkpoint == "storage" else None
-        if diskdb is not None:
-            assert diskdb["complete"] and diskdb["pid"] > 1
-            self.command("exec", self.servers[0], "/bin/kill", "-0", str(diskdb["pid"]))
-        ids = [json.loads(self.command("inspect", name))[0]["Id"] for name in self.servers]
-        self.invoke("cluster", "start", "--container", self.servers[1])
-        after = self.state()
-        assert before["id"] == after["id"] and before["addresses"] == after["addresses"]
-        assert before["diskdb_heartbeat_interval_secs"] == after["diskdb_heartbeat_interval_secs"] == 3
-        self.assert_diskdb_cadence()
-        self.file_disks()
-        assert binding == self.read_owned("node-binding.json")
-        if diskdb is not None:
-            assert diskdb == self.read_owned("services/diskdb-1/execution.json"), "confirmed Diskdb execution must survive resume"
-            self.command("exec", self.servers[0], "/bin/kill", "-0", str(diskdb["pid"]))
-        assert ids == [json.loads(self.command("inspect", name))[0]["Id"] for name in self.servers]
-        assert not (self.root / "s3-mini-cluster.initializing.json").exists()
-        assert not (self.root / "bootstrap-intent.toml").exists()
-        assert "[[rack]]" not in (self.root / "s3-local-state.toml").read_text()
-        assert "Containers: 3/3" in self.invoke("cluster", "status", "--container", self.servers[2])
-        if checkpoint == "bound":
-            self.lifecycle()
-        # The batch retains peer networks until every client has ended.
-        # Teardown still verifies the ordinary CLI delete operation itself.
-        self.delete_after_replay = True
+        container_ids = [self.inspect_owned(name)["Id"] for name in self.servers]
+        execution = self.read_owned("diskdb-execution") if checkpoint == "storage" else None
+        report = json.loads(self.invoke("cluster", "start", "--wait", "180", "--json"))
+        assert report["phase"] == "ready", report
+        assert before == self.state(), "resume must retain accepted launch inputs"
+        assert binding == self.read_owned("node-binding.json"), "resume must retain accepted binding"
+        assert container_ids == [self.inspect_owned(name)["Id"] for name in self.servers]
+        if execution is not None:
+            assert execution == self.read_owned("diskdb-execution"), "confirmed storage must survive CLI interruption"
+        self.lifecycle(report["observation"]["cluster_id"])
+        self.current_readiness(report["observation"]["cluster_id"])
 
-    def lifecycle(self):
+    def lifecycle(self, cluster_id):
         files = self.file_disks()
-        self.invoke("bucket", "put", "--container", self.run_id, "cli-replay")
-        self.invoke("object", "put", "--container", self.run_id, "cli-replay", "witness", "--text", "durable-container-witness")
-        self.invoke("cluster", "stop", "--container", self.servers[1])
-        assert "Containers: 0/3" in self.invoke("cluster", "status", "--root", str(self.root))
-        self.invoke("cluster", "restart", "--container", self.run_id)
-        self.assert_diskdb_cadence()
+        self.invoke("s3", "bucket", "put", "cli-replay")
+        self.invoke("s3", "object", "put", "cli-replay", "witness", "--text", "durable-container-witness")
+        self.invoke("cluster", "stop")
+        assert all(not self.inspect_owned(name)["State"]["Running"] for name in self.servers)
+        report = json.loads(self.invoke("cluster", "start", "--wait", "180", "--json"))
+        assert report["phase"] == "ready" and report["observation"]["cluster_id"] == cluster_id
         assert self.file_disks() == files, "restart must retain the accepted file disk identities"
-        assert self.invoke("object", "get", "--container", self.servers[2], "cli-replay", "witness") == "durable-container-witness"
+        assert self.invoke("s3", "object", "get", "cli-replay", "witness") == "durable-container-witness"
+        # Alternate-member endpoint attachment uses no local runtime selector.
+        report = json.loads(self.invoke("cluster", "check", "--json",
+            endpoint=f"http://{self.addresses[2]}:9090"))
+        assert report["phase"] == "ready" and report["observation"]["cluster_id"] == cluster_id
 
+    def current_readiness(self, cluster_id):
+        origin = f"http://{self.addresses[0]}:9090"
+        node_id = self.read_owned("node-binding.json")["node_id"]
+        services = request(origin, "/api/servers")
+        service = next(item for item in services if item["node_id"] == node_id
+                       and item.get("service_type") == "diskio")
+        service_id = service["id"]
+        dependency = f"node/{node_id}/service/{service_id}"
+        # Restart belongs to the fixture's explicit mutation, never to check.
+        try:
+            request(origin, f"/api/services/{service_id}/stop", {})
+            started = time.monotonic()
+            stopped = json.loads(self.invoke("cluster", "check", "--wait", "2", "--json",
+                                            endpoint=origin, expected_exit=1))
+            assert time.monotonic() - started < 15, "endpoint-only check exceeded its bounded budget"
+            if stopped["phase"] == "unavailable":
+                # The two-second endpoint budget can also expire while collecting
+                # authority. Its higher-priority reason must remain explicit.
+                assert any(reason["dependency"] == "cluster/authority"
+                           and reason["code"] == "management-origin-unavailable"
+                           for reason in stopped["reasons"]), stopped["reasons"]
+            else:
+                assert stopped["phase"] == "degraded", stopped["reasons"]
+            assert stopped["observation"]["cluster_id"] == cluster_id
+            fact = next(item for item in stopped["observation"]["dependencies"] if item["id"] == dependency)
+            assert fact["state"] == "stopped" and fact["current_operation_id"], fact
+            assert fact["reason"]["code"] == "required-service-not-ready", fact
+            assert "current committed action is stop or delete" in fact["detail"], fact
+            again = request(origin, "/api/cluster/status")
+            current = next(item for item in again["observation"]["dependencies"] if item["id"] == dependency)
+            assert current["state"] == "stopped", current
+            assert current["current_operation_id"] == fact["current_operation_id"], "check changed service intent"
+        finally:
+            request(origin, f"/api/services/{service_id}/restart", {})
+        recovered = json.loads(self.invoke("cluster", "check", "--wait", "180", "--json", endpoint=origin))
+        assert recovered["phase"] == "ready" and recovered["observation"]["cluster_id"] == cluster_id
+
+    def inspect_owned(self, name):
+        info = json.loads(self.command("inspect", name))[0]
+        record = self.state()
+        labels = info["Config"]["Labels"]
+        if (labels.get(LABEL) != self.run_id or labels.get(OWNER_LABEL) != record["owner"]
+                or info["Image"] != record["image_id"]):
+            raise ValueError("CLI recovery observation ownership or image changed")
+        return info
 
     def file_disks(self):
         observed = []
         for index, address in enumerate(self.addresses):
-            policy = request(f"http://{address}:9090", "/api/node/auto-join")
-            assert policy["enabled"] is False, policy
-            page = request(f"http://{self.addresses[0]}:9090", f"/api/nodes/{index + 1}/disk-files")
+            node_id = self.read_owned("node-binding.json", index)["node_id"]
+            page = request(f"http://{address}:9090", f"/api/nodes/{node_id}/disk-files")
             assert page["next"] is None and len(page["items"]) == 1, page
             disk = page["items"][0]
-            assert disk["phase"] == "registered", disk
-            assert disk["request"]["admission"]["disk_group_id"] == index + 1, disk
-            assert disk["request"]["sparse"] is True, disk
-            assert disk["preparation_complete"] and disk["backing_identity"], disk
+            assert disk["phase"] == "registered" and disk["preparation_complete"] and disk["backing_identity"], disk
             observed.append({key: disk[key] for key in ("request", "path", "backing_identity")})
         return observed
 
-    def assert_diskdb_cadence(self):
-        for index in range(3):
-            execution = self.read_owned(f"services/diskdb-{index + 1}/execution.json", index)
-            assert execution["complete"] and execution["pid"] > 1
-            configuration = tomllib.loads(execution["intent"]["configuration"])
-            assert configuration["heartbeat"]["interval_secs"] == 3, "running DiskDB must use the recorded cadence"
-
     def refresh(self):
-        state = self.state()
-        self.servers = [state["name"], state["name"] + "-node2", state["name"] + "-node3"]
+        self.servers, self.addresses = [], []
+        network = "crowdb-" + self.run_id
+        for index in range(1, 4):
+            name = f"{network}-{index}"
+            try:
+                info = self.inspect_owned(name)
+            except RuntimeError:
+                continue
+            self.servers.append(name)
+            self.addresses.append(info["NetworkSettings"]["Networks"][network]["IPAddress"])
         self.containers = self.servers.copy()
-        self.addresses = state["addresses"]
         self.origins = [f"http://{address}:10000" for address in self.addresses]
-        self.data_paths = [self.root / "nodes" / f"node{index}" / "data" for index in range(3)]
-        (self.artifacts / "mounts.json").write_text(json.dumps({
-            "container_data": "/opt/crowdb/data", "host_data": [str(path) for path in self.data_paths]}, indent=2))
         (self.artifacts / "endpoints.json").write_text(json.dumps({
-            "addresses": self.addresses, "web_port": 9090, "kv_port": 10000,
-            "diskdb_ports": [7100, 7101, 7102], "diskio_port": 7200,
-            "chunkdb_ports": [7300, 7301], "chunk_kv_ports": [7400, 7401],
-            "access_ports": [9000, 9001, 9002]}, indent=2))
+            "addresses": self.addresses, "web_port": 9090,
+            "published_console_ports": [self.port_base + index * 10 for index in range(3)]}, indent=2))
 
     def read_owned(self, path, index=0):
-        if type(index) is not int or index < 0:
-            raise ValueError("CLI recovery node is outside the owned cluster")
-        if path != "node-binding.json" and path != f"services/diskdb-{index + 1}/execution.json":
+        if path not in ("node-binding.json", "diskdb-execution"):
             raise ValueError("unsupported CLI recovery observation")
-        if index >= len(getattr(self, "servers", ())):
+        if type(index) is not int or not 0 <= index < len(getattr(self, "servers", ())):
             raise ValueError("CLI recovery node is outside the owned cluster")
-        info = json.loads(self.command("inspect", self.servers[index]))[0]
-        labels = info["Config"]["Labels"]
-        if labels.get(LABEL) != self.state()["id"] or labels.get(ROOT_LABEL) != str(self.root) or info["Image"] != self.image:
-            raise ValueError("CLI recovery observation ownership changed")
+        info = self.inspect_owned(self.servers[index])
+        if path == "diskdb-execution":
+            binding = self.read_owned("node-binding.json", index)
+            node_id = binding["node_id"]
+            if type(node_id) is not int or node_id < 1:
+                raise ValueError("invalid owned node binding")
+            path = f"services/diskdb-{node_id}/execution.json"
         return json.loads(self.command("exec", info["Id"], "cat", "/opt/crowdb/data/" + path))
 
     def diagnostics(self):
-        if (self.root / "container-cluster.json").exists():
-            self.refresh()
-            for index, name in enumerate(self.servers):
-                destination = self.artifacts / "runtime-logs" / f"node{index}"
-                destination.mkdir(parents=True, exist_ok=True)
+        if not (self.root / "persistent/oci-clusters" / f"{self.run_id}.json").exists():
+            return
+        self.refresh()
+        for index, address in enumerate(self.addresses):
+            for path in ("/api/cluster/status", "/api/disk-groups", "/api/disks", "/api/servers"):
+                name = path.removeprefix("/api/").replace("/", "-")
                 try:
-                    self.read_owned("node-binding.json", index)
-                    self.command("cp", f"{name}:/opt/crowdb/data/log", str(destination))
-                except (RuntimeError, OSError) as error:
-                    (destination / "collection.error").write_text(redact(str(error)))
+                    value = request(f"http://{address}:9090", path)
+                    (self.artifacts / f"{name}-{index}.json").write_text(redact(value))
+                except (OSError, ValueError) as error:
+                    (self.artifacts / f"{name}-{index}.error").write_text(redact(str(error)))
+        for index, name in enumerate(self.servers):
+            destination = self.artifacts / "runtime-logs" / f"node{index}"
+            destination.mkdir(parents=True, exist_ok=True)
+            self.inspect_owned(name)
+            self.command("cp", f"{name}:/opt/crowdb/data/log", str(destination))
         super().diagnostics()
 
     def close(self):
         if self.closed:
             return
         started = time.monotonic()
-        if self.delete_after_replay:
-            self.invoke("cluster", "delete", "--container", self.servers[2])
-            assert not self.root.exists()
-            self.closed = True
-            self.timings["stop"] = time.monotonic() - started
-            self.timings["total"] = time.monotonic() - self.started
-            self.write_timings()
-            return
-        if (self.root / "container-cluster.json").exists():
-            state = self.state()
-            for kind in ("container", "network"):
-                listing = ("-a",) if kind == "container" else ()
-                names = self.command(kind, "ls", *listing, "--filter", f"label={LABEL}={state['id']}",
-                    "--filter", f"label={ROOT_LABEL}={self.root}", "--format", "{{.Names}}" if kind == "container" else "{{.Name}}")
-                for name in names.splitlines():
-                    info = json.loads(self.command("inspect", name) if kind == "container"
-                                      else self.command("network", "inspect", name))[0]
-                    labels = info["Config"]["Labels"] if kind == "container" else info["Labels"]
-                    if labels[LABEL] != state["id"] or labels[ROOT_LABEL] != str(self.root):
-                        raise AssertionError("CLI cleanup ownership changed")
-                    self.command(kind, "rm", *(("-f", name) if kind == "container" else (name,)))
+        # Cleanup is an independent host operation, never a product CLI command.
+        deletion = ["--delete-data"] if self.timings["status"] == "pass" else []
+        result = subprocess.run(["python", str(ROOT / "container/oci-image/docker-local.py"),
+            "clean", "--cluster", self.run_id, *deletion], env=self.environment(),
+            capture_output=True, text=True, timeout=180)
+        if result.returncode:
+            raise RuntimeError(f"CLI fixture owned cleanup failed: {result.stdout}\n{result.stderr}")
         self.closed = True
         self.timings["stop"] = time.monotonic() - started
-        self.timings["total"] = time.monotonic() - self.started
+        if self.started is not None:
+            self.timings["total"] = time.monotonic() - self.started
         self.write_timings()
