@@ -49,6 +49,7 @@ pub(in crate::node::runtime) fn observe(
             observed_at_unix_ms: health.map_or(now, |health| health.updated_at_ms),
             max_age_ms: 3000,
             reason_code: None,
+            detail: "KV health must match the currently supervised process and observation timestamp".into(),
         });
     }
     observed.sort_by(|left, right| left.service_id.cmp(&right.service_id));
@@ -90,6 +91,15 @@ fn executed(
         DependencyState::Initializing
     };
     NodeServiceObservation {
+        detail: format!(
+            "Service {}: {:?}; executed operation {}; complete {}; launches {}; live process {}",
+            intent.service_id,
+            state,
+            intent.operation_id,
+            execution.complete,
+            execution.attempts,
+            live.contains_key(process)
+        ),
         service_id: intent.service_id.clone(),
         kind: intent.kind.clone(),
         operation_id: Some(intent.operation_id.clone()),

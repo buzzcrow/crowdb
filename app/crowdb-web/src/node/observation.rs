@@ -4,13 +4,14 @@
 //! Bounded local evidence for aggregate cluster observation.
 
 mod protocols;
+mod services;
 
 use crate::{
     error::{err_409, err_502},
     state::AppState,
 };
 use axum::{extract::State, Json};
-use crowdb_console_shared::deployment::{admission::local_control, services};
+use crowdb_console_shared::deployment::{admission::local_control, services as service_intents};
 use crowdb_protocol::mgmt::node::{observation::NodeRuntimeObservation, NodeControl};
 use std::time::Duration;
 
@@ -46,12 +47,25 @@ async fn observe(state: &AppState) -> Result<NodeRuntimeObservation, Failure> {
             return Err(err_409("Bound node and monitor observation identities differ"));
         }
         let intents = tokio::time::timeout(Duration::from_secs(1), async {
-            services::list(state.kv_client().await.as_ref()).await
+            service_intents::list(state.kv_client().await.as_ref()).await
         })
         .await
         .ok()
         .and_then(Result::ok);
-        observation.protocols = protocols::observe(state, &observation, intents.as_deref()).await;
+        let (protocols, service_details) = tokio::join!(
+            protocols::observe(state, &observation, intents.as_deref()),
+            services::observe(state, &observation, intents.as_deref()),
+        );
+        observation.protocols = protocols;
+        for (id, detail) in service_details {
+            if let Some(service) = observation
+                .services
+                .iter_mut()
+                .find(|service| service.service_id == id)
+            {
+                service.detail = format!("{}; {detail}", service.detail);
+            }
+        }
     }
     Ok(observation)
 }
@@ -59,4 +73,28 @@ async fn observe(state: &AppState) -> Result<NodeRuntimeObservation, Failure> {
 #[cfg(feature = "test-util")]
 pub async fn protocol_probe_for_tests(protocol: &str, url: &str, token: Option<&str>) -> Option<bool> {
     protocols::request_probe(protocol, url, token).await
+}
+
+/// Execute the same signed local S3 probe used by node observation.
+///
+/// # Errors
+/// Returns the credential, transport, HTTP or response diagnostic.
+#[cfg(feature = "test-util")]
+pub async fn s3_protocol_probe_for_tests(
+    state: &AppState,
+    url: &str,
+) -> Result<String, (&'static str, String)> {
+    protocols::signed_s3_probe(state, url).await
+}
+
+/// Read bounded local Chunk-KV range evidence using a committed service config.
+///
+/// # Errors
+/// Returns a listener, identity, transport or response diagnostic.
+#[cfg(feature = "test-util")]
+pub async fn service_detail_for_tests(
+    state: &AppState,
+    intent: &crowdb_protocol::mgmt::node::NodeServiceIntent,
+) -> Result<String, String> {
+    services::read(state, intent).await
 }

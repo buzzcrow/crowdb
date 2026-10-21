@@ -377,6 +377,15 @@ the working plan owns type names, file placement and execution order.
   version/freshness per dependency; timeout or stale success is unknown, never
   healthy. Missing runtime facts on a remote check remain unknown and alone do
   not invalidate application readiness.
+  Report storage in dependency order: Group-0 disk/group state and metadata
+  binding, current owner and lease, then current-owner capacity. A blocked
+  upstream layer leaves downstream checks waiting for that named dependency.
+  Distinguish missing/unknown, stale and exhausted capacity. Successful and
+  unsuccessful observations both carry concrete, credential-free evidence;
+  errors retain their specific code and full explanation through aggregation.
+  Chunk-KV instances are stateless workers assigned tree-range ownership. An
+  idle instance with a loaded catalog needs no assigned range; an assigned
+  range requires matching ownership authority and a serviceable recovered tree.
   Apply one deterministic aggregate rule: a validated terminal failure of a
   current blocking operation or an identity conflict is `failed`; superseded
   historical failures do not poison a recovered cluster. Otherwise missing

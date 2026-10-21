@@ -1306,7 +1306,7 @@ do not mark unexecuted acceptance passed.
   J source `ac56e25f2d563a453b81575aeea69d4cf45c788c`, OCI
   `sha256:60ba2bc71ba3190eb50f44f482b884def4e035cc775ca2c0edf1c17a60a29df0`.
 
-## Blocked
+## Previous blocked verification (resumed by the user)
 
 - The resumed packaged verification has now failed five root-cause-driven
   attempts. Stop implementation and packaged retries under the requirement
@@ -1378,3 +1378,60 @@ do not mark unexecuted acceptance passed.
   migration, admitted-member trust extension, native containerd host acceptance,
   registered E2E and documentation cleanup. Do not remove this requirement or
   its backlog entry until all acceptance criteria are met.
+
+## Resumed diagnostic fixes
+
+- The user explicitly resumed debugging and fixes. Storage must report ordered
+  Group-0/disk, owner and space evidence, including concrete healthy details;
+  unavailable upstream evidence blocks dependent layers with a named reason.
+  Chunk-KV instances are stateless workers: assignments are tree-range ownership,
+  idle instances need no range, and owned ranges must actually be serviceable.
+- [x] **Storage diagnostics**: replace the combined readiness predicate with
+  independent layer observations; preserve specific errors and healthy evidence
+  through aggregation. Verify missing disks, binding, lease, live owner, unknown,
+  stale and exhausted space against real Group-0 records.
+- [x] **Protocol observation**: use the existing SigV4 signer and retained S3
+  client credentials for bounded, non-mutating ListBuckets; preserve protocol
+  status and causes instead of replacing them with a generic aggregate error.
+- [~] **Retained-state verification**: inspect the same retained J volumes and
+  current range ownership/recovery; compare aggregate status with actual protocol
+  I/O. Every fixture must remove its containers and owned bridges in finally.
+
+- Confirmed storage cause: current DiskDB heartbeat paths publish `group_usages`
+  inside `/srv/diskdb/<instance>`, while the former status collector scanned
+  `/hw/dg_usage/`, which has no production writer. Read capacity only from the
+  live instance matching the accepted disk group's current owner. Regression
+  fixtures exercise the actual registry heartbeat and reject a detached summary
+  or another instance's otherwise healthy capacity.
+- Storage now has separate disk/group/binding, owner and space observations.
+  Downstream dependencies are `Waiting` with the exact upstream ID. Healthy
+  details include member counts/binding, owner ID/lease and sampled capacity;
+  failures identify missing, invalid, expired, unknown, stale or exhausted state.
+  The existing aggregate wire observation carries `detail` for healthy facts as
+  well as failures; protocol reasons survive member projection unchanged, and
+  CLI text prints both evidence and full errors.
+- S3 now uses the existing Console SigV4 signer with the protected retained
+  client credentials to perform ListBuckets on the data listener. Its bounded
+  response must be S3 XML; an unauthenticated JSON health reply cannot pass.
+  Dataset/Iceberg probes load server credentials from the same runtime root
+  used by preparation, correcting the former accidental parent-root lookup.
+- Chunk-KV reports each owned range's epoch, matching authority and actual
+  dispatch writer readiness. A loaded catalog with no owned range is ready
+  without a serving grant. Local Web observation appends bounded range details
+  from the configured matching instance without overriding monitor operation
+  evidence or readiness state.
+- Read-only retained-image diagnosis is not a successful acceptance run. The
+  singleton scan confirmed Up disks/binding and no detached `/hw/dg_usage/`
+  records; its inspector queried Chunk-KV before startup and failed on connection
+  refused. The three-node retained inspector timed out at the unchanged
+  120-second bound. Logs contain split activation waiting for commit proof and
+  tree recovery reads reporting deleted chunks; do not yet attribute deletion
+  to a particular GC path. Both finally paths removed containers and bridges,
+  keeping original data/receipts. Private evidence is under
+  `.crowdb-runtime/artifacts/status-{1,3}-j-hierarchy/`.
+- Focused verification: shared collector/reducer/member suites (21 cases),
+  two current-owner storage scenarios, 15 Chunk-KV server and two management
+  cases, six real CLI-process cases, 12 Web target/protocol/detail cases and
+  three monitor observation cases pass. Earlier Access proxy suite (ten cases)
+  also passes. All-target clippy for protocol/shared/Web/CLI/Chunk-KV/monitor
+  and affected Rust formatting pass. Packaged readiness remains unverified.

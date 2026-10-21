@@ -11,7 +11,11 @@ use std::time::{Duration, Instant};
 #[tokio::test]
 async fn protocols_require_their_own_successful_readiness_body() {
     for (protocol, body, token) in [
-        ("s3", r#"{"ready":true}"#, None),
+        (
+            "s3",
+            "<ListAllMyBucketsResult><Buckets/></ListAllMyBucketsResult>",
+            None,
+        ),
         (
             "iceberg",
             r#"{"defaults":{},"overrides":{}}"#,
@@ -32,7 +36,7 @@ async fn protocols_require_their_own_successful_readiness_body() {
     let listener = TestListener::serve(200, r#"{"ready":true}"#.into(), Duration::ZERO, true).await;
     assert_eq!(
         protocol_probe_for_tests("iceberg", &listener.url, Some("fixture-token")).await,
-        Some(false)
+        None
     );
 }
 

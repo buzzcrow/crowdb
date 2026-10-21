@@ -739,6 +739,9 @@ async fn matching_grant_activation_promotes_a_replayed_partition() {
         .install(grant, &policy(), 1_000, 50_000)
         .unwrap();
     assert_eq!(service.health(50_100).lifecycle, ServerLifecycle::Serving);
+    assert!(service.health(50_100).range_readiness[0]
+        .detail
+        .contains("Prepared"));
     assert!(
         !service.health(50_100).ready,
         "a live grant cannot make an inactive writer ready"
@@ -757,10 +760,33 @@ async fn matching_grant_activation_promotes_a_replayed_partition() {
 
     assert_eq!(partition.snapshot().lifecycle, PartitionLifecycle::Serving);
     assert!(service.health(50_100).ready);
+    assert!(service.health(50_100).range_readiness[0]
+        .detail
+        .contains("current authority"));
     assert!(
         !service.health(65_000).ready,
         "expired authority cannot report ready"
     );
+}
+
+#[test]
+fn an_idle_stateless_instance_needs_no_owned_range_or_serving_grant() {
+    let service = ChunkKvService::new(INSTANCE_ID + 1, 4).unwrap();
+    assert!(!service.health(50_100).ready, "A catalog must first be loaded");
+    let (head, page) = catalog(
+        Id128 { high: 1, low: 3 },
+        StreamName { high: 30, low: 32 },
+        EPOCH,
+        1,
+        None,
+    );
+    service
+        .install_catalog_and_reconcile(&head, &[page], &[])
+        .unwrap();
+    let health = service.health(50_100);
+    assert!(health.ready);
+    assert!(health.range_readiness.is_empty());
+    assert!(health.detail.contains("no tree-range ownership assigned"));
 }
 
 #[tokio::test]

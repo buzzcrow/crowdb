@@ -68,6 +68,9 @@ pub struct DependencyObservation {
     pub kind: DependencyKind,
     pub required: bool,
     pub state: DependencyState,
+    /// Current operator-facing evidence, including successful checks; no credentials.
+    #[serde(default)]
+    pub detail: String,
     pub observed_at_unix_ms: u64,
     pub max_age_ms: u64,
     pub revision: Option<u64>,

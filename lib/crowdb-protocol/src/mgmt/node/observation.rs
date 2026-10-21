@@ -28,6 +28,9 @@ pub struct NodeServiceObservation {
     /// The executed operation; aggregate readers compare current committed intent.
     pub operation_id: Option<String>,
     pub state: DependencyState,
+    /// Current execution/health evidence without credentials or raw configuration.
+    #[serde(default)]
+    pub detail: String,
     pub observed_at_unix_ms: u64,
     pub max_age_ms: u64,
     pub reason_code: Option<String>,

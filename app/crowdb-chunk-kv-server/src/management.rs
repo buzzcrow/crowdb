@@ -33,6 +33,8 @@ struct HealthResponse {
     hosted_partitions: usize,
     serving_partitions: usize,
     ready: bool,
+    detail: String,
+    ranges: Vec<crate::RangeReadiness>,
 }
 
 pub fn management_router(state: ManagementState) -> Router {
@@ -153,6 +155,8 @@ fn health_response(state: &ManagementState) -> HealthResponse {
         hosted_partitions: health.partitions.len(),
         serving_partitions: health.serving_partitions,
         ready: health.ready,
+        detail: health.detail,
+        ranges: health.range_readiness,
     }
 }
 

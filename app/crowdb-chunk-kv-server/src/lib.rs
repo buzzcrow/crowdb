@@ -24,7 +24,8 @@ pub use management::{management_router, ManagementState};
 pub use metrics::{ServerMetrics, ServerMetricsSnapshot};
 pub use rpc::ChunkKvRpcService;
 pub use server::{
-    ChunkKvRangeCatalogReconcileError, ChunkKvService, HostedPartitionHealth, ServerHealth, ServerLifecycle,
+    ChunkKvRangeCatalogReconcileError, ChunkKvService, HostedPartitionHealth, RangeReadiness, ServerHealth,
+    ServerLifecycle,
 };
 pub use serving::{
     choose_split, choose_transfer, classify_instance, desired_partition_count, replacement_may_activate,

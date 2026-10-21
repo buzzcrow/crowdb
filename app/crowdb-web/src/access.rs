@@ -26,6 +26,13 @@ mod signing;
 const BODY_LIMIT: usize = 16 * 1024 * 1024;
 type ApiError = (StatusCode, Json<ErrorBody>);
 
+pub(crate) fn sign_local_s3_read(state: &AppState, url: &reqwest::Url) -> Result<HeaderMap, String> {
+    let credentials = credentials::local_s3(state)?;
+    let mut headers = HeaderMap::new();
+    signing::sign(&credentials, &axum::http::Method::GET, url, &[], &mut headers)?;
+    Ok(headers)
+}
+
 pub(crate) fn read_router() -> Router<AppState> {
     Router::new()
         .route("/api/access/connections", get(connections))

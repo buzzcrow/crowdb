@@ -36,6 +36,10 @@ pub use state::AppState;
 
 #[cfg(feature = "test-util")]
 pub use node::observation::protocol_probe_for_tests;
+#[cfg(feature = "test-util")]
+pub use node::observation::s3_protocol_probe_for_tests;
+#[cfg(feature = "test-util")]
+pub use node::observation::service_detail_for_tests;
 
 /// Run standard-node automatic admission independently of browser connections.
 #[must_use]

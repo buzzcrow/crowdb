@@ -34,6 +34,7 @@ mod load_sampling;
 mod observation;
 mod prepared_transfer;
 mod readiness;
+pub use readiness::RangeReadiness;
 mod reconcile;
 mod routing;
 mod scan;
@@ -73,6 +74,8 @@ pub struct ServerHealth {
     pub partitions: Vec<HostedPartitionHealth>,
     pub serving_partitions: usize,
     pub ready: bool,
+    pub range_readiness: Vec<RangeReadiness>,
+    pub detail: String,
 }
 
 #[derive(Debug, Error)]
@@ -319,10 +322,12 @@ impl ChunkKvService {
         let lifecycle = if !self.admitting.load(Ordering::Acquire) {
             ServerLifecycle::Draining
         } else if catalog_generation != 0
-            && (partitions.is_empty()
-                || self
-                    .authority
-                    .has_live_grant(catalog_generation, now_monotonic_ms))
+            && (!catalog.entries.iter().any(|entry| {
+                entry.owner.instance_id == self.instance_id
+                    && entry.state != ChunkKvRangeCatalogPartitionState::Retired
+            }) || self
+                .authority
+                .has_live_grant(catalog_generation, now_monotonic_ms))
         {
             ServerLifecycle::Serving
         } else {
@@ -341,14 +346,22 @@ impl ChunkKvService {
                     })
             })
             .count();
+        let range_readiness = self.assignment_readiness(&catalog, now_monotonic_ms);
+        let ready = lifecycle == ServerLifecycle::Serving && range_readiness.iter().all(|range| range.ready);
+        let detail = if range_readiness.is_empty() && ready {
+            format!("Idle stateless instance: catalog generation {catalog_generation} loaded, no tree-range ownership assigned")
+        } else {
+            format!("Instance lifecycle {lifecycle:?}; catalog generation {catalog_generation}; {} owned tree ranges, {} ready", range_readiness.len(), range_readiness.iter().filter(|range| range.ready).count())
+        };
         ServerHealth {
             instance_id: self.instance_id,
             lifecycle,
             catalog_generation,
             partitions,
             serving_partitions,
-            ready: lifecycle == ServerLifecycle::Serving
-                && self.assignments_ready(&catalog, now_monotonic_ms),
+            ready,
+            range_readiness,
+            detail,
         }
     }
 

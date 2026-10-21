@@ -36,6 +36,31 @@ fn each_required_service_and_protocol_has_its_own_current_fact() {
 }
 
 #[test]
+fn aggregate_preserves_protocol_evidence_and_exact_http_failure() {
+    let mut fixture = TestMemberEvidence::new();
+    let s3 = fixture
+        .node
+        .protocols
+        .iter_mut()
+        .find(|fact| fact.id.ends_with("/s3"))
+        .unwrap();
+    s3.state = DependencyState::Unknown;
+    s3.detail = "S3 signed ListBuckets returned HTTP 403; expected 200".into();
+    s3.reason = Some(crowdb_protocol::mgmt::cluster::ReadinessReason {
+        dependency: s3.id.clone(),
+        code: "protocol-http-status".into(),
+        detail: s3.detail.clone(),
+    });
+    let facts = fixture.project();
+    let s3 = facts.iter().find(|fact| fact.id.ends_with("/s3")).unwrap();
+    assert_eq!(s3.reason.as_ref().unwrap().code, "protocol-http-status");
+    assert_eq!(s3.reason.as_ref().unwrap().detail, s3.detail);
+    assert!(s3.detail.contains("HTTP 403"));
+    let iceberg = facts.iter().find(|fact| fact.id.ends_with("/iceberg")).unwrap();
+    assert!(iceberg.detail.contains("authenticated request succeeded"));
+}
+
+#[test]
 fn an_unreachable_member_and_a_pending_binding_cannot_be_replaced_by_other_health() {
     let mut fixture = TestMemberEvidence::new();
     let missing = project(

@@ -68,6 +68,7 @@ impl TestMemberEvidence {
         let mut services: Vec<_> = intents
             .iter()
             .map(|intent| NodeServiceObservation {
+                detail: "Service process and readiness match the current executed operation".into(),
                 service_id: intent.service_id.clone(),
                 kind: intent.kind.clone(),
                 operation_id: Some(intent.operation_id.clone()),
@@ -78,6 +79,7 @@ impl TestMemberEvidence {
             })
             .collect();
         services.push(NodeServiceObservation {
+            detail: "KV has current supervised process health".into(),
             service_id: "kv".into(),
             kind: "kv".into(),
             operation_id: None,
@@ -92,6 +94,7 @@ impl TestMemberEvidence {
             .map(|protocol| DependencyObservation {
                 id: format!("node/1/protocol/{protocol}"),
                 kind: DependencyKind::Protocol,
+                detail: format!("{protocol} authenticated request succeeded"),
                 required: true,
                 state: DependencyState::Ready,
                 observed_at_unix_ms: 1000,

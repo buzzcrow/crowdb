@@ -10,6 +10,7 @@ fn fact(kind: DependencyKind) -> DependencyObservation {
     DependencyObservation {
         id: format!("{kind:?}"),
         kind,
+        detail: "Current test evidence".into(),
         required: true,
         state: DependencyState::Ready,
         observed_at_unix_ms: 1000,

@@ -29,8 +29,14 @@ pub(crate) async fn run(cli: &Cli, json: bool, check: bool, wait: u64, timeout: 
                     report.phase,
                     report.observation.cluster_id.as_deref().unwrap_or("unbound")
                 );
+                for observation in &report.observation.dependencies {
+                    println!(
+                        "  {}: {:?}: {}",
+                        observation.id, observation.state, observation.detail
+                    );
+                }
                 for reason in &report.reasons {
-                    println!("  {}: {}", reason.dependency, reason.code);
+                    println!("  {}: {}: {}", reason.dependency, reason.code, reason.detail);
                 }
             }
             if check && report.phase != ClusterPhase::Ready {

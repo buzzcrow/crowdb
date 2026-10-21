@@ -12,7 +12,11 @@ use crowdb_protocol::mgmt::{
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+mod response;
+use response::list_buckets_body;
+
 const DATASET_PROBE: &str = "crowdb_readiness_probe";
+type ProbeResult = Result<String, (&'static str, String)>;
 
 pub(super) async fn observe(
     state: &AppState,
@@ -50,19 +54,40 @@ pub(super) async fn observe(
         ["s3", "iceberg", "dataset"]
             .into_iter()
             .map(|protocol| async move {
-                let (status, code) = if let Some(current) = current {
+                let result = if let Some(current) = current {
                     if matches!(
                         current.action,
                         NodeServiceAction::Stop | NodeServiceAction::Delete
                     ) {
-                        (DependencyState::Stopped, "operator-stopped-service")
+                        Err((
+                            "operator-stopped-service",
+                            "Access service is explicitly stopped or deleted".into(),
+                        ))
                     } else if runtime_ready {
-                        probe(state, protocol, current).await
+                        request(state, protocol, current).await
                     } else {
-                        (DependencyState::Initializing, "access-service-not-ready")
+                        Err((
+                            "access-service-not-ready",
+                            format!(
+                                "Access service {} has no ready observation for current operation {}",
+                                current.service_id, current.operation_id
+                            ),
+                        ))
                     }
                 } else {
-                    (DependencyState::Unknown, "access-intent-unavailable")
+                    Err((
+                        "access-intent-unavailable",
+                        "Current committed Access service intent is unavailable".into(),
+                    ))
+                };
+                let status = match &result {
+                    Ok(_) => DependencyState::Ready,
+                    Err(("operator-stopped-service", _)) => DependencyState::Stopped,
+                    Err(("access-service-not-ready", _)) => DependencyState::Initializing,
+                    Err(_) => DependencyState::Unknown,
+                };
+                let detail = match &result {
+                    Ok(detail) | Err((_, detail)) => detail.clone(),
                 };
                 let dependency = format!("node/{}/protocol/{protocol}", binding.node_id);
                 DependencyObservation {
@@ -70,15 +95,16 @@ pub(super) async fn observe(
                     kind: DependencyKind::Protocol,
                     required: true,
                     state: status,
+                    detail: detail.clone(),
                     observed_at_unix_ms: now_ms(),
                     max_age_ms: 3000,
                     revision: None,
                     operation_id: current.map(|intent| intent.operation_id.clone()),
                     current_operation_id: current.map(|intent| intent.operation_id.clone()),
-                    reason: (status != DependencyState::Ready).then(|| ReadinessReason {
+                    reason: result.err().map(|(code, _)| ReadinessReason {
                         dependency,
                         code: code.into(),
-                        detail: "Required protocol has no current readiness proof".into(),
+                        detail,
                     }),
                 }
             }),
@@ -86,75 +112,162 @@ pub(super) async fn observe(
     .await
 }
 
-async fn probe(
-    state: &AppState,
-    protocol: &str,
-    intent: &NodeServiceIntent,
-) -> (DependencyState, &'static str) {
-    match request(state, protocol, intent).await {
-        Some(true) => (DependencyState::Ready, "ready"),
-        Some(false) => (DependencyState::Unknown, "protocol-not-ready"),
-        None => (DependencyState::Unknown, "protocol-observation-unavailable"),
+async fn request(state: &AppState, protocol: &str, intent: &NodeServiceIntent) -> ProbeResult {
+    let invalid = || {
+        (
+            "protocol-configuration-invalid",
+            format!("{protocol} has no valid local listener in the committed Access configuration"),
+        )
+    };
+    let config: toml::Value = toml::from_str(&intent.configuration).map_err(|_| invalid())?;
+    let address = config
+        .get(protocol)
+        .and_then(|value| value.get("listen"))
+        .and_then(toml::Value::as_str)
+        .ok_or_else(invalid)?;
+    let origin = internal_origin(state, intent.node_id, address).ok_or_else(invalid)?;
+    if protocol == "s3" {
+        return signed_s3_probe(state, &format!("{origin}/")).await;
+    }
+    let path = match protocol {
+        "iceberg" => "/v1/config".into(),
+        "dataset" => format!("/api/dataset/v1/namespaces/dataset-ns/datasets/{DATASET_PROBE}"),
+        _ => return Err(invalid()),
+    };
+    let credentials =
+        crowdb_monitor::ServerCredentials::load_existing(state.runtime_root.as_ref()).map_err(|_| {
+            (
+                "protocol-credentials-unavailable",
+                format!("Retained {protocol} credentials are unavailable"),
+            )
+        })?;
+    let token = if protocol == "iceberg" {
+        credentials.iceberg_read_token().to_owned()
+    } else {
+        credentials.dataset_token()
+    };
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        reqwest::header::AUTHORIZATION,
+        format!("Bearer {token}").parse().map_err(|_| {
+            (
+                "protocol-credentials-invalid",
+                "Retained bearer credential is invalid".into(),
+            )
+        })?,
+    );
+    execute_probe(protocol, &format!("{origin}{path}"), headers).await
+}
+
+pub(super) async fn signed_s3_probe(state: &AppState, url: &str) -> ProbeResult {
+    let parsed = reqwest::Url::parse(url).map_err(|_| {
+        (
+            "protocol-configuration-invalid",
+            "Invalid local S3 listener".into(),
+        )
+    })?;
+    let headers = crate::access::sign_local_s3_read(state, &parsed).map_err(|_| {
+        (
+            "protocol-credentials-unavailable",
+            "Cannot sign S3 ListBuckets with retained local credentials".into(),
+        )
+    })?;
+    execute_probe("s3", url, headers).await
+}
+
+#[cfg(feature = "test-util")]
+pub(super) async fn request_probe(protocol: &str, url: &str, token: Option<&str>) -> Option<bool> {
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Some(token) = token {
+        headers.insert(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {token}").parse().ok()?,
+        );
+    }
+    match execute_probe(protocol, url, headers).await {
+        Ok(_) => Some(true),
+        Err(("protocol-http-status", _)) => Some(false),
+        Err(_) => None,
     }
 }
 
-async fn request(state: &AppState, protocol: &str, intent: &NodeServiceIntent) -> Option<bool> {
-    let config: toml::Value = toml::from_str(&intent.configuration).ok()?;
-    let address = config.get(protocol)?.get("listen")?.as_str()?;
-    let origin = internal_origin(state, intent.node_id, address)?;
-    let path = match protocol {
-        "s3" => "/_crowdb/health/ready".into(),
-        "iceberg" => "/v1/config".into(),
-        "dataset" => format!("/api/dataset/v1/namespaces/dataset-ns/datasets/{DATASET_PROBE}"),
-        _ => return None,
+async fn execute_probe(protocol: &str, url: &str, headers: reqwest::header::HeaderMap) -> ProbeResult {
+    let transport = || {
+        (
+            "protocol-transport-unavailable",
+            format!("{protocol} read at {url} failed or exceeded its one-second deadline"),
+        )
     };
-    let token = if protocol == "s3" {
-        None
-    } else {
-        let credentials =
-            crowdb_monitor::ServerCredentials::load_existing(state.runtime_root.parent()?).ok()?;
-        Some(if protocol == "iceberg" {
-            credentials.iceberg_read_token().to_owned()
-        } else {
-            credentials.dataset_token()
-        })
-    };
-    request_probe(protocol, &format!("{origin}{path}"), token.as_deref()).await
-}
-
-pub(super) async fn request_probe(protocol: &str, url: &str, token: Option<&str>) -> Option<bool> {
     let client = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(1))
         .build()
-        .ok()?;
-    let mut request = client.get(url);
-    if let Some(token) = token {
-        request = request.bearer_auth(token);
-    }
-    let mut response = request.send().await.ok()?;
+        .map_err(|_| transport())?;
+    let mut response = client
+        .get(url)
+        .headers(headers)
+        .send()
+        .await
+        .map_err(|_| transport())?;
     let status = response.status().as_u16();
+    if status != 200 && !(protocol == "dataset" && status == 404) {
+        return Err((
+            "protocol-http-status",
+            format!(
+                "{protocol} read at {url} returned HTTP {status}; expected {}",
+                if protocol == "dataset" {
+                    "200 or authenticated not-found 404"
+                } else {
+                    "200"
+                }
+            ),
+        ));
+    }
     let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.ok()? {
+    while let Some(chunk) = response.chunk().await.map_err(|_| transport())? {
         if bytes.len() + chunk.len() > 65536 {
-            return None;
+            return Err((
+                "protocol-response-too-large",
+                format!("{protocol} response at {url} exceeds 65536 bytes"),
+            ));
         }
         bytes.extend_from_slice(&chunk);
     }
-    let body: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    Some(match protocol {
-        "s3" => status == 200 && body["ready"] == true,
+    let invalid = || {
+        (
+            "protocol-response-invalid",
+            format!("{protocol} read at {url} returned HTTP {status} with an unexpected protocol response"),
+        )
+    };
+    if protocol == "s3" {
+        return if list_buckets_body(&bytes) {
+            Ok(format!(
+                "S3 signed ListBuckets at {url}: HTTP 200, valid ListAllMyBucketsResult"
+            ))
+        } else {
+            Err(invalid())
+        };
+    }
+    let body: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
+    let valid = match protocol {
         "iceberg" => status == 200 && body["defaults"].is_object() && body["overrides"].is_object(),
         "dataset" => {
             (status == 404 && body["code"] == "not_found")
                 || (status == 200 && body["name"] == DATASET_PROBE && body["id"].is_string())
         }
         _ => false,
-    })
+    };
+    if valid {
+        Ok(format!(
+            "{protocol} authenticated read at {url}: HTTP {status}, valid protocol response"
+        ))
+    } else {
+        Err(invalid())
+    }
 }
 
-fn internal_origin(state: &AppState, node: u64, address: &str) -> Option<String> {
+pub(super) fn internal_origin(state: &AppState, node: u64, address: &str) -> Option<String> {
     let url = reqwest::Url::parse(&format!("http://{address}")).ok()?;
     let host = url.host_str()?;
     let config = state.config.read().ok()?;

@@ -87,6 +87,7 @@ impl TestStatusServer {
                         .map(|kind| DependencyObservation {
                             id: format!("{kind:?}"),
                             kind,
+                            detail: "Current test evidence".into(),
                             required: true,
                             state: if ready || kind == DependencyKind::Authority {
                                 DependencyState::Ready

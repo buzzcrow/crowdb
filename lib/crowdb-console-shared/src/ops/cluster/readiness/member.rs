@@ -129,9 +129,19 @@ fn service_fact(
         result.observed_at_unix_ms = observed.observed_at_unix_ms;
         result.max_age_ms = observed.max_age_ms.min(3000);
         result.state = observed.state;
+        result.detail = format!(
+            "Service {}: {:?}; observed operation {}; current operation {}; reason {}; {}",
+            observed.service_id,
+            observed.state,
+            observed.operation_id.as_deref().unwrap_or("none"),
+            result.current_operation_id.as_deref().unwrap_or("none"),
+            observed.reason_code.as_deref().unwrap_or("none"),
+            observed.detail,
+        );
     }
     if current.is_none() && kind != "kv" {
         result.state = DependencyState::Unknown;
+        result.detail = format!("Service {service_id}: current committed {kind} intent is unavailable");
     }
     if current
         .is_some_and(|intent| matches!(intent.action, NodeServiceAction::Stop | NodeServiceAction::Delete))
@@ -139,9 +149,13 @@ fn service_fact(
         result.state = DependencyState::Stopped;
         result.operation_id = result.current_operation_id.clone();
         result.observed_at_unix_ms = node.observed_at_unix_ms;
+        result.detail = format!("Service {service_id}: current committed action is stop or delete");
     }
-    result.reason =
-        (result.state != DependencyState::Ready).then(|| reason(&result.id, "required-service-not-ready"));
+    result.reason = (result.state != DependencyState::Ready).then(|| ReadinessReason {
+        dependency: result.id.clone(),
+        code: "required-service-not-ready".into(),
+        detail: result.detail.clone(),
+    });
     result
 }
 
@@ -176,18 +190,35 @@ fn protocol_fact(
         result.observed_at_unix_ms = observed.observed_at_unix_ms;
         result.max_age_ms = observed.max_age_ms.min(3000);
         result.state = observed.state;
+        result.detail.clone_from(&observed.detail);
+        result.reason.clone_from(&observed.reason);
     }
     if current.is_none() {
         result.state = DependencyState::Unknown;
+        result.reason = None;
+        result.detail = format!("{protocol}: current committed Access service intent is unavailable");
     } else if current
         .is_some_and(|intent| matches!(intent.action, NodeServiceAction::Stop | NodeServiceAction::Delete))
     {
         result.state = DependencyState::Stopped;
         result.operation_id = result.current_operation_id.clone();
         result.observed_at_unix_ms = node.observed_at_unix_ms;
+        result.detail = format!("{protocol}: current committed Access service action is stop or delete");
     }
-    result.reason =
-        (result.state != DependencyState::Ready).then(|| reason(&id, "required-protocol-not-ready"));
+    if result.state == DependencyState::Ready {
+        result.reason = None;
+    } else if result.reason.is_none() || result.state == DependencyState::Stopped {
+        result.reason = Some(ReadinessReason {
+            dependency: id,
+            code: if result.state == DependencyState::Stopped {
+                "operator-stopped-service"
+            } else {
+                "required-protocol-not-ready"
+            }
+            .into(),
+            detail: result.detail.clone(),
+        });
+    }
     result
 }
 
@@ -211,6 +242,7 @@ fn fact(
 ) -> DependencyObservation {
     let reason = (state != DependencyState::Ready).then(|| reason(&id, code));
     DependencyObservation {
+        detail: format!("{id}: {code}"),
         id,
         kind,
         required: true,

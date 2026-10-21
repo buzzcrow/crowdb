@@ -43,6 +43,7 @@ sha2 = "0.10"
 percent-encoding = "2"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 hex = "0.4"
+quick-xml = "0.38"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 futures = "0.3"
 uuid = { version = "1", features = ["v4"] }

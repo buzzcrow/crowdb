@@ -186,6 +186,7 @@ pub(super) fn fact(
         kind,
         required: true,
         state,
+        detail: format!("{id}: {code}"),
         observed_at_unix_ms: now_ms(),
         max_age_ms: 3000,
         revision: None,
