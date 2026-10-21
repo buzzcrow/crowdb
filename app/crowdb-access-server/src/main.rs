@@ -208,11 +208,8 @@ async fn run_s3(
         )?
         .unwrap_or(10_000);
         let health = Arc::new(S3Health::starting(cleanup_backlog_limit));
-        health.set_metadata(DependencyHealth::Ready);
-        health.set_chunks(DependencyHealth::Ready);
-        health.set_authentication(DependencyHealth::Ready);
         let (operations, object_inspector) =
-            configured_s3_operations(storage, service_config, Arc::clone(&metrics), Arc::clone(&health))?;
+            configured_s3_operations(storage, service_config, Arc::clone(&metrics))?;
         let expiry_task = start_multipart_expiry(Arc::clone(&operations));
         let native_budget = configured_usize(
             access_config.s3.native_budget_bytes,
@@ -501,7 +498,6 @@ fn configured_s3_operations(
     storage: S3StorageClients,
     config: S3ServiceConfig,
     metrics: Arc<S3Metrics>,
-    health: Arc<S3Health>,
 ) -> Result<
     (
         Arc<ProductionS3Operations>,
@@ -517,7 +513,6 @@ fn configured_s3_operations(
     .map_err(|error| format!("S3 object inspection configuration failed: {error}"))?;
     let operations = ProductionS3Operations::new(storage, config)
         .map_err(|_| "invalid S3 service configuration")?
-        .with_metrics(metrics)
-        .with_health(health);
+        .with_metrics(metrics);
     Ok((Arc::new(operations), inspector))
 }

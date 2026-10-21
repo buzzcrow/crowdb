@@ -82,6 +82,10 @@ impl CredentialCache {
 }
 
 impl CredentialProvider for CredentialCache {
+    fn is_ready(&self) -> bool {
+        self.is_ready_at(unix_seconds())
+    }
+
     fn lookup(&self, access_key: &str) -> Option<Credential> {
         self.lookup_at(access_key, unix_seconds())
     }

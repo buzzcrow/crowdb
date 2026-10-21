@@ -78,6 +78,11 @@ pub enum AuthError {
 
 #[async_trait::async_trait]
 pub trait RequestAuthenticator: Send + Sync {
+    /// Current provider availability, when the authenticator can observe it.
+    fn is_ready(&self) -> Option<bool> {
+        None
+    }
+
     async fn authenticate(&self, request: RawAuthRequest<'_>) -> Result<(), AuthError>;
 
     /// Returns an authenticated streaming seed whose full body must be verified.
@@ -109,6 +114,10 @@ impl Default for TrustedNetworkAuthenticator {
 
 #[async_trait::async_trait]
 impl RequestAuthenticator for TrustedNetworkAuthenticator {
+    fn is_ready(&self) -> Option<bool> {
+        Some(true)
+    }
+
     async fn authenticate(&self, _request: RawAuthRequest<'_>) -> Result<(), AuthError> {
         Ok(())
     }

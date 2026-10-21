@@ -410,6 +410,7 @@ CONSOLE_OPERATION_CASES = (
     Case("console.browser.inspector", "console::browser_inspector::selection", shell_browser="clears stale properties when the domain changes or the cluster resets"),
     Case("console.cli.container", "console::cli_container::confirmed_group_zero_replay", cli_replay="bound"),
     Case("console.cli.container", "console::cli_container::confirmed_storage_replay", cli_replay="storage"),
+    Case("console.cli.container", "console::cli_container::terminal_chunk_writer_recovery", cli_replay="terminal-writer"),
     Case("console.managed", "console::managed::authority_outage", console_browser="Managed native authority outage hides stale topology and retains monitor observation"),
     Case("console.managed", "console::managed::hardware_and_user_flows", console_browser="Managed native KV, Iceberg, S3 and Chunk operations retain hardware boundaries"),
     Case("console.browser.kv", "console::browser_kv::pagination", shell_browser="Group selection opens data directly; pages replace rows and expose complete values"),

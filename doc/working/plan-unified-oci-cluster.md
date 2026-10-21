@@ -9,37 +9,50 @@ readiness, attached workloads and scoped cleanup.
 
 ## Current handoff
 
-- **R243 and end-to-end fault recovery remain incomplete.** Do not remove the
-  requirement/backlog entry or claim that the full fault acceptance passed.
-- User requested shutdown after the problem is fixed. **No shutdown scheduled**:
-  Access still prevents recovery to Ready after the valid all-DiskIO outage.
+- **R243 remains incomplete.** Keep the requirement/backlog entry and outstanding
+  acceptance work below. The sustained all-DiskIO recovery case now passes;
+  this does not certify every runtime, protocol or formation/recovery acceptance.
+- 2026-10-22: user authorized continuation past the prior retry limit and asked
+  for diagnosis of the long-standing failure. F02 is the scope of this continuation.
 - Branch `task-stable`; local commits only, no push authorized.
-  Storage fixes: `532af33e`; common CLI fixture: `be0efd32`.
-- All owned containers and labeled bridges are cleaned. Failed fixture data/logs
-  and earlier retained J/L data remain preserved.
+  Earlier storage fixes: `532af33e`; common CLI fixture: `be0efd32`.
+- Failed fixture data/logs and earlier retained J/L data remain preserved.
+  All test-owned containers and labeled bridges are cleaned; successful
+  disposable case volumes were deleted by the independent owned cleanup helper.
 - Preserve user edits in `container/single-node-container/dev-container.sh` and
   `e2e-test/clients/ecosystem/README.md`; exclude them from requirement commits.
 - No compatibility requirement. RDMA uses host networking.
-- [~] **F02 — Restore current Access readiness after backend recovery**.
-  First capture `/_crowdb/health/ready` flags and their exact failure reasons.
-  `ProductionS3Operations::record_dependency_outcome` persists metadata/chunk
-  Unavailable after failed requests; only matching successful requests reset them.
-  Web `node/observation/protocols.rs` skips protocol reads unless the Access
-  service is already Ready. This creates a recovery feedback risk; the precise
-  stuck flag still needs independent confirmation from the dedicated endpoint.
-  Implement bounded read-only dependency observations independent of prior
-  request outcomes; expose exact metadata/chunk/auth/cleanup failures. Preserve
-  explicit stop/delete and ownership fences. Do not merely clear flags, force
-  Ready, restart a healthy Access process, or add mutation/probe objects.
-  Files: Access `s3/{operations,health}.rs`, shared S3 `metrics.rs::S3Health`,
-  Web `node/observation/protocols.rs` and owning tests.
-  Regression: dependency error -> backend recovers -> Ready without user traffic;
-  actual unavailable dependencies and operator-stopped services stay non-ready.
-  Then rerun the retained-data fault scenario with the existing 180-second budget
-  and required old/new object reads on every member. Those reads were not reached
-  in the failed all-DiskIO case and must not be counted as verified.
+- [x] **F02 — Verify current Access readiness after backend recovery** (A15/A23/A26/A27).
+  Independent dedicated endpoint samples confirmed stale metadata/chunks
+  Unavailable after backend recovery; listener/authentication/native-pool/cleanup
+  were Ready and backlog was zero. Only the Access serving failed requests stuck.
+  `record_dependency_outcome` latched request failures; Web skipped protocol
+  reads until Access was already Ready. A ListBuckets read could not reset the
+  chunk flag even if the Web gate were removed.
+  Removed request-derived storage health. Each dedicated health response now
+  reads the routed metadata namespace and ChunkDB/physical DiskIO independently,
+  with separate 750 ms deadlines and an 800 ms outer bound. Results are local to
+  that response. Credential freshness, listener/live state and cleanup backlog
+  retain independent admission checks. Web records exact flags/read failures
+  even for HTTP 503, while stop/delete and operation ownership gates stay intact.
+  No new locks, mutation/probe objects, forced Ready or Access restarts.
+  Files: Access `s3/{dependencies,health,operations,dispatcher}.rs`, `main.rs`;
+  S3 `auth{,/sigv4,/snapshot}.rs`; chunk client `client/readiness.rs`;
+  Web `node/observation/services{,/access}.rs`; E2E
+  `console_cli_{fixture,recovery}.py` and `scenarios.py`.
+  Focused Access readiness/listener/dispatch, credential cache, SigV4, S3 metrics
+  and Web observation/health tests pass (22 unique tests). Four affected crates
+  pass all-target clippy; Rust fmt and 159 Python fixture tests pass.
+  New registered case `console::cli_container::terminal_chunk_writer_recovery`
+  passed on image R: all three paused DiskIOs produced non-ready Access evidence;
+  after resuming, cluster check recovered in 8.13 seconds within the unchanged
+  180-second budget. One terminal ChunkKV writer replayed; all Access PIDs,
+  cluster UUID, accepted inputs and container IDs stayed fixed. Old/new object
+  reads passed on all three members. Both existing CLI interruption/lifecycle
+  cases also passed, including explicit DiskIO stop and current readiness after
+  restart. CI inventory verifies 389 named flows, not their execution.
 
-## Blocked
+## Previous retry-limit handoff
 
 The requirement workflow requires confirmation after five source-driven failed
 end-to-end recovery rounds. Harness setup failures are excluded from this count.
@@ -57,9 +70,8 @@ end-to-end recovery rounds. Harness setup failures are excluded from this count.
 - Recommended continuation: F02 active read-only Access dependency checks, with
   exact diagnostics and a recovery regression. Traffic-driven recovery or clearing
   health flags without fresh evidence would hide the current readiness defect.
-- Continue only after the workflow's retry-limit confirmation; then finish the
-  user-requested verification, cleanup and shutdown. No product design decision
-  is otherwise pending.
+- User confirmed continuation on 2026-10-22. The F02 registered sustained-fault
+  case passed; prior rounds remain historical diagnosis, not current blockers.
 
 ## Remaining implementation tasks
 
@@ -160,6 +172,30 @@ Existing implementation can be reused; these are the outstanding parts.
 
 ## Verification and retained resources
 
+- Current image: `crowdb-node:r243-r`; archive `target/crowdb-r243-r.oci.tar`.
+  Source tree `67269b7a179cfa4ddc8aaa12a740ac3155f29f1f` at `00b3fe00`;
+  server source identity verified before running the registered cases.
+  OCI `sha256:273e479c530e3fc31b4c7ec7ab08ff92360433d6d2a26e582d679d9aa4604ad1`;
+  Docker `sha256:f11c3022d57cb530de351addac125e29d52e9a242562e4b0e6de2bf91c1617b4`.
+  Archive SHA256 `ab647f26b6081876bd1d781c28a28068c3c45edea2314f5861f8b1fefd47d92f`.
+- Current evidence: `.crowdb-runtime/artifacts/r243-r-registered/`. Exact registered
+  `console.cli.container` cases execute through `scenarios.run_cases`, using a
+  prebuilt common CLI bundle in `target/debug` (not the full RPC client bundle).
+  Docker Linux bridge on this local Linux host; three one-CPU node containers.
+  Passed sustained-fault case: `crowdb-e2e-dac91c8b37134f26a8d8701926d039f6`,
+  UUID `7a1243a0-74e8-4704-b78a-a8d9875d1d25`. See `recovery-proof.json`,
+  `access-health-{paused,checked}.json` and writer replay logs.
+  Group-0 replay: `crowdb-e2e-8017473e1bee442d90e4b55c0cbc059b`; confirmed
+  storage replay: `crowdb-e2e-da26f7bfa5804a21a8db87be20267cd1`. All three
+  registered cases passed with final timings and independent scoped cleanup.
+
+- New baseline: `.crowdb-runtime/artifacts/r243-r-baseline/`, valid case
+  `crowdb-e2e-1b8e33246fe64817b1b6c76254c2d54a`. All three storage layers
+  and owned ranges recovered, but Access-2 remained Initializing at the deadline.
+  The CLI final sample also reported a transient management observation failure.
+  Independent `health-correct-address-*` and `health-late-*` confirm stale
+  metadata/chunk flags on container 1 (bound node 2). Health binds the node IP,
+  not loopback; initial loopback-only sampling was corrected independently.
 - Passed: full DiskDB, ChunkKV server, KV server, Chunk client and stream suites;
   DiskDB process-session tests;
   focused uncertainty, actual Unavailable/NoSpace RPC and post-split compatibility
@@ -169,12 +205,12 @@ Existing implementation can be reused; these are the outstanding parts.
   passed. Image Q leader-pause case passed: all three DiskDBs restarted, UUID and
   containers stayed fixed, old/new S3 reads passed on every member, and a strict
   normal DiskDB mix passed. Evidence case: `crowdb-e2e-9df33e1979fb4b7aae178f91ca93cae6`.
-- Current image: `crowdb-node:r243-q`; archive `target/crowdb-r243-q.oci.tar`.
+- Previous image: `crowdb-node:r243-q`; archive `target/crowdb-r243-q.oci.tar`.
   Source tree `e9cc4a3f8d31cefbbf2da7e447fb4ab2015ce289` at `eddecc03`;
   production files match fix commit `532af33e` (verified by tree diff);
   OCI `sha256:aa00679345d7ab4fc4a735177d5963735ff152f356b388e156217841e0b540ea`;
   Docker `sha256:5937f17bd9b83d8d4efc90d8beaaee8240dafc7fe31b0c278f108f6846b719a9`.
-- Current evidence: `.crowdb-runtime/artifacts/r243-q-uncertain-recovery/` and
+- Previous evidence: `.crowdb-runtime/artifacts/r243-q-uncertain-recovery/` and
   `r243-q-chunk-kv-recovery/`. Each contains `run.py` and per-case logs; the passed
   DiskDB case has `recovery-proof.json`. Valid failed Access case:
   `crowdb-e2e-2bcc4a08714c4c35acdd5b0d132cb108`, cluster UUID
@@ -182,9 +218,10 @@ Existing implementation can be reused; these are the outstanding parts.
   generation 23 and all eight owned ranges Ready; `access-3` remains Initializing.
   It uses executable-checked SIGSTOP/CONT as user `crowdb`, verifies state `T`,
   and holds all three DiskIO processes for 40 seconds, restoring them in `finally`.
-  These explicit fault scripts are manual verification;
-  registering sustained fault coverage remains T31/T33 work.
-- Registered CLI selection: `console.cli.container` (two cases). Full `console.cli`
+  These earlier explicit fault scripts are manual verification. The sustained
+  all-DiskIO case is now registered and passed on image R; other sustained fault
+  variants remain T31/T33 work.
+- Registered CLI selection: `console.cli.container` (three cases). Full `console.cli`
   requires the regular client bundle including `domain-test`; an ad-hoc
   `target/debug` bundle supports only the migrated container CLI cases.
 - Earlier diagnostics remain under `r243-m-*`, `r243-n-*`, `r243-l-address-recovery`
@@ -202,6 +239,4 @@ Existing implementation can be reused; these are the outstanding parts.
 
 ## Open questions
 
-- No unresolved product choice. Continuing past the retry limit needs user
-  confirmation under the implementation workflow.
-- login1 `CanPowerOff` is `yes`; shut down only after F02 and its verification pass.
+- No unresolved product choice; retry-limit continuation was authorized.

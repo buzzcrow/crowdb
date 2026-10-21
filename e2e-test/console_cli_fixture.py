@@ -10,6 +10,7 @@ import subprocess
 import time
 
 from fixture import Cluster, redact, request
+from console_cli_recovery import terminal_writer_recovery
 
 LABEL = "org.crowdb.cluster"
 OWNER_LABEL = "org.crowdb.cluster.owner"
@@ -67,7 +68,7 @@ class CliContainerCluster(Cluster):
         if len(ports) != 24 or ports != list(range(ports[0], ports[0] + 24)):
             raise AssertionError("CLI fixture needs 24 contiguous published ports")
         self.port_base = ports[0]
-        self.interrupt(self.checkpoint)
+        self.interrupt("storage" if self.checkpoint == "terminal-writer" else self.checkpoint)
         self.refresh()
         return self
 
@@ -128,6 +129,9 @@ class CliContainerCluster(Cluster):
         assert container_ids == [self.inspect_owned(name)["Id"] for name in self.servers]
         if execution is not None:
             assert execution == self.read_owned("diskdb-execution"), "confirmed storage must survive CLI interruption"
+        if checkpoint == "terminal-writer":
+            terminal_writer_recovery(self, report["observation"]["cluster_id"])
+            return
         self.lifecycle(report["observation"]["cluster_id"])
         self.current_readiness(report["observation"]["cluster_id"])
 

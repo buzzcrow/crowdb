@@ -21,15 +21,15 @@ use super::{
 use crate::http_receive::DeferredBodyReceiveProvider;
 
 pub struct S3Dispatcher {
-    authenticator: Arc<dyn RequestAuthenticator>,
-    operations: Arc<dyn S3Operations>,
-    metrics: Arc<S3Metrics>,
+    pub(super) authenticator: Arc<dyn RequestAuthenticator>,
+    pub(super) operations: Arc<dyn S3Operations>,
+    pub(super) metrics: Arc<S3Metrics>,
     host_id: String,
     trusted_network: bool,
     body_receive_provider_factory: Option<Arc<dyn Fn() -> DeferredBodyReceiveProvider + Send + Sync>>,
-    body_allocator: Option<Arc<NativeBodyAllocator>>,
+    pub(super) body_allocator: Option<Arc<NativeBodyAllocator>>,
     chunk_metrics: Option<Arc<ChunkIoClient>>,
-    health: Arc<S3Health>,
+    pub(super) health: Arc<S3Health>,
     next_request_id: AtomicU64,
     object_inspector: Option<Arc<super::ObjectInspector>>,
 }
@@ -117,38 +117,6 @@ impl S3Dispatcher {
                     status,
                     "application/json",
                     format!(r#"{{"live":{}}}"#, snapshot.live),
-                )
-            }
-            "/_crowdb/health/ready" => {
-                let ready = snapshot.live && snapshot.readiness.is_ready();
-                let status = if ready {
-                    StatusCode::OK
-                } else {
-                    StatusCode::SERVICE_UNAVAILABLE
-                };
-                let readiness = snapshot.readiness;
-                (
-                    status,
-                    "application/json",
-                    format!(
-                        concat!(
-                            r#"{{"ready":{},"listener":"{}","metadata":"{}","chunks":"{}","#,
-                            r#""native_pool":"{}","cleanup":"{}","authentication":"{}","#,
-                            r#""native_retained_bytes":{},"native_budget_bytes":{},"#,
-                            r#""cleanup_backlog":{},"cleanup_backlog_limit":{}}}"#
-                        ),
-                        ready,
-                        readiness.listener.as_str(),
-                        readiness.metadata.as_str(),
-                        readiness.chunks.as_str(),
-                        readiness.native_pool.as_str(),
-                        readiness.cleanup.as_str(),
-                        readiness.authentication.as_str(),
-                        snapshot.native_retained_bytes,
-                        snapshot.native_budget_bytes,
-                        snapshot.cleanup_backlog,
-                        snapshot.cleanup_backlog_limit,
-                    ),
                 )
             }
             "/_crowdb/metrics" => (

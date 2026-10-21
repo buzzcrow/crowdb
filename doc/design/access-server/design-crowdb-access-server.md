@@ -207,6 +207,18 @@ path. Readiness observes the same storage dependencies and cleanup backlog
 as the data dispatcher. Retained launch records identify the dedicated health
 address; a missing address requires deployment reconciliation before restart.
 
+Each readiness observation performs independent, bounded read-only checks of
+the routed Chunk-KV bucket namespace, ChunkDB and online disks through the
+process's storage clients. Metadata and chunk checks have separate deadlines;
+their current results apply only to that response. Application request outcomes
+do not latch dependency failures or clear current failure evidence. Physical
+checks read existing disk bytes without creating objects, allocating chunks or
+repairing storage. Credential-cache freshness, listener/process state and
+cleanup backlog remain independent admission conditions. Readiness recovers
+after dependency recovery without application traffic or an Access restart.
+Responses expose each dependency state and read diagnostic; management retains
+these details even for HTTP 503 and still fences stopped or deleted services.
+
 ## 8. Correctness invariants
 
 - **AS-I1 — First-class models:** S3, Iceberg, and Dataset each own their

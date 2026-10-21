@@ -55,3 +55,52 @@ async fn service_evidence_identifies_the_current_instance_and_owned_range() {
         task.abort();
     }
 }
+
+#[tokio::test]
+async fn access_evidence_preserves_failed_dependency_details_from_http_503() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let app = Router::new().route(
+        "/_crowdb/health/ready",
+        get(|| async {
+            (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "ready": false, "listener": "ready", "metadata": "unavailable",
+                    "chunks": "ready", "native_pool": "ready", "cleanup": "ready",
+                    "authentication": "ready", "cleanup_backlog": 0, "cleanup_backlog_limit": 10,
+                    "details": {"metadata": "metadata read exceeded its 750 ms deadline"}
+                })),
+            )
+        }),
+    );
+    let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let mut config = ConsoleConfig::default();
+    config.nodes.push(NodeEntry {
+        id: 1,
+        rack_id: 1,
+        host: "127.0.0.1".into(),
+        ssh_port: 22,
+        ssh_user: "crowdb".into(),
+        ssh_credential_ref: None,
+        ssh_key: None,
+        ssh_password: None,
+    });
+    let state = AppState::with_runtime_root(config, std::path::PathBuf::from("/unused"));
+    let intent = NodeServiceIntent {
+        cluster_id: uuid::Uuid::new_v4().to_string(),
+        node_id: 1,
+        service_id: "access-1".into(),
+        kind: "access".into(),
+        operation_id: uuid::Uuid::new_v4().to_string(),
+        action: NodeServiceAction::Start,
+        configuration: format!("[health]\nlisten = \"{address}\"\n"),
+        environment: std::collections::BTreeMap::new(),
+    };
+    let detail = service_detail_for_tests(&state, &intent).await.unwrap();
+    assert!(detail.contains("HTTP 503"));
+    assert!(detail.contains("metadata=unavailable"));
+    assert!(detail.contains("chunks=ready"));
+    assert!(detail.contains("750 ms deadline"));
+    task.abort();
+}

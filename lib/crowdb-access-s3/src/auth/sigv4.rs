@@ -29,9 +29,17 @@ pub struct Credential {
 
 pub trait CredentialProvider: Send + Sync {
     fn lookup(&self, access_key: &str) -> Option<Credential>;
+
+    fn is_ready(&self) -> bool {
+        true
+    }
 }
 
 impl<T: CredentialProvider + ?Sized> CredentialProvider for std::sync::Arc<T> {
+    fn is_ready(&self) -> bool {
+        (**self).is_ready()
+    }
+
     fn lookup(&self, access_key: &str) -> Option<Credential> {
         (**self).lookup(access_key)
     }
@@ -56,6 +64,10 @@ impl<P> SigV4Verifier<P> {
 
 #[async_trait::async_trait]
 impl<P: CredentialProvider> RequestAuthenticator for SigV4Verifier<P> {
+    fn is_ready(&self) -> Option<bool> {
+        Some(self.provider.is_ready())
+    }
+
     async fn authenticate(&self, request: RawAuthRequest<'_>) -> Result<(), AuthError> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)

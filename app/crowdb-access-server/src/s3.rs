@@ -20,7 +20,9 @@ use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 
 pub mod copy_body;
+mod dependencies;
 mod dispatcher;
+pub use dependencies::{DependencyProbeFuture, StorageReadiness};
 mod inspection;
 pub use inspection::{ObjectInspector, OBJECT_LOCATIONS_PATH};
 mod health;

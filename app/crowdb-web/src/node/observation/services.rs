@@ -3,6 +3,8 @@
 
 //! Enrich supervised operation evidence with bounded local range diagnostics.
 
+mod access;
+
 use crate::state::AppState;
 use crowdb_protocol::mgmt::node::{
     observation::NodeRuntimeObservation, NodeServiceAction, NodeServiceIntent,
@@ -22,7 +24,7 @@ pub(super) async fn observe(
             .into_iter()
             .flatten()
             .filter(|intent| {
-                intent.kind == "chunk-kv"
+                matches!(intent.kind.as_str(), "chunk-kv" | "access")
                     && intent.node_id == binding.node_id
                     && intent.cluster_id == binding.bootstrap.cluster_id
                     && !matches!(intent.action, NodeServiceAction::Stop | NodeServiceAction::Delete)
@@ -36,6 +38,9 @@ pub(super) async fn observe(
 }
 
 pub(super) async fn read(state: &AppState, intent: &NodeServiceIntent) -> Result<String, String> {
+    if intent.kind == "access" {
+        return access::read(state, intent).await;
+    }
     let invalid = || "Chunk-KV current intent has no valid local management listener".to_owned();
     let config: toml::Value = toml::from_str(&intent.configuration).map_err(|_| invalid())?;
     let address = config

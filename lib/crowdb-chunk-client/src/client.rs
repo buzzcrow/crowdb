@@ -3,6 +3,8 @@
 
 //! Application-facing chunk IO client and prepared large writes.
 
+mod readiness;
+
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
