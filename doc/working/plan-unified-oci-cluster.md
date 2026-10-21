@@ -956,6 +956,39 @@ do not mark unexecuted acceptance passed.
   all-target clippy and formatting. A new packaged fixture must also preserve
   original service operation IDs throughout fresh startup before doing I/O.
 
+- Fourth fixture: commit `71be016a`, OCI digest
+  `sha256:8d466116b401aa16ff2ec514b6d5bfdf53efbbb4b40d97db88c4a3e1a76eb79c`,
+  source tree `459022cadc78434a906701028f196f6015510ff9`, runtime SHA-256
+  `8d0020aa1726426eb3d121c1df95f2fdcc4d5bcfdbac94610184e77c56ec1944`.
+  Archive `target/crowdb-member-recovery-d.oci.tar`, image
+  `crowdb-node:member-recovery-d`, fixture `crowdb-recovery-d-three-{1,2,3}`.
+  Same independent start/restart and protocol tests; additionally verify fresh
+  accepted operation IDs are never replaced before any IP changes. Running;
+  not yet acceptance evidence. All earlier fixtures and volumes are retained.
+
+- Packaged attempt 4 (`71be016a`) failed fresh setup at the unchanged 180-second
+  deadline, before any protocol I/O or IP restart. Group-0 lost quorum as every
+  monitor published only its own endpoint, blocking all outgoing native routes.
+  Direct diagnosis on `crowdb-recovery-d-three-1`: independent root liveness
+  answered in 0.141 seconds, while `control --json recovery_identity` timed out
+  at five seconds. The runtime serializes IPC dispatch with service readiness
+  waits; peer SSH proofs have a ten-second bound. Slow consumer startup therefore
+  suppresses all peer proofs, fences consensus routes and makes the startup
+  wait permanent. This is a control-path dependency cycle, not a missing DNS
+  server or permission to relax trust/expiry checks. Make the existing SSH control
+  command's RecoveryIdentity branch read validated private state directly after
+  the independent root liveness check, bypassing lifecycle IPC. Preserve the
+  wire response and key/bootstrap validation. Regression: an unavailable lifecycle
+  socket cannot block a live root's authenticated identity command, and an
+  offline root still fails. Preserve every failed fixture. This is the fourth
+  root-cause-driven packaged failure; the next packaged run is attempt 5.
+
+- Independent identity-read fix passes seven member trust/recovery tests (including
+  the real CLI invocation with unavailable lifecycle socket), three initialization
+  tests and twelve setup tests, monitor all-target clippy, formatting and whitespace
+  checks. Offline roots, changed SSH keys, missing/corrupt trust and retirement
+  remain rejected. No handshake or freshness deadline was increased.
+
 ## Consolidated file ownership
 
 - Typed policy/status: `lib/crowdb-protocol/src/mgmt/` and `tests/`.

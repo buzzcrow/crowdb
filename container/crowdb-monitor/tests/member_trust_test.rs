@@ -138,3 +138,51 @@ async fn incomplete_endpoint_proof_does_not_rebind_unchanged_fresh_services() {
     assert!(!root.join("service-address.json").exists());
     assert!(!root.join("services").exists());
 }
+
+#[tokio::test]
+async fn ssh_identity_command_is_independent_of_the_lifecycle_control_loop() {
+    use crowdb_protocol::mgmt::node::recovery::{MemberEndpoint, MemberRecoveryIdentity};
+    let dir = tempdir_in_test_data("member-identity");
+    let root = dir.path();
+    let trust = trust::fixture(root);
+    accept_member_trust_for_tests(root, &trust).unwrap();
+    trust::write(
+        &root.join("node-endpoint.json"),
+        &MemberEndpoint {
+            discovery_id: trust.members[0].discovery_id.clone(),
+            node_id: 0,
+            boot_id: uuid::Uuid::new_v4().to_string(),
+            addresses: vec!["192.0.2.1".parse().unwrap()],
+        },
+    );
+    assert!(
+        crowdb_monitor::read_recovery_identity(root).await.is_err(),
+        "an offline root cannot prove live identity"
+    );
+    let liveness = crowdb_monitor::LivenessServer::start(root).unwrap();
+    let unavailable_control = root.join("unavailable-control.sock");
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_crowdb-monitor"));
+    command
+        .kill_on_drop(true)
+        .arg("control")
+        .arg("--socket")
+        .arg(&unavailable_control)
+        .arg("--data-root")
+        .arg(root)
+        .args(["--json", r#"{"command":"recovery_identity"}"#]);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(3), command.output())
+        .await
+        .expect("identity cannot wait for a busy lifecycle executor")
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let reply: MemberRecoveryIdentity = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(reply.binding.bootstrap, trust.bootstrap);
+    assert_eq!(reply.binding.node_id, 1);
+    assert_eq!(reply.endpoint.discovery_id, trust.members[0].discovery_id);
+    drop(liveness);
+    assert!(crowdb_monitor::read_recovery_identity(root).await.is_err());
+}

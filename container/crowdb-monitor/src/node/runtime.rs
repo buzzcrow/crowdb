@@ -307,3 +307,5 @@ pub use services::NodeServiceForTests;
 
 #[cfg(feature = "test-util")]
 pub use recovery::rebind_recovery_services_for_tests;
+
+pub use recovery::read_recovery_identity;

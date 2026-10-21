@@ -387,6 +387,11 @@ Recovery proceeds independently of Group-0 availability:
 3. Through that authenticated connection, the monitor reads the peer's durable
    discovery identity and cluster/bootstrap binding. All must match the accepted
    member, and the verified reply supplies that member's current endpoints.
+   The SSH identity command reads private retained state and verifies the owning
+   monitor's independent liveness endpoint. It does not enter the serialized
+   lifecycle executor or wait for service readiness: otherwise slow service
+   startup could suppress peer proofs, fence routes and prevent its own quorum
+   recovery. Offline roots and changed or retired identities still fail closed.
 4. The local transport uses the verified endpoints for the same replica IDs in
    the existing groups. It does not change votes, membership, WAL, rack placement
    or bootstrap identity. Endpoint replacement invalidates old connections and

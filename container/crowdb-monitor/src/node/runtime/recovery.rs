@@ -216,3 +216,14 @@ pub fn check_member_trust_for_tests(root: &Path) -> Result<()> {
 
 #[cfg(feature = "test-util")]
 pub use publication::rebind_recovery_services_for_tests;
+
+/// Read a live monitor's retained identity without waiting for lifecycle control.
+///
+/// # Errors
+/// Rejects an inactive monitor, changed keys, missing trust and retired identity.
+pub async fn read_recovery_identity(
+    root: &Path,
+) -> Result<crowdb_protocol::mgmt::node::recovery::MemberRecoveryIdentity> {
+    crate::probe_liveness(root).await?;
+    identity(root)
+}

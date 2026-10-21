@@ -45,6 +45,8 @@ enum Command {
     Control {
         #[arg(long, default_value = "/opt/crowdb/run/node-control.sock")]
         socket: PathBuf,
+        #[arg(long, default_value = "/opt/crowdb/data")]
+        data_root: PathBuf,
         #[arg(long)]
         json: String,
     },
@@ -131,14 +133,29 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::Run { args } => node_args::run(args).await?,
         Command::AcceptPolicy { args } => println!("{}", node_args::accept(&args)?),
-        Command::Control { socket, json } => {
+        Command::Control {
+            socket,
+            data_root,
+            json,
+        } => {
             if json.len() > 65536 {
                 return Err("control request exceeds limit".into());
             }
             let request = serde_json::from_str(&json)?;
-            let reply = crowdb_monitor::control_node(&socket, &request)
-                .await
-                .map_err(|error| error.to_string())?;
+            let reply = if matches!(
+                request,
+                crowdb_protocol::mgmt::node::NodeControl::RecoveryIdentity
+            ) {
+                serde_json::to_value(
+                    crowdb_monitor::read_recovery_identity(&data_root)
+                        .await
+                        .map_err(|error| error.to_string())?,
+                )?
+            } else {
+                crowdb_monitor::control_node(&socket, &request)
+                    .await
+                    .map_err(|error| error.to_string())?
+            };
             println!("{}", serde_json::to_string(&reply)?);
         }
         Command::Validate { profile } => {
