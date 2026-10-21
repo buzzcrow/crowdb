@@ -18,6 +18,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod cluster;
 pub mod node;
 
 /// Local connection hints for a KV process; these do not grant group membership.

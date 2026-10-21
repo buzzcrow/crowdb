@@ -9,7 +9,15 @@ requirements and their temporary execution plans are removed during the final
 live in the linked document; implementation follows
 [`implement-requirement`](../../.agents/skills/implement-requirement/SKILL.md).
 
-**Next R number: R238** — R221 and R234 are reserved by other workstreams.
+**Next R number: R244**
+
+## Deployment and cluster operations
+
+- **[R243](R243-deploy-unified-oci-cluster.md)** — unified OCI node deployment,
+  direct Docker one/three-container startup, Docker/containerd runtime adapters,
+  namespace-scoped CLI/Pixi lifecycle, cluster readiness and deployment cleanup.
+  **Area:** deployment / monitor / CLI / console. **Complexity:** High.
+  Kubernetes scheduling remains future work; the node contract stays portable.
 
 ## Dataset and access
 

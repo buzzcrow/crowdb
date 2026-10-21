@@ -1,0 +1,544 @@
+<!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
+<!-- Licensed under the Apache License, Version 2.0. -->
+
+# Unified OCI Cluster Plan
+
+Upstream: [R243](../backlog/R243-deploy-unified-oci-cluster.md),
+[deployment architecture](../design/deploy/design-crowdb-deploy.md),
+[OCI runtime design](../design/deploy/design-crowdb-oci-image.md).
+
+Goal: direct runtime startup, CLI startup and Docker-only Pixi shortcuts use
+one editable, recoverable node lifecycle and the same cluster readiness contract.
+
+Status: startup policy and typed current-readiness foundations are implemented
+and verified. Direct-container/runtime acceptance has not started. Preserve existing worktree changes,
+including the Pixi/CI/container-guide edits that predate this refinement.
+C1–C8 and A01–A31 below refer to the upstream contracts and acceptance cases.
+This plan is temporary and is removed after requirement completion.
+
+## Scope and constraints
+
+- Default local startup is one node; three-node startup explicitly requests three
+  voters. Both use ordinary authenticated admission, bootstrap and node setup.
+  Initial voter count never becomes an automatic membership reconciler.
+- Keep Docker and containerd adapters. Local Docker bridge and Linux host
+  networking are separate network choices; the simple Pixi scripts use Docker.
+  Multi-host acceptance starts each host explicitly. One CLI invocation targets
+  one runtime endpoint; remote multi-host scheduling is outside scope.
+- No compatibility aliases, old-state conversion, new Kubernetes operator,
+  generalized R193 failure budgets or RDMA tuning/hardware certification.
+  Unsupported populated roots fail closed and retain all data. RDMA continues
+  through the host-network path with existing device/transport behavior.
+- Node setup owns application effects; host helpers own runtime resources.
+  Status/check are observational; benchmarks attach to an existing target.
+  A host record's ownership token is not a cluster UUID or membership authority.
+- Never infer a physical host from a container UUID. Local bridge nodes use one
+  conservative shared failure domain with unverified physical identity unless
+  explicitly supplied; production requires stable physical-host input.
+- New locks require the repository's prior contention/ordering review with the
+  user. Reuse existing durable fencing and CAS operations; do not add a lock to
+  serialize distributed preparation. Keep unsafe confined to existing scopes.
+- Follow `coding` for implementation and `console-ui-e2e` for visible UI or
+  Playwright changes. This documentation refinement does not implement code,
+  change permanent designs to unimplemented behavior. Requirement implementation
+  follows its scoped verification and coherent-task commit cadence.
+
+## Review findings and implementation risks
+
+- **P1: missing metadata-group owner.**
+  `container/crowdb-monitor/src/node/runtime/setup/execution/storage.rs::select_group`
+  requires an ordinary group; Web's `planned.rs::metadata` selects the first one.
+  The CLI's `container_cluster/bootstrap/storage.rs::prepare` creates Group 1
+  with fixed nodes 1/2/3. Removing it first strands node setup or binds storage to
+  an unrelated group. T08–T10 must establish a durable shared binding first.
+- **P1: coordinator selection is not fencing.** Web Auto join fixes three voters,
+  requires a rack and calls admission with `ssh_password: None`. Different peer
+  views can choose different coordinators; scope names and UUID sorting alone
+  cannot exclude competing manifests. T05–T07 must test the accepted protocol,
+  not assume eventual discovery repairs conflicts. No automatic reset on conflict.
+- **P1: historical setup can report false success.**
+  `setup/execution/services.rs::advance` skips Ready/Warning; `observe` yields to
+  later operator commands. Preserve that yielding behavior and build readiness
+  from current intent/observations in T16–T18. A required stop is unmet readiness,
+  never an instruction to restart the service from the old setup journal.
+- **P1: storage/service dependency cycle and placement.** File preparation can
+  wait for DiskIO while DiskIO needs published disk-group metadata. Existing
+  `execution.rs::advance` intentionally advances both storage and services.
+  Retain this interleaving. The single profile has four sparse files, the CLI
+  cluster has one sparse file per node, and ordinary setup has one preallocated
+  file. Resolve the local geometry explicitly in T11; do not simply copy defaults
+  or satisfy placement by inventing independent physical hosts.
+- **P1: cleanup may cross ownership boundaries.** Current CLI state is S3-specific;
+  direct Docker startup has no such record. Separate endpoint attachment from
+  runtime ownership in T04/T19/T24. Account for interrupted creation, stopped
+  image users, retained volumes, context changes and reference races.
+- **P2: listener success is not protocol usability.** Ordinary Dataset is optional;
+  legacy public ports differ from CLI cluster ports. `access_config` and the
+  remote environment builder must align all three access protocols. Published
+  ports and advertised Iceberg/object URIs need outside-bridge validation.
+  Native KV/storage RPC additionally needs a reachable transport network.
+- **P2: false runtime evidence.** `containerd-cluster.py` creates privileged outer
+  Docker hosts, starts native containerd inside them and tests Group-0 recovery.
+  Record outer provider separately from node runtime. T34 needs an actual
+  Docker-free Linux runner and complete storage/access checks; the existing
+  profile alone cannot meet A31. Missing infrastructure is unverified coverage.
+- **P2: indirect launch callers.** `ops/s3_bench.rs` calls `s3::start_memory/stop`;
+  RPC regression/sanitizer scripts depend on the product RPC launcher. Migrate
+  their fixtures before deletion so removing commands does not silently drop
+  workload or transport coverage.
+
+## Phase 1: typed contracts and target resolution
+
+Dependency: finish T01–T04 before enabling new automatic side effects.
+
+- [x] **T01 — Seal startup policy**: replace the two-value startup mode record with
+  versioned accepted deployment inputs and validate before node side effects.
+  Resolve explicit overrides > file > fresh defaults; retained accepted fields
+  supply omitted values on restart. Reject unknown versions, policy conflicts,
+  corrupt/legacy populated roots and duplicate writable-root use without cleanup.
+  Reuse existing exclusive ownership/fencing; inspect its coverage before adding
+  a new mechanism. Done when policy precedence and rejection preserve snapshots
+  of identity/data (A06, A18, A19). Files:
+  `lib/crowdb-protocol/src/mgmt/node.rs`,
+  `lib/crowdb-protocol/src/mgmt/node/setup.rs`,
+  `container/crowdb-monitor/src/node/startup.rs`, owning crate `tests/`.
+- [~] **T02 — Resolve direct node inputs**: parse local/production mode, initial
+  voters, common scope, storage choices and required listeners once in monitor
+  startup. Entrypoint forwards inputs instead of maintaining a competing mode
+  detector. Keep one-node defaults with only image/volume/ports; three-node
+  examples add scope/voter policy. Validate production identity/credentials before
+  local convenience can run. Done when direct invocation and configured restart
+  yield the same accepted policy (A01, A03, A06, A20). Files:
+  `container/single-node-container/entrypoint.sh`,
+  `container/crowdb-monitor/src/main.rs`,
+  `container/crowdb-monitor/src/node/startup.rs`,
+  `container/crowdb-monitor/tests/`.
+- [x] **T03 — Define status wire types**: add a versioned cluster observation with
+  optional UUID before bootstrap, scope, accepted policy, members, operation IDs,
+  current authority/storage/service/protocol facts, observation time/age and
+  reason codes. Include runtime/image facts as optional observations, with source;
+  never synthesize a digest from a tag or expose credential contents. Model setup
+  completion separately from current readiness. Done when serialization and C6
+  aggregate examples cover every state and unknown fact (A15, A26, A27). Files:
+  `lib/crowdb-protocol/src/mgmt/`, `lib/crowdb-protocol/tests/`,
+  `lib/crowdb-console-shared/src/ops/cluster.rs`.
+- [ ] **T04 — Implement one target resolver**: add a cluster-target module returning
+  validated cluster identity, management endpoints and optional runtime ownership.
+  Expose global `--cluster` and repeatable `--management-endpoint` inputs; resolve
+  CLI overrides before saved configuration. A named binding plus explicit endpoints
+  must agree; endpoint-only reads/workloads need no Docker or launch record.
+  Remove implicit localhost fallback from explicitly selected targets. Identify
+  management versus native RPC/access endpoints and fail reachability/identity
+  validation before workload writes. Done when every mismatch has a typed error
+  and endpoint attach grants no runtime mutation authority (A14, A28). Files:
+  `app/crowdb-cli/src/main.rs`,
+  new `app/crowdb-cli/src/commands/cluster/target.rs`,
+  `app/crowdb-cli/src/commands/container_cluster/state.rs`,
+  `app/crowdb-cli/tests/`.
+
+## Phase 2: authenticated formation and shared preparation
+
+Dependency: T01/T02; T08 precedes storage/service execution. No CLI bootstrap
+removal until the complete direct-container path passes A01/A03/A25.
+
+- [ ] **T05 — Scope candidates and bootstrap count**: extend discovery/admission
+  compatibility with accepted scope/policy. Generalize hardcoded three-voter
+  checks; one-node ignores unrelated candidates, three-node waits for intended
+  peers, known ambiguous/overfull fresh candidates fail visibly. Duplicate UUIDs
+  and bound foreign clusters never join by name. Extra arrivals after acceptance
+  cannot become automatic voters. Done when missing/foreign/extra-peer cases
+  preserve the accepted manifest (A03, A04, A19–A21). Files:
+  `lib/crowdb-protocol/src/mgmt/node.rs`,
+  `app/crowdb-web/src/node/auto_join.rs`,
+  `app/crowdb-web/src/node/auto_join/runner.rs`,
+  `app/crowdb-web/tests/auto_join_test.rs`.
+- [ ] **T06 — Supply local rack and admission credentials**: prepare the local
+  rack and existing local test SSH credential source before Auto join. Pass it
+  only for compatible local candidates, retain host-key checks and public-key
+  exchange, and never copy private keys. Production accepts only explicit trust
+  inputs and has no local fallback. Done when direct three-container admission
+  succeeds and bad credentials/changed host keys have no weaker retry (A03, A20).
+  Files: `app/crowdb-web/src/node/auto_join/runner.rs`,
+  `lib/crowdb-console-shared/src/deployment/admission.rs`,
+  `container/single-node-container/entrypoint.sh`, admission tests.
+- [ ] **T07 — Verify accepted-manifest exclusion and recovery**: exercise
+  `PreparedBootstrap::open_with_nodes/execute`, node prepare/accept and monitor
+  initialization under concurrent coordinators, asymmetric visibility and lost
+  replies. Recover only sealed members/operation; reject conflicting manifests
+  without reset. Group-0 exclusion remains intact. Done when each acceptance
+  boundary has restart/conflict coverage (A04, A05, A21). Files:
+  `lib/crowdb-console-shared/src/deployment/bootstrap.rs`,
+  `app/crowdb-web/src/node/initialization.rs`,
+  `container/crowdb-monitor/src/node/runtime/initialization/`,
+  `container/crowdb-monitor/tests/initialization_test.rs`.
+- [ ] **T08 — Commit default preparation identity**: introduce a focused shared
+  preparation record under existing deployment ownership, conditional on current
+  Group-0 authority. Seal ordinary group/replica mapping, disk-group bindings and
+  shared credential reference once; scope it by accepted cluster identity and
+  operation. Use CAS/re-read on unknown outcomes, not a local coordinator lock.
+  Done when simultaneous runners converge on one record and changed input fails
+  before mutation (A05, A22). Files:
+  `lib/crowdb-console-shared/src/deployment/`,
+  `lib/crowdb-console-shared/src/ops/cluster/`, corresponding `tests/`.
+- [ ] **T09 — Create and recover the ordinary metadata group**: replace CLI-only
+  Group 1 creation with an authorized operation driven by T08. Derive replicas
+  from admitted membership; persist chosen IDs before effects. Verify matching
+  existing group/binding, leader/readability and publication before dependent
+  work. Conflicting preexisting objects fail instead of being adopted. Done when
+  group creation survives success-with-lost-reply and coordinator loss without
+  duplicates (A05, A22). Files:
+  `lib/crowdb-console-shared/src/ops/kv_logical/`,
+  `lib/crowdb-console-shared/src/ops/cluster/`,
+  `container/crowdb-monitor/src/node/runtime/setup/`.
+- [ ] **T10 — Pin consumers to the accepted metadata binding**: replace first-group
+  selection in storage and planned Chunk-KV with T08's exact mapping. Validate
+  binding on replay; honor retirement/deletion instead of selecting another
+  group or recreating deleted defaults. Done when unrelated groups and explicit
+  removal cannot redirect/revive setup (A22, A23). Files:
+  `container/crowdb-monitor/src/node/runtime/setup/execution/storage.rs`,
+  `app/crowdb-web/src/services/deployment/planned.rs`, setup/planned-service tests.
+- [ ] **T11 — Fix local storage geometry and placement**: derive and persist the
+  smallest supported file-count/geometry and mirror/EC configuration for one and
+  three nodes. Start from existing 16-GiB local sparse media and supported test
+  policies; verify whether the single profile's four files are needed before
+  retaining or reducing them. Extend `AcceptedSetup`'s singular file field only
+  if the required geometry needs multiple files. Record concrete counts, capacity,
+  unit/zone sizes, reserve, mirror/EC settings and budgets in the policy tests and
+  guide before this task is complete. Never silently use production defaults or
+  fake host identity. Done when one/three configurations validate and perform
+  real storage I/O with truthful failure-domain reporting (A01, A07, A24, A25).
+  Files: `lib/crowdb-protocol/src/mgmt/node/setup.rs`,
+  `container/crowdb-monitor/src/node/runtime/setup/journal.rs`,
+  `container/crowdb-monitor/src/node/runtime/setup/execution/storage.rs`,
+  `app/crowdb-web/src/services/deployment/remote.rs`,
+  `app/crowdb-web/src/services/deployment/launch.rs`.
+- [ ] **T12 — Advance disks and services without circular waiting**: preserve
+  interleaved storage/service passes, gate on publication versus runtime Online
+  separately, and reuse disk preparation receipts. Persist every effect's input
+  and operation first. Propagate terminal allocation/inode/geometry failures and
+  bound transient retries. Done when DiskIO breaks the waiting-for-DiskIO cycle,
+  ENOSPC has no sparse fallback and restarts retain media/operations (A05, A24).
+  Files: `container/crowdb-monitor/src/node/runtime/setup/execution.rs`,
+  `container/crowdb-monitor/src/node/runtime/setup/execution/storage.rs`,
+  `container/crowdb-monitor/src/node/runtime/setup/execution/services.rs`,
+  monitor setup/storage tests.
+- [ ] **T13 — Preserve later operator intent**: keep `publish_planned_start`
+  conditional on the accepted service operation; retain retired-operation fences
+  and separate journal completion from live health. Test stop/delete/reconfigure
+  races against old retries and monitor/Web restart. Done when old setup never
+  overwrites a later intent and surfaces the unmet dependency (A05, A23). Files:
+  `lib/crowdb-console-shared/src/deployment/services/planned_start.rs`,
+  `container/crowdb-monitor/src/node/runtime/setup/`,
+  `app/crowdb-web/src/services/deployment/planned.rs`, corresponding `tests/`.
+- [ ] **T14 — Align access listeners, URIs and credentials**: set default local
+  UI/S3/Iceberg/Dataset ports to 9090/9091/9092/9093, explicitly enable Dataset,
+  and separate internal bind addresses from public URI overrides. Reuse one
+  accepted cluster credential set across members/recreation through existing
+  credential distribution. Document retrieval without secret-bearing logs/status.
+  Done when host clients follow returned URIs and all protocols retain data and
+  credentials (A01, A03, A25, A27). Files:
+  `app/crowdb-web/src/services/deployment/launch.rs`,
+  `app/crowdb-web/src/services/deployment/remote.rs`,
+  `container/single-node-container/profile.toml`,
+  `container/crowdb-monitor/src/node/runtime/setup/execution/services.rs`.
+- [ ] **T15 — Enable normal editable startup**: start management during pending
+  setup, select the normal lifecycle for both node counts and remove deployment-
+  derived readonly checks after caller migration. Preserve actual authorization,
+  consistency checks and operator controls; do not invent UI role management.
+  Done when authorized mutations work and invalid ones still fail for their
+  actual cause (A01, A02). Files: `container/single-node-container/entrypoint.sh`,
+  `container/crowdb-monitor/src/node/runtime.rs`,
+  `app/crowdb-web/src/state.rs`, managed/readonly call sites and browser tests.
+
+## Phase 3: observational status and runtime operations
+
+- [ ] **T16 — Collect current dependency evidence**: combine committed topology,
+  setup operations, current service intent, live ownership/capacity and each
+  protocol readiness probe. Timestamp facts and bound endpoint requests; do not
+  treat historical Ready/Warning or a PID as health. Verify cluster identity
+  across observations; changing views are unknown/retryable inside the caller's
+  bound. Done when service stop, stale health and lost quorum invalidate ready
+  without repair (A15, A23, A26, A27). Files:
+  `lib/crowdb-console-shared/src/ops/cluster/`,
+  `container/crowdb-monitor/src/node/runtime/health.rs`,
+  `container/crowdb-monitor/src/node/runtime/observation.rs`, Web node APIs.
+- [x] **T17 — Reduce status deterministically**: implement C6 as a pure reducer
+  over T03 observations, retaining all reasons and a stable primary cause.
+  Distinguish prebootstrap missing voters from established quorum loss, and
+  strict all-required-service readiness from continued partial availability.
+  Done when order-independent unit cases cover failed/unavailable/ready/degraded/
+  initializing/waiting and remote runtime unknown (A15, A26). Files:
+  `lib/crowdb-console-shared/src/ops/cluster/`,
+  `lib/crowdb-console-shared/tests/`.
+- [ ] **T18 — Expose bounded status/check**: add `--json` and `check --wait SECONDS`.
+  Status takes one bounded observation; check with zero wait observes once,
+  otherwise shares one monotonic deadline across requests, retries and polling.
+  Default observation budget is 10 seconds and per-request timeout is capped by
+  remaining budget; expose a timeout override. Return versioned JSON on stdout,
+  diagnostics on stderr. Exit 0 for a valid status report (even unhealthy),
+  check 0 only if ready, check 1 for unmet readiness/deadline, and 2 for invalid
+  target/arguments or failure to form a report. Report transport unavailability
+  as a typed observation when possible. Never cancel accepted work on timeout.
+  Done when slow endpoints cannot multiply the deadline (A15, A27). Files:
+  `app/crowdb-cli/src/commands/cluster.rs`,
+  `app/crowdb-cli/tests/`, shared status API/tests.
+- [ ] **T19 — Extract runtime-owned lifecycle**: move creation/start/stop from
+  S3-specific state/runtime into the common cluster domain. Record endpoint/context,
+  ownership token, exact resource/mount/image/policy inputs and eventual observed
+  cluster UUID. Recover partial creation by verified ownership; conflicting
+  resources fail. Local bridge start accepts one/three nodes; host mode starts
+  one node on the selected host with the intended cluster policy. Start waits
+  for T18; readiness timeout leaves resumable resources. Done when interrupted
+  starts and stale contexts are safe (A08–A10, A29). Files:
+  `app/crowdb-cli/src/commands/container_cluster.rs`,
+  `app/crowdb-cli/src/commands/container_cluster/runtime.rs`,
+  `app/crowdb-cli/src/commands/container_cluster/state.rs`,
+  `container/oci-image/runtime.py`, `container/oci-image/run-node.py`.
+- [ ] **T20 — Preserve host resource validation**: reject fixed-port conflicts,
+  ineffective publish arguments, unsupported runtime/network combinations and
+  invalid devices/resources; verify applied cgroups/network/mounts afterward.
+  Require explicit physical identity and production credentials. No Docker
+  dependency in native containerd path or new RDMA configuration. Done when
+  failures precede application effects and have no bridge fallback (A08, A09,
+  A31). Files: `container/oci-image/runtime.py`,
+  `container/oci-image/run-node.py`, `container/oci-image/tests/`.
+
+## Phase 4: independent Docker shortcuts and reference examples
+
+Dependency: T14/T19 establish the node and ownership inputs. Scripts may share
+runtime-format utilities, but must not invoke CLI or require its records.
+
+- [ ] **T21 — Separate build/load from run**: keep `oci-build` as the root build
+  entry, preserve Docker-free OCI/receipt construction and explicit runtime load.
+  Remove implicit build dependencies from all run aliases and migrate internal
+  CI staging/verification callers without removing their checks. Done when a
+  missing image fails with an actionable build/load command and run executes no
+  cargo/compiler/download/build (A10, A11, A17). Files: `pixi.toml`,
+  `container/oci-image/image-build.sh`, `container/oci-image/transfer.py`,
+  `container/single-node-container/build.sh`, `.github/workflows/`.
+- [ ] **T22 — Implement Docker run one/three**: expose `oci-run`, `oci-run-1c`,
+  `oci-run-3c` with `--cluster`, a default local name and explicit published-port
+  overrides. Use independent volumes and a dedicated bridge per three-node
+  cluster; publish distinct member UIs. Persist host-owned inputs/token before
+  resource effects and reconcile partial starts. Two names must use distinct
+  ports; reject collisions or require overrides, never silently change retained
+  endpoints. Done when no CLI binary/record exists and starts still work (A07,
+  A10, A11, A29). Files: `container/single-node-container/dev-container.sh` or
+  replacement under `container/oci-image/`, `pixi.toml`, runtime-script tests.
+- [ ] **T23 — Implement scoped stop**: add `oci-stop --cluster NAME` and explicit
+  `--all`; verify ownership/endpoint before stopping. Retain containers, volumes,
+  mappings and accepted topology. Treat already stopped/missing resources as
+  idempotent but propagate daemon/permission errors. Done when stopping one
+  scope never affects another and subsequent run resumes (A07, A11, A29).
+  Files: host Docker script, `pixi.toml`, `container/oci-image/tests/`.
+- [ ] **T24 — Implement conservative clean**: add scoped/explicit-all clean and
+  explicit `--delete-data`; no CLI container-clean command. Preserve data and
+  reuse metadata by default. Validate exact owned paths/volumes, reject symlink
+  escape, recheck network/image references including stopped containers and
+  retained bindings, and skip unknown ownership. Handle interruption/resource
+  races without force/prune or substring matching. Done when negative ownership
+  tests and clean/recreate preserve data/credentials (A07, A11, A16, A30). Files:
+  host Docker script, `container/oci-image/tests/`, `pixi.toml`.
+- [ ] **T25 — Add executable reference examples**: one direct Docker command for
+  one node; network creation plus three independent commands for three nodes;
+  matching Compose examples. Use identical policies, ports, volumes and credential
+  retrieval, no init sidecar/peer list/order dependency. Explain plain Docker
+  endpoint attach versus owned helper cleanup; arbitrary unlabelled containers
+  are not auto-adopted. Done when tests execute the actual examples and compare
+  UUID/member/service results (A01, A03, A10, A17, A25). Files:
+  `container/oci-image/README.md`, `container/single-node-container/README.md`,
+  new Compose files beside these guides, deployment fixtures.
+
+## Phase 5: CLI tree and workload migration
+
+Dependency: T04/T18/T19 and the direct path pass before deleting old executors.
+
+- [ ] **T26 — Promote cluster lifecycle**: expose `cluster start/stop/status/check`
+  through the common resolver; migrate S3 bucket/object target selection; remove
+  `s3 cluster` and its private bootstrap/storage executor. Keep logical store,
+  group, replica and working storage maintenance operations. Done when common
+  lifecycle and logical operations address direct/helper clusters (A10, A12,
+  A14). Files: `app/crowdb-cli/src/main.rs`,
+  `app/crowdb-cli/src/commands.rs`, `app/crowdb-cli/src/commands/cluster.rs`,
+  `app/crowdb-cli/src/commands/s3.rs`,
+  `app/crowdb-cli/src/commands/container_cluster/`.
+- [ ] **T27 — Remove benchmark deployment effects**: migrate KV/DiskDB/ChunkDB/
+  ChunkIO/S3 workloads to T04. `bench kv prepare` writes declared data only;
+  remove `s3_bench::run`'s `start_memory/stop`, require selected access endpoint
+  and credentials, and preserve workload measurement/client workers. Validate
+  missing target and changed UUID before writes. Done when inventory/intent
+  snapshots are unchanged and unavailable targets never start/stop/reset (A13,
+  A14, A28). Files: `app/crowdb-cli/src/commands/bench/`,
+  `lib/crowdb-console-shared/src/ops/s3_bench.rs`,
+  `lib/crowdb-console-shared/src/ops/s3.rs`, benchmark tests.
+- [ ] **T28 — Move RPC lifecycle to test tooling**: migrate reusable measurement
+  code and explicit echo server/client fixtures before deleting public `bench rpc`
+  and `local-deploy -t rpc`. Keep regression/sanitizer result semantics and normal
+  application transport workers. Done when RPC tooling owns start/stop and runs
+  without product deployment commands (A12–A14). Files:
+  `app/crowdb-cli/src/commands/bench/rpc.rs`, `lib/crowdb-rpc/`,
+  `tools/benchmark/bench-rpc-regression.sh`,
+  `tools/cpp-checks/sanitize-regression.sh`.
+- [ ] **T29 — Migrate indirect callers and remove dead public paths**: enumerate
+  the full clap tree and follow dispatch/shared-library callers. Remove `launch`,
+  public `--registry`, `cluster local-deploy`, process-oriented destroy/clean,
+  `kv server`, storage process controls and not-implemented placeholders. Move
+  useful inventory to status; retain actual logical deletion/maintenance and
+  monitor-owned supervision. Update profiling/sanitizer/CLI fixtures first;
+  retain narrow internal process fixtures when required. Done when removed
+  commands are absent and all previous meaningful test purposes have owners
+  (A10, A12–A14, A17). Files: `app/crowdb-cli/src/commands/launch.rs`,
+  `app/crowdb-cli/src/commands/kv/server.rs`,
+  `app/crowdb-cli/src/commands/chunk/`,
+  `lib/crowdb-console-shared/src/ops/cluster.rs`,
+  `e2e-test/console_cli_fixture.py`, `tools/benchmark/`, `tools/profiling/`,
+  `tools/cpp-checks/`, affected Cargo manifests/tests.
+
+## Phase 6: acceptance ownership, CI and permanent documentation
+
+- [ ] **T30 — Register contract and recovery tests**: put Rust cases in owning
+  crate `tests/` with existing test-util self dev-dependencies when needed.
+  Inject failure before/after durable acceptance, external success/lost reply,
+  publication and completion. Use deterministic runtime stubs for ownership/error
+  paths; avoid real destructive runtime cleanup in unit tests. Done when A05,
+  A06, A16 and A18–A24/A26–A30 map to named tests. Files:
+  protocol/shared/monitor/Web/CLI `tests/`, `container/oci-image/tests/`.
+- [ ] **T31 — Add direct and Compose acceptance**: execute the actual guide
+  commands, one/three startup and multiple orders, prolonged missing peers,
+  restart during bootstrap/setup, extra peers and two isolated names. Test all
+  three protocols outside the bridge and all UIs for the same confirmed UUID;
+  recreate with retained volumes and compare acknowledged payloads. Done when
+  A01–A04/A07/A10/A25 run with no host bootstrap helper. Files:
+  `e2e-test/profiles/node-containers.py`, `e2e-test/profiles/node-bootstrap.py`,
+  `e2e-test/profiles/node-default-setup.py`,
+  new `e2e-test/unified_oci_fixture.py`, `e2e-test/tests/`,
+  `e2e-test/scenarios.py`, `e2e-test/run.py`.
+- [ ] **T32 — Add helper/target/workload acceptance**: remove CLI from Pixi test
+  PATH; assert no run-time image rebuild. Exercise scoped stop/clean, retained
+  volumes/shared images, direct endpoint attach, mixed UUID rejection, all retained
+  benchmark families and retired-command absence. Compare service intents,
+  containers/topology and image identity, not volatile PIDs alone. Done when
+  A11–A14/A16/A28–A30 have both positive and negative assertions. Files:
+  `app/crowdb-cli/tests/`, `e2e-test/console_cli_fixture.py`,
+  `e2e-test/tests/`, `container/oci-image/tests/`.
+- [ ] **T33 — Add current-readiness failure acceptance**: stop required services,
+  lose one then two voters, stale observations and run endpoint-only JSON checks
+  with slow/unreachable dependencies. Compare before/after intent to prove checks
+  do not repair. Exercise actual authorization and editable UI in both topologies.
+  Done when A02/A15/A23/A26/A27 have exact state/reason/exit/deadline assertions.
+  Files: `e2e-test/tests/deployment.rs`, deployment fixtures,
+  `e2e-test/clients/console-ui/e2e/`, `app/crowdb-cli/tests/`.
+- [ ] **T34 — Validate runtime coverage honestly**: extend Docker host and
+  containerd host/cluster cases to complete setup, protocol I/O, restart and
+  compatible image recreation. Check invalid ports/devices/resources. Record
+  image artifact digest versus runtime-local image ID and outer host provider.
+  Add a native Linux runner without Docker client/socket/daemon for A31; keep
+  disposable Docker-hosted containerd tests as separate coverage. Do not count
+  a skipped/unavailable runner as passed. Done when A08/A09/A31 evidence names
+  actual runtime, hosts, image, cases and results. Files:
+  `e2e-test/profiles/containerd-host.py`,
+  `e2e-test/profiles/containerd-cluster.py`, `e2e-test/containerd_profile.py`,
+  `e2e-test/tests/image_identity_test.py`, `.github/workflows/`.
+- [ ] **T35 — Wire gates and update implemented documentation**: assign every
+  A-case a test/CI job; migrate removed task names without losing component,
+  artifact or release verification. Update root/OCI designs only after matching
+  behavior passes, plus help, direct examples, credentials/ports and cleanup
+  guides. Remove obsolete read-only/bare-metal advice; explicitly leave Kubernetes
+  orchestration and RDMA tuning outside scope. Done when documented commands
+  resolve and coverage is traceable (A17 and all acceptance IDs). Files:
+  `tools/ci-checks/check-ci-test-tasks.py`, `pixi.toml`, `.github/workflows/`,
+  `doc/design/deploy/design-crowdb-deploy.md`,
+  `doc/design/deploy/design-crowdb-oci-image.md`, container guides,
+  `e2e-test/README.md`, `e2e-test/clients/ecosystem/README.md`,
+  `tools/README.md`, benchmark guides.
+
+## Verification and completion gates
+
+- Unit: T01/T03/T04/T17 policy, target and reducer tests; T20/T23/T24 runtime
+  selection/error stubs. Required assertions include A18–A20, A26, A28–A30.
+- Integration: T07–T13 crash/replay/concurrent preparation, binding and retirement
+  tests cover A05/A06/A21–A24. T18/T26–T29 cover command tree, target validation,
+  observation deadlines and attach-only callers (A10/A12/A14/A27/A28).
+- E2E: T31 owns direct startup/Compose and protocol persistence
+  (A01/A03/A04/A07/A10/A25); T32 owns helpers/workloads/isolation
+  (A11–A14/A16/A28–A30); T33 owns editable UI and live degradation
+  (A02/A15/A23/A26/A27); T34 owns runtime host coverage (A08/A09/A31).
+- Cross-cutting A17 belongs to T25/T29/T35: executable examples, migrated callers
+  and documented capability boundaries. Every case needs a recorded test name
+  and result before checking its task; a broad existing suite name is insufficient.
+- First milestone: direct one-node A01/A18/A24/A25. Second: direct three-node
+  A03/A04/A21/A22. Third: status/runtime/helpers and migration. Each milestone
+  must pass before removing the old code that provided its capability.
+- Inject failures at known boundaries rather than arbitrary sleeps. Record
+  node/cluster UUID, manifest/group IDs, service operation IDs, disk identity,
+  payload checksums and runtime resource inventory before/after recovery.
+  E2E failures print the case/error; enable `CROWDB_E2E_PRINT_SERVICE_ERRORS=1`
+  during diagnosis and retain complete service logs/artifacts.
+
+Run affected gates once their cases exist; these existing entrypoints need the
+new case registration above. Use the verified OCI artifact required by each
+runtime profile. The native Docker-free run is separate evidence, not implied
+by the containerd-cluster command:
+
+```bash
+pixi run clean-env && pixi run cargo test -p crowdb-protocol
+pixi run clean-env && pixi run cargo test -p crowdb-monitor
+pixi run clean-env && pixi run cargo test -p crowdb-console-shared
+pixi run clean-env && pixi run cargo test -p crowdb-web
+pixi run clean-env && pixi run cargo test -p crowdb-cli
+pixi run test-oci-image
+pixi run test-container-e2e-fixture
+pixi run test-container-e2e --layer deployment --concurrency 1
+pixi run test-container-e2e --scope console.cli --concurrency 1
+pixi run test-container-e2e --profile bridge-admission --concurrency 1 --node-cpus 1 --cpus 4 --memory-mib 6144
+pixi run test-container-e2e --profile host --concurrency 1 --cpus 4 --memory-mib 4096
+pixi run test-container-e2e --profile containerd-host --concurrency 1 --cpus 4 --memory-mib 4096
+pixi run test-container-e2e --profile containerd-cluster --concurrency 1 --node-cpus 1 --cpus 4 --memory-mib 6144
+pixi run check-ci-test-tasks
+pixi run rs-fmt-check
+pixi run rs-lint
+```
+
+Add affected RPC/benchmark gates from their migrated test owners in T28/T29;
+retain existing component correctness gates. Any changed C++ needs its existing
+format/tree-lint gate. Use 60-second shell timeouts by default; start longer or
+hang-prone commands in background sessions and poll, preserving complete output.
+Report unavailable infrastructure and confirmed pre-existing failures explicitly;
+do not mark unexecuted acceptance passed.
+
+## Execution evidence
+
+- Verified startup-policy resolution and acceptance: 6 protocol policy tests,
+  6 existing setup-validation tests, 8 monitor policy tests and 4 monitor CLI
+  input tests. Cover precedence, retained values, unknown versions, conflicts,
+  foreign/symlink roots, concurrent publication and shared-root socket ownership.
+- Full `pixi run cargo test -p crowdb-protocol` and
+  `pixi run cargo test -p crowdb-monitor` passed. Server-spawning monitor runs
+  were preceded by `pixi run clean-env`.
+- Eight pure current-readiness tests passed under
+  `pixi run cargo test -p crowdb-console-shared --test cluster_readiness_test`.
+  These test state reduction, not yet the live collector or CLI status interface.
+- Affected format check and
+  `pixi run cargo clippy -p crowdb-protocol -p crowdb-monitor -p crowdb-console-shared --all-targets -- -D warnings`
+  passed. Compile/lint findings were fixed without suppressed diagnostics.
+- T02 currently parses monitor flags/environment and bounded TOML policy inputs;
+  entrypoint migration and production credential preflight remain to implement.
+  Existing single-profile paths remain until their callers migrate under T15/T29.
+- No direct Docker, Compose, native containerd or protocol-access acceptance has
+  run yet. No end-to-end or hardware capability is marked verified.
+
+## Consolidated file ownership
+
+- Typed policy/status: `lib/crowdb-protocol/src/mgmt/` and `tests/`.
+- Node durability: `container/crowdb-monitor/src/node/`, `src/main.rs`, `tests/`.
+- Shared authority/preparation: `lib/crowdb-console-shared/src/deployment/`,
+  `src/ops/cluster*`, `src/ops/kv_logical/`, `src/ops/s3*`, `tests/`.
+- Web planning/observations/UI policy: `app/crowdb-web/src/node/`,
+  `src/services/deployment/`, `src/state.rs`, `tests/` and affected UI call sites.
+- CLI/runtime/workloads: `app/crowdb-cli/src/`, `tests/`, affected manifests;
+  `lib/crowdb-rpc/` and benchmark/profiling/sanitizer scripts.
+- Image/helpers: `container/oci-image/`, `container/single-node-container/`,
+  `pixi.toml`, `.github/workflows/`.
+- Acceptance and documentation: `e2e-test/`,
+  `tools/ci-checks/check-ci-test-tasks.py`, root/OCI deployment designs,
+  container/ecosystem/benchmark guides and `tools/README.md`.

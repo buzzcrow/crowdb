@@ -28,6 +28,7 @@ use crate::ops::hardware::{self, AddDiskInput};
 use crate::ops::OpContext;
 
 mod bootstrap;
+pub mod readiness;
 mod storage_readiness;
 #[cfg(feature = "test-util")]
 pub use bootstrap::publish_topology_for_tests;

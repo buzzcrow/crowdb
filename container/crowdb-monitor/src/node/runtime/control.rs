@@ -21,6 +21,7 @@ pub(super) async fn execute(
 ) -> Result<Value> {
     let root = &profile.paths.data_root;
     match request {
+        NodeControl::DeploymentPolicy => Ok(serde_json::to_value(crate::node::read_node_policy(root)?)?),
         NodeControl::AcceptNodeSetup { request } => Ok(serde_json::to_value(setup.accept(root, request)?)?),
         NodeControl::NodeSetup => Ok(serde_json::to_value(setup::NodeSetup::status(root)?)?),
         NodeControl::NodeSetupIntent => Ok(serde_json::to_value(setup::NodeSetup::intent(root)?)?),

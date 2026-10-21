@@ -37,9 +37,9 @@ pub use node::{
     NodeSetupForTests, SuppliedOperationsForTests,
 };
 pub use node::{
-    control_node, discover_disks, run_node, run_single_node, serve_node_management, CandidateCache,
-    DiscoveryConfig, DiscoveryError, NodeDiscovery, NodeIdentity, NodeIdentityError, NodeManagementError,
-    NodeRuntimeConfig, NODE_SERVICE_TYPE,
+    accept_node_policy, control_node, discover_disks, read_node_policy, run_node, run_node_with_inputs,
+    run_single_node, serve_node_management, CandidateCache, DiscoveryConfig, DiscoveryError, NodeDiscovery,
+    NodeIdentity, NodeIdentityError, NodeManagementError, NodeRuntimeConfig, NODE_SERVICE_TYPE,
 };
 pub use preview::{preview_step_names, run_preview, PreviewError};
 pub use probe::{ProbeError, ProbeExecutor};

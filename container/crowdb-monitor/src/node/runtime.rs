@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crowdb_protocol::mgmt::node::deployment::NodeDeploymentOverrides;
 use crowdb_protocol::mgmt::node::{NodeBinding, NodeControl};
 use crowdb_protocol::mgmt::SystemBootstrapIdentity;
 use serde::{Deserialize, Serialize};
@@ -72,9 +73,32 @@ pub(super) struct AcceptedNode {
 /// # Errors
 /// Rejects conflicting persistent state and failed monitor/service startup.
 pub async fn run_node(config: NodeRuntimeConfig) -> Result<()> {
+    run_node_with_inputs(
+        config,
+        &NodeDeploymentOverrides::default(),
+        &NodeDeploymentOverrides::default(),
+    )
+    .await
+}
+
+/// Start a node with explicit/file inputs sealed before node effects.
+///
+/// # Errors
+/// Rejects incompatible policy, concurrent root use and runtime startup failures.
+pub async fn run_node_with_inputs(
+    config: NodeRuntimeConfig,
+    file: &NodeDeploymentOverrides,
+    explicit: &NodeDeploymentOverrides,
+) -> Result<()> {
+    if config.physical_host_id.is_empty() || config.physical_host_id.len() > 256 {
+        return Err("node requires a bounded physical host identity".into());
+    }
     let profile = kv::node_profile(&config)?;
     let root = profile.paths.data_root.clone();
-    super::startup::accept(&root, super::startup::Mode::Standard)?;
+    super::startup::accept_node_policy(&root, file, explicit)?;
+    // Reuse the existing socket ownership guard on the shared durable root,
+    // independently of each container's private runtime directory.
+    let _root_liveness = crate::LivenessServer::start(&root)?;
     NodeIdentity::load_or_create(&root)?;
     std::fs::create_dir_all(&profile.paths.run_root)?;
     std::fs::create_dir_all(&profile.paths.log_root)?;

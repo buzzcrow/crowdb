@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod deployment;
 pub mod setup;
 pub mod storage;
 
@@ -64,6 +65,7 @@ pub struct CandidateSnapshot {
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NodeControl {
     Identity,
+    DeploymentPolicy,
     DiskInventory,
     AcceptNodeSetup {
         request: setup::NodeSetupRequest,
