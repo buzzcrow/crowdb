@@ -5,6 +5,7 @@
 //! topology, plus hardware subcommands (rack/node/disk-group/disk).
 
 pub mod hardware;
+mod local;
 mod status;
 pub(crate) mod target;
 
@@ -67,6 +68,10 @@ async fn local_deploy_context(
 
 #[derive(Subcommand, Debug)]
 pub enum ClusterVerb {
+    /// Start or resume a named OCI cluster; one node is the default.
+    Start(local::StartArgs),
+    /// Stop the selected cluster's owned containers, preserving its data.
+    Stop,
     /// Initialize the cluster by bootstrapping group 0 on the listed nodes.
     Init {
         #[arg(short = 'n', long, value_delimiter = ',')]
@@ -245,6 +250,8 @@ pub enum ClusterVerb {
 #[allow(clippy::too_many_lines)]
 pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
     match verb {
+        ClusterVerb::Start(args) => local::start(cli, &args).await,
+        ClusterVerb::Stop => local::stop(cli).await,
         ClusterVerb::Init {
             nodes,
             bootstrap_file,

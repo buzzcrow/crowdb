@@ -189,7 +189,7 @@ fn validate_binding(
         {
             return Err(TargetError::Invalid);
         }
-        if runtime != Some(&ownership.selection) {
+        if runtime.is_some_and(|runtime| runtime != &ownership.selection) {
             return Err(TargetError::RuntimeConflict);
         }
     }

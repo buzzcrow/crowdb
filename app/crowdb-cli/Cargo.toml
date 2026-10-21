@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 futures = "0.3"
+uuid = { version = "1", features = ["v4"] }
 crowdb-console-shared = { path = "../../lib/crowdb-console-shared" }
 crowdb-kv-client = { path = "../../lib/crowdb-kv-client" }
 crowdb-common = { path = "../../lib/crowdb-common/rust" }
@@ -46,7 +47,6 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 quick-xml = "0.38"
 
 [dev-dependencies]
-uuid = { version = "1", features = ["v4"] }
 crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi", features = ["test-util"] }
 crowdb-test-harness = { path = "../../lib/crowdb-test-harness" }
 
@@ -89,3 +89,7 @@ path = "tests/container_cluster_test.rs"
 [[test]]
 name = "cluster_status_test"
 path = "tests/cluster_status_test.rs"
+
+[[test]]
+name = "cluster_lifecycle_test"
+path = "tests/cluster_lifecycle_test.rs"

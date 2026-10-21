@@ -72,7 +72,6 @@ async fn runtime_endpoint_or_context_change_fails_before_contacting_application(
         owner: uuid::Uuid::new_v4().to_string(),
     });
     for replacement in [
-        None,
         Some(RuntimeSelection {
             context: "remote".into(),
             ..selection.clone()
@@ -88,6 +87,9 @@ async fn runtime_endpoint_or_context_change_fails_before_contacting_application(
         ));
     }
     assert_eq!(server.requests.load(Ordering::Relaxed), 0);
+    // Application attachment remains HTTP-only even for a runtime-owned binding.
+    let attached = resolve(Some(&binding), &[], None).await.unwrap();
+    assert_eq!(attached.runtime, binding.runtime);
     let selected = resolve(Some(&binding), &[], Some(&selection)).await.unwrap();
     assert_eq!(selected.runtime, binding.runtime);
 }

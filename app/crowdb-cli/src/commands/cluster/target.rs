@@ -3,7 +3,7 @@
 
 //! Resolve remote application targets before dispatching logical operations.
 
-use std::{fs, io::Read, process::ExitCode};
+use std::process::ExitCode;
 
 use crowdb_console_shared::deployment::target::{self, ClusterTargetBinding, ResolvedClusterTarget};
 
@@ -13,7 +13,10 @@ pub(crate) async fn resolve(cli: &Cli) -> Result<Option<ResolvedClusterTarget>, 
     if matches!(
         cli.command,
         crate::Domain::Cluster {
-            verb: super::ClusterVerb::Status { .. } | super::ClusterVerb::Check { .. }
+            verb: super::ClusterVerb::Status { .. }
+                | super::ClusterVerb::Check { .. }
+                | super::ClusterVerb::Start(_)
+                | super::ClusterVerb::Stop
         }
     ) {
         return Ok(None);
@@ -60,39 +63,9 @@ fn validate_command(command: &crate::Domain) -> Result<(), ExitCode> {
 }
 
 pub(super) fn load(name: &str) -> Result<ClusterTargetBinding, String> {
-    if name.is_empty()
-        || name.len() > 48
-        || !name.as_bytes()[0].is_ascii_alphanumeric()
-        || !name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
-    {
-        return Err("invalid cluster name".into());
-    }
-    let path = crowdb_protocol::port::namespace::runtime_root()
-        .join("persistent/clusters")
-        .join(name)
-        .join("target.json");
-    let metadata = fs::symlink_metadata(&path)
-        .map_err(|_| "selected cluster has no readable target binding".to_owned())?;
-    if !metadata.file_type().is_file() || metadata.len() > 32768 {
-        return Err("selected cluster target binding is invalid".into());
-    }
-    let mut bytes = Vec::new();
-    fs::File::open(path)
-        .map_err(|_| "cannot open target binding")?
-        .take(32769)
-        .read_to_end(&mut bytes)
-        .map_err(|_| "cannot read target binding")?;
-    if bytes.len() > 32768 {
-        return Err("target binding exceeds its size bound".into());
-    }
-    let binding: ClusterTargetBinding =
-        serde_json::from_slice(&bytes).map_err(|_| "selected cluster target binding is invalid")?;
-    if binding.name != name {
-        return Err("selected cluster name differs from its binding".into());
-    }
-    Ok(binding)
+    super::local::load_target(name)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "selected cluster has no readable target binding".into())
 }
 
 fn failure(error: impl std::fmt::Display) -> ExitCode {

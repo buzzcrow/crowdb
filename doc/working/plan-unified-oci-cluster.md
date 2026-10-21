@@ -283,7 +283,7 @@ removal until the complete direct-container path passes A01/A03/A25.
   Done when slow endpoints cannot multiply the deadline (A15, A27). Files:
   `app/crowdb-cli/src/commands/cluster.rs`,
   `app/crowdb-cli/tests/`, shared status API/tests.
-- [ ] **T19 — Extract runtime-owned lifecycle**: move creation/start/stop from
+- [~] **T19 — Extract runtime-owned lifecycle**: move creation/start/stop from
   S3-specific state/runtime into the common cluster domain. Record endpoint/context,
   ownership token, exact resource/mount/image/policy inputs and eventual observed
   cluster UUID. Recover partial creation by verified ownership; conflicting
@@ -1483,3 +1483,41 @@ do not mark unexecuted acceptance passed.
   after the shared DiskIO stub's byte-range correction. Docker inventory again
   has no running fixture containers and only the default bridge/host/none
   networks. Original failed J volumes and immutable image receipts remain.
+
+## Common CLI local runtime lifecycle implementation
+
+- Public `cluster start` and `cluster stop` now share one Docker path for one
+  and three ordinary OCI nodes. Default cluster name is `local`; defaults are
+  one node, 1 CPU, 1536 MiB and console port 9090. Start requires a loaded image,
+  seals immutable host ownership before creation, and leaves bootstrap/storage
+  work to monitors. Resume validates daemon/context/endpoint, image, policy,
+  resources, published ports and durable volume before starting a retained node.
+- Application UUID bindings are sealed only after observing application identity.
+  A pending named cluster can still use status/check through its accepted host
+  receipt without needing Docker access. Status/check never change runtime state.
+  Runtime stop rechecks exact ownership and preserves containers, networks/data.
+- Application attachment to a runtime-owned binding no longer requires Docker
+  selection; explicitly supplied mismatching runtime selection still fails before
+  contacting an application. Private binding reads reject ancestor symlinks and
+  use no-follow opens, matching runtime receipts.
+- Independent Pixi cleanup uses the same host receipt, honors runtime-root input,
+  and explicit data deletion retires only a matching optional application binding.
+  Foreign bindings reject deletion before runtime effects; ordinary clean retains
+  both binding and data. No CLI clean command is added by the new path.
+- Process tests cover default singleton identity sealing, no duplicate creation,
+  stop/resume, interrupted three-node creation, preserved readiness failures,
+  selected-name isolation, changed runtime, changed launch inputs and symlinks.
+  Shared target tests cover HTTP attachment without local runtime ownership.
+- T19 remains active: host/containerd common CLI adapter, S3 callers, legacy public
+  entry removal and registered deployment acceptance are still required. Current
+  process fixtures prove ownership behavior, not packaged application readiness.
+- Verification: 14 CLI lifecycle/status/target cases and eight shared target cases
+  pass; affected all-target clippy and workspace fmt pass. All 44 OCI Python tests
+  pass in their declared child Pixi environment. Running that suite in the root
+  environment first failed to import its declared PyYAML dependency; using the
+  correct manifest resolves it without changing tests or dependencies.
+- Actual common CLI singleton start against the already loaded `status-k` image
+  reaches aggregate Ready, UUID `1c90dd70-efe5-462a-b4c1-59c26761595c`.
+  Three-node and retained-resume verification are in progress. This image predates
+  the latest finalizer guard, so this is lifecycle verification against existing
+  application packaging, not evidence of a rebuilt current-tree artifact.

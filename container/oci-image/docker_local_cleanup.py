@@ -3,6 +3,7 @@
 """Scoped Docker stop and cleanup; retained volumes and receipts are the default."""
 
 import json
+import stat
 
 from docker_local_state import RECORDS, check_daemon, load, record_path, require_owned
 
@@ -34,6 +35,7 @@ def stop(docker, record):
 
 
 def clean(docker, record, delete_data=False, directory=RECORDS):
+    binding = owned_binding(record, directory) if delete_data else None
     stop(docker, record)
     for item in docker.owned(record, "container"):
         item = current(docker, record, "container", item["Id"])
@@ -51,9 +53,29 @@ def clean(docker, record, delete_data=False, directory=RECORDS):
             if docker.call("ps", "-aq", "--filter", "volume=" + item["Name"]):
                 raise ValueError("owned volume is referenced by another container")
             docker.call("volume", "rm", item["Name"])
+        if binding:
+            # Keep ownership retryable if removing the binding fails.
+            binding.unlink()
         record_path(record["cluster"], directory).unlink()
     print(f"Cleaned containers and bridges for {record['cluster']}; "
           + ("deleted owned data volumes" if delete_data else "preserved data volumes and restart inputs"))
+
+
+def owned_binding(record, directory):
+    path = directory.parent / "clusters" / record["cluster"] / "target.json"
+    if any(parent.is_symlink() for parent in (path, *path.parents)):
+        raise ValueError("cluster target binding must not contain symlinks")
+    if not path.exists():
+        return None
+    metadata = path.stat()
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o077 or metadata.st_size > 32768:
+        raise ValueError("cluster target binding must be a bounded private regular file")
+    target = json.loads(path.read_text())
+    expected = {"owner": record["owner"], "selection": {
+        "runtime": "docker", "context": record["runtime"]["context"], "endpoint": record["runtime"]["endpoint"]}}
+    if target.get("version") != 1 or target.get("name") != record["cluster"] or target.get("runtime") != expected:
+        raise ValueError("cluster target binding differs from owned runtime inputs")
+    return path
 
 
 def image_garbage(docker, directory=RECORDS, runtime=None):

@@ -14,7 +14,7 @@ import uuid
 CLUSTER = "org.crowdb.cluster"
 OWNER = "org.crowdb.cluster.owner"
 ROOT = Path(__file__).resolve().parents[2]
-RECORDS = ROOT / ".crowdb-runtime/persistent/oci-clusters"
+RECORDS = Path(os.environ.get("CROWDB_RUNTIME_ROOT", ROOT / ".crowdb-runtime")) / "persistent/oci-clusters"
 
 
 class Docker:

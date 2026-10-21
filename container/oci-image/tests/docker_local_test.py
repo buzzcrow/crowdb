@@ -3,6 +3,7 @@
 """Scoped cleanup preserves data and rejects changed resource ownership."""
 
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -112,6 +113,33 @@ class DockerLocalTest(unittest.TestCase):
             (directory / "foreign.json").symlink_to(directory / "first.json")
             with self.assertRaisesRegex(ValueError, "symlink"):
                 load("foreign", directory)
+
+    def test_delete_data_retires_only_matching_optional_application_binding(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "oci-clusters"
+            path = Path(temporary) / "clusters/first/target.json"
+            path.parent.mkdir(parents=True)
+            target = {"version": 1, "name": "first", "runtime": {"owner": self.record["owner"],
+                      "selection": {"runtime": "docker", "context": "default", "endpoint": "unix:///owned"}}}
+            path.write_text(json.dumps(target))
+            os.chmod(path, 0o600)
+            seal(self.record, directory)
+            clean(self.docker, self.record, False, directory)
+            self.assertTrue(path.exists())
+            clean(self.docker, self.record, True, directory)
+            self.assertFalse(path.exists())
+            self.assertIsNone(load("first", directory))
+
+    def test_foreign_application_binding_prevents_data_deletion_before_effects(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "oci-clusters"
+            path = Path(temporary) / "clusters/first/target.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps({"version": 1, "name": "first", "runtime": None}))
+            os.chmod(path, 0o600)
+            with self.assertRaisesRegex(ValueError, "differs"):
+                clean(self.docker, self.record, True, directory)
+            self.docker.call.assert_not_called()
 
     def test_garbage_keeps_retained_and_stopped_container_images(self):
         def call(*args):

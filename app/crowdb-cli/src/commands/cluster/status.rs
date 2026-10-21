@@ -50,15 +50,49 @@ pub(crate) async fn run(cli: &Cli, json: bool, check: bool, wait: u64, timeout: 
 }
 
 async fn observe(cli: &Cli, check: bool, wait: u64, timeout: u64) -> Result<ClusterStatus, String> {
-    let binding = cli.cluster.as_deref().map(super::target::load).transpose()?;
+    let binding = cli
+        .cluster
+        .as_deref()
+        .map(super::local::load_target)
+        .transpose()
+        .map_err(|error| error.to_string())?
+        .flatten();
+    let pending = if binding.is_none() && cli.management_endpoints.is_empty() {
+        cli.cluster
+            .as_deref()
+            .map(super::local::pending_origins)
+            .transpose()
+            .map_err(|error| error.to_string())?
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let origins = target::management_origins(if cli.management_endpoints.is_empty() {
-        binding
-            .as_ref()
-            .map_or(&[], |binding| binding.management_endpoints.as_slice())
+        binding.as_ref().map_or(pending.as_slice(), |binding| {
+            binding.management_endpoints.as_slice()
+        })
     } else {
         &cli.management_endpoints
     })
     .map_err(|error| error.to_string())?;
+    let report = observe_origins(&origins, binding.as_ref(), check, wait, timeout).await?;
+    if cli
+        .cluster
+        .as_ref()
+        .is_some_and(|name| name != &report.observation.cluster)
+    {
+        return Err("selected cluster and management endpoints disagree on identity".into());
+    }
+    Ok(report)
+}
+
+pub(super) async fn observe_origins(
+    origins: &[String],
+    binding: Option<&target::ClusterTargetBinding>,
+    check: bool,
+    wait: u64,
+    timeout: u64,
+) -> Result<ClusterStatus, String> {
     let client = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
@@ -73,7 +107,7 @@ async fn observe(cli: &Cli, check: bool, wait: u64, timeout: u64) -> Result<Clus
         }))
         .ok_or("wait exceeds the supported clock range")?;
     let mut last = None;
-    let mut known_identity = binding.as_ref().map(|binding| binding.cluster_id.clone());
+    let mut known_identity = binding.map(|binding| binding.cluster_id.clone());
     loop {
         let request_deadline = deadline.min(
             Instant::now()
@@ -82,8 +116,8 @@ async fn observe(cli: &Cli, check: bool, wait: u64, timeout: u64) -> Result<Clus
         );
         last = round(
             &client,
-            &origins,
-            binding.as_ref(),
+            origins,
+            binding,
             request_deadline,
             last,
             &mut known_identity,

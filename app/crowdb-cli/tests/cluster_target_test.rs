@@ -6,7 +6,7 @@ mod common;
 
 use common::TestTargetServer;
 use crowdb_console_shared::deployment::target::ClusterTargetBinding;
-use std::{path::Path, process::Command};
+use std::{os::unix::fs::PermissionsExt, path::Path, process::Command};
 
 fn run(root: &Path, selected: &[&str]) -> String {
     let output = Command::new(env!("CARGO_BIN_EXE_crowdb-cli"))
@@ -70,6 +70,7 @@ async fn cli_named_binding_never_adopts_a_replacement_uuid_from_explicit_address
     })
     .unwrap();
     std::fs::write(&path, &bytes).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
     let error = run(
         root.path(),
         &["--cluster", "demo", "--management-endpoint", &replacement.origin],
