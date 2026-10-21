@@ -588,6 +588,15 @@ do not mark unexecuted acceptance passed.
   executor and publication fixes, together with its fmt and all-target clippy
   gates. Existing local launch, bootstrap replay, membership, S3 and service
   intent tests remain passing.
+- Target setup acceptance and journal replay now enforce the target's accepted
+  deployment choices. Automatic admission fetches those choices through the
+  authenticated control channel and verifies its formation policy, instead of
+  copying the coordinator's storage/listener choices. Nine monitor setup tests,
+  eight policy tests, seven Web formation tests and six Auto join tests pass;
+  affected monitor/Web all-target clippy passes. Positive authenticated
+  multi-container admission remains under T06 acceptance.
+- Full `pixi run cargo test -p crowdb-web` also passed after target-owned setup
+  policy resolution and authenticated formation checks.
 - No direct application Docker, Compose, native containerd or protocol-access acceptance has
   run yet. No end-to-end or hardware capability is marked verified.
 

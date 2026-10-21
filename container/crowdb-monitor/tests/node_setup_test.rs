@@ -27,6 +27,34 @@ fn authorize(root: &Path, request: &NodeSetupRequest) {
 }
 
 #[test]
+fn accepted_deployment_choices_cannot_be_overridden_by_admission_or_a_changed_setup_journal() {
+    let directory = crowdb_test_harness::test_dirs::tempdir_in_test_data("node-setup-sealed-policy");
+    let root = directory.path();
+    let inputs = crowdb_protocol::mgmt::node::deployment::NodeDeploymentOverrides::default();
+    let policy = crowdb_monitor::accept_node_policy(root, &inputs, &inputs).unwrap();
+    let mut intent = request(root);
+    intent.choices = policy.setup;
+    authorize(root, &intent);
+    let mut conflicting = intent.clone();
+    conflicting.choices.storage = SetupStorage::Diskless;
+    let mut setup = NodeSetupForTests::default();
+    let before = std::fs::read(root.join("node-policy.json")).unwrap();
+    let error = setup.accept_for_tests(root, conflicting.clone()).unwrap_err();
+    assert!(error.to_string().contains("accepted deployment policy"));
+    assert!(!root.join("node-setup.json").exists());
+    assert!(!root.join("disks").exists());
+    setup.accept_for_tests(root, intent).unwrap();
+    let path = root.join("node-setup.json");
+    let mut journal: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    journal["request"]["choices"] = serde_json::to_value(conflicting.choices).unwrap();
+    let corrupt = serde_json::to_vec(&journal).unwrap();
+    std::fs::write(&path, &corrupt).unwrap();
+    assert!(NodeSetupForTests::status_for_tests(root).is_err());
+    assert_eq!(std::fs::read(path).unwrap(), corrupt);
+    assert_eq!(std::fs::read(root.join("node-policy.json")).unwrap(), before);
+}
+
+#[test]
 fn setup_requires_target_identity_and_authenticated_admission_then_replays_read_only() {
     let directory = crowdb_test_harness::test_dirs::tempdir_in_test_data("node-setup-accept");
     let root = directory.path();

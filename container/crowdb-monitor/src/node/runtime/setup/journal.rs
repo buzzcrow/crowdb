@@ -44,6 +44,7 @@ pub(super) fn read(root: &Path) -> Result<Option<AcceptedSetup>> {
     let current: Option<AcceptedSetup> = durable::read(&root.join("node-setup.json"))?;
     if let Some(current) = &current {
         current.request.validate()?;
+        validate_policy(root, &current.request.choices)?;
         supplied::validate(current)?;
         validate_status(&current.status)?;
         for identity in [&current.request.discovery_id, &current.request.operation_id] {
@@ -102,6 +103,7 @@ pub(super) fn accept_with_inputs(
     inputs: &[DiskInput],
 ) -> Result<NodeSetupStatus> {
     request.validate()?;
+    validate_policy(root, &request.choices)?;
     if root
         .join(format!(
             "node-setup-retired-{}.json",
@@ -170,6 +172,16 @@ pub(super) fn accept_with_inputs(
         },
     )?;
     Ok(status)
+}
+
+fn validate_policy(
+    root: &Path,
+    choices: &crowdb_protocol::mgmt::node::setup::NodeSetupChoices,
+) -> Result<()> {
+    if crate::node::read_node_policy(root)?.is_some_and(|policy| policy.setup != *choices) {
+        return Err("node setup choices differ from accepted deployment policy".into());
+    }
+    Ok(())
 }
 
 fn replay(root: &Path, current: &mut AcceptedSetup, running: bool) -> Result<NodeSetupStatus> {

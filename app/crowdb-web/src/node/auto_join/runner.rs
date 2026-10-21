@@ -231,7 +231,8 @@ async fn admit_candidate(
         ssh_port: record.map_or(2222, |record| record.ssh_port),
         ssh_password: password,
         preflight_operation_id: None,
-        setup: Some(deployment.setup),
+        setup: None,
+        expected_formation: Some(deployment.formation()),
     };
     if !super::read(state)?.enabled {
         return Ok(Some(json!({"phase": "disabled"})));

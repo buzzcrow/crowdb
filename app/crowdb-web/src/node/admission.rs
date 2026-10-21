@@ -32,6 +32,9 @@ pub(crate) struct AdmitRequest {
     pub(super) preflight_operation_id: Option<String>,
     #[serde(default)]
     pub(super) setup: Option<crowdb_protocol::mgmt::node::setup::NodeSetupChoices>,
+    /// Automatic callers must confirm discovery hints over authenticated control.
+    #[serde(skip)]
+    pub(super) expected_formation: Option<crowdb_protocol::mgmt::node::deployment::FormationPolicy>,
 }
 
 pub(crate) async fn admit(
@@ -174,7 +177,7 @@ async fn admit_observed(
     )
     .await
     .map_err(map_config_err)?;
-    super::setup::accept(state, &record, &target, body.setup).await?;
+    super::setup::accept(state, &record, &target, body.setup, body.expected_formation).await?;
     target.ssh_password = None;
     target.ssh_key = None;
     target.ssh_credential_ref = Some("id_ed25519".into());
