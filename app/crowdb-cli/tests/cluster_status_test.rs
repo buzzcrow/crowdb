@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use axum::{routing::get, Json, Router};
+use axum::{http::StatusCode, response::IntoResponse, routing::get, Json, Router};
 use crowdb_protocol::mgmt::{
     cluster::{ClusterObservation, ClusterStatus, DependencyKind, DependencyObservation, DependencyState},
     node::deployment::NodeDeploymentPolicy,
@@ -26,6 +26,15 @@ impl Drop for TestStatusServer {
 }
 impl TestStatusServer {
     async fn start(cluster_id: String, ready_after: usize, invalid: bool) -> Self {
+        Self::with_failures(cluster_id, ready_after, invalid, None, false).await
+    }
+    async fn with_failures(
+        cluster_id: String,
+        ready_after: usize,
+        invalid: bool,
+        unavailable_after: Option<usize>,
+        stalled: bool,
+    ) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let seen = Arc::new(AtomicUsize::new(0));
@@ -38,7 +47,14 @@ impl TestStatusServer {
                     let now =
                         u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis())
                             .unwrap();
-                    let ready = seen.fetch_add(1, Ordering::Relaxed) >= ready_after;
+                    let count = seen.fetch_add(1, Ordering::Relaxed);
+                    if unavailable_after.is_some_and(|limit| count >= limit) {
+                        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+                    }
+                    if stalled {
+                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    }
+                    let ready = count >= ready_after;
                     let observation = ClusterObservation {
                         version: if invalid { 2 } else { 1 },
                         cluster: NodeDeploymentPolicy::default().cluster,
@@ -83,6 +99,7 @@ impl TestStatusServer {
                         observation,
                         now,
                     ))
+                    .into_response()
                 }
             }),
         );
@@ -139,4 +156,40 @@ async fn invalid_reports_and_mixed_cluster_origins_return_two_and_no_json() {
     assert_eq!(output.status.code(), Some(2));
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("disagree on identity"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lost_endpoint_after_a_valid_observation_remains_an_unmet_readiness_report() {
+    let server = TestStatusServer::with_failures(
+        uuid::Uuid::new_v4().to_string(),
+        usize::MAX,
+        false,
+        Some(1),
+        false,
+    )
+    .await;
+    let output = run(&[&server.origin], &["check", "--json", "--wait", "1"]);
+    let report = report(&output, 1);
+    assert_eq!(
+        report.phase,
+        crowdb_protocol::mgmt::cluster::ClusterPhase::Unavailable
+    );
+    assert!(report
+        .reasons
+        .iter()
+        .any(|reason| reason.code == "management-origin-unavailable"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slow_selected_origins_share_the_caller_deadline_and_never_multiply_it() {
+    let left = TestStatusServer::with_failures(uuid::Uuid::new_v4().to_string(), 0, false, None, true).await;
+    let right = TestStatusServer::with_failures(uuid::Uuid::new_v4().to_string(), 0, false, None, true).await;
+    let started = std::time::Instant::now();
+    let output = run(
+        &[&left.origin, &right.origin],
+        &["check", "--json", "--wait", "1", "--timeout", "20"],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
 }

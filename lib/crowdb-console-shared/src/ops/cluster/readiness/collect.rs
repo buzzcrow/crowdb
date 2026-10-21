@@ -31,7 +31,7 @@ pub async fn collect(ctx: &OpContext, local: NodeRuntimeObservation) -> Result<C
     if local.version != 1 || uuid::Uuid::parse_str(&local.discovery_id).is_err() {
         return Err(invalid());
     }
-    let deadline = Instant::now() + Duration::from_secs(8);
+    let deadline = Instant::now() + Duration::from_secs(6);
     let mut observation = base(&local);
     let authority = tokio::time::timeout_at(
         deadline.min(Instant::now() + Duration::from_secs(2)),

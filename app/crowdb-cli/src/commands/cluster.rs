@@ -199,6 +199,9 @@ pub enum ClusterVerb {
     Status {
         #[arg(long)]
         json: bool,
+        /// Observation budget in seconds.
+        #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u64).range(1..))]
+        timeout: u64,
     },
     /// Check whole-cluster readiness; exit 1 when the contract is unmet.
     Check {
@@ -207,6 +210,9 @@ pub enum ClusterVerb {
         /// Maximum wait in seconds; zero observes once.
         #[arg(long, default_value_t = 0)]
         wait: u64,
+        /// Maximum duration of one observation request in seconds.
+        #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u64).range(1..))]
+        timeout: u64,
     },
     /// Show the topology view from a node's `/topology` endpoint.
     Topology {
@@ -681,8 +687,8 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                 }
             }
         }
-        ClusterVerb::Status { json } => status::run(cli, json, false, 0).await,
-        ClusterVerb::Check { json, wait } => status::run(cli, json, true, wait).await,
+        ClusterVerb::Status { json, timeout } => status::run(cli, json, false, 0, timeout).await,
+        ClusterVerb::Check { json, wait, timeout } => status::run(cli, json, true, wait, timeout).await,
         ClusterVerb::Topology { node } => {
             let ctx = match authority_context(cli).await {
                 Ok(c) => c,

@@ -1281,3 +1281,12 @@ do not mark unexecuted acceptance passed.
   writer with valid authority. Active online split dispatch remains eligible;
   expired authority and inactive recovered partitions do not. Fourteen real
   server tests pass, including activation, split continuation and grant expiry.
+
+- Bounded-check follow-up: explicit `--timeout` defaults to ten seconds and caps
+  each concurrent origin request within the single `--wait` deadline. Aggregate
+  collection fits beneath this default (three-second local observation plus
+  six-second collector). Once a valid report exists, later origin loss becomes
+  typed unavailable evidence instead of changing an unmet check into an invalid
+  report. Five real CLI process cases pass, including two stalled origins sharing
+  one second, delayed readiness, and an origin disappearing after a valid report.
+  Applicable shared/Web/CLI all-target clippy and formatting pass.

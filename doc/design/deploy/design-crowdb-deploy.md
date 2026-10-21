@@ -704,7 +704,7 @@ Expose:
   health, drift and operation outcomes.
 
 `cluster status` reads the node's aggregate HTTP observation without a local
-runtime socket. Its collector has an eight-second monotonic deadline after the
+runtime socket. Its collector has an six-second monotonic deadline after the
 bounded local monitor observation. Current linearizable Group-0 publication,
 accepted ordinary metadata replicas and ordinary-group authority, physical disk
 placement/bindings, live DiskDB owner leases and allocatable capacity are
