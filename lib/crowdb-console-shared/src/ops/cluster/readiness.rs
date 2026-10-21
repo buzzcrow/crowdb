@@ -8,6 +8,8 @@ use crowdb_protocol::mgmt::cluster::{
     ReadinessReason,
 };
 
+mod collect;
+pub use collect::collect;
 mod member;
 pub use member::member_evidence;
 
@@ -30,7 +32,7 @@ struct Evidence {
 #[must_use]
 pub fn reduce(mut observation: ClusterObservation, now_unix_ms: u64) -> ClusterStatus {
     observation.dependencies.sort();
-    let mut evidence = collect(&observation, now_unix_ms);
+    let mut evidence = collect_evidence(&observation, now_unix_ms);
     for kind in REQUIRED {
         if !evidence.states.contains_key(&kind) {
             evidence.reasons.push(reason(
@@ -62,7 +64,7 @@ pub fn reduce(mut observation: ClusterObservation, now_unix_ms: u64) -> ClusterS
     }
 }
 
-fn collect(observation: &ClusterObservation, now_unix_ms: u64) -> Evidence {
+fn collect_evidence(observation: &ClusterObservation, now_unix_ms: u64) -> Evidence {
     let mut evidence = Evidence::default();
     let mut identities = std::collections::BTreeSet::new();
     for fact in &observation.dependencies {
@@ -156,6 +158,9 @@ fn invalid(observation: &ClusterObservation) -> bool {
     observation.version != 1
         || !matches!(observation.initial_voters, 1 | 3)
         || (observation.bound && observation.cluster_id.is_none())
+        || observation.cluster_id.as_ref().is_some_and(|identity| {
+            uuid::Uuid::parse_str(identity).map_or(true, |identity| identity.is_nil())
+        })
         || observation.policy.as_ref().is_some_and(|policy| {
             policy.validate().is_err()
                 || policy.initial_voters != observation.initial_voters

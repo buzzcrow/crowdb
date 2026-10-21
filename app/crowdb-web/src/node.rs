@@ -10,6 +10,7 @@ pub(crate) mod setup;
 mod update;
 pub(crate) use update::update;
 mod authority;
+pub(crate) mod cluster_status;
 mod hardware;
 pub(crate) mod initialization;
 pub(crate) mod observation;

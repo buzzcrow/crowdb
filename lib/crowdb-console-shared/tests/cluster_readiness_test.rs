@@ -25,7 +25,7 @@ fn observation() -> ClusterObservation {
     ClusterObservation {
         version: 1,
         cluster: "dev".into(),
-        cluster_id: Some("accepted-cluster".into()),
+        cluster_id: Some("27a1f711-7ea4-4ddc-8d4e-3146017fd8cb".into()),
         bound: true,
         initial_voters: 3,
         policy: None,

@@ -949,6 +949,7 @@ dependencies = [
  "crowdb-test-harness",
  "crowdb-web",
  "flatbuffers",
+ "futures",
  "hex",
  "libc",
  "quick-xml",

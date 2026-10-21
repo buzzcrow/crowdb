@@ -271,7 +271,7 @@ async fn dispatch(mut cli: Cli) -> ExitCode {
     let command = std::mem::replace(
         &mut cli.command,
         Domain::Cluster {
-            verb: ClusterVerb::Status,
+            verb: ClusterVerb::Status { json: false },
         },
     );
     match command {

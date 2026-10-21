@@ -703,6 +703,26 @@ Expose:
 - Desired deployment inputs, actual image digest/resources, process/container
   health, drift and operation outcomes.
 
+`cluster status` reads the node's aggregate HTTP observation without a local
+runtime socket. Its collector has an eight-second monotonic deadline after the
+bounded local monitor observation. Current linearizable Group-0 publication,
+accepted ordinary metadata replicas and ordinary-group authority, physical disk
+placement/bindings, live DiskDB owner leases and allocatable capacity are
+independent dependencies. Capacity summaries must be no older than the service
+registry's fifteen-second liveness window. Per-member service evidence matches
+the current committed operation; required S3, Iceberg and Dataset listeners each
+supply their own read-only protocol proof. Historical setup completion cannot
+substitute for these observations. Missing or stale evidence remains unknown.
+Runtime/image facts remain unknown when runtime access was not supplied.
+
+The aggregate route bypasses deployment recovery middleware and never reserves
+preparation, restores configuration or repairs topology. Valid unhealthy status
+returns success; `cluster check` returns one while readiness is unmet and zero
+only for current ready evidence. Invalid or unobtainable reports return two.
+Checks support bounded waiting, and JSON stdout contains only the report while
+diagnostics use stderr. Explicit origins must agree with the selected cluster
+UUID and name; attaching never grants runtime cleanup ownership.
+
 Keep local logs/crash artifacts persistent and collect asynchronously. Do not
 replicate every log line into Group 0 or expose credentials in discovery/UI
 diagnostics.

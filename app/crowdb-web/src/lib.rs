@@ -70,6 +70,7 @@ pub fn router(state: AppState) -> axum::Router {
             .route("/api/node/status", get(node::status))
             .route("/api/cluster/target", get(node::target::identity))
             .route("/api/cluster/node-observation", get(node::observation::read))
+            .route("/api/cluster/status", get(node::cluster_status::read))
             .route("/api/authority", get(managed::authority))
             .route("/api/preview", get(managed::snapshot))
             .route("/api/chunk-kv/catalog", get(chunk_kv::catalog))
@@ -264,6 +265,7 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/api/node/status", get(node::status))
         .route("/api/cluster/target", get(node::target::identity))
         .route("/api/cluster/node-observation", get(node::observation::read))
+        .route("/api/cluster/status", get(node::cluster_status::read))
         .route(
             "/api/node/auto-join",
             get(node::auto_join::status).post(node::auto_join::update),

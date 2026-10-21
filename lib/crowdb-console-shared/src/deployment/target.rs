@@ -75,7 +75,7 @@ pub async fn resolve(
     } else {
         explicit
     };
-    let management_endpoints = origins(selected)?;
+    let management_endpoints = management_origins(selected)?;
     let client = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
@@ -181,7 +181,7 @@ fn validate_binding(
     {
         return Err(TargetError::Invalid);
     }
-    origins(&binding.management_endpoints)?;
+    management_origins(&binding.management_endpoints)?;
     if let Some(ownership) = &binding.runtime {
         if !uuid(&ownership.owner)
             || ownership.selection.endpoint.is_empty()
@@ -200,7 +200,11 @@ fn uuid(value: &str) -> bool {
     Uuid::parse_str(value).is_ok_and(|id| !id.is_nil() && id.to_string() == value)
 }
 
-fn origins(values: &[String]) -> Result<Vec<String>, TargetError> {
+/// Validate and canonicalize explicit console management origins.
+///
+/// # Errors
+/// Rejects empty, excessive, malformed or credential-bearing endpoints.
+pub fn management_origins(values: &[String]) -> Result<Vec<String>, TargetError> {
     if values.is_empty() {
         return Err(TargetError::Missing);
     }
@@ -253,7 +257,7 @@ async fn observe(client: &reqwest::Client, origin: &str) -> Result<ClusterTarget
         return Err(TargetError::Invalid);
     }
     identity.group0_management_endpoints =
-        origins(&identity.group0_management_endpoints).map_err(|_| TargetError::Invalid)?;
+        management_origins(&identity.group0_management_endpoints).map_err(|_| TargetError::Invalid)?;
     for endpoint in &identity.group0_rpc_endpoints {
         // Use the URL parser for DNS and bracketed IPv6, while rejecting paths,
         // credentials and omitted/zero ports on the native transport address.

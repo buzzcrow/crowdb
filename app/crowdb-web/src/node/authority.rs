@@ -191,7 +191,7 @@ fn observation_request(request: &Request) -> bool {
     *request.method() == Method::GET
         && matches!(
             request.uri().path(),
-            "/api/cluster/target" | "/api/cluster/node-observation"
+            "/api/cluster/target" | "/api/cluster/node-observation" | "/api/cluster/status"
         )
 }
 

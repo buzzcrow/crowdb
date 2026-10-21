@@ -10,6 +10,14 @@ use crowdb_console_shared::deployment::target::{self, ClusterTargetBinding, Reso
 use crate::Cli;
 
 pub(crate) async fn resolve(cli: &Cli) -> Result<Option<ResolvedClusterTarget>, ExitCode> {
+    if matches!(
+        cli.command,
+        crate::Domain::Cluster {
+            verb: super::ClusterVerb::Status { .. } | super::ClusterVerb::Check { .. }
+        }
+    ) {
+        return Ok(None);
+    }
     if cli.cluster.is_none() && cli.management_endpoints.is_empty() {
         return Ok(None);
     }
@@ -29,7 +37,8 @@ fn validate_command(command: &crate::Domain) -> Result<(), ExitCode> {
     let supported = matches!(
         command,
         Domain::Cluster {
-            verb: ClusterVerb::Status
+            verb: ClusterVerb::Status { .. }
+                | ClusterVerb::Check { .. }
                 | ClusterVerb::Topology { .. }
                 | ClusterVerb::Rack { .. }
                 | ClusterVerb::Node { .. }
@@ -50,7 +59,7 @@ fn validate_command(command: &crate::Domain) -> Result<(), ExitCode> {
     Ok(())
 }
 
-fn load(name: &str) -> Result<ClusterTargetBinding, String> {
+pub(super) fn load(name: &str) -> Result<ClusterTargetBinding, String> {
     if name.is_empty()
         || name.len() > 48
         || !name.as_bytes()[0].is_ascii_alphanumeric()

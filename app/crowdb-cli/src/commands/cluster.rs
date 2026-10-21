@@ -5,6 +5,7 @@
 //! topology, plus hardware subcommands (rack/node/disk-group/disk).
 
 pub mod hardware;
+mod status;
 pub(crate) mod target;
 
 pub(crate) use hardware::{
@@ -194,8 +195,19 @@ pub enum ClusterVerb {
         #[arg(long, default_value_t = false)]
         restart_services: bool,
     },
-    /// Show cluster status (list all stores from group-0 sysdata).
-    Status,
+    /// Observe current application identity, initialization and readiness.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Check whole-cluster readiness; exit 1 when the contract is unmet.
+    Check {
+        #[arg(long)]
+        json: bool,
+        /// Maximum wait in seconds; zero observes once.
+        #[arg(long, default_value_t = 0)]
+        wait: u64,
+    },
     /// Show the topology view from a node's `/topology` endpoint.
     Topology {
         #[arg(short = 'n', long)]
@@ -669,38 +681,8 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                 }
             }
         }
-        ClusterVerb::Status => {
-            let ctx = match authority_context(cli).await {
-                Ok(c) => c,
-                Err(c) => return c,
-            };
-            match crowdb_console_shared::ops::cluster::status(&ctx).await {
-                Ok(stores) => {
-                    if stores.is_empty() {
-                        println!("(no stores)");
-                    } else {
-                        println!("{:<12}  {:<12}  NODES", "STORE", "REPLICAS");
-                        for s in &stores {
-                            println!(
-                                "{:<12}  {:<12}  {}",
-                                s.store_id,
-                                s.node_ids.len(),
-                                s.node_ids
-                                    .iter()
-                                    .map(std::string::ToString::to_string)
-                                    .collect::<Vec<_>>()
-                                    .join(",")
-                            );
-                        }
-                    }
-                    ExitCode::SUCCESS
-                }
-                Err(e) => {
-                    eprintln!("error: cluster status: {e}");
-                    ExitCode::from(2)
-                }
-            }
-        }
+        ClusterVerb::Status { json } => status::run(cli, json, false, 0).await,
+        ClusterVerb::Check { json, wait } => status::run(cli, json, true, wait).await,
         ClusterVerb::Topology { node } => {
             let ctx = match authority_context(cli).await {
                 Ok(c) => c,

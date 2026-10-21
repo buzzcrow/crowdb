@@ -172,3 +172,58 @@ async fn target_uses_confirmed_current_addresses_without_rewriting_the_manifest(
         .starts_with("192.0.2.99:"));
     assert_eq!(committed(&fixture).await, before);
 }
+
+#[tokio::test]
+async fn cluster_status_is_observational_when_the_monitor_control_socket_is_unavailable() {
+    use crowdb_protocol::mgmt::{
+        cluster::{ClusterPhase, ClusterStatus, DependencyKind, DependencyState},
+        node::deployment::NodeDeploymentOverrides,
+    };
+    let fixture = TestClusterTarget::start().await;
+    let node_root = fixture.root.path().join("observed-node");
+    std::fs::create_dir(&node_root).unwrap();
+    crowdb_monitor::accept_node_policy(
+        &node_root,
+        &NodeDeploymentOverrides::default(),
+        &NodeDeploymentOverrides::default(),
+    )
+    .unwrap();
+    crowdb_monitor::NodeIdentity::load_or_create(&node_root).unwrap();
+    std::fs::write(
+        node_root.join("prepared-bootstrap.json"),
+        serde_json::to_vec(&fixture.prepared).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        node_root.join("node-binding.json"),
+        serde_json::to_vec(&fixture.binding).unwrap(),
+    )
+    .unwrap();
+    std::fs::create_dir(node_root.join("console")).unwrap();
+    let mut state = fixture.state.clone();
+    state.runtime_root = node_root.join("console").into();
+    let before = committed(&fixture).await;
+    let response = crowdb_web::router(state)
+        .oneshot(
+            Request::builder()
+                .uri("/api/cluster/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    let report: ClusterStatus = serde_json::from_slice(&body).unwrap();
+    assert_ne!(report.phase, ClusterPhase::Ready);
+    assert!(report
+        .observation
+        .dependencies
+        .iter()
+        .any(|fact| fact.kind == DependencyKind::Authority && fact.state == DependencyState::Ready));
+    assert_eq!(committed(&fixture).await, before);
+    assert_eq!(std::fs::read_dir(node_root.join("console")).unwrap().count(), 0);
+    assert!(!node_root.join("node-setup.json").exists());
+}

@@ -242,7 +242,7 @@ removal until the complete direct-container path passes A01/A03/A25.
   `app/crowdb-web/src/services/deployment/remote.rs`,
   `container/single-node-container/profile.toml`,
   `container/crowdb-monitor/src/node/runtime/setup/execution/services.rs`.
-- [~] **T15 — Enable normal editable startup**: start management during pending
+- [ ] **T15 — Enable normal editable startup**: start management during pending
   setup, select the normal lifecycle for both node counts and remove deployment-
   derived readonly checks after caller migration. Preserve actual authorization,
   consistency checks and operator controls; do not invent UI role management.
@@ -253,7 +253,7 @@ removal until the complete direct-container path passes A01/A03/A25.
 
 ## Phase 3: observational status and runtime operations
 
-- [ ] **T16 — Collect current dependency evidence**: combine committed topology,
+- [~] **T16 — Collect current dependency evidence**: combine committed topology,
   setup operations, current service intent, live ownership/capacity and each
   protocol readiness probe. Timestamp facts and bound endpoint requests; do not
   treat historical Ready/Warning or a PID as health. Verify cluster identity
@@ -1247,3 +1247,30 @@ do not mark unexecuted acceptance passed.
   including a real occupied socket and one/three supplied-media preservation.
   Native containerd full preparation/retained protocol acceptance remains pending;
   the installed root-owned socket is inaccessible to this unprivileged account.
+
+- Compose I verifies the dependency fix in the packaged node image. UUID
+  `4b4da154-1744-4a8f-9245-c1a232550945`, source revision
+  `91c0a972596475926a2f858400b253676a8dee0c`, OCI
+  `sha256:9a728d960f6f4ac7e3b2ba2c03382100de58a6670a68378d584572daac7f508d`.
+  Fresh formation and whole stop/up pass actual Access readiness within the
+  original 120-second recovery deadline. All three nodes pass retained S3
+  (128 B and 2 MiB), 2 MiB Dataset checksum, and PyIceberg three-row reads.
+  Stable node/cluster identity, trust, credentials and bindings are checked.
+  Finally removes all containers, the bridge and disposable volumes. Complete
+  private evidence and reproduction scripts: `.crowdb-runtime/artifacts/compose-check-i-0d9df1/`.
+- T16/T18 implementation in progress: bounded native authority/accepted ordinary
+  metadata/physical storage owner-capacity observation, current per-member
+  service and protocol evidence, read-only HTTP aggregate route and CLI
+  status/check with JSON and 0/1/2 exits. Positive packaged status and startup
+  integration are pending. T15 still needs admitted-member trust extension and
+  negative packaged identity/host recovery, so is not marked complete.
+
+- Aggregate observation gates: three real Group-0 collector cases and nine reducer
+  cases pass (no implicit reservation/repair, live Group 0 alone insufficient,
+  reserved/retired preparation, identity mismatch). Six Web target/aggregate
+  cases and four protocol cases pass, including unavailable lifecycle IPC and
+  unchanged pending console state. Three actual CLI process cases pass: valid
+  unhealthy JSON/status zero, bounded check one, later-ready check zero, malformed
+  report and mixed origins two, with an unusable Docker socket. Shared/Web/CLI
+  all-target clippy passes. Packaged positive aggregate readiness, exact startup
+  integration and remaining CLI migration are not yet verified.
