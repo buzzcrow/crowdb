@@ -8,6 +8,9 @@ use crowdb_protocol::mgmt::cluster::{
     ReadinessReason,
 };
 
+mod member;
+pub use member::member_evidence;
+
 const REQUIRED: [DependencyKind; 6] = [
     DependencyKind::Authority,
     DependencyKind::Metadata,

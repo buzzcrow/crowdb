@@ -802,6 +802,14 @@ do not mark unexecuted acceptance passed.
   Four protocol probe tests and four target/observation route tests pass;
   affected all-target clippy and formatting pass. Aggregate collection remains
   pending; this does not complete T16 or resolve the retained-address choice.
+- Shared member evidence projection now verifies committed discovery/bootstrap
+  identity and formation policy, keeps every required service/protocol distinct,
+  pairs observations with current committed operations, and retains a missing
+  member rather than substituting another member's health. Explicit current
+  Stop/Delete wins over historical success. Duplicate evidence fails closed;
+  pending bindings and missing intent/protocol facts remain unmet readiness.
+  Seven member projection and nine reducer tests pass; shared all-target clippy
+  and formatting pass. Collection of live native authority/storage remains T16.
 
 ## Open Questions
 
