@@ -103,6 +103,7 @@ async fn status_control_rpc_returns_owned_versioned_json() {
     let connection_status: Value =
         serde_json::from_slice(&connection.transport_status_json().unwrap()).unwrap();
     assert_eq!(connection_status["path"], "tcp");
+    assert!(!connection.is_rdma());
     server.stop();
     let closed: Value = serde_json::from_slice(&connection.transport_status_json().unwrap()).unwrap();
     assert_eq!(closed["open"], false);
@@ -145,6 +146,7 @@ fn hardware_qpair_status_retains_immutable_provider_values_after_close() {
     let connection = client.connect(&address, server.port()).unwrap();
     let info: Value = serde_json::from_slice(&connection.transport_status_json().unwrap()).unwrap();
     assert_eq!(info["path"], "rdma");
+    assert!(connection.is_rdma());
     assert!(info["info"]["qpair_number"].as_u64().unwrap() > 0);
     assert!(info["info"]["effective_sq_depth"].as_u64().unwrap() >= 8);
     assert_eq!(info["info"]["peer_receive_slot_capacity"], 1024);
@@ -153,4 +155,5 @@ fn hardware_qpair_status_retains_immutable_provider_values_after_close() {
     let closed: Value = serde_json::from_slice(&connection.transport_status_json().unwrap()).unwrap();
     assert_eq!(closed["open"], false);
     assert_eq!(closed["info"], info["info"]);
+    assert!(connection.is_rdma());
 }

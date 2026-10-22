@@ -39,14 +39,10 @@ std::string listener_key(const std::string &addr, int port)
 }
 } // namespace
 
-RpcServer::RpcServer(BufferPool *pool, uint32_t io_engines, uint32_t io_workers, RdmaConfig rdma_config)
-    : pool_(pool),
-      owns_pool_(pool == nullptr)
+RpcServer::RpcServer(BufferPool *pool, uint32_t io_engines, uint32_t io_workers, RdmaConfig rdma_config) : pool_(pool)
 {
-    if (pool_ == nullptr) {
-        pool_ = new SystemBufferPool();
-    }
-    transport_ = std::make_unique<SocketTransport>(io_engines, io_workers, pool_, std::move(rdma_config));
+    transport_ = std::make_shared<SocketTransport>(io_engines, io_workers, pool_, std::move(rdma_config));
+    pool_      = transport_->pool();
 }
 
 RpcServer::~RpcServer()
@@ -57,9 +53,6 @@ RpcServer::~RpcServer()
     // transport pointer returns 0 instead of accessing freed memory.
     alive_->store(false, std::memory_order_release);
     transport_.reset();
-    if (owns_pool_) {
-        delete pool_;
-    }
 }
 
 bool RpcServer::listen(const std::string &addr, int port)

@@ -77,6 +77,14 @@ class RpcServer
         return transport_.get();
     }
 
+    // Async service callbacks retain the stopped transport and default pool
+    // until their final I/O completion, independently of this server facade.
+    // An externally supplied pool must outlive all retained transport users.
+    std::shared_ptr<SocketTransport> shared_transport() const
+    {
+        return transport_;
+    }
+
     // The buffer pool (for handlers that allocate response buffers).
     BufferPool *pool()
     {
@@ -92,8 +100,7 @@ class RpcServer
 
   private:
     BufferPool                      *pool_;
-    bool                             owns_pool_;
-    std::unique_ptr<SocketTransport> transport_;
+    std::shared_ptr<SocketTransport> transport_;
     HandlerRegistry                  handlers_;
     RpcClient                       *request_client_{nullptr}; // server-initiated request-response
 

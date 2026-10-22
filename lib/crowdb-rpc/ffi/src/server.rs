@@ -397,6 +397,13 @@ impl Connection {
         unsafe { sys::crowdb_rpc_conn_is_open(self.inner.handle) != 0 }
     }
 
+    /// Selected RDMA path, retained even after this connection closes.
+    #[must_use]
+    pub fn is_rdma(&self) -> bool {
+        // SAFETY: this owned handle retains immutable path metadata.
+        unsafe { sys::crowdb_rpc_conn_is_rdma(self.inner.handle) != 0 }
+    }
+
     /// Whether TCP was refused before the peer accepted this connection.
     /// Established connection loss and timeouts do not prove an unsent request.
     #[must_use]

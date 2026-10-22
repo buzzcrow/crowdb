@@ -184,7 +184,7 @@ it does not add application aggregation or a flush timer.
   (zero exit with style warnings), and 146 TCP-only CTest items also pass
   (one HCA-only item skipped). This closes producer wiring, while disk lifetime
   and complete HTTP/service/OCI acceptance remain below.
-- [~] **Close DiskIO handoff and read lifetime**: use exact view pointer/length,
+- [x] **Close DiskIO handoff and read lifetime**: use exact view pointer/length,
   validate request bounds before disk submission, transition data to DiskOwned
   until the callback returns, and retain connection state across delayed I/O.
   Registered read storage must cover engine completion and SEND completion;
@@ -200,7 +200,71 @@ it does not add application aggregation or a flush timer.
   destructor drains its own queued operations; its block-size-one fast path,
   reads and fsync callbacks must remain independently safe after the service
   facade is destroyed. No new completion-path mutex is needed.
-- [ ] **Verify real service flows**: run focused baseline and changed tests,
+  For a direct-layout READ, reuse the request's already reserved receive data
+  allocation as disk output, instead of allocating another producer buffer.
+  The control is already copied/verified and the request has no input payload.
+  Take a capacity-checked view of that canonical receive allocation, retain it
+  across disk and response SEND completion, then repost it. This uses the same
+  registered region and naturally bounds asynchronous reads by RQ admission;
+  it also propagates a slow response consumer back through server SEND and
+  request receive credits. Validate registered receive ownership before reuse;
+  keep the existing system-pool path for TCP and alignment-edge staging only
+  when the disk requires it. The first focused test build uses an incorrect
+  field spelling `data_offset`; the actual buffer field is `view_offset`.
+  Correct only the test field and rebuild before running the cases.
+  Twelve focused lifecycle/alignment cases pass. The first real HCA plus
+  O_DIRECT/io_uring case passes in 50 ms: three ordered 1 MiB writes reconstruct
+  3 MiB exactly; disk write and read pointers equal the registered receive
+  pointers and are 4096-byte aligned. Four retained client responses consume
+  its RQ, the following four responses retain server receive data in SEND,
+  and releasing caller leases resumes all eight with zero copy/fallback and
+  no CQ/protocol/SEND/repost errors. This functional fixture uses one process
+  with actual client/server QPs on the local HCA; it is not a throughput sample
+  or the separate two-container end-to-end acceptance.
+  Inspection finds an additional application retry seam: `DiskioClient` retries
+  errors from an accepted RPC future through `prepare_retry`, which can create
+  a TCP fallback connection after an uncertain RDMA operation. Add an immutable
+  typed connection-path getter (also valid after close), stop accepted-RDMA
+  read/write/fsync retries, and return the existing typed/ambiguous/durability
+  errors. Keep known pre-submit rejection and established TCP retry behavior.
+  Add optional explicit `RdmaConfig` to the semantic DiskIO client so its data
+  transport can be configured independently of metadata clients and tested
+  without process-wide environment mutation. Add a real-HCA semantic-client
+  case asserting one accepted write, zero retries/reconnects, and ambiguous
+  failure after the peer closes before its reply.
+  The completed 15-case native run passes in 112 ms, including delayed disk
+  ownership, actual HCA/O_DIRECT round trips, peer-close/server-destruction,
+  held response leases, constant registered-memory high water, and TCP byte
+  parity. Evidence: `.crowdb-runtime/rdma-check/artifacts/r240-direct/diskio-hca.{log,xml}`.
+  The new status assertion initially fails because Folly's default JSON parser
+  converts a random unsigned 64-bit capability generation through signed
+  `int64_t`. Preserve the failing log/XML as `diskio-hca-parser-failure.*`;
+  parse numeric tokens as strings in this test's snapshot helper so exact
+  memory-counter comparisons retain full precision. No production generation
+  or lifecycle assertion changes. The corrected run has zero failures.
+  All nine semantic DiskIO tests pass after extracting write/fsync into
+  `semantic/write.rs`; three actual-HCA cases cover accepted read/write/fsync
+  failure with fallback enabled, exactly one accepted operation and no retry
+  or reconnect. Evidence: `diskio-rust.log` in the same artifact directory.
+  The first Rust lint run flags the new fault helper's 114-line function;
+  extract only its cold `RdmaConfig` builder. Workspace all-feature clippy and
+  rs-lint then pass. C++ formatting needs repeated passes to stabilize the
+  pre-existing numeric-config macro; stabilize its whitespace, rebuild, and
+  rerun the 203-item RPC CTest set, all 71 native DiskIO cases with HCA enabled,
+  and all nine semantic cases. All pass. Full C++/FFI gate evidence is
+  `.crowdb-runtime/artifacts/unit/cpp-e70af11a38a443f6a7b660245507292a/`;
+  146 no-verbs items also pass (one HCA-only item skips), and scoped tree-lint
+  exits zero with style warnings. All 125 ChunkIO tests pass. The first
+  full Access gate reaches its 60-second shell bound while compiling test
+  executables, before running any case; complete `--no-run` separately. The
+  compiled suite also exceeds the aggregate shell bound across its independent
+  test programs, with no failed assertion before termination. Run it with
+  `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="timeout 60s"`, giving each
+  existing test program the same 60-second execution bound. Request deadlines
+  and assertions remain unchanged. Preserve the aggregate-limit log as
+  `access-suite-shell-limit.log`. The complete per-program-bounded Access
+  suite passes with zero failures; its complete log is `access.log`.
+- [~] **Verify real service flows**: run focused baseline and changed tests,
   then real DiskIO plus HTTP/ChunkIO upload/download of objects larger than
   1 MiB on the prepared HCA. Assert direct-payload counters and same data
   addresses at producer/SEND and receive/disk handoff, exact bytes and existing
@@ -208,6 +272,19 @@ it does not add application aggregation or a flush timer.
   per-case manifests, settings, errors and complete logs. Run required fmt,
   clippy/tree-lint and full affected gates before cleanup; then use R241's own
   plan for Chunk-KV integration.
+  Use a service fixture that runs a real Hyper HTTP socket, the production S3
+  body-to-ChunkIO transfer function, mirror ChunkIO framing/read verification,
+  and a separate real DiskIO executable with O_DIRECT/io_uring. Inject only
+  chunk placement/catalog state, keeping namespace/authentication outside this
+  datapath case. A `test-util` entry delegates to the production upload function
+  rather than reimplementing its ownership/pressure loop. Build the normal
+  routed disk adapter from an already connected semantic client so the fixture
+  shares production submit/read/error behavior. Use two replicas and an object
+  over 3 MiB with a non-frame-aligned tail; compare exact download and locations
+  across strict RDMA and explicit TCP. Assert native direct/copy/fallback and
+  error counters in machine-readable artifacts. Run the same fixture in two
+  non-root host-network containers sharing the one configured HCA, recording
+  this local-loop topology and pinned runtime image and executable identities.
 
 ## Phase 1: map existing data flow
 
@@ -293,7 +370,8 @@ E2E tests:
 - `lib/crowdb-chunk-client/`
 - `lib/crowdb-diskio-client/`
 - `lib/crowdb-rpc/`
-- `lib/crowdb-chunkio/` or the existing ChunkIO owner module
+- `app/crowdb-diskio/src/rpc/` and its `tests/`
+- `lib/crowdb-chunk-client/src/disk_io/`, `client.rs`, and existing chunk writers
 - relevant S3/DiskIO integration tests and OCI E2E runner
 
 ## Verification gates

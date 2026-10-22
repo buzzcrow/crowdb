@@ -35,6 +35,9 @@ I/O still uses it.
    byte budget. A held or quarantined lease cannot be replaced outside it.
 5. Preserve R239 fallback: before payload submission the operation may use TCP;
    after partial RDMA transfer the stream fails without TCP byte splicing.
+   The semantic DiskIO client must also stop automatic reconnect/retry after
+   an accepted RDMA operation fails. Surface its typed failure or uncertain
+   write/durability outcome; preserve pre-submit rejection and TCP retry policy.
 
 ## Dependencies
 

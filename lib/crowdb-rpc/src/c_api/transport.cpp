@@ -6,15 +6,24 @@
 
 using namespace crowdb::rpc;
 
-#define CONFIG_NUMBERS(X)                                                                               \
-    X(cq_count)                                                                                         \
-    X(cq_depth)                                                                                         \
-    X(sq_depth)                                                                                         \
-    X(rq_depth)                                                                                         \
-    X(posted_receive_target)                                                                            \
-    X(wire_slot_capacity) X(poll_batch) X(verbs_poll_batch) X(poll_empty_budget) X(send_queue_capacity) \
-        X(aggregation_max_bytes) X(aggregation_max_frames) X(send_arena_bytes) X(receive_arena_bytes)   \
-            X(registered_memory_budget_bytes)
+extern "C" int crowdb_rpc_conn_is_rdma(crowdb_rpc_conn_t connection)
+{
+    return connection != nullptr && connection->conn != nullptr && connection->conn->path() == ConnectionPath::Rdma;
+}
+
+#define CONFIG_NUMBERS(X)    \
+    X(cq_count)              \
+    X(cq_depth)              \
+    X(sq_depth)              \
+    X(rq_depth)              \
+    X(posted_receive_target) \
+    X(wire_slot_capacity)    \
+    X(poll_batch)            \
+    X(verbs_poll_batch)      \
+    X(poll_empty_budget)     \
+    X(send_queue_capacity)   \
+    X(aggregation_max_bytes) \
+    X(aggregation_max_frames) X(send_arena_bytes) X(receive_arena_bytes) X(registered_memory_budget_bytes)
 
 extern "C" void crowdb_rpc_rdma_config_init(crowdb_rpc_rdma_config_t *config)
 {

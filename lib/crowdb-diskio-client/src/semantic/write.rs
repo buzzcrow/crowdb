@@ -116,6 +116,9 @@ impl DiskioClient {
                 Err(error) => {
                     only_backpressure = false;
                     last_error = Some(error);
+                    if selected.connection().is_rdma() {
+                        break;
+                    }
                     if attempt + 1 < attempts
                         && self
                             .prepare_retry(&route, options.lane, &selected, &mut backoff, options.deadline)

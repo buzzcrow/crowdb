@@ -17,7 +17,7 @@ use crowdb_rpc_ffi::{
     ConnectionPoolError, ConnectionPoolIndex, OwnedClientRoute, RpcError, RpcServer, SelectedConnection,
 };
 
-use crate::client::{DiskIoRetCode, WireClient, WireError, WireWriteTarget};
+use crate::client::{DiskIoRetCode, WireClient, WireError};
 use crate::topology::{self, DiskRoute};
 use crate::{DiskId, DiskioError, DiskioResult, DiskioStatus, SegmentTarget};
 
@@ -87,6 +87,8 @@ impl OperationOptions {
 /// Discovery, pool, and retry bounds for a semantic client.
 #[derive(Debug, Clone)]
 pub struct DiskioClientConfig {
+    /// Explicit data-transport configuration; `None` retains native environment defaults.
+    pub rdma: Option<crowdb_rpc_ffi::RdmaConfig>,
     pub management_seeds: Vec<String>,
     pub normal_connections_per_endpoint: usize,
     pub priority_connections_per_endpoint: usize,
@@ -128,6 +130,7 @@ impl NativeDiskIoRoutes {
 impl Default for DiskioClientConfig {
     fn default() -> Self {
         Self {
+            rdma: None,
             management_seeds: Vec::new(),
             normal_connections_per_endpoint: 2,
             priority_connections_per_endpoint: 1,
@@ -338,16 +341,7 @@ impl DiskioClient {
     #[cfg(feature = "test-util")]
     pub fn connect_for_tests(routes: Vec<TestDiskRoute>, config: DiskioClientConfig) -> DiskioResult<Self> {
         config.validate(false)?;
-        let server = Arc::new(
-            RpcServer::with_rdma_layout(
-                None,
-                1,
-                config.rpc_workers,
-                crowdb_rpc_ffi::RdmaWireLayout::ControlData,
-                1 << 20,
-            )
-            .map_err(|error| DiskioError::TransportUnavailable(format!("create RPC client: {error}")))?,
-        );
+        let server = Self::create_rpc_server(&config)?;
         server.set_send_queue_capacity(config.send_queue_capacity);
         server
             .listen("127.0.0.1", 0)
@@ -550,7 +544,11 @@ impl DiskioClient {
             let result = self.await_read(future, length, options.deadline).await;
             match result {
                 Ok(data) => return Ok(data),
-                Err(error) if error.is_retryable_read() && attempt + 1 < self.config.retry_attempts => {
+                Err(error)
+                    if !selected.connection().is_rdma()
+                        && error.is_retryable_read()
+                        && attempt + 1 < self.config.retry_attempts =>
+                {
                     self.refresh_topology_after_read_failure().await;
                     self.prepare_retry(&route, options.lane, &selected, &mut backoff, options.deadline)
                         .await?;
@@ -740,6 +738,9 @@ impl DiskioClient {
                 }
                 Err(error) => {
                     last_error = Some(error);
+                    if selected.connection().is_rdma() {
+                        break;
+                    }
                     if attempt + 1 < self.config.retry_attempts
                         && self
                             .prepare_retry(&route, options.lane, &selected, &mut backoff, options.deadline)

@@ -39,7 +39,7 @@ namespace crowdb::diskio
 class DiskioServer
 {
   public:
-    DiskioServer(std::shared_ptr<DiskSet> disk_set, crowdb::rpc::Transport *transport,
+    DiskioServer(std::shared_ptr<DiskSet> disk_set, std::shared_ptr<crowdb::rpc::Transport> transport,
                  uint64_t max_write_request_age_ms = protocol::kMaxWriteRequestAgeMs,
                  uint64_t max_clock_skew_ms        = protocol::kMaxWriteClockSkewMs);
 
@@ -55,25 +55,30 @@ class DiskioServer
     void register_handlers(crowdb::rpc::RpcServer &server);
 
   private:
-    std::shared_ptr<DiskSet>                   disk_set_;
-    crowdb::rpc::Transport                    *transport_;
-    AlignedWriter                              aligned_writer_;
-    crowdb::common::metrics::LatencyHistogram *read_latency_;
-    crowdb::common::metrics::LatencyHistogram *write_latency_;
-    crowdb::common::metrics::LatencyHistogram *fsync_latency_;
-    uint64_t                                   max_write_request_age_ms_;
-    uint64_t                                   max_clock_skew_ms_;
+    std::shared_ptr<DiskSet>                      disk_set_;
+    std::shared_ptr<crowdb::rpc::Transport> transport_;
+    AlignedWriter                                 aligned_writer_;
+    crowdb::common::metrics::LatencyHistogram    *read_latency_;
+    crowdb::common::metrics::LatencyHistogram    *write_latency_;
+    crowdb::common::metrics::LatencyHistogram    *fsync_latency_;
+    uint64_t                                      max_write_request_age_ms_;
+    uint64_t                                      max_clock_skew_ms_;
 
     // Build a response control buffer for a diskio response msg_type.
     // ret_code is a proto::FBDiskIoRetCode value (int16_t to avoid
     // pulling the generated header into this .h).
-    crowdb::rpc::Buffer *build_response_ctrl(crowdb::rpc::BufferPool *pool, uint64_t request_id,
-                                             uint64_t rpc_create_nano, int16_t ret_code, uint16_t msg_type,
-                                             bool sync_completed = false);
+    static crowdb::rpc::Buffer *build_response_ctrl(crowdb::rpc::BufferPool *pool, uint64_t request_id,
+                                                    uint64_t rpc_create_nano, int16_t ret_code, uint16_t msg_type,
+                                                    bool sync_completed = false);
 
     // Send an error response synchronously (disk not found, parse error).
     void send_error_response(crowdb::rpc::Connection *conn, uint64_t request_id, uint64_t rpc_create_nano,
                              uint16_t msg_type, int16_t ret_code);
+
+    static void send_response(const std::shared_ptr<crowdb::rpc::Transport> &transport,
+                              const std::shared_ptr<crowdb::rpc::Connection> &connection, uint64_t request_id,
+                              uint64_t created, uint16_t type, int16_t code, crowdb::rpc::Buffer *data = nullptr,
+                              bool sync_completed = false);
 };
 
 } // namespace crowdb::diskio

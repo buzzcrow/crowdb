@@ -205,6 +205,10 @@ state owned by every outstanding allocation. Destroying the facade therefore
 does not invalidate a TCP/application buffer still held by an asynchronous
 consumer. Clones share one allocation charge; its final release returns that
 charge. The transport owns any default application-pool facade it creates.
+`RpcServer` and asynchronous service callbacks share the transport owner.
+Stopping the server closes admission and connections; outstanding disk
+callbacks retain their connection, transport and buffer until completion.
+An externally supplied application pool must outlive these retained users.
 
 `allocate_producer_buffer` lends storage from the device-owned send arena after
 CM context adoption publishes that arena. Its registration charge and arena
@@ -305,6 +309,12 @@ completions cannot publish data into a reused buffer. QP, CM, and CQ errors
 move the connection to draining or failed state and quarantine uncertain
 buffers.
 
+The semantic DiskIO client treats failure of an accepted RDMA read, write or
+fsync as terminal for that operation. It does not reconnect and replay that
+uncertain operation through TCP. Writes report their ambiguous outcome and
+fsync preserves durability failure mapping. Known pre-submit rejection and
+the existing TCP retry policy retain their separate handling.
+
 `Connection::close()` also wakes its assigned CQ through a private transport
 notifier. The CQ owner requests `rdma_disconnect` once, guarded by the same
 per-connection operation admission that protects posting and CM-ID lifetime.
@@ -319,7 +329,20 @@ retained buffer leases continue to own their arena and device resources.
 For S3/HTTP and DiskIO, HTTP or ChunkIO fills the Access Server registered send
 buffer; DiskIO receives into its own registered buffer and submits that buffer
 directly to asynchronous disk I/O. DiskIO returns it to the receive pool only
-after disk completion.
+after disk completion. Disk requests validate their complete control buffer,
+payload length and physical zone bounds before submission. Disk callbacks use
+the exact view address and retain their owners through short I/O, errors and
+server shutdown.
+
+A direct-layout READ reuses the request's reserved receive data allocation as
+its disk destination. READ has no input payload and its control has already
+been validated. The registered data region remains owned through disk and
+response SEND completion, then becomes eligible for repost. This makes RQ
+admission bound asynchronous reads as well as writes. A slow client retains
+response receive leases; exhausted client receive admission retains server
+SEND sources and eventually stops new request receives. Eligible aligned
+O_DIRECT reads use that same allocation; alignment edges use explicit staging.
+TCP uses the ordinary application pool and the same disk result mapping.
 
 For Access Server and Chunk-KV, the existing access and aggregation layer
 selects the 64 KiB or 256 KiB class. RDMA transports each aggregate with the

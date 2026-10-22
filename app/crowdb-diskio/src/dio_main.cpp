@@ -217,8 +217,8 @@ int main(int argc, char *argv[])
                 disk_set->size());
     std::fflush(stdout);
 
-    auto *transport = server.transport();
-    auto  dio_server =
+    auto transport = server.shared_transport();
+    auto dio_server =
         std::make_unique<DiskioServer>(disk_set, transport, cfg.max_write_request_age_ms, cfg.max_clock_skew_ms);
     dio_server->register_handlers(server);
 
