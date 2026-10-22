@@ -16,6 +16,31 @@ readiness, attached workloads and scoped cleanup.
   for diagnosis of the long-standing failure. User subsequently requested F03
   and explicitly authorized continuing other R243 tasks afterward, starting T04.
   User now explicitly requests completion of every remaining R243 task.
+- [x] **F04 — Publish lease recovery of an unmaterialized split child**.
+  The real Chunk-KV benchmark reproduced a directory/writer disagreement:
+  the target reclaimed epoch 2, but a retained split marker plus tail overlay
+  prevented publication from catalog epoch 1. Lease-expired recovery now accepts
+  that exact source assignment with its complete artifact; epoch, range,
+  readiness and release-proof validation remain intact. The focused test fails
+  before the fix with `range catalog transition identity was reused` and all
+  14 domain-monitor tests pass afterward. Real native run
+  `.crowdb-runtime/artifacts/r243-bench-chunk-kv-6/` passes 30,000 mixed requests
+  with zero errors, split/balance, unchanged restart bounds, recovered readiness
+  and retained-byte reads. Gate logs: `r243-overlay-transfer-{before,after}.log`,
+  `r243-bench-chunk-kv-6.log`, `r243-storage-clippy-3.log` below the T29b gates root.
+  Files: KV-server `background/domain_monitor/chunk_kv/catalog.rs` and
+  `tests/common/catalog_publication.rs`.
+- [x] **F05 — Grow the successor after stream rollover**.
+  A request larger than the initial 1 MiB mirror strip worked in the first
+  chunk but failed after rollover with `new chunk cannot fit the append`.
+  Extracted allocation/growth/rotation into `stream/capacity.rs`; the successor
+  now grows before admission, retaining its chunk limit and publication fences.
+  The new `rollover_growth_test` fails before the fix and verifies both chunks
+  through a cold read-only handle afterward. All 52 stream tests pass; fmt and
+  all-target storage clippy pass. Real MemDisk random-read/replay/GC workloads
+  now complete with zero errors and no watchdogs in
+  `.crowdb-runtime/artifacts/r243-bench-chunk-stream-2/`; the unchanged old
+  performance/metadata assertions still fail and are not reported as a pass.
 - Branch `task-stable`; local commits only, no push authorized.
   Earlier storage fixes: `532af33e`; common CLI fixture: `be0efd32`.
 - Failed fixture data/logs and earlier retained J/L data remain preserved.
@@ -219,8 +244,29 @@ Existing implementation can be reused; these are the outstanding parts.
       the resulting production source tree and must be rebuilt for later OCI
       acceptance. Failed sanitizer logs/data are retained, with no suppression.
     - CLI tests (38 executed plus one distinct ignored case), CLI/example clippy
-      and 166 Python fixture tests pass. Final sanitizer/profiling execution,
-      applicable gates and the coherent task commit remain pending.
+      and 166 Python fixture tests pass. Refreshed gates and the coherent task
+      commit remain pending.
+    - Full Console component execution now passes 389 Rust tests (one distinct
+      ignored case) plus the registered native ownership smoke. Full sanitizer
+      run `sanitize-regression-20261022-084404-1796681` passes every workload,
+      service/worker shutdown and normal-binary restoration. The final run at
+      `sanitize-regression-20261022-091147-1894480` also passes every case with
+      protected placement and explicit EC 8+4 reads suitable for three logical
+      nodes. Production placement checks were retained; the old default EC 4+1
+      read shape requires more independent nodes and was correctly rejected.
+      Actual perf sampling passes with 5,055 samples and retained `perf.data`/
+      `perf-script.txt`; optional inferno SVG generation was unavailable.
+      Gate logs: `.crowdb-runtime/artifacts/r243-t29b-gates/`.
+    - Remaining script checks found release fixtures selecting obsolete
+      `test_unsafe_placement`, a Pixi wrapper PID being mistaken for the
+      Chunk-KV service PID, and chunk-stream's implicit localhost seed. The
+      fixture keeps three logical native nodes with normal protected placement
+      for retained EC measurements; it does not qualify physical-host tolerance.
+      Chunk-KV now tracks native child PID/start directly and no longer repeats
+      failed startup/restart blindly. Chunk-stream receives the live fixture's
+      explicit seed; its benchmark parser rejects a missing seed. Native read/
+      replay fixtures retain bytes through MemDisk. These final script proofs,
+      narrow target tests and refreshed gates remain pending before commit.
 - [ ] **T30–T33 — Complete registered acceptance ownership and CI**.
   Register A01–A33 in owning Rust/Python/container/UI suites; mocks and manual
   observations do not substitute for actual runtime coverage. Direct/Compose,

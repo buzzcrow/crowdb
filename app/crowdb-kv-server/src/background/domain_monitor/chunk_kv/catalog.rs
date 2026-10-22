@@ -126,7 +126,15 @@ fn transfer_source_matches(entry: &ChunkKvRangeCatalogEntry, transition: &Transf
         && entry.owner_epoch == transition.source_epoch
         && entry.state == ChunkKvRangeCatalogPartitionState::Serving
         && entry.artifact == transition.artifact
-        && (entry.transition_id.is_none() || entry.artifact.tail_overlay.is_none())
+        // Lease recovery retains the complete split artifact, including its
+        // historical overlay. The old split marker is not a competing owner;
+        // the exact source assignment and expired lease fence this cutover.
+        && (entry.transition_id.is_none()
+            || entry.artifact.tail_overlay.is_none()
+            || matches!(
+                transition.release_proof,
+                Some(AuthorityReleaseProof::LeaseExpired { .. })
+            ))
         && entry.transition_id != Some(transition.transition_id)
 }
 

@@ -12,11 +12,18 @@ struct TestPublication {
 
 #[tokio::test]
 async fn expired_lease_transfer_publishes_directly_from_serving_source() {
-    for prior_marker in [None, Some(Id128 { high: 88, low: 99 })] {
+    for (prior_marker, retained_overlay) in [
+        (None, false),
+        (Some(Id128 { high: 88, low: 99 }), false),
+        (Some(Id128 { high: 88, low: 99 }), true),
+    ] {
         let (control, mut ready) = assert_ready_transfer_publication().await;
         ready.release_proof = Some(AuthorityReleaseProof::LeaseExpired {
             activation_not_before_ms: 2,
         });
+        if retained_overlay {
+            ready.artifact.tail_overlay = ready.target_artifact.tail_overlay.clone();
+        }
         ready.target_artifact = ready.artifact.clone();
         ready.readiness_proof.as_mut().unwrap().artifact = ready.artifact.clone();
         ready.catchup_proof.as_mut().unwrap().artifact = ready.artifact.clone();
@@ -86,6 +93,17 @@ async fn expired_lease_transfer_publishes_directly_from_serving_source() {
         .await;
         assert_eq!(grant.catalog_generation, published.generation);
         assert_eq!(grant.assignments[0].owner_epoch, ready.target_epoch);
+        let page: ChunkKvRangeCatalogPage = get_json(
+            &control,
+            &ChunkKvRangeCatalogPageKey {
+                generation: published.pages[0].page_generation,
+                page_index: 0,
+            }
+            .to_path(),
+        )
+        .await;
+        assert_eq!(page.entries[0].artifact, ready.artifact);
+        assert_eq!(page.entries[0].owner, ready.target);
     }
 }
 

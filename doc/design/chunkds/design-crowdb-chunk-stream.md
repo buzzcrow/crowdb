@@ -150,10 +150,13 @@ requests may still share one physical batch; each receives its own trailer.
 ## 5. Rollover and Recovery
 
 One append never straddles chunks, and one stream chunk contains at most 256
-MiB of logical data. If an append cannot fit, the worker seals the old chunk,
+MiB of framed data. A production allocation initially contains one mirror strip;
+the worker grows it to cover the waiting append, including frame overhead.
+If an append cannot fit within the chunk limit, the worker seals the old chunk,
 appends its logical mapping to the extent builder, writes a fresh immutable
 version of the affected tail page, allocates a successor, and CAS-publishes the
-successor head before writing the request. A crash before the head CAS leaves
+successor head before writing the request. The fresh successor also grows when
+the waiting append exceeds its initial strip capacity. A crash before the head CAS leaves
 the previous head complete and the new page unreachable. Objects not reachable
 from authoritative metadata are orphans.
 
