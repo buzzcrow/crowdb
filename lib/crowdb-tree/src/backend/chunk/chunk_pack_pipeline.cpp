@@ -202,8 +202,7 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
             }
             const size_t length  = store->staged_pack_length(offset, reuse_base.get());
             const auto   purpose = store->staged_purposes_.at(offset);
-            if (reuse_base != nullptr && reuse_base->format_version >= 3 &&
-                !ChunkPageStore::range_has_pack(*reuse_base, offset, length) &&
+            if (reuse_base != nullptr && !ChunkPageStore::range_has_pack(*reuse_base, offset, length) &&
                 !store->range_was_written(offset, length)) {
                 offset += length;
                 continue;
@@ -216,7 +215,7 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
                 }
                 if (reused != nullptr && chunk_purpose(reused->ref.chunk_id) == purpose) {
                     manifest->packs.push_back({
-                        .owner_tree_id  = chunk_pack_owner(*reuse_base, *reused),
+                        .owner_tree_id  = (*reused).owner_tree_id,
                         .ordinal        = manifest->packs.size(),
                         .logical_offset = offset,
                         .ref            = reused->ref,
@@ -259,10 +258,9 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
             job->pack.ordinal        = manifest->packs.size();
             job->pack.logical_offset = offset;
             job->pack.ref            = {
-                .chunk_id       = chunk,
-                .offset         = cursor,
-                .length         = static_cast<uint32_t>(length),
-                .frame_revision = kChunkFrameRevision,
+                .chunk_id = chunk,
+                .offset   = cursor,
+                .length   = static_cast<uint32_t>(length),
             };
             job->physical_length = chunk_framed_length(length);
             job->source_offset   = offset;

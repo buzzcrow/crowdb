@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Bounded writes and synchronization proof with safe old-peer fallback.
+//! Bounded writes requiring explicit synchronization completion.
 
 use super::{
     Bytes, DiskioClient, DiskioError, DiskioResult, Durability, Instant, OperationKind, OperationOptions,
@@ -93,7 +93,9 @@ impl DiskioClient {
             match self.await_synchronized_write(future, options.deadline).await {
                 Ok(synchronized) => {
                     if durability == Durability::Fsync && !synchronized {
-                        self.fsync_inner(target.disk_id, options, true).await?;
+                        return Err(DiskioError::DurabilityFailure(
+                            "synchronized write response omitted completion proof".into(),
+                        ));
                     }
                     return Ok(());
                 }

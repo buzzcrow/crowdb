@@ -8,7 +8,7 @@ use thiserror::Error;
 
 use super::{StreamName, StreamPurpose};
 use crate::common::ChunkId;
-use crate::frame::{ChunkLocation, FrameLayout};
+use crate::frame::ChunkLocation;
 
 pub(super) mod bounded;
 mod codec;
@@ -40,28 +40,11 @@ pub struct StreamDirectoryRef {
     pub extent_count: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum StreamFrameFormat {
-    LegacyV1,
-    GroupedV2,
-}
-
-impl StreamFrameFormat {
-    #[must_use]
-    pub const fn layout(self) -> FrameLayout {
-        match self {
-            Self::LegacyV1 => FrameLayout::Legacy,
-            Self::GroupedV2 => FrameLayout::StreamGroupV2,
-        }
-    }
-}
-
-/// One complete append location; retained legacy short frames keep their boundaries.
+/// One complete grouped append location.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StreamExtentLocation {
     pub logical_start: u64,
     pub location: ChunkLocation,
-    pub format: StreamFrameFormat,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

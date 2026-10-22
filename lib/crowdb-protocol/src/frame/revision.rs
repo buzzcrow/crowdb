@@ -77,7 +77,6 @@ pub(super) fn parse_role(header: FrameHeaderPrefix, bytes: &[u8]) -> Result<Fram
 /// Canonical framing geometry carried by the owning location or verified frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FrameLayout {
-    Legacy,
     OrdinaryV2,
     StreamGroupV2,
 }
@@ -86,7 +85,6 @@ impl FrameLayout {
     #[must_use]
     pub const fn header_bytes(self) -> usize {
         match self {
-            Self::Legacy => FRAME_HEADER_PREFIX_BYTES,
             Self::OrdinaryV2 => FRAME_V2_HEADER_BYTES,
             Self::StreamGroupV2 => FRAME_GROUP_HEADER_BYTES,
         }

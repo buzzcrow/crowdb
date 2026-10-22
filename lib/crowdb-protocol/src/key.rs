@@ -37,8 +37,7 @@ pub use chunk_kv::{
 };
 pub use chunk_stream::{
     StreamBindingKey, StreamDirectoryControlKey, StreamDirectoryPageKey, StreamDirectoryRootKey,
-    StreamExtentPageKey, StreamLegacySourceKey, StreamManifestHeadKey, StreamManifestKey,
-    StreamMigrationProgressKey, StreamPublicationGuardKey,
+    StreamExtentPageKey, StreamManifestHeadKey, StreamManifestKey, StreamPublicationGuardKey,
 };
 pub use chunk_task::{ChunkTaskKey, FinalizeChunkTaskKey, LeasedChunkTaskKey, ReadyChunkTaskKey};
 pub use chunkdb::{ChunkdbRangeBindingKey, ChunkdbRangeMigrationKey};

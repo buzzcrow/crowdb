@@ -11,19 +11,20 @@ KV work, with compact locations, incremental directories, and bounded recovery.
 
 ## Status and scope
 
-- Code audit: 2026-10-23, against the shared working tree. The first observed
-  HEAD was `6a2a8796`; the deployment requirement is now complete.
-- Implementation starts after completed OCI deployment cleanup at `c3d7d64d`.
-  T01/T05–T07 are complete; T04 is active. Matched release identities and unchanged
-  sentinel results are retained under `r244-chunk-stream/baseline/`.
-- T02/T03 record Q1–Q4 design decisions only. Shared revision-2 codecs,
-  ordinary object reads/writes/native buffers and C++ tree storage are committed
-  in `348f300e`, `4eec25dd` and `d667bbfc`. Stream grouped writes, new append
-  completion, ownership, indexed directories and performance acceptance remain
-  unfinished. T04's record/legacy compatibility gate is in progress.
-- Keep this plan live during implementation and delete it only with completed
-  requirement cleanup. Existing unrelated changes and runtime resources stay
-  outside this work's ownership.
+- Deployment requirement R243 is complete at `c3d7d64d`; R244 is in progress.
+- T01/T02/T03/T05–T07 foundations are committed. T04 is the active cleanup and
+  integration task. Directory, shared-codec, ordinary writer and local-progress
+  foundations exist; the main Stream worker still needs grouped/indexed wiring,
+  safe ownership/recovery, bounded retention and production acceptance.
+- User instruction: this product has never shipped. Support only the chosen
+  current format and matched service contract. Do not add old-format migration,
+  old-service fallback or capability negotiation. Remove compatibility code and
+  its fixtures. Existing development runtime artifacts remain preserved; a test
+  fixture creates data in its current format.
+- Matched retained-MemDisk baseline remains under
+  `r244-chunk-stream/baseline/`; six Stream performance gates are still red.
+  No postimplementation performance acceptance is claimed.
+- The two pre-existing unrelated user edits stay outside this requirement.
 
 ## Gap assessment
 
@@ -43,7 +44,7 @@ two calls in `write_batch` cannot produce a correct working implementation.
   single large append frame; the selected bounded groups retain that maximum
   and add Stream-only roles/completeness fields to the common format. The
   existing Rust/C++ CRC input ranges differ; define
-  new-version bytes and legacy decoding explicitly, with shared golden vectors.
+  canonical bytes with shared golden vectors.
   User data keeps ordinary whole-object publication and streaming without a
   known total length. Do not add Stream grouping or whole-object buffering.
 - **Combined write/sync RPC — medium, D02/A02.** DiskIO already has ordered
@@ -134,9 +135,9 @@ adaptation rather than a new transport or storage engine.
   is not an upper bound for writer failover recovery.
 - Versioned directory decoding and synchronized-wire rollout must be explicit.
   Adding a FlatBuffers field does not itself establish old-server support.
-  Preserve existing data; do not use reset/reallocation as a migration strategy.
-- T01 and compatibility-safe T05–T07 can precede the remaining ownership work.
-  Common codec T08 and directory work T09–T13 follow compatibility task T04;
+  Current-format data survives reopen and faults; no old-format conversion is required.
+- T01 and T05–T07 can precede the remaining ownership work.
+  Common codec T08 and directory work T09–T13 follow format cleanup T04;
   T14–T19 establish the state, recovery, lifecycle, and view contracts.
   T20 integrates the new completion
   boundary only after these dependencies exist. T21–T26 provide consumer and
@@ -167,13 +168,12 @@ adaptation rather than a new transport or storage engine.
 
 ## Synchronized write implementation evidence
 
-- Request/response append-only schema slots, old-peer absence of proof and flush
+- Request/response append-only schema slots, missing synchronization proof and flush
   failure values pass 16 protocol tests. The Rust and C++ schemas are generated
   by their ordinary build paths, with no generated-file edits.
 - The semantic client propagates synchronization through contiguous and bounded
   view requests. Old peers use explicit fsync; matching peers require one write
-  request/reply. Five actual TCP cases cover no early completion, legacy
-  fallback, buffered behavior, ordered view splitting and typed write/flush
+  request/reply. Five actual TCP cases cover no early completion, missing-proof errors, buffered behavior, ordered view splitting and typed write/flush
   failures without extra requests.
 - The actual C++ write handler retains disk/connection/payload through ordered
   write and flush. Nine new delayed/failure/lifetime/ordering tests pass; all
@@ -199,131 +199,47 @@ adaptation rather than a new transport or storage engine.
   and Stream directories until the ownership/framing/recovery dependencies are
   implemented; the six failing baseline performance gates remain unmet.
 
-## Compatibility execution notes
-
-- Synchronized writes append `sync` after the existing request fields and
-  `sync_completed` after the existing response fields. A successful new server
-  sets the proof only after ordered write and flush. An absent/false proof on an
-  otherwise successful synchronized request uses the existing explicit fsync
-  path within the original deadline; this is the safe old-server path, not a
-  repeated write. New matching peers need one request/reply. No capability cache
-  grants durability authority. Buffered requests retain their original behavior.
-- A dedicated flush-failure return code preserves `DurabilityFailure` separately
-  from failed/partial writes. Every constructor, the native C++ enum and the
-  Rust semantic classifier must agree. Unknown/failed responses cannot be
-  interpreted as synchronized success.
-- The actual C++ handler tests use delayed write/flush completions with real
-  FlatBuffers requests. Retain the disk, request buffer and shared connection
-  until the sole completion; rejected response submission retains caller
-  ownership and must release its frame. A transport-interface constructor seam
-  permits deterministic inspection without adding production locks.
-- These notes settle the wire portion of T04 only. Persisted directory/frame
-  versioning, legacy cursor finalization and resumable migration remain T04/T08/
-  T09 work and are not marked complete by this compatibility path.
-
 ## Format execution notes (T04/T08 implementation target)
 
-- The audited legacy Rust and C++ codecs have different CRC coverage, including
-  different supposedly cross-language vectors. Preserve both retained V1 forms
-  explicitly when decoding. Keep each historical V1 encoder stable for fixtures;
-  V2 has one canonical CRC32C input (seed zero, header/group fields/payload),
-  with expected footer chunk identity checked separately.
-- V2 magic keeps purpose in the high byte and version 2 in the low byte. Retain
-  the 14-byte base prefix; byte 14 is role (ordinary 0, head 1, follower 2).
-  Ordinary payload begins at 15. Grouped payload begins at 27: heads add total
-  payload u64 and frame-count u32; followers add head physical offset u64 and
-  ordinal u32. Numeric header fields remain little-endian, footer identity stays
-  big-endian. Capacities are 65501 ordinary and 65489 grouped payload bytes.
-  Count-one heads remain mandatory for nonempty single-frame Stream appends.
-- Frame/group parsing and location arithmetic use explicit version/role geometry
-  and checked bounds. New ordinary object locations retain their existing five
-  fields: canonical physical/logical lengths select candidate geometry, and
-  frame magic/role validation must confirm it. Legacy unframed locations retain
-  their existing interpretation. No persisted object-layout field is appended
-  to an unversioned bincode sequence.
-- The existing writer-open path already recovers only to the persisted legacy
-  ChunkDB cursor, seals that last chunk and allocates a successor, even at the
-  same writer epoch. Preserve/test that ordering for V1: do not infer original
-  append groups beyond its cursor. New grouped writes require an attached new
-  chunk. Current old-format open still eagerly loads history; lazy indexed open
-  and resumable directory conversion remain T09–T17 work.
-- Directory records need an explicit magic/version/kind envelope and dedicated
-  legacy structs before changing their bincode bodies. Old roots stay retained
-  until new pages and head CAS are confirmed; unknown versions fail visibly.
-  Migration is one resumable transition, not repeated full-history conversion
-  on each open. Deploy compatible readers before V2 writers; concurrent old
-  publishers must be fenced or return a CAS conflict, never overwrite a new root.
-- These are implementation targets, not completed format support. Shared golden
-  vectors, legacy reads, actual consumer transitions and migration fault tests
-  must pass before the corresponding tasks are checked.
+- Only canonical revision-2 framing is the implementation target. User-data/
+  tree use ordinary roles; Stream uses verifiable complete append groups.
+- Share CRC32C input, footer chunk-ID validation, checked role capacities and
+  bounded parser memory in Rust/C++. Reject unsupported revisions and roles.
+- No old-format conversion, rollout ordering or capability negotiation is needed.
+  The predecessor Stream worker and its codec are removed with grouped wiring.
+- Preserve current-format crash/reopen, corruption, full-append and cross-language
+  tests. Keep ordinary user-data publication atomic for whole objects.
 
 ## Shared codec implementation evidence (partial T04/T08)
 
-- The shared revision-2 codec is additive: production writers still use V1 until
-  the corresponding consumers migrate. Rust framing is split into encoding,
-  parsing, geometry, revision and group modules; the C++ facade has the same
-  ownership boundaries. Existing V1 encoders retain their original bytes.
-- Eight checked-in, independently CRC-generated vectors are read by both
-  languages: retained Rust/C++ V1 CRC variants, four ordinary V2 purposes, a
-  count-one Stream head and a follower. V2 has exactly one accepted CRC coverage.
-  V1 fallback uses incremental CRC extension over chunk identity without a
-  temporary payload allocation. Unknown versions and malformed roles fail.
-- Group validators use constant state, verify canonical payload sizes, declared
-  count/length, physical continuity, follower head offset/ordinal, timestamp and
-  chunk identity. Incomplete, reordered and cross-group frames cannot finish.
-  The Rust group encoder returns shared Bytes slices, preserving payload owners.
-  Ordinary V2 region/view encoding preserves native reserved-buffer support.
-- Focused Rust 17 and C++ 9 tests pass, including all split positions of the
-  shared vectors and interruption at each physical frame boundary. Protocol
-  all-target clippy passes after ordinary explicit-import/doc/attribute cleanup.
-  Final protocol tests pass 258 cases. Full `test-cpp` passes 715 native and 85
-  Rust FFI/tool tests, zero ignored, with receipt
-  `unit/cpp-3e91998b44ab4581aa78b3711214fca4/results.json`. Full tree-lint exits
-  zero with existing warnings; the touched public headers/tests have no focused
-  diagnostics. Rust fmt and protocol all-target clippy pass. Full native tests
-  were repeated after tightening overflow checks and explicit enum decoding.
-  These tests establish codec behavior only; consumer migration, directories and
-  recovery are pending.
+- `348f300e` introduced shared revision-2 roles/geometry, a bounded complete-group
+  validator and independent Rust/C++ vectors. Header/payload CRC32C and separate
+  expected chunk-ID validation agree across languages.
+- Group encoding preserves Bytes payload owners, checks canonical full interior
+  frames, association/ordinal/count/total length and constant-state validation.
+- These foundations passed protocol/native gates recorded in `shared-frame-*`
+  artifacts. Old-format support from that milestone is being deleted under T04.
+  Current remaining group integration is not claimed complete.
 
 ## Object reader compatibility evidence (partial T08)
 
-- Object reads infer candidate V1/V2 ordinary geometry from the existing
-  physical/logical length pair and then require verified magic/header geometry
-  to match. No field is appended to the persisted Location sequence. Grouped
-  Stream frames cannot pass the ordinary object decoder.
-- Extracted framing, streaming and strip-layout logic from the 1500-line reader
-  into owning private modules; the parent is below 1000 lines. Shared payload
-  views, read-credit retention, bounded windows and layout reuse are preserved.
-- Three new cases cover retained V1 adjacent to V2 objects, multi-frame ranges,
-  one-byte streaming windows, short final frames and deliberately wrong location
-  geometry. All 14 reader tests and the full 133-test ChunkClient suite pass.
-  All-target clippy and Rust fmt pass after ordinary extraction-import and test
-  fixture type cleanup. Evidence: `frame-reader-rust3.log` and
-  `frame-reader-suite.log`. Writers/native buffers/tree are not yet migrated.
+- Ordinary object reads validate one canonical revision-2 geometry from compact
+  locations and actual verified headers. Bounded read windows and credits retain
+  original payload owners, including frames crossing physical buffers.
+- Current cleanup removes revision-1 geometry and fixtures. Focused tests retain
+  exact cross-frame/subrange bytes, pointer ownership and CRC mirror failover.
+- Stream last-chunk reads still need their separate authorized content-derived
+  boundary; this does not widen arbitrary ordinary object reads.
 
 ## Ordinary producer execution notes (T08)
 
-- Rust object writers and native receive buffers use ordinary revision 2 and
-  its 15-byte header / 65,501-byte payload capacity. Update Access-server's S3
-  and Iceberg producer selection as well as the library paths. Native owners
-  reject legacy/grouped magic before constructing reserved-region views.
-- Tree references need an explicit frame revision while retaining old packs.
-  Existing tree pack lengths cannot exceed the 256 MiB chunk limit. Reserve
-  the serialized u32 length's high bit for revision 2; all retained valid lengths
-  have it clear. Keep the in-memory logical length untagged. This preserves the
-  28-byte serialized reference and unambiguously decodes retained V1 references.
-  New manifest version 7 fences old publishers; accept version 6 with legacy
-  references. Reference-segment and manifest CRCs include the encoded revision
-  bit. Reused references/segments retain their original identity and revision.
-  Reads derive exact geometry from the reference without an extra header RPC.
-- Ordinary consumer test compilation initially exhausted the build filesystem:
-  linker bus errors were followed by explicit `No space left on device` before
-  test execution. Retain that complete failed log; compact only debug sections
-  of old inactive test executables, keeping source/data/logs/production binaries.
-  The recovery ledger is `build-cache-debug-compaction.json`: 662 inactive old
-  test executables had debug sections removed, reclaiming 210.74 GiB while
-  preserving executable code and excluding running binaries. This is an
-  environment/setup failure, not a product assertion or performance result.
+- Small/large/async/native user-data writers emit ordinary revision-2 frames.
+  Native regions reserve exact role-dependent overhead and preserve owners.
+- Tree packs use the same ordinary format. Compact references carry plain logical
+  lengths with no format tag or revision byte. Manifest encode/decode accepts one
+  current version. Checksums cover the complete current record.
+- Streaming uploads retain whole-object publication and bounded memory; no Stream
+  head/follower roles or whole-object buffering are added to ordinary producers.
 
 ## Ordinary producer implementation evidence (partial T08)
 
@@ -365,109 +281,24 @@ adaptation rather than a new transport or storage engine.
 
 ## Directory execution notes (T04/T09–T13 implementation target)
 
-- Freeze the raw persisted schemas as named legacy manifest/page types before
-  changing bodies. New records use an explicit CSTR magic/version/kind envelope;
-  unknown versions or wrong kinds fail. Head bodies' purpose enum prefixes
-  0/1 make envelope detection unambiguous. Legacy pages instead begin with an
-  arbitrary stream ID, which can equal CSTR: their owning key namespace must
-  select legacy or enveloped decoding explicitly. Keep legacy extent-page bodies
-  and key space raw; new independently identified directory pages use new keys. Do not append fields to unversioned bincode.
-- Use an immutable bounded-fanout append index. A leaf holds compact logical
-  intervals, chunk locations and explicit legacy/grouped geometry; a branch
-  holds bounded child fences/levels. The head holds one bounded root reference,
-  durable publication tail and last-chunk attachment/checkpoint, not a flat
-  fence per history page. Include stream identity/purpose in every page's
-  canonical content identity. Page identity excludes owner epoch/head generation.
-- Preserve legacy short frames as separate locations. Only canonical full
-  interior frames permit location merging; append-group boundaries stay intact.
-  For a grouped active attachment, preserve the chunk's original logical start
-  and separate checkpoint physical/logical ends. Current capacity is a ChunkDB
-  query result, not root authority.
-- Publication path-copies only the unfinished tail and necessary index ancestors.
-  Publish immutable pages before root CAS and reconcile the same candidate
-  identities after unknown outcomes. Capture a bounded tail builder without
-  cloning history. Background checkpoint publication cannot make ordinary
-  mirror-complete append ACK wait on KV; bounded pending-page admission may
-  backpressure if the publisher cannot keep up.
-- Root/page GC needs an explicit durable candidate guard persisted before its
-  new pages. It names the bounded new page set and candidate root. GC first
-  selects old page candidates, then resolves retained roots, durable consumer
-  pins, candidate guards and the latest head. A page created after candidate
-  enumeration cannot enter that pass. Clear a guard only after a confirmed
-  root publication or safe abandonment. Validate this ordering with paused GC,
-  delayed CAS, restart and late pin races; generation-only deletion is unsafe.
-- Legacy conversion is a resumable one-time transition with immutable new pages
-  and bounded progress records. Keep the raw root reachable until the new head
-  CAS succeeds. Seal the legacy last chunk only at its persisted cursor, retain
-  its existing append/frame boundaries and attach a fresh grouped-write chunk.
-  Do not repeat full history conversion on each subsequent open.
-- These are execution targets only. Indexed storage, migration, candidate guards,
-  background publication and root-reachability GC are not implemented yet.
-
-## Metadata record and legacy recovery evidence (partial T04)
-
-- Frozen `LegacyStreamManifest` / `LegacyStreamExtentPage` bodies retain existing
-  public aliases and raw bytes. New heads use a 12-byte CSTR version/kind/flags/
-  length envelope; raw heads still decode. Retained per-frame page keys stay raw,
-  with their decoder selected by namespace. A real counterexample stream identity
-  begins with CSTR/version-like bytes; it remains readable rather than being
-  mistaken for an unknown envelope.
-- Independent fixed-integer legacy golden bodies round-trip unchanged. Four new
-  protocol cases cover version/kind/flag/length/trailing-byte rejection, bounded
-  malformed sequence decoding and the arbitrary-ID collision. Three real KV
-  adapter cases cover raw-head upgrade, unchanged legacy page bytes, the ID
-  collision and refusal to overwrite an unknown head version.
-- A manually seeded legacy Stream contains acknowledged V1 bytes plus a valid
-  multi-frame suffix without its durable cursor advance. Same-epoch and
-  higher-epoch reopen both seal at exactly the old persisted cursor, expose only
-  the acknowledged prefix and attach a fresh chunk before the next append.
-  This fixture is independent of the current append encoder and remains a
-  compatibility test when new Stream writes become grouped.
-- Protocol and Stream all-target clippy and all 325 tests pass, including 262
-  protocol and 63 Stream cases, zero ignored. Initial clippy repair was explicit
-  legacy-type Default syntax in two new tests. Evidence: `record-compat-gate2.log`.
-  Rust fmt passes. This establishes the retained record/legacy boundary;
-  independently indexed pages and resumable index conversion remain unfinished.
-- The ordinary migration's extra pinned boto3 case passes through its existing
-  prebuilt HTTP test binary and pinned Python interpreter (`frame-consumer-boto3.log`).
-  The installed-wheel Dataset case remains outside the default test invocation.
+- Only independent immutable indexed records are supported. Keep fixed bounded
+  heads, compact grouped append locations, SHA-addressed pages and path copying.
+- Root publication protects candidates before page writes and resolves a guarded
+  head CAS. Retention control revisions fence concurrent publication/pins/GC.
+- No frozen old schema, source snapshot, migration marker or conversion cursor.
+- Reader pins, sealed chunk spans, bounded root/page/data collection and restart
+  cleanup still need implementation before ordinary append can omit checkpoints.
 
 ## Indexed record implementation evidence (partial T09)
 
-- Added independent SHA-256 page identities, bounded leaf/branch records and a
-  version-2 indexed head. The head carries one root reference, a published tail,
-  attachment/checkpoint and owner session. Leaves contain compact shared
-  ChunkLocation values; one 4 MiB append occupies one directory location and an
-  88-byte encoded leaf. Pages exclude head epoch/generation and retain identities
-  across successive roots. Stream-only format distinguishes retained V1 and
-  grouped V2 geometry.
-- Bounds are explicit: 1024 locations, 128 children, height 8 and 64 KiB encoded
-  records. Bounded sequence visitors reject invented lengths before reserving
-  elements. Codecs check scope/purpose, SHA identity, fence/height/count, logical
-  coverage, physical continuity/overlap, mixed same-chunk formats and arithmetic.
-  Head validation separates persisted progress from current layout capacity.
-- Fresh fixed key tags 0x0016/0x0017 keep independent page and immutable root
-  namespaces separate from the frozen generation-qualified legacy pages. The
-  indexed head is CSTR version 2/kind 1; old version-1-only writers fail visibly
-  rather than reinterpret it. Generic head dispatch reads both schemas.
-- Eight focused directory cases and all four retained record cases pass;
-  protocol all-target clippy, fmt and all 270 protocol cases pass. Indexed head
-  publication, migration, root guards/retention and append completion remain
-  incomplete; record/schema tests alone do not establish them.
-- GC must also fence reuse of an old orphan with the same content identity.
-  Selection-before-resolution alone does not protect a selected orphan if an
-  equivalent new candidate resurrects it after guard enumeration. A per-stream
-  retention-control KV revision changes atomically with guard creation and with
-  head replacement/guard removal. GC captures that revision before resolving
-  roots/guards/pins and conditionally deletes candidates only if it still matches.
-  Pin creation/root retirement must use the same control revision. These are
-  lifecycle/checkpoint operations, never ordinary append operations.
-- Migration must first install a bounded versioned migration head by CAS,
-  referring to a separately retained immutable legacy source. This fences old
-  cached publishers while pages convert; only a final CAS exposes the indexed
-  root. Store conversion progress durably and preserve source pages until that
-  CAS. Merely converting everything and hoping a final head CAS wins can race
-  indefinitely with old publishers and does not establish a stable source.
+- `5c9b4bcc` defines bounded heads, SHA-addressed independent leaf/branch records
+  and checked scope, height, fences, counts, logical/physical continuity.
+- T04 removes old-format discrimination: one grouped append location contains
+  logical start and ChunkLocation, without a per-entry frame-format enum.
+- Independent page/root/publication-guard/control namespaces survive owner and
+  generation changes. No migration namespace or format dispatcher remains.
+- Indexed storage foundations exist. The main worker, retention/GC and new append
+  completion remain unfinished and must be integrated before acceptance.
 
 ## Incremental index implementation evidence (partial T10–T12)
 
@@ -485,11 +316,11 @@ adaptation rather than a new transport or storage engine.
   verified for content identity, purpose and reference fences before traversal.
 - Seven integration cases cover 1/16/256 historical segments, full/unfinished
   tail reuse, height growth, bounded paginated ranges, compact 4 MiB groups,
-  legacy short frames, cross-leaf continuity, trim and missing/corrupt records.
+  complete grouped locations, cross-leaf continuity, trim and missing/corrupt records.
   All 70 Stream tests, all-target clippy and fmt pass. Receipts:
   `directory-index-tests.log`, `directory-index-full-stream.log`,
   `directory-index-clippy4.log`. These APIs are not yet the active append/read
-  state machine. Guarded KV publication, root retention, migration, bounded
+  state machine. Guarded KV publication, root retention, bounded
   active-tail snapshots/cache and append completion remain unfinished.
 
 ## Guarded KV publication evidence (partial T11/T13)
@@ -512,11 +343,11 @@ adaptation rather than a new transport or storage engine.
   Concurrent identical candidates across 16 fresh stream scopes exercise this.
 - Two protocol and seven real-KV cases pass, including unknown record shapes,
   scope/identity/allocation bounds, retained roots, page conflicts/protected retry,
-  stale owner CAS, active checkpoint disagreement, explicit legacy rejection and
+  stale owner CAS, active checkpoint disagreement, unknown-schema rejection and
   both GC revision races. Full Protocol/Stream suites pass 349 cases, zero
   ignored; all-target clippy and fmt pass. Logs:
   `directory-publication-{protocol,tests,clippy4,full-suite2,fmt2}.log`.
-- The legacy Stream worker is deliberately not switched yet: migration,
+- The predecessor Stream worker is not switched yet:
   root pins/GC, owner authority, content recovery and the new finite-view/ACK
   contract must be wired together. No performance acceptance is claimed here.
 
@@ -535,101 +366,19 @@ adaptation rather than a new transport or storage engine.
   512 historical pages under the fixed slot/byte bound, and refusal to cache
   corrupt/oversized records. Full Protocol/Stream suites pass 352 cases, zero
   ignored; all-target clippy and fmt pass. Logs:
-  `directory-cache-{clippy4,full-suite,fmt}.log`. Legacy worker open/read remains
-  unchanged until migration and the complete indexed state machine are wired.
-
-## Legacy migration fence evidence (partial T04/T09)
-
-- Added zero-allocation borrowed views over the frozen legacy head/page column
-  formats. Selecting one fence/extent does not build Vec copies or walk all
-  history. Arrays have checked byte spans, matching column counts, strict
-  option/bool/version handling and no trailing data. Per-frame geometry remains
-  explicitly V1; arbitrary legacy page identities never select an envelope.
-- Four protocol cases use independent retained vectors, all optional head
-  fields, a 100000-fence head, malicious lengths, truncation, short V1 frames,
-  unknown versions and the bounded version-3 migration head. The migration head
-  names the exact immutable source by SHA, old epoch/generation and new session;
-  its reserved generation is not an indexed finite view.
-- Production KV saves the raw exact source under tag 0x001c before CAS-installing
-  the migration head and advancing retention control atomically. Existing cached
-  V1 publishers lose that head CAS and cannot reinterpret version 3. Reopening
-  the same session reloads the saved source without changing the marker revision.
-  Different sessions cannot silently adopt it before the owner-authority path.
-  Missing/corrupt sources fail without undoing the durable fence. Initial indexed
-  publication now checks an existing head before creating guards/control, so a
-  caller cannot stage an incompatible new stream over a legacy/migrating head.
-- Three additional real-KV cases pass for raw and enveloped retained heads,
-  17 unchanged source pages, cached old publishers, cold resume, foreign sessions,
-  stale epochs, conflicting backup keys and missing/corrupt sources. All-target
-  clippy, fmt and all 359 Protocol/Stream cases pass, zero ignored. Logs:
-  `migration-fence-{clippy2,protocol,tests,full-suite,fmt}.log`.
-- Remaining migration work is implementation, not a human decision: persist
-  bounded progress under the same head/control fence; protect its base and new
-  paths before staging pages; finalize legacy active bytes strictly at its
-  persisted cursor; preserve a converted old-generation root at the original
-  published tail; atomically replace the marker only when the entire converted
-  root is valid. Grouped writes use a fresh attached chunk afterwards. This does
-  not infer any append boundary in an uncommitted V1 suffix.
-
-## Resumable conversion implementation evidence (partial T04/T09)
-
-- Added bounded History/Tail/Complete progress under tag 0x001a. Each conversion
-  batch selects at most 1024 locations from borrowed legacy columns, path-copies
-  the directory, and protects its base/current/historical roots with a kind-6
-  migration guard before storing pages. One conditional batch advances the
-  stable migration head revision, progress and retention control, and removes
-  the guard. Old snapshots cannot overwrite newer progress; identical staged
-  candidates retain their identities and can reconcile/reuse their pages.
-- After history reaches the published tail, the converter validates the legacy
-  active checkpoint against its final mapping, queries/seals at its persisted
-  cursor and scans only the bounded durable V1 range. It never infers append
-  groups in an uncommitted V1 suffix. The historical root retains the old
-  published tail; extra cursor-confirmed frames belong to the new root only.
-  Noncanonical legacy active descriptors or corrupt/incomplete durable frames
-  fail closed without resetting progress or changing the original source.
-- Final conversion persists both the original epoch/generation's finite root
-  and the complete new root, then atomically replaces the marker/removes progress
-  under the same control fence. The new head has no active chunk: grouped writes
-  must attach a fresh chunk before admission. Source backups are reasserted in
-  the marker CAS batch so cleanup winning before the fence cannot create a
-  dangling source reference. Future GC must enumerate migration progress/guards,
-  preserve their source pages and protect both root identities.
-- Added protocol phase/protection/key checks, cold resume after every three-row
-  KV batch, stale-snapshot publication, both retained root identities and legacy
-  tail/corruption recovery. One initial test fixture supplied an arbitrary cursor
-  checksum; the first divergence was MemoryStreamStore rejecting setup before
-  conversion. Corrected it to CRC32 of the exact staged durable prefix; the
-  exact tail case then passes. No production checksum rule was weakened.
-- All 363 Protocol/Stream cases, all-target clippy and fmt pass, zero ignored. Logs:
-  `migration-conversion-{clippy4,full-suite,fmt}.log` and the exact tail receipt
-  is `migration-conversion-tail-repro.log`. This is a production KV conversion
-  component with retained-byte chunk seams; actual ChunkDB lifecycle/production
-  restart acceptance, Group-0 authority and active Stream worker integration
-  remain subsequent tasks.
+  `directory-cache-{clippy4,full-suite,fmt}.log`. The predecessor worker remains until the indexed state machine is wired.
 
 ## Shared metadata backend evidence (T09–T12 wiring foundation)
 
-- Moved indexed-directory ownership from the KV adapter into
-  DirectoryMetadataStore under directory/metadata. The record boundary supplies
-  scoped linearizable get, create/revision CAS and atomic conditional batches;
-  the shared component owns validation, cache, publication and resumable
-  conversion. Existing KvStreamMetadataStore APIs delegate to the same component.
-- StreamMetadataStore exposes a bound directory handle for the upcoming worker
-  integration. KV validates its fixed group; MemoryStreamStore uses the same
-  record map for legacy and indexed heads/pages and the exact shared conversion
-  state machine. Its existing test-only mutex is shared with that map; no
-  production lock or unsafe scope was added. Legacy memory head reads and writes
-  cannot reinterpret or overwrite a migration/indexed head. Extracted test
-  metadata ownership into memory/metadata instead of growing the old root file.
-- Two additional memory-adapter cases verify failed protected publication/retry,
-  retained old roots, legacy writer fencing and migration in metadata group 7.
-  All 87 Stream tests pass (including real KV cases), all-target clippy and fmt
-  pass. Logs: `directory-backend-{clippy5,full-stream,fmt}.log`. Protocol source
-  is unchanged from the previous 278-case passing suite.
-- The active worker still uses its legacy manifest/extent state; the new handle
-  is a wiring boundary, not an append completion change. Next integrate grouped
-  locations, lazy index reads and immutable finite worker views while retaining
-  the existing per-append durability prerequisites until T14–T19 are ready.
+- `9e911373` shares one conditional-record state machine between KV and the
+  deterministic Memory backend. The memory adapter uses its existing test lock;
+  no production lock or new unsafe scope was added.
+- The factory binds metadata group and scope. Both backends use the same immutable
+  page writes, publication guard/control ordering and revision-fenced head CAS.
+- Retained roots and failed-publication protection tests remain. Compatibility
+  conversion tests and their source/marker/progress machinery were removed.
+- The main worker still needs to consume this factory; custom deterministic
+  wrappers must forward it when that integration replaces the predecessor API.
 
 ## Local synchronized progress evidence (partial T14)
 
@@ -642,7 +391,7 @@ adaptation rather than a new transport or storage engine.
   adapter cannot overwrite a prior process's group even when its persisted
   cursor is zero. A failed first attempt cannot turn an unknown old range into
   a fresh allocation. Grouped chunks reject legacy-frame writes. Legacy V1/raw
-  test seams retain their cursor-authority behavior until migration/new wiring.
+  test seams retain their cursor-authority behavior until grouped wiring.
 - Only successful synchronized completion of all strip writes promotes local
   progress. Explicit seal accepts the synchronized grouped boundary and persists
   it through the existing chunk-layer seal. MemoryStreamStore models the same
@@ -663,8 +412,8 @@ adaptation rather than a new transport or storage engine.
 ## Current capacity isolation evidence (partial T14)
 
 - StreamChunkStore can report current chunk-layer capacity. Production uses its
-  authoritative layout cache and Memory reports backing capacity. Legacy injected
-  stores can explicitly return None; only that compatibility path still publishes
+  authoritative layout cache and Memory reports backing capacity. Injected
+  stores can explicitly return None; that temporary injected-store path still publishes
   cached capacity on growth. The supported production path no longer creates a
   Stream head/directory publication solely for internal growth.
 - Legacy writer/read-only open refresh capacity from the chunk layer after its
@@ -688,33 +437,6 @@ adaptation rather than a new transport or storage engine.
   cursor. Do not enable deferred append completion until owner exclusion and
   content-derived finalization protect both cases.
 
-## Allocation format proof execution notes (T04/T08/T15–T16)
-
-- A content scanner cannot safely choose legacy cursor authority versus grouped
-  content authority by guessing the first on-disk frame: a damaged first header
-  must not turn acknowledged grouped bytes beyond an old zero checkpoint into
-  an empty legacy chunk. Record the framing revision immutably in chunkinfo at
-  allocation, before any data admission. Keep logical owner identity unchanged;
-  do not overload owner_key with physical framing flags.
-- Add append-only frame_revision fields to the allocation request and returned
-  Chunk. Zero retains existing legacy semantics; revision 2 is canonical ordinary
-  framing for user-data/tree types and grouped framing for Wal/Stream. New V2
-  producers require the matching value in the allocation response before writing;
-  an older server that ignores the request cannot prove support and must fail
-  allocation instead of accepting bytes its finalizer cannot understand.
-- Freeze the current bincode Chunk/strip shape before adding the field. Use an
-  explicit versioned envelope for new revision-2 persisted chunks so an old
-  metadata reader cannot silently ignore a trailing physical-authority field.
-  Decode retained raw schemas explicitly with strict lengths; do not append a
-  field and rely on unversioned bincode EOF/trailing behavior. Unknown envelope
-  versions/revisions fail closed. Retain legacy owner attribution and placement.
-- Allocation proof must reach common small/large/native writers and the tree
-  allocator, not only standalone Stream tests. Keep the explicit legacy allocation
-  seam for retained V1 fixtures; add a grouped allocation seam for the new worker.
-  Finalizer/recovery scan limits derive from the persisted revision, then verify
-  each actual frame's matching revision, CRC and identity. This is an unresolved
-  implementation dependency, not a new human decision or a performance result.
-
 ## Persisted cursor seal boundary evidence (partial T16)
 
 - Raw Stream/Wal sealing rejects an exact byte boundary below an already
@@ -730,6 +452,58 @@ adaptation rather than a new transport or storage engine.
   require allocation format authority, grouped content scans and owner/old-IO
   exclusion before deferred-cursor ACK can be enabled. In particular zero in
   old metadata cannot prove grouped data absence.
+
+## Unpublished-format cleanup execution
+
+- User confirms no released old format/service must remain supported. Removed
+  frozen Chunk bodies and reservation fallbacks, all Stream source/marker/
+  progress/conversion modules and keys, and their dedicated fixtures. The
+  compact indexed extent now has no per-entry format enum.
+- Chunk metadata accepts only its explicit current envelope. The journal test
+  now uses the actual current encoder; its CAS/flush/reopen assertions remain.
+- Indexed head decode returns the current bounded head directly. No migration
+  head dispatcher or legacy-to-indexed path remains. Raw Stream metadata decode
+  was removed; the predecessor worker's own metadata API still exists only
+  until the indexed worker replaces it.
+- Missing synchronized-write completion proof returns a durability error with
+  no fallback fsync or repeated write. Removed nested fallback accounting.
+- Ordinary object reads have one revision-2 geometry. C++ tree manifests accept
+  only the current version, references carry plain logical lengths, and reads/
+  checksums no longer branch on per-reference frame revisions or old manifests.
+- The shared revision-1 frame codec and old Stream worker remain to be removed
+  together with grouped recovery/finalizer and indexed-worker wiring; they are
+  unfinished implementation, not an old-format support requirement. No claim of
+  completed T04/T08 or new append/performance acceptance is made here.
+- Initial affected suite failed in `journal_handoff_test` because its fixture
+  bypassed the production metadata encoder and wrote a raw body. Fixed that
+  fixture at its creation point, without restoring any compatibility decoder.
+  The focused 20 cases and all 652 cases across Protocol, Stream, ChunkDB,
+  DiskIO-client and Chunk-client pass with zero ignored tests. Strict all-target
+  clippy and Rust/C++ format pass. Full tree-lint exits zero; changed-scope lint
+  is clean after removing redundant parentheses (the unrelated existing
+  make_shared warning in the pipeline remains). Full `test-cpp` passes 719
+  native cases and 85 Rust FFI/tool cases with zero ignored tests; receipt
+  `unit/cpp-e2ca7816ffc74dc18ef850d7f4d540f0/results.json`. Complete logs are
+  `no-compat-{focused2,full-suite,clippy2,tree-lint,tree-lint-focused,full-cpp,
+  fmt-final,cpp-fmt}.log` under `r244-chunk-stream/`.
+
+## Remaining bounded-publication wiring
+
+- An active 256 MiB chunk can hold more than 65,536 tiny append locations.
+  `MAX_DIRECTORY_MUTATION_EXTENTS` and the 128-page publication guard cannot be
+  raised to accommodate a whole chunk in one allocation. During rollover,
+  stage bounded path-copy batches under durable candidate guards; retain each
+  staged root until the final bounded head CAS publishes the complete root.
+  Intermediate staging must not publish stable heads or immutable roots under
+  the final epoch/generation identity. Ordinary append still performs no KV
+  work when optional checkpoints are off, and rollover performs one head CAS.
+- Staging restart/retry and orphan cleanup must use retention-control revisions
+  and ownership fences. This is new-format publication construction, not an old
+  directory migration. Add tiny-payload history coverage beyond one mutation
+  budget and crash between stages before marking indexed-worker wiring done.
+- All new sealed chunks have an exact original logical base in their attachment.
+  Persist exact sealed chunk spans for whole-chunk retention. No unknown-base
+  compatibility fallback or old-consumer generation conversion is needed.
 
 ## Phase 0 — Establish evidence and settle contracts
 
@@ -759,23 +533,17 @@ adaptation rather than a new transport or storage engine.
   this check does not claim tests or code are complete. Files:
   `doc/backlog/R244-chunk-stream-incremental-directory-publication.md`,
   `doc/design/chunkds/design-crowdb-chunk-stream.md`.
-- [~] **T04 — Define format and wire compatibility**: inventory old bincode
-  manifests/pages, shared frames, and current wire consumers; define version
-  detection and supported read/migration/rollout behavior. Finalize legacy Stream
-  chunks at their persisted durable cursor before grouped writes, preserving
-  acknowledged data without inventing group boundaries in uncommitted V1 bytes.
-  New synchronized write success
-  must prove peer support or use an explicitly safe compatibility path. Do not
-  silently reinterpret old pages or accept an ignored sync flag. Conversion of
-  retained directories, if required, is resumable with old roots retained until
-  the new head is published; no full-history conversion on every open. Files:
-  `lib/crowdb-protocol/src/chunk_stream.rs`,
-  `lib/crowdb-protocol/src/key/chunk_stream.rs`,
-  `lib/crowdb-protocol/src/frame.rs`,
-  `lib/crowdb-protocol/cpp/include/crowdb-protocol/frame.h`,
-  `lib/crowdb-protocol/src/fbs/diskio.fbs`,
-  `lib/crowdb-chunk-stream/src/kv.rs`,
-  `lib/crowdb-diskio-client/src/client.rs`.
+- [~] **T04 — Remove unpublished format/service compatibility**: the user
+  confirms no product release or supported persisted old format exists. Remove
+  old raw Chunk/Stream decoders, frozen schema copies, directory conversion,
+  migration guards/progress/source keys, old-server sync fallback and revision-1
+  reader/tree support. Keep one canonical frame format and current directory
+  schema; malformed/unknown records and missing sync proof fail explicitly.
+  Wire the grouped/indexed worker and delete its predecessor together. Retain
+  new-format reopen/fault tests and unchanged performance gates. No format
+  negotiation or per-chunk capability fields are needed for matched services.
+  Files: protocol frame/metadata codecs, Stream directory/worker, object readers,
+  DiskIO semantic writes, native tree catalog/frame codecs and affected tests.
 
 ## Phase 1 — Combine write and synchronization
 
@@ -823,7 +591,7 @@ adaptation rather than a new transport or storage engine.
 
 - [ ] **T08 — Implement the selected common frame revision**: update the Rust
   and C++ physical codecs together, with shared golden vectors, identical CRC
-  coverage, versioned legacy handling, checked sizes, and geometry helpers.
+  coverage, strict current-format handling, checked sizes, and geometry helpers.
   Implement T02's Stream head/follower roles, head length/count, follower head
   offset/ordinal, and group validation; preserve count-one heads. CRC covers
   header/group fields/payload, with separate expected chunk-ID validation.
@@ -852,7 +620,7 @@ adaptation rather than a new transport or storage engine.
   fence list with a bounded root and independent page references. Represent
   multi-frame extents with logical intervals and `ChunkLocation` geometry;
   keep page identity independent of owner epoch/head generation. Implement
-  T04's decoder/migration rules and purpose/identity checks. Maps to D01/D07,
+  T04's single-format rules and purpose/identity checks. Maps to D01/D07,
   A01/A08/A09. Files: `lib/crowdb-protocol/src/chunk_stream.rs`,
   `lib/crowdb-protocol/src/key/chunk_stream.rs`,
   `lib/crowdb-protocol/tests/frame_test.rs`,
@@ -1129,7 +897,7 @@ The task entries above are the authoritative per-hunk list. Consolidated areas:
   primary files are protocol `frame_test.rs`, proposed `diskio_wire_test.rs`
   and `stream_directory_test.rs`, and Stream `metadata_test.rs`.
   Shared-format golden vectors cross Rust/C++ and every purpose, including
-  CRC coverage, incomplete/corrupt input, legacy bytes, and length bounds.
+  CRC coverage, incomplete/corrupt input, unsupported revisions, and length bounds.
 - Integration coverage: synchronized server response lifetime/errors, mirror
   repair, production local-cursor refresh, bounded scans, CAS ambiguity,
   lazy directory/cache, retention/GC, ownership, and finite views. Keep Stream's
@@ -1169,7 +937,7 @@ the exact available tasks before implementation, and do not run `clean-env` or
 shared service teardown during this read-only planning audit.
 If `DiskWriter` signature changes affect the access-server test adapter, also
 run `pixi run cargo check -p crowdb-access-server --tests` before declaring the
-seam migration complete.
+seam integration complete.
 
 The common frame revision also requires consumer/native-buffer and C++ codec
 coverage. Include every changed C++ frame consumer in format checks:

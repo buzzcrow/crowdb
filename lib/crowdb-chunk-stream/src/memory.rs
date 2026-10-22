@@ -16,6 +16,7 @@ use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::frame::{FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES};
 use tokio::sync::{Mutex, Notify};
 
+mod allocation;
 mod directory_records;
 mod metadata;
 
@@ -282,32 +283,7 @@ impl StreamChunkStore for MemoryStreamStore {
         writer_epoch: u64,
         purpose: crowdb_protocol::chunk_stream::StreamPurpose,
     ) -> Result<ActiveChunkDescriptor> {
-        let low = self.next_chunk.fetch_add(1, Ordering::AcqRel);
-        let chunk_id = ChunkId {
-            high: (purpose.chunk_type() as u64) << 56,
-            low,
-        };
-        self.state.lock().await.chunks.insert(
-            chunk_id,
-            Chunk {
-                bytes: Vec::new(),
-                cursor: 0,
-                synchronized_cursor: 0,
-                write_mode: ChunkWriteMode::Fresh,
-                capacity: self.chunk_capacity,
-                sealed: false,
-                released: false,
-                writer_epoch,
-                last_advance_checksum: None,
-            },
-        );
-        Ok(ActiveChunkDescriptor {
-            chunk_id,
-            physical_start: 0,
-            logical_start: 0,
-            acknowledged_cursor: 0,
-            capacity: self.chunk_capacity,
-        })
+        self.allocate_active_chunk(writer_epoch, purpose).await
     }
 
     async fn write_mirrors_with_images(

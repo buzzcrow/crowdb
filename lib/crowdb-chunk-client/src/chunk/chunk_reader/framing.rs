@@ -23,10 +23,12 @@ struct FramedLocation {
 }
 
 pub(super) fn object_layout(location: &Location) -> ReadResult<FrameLayout> {
-    for layout in [FrameLayout::Legacy, FrameLayout::OrdinaryV2] {
-        if layout.physical_length(location.logical_length).ok() == Some(location.length) {
-            return Ok(layout);
-        }
+    if FrameLayout::OrdinaryV2
+        .physical_length(location.logical_length)
+        .ok()
+        == Some(location.length)
+    {
+        return Ok(FrameLayout::OrdinaryV2);
     }
     Err(ReadError::InvalidLocations(
         "framed location length is inconsistent".into(),
@@ -207,20 +209,12 @@ fn decode_framed_partial(
             .inc_by(u64::try_from(parse_started.elapsed().as_nanos()).unwrap_or(u64::MAX));
         let (header, physical_length) =
             parsed.map_err(|error| ReadError::DataLoss(format!("invalid chunk frame: {error}")))?;
-        if !matches!(
-            header.magic,
-            FrameMagic::RepoSmallV1
-                | FrameMagic::RepoLargeV1
-                | FrameMagic::RepoSmallV2
-                | FrameMagic::RepoLargeV2
-        ) {
+        if !matches!(header.magic, FrameMagic::RepoSmallV2 | FrameMagic::RepoLargeV2) {
             return Err(ReadError::DataLoss(
                 "framed location has unsupported frame kind".into(),
             ));
         }
-        if header.magic.is_v2() != (framed.geometry == FrameLayout::OrdinaryV2)
-            || usize::from(header.payload_offset) != framed.geometry.header_bytes()
-        {
+        if usize::from(header.payload_offset) != framed.geometry.header_bytes() {
             return Err(ReadError::DataLoss(
                 "frame revision disagrees with location geometry".into(),
             ));

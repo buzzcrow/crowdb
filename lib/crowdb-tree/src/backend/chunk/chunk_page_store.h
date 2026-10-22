@@ -34,9 +34,8 @@ struct ChunkPageRef
     // Public frame location. Integrity belongs to the frame footer, never to
     // this high-cardinality manifest entry.
     ChunkId  chunk_id;
-    uint64_t offset         = 0;
-    uint32_t length         = 0;
-    uint8_t  frame_revision = 1;
+    uint64_t offset = 0;
+    uint32_t length = 0;
 };
 
 struct ChunkPagePack
@@ -67,7 +66,7 @@ struct ChunkReferenceSegmentImage
 
 struct ChunkManifest
 {
-    uint32_t                           format_version    = 0;
+    uint32_t                           format_version    = kChunkManifestFormat;
     uint64_t                           tree_id           = 0;
     uint64_t                           generation        = 0;
     uint64_t                           owner_epoch       = 0;
@@ -80,16 +79,6 @@ struct ChunkManifest
     std::vector<ChunkReferenceSegment> reference_segments;
     std::vector<ChunkPagePack>         packs;
 };
-
-inline uint64_t chunk_pack_owner(const ChunkManifest &manifest, const ChunkPagePack &pack)
-{
-    if (manifest.format_version >= 2) {
-        return pack.owner_tree_id;
-    }
-    // Older manifests did not distinguish same-lineage reuse from inherited
-    // reuse. Conservatively materialize every reused pack on the next pass.
-    return pack.reused ? UINT64_MAX : manifest.tree_id;
-}
 
 class RootCatalog
 {
@@ -154,7 +143,7 @@ class MemoryRootCatalog final : public RootCatalog
     [[nodiscard]] uint64_t reference_segment_count(uint64_t tree_id) const;
     void                   corrupt_active_reference_segment(size_t segment_index, size_t ref_index);
     void                   corrupt_active_pack_layout_for_tests(uint64_t tree_id);
-    void                   downgrade_active_manifest_for_tests(uint64_t tree_id);
+    void                   corrupt_active_manifest_version_for_tests(uint64_t tree_id);
     void                   block_next_publish_for_tests();
     void                   wait_for_blocked_publish_for_tests() const;
     void                   release_blocked_publish_for_tests();

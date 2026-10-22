@@ -10,9 +10,7 @@ namespace crowdb::tree::detail
 
 [[nodiscard]] uint32_t reference_segment_checksum(const ChunkReferenceSegmentImage &segment);
 [[nodiscard]] uint32_t manifest_checksum(const ChunkManifest &manifest);
-[[nodiscard]] uint64_t reference_segment_owner(const ChunkManifest &manifest, const ChunkReferenceSegment &segment);
 
-[[nodiscard]] uint32_t             encoded_page_ref_length(const ChunkPageRef &ref);
 [[nodiscard]] std::vector<uint8_t> encode_reference_segment(const ChunkReferenceSegmentImage &segment);
 [[nodiscard]] std::shared_ptr<const ChunkReferenceSegmentImage>
 decode_reference_segment(const std::vector<uint8_t> &bytes);

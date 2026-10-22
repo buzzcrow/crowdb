@@ -31,9 +31,7 @@ impl StreamExtentLocation {
     /// # Errors
     /// Rejects overflowing physical intervals or locations outside the chunk limit.
     pub fn end_physical(self) -> Result<u64, StreamDirectoryError> {
-        let length = self
-            .format
-            .layout()
+        let length = crate::frame::FrameLayout::StreamGroupV2
             .physical_length(self.location.logical_length)
             .map_err(|_| StreamDirectoryError::InvalidBounds)?;
         self.location
@@ -103,9 +101,9 @@ fn leaf_bounds(page: &super::StreamDirectoryLeaf) -> Result<PageBounds, StreamDi
         }
         end = extent.end_logical()?;
         let physical_end = extent.end_physical()?;
-        if let Some((chunk, physical, format)) = previous {
+        if let Some((chunk, physical)) = previous {
             if chunk == extent.location.chunk_id {
-                if extent.location.frame_offset != physical || extent.format != format {
+                if extent.location.frame_offset != physical {
                     return Err(StreamDirectoryError::InvalidBounds);
                 }
             } else if extent.location.frame_offset != 0 || chunks.contains(&extent.location.chunk_id) {
@@ -113,7 +111,7 @@ fn leaf_bounds(page: &super::StreamDirectoryLeaf) -> Result<PageBounds, StreamDi
             }
         }
         chunks.insert(extent.location.chunk_id);
-        previous = Some((extent.location.chunk_id, physical_end, extent.format));
+        previous = Some((extent.location.chunk_id, physical_end));
     }
     Ok(PageBounds {
         level: 0,

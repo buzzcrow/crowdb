@@ -100,8 +100,8 @@ Every allocation preserves the durable `StreamPurpose`: system journals use
 `ChunkType::Wal`, business streams use `ChunkType::Stream`. Both use the
 canonical `stream/` owner key followed by the 128-bit stream identity. Reopen
 rejects purpose disagreement between binding, manifest, chunk identity, and
-chunk information. Legacy unattributed records are not inferred or retagged;
-Chunk-KV journals require Wal streams.
+chunk information, including a missing or mismatched owner key. Chunk-KV
+journals require Wal streams.
 
 `ProductionStreamRuntime` shares the process KV client and discovered chunk IO
 routes. The Chunk-KV server chooses the metadata store; the Active binding
@@ -187,9 +187,7 @@ does not allocate buffers proportional to an untrusted declared group size.
 Role-dependent header sizes determine payload capacities. Interior frames fill
 their role's payload capacity and only the last may be short. Location arithmetic
 derives group geometry from the format version, role capacities, and total
-logical length, without one directory entry per frame. Existing `StreamV1` has
-a 14-byte header, at most 65,502 payload bytes, and a 20-byte footer; these legacy
-constants do not define the grouped revision's payload capacities.
+logical length, without one directory entry per frame.
 
 Revision 2 retains the 14-byte fixed prefix: little-endian magic, payload offset,
 payload size, and write timestamp. The low magic byte is 2; the high byte keeps
@@ -201,30 +199,19 @@ and add head physical offset (u64) and ordinal (u32). Both grouped headers are
 The 20-byte footer stores the little-endian CRC32C followed by the big-endian
 chunk identity. Revision-2 CRC starts at zero and excludes the footer.
 
-Legacy decoding accepts both retained revision-1 CRC conventions: header plus
-payload, and header plus payload plus chunk identity. Expected chunk identity
-is mandatory for both. New revision-2 frames accept only the canonical CRC
-coverage. Unknown revisions, roles outside their purpose, and noncanonical
-revision-2 header offsets are rejected. A legacy encoder's retained bytes do
-not define the new revision's wire format.
+Only the canonical revision-2 frame format is accepted. Unknown revisions,
+roles outside their purpose and noncanonical header offsets are rejected.
 
 Metadata records use a CSTR envelope with an explicit little-endian version,
-record kind, zero flags and exact body length. Frozen legacy manifest/page
-schemas retain their fixed-integer bincode layout. Head bodies begin with the
-legacy purpose enum, so raw and enveloped heads are distinguishable. A legacy
-page instead begins with arbitrary stream-identity bytes, which may equal the
-magic: its owning key namespace selects its decoder explicitly. The retained
-per-frame extent-page namespace stays raw; new independent page namespaces use
-versioned records. Unknown versions/kinds, malformed lengths and trailing bytes
-fail without falling back to another schema. A head upgrade uses the existing
-revision CAS and preserves referenced page identities.
+record kind, zero flags and exact body length. Indexed heads and independent
+pages each have one supported schema. Unknown versions/kinds, malformed lengths,
+raw bodies and trailing bytes fail without selecting another schema. No format
+migration or older-service fallback is supported.
 
 The directory keeps one extent per append group and preserves its boundary.
 Recovery reconstructs that boundary from the head and followers. It does not
 merge groups in a way that loses append validity or use a valid follower as an
-independent append. Legacy chunks retain their published durable-cursor contract
-and are finalized before new grouped writes; readers decode them explicitly
-without inventing group boundaries for their uncommitted suffixes.
+independent append.
 
 Validation rejects empty, overlapping, unordered, or overflowing ranges,
 inconsistent page references, and gaps through the retained sealed interval.

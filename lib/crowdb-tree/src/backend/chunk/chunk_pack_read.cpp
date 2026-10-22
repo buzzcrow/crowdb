@@ -27,7 +27,7 @@ Status ChunkPageStore::read_pack(const ChunkPageRef &ref, std::shared_ptr<const 
     const bool use_cache = cancellation.cancelled_id != nullptr;
     auto       cached    = use_cache ? cached_pack_ : nullptr;
     if (cached != nullptr && cached->ref.chunk_id == ref.chunk_id && cached->ref.offset == ref.offset &&
-        cached->ref.length == ref.length && cached->ref.frame_revision == ref.frame_revision) {
+        cached->ref.length == ref.length) {
         if (cancellation.cancelled()) {
             return Status::unavailable("chunk page read cancelled");
         }
@@ -37,7 +37,7 @@ Status ChunkPageStore::read_pack(const ChunkPageRef &ref, std::shared_ptr<const 
         return Status::Ok();
     }
     pack_reads_.fetch_add(1, std::memory_order_relaxed);
-    const size_t physical_length = chunk_framed_length(ref.length, ref.frame_revision);
+    const size_t physical_length = chunk_framed_length(ref.length);
     if (physical_length == 0) {
         return Status::corruption("chunk page frame length overflows");
     }
@@ -61,7 +61,7 @@ Status ChunkPageStore::read_pack(const ChunkPageRef &ref, std::shared_ptr<const 
         auto       payload     = std::make_shared<std::vector<uint8_t>>();
         const auto frame_error = crowdb::protocol::parse_frames(
             *framed, {.high = ref.chunk_id.high, .low = ref.chunk_id.low},
-            chunk_page_frame_magic(chunk_purpose(ref.chunk_id), ref.frame_revision), ref.length, payload.get());
+            chunk_page_frame_magic(chunk_purpose(ref.chunk_id)), ref.length, payload.get());
         if (frame_error == crowdb::protocol::FrameError::Ok) {
             auto entry = std::make_shared<CachedPack>(CachedPack{.ref = ref, .bytes = payload});
             if (use_cache) {

@@ -3,7 +3,7 @@
 
 use crowdb_protocol::chunk_stream::{
     StreamDirectoryHead, StreamDirectoryLeaf, StreamDirectoryPage, StreamDirectoryRef, StreamExtentLocation,
-    StreamFrameFormat, StreamName, StreamPurpose,
+    StreamName, StreamPurpose,
 };
 use crowdb_protocol::chunkdb::rpc::ChunkType;
 use crowdb_protocol::common::ChunkId;
@@ -29,7 +29,6 @@ impl TestDirectory {
                     frame_offset: physical,
                     logical_length: length,
                 },
-                format: StreamFrameFormat::GroupedV2,
             }],
         })
     }

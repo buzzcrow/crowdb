@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Explicit record dispatch around the retained manifest/page body schemas.
+//! Strict versioned Stream metadata codecs.
 
 use bincode::Options;
 use serde::{de::DeserializeOwned, Serialize};
@@ -15,13 +15,11 @@ const HEADER_BYTES: usize = 12;
 const MANIFEST: u8 = 1;
 const EXTENT_PAGE: u8 = 2;
 
-/// Distinguishes raw retained bytes from a record with an explicit envelope.
+/// Encoding of one explicitly versioned metadata schema.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StreamRecordEncoding {
-    Legacy,
     Version1,
     Version2,
-    Version3,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -45,7 +43,7 @@ pub enum StreamRecordError {
 }
 
 /// # Errors
-/// Returns an error when the retained body cannot be encoded or is too large.
+/// Returns an error when the metadata body cannot be encoded or is too large.
 pub fn encode_stream_manifest_record(value: &StreamManifest) -> Result<Vec<u8>, StreamRecordError> {
     encode_record(MANIFEST, value)
 }
@@ -59,23 +57,19 @@ pub fn decode_stream_manifest_record(
 }
 
 /// # Errors
-/// Returns an error when the retained body cannot be encoded or is too large.
+/// Returns an error when the metadata body cannot be encoded or is too large.
 pub fn encode_stream_extent_page_record(value: &StreamExtentPage) -> Result<Vec<u8>, StreamRecordError> {
     encode_record(EXTENT_PAGE, value)
 }
 
 /// # Errors
-/// The owning key namespace supplies the encoding: legacy page bodies start
-/// with arbitrary stream-ID bytes and can overlap the envelope magic.
 /// Rejects wrong versions/kinds, trailing bytes or a malformed body.
 pub fn decode_stream_extent_page_record(
     bytes: &[u8],
     encoding: StreamRecordEncoding,
 ) -> Result<DecodedStreamRecord<StreamExtentPage>, StreamRecordError> {
     let body = match encoding {
-        StreamRecordEncoding::Legacy => bytes,
         StreamRecordEncoding::Version2 => return Err(StreamRecordError::UnsupportedVersion(2)),
-        StreamRecordEncoding::Version3 => return Err(StreamRecordError::UnsupportedVersion(3)),
         StreamRecordEncoding::Version1 => {
             if !bytes.starts_with(MAGIC) {
                 return Err(StreamRecordError::InvalidEnvelope);
@@ -110,12 +104,8 @@ fn decode_record<T: DeserializeOwned>(
     kind: u8,
     bytes: &[u8],
 ) -> Result<DecodedStreamRecord<T>, StreamRecordError> {
-    let (body, encoding) = if bytes.starts_with(MAGIC) {
-        (decode_envelope(kind, bytes)?, StreamRecordEncoding::Version1)
-    } else {
-        (bytes, StreamRecordEncoding::Legacy)
-    };
-    decode_body(body, encoding)
+    let body = decode_envelope(kind, bytes)?;
+    decode_body(body, StreamRecordEncoding::Version1)
 }
 
 pub(super) fn decode_body<T: DeserializeOwned>(
@@ -162,15 +152,6 @@ pub(super) fn decode_versioned_envelope(
     Ok(&bytes[HEADER_BYTES..])
 }
 
-/// A stored head is decoded explicitly; compatibility readers cannot publish
-/// over an indexed head by treating it as the retained body schema.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum StreamHeadRecord {
-    Legacy(StreamManifest),
-    Indexed(super::StreamDirectoryHead),
-    Migrating(super::StreamMigrationHead),
-}
-
 /// # Errors
 /// Rejects invalid indexed checkpoints or an unencodable record.
 pub fn encode_stream_directory_head(
@@ -183,45 +164,14 @@ pub fn encode_stream_directory_head(
 }
 
 /// # Errors
-/// Rejects invalid migration scope or an unencodable record.
-pub fn encode_stream_migration_head(
-    value: &super::StreamMigrationHead,
-) -> Result<Vec<u8>, StreamRecordError> {
-    value
+/// Rejects unknown versions/kinds, invalid bounds and trailing bytes.
+pub fn decode_stream_head_record(bytes: &[u8]) -> Result<super::StreamDirectoryHead, StreamRecordError> {
+    let body = decode_versioned_envelope(2, MANIFEST, bytes)?;
+    let decoded: DecodedStreamRecord<super::StreamDirectoryHead> =
+        decode_body(body, StreamRecordEncoding::Version2)?;
+    decoded
+        .value
         .validate()
         .map_err(|error| StreamRecordError::InvalidDirectory(error.to_string()))?;
-    encode_versioned_record(3, MANIFEST, value)
-}
-
-/// # Errors
-/// Rejects unknown versions/kinds, invalid bounds and trailing bytes.
-pub fn decode_stream_head_record(bytes: &[u8]) -> Result<StreamHeadRecord, StreamRecordError> {
-    if !bytes.starts_with(MAGIC) {
-        return decode_stream_manifest_record(bytes).map(|record| StreamHeadRecord::Legacy(record.value));
-    }
-    let version = bytes.get(4..6).ok_or(StreamRecordError::InvalidEnvelope)?;
-    match u16::from_le_bytes([version[0], version[1]]) {
-        1 => decode_stream_manifest_record(bytes).map(|record| StreamHeadRecord::Legacy(record.value)),
-        2 => {
-            let body = decode_versioned_envelope(2, MANIFEST, bytes)?;
-            let decoded: DecodedStreamRecord<super::StreamDirectoryHead> =
-                decode_body(body, StreamRecordEncoding::Version2)?;
-            decoded
-                .value
-                .validate()
-                .map_err(|error| StreamRecordError::InvalidDirectory(error.to_string()))?;
-            Ok(StreamHeadRecord::Indexed(decoded.value))
-        }
-        3 => {
-            let body = decode_versioned_envelope(3, MANIFEST, bytes)?;
-            let decoded: DecodedStreamRecord<super::StreamMigrationHead> =
-                decode_body(body, StreamRecordEncoding::Version3)?;
-            decoded
-                .value
-                .validate()
-                .map_err(|error| StreamRecordError::InvalidDirectory(error.to_string()))?;
-            Ok(StreamHeadRecord::Migrating(decoded.value))
-        }
-        other => Err(StreamRecordError::UnsupportedVersion(other)),
-    }
+    Ok(decoded.value)
 }

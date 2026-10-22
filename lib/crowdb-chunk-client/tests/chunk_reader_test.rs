@@ -22,7 +22,9 @@ use crowdb_protocol::chunkdb::rpc::{
 };
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::diskdb::rpc::Segment;
-use crowdb_protocol::frame::{encode_frame, FrameMagic, MAX_FRAME_BYTES, MAX_FRAME_PAYLOAD_BYTES};
+use crowdb_protocol::frame::{
+    encode_frame, FrameMagic, MAX_FRAME_BYTES, MAX_FRAME_V2_PAYLOAD_BYTES as MAX_FRAME_PAYLOAD_BYTES,
+};
 use tokio::sync::{Notify, Semaphore};
 
 const KIB: usize = 1024;
@@ -449,7 +451,7 @@ async fn framed_read_stream_keeps_whole_frame_under_small_window_setting() {
     let id = ChunkId { high: 13, low: 37 };
     let segment = segment(1);
     let payload = b"abcdefghij";
-    let frame = Bytes::from(encode_frame(FrameMagic::RepoLargeV1, id, payload, 1).unwrap());
+    let frame = Bytes::from(encode_frame(FrameMagic::RepoLargeV2, id, payload, 1).unwrap());
     let chunk = Chunk {
         id: Some(id),
         state: ChunkState::Sealed as i32,
@@ -515,7 +517,7 @@ async fn read_stream_selects_only_locations_overlapping_each_window() {
     let mut physical = Vec::new();
     let mut locations = Vec::new();
     for (index, payload) in [b"abcd", b"efgh", b"ijkl"].into_iter().enumerate() {
-        let frame = encode_frame(FrameMagic::RepoLargeV1, id, payload, 1).unwrap();
+        let frame = encode_frame(FrameMagic::RepoLargeV2, id, payload, 1).unwrap();
         locations.push(Location {
             chunk_id: Some(id),
             offset: physical.len() as u64,
@@ -585,7 +587,7 @@ async fn stream_waits_for_first_result_and_retains_three_slots_until_consumer_re
     let mut physical = Vec::new();
     let mut locations = Vec::new();
     for (index, payload) in [b"aaaa", b"bbbb", b"cccc", b"dddd"].into_iter().enumerate() {
-        let frame = encode_frame(FrameMagic::RepoLargeV1, id, payload, 1).unwrap();
+        let frame = encode_frame(FrameMagic::RepoLargeV2, id, payload, 1).unwrap();
         locations.push(Location {
             chunk_id: Some(id),
             offset: physical.len() as u64,
@@ -680,7 +682,7 @@ async fn global_read_budget_remains_charged_while_http_keeps_frame_views() {
     let mut segment = segment(1);
     segment.unit_count = 2;
     let payload = vec![0x5a; MAX_FRAME_PAYLOAD_BYTES];
-    let frame = encode_frame(FrameMagic::RepoLargeV1, id, &payload, 1).unwrap();
+    let frame = encode_frame(FrameMagic::RepoLargeV2, id, &payload, 1).unwrap();
     assert_eq!(frame.len(), MAX_FRAME_BYTES);
     let physical = Bytes::from(frame.repeat(32));
     let chunk = Chunk {
@@ -754,7 +756,7 @@ async fn frame_crossing_physical_parts_returns_two_original_payload_views() {
     let first_segment = segment(1);
     let second_segment = segment(2);
     let payload = b"abcdefghijklmnopqrst";
-    let frame = encode_frame(FrameMagic::RepoSmallV1, id, payload, 1).unwrap();
+    let frame = encode_frame(FrameMagic::RepoSmallV2, id, payload, 1).unwrap();
     let frame_offset = 1000_usize;
     let first_length = 1024 - frame_offset;
     let mut first_data = vec![0; 1024];
@@ -824,7 +826,12 @@ async fn frame_crossing_physical_parts_returns_two_original_payload_views() {
         .unwrap();
     assert_eq!(views.concat(), payload);
     assert_eq!(views.len(), 2);
-    assert_eq!(views[0].as_ptr(), first_data.slice(frame_offset + 14..).as_ptr());
+    assert_eq!(
+        views[0].as_ptr(),
+        first_data
+            .slice(frame_offset + crowdb_protocol::frame::FRAME_V2_HEADER_BYTES..)
+            .as_ptr()
+    );
     assert_eq!(views[1].as_ptr(), second_data.as_ptr());
 }
 
@@ -834,7 +841,7 @@ async fn framed_mirror_crc_failure_uses_a_verified_fallback() {
     let first = segment(1);
     let second = segment(2);
     let payload = b"verified mirror payload";
-    let valid = Bytes::from(encode_frame(FrameMagic::RepoSmallV1, id, payload, 1).unwrap());
+    let valid = Bytes::from(encode_frame(FrameMagic::RepoSmallV2, id, payload, 1).unwrap());
     let mut corrupt = valid.to_vec();
     corrupt[14] ^= 0x80;
     let chunk = Chunk {

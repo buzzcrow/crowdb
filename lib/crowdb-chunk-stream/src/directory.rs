@@ -18,8 +18,7 @@ mod append;
 mod metadata;
 pub(crate) use metadata::DirectoryRecords;
 pub use metadata::{
-    DirectoryCacheSnapshot, DirectoryHeadSnapshot, DirectoryMetadataStore, StreamMigrationSnapshot,
-    StreamMigrationStep, DIRECTORY_PAGE_CACHE_SLOTS,
+    DirectoryCacheSnapshot, DirectoryHeadSnapshot, DirectoryMetadataStore, DIRECTORY_PAGE_CACHE_SLOTS,
 };
 mod publication;
 mod read;
@@ -179,7 +178,7 @@ fn checked_join(previous: StreamExtentLocation, next: StreamExtentLocation) -> R
     let physical = previous.end_physical().map_err(invalid_directory)?;
     if logical != next.logical_start
         || if previous.location.chunk_id == next.location.chunk_id {
-            physical != next.location.frame_offset || previous.format != next.format
+            physical != next.location.frame_offset
         } else {
             next.location.frame_offset != 0
         }

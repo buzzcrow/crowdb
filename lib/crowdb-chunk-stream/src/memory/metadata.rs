@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Legacy test metadata shares the conditional record map with indexed storage.
+//! Test metadata shares the conditional record map with indexed storage.
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -104,7 +104,7 @@ impl StreamMetadataStore for MemoryStreamStore {
         {
             return Err(StreamError::StaleWriter);
         }
-        publish_legacy_records(&mut state, &manifest, &pages)?;
+        publish_metadata_records(&mut state, &manifest, &pages)?;
         for page in pages {
             state.pages.insert(
                 (
@@ -158,7 +158,7 @@ impl StreamMetadataStore for MemoryStreamStore {
     }
 }
 
-fn publish_legacy_records(
+fn publish_metadata_records(
     state: &mut MemoryState,
     manifest: &StreamManifest,
     pages: &[StreamExtentPage],

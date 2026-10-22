@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use crowdb_chunkdb::storage::decode_chunk_for_tests;
+use crowdb_chunkdb::storage::{decode_chunk_for_tests, encode_chunk_for_tests};
 use crowdb_kv::cluster::group::{ProposeResult, PxGroup};
 use crowdb_kv::cluster::{PxLocalReplica, PxLocalReplicaRole};
 use crowdb_kv::kv::{CrowdbTreeConfig, CrowdbTreeEngine, KVEngine};
@@ -22,7 +22,7 @@ fn chunk_key() -> Bytes {
 }
 
 fn metadata(modify_ts: u64, acknowledged_cursor: u64) -> Vec<u8> {
-    bincode::serialize(&Chunk {
+    encode_chunk_for_tests(&Chunk {
         id: Some(ChunkId { high: 1, low: 2 }),
         chunk_type: ChunkType::Wal as i32,
         modify_ts,

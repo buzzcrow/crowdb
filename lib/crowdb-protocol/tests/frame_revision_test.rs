@@ -174,11 +174,7 @@ fn group_validator_keeps_previous_boundary_until_finish() {
 
 #[test]
 fn geometry_maps_boundaries_and_rejects_overflow_for_each_revision() {
-    for layout in [
-        FrameLayout::Legacy,
-        FrameLayout::OrdinaryV2,
-        FrameLayout::StreamGroupV2,
-    ] {
+    for layout in [FrameLayout::OrdinaryV2, FrameLayout::StreamGroupV2] {
         let capacity = layout.payload_capacity();
         let location = ChunkLocation {
             chunk_id: CHUNK,

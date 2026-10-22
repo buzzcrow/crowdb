@@ -1018,14 +1018,14 @@ TEST(ChunkPageStore, StaleMaterializationCannotReplaceForegroundCheckpoint)
     EXPECT_GT(materializer.stats().orphan_bytes, 0U);
 }
 
-TEST(ChunkPageStore, RejectsLegacyManifestWithoutPublicFrameLocations)
+TEST(ChunkPageStore, RejectsUnsupportedManifestVersion)
 {
     auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
     auto           transport = std::make_shared<MemoryChunkTransport>();
     ChunkPageStore store({.tree_id = 52, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1},
                          catalog, transport);
     publish_raw_generation(&store, 6);
-    catalog->downgrade_active_manifest_for_tests(52);
+    catalog->corrupt_active_manifest_version_for_tests(52);
 
     ChunkPageStore reopened({.tree_id = 52, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1},
                             catalog, transport);

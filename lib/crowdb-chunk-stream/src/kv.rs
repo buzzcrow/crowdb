@@ -17,7 +17,6 @@ use futures::{stream, StreamExt, TryStreamExt};
 mod directory;
 mod directory_records;
 pub use directory::{DirectoryCacheSnapshot, DirectoryHeadSnapshot, DIRECTORY_PAGE_CACHE_SLOTS};
-pub use directory::{StreamMigrationSnapshot, StreamMigrationStep};
 mod pages;
 
 use crate::perf::{perf, PhaseTimer};
@@ -364,16 +363,14 @@ impl StreamMetadataStore for KvStreamMetadataStore {
 }
 
 fn encode(value: &StreamExtentPage) -> Result<Vec<u8>> {
-    bincode::serialize(value)
+    crowdb_protocol::chunk_stream::encode_stream_extent_page_record(value)
         .map_err(|error| StreamError::Internal(format!("stream metadata encode failed: {error}")))
 }
 
 fn decode(value: &[u8]) -> Result<StreamExtentPage> {
-    // This retained key namespace always stores the raw legacy body. Its stream
-    // identity can overlap envelope magic, so never infer encoding from bytes.
     crowdb_protocol::chunk_stream::decode_stream_extent_page_record(
         value,
-        crowdb_protocol::chunk_stream::StreamRecordEncoding::Legacy,
+        crowdb_protocol::chunk_stream::StreamRecordEncoding::Version1,
     )
     .map(|decoded| decoded.value)
     .map_err(|error| StreamError::Corruption(format!("stream metadata decode failed: {error}")))

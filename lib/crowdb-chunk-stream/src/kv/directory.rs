@@ -6,16 +6,13 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use crowdb_protocol::chunk_stream::{
-    StreamDirectoryHead, StreamDirectoryPageId, StreamMigrationProgress, StreamName, StreamRootIdentity,
+    StreamDirectoryHead, StreamDirectoryPageId, StreamName, StreamRootIdentity,
 };
 
 use super::KvStreamMetadataStore;
 use crate::directory::DirectoryMetadataStore;
-pub use crate::directory::{
-    DirectoryCacheSnapshot, DirectoryHeadSnapshot, StreamMigrationSnapshot, StreamMigrationStep,
-    DIRECTORY_PAGE_CACHE_SLOTS,
-};
-use crate::{DirectoryMutation, Result, StreamChunkStore, StreamDirectoryStore};
+pub use crate::directory::{DirectoryCacheSnapshot, DirectoryHeadSnapshot, DIRECTORY_PAGE_CACHE_SLOTS};
+use crate::{DirectoryMutation, Result, StreamDirectoryStore};
 
 impl KvStreamMetadataStore {
     #[must_use]
@@ -53,50 +50,6 @@ impl KvStreamMetadataStore {
         mutation: &DirectoryMutation,
     ) -> Result<DirectoryHeadSnapshot> {
         self.directory.publish_directory(expected, head, mutation).await
-    }
-
-    /// # Errors
-    /// Returns migration marker/source IO/version/scope errors.
-    pub async fn load_directory_migration(
-        &self,
-        name: StreamName,
-    ) -> Result<Option<StreamMigrationSnapshot>> {
-        self.directory.load_directory_migration(name).await
-    }
-
-    /// # Errors
-    /// Returns legacy source preservation or migration head CAS errors.
-    pub async fn begin_directory_migration(
-        &self,
-        name: StreamName,
-        epoch: u64,
-        session: [u8; 16],
-    ) -> Result<StreamMigrationSnapshot> {
-        self.directory
-            .begin_directory_migration(name, epoch, session)
-            .await
-    }
-
-    /// # Errors
-    /// Returns conversion progress IO/version/scope errors.
-    pub async fn load_directory_migration_progress(
-        &self,
-        snapshot: &StreamMigrationSnapshot,
-    ) -> Result<Option<StreamMigrationProgress>> {
-        self.directory.load_directory_migration_progress(snapshot).await
-    }
-
-    /// # Errors
-    /// Returns bounded conversion IO/validation/CAS errors.
-    pub async fn advance_directory_migration(
-        &self,
-        snapshot: &StreamMigrationSnapshot,
-        chunks: &dyn StreamChunkStore,
-        limit: usize,
-    ) -> Result<StreamMigrationStep> {
-        self.directory
-            .advance_directory_migration(snapshot, chunks, limit)
-            .await
     }
 }
 

@@ -4,8 +4,7 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use crowdb_protocol::chunk_stream::{
-    decode_stream_head_record, StreamDirectoryHead, StreamDirectoryPageId, StreamHeadRecord, StreamName,
-    StreamRootIdentity,
+    decode_stream_head_record, StreamDirectoryHead, StreamDirectoryPageId, StreamName, StreamRootIdentity,
 };
 use crowdb_protocol::key::{
     BinaryKey, StreamDirectoryPageKey, StreamDirectoryRootKey, StreamManifestHeadKey,
@@ -18,12 +17,10 @@ use std::sync::Arc;
 
 mod cache;
 mod control;
-mod migration;
 mod publication;
 mod records;
 use cache::DirectoryRecordCache;
 pub use cache::{DirectoryCacheSnapshot, DIRECTORY_PAGE_CACHE_SLOTS};
-pub use migration::{StreamMigrationSnapshot, StreamMigrationStep};
 pub(crate) use records::DirectoryRecords;
 
 /// Shared indexed metadata state machine over conditional immutable records.
@@ -85,7 +82,7 @@ impl DirectoryMetadataStore {
         self.directory_pages.snapshot()
     }
     /// # Errors
-    /// Rejects legacy heads until migration, unknown versions and wrong metadata scope.
+    /// Rejects unknown versions and wrong metadata scope.
     pub async fn load_directory_head(&self, name: StreamName) -> Result<Option<DirectoryHeadSnapshot>> {
         let key = StreamManifestHeadKey { stream_name: name }.to_bytes();
         match self.records.get(&key).await.map_err(kv_error)? {
@@ -125,13 +122,8 @@ impl DirectoryMetadataStore {
     }
 
     fn decode_indexed(&self, bytes: &[u8], name: StreamName) -> Result<StreamDirectoryHead> {
-        let record = decode_stream_head_record(bytes)
+        let head = decode_stream_head_record(bytes)
             .map_err(|error| StreamError::Corruption(format!("stream head decode failed: {error}")))?;
-        let StreamHeadRecord::Indexed(head) = record else {
-            return Err(StreamError::InvalidRequest(
-                "legacy stream requires indexed migration".into(),
-            ));
-        };
         if head.stream_name != name || head.metadata_group_id != self.group_id {
             return Err(StreamError::Corruption(
                 "indexed head identity or metadata group is invalid".into(),

@@ -2,9 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crowdb_chunk_stream::{DirectoryIndex, DirectoryMutation};
-use crowdb_protocol::chunk_stream::{
-    StreamDirectoryHead, StreamExtentLocation, StreamFrameFormat, StreamName, StreamPurpose,
-};
+use crowdb_protocol::chunk_stream::{StreamDirectoryHead, StreamExtentLocation, StreamName, StreamPurpose};
 use crowdb_protocol::frame::ChunkLocation;
 use crowdb_protocol::{chunkdb::rpc::ChunkType, common::ChunkId};
 
@@ -27,7 +25,6 @@ impl TestIndexedMetadata {
                     frame_offset: 0,
                     logical_length: 1,
                 },
-                format: StreamFrameFormat::GroupedV2,
             })
             .collect()
     }

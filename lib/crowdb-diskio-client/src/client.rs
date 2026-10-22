@@ -404,7 +404,7 @@ impl WireClient {
     /// Parse the server's proof that a successful write was synchronized.
     ///
     /// # Errors
-    /// Rejects failed or invalid replies; old peers return no synchronization proof.
+    /// Rejects failed or invalid replies and returns explicit synchronization completion.
     pub async fn await_synchronized_write_response(future: CallFuture) -> WireResult<bool> {
         let response = future.await.map_err(WireError::from)?;
         parse_ret_code(&response)?;

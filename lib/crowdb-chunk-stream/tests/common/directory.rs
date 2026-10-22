@@ -10,9 +10,7 @@ use std::sync::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use crowdb_chunk_stream::{DirectoryIndex, DirectoryMutation, Result, StreamDirectoryStore};
-use crowdb_protocol::chunk_stream::{
-    StreamDirectoryPageId, StreamExtentLocation, StreamFrameFormat, StreamName, StreamPurpose,
-};
+use crowdb_protocol::chunk_stream::{StreamDirectoryPageId, StreamExtentLocation, StreamName, StreamPurpose};
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::frame::ChunkLocation;
 
@@ -91,7 +89,6 @@ pub fn test_locations(start: u64, count: usize) -> Vec<StreamExtentLocation> {
                 frame_offset: 0,
                 logical_length: 1,
             },
-            format: StreamFrameFormat::GroupedV2,
         })
         .collect()
 }

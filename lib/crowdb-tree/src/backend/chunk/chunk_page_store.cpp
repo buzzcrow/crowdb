@@ -319,7 +319,7 @@ void MemoryRootCatalog::corrupt_active_reference_segment(size_t segment_index, s
         return;
     }
     const ChunkReferenceSegment &descriptor    = manifest->reference_segments[segment_index];
-    const uint64_t               owner_tree_id = reference_segment_owner(*manifest, descriptor);
+    const uint64_t               owner_tree_id = descriptor.owner_tree_id;
     const uint64_t               object_id     = descriptor.object_id;
     auto                         current       = reference_segment_store_.load(std::memory_order_acquire);
     for (;;) {
@@ -366,7 +366,7 @@ void MemoryRootCatalog::corrupt_active_pack_layout_for_tests(uint64_t tree_id)
     }
 }
 
-void MemoryRootCatalog::downgrade_active_manifest_for_tests(uint64_t tree_id)
+void MemoryRootCatalog::corrupt_active_manifest_version_for_tests(uint64_t tree_id)
 {
     auto state = state_.load(std::memory_order_acquire);
     for (;;) {
@@ -378,15 +378,11 @@ void MemoryRootCatalog::downgrade_active_manifest_for_tests(uint64_t tree_id)
         if (found == state->current.end()) {
             return;
         }
-        auto legacy            = std::make_shared<ChunkManifest>(**found);
-        legacy->format_version = 0;
-        for (ChunkReferenceSegment &segment : legacy->reference_segments) {
-            segment.owner_tree_id = 0;
-            segment.reused        = false;
-        }
-        legacy->checksum                                                   = manifest_checksum(*legacy);
+        auto corrupt                                                       = std::make_shared<ChunkManifest>(**found);
+        corrupt->format_version                                            = 0;
+        corrupt->checksum                                                  = manifest_checksum(*corrupt);
         auto next                                                          = std::make_shared<CatalogState>(*state);
-        next->current[static_cast<size_t>(found - state->current.begin())] = std::move(legacy);
+        next->current[static_cast<size_t>(found - state->current.begin())] = std::move(corrupt);
         if (state_.compare_exchange_weak(state, next, std::memory_order_release, std::memory_order_acquire)) {
             return;
         }
@@ -529,8 +525,7 @@ uint64_t MemoryRootCatalog::reclaim_before(uint64_t tree_id, uint64_t generation
             candidate_packs.insert(pack_identity(pack));
         }
         for (const ChunkReferenceSegment &segment : manifest->reference_segments) {
-            candidate_segments.push_back(
-                {.owner_tree_id = reference_segment_owner(*manifest, segment), .object_id = segment.object_id});
+            candidate_segments.push_back({.owner_tree_id = segment.owner_tree_id, .object_id = segment.object_id});
         }
     }
     uint64_t                                                                   reclaimed = 0;
@@ -544,8 +539,7 @@ uint64_t MemoryRootCatalog::reclaim_before(uint64_t tree_id, uint64_t generation
                     live_packs.insert(pack_identity(pack));
                 }
                 for (const ChunkReferenceSegment &segment : manifest->reference_segments) {
-                    live_segments.insert(
-                        {.owner_tree_id = reference_segment_owner(*manifest, segment), .object_id = segment.object_id});
+                    live_segments.insert({.owner_tree_id = segment.owner_tree_id, .object_id = segment.object_id});
                 }
             }
         };
@@ -679,7 +673,7 @@ ChunkPageStore::ChunkPageStore(Config config, std::shared_ptr<RootCatalog> catal
         transport_ = std::make_shared<MemoryChunkTransport>();
     }
     if (config_.open_generation == 0) {
-        if (auto current = catalog_->load(config_.tree_id); current != nullptr && current->format_version >= 4) {
+        if (auto current = catalog_->load(config_.tree_id); current != nullptr) {
             wal_replay_offset_.store(current->wal_replay_offset, std::memory_order_relaxed);
         }
     }
@@ -689,9 +683,7 @@ ChunkPageStore::ChunkPageStore(Config config, std::shared_ptr<RootCatalog> catal
             cached_layout_.store(opened, std::memory_order_release);
             layout_valid_until_ms_.store(monotonic_millis() + config_.layout_validity_ms, std::memory_order_release);
             bootstrap_layout_.store(opened, std::memory_order_release);
-            if (opened->format_version >= 4) {
-                wal_replay_offset_.store(opened->wal_replay_offset, std::memory_order_relaxed);
-            }
+            wal_replay_offset_.store(opened->wal_replay_offset, std::memory_order_relaxed);
         }
     }
     else {
@@ -840,9 +832,8 @@ bool ChunkPageStore::has_shared_ownership() const
     if (manifest == nullptr) {
         return false;
     }
-    return std::any_of(manifest->packs.begin(), manifest->packs.end(), [this, &manifest](const ChunkPagePack &pack) {
-        return chunk_pack_owner(*manifest, pack) != config_.tree_id;
-    });
+    return std::any_of(manifest->packs.begin(), manifest->packs.end(),
+                       [this, &manifest](const ChunkPagePack &pack) { return pack.owner_tree_id != config_.tree_id; });
 }
 
 bool ChunkPageStore::inherited_snapshot_matches(const PageStore &source_store) const
@@ -899,8 +890,7 @@ const ChunkPagePack *ChunkPageStore::find_pack_at(const ChunkManifest &base, uin
 
 Status ChunkPageStore::validate_manifest(const ChunkManifest &manifest, const RootCatalog &catalog)
 {
-    if ((manifest.format_version != 6 && manifest.format_version != kChunkManifestFormat) ||
-        manifest.checksum != manifest_checksum(manifest)) {
+    if (manifest.format_version != kChunkManifestFormat || manifest.checksum != manifest_checksum(manifest)) {
         return Status::corruption("chunk manifest checksum mismatch");
     }
     const size_t expected_segments = (manifest.packs.size() + kReferencesPerSegment - 1) / kReferencesPerSegment;
@@ -918,7 +908,7 @@ Status ChunkPageStore::validate_manifest(const ChunkManifest &manifest, const Ro
         if (segment.first_ordinal != first || segment.ref_count != count) {
             return Status::corruption("chunk reference segment directory coverage is invalid");
         }
-        auto image = catalog.load_reference_segment(reference_segment_owner(manifest, segment), segment.object_id);
+        auto image = catalog.load_reference_segment(segment.owner_tree_id, segment.object_id);
         if (image == nullptr || image->object_id != segment.object_id || image->first_ordinal != first ||
             image->refs.size() != count || reference_segment_checksum(*image) != segment.checksum) {
             return Status::corruption("chunk reference segment image is missing or corrupt");
@@ -932,10 +922,7 @@ Status ChunkPageStore::validate_manifest(const ChunkManifest &manifest, const Ro
             if (pack.ordinal != ordinal || bad_layout || pack.ref.chunk_id.empty() || pack.ref.length == 0 ||
                 pack.logical_offset > manifest.logical_size ||
                 pack.ref.length > manifest.logical_size - pack.logical_offset || ref.chunk_id != pack.ref.chunk_id ||
-                ref.offset != pack.ref.offset || ref.length != pack.ref.length ||
-                ref.frame_revision != pack.ref.frame_revision || ref.length > kMaxChunkPackBytes ||
-                (ref.frame_revision != kLegacyChunkFrameRevision && ref.frame_revision != kChunkFrameRevision) ||
-                (manifest.format_version == 6 && ref.frame_revision != kLegacyChunkFrameRevision)) {
+                ref.offset != pack.ref.offset || ref.length != pack.ref.length || ref.length > kMaxChunkPackBytes) {
                 return Status::corruption("chunk manifest page-pack coverage or reference is invalid");
             }
             logical_offset = pack.logical_offset + pack.ref.length;
@@ -945,8 +932,7 @@ Status ChunkPageStore::validate_manifest(const ChunkManifest &manifest, const Ro
             }
         }
     }
-    if ((manifest.format_version < 3 && logical_offset != manifest.logical_size) ||
-        logical_offset > manifest.logical_size || reused_packs != manifest.packs_reused ||
+    if (logical_offset > manifest.logical_size || reused_packs != manifest.packs_reused ||
         reused_pack_bytes != manifest.pack_bytes_reused) {
         return Status::corruption("chunk manifest coverage or reuse counters are inconsistent");
     }
@@ -1105,12 +1091,11 @@ Status ChunkPageStore::persist_reference_segments(ChunkManifest *manifest, const
                 std::equal(manifest->packs.begin() + first_offset, manifest->packs.begin() + end_offset,
                            reuse_base->packs.begin() + first_offset, [](const auto &left, const auto &right) {
                                return left.ref.chunk_id == right.ref.chunk_id && left.ref.offset == right.ref.offset &&
-                                      left.ref.length == right.ref.length &&
-                                      left.ref.frame_revision == right.ref.frame_revision;
+                                      left.ref.length == right.ref.length;
                            });
             if (same) {
                 ChunkReferenceSegment shared = candidate;
-                shared.owner_tree_id         = reference_segment_owner(*reuse_base, candidate);
+                shared.owner_tree_id         = candidate.owner_tree_id;
                 shared.reused                = true;
                 manifest->reference_segments.push_back(shared);
                 continue;
@@ -1184,7 +1169,7 @@ Status ChunkPageStore::build_manifest(uint64_t expected_generation, std::shared_
         }
         const size_t length  = staged_pack_length(offset, reuse_base.get());
         const auto   purpose = staged_purposes_.at(offset);
-        if (reuse_base != nullptr && reuse_base->format_version >= 3 && !range_has_pack(*reuse_base, offset, length) &&
+        if (reuse_base != nullptr && !range_has_pack(*reuse_base, offset, length) &&
             !range_was_written(offset, length)) {
             offset += length;
             continue;
@@ -1194,7 +1179,7 @@ Status ChunkPageStore::build_manifest(uint64_t expected_generation, std::shared_
                 find_reusable_pack(*reuse_base, offset, static_cast<uint32_t>(length), cancellation);
             if (reused != nullptr && chunk_purpose(reused->ref.chunk_id) == purpose) {
                 manifest->packs.push_back({
-                    .owner_tree_id  = chunk_pack_owner(*reuse_base, *reused),
+                    .owner_tree_id  = reused->owner_tree_id,
                     .ordinal        = manifest->packs.size(),
                     .logical_offset = offset,
                     .ref            = reused->ref,
@@ -1240,7 +1225,6 @@ Status ChunkPageStore::build_manifest(uint64_t expected_generation, std::shared_
         pack.ref.chunk_id                    = active_chunk_id_;
         pack.ref.offset                      = active_chunk_cursor_;
         pack.ref.length                      = static_cast<uint32_t>(length);
-        pack.ref.frame_revision              = kChunkFrameRevision;
         const size_t         physical_length = chunk_framed_length(length);
         std::vector<uint8_t> framed;
         if (physical_length == 0 ||
@@ -1378,12 +1362,12 @@ Status ChunkPageStore::materialize_ownership(uint64_t *bytes_written, bool *comp
             removed_packs = true;
             continue;
         }
-        const bool shared        = chunk_pack_owner(*base, base_pack) != config_.tree_id;
+        const bool shared        = base_pack.owner_tree_id != config_.tree_id;
         const bool within_budget = base_pack.ref.length <= config_.materialization_bytes_per_pass - copied_bytes;
         if (!shared || !within_budget) {
             ChunkPagePack reused = base_pack;
             reused.ordinal       = manifest->packs.size();
-            reused.owner_tree_id = chunk_pack_owner(*base, base_pack);
+            reused.owner_tree_id = base_pack.owner_tree_id;
             reused.reused        = true;
             manifest->packs.push_back(reused);
             ++manifest->packs_reused;
@@ -1474,13 +1458,12 @@ Status ChunkPageStore::materialize_ownership(uint64_t *bytes_written, bool *comp
             active_chunk_cursor_ = 0;
             return fail(std::move(advance_status));
         }
-        ChunkPagePack copied      = base_pack;
-        copied.ordinal            = manifest->packs.size();
-        copied.owner_tree_id      = config_.tree_id;
-        copied.ref.chunk_id       = active_chunk_id_;
-        copied.ref.offset         = active_chunk_cursor_;
-        copied.ref.frame_revision = kChunkFrameRevision;
-        copied.reused             = false;
+        ChunkPagePack copied = base_pack;
+        copied.ordinal       = manifest->packs.size();
+        copied.owner_tree_id = config_.tree_id;
+        copied.ref.chunk_id  = active_chunk_id_;
+        copied.ref.offset    = active_chunk_cursor_;
+        copied.reused        = false;
         manifest->packs.push_back(std::move(copied));
         active_chunk_bytes_ += base_pack.ref.length;
         active_chunk_cursor_ += physical_length;
@@ -1737,7 +1720,7 @@ Status ChunkPageStore::set_wal_replay_offset(uint64_t offset)
                           status.to_string());
             return status;
         }
-        if (current->format_version >= 4 && offset < current->wal_replay_offset) {
+        if (offset < current->wal_replay_offset) {
             return Status::invalid_argument("WAL replay offset cannot regress");
         }
     }
@@ -1767,7 +1750,7 @@ Status ChunkPageStore::wal_replay_offset(uint64_t *offset) const
     if (!status.ok()) {
         return status;
     }
-    *offset = current->format_version >= 4 ? current->wal_replay_offset : 0;
+    *offset = current->wal_replay_offset;
     return Status::Ok();
 }
 
@@ -1804,14 +1787,11 @@ ChunkPageStoreStats ChunkPageStore::stats() const
     uint64_t shared_packs             = 0;
     uint64_t shared_metadata_segments = 0;
     if (manifest != nullptr) {
-        shared_packs = std::count_if(manifest->packs.begin(), manifest->packs.end(), [&](const ChunkPagePack &pack) {
-            return chunk_pack_owner(*manifest, pack) != config_.tree_id;
-        });
-        shared_metadata_segments =
-            std::count_if(manifest->reference_segments.begin(), manifest->reference_segments.end(),
-                          [&](const ChunkReferenceSegment &segment) {
-                              return reference_segment_owner(*manifest, segment) != config_.tree_id;
-                          });
+        shared_packs = std::count_if(manifest->packs.begin(), manifest->packs.end(),
+                                     [&](const ChunkPagePack &pack) { return pack.owner_tree_id != config_.tree_id; });
+        shared_metadata_segments = std::count_if(
+            manifest->reference_segments.begin(), manifest->reference_segments.end(),
+            [&](const ChunkReferenceSegment &segment) { return segment.owner_tree_id != config_.tree_id; });
     }
     return {
         .generations_published           = generations_published_.load(std::memory_order_relaxed),

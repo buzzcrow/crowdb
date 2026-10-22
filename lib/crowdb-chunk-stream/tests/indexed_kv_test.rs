@@ -3,14 +3,10 @@
 
 #[path = "indexed_kv_test/cache.rs"]
 mod cache;
-#[path = "indexed_kv_test/conversion.rs"]
-mod conversion;
 #[path = "common/indexed_metadata.rs"]
 mod indexed_metadata;
 #[path = "common/metadata_server.rs"]
 mod metadata_server;
-#[path = "indexed_kv_test/migration.rs"]
-mod migration;
 
 use bytes::Bytes;
 use crowdb_chunk_stream::{DirectoryIndex, KvStreamMetadataStore, StreamError, StreamMetadataStore};
@@ -300,25 +296,6 @@ async fn head_root_and_active_checkpoint_are_validated_before_storing_anything()
     let mut wrong = Test::head(&mutation, None);
     wrong.stream_name = StreamName::default();
     assert!(metadata.publish_directory(None, wrong, &mutation).await.is_err());
-}
-
-#[tokio::test]
-async fn indexed_publication_requires_legacy_migration_instead_of_reinterpreting_it() {
-    let server = TestMetadataServer::start().await;
-    let metadata = KvStreamMetadataStore::new(server.client.clone(), 1, 1).unwrap();
-    let (mut legacy, _) = metadata_server::candidate(1, 1, 0);
-    legacy.stream_name = Test::NAME;
-    metadata.publish(None, legacy.clone(), vec![]).await.unwrap();
-    assert!(matches!(
-        metadata.load_directory_head(Test::NAME).await,
-        Err(StreamError::InvalidRequest(_))
-    ));
-    let empty = Test::empty().prepare_append(&metadata, &[]).await.unwrap();
-    assert!(metadata
-        .publish_directory(None, Test::head(&empty, None), &empty)
-        .await
-        .is_err());
-    assert_eq!(metadata.load_current(Test::NAME).await.unwrap(), Some(legacy));
 }
 
 #[tokio::test]

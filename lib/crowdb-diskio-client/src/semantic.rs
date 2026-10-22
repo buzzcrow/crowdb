@@ -536,7 +536,7 @@ impl DiskioClient {
     /// error.
     pub async fn fsync(&self, disk_id: DiskId, options: OperationOptions) -> DiskioResult<()> {
         self.refresh_topology_if_due().await;
-        self.fsync_inner(disk_id, options, false).await
+        self.fsync_inner(disk_id, options).await
     }
 
     /// Return an operation policy using the configured default deadline.
@@ -598,16 +598,6 @@ impl DiskioClient {
             counted_inflight: true,
             lane_inflight: Some(lane_inflight),
         })
-    }
-
-    fn begin_nested_operation(&self, kind: OperationKind) -> InflightGuard<'_> {
-        InflightGuard {
-            counters: &self.counters,
-            kind,
-            started: Instant::now(),
-            counted_inflight: false,
-            lane_inflight: None,
-        }
     }
 
     fn select(&self, disk_id: DiskId, lane: TrafficLane) -> DiskioResult<(DiskRoute, SelectedConnection)> {
@@ -684,17 +674,8 @@ impl DiskioClient {
         Ok(())
     }
 
-    async fn fsync_inner(
-        &self,
-        disk_id: DiskId,
-        options: OperationOptions,
-        durability_context: bool,
-    ) -> DiskioResult<()> {
-        let _inflight = if durability_context {
-            self.begin_nested_operation(OperationKind::Fsync)
-        } else {
-            self.begin_operation(OperationKind::Fsync, options.lane)?
-        };
+    async fn fsync_inner(&self, disk_id: DiskId, options: OperationOptions) -> DiskioResult<()> {
+        let _inflight = self.begin_operation(OperationKind::Fsync, options.lane)?;
         let mut backoff = self.config.reconnect_initial_backoff;
         let mut last_error = None;
         for attempt in 0..self.config.retry_attempts {
@@ -722,11 +703,7 @@ impl DiskioClient {
             {
                 Ok(()) => return Ok(()),
                 Err(error @ (DiskioError::DiskFailure(_) | DiskioError::DiskNotFound)) => {
-                    return if durability_context {
-                        Err(DiskioError::DurabilityFailure(error.to_string()))
-                    } else {
-                        Err(error)
-                    };
+                    return Err(error);
                 }
                 Err(error) => {
                     last_error = Some(error);
@@ -745,11 +722,7 @@ impl DiskioClient {
             || "fsync completion was not observed".into(),
             |error| error.to_string(),
         );
-        if durability_context {
-            Err(DiskioError::DurabilityFailure(message))
-        } else {
-            Err(DiskioError::TransportUnavailable(message))
-        }
+        Err(DiskioError::TransportUnavailable(message))
     }
 
     async fn await_write(

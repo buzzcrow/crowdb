@@ -10,7 +10,7 @@ use fixture::TestFramedReader;
 use std::sync::atomic::Ordering;
 
 #[tokio::test]
-async fn v2_ranges_cross_frames_and_legacy_objects_without_payload_copies() {
+async fn ordinary_ranges_cross_frames_and_objects_without_payload_copies() {
     let old = Bytes::from(vec![0x35; 71]);
     let payload = Bytes::from(
         (0..2 * MAX_FRAME_V2_PAYLOAD_BYTES + 17)
@@ -19,7 +19,7 @@ async fn v2_ranges_cross_frames_and_legacy_objects_without_payload_copies() {
     );
     let fixture = TestFramedReader::new(
         &[
-            (FrameMagic::RepoSmallV1, old.clone()),
+            (FrameMagic::RepoSmallV2, old.clone()),
             (FrameMagic::RepoLargeV2, payload.clone()),
         ],
         1,
@@ -71,7 +71,7 @@ async fn location_geometry_must_match_the_verified_revision() {
     fixture.locations[0].length -= 1;
     assert!(fixture.reader.read_object(&fixture.locations).await.is_err());
     let mut fixture = TestFramedReader::new(
-        &[(FrameMagic::RepoLargeV1, Bytes::from_static(b"payload"))],
+        &[(FrameMagic::RepoLargeV2, Bytes::from_static(b"payload"))],
         MAX_FRAME_BYTES,
     );
     fixture.locations[0].length += 1;

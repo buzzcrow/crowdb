@@ -6,8 +6,8 @@ mod directory;
 
 use crowdb_chunk_stream::{DirectoryIndex, StreamError, MAX_DIRECTORY_MUTATION_EXTENTS};
 use crowdb_protocol::chunk_stream::{
-    StreamDirectoryPage, StreamExtentLocation, StreamFrameFormat, StreamPurpose,
-    MAX_STREAM_DIRECTORY_CHILDREN, MAX_STREAM_DIRECTORY_LOCATIONS,
+    StreamDirectoryPage, StreamExtentLocation, StreamPurpose, MAX_STREAM_DIRECTORY_CHILDREN,
+    MAX_STREAM_DIRECTORY_LOCATIONS,
 };
 use crowdb_protocol::frame::ChunkLocation;
 use directory::{test_locations, TestDirectoryStore};
@@ -173,25 +173,10 @@ async fn compact_groups_and_legacy_short_frames_keep_their_physical_boundaries()
     let trimmed = index.prepare_trim(&store, 1).await.unwrap();
     assert!(trimmed.pages().is_empty());
     assert_eq!(trimmed.index().root(), index.root());
-    let mut legacy = large;
-    legacy.format = StreamFrameFormat::LegacyV1;
-    legacy.location.logical_length = 3;
-    let mut other = legacy;
-    other.logical_start = 3;
-    other.location.frame_offset = legacy.end_physical().unwrap();
-    other.location.logical_length = 5;
-    let mutation = store
-        .empty()
-        .prepare_append(&store, &[legacy, other])
-        .await
-        .unwrap();
-    let index = store.install(&mutation);
-    assert_eq!(index.root().unwrap().extent_count, 2);
-    assert_eq!(index.lookup(&store, 4).await.unwrap(), Some(other));
 }
 
 #[tokio::test]
-async fn cross_leaf_gaps_format_changes_and_bad_pages_fail_closed() {
+async fn cross_leaf_gaps_and_bad_pages_fail_closed() {
     let store = TestDirectoryStore::new();
     let chunk = test_locations(0, 1)[0].location.chunk_id;
     let locations: Vec<_> = (0..MAX_STREAM_DIRECTORY_LOCATIONS)
@@ -202,7 +187,6 @@ async fn cross_leaf_gaps_format_changes_and_bad_pages_fail_closed() {
                 frame_offset: offset as u64 * 48,
                 logical_length: 1,
             },
-            format: StreamFrameFormat::GroupedV2,
         })
         .collect();
     let mutation = store.empty().prepare_append(&store, &locations).await.unwrap();
@@ -212,9 +196,6 @@ async fn cross_leaf_gaps_format_changes_and_bad_pages_fail_closed() {
     next.location.frame_offset = locations.len() as u64 * 48;
     assert!(index.prepare_append(&store, &[next]).await.is_ok());
     next.location.frame_offset += 1;
-    assert!(index.prepare_append(&store, &[next]).await.is_err());
-    next.location.frame_offset -= 1;
-    next.format = StreamFrameFormat::LegacyV1;
     assert!(index.prepare_append(&store, &[next]).await.is_err());
     let root = index.root().unwrap();
     store.corrupt(root.id);

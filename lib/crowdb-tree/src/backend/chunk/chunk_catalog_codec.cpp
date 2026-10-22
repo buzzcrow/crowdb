@@ -60,15 +60,9 @@ namespace
 {
 bool valid_page_ref(const ChunkPageRef &ref)
 {
-    return ref.length > 0 && ref.length <= kMaxChunkPackBytes &&
-           (ref.frame_revision == kLegacyChunkFrameRevision || ref.frame_revision == kChunkFrameRevision);
+    return ref.length > 0 && ref.length <= kMaxChunkPackBytes;
 }
 } // namespace
-
-uint32_t encoded_page_ref_length(const ChunkPageRef &ref)
-{
-    return ref.length | (ref.frame_revision == kChunkFrameRevision ? 0x80000000U : 0U);
-}
 
 std::vector<uint8_t> encode_reference_segment(const ChunkReferenceSegmentImage &segment)
 {
@@ -84,7 +78,7 @@ std::vector<uint8_t> encode_reference_segment(const ChunkReferenceSegmentImage &
         append_scalar(&out, ref.chunk_id.high);
         append_scalar(&out, ref.chunk_id.low);
         append_scalar(&out, ref.offset);
-        append_scalar(&out, encoded_page_ref_length(ref));
+        append_scalar(&out, ref.length);
     }
     return out;
 }
@@ -105,8 +99,6 @@ std::shared_ptr<const ChunkReferenceSegmentImage> decode_reference_segment(const
             !reader.scalar(&ref.length)) {
             return nullptr;
         }
-        ref.frame_revision = (ref.length & 0x80000000U) == 0 ? kLegacyChunkFrameRevision : kChunkFrameRevision;
-        ref.length &= 0x7fffffffU;
         if (ref.length == 0 || ref.length > kMaxChunkPackBytes) {
             return nullptr;
         }
@@ -117,11 +109,9 @@ std::shared_ptr<const ChunkReferenceSegmentImage> decode_reference_segment(const
 
 std::vector<uint8_t> encode_manifest(const ChunkManifest &manifest)
 {
-    if (manifest.format_version > kChunkManifestFormat ||
-        std::any_of(manifest.packs.begin(), manifest.packs.end(), [&](const auto &pack) {
-            return !valid_page_ref(pack.ref) ||
-                   (manifest.format_version < 7 && pack.ref.frame_revision != kLegacyChunkFrameRevision);
-        })) {
+    if (manifest.format_version != kChunkManifestFormat ||
+        std::any_of(manifest.packs.begin(), manifest.packs.end(),
+                    [&](const auto &pack) { return !valid_page_ref(pack.ref); })) {
         return {};
     }
     std::vector<uint8_t> out;
@@ -133,9 +123,7 @@ std::vector<uint8_t> encode_manifest(const ChunkManifest &manifest)
     append_scalar(&out, manifest.published_at_ms);
     append_scalar(&out, manifest.packs_reused);
     append_scalar(&out, manifest.pack_bytes_reused);
-    if (manifest.format_version >= 4) {
-        append_scalar(&out, manifest.wal_replay_offset);
-    }
+    append_scalar(&out, manifest.wal_replay_offset);
     append_scalar(&out, manifest.checksum);
     append_scalar(&out, static_cast<uint64_t>(manifest.reference_segments.size()));
     for (const auto &segment : manifest.reference_segments) {
@@ -154,7 +142,7 @@ std::vector<uint8_t> encode_manifest(const ChunkManifest &manifest)
         append_scalar(&out, pack.ref.chunk_id.high);
         append_scalar(&out, pack.ref.chunk_id.low);
         append_scalar(&out, pack.ref.offset);
-        append_scalar(&out, encoded_page_ref_length(pack.ref));
+        append_scalar(&out, pack.ref.length);
         append_scalar(&out, static_cast<uint8_t>(pack.reused));
     }
     return out;
@@ -165,11 +153,11 @@ std::shared_ptr<const ChunkManifest> decode_manifest(const std::vector<uint8_t> 
     BlobReader reader(bytes);
     auto       manifest        = std::make_shared<ChunkManifest>();
     uint64_t   reference_count = 0;
-    if (!reader.scalar(&manifest->format_version) || !reader.scalar(&manifest->tree_id) ||
-        !reader.scalar(&manifest->generation) || !reader.scalar(&manifest->owner_epoch) ||
-        !reader.scalar(&manifest->logical_size) || !reader.scalar(&manifest->published_at_ms) ||
-        !reader.scalar(&manifest->packs_reused) || !reader.scalar(&manifest->pack_bytes_reused) ||
-        (manifest->format_version >= 4 && !reader.scalar(&manifest->wal_replay_offset)) ||
+    if (!reader.scalar(&manifest->format_version) || manifest->format_version != kChunkManifestFormat ||
+        !reader.scalar(&manifest->tree_id) || !reader.scalar(&manifest->generation) ||
+        !reader.scalar(&manifest->owner_epoch) || !reader.scalar(&manifest->logical_size) ||
+        !reader.scalar(&manifest->published_at_ms) || !reader.scalar(&manifest->packs_reused) ||
+        !reader.scalar(&manifest->pack_bytes_reused) || !reader.scalar(&manifest->wal_replay_offset) ||
         !reader.scalar(&manifest->checksum) || !reader.scalar(&reference_count) ||
         reference_count > reader.remaining() / 33U) {
         return nullptr;
@@ -200,17 +188,13 @@ std::shared_ptr<const ChunkManifest> decode_manifest(const std::vector<uint8_t> 
             !reader.scalar(&pack.ref.length) || !reader.scalar(&reused) || reused > 1) {
             return nullptr;
         }
-        pack.ref.frame_revision =
-            (pack.ref.length & 0x80000000U) == 0 ? kLegacyChunkFrameRevision : kChunkFrameRevision;
-        pack.ref.length &= 0x7fffffffU;
-        if (pack.ref.length == 0 || pack.ref.length > kMaxChunkPackBytes ||
-            (manifest->format_version < 7 && pack.ref.frame_revision != kLegacyChunkFrameRevision)) {
+        if (!valid_page_ref(pack.ref)) {
             return nullptr;
         }
         pack.reused = reused != 0;
         manifest->packs.push_back(pack);
     }
-    return reader.complete() && manifest->format_version <= kChunkManifestFormat ? manifest : nullptr;
+    return reader.complete() ? manifest : nullptr;
 }
 
 } // namespace crowdb::tree::detail

@@ -71,8 +71,7 @@ under Open Questions instead of being selected here.
    Replace per-frame `Extent` generation in `write_batch`, the protocol directory
    representation, `resolve_extent`, and Stream reads with one compact location
    per append group. `ChunkLocation` already supplies framed-length and logical-
-   subrange arithmetic; extend it for grouped geometry and preserve legacy short
-   frame boundaries and checked lengths. A 4 MiB payload occupies 65
+   subrange arithmetic; extend it for grouped geometry with checked lengths. A 4 MiB payload occupies 65
    frames with current geometry but needs one location. Correct the old design's
    raw-byte mapping and extra chunk-ID payload-trailer descriptions: Stream
    frames own physical framing/provenance and returned lengths count caller bytes.
@@ -88,7 +87,7 @@ under Open Questions instead of being selected here.
    frames and whole-object publication. V1 capacity is not the new role-dependent
    capacity. The current Rust/C++ CRC input ranges differ; unify the new revision
    on CRC32C of header/group fields/payload, with separate expected chunk-ID
-   validation. Cross-language vectors and explicit legacy decoding are required.
+   validation. Cross-language vectors establish the one supported format.
    Invariants I6, I7.
 
    Q1 considered a single variable-size frame per append. Bounded verifiable
@@ -106,7 +105,7 @@ under Open Questions instead of being selected here.
    one success only after both. Buffered writes omit the flush; explicit fsync
    remains available for independent callers. Preserve same-strip ordering,
    bounded transport splitting, immutable-byte retries, error propagation, and
-   replica repair. Wire compatibility and matching DiskIO/chunk-IO documentation
+   replica repair. Strict wire validation and matching DiskIO/chunk-IO documentation
    belong to implementation, not a claim that the wire already supports it.
    Invariants I1, I9, I10.
 
@@ -261,13 +260,12 @@ under Open Questions instead of being selected here.
   whole-object publication/failure, including unknown-length uploads. Preserve
   native buffer ownership and versioned location/capacity arithmetic without
   adding Stream markers or group buffering to user-data writers.
-- Finalize legacy Stream chunks under their existing persisted durable-cursor
-  contract before new grouped writes. Decode legacy bytes explicitly; never
-  infer original append boundaries from an uncommitted V1 frame suffix.
 - Stream purpose, group binding, Chunk-KV ownership, consumer retention, and
-  allocation/reuse protections remain required. Make compatibility for existing
-  persisted Stream formats explicit; do not silently reinterpret incompatible
-  directory records.
+  allocation/reuse protections remain required. The product has not shipped:
+  support only the selected current format and matched service contract. Remove
+  older-format decoders, directory migration and old-service fallbacks. Unknown
+  versions, malformed records and missing synchronization proof fail explicitly;
+  correctness and performance acceptance remain unchanged.
 - R243 deployment acceptance remains separate and its failed performance checks
   stay visible. Runtime artifacts support attribution but are not prerequisites.
   R148 migration, sharding, and EC conversion must reuse the resulting

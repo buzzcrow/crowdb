@@ -7,9 +7,9 @@ mod fixture;
 use crowdb_protocol::chunk_stream::{
     decode_stream_directory_page, decode_stream_head_record, decode_stream_manifest_record,
     encode_stream_directory_head, encode_stream_directory_page, StreamActiveAttachment,
-    StreamDirectoryBranch, StreamDirectoryError, StreamDirectoryPage, StreamDirectoryPageId,
-    StreamFrameFormat, StreamHeadRecord, StreamName, StreamPurpose, StreamRecordError, StreamRootIdentity,
-    MAX_STREAM_DIRECTORY_HEIGHT, MAX_STREAM_DIRECTORY_LOCATIONS,
+    StreamDirectoryBranch, StreamDirectoryError, StreamDirectoryPage, StreamDirectoryPageId, StreamName,
+    StreamPurpose, StreamRecordError, StreamRootIdentity, MAX_STREAM_DIRECTORY_HEIGHT,
+    MAX_STREAM_DIRECTORY_LOCATIONS,
 };
 use crowdb_protocol::frame::{FrameLayout, MAX_FRAME_BYTES, MAX_FRAME_GROUP_PAYLOAD_BYTES};
 use crowdb_protocol::key::{BinaryKey, StreamDirectoryPageKey, StreamDirectoryRootKey, StreamExtentPageKey};
@@ -33,9 +33,7 @@ fn large_append_has_one_location_and_checked_minimal_frame_ranges() {
     let extent = leaf.locations[0];
     let capacity = MAX_FRAME_GROUP_PAYLOAD_BYTES as u64;
     assert_eq!(
-        extent
-            .format
-            .layout()
+        crowdb_protocol::frame::FrameLayout::StreamGroupV2
             .physical_range(extent.location, capacity - 1..capacity + 2)
             .unwrap(),
         0..2 * MAX_FRAME_BYTES as u64
@@ -129,8 +127,6 @@ fn leaf_rejects_gaps_physical_overlap_wrong_purpose_and_excess_entries() {
     leaf.locations[1].location.frame_offset = 49;
     assert!(encode_stream_directory_page(&StreamDirectoryPage::Leaf(leaf.clone())).is_err());
     leaf.locations[1].location.frame_offset = 50;
-    leaf.locations[1].format = StreamFrameFormat::LegacyV1;
-    assert!(encode_stream_directory_page(&StreamDirectoryPage::Leaf(leaf.clone())).is_err());
     leaf.locations.truncate(1);
     leaf.purpose = StreamPurpose::Wal;
     assert!(encode_stream_directory_page(&StreamDirectoryPage::Leaf(leaf.clone())).is_err());
@@ -190,10 +186,7 @@ fn indexed_heads_have_explicit_versions_and_checkpoint_bounds() {
     });
     let bytes = encode_stream_directory_head(&head).unwrap();
     assert_eq!(&bytes[..8], b"CSTR\x02\x00\x01\x00");
-    assert_eq!(
-        decode_stream_head_record(&bytes).unwrap(),
-        StreamHeadRecord::Indexed(head.clone())
-    );
+    assert_eq!(decode_stream_head_record(&bytes).unwrap(), head.clone());
     assert!(matches!(
         decode_stream_manifest_record(&bytes),
         Err(StreamRecordError::UnsupportedVersion(2))

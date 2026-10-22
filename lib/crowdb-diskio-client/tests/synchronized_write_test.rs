@@ -44,9 +44,10 @@ async fn synchronized_write_waits_for_its_proof_and_needs_no_fsync_rpc() {
 }
 
 #[tokio::test]
-async fn older_peer_without_proof_uses_one_explicit_fsync_without_repeating_write() {
+async fn synchronized_response_without_proof_fails_without_extra_io() {
     let peer = TestDiskioPeer::start(false, false, FBDiskIoRetCode::Success).await;
-    peer.client()
+    let error = peer
+        .client()
         .write(
             target(),
             0,
@@ -55,10 +56,11 @@ async fn older_peer_without_proof_uses_one_explicit_fsync_without_repeating_writ
             options(),
         )
         .await
-        .unwrap();
+        .unwrap_err();
+    assert!(matches!(error, DiskioError::DurabilityFailure(_)));
     assert_eq!(peer.counts.writes.load(Ordering::Relaxed), 1);
     assert_eq!(peer.counts.sync_requests.load(Ordering::Relaxed), 1);
-    assert_eq!(peer.counts.fsyncs.load(Ordering::Relaxed), 1);
+    assert_eq!(peer.counts.fsyncs.load(Ordering::Relaxed), 0);
 }
 
 #[tokio::test]
