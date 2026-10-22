@@ -90,7 +90,7 @@ Observed contract:
     rejected submit restores the caller's original buffer. WR records retain
     the single original cursor until every posted SEND has completed.
   - Set effective data capacity and peer generation/maximum from CM. Active
-    connections create/prime receive storage after the validated CM reply and
+    control/data connections create/prime receive storage after the validated CM reply and
     before application publication, so asymmetric classes allocate/post the
     actual minimum rather than a larger local default.
   - Extend the existing CQ deferred receive vector for byte admission. A
@@ -199,6 +199,33 @@ Real service checkpoint:
 - Keep this task active until the clean-source semantic rerun, HTTP/DiskIO
   regression, matching release CLI 10-second controls and permanent evidence
   are complete.
+- The clean v4 timed controls expose a startup tail: the single-loader run has
+  zero warmup completions and a 1.46-second first response; high-load rows also
+  contain roughly 1.8-second outliers. Preserve `accepted-018da2fc-*` artifacts.
+  Check whether moving contiguous RX priming after CM setup caused this change;
+  only control/data needs the peer's negotiated data class before allocation.
+  Keep the one-second warmup and ten-second window unchanged. Repeat controls
+  after diagnosis, and embed the final environment/config/results directly in
+  both benchmark wrapper scripts as the user requested.
+- The controlled contiguous-only fix restores RX priming before active CM
+  connect. The unchanged single-loader 1 s warmup + 10 s probe now completes
+  60,804 warmup RPCs, measures 60,814.3 TPS, average 15,935.74 ns, P90 16,063 ns,
+  P99 18,687 ns and maximum 90,601 ns with zero errors/fallback. Control/data
+  still allocates the negotiated minimum after the validated reply. Active
+  route/QP/CM stages now live in a private implementation with bounded helpers.
+- The dedicated HCA first-response regression and all 13 existing selected
+  transport/control cases pass. Full C++/FFI gate passes at
+  `.crowdb-runtime/artifacts/unit/cpp-b493f2503a414232a8c41bc2a13824d6/`:
+  543 tree, 192 RPC, 71 DiskIO and 35 common native cases plus both FFI suites.
+  The refreshed no-verbs build passes all 160 CTest cases (one hardware skip).
+  Changed C++ format/tree-lint, workspace Rust format, shell syntax and all
+  13 runner contract cases pass. Logs remain at `/tmp/r241-startup-*.log`.
+  Repeat clean-source timed raw-server/OCI controls next; include OCI TCP TPS.
+- Earlier build/artifact directories were removed during this session outside
+  this task's commands. Previous canonical artifact IDs remain historical;
+  surviving `/tmp/r241-accepted-*.log`, `/tmp/r241-datapath-*.log` and gate logs
+  retain the completed semantic checks. Keep fresh perf artifacts under
+  `/tmp/crowdb-rdma-probe/artifacts/` as well as the repository runtime root.
 
 ## Phase 1: access contract mapping
 

@@ -148,11 +148,13 @@ the fixed SQ descriptor window reusable across mixed sizes and peer classes.
 SEND carries only the actual fragment length. Rejected queue publication
 restores the caller's original control ownership.
 
-QP data capacity is `min(local_data_capacity, peer_data_capacity)`. Active CM
-setup allocates and primes receives after validating the peer reply; passive
-setup already has the offer. Both actual RX allocation/posting and SEND
-validation use this minimum, which immutable connection status exposes as
-`effective_data_capacity`.
+Control/data QP data capacity is `min(local_data_capacity, peer_data_capacity)`.
+Active CM setup allocates and primes those receives after validating the peer
+reply; passive setup already has the offer. Both actual RX allocation/posting
+and SEND validation use this minimum, which immutable connection status exposes
+as `effective_data_capacity`. Contiguous slots retain their fixed local wire
+capacity and are posted before active CM connect, so an immediate peer response
+finds receive credits without entering an RNR retry cycle.
 
 The receiver reserves the complete logical length under
 `control_receive_budget_bytes` before assembly. One active message per QP

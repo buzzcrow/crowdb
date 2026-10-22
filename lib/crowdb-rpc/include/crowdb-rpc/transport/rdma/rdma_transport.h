@@ -242,8 +242,12 @@ class RdmaTransport : public Transport
     enum class WorkKind : uint8_t { Send, Receive };
     struct ConnectionPools;
     struct ControlSendState;
-    bool create_connection_pools(ConnectionPools &pools);
-    void configure_peer(ConnectionPools &pools, const RdmaCmOffer &peer);
+    bool                        create_connection_pools(ConnectionPools &pools);
+    void                        configure_peer(ConnectionPools &pools, const RdmaCmOffer &peer);
+    std::shared_ptr<Connection> create_active_connection(rdma_cm_id *id, const std::string &addr,
+                                                         std::shared_ptr<ConnectionPools> &pools);
+    bool establish_active_connection(rdma_cm_id *id, rdma_event_channel *channel, const std::string &addr,
+                                     const RdmaEndpointCapability *expected_peer, RdmaCmOffer &peer_offer);
 
     struct WorkRequest
     {
