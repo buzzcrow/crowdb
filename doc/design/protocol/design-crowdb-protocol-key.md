@@ -261,6 +261,13 @@ change and is not allowed; add a new key kind instead (§6).
 
 Header for every binary key: `magic:1 | type_tag:2`.
 
+- **StreamDirectoryPageKey** — `stream_name:16 bytes | page_id:32 bytes`.
+  Total 51 bytes. Tag `0x0016`. The page identity is its canonical record's
+  SHA-256 digest; ownership epoch and head generation do not enter this key.
+  Scan prefix `magic|0x0016|stream_name` selects one stream's independent pages.
+- **StreamDirectoryRootKey** — `stream_name:16 bytes | writer_epoch:u64 BE |
+  generation:u64 BE`. Total 35 bytes. Tag `0x0017`.
+  Scan prefix `magic|0x0017|stream_name` selects retained immutable roots.
 - **RackKey** — `rack_id:u64 BE`. Total 11 bytes.
   Tag `0x0002`. Scan prefix `magic|0x0002` = all racks.
 - **NodeKey** — `rack_id:u64 BE | node_id:u64 BE`. Total 19 bytes.

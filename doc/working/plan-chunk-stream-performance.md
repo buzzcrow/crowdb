@@ -432,6 +432,35 @@ adaptation rather than a new transport or storage engine.
   prebuilt HTTP test binary and pinned Python interpreter (`frame-consumer-boto3.log`).
   The installed-wheel Dataset case remains outside the default test invocation.
 
+## Indexed record implementation evidence (partial T09)
+
+- Added independent SHA-256 page identities, bounded leaf/branch records and a
+  version-2 indexed head. The head carries one root reference, a published tail,
+  attachment/checkpoint and owner session. Leaves contain compact shared
+  ChunkLocation values; one 4 MiB append occupies one directory location and an
+  88-byte encoded leaf. Pages exclude head epoch/generation and retain identities
+  across successive roots. Stream-only format distinguishes retained V1 and
+  grouped V2 geometry.
+- Bounds are explicit: 1024 locations, 128 children, height 8 and 64 KiB encoded
+  records. Bounded sequence visitors reject invented lengths before reserving
+  elements. Codecs check scope/purpose, SHA identity, fence/height/count, logical
+  coverage, physical continuity/overlap, mixed same-chunk formats and arithmetic.
+  Head validation separates persisted progress from current layout capacity.
+- Fresh fixed key tags 0x0016/0x0017 keep independent page and immutable root
+  namespaces separate from the frozen generation-qualified legacy pages. The
+  indexed head is CSTR version 2/kind 1; old version-1-only writers fail visibly
+  rather than reinterpret it. Generic head dispatch reads both schemas.
+- Eight focused directory cases and all four retained record cases pass;
+  protocol all-target clippy passes. Full protocol gates are pending. KV/index
+  runtime wiring, migration, root guards/retention and append completion are
+  not implemented by these record/schema tests.
+- Migration must first install a bounded versioned migration head by CAS,
+  referring to a separately retained immutable legacy source. This fences old
+  cached publishers while pages convert; only a final CAS exposes the indexed
+  root. Store conversion progress durably and preserve source pages until that
+  CAS. Merely converting everything and hoping a final head CAS wins can race
+  indefinitely with old publishers and does not establish a stable source.
+
 ## Phase 0 — Establish evidence and settle contracts
 
 - [x] **T01 — Capture a matched implementation baseline**: retain release

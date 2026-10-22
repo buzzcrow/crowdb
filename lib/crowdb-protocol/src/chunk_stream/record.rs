@@ -20,6 +20,7 @@ const EXTENT_PAGE: u8 = 2;
 pub enum StreamRecordEncoding {
     Legacy,
     Version1,
+    Version2,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -38,6 +39,8 @@ pub enum StreamRecordError {
     WrongKind { expected: u8, actual: u8 },
     #[error("stream metadata codec failed: {0}")]
     Codec(#[from] Box<bincode::ErrorKind>),
+    #[error("invalid indexed stream directory: {0}")]
+    InvalidDirectory(String),
 }
 
 /// # Errors
@@ -70,6 +73,7 @@ pub fn decode_stream_extent_page_record(
 ) -> Result<DecodedStreamRecord<StreamExtentPage>, StreamRecordError> {
     let body = match encoding {
         StreamRecordEncoding::Legacy => bytes,
+        StreamRecordEncoding::Version2 => return Err(StreamRecordError::UnsupportedVersion(2)),
         StreamRecordEncoding::Version1 => {
             if !bytes.starts_with(MAGIC) {
                 return Err(StreamRecordError::InvalidEnvelope);
@@ -80,12 +84,20 @@ pub fn decode_stream_extent_page_record(
     decode_body(body, encoding)
 }
 
-fn encode_record<T: Serialize>(kind: u8, value: &T) -> Result<Vec<u8>, StreamRecordError> {
+pub(super) fn encode_record<T: Serialize>(kind: u8, value: &T) -> Result<Vec<u8>, StreamRecordError> {
+    encode_versioned_record(VERSION, kind, value)
+}
+
+pub(super) fn encode_versioned_record<T: Serialize>(
+    version: u16,
+    kind: u8,
+    value: &T,
+) -> Result<Vec<u8>, StreamRecordError> {
     let body = bincode::serialize(value)?;
     let length = u32::try_from(body.len()).map_err(|_| StreamRecordError::InvalidEnvelope)?;
     let mut bytes = Vec::with_capacity(HEADER_BYTES + body.len());
     bytes.extend_from_slice(MAGIC);
-    bytes.extend_from_slice(&VERSION.to_le_bytes());
+    bytes.extend_from_slice(&version.to_le_bytes());
     bytes.extend_from_slice(&[kind, 0]);
     bytes.extend_from_slice(&length.to_le_bytes());
     bytes.extend_from_slice(&body);
@@ -104,7 +116,7 @@ fn decode_record<T: DeserializeOwned>(
     decode_body(body, encoding)
 }
 
-fn decode_body<T: DeserializeOwned>(
+pub(super) fn decode_body<T: DeserializeOwned>(
     body: &[u8],
     encoding: StreamRecordEncoding,
 ) -> Result<DecodedStreamRecord<T>, StreamRecordError> {
@@ -116,12 +128,23 @@ fn decode_body<T: DeserializeOwned>(
     Ok(DecodedStreamRecord { value, encoding })
 }
 
-fn decode_envelope(kind: u8, bytes: &[u8]) -> Result<&[u8], StreamRecordError> {
+pub(super) fn decode_envelope(kind: u8, bytes: &[u8]) -> Result<&[u8], StreamRecordError> {
+    decode_versioned_envelope(VERSION, kind, bytes)
+}
+
+pub(super) fn decode_versioned_envelope(
+    expected_version: u16,
+    kind: u8,
+    bytes: &[u8],
+) -> Result<&[u8], StreamRecordError> {
+    if !bytes.starts_with(MAGIC) {
+        return Err(StreamRecordError::InvalidEnvelope);
+    }
     let header = bytes
         .get(..HEADER_BYTES)
         .ok_or(StreamRecordError::InvalidEnvelope)?;
     let version = u16::from_le_bytes([header[4], header[5]]);
-    if version != VERSION {
+    if version != expected_version {
         return Err(StreamRecordError::UnsupportedVersion(version));
     }
     if header[6] != kind {
@@ -135,4 +158,46 @@ fn decode_envelope(kind: u8, bytes: &[u8]) -> Result<&[u8], StreamRecordError> {
         return Err(StreamRecordError::InvalidEnvelope);
     }
     Ok(&bytes[HEADER_BYTES..])
+}
+
+/// A stored head is decoded explicitly; compatibility readers cannot publish
+/// over an indexed head by treating it as the retained body schema.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StreamHeadRecord {
+    Legacy(StreamManifest),
+    Indexed(super::StreamDirectoryHead),
+}
+
+/// # Errors
+/// Rejects invalid indexed checkpoints or an unencodable record.
+pub fn encode_stream_directory_head(
+    value: &super::StreamDirectoryHead,
+) -> Result<Vec<u8>, StreamRecordError> {
+    value
+        .validate()
+        .map_err(|error| StreamRecordError::InvalidDirectory(error.to_string()))?;
+    encode_versioned_record(2, MANIFEST, value)
+}
+
+/// # Errors
+/// Rejects unknown versions/kinds, invalid bounds and trailing bytes.
+pub fn decode_stream_head_record(bytes: &[u8]) -> Result<StreamHeadRecord, StreamRecordError> {
+    if !bytes.starts_with(MAGIC) {
+        return decode_stream_manifest_record(bytes).map(|record| StreamHeadRecord::Legacy(record.value));
+    }
+    let version = bytes.get(4..6).ok_or(StreamRecordError::InvalidEnvelope)?;
+    match u16::from_le_bytes([version[0], version[1]]) {
+        1 => decode_stream_manifest_record(bytes).map(|record| StreamHeadRecord::Legacy(record.value)),
+        2 => {
+            let body = decode_versioned_envelope(2, MANIFEST, bytes)?;
+            let decoded: DecodedStreamRecord<super::StreamDirectoryHead> =
+                decode_body(body, StreamRecordEncoding::Version2)?;
+            decoded
+                .value
+                .validate()
+                .map_err(|error| StreamRecordError::InvalidDirectory(error.to_string()))?;
+            Ok(StreamHeadRecord::Indexed(decoded.value))
+        }
+        other => Err(StreamRecordError::UnsupportedVersion(other)),
+    }
 }

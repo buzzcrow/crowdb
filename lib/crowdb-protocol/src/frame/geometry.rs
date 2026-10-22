@@ -10,7 +10,7 @@ use super::{
     MAX_FRAME_PAYLOAD_BYTES,
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ChunkLocation {
     pub chunk_id: ChunkId,
     pub frame_offset: u64,

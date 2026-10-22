@@ -12,6 +12,9 @@ use super::encoding::{
     BinaryKey, KeyError, TextKey,
 };
 
+mod directory;
+pub use directory::{StreamDirectoryPageKey, StreamDirectoryRootKey};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct StreamBindingKey {
     pub stream_name: StreamName,

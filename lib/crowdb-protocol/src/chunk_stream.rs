@@ -9,8 +9,10 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod directory;
 mod record;
 
+pub use directory::*;
 pub use record::*;
 
 /// Durable purpose of a logical stream; absent legacy values are not inferred.
