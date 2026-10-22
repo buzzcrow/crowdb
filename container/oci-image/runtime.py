@@ -66,7 +66,7 @@ class Runtime:
         result = subprocess.run([*self.command, *map(str, args)], check=False, text=True, capture_output=True, timeout=60)
         if result.returncode:
             raise RuntimeError(f"{self.name} {args[0]} failed: {result.stderr}")
-        return result.stdout
+        return result.stdout + result.stderr if args and args[0] == 'logs' else result.stdout
 
     def inspect(self, name, image=False):
         return json.loads(self.invoke(*(["image", "inspect"] if image else ["inspect"]), name))[0]

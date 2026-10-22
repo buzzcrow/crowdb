@@ -9,6 +9,28 @@ readiness, attached workloads and scoped cleanup.
 
 ## Current handoff
 
+- Latest verification: image AB manifest
+  `sha256:015ec004d8a565dd74e432bfc812d3e16f0ce745bbe65a0de46dddb6fd692d7b`
+  (server revision `ba50e29b`) passes actual four-member Docker-free native
+  cold recovery. All former management/SSH/KV endpoints are unreachable;
+  hosts change from `.11–.14` to `.21–.24`, start in order 4,3,1,2, and retain
+  their original three-voter manifest, identities, pinned keys and credentials.
+  One voter plus the confirmed nonvoter cannot recover authority; two original
+  voters recover authority while the missing member remains degraded. All
+  three serving nodes read the original S3 bytes, Iceberg commit properties and
+  Dataset snapshot/manifest. Evidence: `r243-native-kvm/`
+  `node{1,2,3,4}-cold-recovery-ab.json`, `cold-protocol-proof-ab.json`,
+  `one-voter-nonvoter-negative-ab.json`. All four trust containers are stopped
+  with preserved volumes. Registered changed-address and public host-profile
+  qualification remain outstanding; the native proof is not their substitute.
+- User requests completing R243 first, then implementing the already-authored
+  R244 design and plan. Preserve those concurrent document edits until that work.
+- Actual Docker CPU inspection reports `NanoCpus` with zero period/quota.
+  Host ownership now accepts either representation and rejects contradictory
+  limits. Runtime logs retain both output streams so entrypoint rejection is
+  visible. All 61 OCI helper tests, CLI all-target clippy, Rust fmt and CLI build
+  pass; actual Docker host qualification remains pending.
+
 - **R243 remains incomplete.** Keep the requirement/backlog entry and outstanding
   acceptance work below. The sustained all-DiskIO recovery case now passes;
   this does not certify every runtime, protocol or formation/recovery acceptance.

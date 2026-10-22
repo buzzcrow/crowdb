@@ -155,6 +155,21 @@ class HostCliTest(unittest.TestCase):
             lifecycle.run(self.request)
         self.assertEqual(self.runtime.effects, [])
 
+    def test_docker_nanocpus_and_containerd_quota_limits_must_match_even_when_stopped(self):
+        for running in (True, False):
+            current = container(self.record)
+            current['State']['Running'] = running
+            current['HostConfig'].update(NanoCpus=2_000_000_000,CpuPeriod=0,CpuQuota=0)
+            require_owned(current,self.record)
+            current['HostConfig']['NanoCpus'] = 1_000_000_000
+            with self.assertRaisesRegex(ValueError,'resource limits'):
+                require_owned(current,self.record)
+            current['HostConfig'].update(NanoCpus=2_000_000_000,CpuPeriod=100000,CpuQuota=100000)
+            with self.assertRaisesRegex(ValueError,'resource limits'):
+                require_owned(current,self.record)
+            current['HostConfig'].update(NanoCpus=0,CpuQuota=200000)
+            require_owned(current,self.record)
+
     def test_raw_device_requires_exact_source_target_and_permissions(self):
         record = copy.deepcopy(self.record)
         record['disks'] = [dict(backend='block-device', source='/dev/vdf', path='/opt/crowdb/data/disks/vdf',

@@ -90,7 +90,11 @@ def require_owned(current, record):
     if host.get('NetworkMode') != 'host':
         raise ValueError('owned host container no longer uses host networking')
     period, quota = host.get('CpuPeriod', 0), host.get('CpuQuota', 0)
-    if (period <= 0 or abs(quota / period - record['options']['cpus']) > 0.00001
+    nanocpus = host.get('NanoCpus', 0)
+    limits = ([nanocpus / 1_000_000_000] if nanocpus > 0 else [])
+    if period > 0 and quota > 0:
+        limits.append(quota / period)
+    if (not limits or nanocpus < 0 or any(abs(limit - record['options']['cpus']) > 0.00001 for limit in limits)
             or host.get('Memory') != record['options']['memory_mib'] * 1024 * 1024):
         raise ValueError('owned host container resource limits differ from accepted inputs')
     expected = {'/opt/crowdb/data': (record['options']['data_root'], True),
