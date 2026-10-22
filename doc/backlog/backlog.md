@@ -11,18 +11,6 @@ live in the linked document; implementation follows
 
 **Next R number: R245**
 
-## Deployment and cluster operations
-
-- **[R243](R243-deploy-unified-oci-cluster.md)** — unified OCI node deployment,
-  direct Docker one/three-container startup, Docker/containerd runtime adapters,
-  namespace-scoped CLI/Pixi lifecycle, cluster readiness and deployment cleanup.
-  **Area:** deployment / monitor / CLI / console. **Complexity:** High.
-  **Status:** implementation resumed; packaged one/three-node aggregate checks and
-  retained I/O pass on the current image. Detailed diagnostics and a guard against
-  destructive finalization are implemented; lifecycle migration and remaining
-  acceptance work are recorded in the working plan.
-  Kubernetes scheduling remains future work; the node contract stays portable.
-
 ## Dataset and access
 
 - **[R233](R233-sdk-local-cache-checkpoint.md)** — optional local disk read cache
