@@ -12,6 +12,15 @@ use super::{
 const PAGE_KIND: u8 = 3;
 
 /// # Errors
+/// Rejects records above the physical page budget before hashing their identity.
+pub fn stream_directory_page_id(bytes: &[u8]) -> Result<StreamDirectoryPageId, StreamDirectoryError> {
+    if bytes.len() > MAX_STREAM_DIRECTORY_RECORD_BYTES {
+        return Err(StreamDirectoryError::InvalidBounds);
+    }
+    Ok(StreamDirectoryPageId(Sha256::digest(bytes).into()))
+}
+
+/// # Errors
 /// Rejects invalid bounds, purpose or a record larger than the page budget.
 pub fn encode_stream_directory_page(
     page: &StreamDirectoryPage,
@@ -22,7 +31,7 @@ pub fn encode_stream_directory_page(
     if bytes.len() > MAX_STREAM_DIRECTORY_RECORD_BYTES {
         return Err(StreamDirectoryError::InvalidBounds);
     }
-    let id = StreamDirectoryPageId(Sha256::digest(&bytes).into());
+    let id = stream_directory_page_id(&bytes)?;
     Ok((
         StreamDirectoryRef {
             id,
@@ -47,8 +56,7 @@ pub fn decode_stream_directory_page(
     if bytes.len() > MAX_STREAM_DIRECTORY_RECORD_BYTES {
         return Err(StreamDirectoryError::InvalidBounds);
     }
-    let actual_id: [u8; 32] = Sha256::digest(bytes).into();
-    if actual_id != expected.id.0 {
+    if stream_directory_page_id(bytes)? != expected.id {
         return Err(StreamDirectoryError::IdentityMismatch);
     }
     let body =

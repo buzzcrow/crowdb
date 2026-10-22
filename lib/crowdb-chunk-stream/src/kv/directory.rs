@@ -14,8 +14,11 @@ use crowdb_protocol::key::{
 use super::{kv_error, GetOutcome, KvStreamMetadataStore, ReadMode};
 use crate::{Result, StreamDirectoryStore, StreamError};
 
+mod cache;
 mod control;
 mod publication;
+pub(super) use cache::DirectoryRecordCache;
+pub use cache::{DirectoryCacheSnapshot, DIRECTORY_PAGE_CACHE_SLOTS};
 
 /// An immutable indexed head and the KV revision that fenced its observation.
 #[derive(Clone, Debug)]
@@ -33,6 +36,10 @@ impl DirectoryHeadSnapshot {
 }
 
 impl KvStreamMetadataStore {
+    #[must_use]
+    pub fn directory_cache_snapshot(&self) -> DirectoryCacheSnapshot {
+        self.directory_pages.snapshot()
+    }
     /// # Errors
     /// Rejects legacy heads until migration, unknown versions and wrong metadata scope.
     pub async fn load_directory_head(&self, name: StreamName) -> Result<Option<DirectoryHeadSnapshot>> {
@@ -129,6 +136,9 @@ impl StreamDirectoryStore for KvStreamMetadataStore {
         stream_name: StreamName,
         page_id: StreamDirectoryPageId,
     ) -> Result<Option<Bytes>> {
+        if let Some(bytes) = self.directory_pages.get(stream_name, page_id) {
+            return Ok(Some(bytes));
+        }
         let key = StreamDirectoryPageKey { stream_name, page_id }.to_bytes();
         match self
             .kv
@@ -136,7 +146,10 @@ impl StreamDirectoryStore for KvStreamMetadataStore {
             .await
             .map_err(kv_error)?
         {
-            GetOutcome::Found { value, .. } => Ok(Some(value)),
+            GetOutcome::Found { value, .. } => {
+                self.directory_pages.insert(stream_name, page_id, &value)?;
+                Ok(Some(value))
+            }
             GetOutcome::NotFound => Ok(None),
         }
     }

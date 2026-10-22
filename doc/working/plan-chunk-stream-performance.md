@@ -520,6 +520,24 @@ adaptation rather than a new transport or storage engine.
   root pins/GC, owner authority, content recovery and the new finite-view/ACK
   contract must be wired together. No performance acceptance is claimed here.
 
+## Independent page cache evidence (partial T12)
+
+- KV directory reads now use a fixed 64-slot, directly mapped ArcSwap cache.
+  Page IDs remain reusable across root epochs/generations; no historical map is
+  cloned or retained. Cold insert verifies the bounded record's SHA identity and
+  copies only its bytes, avoiding retention of a larger transport allocation.
+  Collisions replace one slot; there is no new lock or unsafe scope.
+- DirectoryCacheSnapshot exposes hits, misses, replacements and resident
+  pages/bytes/slot limit. Resident page bytes are bounded by 64 * 64 KiB,
+  independently of retained history; caller-owned in-flight buffers follow their
+  existing admission bounds. Cache residency does not replace root/data pins.
+- Three additional real-KV cases verify reuse across publication generations,
+  512 historical pages under the fixed slot/byte bound, and refusal to cache
+  corrupt/oversized records. Full Protocol/Stream suites pass 352 cases, zero
+  ignored; all-target clippy and fmt pass. Logs:
+  `directory-cache-{clippy4,full-suite,fmt}.log`. Legacy worker open/read remains
+  unchanged until migration and the complete indexed state machine are wired.
+
 ## Phase 0 — Establish evidence and settle contracts
 
 - [x] **T01 — Capture a matched implementation baseline**: retain release

@@ -1,6 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+#[path = "indexed_kv_test/cache.rs"]
+mod cache;
 #[path = "common/indexed_metadata.rs"]
 mod indexed_metadata;
 #[path = "common/metadata_server.rs"]

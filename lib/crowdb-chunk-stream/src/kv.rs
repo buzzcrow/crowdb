@@ -15,7 +15,7 @@ use crowdb_protocol::key::{
 use futures::{stream, StreamExt, TryStreamExt};
 
 mod directory;
-pub use directory::DirectoryHeadSnapshot;
+pub use directory::{DirectoryCacheSnapshot, DirectoryHeadSnapshot, DIRECTORY_PAGE_CACHE_SLOTS};
 mod pages;
 
 use crate::perf::{perf, PhaseTimer};
@@ -92,6 +92,7 @@ pub struct KvStreamMetadataStore {
     store_id: u64,
     group_id: u64,
     head: ArcSwapOption<CachedHead>,
+    directory_pages: directory::DirectoryRecordCache,
 }
 
 struct CachedHead {
@@ -116,6 +117,7 @@ impl KvStreamMetadataStore {
             store_id,
             group_id,
             head: ArcSwapOption::empty(),
+            directory_pages: directory::DirectoryRecordCache::default(),
         })
     }
 
