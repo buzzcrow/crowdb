@@ -9,6 +9,10 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod record;
+
+pub use record::*;
+
 /// Durable purpose of a logical stream; absent legacy values are not inferred.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StreamPurpose {
@@ -191,7 +195,7 @@ pub struct StreamExtentPageFence {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StreamManifest {
+pub struct LegacyStreamManifest {
     pub purpose: StreamPurpose,
     pub stream_name: StreamName,
     pub metadata_group_id: u64,
@@ -205,11 +209,14 @@ pub struct StreamManifest {
     pub closed: bool,
 }
 
+/// Frozen retained manifest body. New directory schemas use separate record versions.
+pub type StreamManifest = LegacyStreamManifest;
+
 /// Parallel logical-to-physical extent arrays. Entry `i` maps
 /// `[logical_offsets[i], logical_offsets[i + 1])` into `chunk_ids[i]`
 /// starting at `physical_offsets[i]`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StreamExtentPage {
+pub struct LegacyStreamExtentPage {
     pub stream_name: StreamName,
     pub writer_epoch: u64,
     pub generation: u64,
@@ -221,3 +228,6 @@ pub struct StreamExtentPage {
     /// Complete physical frame length, including its public header and footer.
     pub frame_lengths: Vec<u32>,
 }
+
+/// Frozen retained per-frame extent-page body.
+pub type StreamExtentPage = LegacyStreamExtentPage;

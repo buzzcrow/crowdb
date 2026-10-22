@@ -208,6 +208,17 @@ coverage. Unknown revisions, roles outside their purpose, and noncanonical
 revision-2 header offsets are rejected. A legacy encoder's retained bytes do
 not define the new revision's wire format.
 
+Metadata records use a CSTR envelope with an explicit little-endian version,
+record kind, zero flags and exact body length. Frozen legacy manifest/page
+schemas retain their fixed-integer bincode layout. Head bodies begin with the
+legacy purpose enum, so raw and enveloped heads are distinguishable. A legacy
+page instead begins with arbitrary stream-identity bytes, which may equal the
+magic: its owning key namespace selects its decoder explicitly. The retained
+per-frame extent-page namespace stays raw; new independent page namespaces use
+versioned records. Unknown versions/kinds, malformed lengths and trailing bytes
+fail without falling back to another schema. A head upgrade uses the existing
+revision CAS and preserves referenced page identities.
+
 The directory keeps one extent per append group and preserves its boundary.
 Recovery reconstructs that boundary from the head and followers. It does not
 merge groups in a way that loses append validity or use a valid follower as an

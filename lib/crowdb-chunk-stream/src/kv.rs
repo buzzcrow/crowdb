@@ -127,7 +127,11 @@ impl KvStreamMetadataStore {
             .map_err(kv_error)?
         {
             GetOutcome::Found { value, revision } => {
-                let manifest: StreamManifest = decode(&value)?;
+                let manifest = crowdb_protocol::chunk_stream::decode_stream_manifest_record(&value)
+                    .map_err(|error| {
+                        StreamError::Corruption(format!("stream manifest decode failed: {error}"))
+                    })?
+                    .value;
                 if manifest.stream_name != stream_name || manifest.metadata_group_id != self.group_id {
                     return Err(StreamError::Corruption(
                         "stream manifest identity or metadata group is invalid".into(),
@@ -261,7 +265,8 @@ impl StreamMetadataStore for KvStreamMetadataStore {
             stream_name: manifest.stream_name,
         }
         .to_bytes();
-        let value = encode(&manifest)?;
+        let value = crowdb_protocol::chunk_stream::encode_stream_manifest_record(&manifest)
+            .map_err(|error| StreamError::Internal(format!("stream manifest encode failed: {error}")))?;
         let _timer = PhaseTimer::start(&perf().head_cas);
         match self
             .kv
@@ -335,14 +340,20 @@ impl StreamMetadataStore for KvStreamMetadataStore {
     }
 }
 
-fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>> {
+fn encode(value: &StreamExtentPage) -> Result<Vec<u8>> {
     bincode::serialize(value)
         .map_err(|error| StreamError::Internal(format!("stream metadata encode failed: {error}")))
 }
 
-fn decode<T: serde::de::DeserializeOwned>(value: &[u8]) -> Result<T> {
-    bincode::deserialize(value)
-        .map_err(|error| StreamError::Corruption(format!("stream metadata decode failed: {error}")))
+fn decode(value: &[u8]) -> Result<StreamExtentPage> {
+    // This retained key namespace always stores the raw legacy body. Its stream
+    // identity can overlap envelope magic, so never infer encoding from bytes.
+    crowdb_protocol::chunk_stream::decode_stream_extent_page_record(
+        value,
+        crowdb_protocol::chunk_stream::StreamRecordEncoding::Legacy,
+    )
+    .map(|decoded| decoded.value)
+    .map_err(|error| StreamError::Corruption(format!("stream metadata decode failed: {error}")))
 }
 
 #[allow(clippy::needless_pass_by_value)]

@@ -12,12 +12,15 @@ KV work, with compact locations, incremental directories, and bounded recovery.
 ## Status and scope
 
 - Code audit: 2026-10-23, against the shared working tree. The first observed
-  HEAD was `6a2a8796`; unrelated deployment work is proceeding independently.
+  HEAD was `6a2a8796`; the deployment requirement is now complete.
 - Implementation starts after completed OCI deployment cleanup at `c3d7d64d`.
   T01/T05–T07 are complete; T04 is active. Matched release identities and unchanged
   sentinel results are retained under `r244-chunk-stream/baseline/`.
-- T02/T03 record Q1–Q4 design decisions only. The new append completion,
-  framing, ownership, directory and performance contracts are not implemented.
+- T02/T03 record Q1–Q4 design decisions only. Shared revision-2 codecs,
+  ordinary object reads/writes/native buffers and C++ tree storage are committed
+  in `348f300e`, `4eec25dd` and `d667bbfc`. Stream grouped writes, new append
+  completion, ownership, indexed directories and performance acceptance remain
+  unfinished. T04's record/legacy compatibility gate is in progress.
 - Keep this plan live during implementation and delete it only with completed
   requirement cleanup. Existing unrelated changes and runtime resources stay
   outside this work's ownership.
@@ -400,6 +403,34 @@ adaptation rather than a new transport or storage engine.
   Do not repeat full history conversion on each subsequent open.
 - These are execution targets only. Indexed storage, migration, candidate guards,
   background publication and root-reachability GC are not implemented yet.
+
+## Metadata record and legacy recovery evidence (partial T04)
+
+- Frozen `LegacyStreamManifest` / `LegacyStreamExtentPage` bodies retain existing
+  public aliases and raw bytes. New heads use a 12-byte CSTR version/kind/flags/
+  length envelope; raw heads still decode. Retained per-frame page keys stay raw,
+  with their decoder selected by namespace. A real counterexample stream identity
+  begins with CSTR/version-like bytes; it remains readable rather than being
+  mistaken for an unknown envelope.
+- Independent fixed-integer legacy golden bodies round-trip unchanged. Four new
+  protocol cases cover version/kind/flag/length/trailing-byte rejection, bounded
+  malformed sequence decoding and the arbitrary-ID collision. Three real KV
+  adapter cases cover raw-head upgrade, unchanged legacy page bytes, the ID
+  collision and refusal to overwrite an unknown head version.
+- A manually seeded legacy Stream contains acknowledged V1 bytes plus a valid
+  multi-frame suffix without its durable cursor advance. Same-epoch and
+  higher-epoch reopen both seal at exactly the old persisted cursor, expose only
+  the acknowledged prefix and attach a fresh chunk before the next append.
+  This fixture is independent of the current append encoder and remains a
+  compatibility test when new Stream writes become grouped.
+- Protocol and Stream all-target clippy and all 325 tests pass, including 262
+  protocol and 63 Stream cases, zero ignored. Initial clippy repair was explicit
+  legacy-type Default syntax in two new tests. Evidence: `record-compat-gate2.log`.
+  Rust fmt passes. This establishes the retained record/legacy boundary;
+  independently indexed pages and resumable index conversion remain unfinished.
+- The ordinary migration's extra pinned boto3 case passes through its existing
+  prebuilt HTTP test binary and pinned Python interpreter (`frame-consumer-boto3.log`).
+  The installed-wheel Dataset case remains outside the default test invocation.
 
 ## Phase 0 — Establish evidence and settle contracts
 
