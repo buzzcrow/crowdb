@@ -54,15 +54,13 @@ design is detailed in the sub-design `design-crowdb-console-ui.md`.
 - Multi-tenancy and a general audit-log service.
 - Making a console-local file authoritative for cluster topology.
 
-Local deployments use one stable directory per logical server below their
-runtime namespace. Each server owns its `data/`, `config/`, `log/`, and
-`artifacts/` directories. Process IDs are recorded as live-process ownership,
-not used as logical directory identities, so restart continues to use the same
-server directory and port assignments.
-
-The default simulated topology is one rack containing all requested nodes.
-Benchmarks that need distinct failure domains create additional racks
-explicitly; full-stack deployment does not silently move nodes between racks.
+Ordinary deployment runs the shared OCI node image. The host lifecycle owns
+containers, applied resources and private ownership receipts; each node monitor
+owns its service processes and retained data. Local evaluation may place several
+logical nodes on one host, with zero physical host failure tolerance. Production
+placement uses the confirmed physical failure domains. Test-only measurement
+fixtures may own native processes but do not define a second public deployment
+lifecycle.
 
 ## 2. High-Level Architecture
 
@@ -98,9 +96,10 @@ commands select `--cluster` or `--management-endpoint`, verify the confirmed
 cluster UUID through the management origin, then verify the same UUID through
 native Group 0 before hardware/KV operations and native workloads. Production
 Web uses a versioned process configuration. Both read confirmed hardware and logical records through Group 0
-and resolve node management endpoints from live registration. The process
-launch registry is local to each bare-metal console. Docker process state is
-owned by `crowdb-monitor`.
+and resolve node management endpoints from live registration. Ordinary OCI nodes
+use `crowdb-monitor` for process ownership on both Docker and containerd. A
+configured auxiliary Web process may retain a local launch registry; it is not
+required for node formation or endpoint-only attachment.
 
 The CLI talks directly to group-0 system metadata via
 `CrowdbSysmdClient` and to individual `crowdb-kv-server` management
@@ -143,8 +142,8 @@ call.
   the web backend via `AppState::op_context()` (sharing the
   cached `CrowdbKvClient` and Group 0 management seeds).
 - Shared hardware and logical operations provide the same authority and
-  conditional publication rules to both frontends. Deployment-mode policy
-  controls which process and hardware mutations Web exposes.
+  conditional publication rules to both frontends. Node count and runtime do not
+  select UI permissions; required authority and resource ownership still apply.
 
 ## 3. Data Model
 
@@ -350,29 +349,21 @@ child recovery and status to `crowdb-monitor`.
 
 ### 6.1 Design Rules
 
-Configured managed Web uses the managed router and a versioned process configuration.
-`/api/preview` combines confirmed Group 0 records, live registration, and the
-mode-specific process view. `/api/stores/...` provides authenticated logical
-mutations through shared operations in both modes. Bare-metal Web additionally
-exposes rack, node, disk-group and disk reads and authenticated mutations, plus
-registry-backed launch controls and bootstrap. Automatic single-node Docker Web does not expose
-hardware or process mutation routes. Manual node Web exposes candidate/rack
-preparation before bootstrap and routes subsequent shared management through
-Group 0 and authenticated monitor execution. Unknown managed API routes report
-unavailable rather than entering an in-memory topology path.
+The ordinary OCI entrypoint starts a node Web with an editable UI in both
+one-member and three-member clusters. Automatic preparation and runtime choice
+do not restrict management writes. Before bootstrap, candidate/rack preparation
+uses retained local admission state; afterward, hardware and logical mutations
+use confirmed Group 0 authority and authenticated monitor execution. Configured
+managed Web retains its versioned process configuration and requires confirmed
+records; unknown managed routes never enter an in-memory topology fallback.
 
-A mutation is accepted only after the required node-side steps and Group 0
-publication are confirmed. The Console assumes a root operator until UI login is introduced. Automatic single-node container
-mode rejects topology, deployment, and disk-management writes at the
-backend; logical and Access operations use server-held protocol credentials.
-Docker Web is writable by default. The process configuration explicitly sets
-`readonly = true` to reject every non-read request with 403; `/api/mode` exposes
-this flag and the SPA disables write controls accordingly. The public
-single-container profile enables readonly, while internal writable profiles
-select the same release image with readonly disabled. Docker physical-management
-restrictions apply independently of readonly.
-The SPA calls the Axum backend; it does not talk directly to KV management
-endpoints.
+A mutation returns success only after the required node-side steps and Group 0
+publication are confirmed. The Console assumes a root operator until UI login
+is introduced. Explicit `readonly = true` rejects non-read requests with 403;
+`/api/mode` exposes that setting and the SPA disables writes accordingly. The
+ordinary node default is writable. Credentials remain in the established private
+store, and invalid authority, ownership or placement rejects the operation for
+that cause. The SPA calls the Axum backend rather than KV management endpoints.
 
 ### 6.2 In-process test API
 
@@ -498,12 +489,12 @@ backend-facing contract here:
 
 ## 10. Hardware mutations
 
-CLI and bare-metal Web use the shared Group 0 hardware operations. Rack,
+CLI and node Web use the shared Group 0 hardware operations. Rack,
 node, disk-group and disk changes update parent and child records in one
 conditional batch where membership changes. Matching retries are confirmed;
-conflicting concurrent writes preserve the existing record. Automatic single-node Docker Web does
-not expose hardware or process mutations. Manual Docker nodes use the same
-shared hardware operations after confirmed Group 0 publication.
+conflicting concurrent writes preserve the existing record. One-member and
+three-member OCI nodes expose the same shared management surface after
+confirmed Group 0 publication.
 
 The physical Cluster workspace shares one tree and selection across Topology and
 Capacity. Cluster/Rack node cards and capacity tables reuse bounded observations;
@@ -525,16 +516,20 @@ from incomplete state. Secrets remain in the established private credential path
 
 ## 11. Cluster teardown and verification
 
-`cluster destroy` requires the local launch registry. It reads confirmed Group
-0 membership, removes user stores and groups through shared logical operations,
-then removes the system group last. Only after metadata teardown succeeds does
-it stop processes named by that console's launch registry. A failed or
-unconfirmed step returns an error instead of deleting presumed local topology.
+`cluster start`, `cluster stop`, `cluster status` and `cluster check` form the
+common CLI lifecycle. Start and stop require matching private runtime ownership;
+stop retains accepted inputs and data. Endpoint-only attachment supports current
+observation and workloads without granting runtime stop or cleanup authority.
+Independent OCI cleanup validates the recorded daemon, exact container and
+resource identities before removing owned runtime resources. It preserves data
+by default; explicit owned-data deletion is separate from stopping services.
 
-There is no orphan-guessing reset command. A stopped or unreachable node does
-not imply its membership should be deleted. `cluster clean` derives its
-replica targets from Group 0, wipes each live target, and waits for a new
-leader while preserving topology.
+Application cleanup is a distinct authenticated operation. It validates the
+retained bootstrap, retires further setup/recovery, drains owned services and
+removes the matching system store through its local deletion endpoint. Failed
+members remain pending for explicit retry; an unavailable node is never proof
+that its membership or data should be deleted. No cleanup guesses orphan
+ownership or reconstructs topology from host-local process records.
 
 Manual node discovery and bootstrap follow the
 [deployment architecture](../deploy/design-crowdb-deploy.md). The Cluster sidebar

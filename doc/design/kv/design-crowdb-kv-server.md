@@ -216,8 +216,9 @@ same `(store_id, group_id)`.
 
 `POST /stores/{sid}/groups/{gid}/wipe-user-data` drops and recreates
 WAL + engine user data for a group, preserving group0 sysdata +
-topology. Used by `cluster clean` to reset a cluster between
-write-regression sub-tests without a full redeploy. The handler
+topology. Explicit test-only measurement fixtures use this endpoint between
+write-regression sub-tests while retaining their owned topology. Attached
+product benchmarks do not reset groups or manage servers. The handler
 steps down if leader, deletes the WAL + engine dirs, recreates the
 group via `create_group_with_wal` (replays empty WAL → fresh state),
 and does `remove_group` + `add_group` (remove-before-add is critical:
