@@ -401,6 +401,12 @@ Existing implementation can be reused; these are the outstanding parts.
   Original strict throughput/publication assertions remain unmodified and unmet;
   T29b and R243 remain incomplete. Framed synthetic reads and T34's external
   native runner proof remain outstanding.
+- User subsequently deferred the directory redesign to
+  [R244](../backlog/R244-chunk-stream-incremental-directory-publication.md).
+  It owns incremental page references, active-tail commitment/checkpoint
+  separation, shared-page reclamation and real Chunk-KV WAL performance
+  acceptance. Do not continue that optimization in this deployment task or
+  mark the existing failing performance gates as passed because work was moved.
 
 ## Completed foundation (brief)
 

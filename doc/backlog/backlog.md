@@ -9,7 +9,7 @@ requirements and their temporary execution plans are removed during the final
 live in the linked document; implementation follows
 [`implement-requirement`](../../.agents/skills/implement-requirement/SKILL.md).
 
-**Next R number: R244**
+**Next R number: R245**
 
 ## Deployment and cluster operations
 
@@ -56,6 +56,12 @@ live in the linked document; implementation follows
 
 ## Chunk, Chunk-KV, and recovery
 
+- **[R244](R244-chunk-stream-incremental-directory-publication.md)** — eliminate
+  historical extent-directory rewrites and per-append directory publication;
+  preserve durable cursor, snapshot/recovery and shared-page reclamation rules,
+  and verify real Chunk-KV WAL latency alongside Stream perf.
+  **Area:** chunk-stream / chunk-kv / KV metadata. **Complexity:** High.
+  **Status:** Deferred by user decision to a dedicated storage performance iteration.
 - **[R83](R83-chunkdb-complete-recovery-flow.md)** — complete data recovery and
   recovery-speed control. **Area:** chunkdb / diskdb / DiskIO.
   **Complexity:** High. **Dependencies:** chunkdb server and DiskIO recovery path.
