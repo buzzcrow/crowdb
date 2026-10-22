@@ -7,8 +7,9 @@ Upstream: [R239](../backlog/R239-rdma-rpc-transport.md),
 [root RDMA plan](plan-rdma.md), and
 [RDMA RPC design](../design/rpc/design-crowdb-rpc-rdma.md).
 
-Goal: add RC SEND/RECV to the common RPC transport with epoll/CQ event
-composition and one-way RDMA-to-TCP fallback.
+Goal: complete RC SEND/RECV ownership and fallback acceptance, together with
+CLI coroutine benchmarks, bounded RPC aggregation, and one polling/event
+worker per CQ, using the existing RPC regression runners.
 
 ## Progress
 
@@ -96,7 +97,7 @@ and TPS/P50/P95/P99 output.
   rerunning under `CROWDB_RUNTIME_ROOT=.crowdb-runtime/rdma-check` passed.
   Full gate artifacts:
   `.crowdb-runtime/artifacts/unit/cpp-3ab318e0c5a04f27a8328be78ca1cab6/`.
-- [~] **Complete remaining transport and OCI acceptance**: negotiated TCP
+- [ ] **Complete remaining transport and OCI acceptance**: negotiated TCP
   capability preflight, real registered-lease PD/MR lifetime verification,
   and multi-container profiles remain open. Do not treat the historical
   gate record below as verification of these unfinished contracts.
@@ -150,7 +151,7 @@ and TPS/P50/P95/P99 output.
   profiles. Existing capability serialization and state predicates alone do
   not prove that every connection follows the negotiated setup contract.
 
-### Benchmark audit and proposed unified measurement
+### Benchmark audit and unified measurement
 
 User decisions: use coroutine loaders for the primary throughput benchmark;
 keep producer-thread stress as diagnostic coverage; include errors in every
@@ -186,8 +187,8 @@ latency histogram to resolve sub-65-us RTTs.
   preserved error count, a missing report despite exit zero, and reported RPC
   errors despite exit zero. These use fixture processes without an HCA:
   `pixi run -- python -m unittest discover -s tools/benchmark/tests -p rdma_regression_test.py -v`.
-- [ ] **Unify the workload and report contract after the test-design
-  decision**: use one coroutine-driven RPC echo workload, one case manifest,
+- [ ] **Unify the workload and report contract**: use one
+  coroutine-driven RPC echo workload, one case manifest,
   and one JSON/CSV schema for native processes and two host-network
   containers. Require actual RDMA path and unique QP counts. Verify request
   correlation and response length/content; include submission rejection and
@@ -203,22 +204,22 @@ latency histogram to resolve sub-65-us RTTs.
   common C++/Rust histograms' 65.5-us underflow floor; do not retain a separate
   benchmark-only precision contract. Specify a shared bucket layout and
   golden vectors. Record timing origin and exclude warmup/drain from TPS.
-- [ ] **Confirm CQ ownership before expanding the performance matrix**:
+- [ ] **Replace competing CQ consumers before expanding the performance matrix**:
   current `RdmaTransport` has one `cq_` per peer, no dedicated polling
   thread, and competing epoll workers protected by `cq_polling_`.
   `RdmaTransport::start()` only changes lifecycle state. The recommended
-  target is one assigned polling/event thread per CQ, with QPs assigned
+  agreed target is one assigned polling/event thread per CQ, with QPs assigned
   to one CQ, bounded busy polling under traffic, and arm/poll/epoll sleep
-  after the idle budget. Proposed `cq_count` and `poller_count` are not
-  existing configuration knobs. Compare native and OCI runs with the same
+  after the idle budget. Add `cq_count`; derive `poller_count = cq_count`
+  rather than exposing two inconsistent knobs. Compare native and OCI runs with the same
   manifest; neither single-host topology establishes physical-node isolation.
 
-Proposed result schema (client/server resource values are separate):
+Required result schema (client/server resource values are separate):
 
 | Group       | Required columns                                                                                                             |
 |-------------|------------------------------------------------------------------------------------------------------------------------------|
 | Identity    | case_id, run_id, git_sha, binary hashes, topology, CPU/HCA identity, CPU affinity, actual path, fallback policy/count             |
-| Workload    | client_mode, loader_count, producer_threads, in_flight_per_loader, connection_count, logical_ops_per_rpc, payload_bytes, wire_bytes |
+| Workload    | client_mode, loader_count, producer_threads, in_flight_per_loader, connection_count, qpair_count, logical_ops_per_rpc, payload_bytes, wire_bytes, aggregation_enabled, aggregation_max_bytes, aggregation_max_frames, frames_per_send |
 | Scheduling  | io_engines, io_workers, cq_count, poller_count, poll_batch, verbs_poll_batch, poll_empty_budget, epoll_wakeups, CQ event/poll counts |
 | Capacity    | requested/effective sq_depth, rq_depth, posted_receive_target, cq_depth, wire_slot_capacity, arena bytes, queue/pool high-water marks |
 | Measurement | warmup_s, measure_s, repeat_index, latency_scope, submitted, completed_in_window, drain_completed, rpc_tps, logical_ops_s, payload_Bps |
@@ -229,10 +230,11 @@ Proposed result schema (client/server resource values are separate):
 All fields belong to one machine-readable row; unavailable values are null.
 Human tables can show projections joined by case_id but always include errors
 and validity. Normal shutdown WR flushes are separate from workload failures.
-Each measured operation is one validated RPC round trip; current code copies
-one OutFrame into one SEND slot and does not combine multiple RPCs merely
-because they share a QP. Application aggregation, if benchmarked, must report
-logical_ops_per_rpc and logical_ops_s separately from rpc_tps.
+Each measured operation is one validated RPC round trip. Transport aggregation
+may put multiple complete RPC frames in one SEND slot; count every correlated
+RPC once and report SEND count and frames per SEND separately. Application
+aggregation, if benchmarked, must report logical_ops_per_rpc and logical_ops_s
+separately from rpc_tps.
 
 Recommended sweep: single-loader latency baseline; then sweep coroutine count
 with one QP/CQ/poller; then QP count; then CQ/poller count; then queue depths
@@ -241,6 +243,140 @@ candidate peaks, and retain all trials and errors. Choose the highest repeatable
 zero-error TPS and show its latency rather than selecting unrelated best
 throughput and latency fields from different trials. Wire header/control bytes
 count toward slot capacity, including at the 1-MiB class boundary.
+
+## Agreed implementation sequence
+
+The user selected joint implementation of the benchmark and CQ architecture
+on 2026-10-22, then requested this plan before code changes. The primary runner
+is `tools/benchmark/bench-rdma-rpc-regression.sh`: start the RPC server and use
+`crowdb-cli bench rdma` as its client, sharing the workload implementation with
+`bench rpc`. Thread-driven gtests remain transport diagnostics. Transport
+aggregation is permitted for max TPS; `qpair_count` and `wire_slot_capacity`
+are independent, reported parameters. These decisions replace earlier notes
+deferring multiple CQs or forbidding transport coalescing.
+
+### A. Contract and reliable timing
+
+- [x] **Record the agreed scope**: amend this plan, the root decisions, and
+  R239's high-level contract; preserve historical measurements as historical.
+  Files: this plan, `plan-rdma.md`, `../backlog/R239-rdma-rpc-transport.md`.
+- [~] **Replace the histogram floor**: use a shared C++/Rust logarithmic
+  nanosecond bucket layout with bounded memory, explicit zero/overflow, exact
+  count/sum/min/max, and P50/P90/P95/P99/P99.9. Keep existing metric callers
+  compatible, expose mergeable snapshots, and verify shared golden vectors,
+  sub-microsecond values, bucket boundaries, empty/reset and overflow cases.
+  Files: `lib/crowdb-common/{cpp,rust}/` histogram implementations and tests;
+  `app/crowdb-cli/src/commands/bench/{loader,result}.rs`.
+
+### B. CQ owners and resource ownership
+
+- [ ] **Create the bounded CQ pool**: add `RdmaConfig::cq_count`,
+  `verbs_poll_batch`, and strict environment validation. Each CQ owns its
+  completion channel, wake fd, fixed poller and bounded WR table. Assign each
+  QP to one CQ at creation; SEND/RECV and repost retain that assignment.
+  Distinguish requested from provider-effective depths and reject insufficient
+  CQ capacity for the configured QPs and posted receives before traffic.
+  Files: `rdma_transport.h`, `rdma_config.cpp`, `rdma_connection.cpp`,
+  `rdma_work_request.cpp`, new private CQ implementation under `transport/rdma/`.
+- [ ] **Run one polling/event worker per CQ**: continuously poll while busy,
+  dispatch callbacks on the owner, arm notification after the empty budget,
+  poll again before sleeping, acknowledge events, and wake promptly on submit
+  and stop. Keep CM management separate from CQ completion ownership; generic
+  epoll workers cannot compete for that CQ. Stop producers, wake/join pollers,
+  drain/quarantine WRs, then destroy QPs/CQs/channels. Test idle/busy transitions,
+  arm races, contention, multi-CQ mapping, partial setup and repeated teardown.
+  Files: RDMA transport/completion sources, `socket_transport.cpp`, RPC tests.
+- [ ] **Separate application and receive allocators**: built-in echo and
+  default handlers allocate from the common application pool, not a fully
+  preposted receive arena. Receive posting and repost explicitly use the
+  connection's retained RDMA receive pool. Test `posted_receive_target ==
+  rq_depth` with request and response payload validation. Files: `connection.h`,
+  RDMA setup/completion, `c_api.cpp`, `server/handler.cpp`, transport tests.
+- [ ] **Finish real registered-lease shutdown**: retain PD/context/MR owners
+  until the last held receive lease is released, including after transport
+  shutdown; no deregister-before-release, double repost, premature recycle or
+  silent PD leak. Files: RDMA buffer pool and lifecycle sources, lease tests.
+
+### C. Bounded aggregation
+
+- [ ] **Coalesce complete frames on the CQ owner**: use bounded lock-free
+  admission and per-QP queues; drain available frames without adding a waiting
+  timer. Keep per-QP ordering and common frame/request IDs. Limit a SEND to
+  `min(aggregation_max_bytes, local send slot capacity, peer receive slot
+  capacity)` including every header/control byte and to
+  `aggregation_max_frames`. Disabled mode sends one frame. Reject oversized
+  single frames before admission; do not fragment or silently fall back.
+  Files: RDMA submit/owner loop, `out_frame.h`, config/capability validation.
+- [ ] **Retain aggregate owners through completion**: one SEND WR retains all
+  constituent frames until CQE; failure closes the uncertain stream and
+  quarantines its slot once. Validate the entire received aggregate before
+  publishing any frame. Give each frame an independent immutable buffer view
+  sharing the receive-slot lease; repost only after all C++/FFI views release.
+  Test exact slot fit, one byte over, multi-frame correlation/order, malformed
+  suffix, held middle frame, send errors, bounded exhaustion and shutdown.
+  Files: RDMA completion/WR code, buffer views and focused RPC tests.
+- [ ] **Expose aggregation observations**: export actual frames/SEND, wire
+  bytes, queue high-water and rejects. Keep RPC TPS distinct from transport
+  SEND rate; compare aggregation disabled/enabled for both TCP and RDMA.
+  Files: transport statistics, C API/Rust FFI and benchmark reports.
+
+### D. CLI coroutine workload and canonical results
+
+- [ ] **Add `bench rdma` with shared echo workload**: reuse `bench rpc`
+  coroutine machinery; expose `qpair_count`, loader count, warmup/duration,
+  slot/aggregation and CQ/queue knobs using the same code variable names as
+  the report. RDMA command requires RDMA and disables TCP fallback. Preserve
+  existing TCP command behavior; no OS thread per loader. Reject inconsistent
+  settings before starting. Files: CLI `bench.rs`, `bench/verb.rs`,
+  `bench/rpc.rs`, shared workload/config modules.
+- [ ] **Validate and measure each completion**: expose response data to
+  `CoBenchHandler`, verify request ID, length and payload, count submission
+  rejects/retries/timeouts/connection/payload/duplicate errors, and reconcile
+  C++ coroutine statistics with Rust results. Warm up for one second, measure
+  completions for ten seconds using a monotonic deadline, then drain separately;
+  exclude setup/warmup/drain from TPS. Define latency from submission to
+  validated response in nanoseconds. Never destroy a coroutine while a late
+  completion can resume it. Files: `co_client.cpp`, FFI `co_bench.rs`, CLI echo
+  handler and lifecycle tests.
+- [ ] **Write the canonical report**: emit a versioned JSON result directly
+  to a requested file, plus human output; serialize all schema columns above.
+  Use explicit null for unavailable counters. Record measured errors and mark
+  invalid on setup/client/server/report failure or RDMA path mismatch. Include
+  client/server resource settings and actual QP/CQ/poller/path/fallback stats.
+  Files: CLI benchmark result/transport FFI modules and report tests.
+
+### E. One runner, staged evidence and requirement completion
+
+- [ ] **Unify regression orchestration**: keep the named RDMA regression
+  script as the entry point and share common orchestration with TCP regression.
+  Launch the RPC server then the CLI client from one case manifest; wait for
+  actual RDMA readiness, not just the TCP listen message. Save complete logs,
+  canonical JSON and a wide CSV/TSV with errors/validity; propagate failures.
+  Record git/binary hashes, topology, CPU/HCA, affinity, CPU time and supported
+  provider counters. Tests cover invalid/missing reports, reported errors,
+  failed/early-exit server, disabled fallback and actual argument propagation.
+  Files: `tools/benchmark/bench-{rdma-,}rpc-regression.sh`, common runner and
+  `tools/benchmark/tests/rdma_regression_test.py`.
+- [ ] **Run gradual native hardware profiles**: first one coroutine/QP/CQ,
+  then loader sweep 1/2/4/8/16/32 and higher as needed, then QP and CQ sweeps;
+  compare aggregation off/on, SQ/RQ 1024 and 4096, small slot classes and larger
+  payload/slot pairs. Increase depth only when counters show it limits load.
+  Each case uses 1 s warmup + 10 s measured traffic. Repeat candidate peaks
+  three times and retain all rows. Require zero workload errors/fallback and
+  report avg/P90/tails with the highest repeatable TPS. Do not claim a hardware
+  maximum when CPU/affinity/topology still limits the result.
+- [ ] **Run matching OCI profiles and finish protocol tests**: use the same
+  CLI workload and manifest in two host-network containers on this physical
+  HCA; record separate process/container topology. Complete negotiated TCP
+  preflight, fallback-before-payload, no mixed stream, no-device TCP and
+  non-root device/memlock acceptance. Compare matching native/container rows
+  and explain any gap. Files: RDMA OCI runner, capability/path tests.
+- [ ] **Gate and document each coherent change**: build with `-j32`; run all
+  executables/tests/lints through `pixi run`, use `clean-env` before server
+  tests, and keep complete failure output. Run affected tests, fmt, clippy,
+  changed C++ format/tree-lint, then full C++/FFI gates. Update permanent design
+  to implemented behavior; remove requirements/plans only after all acceptance
+  passes. Keep an explicit verified/pending checkpoint after each commit.
 
 Provider references for the implementation choices:
 
@@ -287,13 +423,12 @@ Remaining implementation and acceptance work:
   built image;
 - remove temporary hardware diagnostics, normalize failure logging, and run
   the full C++ format/tree-lint gates;
-- keep multi-CQ and a dedicated polling worker as follow-up performance work;
-  they are not R239 blockers unless the acceptance profile shows contention;
+- implement multi-CQ and a fixed polling/event worker per CQ together with
+  the CLI coroutine benchmark, as agreed in the implementation sequence above;
 - rerun the RDMA benchmark concurrency and payload cases after the acceptance
   changes.
-  Completed on the local HCA at 128B, 1KiB, and 4KiB with 0 errors for 1, 4,
-  8, and 32 connections. The 4-connection cases reached about 442k ops/s
-  (128B), 414k ops/s (1KiB), and 376k ops/s (4KiB).
+  Earlier script results claiming 442k/414k/376k ops/s did not establish the
+  RDMA path; replace them with validated canonical results from the CLI runner.
 
 ## Phase 1: common transport seam
 

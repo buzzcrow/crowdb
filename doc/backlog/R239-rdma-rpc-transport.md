@@ -14,17 +14,24 @@ without changing request semantics.
 ## Solution
 
 1. Add an RC SEND/RECV transport behind the common RPC `Transport` interface.
-   Each message is copied into one fixed-size registered wire slot and sent
-   with one SGE. Receive slots are pre-posted from a registered arena and are
+   One or more complete RPC frames are copied into one fixed-size registered
+   wire slot and sent with one SGE. Optional bounded transport aggregation
+   preserves each frame's identity and ordering, drains available frames
+   without a batching timer, and never exceeds the local send slot or the
+   peer's advertised receive slot, including all headers and metadata.
+   Receive slots are pre-posted from a registered arena and are
    reused only after Frame ownership is released. The complete wire message
    must fit the slot capacity.
 2. Use service discovery for coarse RDMA capability and TCP handshake for the
    current CM endpoint, device/GID identity, capability generation, protocol
    version, and supported data classes. Local configuration and probing can
    disable RDMA before CM setup.
-3. Register the RDMA completion and CM event descriptors with the existing
-   epoll engine. Epoll wakes the worker; the RPC library acknowledges events,
-   re-arms notifications, polls bounded CQ batches, and dispatches completions.
+3. Assign each QP to one shared CQ and each CQ to one fixed polling/event
+   worker. Busy workers poll and dispatch bounded batches continuously; idle
+   workers arm notifications, poll again to close the race, then sleep in
+   epoll. Acknowledge completion events before resuming polling. Generic
+   socket workers do not compete for CQ ownership. CM remains a separately
+   serialized lifecycle event source.
 4. Select RDMA as the preferred path for one logical connection and TCP as its
    one-way fallback. A TCP connection is never upgraded to RDMA. The shared
    request ID is used for idempotent or duplicate-suppressed retry.
@@ -48,6 +55,15 @@ without changing request semantics.
    its documented default port. The RDMA HCA device and physical HCA port are
    shared and are not offset. The default RDMA CM service port is `19101`, so
    the effective port is `19101 + CROWDB_PORT_OFFSET`.
+9. Provide `crowdb-cli bench rdma` sharing the coroutine echo workload with
+   `bench rpc`, driven by the existing RPC regression scripts. Explicitly
+   configure loaders, QPs, CQs, queue depths, slot capacity and aggregation;
+   prohibit TCP fallback in RDMA tests and verify the actual path. Measure
+   validated completions for ten seconds after warmup, with separate drain
+   accounting, nanosecond latency histograms, categorized errors and canonical
+   machine-readable results. Report all workload/resource settings, RPC TPS,
+   SEND rate, avg/P90/tail latency and validity together. Application logical
+   operations remain a separate metric from correlated RPC completions.
 
 ## Dependencies
 
@@ -71,9 +87,16 @@ without changing request semantics.
 - Given an RDMA payload partially completes, when the connection fails, no TCP
   bytes are appended and uncertain buffers remain quarantined. Invariant:
   partial transfer isolation. Integration test.
-- Given CQ and CM events arrive, when epoll wakes the worker, all currently
-  available completions are drained without a private polling thread.
+- Given QPs assigned to multiple CQs and busy/idle traffic transitions, when
+  completions and CM events arrive, each CQ's fixed owner drains completions,
+  arms/polls before idle sleep, acknowledges wakeups and stops cleanly without
+  competing socket workers or lost wakeups.
   Invariant: event/poll composition. Integration test.
+- Given aggregation is enabled and frames approach the peer slot limit, when
+  frames are submitted, only complete fitting frames share a SEND; every RPC
+  retains identity, ordering and completion ownership. A malformed suffix
+  publishes no frames, and a held frame view prevents receive-slot repost.
+  Invariant: bounded aggregate ownership. Integration test.
 - Given an OCI image with no RDMA devices, when the TCP-only profile starts,
   service discovery selects TCP without attempting RDMA. Invariant: optional
   capability. E2E test.
@@ -88,7 +111,10 @@ without changing request semantics.
   is separated from unprivileged application execution. E2E test.
 - Given the RDMA benchmark runner uses the same echo workload as the TCP
   regression benchmark, when it runs on a prepared HCA, it reports throughput,
-  latency percentiles, and errors for matching concurrency cases. Invariant:
+  latency including avg/P90/tails, categorized errors, all queue/QP/CQ/slot
+  settings and actual RDMA path for matching ten-second coroutine cases.
+  Missing reports, nonzero errors, fallback and failed processes fail the run.
+  Invariant:
   transport regressions and large flow bugs are visible before downstream use.
   Benchmark test.
 - Given an application linked against `crowdb-rpc`, when deployment provides

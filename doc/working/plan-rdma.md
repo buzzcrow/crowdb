@@ -43,8 +43,9 @@ and the fixed-I/O-worker control; protocol and OCI acceptance remain open.
 
 This is the root plan. The five child plans contain implementation details;
 only this plan controls phase order, cross-backlog decisions, and final
-acceptance. No child plan may broaden the transport contract without updating
-the formal design first.
+acceptance. The agreed joint CQ/benchmark/aggregation work is detailed in
+[the transport plan](plan-rdma-rpc-transport.md#agreed-implementation-sequence).
+Update the formal design with each implemented architecture change.
 
 ## Fixed design decisions
 
@@ -53,8 +54,13 @@ the formal design first.
 - Use service discovery for coarse RDMA capability and TCP handshake for the
   current RDMA endpoint, capability generation, and data classes.
 - Select RDMA before the first payload; fallback is RDMA to TCP only.
-- Reuse existing ChunkIO and Chunk-KV aggregation. RDMA does not aggregate or
-  flush independently.
+- Preserve existing ChunkIO and Chunk-KV aggregation. Additionally permit
+  bounded transport coalescing of complete RPC frames without a batching timer;
+  every SEND fits both the local send slot and peer receive slot, including
+  headers, and retains each RPC's identity and completion ownership.
+- Assign each QP to one CQ and each CQ to one fixed polling/event worker.
+  Implement this together with `crowdb-cli bench rdma` and the existing RPC
+  regression runner; report QP count, slot size, aggregation and errors.
 - Use 64 KiB metadata, 256 KiB aggregated Chunk-KV, and 1 MiB datapath
   capacities, configured as transport defaults.
 - Use posted receives as implicit data credit; do not add an extra credit
@@ -210,8 +216,9 @@ device, selected path, fallback count, buffer pressure, and final result.
 
 - [ ] **No mixed stream**: never append TCP bytes to a partially completed RDMA
   stream.
-- [ ] **No hidden aggregation**: only ChunkIO/Chunk-KV decides message boundary
-  and flush; RDMA transports the result.
+- [ ] **Bounded aggregation**: application message boundaries remain intact;
+  transport coalescing preserves complete frames, order and per-RPC identity
+  and stays within both peers' slot limits.
 - [ ] **No premature reuse**: completion, disk completion, and caller release
   all precede buffer reuse for their respective ownership path.
 - [ ] **Bounded memory**: registered bytes, posted receives, send depth, disk
