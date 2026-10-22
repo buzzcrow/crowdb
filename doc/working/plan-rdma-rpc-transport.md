@@ -37,9 +37,9 @@ TCP control preflight now precedes CM setup; the compact CM offer binds the
 preflight identity/generation and peer receive admission. Strict policy has
 passed a two-QP real-HCA RPC round trip and a TCP-only peer rejection case.
 Bounded transport aggregation is implemented and verified below.
-Still pending: `bench rdma`/shared coroutine
-reporting, unified regression orchestration, failure injection, and the
-two-container acceptance profiles. Do not treat the
+The CLI workload and shared regression orchestration are now implemented.
+Still pending: expanded sustained comparisons, remaining failure injection,
+and the two-container acceptance profiles. Do not treat the
 historical benchmark comments or older subtask ledger as completed acceptance.
 Physical multi-node validation remains outside this scope in
 [the follow-up plan](plan-rdma-multi-node.md).
@@ -598,7 +598,8 @@ Aggregation checkpoint:
   and workspace clippy pass. Full gate artifact:
   `.crowdb-runtime/artifacts/unit/cpp-00a90cd3faa7480f894c80dee7ab03bc/`.
   The no-verbs build passes all 133 CTest cases. Native statistics are present;
-  the status/FFI/CLI report exposure is the active continuation.
+  status/FFI/CLI exposure is verified in phase D; sustained comparisons are
+  the active continuation in phase E.
 
 Preflight verification:
 
@@ -742,7 +743,7 @@ Implementation checkpoint:
 
 ### E. One runner, staged evidence and requirement completion
 
-- [ ] **Unify regression orchestration**: keep the named RDMA regression
+- [x] **Unify regression orchestration**: keep the named RDMA regression
   script as the entry point and share common orchestration with TCP regression.
   Launch the RPC server then the CLI client from one case manifest; wait for
   actual RDMA readiness, not just the TCP listen message. Save complete logs,
@@ -752,6 +753,21 @@ Implementation checkpoint:
   failed/early-exit server, disabled fallback and actual argument propagation.
   Files: `tools/benchmark/bench-{rdma-,}rpc-regression.sh`, common runner and
   `tools/benchmark/tests/rdma_regression_test.py`.
+- Runner checkpoint: both shell entry points dispatch to `rpc_regression.py`;
+  `rpc_bench_cases.py` resolves one JSON manifest and derives queue/arena
+  capacities, `rpc_bench_process.py` owns readiness and process lifetimes, and
+  `rpc_bench_report.py` validates/exports canonical JSON plus wide CSV/TSV.
+  Every child executable runs through Pixi. A native server PID from its owned
+  startup status permits graceful shutdown while preserving the actual exit
+  code. Binary hashes, source revision/dirty state, CPU/HCA/affinity and readable
+  provider counters accompany every row. The runner stops at an invalid case
+  and prints its full server/client logs. Twelve fixture contract tests pass,
+  including both entry points, malformed/forged reports, missing readiness,
+  duplicate QPs and early server exit. Shell syntax and Python compilation pass.
+  Native/container command construction shares this manifest; actual OCI
+  execution remains pending in the task below. TCP uses writev/Nagle controls;
+  RDMA uses bounded complete-frame SEND aggregation, so the sweep does not
+  pretend these two transport mechanisms are the same switch.
 - [~] **Run gradual native hardware profiles**: first one coroutine/QP/CQ,
   then loader sweep 1/2/4/8/16/32 and higher as needed, then QP and CQ sweeps;
   compare aggregation off/on, SQ/RQ 1024 and 4096, small slot classes and larger
