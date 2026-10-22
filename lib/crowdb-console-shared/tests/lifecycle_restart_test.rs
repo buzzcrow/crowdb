@@ -62,6 +62,14 @@ async fn retained_launch_restarts_with_a_new_pid() {
     assert!(lifecycle::process_is_alive(new_pid));
 
     lifecycle::stop_pid_with_timeout(new_pid, Duration::from_secs(5)).unwrap();
+    #[cfg(target_os = "linux")]
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while std::path::Path::new(&format!("/proc/{new_pid}")).exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("restarted child retained its process registration after exit");
     let _ = child.wait();
 }
 

@@ -72,6 +72,10 @@ SERVER_PATHS = (
     ":(exclude)tools/sdk/package.py",
     # This host-only RPC benchmark is not a dependency or staged server binary.
     ":(exclude)app/crowdb-cli/src/commands/bench/rpc.rs",
+    ":(exclude)app/crowdb-cli/src/commands/bench/result.rs",
+    ":(exclude)app/crowdb-cli/src/commands/bench/kv/read.rs",
+    ":(exclude)app/crowdb-cli/src/commands/bench/kv/scan.rs",
+    ":(exclude)app/crowdb-cli/src/commands/bench/kv/write.rs",
     # This workload driver has only CLI consumers; server consumer changes
     # remain guarded. Its test hook does not enter a release build.
     ":(exclude)lib/crowdb-console-shared/src/ops/s3_bench.rs",
@@ -141,6 +145,14 @@ def production_manifest(manifest):
     result = dict(manifest)
     result.pop("test", None)
     result.pop("dev-dependencies", None)
+    if "example" in result:
+        examples = [entry for entry in result["example"] if not (
+            entry.get("path", "").startswith("tests/common/")
+            and entry.get("required-features") == ["test-util"])]
+        if examples:
+            result["example"] = examples
+        else:
+            result.pop("example")
     if result.get("package", {}).get("name") == "crowdb-console-shared":
         features = dict(result.get("features", {}))
         if features.get("test-util") == []:

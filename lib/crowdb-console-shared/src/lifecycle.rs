@@ -1262,7 +1262,7 @@ pub async fn deploy_chunkdb_local(
         "ChunkDB",
     )
     .await?;
-    std::mem::forget(child);
+    tokio::spawn(reap_child(child, pid, "crowdb-chunkdb"));
     Ok(DeployedDiskdb {
         server_id: req.server_id.clone(),
         endpoint,
@@ -1356,7 +1356,7 @@ pub async fn deploy_diskio_local(
             ),
         });
     }
-    std::mem::forget(child);
+    tokio::spawn(reap_child(child, pid, "crowdb-diskio"));
     Ok(DeployedDiskdb {
         server_id: req.server_id.clone(),
         endpoint,

@@ -2,7 +2,7 @@
 # Copyright 2026-present Gian <crow.db@outlook.com>
 # Licensed under the Apache License, Version 2.0.
 #
-# Production chunk-stream regression over the three-node local NullDisk stack.
+# Production chunk-stream regression over a three-node native memory-disk fixture.
 #
 # Optional environment variables:
 #   CHUNK_STREAM_BENCH_CASES       space-separated case labels
@@ -182,7 +182,7 @@ run_case() {
     set +e
     output=$(timeout --signal=INT --kill-after=10 "$TIMEOUT_SECS" \
         pixi run -- cargo bench -p crowdb-chunk-stream --bench production_bounds -- \
-        --duration-secs "$DURATION_SECS" "$@" 2>&1)
+        --management-seed "$MGMT_SEED" --duration-secs "$DURATION_SECS" "$@" 2>&1)
     status=$?
     set -e
     printf '%s\n' "$output" | tee "$case_log"
@@ -206,8 +206,9 @@ mkdir -p "$LOG_ROOT" "$(dirname "$RESULTS_FILE")"
 regression_init
 printf 'case\tworkload\toperations\tbytes\terrors\tseconds\tops_s\tmib_s\tavg_us\tp50_us\tp99_us\trss_start_kib\trss_end_kib\trss_peak_kib\tmax_queue_requests\tmax_queue_bytes\tbatches\tbatch_requests\trollovers\tmetadata_publications\tcache_hits\tcache_misses\tphysical_reads\treclaimed_bytes\twatchdogs\n' >"$RESULTS_FILE"
 
-regression_cli cluster local-deploy -t combined --metrics-interval 1 --allow-unsafe-ec \
-    --kv-backend mem-block --wal-backend mem-block --no-fsync
+regression_fixture setup -- --kind combined --metrics-interval 1 \
+    --kv-backend mem-block --wal-backend mem-block --no-fsync --diskio-dummy-disk-type mem
+MGMT_SEED=$(pixi run python tools/benchmark/fixture.py --state "$REGRESSION_CONFIG" seed)
 
 run_case append_4k_1t --workload append --object-size 4096 --concurrency 1
 run_case append_4k_32t --workload append --object-size 4096 --concurrency 32

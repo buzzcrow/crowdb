@@ -31,6 +31,25 @@ pub struct BenchResult {
     pub server_metrics: Option<ServerMetrics>,
 }
 
+impl BenchResult {
+    /// Keep the console report and a structured latest-run artifact for measurement tools.
+    #[must_use]
+    pub fn finish(&self, directory: &std::path::Path) -> std::process::ExitCode {
+        println!("{self}");
+        let path = directory.join("report.json");
+        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+            let file = std::fs::File::create(&path)?;
+            serde_json::to_writer_pretty(file, self)?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            eprintln!("error: retain benchmark report {}: {error}", path.display());
+            return std::process::ExitCode::from(2);
+        }
+        std::process::ExitCode::SUCCESS
+    }
+}
+
 #[derive(Debug, Default, Serialize)]
 pub struct BenchOps {
     #[serde(skip_serializing_if = "Option::is_none")]

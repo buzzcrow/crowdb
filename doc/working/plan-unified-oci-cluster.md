@@ -265,8 +265,28 @@ Existing implementation can be reused; these are the outstanding parts.
       Chunk-KV now tracks native child PID/start directly and no longer repeats
       failed startup/restart blindly. Chunk-stream receives the live fixture's
       explicit seed; its benchmark parser rejects a missing seed. Native read/
-      replay fixtures retain bytes through MemDisk. These final script proofs,
-      narrow target tests and refreshed gates remain pending before commit.
+      replay fixtures retain bytes through MemDisk. The final 169 Python tests,
+      five directly affected crates' all-target clippy, fmt, 17 shell syntax
+      checks and the 381-flow CI inventory pass. Inventory is not runtime proof.
+    - Actual ChunkIO read-small/read-large/read-mix pass, with retained-byte
+      verification and exact request counts, under `r243-bench-chunkio-read`.
+      Both 20-second small-write cases (1T/32T) pass under
+      `r243-bench-chunkio-small-2`, including parity and scale-out assertions.
+      The one-second rehearsal correctly failed to produce parity at 1T; the
+      default duration and every assertion remain unchanged. Two concurrent
+      script builds conflicted in a shared CMake archive; subsequent builds
+      are serialized. Large writes also exposed misplaced `grep --include`
+      options scanning executable strings instead of logs. The shared scanner
+      now checks only log files, prints real errors and rejects scan failures;
+      three new tests cover those boundaries. The large-write rerun passes
+      both stream/direct modes with original 20-second duration, zero errors,
+      exact accounting and complete metrics under `r243-bench-chunkio-write-4`.
+      Fixture shutdown receipts confirm successful scoped child cleanup.
+    - F04/F05 above repair the actual split-transfer restart and stream successor
+      failures discovered through the migrated fixture. The Chunk-KV script
+      now passes; stream random-read/replay/GC complete with zero data errors,
+      but the original performance script remains red. See the design decision
+      below; no metadata, cache, throughput or latency threshold was relaxed.
 - [ ] **T30–T33 — Complete registered acceptance ownership and CI**.
   Register A01–A33 in owning Rust/Python/container/UI suites; mocks and manual
   observations do not substitute for actual runtime coverage. Direct/Compose,
@@ -288,6 +308,49 @@ Existing implementation can be reused; these are the outstanding parts.
   and CI only for verified behavior. Old standard/single/bare-metal registry
   descriptions still need migration. Run applicable full gates, then remove
   requirement, backlog row and this temporary plan in the final cleanup commit.
+
+## Blocked
+
+- **Decision required: retained chunk-stream performance contract.** This is a
+  design/scope choice under `/implement-requirement`, not the five-attempt limit.
+  Keep T29b and R243 incomplete until the selected contract is verified.
+  - Existing `write_batch` publishes the framed extent directory before append
+    completion. `read_publication_test` explicitly requires concurrent readers
+    to retain the last published boundary; crash recovery verifies unpublished
+    durable frames rather than exposing unverified bytes. These semantics
+    predate the current fixture migration.
+  - The unchanged benchmark instead asserts `metadata_publications <= rollovers
+    + 1`. Actual 4 KiB append produced 241 successful operations, zero errors,
+    zero rollovers and 242 publications, so that assertion cannot pass with the
+    current append contract. Removing publication just to pass it would break
+    the reader/recovery tests.
+  - The historical throughput baseline used NullDisk. The current reader
+    validates real frames, so measurement fixtures use MemDisk. Following F05,
+    real 320 MiB replay and 576 MiB GC complete correctly. The reduced-duration
+    diagnostic measured random read 18,105 ops/s against the old 30,000 floor,
+    replay 164 MiB/s against the old 300 floor, and six cache misses against the
+    old two-miss bound. GC passed. These one-second diagnostics are not a new
+    reference baseline and do not certify the ten-second performance matrix.
+  - Evidence: `.crowdb-runtime/artifacts/r243-bench-chunk-stream{,-2}/` and
+    `r243-t29b-gates/r243-bench-chunk-stream{,-2}.log`. Both real attempts retain
+    all failed assertions; F05 fixed the first attempt's rollover corruption.
+    No threshold was changed, no data error suppressed and no timeout extended.
+  - **Option A (recommended):** preserve current publication/snapshot/fencing
+    semantics, explicitly replace the obsolete NullDisk performance contract
+    with a reviewed MemDisk baseline and bounds for batching, growth and reads.
+    Run the full-duration matrix before accepting it; document any remaining
+    performance regressions rather than deriving limits from one sample.
+  - **Option B:** keep the original metadata/performance gates and undertake a
+    stream directory/recovery redesign that removes per-batch metadata writes
+    while preserving verified read boundaries, overlays and writer fencing.
+    This is additional storage architecture work beyond the OCI fixture move.
+- **A31 environment remains unavailable:** native containerd socket permissions
+  require credentials unavailable to this process. A Docker-provisioned nested
+  daemon is not the requested Docker-free Linux host. The earlier request for
+  a reachable SSH runner remains pending; do not count this as a pass or delete
+  the requirement. Other unfinished implementation is listed above, including
+  formation/interruption, non-voter trust, CLI host adapters and UI/runtime
+  acceptance; those are unfinished work, not additional user decisions.
 
 ## Completed foundation (brief)
 

@@ -71,7 +71,7 @@ run_subtest() {
     fi
     echo ">>> $label (${threads}T:${connections}C) ..."
     local output
-    output=$(pixi run -- cargo run --release -p crowdb-cli -- --config "$CONFIG_FILE" \
+    if ! output=$(regression_client_for "$CONFIG_FILE" \
         bench kv scan --store 0 --group 1 --duration-secs "$DURATION" \
         --loader-num "$threads" --connections "$connections" \
         --read-mode "$read_mode" --min-slot "$min_slot" \
@@ -79,10 +79,13 @@ run_subtest() {
         --scan-limit "$limit" --scan-prefix "$prefix" --scan-start-after "$start_after" \
         --scan-direction "$direction" \
         --value-size "$value_size" \
-        --key-space "$KEYSPACE" --verify-bytes 0 --json $mix_arg 2>&1)
-    local json; json=$(echo "$output" | sed -n '/^{/,/^}/p')
+        --key-space "$KEYSPACE" --verify-bytes 0 $mix_arg 2>&1); then
+        echo "$output" >&2
+        return 1
+    fi
+    local json; json=$(regression_report_for "$CONFIG_FILE")
     if [ -z "$json" ]; then
-        echo "    ERROR: no JSON output"; echo "$output" | tail -5
+        echo "    ERROR: no JSON output"; echo "$output"
         echo -e "$label\t$limit\t$prefix\t$start_after\t$value_size\t$read_mode\t$direction\t${threads}T${connections}C\t0\t0\t0\t0\t0\t1" >> "$RESULTS_FILE"
         return
     fi
@@ -91,7 +94,7 @@ run_subtest() {
     avg_us=$(echo "$json" | jq -r '.by_op.list.latency_us.avg_us')
     p50_us=$(echo "$json" | jq -r '.by_op.list.latency_us.p50_us')
     p99_us=$(echo "$json" | jq -r '.by_op.list.latency_us.p99_us')
-    p999_us=$(echo "$json" | jq -r '.by_op.list.latency_us.p999_us')
+    p999_us=$(echo "$json" | jq -r '.by_op.list.latency_us.p999_us // "unavailable"')
     errors=$(echo "$json" | jq -r '.total_errors')
     echo "    scans/s=$ops_s avg=${avg_us}us p50=${p50_us}us p99=${p99_us}us p999=${p999_us}us err=$errors"
     echo -e "$label\t$limit\t$prefix\t$start_after\t$value_size\t$read_mode\t$direction\t${threads}T${connections}C\t$ops_s\t$avg_us\t$p50_us\t$p99_us\t$p999_us\t$errors" >> "$RESULTS_FILE"
@@ -172,23 +175,21 @@ run_subtest() {
 
 echo -e "label\tlimit\tprefix\tstart_after\tvalue_size\tread_mode\tdirection\tT:C\tscans_s\tavg_us\tp50_us\tp99_us\tp999_us\terrors" > "$RESULTS_FILE"
 
-# Phase 1: deploy the cluster once via `cluster local-deploy`.
-echo "=== Deploying 3-node KV cluster via local-deploy ==="
+# Phase 1: deploy the cluster once via the explicit test fixture.
+echo "=== Deploying 3-node KV cluster via the explicit test fixture ==="
 CONFIG_FILE="$REGRESSION_CONFIG"
-pixi run -- cargo run --release -p crowdb-cli -- --config "$CONFIG_FILE" \
-    cluster local-deploy -n 3 -t kv \
+regression_fixture_for "$CONFIG_FILE" setup -- --nodes 3 --kind kv \
     --kv-backend mem-block --wal-backend mem-block
 
 # Create bench group 1 (group 0 sysdata preserved).
 echo "=== Creating bench group 0/1 (group 0 sysdata preserved) ==="
-pixi run -- cargo run --release -p crowdb-cli -- --config "$CONFIG_FILE" \
-    kv group add -s 0 -g 1 -n 1,2,3 2>&1 | tail -3
+regression_client_for "$CONFIG_FILE" \
+    kv group add -s 0 -g 1 -n 1,2,3 2>&1
 
-# Phase 2: pre-populate keys once (Phase 3: bench prepare not yet wired).
-echo "=== Pre-populating $KEYSPACE keys (Phase 3: bench prepare stub) ==="
-pixi run -- cargo run --release -p crowdb-cli -- --config "$CONFIG_FILE" \
-    bench kv prepare --store 0 --group 1 --keys "$KEYSPACE" --value-size 64 2>&1 || \
-    echo "WARNING: bench prepare is a Phase 3 stub — skipping pre-pop"
+# Phase 2: pre-populate keys once (prepare data before measuring).
+echo "=== Pre-populating $KEYSPACE keys ==="
+regression_client_for "$CONFIG_FILE" \
+    bench kv prepare --store 0 --group 1 --keys "$KEYSPACE" --value-size 64 2>&1
 
 # Phase 3: run all sub-tests against the same cluster.
 echo "=== Single-thread (1T:1C) — per-scan engine cost ==="
@@ -222,10 +223,9 @@ run_subtest "minslot_16t"     1000   "" ""                        64    minslot 
 run_subtest "lin_32t"         1000   "" ""                        64    linearizable auto 32 32 forward
 run_subtest "minslot_32t"     1000   "" ""                        64    minslot      zero 32 32 forward
 
-# Phase 4: teardown via `cluster destroy`.
+# Phase 4: teardown via owned fixture shutdown.
 echo "=== Tearing down cluster ==="
-pixi run -- cargo run --release -p crowdb-cli -- --config "$CONFIG_FILE" \
-    cluster destroy
+regression_fixture_for "$CONFIG_FILE" stop
 
 echo "=== DONE ==="
 echo "Results in $RESULTS_FILE"

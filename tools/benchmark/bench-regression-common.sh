@@ -12,20 +12,47 @@ fi
 
 REGRESSION_CONFIG="${REGRESSION_CONFIG:-$REGRESSION_LOG_ROOT/console.toml}"
 REGRESSION_CLI="${REGRESSION_CLI:-./target/release/crowdb-cli}"
+export REGRESSION_CLI
 
 regression_init() {
     mkdir -p "$REGRESSION_LOG_ROOT"
+    if [ -z "${CROWDB_REGRESSION_FIXTURE_BIN:-}" ]; then
+        pixi run cargo build --release -p crowdb-console-shared --example regression-fixture --features test-util
+    fi
 }
 
 regression_cli() {
-    pixi run -- "$REGRESSION_CLI" --log-root "$REGRESSION_LOG_ROOT" \
-        --config "$REGRESSION_CONFIG" "$@"
+    regression_client_for "$REGRESSION_CONFIG" "$@"
+}
+
+regression_client_for() {
+    local state="$1"
+    shift
+    REGRESSION_CLI="$REGRESSION_CLI" pixi run python tools/benchmark/fixture.py \
+        --state "$state" client -- "$@"
+}
+
+regression_fixture_for() {
+    local state="$1"
+    shift
+    pixi run python tools/benchmark/fixture.py --state "$state" --owner-pid "$$" "$@"
+}
+
+regression_fixture() {
+    regression_fixture_for "$REGRESSION_CONFIG" "$@"
+}
+
+regression_fixture_log_root() {
+    pixi run python tools/benchmark/fixture.py --state "$REGRESSION_CONFIG" root
+}
+
+regression_report_for() {
+    pixi run python tools/benchmark/fixture.py --state "$1" report
 }
 
 regression_destroy() {
     if [ -f "$REGRESSION_CONFIG" ]; then
-        timeout 30 pixi run -- "$REGRESSION_CLI" --log-root "$REGRESSION_LOG_ROOT" \
-            --config "$REGRESSION_CONFIG" cluster destroy
+        regression_fixture stop
     fi
 }
 
@@ -39,9 +66,9 @@ regression_reset_stack() {
     last=$((${#groups[@]} - 1))
     for index in "${!groups[@]}"; do
         if [ "$index" -eq "$last" ]; then
-            regression_cli cluster clean --store 0 --group "${groups[$index]}" --restart-services
+            regression_fixture reset --store 0 --group "${groups[$index]}" --restart-storage
         else
-            regression_cli cluster clean --store 0 --group "${groups[$index]}"
+            regression_fixture reset --store 0 --group "${groups[$index]}"
         fi
     done
 }
@@ -71,6 +98,17 @@ regression_require_metric_files() {
     done < <(find "$REGRESSION_LOG_ROOT" -type f -name "$name_pattern" -print0)
     if [ "$found" -eq 0 ]; then
         echo "ERROR: no metrics files matching $name_pattern" >&2
+        return 1
+    fi
+}
+
+regression_require_no_service_errors() {
+    local root status=0
+    root=$(regression_fixture_log_root) || return 1
+    grep -ERn --include='*.log' -- 'fd .*not registered|DiskNotExist' "$root/services" || status=$?
+    # One means no log matched. Matching errors and scan failures both fail.
+    if [ "$status" -ne 1 ]; then
+        echo "ERROR: service log validation failed (grep status $status)" >&2
         return 1
     fi
 }

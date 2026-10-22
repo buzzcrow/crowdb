@@ -100,14 +100,14 @@ any_case_selected() {
 verify_logs() {
     local label="$1" kv_metrics diskdb_metrics chunkdb_metrics cli_metrics
     local kv_rpc diskdb_rpc chunkdb_rpc cli_rpc expected_servers expected_clients
-    kv_metrics=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/kv-server-*/log/crowdb-kv-server-metrics-*.log' -type f | wc -l)
-    diskdb_metrics=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/diskdb-*/log/crowdb-diskdb-metrics-*.log' -type f | wc -l)
-    chunkdb_metrics=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/chunkdb-*/log/crowdb-chunkdb-metrics-*.log' -type f | wc -l)
-    cli_metrics=$(find "$LOG_ROOT" -path '*/cli-bench-chunkdb-*/crowdb-cli-metrics-*.log' -type f | wc -l)
-    kv_rpc=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/kv-server-*/log/crowdb-kv-server-rpc-*.log' -type f | wc -l)
-    diskdb_rpc=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/diskdb-*/log/crowdb-diskdb-rpc-*.log' -type f | wc -l)
-    chunkdb_rpc=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/chunkdb-*/log/crowdb-chunkdb-rpc-*.log' -type f | wc -l)
-    cli_rpc=$(find "$LOG_ROOT" -path '*/cli-bench-chunkdb-*/crowdb-cli-rpc-*.log' -type f | wc -l)
+    kv_metrics=$(find "$LOG_ROOT" -path '*/services/rack*/node*/kv-server-*/log/crowdb-kv-server-metrics-*.log' -type f | wc -l)
+    diskdb_metrics=$(find "$LOG_ROOT" -path '*/services/rack*/node*/diskdb-*/log/crowdb-diskdb-metrics-*.log' -type f | wc -l)
+    chunkdb_metrics=$(find "$LOG_ROOT" -path '*/services/rack*/node*/chunkdb-*/log/crowdb-chunkdb-metrics-*.log' -type f | wc -l)
+    cli_metrics=$(find "$LOG_ROOT" -path '*/measurements/bench-chunkdb-*/crowdb-cli-metrics-*.log' -type f | wc -l)
+    kv_rpc=$(find "$LOG_ROOT" -path '*/services/rack*/node*/kv-server-*/log/crowdb-kv-server-rpc-*.log' -type f | wc -l)
+    diskdb_rpc=$(find "$LOG_ROOT" -path '*/services/rack*/node*/diskdb-*/log/crowdb-diskdb-rpc-*.log' -type f | wc -l)
+    chunkdb_rpc=$(find "$LOG_ROOT" -path '*/services/rack*/node*/chunkdb-*/log/crowdb-chunkdb-rpc-*.log' -type f | wc -l)
+    cli_rpc=$(find "$LOG_ROOT" -path '*/measurements/bench-chunkdb-*/crowdb-cli-rpc-*.log' -type f | wc -l)
     expected_servers=$((CASE_NUMBER * 3))
     expected_clients="$CASE_NUMBER"
     if [ "$kv_metrics" -ne $((DEPLOY_NUMBER * 3)) ] || [ "$diskdb_metrics" -lt "$expected_servers" ] \
@@ -128,7 +128,7 @@ deploy_group() {
     CURRENT_CONFIG="$REGRESSION_CONFIG"
     CASE_IN_GROUP=0
     DEPLOY_NUMBER=$((DEPLOY_NUMBER + 1))
-    cli cluster local-deploy -t combined \
+    regression_fixture setup -- --kind combined \
         --kv-backend mem-block --wal-backend mem-block --metrics-interval 1 \
         --event-write --peer-pool-size "$connections" --rpc-workers "$workers" \
         --max-inflight "$KV_INFLIGHT" --coalesce-max-keys "$KV_COALESCE" \
@@ -157,7 +157,7 @@ run_case() {
     local output status line space busy expected
     set +e
     output=$(timeout --signal=INT --kill-after=10 "$((DURATION + 40))" \
-        pixi run -- ./target/release/crowdb-cli --log-root "$LOG_ROOT" --config "$CURRENT_CONFIG" \
+        pixi run python tools/benchmark/fixture.py --state "$CURRENT_CONFIG" client -- \
         bench chunkdb allocate --duration-secs "$DURATION" --concurrency "$concurrency" \
         --chunkdb-connections "$connections" --chunkdb-client-rpc-workers "$workers" \
         --strip-count 1 --strip-type ec --data-num 8 --code-num 4 \

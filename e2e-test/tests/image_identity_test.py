@@ -128,6 +128,19 @@ class ImageIdentityTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "pixi.toml"):
             verify_server_sources(self.root, revision)
 
+    def test_dev_example_does_not_exempt_shipped_examples_or_runtime_features(self):
+        original = self.manifest.read_text()
+        fixture = ('[[example]]\nname = "measurement"\n'
+                   'path = "tests/common/measurement.rs"\nrequired-features = ["test-util"]\n')
+        self.manifest.write_text(original + fixture)
+        self.assertTrue(verify_server_sources(self.root, self.revision)["server_sources_match"])
+        for changed in (fixture.replace('tests/common/', 'examples/'),
+                        fixture.replace('["test-util"]', '["runtime"]'),
+                        fixture.replace('required-features = ["test-util"]\n', '')):
+            self.manifest.write_text(original + changed)
+            with self.assertRaisesRegex(ValueError, "Cargo.toml"):
+                verify_server_sources(self.root, self.revision)
+
     def test_host_benchmark_hook_does_not_exempt_shared_runtime_or_default_features(self):
         directory = self.root / "lib/crowdb-console-shared"
         driver = directory / "src/ops/s3_bench.rs"

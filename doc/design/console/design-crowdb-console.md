@@ -460,7 +460,10 @@ backend-facing contract here:
   by type and byte count. Status/check support structured JSON output.
 - Ordinary commands log only to the console. A benchmark writes the latest run
   under the runtime root's `artifacts/cli/bench-<family>` directory; the next run
-  replaces only that family's previous benchmark log.
+  replaces only that family's previous benchmark log. KV workloads also retain
+  a structured `report.json` with operation counts, errors and measured latency
+  alongside the human-readable console report. Measurement tools preserve each
+  completed invocation before another run replaces the latest directory.
 
 ## 8. Error Model and Operation Logging
 
@@ -472,7 +475,8 @@ backend-facing contract here:
   body marker. Text is visible, XML/JSON is formatted, and binary content is
   summarized by byte count without duplicating it in the trace.
 - **Retained diagnostics** — only benchmark commands write files. The latest
-  run for each benchmark family lives beneath `<cwd>/cli-log/bench-<family>/`
+  run for each benchmark family lives beneath the runtime root's
+  `artifacts/cli/bench-<family>/`
   and replaces the previous run. Benchmark tracing is also mirrored to the
   console. Routine outbound HTTP calls are debug-level so default output keeps
   lifecycle events, warnings, and errors without per-request noise.

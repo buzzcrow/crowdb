@@ -4,15 +4,16 @@
 #
 # The preparation phase writes real ChunkDB/DiskDB metadata through the client
 # library into mem-block KV/WAL backends. The timed phase reads through the
-# complete client -> ChunkDB -> KV and client -> DiskIO paths; DiskIO uses
-# NullDisk so device capacity and media latency do not dominate the result.
+# complete client -> ChunkDB -> KV and client -> DiskIO paths. DiskIO uses
+# MemDisk so reads retain and verify the prepared bytes without device latency.
 # Each case runs for 20 seconds and counts only successful responses as TPS.
-# cluster clean restarts the auxiliary stack between cases.
+# fixture reset restarts the auxiliary stack between cases.
 #
 # Reference platform: Intel Core i9-7960X (16c/32t, x86_64, Linux).
 # Configuration: 8 DiskIO connections/endpoint, 1 client DiskIO RPC worker,
 # 8 KiB small objects, 16 MiB large objects, 16 prepared objects/class,
-# EC 8+4, 1 MiB blocks, mem-block metadata, NullDisk data (2026-09-09).
+# Historical baseline: EC 8+4, 1 MiB blocks, mem-block metadata,
+# NullDisk data (2026-09-09). It is not a retained-byte read baseline.
 #
 # Reference results (all errors=0, incomplete=0, stop=complete):
 #   workload    threads    success TPS    MiB/s     p50 us    p99 us
@@ -108,8 +109,7 @@ run_case() {
     local output status line requested reads errors incomplete stop small_reads large_reads
     set +e
     output=$(timeout --signal=INT --kill-after=10 "$TIMEOUT_SECS" \
-        pixi run -- ./target/release/crowdb-cli --log-root "$LOG_ROOT" \
-        --config "$CURRENT_CONFIG" bench chunkio "$verb" \
+        pixi run python tools/benchmark/fixture.py --state "$CURRENT_CONFIG" client -- bench chunkio "$verb" \
         --requests 18446744073709551615 --duration-secs "$DURATION" \
         --dataset-objects "$DATASET_OBJECTS" --concurrency "$concurrency" \
         --diskio-connections "$DISKIO_CONNECTIONS" --diskio-rpc-workers "$DISKIO_RPC_WORKERS" \
@@ -156,12 +156,12 @@ mkdir -p "$LOG_ROOT"
 regression_init
 printf 'case\tverb\tconcurrency\trequested\treads\tsmall_reads\tlarge_reads\terrors\tincomplete\tstop\treads_s\tlogical_mib_s\tavg_us\tp50_us\tp99_us\tprepare_s\n' >"$RESULTS_FILE"
 
-deploy_args=(cluster local-deploy -t combined --metrics-interval 1 --allow-unsafe-ec \
-    --kv-backend mem-block --wal-backend mem-block --no-fsync)
+deploy_args=( --kind combined --metrics-interval 1 \
+    --kv-backend mem-block --wal-backend mem-block --no-fsync --diskio-dummy-disk-type mem)
 if [ -n "$SERVER_RPC_WORKERS" ]; then
     deploy_args+=(--diskio-rpc-workers "$SERVER_RPC_WORKERS")
 fi
-regression_cli "${deploy_args[@]}"
+regression_fixture setup -- "${deploy_args[@]}"
 run_case read_small_1t read-small 1
 run_case read_small_4t read-small 4
 run_case read_small_8t read-small 8

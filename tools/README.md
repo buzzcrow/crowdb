@@ -43,6 +43,31 @@ update the package groups in `pixi-tasks/test.py` and the checked CI map, then r
 `check-ci-test-tasks`.
 Feature-gated or ignored client tests need explicit task selection.
 
+Benchmark and profiling scripts create an explicit native measurement fixture
+through `benchmark/fixture.py`. The fixture is a `test-util` example, built by
+the scripts, and owns its services by PID plus process start identity. It stops
+them on explicit teardown or when the measurement owner exits. Its private
+descriptor and retained logs live beside the selected measurement state file.
+Memory backends, server transport tuning and group reset belong to this fixture;
+the installed CLI attaches to its target using the normal client contract.
+ChunkDB measurements retain protected placement over three logical native nodes
+so EC workloads remain covered, including in release builds. These processes
+share one physical host and do not qualify host-failure tolerance. Read/replay
+fixtures use memory disks that retain bytes; allocation and write-throughput
+fixtures may use NullDisk.
+These native measurements do not certify OCI startup or runtime acceptance.
+
+KV measurements keep the human console report and `report.json` in the latest
+CLI benchmark directory. The fixture saves every invocation under `measurements/`
+before another invocation replaces it. Reports contain average, p50 and p99
+latency; scripts print `unavailable` for the unsupported p999 field. Failed
+commands clear prior reports and preserve complete diagnostics. The Console
+component task explicitly builds and runs `benchmark/fixture-smoke.py`, checking
+real read/scan/write, reset, foreign control rejection, owner exit and scoped
+cleanup. `bench-leak-inspect.sh` remains alive during inspection; Ctrl-C ends its
+ownership and stops its services. Profiling records the attached client; fixture
+server PIDs are retained in its state for separate server sampling.
+
 Container packaging and its acceptance scripts live under
 [`container/single-node-container/`](../container/single-node-container/README.md).
 Generated artifacts belong under `target/` or `.crowdb-runtime/`, not here.

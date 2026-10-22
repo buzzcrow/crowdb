@@ -10,22 +10,25 @@ KEYSPACE=1000000
 VALUE_SIZE=512
 DEPLOY="leak-inspect-$$-$(date +%s)"
 RUNTIME_ROOT="${CROWDB_RUNTIME_ROOT:-${PIXI_PROJECT_ROOT:-$(pwd)}/.crowdb-runtime}"
-mkdir -p "$RUNTIME_ROOT/ephemeral/bench-leak-inspect"
-CFG="$RUNTIME_ROOT/ephemeral/bench-leak-inspect/${DEPLOY}.toml"
+REGRESSION_LOG_ROOT="$RUNTIME_ROOT/artifacts/bench/leak-inspect-$DEPLOY"
+CFG="$REGRESSION_LOG_ROOT/console.toml"
 BENCH_STORE=0
 BENCH_GROUP=1
+REGRESSION_CONFIG="$CFG"
+source tools/benchmark/bench-regression-common.sh
+regression_init
+trap regression_destroy EXIT
 
 echo "=== deploying cluster (win=32, coalesce=16, workers=2, MALLOC_ARENA_MAX=1 + TRIM_THRESHOLD=0) ==="
-MALLOC_ARENA_MAX=1 MALLOC_TRIM_THRESHOLD_=0 pixi run -- cargo run --release -p crowdb-cli -- --config "$CFG" \
-    cluster local-deploy -n 3 -t kv \
+MALLOC_ARENA_MAX=1 MALLOC_TRIM_THRESHOLD_=0 regression_fixture_for "$CFG" setup -- --nodes 3 --kind kv \
     --event-write --peer-pool-size 4 \
     --max-inflight 32 --coalesce-max-keys 16 \
     --rpc-workers 2 \
-    --kv-backend mem-block --wal-backend mem-block 2>&1 | tail -3
+    --kv-backend mem-block --wal-backend mem-block 2>&1
 
 echo "=== creating bench group $BENCH_STORE/$BENCH_GROUP (group 0 sysdata preserved) ==="
-pixi run -- cargo run --release -p crowdb-cli -- --config "$CFG" \
-    kv group add -s "$BENCH_STORE" -g "$BENCH_GROUP" -n 1,2,3 2>&1 | tail -3
+regression_client_for "$CFG" \
+    kv group add -s "$BENCH_STORE" -g "$BENCH_GROUP" -n 1,2,3 2>&1
 
 sample_rss() {
     local label="$1"
@@ -54,16 +57,15 @@ run_sub() {
     local threads="$1" conn="$2" label="$3" workers="${4:-2}"
     echo ">>> $label ..."
     sample_rss "pre-clean"
-    MALLOC_ARENA_MAX=1 MALLOC_TRIM_THRESHOLD_=0 pixi run -- cargo run --release -p crowdb-cli -- --config "$CFG" \
-        cluster clean --store "$BENCH_STORE" --group "$BENCH_GROUP" --json 2>&1 | tail -1
+    MALLOC_ARENA_MAX=1 MALLOC_TRIM_THRESHOLD_=0 regression_fixture_for "$CFG" reset --store "$BENCH_STORE" --group "$BENCH_GROUP" 2>&1
     sample_rss "post-clean"
-    MALLOC_ARENA_MAX=1 MALLOC_TRIM_THRESHOLD_=0 pixi run -- cargo run --release -p crowdb-cli -- --config "$CFG" \
+    MALLOC_ARENA_MAX=1 MALLOC_TRIM_THRESHOLD_=0 regression_client_for "$CFG" \
         bench kv write --store "$BENCH_STORE" --group "$BENCH_GROUP" \
         --duration-secs "$DURATION" \
         --loader-num "$threads" --connections "$conn" \
         --key-space "$KEYSPACE" --value-size "$VALUE_SIZE" \
         --event-write --rpc-workers "$workers" \
-        --verify-bytes 0 --json 2>&1 | tail -1
+        --verify-bytes 0 2>&1
     sample_rss "post-bench"
 }
 
@@ -74,7 +76,7 @@ run_sub 64  4 "write_64t"  2
 run_sub 128 4 "write_128t" 4
 
 echo ""
-echo "=== DONE — servers kept alive for inspection ==="
+echo "=== Measurements complete — servers remain owned while inspecting ==="
 echo "Config: $CFG"
 echo "Server PIDs:"
 grep '^pid' "$CFG" | awk '{print "  pid=" $3}'
@@ -88,3 +90,5 @@ for pid in $(grep '^pid' "$CFG" | awk '{print $3}'); do
         echo "  pid=$pid RSS=${local_mb}MB"
     fi
 done
+echo "Inspect the services now; Ctrl-C stops this fixture and its owned services."
+while sleep 60; do :; done

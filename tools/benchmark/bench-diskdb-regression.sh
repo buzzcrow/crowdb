@@ -2,7 +2,7 @@
 # CrowDB diskdb allocation regression benchmark.
 # Usage: bash tools/benchmark/bench-diskdb-regression.sh
 #
-# Every case uses the production CLI lifecycle: deploy three KV nodes,
+# Every case uses an explicit native measurement fixture: deploy three KV nodes,
 # create non-system data groups, deploy one diskdb per node, provision
 # four logical disks per node, run the workload, and destroy processes.
 # All invocations share one timestamped root and retain their individual
@@ -149,12 +149,12 @@ trap destroy_cluster EXIT
 
 verify_logs() {
     local label="$1" kv_metrics diskdb_metrics cli_metrics kv_rpc diskdb_rpc cli_rpc
-    kv_metrics=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/kv-server-*/log/crowdb-kv-server-metrics-*.log' -type f | wc -l)
-    diskdb_metrics=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/diskdb-*/log/crowdb-diskdb-metrics-*.log' -type f | wc -l)
-    cli_metrics=$(find "$LOG_ROOT" -path '*/cli-bench-diskdb-*/crowdb-cli-metrics-*.log' -type f | wc -l)
-    kv_rpc=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/kv-server-*/log/crowdb-kv-server-rpc-*.log' -type f | wc -l)
-    diskdb_rpc=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/diskdb-*/log/crowdb-diskdb-rpc-*.log' -type f | wc -l)
-    cli_rpc=$(find "$LOG_ROOT" -path '*/cli-bench-diskdb-*/crowdb-cli-rpc-*.log' -type f | wc -l)
+    kv_metrics=$(find "$LOG_ROOT" -path '*/services/rack*/node*/kv-server-*/log/crowdb-kv-server-metrics-*.log' -type f | wc -l)
+    diskdb_metrics=$(find "$LOG_ROOT" -path '*/services/rack*/node*/diskdb-*/log/crowdb-diskdb-metrics-*.log' -type f | wc -l)
+    cli_metrics=$(find "$LOG_ROOT" -path '*/measurements/bench-diskdb-*/crowdb-cli-metrics-*.log' -type f | wc -l)
+    kv_rpc=$(find "$LOG_ROOT" -path '*/services/rack*/node*/kv-server-*/log/crowdb-kv-server-rpc-*.log' -type f | wc -l)
+    diskdb_rpc=$(find "$LOG_ROOT" -path '*/services/rack*/node*/diskdb-*/log/crowdb-diskdb-rpc-*.log' -type f | wc -l)
+    cli_rpc=$(find "$LOG_ROOT" -path '*/measurements/bench-diskdb-*/crowdb-cli-rpc-*.log' -type f | wc -l)
     local expected_servers=$((CASE_NUMBER * 3)) expected_clients="$CASE_NUMBER"
     if [ "$kv_metrics" -ne $((DEPLOY_NUMBER * 3)) ] || [ "$diskdb_metrics" -lt "$expected_servers" ] \
         || [ "$cli_metrics" -ne "$expected_clients" ] || [ "$kv_rpc" -ne $((DEPLOY_NUMBER * 3)) ] \
@@ -210,7 +210,7 @@ deploy_group() {
     if [ "$KV_COALESCE" -ne 0 ]; then
         kv_args+=(--coalesce-max-keys "$KV_COALESCE")
     fi
-    cli cluster local-deploy -n 3 -t kv "${backend_args[@]}" "${kv_args[@]}"
+    regression_fixture setup -- --nodes 3 --kind kv "${backend_args[@]}" "${kv_args[@]}"
     local groups=()
     for group in $(seq 1 "$DATA_GROUP_COUNT"); do
         cli kv group add -s 0 -g "$group" -n 1,2,3
@@ -222,7 +222,7 @@ deploy_group() {
     if [ "$free_batch" = "on" ]; then
         free_batch_args=(--free-batch --free-flush-max-batch 256)
     fi
-    cli cluster local-deploy -t diskdb --data-groups "$group_csv" \
+    regression_fixture setup -- --kind diskdb --data-groups "$group_csv" \
         --rpc-workers "$DDB_RPC_WORKERS" --kv-connections "$KV_CONNECTIONS" \
         --kv-client-rpc-workers "$KV_CLIENT_WORKERS" \
         --disk-groups-per-node 1 --disks-per-group 4 \
@@ -259,12 +259,12 @@ run_case() {
     epoll_workers="$DDB_RPC_WORKERS"
     set +e
     output=$(timeout --signal=INT --kill-after=10 "$((DURATION + 40))" \
-        pixi run -- ./target/release/crowdb-cli --log-root "$LOG_ROOT" --config "$CURRENT_CONFIG" \
+        pixi run python tools/benchmark/fixture.py --state "$CURRENT_CONFIG" client -- \
         bench diskdb "$workload" --duration-secs "$DURATION" \
         --concurrency "$concurrency" --unit-count 1 --blocks-per-request "$blocks" \
         --diskdb-connections "$DDB_CONNECTIONS" \
         --diskdb-client-rpc-workers "$DDB_CLIENT_WORKERS" \
-        --mode "$mode" --seed 1 --metrics-interval 1 2>&1)
+        --seed 1 --metrics-interval 1 2>&1)
     status=$?
     set -e
     printf '%s\n' "$output"
@@ -317,6 +317,7 @@ run_case() {
 
 echo "=== building release binaries ==="
 pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server -p crowdb-diskdb
+regression_init
 mkdir -p "$LOG_ROOT" "$(dirname "$RESULTS_FILE")"
 printf 'Wl\tGrp\tThr\tBlk\tCli\tDdb\tKv\tWkr\tWin\tCoal\tops/s\tavg\tp50\tp99\tDur\tErr\tSpc\tFB\tFReq\tFKV\tFCo\n' >"$RESULTS_FILE"
 

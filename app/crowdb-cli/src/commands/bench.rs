@@ -1,10 +1,10 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! `bench` command — KV, RPC, disk, chunk, and chunk-IO workloads.
+//! `bench` command — KV, disk, chunk, chunk-IO, and S3 workloads.
 //!
 //! Module index only; workload implementations live in `bench/`. Each
-//! sub-topic has its own sub-module: `kv`, `rpc`, `disk`, `chunk`, `io`.
+//! sub-topic has its own sub-module: `kv`, `disk`, `chunk`, `io`, `s3`.
 //! Shared helpers (`loader`, `metrics`, `result`, `verb`) live directly
 //! under `bench/`.
 

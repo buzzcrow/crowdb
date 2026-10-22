@@ -13,7 +13,7 @@ use crate::Cli;
 /// Workloads attached to a selected application cluster.
 #[derive(Subcommand, Debug)]
 pub enum BenchVerb {
-    /// KV-layer workload (prepare / read / write / scan / clean).
+    /// KV-layer workload (prepare / read / write / scan).
     #[command(subcommand)]
     Kv(KvBenchVerb),
     /// Distributed disk-block allocation benchmark.

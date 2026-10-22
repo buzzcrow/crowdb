@@ -23,32 +23,29 @@ REGRESSION_LOG_ROOT="$LOG_ROOT"
 source tools/benchmark/bench-regression-common.sh
 
 CHUNK_KV_PIDS=()
+CHUNK_KV_STARTS=()
 
-stop_auxiliary_processes() {
-    local pattern="$1" pid
-    local pids=()
-    mapfile -t pids < <(pgrep -f "$pattern" || true)
-    for pid in "${pids[@]}"; do
-        kill -TERM "$pid" 2>/dev/null || true
-    done
-    sleep 0.1
-    for pid in "${pids[@]}"; do
-        if kill -0 "$pid" 2>/dev/null; then
-            kill -KILL "$pid" 2>/dev/null || true
-        fi
-    done
+process_start() {
+    pixi run python - "$1" <<'PY'
+import sys
+sys.path.insert(0, "tools/benchmark")
+from fixture import process_start
+print(process_start(int(sys.argv[1])) or "stopped")
+PY
 }
 
+
 cleanup() {
-    local pid
-    for pid in "${CHUNK_KV_PIDS[@]}"; do
-        if kill -0 "$pid" 2>/dev/null; then
-            kill -TERM "$pid" 2>/dev/null || true
+    local pid index status=0
+    for index in "${!CHUNK_KV_PIDS[@]}"; do
+        pid=${CHUNK_KV_PIDS[$index]}
+        if [ "$(process_start "$pid")" = "${CHUNK_KV_STARTS[$index]}" ]; then
+            kill -TERM "$pid" || status=1
             wait "$pid" 2>/dev/null || true
         fi
     done
-    regression_destroy || true
-    stop_auxiliary_processes "^$LOG_ROOT/cli-cluster-local-deploy-.*/deploy/.*bin/crowdb-(chunkdb|diskdb|diskio)"
+    regression_destroy || status=1
+    return "$status"
 }
 trap cleanup EXIT
 
@@ -73,22 +70,9 @@ fi
 
 mkdir -p "$LOG_ROOT"
 regression_init
-stop_auxiliary_processes "^${CROWDB_RUNTIME_ROOT:-$(pwd)/.crowdb-runtime}/artifacts/bench/chunk-kv-regression-.*/cli-cluster-local-deploy-.*/deploy/.*bin/crowdb-(chunkdb|diskdb|diskio)"
-DEPLOYED=0
-for attempt in 1 2 3; do
-    REGRESSION_CONFIG="$LOG_ROOT/console-attempt-$attempt.toml"
-    if regression_cli cluster local-deploy -t combined --metrics-interval 1 --allow-unsafe-ec \
-        --kv-backend mem-block --wal-backend mem-block --no-fsync \
-        --diskio-dummy-disk-type mem; then
-        DEPLOYED=1
-        break
-    fi
-    regression_destroy || true
-done
-if [[ "$DEPLOYED" -ne 1 ]]; then
-    echo "chunk KV local deployment failed after 3 attempts" >&2
-    exit 1
-fi
+regression_fixture setup -- --kind combined --metrics-interval 1 \
+    --kv-backend mem-block --wal-backend mem-block --no-fsync \
+    --diskio-dummy-disk-type mem
 
 MGMT_SEED=$(sed -n 's/^[[:space:]]*url = "\([^"]*\)"/\1/p' "$REGRESSION_CONFIG" | head -n 1)
 if [ -z "$MGMT_SEED" ]; then
@@ -132,30 +116,41 @@ write_config() {
 }
 
 start_server() {
-    local instance="$1" config="$LOG_ROOT/chunk-kv-$instance.toml"
+    local instance="$1" start
+    local config="$LOG_ROOT/chunk-kv-$instance.toml"
     write_config "$instance" "$((15200 + instance))" "$((15100 + instance))" "$config"
-    pixi run -- ./target/release/crowdb-chunk-kv-server --config "$config" \
+    # The caller runs this script through Pixi. Keep the native child PID,
+    # rather than the PID of another Pixi command wrapper.
+    ./target/release/crowdb-chunk-kv-server --config "$config" \
         --log-dir "$LOG_ROOT/chunk-kv-$instance-log" \
         >"$LOG_ROOT/chunk-kv-$instance.console.log" 2>&1 &
     SERVER_PID=$!
+    start=$(process_start "$SERVER_PID")
     CHUNK_KV_PIDS+=("$SERVER_PID")
+    CHUNK_KV_STARTS+=("$start")
+    printf '%s\t%s\n' "$SERVER_PID" "$start" >>"$LOG_ROOT/owned-processes.tsv"
 }
 
 wait_ready() {
-    local instance="$1" pid="$2" deadline=$((SECONDS + READY_TIMEOUT_SECS))
+    local instance="$1" pid="$2" deadline=$((SECONDS + READY_TIMEOUT_SECS)) code
     while [ "$SECONDS" -lt "$deadline" ]; do
-        if curl --silent --fail "http://127.0.0.1:$((15100 + instance))/ready" \
-            >"$LOG_ROOT/chunk-kv-$instance.ready.json"; then
+        code=$(curl --silent --output "$LOG_ROOT/chunk-kv-$instance.ready.json" \
+            --write-out '%{http_code}' "http://127.0.0.1:$((15100 + instance))/ready") || code=000
+        if [ "$code" = 200 ]; then
             return 0
         fi
         if ! kill -0 "$pid" 2>/dev/null || [ "$(awk '{ print $3 }' "/proc/$pid/stat" 2>/dev/null || true)" = Z ]; then
             wait "$pid" 2>/dev/null || true
             echo "chunk-KV server $instance exited before becoming ready" >&2
+            cat "$LOG_ROOT/chunk-kv-$instance.console.log" >&2
             return 1
         fi
         sleep 1
     done
     echo "ERROR: chunk-KV server $instance did not become ready" >&2
+    cat "$LOG_ROOT/chunk-kv-$instance.ready.json" >&2
+    regression_fixture inspect >"$LOG_ROOT/failed-recovery-records.json"
+    cat "$LOG_ROOT/failed-recovery-records.json" >&2
     return 1
 }
 
@@ -229,6 +224,7 @@ if ! LOAD_OUTPUT=$(timeout "$LOAD_TIMEOUT_SECS" pixi run -- ./target/release/cro
     --key-prefix "$HOT_KEY_PREFIX" --key-offset 0 --read-percent "$READ_PERCENT"); then
     printf '%s\n' "$LOAD_OUTPUT" >"$LOG_ROOT/load-continuous.log"
     capture_failure_metrics
+    printf '%s\n' "$LOAD_OUTPUT" >&2
     echo "ERROR: continuous routed load failed; retained metrics: $LOG_ROOT/load-failure-metrics.log" >&2
     exit 1
 fi
@@ -308,6 +304,7 @@ if [ "$OWNERS_WITH_PARTITIONS" -lt 2 ]; then
     exit 1
 fi
 
+regression_fixture inspect >"$LOG_ROOT/before-restart-records.json"
 OLD_PID=${CHUNK_KV_PIDS[0]}
 kill -TERM "$OLD_PID"
 # Keep the intentional restart inside the registry dead-owner window. The
@@ -322,20 +319,10 @@ if kill -0 "$OLD_PID" 2>/dev/null; then
 fi
 wait "$OLD_PID" 2>/dev/null || true
 REPLAY_STARTED_MS=$(date +%s%3N)
-RESTARTED_PID=0
-for attempt in 1 2 3; do
-    start_server 1
-    RESTARTED_PID=$SERVER_PID
-    if wait_ready 1 "$RESTARTED_PID"; then
-        break
-    fi
-    RESTARTED_PID=0
-    sleep 6
-done
-if [ "$RESTARTED_PID" -eq 0 ]; then
-    echo "ERROR: restarted chunk-KV server did not become ready after 3 attempts" >&2
-    exit 1
-fi
+start_server 1
+RESTARTED_PID=$SERVER_PID
+wait_ready 1 "$RESTARTED_PID"
+regression_fixture inspect >"$LOG_ROOT/after-restart-records.json"
 REPLAY_MS=$(($(date +%s%3N) - REPLAY_STARTED_MS))
 REPLAY_PARTITIONS=$(sed -n 's/.*"hosted_partitions":\([0-9][0-9]*\).*/\1/p' \
     "$LOG_ROOT/chunk-kv-1.ready.json")
