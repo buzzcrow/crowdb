@@ -22,10 +22,11 @@ fn trust_must_match_the_sealed_bootstrap_members_and_admission() {
     use sha2::{Digest, Sha256};
 
     let mut accepted = member_evidence::TestMemberEvidence::new().bootstrap;
+    let mut trust = recovery::trust(&KeyPair::generate_ed25519().unwrap());
+    accepted.nodes[0].host_key = Some(trust.members[0].host_key.clone());
     accepted.identity.configuration_digest = hex::encode(Sha256::digest(
         serde_json::to_vec(&(&accepted.intent, &accepted.nodes)).unwrap(),
     ));
-    let mut trust = recovery::trust(&KeyPair::generate_ed25519().unwrap());
     trust.bootstrap = accepted.identity.clone();
     trust.members[0]
         .discovery_id
@@ -35,6 +36,9 @@ fn trust_must_match_the_sealed_bootstrap_members_and_admission() {
         .clone_from(&accepted.nodes[0].operation_id);
     trust.validate_bootstrap(&accepted).unwrap();
     let mut changed = trust.clone();
+    changed.members[0].host_key = recovery::host_key(&KeyPair::generate_ed25519().unwrap());
+    assert!(changed.validate_bootstrap(&accepted).is_err());
+    changed = trust.clone();
     changed.members[0].admission_operation_id = uuid::Uuid::new_v4().to_string();
     assert!(changed.validate_bootstrap(&accepted).is_err());
     changed = trust.clone();
@@ -298,4 +302,76 @@ listen = "192.0.2.8:9093"
         .unwrap(),
         result
     );
+}
+
+#[test]
+fn authenticated_admission_pin_survives_serialization_and_address_changes() {
+    let mut node = member_evidence::TestMemberEvidence::new().expected;
+    let key = recovery::host_key(&KeyPair::generate_ed25519().unwrap());
+    node.pin_host_key(&format!("{key} authenticated-host")).unwrap();
+    let accepted = node.host_key.clone();
+    node.host = "192.0.2.42".into();
+    node.pin_host_key(&format!("{key} updated-comment")).unwrap();
+    assert_eq!(node.host_key, accepted);
+    let bytes = serde_json::to_vec(&node).unwrap();
+    let retained: crowdb_console_shared::deployment::registry::NodeRecord =
+        serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(retained.host_key, accepted);
+    let changed = recovery::host_key(&KeyPair::generate_ed25519().unwrap());
+    assert!(node.pin_host_key(&changed).is_err());
+    assert!(node.pin_host_key("ssh-ed25519 invalid").is_err());
+    assert_eq!(node.host_key, accepted);
+}
+
+#[test]
+fn confirmed_authority_alone_extends_and_retires_later_member_trust() {
+    use crowdb_console_shared::deployment::registry::NodeRegistry;
+    let initial = recovery::trust(&KeyPair::generate_ed25519().unwrap());
+    let mut node = member_evidence::TestMemberEvidence::new().expected;
+    node.discovery_id.clone_from(&initial.members[0].discovery_id);
+    node.operation_id
+        .clone_from(&initial.members[0].admission_operation_id);
+    node.host_key = Some(initial.members[0].host_key.clone());
+    node.confirmed = true;
+    let mut later = node.clone();
+    later.discovery_id = uuid::Uuid::new_v4().to_string();
+    later.operation_id = uuid::Uuid::new_v4().to_string();
+    later.node_id = 2;
+    later.host_key = None;
+    later
+        .pin_host_key(&recovery::host_key(&KeyPair::generate_ed25519().unwrap()))
+        .unwrap();
+    later.confirmed = false;
+    let mut registry = NodeRegistry {
+        cluster_id: initial.bootstrap.cluster_id.clone(),
+        nodes: vec![node, later],
+    };
+    assert_eq!(initial.confirmed_registry(&registry).unwrap(), initial);
+    registry.nodes[1].confirmed = true;
+    let current = initial.confirmed_registry(&registry).unwrap();
+    assert_eq!(current.members.len(), 2);
+    assert_eq!(current.members[0], initial.members[0]);
+    registry.nodes[1].cancelled = true;
+    assert_eq!(initial.confirmed_registry(&registry).unwrap(), initial);
+    registry.nodes[1].cancelled = false;
+    let accepted = registry.clone();
+    for change in [
+        "cluster",
+        "initial-key",
+        "initial-operation",
+        "missing-pin",
+        "shared-key",
+    ] {
+        let mut changed = accepted.clone();
+        match change {
+            "cluster" => changed.cluster_id = uuid::Uuid::new_v4().to_string(),
+            "initial-key" => changed.nodes[0].host_key = changed.nodes[1].host_key.clone(),
+            "initial-operation" => changed.nodes[0].operation_id = uuid::Uuid::new_v4().to_string(),
+            "missing-pin" => changed.nodes[1].host_key = None,
+            "shared-key" => changed.nodes[1].host_key = changed.nodes[0].host_key.clone(),
+            _ => unreachable!(),
+        }
+        assert!(initial.confirmed_registry(&changed).is_err(), "{change}");
+    }
+    assert_eq!(initial.members.len(), 1, "initial sealed trust remains immutable");
 }

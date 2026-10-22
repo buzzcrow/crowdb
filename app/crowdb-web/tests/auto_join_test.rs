@@ -198,6 +198,7 @@ async fn two_authenticated_nodes_wait_in_uuid_order_without_initializing() {
             ssh_user: "crowdb".into(),
             operation_id: uuid::Uuid::new_v4().to_string(),
             confirmed: false,
+            host_key: None,
             cancelled: false,
         };
         std::fs::write(

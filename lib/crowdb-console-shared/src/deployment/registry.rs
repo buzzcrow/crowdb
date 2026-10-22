@@ -19,6 +19,9 @@ pub struct NodeRecord {
     pub ssh_port: u16,
     pub ssh_user: String,
     pub operation_id: String,
+    /// Public key proved by the authenticated admission, independent of its address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_key: Option<String>,
     pub confirmed: bool,
     #[serde(default)]
     pub cancelled: bool,
@@ -28,6 +31,26 @@ pub struct NodeRecord {
 pub struct NodeRegistry {
     pub cluster_id: String,
     pub nodes: Vec<NodeRecord>,
+}
+
+impl NodeRecord {
+    /// Retain the public SSH key proved by admission; an address update cannot replace it.
+    ///
+    /// # Errors
+    /// Rejects malformed keys or an attempted replacement of an accepted pin.
+    pub fn pin_host_key(&mut self, authenticated: &str) -> Result<()> {
+        use russh::keys::PublicKeyBase64;
+        let key = super::recovery::host_key(authenticated)?;
+        if let Some(previous) = &self.host_key {
+            if super::recovery::host_key(previous)?.fingerprint() != key.fingerprint() {
+                return Err(Error::Config(
+                    "admission changes its authenticated host key".into(),
+                ));
+            }
+        }
+        self.host_key = Some(format!("ssh-ed25519 {}", key.public_key_base64()));
+        Ok(())
+    }
 }
 
 /// # Errors
@@ -93,6 +116,15 @@ pub async fn admit(kv: &CrowdbKvClient, cluster: &str, mut node: NodeRecord) -> 
             node.node_id = existing.node_id;
             if !existing.cancelled {
                 node.operation_id = existing.operation_id.clone();
+                if existing.host_key.is_some()
+                    && node.host_key.is_some()
+                    && existing.host_key != node.host_key
+                {
+                    return Err(Error::Config(
+                        "admission changes its authenticated host key".into(),
+                    ));
+                }
+                node.host_key = existing.host_key.clone().or(node.host_key);
             }
             if existing.confirmed {
                 if existing.rack_id != node.rack_id || existing.ssh_user != node.ssh_user {

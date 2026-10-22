@@ -53,6 +53,7 @@ pub fn fixture(root: &Path) -> MemberTrust {
             ssh_user: "crowdb".into(),
             operation_id: uuid::Uuid::new_v4().to_string(),
             confirmed: false,
+            host_key: None,
             cancelled: false,
         });
     }

@@ -152,6 +152,7 @@ async fn target_uses_confirmed_current_addresses_without_rewriting_the_manifest(
             ssh_user: "operator".into(),
             operation_id: uuid::Uuid::new_v4().to_string(),
             confirmed: true,
+            host_key: None,
             cancelled: false,
         }],
     };

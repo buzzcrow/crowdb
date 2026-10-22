@@ -120,6 +120,7 @@ pub(crate) async fn prepare(
             ssh_user: body.ssh_user.clone(),
             ssh_port: body.ssh_port,
             operation_id: uuid::Uuid::new_v4().to_string(),
+            host_key: None,
             confirmed: false,
             cancelled: false,
         }

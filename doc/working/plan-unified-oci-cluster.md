@@ -219,11 +219,19 @@ Existing implementation can be reused; these are the outstanding parts.
     before the fix and passes afterward. All 277 UI tests/types pass; both real
     default UIs pass on image U. The existing browser flow retains DOM assertions
     and asserts the mutation's 201 separately, with independent step timings.
-- [ ] **T15a–T15d — Finish member trust and retained recovery** (A32/A33).
+- [~] **T15a–T15d — Finish member trust and retained recovery** (A32/A33).
   Initial authenticated member pins, SSH-verified rediscovery, duplicate live
   identity rejection and identity-bound replica routing are implemented. Fresh
   three-node Docker changed-IP recovery with retained S3 bytes passed.
-  **Gap:** later non-voter admission/revocation trust distribution and non-voter
+  Foundation implemented: authenticated admission now retains a canonical public
+  Ed25519 host key in `NodeRecord`; another key and authenticated address updates
+  cannot replace it. A fresh confirmed Group-0 registry can extend initial pins
+  to later members and omits pending/cancelled admissions, while rejecting
+  unpinned later members, conflicting initial pins, operations and shared keys.
+  Initial sealed trust remains immutable. Eleven shared recovery tests and
+  affected shared/Web/monitor all-target clippy pass. Thirteen affected Web
+  auto-join, target and preflight tests also pass.
+  **Gap:** runtime distribution/use of later non-voter trust and non-voter
   changed-IP recovery. Current trust file is immutable initial membership;
   `recovery::accept/check/ready` special-case admitted nodes and discovery loads
   the initial PreparedBootstrap. Extend only through confirmed Group-0 authority
@@ -233,7 +241,7 @@ Existing implementation can be reused; these are the outstanding parts.
   add actual S3/Iceberg/Dataset and host-network recovery coverage.
   Owners: shared `deployment/recovery*`, `registry.rs`, Web `node/admission.rs`,
   monitor `node/runtime/{admission,recovery}*`, KV identity-route tests.
-- [~] **T16 — Complete current dependency acceptance** (A15/A23/A26/A27).
+- [ ] **T16 — Complete current dependency acceptance** (A15/A23/A26/A27).
   Group0/disk+binding → owner → space layers, current operations, stateless idle
   ChunkKV and owned-range writer readiness exist. Finish service stop, voter loss,
   stale evidence, mixed failures and bounded endpoint checks with non-repair proofs.
@@ -336,8 +344,11 @@ Existing implementation can be reused; these are the outstanding parts.
     insufficient remaining time and expired evidence remain unknown. Twelve
     shared readiness regressions and seven actual CLI HTTP tests pass, including
     a single HTTP observation with an 80-ms offset and rejected 10-second offset;
-    affected all-target clippy and Rust fmt pass. Native retained-witness proof
-    remains in progress; no timeouts or readiness assertions were relaxed.
+    affected all-target clippy and Rust fmt pass. Native pre-recreation retained-witness read now passes on all three hosts
+    with cluster UUID `c91e3082-dbc0-49fd-bf3f-acc90c0bc0ac`: S3 bytes,
+    committed Iceberg properties and Dataset snapshot/manifest. Proof lives on
+    VM1 at `/srv/crowdb-r243-final/protocol-before-recreation.json` and private
+    `protocol-witness.json`; final recreation proof remains in progress; no timeouts or readiness assertions were relaxed.
 - [x] **T25 — Register direct Docker/Compose reference acceptance** (A01/A03/A25).
   - Six registered `deployment.reference` cases cover direct Docker and the
     unchanged shipped one/three-node Compose files, plus real editable UIs in
@@ -470,24 +481,27 @@ Existing implementation can be reused; these are the outstanding parts.
   - Python fixture suite: 180 tests; CI inventory: 388 owned flows. Inventory
     does not substitute for runtime execution of the remaining acceptance.
 - [ ] **T34 — Verify host runtimes honestly** (A08/A09/A31).
-  Docker-hosted containerd profiles are separate from native Docker-free A31.
-  Three independent KVM Linux VMs are now available under
-  `.crowdb-runtime/artifacts/r243-native-kvm/`, each with four supplied raw disks,
-  unique physical-host identity and private multicast-capable interfaces.
-  Native rootful containerd 2.2.1 + nerdctl 2.4.1 launch image W without any Docker
-  client/socket/daemon inside the hosts. Applied host network namespace, CPU and
-  memory cgroups are recorded; actual containerd restart preserves daemon ID.
-  Production discovery, authenticated admission and formation pass. First full
-  check correctly remains degraded: supplied media use compatible per-class
-  disk groups from their sealed journals, while aggregate observation assumes
-  the automatic-medium group reservation. The collector now resolves every
-  sealed supplied disk ID from fresh identity-checked member evidence through
-  its unique authoritative Group-0 disk and group membership. Every resulting
-  group retains metadata-binding, live-owner and space checks. Missing/duplicate
-  identity, unfinished media and conflicting setup remain unhealthy. Two new
-  supplied-media regressions plus 12 existing storage/readiness tests pass;
-  affected shared/Web all-target clippy and Rust fmt pass. New-image actual
-  three-protocol retained read/write and recreation remain required for A31.
+  - [x] Native Docker-free containerd: three independent owned KVM Linux hosts,
+    rootful containerd 2.2.1 + nerdctl 2.4.1; image Y manifest
+    `sha256:afcbd73d5f39b7d0a61841dbce203e338419f598750c5502de137589ff408b54`.
+    Actual common CLI host creation, authenticated production admission and
+    formation, signed S3 bytes, committed Iceberg properties and Dataset
+    snapshot/manifest all pass. CLI start seals the observed application UUID.
+    Independent `oci-host-clean` removes all three exact owned containers,
+    retaining raw devices, data and both receipts; CLI recreates in order 3,1,2.
+    All three containers acquire new IDs while original UUID and credentials
+    remain; all three protocol witnesses read successfully afterward.
+    Applied limits stay `cpu.max=200000 100000`, memory 2147483648 and host
+    network namespace. Daemon, input hashes and physical identities match
+    before/after. Docker client/socket/daemon are absent on each proof host.
+    Evidence: `r243-native-kvm/node{1,2,3}-recreation-proof.json`,
+    `protocol-after-recreation.json`, guest `/srv/crowdb-r243-final/` logs and
+    private witness. This certifies image Y plus the recorded current host CLI,
+    not the newer in-progress member-trust server changes.
+  - Repeated FD samples remain monitor 56 and DiskIO 187 on VM1;
+    unchanged soft nofile=1024, no larger restart budget. Old failed W/X data
+    remains preserved separately; no accepted media was reset.
+  - [ ] Actual Docker host profile and changed-address host-network proof remain.
 - [ ] **T35 — Final documentation/gates/cleanup** (A17/all acceptance IDs).
   Update deployment/OCI designs, help, examples, credentials/ports, tool guides
   and CI only for verified behavior. Old standard/single/bare-metal registry

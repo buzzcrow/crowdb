@@ -70,6 +70,7 @@ async fn setup() -> (TestPreparationAuthority, NodeRuntimeObservation) {
                 ssh_user: "crowdb".into(),
                 operation_id: operation_id.clone(),
                 confirmed: true,
+                host_key: None,
                 cancelled: false,
             }],
         },

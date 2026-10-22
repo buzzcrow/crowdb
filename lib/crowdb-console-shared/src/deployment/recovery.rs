@@ -7,6 +7,7 @@ mod endpoints;
 mod services;
 pub use services::rebind_service;
 mod persistence;
+mod registry;
 
 use std::collections::BTreeSet;
 
@@ -79,12 +80,16 @@ impl MemberTrust {
             return Err(invalid("member trust differs from accepted bootstrap"));
         }
         for member in &self.members {
+            let expected = member.key()?;
             if !accepted.intent.members().contains(&member.node_id)
                 || !accepted.nodes.iter().any(|node| {
                     node.node_id == member.node_id
                         && node.discovery_id == member.discovery_id
                         && node.operation_id == member.admission_operation_id
                         && !node.cancelled
+                        && node.host_key.as_ref().map_or(true, |key| {
+                            host_key(key).is_ok_and(|key| key.fingerprint() == expected.fingerprint())
+                        })
                 })
             {
                 return Err(invalid("member trust changes accepted membership"));

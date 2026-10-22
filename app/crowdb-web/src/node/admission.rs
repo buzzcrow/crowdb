@@ -167,7 +167,7 @@ async fn admit_observed(
     if target.ssh_password.is_none() {
         target.ssh_key = Some(key.to_string_lossy().into_owned());
     }
-    admission::prepare(
+    let identity = admission::prepare(
         &control_socket(),
         &key,
         &record.operation_id,
@@ -177,6 +177,17 @@ async fn admit_observed(
     )
     .await
     .map_err(map_config_err)?;
+    record.pin_host_key(&identity.host_key).map_err(map_config_err)?;
+    if let Some(binding) = &binding {
+        record = registry::admit(
+            state.kv_client().await.as_ref(),
+            &binding.bootstrap.cluster_id,
+            record,
+        )
+        .await
+        .map_err(map_config_err)?;
+    }
+    save(&path, &record)?;
     super::setup::accept(state, &record, &target, body.setup, body.expected_formation).await?;
     target.ssh_password = None;
     target.ssh_key = None;
@@ -423,6 +434,7 @@ fn initial_record(
             ssh_port: body.ssh_port,
             ssh_user: body.ssh_user.clone(),
             operation_id: uuid::Uuid::new_v4().to_string(),
+            host_key: None,
             confirmed: false,
             cancelled: false,
         }

@@ -63,6 +63,7 @@ impl TestAuthority {
                 ssh_port: 22,
                 ssh_user: "crowdb".into(),
                 confirmed: true,
+                host_key: None,
                 cancelled: false,
             }],
         };

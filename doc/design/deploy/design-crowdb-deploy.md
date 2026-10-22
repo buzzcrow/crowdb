@@ -361,7 +361,8 @@ and only public keys cross nodes.
 
 Node identity survives changes to management and data addresses. Each accepted
 member has a durable binding between cluster UUID, discovery UUID, numeric node
-ID and its Ed25519 SSH host public key. The SSH login key authenticates a caller;
+ID and its Ed25519 SSH host public key. Admission retains the canonical public host key in its Group-0 node record;
+normal address/rack updates cannot replace that pin. The SSH login key authenticates a caller;
 the SSH host key authenticates the peer. Both private keys remain on their owning
 node's persistent volume. Address recovery reuses SSH and does not introduce a
 CA, certificate service or custom signature protocol.
