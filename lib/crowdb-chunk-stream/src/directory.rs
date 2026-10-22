@@ -15,6 +15,12 @@ use crowdb_protocol::chunk_stream::{
 use crate::{Result, StreamError};
 
 mod append;
+mod metadata;
+pub(crate) use metadata::DirectoryRecords;
+pub use metadata::{
+    DirectoryCacheSnapshot, DirectoryHeadSnapshot, DirectoryMetadataStore, StreamMigrationSnapshot,
+    StreamMigrationStep, DIRECTORY_PAGE_CACHE_SLOTS,
+};
 mod publication;
 mod read;
 mod trim;

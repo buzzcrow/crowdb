@@ -7,9 +7,7 @@ use crowdb_protocol::chunk_stream::{
 };
 use crowdb_protocol::key::{BinaryKey, StreamExtentPageKey};
 
-use super::{
-    kv_error, migration_error, GetOutcome, KvStreamMetadataStore, ReadMode, StreamMigrationSnapshot,
-};
+use super::{kv_error, migration_error, DirectoryMetadataStore, GetOutcome, StreamMigrationSnapshot};
 use crate::{
     DirectoryHeadSnapshot, DirectoryIndex, DirectoryMutation, Result, StreamChunkStore, StreamError,
 };
@@ -23,7 +21,7 @@ pub enum StreamMigrationStep {
     Complete(DirectoryHeadSnapshot),
 }
 
-impl KvStreamMetadataStore {
+impl DirectoryMetadataStore {
     /// Perform at most one bounded conversion batch. History, sealed legacy tail
     /// scanning and final publication remain fenced by this exact session/revision.
     ///
@@ -110,12 +108,7 @@ impl KvStreamMetadataStore {
                 page_index: expected.page_index,
             }
             .to_bytes();
-            let GetOutcome::Found { value, .. } = self
-                .kv
-                .get(self.store_id, self.group_id, &key, ReadMode::Linearizable, None)
-                .await
-                .map_err(kv_error)?
-            else {
+            let GetOutcome::Found { value, .. } = self.records.get(&key).await.map_err(kv_error)? else {
                 return Err(StreamError::ReadUnavailable(
                     "legacy source extent page is absent".into(),
                 ));

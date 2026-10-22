@@ -1,149 +1,102 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+//! KV metadata facade for the shared indexed-directory state machine.
+
 use async_trait::async_trait;
 use bytes::Bytes;
 use crowdb_protocol::chunk_stream::{
-    decode_stream_head_record, StreamDirectoryHead, StreamDirectoryPageId, StreamHeadRecord, StreamName,
-    StreamRootIdentity,
+    StreamDirectoryHead, StreamDirectoryPageId, StreamMigrationProgress, StreamName, StreamRootIdentity,
 };
-use crowdb_protocol::key::{
-    BinaryKey, StreamDirectoryPageKey, StreamDirectoryRootKey, StreamManifestHeadKey,
+
+use super::KvStreamMetadataStore;
+use crate::directory::DirectoryMetadataStore;
+pub use crate::directory::{
+    DirectoryCacheSnapshot, DirectoryHeadSnapshot, StreamMigrationSnapshot, StreamMigrationStep,
+    DIRECTORY_PAGE_CACHE_SLOTS,
 };
-use futures::{stream, StreamExt, TryStreamExt};
-
-use super::{kv_error, GetOutcome, KvStreamMetadataStore, ReadMode};
-use crate::{DirectoryMutation, Result, StreamDirectoryStore, StreamError};
-
-mod cache;
-mod control;
-mod migration;
-mod publication;
-pub(super) use cache::DirectoryRecordCache;
-pub use cache::{DirectoryCacheSnapshot, DIRECTORY_PAGE_CACHE_SLOTS};
-pub use migration::{StreamMigrationSnapshot, StreamMigrationStep};
-
-/// An immutable indexed head and the KV revision that fenced its observation.
-#[derive(Clone, Debug)]
-pub struct DirectoryHeadSnapshot {
-    pub(super) head: StreamDirectoryHead,
-    pub(super) revision: u64,
-    pub(super) store_id: u64,
-}
-
-impl DirectoryHeadSnapshot {
-    #[must_use]
-    pub const fn head(&self) -> &StreamDirectoryHead {
-        &self.head
-    }
-}
+use crate::{DirectoryMutation, Result, StreamChunkStore, StreamDirectoryStore};
 
 impl KvStreamMetadataStore {
-    async fn store_directory_pages(&self, mutation: &DirectoryMutation) -> Result<()> {
-        stream::iter(mutation.pages())
-            .map(|page| async move {
-                let key = StreamDirectoryPageKey {
-                    stream_name: mutation.index().stream_name(),
-                    page_id: page.reference().id,
-                }
-                .to_bytes();
-                self.put_directory_immutable(&key, page.bytes()).await
-            })
-            .buffer_unordered(8)
-            .try_collect::<Vec<_>>()
-            .await?;
-        Ok(())
+    #[must_use]
+    pub const fn directory_metadata(&self) -> &DirectoryMetadataStore {
+        &self.directory
     }
+
     #[must_use]
     pub fn directory_cache_snapshot(&self) -> DirectoryCacheSnapshot {
-        self.directory_pages.snapshot()
-    }
-    /// # Errors
-    /// Rejects legacy heads until migration, unknown versions and wrong metadata scope.
-    pub async fn load_directory_head(&self, name: StreamName) -> Result<Option<DirectoryHeadSnapshot>> {
-        let key = StreamManifestHeadKey { stream_name: name }.to_bytes();
-        match self
-            .kv
-            .get(self.store_id, self.group_id, &key, ReadMode::Linearizable, None)
-            .await
-            .map_err(kv_error)?
-        {
-            GetOutcome::Found { value, revision } => Ok(Some(DirectoryHeadSnapshot {
-                head: self.decode_indexed(&value, name)?,
-                revision,
-                store_id: self.store_id,
-            })),
-            GetOutcome::NotFound => Ok(None),
-        }
+        self.directory.directory_cache_snapshot()
     }
 
     /// # Errors
-    /// Returns unavailable/malformed root failures and never substitutes a newer root.
+    /// Returns indexed head IO/version/scope errors.
+    pub async fn load_directory_head(&self, name: StreamName) -> Result<Option<DirectoryHeadSnapshot>> {
+        self.directory.load_directory_head(name).await
+    }
+
+    /// # Errors
+    /// Returns retained root IO/version/scope errors.
     pub async fn load_directory_root(
         &self,
         name: StreamName,
         identity: StreamRootIdentity,
     ) -> Result<Option<StreamDirectoryHead>> {
-        let key = StreamDirectoryRootKey {
-            stream_name: name,
-            identity,
-        }
-        .to_bytes();
-        match self
-            .kv
-            .get(self.store_id, self.group_id, &key, ReadMode::Linearizable, None)
+        self.directory.load_directory_root(name, identity).await
+    }
+
+    /// # Errors
+    /// Returns protected publication validation/CAS errors.
+    pub async fn publish_directory(
+        &self,
+        expected: Option<&DirectoryHeadSnapshot>,
+        head: StreamDirectoryHead,
+        mutation: &DirectoryMutation,
+    ) -> Result<DirectoryHeadSnapshot> {
+        self.directory.publish_directory(expected, head, mutation).await
+    }
+
+    /// # Errors
+    /// Returns migration marker/source IO/version/scope errors.
+    pub async fn load_directory_migration(
+        &self,
+        name: StreamName,
+    ) -> Result<Option<StreamMigrationSnapshot>> {
+        self.directory.load_directory_migration(name).await
+    }
+
+    /// # Errors
+    /// Returns legacy source preservation or migration head CAS errors.
+    pub async fn begin_directory_migration(
+        &self,
+        name: StreamName,
+        epoch: u64,
+        session: [u8; 16],
+    ) -> Result<StreamMigrationSnapshot> {
+        self.directory
+            .begin_directory_migration(name, epoch, session)
             .await
-            .map_err(kv_error)?
-        {
-            GetOutcome::Found { value, .. } => {
-                let head = self.decode_indexed(&value, name)?;
-                if head.identity() != identity {
-                    return Err(StreamError::Corruption(
-                        "directory root identity differs from its key".into(),
-                    ));
-                }
-                Ok(Some(head))
-            }
-            GetOutcome::NotFound => Ok(None),
-        }
     }
 
-    fn decode_indexed(&self, bytes: &[u8], name: StreamName) -> Result<StreamDirectoryHead> {
-        let record = decode_stream_head_record(bytes)
-            .map_err(|error| StreamError::Corruption(format!("stream head decode failed: {error}")))?;
-        let StreamHeadRecord::Indexed(head) = record else {
-            return Err(StreamError::InvalidRequest(
-                "legacy stream requires indexed migration".into(),
-            ));
-        };
-        if head.stream_name != name || head.metadata_group_id != self.group_id {
-            return Err(StreamError::Corruption(
-                "indexed head identity or metadata group is invalid".into(),
-            ));
-        }
-        Ok(head)
+    /// # Errors
+    /// Returns conversion progress IO/version/scope errors.
+    pub async fn load_directory_migration_progress(
+        &self,
+        snapshot: &StreamMigrationSnapshot,
+    ) -> Result<Option<StreamMigrationProgress>> {
+        self.directory.load_directory_migration_progress(snapshot).await
     }
 
-    async fn put_directory_immutable(&self, key: &[u8], bytes: &[u8]) -> Result<()> {
-        match self.kv.put_cas(self.store_id, self.group_id, key, bytes, 0).await {
-            Ok(_) => Ok(()),
-            Err(crowdb_kv_client::Error::CasFailed { .. } | crowdb_kv_client::Error::OutcomeUnknown) => {
-                match self
-                    .kv
-                    .get(self.store_id, self.group_id, key, ReadMode::Linearizable, None)
-                    .await
-                    .map_err(kv_error)?
-                {
-                    GetOutcome::Found { value, .. } if value.as_ref() == bytes => Ok(()),
-                    GetOutcome::Found { .. } => Err(StreamError::Corruption(
-                        "immutable directory key contains different bytes".into(),
-                    )),
-                    GetOutcome::NotFound => Err(StreamError::WriteStalled),
-                }
-            }
-            Err(crowdb_kv_client::Error::CasBusy) => Err(StreamError::Backpressure),
-            Err(error) => Err(kv_error(error)),
-        }
+    /// # Errors
+    /// Returns bounded conversion IO/validation/CAS errors.
+    pub async fn advance_directory_migration(
+        &self,
+        snapshot: &StreamMigrationSnapshot,
+        chunks: &dyn StreamChunkStore,
+        limit: usize,
+    ) -> Result<StreamMigrationStep> {
+        self.directory
+            .advance_directory_migration(snapshot, chunks, limit)
+            .await
     }
 }
 
@@ -151,24 +104,9 @@ impl KvStreamMetadataStore {
 impl StreamDirectoryStore for KvStreamMetadataStore {
     async fn load_directory_record(
         &self,
-        stream_name: StreamName,
-        page_id: StreamDirectoryPageId,
+        name: StreamName,
+        id: StreamDirectoryPageId,
     ) -> Result<Option<Bytes>> {
-        if let Some(bytes) = self.directory_pages.get(stream_name, page_id) {
-            return Ok(Some(bytes));
-        }
-        let key = StreamDirectoryPageKey { stream_name, page_id }.to_bytes();
-        match self
-            .kv
-            .get(self.store_id, self.group_id, &key, ReadMode::Linearizable, None)
-            .await
-            .map_err(kv_error)?
-        {
-            GetOutcome::Found { value, .. } => {
-                self.directory_pages.insert(stream_name, page_id, &value)?;
-                Ok(Some(value))
-            }
-            GetOutcome::NotFound => Ok(None),
-        }
+        self.directory.load_directory_record(name, id).await
     }
 }

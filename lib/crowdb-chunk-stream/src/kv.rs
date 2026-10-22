@@ -15,6 +15,7 @@ use crowdb_protocol::key::{
 use futures::{stream, StreamExt, TryStreamExt};
 
 mod directory;
+mod directory_records;
 pub use directory::{DirectoryCacheSnapshot, DirectoryHeadSnapshot, DIRECTORY_PAGE_CACHE_SLOTS};
 pub use directory::{StreamMigrationSnapshot, StreamMigrationStep};
 mod pages;
@@ -93,7 +94,7 @@ pub struct KvStreamMetadataStore {
     store_id: u64,
     group_id: u64,
     head: ArcSwapOption<CachedHead>,
-    directory_pages: directory::DirectoryRecordCache,
+    directory: crate::directory::DirectoryMetadataStore,
 }
 
 struct CachedHead {
@@ -113,12 +114,21 @@ impl KvStreamMetadataStore {
                 "stream metadata must use a nonzero KV group".into(),
             ));
         }
+        let directory = crate::directory::DirectoryMetadataStore::new(
+            Arc::new(directory_records::KvDirectoryRecords::new(
+                Arc::clone(&kv),
+                store_id,
+                group_id,
+            )),
+            store_id,
+            group_id,
+        )?;
         Ok(Self {
             kv,
             store_id,
             group_id,
             head: ArcSwapOption::empty(),
-            directory_pages: directory::DirectoryRecordCache::default(),
+            directory,
         })
     }
 
@@ -197,6 +207,14 @@ impl KvStreamMetadataStore {
 
 #[async_trait]
 impl StreamMetadataStore for KvStreamMetadataStore {
+    fn directory_metadata(&self, metadata_group_id: u64) -> Result<crate::DirectoryMetadataStore> {
+        if metadata_group_id != self.group_id {
+            return Err(StreamError::InvalidRequest(
+                "directory group differs from metadata binding".into(),
+            ));
+        }
+        Ok(self.directory.clone())
+    }
     async fn load_current(&self, stream_name: StreamName) -> Result<Option<StreamManifest>> {
         Ok(self.get_head(stream_name).await?.map(|(manifest, _)| manifest))
     }

@@ -9,10 +9,10 @@ use crowdb_protocol::frame::{
     frame_length, parse_frame, parse_header, ChunkLocation, FrameMagic, FRAME_HEADER_PREFIX_BYTES,
 };
 
-use super::{migration_error, KvStreamMetadataStore, StreamMigrationSnapshot};
+use super::{migration_error, DirectoryMetadataStore, StreamMigrationSnapshot};
 use crate::{DirectoryIndex, DirectoryMutation, Result, StreamChunkStore};
 
-impl KvStreamMetadataStore {
+impl DirectoryMetadataStore {
     pub(super) async fn prepare_migration_tail(
         &self,
         source: &LegacyManifestView<'_>,

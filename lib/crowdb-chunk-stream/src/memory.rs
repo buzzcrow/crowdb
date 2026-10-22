@@ -5,6 +5,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -15,9 +16,11 @@ use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::frame::{FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES};
 use tokio::sync::{Mutex, Notify};
 
+mod directory_records;
+mod metadata;
+
 use crate::{
-    CursorAdvance, DurableCursor, Result, StreamChunkStore, StreamError, StreamMetadataStore, StreamRegistry,
-    TrimmedChunk,
+    CursorAdvance, DurableCursor, Result, StreamChunkStore, StreamError, StreamRegistry, TrimmedChunk,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -52,15 +55,18 @@ struct MemoryState {
     pages: HashMap<(StreamName, u64, u64, u64), StreamExtentPage>,
     chunks: HashMap<ChunkId, Chunk>,
     cursor_faults: VecDeque<CursorFault>,
+    metadata_records: HashMap<(u64, Vec<u8>), directory_records::MemoryRecord>,
+    metadata_revision: u64,
+    metadata_heads: HashMap<StreamName, u64>,
 }
 
 /// Test-only implementation of all three injected storage contracts.
 #[derive(Debug)]
 pub struct MemoryStreamStore {
-    state: Mutex<MemoryState>,
+    state: Arc<Mutex<MemoryState>>,
     chunk_capacity: u64,
     next_chunk: AtomicU64,
-    metadata_publishes: AtomicU64,
+    metadata_publishes: Arc<AtomicU64>,
     extent_page_loads: AtomicU64,
     chunk_writes: AtomicU64,
     cursor_advances: AtomicU64,
@@ -70,7 +76,7 @@ pub struct MemoryStreamStore {
     pause_reads: AtomicBool,
     active_reads: AtomicUsize,
     max_active_reads: AtomicUsize,
-    fail_next_publish: AtomicBool,
+    fail_next_publish: Arc<AtomicBool>,
     fail_next_writes: AtomicUsize,
     fail_next_renewals: AtomicUsize,
     write_started: Notify,
@@ -91,12 +97,12 @@ impl MemoryStreamStore {
     pub fn new(chunk_capacity: u64) -> Self {
         assert!(chunk_capacity > 0);
         Self {
-            state: Mutex::new(MemoryState::default()),
+            state: Arc::new(Mutex::new(MemoryState::default())),
             chunk_capacity: chunk_capacity.saturating_add(
                 u64::try_from(FRAME_HEADER_PREFIX_BYTES + FRAME_FOOTER_BYTES).unwrap_or(u64::MAX),
             ),
             next_chunk: AtomicU64::new(1),
-            metadata_publishes: AtomicU64::new(0),
+            metadata_publishes: Arc::new(AtomicU64::new(0)),
             extent_page_loads: AtomicU64::new(0),
             chunk_writes: AtomicU64::new(0),
             cursor_advances: AtomicU64::new(0),
@@ -106,7 +112,7 @@ impl MemoryStreamStore {
             pause_reads: AtomicBool::new(false),
             active_reads: AtomicUsize::new(0),
             max_active_reads: AtomicUsize::new(0),
-            fail_next_publish: AtomicBool::new(false),
+            fail_next_publish: Arc::new(AtomicBool::new(false)),
             fail_next_writes: AtomicUsize::new(0),
             fail_next_renewals: AtomicUsize::new(0),
             write_started: Notify::new(),
@@ -247,97 +253,6 @@ impl StreamRegistry for MemoryStreamStore {
             ));
         }
         Ok(())
-    }
-}
-
-#[async_trait]
-impl StreamMetadataStore for MemoryStreamStore {
-    async fn load_current(&self, stream_name: StreamName) -> Result<Option<StreamManifest>> {
-        Ok(self.state.lock().await.manifests.get(&stream_name).cloned())
-    }
-
-    async fn load_extent_page(
-        &self,
-        stream_name: StreamName,
-        writer_epoch: u64,
-        generation: u64,
-        page_index: u64,
-    ) -> Result<Option<StreamExtentPage>> {
-        self.extent_page_loads.fetch_add(1, Ordering::AcqRel);
-        Ok(self
-            .state
-            .lock()
-            .await
-            .pages
-            .get(&(stream_name, writer_epoch, generation, page_index))
-            .cloned())
-    }
-
-    async fn publish(
-        &self,
-        expected: Option<(u64, u64)>,
-        manifest: StreamManifest,
-        extent_pages: Vec<StreamExtentPage>,
-    ) -> Result<()> {
-        if self.fail_next_publish.swap(false, Ordering::AcqRel) {
-            return Err(StreamError::Internal(
-                "injected metadata publication failure".into(),
-            ));
-        }
-        let mut state = self.state.lock().await;
-        if state
-            .manifests
-            .get(&manifest.stream_name)
-            .is_some_and(|current| current.purpose != manifest.purpose)
-        {
-            return Err(StreamError::Corruption("stream purpose is immutable".into()));
-        }
-        let observed = state
-            .manifests
-            .get(&manifest.stream_name)
-            .map(|current| (current.writer_epoch, current.generation));
-        if observed != expected {
-            return Err(StreamError::StaleWriter);
-        }
-        for page in extent_pages {
-            state.pages.insert(
-                (
-                    page.stream_name,
-                    page.writer_epoch,
-                    page.generation,
-                    page.page_index,
-                ),
-                page,
-            );
-        }
-        state.manifests.insert(manifest.stream_name, manifest);
-        self.metadata_publishes.fetch_add(1, Ordering::AcqRel);
-        Ok(())
-    }
-
-    async fn reclaim_extent_pages_before(
-        &self,
-        stream_name: StreamName,
-        retained_generation: u64,
-        max_pages: usize,
-    ) -> Result<u64> {
-        if retained_generation == 0 || max_pages == 0 {
-            return Err(StreamError::InvalidRequest(
-                "metadata reclaim watermark and page bound must be nonzero".into(),
-            ));
-        }
-        let mut state = self.state.lock().await;
-        let keys: Vec<_> = state
-            .pages
-            .keys()
-            .filter(|(name, _, generation, _)| *name == stream_name && *generation < retained_generation)
-            .take(max_pages)
-            .copied()
-            .collect();
-        for key in &keys {
-            state.pages.remove(key);
-        }
-        Ok(keys.len() as u64)
     }
 }
 

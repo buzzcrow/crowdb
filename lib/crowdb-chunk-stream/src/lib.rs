@@ -19,6 +19,7 @@ mod stream;
 #[cfg(feature = "test-util")]
 pub mod memory;
 
+pub use directory::DirectoryMetadataStore;
 pub use directory::{
     DirectoryIndex, DirectoryMutation, DirectoryRecord, DirectoryScan, StreamDirectoryStore,
     MAX_DIRECTORY_MUTATION_EXTENTS,

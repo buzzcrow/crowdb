@@ -6,10 +6,10 @@ use crowdb_kv_client::BatchOp;
 use crowdb_protocol::chunk_stream::{StreamDirectoryControl, StreamDirectoryHead};
 use crowdb_protocol::key::{BinaryKey, StreamDirectoryControlKey};
 
-use super::{kv_error, GetOutcome, KvStreamMetadataStore, ReadMode};
+use super::{kv_error, DirectoryMetadataStore, GetOutcome};
 use crate::{Result, StreamError};
 
-impl KvStreamMetadataStore {
+impl DirectoryMetadataStore {
     pub(super) fn directory_control_op(head: &StreamDirectoryHead) -> Result<BatchOp> {
         Self::directory_control_scope_op(StreamDirectoryControl {
             stream_name: head.stream_name,
@@ -58,12 +58,7 @@ impl KvStreamMetadataStore {
         let BatchOp::Put { key, value } = &control else {
             unreachable!()
         };
-        let revision = match self
-            .kv
-            .get(self.store_id, self.group_id, key, ReadMode::Linearizable, None)
-            .await
-            .map_err(kv_error)?
-        {
+        let revision = match self.records.get(key).await.map_err(kv_error)? {
             GetOutcome::Found {
                 value: observed,
                 revision,
@@ -90,11 +85,7 @@ impl KvStreamMetadataStore {
                 value: Bytes::copy_from_slice(bytes),
             },
         ];
-        match self
-            .kv
-            .batch_write_cas(self.store_id, self.group_id, &ops, key, revision)
-            .await
-        {
+        match self.records.batch_write_cas(&ops, key, revision).await {
             Ok(_) => Ok(()),
             Err(crowdb_kv_client::Error::CasBusy) => Err(StreamError::Backpressure),
             Err(
@@ -114,12 +105,7 @@ impl KvStreamMetadataStore {
     }
 
     async fn directory_guard_matches(&self, key: &[u8], bytes: &[u8]) -> Result<bool> {
-        match self
-            .kv
-            .get(self.store_id, self.group_id, key, ReadMode::Linearizable, None)
-            .await
-            .map_err(kv_error)?
-        {
+        match self.records.get(key).await.map_err(kv_error)? {
             GetOutcome::Found { value, .. } if value.as_ref() == bytes => Ok(true),
             GetOutcome::Found { .. } => Err(StreamError::Corruption(
                 "publication guard has conflicting bytes".into(),

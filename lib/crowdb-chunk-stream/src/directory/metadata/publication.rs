@@ -11,10 +11,10 @@ use crowdb_protocol::key::{
     BinaryKey, StreamDirectoryRootKey, StreamManifestHeadKey, StreamPublicationGuardKey,
 };
 
-use super::{kv_error, DirectoryHeadSnapshot, KvStreamMetadataStore};
+use super::{kv_error, DirectoryHeadSnapshot, DirectoryMetadataStore};
 use crate::{DirectoryMutation, Result, StreamError};
 
-impl KvStreamMetadataStore {
+impl DirectoryMetadataStore {
     /// Store a protected path mutation, retain its immutable root, then atomically
     /// replace the head and remove its guard. No ordinary append calls this API.
     ///
@@ -96,14 +96,8 @@ impl KvStreamMetadataStore {
             },
         ];
         match self
-            .kv
-            .batch_write_cas(
-                self.store_id,
-                self.group_id,
-                &ops,
-                &key,
-                expected.map_or(0, |snapshot| snapshot.revision),
-            )
+            .records
+            .batch_write_cas(&ops, &key, expected.map_or(0, |snapshot| snapshot.revision))
             .await
         {
             Ok(outcome) => Ok(DirectoryHeadSnapshot {

@@ -32,7 +32,7 @@ struct CachedPage {
     bytes: Bytes,
 }
 
-pub(in crate::kv) struct DirectoryRecordCache {
+pub(super) struct DirectoryRecordCache {
     slots: [ArcSwapOption<CachedPage>; DIRECTORY_PAGE_CACHE_SLOTS],
     hits: AtomicU64,
     misses: AtomicU64,

@@ -11,12 +11,10 @@ use crowdb_protocol::key::{
     BinaryKey, StreamManifestHeadKey, StreamMigrationProgressKey, StreamPublicationGuardKey,
 };
 
-use super::{
-    kv_error, migration_error, GetOutcome, KvStreamMetadataStore, ReadMode, StreamMigrationSnapshot,
-};
+use super::{kv_error, migration_error, DirectoryMetadataStore, GetOutcome, StreamMigrationSnapshot};
 use crate::{DirectoryMutation, Result, StreamError};
 
-impl KvStreamMetadataStore {
+impl DirectoryMetadataStore {
     /// # Errors
     /// Rejects foreign snapshots, unknown versions and progress outside the frozen source.
     pub async fn load_directory_migration_progress(
@@ -29,12 +27,7 @@ impl KvStreamMetadataStore {
             source: snapshot.marker.source,
         }
         .to_bytes();
-        let GetOutcome::Found { value, .. } = self
-            .kv
-            .get(self.store_id, self.group_id, &key, ReadMode::Linearizable, None)
-            .await
-            .map_err(kv_error)?
-        else {
+        let GetOutcome::Found { value, .. } = self.records.get(&key).await.map_err(kv_error)? else {
             return Ok(None);
         };
         let progress = StreamMigrationProgress::decode(&value).map_err(migration_error)?;
@@ -125,11 +118,7 @@ impl KvStreamMetadataStore {
         guard_key: Vec<u8>,
     ) -> Result<StreamMigrationSnapshot> {
         let (key, ops) = migration_progress_ops(snapshot, progress, guard_key)?;
-        match self
-            .kv
-            .batch_write_cas(self.store_id, self.group_id, &ops, &key, snapshot.revision)
-            .await
-        {
+        match self.records.batch_write_cas(&ops, &key, snapshot.revision).await {
             Ok(outcome) => Ok(StreamMigrationSnapshot {
                 marker: snapshot.marker.clone(),
                 source: snapshot.source.clone(),
@@ -171,7 +160,7 @@ fn migration_progress_ops(
     }
     .to_bytes();
     let ops = vec![
-        KvStreamMetadataStore::directory_control_scope_op(StreamDirectoryControl {
+        DirectoryMetadataStore::directory_control_scope_op(StreamDirectoryControl {
             stream_name: snapshot.marker.stream_name,
             purpose: snapshot.marker.purpose,
         })?,

@@ -11,10 +11,10 @@ use crowdb_protocol::key::{
     BinaryKey, StreamDirectoryRootKey, StreamManifestHeadKey, StreamMigrationProgressKey,
 };
 
-use super::{kv_error, migration_error, KvStreamMetadataStore, StreamMigrationSnapshot};
+use super::{kv_error, migration_error, DirectoryMetadataStore, StreamMigrationSnapshot};
 use crate::{DirectoryHeadSnapshot, Result, StreamError};
 
-impl KvStreamMetadataStore {
+impl DirectoryMetadataStore {
     pub(super) async fn finish_directory_migration(
         &self,
         snapshot: &StreamMigrationSnapshot,
@@ -73,11 +73,7 @@ impl KvStreamMetadataStore {
                 key: Bytes::from(progress_key),
             },
         ];
-        match self
-            .kv
-            .batch_write_cas(self.store_id, self.group_id, &ops, &key, snapshot.revision)
-            .await
-        {
+        match self.records.batch_write_cas(&ops, &key, snapshot.revision).await {
             Ok(outcome) => Ok(DirectoryHeadSnapshot {
                 head,
                 revision: outcome.revision,

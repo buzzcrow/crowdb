@@ -607,6 +607,30 @@ adaptation rather than a new transport or storage engine.
   restart acceptance, Group-0 authority and active Stream worker integration
   remain subsequent tasks.
 
+## Shared metadata backend evidence (T09–T12 wiring foundation)
+
+- Moved indexed-directory ownership from the KV adapter into
+  DirectoryMetadataStore under directory/metadata. The record boundary supplies
+  scoped linearizable get, create/revision CAS and atomic conditional batches;
+  the shared component owns validation, cache, publication and resumable
+  conversion. Existing KvStreamMetadataStore APIs delegate to the same component.
+- StreamMetadataStore exposes a bound directory handle for the upcoming worker
+  integration. KV validates its fixed group; MemoryStreamStore uses the same
+  record map for legacy and indexed heads/pages and the exact shared conversion
+  state machine. Its existing test-only mutex is shared with that map; no
+  production lock or unsafe scope was added. Legacy memory head reads and writes
+  cannot reinterpret or overwrite a migration/indexed head. Extracted test
+  metadata ownership into memory/metadata instead of growing the old root file.
+- Two additional memory-adapter cases verify failed protected publication/retry,
+  retained old roots, legacy writer fencing and migration in metadata group 7.
+  All 87 Stream tests pass (including real KV cases), all-target clippy and fmt
+  pass. Logs: `directory-backend-{clippy5,full-stream,fmt}.log`. Protocol source
+  is unchanged from the previous 278-case passing suite.
+- The active worker still uses its legacy manifest/extent state; the new handle
+  is a wiring boundary, not an append completion change. Next integrate grouped
+  locations, lazy index reads and immutable finite worker views while retaining
+  the existing per-append durability prerequisites until T14–T19 are ready.
+
 ## Phase 0 — Establish evidence and settle contracts
 
 - [x] **T01 — Capture a matched implementation baseline**: retain release

@@ -46,6 +46,13 @@ pub trait StreamRegistry: Send + Sync {
 
 #[async_trait]
 pub trait StreamMetadataStore: Send + Sync {
+    /// # Errors
+    /// Rejects unsupported stores or a group that differs from the bound metadata.
+    fn directory_metadata(&self, _metadata_group_id: u64) -> Result<crate::DirectoryMetadataStore> {
+        Err(crate::StreamError::InvalidRequest(
+            "metadata store does not provide indexed directories".into(),
+        ))
+    }
     async fn load_current(&self, stream_name: StreamName) -> Result<Option<StreamManifest>>;
     async fn load_extent_page(
         &self,

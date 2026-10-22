@@ -11,7 +11,7 @@ use crowdb_protocol::chunk_stream::{
 };
 use crowdb_protocol::key::{BinaryKey, StreamLegacySourceKey, StreamManifestHeadKey};
 
-use super::{kv_error, GetOutcome, KvStreamMetadataStore, ReadMode};
+use super::{kv_error, DirectoryMetadataStore, GetOutcome};
 use crate::{Result, StreamError};
 
 mod conversion;
@@ -50,7 +50,7 @@ impl StreamMigrationSnapshot {
     }
 }
 
-impl KvStreamMetadataStore {
+impl DirectoryMetadataStore {
     /// # Errors
     /// Rejects unknown/wrong-scope heads and missing or corrupt frozen sources.
     pub async fn load_directory_migration(
@@ -145,12 +145,7 @@ impl KvStreamMetadataStore {
         let BatchOp::Put { key, value } = control else {
             unreachable!()
         };
-        match self
-            .kv
-            .get(self.store_id, self.group_id, key, ReadMode::Linearizable, None)
-            .await
-            .map_err(kv_error)?
-        {
+        match self.records.get(key).await.map_err(kv_error)? {
             GetOutcome::Found { value: observed, .. } if observed != *value => Err(migration_error(
                 "retention control scope differs from legacy stream",
             )),
@@ -189,11 +184,7 @@ impl KvStreamMetadataStore {
                 value: Bytes::from(value),
             },
         ];
-        match self
-            .kv
-            .batch_write_cas(self.store_id, self.group_id, &ops, &key, revision)
-            .await
-        {
+        match self.records.batch_write_cas(&ops, &key, revision).await {
             Ok(outcome) => {
                 self.load_migration_source(marker.stream_name, marker, outcome.revision)
                     .await
@@ -214,12 +205,7 @@ impl KvStreamMetadataStore {
 
     async fn migration_head_bytes(&self, name: StreamName) -> Result<Option<(Bytes, u64)>> {
         let key = StreamManifestHeadKey { stream_name: name }.to_bytes();
-        match self
-            .kv
-            .get(self.store_id, self.group_id, &key, ReadMode::Linearizable, None)
-            .await
-            .map_err(kv_error)?
-        {
+        match self.records.get(&key).await.map_err(kv_error)? {
             GetOutcome::Found { value, revision } => Ok(Some((value, revision))),
             GetOutcome::NotFound => Ok(None),
         }
@@ -239,12 +225,7 @@ impl KvStreamMetadataStore {
             source: marker.source,
         }
         .to_bytes();
-        let GetOutcome::Found { value, .. } = self
-            .kv
-            .get(self.store_id, self.group_id, &key, ReadMode::Linearizable, None)
-            .await
-            .map_err(kv_error)?
-        else {
+        let GetOutcome::Found { value, .. } = self.records.get(&key).await.map_err(kv_error)? else {
             return Err(StreamError::ReadUnavailable(
                 "legacy migration source is absent".into(),
             ));
