@@ -451,15 +451,38 @@ adaptation rather than a new transport or storage engine.
   indexed head is CSTR version 2/kind 1; old version-1-only writers fail visibly
   rather than reinterpret it. Generic head dispatch reads both schemas.
 - Eight focused directory cases and all four retained record cases pass;
-  protocol all-target clippy passes. Full protocol gates are pending. KV/index
-  runtime wiring, migration, root guards/retention and append completion are
-  not implemented by these record/schema tests.
+  protocol all-target clippy, fmt and all 270 protocol cases pass. Indexed head
+  publication, migration, root guards/retention and append completion remain
+  incomplete; record/schema tests alone do not establish them.
 - Migration must first install a bounded versioned migration head by CAS,
   referring to a separately retained immutable legacy source. This fences old
   cached publishers while pages convert; only a final CAS exposes the indexed
   root. Store conversion progress durably and preserve source pages until that
   CAS. Merely converting everything and hoping a final head CAS wins can race
   indefinitely with old publishers and does not establish a stable source.
+
+## Incremental index implementation evidence (partial T10–T12)
+
+- Added bounded immutable DirectoryIndex traversal and prepared mutations. Append
+  loads the rightmost path, retains completed leaf/branch identities and encodes
+  only changed tail paths/new segments. Trim copies the left path and keeps a
+  location crossing the watermark whole. Preparation does not write KV state or
+  authorize chunk release; roots remain independently readable.
+- Lookup loads at most height + 1 records. Range scans bound both record IO and
+  returned locations, with continuation offsets tied to the captured immutable
+  root. A page budget below the root traversal depth fails before IO, preventing
+  a continuation that cannot make progress. One checkpoint accepts at most 65536
+  locations; excess work backpressures instead of materializing unlimited history.
+- Production KV implements identity-addressed page reads. Every loaded record is
+  verified for content identity, purpose and reference fences before traversal.
+- Seven integration cases cover 1/16/256 historical segments, full/unfinished
+  tail reuse, height growth, bounded paginated ranges, compact 4 MiB groups,
+  legacy short frames, cross-leaf continuity, trim and missing/corrupt records.
+  All 70 Stream tests, all-target clippy and fmt pass. Receipts:
+  `directory-index-tests.log`, `directory-index-full-stream.log`,
+  `directory-index-clippy4.log`. These APIs are not yet the active append/read
+  state machine. Guarded KV publication, root retention, migration, bounded
+  active-tail snapshots/cache and append completion remain unfinished.
 
 ## Phase 0 — Establish evidence and settle contracts
 

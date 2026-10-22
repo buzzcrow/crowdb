@@ -14,6 +14,7 @@ use crowdb_protocol::key::{
 };
 use futures::{stream, StreamExt, TryStreamExt};
 
+mod directory;
 mod pages;
 
 use crate::perf::{perf, PhaseTimer};

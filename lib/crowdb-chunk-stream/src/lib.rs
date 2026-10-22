@@ -3,6 +3,7 @@
 
 //! Fenced, mirrored logical byte streams assembled from finite chunks.
 
+mod directory;
 mod error;
 mod extent_cache;
 mod kv;
@@ -18,6 +19,10 @@ mod stream;
 #[cfg(feature = "test-util")]
 pub mod memory;
 
+pub use directory::{
+    DirectoryIndex, DirectoryMutation, DirectoryRecord, DirectoryScan, StreamDirectoryStore,
+    MAX_DIRECTORY_MUTATION_EXTENTS,
+};
 pub use error::{Result, StreamError};
 pub use kv::{KvStreamMetadataStore, KvStreamRegistry};
 pub use metadata::{resolve_extent, validate_manifest, ExtentLocation};
