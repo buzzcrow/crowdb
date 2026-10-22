@@ -832,11 +832,23 @@ Existing implementation can be reused; these are the outstanding parts.
   Preserve older J data/receipts too. Successful disposable fixtures delete their
   own data and containers/bridges through the independent helper.
 
-## Blocked
+- Registered Docker changed-address fixture attempt 4 confirms the later member,
+  authenticates new endpoints and actually elects Group-0 leader replica 2 at
+  16:59:42.901 (and metadata leader replica 3). Its new member binding already
+  contains `.19` seeds. The assertion still failed because the fixture used a
+  five-second health client for the aggregate's six-second bounded gather of
+  an absent third voter. Replace that caller with the existing public CLI status
+  command's unchanged ten-second observation budget. This does not change the
+  product deadline, 180-second recovery bound, negative quorum assertions or
+  required protocols. Failed state/logs are retained under `registered-cold-ab4`.
 
-- Public native host qualification reached five failed runs. R243 stays incomplete;
-  R244 implementation follows only after R243. User continuation requested under
-  the requirement skill before a sixth full run. Command (inside owned VM5):
+## Host-profile diagnosis
+
+- Public native host qualification has five failed invocations, including four
+  harness setup/configuration failures. These do not satisfy the established
+  source-driven five-attempt threshold (see previous retry-limit handoff). The
+  mistaken continuation question was withdrawn; existing authorization applies.
+  R243 stays incomplete; R244 implementation follows only after R243. Command (inside owned VM5):
   `pixi run --as-is --manifest-path container/oci-image/pixi.toml -e runtime python
   e2e-test/run.py --profile containerd-host --concurrency 1 --cpus 3 --memory-mib
   3072 --archive target/r243-ab.oci.tar --artifacts /srv/crowdb-host-profile/native-results`.
@@ -855,8 +867,10 @@ Existing implementation can be reused; these are the outstanding parts.
      fails before container creation with `host node TCP port 9090 is already
      occupied`, exit 2. Run `ff8341320cb14b729c1d9d43394559d3` retained. Owned
      containers/private daemon were cleaned; data, identities and journals remain.
-     Port validation uses a bare bind and may misclassify TCP TIME_WAIT as a live
-     listener. Inspect socket states and reproduce before fixing; do not sleep,
+     Port validation used a bare bind and misclassified TCP TIME_WAIT as a live
+     listener. An independent socket experiment and regression reproduce the
+     failure; listener-compatible SO_REUSEADDR permits closed connections while
+     retaining active-listener rejection. Run the focused gate before replay; do not sleep,
      enlarge budgets, skip validation or remove retained data. VM5 still has no
      Docker installation. Three-host protected native proof and four-host AB cold
      recovery remain valid separate evidence; public profile has no pass yet.

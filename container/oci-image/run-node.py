@@ -28,6 +28,9 @@ HOST_PORTS = (2222, 7100, 7101, 7200, 7300, 7301, 7400, 7401,
 def check_host_ports(ports=HOST_PORTS):
     for port in ports:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            # Match the node listener: closed connections in TIME_WAIT are not
+            # a running port owner; an active listener still rejects this bind.
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 listener.bind(("0.0.0.0", port))
             except OSError as error:

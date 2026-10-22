@@ -23,6 +23,21 @@ class HostInputsTest(unittest.TestCase):
             self.assertEqual(runtime.invoke('inspect','owned'),'{"status":"running"}')
             self.assertEqual(runtime.invoke('logs','owned'),'{"status":"running"}startup failed on stderr')
 
+    def test_closed_server_time_wait_does_not_prevent_immediate_recreation(self):
+        with socket.socket() as listener:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind(('127.0.0.1', 0))
+            port = listener.getsockname()[1]
+            listener.listen()
+            with socket.create_connection(('127.0.0.1', port)) as client:
+                accepted, _ = listener.accept()
+                accepted.close()
+                self.assertEqual(client.recv(1), b'')
+        with socket.socket() as without_reuse:
+            with self.assertRaises(OSError):
+                without_reuse.bind(('0.0.0.0', port))
+        run_node.check_host_ports([port])
+
     def test_occupied_host_listener_rejects_before_runtime_launch(self):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
             listener.bind(("127.0.0.1", 0))
