@@ -41,7 +41,10 @@ multi-node validation remain outside the user's requested continuation.
 ## Fixed design decisions
 
 - Use one common RPC abstraction for TCP and RDMA.
-- Use RC SEND/RECV, one contiguous wire slot and one SGE per message.
+- Use RC SEND/RECV. The accepted contiguous RPC layout uses one wire slot
+  and one SGE per message. R240 adds a negotiated control/data layout with
+  separate SGEs for immutable producer payload and per-target control; its
+  total wire admission includes both regions.
 - Use service discovery for coarse RDMA capability and TCP handshake for the
   current RDMA endpoint, capability generation, and data classes.
 - Select RDMA before the first payload; fallback is RDMA to TCP only.

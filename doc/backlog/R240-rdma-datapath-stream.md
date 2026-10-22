@@ -13,16 +13,26 @@ I/O still uses it.
 
 ## Solution
 
-1. Feed already aggregated ChunkIO buffers to R239. RDMA does not aggregate or
-   flush; it preserves actual payload length and stream sequence.
-2. Use a 1 KiB control block plus a 1 MiB data capacity for the datapath. A
-   logical object is an ordered sequence of messages when larger than one
-   message.
+1. Feed already aggregated ChunkIO buffers to the common transport without
+   another application aggregation queue or flush timer. Ordinary RPC transport
+   coalescing remains bounded by both peers' wire-slot admission.
+2. Use a 1 KiB control region plus a 1 MiB data region for the direct datapath.
+   `wire_slot_capacity` bounds their total, including the RPC header. Negotiate
+   this layout before payload submission; reject incompatible RDMA layouts
+   before selecting the path. Direct messages use separate registered SGEs for
+   control and immutable payload, so mirror fanout can retain the same payload
+   without modifying its bytes or copying it behind different request headers.
+   A logical object is an ordered sequence of messages when larger than one
+   message. This layout sends one application message per SEND; the existing
+   contiguous layout retains bounded complete-frame aggregation.
 3. Let Access Server fill its registered send buffer from the HTTP path. Let
    DiskIO own its registered receive buffer after CQ completion and submit that
    buffer directly to asynchronous disk I/O.
 4. Repost a DiskIO receive buffer only after disk completion. Apply bounded
    receive-window backpressure when DiskIO or the SDK consumer is slow.
+   Receive data starts at the registered data-region base, preserving disk
+   alignment. Control storage and data storage share the configured registered
+   byte budget. A held or quarantined lease cannot be replaced outside it.
 5. Preserve R239 fallback: before payload submission the operation may use TCP;
    after partial RDMA transfer the stream fails without TCP byte splicing.
 

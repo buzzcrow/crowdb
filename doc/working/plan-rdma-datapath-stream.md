@@ -11,6 +11,101 @@ Goal: connect existing HTTP/ChunkIO aggregation to the RDMA RPC stream and
 DiskIO receive loop without introducing another aggregation or CPU payload
 copy.
 
+## Execution checkpoint
+
+The transport/foundation acceptance is complete at `55ffee38`; cleanup is
+committed at `d6bedf94`. Preserve the verified contiguous-slot benchmark path.
+The six existing DiskIO-client integration cases pass before service changes.
+The full C++ gate already covers DiskIO engines and AlignedWriter.
+
+Observed flow and the first missing seam:
+
+- `NativeBodyAllocator` / `NativeOwner` in `crowdb-access-s3` supplies Hyper's
+  body receive regions. `NativeFramedOwner` finalizes physical frame regions
+  in place and supplies immutable `Bytes` views. S3 `write_object_body` passes
+  those owners through `UploadBuffer::Framed` to
+  `LargeAsyncObjectWriter::on_framed_data`. Do not route this path through
+  `frame_tail` or introduce another HTTP assembly copy.
+- `RoutedDiskWriter` delegates views to `DiskioClient::write_views`, then
+  `WireClient::write_segment_views` and `RpcClient::call_chain`. Existing
+  grouping preserves order and `ordering_zone_offset`. The current RDMA
+  `flush_connection` copies every view into a new contiguous wire slot.
+- `DiskioServer::handle_write` clones `request->data_buf`, deletes the Frame,
+  and retains the clone through `AlignedWriter::submit_ordered` completion.
+  Its current `data_buf->data` access must honor `payload_data()` for views.
+  AlignedWriter passes aligned full blocks directly, with explicit edge-block
+  staging only when required by device alignment.
+- Reads currently allocate from `conn->pool()` and may stage O_DIRECT data.
+  Allocate eligible direct reads from registered producer storage. Rust
+  `WireClient::await_read_response` already returns `Bytes::from_owner(Buffer)`;
+  the final caller release can therefore own receive repost admission.
+
+### Direct layout and implementation order
+
+The existing one-SGE path copies complete frames and remains the ordinary RPC
+benchmark path. A zero-copy service producer needs an immutable registered
+payload independent of each destination's control header: mirror targets have
+different disk addresses and may send concurrently. Add an explicitly
+negotiated control/data layout for this service path, using the QP's existing
+two-SGE capability. This avoids rewriting payload prefixes during fanout.
+The layout is an implementation decision for the required zero-copy path;
+it does not add application aggregation or a flush timer.
+
+- [~] **Add negotiated direct layout**: add `RdmaWireLayout::Contiguous` and
+  `ControlData`, defaulting to `Contiguous`. For `ControlData`, the control
+  region is `RDMA_CONTROL_CAPACITY` including the 14-byte RPC header; derive
+  data capacity from `wire_slot_capacity - RDMA_CONTROL_CAPACITY` and validate
+  it against the existing classes. The 1 MiB data default therefore has total
+  `wire_slot_capacity = 1049600`, rather than claiming 1 MiB of payload fits
+  in a 1 MiB total wire slot. Advertise layout in the versioned TCP capability
+  and bind it in the compact CM offer. A mismatched layout fails before payload
+  and follows the existing explicit fallback policy. Reject direct layout with
+  transport aggregation enabled or provider SGE capacity below two. Extend
+  typed C/Rust cold config, environment parsing and status with the same names.
+  Files: `rdma_config.h`, capability/offer/preflight modules, config ABI/FFI,
+  `rdma_connection.cpp`, config/status tests.
+- [ ] **Allocate and send immutable registered data**: expose bounded producer
+  allocation from the transport's device-owned arena. Provide a unique Rust
+  `WritableBuffer` with a `MaybeUninit<u8>` capacity view and consuming commit;
+  freeze into the existing owner-backed `Bytes` contract. Validate address
+  ranges against the owning arena before using an MR key; retain the exact
+  underlying allocation through SEND completion and propagate quarantine to
+  that allocation. Build the small per-request header/control in its own
+  registered region, pad that region to 1 KiB, and post control plus payload
+  as two SGEs. Keep one WR per complete RPC and count direct/copied payload
+  bytes in status. No range registry or new hot-path lock. Files: buffer arena,
+  RDMA pool/send/work-request modules, C ABI/FFI buffer producer API.
+- [ ] **Receive into aligned data storage**: prepost two registered SGEs in
+  direct layout, with 1 KiB control and a separately aligned data allocation.
+  Charge both against `receive_arena_bytes`; descriptor count covers both and
+  arithmetic is checked. Validate the complete control/header/length before
+  dispatch; retain data ownership through disk/caller completion. Release or
+  quarantine both regions exactly once on post/CQE/cancel/shutdown failure.
+  Files: `rdma_receive.cpp`, receive posting, WorkRequest and repost context,
+  real HCA ownership tests. Keep generic receive credit implicit in RQ slots.
+- [ ] **Connect the actual HTTP producer**: allow `NativeBodyAllocator` to
+  obtain its owner storage from the retained DiskIO producer allocator after
+  route setup. Preserve its existing byte admission, AtomicWaker pressure and
+  framed-owner API. Wire it through `ChunkIoClient` / `RoutedDiskWriter` /
+  S3 storage setup. A bounded native allocator failure pauses intake; it must
+  not silently allocate an unregistered replacement. Retain TCP allocation
+  when the service selects TCP. Cover owner views, slices and mirror fanout.
+- [ ] **Close DiskIO handoff and read lifetime**: use exact view pointer/length,
+  validate request bounds before disk submission, transition data to DiskOwned
+  until the callback returns, and retain connection state across delayed I/O.
+  Registered read storage must cover engine completion and SEND completion;
+  client receive storage remains held through returned Bytes. Preserve existing
+  alignment handling and short-I/O/error semantics. Test delayed I/O, queue
+  pressure, held caller buffers, error, cancellation and connection shutdown.
+- [ ] **Verify real service flows**: run focused baseline and changed tests,
+  then real DiskIO plus HTTP/ChunkIO upload/download of objects larger than
+  1 MiB on the prepared HCA. Assert direct-payload counters and same data
+  addresses at producer/SEND and receive/disk handoff, exact bytes and existing
+  frame integrity/order. Repeat TCP-only and two non-root OCI profiles. Keep
+  per-case manifests, settings, errors and complete logs. Run required fmt,
+  clippy/tree-lint and full affected gates before cleanup; then use R241's own
+  plan for Chunk-KV integration.
+
 ## Phase 1: map existing data flow
 
 - [ ] **Trace upload flow**: identify where HTTP body bytes enter ChunkIO,
@@ -27,7 +122,8 @@ copy.
 ## Phase 2: upload to DiskIO
 
 - [ ] **Allocate 1 MiB datapath class**: select the configured 1 MiB data
-  capacity plus 1 KiB control buffer for S3/HTTP/DiskIO streams.
+  capacity plus 1 KiB control buffer for S3/HTTP/DiskIO streams; the configured
+  total wire slot includes both regions and the header.
 - [ ] **Fill registered send buffer**: make the HTTP/ChunkIO producer write
   directly into the send-owned registered buffer and submit its actual length.
   The producer must stop when the send/registered budget is exhausted.
