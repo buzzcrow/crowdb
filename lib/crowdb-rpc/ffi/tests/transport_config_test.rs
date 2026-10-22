@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crowdb_protocol::fb::{ConnectionPingRequest, ConnectionPingRequestArgs};
-use crowdb_rpc_ffi::{Buffer, RdmaConfig, RpcClient, RpcServer};
+use crowdb_rpc_ffi::{Buffer, RdmaConfig, RdmaWireLayout, RpcClient, RpcServer};
 use flatbuffers::FlatBufferBuilder;
 use serde_json::Value;
 
@@ -36,6 +36,23 @@ fn invalid_queue_bounds_fail_before_start() {
         send_queue_capacity: 3,
         ..RdmaConfig::default()
     };
+    assert!(server.configure_rdma(&config).is_err());
+}
+
+#[test]
+fn typed_control_data_layout_accounts_for_control_and_forbids_aggregation() {
+    let server = RpcServer::new(None);
+    let mut config = RdmaConfig {
+        wire_layout: RdmaWireLayout::ControlData,
+        wire_slot_capacity: (1 << 20) + 1024,
+        receive_arena_bytes: 1024 * ((1 << 20) + 1024),
+        ..RdmaConfig::default()
+    };
+    server.configure_rdma(&config).unwrap();
+    config.aggregation_enabled = true;
+    assert!(server.configure_rdma(&config).is_err());
+    config.aggregation_enabled = false;
+    config.receive_arena_bytes -= 1;
     assert!(server.configure_rdma(&config).is_err());
 }
 

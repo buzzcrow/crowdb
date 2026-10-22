@@ -120,6 +120,7 @@ Buffer *Buffer::slice(uint32_t offset, uint32_t size)
     view->registration_id     = registration_id;
     view->registration_key    = registration_key;
     view->registration_handle = registration_handle;
+    view->allocation_owner    = allocation_owner == nullptr ? this : allocation_owner;
     view->set_metadata(request_id, stream_id, sequence, logical_offset, registration_id);
     view->free_cb  = [](void *parent) { static_cast<Buffer *>(parent)->release(); };
     view->free_ctx = this;
@@ -133,6 +134,8 @@ bool Buffer::transition(BufferOwnership from, BufferOwnership to)
 
 bool Buffer::quarantine()
 {
+    if (allocation_owner != nullptr)
+        (void)allocation_owner->quarantine();
     BufferOwnership state = ownership.load(std::memory_order_acquire);
     while (state != BufferOwnership::Quarantined) {
         if (ownership.compare_exchange_weak(state, BufferOwnership::Quarantined, std::memory_order_acq_rel,

@@ -21,6 +21,10 @@ std::string RdmaTransport::status_json() const
     status.number("cm_port", capability.port);
     status.number("generation", capability.generation);
     status.boolean("aggregation_enabled", config_.aggregation_enabled);
+    status.string("wire_layout", config_.wire_layout == RdmaWireLayout::Contiguous ? "contiguous" : "control_data");
+    status.number("data_slot_capacity", config_.data_slot_capacity());
+    status.number("control_slot_capacity",
+                  config_.wire_layout == RdmaWireLayout::ControlData ? RDMA_CONTROL_CAPACITY : 0);
 #    define CONFIG_FIELD(name) status.number(#name, config_.name)
     CONFIG_FIELD(port);
     CONFIG_FIELD(cq_count);
@@ -48,6 +52,10 @@ std::string RdmaTransport::status_json() const
     COUNTER_FIELD(cq_errors);
     COUNTER_FIELD(protocol_errors);
     COUNTER_FIELD(send_errors);
+    COUNTER_FIELD(receive_post_errors);
+    COUNTER_FIELD(direct_sends);
+    COUNTER_FIELD(direct_payload_bytes);
+    COUNTER_FIELD(copied_payload_bytes);
     COUNTER_FIELD(submit_rejects);
     COUNTER_FIELD(send_queue_high_water);
     COUNTER_FIELD(fallback_count);

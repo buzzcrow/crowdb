@@ -6,14 +6,15 @@
 
 using namespace crowdb::rpc;
 
-#define CONFIG_NUMBERS(X)                                                                                 \
-    X(cq_count)                                                                                           \
-    X(cq_depth)                                                                                           \
-    X(sq_depth)                                                                                           \
-    X(rq_depth)                                                                                           \
-    X(posted_receive_target) X(wire_slot_capacity) X(poll_batch) X(verbs_poll_batch) X(poll_empty_budget) \
-        X(send_queue_capacity) X(aggregation_max_bytes) X(aggregation_max_frames) X(send_arena_bytes)     \
-            X(receive_arena_bytes) X(registered_memory_budget_bytes)
+#define CONFIG_NUMBERS(X)                                                                               \
+    X(cq_count)                                                                                         \
+    X(cq_depth)                                                                                         \
+    X(sq_depth)                                                                                         \
+    X(rq_depth)                                                                                         \
+    X(posted_receive_target)                                                                            \
+    X(wire_slot_capacity) X(poll_batch) X(verbs_poll_batch) X(poll_empty_budget) X(send_queue_capacity) \
+        X(aggregation_max_bytes) X(aggregation_max_frames) X(send_arena_bytes) X(receive_arena_bytes)   \
+            X(registered_memory_budget_bytes)
 
 extern "C" void crowdb_rpc_rdma_config_init(crowdb_rpc_rdma_config_t *config)
 {
@@ -34,12 +35,20 @@ extern "C" void crowdb_rpc_rdma_config_init(crowdb_rpc_rdma_config_t *config)
 extern "C" crowdb_rpc_status crowdb_rpc_server_configure_rdma(crowdb_rpc_server_t             server,
                                                               const crowdb_rpc_rdma_config_t *config)
 {
+    return crowdb_rpc_server_configure_rdma_v2(server, config, 0);
+}
+
+extern "C" crowdb_rpc_status crowdb_rpc_server_configure_rdma_v2(crowdb_rpc_server_t             server,
+                                                                 const crowdb_rpc_rdma_config_t *config,
+                                                                 uint32_t                        wire_layout)
+{
     if (server == nullptr || config == nullptr || config->struct_size != sizeof(*config) || config->version != 1 ||
         config->enabled > 1 || config->allow_tcp_fallback > 1 || config->listen_enabled > 1 ||
         config->aggregation_enabled > 1 || config->port > UINT8_MAX)
         return CROWDB_RPC_ERR_INVALID_ARG;
     try {
         RdmaConfig native;
+        native.wire_layout         = static_cast<RdmaWireLayout>(wire_layout);
         native.use_environment     = false;
         native.port                = static_cast<uint8_t>(config->port);
         native.aggregation_enabled = config->aggregation_enabled != 0;

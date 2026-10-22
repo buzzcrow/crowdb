@@ -32,7 +32,7 @@ std::shared_ptr<BufferRegion> register_region(ibv_pd *pd, uint64_t size, std::sh
 {
     if (pd == nullptr)
         return nullptr;
-    auto region = BufferRegion::allocate(size);
+    auto region = BufferRegion::allocate(size, 0, 4096);
     if (region->data == nullptr)
         return nullptr;
     auto registration          = std::make_shared<RdmaRegion>();
@@ -52,7 +52,8 @@ std::shared_ptr<BufferRegion> register_region(ibv_pd *pd, uint64_t size, std::sh
 
 RdmaBufferPool::RdmaBufferPool(ibv_pd *pd, uint64_t mr_size, uint32_t max_buffers,
                                std::shared_ptr<void> registration_owner)
-    : arena_(std::make_shared<BufferArena>(register_region(pd, mr_size, std::move(registration_owner)), max_buffers))
+    : arena_(
+          std::make_shared<BufferArena>(register_region(pd, mr_size, std::move(registration_owner)), max_buffers, 4096))
 {
 }
 
@@ -61,6 +62,11 @@ RdmaBufferPool::~RdmaBufferPool() = default;
 Buffer *RdmaBufferPool::alloc(uint32_t capacity)
 {
     return arena_->alloc(capacity);
+}
+
+Buffer *RdmaBufferPool::borrow_range(const uint8_t *data, uint32_t size)
+{
+    return arena_->borrow_range(data, size);
 }
 
 void RdmaBufferPool::recycle(Buffer *buffer)

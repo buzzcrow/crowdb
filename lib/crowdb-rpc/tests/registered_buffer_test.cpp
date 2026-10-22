@@ -32,6 +32,41 @@ TEST(RegisteredBufferTest, HeldLeaseRetainsArenaAfterFacadeDestruction)
     EXPECT_TRUE(arena.expired());
 }
 
+TEST(RegisteredBufferTest, SmallerProducerReusesLargerFreeAllocationWithinHardBudget)
+{
+    RegisteredBufferPool pool(RDMA_DATAPATH_CAPACITY, 1);
+    auto                *large = pool.alloc(RDMA_DATAPATH_CAPACITY);
+    ASSERT_NE(large, nullptr);
+    const auto *pointer = large->data;
+    large->release();
+    auto *small = pool.alloc(32);
+    ASSERT_NE(small, nullptr);
+    EXPECT_EQ(small->data, pointer);
+    EXPECT_EQ(small->capacity, RDMA_DATAPATH_CAPACITY);
+    EXPECT_EQ(small->capacity_class, BufferCapacityClass::Datapath);
+    EXPECT_EQ(pool.committed_bytes(), RDMA_DATAPATH_CAPACITY);
+    EXPECT_EQ(pool.alloc(32), nullptr);
+    small->release();
+}
+
+TEST(RegisteredBufferTest, QuarantinedNestedViewRetainsAndRetiresCanonicalAllocation)
+{
+    RegisteredBufferPool pool(1024, 1);
+    auto                *root = pool.alloc(32);
+    ASSERT_NE(root, nullptr);
+    auto *view = root->slice(4, 16);
+    ASSERT_NE(view, nullptr);
+    auto *nested = view->slice(2, 8);
+    ASSERT_NE(nested, nullptr);
+    root->release();
+    view->release();
+    EXPECT_TRUE(nested->quarantine());
+    EXPECT_EQ(nested->allocation_owner->ownership.load(), BufferOwnership::Quarantined);
+    nested->release();
+    EXPECT_EQ(pool.alloc(32), nullptr);
+    EXPECT_EQ(pool.quarantined_bytes(), 1024U);
+}
+
 TEST(RegisteredBufferTest, DetachedLeaseRetainsRegionAndCanReleaseAfterFacade)
 {
     auto  pool   = std::make_unique<RegisteredBufferPool>(4096, 4);

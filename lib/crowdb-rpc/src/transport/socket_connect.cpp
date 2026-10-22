@@ -26,7 +26,8 @@ std::shared_ptr<Connection> SocketTransport::connect(const std::string &addr, in
         stats.preflight_attempts.fetch_add(1, std::memory_order_relaxed);
         auto probe = RdmaPreflight::connect(addr, port, local_rdma_capability(), rdma_transport_->source_address());
         if (probe != nullptr &&
-            validate_rdma_capability(probe->peer, RDMA_PROTOCOL_VERSION, probe->peer.generation, {})) {
+            validate_rdma_capability(probe->peer, RDMA_PROTOCOL_VERSION, probe->peer.generation, {}) &&
+            probe->peer.wire_layout == rdma_transport_->config().wire_layout) {
             const auto &cm_address  = probe->peer.cm_address;
             const auto  destination = cm_address == "0.0.0.0" ? addr : cm_address;
             auto        connection  = rdma_transport_->connect(destination, probe->peer.port, &probe->peer);

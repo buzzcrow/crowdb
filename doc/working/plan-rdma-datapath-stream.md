@@ -90,7 +90,7 @@ it does not add application aggregation or a flush timer.
   producer tests, workspace clippy/rs-lint, formatting and scoped tree-lint.
   Tree-lint exits zero with style warnings. The test's corrected startup/CM
   setup is rebuilt and verified separately after that full gate.
-- [~] **Add negotiated direct layout**: add `RdmaWireLayout::Contiguous` and
+- [x] **Add negotiated direct layout**: add `RdmaWireLayout::Contiguous` and
   `ControlData`, defaulting to `Contiguous`. For `ControlData`, the control
   region is `RDMA_CONTROL_CAPACITY` including the 14-byte RPC header; derive
   data capacity from `wire_slot_capacity - RDMA_CONTROL_CAPACITY` and validate
@@ -106,7 +106,25 @@ it does not add application aggregation or a flush timer.
   rather than writing new fields past a version-one caller's storage.
   Files: `rdma_config.h`, capability/offer/preflight modules, config ABI/FFI,
   `rdma_connection.cpp`, config/status tests.
-- [ ] **Allocate and send immutable registered data**: expose bounded producer
+  Implementation and the first 38 focused cases pass, including real HCA
+  full 1 MiB direct echo, 4096-byte receive alignment, exact payload/copy
+  counters, all four receive leases held without repost, release-triggered
+  repost, and source/receive leases retained after both CM transports die.
+  A second HCA case proves layout mismatch does not attempt CM and only uses
+  TCP with explicit fallback enabled. Portable cases cover exact total wire
+  length, malformed/truncated control, unknown layout, two-SGE requirements,
+  version-two decode and CM identity binding. Full C++/FFI verification passes
+  at `.crowdb-runtime/artifacts/unit/cpp-90779b2686624240909737a33e7c2a99/`:
+  543 Tree, 168 RPC and 64 DiskIO native cases; all FFI cases including the
+  versioned direct-layout configuration pass. TCP-only build has 146 CTest
+  items, zero failures, with the producer HCA case skipped as expected.
+  Workspace all-feature clippy, rs-lint, Rust/C++ formatting, scoped tree-lint
+  (exit zero with style warnings) and all four CLI benchmark report tests pass.
+  The CLI test command initially named `bench_rpc_test`; Cargo lists the actual
+  target as `rpc_bench_test`, which passes after correcting only the command.
+  Final real-HCA lease/producer/layout cases pass at
+  `.crowdb-runtime/rdma-check/artifacts/r240-direct/native-hca.{log,xml}`.
+- [x] **Allocate and send immutable registered data**: expose bounded producer
   allocation from the transport's device-owned arena. Provide a unique Rust
   `WritableBuffer` with a `MaybeUninit<u8>` capacity view and consuming commit;
   freeze into the existing owner-backed `Bytes` contract. Validate address
@@ -117,7 +135,7 @@ it does not add application aggregation or a flush timer.
   as two SGEs. Keep one WR per complete RPC and count direct/copied payload
   bytes in status. No range registry or new hot-path lock. Files: buffer arena,
   RDMA pool/send/work-request modules, C ABI/FFI buffer producer API.
-- [ ] **Receive into aligned data storage**: prepost two registered SGEs in
+- [x] **Receive into aligned data storage**: prepost two registered SGEs in
   direct layout, with 1 KiB control and a separately aligned data allocation.
   Charge both against `receive_arena_bytes`; descriptor count covers both and
   arithmetic is checked. Validate the complete control/header/length before
@@ -125,13 +143,28 @@ it does not add application aggregation or a flush timer.
   quarantine both regions exactly once on post/CQE/cancel/shutdown failure.
   Files: `rdma_receive.cpp`, receive posting, WorkRequest and repost context,
   real HCA ownership tests. Keep generic receive credit implicit in RQ slots.
-- [ ] **Connect the actual HTTP producer**: allow `NativeBodyAllocator` to
+- [~] **Connect the actual HTTP producer**: allow `NativeBodyAllocator` to
   obtain its owner storage from the retained DiskIO producer allocator after
   route setup. Preserve its existing byte admission, AtomicWaker pressure and
   framed-owner API. Wire it through `ChunkIoClient` / `RoutedDiskWriter` /
   S3 storage setup. A bounded native allocator failure pauses intake; it must
   not silently allocate an unregistered replacement. Retain TCP allocation
   when the service selects TCP. Cover owner views, slices and mirror fanout.
+  Add a cold `RpcServer` construction path receiving layout/data-capacity
+  defaults before native environment overrides. DiskIO server and its semantic
+  client select control/data with 1 MiB data capacity; ordinary RPC construction
+  retains contiguous defaults. Existing typed explicit configuration remains
+  authoritative. Do not set a process-wide direct-layout environment variable:
+  the Access Server's metadata transports must retain their own layout.
+  Expose a clonable producer allocator retaining the client's `Arc<RpcServer>`
+  through `RoutedDiskWriter` and `ChunkIoClient`. `NativeOwner` may hold its
+  writable allocation as backing storage while its established disjoint-region
+  rules govern initialization and immutable framed views. Drop that backing
+  before waking allocator credit waiters, so a resumed receiver observes the
+  returned native admission. Native pool exhaustion is `WouldBlock`, not a
+  malloc replacement or a terminal upload error. Keep the existing AtomicWaker
+  release wakeups; add a bounded retry wake for native credits held by other
+  producers or asynchronous transport completion.
 - [ ] **Close DiskIO handoff and read lifetime**: use exact view pointer/length,
   validate request bounds before disk submission, transition data to DiskOwned
   until the callback returns, and retain connection state across delayed I/O.

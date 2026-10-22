@@ -12,6 +12,16 @@
 namespace crowdb::rpc
 {
 
+bool RdmaTransport::create_connection_pools(ConnectionPools &pools)
+{
+    const auto control_bytes = config_.receive_control_bytes();
+    pools.send               = make_pool(config_.send_arena_bytes, config_.sq_depth);
+    pools.recv               = make_pool(config_.receive_arena_bytes - control_bytes, config_.rq_depth);
+    if (control_bytes != 0)
+        pools.recv_control = make_pool(control_bytes, config_.posted_receive_target);
+    return pools.send != nullptr && pools.recv != nullptr && (control_bytes == 0 || pools.recv_control != nullptr);
+}
+
 RdmaTransport::ConnectionPools *RdmaTransport::pools_for(Connection *connection)
 {
     return static_cast<ConnectionPools *>(connection->transport_context_.get());
@@ -35,6 +45,11 @@ bool RdmaTransport::publish_cm_connection(rdma_cm_id *id, const std::shared_ptr<
     info.number("effective_rq_depth", pools->effective_capacity.max_recv_wr);
     info.number("effective_cq_depth", completion_queues_[pools->cq_index]->effective_depth);
     info.number("peer_receive_slot_capacity", pools->peer_receive_slot_capacity);
+    info.number("peer_receive_data_capacity",
+                rdma_data_slot_capacity(pools->peer_receive_slot_capacity, config_.wire_layout));
+    info.number("effective_max_send_sge", pools->effective_capacity.max_send_sge);
+    info.number("effective_max_recv_sge", pools->effective_capacity.max_recv_sge);
+    info.string("wire_layout", config_.wire_layout == RdmaWireLayout::Contiguous ? "contiguous" : "control_data");
     info.number("peer_receive_frame_limit", pools->peer_receive_frame_limit);
     connection->transport_info_json_ = info.finish();
     std::scoped_lock lock(cm_mu_);

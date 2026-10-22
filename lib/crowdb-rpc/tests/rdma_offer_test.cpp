@@ -97,6 +97,37 @@ TEST(RdmaOfferTest, PrivateDataBindsPreflightIdentityAndReceiveAdmission)
     EXPECT_FALSE(validate_rdma_offer(reply, client, &server, true));
 }
 
+TEST(RdmaOfferTest, ControlDataLayoutIsBoundByBothCapabilityAndPrivateOffer)
+{
+    auto client        = test_capability(11);
+    auto server        = test_capability(17);
+    client.wire_layout = server.wire_layout = RdmaWireLayout::ControlData;
+    client.receive_slot_capacity = server.receive_slot_capacity = RDMA_DATAPATH_CAPACITY + RDMA_CONTROL_CAPACITY;
+    const auto             wire                                 = serialize_rdma_handshake(client);
+    RdmaEndpointCapability decoded;
+    ASSERT_TRUE(parse_rdma_handshake(wire, &decoded));
+    EXPECT_EQ(decoded.wire_layout, RdmaWireLayout::ControlData);
+    EXPECT_TRUE(validate_rdma_capability(decoded, RDMA_PROTOCOL_VERSION, 11, "test-device"));
+    RdmaCmOffer offer;
+    ASSERT_TRUE(parse_rdma_offer(serialize_rdma_offer(client, &server), &offer));
+    EXPECT_TRUE(validate_rdma_offer(offer, server, &client, true));
+    server.wire_layout           = RdmaWireLayout::Contiguous;
+    server.receive_slot_capacity = RDMA_DATAPATH_CAPACITY;
+    EXPECT_FALSE(validate_rdma_offer(offer, server, &client, true));
+    auto invalid = wire;
+    invalid[152] = 2;
+    EXPECT_FALSE(parse_rdma_handshake(invalid, &decoded));
+    invalid      = wire;
+    invalid[156] = 1;
+    EXPECT_FALSE(parse_rdma_handshake(invalid, &decoded));
+    client.protocol_version      = 2;
+    client.wire_layout           = RdmaWireLayout::Contiguous;
+    client.receive_slot_capacity = RDMA_DATAPATH_CAPACITY;
+    ASSERT_TRUE(parse_rdma_handshake(serialize_rdma_handshake(client), &decoded));
+    EXPECT_EQ(decoded.wire_layout, RdmaWireLayout::Contiguous);
+    EXPECT_TRUE(validate_rdma_capability(decoded, 2, 11, "test-device"));
+}
+
 TEST(RdmaOfferTest, MissingPreflightAndMalformedAdmissionFailClosed)
 {
     const auto  client = test_capability(1);

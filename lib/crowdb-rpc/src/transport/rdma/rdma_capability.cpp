@@ -11,6 +11,23 @@
 namespace crowdb::rpc
 {
 
+uint32_t rdma_data_slot_capacity(uint32_t wire_capacity, RdmaWireLayout layout)
+{
+    if (layout == RdmaWireLayout::Contiguous)
+        return wire_capacity;
+    return layout == RdmaWireLayout::ControlData && wire_capacity > RDMA_CONTROL_CAPACITY
+             ? wire_capacity - RDMA_CONTROL_CAPACITY
+             : 0;
+}
+
+bool valid_rdma_wire_capacity(uint32_t wire_capacity, RdmaWireLayout layout)
+{
+    BufferCapacityClass cls;
+    uint32_t            capacity      = 0;
+    const auto          data_capacity = rdma_data_slot_capacity(wire_capacity, layout);
+    return classify_rdma_capacity(data_capacity, &cls, &capacity) && capacity == data_capacity;
+}
+
 std::array<uint8_t, RDMA_HANDSHAKE_SIZE> serialize_rdma_handshake(const RdmaEndpointCapability &capability)
 {
     std::array<uint8_t, RDMA_HANDSHAKE_SIZE> bytes{};
@@ -42,6 +59,11 @@ std::array<uint8_t, RDMA_HANDSHAKE_SIZE> serialize_rdma_handshake(const RdmaEndp
         bytes[132 + i] = static_cast<uint8_t>(capability.receive_frame_limit >> (i * 8));
     }
     std::memcpy(bytes.data() + 136, capability.cm_address.data(), std::min<size_t>(16, capability.cm_address.size()));
+    if (capability.protocol_version >= 3) {
+        const auto layout = static_cast<uint32_t>(capability.wire_layout);
+        for (size_t i = 0; i < 4; ++i)
+            bytes[152 + i] = static_cast<uint8_t>(layout >> (i * 8));
+    }
     return bytes;
 }
 
@@ -60,7 +82,7 @@ bool parse_rdma_handshake(std::span<const uint8_t> bytes, RdmaEndpointCapability
     };
     if (get16(0) != RDMA_HANDSHAKE_MAGIC)
         return false;
-    if (get16(2) >= RDMA_PROTOCOL_VERSION && bytes.size() < RDMA_HANDSHAKE_SIZE)
+    if (get16(2) >= 2 && bytes.size() < RDMA_HANDSHAKE_SIZE)
         return false;
     *out                  = RdmaEndpointCapability{};
     out->protocol_version = get16(2);
@@ -77,7 +99,7 @@ bool parse_rdma_handshake(std::span<const uint8_t> bytes, RdmaEndpointCapability
                                (static_cast<uint32_t>(bytes[offset + 2]) << 16) |
                                (static_cast<uint32_t>(bytes[offset + 3]) << 24);
     }
-    if (out->protocol_version >= RDMA_PROTOCOL_VERSION) {
+    if (out->protocol_version >= 2) {
         for (size_t i = 0; i < 4; ++i) {
             out->receive_slot_capacity |= static_cast<uint32_t>(bytes[128 + i]) << (i * 8);
             if (i == 0)
@@ -87,6 +109,17 @@ bool parse_rdma_handshake(std::span<const uint8_t> bytes, RdmaEndpointCapability
         out->cm_address.assign(reinterpret_cast<const char *>(bytes.data() + 136), 16);
         out->cm_address.resize(out->cm_address.find('\0') == std::string::npos ? out->cm_address.size()
                                                                                : out->cm_address.find('\0'));
+    }
+    if (out->protocol_version >= 3) {
+        uint32_t layout = 0;
+        for (size_t i = 0; i < 4; ++i) {
+            layout |= static_cast<uint32_t>(bytes[152 + i]) << (i * 8);
+            if (bytes[156 + i] != 0)
+                return false;
+        }
+        if (layout > static_cast<uint32_t>(RdmaWireLayout::ControlData))
+            return false;
+        out->wire_layout = static_cast<RdmaWireLayout>(layout);
     }
     return true;
 }
@@ -99,16 +132,15 @@ bool validate_rdma_capability(const RdmaEndpointCapability &capability, uint16_t
         capability.gid.empty() || (!expected_device.empty() && capability.device != expected_device)) {
         return false;
     }
-    if (expected_protocol >= RDMA_PROTOCOL_VERSION) {
-        BufferCapacityClass cls;
-        uint32_t            size = 0;
-        in_addr             address{};
-        in6_addr            gid{};
+    if (expected_protocol >= 2) {
+        in_addr  address{};
+        in6_addr gid{};
         if (::inet_pton(AF_INET, capability.cm_address.c_str(), &address) != 1 ||
             ::inet_pton(AF_INET6, capability.gid.c_str(), &gid) != 1 || capability.generation == 0 ||
-            !classify_rdma_capacity(capability.receive_slot_capacity, &cls, &size) ||
-            size != capability.receive_slot_capacity || capability.receive_frame_limit == 0 ||
-            capability.receive_frame_limit > 256)
+            !valid_rdma_wire_capacity(capability.receive_slot_capacity, capability.wire_layout) ||
+            capability.receive_frame_limit == 0 || capability.receive_frame_limit > 256 ||
+            (capability.wire_layout == RdmaWireLayout::ControlData &&
+             (expected_protocol < 3 || capability.receive_frame_limit != 1)))
             return false;
     }
     return capability.data_classes[0] == RDMA_CONTROL_CAPACITY &&

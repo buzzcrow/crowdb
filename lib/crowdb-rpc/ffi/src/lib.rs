@@ -36,7 +36,7 @@ pub use logging::{
 pub use owned_route::{OwnedClientRoute, RpcClientHandle};
 pub use producer_buffer::WritableBuffer;
 pub use server::{Connection, RpcError, RpcServer, ServerRequest};
-pub use transport::RdmaConfig;
+pub use transport::{RdmaConfig, RdmaWireLayout};
 
 pub use sys::{CrowdbRpcLatencyStats, CrowdbRpcTransportStats};
 

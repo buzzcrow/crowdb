@@ -50,6 +50,9 @@ struct RdmaTransport::CompletionQueue
     std::atomic<uint32_t>         reserved_capacity{0};
     std::atomic<uint64_t>         poll_calls{0};
     std::atomic<uint64_t>         empty_polls{0};
+    std::atomic<uint64_t>         direct_sends{0};
+    std::atomic<uint64_t>         direct_payload_bytes{0};
+    std::atomic<uint64_t>         copied_payload_bytes{0};
 };
 
 } // namespace crowdb::rpc

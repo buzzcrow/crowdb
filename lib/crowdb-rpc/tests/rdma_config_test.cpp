@@ -10,6 +10,41 @@
 
 using crowdb::rpc::RdmaConfig;
 
+TEST(RdmaConfigTest, ControlDataChargesBothRegionsAndRequiresTwoSges)
+{
+    RdmaConfig config;
+    config.wire_layout         = crowdb::rpc::RdmaWireLayout::ControlData;
+    config.wire_slot_capacity  = crowdb::rpc::RDMA_DATAPATH_CAPACITY + crowdb::rpc::RDMA_CONTROL_CAPACITY;
+    config.receive_arena_bytes = uint64_t{config.posted_receive_target} * config.wire_slot_capacity;
+    EXPECT_TRUE(config.valid());
+    EXPECT_EQ(config.data_slot_capacity(), crowdb::rpc::RDMA_DATAPATH_CAPACITY);
+    EXPECT_EQ(config.receive_control_bytes(), uint64_t{config.posted_receive_target} * 1024);
+    --config.receive_arena_bytes;
+    EXPECT_FALSE(config.valid());
+    ++config.receive_arena_bytes;
+    config.aggregation_enabled = true;
+    EXPECT_FALSE(config.valid());
+    config.aggregation_enabled = false;
+    config.qp_max_send_sge     = 1;
+    EXPECT_FALSE(config.valid());
+    config.qp_max_send_sge = 2;
+    config.qp_max_recv_sge = 1;
+    EXPECT_FALSE(config.valid());
+    config.qp_max_recv_sge = 2;
+    config.wire_layout     = static_cast<crowdb::rpc::RdmaWireLayout>(2);
+    EXPECT_FALSE(config.valid());
+}
+
+TEST(RdmaConfigTest, EnvironmentRejectsUnknownWireLayout)
+{
+    const TestEnvironment valid("CROWDB_RDMA_WIRE_LAYOUT", "1");
+    RdmaConfig            config;
+    ASSERT_TRUE(config.apply_environment());
+    EXPECT_EQ(config.wire_layout, crowdb::rpc::RdmaWireLayout::ControlData);
+    const TestEnvironment invalid("CROWDB_RDMA_WIRE_LAYOUT", "2");
+    EXPECT_FALSE(config.apply_environment());
+}
+
 TEST(RdmaConfigTest, PostedReceiveTargetMustFitRqAndRegisteredBudget)
 {
     RdmaConfig config;

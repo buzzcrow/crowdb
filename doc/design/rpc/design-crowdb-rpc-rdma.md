@@ -49,10 +49,13 @@ version, and supported data classes. The client verifies that the generation
 and peer identity are current before creating the RDMA connection.
 
 `SocketTransport` performs this control exchange on a temporary nonblocking
-TCP socket with one deadline. Version 2 also advertises receive slot capacity
-and the maximum number of frames accepted in one SEND. A 48-byte CM offer
+TCP socket with one deadline. The 160-byte version 3 capability advertises
+receive slot capacity, the maximum number of frames accepted in one SEND and
+`wire_layout`. Older capability versions can be decoded for pre-payload TCP
+fallback; an RDMA connection requires the current protocol and matching layout.
+A 48-byte CM offer
 echoes the expected peer generation and identity digest, and declares the
-sender's generation, digest and receive admission. Both CM sides validate it
+sender's generation, digest, layout and receive admission. Both CM sides validate it
 before publishing the logical connection. The digest detects inconsistent or
 stale discovery; it does not authenticate a peer. Low-level CM diagnostics may
 omit the TCP expectation but still negotiate receive admission.
@@ -93,7 +96,7 @@ admission without fragmentation or fallback. A logical result larger than the
 selected capacity is an ordered sequence identified by request ID, stream ID,
 sequence, logical offset, and START/DATA/END/ERROR flags.
 
-Each SEND uses one SGE pointing at the slot and the actual wire length. Each
+In the default `Contiguous` layout, each SEND uses one SGE pointing at the slot and the actual wire length. Each
 RECV is posted with one SGE pointing at a complete receive slot and its full
 capacity. The sender and receiver do not share addresses and do not need equal
 ring counts; the receive slot is a bounded window for incoming messages. One
@@ -103,6 +106,26 @@ The transport may copy caller-owned control and payload buffers into the slot
 before posting SEND. This copy is the transport boundary needed to make the
 wire message contiguous. RPC correlation and logical operation counts remain
 per frame, independently of SEND count.
+
+`ControlData` is the negotiated direct datapath layout. It posts a fixed
+1024-byte control region, including the 14-byte RPC header, followed by the
+actual payload length in a separate SGE. The control FlatBuffer is zero padded
+inside that region. Receive uses two SGEs with matching region capacities;
+data starts at its own registered allocation base. Data classes of 64 KiB and
+above have 4096-byte alignment. Control and data consume the configured receive
+arena budget; a 1 MiB data capacity requires `wire_slot_capacity = 1049600`.
+Header and CQE lengths must match exactly before dispatch. This layout sends
+one RPC per SEND and rejects transport aggregation or fewer than two provider
+SGEs during setup. It leaves the HTTP/ChunkIO producer's aggregation intact.
+
+Immutable contiguous data already owned by the device's producer arena or
+the connection's receive arena is borrowed by exact allocation range. SEND
+retains that allocation without rewriting it, allowing different mirror
+control headers to share the same payload. Unregistered or noncontiguous data
+uses a bounded copy into the device arena. Per-CQ `direct_payload_bytes` and
+`copied_payload_bytes` distinguish these paths; `direct_sends` counts all SENDs
+using this layout. A failed SEND quarantines the canonical source allocation,
+including when the WR retains a nested view.
 
 Each QP has a bounded `SendQueue` in `ConnectionPools`. Producers validate and
 transfer immutable frame ownership through its MPSC admission; the CQ owner
@@ -172,6 +195,10 @@ portable buffers keep the region alive and reserve their descriptor until final
 release. Their detached ranges remain committed and are not reused by another
 stream. Cached and quarantined descriptors both count toward the hard total.
 Application-pool count admission also uses one atomic reservation.
+When a requested class cannot obtain a fresh allocation, it may reuse an
+available larger class without extending the arena. The returned buffer keeps
+its actual capacity class. This preserves admission after differently sized
+HTTP owners have carved the arena.
 
 `SystemBufferPool` retains its admission counter and recycler in a shared
 state owned by every outstanding allocation. Destroying the facade therefore
@@ -311,7 +338,11 @@ one 8192-entry CQ admits four QPs with the default send and posted-receive
 limits. `poller_count` follows the number of initialized CQs. Small-message
 benchmarks select 1024-byte slots and matching arena budgets explicitly.
 
-The versioned C ABI and Rust `RdmaConfig` expose cold configuration. Owned
+The versioned C ABI and Rust `RdmaConfig` expose cold configuration.
+`crowdb_rpc_server_configure_rdma_v2` accepts `wire_layout` separately from the
+unchanged version-one config structure; the original entry selects contiguous
+layout. `CROWDB_RDMA_WIRE_LAYOUT` uses 0 for contiguous and 1 for control/data.
+Owned
 status JSON contains requested settings, actual QP/CQ/provider capacities,
 transport errors, registration budgets and process resource counters. Connection
 status caches immutable provider values before publication and retains them
@@ -347,8 +378,10 @@ slot class only when the complete wire message fits that class.
   being mistaken for a distinct operation.
 - **I6:** FFI completion never transfers a buffer whose ownership or length is
   unresolved.
-- **I7:** A SEND uses one contiguous registered slot and a RECV uses one
-  complete posted slot; sender SGE boundaries never define receiver parsing.
+- **I7:** Contiguous layout parses complete frames inside one registered slot.
+  Control/data layout uses its negotiated fixed control region and independent
+  data capacity. Both enforce total wire admission and retain every region
+  until transport and consumer access complete.
 - **I8:** Every QP is assigned to exactly one shared CQ, and every shared CQ is
   polled by exactly one worker at a time.
 - **I9:** Epoll notification only wakes an idle CQ polling worker; completion

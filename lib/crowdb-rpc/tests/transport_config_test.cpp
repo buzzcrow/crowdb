@@ -47,6 +47,13 @@ TEST(TransportConfigTest, VersionedCAbiRejectsMalformedBoundsBeforePublication)
     EXPECT_EQ(crowdb_rpc_server_configure_rdma(server, &config), CROWDB_RPC_ERR_INVALID_ARG);
     config.cq_count = 1;
     EXPECT_EQ(crowdb_rpc_server_configure_rdma(server, &config), CROWDB_RPC_OK);
+    EXPECT_EQ(crowdb_rpc_server_configure_rdma_v2(server, &config, 2), CROWDB_RPC_ERR_INVALID_ARG);
+    config.wire_slot_capacity  = RDMA_DATAPATH_CAPACITY + RDMA_CONTROL_CAPACITY;
+    config.receive_arena_bytes = uint64_t{config.posted_receive_target} * config.wire_slot_capacity;
+    EXPECT_EQ(crowdb_rpc_server_configure_rdma(server, &config), CROWDB_RPC_ERR_INVALID_ARG);
+    EXPECT_EQ(crowdb_rpc_server_configure_rdma_v2(server, &config, 1), CROWDB_RPC_OK);
+    EXPECT_EQ(config.struct_size, sizeof(config));
+    EXPECT_EQ(config.version, 1U);
     crowdb_rpc_server_destroy(server);
 }
 

@@ -8,23 +8,24 @@
 
 namespace crowdb::rpc
 {
-std::shared_ptr<BufferRegion> BufferRegion::allocate(uint64_t bytes, uint32_t registration_id)
+std::shared_ptr<BufferRegion> BufferRegion::allocate(uint64_t bytes, uint32_t registration_id, uint32_t alignment)
 {
     auto region             = std::make_shared<BufferRegion>();
     region->bytes           = bytes;
     region->registration_id = registration_id;
     void *memory            = nullptr;
-    if (bytes != 0 && posix_memalign(&memory, 64, bytes) == 0) {
+    if (bytes != 0 && posix_memalign(&memory, alignment, bytes) == 0) {
         region->data  = static_cast<uint8_t *>(memory);
         region->owner = std::shared_ptr<void>(memory, std::free);
     }
     return region;
 }
 
-BufferArena::BufferArena(std::shared_ptr<BufferRegion> allocation, uint32_t count)
+BufferArena::BufferArena(std::shared_ptr<BufferRegion> allocation, uint32_t count, uint32_t large_alignment)
     : region(std::move(allocation)),
       bytes(region == nullptr ? 0 : region->bytes),
-      capacity(count)
+      capacity(count),
+      large_alignment_(large_alignment)
 {
     if (region != nullptr && region->data != nullptr && count != 0 && count != UINT32_MAX)
         entries_ = std::make_unique<Entry[]>(count);
@@ -55,14 +56,15 @@ Buffer *BufferArena::fresh(uint32_t size)
                 return nullptr;
         } while (!next_entry_.compare_exchange_weak(index, index + 1, std::memory_order_relaxed));
     }
-    uint64_t offset = next_offset.load(std::memory_order_relaxed);
-    uint64_t aligned;
+    uint64_t       offset = next_offset.load(std::memory_order_relaxed);
+    uint64_t       aligned;
+    const uint64_t mask = (size >= RDMA_METADATA_CAPACITY ? large_alignment_ : 64U) - 1U;
     do {
-        if (offset > bytes || offset > UINT64_MAX - 63U) {
+        if (offset > bytes || offset > UINT64_MAX - mask) {
             push_entry(unused_entries_, index);
             return nullptr;
         }
-        aligned = (offset + 63U) & ~uint64_t{63};
+        aligned = (offset + mask) & ~mask;
         if (aligned > bytes || size > bytes - aligned) {
             push_entry(unused_entries_, index);
             return nullptr;
@@ -128,8 +130,13 @@ Buffer *BufferArena::alloc(uint32_t requested)
     auto *buffer = pop(static_cast<size_t>(cls));
     if (buffer == nullptr)
         buffer = fresh(size);
+    if (buffer == nullptr) {
+        for (size_t bucket = static_cast<size_t>(cls) + 1; bucket < free_heads_.size() && buffer == nullptr; ++bucket)
+            buffer = pop(bucket);
+    }
     if (buffer == nullptr)
         return nullptr;
+    (void)classify_rdma_capacity(buffer->capacity, &cls, &size);
     buffer->reset_view();
     buffer->len = 0;
     buffer->ref->store(1, std::memory_order_relaxed);
@@ -138,6 +145,30 @@ Buffer *BufferArena::alloc(uint32_t requested)
     buffer->pool_owner     = shared_from_this();
     outstanding.fetch_add(1, std::memory_order_relaxed);
     return buffer;
+}
+
+Buffer *BufferArena::borrow_range(const uint8_t *data, uint32_t size)
+{
+    if (region == nullptr || region->registration_handle == 0 || entries_ == nullptr || size == 0)
+        return nullptr;
+    const auto address = reinterpret_cast<uintptr_t>(data);
+    const auto begin   = reinterpret_cast<uintptr_t>(region->data);
+    if (address < begin || size > bytes || address - begin > bytes - size)
+        return nullptr;
+    const auto count = next_entry_.load(std::memory_order_acquire);
+    for (uint32_t index = 0; index < count; ++index) {
+        auto *buffer = entries_[index].buffer.load(std::memory_order_acquire);
+        if (buffer == nullptr)
+            continue;
+        const auto start = reinterpret_cast<uintptr_t>(buffer->allocation_data);
+        if (address >= start && address - start <= buffer->allocation_capacity &&
+            size <= buffer->allocation_capacity - (address - start)) {
+            // The immutable source owner still pins this allocation. Retain
+            // that same allocation, not merely any MR containing the address.
+            return buffer->slice(static_cast<uint32_t>(address - start), size);
+        }
+    }
+    return nullptr;
 }
 
 void BufferArena::recycle(Buffer *buffer)

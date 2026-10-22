@@ -31,6 +31,10 @@ bool RdmaConfig::apply_environment()
         destination = static_cast<T>(parsed);
         return true;
     };
+    auto layout = static_cast<uint32_t>(wire_layout);
+    if (!read("CROWDB_RDMA_WIRE_LAYOUT", layout) || layout > static_cast<uint32_t>(RdmaWireLayout::ControlData))
+        return false;
+    wire_layout = static_cast<RdmaWireLayout>(layout);
     return (port != 1 || read("CROWDB_RDMA_PORT", port)) && read("CROWDB_RDMA_SQ_DEPTH", sq_depth) &&
            read("CROWDB_RDMA_RQ_DEPTH", rq_depth) && read("CROWDB_RDMA_POSTED_RECEIVE_TARGET", posted_receive_target) &&
            read("CROWDB_RDMA_WIRE_SLOT_CAPACITY", wire_slot_capacity) &&
@@ -48,15 +52,14 @@ bool RdmaConfig::apply_environment()
 
 bool RdmaConfig::valid() const
 {
-    BufferCapacityClass capacity_class;
-    uint32_t            capacity = 0;
-    return port > 0 && classify_rdma_capacity(wire_slot_capacity, &capacity_class, &capacity) &&
-           capacity == wire_slot_capacity && sq_depth > 0 && rq_depth > 0 && posted_receive_target > 0 &&
-           posted_receive_target <= rq_depth && cq_depth > posted_receive_target &&
-           cq_depth <= static_cast<uint32_t>(INT32_MAX) && cq_count > 0 && cq_count <= 256 &&
-           static_cast<uint64_t>(cq_count) * cq_depth < UINT32_MAX && poll_batch > 0 &&
+    const bool direct = wire_layout == RdmaWireLayout::ControlData;
+    return port > 0 && valid_rdma_wire_capacity(wire_slot_capacity, wire_layout) &&
+           (!direct || (!aggregation_enabled && qp_max_send_sge >= 2 && qp_max_recv_sge >= 2)) && sq_depth > 0 &&
+           rq_depth > 0 && posted_receive_target > 0 && posted_receive_target <= rq_depth &&
+           cq_depth > posted_receive_target && cq_depth <= static_cast<uint32_t>(INT32_MAX) && cq_count > 0 &&
+           cq_count <= 256 && static_cast<uint64_t>(cq_count) * cq_depth < UINT32_MAX && poll_batch > 0 &&
            poll_batch <= static_cast<uint32_t>(INT32_MAX) && verbs_poll_batch > 0 && verbs_poll_batch <= 256 &&
-           poll_empty_budget > 0 && send_arena_bytes >= wire_slot_capacity &&
+           poll_empty_budget > 0 && send_arena_bytes >= data_slot_capacity() &&
            receive_arena_bytes >= static_cast<uint64_t>(posted_receive_target) * wire_slot_capacity &&
            min_rnr_timer <= 31 && retry_count <= 7 && rnr_retry_count <= 7 && registration_budget() != 0 &&
            aggregation_max_bytes >= HEADER_SIZE && aggregation_max_bytes <= RDMA_DATAPATH_CAPACITY &&

@@ -10,6 +10,10 @@ namespace crowdb::rpc
 {
 void RdmaTransport::release_completed_receive(WorkRequest *work, const ibv_wc &wc)
 {
+    if (work->prefix != nullptr) {
+        release_completed_direct_receive(work, wc);
+        return;
+    }
     auto fail = [&] {
         if (wc.status != IBV_WC_SUCCESS)
             record_completion_error(wc, !work->conn->is_open());
@@ -73,8 +77,12 @@ void RdmaTransport::repost_frame_release(void *context, Buffer *slot)
         (void)slot->quarantine();
     {
         Operation operation(repost->state);
-        if (operation && slot->ownership.load(std::memory_order_acquire) == BufferOwnership::Available)
-            (void)repost->state->transport->post_receive(repost->connection.get(), slot);
+        if (operation && repost->connection->is_open() &&
+            slot->ownership.load(std::memory_order_acquire) == BufferOwnership::Available &&
+            !repost->state->transport->post_receive(repost->connection.get(), slot)) {
+            repost->state->transport->stats_.receive_post_errors.fetch_add(1, std::memory_order_relaxed);
+            repost->connection->close();
+        }
     }
     slot->release();
 }

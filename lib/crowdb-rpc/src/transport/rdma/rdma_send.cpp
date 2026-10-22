@@ -3,6 +3,7 @@
 
 #include "rdma_aggregate.h"
 #include "rdma_cq.h"
+#include "rdma_direct_frame.h"
 
 #ifdef CROWDB_RPC_HAVE_RDMA
 #    include <algorithm>
@@ -30,10 +31,14 @@ bool RdmaTransport::submit(Connection *connection, OutFrame *frame)
     if (pools == nullptr || pools->send == nullptr || pools->cq_index >= completion_queues_.size())
         return reject();
     Operation  posting(pools->posting_state);
-    uint32_t   bytes = 0;
+    uint32_t   bytes  = 0;
+    const bool direct = config_.wire_layout == RdmaWireLayout::ControlData;
     const auto limit =
-        std::min({config_.wire_slot_capacity, pools->peer_receive_slot_capacity, config_.aggregation_max_bytes});
-    if (!posting || !connection->is_open() || !rdma_frame_size(*frame, limit, bytes))
+        direct
+            ? std::min(config_.wire_slot_capacity, pools->peer_receive_slot_capacity)
+            : std::min({config_.wire_slot_capacity, pools->peer_receive_slot_capacity, config_.aggregation_max_bytes});
+    if (!posting || !connection->is_open() ||
+        !(direct ? rdma_direct_frame_size(*frame, limit, bytes) : rdma_frame_size(*frame, limit, bytes)))
         return reject();
     uint32_t queued = pools->queued_frames.load(std::memory_order_relaxed);
     do {
@@ -54,6 +59,8 @@ bool RdmaTransport::submit(Connection *connection, OutFrame *frame)
 
 uint32_t RdmaTransport::flush_connection(Connection *connection, ConnectionPools &pools, uint32_t budget)
 {
+    if (config_.wire_layout == RdmaWireLayout::ControlData)
+        return flush_direct_connection(connection, pools, budget);
     const auto byte_limit =
         std::min({config_.wire_slot_capacity, pools.peer_receive_slot_capacity, config_.aggregation_max_bytes});
     const auto frame_limit =
@@ -81,6 +88,8 @@ uint32_t RdmaTransport::flush_connection(Connection *connection, ConnectionPools
             if (bytes > byte_limit - slot->len)
                 break;
             copy_rdma_frame(slot->data + slot->len, *frame);
+            completion_queues_[pools.cq_index]->copied_payload_bytes.fetch_add(
+                bytes - HEADER_SIZE - frame->control->len, std::memory_order_relaxed);
             slot->len += bytes;
             frame->next_aggregate = nullptr;
             *tail                 = frame;

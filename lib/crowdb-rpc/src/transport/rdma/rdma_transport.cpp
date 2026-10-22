@@ -79,8 +79,10 @@ RdmaTransport::RdmaTransport(RdmaConfig config, BufferPool *application_pool)
     local_capability_.data_classes          = {RDMA_CONTROL_CAPACITY, RDMA_METADATA_CAPACITY, RDMA_AGGREGATE_CAPACITY,
                                                RDMA_DATAPATH_CAPACITY};
     local_capability_.receive_slot_capacity = config_.wire_slot_capacity;
-    local_capability_.receive_frame_limit   = RDMA_MAX_AGGREGATE_FRAMES;
-    local_capability_.cm_address            = config_.source_address;
+    local_capability_.wire_layout           = config_.wire_layout;
+    local_capability_.receive_frame_limit =
+        config_.wire_layout == RdmaWireLayout::ControlData ? 1 : RDMA_MAX_AGGREGATE_FRAMES;
+    local_capability_.cm_address = config_.source_address;
 
     int          device_count = 0;
     ibv_device **devices      = ibv_get_device_list(&device_count);
@@ -189,6 +191,8 @@ std::unique_ptr<RdmaBufferPool> RdmaTransport::make_pool(uint64_t bytes, uint32_
 
 bool RdmaTransport::post_receive(Connection *conn, Buffer *slot)
 {
+    if (config_.wire_layout == RdmaWireLayout::ControlData)
+        return post_direct_receive(conn, slot);
     Operation operation(repost_state_);
     if (!operation)
         return false;

@@ -73,6 +73,7 @@ struct Buffer
     uintptr_t                    registration_handle = 0;
     uint8_t                     *allocation_data     = nullptr;
     uint32_t                     allocation_capacity = 0;
+    Buffer                      *allocation_owner    = nullptr;
     uint32_t                     view_offset         = 0;
     Buffer                      *next_pool           = nullptr;
     Buffer                      *next_all            = nullptr;

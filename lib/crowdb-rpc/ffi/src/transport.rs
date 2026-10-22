@@ -8,6 +8,15 @@ use std::mem::MaybeUninit;
 
 use crate::{sys, Buffer, Connection, RpcError, RpcServer};
 
+/// Layout selected during TCP preflight and bound into the CM offer.
+#[derive(Debug, Default, Clone, Copy, Eq, PartialEq)]
+#[repr(u32)]
+pub enum RdmaWireLayout {
+    #[default]
+    Contiguous = 0,
+    ControlData = 1,
+}
+
 /// Explicit configuration overrides native environment defaults before listen.
 #[derive(Debug, Clone)]
 #[allow(clippy::struct_excessive_bools)]
@@ -22,6 +31,7 @@ pub struct RdmaConfig {
     pub rq_depth: u32,
     pub posted_receive_target: u32,
     pub wire_slot_capacity: u32,
+    pub wire_layout: RdmaWireLayout,
     pub poll_batch: u32,
     pub verbs_poll_batch: u32,
     pub poll_empty_budget: u32,
@@ -60,6 +70,7 @@ impl Default for RdmaConfig {
             rq_depth: raw.rq_depth,
             posted_receive_target: raw.posted_receive_target,
             wire_slot_capacity: raw.wire_slot_capacity,
+            wire_layout: RdmaWireLayout::Contiguous,
             poll_batch: raw.poll_batch,
             verbs_poll_batch: raw.verbs_poll_batch,
             poll_empty_budget: raw.poll_empty_budget,
@@ -111,7 +122,9 @@ impl RpcServer {
         raw.source_address = source.as_ptr();
         raw.gid = gid.as_ptr();
         // SAFETY: handle is borrowed, struct and CStrings live through the call.
-        let status = unsafe { sys::crowdb_rpc_server_configure_rdma(self.handle(), &raw) };
+        let status = unsafe {
+            sys::crowdb_rpc_server_configure_rdma_v2(self.handle(), &raw, config.wire_layout as u32)
+        };
         if status == sys::CROWDB_RPC_OK {
             Ok(())
         } else {

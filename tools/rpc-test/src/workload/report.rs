@@ -139,10 +139,15 @@ pub(super) fn finish(
         || histogram.overflow_count != 0;
     let cq_errors = sum_rdma_delta(report, "cq_errors");
     let fallback = sum_rdma_delta(report, "fallback_count");
-    let transport_errors: u64 = ["protocol_errors", "send_errors", "registration_failures"]
-        .into_iter()
-        .map(|field| sum_rdma_delta(report, field))
-        .sum();
+    let transport_errors: u64 = [
+        "protocol_errors",
+        "send_errors",
+        "receive_post_errors",
+        "registration_failures",
+    ]
+    .into_iter()
+    .map(|field| sum_rdma_delta(report, field))
+    .sum();
     let errors = native.total_errors
         + get(Count::PayloadMismatches)
         + get(Count::Duplicates)

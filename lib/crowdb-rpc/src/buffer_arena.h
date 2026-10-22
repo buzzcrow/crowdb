@@ -16,7 +16,8 @@ struct BufferRegion
     uint32_t              registration_id     = 0;
     std::shared_ptr<void> owner;
 
-    static std::shared_ptr<BufferRegion> allocate(uint64_t bytes, uint32_t registration_id = 0);
+    static std::shared_ptr<BufferRegion> allocate(uint64_t bytes, uint32_t registration_id = 0,
+                                                  uint32_t alignment = 64);
 };
 
 class BufferArena : public BufferPool, public std::enable_shared_from_this<BufferArena>
@@ -35,14 +36,16 @@ class BufferArena : public BufferPool, public std::enable_shared_from_this<Buffe
     std::atomic<uint64_t>               next_offset{0};
     std::atomic<uint64_t>               quarantined{0};
 
-    BufferArena(std::shared_ptr<BufferRegion> region, uint32_t count);
+    BufferArena(std::shared_ptr<BufferRegion> region, uint32_t count, uint32_t large_alignment = 64);
     ~BufferArena() override;
     Buffer *alloc(uint32_t requested) override;
+    Buffer *borrow_range(const uint8_t *data, uint32_t size);
     void    recycle(Buffer *buffer) override;
     bool    detach(Buffer *buffer) override;
     void    quarantine_inflight();
 
   private:
+    const uint32_t                       large_alignment_;
     std::unique_ptr<Entry[]>             entries_;
     std::array<std::atomic<uint64_t>, 4> free_heads_{};
     std::atomic<uint64_t>                unused_entries_{0};

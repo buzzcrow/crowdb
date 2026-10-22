@@ -163,7 +163,7 @@ bool RdmaTransport::prime_receive(const std::shared_ptr<Connection> &connection)
         return false;
     BufferPool *pool = pools->recv.get();
     for (uint32_t i = 0; i < depth; ++i) {
-        Buffer *slot = pool->alloc(config_.wire_slot_capacity);
+        Buffer *slot = pool->alloc(config_.data_slot_capacity());
         if (slot == nullptr) {
             return false;
         }
@@ -209,6 +209,7 @@ void RdmaTransport::release_completed_frame(WorkRequest *work, const ibv_wc &wc)
     auto       connection = std::move(work->conn);
     const auto pools      = std::move(work->pools);
     Buffer    *slot       = work->slot;
+    Buffer    *prefix     = work->prefix;
     if (pools != nullptr && pools->sends_in_flight != 0)
         --pools->sends_in_flight;
 
@@ -218,6 +219,8 @@ void RdmaTransport::release_completed_frame(WorkRequest *work, const ibv_wc &wc)
         // suffix to be appended to this RDMA connection.
         if (work->slot != nullptr)
             (void)work->slot->quarantine();
+        if (prefix != nullptr)
+            (void)prefix->quarantine();
         if (connection != nullptr)
             connection->close();
     }
@@ -227,9 +230,17 @@ void RdmaTransport::release_completed_frame(WorkRequest *work, const ibv_wc &wc)
         if (connection != nullptr)
             connection->close();
     }
+    if (wc.status == IBV_WC_SUCCESS && prefix != nullptr &&
+        !prefix->transition(BufferOwnership::SendInFlight, BufferOwnership::Available)) {
+        (void)prefix->quarantine();
+        if (connection != nullptr)
+            connection->close();
+    }
     release_work(work);
     if (slot != nullptr)
         slot->release();
+    if (prefix != nullptr)
+        prefix->release();
     release_rdma_frames(frame, wc.status != IBV_WC_SUCCESS);
 }
 

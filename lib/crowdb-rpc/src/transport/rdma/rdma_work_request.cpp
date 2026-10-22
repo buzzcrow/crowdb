@@ -4,13 +4,15 @@
 #include "crowdb-rpc/transport/rdma/rdma_transport.h"
 #include "rdma_aggregate.h"
 #include "rdma_cq.h"
+#include "rdma_direct_frame.h"
 
 #ifdef CROWDB_RPC_HAVE_RDMA
 
 namespace crowdb::rpc
 {
 
-RdmaTransport::WorkRequest *RdmaTransport::acquire_work(WorkKind kind, Connection *conn, Buffer *slot, OutFrame *frame)
+RdmaTransport::WorkRequest *RdmaTransport::acquire_work(WorkKind kind, Connection *conn, Buffer *slot, OutFrame *frame,
+                                                        Buffer *prefix)
 {
     auto owner = conn->weak_from_this().lock();
     if (owner == nullptr)
@@ -31,6 +33,7 @@ RdmaTransport::WorkRequest *RdmaTransport::acquire_work(WorkKind kind, Connectio
         work.connection_identity.store(conn, std::memory_order_relaxed);
         work.pools          = pools == nullptr ? nullptr : pools->shared_from_this();
         work.slot           = slot;
+        work.prefix         = prefix;
         work.frame          = frame;
         work.request_id     = frame == nullptr ? slot->request_id : frame->request_id;
         work.stream_id      = slot->stream_id;
@@ -60,8 +63,9 @@ void RdmaTransport::release_work(WorkRequest *work)
 {
     work->conn.reset();
     work->pools.reset();
-    work->slot  = nullptr;
-    work->frame = nullptr;
+    work->slot   = nullptr;
+    work->prefix = nullptr;
+    work->frame  = nullptr;
     work->token.store(0, std::memory_order_release);
 }
 
@@ -74,11 +78,20 @@ void RdmaTransport::dispatch_completion(const ibv_wc &wc)
     // work record owns dispatch, even after disconnect or QP destruction.
     if (work->kind == WorkKind::Receive && wc.status == IBV_WC_SUCCESS && !work->conn->has_frame_handler()) {
         RdmaAggregate aggregate;
-        const bool    valid       = wc.byte_len <= work->slot->capacity &&
-                                    parse_rdma_aggregate(std::span(work->slot->data, wc.byte_len), aggregate);
+        bool          valid       = false;
         bool          application = false;
-        for (uint32_t index = 0; valid && index < aggregate.count; ++index)
-            application |= aggregate.frames[index].header.msg_type != RDMA_HANDSHAKE_MSG_TYPE;
+        if (work->prefix != nullptr) {
+            Header header;
+            valid       = parse_rdma_direct_control(std::span(work->prefix->data, RDMA_CONTROL_CAPACITY),
+                                                    config_.data_slot_capacity(), wc.byte_len, header);
+            application = valid && header.msg_type != RDMA_HANDSHAKE_MSG_TYPE;
+        }
+        else {
+            valid = wc.byte_len <= work->slot->capacity &&
+                    parse_rdma_aggregate(std::span(work->slot->data, wc.byte_len), aggregate);
+            for (uint32_t index = 0; valid && index < aggregate.count; ++index)
+                application |= aggregate.frames[index].header.msg_type != RDMA_HANDSHAKE_MSG_TYPE;
+        }
         if (application) {
             const uint32_t index = static_cast<uint32_t>(wc.wr_id) / config_.cq_depth;
             completion_queues_[index]->deferred.push_back({work, wc});

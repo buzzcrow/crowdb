@@ -23,6 +23,11 @@ enum class RdmaPathState : uint8_t {
     TcpFallback,
 };
 
+enum class RdmaWireLayout : uint32_t { Contiguous = 0, ControlData = 1 };
+
+[[nodiscard]] uint32_t rdma_data_slot_capacity(uint32_t wire_capacity, RdmaWireLayout layout);
+[[nodiscard]] bool     valid_rdma_wire_capacity(uint32_t wire_capacity, RdmaWireLayout layout);
+
 struct RdmaEndpointCapability
 {
     bool                    rdma_available   = false;
@@ -35,11 +40,12 @@ struct RdmaEndpointCapability
     uint32_t                receive_slot_capacity = 0;
     uint32_t                receive_frame_limit   = 1;
     std::string             cm_address{};
+    RdmaWireLayout          wire_layout = RdmaWireLayout::Contiguous;
 };
 
 constexpr uint16_t RDMA_HANDSHAKE_MAGIC       = 0x5244;
 constexpr uint16_t RDMA_HANDSHAKE_MSG_TYPE    = 0xFFFE;
-constexpr uint16_t RDMA_PROTOCOL_VERSION      = 2;
+constexpr uint16_t RDMA_PROTOCOL_VERSION      = 3;
 constexpr size_t   RDMA_LEGACY_HANDSHAKE_SIZE = 128;
 constexpr size_t   RDMA_HANDSHAKE_SIZE        = 160;
 

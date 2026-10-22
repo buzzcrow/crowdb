@@ -145,13 +145,17 @@ std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int 
         rdma_destroy_id(id);
         return nullptr;
     }
+    if (config_.wire_layout == RdmaWireLayout::ControlData &&
+        (qp_attr.cap.max_send_sge < 2 || qp_attr.cap.max_recv_sge < 2)) {
+        rdma_destroy_qp(id);
+        rdma_destroy_id(id);
+        return nullptr;
+    }
     auto pools                = std::make_shared<ConnectionPools>(config_.send_queue_capacity);
     pools->effective_capacity = qp_attr.cap;
     pools->cq_index           = reservation.queue->index;
     pools->reserved_capacity  = reservation.capacity;
-    pools->send               = make_pool(config_.send_arena_bytes, config_.sq_depth);
-    pools->recv               = make_pool(config_.receive_arena_bytes, config_.rq_depth);
-    if (pools->send == nullptr || pools->recv == nullptr) {
+    if (!create_connection_pools(*pools)) {
         rdma_destroy_qp(id);
         rdma_destroy_id(id);
         return nullptr;
@@ -363,9 +367,9 @@ std::shared_ptr<Connection> RdmaTransport::accept()
     pools->effective_capacity         = qp_attr.cap;
     pools->cq_index                   = reservation.queue->index;
     pools->reserved_capacity          = reservation.capacity;
-    pools->send                       = make_pool(config_.send_arena_bytes, config_.sq_depth);
-    pools->recv                       = make_pool(config_.receive_arena_bytes, config_.rq_depth);
-    if (pools->send == nullptr || pools->recv == nullptr) {
+    if ((config_.wire_layout == RdmaWireLayout::ControlData &&
+         (qp_attr.cap.max_send_sge < 2 || qp_attr.cap.max_recv_sge < 2)) ||
+        !create_connection_pools(*pools)) {
         rdma_destroy_qp(id);
         rdma_destroy_id(id);
         return nullptr;

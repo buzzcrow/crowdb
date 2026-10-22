@@ -106,6 +106,10 @@ typedef struct crowdb_rpc_rdma_config
 void crowdb_rpc_rdma_config_init(crowdb_rpc_rdma_config_t *config);
 // Explicit cold configuration overrides environment; rejected after listen.
 crowdb_rpc_status crowdb_rpc_server_configure_rdma(crowdb_rpc_server_t server, const crowdb_rpc_rdma_config_t *config);
+// Version-two configuration adds the negotiated wire layout without changing
+// the version-one struct or initializer. wire_layout: 0 contiguous, 1 control/data.
+crowdb_rpc_status crowdb_rpc_server_configure_rdma_v2(crowdb_rpc_server_t             server,
+                                                      const crowdb_rpc_rdma_config_t *config, uint32_t wire_layout);
 // Owned, versioned UTF-8 JSON snapshots. Release using buffer_release.
 crowdb_rpc_buffer_t crowdb_rpc_server_status_json(crowdb_rpc_server_t server);
 crowdb_rpc_buffer_t crowdb_rpc_conn_status_json(crowdb_rpc_conn_t connection);

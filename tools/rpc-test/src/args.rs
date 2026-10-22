@@ -165,6 +165,7 @@ impl RpcArgs {
             rq_depth: q.rq_depth,
             posted_receive_target: q.posted_receive_target,
             wire_slot_capacity: q.wire_slot_capacity,
+            wire_layout: crowdb_rpc_ffi::RdmaWireLayout::Contiguous,
             send_arena_bytes: q.send_arena_bytes,
             receive_arena_bytes: q.receive_arena_bytes,
             registered_memory_budget_bytes: q.registered_memory_budget_bytes,

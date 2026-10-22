@@ -155,6 +155,11 @@ extern "C" {
         server: crowdb_rpc_server_t,
         config: *const CrowdbRpcRdmaConfig,
     ) -> crowdb_rpc_status;
+    pub fn crowdb_rpc_server_configure_rdma_v2(
+        server: crowdb_rpc_server_t,
+        config: *const CrowdbRpcRdmaConfig,
+        wire_layout: u32,
+    ) -> crowdb_rpc_status;
     pub fn crowdb_rpc_server_status_json(server: crowdb_rpc_server_t) -> crowdb_rpc_buffer_t;
     pub fn crowdb_rpc_conn_status_json(connection: crowdb_rpc_conn_t) -> crowdb_rpc_buffer_t;
     pub fn crowdb_rpc_server_register_status_handler(server: crowdb_rpc_server_t, msg_type: u16);

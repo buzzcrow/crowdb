@@ -33,6 +33,7 @@ pub(super) fn validate(status: &Value, rdma: bool) -> Result<(), String> {
             "cq_errors",
             "protocol_errors",
             "send_errors",
+            "receive_post_errors",
             "submit_rejects",
             "fallback_count",
             "registration_failures",

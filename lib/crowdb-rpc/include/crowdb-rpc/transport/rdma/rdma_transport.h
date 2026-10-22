@@ -47,6 +47,7 @@ class RdmaBufferPool : public BufferPool
     ~RdmaBufferPool() override;
 
     Buffer *alloc(uint32_t capacity) override;
+    Buffer *borrow_range(const uint8_t *data, uint32_t size);
     void    recycle(Buffer *buf) override;
 
     [[nodiscard]] uint64_t quarantined_bytes() const;
@@ -102,6 +103,10 @@ class RdmaTransport : public Transport
         std::atomic<uint64_t> submit_rejects{0};
         std::atomic<uint64_t> send_queue_high_water{0};
         std::atomic<uint64_t> send_errors{0};
+        std::atomic<uint64_t> receive_post_errors{0};
+        std::atomic<uint64_t> direct_sends{0};
+        std::atomic<uint64_t> direct_payload_bytes{0};
+        std::atomic<uint64_t> copied_payload_bytes{0};
     };
 
     explicit RdmaTransport(RdmaConfig config = {}, BufferPool *application_pool = nullptr);
@@ -214,6 +219,7 @@ class RdmaTransport : public Transport
 
     enum class WorkKind : uint8_t { Send, Receive };
     struct ConnectionPools;
+    bool create_connection_pools(ConnectionPools &pools);
 
     struct WorkRequest
     {
@@ -223,6 +229,7 @@ class RdmaTransport : public Transport
         std::atomic<Connection *>        connection_identity{nullptr};
         std::shared_ptr<ConnectionPools> pools;
         Buffer                          *slot           = nullptr;
+        Buffer                          *prefix         = nullptr;
         OutFrame                        *frame          = nullptr;
         uint64_t                         request_id     = 0;
         uint64_t                         stream_id      = 0;
@@ -263,13 +270,17 @@ class RdmaTransport : public Transport
     void     install_connection_notifiers(const std::shared_ptr<Connection> &connection, uint32_t index);
     uint32_t flush_sends(CompletionQueue &queue, uint32_t budget);
     uint32_t flush_connection(Connection *connection, ConnectionPools &pools, uint32_t budget);
+    uint32_t flush_direct_connection(Connection *connection, ConnectionPools &pools, uint32_t budget);
+    bool     post_direct(Connection *connection, ConnectionPools &pools, Buffer *slot, Buffer *prefix, OutFrame *frame);
+    bool     post_direct_receive(Connection *connection, Buffer *slot);
     void     retire_sends(CompletionQueue &queue, Connection *connection);
     bool     post_aggregate(Connection *connection, ConnectionPools &pools, Buffer *slot, OutFrame *frames,
                             uint32_t frame_count);
     static constexpr uint64_t CM_EVENT_TAG  = 1;
     static constexpr uint64_t CQ_EVENT_BASE = 2;
 
-    WorkRequest            *acquire_work(WorkKind kind, Connection *conn, Buffer *slot, OutFrame *frame = nullptr);
+    WorkRequest            *acquire_work(WorkKind kind, Connection *conn, Buffer *slot, OutFrame *frame = nullptr,
+                                         Buffer *prefix = nullptr);
     WorkRequest            *claim_work(uint64_t token);
     void                    release_work(WorkRequest *work);
     void                    dispatch_completion(const struct ibv_wc &wc);
@@ -334,6 +345,7 @@ class RdmaTransport : public Transport
         std::shared_ptr<RepostState>    posting_state = std::make_shared<RepostState>();
         std::unique_ptr<RdmaBufferPool> send;
         std::unique_ptr<RdmaBufferPool> recv;
+        std::unique_ptr<RdmaBufferPool> recv_control;
         uint32_t                        cq_index                   = 0;
         uint32_t                        reserved_capacity          = 0;
         uint32_t                        peer_receive_slot_capacity = 0;
@@ -358,6 +370,7 @@ class RdmaTransport : public Transport
 
     void        release_completed_frame(WorkRequest *work, const struct ibv_wc &wc);
     void        release_completed_receive(WorkRequest *work, const struct ibv_wc &wc);
+    void        release_completed_direct_receive(WorkRequest *work, const struct ibv_wc &wc);
     void        record_completion_error(const struct ibv_wc &wc, bool expected_flush = false);
     static void repost_frame_release(void *context, Buffer *slot);
     bool        adopt_cm_context(struct ibv_context *context);
