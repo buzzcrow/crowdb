@@ -14,7 +14,7 @@ use crate::{
     state::AppState,
 };
 use axum::{extract::State, Json};
-use crowdb_console_shared::deployment::{admission::local_control, services as service_intents};
+use crowdb_console_shared::deployment::{admission::local_control, registry, services as service_intents};
 use crowdb_protocol::mgmt::node::{observation::NodeRuntimeObservation, NodeControl};
 use std::time::Duration;
 
@@ -59,17 +59,44 @@ async fn observe(state: &AppState) -> Result<NodeRuntimeObservation, Failure> {
         }) {
             return Err(err_409("Bound node and monitor observation identities differ"));
         }
-        let intents = tokio::time::timeout(Duration::from_secs(1), async {
+        enrich(state, &mut observation).await;
+    }
+    Ok(observation)
+}
+
+async fn enrich(state: &AppState, observation: &mut NodeRuntimeObservation) {
+    if let Some(binding) = &observation.binding {
+        let current = tokio::time::timeout(Duration::from_secs(1), async {
             let kv = state.kv_client().await;
             kv.set_mgmt_seeds(binding.management_seeds.clone());
-            service_intents::list(kv.as_ref()).await
+            let (intents, registry) =
+                tokio::try_join!(service_intents::list(kv.as_ref()), registry::read(&kv))?;
+            let host = registry
+                .filter(|(registry, _)| registry.cluster_id == binding.bootstrap.cluster_id)
+                .and_then(|(registry, _)| {
+                    registry.nodes.into_iter().find(|node| {
+                        node.node_id == binding.node_id
+                            && node.discovery_id == observation.discovery_id
+                            && node.confirmed
+                            && !node.cancelled
+                    })
+                })
+                .map(|node| node.host)
+                .ok_or_else(|| {
+                    crowdb_console_shared::error::Error::Config(
+                        "Current confirmed local address is unavailable".into(),
+                    )
+                })?;
+            Ok::<_, crowdb_console_shared::error::Error>((intents, host))
         })
         .await
         .ok()
         .and_then(Result::ok);
+        let intents = current.as_ref().map(|(intents, _)| intents.as_slice());
+        let own_host = current.as_ref().map(|(_, host)| host.as_str());
         let (protocols, service_details) = tokio::join!(
-            protocols::observe(state, &observation, intents.as_deref()),
-            services::observe(state, &observation, intents.as_deref()),
+            protocols::observe(state, observation, intents, own_host),
+            services::observe(observation, intents, own_host),
         );
         observation.protocols = protocols;
         for (id, detail) in service_details {
@@ -82,7 +109,6 @@ async fn observe(state: &AppState) -> Result<NodeRuntimeObservation, Failure> {
             }
         }
     }
-    Ok(observation)
 }
 
 #[cfg(feature = "test-util")]
@@ -111,7 +137,20 @@ pub async fn service_detail_for_tests(
     state: &AppState,
     intent: &crowdb_protocol::mgmt::node::NodeServiceIntent,
 ) -> Result<String, String> {
-    services::read(state, intent).await
+    let host = state
+        .config
+        .read()
+        .map_err(|_| "Invalid test configuration")?
+        .node(intent.node_id)
+        .map(|node| node.host.clone());
+    services::read(intent, host.as_deref()).await
+}
+
+/// Sample actual committed local intents and addresses without UI traffic.
+/// Uses the production authority deadline, identity fences and HTTP probes.
+#[cfg(feature = "test-util")]
+pub async fn sample_node_services_for_tests(state: &AppState, observation: &mut NodeRuntimeObservation) {
+    enrich(state, observation).await;
 }
 
 /// Start the production sampling loop with an injected observation source.

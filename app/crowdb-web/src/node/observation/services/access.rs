@@ -3,11 +3,10 @@
 
 //! Exact Access readiness diagnostics even while the process is not ready.
 
-use crate::state::AppState;
 use crowdb_protocol::mgmt::node::NodeServiceIntent;
 use std::time::Duration;
 
-pub(super) async fn read(state: &AppState, intent: &NodeServiceIntent) -> Result<String, String> {
+pub(super) async fn read(intent: &NodeServiceIntent, own_host: Option<&str>) -> Result<String, String> {
     let invalid = || "Access current intent has no valid local health listener".to_owned();
     let config: toml::Value = toml::from_str(&intent.configuration).map_err(|_| invalid())?;
     let address = config
@@ -15,8 +14,7 @@ pub(super) async fn read(state: &AppState, intent: &NodeServiceIntent) -> Result
         .and_then(|health| health.get("listen"))
         .and_then(toml::Value::as_str)
         .ok_or_else(invalid)?;
-    let origin =
-        super::super::protocols::internal_origin(state, intent.node_id, address).ok_or_else(invalid)?;
+    let origin = super::super::protocols::internal_origin(own_host, address).ok_or_else(invalid)?;
     let client = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())

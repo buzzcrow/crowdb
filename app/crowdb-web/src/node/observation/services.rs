@@ -5,16 +5,15 @@
 
 mod access;
 
-use crate::state::AppState;
 use crowdb_protocol::mgmt::node::{
     observation::NodeRuntimeObservation, NodeServiceAction, NodeServiceIntent,
 };
 use std::time::Duration;
 
 pub(super) async fn observe(
-    state: &AppState,
     node: &NodeRuntimeObservation,
     intents: Option<&[NodeServiceIntent]>,
+    own_host: Option<&str>,
 ) -> Vec<(String, String)> {
     let Some(binding) = &node.binding else {
         return Vec::new();
@@ -30,16 +29,16 @@ pub(super) async fn observe(
                     && !matches!(intent.action, NodeServiceAction::Stop | NodeServiceAction::Delete)
             })
             .map(|intent| async move {
-                let detail = read(state, intent).await.unwrap_or_else(|detail| detail);
+                let detail = read(intent, own_host).await.unwrap_or_else(|detail| detail);
                 (intent.service_id.clone(), detail)
             }),
     )
     .await
 }
 
-pub(super) async fn read(state: &AppState, intent: &NodeServiceIntent) -> Result<String, String> {
+pub(super) async fn read(intent: &NodeServiceIntent, own_host: Option<&str>) -> Result<String, String> {
     if intent.kind == "access" {
-        return access::read(state, intent).await;
+        return access::read(intent, own_host).await;
     }
     let invalid = || "Chunk-KV current intent has no valid local management listener".to_owned();
     let config: toml::Value = toml::from_str(&intent.configuration).map_err(|_| invalid())?;
@@ -47,7 +46,7 @@ pub(super) async fn read(state: &AppState, intent: &NodeServiceIntent) -> Result
         .get("http_listen_addr")
         .and_then(toml::Value::as_str)
         .ok_or_else(invalid)?;
-    let origin = super::protocols::internal_origin(state, intent.node_id, address).ok_or_else(invalid)?;
+    let origin = super::protocols::internal_origin(own_host, address).ok_or_else(invalid)?;
     let expected = config
         .get("instance_id")
         .and_then(toml::Value::as_integer)

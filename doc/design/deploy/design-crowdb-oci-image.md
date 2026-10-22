@@ -88,6 +88,17 @@ Docker-specific `HEALTHCHECK` is not a portable OCI configuration field. Runtime
 health checks invoke `crowdb-monitor liveness` and `crowdb-monitor readiness`
 explicitly. Container restart policy and application readiness are distinct:
 unready Group 0 must not trigger destructive reinitialization or restart loops.
+On retained startup, the monitor validates sealed member trust and starts the
+owned KV process without waiting for quorum health. Management discovery and
+authenticated member identity remain available while the replica recovers its
+peers' current addresses. Independent HTTP health observations determine KV
+readiness; a live unready process does not consume another restart attempt.
+Explicit admission/start actions retain their bounded readiness wait.
+Background protocol observations obtain the local node's current address and
+service intents from Group 0 within one shared authority deadline. Cluster,
+node and discovery identities must match a confirmed, non-cancelled record.
+The retained UI topology is not the address authority for these local probes;
+status readers only consume the resulting observations.
 
 ## 3. Pixi-managed construction
 

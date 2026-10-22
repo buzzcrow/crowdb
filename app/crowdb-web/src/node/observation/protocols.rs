@@ -22,6 +22,7 @@ pub(super) async fn observe(
     state: &AppState,
     node: &NodeRuntimeObservation,
     intents: Option<&[NodeServiceIntent]>,
+    own_host: Option<&str>,
 ) -> Vec<DependencyObservation> {
     let Some(binding) = &node.binding else {
         return Vec::new();
@@ -64,7 +65,7 @@ pub(super) async fn observe(
                             "Access service is explicitly stopped or deleted".into(),
                         ))
                     } else if runtime_ready {
-                        request(state, protocol, current).await
+                        request(state, protocol, current, own_host).await
                     } else {
                         Err((
                             "access-service-not-ready",
@@ -112,7 +113,12 @@ pub(super) async fn observe(
     .await
 }
 
-async fn request(state: &AppState, protocol: &str, intent: &NodeServiceIntent) -> ProbeResult {
+async fn request(
+    state: &AppState,
+    protocol: &str,
+    intent: &NodeServiceIntent,
+    own_host: Option<&str>,
+) -> ProbeResult {
     let invalid = || {
         (
             "protocol-configuration-invalid",
@@ -125,7 +131,7 @@ async fn request(state: &AppState, protocol: &str, intent: &NodeServiceIntent) -
         .and_then(|value| value.get("listen"))
         .and_then(toml::Value::as_str)
         .ok_or_else(invalid)?;
-    let origin = internal_origin(state, intent.node_id, address).ok_or_else(invalid)?;
+    let origin = internal_origin(own_host, address).ok_or_else(invalid)?;
     if protocol == "s3" {
         return signed_s3_probe(state, &format!("{origin}/")).await;
     }
@@ -267,11 +273,10 @@ async fn execute_probe(protocol: &str, url: &str, headers: reqwest::header::Head
     }
 }
 
-pub(super) fn internal_origin(state: &AppState, node: u64, address: &str) -> Option<String> {
+pub(super) fn internal_origin(own_host: Option<&str>, address: &str) -> Option<String> {
     let url = reqwest::Url::parse(&format!("http://{address}")).ok()?;
     let host = url.host_str()?;
-    let config = state.config.read().ok()?;
-    let own_host = &config.node(node)?.host;
+    let own_host = own_host?;
     if !["127.0.0.1", "localhost", "0.0.0.0", "[::]", "[::1]"].contains(&host) && host != own_host {
         return None;
     }

@@ -275,6 +275,25 @@ Existing implementation can be reused; these are the outstanding parts.
   actual restart and changed-key rejection. Full monitor tests, all-target clippy
   and Rust format gates pass. The first gate caught an over-eager test helper
   requiring unrelated fixtures' runtime directories; health setup is now lazy.
+  Image AA fixes the startup cycle on the preserved changed-IP cluster. Actual
+  one-voter plus confirmed-nonvoter observations remain unavailable; two original
+  voters restore authority while the missing required member keeps the cluster
+  degraded. All four authenticated endpoint records then converge to .21–.24.
+  Full protocol acceptance still fails after the unchanged 180-second bound:
+  Web's independent protocol sampler validates new committed listeners against
+  its retained UI topology, so it rejects them as `protocol-configuration-invalid`.
+  Storage and actual service readiness have recovered. Preserve this second
+  distinct cold-recovery failure and original image/identity receipts.
+  The sampler now reads confirmed local identity/address alongside current
+  service intents within its existing one-second authority budget; it never
+  refreshes or rewrites UI configuration on a status request. A real KV/HTTP
+  regression verifies S3, Iceberg, Dataset and Access health at the new address,
+  while the old UI host and original manifest remain unchanged. Pending,
+  cancelled, wrong-node/discovery and foreign-cluster records authorize no probes.
+  Full Web gate passes 150 tests with zero failures or ignored cases; affected
+  all-target clippy and Rust format checks pass. The final focused regression
+  is repeated after extracting its helpers. Public host profile migration passes
+  190 Python fixture tests; actual native/Docker host executions remain pending.
   **Gap:** fresh-image cold changed-IP recovery acceptance and final registered host-runtime
   fixture/CI migration. Verify real four-member
   contacts with unchanged three-voter authority, preserved protocol witnesses
