@@ -27,6 +27,7 @@ async fn grouped_progress_survives_checkpoint_query_renew_growth_and_mirror_repa
     let first = strip.append(&store, name, 9, active.chunk_id, b"first").await;
     assert_eq!(store.durable_cursor(active.chunk_id, 9).await.unwrap().offset, 0);
     store.renew_liveness(active.chunk_id, 9).await.unwrap();
+    let old_layout = allocator.chunk.lock().unwrap().clone();
     let grown = store
         .grow_mirrored(name, 9, active.chunk_id, active.capacity + 1)
         .await
@@ -34,6 +35,12 @@ async fn grouped_progress_survives_checkpoint_query_renew_growth_and_mirror_repa
         .unwrap();
     assert_eq!(grown.acknowledged_cursor, first);
     assert_eq!(grown.capacity, 2 * 1024 * 1024);
+    *allocator.stale_query_once.lock().unwrap() = old_layout;
+    store.durable_cursor(active.chunk_id, 9).await.unwrap();
+    assert_eq!(
+        store.current_capacity(active.chunk_id).await.unwrap(),
+        Some(2 * 1024 * 1024)
+    );
     disks.fail_disk_once.store(1, Ordering::Release);
     let second = strip.append(&store, name, 9, active.chunk_id, b"second").await;
     assert!(second > first);

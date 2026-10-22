@@ -660,6 +660,34 @@ adaptation rather than a new transport or storage engine.
   in the grouped worker remain wiring tasks. No lease, recovery, finite-view or
   performance acceptance is claimed by this adapter preparation.
 
+## Current capacity isolation evidence (partial T14)
+
+- StreamChunkStore can report current chunk-layer capacity. Production uses its
+  authoritative layout cache and Memory reports backing capacity. Legacy injected
+  stores can explicitly return None; only that compatibility path still publishes
+  cached capacity on growth. The supported production path no longer creates a
+  Stream head/directory publication solely for internal growth.
+- Legacy writer/read-only open refresh capacity from the chunk layer after its
+  durable query rather than rejecting newer valid storage against a cached
+  manifest capacity. The read-only view still stops at its captured root; it
+  never combines a newer physical cursor with an older logical directory.
+- Layout cache replacement now compares modify_ts through ArcSwap RCU. Delayed
+  old replies cannot replace a newer layout; cursor/checkpoint counters and the
+  sealed flag do not move backward. This adds no lock. The allocator mock's
+  seal timestamp/cursor now match actual ChunkDB transitions.
+- Two growth cases prove unchanged attachment/append publication counts without
+  growth-only writes, and a persisted 1.5 MiB legacy cursor with a still-1 MiB
+  manifest hint. Cold read-only capture retains EOF zero; writer reopen recovers
+  exact retained bytes. Production-adapter coverage injects an older layout
+  reply after growth and verifies capacity/progress remain current. Focused
+  14 cases and clippy pass. All 92 Stream cases and fmt pass, zero ignored. Logs:
+  `capacity-isolation-{clippy3,tests,full-stream,fmt}.log`.
+- T16 must still align expiry/finalization and reject stale shortening: the
+  current raw ChunkDB seal helper can accept seal_bytes below an existing cursor,
+  and a grouped owner's synchronized position can be newer than that persisted
+  cursor. Do not enable deferred append completion until owner exclusion and
+  content-derived finalization protect both cases.
+
 ## Phase 0 — Establish evidence and settle contracts
 
 - [x] **T01 — Capture a matched implementation baseline**: retain release

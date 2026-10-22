@@ -30,6 +30,7 @@ mod local_progress;
 
 struct Allocator {
     chunk: Mutex<Option<Chunk>>,
+    stale_query_once: Mutex<Option<Chunk>>,
     fail_advance_after_commit: AtomicBool,
     fail_replacement_response_once: AtomicBool,
     fail_query_once: AtomicBool,
@@ -41,6 +42,7 @@ impl Allocator {
     fn new() -> Self {
         Self {
             chunk: Mutex::new(None),
+            stale_query_once: Mutex::new(None),
             fail_advance_after_commit: AtomicBool::new(false),
             fail_replacement_response_once: AtomicBool::new(false),
             fail_query_once: AtomicBool::new(false),
@@ -213,6 +215,7 @@ impl ChunkAllocator for Allocator {
         chunk.state = ChunkState::Sealed as i32;
         chunk.sealed_length = request.seal_length;
         chunk.acknowledged_cursor = request.seal_bytes;
+        chunk.modify_ts += 1;
         Ok(SealChunkResponse {
             chunk: Some(chunk.clone()),
         })
@@ -245,7 +248,12 @@ impl ChunkAllocator for Allocator {
         if self.fail_query_once.swap(false, Ordering::AcqRel) {
             return Err(IoError::AllocationFailed("injected query outage".into()));
         }
-        let chunk = self.chunk.lock().unwrap().clone();
+        let chunk = self
+            .stale_query_once
+            .lock()
+            .unwrap()
+            .take()
+            .or_else(|| self.chunk.lock().unwrap().clone());
         if chunk.as_ref().and_then(|chunk| chunk.id) != request.chunk_id {
             return Err(IoError::ChunkNotFound("missing test chunk".into()));
         }

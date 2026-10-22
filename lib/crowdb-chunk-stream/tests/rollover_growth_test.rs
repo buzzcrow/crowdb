@@ -7,8 +7,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use crowdb_chunk_stream::{
     memory::MemoryStreamStore, ActiveChunkDescriptor, ChunkStream, CursorAdvance, DurableCursor,
-    MirrorStripImage, Result, StreamBinding, StreamBindingState, StreamChunkStore, StreamConfig, StreamName,
-    StreamPurpose, TrimmedChunk,
+    MirrorStripImage, Result, StreamBinding, StreamBindingState, StreamChunkStore, StreamConfig,
+    StreamManifest, StreamMetadataStore, StreamName, StreamPurpose, StreamRegistry, TrimmedChunk,
 };
 use crowdb_protocol::common::ChunkId;
 
@@ -22,6 +22,9 @@ struct TestGrowingChunks {
 
 #[async_trait]
 impl StreamChunkStore for TestGrowingChunks {
+    async fn current_capacity(&self, _chunk: ChunkId) -> Result<Option<u64>> {
+        Ok(Some(CAPACITY))
+    }
     async fn allocate_mirrored(
         &self,
         name: StreamName,
@@ -130,6 +133,11 @@ async fn rollover_grows_a_fresh_successor_before_admitting_the_waiting_append() 
     assert_ne!(first.chunk_id, second.chunk_id);
     assert_eq!(second.begin, first.end);
     assert_eq!(stream.metrics().rollovers, 1);
+    assert_eq!(
+        store.metadata_publish_count(),
+        5,
+        "growth changes only chunkinfo; initial head, attachments and append publications remain"
+    );
     let reopened = ChunkStream::open_read_only(name, 1, config, store.clone(), store, chunks)
         .await
         .unwrap();
@@ -140,4 +148,87 @@ async fn rollover_grows_a_fresh_successor_before_admitting_the_waiting_append() 
             payload
         );
     }
+}
+
+#[tokio::test]
+async fn stale_stream_capacity_does_not_reject_a_newer_durable_chunk_layout() {
+    let store = Arc::new(MemoryStreamStore::new(CAPACITY));
+    let chunks = Arc::new(TestGrowingChunks { store: store.clone() });
+    let name = StreamName { high: 73, low: 79 };
+    let config = StreamConfig {
+        chunk_capacity_bytes: CAPACITY,
+        ..StreamConfig::default()
+    };
+    StreamRegistry::create(
+        store.as_ref(),
+        StreamBinding {
+            purpose: StreamPurpose::Stream,
+            stream_name: name,
+            metadata_group_id: 1,
+            binding_generation: 1,
+            state: StreamBindingState::Active,
+            owner_kind: Some("test".into()),
+        },
+    )
+    .await
+    .unwrap();
+    let active = chunks
+        .allocate_mirrored(name, 1, StreamPurpose::Stream)
+        .await
+        .unwrap();
+    let manifest = StreamManifest {
+        stream_name: name,
+        metadata_group_id: 1,
+        writer_epoch: 1,
+        generation: 1,
+        active: Some(active.clone()),
+        ..StreamManifest::default()
+    };
+    store.publish(None, manifest.clone(), vec![]).await.unwrap();
+    let payload = Bytes::from(vec![0x5a; usize::try_from(INITIAL + INITIAL / 2).unwrap()]);
+    let frames = crowdb_protocol::frame::encode_frames(
+        crowdb_protocol::frame::FrameMagic::StreamV1,
+        active.chunk_id,
+        &payload,
+        1,
+    )
+    .unwrap();
+    let data = Bytes::from(frames.concat());
+    let end = data.len() as u64;
+    assert!(end > INITIAL);
+    chunks
+        .grow_mirrored(name, 1, active.chunk_id, end)
+        .await
+        .unwrap()
+        .unwrap();
+    chunks
+        .write_mirrors_with_images(name, 1, active.chunk_id, 0, data.clone(), &[])
+        .await
+        .unwrap();
+    chunks
+        .advance_cursor(name, 1, active.chunk_id, 0, end, crc32fast::hash(&data))
+        .await
+        .unwrap();
+    assert_eq!(store.load_current(name).await.unwrap(), Some(manifest));
+    let reader = ChunkStream::open_read_only(
+        name,
+        1,
+        config.clone(),
+        store.clone(),
+        store.clone(),
+        chunks.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        reader.tail(),
+        0,
+        "the captured directory remains the finite read boundary"
+    );
+    let reopened = ChunkStream::open(name, 2, config, store.clone(), store.clone(), chunks)
+        .await
+        .unwrap();
+    assert_eq!(reopened.tail(), payload.len() as u64);
+    assert_eq!(reopened.read_at(0, payload.len()).await.unwrap(), payload);
+    assert_eq!(reader.tail(), 0);
 }

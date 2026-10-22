@@ -77,6 +77,13 @@ pub trait StreamMetadataStore: Send + Sync {
 
 #[async_trait]
 pub trait StreamChunkStore: Send + Sync {
+    /// Current physical capacity from the chunk layer, independent of a cached
+    /// Stream checkpoint. None retains compatibility for legacy injected stores.
+    /// # Errors
+    /// Returns chunk metadata/availability errors when this store provides capacity.
+    async fn current_capacity(&self, _chunk_id: ChunkId) -> Result<Option<u64>> {
+        Ok(None)
+    }
     async fn allocate_mirrored(
         &self,
         stream_name: StreamName,

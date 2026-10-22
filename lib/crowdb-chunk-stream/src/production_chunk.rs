@@ -197,21 +197,33 @@ fn chunk_capacity(chunk: &Chunk) -> Result<u64> {
 }
 
 fn update_state(state: &ChunkStateView, chunk: Chunk) {
-    state.modify_ts.store(chunk.modify_ts, Ordering::Release);
+    let incoming = Arc::new(chunk);
+    state.chunk.rcu(|current| {
+        if incoming.modify_ts >= current.modify_ts {
+            Arc::clone(&incoming)
+        } else {
+            Arc::clone(current)
+        }
+    });
+    let chunk = state.chunk.load_full();
+    state.modify_ts.fetch_max(chunk.modify_ts, Ordering::AcqRel);
     state
         .persisted_cursor
-        .store(chunk.acknowledged_cursor, Ordering::Release);
+        .fetch_max(chunk.acknowledged_cursor, Ordering::AcqRel);
     state
         .synchronized_cursor
         .fetch_max(chunk.acknowledged_cursor, Ordering::AcqRel);
     state
         .sealed
-        .store(chunk.state == ChunkState::Sealed as i32, Ordering::Release);
-    state.chunk.store(Arc::new(chunk));
+        .fetch_or(chunk.state == ChunkState::Sealed as i32, Ordering::AcqRel);
 }
 
 #[async_trait]
 impl StreamChunkStore for ProductionStreamChunkStore {
+    async fn current_capacity(&self, chunk_id: ChunkId) -> Result<Option<u64>> {
+        let state = self.state(chunk_id).await?;
+        chunk_capacity(&state.chunk.load()).map(Some)
+    }
     async fn allocate_mirrored(
         &self,
         stream_name: StreamName,
