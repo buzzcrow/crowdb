@@ -25,6 +25,9 @@ use crowdb_protocol::chunkdb::rpc::{
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::diskdb::rpc::Segment;
 
+#[path = "production_chunk_test/local_progress.rs"]
+mod local_progress;
+
 struct Allocator {
     chunk: Mutex<Option<Chunk>>,
     fail_advance_after_commit: AtomicBool,
@@ -209,6 +212,7 @@ impl ChunkAllocator for Allocator {
         assert_eq!(chunk.id, request.chunk_id);
         chunk.state = ChunkState::Sealed as i32;
         chunk.sealed_length = request.seal_length;
+        chunk.acknowledged_cursor = request.seal_bytes;
         Ok(SealChunkResponse {
             chunk: Some(chunk.clone()),
         })

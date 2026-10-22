@@ -37,10 +37,19 @@ impl Drop for ActiveRead<'_> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChunkWriteMode {
+    Fresh,
+    Legacy,
+    Grouped,
+}
+
 #[derive(Debug)]
 struct Chunk {
     bytes: Vec<u8>,
     cursor: u64,
+    synchronized_cursor: u64,
+    write_mode: ChunkWriteMode,
     capacity: u64,
     sealed: bool,
     released: bool,
@@ -274,6 +283,8 @@ impl StreamChunkStore for MemoryStreamStore {
             Chunk {
                 bytes: Vec::new(),
                 cursor: 0,
+                synchronized_cursor: 0,
+                write_mode: ChunkWriteMode::Fresh,
                 capacity: self.chunk_capacity,
                 sealed: false,
                 released: false,
@@ -329,8 +340,27 @@ impl StreamChunkStore for MemoryStreamStore {
         if chunk.sealed || u64::try_from(end).unwrap_or(u64::MAX) > chunk.capacity {
             return Err(StreamError::InvalidRequest("write exceeds writable chunk".into()));
         }
+        let grouped = crowdb_protocol::frame::parse_header(&data)
+            .is_ok_and(|header| header.magic == crowdb_protocol::frame::FrameMagic::StreamV2);
+        if chunk.write_mode == ChunkWriteMode::Grouped
+            && (!grouped || physical_offset != chunk.synchronized_cursor)
+            || grouped
+                && chunk.write_mode != ChunkWriteMode::Grouped
+                && (chunk.write_mode != ChunkWriteMode::Fresh
+                    || physical_offset != 0
+                    || chunk.synchronized_cursor != 0)
+        {
+            return Err(StreamError::InvalidRequest(
+                "grouped writes require a fresh chunk and contiguous synchronized progress".into(),
+            ));
+        }
+        chunk.write_mode = ChunkWriteMode::Legacy;
         chunk.bytes.resize(chunk.bytes.len().max(end), 0);
         chunk.bytes[start..end].copy_from_slice(&data);
+        chunk.synchronized_cursor = chunk.synchronized_cursor.max(end as u64);
+        if grouped {
+            chunk.write_mode = ChunkWriteMode::Grouped;
+        }
         Ok(())
     }
 
@@ -370,6 +400,7 @@ impl StreamChunkStore for MemoryStreamStore {
         }
         if fault.commit {
             chunk.cursor = new_cursor;
+            chunk.synchronized_cursor = chunk.synchronized_cursor.max(new_cursor);
             chunk.last_advance_checksum = Some(checksum);
         }
         Ok(fault.outcome)
@@ -422,11 +453,17 @@ impl StreamChunkStore for MemoryStreamStore {
         if writer_epoch != chunk.writer_epoch {
             return Err(StreamError::StaleWriter);
         }
-        if chunk.cursor != cursor {
+        if (if chunk.write_mode == ChunkWriteMode::Grouped {
+            chunk.synchronized_cursor
+        } else {
+            chunk.cursor
+        }) != cursor
+        {
             return Err(StreamError::Corruption(
                 "seal cursor differs from durable cursor".into(),
             ));
         }
+        chunk.cursor = cursor;
         chunk.sealed = true;
         Ok(())
     }

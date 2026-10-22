@@ -27,10 +27,16 @@ use crate::{
     CursorAdvance, DurableCursor, MirrorStripImage, Result, StreamChunkStore, StreamError, TrimmedChunk,
 };
 
+mod progress;
+use progress::{admit_write, write_cursor};
+
 struct ChunkStateView {
     chunk: ArcSwap<Chunk>,
     modify_ts: AtomicU64,
-    cursor: AtomicU64,
+    persisted_cursor: AtomicU64,
+    synchronized_cursor: AtomicU64,
+    grouped_progress: AtomicBool,
+    fresh_grouped_allocation: AtomicBool,
     sealed: AtomicBool,
     last_checksum: AtomicU32,
     has_checksum: AtomicBool,
@@ -147,7 +153,10 @@ impl ProductionStreamChunkStore {
         }
         let view = Arc::new(ChunkStateView {
             modify_ts: AtomicU64::new(chunk.modify_ts),
-            cursor: AtomicU64::new(chunk.acknowledged_cursor),
+            persisted_cursor: AtomicU64::new(chunk.acknowledged_cursor),
+            synchronized_cursor: AtomicU64::new(chunk.acknowledged_cursor),
+            grouped_progress: AtomicBool::new(false),
+            fresh_grouped_allocation: AtomicBool::new(false),
             sealed: AtomicBool::new(chunk.state == ChunkState::Sealed as i32),
             last_checksum: AtomicU32::new(0),
             has_checksum: AtomicBool::new(false),
@@ -189,7 +198,12 @@ fn chunk_capacity(chunk: &Chunk) -> Result<u64> {
 
 fn update_state(state: &ChunkStateView, chunk: Chunk) {
     state.modify_ts.store(chunk.modify_ts, Ordering::Release);
-    state.cursor.store(chunk.acknowledged_cursor, Ordering::Release);
+    state
+        .persisted_cursor
+        .store(chunk.acknowledged_cursor, Ordering::Release);
+    state
+        .synchronized_cursor
+        .fetch_max(chunk.acknowledged_cursor, Ordering::AcqRel);
     state
         .sealed
         .store(chunk.state == ChunkState::Sealed as i32, Ordering::Release);
@@ -218,7 +232,9 @@ impl StreamChunkStore for ProductionStreamChunkStore {
         let chunk_id = writer.chunk_id();
         let capacity = writer.capacity();
         let cursor = writer.cursor();
-        self.install(writer.chunk().clone())?;
+        self.install(writer.chunk().clone())?
+            .fresh_grouped_allocation
+            .store(true, Ordering::Release);
         Ok(ActiveChunkDescriptor {
             chunk_id,
             physical_start: 0,
@@ -248,9 +264,9 @@ impl StreamChunkStore for ProductionStreamChunkStore {
             if capacity >= required_capacity {
                 return Ok(Some(ActiveChunkDescriptor {
                     chunk_id,
-                    physical_start: chunk.acknowledged_cursor,
+                    physical_start: write_cursor(&state),
                     logical_start: 0,
-                    acknowledged_cursor: chunk.acknowledged_cursor,
+                    acknowledged_cursor: write_cursor(&state),
                     capacity,
                 }));
             }
@@ -308,9 +324,9 @@ impl StreamChunkStore for ProductionStreamChunkStore {
             update_state(&state, updated);
             return Ok(Some(ActiveChunkDescriptor {
                 chunk_id,
-                physical_start: state.cursor.load(Ordering::Acquire),
+                physical_start: write_cursor(&state),
                 logical_start: 0,
-                acknowledged_cursor: state.cursor.load(Ordering::Acquire),
+                acknowledged_cursor: write_cursor(&state),
                 capacity,
             }));
         }
@@ -328,15 +344,7 @@ impl StreamChunkStore for ProductionStreamChunkStore {
     ) -> Result<()> {
         let state = self.state(chunk_id).await?;
         let mut chunk = (*state.chunk.load_full()).clone();
-        if chunk.writer_epoch != writer_epoch
-            || state.sealed.load(Ordering::Acquire)
-            || state.cursor.load(Ordering::Acquire) != physical_offset
-        {
-            return Err(StreamError::StaleWriter);
-        }
-        let data_end = physical_offset
-            .checked_add(data.len() as u64)
-            .ok_or_else(|| StreamError::InvalidRequest("stream write cursor overflows".into()))?;
+        let (grouped, data_end) = admit_write(&state, &chunk, writer_epoch, physical_offset, &data)?;
         let flow = MirrorStripFlow::with_shared_failures(
             Arc::clone(&self.allocator),
             Arc::clone(&self.disk_writer),
@@ -412,6 +420,10 @@ impl StreamChunkStore for ProductionStreamChunkStore {
                 "stream mirror images do not cover the write range".into(),
             ));
         }
+        state.synchronized_cursor.fetch_max(data_end, Ordering::AcqRel);
+        if grouped {
+            state.grouped_progress.store(true, Ordering::Release);
+        }
         Ok(())
     }
 
@@ -426,7 +438,7 @@ impl StreamChunkStore for ProductionStreamChunkStore {
     ) -> Result<CursorAdvance> {
         let state = self.state(chunk_id).await?;
         if state.chunk.load().writer_epoch != writer_epoch
-            || state.cursor.load(Ordering::Acquire) != expected_cursor
+            || state.persisted_cursor.load(Ordering::Acquire) != expected_cursor
         {
             return Ok(CursorAdvance::DefinitelyNotCommitted);
         }
@@ -516,7 +528,7 @@ impl StreamChunkStore for ProductionStreamChunkStore {
 
     async fn renew_liveness(&self, chunk_id: ChunkId, writer_epoch: u64) -> Result<()> {
         let state = self.state(chunk_id).await?;
-        let cursor = state.cursor.load(Ordering::Acquire);
+        let cursor = state.persisted_cursor.load(Ordering::Acquire);
         let response = self
             .allocator
             .advance_chunk_write(AdvanceChunkWriteRequest {
@@ -541,7 +553,7 @@ impl StreamChunkStore for ProductionStreamChunkStore {
 
     async fn seal(&self, chunk_id: ChunkId, writer_epoch: u64, cursor: u64) -> Result<()> {
         let state = self.state(chunk_id).await?;
-        if state.chunk.load().writer_epoch > writer_epoch || state.cursor.load(Ordering::Acquire) != cursor {
+        if state.chunk.load().writer_epoch > writer_epoch || write_cursor(&state) != cursor {
             return Err(StreamError::StaleWriter);
         }
         let response = self
@@ -608,7 +620,7 @@ impl StreamChunkStore for ProductionStreamChunkStore {
 
     async fn release_trimmed(&self, chunk_id: ChunkId, _logical_end: u64) -> Result<TrimmedChunk> {
         let state = self.state(chunk_id).await?;
-        let reclaimed_bytes = state.cursor.load(Ordering::Acquire);
+        let reclaimed_bytes = state.persisted_cursor.load(Ordering::Acquire);
         self.allocator
             .delete_chunk(DeleteChunkRequest {
                 chunk_id: Some(chunk_id),

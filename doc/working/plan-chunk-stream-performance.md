@@ -631,6 +631,35 @@ adaptation rather than a new transport or storage engine.
   locations, lazy index reads and immutable finite worker views while retaining
   the existing per-append durability prerequisites until T14–T19 are ready.
 
+## Local synchronized progress evidence (partial T14)
+
+- ProductionStreamChunkStore now tracks persisted and synchronized physical
+  cursors separately. Stream V2 chunks admit subsequent grouped writes from
+  synchronized progress; layout/query/repair refreshes only advance, never rewind,
+  that local position. Growth descriptors preserve it. Liveness renewal continues
+  to use the persisted checkpoint and does not silently publish a newer cursor.
+- The first grouped write consumes a locally fresh allocation token; a cold
+  adapter cannot overwrite a prior process's group even when its persisted
+  cursor is zero. A failed first attempt cannot turn an unknown old range into
+  a fresh allocation. Grouped chunks reject legacy-frame writes. Legacy V1/raw
+  test seams retain their cursor-authority behavior until migration/new wiring.
+- Only successful synchronized completion of all strip writes promotes local
+  progress. Explicit seal accepts the synchronized grouped boundary and persists
+  it through the existing chunk-layer seal. MemoryStreamStore models the same
+  grouped progress/seal contract under its existing test-only mutex. The mock
+  production allocator's seal response now matches actual ChunkDB by returning
+  the exact persisted seal_bytes cursor.
+- Three new production-adapter cases cover stale checkpoint queries, renewal,
+  growth, replica repair/full images, further append and final seal, mixed
+  revisions and cold overwrite refusal. One memory case covers multiple groups
+  with zero cursor advances before explicit seal. Focused 13 cases and clippy
+  pass. All 91 Stream cases and fmt pass, zero ignored. Logs:
+  `local-progress-{clippy4,tests3,full-stream,fmt}.log`.
+- The existing worker still encodes V1 and waits for cursor/directory publication.
+  Removing growth-triggered Stream publication and using these local positions
+  in the grouped worker remain wiring tasks. No lease, recovery, finite-view or
+  performance acceptance is claimed by this adapter preparation.
+
 ## Phase 0 — Establish evidence and settle contracts
 
 - [x] **T01 — Capture a matched implementation baseline**: retain release
