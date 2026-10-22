@@ -285,7 +285,7 @@ Existing implementation can be reused; these are the outstanding parts.
     - F04/F05 above repair the actual split-transfer restart and stream successor
       failures discovered through the migrated fixture. The Chunk-KV script
       now passes; stream random-read/replay/GC complete with zero data errors,
-      but the original performance script remains red. See the design decision
+      but the original performance script remains red. See the contract audit
       below; no metadata, cache, throughput or latency threshold was relaxed.
 - [ ] **T30–T33 — Complete registered acceptance ownership and CI**.
   Register A01–A33 in owning Rust/Python/container/UI suites; mocks and manual
@@ -309,48 +309,51 @@ Existing implementation can be reused; these are the outstanding parts.
   descriptions still need migration. Run applicable full gates, then remove
   requirement, backlog row and this temporary plan in the final cleanup commit.
 
-## Blocked
+## Stream contract audit
 
-- **Decision required: retained chunk-stream performance contract.** This is a
-  design/scope choice under `/implement-requirement`, not the five-attempt limit.
-  Keep T29b and R243 incomplete until the selected contract is verified.
-  - Existing `write_batch` publishes the framed extent directory before append
-    completion. `read_publication_test` explicitly requires concurrent readers
-    to retain the last published boundary; crash recovery verifies unpublished
-    durable frames rather than exposing unverified bytes. These semantics
-    predate the current fixture migration.
-  - The unchanged benchmark instead asserts `metadata_publications <= rollovers
-    + 1`. Actual 4 KiB append produced 241 successful operations, zero errors,
-    zero rollovers and 242 publications, so that assertion cannot pass with the
-    current append contract. Removing publication just to pass it would break
-    the reader/recovery tests.
-  - The historical throughput baseline used NullDisk. The current reader
-    validates real frames, so measurement fixtures use MemDisk. Following F05,
-    real 320 MiB replay and 576 MiB GC complete correctly. The reduced-duration
-    diagnostic measured random read 18,105 ops/s against the old 30,000 floor,
-    replay 164 MiB/s against the old 300 floor, and six cache misses against the
-    old two-miss bound. GC passed. These one-second diagnostics are not a new
-    reference baseline and do not certify the ten-second performance matrix.
-  - Evidence: `.crowdb-runtime/artifacts/r243-bench-chunk-stream{,-2}/` and
-    `r243-t29b-gates/r243-bench-chunk-stream{,-2}.log`. Both real attempts retain
-    all failed assertions; F05 fixed the first attempt's rollover corruption.
-    No threshold was changed, no data error suppressed and no timeout extended.
-  - **Option A (recommended):** preserve current publication/snapshot/fencing
-    semantics, explicitly replace the obsolete NullDisk performance contract
-    with a reviewed MemDisk baseline and bounds for batching, growth and reads.
-    Run the full-duration matrix before accepting it; document any remaining
-    performance regressions rather than deriving limits from one sample.
-  - **Option B:** keep the original metadata/performance gates and undertake a
-    stream directory/recovery redesign that removes per-batch metadata writes
-    while preserving verified read boundaries, overlays and writer fencing.
-    This is additional storage architecture work beyond the OCI fixture move.
-- **A31 environment remains unavailable:** native containerd socket permissions
-  require credentials unavailable to this process. A Docker-provisioned nested
-  daemon is not the requested Docker-free Linux host. The earlier request for
-  a reachable SSH runner remains pending; do not count this as a pass or delete
-  the requirement. Other unfinished implementation is listed above, including
-  formation/interruption, non-voter trust, CLI host adapters and UI/runtime
-  acceptance; those are unfinished work, not additional user decisions.
+- User requested confirmation through tests before changing performance gates.
+  The earlier proposed consistency-versus-baseline choice is withdrawn: absence
+  of per-append Stream-directory publication does not imply missing durability.
+  Keep the original performance assertions and do not rebaseline to hide failures.
+- Two metadata boundaries must remain distinct. Every acknowledged append still
+  durably advances the fenced ChunkDB cursor. The old raw-byte Stream directory
+  was published on allocation/rollover; recovery used that cursor to reconstruct
+  the active tail. Historical `first_append_has_no_timer_and_skips_metadata_consensus`
+  asserted two publications (create plus allocation), while
+  `reopen_recovers_the_durable_active_tail` verified retained bytes after reopen.
+- Commit `576d3c36b` introduced public Stream frames and per-frame extent mapping,
+  replaced the local manifest snapshot update with `publish_state` on every
+  append batch, and changed the first-append test to expect three publications.
+  Commit `d166a2bf6` still included the old `publications <= rollovers + 1` gate.
+  These are a representation/performance regression and an inconsistent test
+  contract, not evidence that the old no-directory-write design lost data.
+- Added `durable_cursor_recovery_test` with three independent boundaries:
+  valid framed data with a committed cursor recovers without another directory
+  publication; bytes beyond the durable cursor remain invisible; corrupt framed
+  bytes inside the committed cursor are rejected. Old writers remain fenced.
+  All 55 current stream tests pass. All eight NullDisk/MemDisk C++ tests pass,
+  including deterministic synthetic reads and successful discard writes.
+- The current NullDisk generates disk-ID/offset PRNG bytes, not valid Stream
+  frames with matching framing/trailer. This does not disqualify patterned
+  NullDisk benchmarking; that fixture needs a pattern matching the framed
+  protocol. Retained-byte recovery tests still use memory-backed storage.
+- Evidence and a reproducible same-binary NullDisk/MemDisk comparison runner:
+  `.crowdb-runtime/artifacts/r243-stream-contract-audit/`. The initial comparison
+  overlapped a cold clippy dependency build and is diagnostic only. The isolated
+  comparison uses the same release binary and parameters, ten seconds per write
+  case, after compilation completed: NullDisk/MemDisk 1T 140.07/131.58 ops/s,
+  32T 1019.88/1007.33 ops/s, all zero errors. These samples do not establish a
+  new baseline or attribute the main regression to MemDisk. At 1T, 1401/1317
+  append batches publish 1407/1323 directories (including allocation/growth).
+  Raw-pattern NullDisk Stream reads fail with `LayoutExpired`; MemDisk completes
+  all 32 requested reads. The synthetic framed-data fixture remains unfinished.
+  Exact binary hash, parameters, operation counts, publications and successful
+  scoped shutdown receipts are retained. All-target stream clippy and fmt pass;
+  no production behavior or performance threshold changed.
+- T29b remains unfinished while its strict stream performance checks fail;
+  address the append directory publication cost and framed synthetic-data
+  fixture rather than asking the user to trade correctness for performance.
+  Native Docker-free A31 remains an external-runner dependency under T34.
 
 ## Completed foundation (brief)
 
