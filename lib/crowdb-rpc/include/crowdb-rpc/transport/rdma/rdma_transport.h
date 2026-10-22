@@ -34,6 +34,9 @@ constexpr uint32_t RDMA_WIRE_SLOT_CAPACITY = RDMA_DATAPATH_CAPACITY;
 struct RdmaConfig
 {
     std::string device;
+    std::string source_address{};
+    std::string gid{};
+    bool        require_tcp_preflight          = false;
     uint8_t     port                           = 1;
     uint32_t    cq_depth                       = 8192;
     uint32_t    cq_count                       = 1;
@@ -118,6 +121,9 @@ class RdmaTransport : public Transport
         std::atomic<uint64_t> registered_bytes_high_water{0};
         std::atomic<uint64_t> registration_rejects{0};
         std::atomic<uint64_t> registration_failures{0};
+        std::atomic<uint64_t> cm_attempts{0};
+        std::atomic<uint64_t> preflight_attempts{0};
+        std::atomic<uint64_t> preflight_failures{0};
     };
 
     explicit RdmaTransport(RdmaConfig config = {}, BufferPool *application_pool = nullptr);
@@ -130,7 +136,14 @@ class RdmaTransport : public Transport
 
     // RDMA-specific: connect to a peer endpoint.
     // Returns a new Connection on success, nullptr on failure.
-    std::shared_ptr<Connection> connect(const std::string &addr, int port);
+    std::shared_ptr<Connection>          connect(const std::string &addr, int port,
+                                                 const RdmaEndpointCapability *expected_peer = nullptr);
+    [[nodiscard]] RdmaEndpointCapability local_capability() const;
+
+    [[nodiscard]] const std::string &source_address() const
+    {
+        return config_.source_address;
+    }
 
     // RDMA-specific: listen on an endpoint (server side).
     bool listen(const std::string &addr, int port);
@@ -176,6 +189,8 @@ class RdmaTransport : public Transport
     friend struct TestRdmaTransport;
 #    endif
     RdmaConfig                                                           config_;
+    RdmaEndpointCapability                                               local_capability_;
+    std::atomic<bool>                                                    listen_active_{false};
     std::atomic<bool>                                                    capability_available_{false};
     struct ibv_context                                                  *context_ = nullptr;
     std::shared_ptr<RdmaDevice>                                          device_;
@@ -313,8 +328,11 @@ class RdmaTransport : public Transport
         std::shared_ptr<RepostState>    posting_state = std::make_shared<RepostState>();
         std::unique_ptr<RdmaBufferPool> send;
         std::unique_ptr<RdmaBufferPool> recv;
-        uint32_t                        cq_index          = 0;
-        uint32_t                        reserved_capacity = 0;
+        uint32_t                        cq_index                   = 0;
+        uint32_t                        reserved_capacity          = 0;
+        uint32_t                        peer_receive_slot_capacity = 0;
+        uint32_t                        peer_receive_frame_limit   = 1;
+        uint32_t                        qp_number                  = 0;
     };
 
     struct RepostContext

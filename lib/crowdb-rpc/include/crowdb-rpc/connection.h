@@ -73,6 +73,11 @@ class Connection : public std::enable_shared_from_this<Connection>
 
     void set_peer_capability(const RdmaEndpointCapability &capability)
     {
+        if (peer_handshake_received_.load(std::memory_order_acquire)) {
+            if (rdma_capability_identity(peer_capability_) != rdma_capability_identity(capability))
+                close();
+            return;
+        }
         peer_capability_ = capability;
         peer_handshake_received_.store(true, std::memory_order_release);
     }

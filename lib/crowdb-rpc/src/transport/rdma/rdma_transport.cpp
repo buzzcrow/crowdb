@@ -23,6 +23,7 @@
 #    include <chrono>
 #    include <cstdlib>
 #    include <cstring>
+#    include <random>
 #    include <thread>
 
 namespace crowdb::rpc
@@ -60,6 +61,24 @@ RdmaTransport::RdmaTransport(RdmaConfig config, BufferPool *application_pool)
     }
     requested_device_ = config_.device;
     port_             = config_.port;
+    if (config_.source_address.empty()) {
+        if (const char *source = std::getenv("CROWDB_RDMA_SOURCE_ADDR"); source != nullptr)
+            config_.source_address = source;
+    }
+    if (config_.gid.empty()) {
+        if (const char *gid = std::getenv("CROWDB_RDMA_GID"); gid != nullptr)
+            config_.gid = gid;
+    }
+    std::random_device random;
+    local_capability_.protocol_version = RDMA_PROTOCOL_VERSION;
+    local_capability_.generation       = (static_cast<uint64_t>(random()) << 32) | random();
+    if (local_capability_.generation == 0)
+        local_capability_.generation = 1;
+    local_capability_.data_classes          = {RDMA_CONTROL_CAPACITY, RDMA_METADATA_CAPACITY, RDMA_AGGREGATE_CAPACITY,
+                                               RDMA_DATAPATH_CAPACITY};
+    local_capability_.receive_slot_capacity = config_.wire_slot_capacity;
+    local_capability_.receive_frame_limit   = 1;
+    local_capability_.cm_address            = config_.source_address;
 
     int          device_count = 0;
     ibv_device **devices      = ibv_get_device_list(&device_count);
@@ -80,10 +99,26 @@ RdmaTransport::RdmaTransport(RdmaConfig config, BufferPool *application_pool)
             ibv_port_attr attributes{};
             capability_available_ =
                 ibv_query_port(probe, port_, &attributes) == 0 && attributes.state == IBV_PORT_ACTIVE;
+            local_capability_.device = ibv_get_device_name(selected);
+            local_capability_.gid    = config_.gid;
+            if (local_capability_.gid.empty()) {
+                ibv_gid gid{};
+                char    text[INET6_ADDRSTRLEN]{};
+                if (ibv_query_gid(probe, port_, 0, &gid) == 0 &&
+                    ::inet_ntop(AF_INET6, &gid, text, sizeof(text)) != nullptr)
+                    local_capability_.gid = text;
+            }
             ibv_close_device(probe);
         }
     }
     ibv_free_device_list(devices);
+}
+
+RdmaEndpointCapability RdmaTransport::local_capability() const
+{
+    auto capability           = local_capability_;
+    capability.rdma_available = ready() && (capability.port == 0 || listen_active_.load(std::memory_order_acquire));
+    return capability;
 }
 
 RdmaTransport::~RdmaTransport()
@@ -112,6 +147,8 @@ bool RdmaTransport::adopt_cm_context(struct ibv_context *context)
     // A transport uses one device context for its CQ pool and registered
     // arenas. Do not replace live QPs/registrations when another HCA appears.
     if (context_ != nullptr)
+        return false;
+    if (local_capability_.device != ibv_get_device_name(context->device))
         return false;
     auto device = RdmaDevice::retain(context, memory_stats_);
     if (device == nullptr)
@@ -188,11 +225,12 @@ bool RdmaTransport::submit(Connection *conn, OutFrame *frame)
     }
     const uint32_t data_len = frame->data == nullptr ? 0 : frame->data->len;
     const uint64_t wire_len = static_cast<uint64_t>(HEADER_SIZE) + control_len + data_len;
-    if (wire_len > slot->capacity) {
+    if (wire_len > slot->capacity || wire_len > pools->peer_receive_slot_capacity) {
+        const auto capacity = slot->capacity;
         (void)slot->transition(BufferOwnership::SendInFlight, BufferOwnership::Available);
         slot->release();
         CRB_LOG_WARN("rdma send: message exceeds wire slot control_len={} data_len={} capacity={}", control_len,
-                     data_len, slot->capacity);
+                     data_len, capacity);
         return false;
     }
     frame->header.msg_size  = control_len;
@@ -330,6 +368,7 @@ Buffer *RdmaTransport::register_buffer(Buffer *buf)
 
 void RdmaTransport::shutdown()
 {
+    listen_active_.store(false, std::memory_order_release);
     repost_state_->users.fetch_or(RepostState::STOPPED, std::memory_order_acq_rel);
     while ((repost_state_->users.load(std::memory_order_acquire) & ~RepostState::STOPPED) != 0)
         std::this_thread::yield();

@@ -559,7 +559,8 @@ SocketTransport::SocketTransport(uint32_t io_engines, uint32_t io_workers, Buffe
         pool_ = new SystemBufferPool(); // own a default pool
     }
 #ifdef CROWDB_RPC_HAVE_RDMA
-    rdma_config_ = std::move(rdma_config);
+    rdma_config_                       = std::move(rdma_config);
+    rdma_config_.require_tcp_preflight = true;
     if (const char *enabled = std::getenv("CROWDB_RDMA_ENABLED");
         enabled != nullptr && std::strcmp(enabled, "1") == 0) {
         rdma_transport_ = std::make_unique<RdmaTransport>(rdma_config_, pool_);
@@ -883,106 +884,6 @@ size_t SocketTransport::connection_count() const
     return live_conns_.size();
 }
 
-std::shared_ptr<Connection> SocketTransport::connect(const std::string &addr, int port)
-{
-#ifdef CROWDB_RPC_HAVE_RDMA
-    if (rdma_transport_ != nullptr) {
-        int  rdma_port          = port;
-        bool explicit_rdma_port = false;
-        if (const char *port_env = std::getenv("CROWDB_RDMA_E2E_PORT"); port_env != nullptr && *port_env != '\0') {
-            char *end             = nullptr;
-            errno                 = 0;
-            const long configured = std::strtol(port_env, &end, 10);
-            if (errno == 0 && end != port_env && *end == '\0' && configured > 0 && configured <= 65535) {
-                rdma_port          = static_cast<int>(configured);
-                explicit_rdma_port = true;
-            }
-            else {
-                CRB_LOG_WARN("connect: invalid RDMA CM port value={}", port_env);
-            }
-        }
-        if (!explicit_rdma_port) {
-            const char *offset_env = std::getenv("CROWDB_PORT_OFFSET");
-            if (offset_env == nullptr || *offset_env == '\0')
-                offset_env = nullptr;
-            if (offset_env != nullptr) {
-                char *end         = nullptr;
-                errno             = 0;
-                const long offset = std::strtol(offset_env, &end, 10);
-                if (errno == 0 && end != offset_env && *end == '\0' && offset >= 0 && offset <= 65535 - port)
-                    rdma_port += static_cast<int>(offset);
-                else
-                    CRB_LOG_WARN("connect: invalid RDMA port offset value={}", offset_env);
-            }
-        }
-        if (auto rdma_conn = rdma_transport_->connect(addr, rdma_port); rdma_conn != nullptr) {
-            for (auto &engine : engines_)
-                rdma_transport_->register_events(engine.get());
-            register_conn(rdma_conn);
-            attach_rdma_connection(rdma_conn);
-            return rdma_conn;
-        }
-    }
-#endif
-    if (!allow_tcp_fallback_) {
-        CRB_LOG_WARN("RDMA connection unavailable; TCP fallback disabled addr={} port={}", addr, port);
-        return nullptr;
-    }
-#ifdef CROWDB_RPC_HAVE_RDMA
-    if (rdma_transport_ != nullptr) {
-        rdma_transport_->stats().fallback_count.fetch_add(1, std::memory_order_relaxed);
-    }
-#endif
-    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
-        CRB_LOG_WARN("connect: socket() failed addr={} port={} errno={} ({})", addr, port, errno, std::strerror(errno));
-        return nullptr;
-    }
-
-    struct sockaddr_in sa{};
-    sa.sin_family = AF_INET;
-    sa.sin_port   = htons(static_cast<uint16_t>(port));
-    if (::inet_pton(AF_INET, addr.c_str(), &sa.sin_addr) <= 0) {
-        CRB_LOG_WARN("connect: inet_pton failed addr={} port={} errno={} ({})", addr, port, errno,
-                     std::strerror(errno));
-        ::close(fd);
-        return nullptr;
-    }
-
-    const int flags = fcntl(fd, F_GETFL, 0);
-    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
-        CRB_LOG_WARN("connect: nonblocking setup failed addr={} port={} errno={} ({})", addr, port, errno,
-                     std::strerror(errno));
-        ::close(fd);
-        return nullptr;
-    }
-
-    // A missing peer must not block the caller's executor while TCP retries
-    // its handshake. Queued writes wait for writability in the worker;
-    // handshake failures use the same error/close path as established peers.
-    if (::connect(fd, reinterpret_cast<struct sockaddr *>(&sa), sizeof(sa)) < 0 && errno != EINPROGRESS) {
-        CRB_LOG_WARN("connect: connect() failed addr={} port={} errno={} ({})", addr, port, errno,
-                     std::strerror(errno));
-        ::close(fd);
-        return nullptr;
-    }
-
-    int nodelay = tcp_nodelay_ ? 1 : 0;
-    ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
-#ifdef __linux__
-    if (quickack_) {
-        int quickack = 1;
-        ::setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &quickack, sizeof(quickack));
-    }
-#endif
-
-    auto conn = create_connection(fd, addr + ":" + std::to_string(port));
-    send_rdma_handshake(conn);
-    CRB_LOG_INFO("rpc transport: connection initiated -> {}:{} conn_id={}", addr, port,
-                 static_cast<long long>(conn->id()));
-    return conn;
-}
-
 void SocketTransport::attach_rdma_connection(const std::shared_ptr<Connection> &conn,
                                              Connection::OnFrameCallback on_frame, Connection::OnCloseCallback on_close)
 {
@@ -1003,24 +904,26 @@ void SocketTransport::set_rdma_accept_handler(RdmaAcceptHandler handler)
     rdma_accept_handler_ = std::move(handler);
 }
 
+RdmaEndpointCapability SocketTransport::local_rdma_capability() const
+{
+#ifdef CROWDB_RPC_HAVE_RDMA
+    if (rdma_transport_ != nullptr)
+        return rdma_transport_->local_capability();
+#endif
+    RdmaEndpointCapability capability;
+    capability.protocol_version = RDMA_PROTOCOL_VERSION;
+    capability.data_classes     = {RDMA_CONTROL_CAPACITY, RDMA_METADATA_CAPACITY, RDMA_AGGREGATE_CAPACITY,
+                                   RDMA_DATAPATH_CAPACITY};
+    return capability;
+}
+
 bool SocketTransport::send_rdma_handshake(const std::shared_ptr<Connection> &conn)
 {
     if (!conn || pool_ == nullptr)
         return false;
-    RdmaEndpointCapability capability;
-    const char            *enabled = std::getenv("CROWDB_RDMA_ENABLED");
-    capability.rdma_available      = enabled != nullptr && std::strcmp(enabled, "1") == 0;
-    capability.protocol_version    = 1;
-    capability.generation          = 1;
-    capability.port                = 1;
-    if (const char *device = std::getenv("CROWDB_RDMA_DEVICE"); device != nullptr)
-        capability.device = device;
-    if (const char *gid = std::getenv("CROWDB_RDMA_GID"); gid != nullptr)
-        capability.gid = gid;
-    capability.data_classes = {RDMA_CONTROL_CAPACITY, RDMA_METADATA_CAPACITY, RDMA_AGGREGATE_CAPACITY,
-                               RDMA_DATAPATH_CAPACITY};
-    const auto wire         = serialize_rdma_handshake(capability);
-    Buffer    *control      = build_raw_control(pool_, wire.data(), static_cast<uint32_t>(wire.size()));
+    const auto capability = local_rdma_capability();
+    const auto wire       = serialize_rdma_handshake(capability);
+    Buffer    *control    = build_raw_control(pool_, wire.data(), static_cast<uint32_t>(wire.size()));
     if (control == nullptr)
         return false;
     OutFrame *frame = build_out_frame(0, RDMA_HANDSHAKE_MSG_TYPE, control, nullptr, FLAG_ONE_WAY);

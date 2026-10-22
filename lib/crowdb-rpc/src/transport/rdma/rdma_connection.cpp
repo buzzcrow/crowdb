@@ -5,6 +5,7 @@
 #include "crowdb-rpc/transport/rdma/rdma_transport.h"
 #include "rdma_channel.h"
 #include "rdma_cq.h"
+#include "rdma_offer.h"
 
 #ifdef CROWDB_RPC_HAVE_RDMA
 
@@ -17,13 +18,16 @@
 namespace crowdb::rpc
 {
 
-std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int port)
+std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int port,
+                                                   const RdmaEndpointCapability *expected_peer)
 {
-    if (!ready() || addr.empty() || port <= 0 || port > 65535) {
+    if (!ready() || addr.empty() || port <= 0 || port > 65535 ||
+        (config_.require_tcp_preflight && expected_peer == nullptr)) {
 
         CRB_LOG_WARN("rdma connect: transport unavailable addr={} port={}", addr, port);
         return nullptr;
     }
+    stats_.cm_attempts.fetch_add(1, std::memory_order_relaxed);
     {
         std::scoped_lock lock(cm_mu_);
         if (cm_channel_ == nullptr)
@@ -52,7 +56,7 @@ std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int 
     }
     sockaddr_in source{};
     sockaddr   *source_address = nullptr;
-    if (const char *source_env = std::getenv("CROWDB_RDMA_SOURCE_ADDR"); source_env != nullptr && *source_env != '\0') {
+    if (const char *source_env = config_.source_address.c_str(); *source_env != '\0') {
         source.sin_family = AF_INET;
         if (::inet_pton(AF_INET, source_env, &source.sin_addr) != 1) {
             CRB_LOG_WARN("rdma connect: invalid source address {}", source_env);
@@ -164,6 +168,10 @@ std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int 
         return nullptr;
     }
     rdma_conn_param params{};
+    const auto      local      = local_capability();
+    const auto      offer      = serialize_rdma_offer(local, expected_peer);
+    params.private_data        = offer.data();
+    params.private_data_len    = static_cast<uint8_t>(offer.size());
     params.initiator_depth     = 1;
     params.responder_resources = 1;
     params.retry_count         = config_.retry_count;
@@ -186,7 +194,21 @@ std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int 
         rdma_destroy_id(id);
         return nullptr;
     }
+    RdmaCmOffer peer_offer;
+    const bool  valid_peer = event->param.conn.private_data != nullptr &&
+                             parse_rdma_offer(std::span(static_cast<const uint8_t *>(event->param.conn.private_data),
+                                                        event->param.conn.private_data_len),
+                                              &peer_offer) &&
+                             validate_rdma_offer(peer_offer, local, expected_peer, true);
     rdma_ack_cm_event(event);
+    if (!valid_peer) {
+        destroy_connection_qp(connection.get(), id);
+        rdma_destroy_id(id);
+        return nullptr;
+    }
+    pools->peer_receive_slot_capacity = peer_offer.receive_slot_capacity;
+    pools->peer_receive_frame_limit   = peer_offer.receive_frame_limit;
+    pools->qp_number                  = id->qp->qp_num;
     ibv_qp_attr receive_attributes{};
     receive_attributes.min_rnr_timer = config_.min_rnr_timer;
     if (ibv_modify_qp(id->qp, &receive_attributes, IBV_QP_MIN_RNR_TIMER) != 0) {
@@ -232,6 +254,9 @@ bool RdmaTransport::listen(const std::string &addr, int port)
         listen_id_ = nullptr;
         return false;
     }
+    local_capability_.cm_address = addr;
+    local_capability_.port       = static_cast<uint16_t>(port);
+    listen_active_.store(true, std::memory_order_release);
     return true;
 }
 
@@ -279,7 +304,18 @@ std::shared_ptr<Connection> RdmaTransport::accept()
     if (event == nullptr)
         return nullptr;
     rdma_cm_id *id = event->id;
+    RdmaCmOffer peer_offer;
+    const bool valid_peer = event->param.conn.private_data != nullptr &&
+                            parse_rdma_offer(std::span(static_cast<const uint8_t *>(event->param.conn.private_data),
+                                                       event->param.conn.private_data_len),
+                                             &peer_offer) &&
+                            validate_rdma_offer(peer_offer, local_capability(), nullptr, config_.require_tcp_preflight);
     rdma_ack_cm_event(event);
+    if (!valid_peer) {
+        rdma_reject(id, nullptr, 0);
+        rdma_destroy_id(id);
+        return nullptr;
+    }
 
     // A new CONNECT_REQUEST may precede this connection's ESTABLISHED on
     // the listener channel. Keep setup events private until readiness.
@@ -320,12 +356,15 @@ std::shared_ptr<Connection> RdmaTransport::accept()
         rdma_destroy_id(id);
         return nullptr;
     }
-    auto pools                = std::make_shared<ConnectionPools>();
-    pools->effective_capacity = qp_attr.cap;
-    pools->cq_index           = reservation.queue->index;
-    pools->reserved_capacity  = reservation.capacity;
-    pools->send               = make_pool(config_.send_arena_bytes, config_.sq_depth);
-    pools->recv               = make_pool(config_.receive_arena_bytes, config_.rq_depth);
+    auto pools                        = std::make_shared<ConnectionPools>();
+    pools->peer_receive_slot_capacity = peer_offer.receive_slot_capacity;
+    pools->peer_receive_frame_limit   = peer_offer.receive_frame_limit;
+    pools->qp_number                  = id->qp->qp_num;
+    pools->effective_capacity         = qp_attr.cap;
+    pools->cq_index                   = reservation.queue->index;
+    pools->reserved_capacity          = reservation.capacity;
+    pools->send                       = make_pool(config_.send_arena_bytes, config_.sq_depth);
+    pools->recv                       = make_pool(config_.receive_arena_bytes, config_.rq_depth);
     if (pools->send == nullptr || pools->recv == nullptr) {
         rdma_destroy_qp(id);
         rdma_destroy_id(id);
@@ -344,6 +383,9 @@ std::shared_ptr<Connection> RdmaTransport::accept()
     }
 
     rdma_conn_param params{};
+    const auto      reply      = serialize_rdma_reply(local_capability(), peer_offer);
+    params.private_data        = reply.data();
+    params.private_data_len    = static_cast<uint8_t>(reply.size());
     params.initiator_depth     = 1;
     params.responder_resources = 1;
     params.retry_count         = config_.retry_count;

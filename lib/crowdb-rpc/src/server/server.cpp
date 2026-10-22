@@ -342,14 +342,6 @@ void RpcServer::dispatch(Frame *frame, Connection *conn)
     uint16_t msg_type   = frame->header.msg_type;
     bool     is_one_way = (frame->header.flags & FLAG_ONE_WAY) != 0;
 
-    if (msg_type == RDMA_HANDSHAKE_MSG_TYPE) {
-        RdmaEndpointCapability capability;
-        if (parse_rdma_handshake(frame->control, &capability))
-            conn->set_peer_capability(capability);
-        delete frame;
-        return;
-    }
-
     // Try request dispatch first — if a handler is registered for
     // this msg_type, dispatch as a request. This ensures request
     // frames are not intercepted by on_response (which matches by

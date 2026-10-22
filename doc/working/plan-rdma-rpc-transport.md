@@ -33,12 +33,12 @@ The C ABI now returns independent handles for retained buffer references.
 
 Portable and verbs-backed pools now share the same arena/lifetime machinery.
 Registration admission remains charged while retired connections retain MRs.
-Still pending: negotiated TCP/CM preflight, bounded
-transport aggregation, `bench rdma`/shared coroutine reporting, unified regression
-orchestration, negotiated TCP capability preflight, failure injection, and the
-two-container acceptance profiles. Capability serialization and automatic
-consumption at the connection seam do not establish negotiated preflight:
-`connect` still attempts CM before the required TCP preflight. Do not treat the
+TCP control preflight now precedes CM setup; the compact CM offer binds the
+preflight identity/generation and peer receive admission. Strict policy has
+passed a two-QP real-HCA RPC round trip and a TCP-only peer rejection case.
+Still pending: bounded transport aggregation, `bench rdma`/shared coroutine
+reporting, unified regression orchestration, failure injection, and the
+two-container acceptance profiles. Do not treat the
 historical benchmark comments or older subtask ledger as completed acceptance.
 Physical multi-node validation remains outside this scope in
 [the follow-up plan](plan-rdma-multi-node.md).
@@ -504,7 +504,7 @@ CQ verification:
 
 ### C. Bounded aggregation
 
-- [~] **Negotiate receive admission before coalescing**: finish TCP capability
+- [x] **Negotiate receive admission before coalescing**: finish TCP capability
   preflight before the CM attempt; reuse its TCP connection only for allowed
   pre-payload fallback. Publish actual CM address/port, per-instance generation,
   device/GID identity, receive slot capacity and supported aggregate frame count.
@@ -512,8 +512,10 @@ CQ verification:
   reject stale/mismatched peers before publishing an RDMA connection. Direct
   low-level CM diagnostics also negotiate receive slot capacities. Strict RDMA
   permits the TCP control preflight but never TCP workload bytes. Keep no-device
-  strict rejection before opening a socket. Retire a successful preflight TCP
-  connection through the common worker cleanup path. This is a prerequisite
+  strict rejection before opening a socket. Use an unregistered RAII TCP
+  control socket: close it on RDMA success and transfer its aligned stream to
+  the TCP worker only for allowed fallback. This avoids registering a short
+  lived probe in a data worker and racing descriptor reuse. This is a prerequisite
   for the peer-slot bound below; the remaining OCI/failure matrix stays in E.
   Keep the compact CM offer within the RC request's 56-byte private-data limit;
   use a fixed 48-byte offer with explicit encoding rather than a native struct
@@ -524,7 +526,7 @@ CQ verification:
   preflight expectation, while still negotiating receive admission.
   Files: RDMA capability/CM sources, `socket_transport.cpp`, server readiness,
   capability/path and hardware tests.
-- [ ] **Coalesce complete frames on the CQ owner**: use bounded lock-free
+- [~] **Coalesce complete frames on the CQ owner**: use bounded lock-free
   admission and per-QP queues; drain available frames without adding a waiting
   timer. Keep per-QP ordering and common frame/request IDs. Limit a SEND to
   `min(aggregation_max_bytes, local send slot capacity, peer receive slot
@@ -532,7 +534,10 @@ CQ verification:
   `aggregation_max_frames`. Disabled mode sends one frame. Reject oversized
   single frames before admission; do not fragment or silently fall back.
   Files: RDMA submit/owner loop, `transport.h`, config/capability validation.
-  Reuse `Connection::send_queue` for MPSC frame admission. Keep a bounded
+  Reuse the common `SendQueue` MPSC primitive in `ConnectionPools` for RDMA
+  admission. Keep it separate from `Connection::send_queue`: TCP close drains
+  that queue under `in_send_`, which cannot also act as the RDMA CQ consumer.
+  Keep a bounded
   per-CQ connection directory, changed only under its existing CQ ownership
   gate during cold setup/retirement. The CQ owner drains per-QP queues with a
   fixed SEND budget and retains one overflow frame for the next slot; do not
@@ -559,6 +564,24 @@ CQ verification:
   bytes, queue high-water and rejects. Keep RPC TPS distinct from transport
   SEND rate; compare aggregation disabled/enabled for both TCP and RDMA.
   Files: transport statistics, C API/Rust FFI and benchmark reports.
+
+Preflight verification:
+
+- Version 2 TCP capability carries CM address/port, generation/device/GID,
+  receive slot and frame limit. The 48-byte CM offer binds both generations
+  and explicit identity digests; the digest is a consistency check, not peer
+  authentication. Event private data is copied before acknowledgement.
+- The raw nonblocking control socket uses one absolute deadline for connect,
+  write, header and capability reads. Truncated and stalled replies fail
+  closed. An allowed TCP-only peer reuses the aligned socket for a validated
+  echo; strict policy records no CM attempt or fallback.
+- All 169 enabled native CTest cases pass (opt-in hardware cases skip there).
+  The no-verbs build passes all 130 cases. Full C++/FFI gate, including all
+  29 Rust RPC FFI tests, passes at
+  `.crowdb-runtime/artifacts/unit/cpp-8022af25b2b643cea3d99b3bc35b35d2/`.
+  A separate real-HCA two-process, two-QP worker case passes 1000 validated
+  requests with zero request/CQ errors and fallback disabled. This is
+  functional evidence, not a sustained benchmark.
 
 ### D. CLI coroutine workload and canonical results
 

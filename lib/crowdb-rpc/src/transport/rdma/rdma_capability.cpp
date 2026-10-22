@@ -3,6 +3,8 @@
 
 #include "crowdb-rpc/transport/rdma/rdma_capability.h"
 
+#include <arpa/inet.h>
+
 #include <algorithm>
 #include <cstring>
 
@@ -35,12 +37,17 @@ std::array<uint8_t, RDMA_HANDSHAKE_SIZE> serialize_rdma_handshake(const RdmaEndp
         bytes[offset + 2]     = static_cast<uint8_t>(value >> 16);
         bytes[offset + 3]     = static_cast<uint8_t>(value >> 24);
     }
+    for (size_t i = 0; i < 4; ++i) {
+        bytes[128 + i] = static_cast<uint8_t>(capability.receive_slot_capacity >> (i * 8));
+        bytes[132 + i] = static_cast<uint8_t>(capability.receive_frame_limit >> (i * 8));
+    }
+    std::memcpy(bytes.data() + 136, capability.cm_address.data(), std::min<size_t>(16, capability.cm_address.size()));
     return bytes;
 }
 
 bool parse_rdma_handshake(std::span<const uint8_t> bytes, RdmaEndpointCapability *out)
 {
-    if (out == nullptr || bytes.size() < RDMA_HANDSHAKE_SIZE)
+    if (out == nullptr || bytes.size() < RDMA_LEGACY_HANDSHAKE_SIZE)
         return false;
     auto get16 = [&](size_t offset) {
         return static_cast<uint16_t>(bytes[offset]) | static_cast<uint16_t>(bytes[offset + 1] << 8);
@@ -53,6 +60,9 @@ bool parse_rdma_handshake(std::span<const uint8_t> bytes, RdmaEndpointCapability
     };
     if (get16(0) != RDMA_HANDSHAKE_MAGIC)
         return false;
+    if (get16(2) >= RDMA_PROTOCOL_VERSION && bytes.size() < RDMA_HANDSHAKE_SIZE)
+        return false;
+    *out                  = RdmaEndpointCapability{};
     out->protocol_version = get16(2);
     out->generation       = get64(4);
     out->port             = get16(12);
@@ -67,6 +77,17 @@ bool parse_rdma_handshake(std::span<const uint8_t> bytes, RdmaEndpointCapability
                                (static_cast<uint32_t>(bytes[offset + 2]) << 16) |
                                (static_cast<uint32_t>(bytes[offset + 3]) << 24);
     }
+    if (out->protocol_version >= RDMA_PROTOCOL_VERSION) {
+        for (size_t i = 0; i < 4; ++i) {
+            out->receive_slot_capacity |= static_cast<uint32_t>(bytes[128 + i]) << (i * 8);
+            if (i == 0)
+                out->receive_frame_limit = 0;
+            out->receive_frame_limit |= static_cast<uint32_t>(bytes[132 + i]) << (i * 8);
+        }
+        out->cm_address.assign(reinterpret_cast<const char *>(bytes.data() + 136), 16);
+        out->cm_address.resize(out->cm_address.find('\0') == std::string::npos ? out->cm_address.size()
+                                                                               : out->cm_address.find('\0'));
+    }
     return true;
 }
 
@@ -78,10 +99,32 @@ bool validate_rdma_capability(const RdmaEndpointCapability &capability, uint16_t
         capability.gid.empty() || (!expected_device.empty() && capability.device != expected_device)) {
         return false;
     }
+    if (expected_protocol >= RDMA_PROTOCOL_VERSION) {
+        BufferCapacityClass cls;
+        uint32_t            size = 0;
+        in_addr             address{};
+        in6_addr            gid{};
+        if (::inet_pton(AF_INET, capability.cm_address.c_str(), &address) != 1 ||
+            ::inet_pton(AF_INET6, capability.gid.c_str(), &gid) != 1 || capability.generation == 0 ||
+            !classify_rdma_capacity(capability.receive_slot_capacity, &cls, &size) ||
+            size != capability.receive_slot_capacity || capability.receive_frame_limit == 0 ||
+            capability.receive_frame_limit > 256)
+            return false;
+    }
     return capability.data_classes[0] == RDMA_CONTROL_CAPACITY &&
            capability.data_classes[1] == RDMA_METADATA_CAPACITY &&
            capability.data_classes[2] == RDMA_AGGREGATE_CAPACITY &&
            capability.data_classes[3] == RDMA_DATAPATH_CAPACITY;
+}
+
+uint64_t rdma_capability_identity(const RdmaEndpointCapability &capability)
+{
+    uint64_t digest = 14695981039346656037ULL;
+    for (const uint8_t byte : serialize_rdma_handshake(capability)) {
+        digest ^= byte;
+        digest *= 1099511628211ULL;
+    }
+    return digest;
 }
 
 bool can_fallback_to_tcp(RdmaPathState state, bool payload_submitted)

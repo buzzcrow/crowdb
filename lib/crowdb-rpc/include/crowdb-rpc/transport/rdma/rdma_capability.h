@@ -32,11 +32,16 @@ struct RdmaEndpointCapability
     std::string             device;
     std::string             gid;
     std::array<uint32_t, 4> data_classes{};
+    uint32_t                receive_slot_capacity = 0;
+    uint32_t                receive_frame_limit   = 1;
+    std::string             cm_address{};
 };
 
-constexpr uint16_t RDMA_HANDSHAKE_MAGIC    = 0x5244;
-constexpr uint16_t RDMA_HANDSHAKE_MSG_TYPE = 0xFFFE;
-constexpr size_t   RDMA_HANDSHAKE_SIZE     = 128;
+constexpr uint16_t RDMA_HANDSHAKE_MAGIC       = 0x5244;
+constexpr uint16_t RDMA_HANDSHAKE_MSG_TYPE    = 0xFFFE;
+constexpr uint16_t RDMA_PROTOCOL_VERSION      = 2;
+constexpr size_t   RDMA_LEGACY_HANDSHAKE_SIZE = 128;
+constexpr size_t   RDMA_HANDSHAKE_SIZE        = 160;
 
 [[nodiscard]] std::array<uint8_t, RDMA_HANDSHAKE_SIZE>
 serialize_rdma_handshake(const RdmaEndpointCapability &capability);
@@ -45,6 +50,8 @@ serialize_rdma_handshake(const RdmaEndpointCapability &capability);
 
 [[nodiscard]] bool validate_rdma_capability(const RdmaEndpointCapability &capability, uint16_t expected_protocol,
                                             uint64_t expected_generation, const std::string &expected_device);
+
+[[nodiscard]] uint64_t rdma_capability_identity(const RdmaEndpointCapability &capability);
 
 [[nodiscard]] bool can_fallback_to_tcp(RdmaPathState state, bool payload_submitted);
 

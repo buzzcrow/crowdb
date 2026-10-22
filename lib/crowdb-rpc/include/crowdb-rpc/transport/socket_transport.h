@@ -507,8 +507,9 @@ class SocketTransport : public Transport
             external_handler_(tag);
     }
 
-    bool send_rdma_handshake(const std::shared_ptr<Connection> &conn);
-    bool listen_rdma(const std::string &addr, int port);
+    bool                                 send_rdma_handshake(const std::shared_ptr<Connection> &conn);
+    [[nodiscard]] RdmaEndpointCapability local_rdma_capability() const;
+    bool                                 listen_rdma(const std::string &addr, int port);
 
 #if defined(CROWDB_RPC_HAVE_RDMA) && defined(CROWDB_RPC_TEST_UTIL)
     const RdmaTransport::Stats *rdma_stats_for_tests() const
@@ -519,8 +520,10 @@ class SocketTransport : public Transport
 #endif
 
   private:
-    BufferPool *pool_;
-    bool        allow_tcp_fallback_{true};
+    std::shared_ptr<Connection> connect_tcp(const std::string &addr, int port);
+    void                        prepare_tcp_socket(int fd) const;
+    BufferPool                 *pool_;
+    bool                        allow_tcp_fallback_{true};
 #ifdef CROWDB_RPC_HAVE_RDMA
     std::unique_ptr<class RdmaTransport> rdma_transport_;
     RdmaConfig                           rdma_config_;

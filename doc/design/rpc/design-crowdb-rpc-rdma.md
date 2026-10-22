@@ -48,6 +48,21 @@ RDMA CM address and port, GID/device identity, capability generation, protocol
 version, and supported data classes. The client verifies that the generation
 and peer identity are current before creating the RDMA connection.
 
+`SocketTransport` performs this control exchange on a temporary nonblocking
+TCP socket with one deadline. Version 2 also advertises receive slot capacity
+and the maximum number of frames accepted in one SEND. A 48-byte CM offer
+echoes the expected peer generation and identity digest, and declares the
+sender's generation, digest and receive admission. Both CM sides validate it
+before publishing the logical connection. The digest detects inconsistent or
+stale discovery; it does not authenticate a peer. Low-level CM diagnostics may
+omit the TCP expectation but still negotiate receive admission.
+
+The control socket closes on successful RDMA setup. Allowed TCP fallback may
+transfer the fully consumed control stream to the ordinary worker; a failed or
+partial control exchange closes it and uses a fresh socket. Strict RDMA policy
+permits this TCP control traffic and rejects TCP workload fallback. Disabled or
+unavailable local RDMA under strict policy fails before opening a socket.
+
 One logical RPC connection chooses RDMA as its preferred path and TCP as its
 one-way fallback. The path is selected before the first payload. TCP is chosen
 when RDMA setup fails before payload submission; an established TCP connection
