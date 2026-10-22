@@ -100,6 +100,7 @@ pub async fn run_node_with_inputs(
     if config.physical_host_id.is_empty() || config.physical_host_id.len() > 256 {
         return Err("node requires a bounded physical host identity".into());
     }
+    DiscoveryConfig::validate_seed_origins(&config.discovery.seeds)?;
     let profile = kv::node_profile(&config)?;
     let root = profile.paths.data_root.clone();
     super::startup::accept_node_policy(&root, file, explicit)?;

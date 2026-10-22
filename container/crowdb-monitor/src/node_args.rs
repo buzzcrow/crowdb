@@ -58,12 +58,7 @@ pub(crate) async fn run(args: NodeRunArgs) -> Result<(), Box<dyn std::error::Err
             addresses,
             monitor_port: 9095,
             cluster_id: None,
-            seeds: std::env::var("CROWDB_DISCOVERY_SEEDS")
-                .unwrap_or_default()
-                .split(',')
-                .filter(|seed| !seed.is_empty())
-                .map(str::to_owned)
-                .collect(),
+            seeds: discovery_seeds(),
         },
         physical_host_id: inputs.physical_host_id,
     };
@@ -88,6 +83,7 @@ struct ResolvedInputs {
 }
 
 fn resolve(args: &NodeRunArgs) -> Result<ResolvedInputs, Box<dyn std::error::Error>> {
+    DiscoveryConfig::validate_seed_origins(&discovery_seeds())?;
     let file = read_inputs(args.deployment_config.as_deref())?;
     let explicit = NodeDeploymentOverrides {
         mode: args.deployment_mode.map(|mode| match mode {
@@ -114,6 +110,15 @@ fn resolve(args: &NodeRunArgs) -> Result<ResolvedInputs, Box<dyn std::error::Err
         explicit,
         physical_host_id,
     })
+}
+
+fn discovery_seeds() -> Vec<String> {
+    std::env::var("CROWDB_DISCOVERY_SEEDS")
+        .unwrap_or_default()
+        .split(',')
+        .filter(|seed| !seed.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 fn physical_host(value: Option<String>, policy: &NodeDeploymentPolicy) -> Result<String, &'static str> {

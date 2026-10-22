@@ -133,6 +133,14 @@ Existing implementation can be reused; these are the outstanding parts.
   physical-host identity. Split the diagnostic and validate seeds before node
   effects; include malformed/credential-bearing seeds without leaking values.
   Owners: Web auto-join/initialization, shared bootstrap/admission, monitor tests.
+  - [x] T05a: seed validation now has a dedicated diagnostic and runs before
+    policy acceptance, identity creation or listener/service effects through
+    `accept-policy`, `run`, and the standalone management entry point. Tests:
+    `node_management_inputs_test`, `node_management_test`, `node_run_inputs_test`;
+    12 focused tests pass, as do fmt and all-target clippy. Gate logs are under
+    `.crowdb-runtime/artifacts/r243-t29b-gates/` (`r243-monitor-inputs-tests.log`,
+    `r243-final-fmt.log`, `r243-final-clippy.log`). Files: monitor `node/management.rs`,
+    `node/runtime.rs`, `node_args.rs`, `tests/node_management_inputs_test.rs`.
 - [ ] **T15 — Complete editable startup acceptance** (A01/A02).
   Management starts while setup is pending. Migrate remaining readonly/legacy
   callers; verify authorized edits and actual rejection causes in both topologies.
@@ -180,9 +188,39 @@ Existing implementation can be reused; these are the outstanding parts.
     assertions become command-tree rejection tests; shared bootstrap and
     supervisor correctness tests remain independent owners.
   - [ ] T29b: migrate profiling/benchmark/sanitizer fixture ownership and flags.
-  - Profiling, benchmark and sanitizer scripts still call old config/reset/
-    deployment APIs. Preserve useful measurement purposes in narrow test-owned
-    fixtures before removing the executors; no product compatibility aliases.
+    Current implementation uses a `test-util` native example plus private
+    `tools/benchmark/fixture.py` controller. The worker owns exact PID/start
+    identities, seals genuine Group-0 bootstrap, and supplies a target to normal
+    product clients. Server tunables, memory backends and group reset stay in
+    this explicit measurement fixture. Benchmark/profiling/sanitizer callers
+    no longer invoke retired product lifecycle commands. Console CI explicitly
+    builds and runs its native ownership/workload smoke.
+    - Native ownership/read/scan/write/reset, foreign token rejection, Group-0
+      reset rejection, stale-report rejection and owner-exit cleanup pass:
+      `.crowdb-runtime/artifacts/measurement-fixture/59b0c23a793f4f92a65d1f05595e681b/`.
+    - KV read/scan/write scripts pass reduced-duration measurements; DiskDB
+      allocate/mix and ChunkDB 1T/16T pass with exact space accounting and
+      retained per-invocation metrics. Roots: `r243-bench-kv-read-3`,
+      `r243-bench-kv-scan`, `r243-bench-kv-write`, `r243-bench-diskdb-2`,
+      `r243-bench-chunkdb` below `.crowdb-runtime/artifacts/`.
+    - Root causes fixed during validation: stale `--json` and DiskDB `--mode`
+      flags, swallowed command errors, old log globs, and bootstrap replacing
+      process-local PID fields. The first ownership smoke caught leaked native
+      services; their exact PID/start/path-verified cleanup receipt is retained
+      at `.crowdb-runtime/artifacts/r243-regression-pre-fix-cleanup.json`.
+      Earlier measurement successes do not certify cleanup before that fix.
+    - Full sanitizer attempt found retained-byte reads incorrectly using
+      NullDisk and a real lifecycle handle leak: ChunkDB/DiskIO/restart used
+      `mem::forget(child)`, retaining Tokio pidfd registrations after exit.
+      These paths now retain a reaper task; the fixture waits for reaping and
+      publishes a checked shutdown receipt. Read verification gets a separate
+      memory-backed fixture. The four focused lifecycle/reaping tests pass.
+      This shared lifecycle fix changes server sources; image S cannot certify
+      the resulting production source tree and must be rebuilt for later OCI
+      acceptance. Failed sanitizer logs/data are retained, with no suppression.
+    - CLI tests (38 executed plus one distinct ignored case), CLI/example clippy
+      and 166 Python fixture tests pass. Final sanitizer/profiling execution,
+      applicable gates and the coherent task commit remain pending.
 - [ ] **T30–T33 — Complete registered acceptance ownership and CI**.
   Register A01–A33 in owning Rust/Python/container/UI suites; mocks and manual
   observations do not substitute for actual runtime coverage. Direct/Compose,
