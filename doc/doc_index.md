@@ -110,7 +110,7 @@ Temporary plans live under `doc/working/`; flow analyses live under
 | `doc/design/chunkdb/chunkdb-allocate-flow-analysis.md`                        | EC allocation benchmark and bottlenecks.                |
 | `doc/design/chunkio/design-crowdb-chunkio-small-object-writer.md`             | Shared-chunk admission, routing, recovery, elasticity.  |
 | `doc/design/chunkio/design-crowdb-chunkio-reader.md`                          | Mirror/EC reads, recovery, fencing, repair.             |
-| `doc/design/chunkds/design-crowdb-chunk-stream.md`                            | Logical streams, append, rollover, trim, transfer.      |
+| `doc/design/chunkds/design-crowdb-chunk-stream.md`                            | Frame groups, mirrored append, segmented directories.  |
 | `doc/design/diskdb/design-crowdb-diskdb-zone-management.md`                   | Zone allocation, free, compaction, recovery.            |
 | `doc/design/diskdb/design-crowdb-diskdb-space-metrics.md`                     | Capacity counters, reporting, aggregation.              |
 | `doc/design/diskdb/diskdb-allocate-flow-analysis.md`                          | Durable allocation flow and benchmarks.                 |

@@ -4,11 +4,14 @@
 # CROWDB - Design: Chunk Stream
 
 The chunk stream presents finite mirrored chunks as one durable, ordered
-logical byte space. It supplies the storage boundary used by the partition WAL
-without owning WAL framing, request identity, or replay policy.
+logical byte space. Append completion depends on mirrored data persistence;
+Stream metadata records lifecycle transitions and bounded directory checkpoints.
+The stream owns physical framing and addressing; the partition WAL owns
+business-record framing, request identity, and replay policy.
 
 Depends on: [chunk IO](../chunkio/design-crowdb-chunkio.md),
 [chunk reader](../chunkio/design-crowdb-chunkio-reader.md),
+[DiskIO](../diskio/design-crowdb-diskio.md),
 [chunkdb](../chunkdb/design-crowdb-chunkdb.md), and
 [group-0 sysdata](../kv/design-crowdb-kv-group0.md).
 
@@ -23,7 +26,7 @@ Depends on: [chunk IO](../chunkio/design-crowdb-chunkio.md),
 7. [Trim and reclamation](#7-trim-and-reclamation)
 8. [Bounds and observation](#8-bounds-and-observation)
 9. [Errors and invariants](#9-errors-and-invariants)
-10. [Open Issues](#open-issues)
+10. [Open issues](#10-open-issues)
 
 ## 1. Ownership and API
 
@@ -32,310 +35,495 @@ opaque, time-ordered 128-bit identity bound to a logical partition, never to a
 process or node. It renders as 32 hexadecimal digits. `ChunkStream` exposes
 `create`, `open`, `open_read_only`, `tail`, vectored `append`, exact `read_at`,
 seekable bounded sequential reading, `trim_prefix`, and `close`.
-`open_read_only` opens one exact durable epoch without adopting writer
-authority, allocating a successor chunk, sealing the active extent, or
-publishing metadata. It is the source-tail handle used by split and balance
-overlays.
+An owner-side flush/checkpoint barrier captures and persists a synchronized
+prefix on demand without changing ordinary append completion.
 
-Every nonempty `append` returns the selected chunk identity and exact logical
-range. A zero-length ordinary append returns no chunk identity and performs no
-IO. `append_chunk_bound` accepts caller-framed body+CRC bytes and makes the
-stream worker add the selected chunk's canonical 128-bit ID after rollover
-selection. The returned logical range includes that trailer. This keeps chunk
-choice in the ordered worker while allowing a journal to bind each frame to its
-physical source.
+Every nonempty append returns the selected chunk identity and exact logical
+range. Logical lengths count caller payload bytes, excluding physical frame
+headers and footers. A zero-length ordinary append returns no chunk identity
+and performs no IO. `append_chunk_bound` and `append_chunk_bound_batch` keep
+chunk selection in the ordered worker; the outer Stream frames carry the
+selected chunk identity and CRC. They add no payload trailer. The stream does
+not interpret the caller's business-record format or retry identity.
 
-Each writable handle owns one bounded Tokio MPSC queue and one worker task. The
-task exclusively mutates the active descriptor, extent list, manifest
-generation, tail, trim point, and rollover state. Producers and readers use
-atomics plus immutable `ArcSwap` manifest snapshots; the hot path adds no lock.
+One append payload is one indivisible validity unit. A successful append makes
+the whole payload available; recovery never exposes a proper prefix of that
+payload. Physical frame and IO splitting are internal. Batching preserves each
+request's append boundary rather than making the entire batch one group.
 
-The stream does not interpret record headers, checksums, request identities, or
-replay semantics. Ordinary append stores exact caller bytes. Chunk-bound append
-adds only the fixed physical-provenance trailer requested by the caller; the
-partition journal owns its surrounding frame and consumer watermarks.
+Each writable handle owns one bounded Tokio MPSC queue and one worker task.
+The task exclusively mutates the active chunk's in-memory cursor and mappings,
+logical tail, and lifecycle publication state. Producers and readers use
+atomics and immutable `ArcSwap` views. Append and snapshot publication add no
+hot-path lock. Batching preserves request order and exact returned ranges.
+
+`open_read_only` validates one exact writer epoch and captures a finite view.
+It does not adopt writer authority, allocate a successor, seal a chunk, or
+publish writer state itself. It may request a flush/checkpoint from the current
+owner. If the owner is unavailable it uses the consistent prefix persisted in
+ChunkDB and records that checkpoint as its finite bound; that view can lag
+successful appends. A caller requiring a newer exact cutover must not silently
+accept the older fallback. The handle supports source-tail replay during split
+and balance with these explicit bounds.
 
 ## 2. Storage Contracts
 
-Three injected async traits isolate the state machine from placement and
-transport:
+Three injected async traits separate Stream state from placement and transport:
 
-- `StreamRegistry` loads and creates the small group-0 binding. It is used only
-  by create/open, never append or read. Binding keys are readable text. Stream
-  creation accepts a metadata-group selection and defaults to group 1.
-- `StreamMetadataStore` loads the stable manifest head and immutable extent
-  pages. It writes fresh versioned pages before publishing the head through a
-  KV revision compare-and-set. `None` means the stream must not exist.
-- `StreamChunkStore` allocates mirrored chunks, writes one contiguous range to
-  every mirror, advances and inspects the fenced durable cursor, seals chunks,
-  reads physical ranges, and idempotently releases trimmed chunks.
+- `StreamRegistry` loads and creates the small group-0 binding. It is used by
+  create/open, never by ordinary append or data reads. Binding keys are readable
+  text; metadata-group selection defaults to nonzero group 1.
+- `StreamMetadataStore` loads the stable manifest head and independently
+  versioned directory segments. It persists newly referenced pages before
+  publishing the head through KV revision compare-and-set.
+- `StreamChunkStore` allocates and seals mirrored chunks, writes and synchronizes
+  the required replicas, exposes current chunk layout for bounded reads and
+  recovery, and idempotently releases trimmed chunks. It does not require a
+  separate ChunkDB cursor advance for each append.
 
-The production chunk store uses a direct-buffer `MirrorChunkWriter` from
-`crowdb-chunk-client`. It owns one chunk, appends mirror strips asynchronously,
-and never constructs the EC pipeline. Every allocation uses the durable `StreamPurpose` in the binding and manifest:
-system journals allocate `ChunkType::Wal`, business streams allocate
-`ChunkType::Stream`. Both use a canonical `stream/` owner key followed by the 128-bit stream identity.
-Legacy persisted and wire chunk records decode with an empty unattributed owner.
-Stream rollover remains above the writer. Allocation, reopen, rollover and
-repair preserve purpose and stream identity. Reopen rejects binding/manifest
-purpose disagreement and chunk ID/metadata purpose disagreement. Purpose is
-required in persisted bindings; legacy records are not inferred or retagged.
-Chunk-kv journals require Wal streams at construction.
+Chunk IO and ChunkDB own `chunkinfo`: strips, physical capacity, replica
+placement, growth, replacement, and their durable internal transitions. Each
+such transition updates chunk information independently. Stream metadata refers
+to stable chunk identities and logical mappings; internal chunk changes are
+transparent and never trigger Stream generation changes or directory rewrites.
+Recovery resolves current capacity and layout through the chunk layer instead
+of trusting capacity cached in an older Stream checkpoint.
+
+DiskIO writes carry a boolean sync option. For a synchronized request the server
+performs the ordered write, then the required flush, and returns one response
+after both succeed. The client does not wait for a write reply and then send a
+second fsync RPC. Buffered writes do not request the flush. When transport
+limits require several requests, preserve strip-block write ordering and
+complete required synchronization before acknowledging the append.
+
+Every allocation preserves the durable `StreamPurpose`: system journals use
+`ChunkType::Wal`, business streams use `ChunkType::Stream`. Both use the
+canonical `stream/` owner key followed by the 128-bit stream identity. Reopen
+rejects purpose disagreement between binding, manifest, chunk identity, and
+chunk information. Legacy unattributed records are not inferred or retagged;
+Chunk-KV journals require Wal streams.
 
 `ProductionStreamRuntime` shares the process KV client and discovered chunk IO
-routes across every stream handle. The chunk-KV server owns that runtime and
-selects the metadata store while each Active binding selects its metadata
-group. A control-plane-created binding is initialized through
-`create_registered`; standalone creation may publish its own binding.
-
-The `test-util` feature provides one deterministic in-memory implementation of
-all three traits, including write suspension, cursor outcomes, and metadata
-publication failure injection. Production adapters retain the same ownership
-and durability contract.
+routes. The Chunk-KV server chooses the metadata store; the Active binding
+chooses its metadata group. `create_registered` initializes a control-plane
+binding. The `test-util` implementation supplies deterministic mirror-write,
+sync, tail-content, ownership, and metadata-publication fault injection.
 
 ## 3. Metadata
 
-Group 0 stores only `StreamBinding {purpose, stream_name, metadata_group_id,
-binding_generation, state, owner_kind}`. One nonzero KV group stores one stable
-head per stream plus immutable extent pages under versioned keys.
+### 3.1 Ownership and lifetime
 
-The KV adapter publishes at most eight immutable pages concurrently and waits
-for every page before the manifest CAS. A failed page leaves the previous head
-authoritative. The adapter caches one observed manifest and its KV revision;
-an exact stream/epoch/generation match reuses that revision for the next CAS.
-The cache grants no writer authority: a competing update rejects the stale
-revision, and conflict or ambiguous outcomes require a fresh head observation.
+Group 0 stores `StreamBinding {purpose, stream_name, metadata_group_id,
+binding_generation, state, owner_kind}` and authoritative owner-lease identity,
+writer epoch, lease sequence, expiry, and release/transfer state. Chunk-KV
+composes the Stream owner with its existing serving-grant authority instead of
+creating conflicting leases. Other Stream owners obey the same Group-0 lease
+contract. A nonzero KV group stores the Stream head and immutable directory
+pages. Physical frames remain in mirrored chunks;
+directory records are KV values, not files within those chunks.
 
-`StreamManifest` contains the immutable purpose, writer epoch, generation, logical trim point,
-sealed tail, optional active descriptor, page fences, and closed state. Every
-head mutation uses conditional KV write; no competing writer may blind-write
-that key. `StreamExtentPage` contains parallel arrays:
+`StreamManifest` contains purpose, stream identity, writer epoch, publication
+generation, trim point, sealed logical tail, a bounded directory root, an
+optional active chunk identity and logical start, and closed state. An optional
+checkpoint describes an already synchronized physical/logical prefix. Neither
+that checkpoint nor a cached ChunkDB cursor caps recovery of newer valid data.
+An active chunk's latest cursor and mappings normally reside in memory.
 
-- `chunk_ids[N]`
-- `logical_offsets[N + 1]`
-- `physical_offsets[N]`
+Allocation and Stream reference publication precede the first append to a new
+chunk. Before a successor accepts bytes, the predecessor has a durable seal and
+finalized mappings in the published directory. Thus every referenced chunk
+before the tail has a complete immutable description.
 
-Entry `i` maps `[logical_offsets[i], logical_offsets[i + 1])` to the same-sized
-physical range beginning at `physical_offsets[i]`. Validation rejects bad
-array lengths, empty or unordered extents, gaps between retained pages,
-identity or fence mismatches, invalid active cursors, and arithmetic overflow.
-After trim compaction, coverage may begin at or before `trim_offset`; it must
-continue exactly through `sealed_tail`.
+### 3.2 Segmented directory
 
-The open chunk stays outside the sealed extent pages. Its durable logical end
-is `logical_start + acknowledged_cursor - physical_start`, using checked
-arithmetic.
+The extent directory is divided into bounded segments. Completed segments are
+immutable; additions change only the current tail segment. A full tail segment
+is finalized and followed by a new one. Trim may separately change the retained
+prefix boundary. Each page reference carries its own persisted identity and
+version, independent of the head's epoch and generation. Ownership adoption or
+head publication does not copy historical pages just to retag them.
+
+A bounded-fanout index locates segments by logical range. The head holds a
+bounded root, not a flat list of every segment fence. Publishing a tail change
+writes only changed leaves and necessary ancestor paths. Opening a writer loads
+the root and tail path, not all retained extents; reads load the paths they use.
+Work follows changed segments and index height rather than the entire Stream
+length.
+
+The partitioning into bounded index pages does not require an immutable active
+tail after every append. Active mappings use an in-memory snapshot. They become
+durable directory entries at seal or an explicit checkpoint. In-memory view
+publication also changes bounded tail pages and paths; it does not clone the
+entire active or historical extent list for each append. A seal/checkpoint may
+flush several newly filled segments, but it rewrites no previously completed
+historical segment.
+
+### 3.3 Extent geometry
+
+An extent describes a logical interval and a `ChunkLocation` containing a chunk
+identity, first physical frame offset, and logical payload length. One large
+payload uses one extent even when encoded into several physical frames.
+
+All consumers use one versioned physical frame format and common Rust/C++
+codecs. Each frame is at most 64 KiB including header and footer. Magic identifies
+purpose and version; a common header role identifies ordinary, head, or follower
+frames. Only Stream uses grouped roles. User-data and tree consumers use ordinary
+frames; user-data completeness remains a whole-object publication condition.
+Native buffers retain bounded streaming and zero-copy ownership.
+
+Each nonempty Stream append is exactly one verifiable frame group in one chunk.
+Its head declares total payload bytes and frame count, including the head. Even
+a single-frame append is a head with count one. Followers identify their head
+by its physical offset in the same chunk and carry their ordinal. Frame lengths,
+roles, group identity, order, count, total payload length, CRC, and expected chunk
+identity must all agree before the group is valid. There is no separate commit
+frame or commit RPC. CRC32C covers the common header, group fields, and payload;
+the footer chunk identity is validated separately against the expected chunk.
+All codecs use the same CRC input and byte layout.
+Declared lengths/counts are checked against append limits, remaining chunk
+capacity, and checked arithmetic before scanning or reserving memory. A parser
+does not allocate buffers proportional to an untrusted declared group size.
+
+Role-dependent header sizes determine payload capacities. Interior frames fill
+their role's payload capacity and only the last may be short. Location arithmetic
+derives group geometry from the format version, role capacities, and total
+logical length, without one directory entry per frame. Existing `StreamV1` has
+a 14-byte header, at most 65,502 payload bytes, and a 20-byte footer; these legacy
+constants do not define the grouped revision's payload capacities.
+
+The directory keeps one extent per append group and preserves its boundary.
+Recovery reconstructs that boundary from the head and followers. It does not
+merge groups in a way that loses append validity or use a valid follower as an
+independent append. Legacy chunks retain their published durable-cursor contract
+and are finalized before new grouped writes; readers decode them explicitly
+without inventing group boundaries for their uncommitted suffixes.
+
+Validation rejects empty, overlapping, unordered, or overflowing ranges,
+inconsistent page references, and gaps through the retained sealed interval.
+Logical and physical lengths are checked separately; physical framing overhead
+never increases the caller's logical offset.
+
+### 3.4 Publication
+
+New pages are persisted before the manifest CAS, with at most eight page writes
+in flight. A partial publication leaves the previous root authoritative.
+Unchanged pages retain their identities. The KV adapter may reuse the revision
+from an exact prior observed or successful head CAS. Conflict or ambiguous
+publication requires observing the durable head; the cache grants no authority.
+
+Directory publication occurs at Stream lifecycle changes, including initial
+chunk attachment, rollover, trim, close, and ownership changes. Optional
+checkpoints may use explicit time or byte budgets. Checkpointing is independent
+of append completion and never rewrites all historical segments. Chunk-internal
+growth or repair does not publish a Stream checkpoint.
 
 ## 4. Append Protocol
 
-Admission reserves a bounded request slot and queued bytes. A zero-length
-append returns the current tail without allocation or IO. An append above the
-configured maximum is rejected before enqueue.
+Admission reserves bounded request slots and queued bytes. Oversized appends are
+rejected before enqueue. An idle worker dispatches the first request immediately
+and drains only requests already queued. It stops at the request limit, byte
+target, or current chunk capacity, without adding a batching delay. One large
+request may exceed the batch byte target while remaining within append bounds.
 
-An idle worker submits the first request immediately. It drains only requests
-already queued and stops at the request limit, byte limit, or active chunk
-capacity. It does not use a batching delay. Vectored request bytes are assembled
-in queue order into one retained staging buffer and sent through one
-`write_mirrors` call. The worker then performs one fenced cursor advance.
+The normal path for an already attached chunk is:
 
-Completion occurs only after all mirror writes and the durable cursor update.
-Each request receives its exact non-overlapping logical subrange. Mirror-write
-failures use the retained strip image to replace a failed block; a confirmed
-absent append can rotate to another chunk and retry. An ambiguous cursor
-response is inspected without blind resubmission: the worker accepts it only
-when the durable cursor equals the proposed end and the last-advance checksum
-matches the staging checksum; an unchanged cursor proves absence. If durable
-state cannot be read, the current append remains pending for resolution. A
-fencing violation or corrupt durable state requires reopening and recovery;
-it is not a transfer-quiescence state.
+1. Select non-overlapping logical ranges and encode one complete frame group
+   per append. Keep one location per payload rather than one extent per frame.
+2. Submit mirror writes concurrently, requesting synchronization in the write
+   requests. The chunk layer owns strip ordering, repair images, replica
+   replacement, and durable updates of its own chunk information.
+3. Wait for successful synchronized completion from every required replica in
+   the configured mirror set. Three-copy configuration waits for three replicas;
+   no fixed replica count is assumed by the Stream API. A smaller set of readable
+   replicas does not lower the write-completion requirement. The chunk layer
+   restores required protection after replacement before returning success.
+4. Publish the completed in-memory cursor, logical tail, and extent snapshot,
+   then complete each request with its exact logical range.
 
-For a chunk-bound request, the worker adds the selected `ChunkId` after the
-caller's bytes before assembling the aggregate write. Admission, remaining
-capacity, cursor advancement, and returned ranges include the trailer. Several
-requests may still share one physical batch; each receives its own trailer.
+There is no per-batch `advance_chunk_write`, group-0 update, directory page
+write, or manifest CAS. Encoding, buffer ownership, and staging remain bounded;
+frame splitting does not justify repeated payload coalescing or per-frame KV
+writes. Periodic lease maintenance is separate from the append data path.
+
+An ambiguous mirror response is not evidence of absence. Resolve it through the
+chunk write/recovery contract; do not retry at a guessed offset or use an old
+ChunkDB cursor to declare new bytes absent. A failure on one request cannot let
+later requests skip a logical hole. Watchdogs observe the original future and
+do not cancel, resubmit, or complete it. An interrupted append contributes no
+partial logical range. Recovery may retain a complete append whose response was
+lost, but never its proper prefix; consumer retry semantics handle that uncertain
+completion. Differing valid replica tails follow section 5.2.
 
 ## 5. Rollover and Recovery
 
-One append never straddles chunks, and one stream chunk contains at most 256
-MiB of framed data. A production allocation initially contains one mirror strip;
-the worker grows it to cover the waiting append, including frame overhead.
-If an append cannot fit within the chunk limit, the worker seals the old chunk,
-appends its logical mapping to the extent builder, writes a fresh immutable
-version of the affected tail page, allocates a successor, and CAS-publishes the
-successor head before writing the request. The fresh successor also grows when
-the waiting append exceeds its initial strip capacity. A crash before the head CAS leaves
-the previous head complete and the new page unreachable. Objects not reachable
-from authoritative metadata are orphans.
+### 5.1 Lifecycle ordering
 
-Writer open resolves the authoritative tail metadata and last extent, then
-queries the last chunk's durable cursor. It never appends to a chunk owned by a
-previous process. The old chunk is sealed at its acknowledged cursor and a
-fresh 256-MiB mirrored chunk is published before new bytes are admitted. Before
-initial publication and every CAS retry, the writer compares the observed head
-epoch with its local ownership epoch. A lower epoch returns `StaleWriter`; only
-a higher epoch holding current ownership may adopt an older head. KV revision
-CAS serializes publications, while the epoch comparison prevents authority
-regression. Full extent pages remain immutable; short restart extents are
-accepted and require no merge pass.
+One append never straddles chunks. A chunk contains at most the configured
+physical framed-byte limit, 256 MiB by default. Chunk IO may allocate physical
+strips incrementally; this remains internal to the chunk layer.
 
-A higher ownership epoch adopts the same manifest and byte history into a new
-generation. Querying the active cursor establishes the new chunk-store fence;
-publishing compares against the exact prior epoch and generation. A lower
-epoch is rejected, and a previously open lower-epoch writer can no longer
-write or advance the cursor.
+When the next append cannot fit, the worker stops writes to the current chunk,
+waits for outstanding writes, seals it with the final physical length, and
+persists its final logical mappings in the changed directory tail. It then
+allocates a successor and CAS-publishes a head that includes the finalized
+predecessor and the successor's identity and logical start. The successor
+accepts no data before this publication succeeds. Historical sealed chunks and
+completed directory segments are not updated.
 
-Idle maintenance compares the current manifest epoch, generation and active
-chunk with the worker's head before renewal and before rollover. A superseded
-worker stalls and performs no further idle renewals or publications. An
-unavailable authority observation defers maintenance to the next interval.
-Current owners may still rotate their own sealed chunk; renewal retries are
-bounded per idle tick, and manifest publication remains fenced by CAS.
+Every intermediate state is recoverable. An allocation that was never attached
+cannot contain acknowledged Stream bytes and is an orphan candidate. A seal
+that completed before the directory CAS leaves only the last referenced chunk
+to reconcile. A crash before successor publication cannot leave two chunks with
+acknowledged data whose logical mappings both require content reconstruction.
 
-Read-only open is deliberately different from writer open. It validates the
-requested historical epoch against the durable manifest, captures its
-generation, trim point, extents, active descriptor, and acknowledged cursor,
-and never runs adoption. Consequently a target can replay a source suffix while
-the source writer continues appending. Its captured durable end is finite; a
-later read-only open is required to observe a newer preparation or release
-cursor.
+### 5.2 Tail reconstruction
+
+The latest physical cursor is the end of the contiguous prefix of complete
+append groups in the last referenced chunk. Recovery starts
+at that chunk's beginning or a validated synchronized checkpoint and parses
+forward within current authoritative capacity. It checks frame kind, lengths,
+CRC, chunk identity, and address arithmetic. It tracks a tentative frame cursor
+inside a group and advances the recovered physical cursor and logical tail only
+after validating the entire group. It then adds one compact location.
+
+An unwritten suffix, incomplete final frame, or incomplete group bounds the
+candidate prefix at the previous complete append. No later group can skip that
+hole. Individually valid frames in an incomplete group do not advance the tail.
+Corruption in required retained data is not silently treated as EOF: use mirror
+validation/repair or fail recovery. Bytes with a wrong chunk identity cannot
+extend the tail. Syntactically valid bytes beyond the last checkpoint remain
+candidates; a stale persisted cursor is not an authority to discard them.
+
+After owner exclusion, observe the current available mirrors concurrently
+within a bounded IO budget. Use the shortest complete-append prefix among healthy
+mirrors that finish observation. A mirror that fails or times out during the
+read is unavailable, not a zero-length or partially observed prefix. Corrupt
+replicas are not valid shorter candidates; use healthy copies or report an
+error. All candidates must agree on retained overlapping contents. Conflicting
+valid contents fail explicitly rather than waiting for an external arbiter.
+No surviving readable candidate means recovery is unavailable. Repair restores
+configured protection before the next successful append. Replica comparison and
+checkpoints use complete-group boundaries, never an interior frame boundary.
+
+Only the last referenced chunk may require content parsing. Earlier chunks
+have finalized lengths and directory mappings and are not scanned. A last
+chunk whose seal and final mappings are already published needs no tail scan.
+Recovery after an interrupted seal may still reconstruct that one last chunk.
+Bound reads, buffered bytes, parsed frames, and total scan bytes by the active
+chunk geometry, independently of retained Stream length.
+
+### 5.3 Writer ownership
+
+Writer open validates purpose and current ownership before exposing a writable
+handle. A lower epoch is rejected. A higher epoch adopts retained history
+without copying immutable pages, resolves the old tail, seals/finalizes it, and
+attaches a fresh chunk before new appends. Writers never resume appending to a
+previous process's chunk.
+
+Group-0 owner leases remain authoritative between metadata checkpoints. The
+writer uses a conservative local monotonic deadline derived from its grant and
+checks authority before accepting work and before acknowledging it. Background
+renewal is independent of append batches. Expiry or explicit fencing stops both
+new admission and successful acknowledgment, including after a process pause.
+Metadata CAS still fences lifecycle publications; DiskIO success alone does
+not authorize an acknowledgment and DiskIO does not own Stream leases.
+
+Explicit transfer stops the old owner's admission, drains its in-flight work,
+persists the final synchronized boundary, and records a fenced release proof
+in Group 0. Once release and the new grant are authoritative, the new owner can
+activate without waiting for the old lease's natural expiry. A verbal/local
+promise or an unresolved release response is not the durable release proof.
+
+If the old owner cannot be contacted, activation waits for its lease's safe
+expiry boundary, including the existing clock-skew allowance. Resolve in-flight
+old writes using the bounded write-age/drain rules before fixing the old tail.
+The new owner recovers that tail and publishes a newly allocated chunk; it
+never resumes writing the old owner's chunk. Group-0 unavailability cannot
+extend a local grant past its conservative deadline.
+
+### 5.4 Read-only capture
+
+Read-only open validates the requested epoch and captures the directory root,
+trim point, active identity, and one finite validated tail:
+
+- When the current owner is reachable, request an ordered flush/checkpoint
+  barrier. The owner captures its synchronized prefix, persists the ChunkDB
+  complete-group boundary, then publishes the corresponding directory checkpoint
+  before returning the matching epoch/chunk/physical cursor/logical end. A failed
+  root publication leaves the prior checkpoint authoritative even if ChunkDB
+  already holds a newer cursor. Later append does not widen that view. Already
+  synchronized appends do not require another data fsync to capture the prefix.
+- When the owner is unreachable, use the captured persisted ChunkDB boundary
+  with matching Stream metadata. Reconstruct missing mappings only through that
+  boundary without writer adoption or publication. The result is an explicitly
+  older checkpoint view, possibly empty for the active chunk.
+
+Epoch, chunk identity, root/checkpoint, and end must form one consistent view;
+both physical and logical checkpoint bounds end complete groups. A raw newer
+ChunkDB cursor is not combined with an unrelated root or epoch. Do not combine
+observations across ownership changes. Expose the captured bound
+and whether it came from owner flush or checkpoint fallback. A requested exact
+upper cutover beyond that bound is unavailable, not a successful shorter replay.
+Checkpoint fallback is a read-visibility rule: writer failover still recovers
+the content-derived tail and cannot discard acknowledged data beyond it.
 
 ## 6. Reads
 
-Reads reject ranges below `trim_offset` or beyond the current durable tail.
-For sealed data, the reader binary-searches manifest fences, loads only the
-target extent pages, validates each loaded page against its fence, and resolves
-the physical offset with checked arithmetic. Active reads use the immutable
-acknowledged cursor snapshot.
+Reads reject ranges below `trim_offset` or beyond their captured logical tail.
+For sealed data the reader searches the bounded directory index, loads the
+target segments, and resolves the `ChunkLocation`. Active reads use immutable
+in-memory mappings or the reconstructed captured tail. The read path expands a
+large location into necessary complete physical frames, validates them, and
+returns only the requested payload. Reads can cross extent or chunk boundaries
+while keeping logical delivery order.
 
-A sequential reader starts at a caller-supplied logical offset and accepts a
-finite byte hint or `ToEnd`. It captures the corresponding durable end, returns
-EOF there, and leaves EOF handling to its caller. Cached bytes are returned
-while adjacent physical ranges are prefetched out of order within one bounded
-window; delivery remains in logical order. The default retained window is 8
-MiB. Each physical request is at most 1 MiB and at most eight requests from the
-window run concurrently. This keeps production DiskIO frames below their
-deadline-sensitive large-message range without reducing sequential readahead.
-Independent readers may run concurrently. Each physical read has an observation
-watchdog that never cancels or retries the underlying future.
-A stream handle keeps the current manifest generation's extent pages in an
-`ArcSwap` snapshot. Reads hit the immutable snapshot without a lock; a miss
-publishes a copy-on-write snapshot, and an older reader cannot replace a newer
-generation. The cache therefore remains bounded by one manifest generation.
-A provenance-aware reader also yields each logical segment's physical chunk
-identity. A journal compares that identity with its frame trailer. The durable
-acknowledged cursor remains the read and recovery upper bound; identity
-validation never promotes residual bytes beyond it.
+A sequential reader accepts a start and finite byte hint or `ToEnd`, captures
+its end once, and returns EOF there. The default retained window is 8 MiB, each
+physical request is at most 1 MiB, and at most eight requests run concurrently.
+Independent readers may run concurrently. Observation watchdogs do not cancel
+or retry underlying IO.
 
-An overlay reader supplies both a lower replay offset and an exact upper
-cutover offset. The consumer owns record framing, range filtering, sequence
-continuity, and retry-result semantics. The stream guarantees only that bytes
-within the captured interval come from the validated source epoch and manifest
-and that EOF occurs at the captured acknowledged cursor.
+Immutable directory-page caches use independently versioned page identities and
+an explicit retention budget. Pages may be shared by multiple head generations;
+head changes do not invalidate unchanged history. Snapshot publication is
+lock-free and an older lookup cannot replace a newer active-tail view. Neither
+opening nor the cache may eagerly materialize an unbounded historical index.
+
+A provenance-aware reader yields physical chunk identity along with payload.
+The journal owns business-record validation, sequence continuity, filtering,
+and retry-result semantics. Physical Stream frame validation applies regardless
+of consumer. Readers and overlays preserve their captured bounds through later
+append, rollover, and ownership changes.
 
 ## 7. Trim and Reclamation
 
 `trim_prefix(g)` rejects regression and `g > tail`. It first publishes the new
-logical trim point. Only afterward does it release complete sealed extents
-whose logical end is at or below `g`. A boundary extent remains allocated.
+logical trim point. Only afterward may it release complete sealed chunks whose
+logical end is at or below `g`. A chunk containing the boundary or retained
+extents remains allocated even if individual mappings precede `g`.
 
 Cleanup is idempotent and bounded by `gc_bytes_per_pass`, with at least one
-eligible extent processed so progress cannot stop behind a large chunk. A
-second generation removes successfully released extents from the directory.
-Calling trim again at the same watermark retries unfinished physical cleanup.
-Reads below the published watermark remain inaccessible throughout every crash
-point.
+eligible whole chunk processed so a large chunk cannot stop progress. Released
+chunks are removed from the directory through bounded changes to the retained
+prefix. Repeating trim at the same watermark retries unfinished cleanup.
 
-Immutable metadata cleanup is separate from logical trim. A caller that owns
-reader/checkpoint retention supplies the oldest still-readable manifest
-generation to `reclaim_metadata_before`. Each call deletes only older extent
-pages and is bounded by a caller-supplied page count; the current generation is
-never eligible.
+Directory reclamation follows reachability from current and retained roots.
+An older page version can remain referenced by a newer root; generation alone
+does not authorize deletion. `reclaim_metadata_before` uses the caller's
+retention horizon together with live-root reachability, with a bounded deletion
+budget. Orphan and unreachable-page cleanup remains safe and idempotent after
+restart. A failed candidate publication does not invalidate its prior root.
+In-flight candidate pages remain protected until their publication outcome is
+resolved; temporary unreachability alone cannot authorize deleting them.
 
-Shared-tail consumers contribute retention pins outside the stream. A caller
-may advance trim or metadata reclamation only after no catalog artifact,
-checkpoint, recovery operation, retry floor, or forwarding grace interval
-references the affected source offsets or manifest generation. Reopening a
-read-only handle is not a substitute for a pin: once the authoritative caller
-releases the last pin, later trim may make that historical interval
-unreadable.
+Reader, checkpoint, replay, retry, split/transfer, and forwarding-grace pins
+constrain data and metadata reclamation. Read-only reopening is not a substitute
+for a pin. Trim and cleanup never remove a byte, chunk, or shared page required
+by a retained view.
 
 ## 8. Bounds and Observation
 
-Defaults bound the queue at 1,024 requests and 64 MiB, a batch at 64 requests
-and 1 MiB, one append at 64 MiB, one chunk at 256 MiB, an extent page at 1,024
-entries, a sequential read window at 8 MiB with eight concurrent physical
-reads capped at 1 MiB each, and one GC pass at 64 MiB. All bounds are
-configurable and validated as nonzero.
+Defaults bound admission at 1,024 requests and 64 MiB, a batch at 64 requests
+and a 1 MiB byte target, one append at 64 MiB, one chunk at 256 MiB, and a
+directory segment at 1,024 extents. Sequential reading uses an 8 MiB window,
+eight concurrent physical requests of at most 1 MiB each, and GC uses a 64 MiB
+pass budget. Bounds are configurable and validated; index fanout, cache budget,
+and optional checkpoint budgets must also bound their own work. Replica count
+is configured, not implied by a physical-byte metric.
 
-Lock-free counters report submitted/completed/failed requests, logical and
-three-mirror physical bytes, batch/request counts, rollovers, read bytes,
-reclaimed bytes, queue high-water marks, metadata publications, extent-page
-cache hits/misses, physical-read amplification, and watchdog observations.
-Append and read watchdogs log the
-stream identity, epoch, logical range or offset, operation age, queue age,
-batch size, and stage at every interval while retaining the original future as
-the sole completion owner.
+Lock-free counters and phase histograms distinguish:
 
-Process perf histograms expose `stream.append.{e2e,queue,capacity,batch,encode,
-mirror,cursor}.lh`, `stream.metadata.{publish,build,page_cas,head_get,head_cas}.lh`,
-and `stream.read.e2e.lh`. The Chunk-KV server registers them in its periodic metrics
-output; the production benchmark also prints cumulative phase distributions.
-Observations use atomic histogram buckets and include failed operations. Values
-are nanoseconds in the metrics API and microseconds in benchmark phase output.
-Queue time runs from admission to batch dispatch, including capacity preparation.
-Batch samples exclude capacity preparation; metadata publication is nested
-inside batch duration and includes directory building and page/head operations.
-Request and batch sample counts differ when producers aggregate. Compare counts
-and mean durations for attribution; percentiles from nested or overlapping
-stages cannot be added. The fixed histogram's underflow bucket covers values
-below about 65 microseconds; its mean still uses the observed duration.
+- append admission, queue, capacity preparation, batching, framing, synchronized
+  mirror RPC completion, in-memory publication, and end-to-end completion;
+- chunk-internal layout updates from Stream lifecycle publications, seal,
+  ownership maintenance, and optional checkpoints;
+- directory pages/bytes read, built, reused, and written, root CAS operations,
+  extent count, and index height;
+- recovery chunks/bytes/frames scanned, replica resolution/repair, cursor and
+  extent reconstruction, and read-only capture;
+- logical/physical bytes, queue high-water marks, retained buffers/cache, read
+  amplification, reclaimed bytes, orphan backlog, and watchdog observations.
 
-The production regression baseline uses a three-node loopback deployment with
-three NullDisk instances, memory-backed KV/WAL, an Intel Core i9-7960X, and
-Linux 6.11. A ten-second reference run produced these results and gates:
+Periodic perf output and cumulative benchmark output retain count, average,
+p50, p99, and maximum. Phase scopes and whether counts describe requests,
+batches, or replicas are explicit. Nested percentiles are not added. Ordinary
+append samples must not conceal control-plane waits inside a mirror stage.
 
-| Workload                 | Reference throughput | Reference p99 | Regression floor | p99 ceiling | Peak RSS growth |
-|--------------------------|---------------------:|--------------:|-----------------:|------------:|----------------:|
-| 4 KiB append, 1 task     |          470 ops/s   |        3.3 ms |        250 ops/s  |       10 ms |         0.3 MiB |
-| 4 KiB append, 32 tasks   |        7,076 ops/s   |        5.5 ms |      3,000 ops/s  |       20 ms |         1.5 MiB |
-| 1 MiB append, 8 tasks    |          284 MiB/s   |         38 ms |        125 MiB/s  |      150 ms |          33 MiB |
-| 4 MiB rollover, 8 tasks  |          444 MiB/s   |        112 ms |        200 MiB/s  |      500 ms |          91 MiB |
-| 4 KiB random, 32 tasks   |       71,606 ops/s   |        0.7 ms |     30,000 ops/s  |        5 ms |          10 MiB |
-| 320 MiB replay, 1 task   |          746 MiB/s   |        478 ms |        300 MiB/s  |    2,000 ms |         144 MiB |
-| 576 MiB prefix trim      |       28,888 MiB/s   |        8.9 ms |      1,000 MiB/s  |      100 ms |           0 MiB |
+Performance acceptance uses release artifacts and a matched three-node native
+fixture with `mem-block` KV/WAL and retained MemDisk payload bytes. Record the
+replica count, buffer/queue settings, checkpoint policy, binary identities, and
+fixture parameters. The fixture removes physical-media latency without skipping
+framing, transport, synchronization responses, or read validation. It proves
+process/reopen behavior while retained media exists, not power-loss durability;
+durability fault tests use storage that survives the tested failure.
 
-The sentinel also requires zero errors and watchdog observations, queue high
-water below configured admission bounds, and peak RSS growth below 256 MiB.
-Metadata publications may not exceed initial allocation plus rollover count.
-One manifest generation incurs at most one extent-page miss per concurrent
-reader; the 32-task random baseline observed 25 racing initial misses followed
-by 572,996 hits, while replay observed one miss and 6,143 hits. GC must release
-at least one complete chunk.
+The regression workloads and minimum gates are:
+
+- 4 KiB append, one producer: at least 250 ops/s and p99 at most 10 ms.
+- 4 KiB append, 32 producers: at least 3,000 ops/s and p99 at most 20 ms.
+- 1 MiB append, eight producers: at least 125 MiB/s and p99 at most 150 ms.
+- 4 MiB rollover, eight producers: at least 200 MiB/s and p99 at most 500 ms.
+- 4 KiB random reads, 32 producers: at least 30,000 ops/s and p99 at most 5 ms.
+- 320 MiB replay, one producer: at least 300 MiB/s and p99 at most 2 s.
+- 576 MiB prefix trim: at least 1,000 MiB/s and p99 at most 100 ms.
+
+These are regression floors, not a claim that multi-millisecond memory-backed
+append latency is the performance objective. Matched before/after distributions
+must show the effect of removed KV waits and the combined write/sync RPC.
+Separately report standalone Stream append, actual Chunk-KV WAL, and client
+mutation latency.
+
+Sentinels require zero errors/watchdogs, bounded admission, less than 256 MiB
+peak workload RSS growth, no per-append ChunkDB cursor or directory writes,
+history-independent normal append work, and at most one tail chunk scanned on
+recovery. With optional checkpoints disabled and close outside measurement,
+head publications do not exceed initial attachment plus rollover count. Cache
+and lookup accounting follow accessed paths and configured budgets. GC must
+release at least one complete eligible chunk.
 
 ## 9. Errors and Invariants
 
-`StreamError` distinguishes invalid requests, admission backpressure, stale
-writers, definitely absent appends, ambiguous resolution, stalled writes,
-unavailable reads, corruption, and internal invariant failures.
+`StreamError` distinguishes invalid requests, backpressure, stale writers,
+definitely absent operations, unresolved outcomes, stalled writes, unavailable
+reads, corruption, and internal invariant failures. Absence cannot be inferred
+solely from a stale checkpoint cursor.
 
-The central invariants are:
+- **I1 — Durable completion.** A successful append has exact ordered logical
+  ranges and synchronized data on every required mirror replica. Per-append
+  ChunkDB cursor and directory updates are not completion prerequisites.
+- **I2 — Bounded directory work.** Historical segments keep their identities;
+  publications touch changed boundary segments and bounded index paths, and
+  open/read load only the paths they need.
+- **I3 — Publication and ownership.** Data is not admitted to an unattached
+  chunk; every visible root references complete pages; epochs never regress;
+  Group-0 lease expiry or release excludes stale acknowledgments/publications.
+- **I4 — Bounded recovery and views.** Only the last referenced chunk can need
+  parsing. Recovery preserves acknowledged bytes beyond old checkpoints and
+  establishes a validated contiguous prefix. Read-only ends are finite; an
+  owner-unavailable checkpoint fallback explicitly permits an older view and
+  cannot silently satisfy a newer requested cutover.
+- **I5 — Retention.** Logical trim precedes deletion and reclamation respects
+  whole-chunk liveness, shared-page reachability, and every retained consumer pin.
+- **I6 — Consumer separation.** Wal and business streams share the same storage
+  contract. The consumer owns business-record and retry-result semantics.
+- **I7 — Logical addressing.** One append stays in one chunk, framing bytes never
+  enter logical offsets, compatible multi-frame payloads use compact locations,
+  recovery accepts the entire append or none of it, and rollover/trim never
+  renumber retained bytes.
+- **I8 — Chunk isolation.** Internal chunk layout and `chunkinfo` changes do not
+  mutate Stream directory generations or copy Stream metadata.
+- **I9 — Synchronized write RPC.** A synchronized write response follows both
+  write and flush; it does not require a separate client fsync round trip.
+- **I10 — Resource and observation bounds.** Queues, batches, buffers, index
+  caches, recovery, and GC are bounded; the hot path adds no lock, and watchdogs
+  observe without taking over IO completion.
 
-- returned append ranges form one durable ordered tail;
-- append never updates group 0 or stream KV metadata per batch;
-- ambiguous data is never resubmitted at a guessed offset;
-- one append belongs to one chunk;
-- logical offsets never renumber after rollover or trim;
-- logical trim publication precedes physical deletion;
-- immutable page coverage is gap-free over the retained sealed interval;
-- an ownership epoch can advance but cannot regress;
-- read-only open never changes writer epoch, manifest generation, active chunk,
-  or durable cursor;
-- a captured read-only tail is finite and cannot silently widen during replay;
-- trim and metadata reclamation stay behind every externally owned overlay
-  pin; and
-- watchdogs observe without cancelling, retrying, or completing IO.
+## 10. Open Issues
 
-## Open Issues
+There are no unresolved decisions for the append/recovery contract. Verifiable
+bounded frame groups, all-required-mirror completion, Group-0 owner leases, and
+explicit live-view bounds define the contract. Byte packing, decoder fixtures,
+and rollout are implementation work under those constraints.
 
-None. Metadata-group rebinding, per-stream sharding, and EC conversion are
-explicit scale-out non-goals for this design.
+Metadata-group rebinding, per-stream sharding, and sealed-chunk EC conversion
+remain separate scale-out topics.

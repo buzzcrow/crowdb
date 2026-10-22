@@ -44,12 +44,14 @@ live in the linked document; implementation follows
 
 ## Chunk, Chunk-KV, and recovery
 
-- **[R244](R244-chunk-stream-incremental-directory-publication.md)** — eliminate
-  historical extent-directory rewrites and per-append directory publication;
-  preserve durable cursor, snapshot/recovery and shared-page reclamation rules,
-  and verify real Chunk-KV WAL latency alongside Stream perf.
-  **Area:** chunk-stream / chunk-kv / KV metadata. **Complexity:** High.
-  **Status:** Deferred by user decision to a dedicated storage performance iteration.
+- **[R244](R244-chunk-stream-incremental-directory-publication.md)** — synchronized
+  mirror writes complete append without per-batch cursor/directory KV updates;
+  use compact extents, segmented history and last-chunk content recovery, with
+  isolated chunkinfo updates and actual Chunk-KV WAL performance acceptance.
+  **Area:** chunk-stream / chunk-kv / DiskIO / KV metadata. **Complexity:** High.
+  **Status:** Verifiable frame groups, recovery, Group-0 ownership and live-tail
+  rules selected. Implementation started with matched baseline capture;
+  performance acceptance remains outstanding.
 - **[R83](R83-chunkdb-complete-recovery-flow.md)** — complete data recovery and
   recovery-speed control. **Area:** chunkdb / diskdb / DiskIO.
   **Complexity:** High. **Dependencies:** chunkdb server and DiskIO recovery path.
