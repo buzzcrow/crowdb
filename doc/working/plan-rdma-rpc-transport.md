@@ -150,6 +150,98 @@ and TPS/P50/P95/P99 output.
   profiles. Existing capability serialization and state predicates alone do
   not prove that every connection follows the negotiated setup contract.
 
+### Benchmark audit and proposed unified measurement
+
+User decisions: use coroutine loaders for the primary throughput benchmark;
+keep producer-thread stress as diagnostic coverage; include errors in every
+performance result; prohibit TCP fallback in RDMA benchmarks; redesign the
+latency histogram to resolve sub-65-us RTTs.
+
+- [x] **Audit historical baseline**: the retained 128-byte run at
+  `.crowdb-runtime/artifacts/bench/rdma-rpc-20261018-220617/server/metrics.log`
+  records TCP socket read/writev data for all cases. Its 32-connection count
+  is 3,560,660 payloads over approximately three seconds, matching the
+  script comment's 1,186,876 TPS. Treat that number as TCP-path evidence,
+  not a verified RDMA baseline. The old `results.tsv` files contain error
+  rows despite successful shell exit; the script also expects JSON while
+  the current CLI emits a human report.
+- [x] **Add explicit fallback policy**: `CROWDB_RDMA_ALLOW_TCP_FALLBACK=0`
+  sets `SocketTransport::allow_tcp_fallback_` false. Unavailable, disabled,
+  or uncompiled RDMA then returns connection failure before opening a TCP
+  socket. The default remains enabled; invalid policy values disable TCP
+  fallback. Count only allowed fallback attempts. Five path-policy tests
+  and five existing capability tests pass.
+  The full 126-test native RPC suite passes (hardware-only cases skip there),
+  and the actual hardware worker round trip also passes with fallback disabled.
+- [x] **Reject false benchmark success**: both RDMA load runners set the
+  strict policy. The regression script preserves complete per-case client
+  output, records `client_exit`, `report_errors`, and `valid`, and returns
+  nonzero for a failed client or invalid report. Missing RPC error counts
+  are `NA`, not zero. A rebuilt-client invalid-device reproduction returns
+  client exit 2 and script exit 1. Retained evidence:
+  `.crowdb-runtime/artifacts/rdma/strict-policy-script-fixed/`.
+  Changed C++ formatting/tree-lint and workspace clippy pass. The historical
+  table is now annotated as unverified RDMA data instead of a regression gate.
+  Four runner contract tests cover a successful report, a failed client with
+  preserved error count, a missing report despite exit zero, and reported RPC
+  errors despite exit zero. These use fixture processes without an HCA:
+  `pixi run -- python -m unittest discover -s tools/benchmark/tests -p rdma_regression_test.py -v`.
+- [ ] **Unify the workload and report contract after the test-design
+  decision**: use one coroutine-driven RPC echo workload, one case manifest,
+  and one JSON/CSV schema for native processes and two host-network
+  containers. Require actual RDMA path and unique QP counts. Verify request
+  correlation and response length/content; include submission rejection and
+  native coroutine retry counters, which are not fully represented by the
+  current Rust `EchoHandler` response-error counter.
+  Audit the built-in echo allocator before using it as the common workload:
+  it allocates replies from `conn->pool()`, which is currently the RDMA
+  receive pool, while the diagnostic echo uses `server.pool()`. A completely
+  preposted receive pool leaves no allocation admission for those replies.
+- [ ] **Unify histogram semantics**: use nanosecond input, fixed bounded
+  memory, mergeable per-polling-owner shards, explicit zero/overflow counts,
+  exact count/sum/min/max, and avg/P50/P90/P95/P99/P99.9 output. Remove the
+  common C++/Rust histograms' 65.5-us underflow floor; do not retain a separate
+  benchmark-only precision contract. Specify a shared bucket layout and
+  golden vectors. Record timing origin and exclude warmup/drain from TPS.
+- [ ] **Confirm CQ ownership before expanding the performance matrix**:
+  current `RdmaTransport` has one `cq_` per peer, no dedicated polling
+  thread, and competing epoll workers protected by `cq_polling_`.
+  `RdmaTransport::start()` only changes lifecycle state. The recommended
+  target is one assigned polling/event thread per CQ, with QPs assigned
+  to one CQ, bounded busy polling under traffic, and arm/poll/epoll sleep
+  after the idle budget. Proposed `cq_count` and `poller_count` are not
+  existing configuration knobs. Compare native and OCI runs with the same
+  manifest; neither single-host topology establishes physical-node isolation.
+
+Proposed result schema (client/server resource values are separate):
+
+| Group       | Required columns                                                                                                             |
+|-------------|------------------------------------------------------------------------------------------------------------------------------|
+| Identity    | case_id, run_id, git_sha, binary hashes, topology, CPU/HCA identity, CPU affinity, actual path, fallback policy/count             |
+| Workload    | client_mode, loader_count, producer_threads, in_flight_per_loader, connection_count, logical_ops_per_rpc, payload_bytes, wire_bytes |
+| Scheduling  | io_engines, io_workers, cq_count, poller_count, poll_batch, verbs_poll_batch, poll_empty_budget, epoll_wakeups, CQ event/poll counts |
+| Capacity    | requested/effective sq_depth, rq_depth, posted_receive_target, cq_depth, wire_slot_capacity, arena bytes, queue/pool high-water marks |
+| Measurement | warmup_s, measure_s, repeat_index, latency_scope, submitted, completed_in_window, drain_completed, rpc_tps, logical_ops_s, payload_Bps |
+| Latency     | latency_count, avg_ns, p50_ns, p90_ns, p95_ns, p99_ns, p999_ns, min_ns, max_ns, histogram_zero_count, histogram_overflow_count       |
+| Errors      | errors_total, setup_errors, submit_rejects, timeouts, connection_errors, cq_errors, payload_mismatches, duplicate_completions, retries, report_errors, client_exit, server_exit, valid |
+| Cost        | client/server CPU time, context switches, CPU migrations, registered bytes, quarantined bytes, available RNR/provider counters   |
+
+All fields belong to one machine-readable row; unavailable values are null.
+Human tables can show projections joined by case_id but always include errors
+and validity. Normal shutdown WR flushes are separate from workload failures.
+Each measured operation is one validated RPC round trip; current code copies
+one OutFrame into one SEND slot and does not combine multiple RPCs merely
+because they share a QP. Application aggregation, if benchmarked, must report
+logical_ops_per_rpc and logical_ops_s separately from rpc_tps.
+
+Recommended sweep: single-loader latency baseline; then sweep coroutine count
+with one QP/CQ/poller; then QP count; then CQ/poller count; then queue depths
+and payload/slot size. Use one-second warmup and ten-second measurement, repeat
+candidate peaks, and retain all trials and errors. Choose the highest repeatable
+zero-error TPS and show its latency rather than selecting unrelated best
+throughput and latency fields from different trials. Wire header/control bytes
+count toward slot capacity, including at the 1-MiB class boundary.
+
 Provider references for the implementation choices:
 
 - [libibverbs QP capacity terminology](https://github.com/linux-rdma/rdma-core/blob/master/libibverbs/man/ibv_create_qp.3).

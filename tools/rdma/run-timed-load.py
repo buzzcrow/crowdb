@@ -50,6 +50,7 @@ def main():
             env = runtime_env.copy()
             env.update({
                 "CROWDB_RDMA_ENABLED": "1",
+                "CROWDB_RDMA_ALLOW_TCP_FALLBACK": "0",
                 "CROWDB_RDMA_RPC_E2E": "1",
                 "CROWDB_RDMA_E2E_FILTER": "RdmaHardwareTest.RpcServerClientTimedLoad",
                 "CROWDB_RDMA_TEST_SECONDS": str(args.seconds),

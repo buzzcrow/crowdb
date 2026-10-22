@@ -520,6 +520,7 @@ class SocketTransport : public Transport
 
   private:
     BufferPool *pool_;
+    bool        allow_tcp_fallback_{true};
 #ifdef CROWDB_RPC_HAVE_RDMA
     std::unique_ptr<class RdmaTransport> rdma_transport_;
     RdmaConfig                           rdma_config_;

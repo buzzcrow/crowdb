@@ -549,6 +549,12 @@ SocketTransport::SocketTransport(uint32_t io_engines, uint32_t io_workers, Buffe
 {
     assert(io_engines >= 1 && io_workers >= 1);
     assert(io_workers % io_engines == 0);
+    if (const char *fallback = std::getenv("CROWDB_RDMA_ALLOW_TCP_FALLBACK"); fallback != nullptr) {
+        allow_tcp_fallback_ = std::strcmp(fallback, "1") == 0;
+        if (!allow_tcp_fallback_ && std::strcmp(fallback, "0") != 0) {
+            CRB_LOG_WARN("invalid RDMA TCP fallback policy value={}; TCP fallback disabled", fallback);
+        }
+    }
     if (pool_ == nullptr) {
         pool_ = new SystemBufferPool(); // own a default pool
     }
@@ -916,6 +922,14 @@ std::shared_ptr<Connection> SocketTransport::connect(const std::string &addr, in
             attach_rdma_connection(rdma_conn);
             return rdma_conn;
         }
+    }
+#endif
+    if (!allow_tcp_fallback_) {
+        CRB_LOG_WARN("RDMA connection unavailable; TCP fallback disabled addr={} port={}", addr, port);
+        return nullptr;
+    }
+#ifdef CROWDB_RPC_HAVE_RDMA
+    if (rdma_transport_ != nullptr) {
         rdma_transport_->stats().fallback_count.fetch_add(1, std::memory_order_relaxed);
     }
 #endif
