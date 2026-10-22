@@ -480,3 +480,30 @@ TEST_F(TransportLoopbackTest, ExplicitIdleCloseReclaimsSocketsAcrossWorkersWhile
     }
     transport.stop();
 }
+
+TEST_F(TransportLoopbackTest, ExplicitCloseDefersDescriptorReuseUntilActiveSocketIoRetires)
+{
+    SocketTransport transport(1, 2);
+    transport.start();
+    int sockets[2];
+    ASSERT_EQ(socketpair_nonblocking(sockets), 0);
+    auto      connection = transport.create_connection(sockets[0], "active-socket-io");
+    const int write_fd   = connection->write_fd;
+    {
+        const auto socket_use = connection->use_socket();
+        ASSERT_TRUE(socket_use);
+        connection->close();
+        EXPECT_FALSE(connection->use_socket());
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        EXPECT_NE(::fcntl(sockets[0], F_GETFD), -1);
+        EXPECT_NE(::fcntl(write_fd, F_GETFD), -1);
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (::fcntl(sockets[0], F_GETFD) != -1 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_EQ(::fcntl(sockets[0], F_GETFD), -1);
+    EXPECT_EQ(::fcntl(write_fd, F_GETFD), -1);
+    ::close(sockets[1]);
+    transport.stop();
+}

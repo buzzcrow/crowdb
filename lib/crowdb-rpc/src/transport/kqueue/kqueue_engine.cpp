@@ -87,6 +87,11 @@ void KqueueEngine::remove_connection(int read_fd, int write_fd)
 
 void KqueueEngine::arm_read(int read_fd, Connection *conn)
 {
+    const auto socket_use = conn->use_socket();
+    if (!socket_use) {
+        return;
+    }
+
     int           flags = EV_ADD | (oneshot_ ? EV_ONESHOT : 0);
     struct kevent change;
     EV_SET(&change, read_fd, EVFILT_READ, flags, 0, 0, reinterpret_cast<void *>(static_cast<uintptr_t>(conn->id())));
@@ -95,6 +100,11 @@ void KqueueEngine::arm_read(int read_fd, Connection *conn)
 
 void KqueueEngine::arm_write(int write_fd, Connection *conn)
 {
+    const auto socket_use = conn->use_socket();
+    if (!socket_use) {
+        return;
+    }
+
     // kqueue uses EVFILT_WRITE on the same fd — independent from EVFILT_READ.
     int           flags = EV_ADD | (oneshot_ ? EV_ONESHOT : 0);
     struct kevent change;
@@ -102,8 +112,13 @@ void KqueueEngine::arm_write(int write_fd, Connection *conn)
     ::kevent(kq_, &change, 1, nullptr, 0, nullptr);
 }
 
-void KqueueEngine::disarm_write(int write_fd, Connection * /*conn*/)
+void KqueueEngine::disarm_write(int write_fd, Connection *conn)
 {
+    const auto socket_use = conn->use_socket();
+    if (!socket_use) {
+        return;
+    }
+
     struct kevent change;
     EV_SET(&change, write_fd, EVFILT_WRITE, EV_DELETE, 0, 0, nullptr);
     ::kevent(kq_, &change, 1, nullptr, 0, nullptr);

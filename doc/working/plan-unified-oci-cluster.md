@@ -37,6 +37,14 @@ readiness, attached workloads and scoped cleanup.
   owned native containers are stopped. Another four independent blank 8-GiB
   raw test devices per VM are attached and their serials/lineage recorded for
   a fresh post-fix cluster; old accepted disks and journals are not reset.
+  Socket-use references additionally fence descriptor reuse while reads, writes
+  or engine re-arms are in flight. Close rejects new uses atomically; a worker
+  retains its close request until existing uses retire. A new physical-FD test
+  holds an active I/O scope across close and requires the descriptors to remain
+  valid until that scope ends, then close without transport shutdown. Follow-up
+  full C++/FFI, 174 monitor tests, affected all-target clippy, targeted tree-lint
+  and Rust/C++ format gates pass. Rebuild the staged image with this final I/O
+  fence before running the fresh native cluster.
   No A31 protocol/recreation pass claimed.
 - 2026-10-22: user authorized continuation past the prior retry limit and asked
   for diagnosis of the long-standing failure. User subsequently requested F03

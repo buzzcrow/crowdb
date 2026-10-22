@@ -80,6 +80,9 @@ void Worker::close_connections()
         for (auto &[fd, conn] : connections_) {
             (void)fd;
             conn->close();
+            while (!conn->socket_cleanup_ready()) {
+                std::this_thread::yield();
+            }
             close_connection_fds(engine_, conn.get(), transport_);
         }
         connections_.clear();
@@ -89,13 +92,17 @@ void Worker::close_connections()
 
 void Worker::request_close(std::shared_ptr<Connection> conn)
 {
-    auto *request = new CloseRequest{.connection = std::move(conn), .next = nullptr};
-    auto *head    = pending_closes_.load(std::memory_order_relaxed);
+    enqueue_close(new CloseRequest{.connection = std::move(conn), .next = nullptr});
+    engine_->notify_worker();
+}
+
+void Worker::enqueue_close(CloseRequest *request)
+{
+    auto *head = pending_closes_.load(std::memory_order_relaxed);
     do {
         request->next = head;
     } while (
         !pending_closes_.compare_exchange_weak(head, request, std::memory_order_release, std::memory_order_relaxed));
-    engine_->notify_worker();
 }
 
 void Worker::drain_closes(ClosedConnections &closed_fds)
@@ -105,6 +112,11 @@ void Worker::drain_closes(ClosedConnections &closed_fds)
         auto     *next = request->next;
         auto     *conn = request->connection.get();
         const int fd   = static_cast<int>(conn->transport_handle);
+        if (!conn->socket_cleanup_ready()) {
+            enqueue_close(request);
+            request = next;
+            continue;
+        }
         close_connection_fds(engine_, conn, transport_);
         closed_fds.emplace_back(fd, conn->id());
         delete request;
@@ -336,6 +348,10 @@ void Worker::process_writable(const EngineEvent &ev, ClosedConnections &closed_f
 void Worker::process_error(const EngineEvent &ev, ClosedConnections &closed_fds)
 {
     if (ev.conn != nullptr && ev.conn->is_open()) {
+        const auto socket_use = ev.conn->use_socket();
+        if (!socket_use) {
+            return;
+        }
         CRB_LOG_WARN("worker: socket error event fd={} conn_id={} name={}", ev.fd,
                      static_cast<long long>(ev.conn->id()), ev.conn->name());
         int       rfd          = static_cast<int>(ev.conn->transport_handle);
@@ -399,6 +415,11 @@ void Worker::retire_closed(const ClosedConnections &closed_fds)
 static void on_readable_impl(Connection *conn, int fd, uint8_t *recv_buf, size_t recv_buf_size,
                              std::vector<Connection *> &pending_writes)
 {
+    const auto socket_use = conn->use_socket();
+    if (!socket_use) {
+        return;
+    }
+
     auto &parser      = conn->parser();
     auto  on_frame_cb = [conn](Frame *frame) { conn->on_frame(frame); };
 

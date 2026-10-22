@@ -282,6 +282,7 @@ class Worker
     void drain_notified();
     void drain_closes(ClosedConnections &closed_fds);
     void discard_closes();
+    void enqueue_close(CloseRequest *request);
     void process_readable(const EngineEvent &ev, ClosedConnections &closed_fds);
     void process_writable(const EngineEvent &ev, ClosedConnections &closed_fds);
     void process_error(const EngineEvent &ev, ClosedConnections &closed_fds);
