@@ -23,7 +23,7 @@ use crowdb_common::metrics::{Bandwidth, MetricName};
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::frame::{
     encode_frame_regions, prepare_frame_regions, set_frame_chunk_id, FrameError, FrameMagic,
-    FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES, MAX_FRAME_BYTES, MAX_FRAME_PAYLOAD_BYTES,
+    FRAME_FOOTER_BYTES, FRAME_V2_HEADER_BYTES, MAX_FRAME_BYTES, MAX_FRAME_V2_PAYLOAD_BYTES,
 };
 use hyper::body::{Bytes, Http1BodyReceiveBuffer, Http1BodyReceiveProvider};
 
@@ -132,7 +132,7 @@ impl NativeBodyReceiver {
             ));
         }
         let frame_offset = slot * MAX_FRAME_BYTES;
-        let payload_offset = frame_offset + FRAME_HEADER_PREFIX_BYTES;
+        let payload_offset = frame_offset + FRAME_V2_HEADER_BYTES;
         let write_time_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |duration| {
@@ -143,17 +143,17 @@ impl NativeBodyReceiver {
         unsafe {
             let header = std::slice::from_raw_parts_mut(
                 owner.pointer.as_ptr().add(frame_offset),
-                FRAME_HEADER_PREFIX_BYTES,
+                FRAME_V2_HEADER_BYTES,
             );
             let payload = std::slice::from_raw_parts(
                 owner.pointer.as_ptr().add(payload_offset),
-                MAX_FRAME_PAYLOAD_BYTES,
+                MAX_FRAME_V2_PAYLOAD_BYTES,
             );
             let footer = std::slice::from_raw_parts_mut(
                 owner
                     .pointer
                     .as_ptr()
-                    .add(payload_offset + MAX_FRAME_PAYLOAD_BYTES),
+                    .add(payload_offset + MAX_FRAME_V2_PAYLOAD_BYTES),
                 FRAME_FOOTER_BYTES,
             );
             prepare_frame_regions(state.magic, payload, write_time_ms, header, footer)
@@ -215,8 +215,8 @@ impl NativeBodyReceiver {
         owner: Arc<NativeOwner>,
         data: &Bytes,
     ) -> io::Result<()> {
-        for (slot, payload) in data.chunks(MAX_FRAME_PAYLOAD_BYTES).enumerate() {
-            let payload_offset = slot * MAX_FRAME_BYTES + FRAME_HEADER_PREFIX_BYTES;
+        for (slot, payload) in data.chunks(MAX_FRAME_V2_PAYLOAD_BYTES).enumerate() {
+            let payload_offset = slot * MAX_FRAME_BYTES + FRAME_V2_HEADER_BYTES;
             // SAFETY: the reserved owner is exclusively initialized here and
             // every destination payload slot is disjoint and large enough.
             unsafe {
@@ -230,13 +230,13 @@ impl NativeBodyReceiver {
                 io::Error::new(io::ErrorKind::InvalidData, "native payload length exceeds u16")
             })?;
             state.completed_slots += 1;
-            if payload.len() == MAX_FRAME_PAYLOAD_BYTES {
+            if payload.len() == MAX_FRAME_V2_PAYLOAD_BYTES {
                 Self::prepare_full_slot(state, &owner, slot)?;
             }
         }
         state.next_slot = state.completed_slots;
         if let Some(last) = state.completed_slots.checked_sub(1) {
-            if usize::from(state.payload_lengths[last]) < MAX_FRAME_PAYLOAD_BYTES {
+            if usize::from(state.payload_lengths[last]) < MAX_FRAME_V2_PAYLOAD_BYTES {
                 state.append_slot = Some(last);
             }
         }
@@ -282,8 +282,14 @@ impl NativeBodyReceiver {
 
     /// Select frame identity before socket reception and hand off whole owners.
     /// # Errors
-    /// Returns an error if the receive state is concurrently in use.
+    /// Returns an error for incompatible framing or concurrent receive-state use.
     pub fn enable_owner_handoff_with_magic(&self, magic: FrameMagic) -> io::Result<()> {
+        if !matches!(magic, FrameMagic::RepoSmallV2 | FrameMagic::RepoLargeV2) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "native receive requires ordinary object revision 2",
+            ));
+        }
         let _guard = self.enter_state()?;
         // SAFETY: the guard exclusively owns the existing receive state.
         let state = unsafe { &mut *self.state.get() };
@@ -399,7 +405,7 @@ fn completed_owner(state: &mut ReceiverState, owner: Arc<NativeOwner>) -> io::Re
         .copied()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "native owner has no completed slots"))?;
     let physical_len = (lengths.len() - 1) * MAX_FRAME_BYTES
-        + FRAME_HEADER_PREFIX_BYTES
+        + FRAME_V2_HEADER_BYTES
         + usize::from(last_payload)
         + FRAME_FOOTER_BYTES;
     state.completed_slots = 0;
@@ -442,6 +448,9 @@ impl FramedWriteBuffer for NativeFramedOwner {
     }
 
     fn prepare_frames(&mut self, magic: FrameMagic, write_time_ms: u64) -> Result<(), FrameError> {
+        if !matches!(magic, FrameMagic::RepoSmallV2 | FrameMagic::RepoLargeV2) {
+            return Err(FrameError::InvalidRole);
+        }
         if self.magic != magic {
             self.prepared = false;
             self.prepared_slots = 0;
@@ -455,13 +464,13 @@ impl FramedWriteBuffer for NativeFramedOwner {
             let frame_offset = index
                 .checked_mul(MAX_FRAME_BYTES)
                 .ok_or(FrameError::LengthOverflow)?;
-            let payload_offset = frame_offset + FRAME_HEADER_PREFIX_BYTES;
+            let payload_offset = frame_offset + FRAME_V2_HEADER_BYTES;
             // SAFETY: socket receive has completed this slot. Header and
             // footer regions are disjoint from immutable payload views.
             unsafe {
                 let header = std::slice::from_raw_parts_mut(
                     self.owner.pointer.as_ptr().add(frame_offset),
-                    FRAME_HEADER_PREFIX_BYTES,
+                    FRAME_V2_HEADER_BYTES,
                 );
                 let payload =
                     std::slice::from_raw_parts(self.owner.pointer.as_ptr().add(payload_offset), payload_len);
@@ -483,21 +492,24 @@ impl FramedWriteBuffer for NativeFramedOwner {
         chunk_id: ChunkId,
         write_time_ms: u64,
     ) -> Result<Range<usize>, FrameError> {
+        if !matches!(magic, FrameMagic::RepoSmallV2 | FrameMagic::RepoLargeV2) {
+            return Err(FrameError::InvalidRole);
+        }
         let payload_len = self
             .frame_payload_len(index)
             .ok_or(FrameError::InvalidLocationRange)?;
         let frame_offset = index
             .checked_mul(MAX_FRAME_BYTES)
             .ok_or(FrameError::LengthOverflow)?;
-        let payload_offset = frame_offset + FRAME_HEADER_PREFIX_BYTES;
-        let frame_len = FRAME_HEADER_PREFIX_BYTES + payload_len + FRAME_FOOTER_BYTES;
+        let payload_offset = frame_offset + FRAME_V2_HEADER_BYTES;
+        let frame_len = FRAME_V2_HEADER_BYTES + payload_len + FRAME_FOOTER_BYTES;
         // SAFETY: the provider never exposes the reserved header/footer bytes.
         // This consumed slot is their only writer; payload views alias only
         // the disjoint initialized payload range.
         unsafe {
             let header = std::slice::from_raw_parts_mut(
                 self.owner.pointer.as_ptr().add(frame_offset),
-                FRAME_HEADER_PREFIX_BYTES,
+                FRAME_V2_HEADER_BYTES,
             );
             let payload =
                 std::slice::from_raw_parts(self.owner.pointer.as_ptr().add(payload_offset), payload_len);
@@ -505,7 +517,7 @@ impl FramedWriteBuffer for NativeFramedOwner {
                 self.owner.pointer.as_ptr().add(payload_offset + payload_len),
                 FRAME_FOOTER_BYTES,
             );
-            if self.prepared {
+            if self.prepared && self.magic == magic {
                 set_frame_chunk_id(chunk_id, footer)?;
             } else {
                 encode_frame_regions(magic, chunk_id, payload, write_time_ms, header, footer)?;
@@ -595,8 +607,8 @@ impl Http1BodyReceiveProvider for NativeBodyReceiver {
             },
             |slot| (slot, usize::from(state.payload_lengths[slot])),
         );
-        let payload_offset = slot * MAX_FRAME_BYTES + FRAME_HEADER_PREFIX_BYTES + initial_len;
-        let capacity = requested.min(MAX_FRAME_PAYLOAD_BYTES - initial_len).min(
+        let payload_offset = slot * MAX_FRAME_BYTES + FRAME_V2_HEADER_BYTES + initial_len;
+        let capacity = requested.min(MAX_FRAME_V2_PAYLOAD_BYTES - initial_len).min(
             state
                 .owner_bytes
                 .saturating_sub(payload_offset + FRAME_FOOTER_BYTES),
@@ -618,7 +630,7 @@ impl Http1BodyReceiveProvider for NativeBodyReceiver {
             state.owner = None;
         }
         debug_assert_eq!(
-            FRAME_HEADER_PREFIX_BYTES + MAX_FRAME_PAYLOAD_BYTES + FRAME_FOOTER_BYTES,
+            FRAME_V2_HEADER_BYTES + MAX_FRAME_V2_PAYLOAD_BYTES + FRAME_FOOTER_BYTES,
             MAX_FRAME_BYTES
         );
         Poll::Ready(Ok(Box::new(NativeReceiveRegion {
@@ -671,7 +683,7 @@ impl Http1BodyReceiveProvider for NativeBodyReceiver {
             if issued.initial_len == 0 {
                 state.completed_slots += 1;
             }
-            if payload_len < MAX_FRAME_PAYLOAD_BYTES {
+            if payload_len < MAX_FRAME_V2_PAYLOAD_BYTES {
                 state.append_slot = Some(issued.slot);
             } else {
                 Self::prepare_full_slot(state, &owner, issued.slot)?;
@@ -713,7 +725,8 @@ impl Http1BodyReceiveProvider for NativeBodyReceiver {
             ));
         }
         let owner_bytes = state.owner_bytes;
-        let logical_capacity = owner_bytes - state.payload_lengths.len() * 34;
+        let logical_capacity =
+            owner_bytes - state.payload_lengths.len() * (FRAME_V2_HEADER_BYTES + FRAME_FOOTER_BYTES);
         if data.len() > logical_capacity {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,

@@ -4,6 +4,8 @@
 #include "chunk_pack_pipeline.h"
 
 #include "c_api_internal.h"
+#include "chunk_catalog_codec.h"
+#include "chunk_frame.h"
 #include "chunk_page_store.h"
 #include "crowdb-common/crc32c.h"
 #include "crowdb-protocol/frame.h"
@@ -17,11 +19,6 @@
 
 namespace crowdb::tree::detail
 {
-static crowdb::protocol::FrameMagic page_frame_magic(PagePurpose purpose)
-{
-    return purpose == PagePurpose::kPageIndex ? crowdb::protocol::FrameMagic::PageIndexV1
-                                              : crowdb::protocol::FrameMagic::BtreePageV1;
-}
 
 uint64_t monotonic_millis()
 {
@@ -233,7 +230,7 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
             }
             if (!chunk.empty() &&
                 (chunk_purpose(chunk) != purpose || length > store->config_.max_chunk_bytes - logical_bytes ||
-                 crowdb::protocol::framed_physical_length(length) > store->chunk_allocation_bytes() - cursor)) {
+                 chunk_framed_length(length) > store->chunk_allocation_bytes() - cursor)) {
                 if (writes.empty()) {
                     initial_rotated_chunk  = chunk;
                     initial_rotated_cursor = cursor;
@@ -245,8 +242,7 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
             if (chunk.empty()) {
                 const uint64_t packs_per_chunk =
                     (store->config_.max_chunk_bytes + store->config_.pack_bytes - 1) / store->config_.pack_bytes;
-                const uint64_t physical_pack_bytes =
-                    crowdb::protocol::framed_physical_length(store->config_.pack_bytes);
+                const uint64_t physical_pack_bytes = chunk_framed_length(store->config_.pack_bytes);
                 if (physical_pack_bytes == 0 ||
                     packs_per_chunk > std::numeric_limits<uint64_t>::max() / physical_pack_bytes) {
                     return Status::resource_exhausted("chunk page framing exceeds address space");
@@ -263,11 +259,12 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
             job->pack.ordinal        = manifest->packs.size();
             job->pack.logical_offset = offset;
             job->pack.ref            = {
-                .chunk_id = chunk,
-                .offset   = cursor,
-                .length   = static_cast<uint32_t>(length),
+                .chunk_id       = chunk,
+                .offset         = cursor,
+                .length         = static_cast<uint32_t>(length),
+                .frame_revision = kChunkFrameRevision,
             };
-            job->physical_length = crowdb::protocol::framed_physical_length(length);
+            job->physical_length = chunk_framed_length(length);
             job->source_offset   = offset;
             manifest->packs.push_back(job->pack);
             logical_bytes += length;
@@ -361,7 +358,7 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
             remember_orphan_segments();
             return segment_status;
         }
-        manifest->checksum       = ChunkPageStore::manifest_checksum(*manifest);
+        manifest->checksum       = manifest_checksum(*manifest);
         Status validation_status = crowdb::tree::detail::ChunkPageStore::validate_manifest(*manifest, *store->catalog_);
         if (!validation_status.ok()) {
             remember_orphan_segments();
@@ -407,7 +404,7 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
         auto &job = *writes[index];
         orphan_pack_bytes.fetch_add(job.pack.ref.length, std::memory_order_relaxed);
         const auto frame_error = crowdb::protocol::encode_frames(
-            page_frame_magic(chunk_purpose(job.pack.ref.chunk_id)),
+            chunk_page_frame_magic(chunk_purpose(job.pack.ref.chunk_id)),
             {.high = job.pack.ref.chunk_id.high, .low = job.pack.ref.chunk_id.low},
             std::span<const uint8_t>(store->staged_.data() + job.source_offset, job.pack.ref.length),
             monotonic_millis(), &job.framed);

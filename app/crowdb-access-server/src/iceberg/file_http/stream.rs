@@ -13,7 +13,7 @@ use crowdb_access_iceberg::file::{
 };
 use crowdb_access_s3::native_buffer::NativeBodyReceiver;
 use crowdb_chunk_client::{FramedWriteBuffer, LargeWritePolicy};
-use crowdb_protocol::frame::{FrameMagic, MAX_FRAME_PAYLOAD_BYTES};
+use crowdb_protocol::frame::{FrameMagic, MAX_FRAME_V2_PAYLOAD_BYTES};
 use http_body_util::BodyExt;
 use hyper::body::{Bytes, Incoming};
 use tokio::sync::mpsc;
@@ -28,7 +28,7 @@ use crate::upload_flow::{drive_transfer, write_buffers, OfferStatus, UploadBuffe
 // Sixteen complete frames occupy one 1-MiB physical mirror strip. A full
 // logical MiB would spill frame overhead into the next strip and serialize
 // otherwise independent writes in the non-native receive path.
-const TARGET_BUFFER_BYTES: usize = 16 * MAX_FRAME_PAYLOAD_BYTES;
+const TARGET_BUFFER_BYTES: usize = 16 * MAX_FRAME_V2_PAYLOAD_BYTES;
 
 struct WriteObject<'a> {
     body: UploadBody<Incoming>,
@@ -95,9 +95,9 @@ pub(super) async fn upload(
     if let Some(receiver) = receiver {
         receiver
             .enable_owner_handoff_with_magic(if small.is_some() {
-                FrameMagic::RepoSmallV1
+                FrameMagic::RepoSmallV2
             } else {
-                FrameMagic::RepoLargeV1
+                FrameMagic::RepoLargeV2
             })
             .map_err(|_| FileS3ErrorCode::InternalError)?;
     }
@@ -107,9 +107,9 @@ pub(super) async fn upload(
         object: object::ObjectWriter::new(writer, small.is_some(), expected_sha256.is_some())
             .map_err(|()| FileS3ErrorCode::InternalError)?,
         frame_magic: if small.is_some() {
-            FrameMagic::RepoSmallV1
+            FrameMagic::RepoSmallV2
         } else {
-            FrameMagic::RepoLargeV1
+            FrameMagic::RepoLargeV2
         },
         held_buffers: large_write.client.large_held_buffers,
         admission,
@@ -200,7 +200,7 @@ impl WriteObject<'_> {
     }
 
     async fn transfer(&mut self) -> Result<(u64, crate::upload_flow::WriteStats), FileS3ErrorCode> {
-        if self.frame_magic == FrameMagic::RepoSmallV1 {
+        if self.frame_magic == FrameMagic::RepoSmallV2 {
             if let Some(receiver) = self.receiver {
                 let (writer, digest) = self.object.parts_mut();
                 return small_receive::receive(

@@ -25,9 +25,9 @@ use crowdb_protocol::chunkdb::rpc::{
 };
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::diskdb::rpc::Segment;
-use crowdb_protocol::frame::{parse_frame, MAX_FRAME_PAYLOAD_BYTES};
+use crowdb_protocol::frame::{parse_frame, MAX_FRAME_V2_PAYLOAD_BYTES};
 
-const MAX_SMALL: usize = MAX_FRAME_PAYLOAD_BYTES;
+const MAX_SMALL: usize = MAX_FRAME_V2_PAYLOAD_BYTES;
 
 #[path = "common/small_durable.rs"]
 mod durable;
@@ -36,7 +36,7 @@ mod durable;
 mod native;
 
 fn frame_bytes(payload_bytes: usize) -> u64 {
-    u64::try_from(payload_bytes).unwrap() + 34
+    u64::try_from(payload_bytes).unwrap() + 35
 }
 
 #[derive(Default)]

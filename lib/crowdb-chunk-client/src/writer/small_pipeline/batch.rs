@@ -157,7 +157,7 @@ fn pack_batch(
                     .frame_payload_len(index)
                     .ok_or_else(|| IoError::WriteFailed("missing frame payload".into()))?;
                 let range = owner
-                    .finalize_frame(index, FrameMagic::RepoSmallV1, chunk_id, write_time_ms)
+                    .finalize_frame(index, FrameMagic::RepoSmallV2, chunk_id, write_time_ms)
                     .map_err(|error| IoError::WriteFailed(error.to_string()))?;
                 if range.start != end {
                     return Err(IoError::WriteFailed(
@@ -181,7 +181,7 @@ fn pack_batch(
             let mut fragments: VecDeque<Bytes> = object.fragments.iter().cloned().collect();
             let mut remaining = object.len;
             while remaining > 0 {
-                let length = remaining.min(crowdb_protocol::frame::MAX_FRAME_PAYLOAD_BYTES);
+                let length = remaining.min(crowdb_protocol::frame::MAX_FRAME_V2_PAYLOAD_BYTES);
                 let payload = take_views(&mut fragments, length);
                 if payload.iter().map(Bytes::len).sum::<usize>() != length {
                     return Err(IoError::SourceRead(
@@ -190,7 +190,7 @@ fn pack_batch(
                 }
                 views.extend(
                     crowdb_protocol::frame::encode_frame_views(
-                        FrameMagic::RepoSmallV1,
+                        FrameMagic::RepoSmallV2,
                         chunk_id,
                         payload,
                         write_time_ms,

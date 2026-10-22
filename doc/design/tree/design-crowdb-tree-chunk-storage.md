@@ -54,7 +54,8 @@ exposes construction, transport routes, statistics, and orphan accounting.
 The tree writes a logical byte image. The chunk backend groups its dirty ranges
 into immutable packs of at most `pack_bytes`. Every pack has a logical offset
 and a `ChunkPageRef` containing chunk identity, physical offset, logical length,
-and checksum.
+and frame revision. Frame footers own payload integrity and expected chunk
+identity; high-cardinality reference entries do not duplicate their checksums.
 
 Mapping-table slots do not store physical chunk offsets. Their tagged 64-bit
 page-reference words name a logical location whose covering pack is resolved
@@ -62,13 +63,22 @@ through immutable segmented reference tables. Untagged words remain valid for
 local stores and legacy mapping images. Mixed mapping images use their versioned
 codec so the two forms cannot be confused.
 
-Manifest format 6 requires concrete BtreePage/PageIndex chunk identities.
-Unsupported legacy chunk manifests are rejected rather than silently retagged.
-The manifest retains the WAL replay offset; format 4 introduced the WAL replay offset associated with the tree snapshot;
-format 3 permits sorted, non-overlapping sparse pack layouts. A gap
-means that no live page references that logical pack range. Recovery and page
-reference decoding validate arithmetic bounds, reference-segment checksums, and
-complete pack coverage for every addressed page.
+Manifest formats 6 and 7 require concrete BtreePage/PageIndex chunk identities,
+retain the WAL replay offset and permit sorted, non-overlapping sparse pack
+layouts. A gap means that no live page references that logical pack range.
+Recovery validates arithmetic bounds, reference-segment checksums and complete
+pack coverage for every addressed page. Unsupported formats fail visibly.
+
+New manifests use format 7 and packs use ordinary revision-2 common frames.
+Each frame has a 15-byte header and 20-byte footer, with at most 65,501 payload
+bytes; Stream grouping roles do not apply. Revision-1 packs remain readable.
+The serialized 28-byte reference uses its u32 length's high bit as the revision-2
+marker. Valid logical pack lengths are bounded by 256 MiB, so retained
+revision-1 lengths have that bit clear. In-memory logical lengths exclude the
+marker. Manifest and reference-segment CRCs cover the encoded marker, and
+format-6 manifests accept only legacy references. Exact reads derive physical
+length from the reference's revision without a separate header probe. Reused
+packs and immutable reference segments retain their original revisions.
 
 The backend allocates three-way mirror strips. One B+tree chunk carries at most
 256 MiB of logical pack data. A pack never crosses that limit: the current chunk
@@ -118,7 +128,8 @@ nonblocking pipe. Rust polls the descriptor through its existing async reactor.
 `ChunkManifest` records tree identity, generation, owner epoch, logical size,
 the snapshot's WAL replay offset, pack entries, reference-segment directory,
 sharing counters, and checksums. Manifest directories and reference-segment
-images are immutable. Only the current typed manifest format is accepted by this backend.
+images are immutable. The backend accepts supported typed manifests and
+rejects unknown formats before using their references.
 
 A checkpoint captures the current catalog generation before it constructs any
 packs. Its new manifest is numbered `expected_generation + 1`. After pack and

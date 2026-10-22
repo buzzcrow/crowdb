@@ -30,7 +30,7 @@ use crowdb_protocol::chunkdb::rpc::{
     UpdateChunkStripRequest, UpdateChunkStripResponse,
 };
 use crowdb_protocol::diskdb::rpc::Segment;
-use crowdb_protocol::frame::MAX_FRAME_PAYLOAD_BYTES;
+use crowdb_protocol::frame::MAX_FRAME_V2_PAYLOAD_BYTES;
 
 use crate::metrics::SmallWriteMetrics;
 use crate::negative_list::FailedDiskList;
@@ -337,10 +337,10 @@ impl ChunkIoClient {
         if object_size == 0 {
             return Ok(SharedObjectWriter::empty());
         }
-        if object_size > MAX_FRAME_PAYLOAD_BYTES {
+        if object_size > MAX_FRAME_V2_PAYLOAD_BYTES {
             return Err(IoError::ObjectTooLarge {
                 size: object_size,
-                limit: MAX_FRAME_PAYLOAD_BYTES,
+                limit: MAX_FRAME_V2_PAYLOAD_BYTES,
             });
         }
         let runtime = self.small_pool.prepare(object_size).await?;
@@ -362,10 +362,10 @@ impl ChunkIoClient {
         if object_size == 0 {
             return Ok(SharedObjectWriter::empty());
         }
-        if object_size > MAX_FRAME_PAYLOAD_BYTES {
+        if object_size > MAX_FRAME_V2_PAYLOAD_BYTES {
             return Err(IoError::ObjectTooLarge {
                 size: object_size,
-                limit: MAX_FRAME_PAYLOAD_BYTES,
+                limit: MAX_FRAME_V2_PAYLOAD_BYTES,
             });
         }
         let runtime = self.small_pool.prepare(object_size).await?;

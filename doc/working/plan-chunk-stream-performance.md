@@ -298,6 +298,109 @@ adaptation rather than a new transport or storage engine.
   fixture type cleanup. Evidence: `frame-reader-rust3.log` and
   `frame-reader-suite.log`. Writers/native buffers/tree are not yet migrated.
 
+## Ordinary producer execution notes (T08)
+
+- Rust object writers and native receive buffers use ordinary revision 2 and
+  its 15-byte header / 65,501-byte payload capacity. Update Access-server's S3
+  and Iceberg producer selection as well as the library paths. Native owners
+  reject legacy/grouped magic before constructing reserved-region views.
+- Tree references need an explicit frame revision while retaining old packs.
+  Existing tree pack lengths cannot exceed the 256 MiB chunk limit. Reserve
+  the serialized u32 length's high bit for revision 2; all retained valid lengths
+  have it clear. Keep the in-memory logical length untagged. This preserves the
+  28-byte serialized reference and unambiguously decodes retained V1 references.
+  New manifest version 7 fences old publishers; accept version 6 with legacy
+  references. Reference-segment and manifest CRCs include the encoded revision
+  bit. Reused references/segments retain their original identity and revision.
+  Reads derive exact geometry from the reference without an extra header RPC.
+- Ordinary consumer test compilation initially exhausted the build filesystem:
+  linker bus errors were followed by explicit `No space left on device` before
+  test execution. Retain that complete failed log; compact only debug sections
+  of old inactive test executables, keeping source/data/logs/production binaries.
+  The recovery ledger is `build-cache-debug-compaction.json`: 662 inactive old
+  test executables had debug sections removed, reclaiming 210.74 GiB while
+  preserving executable code and excluding running binaries. This is an
+  environment/setup failure, not a product assertion or performance result.
+
+## Ordinary producer implementation evidence (partial T08)
+
+- All audited ordinary Rust producers now request revision 2, including both
+  object writers, shared small batches, S3 native buffers/streaming and
+  Access-server S3/Iceberg frame selection. Region offsets, capacities and
+  exact-size owner accounting use the common V2 geometry. Native finalization
+  checks revision before touching reserved regions and regenerates a prepared
+  header if its requested ordinary purpose changes.
+- Tree's new format-7 references carry explicit per-pack frame revision through
+  the existing length field's reserved high bit; old format-6 references decode
+  as V1. Checksums cover the revision tag. New ordinary BtreePage/PageIndex
+  frames and current geometry are used by synchronous, asynchronous and
+  ownership-materialization paths. Reused locations retain their revision.
+  Extracted catalog encoding/checksums and verified pack reads into private
+  owning modules, rather than extending the large store implementation.
+- Three focused native cases pass for compact reference serialization, unknown
+  or mislabeled manifest versions, actual retained V1 bytes/catalog reads and
+  a subsequent V2 publication without altering the old bytes. Initial native
+  build repairs were test target include propagation, checksum visibility during
+  extraction, and a missed private-header declaration; no product test assertion
+  has failed in this group. Rust all-target clippy for all four affected crates
+  passes. The four-crate Rust run passes 1132 cases; the two existing external
+  Python SDK cases remain explicitly ignored by the default command. Full native
+  testing found two stale 34-byte/68-byte V1 expectations. Auditing that family
+  also found the production Config default still used a 65,502-byte pack; change
+  it to 65,501 so one default pack stays within one V2 frame. Added a dedicated
+  default-boundary assertion. All six focused cases pass. The repeated full
+  native/FFI gate passes 719 native tests and 85 Rust FFI/tool tests, zero ignored,
+  and covers the corrected default through the Rust FFI. Receipt:
+  `unit/cpp-91a82bf210354f3abb1c9d72b9a33b78/results.json`. Full tree-lint exits
+  zero with existing warnings; the final focused private codec/read/revision and
+  header lint has no diagnostics. Logs: `frame-consumer-tests2.log`,
+  `frame-consumer-full-cpp2.log`, `frame-tree-focused-final.log`,
+  `frame-consumer-tree-lint.log` and `frame-tree-lint-final.log`.
+- This completes ordinary producer migration, not Stream group integration,
+  indexed directories, owner leases or content-derived recovery. T08 remains
+  unchecked until those consumers are wired and verified.
+
+## Directory execution notes (T04/T09–T13 implementation target)
+
+- Freeze the raw persisted schemas as named legacy manifest/page types before
+  changing bodies. New records use an explicit CSTR magic/version/kind envelope;
+  unknown versions or wrong kinds fail. Head bodies' purpose enum prefixes
+  0/1 make envelope detection unambiguous. Legacy pages instead begin with an
+  arbitrary stream ID, which can equal CSTR: their owning key namespace must
+  select legacy or enveloped decoding explicitly. Keep legacy extent-page bodies
+  and key space raw; new independently identified directory pages use new keys. Do not append fields to unversioned bincode.
+- Use an immutable bounded-fanout append index. A leaf holds compact logical
+  intervals, chunk locations and explicit legacy/grouped geometry; a branch
+  holds bounded child fences/levels. The head holds one bounded root reference,
+  durable publication tail and last-chunk attachment/checkpoint, not a flat
+  fence per history page. Include stream identity/purpose in every page's
+  canonical content identity. Page identity excludes owner epoch/head generation.
+- Preserve legacy short frames as separate locations. Only canonical full
+  interior frames permit location merging; append-group boundaries stay intact.
+  For a grouped active attachment, preserve the chunk's original logical start
+  and separate checkpoint physical/logical ends. Current capacity is a ChunkDB
+  query result, not root authority.
+- Publication path-copies only the unfinished tail and necessary index ancestors.
+  Publish immutable pages before root CAS and reconcile the same candidate
+  identities after unknown outcomes. Capture a bounded tail builder without
+  cloning history. Background checkpoint publication cannot make ordinary
+  mirror-complete append ACK wait on KV; bounded pending-page admission may
+  backpressure if the publisher cannot keep up.
+- Root/page GC needs an explicit durable candidate guard persisted before its
+  new pages. It names the bounded new page set and candidate root. GC first
+  selects old page candidates, then resolves retained roots, durable consumer
+  pins, candidate guards and the latest head. A page created after candidate
+  enumeration cannot enter that pass. Clear a guard only after a confirmed
+  root publication or safe abandonment. Validate this ordering with paused GC,
+  delayed CAS, restart and late pin races; generation-only deletion is unsafe.
+- Legacy conversion is a resumable one-time transition with immutable new pages
+  and bounded progress records. Keep the raw root reachable until the new head
+  CAS succeeds. Seal the legacy last chunk only at its persisted cursor, retain
+  its existing append/frame boundaries and attach a fresh grouped-write chunk.
+  Do not repeat full history conversion on each subsequent open.
+- These are execution targets only. Indexed storage, migration, candidate guards,
+  background publication and root-reachability GC are not implemented yet.
+
 ## Phase 0 — Establish evidence and settle contracts
 
 - [x] **T01 — Capture a matched implementation baseline**: retain release

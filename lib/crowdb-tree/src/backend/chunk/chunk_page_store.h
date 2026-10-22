@@ -23,7 +23,7 @@
 namespace crowdb::tree::detail
 {
 
-inline constexpr uint32_t kChunkManifestFormat = 6;
+inline constexpr uint32_t kChunkManifestFormat = 7;
 
 class ChunkAsyncExecutor;
 class ChunkPackPipeline;
@@ -34,8 +34,9 @@ struct ChunkPageRef
     // Public frame location. Integrity belongs to the frame footer, never to
     // this high-cardinality manifest entry.
     ChunkId  chunk_id;
-    uint64_t offset = 0;
-    uint32_t length = 0;
+    uint64_t offset         = 0;
+    uint32_t length         = 0;
+    uint8_t  frame_revision = 1;
 };
 
 struct ChunkPagePack
@@ -191,9 +192,9 @@ class MemoryRootCatalog final : public RootCatalog
 
     using ReferenceSegmentStore = std::vector<StoredReferenceSegment>;
     AtomicSharedPtr<const ReferenceSegmentStore> reference_segment_store_;
-    std::atomic<bool>                                         block_next_publish_{false};
-    mutable std::atomic<bool>                                 publish_blocked_{false};
-    std::atomic<bool>                                         release_publish_{false};
+    std::atomic<bool>                            block_next_publish_{false};
+    mutable std::atomic<bool>                    publish_blocked_{false};
+    std::atomic<bool>                            release_publish_{false};
 };
 
 class CallbackRootCatalog final : public RootCatalog
@@ -285,7 +286,7 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
         uint64_t tree_id                        = 0;
         uint64_t owner_epoch                    = 0;
         uint64_t open_generation                = 0;
-        size_t   pack_bytes                     = (64U * 1024U) - 34U;
+        size_t   pack_bytes                     = (64U * 1024U) - 35U;
         uint64_t max_chunk_bytes                = 256U * 1024U * 1024U;
         uint32_t mirror_copies                  = 2;
         uint32_t page_alignment                 = 64U * 1024U;
@@ -395,65 +396,63 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
                                                           uint32_t length, ChunkCancellation cancellation = {}) const;
     [[nodiscard]] static const ChunkPagePack *find_pack_at(const ChunkManifest &base, uint64_t logical_offset,
                                                            uint32_t length);
-    static uint32_t                           reference_segment_checksum(const ChunkReferenceSegmentImage &segment);
-    static uint32_t                           manifest_checksum(const ChunkManifest &manifest);
     static std::vector<uint64_t>              reference_segment_ids(const ChunkManifest &manifest);
     [[nodiscard]] bool                        pack_is_live(const ChunkPagePack &pack) const;
     [[nodiscard]] bool                        range_was_written(uint64_t offset, uint64_t length) const;
     void                                      record_completion_wakeup();
 
-    Config                                                    config_;
-    std::shared_ptr<RootCatalog>                              catalog_;
-    std::shared_ptr<ChunkTransport>                           transport_;
-    std::vector<uint8_t>                                      staged_;
-    PagePurposeRanges                                         staged_purposes_;
-    std::vector<std::pair<uint64_t, uint64_t>>                dirty_ranges_;
-    std::vector<std::pair<uint64_t, uint64_t>>                materialization_live_extents_;
-    bool                                                      staged_initialized_ = false;
-    bool                                                      data_durable_       = false;
-    bool                                                      anchor_dirty_       = false;
-    std::atomic<bool>                                         unavailable_{false};
-    std::atomic<uint8_t>                                      mirror_write_failure_mask_{0};
+    Config                                       config_;
+    std::shared_ptr<RootCatalog>                 catalog_;
+    std::shared_ptr<ChunkTransport>              transport_;
+    std::vector<uint8_t>                         staged_;
+    PagePurposeRanges                            staged_purposes_;
+    std::vector<std::pair<uint64_t, uint64_t>>   dirty_ranges_;
+    std::vector<std::pair<uint64_t, uint64_t>>   materialization_live_extents_;
+    bool                                         staged_initialized_ = false;
+    bool                                         data_durable_       = false;
+    bool                                         anchor_dirty_       = false;
+    std::atomic<bool>                            unavailable_{false};
+    std::atomic<uint8_t>                         mirror_write_failure_mask_{0};
     mutable AtomicSharedPtr<const ChunkManifest> cached_layout_;
     mutable AtomicSharedPtr<const ChunkManifest> bootstrap_layout_;
-    mutable std::shared_ptr<const CachedPack>                 cached_pack_;
-    mutable std::atomic<uint64_t>                             layout_valid_until_ms_{0};
-    std::atomic<uint64_t>                                     generations_published_{0};
-    std::atomic<uint64_t>                                     wal_replay_offset_{0};
-    std::atomic<uint64_t>                                     packs_written_{0};
-    std::atomic<uint64_t>                                     pack_bytes_written_{0};
-    std::atomic<uint64_t>                                     packs_reused_{0};
-    std::atomic<uint64_t>                                     pack_bytes_reused_{0};
-    mutable std::atomic<uint64_t>                             pack_reads_{0};
-    mutable std::atomic<uint64_t>                             cache_hits_{0};
-    mutable std::atomic<uint64_t>                             layout_queries_{0};
-    std::atomic<uint64_t>                                     mirror_write_attempts_{0};
-    std::atomic<uint64_t>                                     mirror_write_failures_{0};
-    std::atomic<uint64_t>                                     orphan_bytes_{0};
-    std::atomic<uint64_t>                                     materialization_passes_{0};
-    std::atomic<uint64_t>                                     materialization_failures_{0};
-    std::atomic<uint64_t>                                     materialization_packs_written_{0};
-    std::atomic<uint64_t>                                     materialization_bytes_written_{0};
-    mutable std::atomic<uint64_t>                             rpc_operations_{0};
-    mutable std::atomic<uint64_t>                             rpc_latency_ns_{0};
-    mutable std::atomic<uint64_t>                             diskio_operations_{0};
-    mutable std::atomic<uint64_t>                             diskio_latency_ns_{0};
-    mutable std::atomic<uint64_t>                             coalesced_reads_{0};
-    mutable std::atomic<uint64_t>                             coalesced_read_bytes_{0};
-    std::atomic<uint64_t>                                     completion_wakeups_{0};
-    std::atomic<uint64_t>                                     materialization_scan_bytes_{0};
-    std::atomic<uint64_t>                                     materialized_metadata_segments_{0};
-    std::atomic<uint64_t>                                     manifest_publication_latency_ns_{0};
-    mutable std::atomic<uint64_t>                             recovery_latency_ns_{0};
-    mutable std::atomic<bool>                                 recovery_recorded_{false};
-    std::vector<uint64_t>                                     orphan_reference_segments_;
-    ChunkId                                                   active_chunk_id_;
-    uint64_t                                                  active_chunk_bytes_  = 0;
-    uint64_t                                                  active_chunk_cursor_ = 0;
-    std::shared_ptr<const ChunkManifest>                      inherited_manifest_;
-    std::shared_ptr<RootCatalog>                              inherited_catalog_;
-    std::unique_ptr<ChunkAsyncExecutor>                       async_executor_;
-    Status                                                    open_status_;
+    mutable std::shared_ptr<const CachedPack>    cached_pack_;
+    mutable std::atomic<uint64_t>                layout_valid_until_ms_{0};
+    std::atomic<uint64_t>                        generations_published_{0};
+    std::atomic<uint64_t>                        wal_replay_offset_{0};
+    std::atomic<uint64_t>                        packs_written_{0};
+    std::atomic<uint64_t>                        pack_bytes_written_{0};
+    std::atomic<uint64_t>                        packs_reused_{0};
+    std::atomic<uint64_t>                        pack_bytes_reused_{0};
+    mutable std::atomic<uint64_t>                pack_reads_{0};
+    mutable std::atomic<uint64_t>                cache_hits_{0};
+    mutable std::atomic<uint64_t>                layout_queries_{0};
+    std::atomic<uint64_t>                        mirror_write_attempts_{0};
+    std::atomic<uint64_t>                        mirror_write_failures_{0};
+    std::atomic<uint64_t>                        orphan_bytes_{0};
+    std::atomic<uint64_t>                        materialization_passes_{0};
+    std::atomic<uint64_t>                        materialization_failures_{0};
+    std::atomic<uint64_t>                        materialization_packs_written_{0};
+    std::atomic<uint64_t>                        materialization_bytes_written_{0};
+    mutable std::atomic<uint64_t>                rpc_operations_{0};
+    mutable std::atomic<uint64_t>                rpc_latency_ns_{0};
+    mutable std::atomic<uint64_t>                diskio_operations_{0};
+    mutable std::atomic<uint64_t>                diskio_latency_ns_{0};
+    mutable std::atomic<uint64_t>                coalesced_reads_{0};
+    mutable std::atomic<uint64_t>                coalesced_read_bytes_{0};
+    std::atomic<uint64_t>                        completion_wakeups_{0};
+    std::atomic<uint64_t>                        materialization_scan_bytes_{0};
+    std::atomic<uint64_t>                        materialized_metadata_segments_{0};
+    std::atomic<uint64_t>                        manifest_publication_latency_ns_{0};
+    mutable std::atomic<uint64_t>                recovery_latency_ns_{0};
+    mutable std::atomic<bool>                    recovery_recorded_{false};
+    std::vector<uint64_t>                        orphan_reference_segments_;
+    ChunkId                                      active_chunk_id_;
+    uint64_t                                     active_chunk_bytes_  = 0;
+    uint64_t                                     active_chunk_cursor_ = 0;
+    std::shared_ptr<const ChunkManifest>         inherited_manifest_;
+    std::shared_ptr<RootCatalog>                 inherited_catalog_;
+    std::unique_ptr<ChunkAsyncExecutor>          async_executor_;
+    Status                                       open_status_;
 };
 
 } // namespace crowdb::tree::detail

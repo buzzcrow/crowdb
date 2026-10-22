@@ -176,7 +176,7 @@ async fn handoff_owner(
             u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
         });
     owner
-        .prepare_frames(FrameMagic::RepoLargeV1, now_ms)
+        .prepare_frames(FrameMagic::RepoLargeV2, now_ms)
         .map_err(|error| failed(PutErrorCode::ChunkWrite, &error))?;
     handoff(flow, digest, UploadBuffer::Framed(Box::new(owner)), payload).await
 }

@@ -87,12 +87,17 @@ impl NativeBodyAllocator {
         &self,
         payload_bytes: usize,
     ) -> Result<NativeBodyReceiver, NativeBufferConfigError> {
-        let physical = crowdb_protocol::frame::framed_physical_length(payload_bytes as u64)
+        let physical = crowdb_protocol::frame::FrameLayout::OrdinaryV2
+            .physical_length(payload_bytes as u64)
             .ok()
             .and_then(|bytes| usize::try_from(bytes).ok())
             .filter(|bytes| *bytes <= self.state.budget_bytes)
             .ok_or(NativeBufferConfigError::InvalidOwnerSize)?;
-        Ok(self.receiver_with_owner_bytes(physical.max(34)))
+        Ok(self.receiver_with_owner_bytes(
+            physical.max(
+                crowdb_protocol::frame::FRAME_V2_HEADER_BYTES + crowdb_protocol::frame::FRAME_FOOTER_BYTES,
+            ),
+        ))
     }
 
     /// Attach the process bandwidth series before sharing this allocator.
@@ -131,7 +136,7 @@ impl NativeBodyAllocator {
                 payload_lengths: vec![0; owner_bytes.div_ceil(MAX_FRAME_BYTES)],
                 append_slot: None,
                 credit_wait_started: None,
-                magic: FrameMagic::RepoLargeV1,
+                magic: FrameMagic::RepoLargeV2,
                 owner_bytes,
             }),
             state_in_use: AtomicBool::new(false),

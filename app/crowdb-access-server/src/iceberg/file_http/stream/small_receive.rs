@@ -89,7 +89,7 @@ pub(super) async fn receive(
     };
     let started = Instant::now();
     owner
-        .prepare_frames(FrameMagic::RepoSmallV1, super::super::now_ms()?)
+        .prepare_frames(FrameMagic::RepoSmallV2, super::super::now_ms()?)
         .map_err(|_| FileS3ErrorCode::InternalError)?;
     observation.frame_prepare(owner.frame_count(), started.elapsed());
     let started = Instant::now();

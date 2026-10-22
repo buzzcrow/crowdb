@@ -7,8 +7,48 @@ use std::time::Duration;
 use crowdb_access_s3::native_buffer::NativeBodyAllocator;
 use crowdb_chunk_client::FramedWriteBuffer;
 use crowdb_protocol::common::ChunkId;
-use crowdb_protocol::frame::{parse_frame, FrameMagic, MAX_FRAME_BYTES, MAX_FRAME_PAYLOAD_BYTES};
+use crowdb_protocol::frame::{parse_frame, FrameMagic, MAX_FRAME_BYTES, MAX_FRAME_V2_PAYLOAD_BYTES};
 use hyper::body::{Bytes, Http1BodyReceiveProvider};
+
+#[tokio::test]
+async fn native_owner_rejects_incompatible_revisions_before_touching_reserved_regions() {
+    let allocator = NativeBodyAllocator::new(MAX_FRAME_BYTES, MAX_FRAME_BYTES).unwrap();
+    let provider = allocator.object_receiver();
+    for magic in [
+        FrameMagic::RepoSmallV1,
+        FrameMagic::RepoLargeV1,
+        FrameMagic::StreamV2,
+    ] {
+        assert!(provider.enable_owner_handoff_with_magic(magic).is_err());
+    }
+    provider
+        .enable_owner_handoff_with_magic(FrameMagic::RepoSmallV2)
+        .unwrap();
+    let mut allocation = poll_fn(|cx| provider.poll_next_buffer(cx, 3)).await.unwrap();
+    for (slot, value) in allocation.spare_capacity_mut().iter_mut().zip(*b"abc") {
+        slot.write(value);
+    }
+    allocation.advance(3).unwrap();
+    drop(provider.on_data_ready(allocation).unwrap());
+    let mut owner = provider.finish_owner_when_ready().await.unwrap().unwrap();
+    for magic in [
+        FrameMagic::RepoSmallV1,
+        FrameMagic::RepoLargeV1,
+        FrameMagic::StreamV2,
+    ] {
+        assert!(owner.prepare_frames(magic, 42).is_err());
+        assert!(owner
+            .finalize_frame(0, magic, ChunkId { high: 7, low: 11 }, 42)
+            .is_err());
+    }
+    owner.prepare_frames(FrameMagic::RepoSmallV2, 42).unwrap();
+    let range = owner
+        .finalize_frame(0, FrameMagic::RepoSmallV2, ChunkId { high: 7, low: 11 }, 42)
+        .unwrap();
+    let bytes = owner.views(range).unwrap().concat();
+    let frame = parse_frame(&bytes, ChunkId { high: 7, low: 11 }).unwrap();
+    assert_eq!(frame.payload, b"abc");
+}
 
 #[tokio::test]
 async fn native_frame_retains_and_releases_allocator_credit() {
@@ -137,12 +177,12 @@ async fn native_eof_owner_finalizes_reserved_frame_bytes_in_place() {
     assert_eq!(owner.frame_count(), 1);
     let chunk_id = ChunkId { high: 17, low: 29 };
     let range = owner
-        .finalize_frame(0, FrameMagic::RepoLargeV1, chunk_id, 123)
+        .finalize_frame(0, FrameMagic::RepoLargeV2, chunk_id, 123)
         .unwrap();
     let frame = owner.views(range).unwrap().pop().unwrap();
 
     assert_eq!(parse_frame(&frame, chunk_id).unwrap().payload, payload);
-    assert_eq!(frame.as_ptr().wrapping_add(14), payload.as_ptr());
+    assert_eq!(frame.as_ptr().wrapping_add(15), payload.as_ptr());
 
     drop(frame);
     drop(owner);
@@ -159,25 +199,25 @@ async fn full_owner_is_one_contiguous_buffer_across_chunk_views() {
     provider.enable_owner_handoff();
     let mut payloads = Vec::new();
     for value in [0x31, 0x72] {
-        let mut allocation = poll_fn(|cx| provider.poll_next_buffer(cx, MAX_FRAME_PAYLOAD_BYTES))
+        let mut allocation = poll_fn(|cx| provider.poll_next_buffer(cx, MAX_FRAME_V2_PAYLOAD_BYTES))
             .await
             .unwrap();
         allocation
             .spare_capacity_mut()
             .fill(std::mem::MaybeUninit::new(value));
-        allocation.advance(MAX_FRAME_PAYLOAD_BYTES).unwrap();
+        allocation.advance(MAX_FRAME_V2_PAYLOAD_BYTES).unwrap();
         payloads.push(provider.on_data_ready(allocation).unwrap());
     }
     let mut owner = provider.take_ready_owner().unwrap();
     assert_eq!(owner.frame_count(), 2);
-    assert_eq!(owner.logical_len(), (2 * MAX_FRAME_PAYLOAD_BYTES) as u64);
+    assert_eq!(owner.logical_len(), (2 * MAX_FRAME_V2_PAYLOAD_BYTES) as u64);
     let first_chunk = ChunkId { high: 1, low: 2 };
     let second_chunk = ChunkId { high: 3, low: 4 };
     let first = owner
-        .finalize_frame(0, FrameMagic::RepoLargeV1, first_chunk, 5)
+        .finalize_frame(0, FrameMagic::RepoLargeV2, first_chunk, 5)
         .unwrap();
     let second = owner
-        .finalize_frame(1, FrameMagic::RepoLargeV1, second_chunk, 6)
+        .finalize_frame(1, FrameMagic::RepoLargeV2, second_chunk, 6)
         .unwrap();
     assert_eq!(first, 0..MAX_FRAME_BYTES);
     assert_eq!(second, MAX_FRAME_BYTES..owner_bytes);
@@ -217,11 +257,11 @@ async fn prefetched_payload_starts_the_first_native_owner_and_next_fill_appends(
     let mut owner = provider.finish_owner().unwrap().unwrap();
     let chunk_id = ChunkId { high: 41, low: 43 };
     let range = owner
-        .finalize_frame(0, FrameMagic::RepoLargeV1, chunk_id, 47)
+        .finalize_frame(0, FrameMagic::RepoLargeV2, chunk_id, 47)
         .unwrap();
     let frame = owner.views(range).unwrap().pop().unwrap();
 
-    assert_ne!(frame.as_ptr().wrapping_add(14), payload.as_ptr());
+    assert_ne!(frame.as_ptr().wrapping_add(15), payload.as_ptr());
     assert_eq!(
         parse_frame(&frame, chunk_id).unwrap().payload,
         b"prefetched-body-next"
@@ -269,7 +309,7 @@ async fn prefetched_body_waits_for_credit_and_still_starts_at_body_offset_zero()
         .unwrap();
     let chunk_id = ChunkId { high: 51, low: 53 };
     let frame_range = owner
-        .finalize_frame(0, FrameMagic::RepoLargeV1, chunk_id, 59)
+        .finalize_frame(0, FrameMagic::RepoLargeV2, chunk_id, 59)
         .unwrap();
     let frame = owner.views(frame_range).unwrap().pop().unwrap();
     assert_eq!(
@@ -308,7 +348,7 @@ async fn prefetched_body_at_eof_waits_for_credit_before_finalizing() {
         .unwrap();
     let chunk_id = ChunkId { high: 61, low: 67 };
     let frame_range = owner
-        .finalize_frame(0, FrameMagic::RepoLargeV1, chunk_id, 71)
+        .finalize_frame(0, FrameMagic::RepoLargeV2, chunk_id, 71)
         .unwrap();
     let frame = owner.views(frame_range).unwrap().pop().unwrap();
     assert_eq!(parse_frame(&frame, chunk_id).unwrap().payload, b"only-body");
@@ -321,7 +361,7 @@ async fn one_mib_owner_boundaries_follow_body_not_prefetched_header_size() {
     let allocator = NativeBodyAllocator::new(MIB, MIB).unwrap();
     let provider = allocator.object_receiver();
     provider.enable_owner_handoff();
-    let prefix = Bytes::from(vec![b'p'; MAX_FRAME_PAYLOAD_BYTES - 2]);
+    let prefix = Bytes::from(vec![b'p'; MAX_FRAME_V2_PAYLOAD_BYTES - 2]);
     provider.on_prefetched_data(prefix.clone()).unwrap();
 
     let mut first = poll_fn(|cx| provider.poll_next_buffer(cx, 4)).await.unwrap();
@@ -341,37 +381,37 @@ async fn one_mib_owner_boundaries_follow_body_not_prefetched_header_size() {
     let chunk_id = ChunkId { high: 73, low: 79 };
     assert_eq!(owner.frame_count(), 2);
     let first_range = owner
-        .finalize_frame(0, FrameMagic::RepoLargeV1, chunk_id, 0)
+        .finalize_frame(0, FrameMagic::RepoLargeV2, chunk_id, 0)
         .unwrap();
     let second_range = owner
         .finalize_frame(
             1,
-            FrameMagic::RepoLargeV1,
+            FrameMagic::RepoLargeV2,
             chunk_id,
-            MAX_FRAME_PAYLOAD_BYTES as u64,
+            MAX_FRAME_V2_PAYLOAD_BYTES as u64,
         )
         .unwrap();
     assert_eq!(first_range, 0..MAX_FRAME_BYTES);
     assert_eq!(second_range.start, MAX_FRAME_BYTES);
-    assert_eq!(owner.logical_len(), (MAX_FRAME_PAYLOAD_BYTES + 2) as u64);
+    assert_eq!(owner.logical_len(), (MAX_FRAME_V2_PAYLOAD_BYTES + 2) as u64);
     let first_frame = owner.views(first_range).unwrap().pop().unwrap();
     let second_frame = owner.views(second_range).unwrap().pop().unwrap();
     assert_eq!(
         parse_frame(&first_frame, chunk_id).unwrap().payload.len(),
-        MAX_FRAME_PAYLOAD_BYTES
+        MAX_FRAME_V2_PAYLOAD_BYTES
     );
-    assert_eq!(&first_frame[14..14 + prefix.len()], &prefix[..]);
+    assert_eq!(&first_frame[15..15 + prefix.len()], &prefix[..]);
     assert_eq!(parse_frame(&second_frame, chunk_id).unwrap().payload, b"34");
     assert_eq!(allocator.allocation_count(), 1);
 }
 
 #[tokio::test]
 async fn small_native_objects_keep_one_owner_across_socket_reads_and_frames() {
-    for length in [1024, 512 * 1024, MAX_FRAME_PAYLOAD_BYTES, 1_200_000] {
+    for length in [1024, 512 * 1024, MAX_FRAME_V2_PAYLOAD_BYTES, 1_200_000] {
         let allocator = NativeBodyAllocator::new(2 * 1024 * 1024, 1024 * 1024).unwrap();
         let provider = allocator.object_receiver_for_payload(length).unwrap();
         provider
-            .enable_owner_handoff_with_magic(FrameMagic::RepoSmallV1)
+            .enable_owner_handoff_with_magic(FrameMagic::RepoSmallV2)
             .unwrap();
         let mut fragments = Vec::new();
         let mut remaining = length;
@@ -392,14 +432,14 @@ async fn small_native_objects_keep_one_owner_across_socket_reads_and_frames() {
             .take_ready_owner()
             .unwrap_or_else(|| provider.finish_owner().unwrap().unwrap());
         assert!(provider.take_ready_owner().is_none(), "owner is handed off once");
-        let count = length.div_ceil(MAX_FRAME_PAYLOAD_BYTES);
+        let count = length.div_ceil(MAX_FRAME_V2_PAYLOAD_BYTES);
         assert_eq!(owner.frame_count(), count);
-        owner.prepare_frames(FrameMagic::RepoSmallV1, 123).unwrap();
+        owner.prepare_frames(FrameMagic::RepoSmallV2, 123).unwrap();
         let chunk = ChunkId { high: 11, low: 31 };
         let mut end = 0;
         for index in 0..count {
             let range = owner
-                .finalize_frame(index, FrameMagic::RepoSmallV1, chunk, 123)
+                .finalize_frame(index, FrameMagic::RepoSmallV2, chunk, 123)
                 .unwrap();
             assert_eq!(range.start, end);
             end = range.end;
@@ -407,19 +447,19 @@ async fn small_native_objects_keep_one_owner_across_socket_reads_and_frames() {
         let views = owner.views(0..end).unwrap();
         assert_eq!(views.len(), 1, "one object must produce one contiguous view");
         let bytes = &views[0];
-        assert_eq!(bytes.len(), length + count * 34);
-        assert_eq!(bytes.as_ptr().wrapping_add(14), fragments[0].as_ptr());
+        assert_eq!(bytes.len(), length + count * 35);
+        assert_eq!(bytes.as_ptr().wrapping_add(15), fragments[0].as_ptr());
         let mut offset = 0;
         for index in 0..count {
             let payload_len = owner.frame_payload_len(index).unwrap();
-            let frame_len = payload_len + 34;
+            let frame_len = payload_len + 35;
             let frame = parse_frame(&bytes[offset..offset + frame_len], chunk).unwrap();
             assert!(frame.payload.iter().all(|byte| *byte == 0x5a));
             offset += frame_len;
         }
         assert_eq!(allocator.metrics_snapshot().prefix_copy_bytes, 0);
         assert_eq!(allocator.allocation_count(), 1);
-        assert_eq!(allocator.retained_bytes(), length + count * 34);
+        assert_eq!(allocator.retained_bytes(), length + count * 35);
         drop(views);
         drop(owner);
         drop(fragments);

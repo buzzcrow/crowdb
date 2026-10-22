@@ -1333,7 +1333,7 @@ TEST(ChunkPageStore, RotatesWholePacksAndReopenAllocatesFreshChunk)
         EXPECT_LE(pack.ref.length, config.pack_bytes);
         ChunkLayout layout;
         ASSERT_TRUE(transport->query_chunk(pack.ref.chunk_id, &layout).ok());
-        EXPECT_LE(pack.ref.offset + pack.ref.length + 34U, layout.logical_capacity);
+        EXPECT_LE(pack.ref.offset + pack.ref.length + 35U, layout.logical_capacity);
         if (std::find(chunk_ids.begin(), chunk_ids.end(), pack.ref.chunk_id) == chunk_ids.end()) {
             chunk_ids.push_back(pack.ref.chunk_id);
         }
@@ -1428,7 +1428,7 @@ TEST(ChunkPageStore, FramesPackTailWithoutAlignmentPadding)
     EXPECT_EQ(first->packs[0].ref.length, bytes.size());
     ChunkLayout layout;
     ASSERT_TRUE(transport->query_chunk(first->packs[0].ref.chunk_id, &layout).ok());
-    EXPECT_EQ(layout.acknowledged_bytes, first->packs[0].ref.length + 34U);
+    EXPECT_EQ(layout.acknowledged_bytes, first->packs[0].ref.length + 35U);
 
     transport->corrupt_mirror(first->packs[0].ref.chunk_id, 0, first->packs[0].ref.length);
     std::array<uint8_t, 4> out{};
@@ -1461,10 +1461,10 @@ TEST(ChunkPageStore, LargePackUsesOneLocationAndMultipleVerifiedFrames)
     ASSERT_NE(manifest, nullptr);
     ASSERT_EQ(manifest->packs.size(), 1U);
     const ChunkPageRef &ref = manifest->packs.front().ref;
-    EXPECT_GT(ref.length, (64U * 1024U) - 34U);
+    EXPECT_GT(ref.length, (64U * 1024U) - 35U);
     ChunkLayout layout;
     ASSERT_TRUE(transport->query_chunk(ref.chunk_id, &layout).ok());
-    EXPECT_EQ(layout.acknowledged_bytes, ref.length + 68U);
+    EXPECT_EQ(layout.acknowledged_bytes, ref.length + 70U);
 
     std::vector<uint8_t> read(payload.size());
     ASSERT_TRUE(store.read_at(8192, read.data(), read.size()).ok());

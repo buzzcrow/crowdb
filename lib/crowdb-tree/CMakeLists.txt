@@ -108,7 +108,7 @@ target_include_directories(crowdb_tree_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
 target_include_directories(crowdb_tree_tests PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/crowdb-rpc-build/generated)
 target_include_directories(crowdb_tree_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../crowdb-rpc/include)
 target_include_directories(crowdb_tree_tests SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../third-party/stdexec/include)
-target_link_libraries(crowdb_tree_tests PRIVATE crowdb-tree GTest::gtest)
+target_link_libraries(crowdb_tree_tests PRIVATE crowdb-tree crowdb-rpc GTest::gtest)
 # GCC 13 -Warray-bounds/-Wstringop-overflow false positives: buffer::alloc
 # returns heap memory, but GCC thinks b.data() points into the stack object b.
 # These flags are GCC-specific (clang doesn't know -Wstringop-overflow); guard

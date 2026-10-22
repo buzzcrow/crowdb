@@ -42,8 +42,8 @@ use crowdb_protocol::chunkdb::rpc::{
 use crowdb_protocol::common::{ChunkId, DiskId as ProtoDiskId};
 use crowdb_protocol::diskdb::rpc::Segment;
 use crowdb_protocol::frame::{
-    encode_frame_regions, parse_frame, FrameError, FrameMagic, FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES,
-    MAX_FRAME_BYTES, MAX_FRAME_PAYLOAD_BYTES,
+    encode_frame_regions, parse_frame, FrameError, FrameMagic, FRAME_FOOTER_BYTES, FRAME_V2_HEADER_BYTES,
+    MAX_FRAME_BYTES, MAX_FRAME_V2_PAYLOAD_BYTES,
 };
 
 use common::LocalFileDiskWriter;
@@ -58,8 +58,8 @@ fn framed_bytes(logical_bytes: usize) -> u64 {
     if logical_bytes == 0 {
         return 0;
     }
-    let frames = logical_bytes.div_ceil(MAX_FRAME_PAYLOAD_BYTES);
-    u64::try_from(logical_bytes + frames * (FRAME_HEADER_PREFIX_BYTES + FRAME_FOOTER_BYTES)).unwrap()
+    let frames = logical_bytes.div_ceil(MAX_FRAME_V2_PAYLOAD_BYTES);
+    u64::try_from(logical_bytes + frames * (FRAME_V2_HEADER_BYTES + FRAME_FOOTER_BYTES)).unwrap()
 }
 
 fn framed_io_bytes(logical_bytes: usize) -> u64 {
@@ -74,7 +74,7 @@ fn decode_repo_large_frames(bytes: &[u8], chunk_id: crowdb_protocol::common::Chu
     let mut offset = 0;
     while offset < bytes.len() {
         let frame = parse_frame(&bytes[offset..], chunk_id).expect("durable RepoLarge frame");
-        assert_eq!(frame.header.magic, FrameMagic::RepoLargeV1);
+        assert_eq!(frame.header.magic, FrameMagic::RepoLargeV2);
         payload.extend_from_slice(frame.payload);
         offset += frame.physical_length;
     }
@@ -96,12 +96,12 @@ impl TestFramedOwner {
     fn full_frames(count: usize) -> Self {
         let mut bytes = vec![0; count * MAX_FRAME_BYTES];
         for index in 0..count {
-            let start = index * MAX_FRAME_BYTES + FRAME_HEADER_PREFIX_BYTES;
-            bytes[start..start + MAX_FRAME_PAYLOAD_BYTES].fill(index as u8 + 1);
+            let start = index * MAX_FRAME_BYTES + FRAME_V2_HEADER_BYTES;
+            bytes[start..start + MAX_FRAME_V2_PAYLOAD_BYTES].fill(index as u8 + 1);
         }
         Self {
             bytes,
-            payload_lengths: vec![MAX_FRAME_PAYLOAD_BYTES; count],
+            payload_lengths: vec![MAX_FRAME_V2_PAYLOAD_BYTES; count],
             finalized_chunks: Arc::new(Mutex::new(Vec::new())),
             views: Arc::new(Mutex::new(Vec::new())),
         }
@@ -130,9 +130,9 @@ impl FramedWriteBuffer for TestFramedOwner {
     ) -> std::result::Result<Range<usize>, FrameError> {
         let frame_start = index * MAX_FRAME_BYTES;
         let payload_len = self.payload_lengths[index];
-        let frame_end = frame_start + FRAME_HEADER_PREFIX_BYTES + payload_len + FRAME_FOOTER_BYTES;
+        let frame_end = frame_start + FRAME_V2_HEADER_BYTES + payload_len + FRAME_FOOTER_BYTES;
         let frame = &mut self.bytes[frame_start..frame_end];
-        let (header, remainder) = frame.split_at_mut(FRAME_HEADER_PREFIX_BYTES);
+        let (header, remainder) = frame.split_at_mut(FRAME_V2_HEADER_BYTES);
         let (payload, footer) = remainder.split_at_mut(payload_len);
         encode_frame_regions(magic, chunk_id, payload, write_time_ms, header, footer)?;
         self.finalized_chunks.lock().unwrap().push(chunk_id);
@@ -843,8 +843,8 @@ async fn framed_owner_splits_into_views_only_at_chunk_boundaries() {
     assert_eq!(locations.len(), 2);
     assert_eq!(locations[0].length, MAX_FRAME_BYTES as u64);
     assert_eq!(locations[1].length, MAX_FRAME_BYTES as u64);
-    assert_eq!(locations[0].logical_length, MAX_FRAME_PAYLOAD_BYTES as u64);
-    assert_eq!(locations[1].logical_length, MAX_FRAME_PAYLOAD_BYTES as u64);
+    assert_eq!(locations[0].logical_length, MAX_FRAME_V2_PAYLOAD_BYTES as u64);
+    assert_eq!(locations[1].logical_length, MAX_FRAME_V2_PAYLOAD_BYTES as u64);
     assert_ne!(locations[0].chunk_id, locations[1].chunk_id);
     assert_eq!(
         *views.lock().unwrap(),
@@ -856,7 +856,10 @@ async fn framed_owner_splits_into_views_only_at_chunk_boundaries() {
     );
     assert_eq!(metrics.framed_owners, 1);
     assert_eq!(metrics.framed_views, 2);
-    assert_eq!(metrics.framed_payload_bytes, (2 * MAX_FRAME_PAYLOAD_BYTES) as u64);
+    assert_eq!(
+        metrics.framed_payload_bytes,
+        (2 * MAX_FRAME_V2_PAYLOAD_BYTES) as u64
+    );
     assert_eq!(metrics.payload_copy_operations, 0);
     assert_eq!(metrics.payload_copy_bytes, 0);
 }

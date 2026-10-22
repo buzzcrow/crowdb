@@ -309,6 +309,16 @@ new `ChunkWriter`. The buffer is re-pushed to the new chunk. The
 `ProtoLocation` array accumulates one entry per rotated chunk, ordered
 by `logical_offset`.
 
+Object writers use the common revision-2 ordinary frame codec: 15-byte header,
+20-byte footer and at most 65,501 payload bytes per 64 KiB frame. The role is
+ordinary; Stream head/follower markers are never added to object payloads.
+Unknown-length uploads keep bounded tail buffers and publish an object only
+when the complete upload finishes. Native socket buffers reserve the same
+header/footer geometry and retain payload ownership through scatter/gather IO.
+Readers retain explicit V1 support, including both historical CRC conventions;
+revision 2 has canonical header/payload CRC coverage with separate chunk-ID
+validation, shared with the C++ codec.
+
 ### 6.1 Location
 
 `ProtoLocation` (from `crowdb-protocol::chunkdb::rpc::Location`) records
@@ -324,8 +334,10 @@ is flatbuffers via the flatbuffer `Message` trait (`encode_to_vec` / `decode`).
 Edge cases:
 
 - Empty object (size 0) → `Vec<Location>` is empty; no chunk allocated.
-- `logical_length` may be < `length` in future hole-punch scenarios; the
-  writer always sets them equal.
+- `logical_length` counts object payload bytes. `length` counts physical
+  bytes including ordinary frame headers and footers. Readers infer the
+  supported frame geometry from this pair and verify each actual frame kind
+  and revision before exposing payload views.
 - `max_chunk_size` not a multiple of strip data capacity → rotation
   still happens at strip boundaries; the actual chunk size is the
   multiple-of-strip value at or just above the threshold.

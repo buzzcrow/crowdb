@@ -8,6 +8,8 @@
 #include "c_api_internal.h"
 #include "chunk_async_executor.h"
 #include "chunk_c_api_internal.h"
+#include "chunk_catalog_codec.h"
+#include "chunk_frame.h"
 #include "chunk_pack_pipeline.h"
 #include "crowdb-common/crc32c.h"
 #include "crowdb-common/log.h"
@@ -21,22 +23,11 @@
 
 namespace crowdb::tree::detail
 {
-static crowdb::protocol::FrameMagic page_frame_magic(PagePurpose purpose)
-{
-    return purpose == PagePurpose::kPageIndex ? crowdb::protocol::FrameMagic::PageIndexV1
-                                              : crowdb::protocol::FrameMagic::BtreePageV1;
-}
-
 namespace
 {
 
 constexpr size_t   kReferencesPerSegment = 256;
 constexpr uint64_t kMaxChunkBytes        = 256U * 1024U * 1024U;
-
-uint32_t update_u64(uint32_t crc, uint64_t value)
-{
-    return crowdb::common::crc32c_update(crc, reinterpret_cast<const uint8_t *>(&value), sizeof(value));
-}
 
 uint64_t monotonic_millis()
 {
@@ -48,170 +39,6 @@ uint64_t monotonic_nanos()
 {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
         .count();
-}
-
-template <typename T> void append_scalar(std::vector<uint8_t> *out, T value)
-{
-    for (size_t i = 0; i < sizeof(T); ++i) {
-        out->push_back(static_cast<uint8_t>((value >> (i * 8U)) & 0xffU));
-    }
-}
-
-class BlobReader
-{
-  public:
-    explicit BlobReader(const std::vector<uint8_t> &bytes) : bytes_(bytes)
-    {
-    }
-
-    template <typename T> bool scalar(T *out)
-    {
-        if (out == nullptr || offset_ > bytes_.size() || sizeof(T) > bytes_.size() - offset_) {
-            return false;
-        }
-        T value = 0;
-        for (size_t i = 0; i < sizeof(T); ++i) {
-            value |= static_cast<T>(bytes_[offset_ + i]) << (i * 8U);
-        }
-        offset_ += sizeof(T);
-        *out = value;
-        return true;
-    }
-
-    [[nodiscard]] bool complete() const
-    {
-        return offset_ == bytes_.size();
-    }
-
-    [[nodiscard]] size_t remaining() const
-    {
-        return bytes_.size() - offset_;
-    }
-
-  private:
-    const std::vector<uint8_t> &bytes_;
-    size_t                      offset_ = 0;
-};
-
-std::vector<uint8_t> encode_reference_segment(const ChunkReferenceSegmentImage &segment)
-{
-    std::vector<uint8_t> out;
-    out.reserve(24 + (segment.refs.size() * 28));
-    append_scalar(&out, segment.object_id);
-    append_scalar(&out, segment.first_ordinal);
-    append_scalar(&out, static_cast<uint64_t>(segment.refs.size()));
-    for (const auto &ref : segment.refs) {
-        append_scalar(&out, ref.chunk_id.high);
-        append_scalar(&out, ref.chunk_id.low);
-        append_scalar(&out, ref.offset);
-        append_scalar(&out, ref.length);
-    }
-    return out;
-}
-
-std::shared_ptr<const ChunkReferenceSegmentImage> decode_reference_segment(const std::vector<uint8_t> &bytes)
-{
-    BlobReader reader(bytes);
-    auto       segment = std::make_shared<ChunkReferenceSegmentImage>();
-    uint64_t   count   = 0;
-    if (!reader.scalar(&segment->object_id) || !reader.scalar(&segment->first_ordinal) || !reader.scalar(&count) ||
-        count > reader.remaining() / 28U) {
-        return nullptr;
-    }
-    segment->refs.reserve(static_cast<size_t>(count));
-    for (uint64_t i = 0; i < count; ++i) {
-        ChunkPageRef ref;
-        if (!reader.scalar(&ref.chunk_id.high) || !reader.scalar(&ref.chunk_id.low) || !reader.scalar(&ref.offset) ||
-            !reader.scalar(&ref.length)) {
-            return nullptr;
-        }
-        segment->refs.push_back(ref);
-    }
-    return reader.complete() ? segment : nullptr;
-}
-
-std::vector<uint8_t> encode_manifest(const ChunkManifest &manifest)
-{
-    std::vector<uint8_t> out;
-    append_scalar(&out, manifest.format_version);
-    append_scalar(&out, manifest.tree_id);
-    append_scalar(&out, manifest.generation);
-    append_scalar(&out, manifest.owner_epoch);
-    append_scalar(&out, manifest.logical_size);
-    append_scalar(&out, manifest.published_at_ms);
-    append_scalar(&out, manifest.packs_reused);
-    append_scalar(&out, manifest.pack_bytes_reused);
-    if (manifest.format_version >= 4) {
-        append_scalar(&out, manifest.wal_replay_offset);
-    }
-    append_scalar(&out, manifest.checksum);
-    append_scalar(&out, static_cast<uint64_t>(manifest.reference_segments.size()));
-    for (const auto &segment : manifest.reference_segments) {
-        append_scalar(&out, segment.owner_tree_id);
-        append_scalar(&out, segment.object_id);
-        append_scalar(&out, segment.first_ordinal);
-        append_scalar(&out, segment.ref_count);
-        append_scalar(&out, segment.checksum);
-        append_scalar(&out, static_cast<uint8_t>(segment.reused));
-    }
-    append_scalar(&out, static_cast<uint64_t>(manifest.packs.size()));
-    for (const auto &pack : manifest.packs) {
-        append_scalar(&out, pack.owner_tree_id);
-        append_scalar(&out, pack.ordinal);
-        append_scalar(&out, pack.logical_offset);
-        append_scalar(&out, pack.ref.chunk_id.high);
-        append_scalar(&out, pack.ref.chunk_id.low);
-        append_scalar(&out, pack.ref.offset);
-        append_scalar(&out, pack.ref.length);
-        append_scalar(&out, static_cast<uint8_t>(pack.reused));
-    }
-    return out;
-}
-
-std::shared_ptr<const ChunkManifest> decode_manifest(const std::vector<uint8_t> &bytes)
-{
-    BlobReader reader(bytes);
-    auto       manifest        = std::make_shared<ChunkManifest>();
-    uint64_t   reference_count = 0;
-    if (!reader.scalar(&manifest->format_version) || !reader.scalar(&manifest->tree_id) ||
-        !reader.scalar(&manifest->generation) || !reader.scalar(&manifest->owner_epoch) ||
-        !reader.scalar(&manifest->logical_size) || !reader.scalar(&manifest->published_at_ms) ||
-        !reader.scalar(&manifest->packs_reused) || !reader.scalar(&manifest->pack_bytes_reused) ||
-        (manifest->format_version >= 4 && !reader.scalar(&manifest->wal_replay_offset)) ||
-        !reader.scalar(&manifest->checksum) || !reader.scalar(&reference_count) ||
-        reference_count > reader.remaining() / 33U) {
-        return nullptr;
-    }
-    manifest->reference_segments.reserve(static_cast<size_t>(reference_count));
-    for (uint64_t i = 0; i < reference_count; ++i) {
-        ChunkReferenceSegment segment;
-        uint8_t               reused = 0;
-        if (!reader.scalar(&segment.owner_tree_id) || !reader.scalar(&segment.object_id) ||
-            !reader.scalar(&segment.first_ordinal) || !reader.scalar(&segment.ref_count) ||
-            !reader.scalar(&segment.checksum) || !reader.scalar(&reused) || reused > 1) {
-            return nullptr;
-        }
-        segment.reused = reused != 0;
-        manifest->reference_segments.push_back(segment);
-    }
-    uint64_t pack_count = 0;
-    if (!reader.scalar(&pack_count) || pack_count > reader.remaining() / 53U) {
-        return nullptr;
-    }
-    manifest->packs.reserve(static_cast<size_t>(pack_count));
-    for (uint64_t i = 0; i < pack_count; ++i) {
-        ChunkPagePack pack;
-        uint8_t       reused = 0;
-        if (!reader.scalar(&pack.owner_tree_id) || !reader.scalar(&pack.ordinal) ||
-            !reader.scalar(&pack.logical_offset) || !reader.scalar(&pack.ref.chunk_id.high) ||
-            !reader.scalar(&pack.ref.chunk_id.low) || !reader.scalar(&pack.ref.offset) ||
-            !reader.scalar(&pack.ref.length) || !reader.scalar(&reused) || reused > 1) {
-            return nullptr;
-        }
-        pack.reused = reused != 0;
-        manifest->packs.push_back(pack);
-    }
-    return reader.complete() ? manifest : nullptr;
 }
 
 struct CallbackBlob
@@ -302,11 +129,6 @@ struct ReferenceSegmentIdentityHash
         return hash;
     }
 };
-
-uint64_t reference_segment_owner(const ChunkManifest &manifest, const ChunkReferenceSegment &segment)
-{
-    return manifest.format_version == 0 ? manifest.tree_id : segment.owner_tree_id;
-}
 
 PackIdentity pack_identity(const ChunkPagePack &pack)
 {
@@ -533,10 +355,10 @@ void MemoryRootCatalog::corrupt_active_pack_layout_for_tests(uint64_t tree_id)
         if (found == state->current.end() || (*found)->packs.empty()) {
             return;
         }
-        auto corrupt                          = std::make_shared<ChunkManifest>(**found);
-        corrupt->packs.front().logical_offset = std::numeric_limits<uint64_t>::max();
-        corrupt->checksum                     = ChunkPageStore::manifest_checksum(*corrupt);
-        auto next                             = std::make_shared<CatalogState>(*state);
+        auto corrupt                                                       = std::make_shared<ChunkManifest>(**found);
+        corrupt->packs.front().logical_offset                              = std::numeric_limits<uint64_t>::max();
+        corrupt->checksum                                                  = manifest_checksum(*corrupt);
+        auto next                                                          = std::make_shared<CatalogState>(*state);
         next->current[static_cast<size_t>(found - state->current.begin())] = std::move(corrupt);
         if (state_.compare_exchange_weak(state, next, std::memory_order_release, std::memory_order_acquire)) {
             return;
@@ -562,7 +384,7 @@ void MemoryRootCatalog::downgrade_active_manifest_for_tests(uint64_t tree_id)
             segment.owner_tree_id = 0;
             segment.reused        = false;
         }
-        legacy->checksum                                                   = ChunkPageStore::manifest_checksum(*legacy);
+        legacy->checksum                                                   = manifest_checksum(*legacy);
         auto next                                                          = std::make_shared<CatalogState>(*state);
         next->current[static_cast<size_t>(found - state->current.begin())] = std::move(legacy);
         if (state_.compare_exchange_weak(state, next, std::memory_order_release, std::memory_order_acquire)) {
@@ -830,7 +652,7 @@ ChunkPageStore::ChunkPageStore(Config config, std::shared_ptr<RootCatalog> catal
       transport_(std::move(transport))
 {
     if (config_.pack_bytes == 0) {
-        config_.pack_bytes = crowdb::protocol::kMaxFramePayloadBytes;
+        config_.pack_bytes = crowdb::protocol::kMaxFrameV2PayloadBytes;
     }
     if (config_.iu_size == 0) {
         config_.iu_size = 64U * 1024U;
@@ -877,7 +699,7 @@ ChunkPageStore::ChunkPageStore(Config config, std::shared_ptr<RootCatalog> catal
     }
     config_.max_chunk_bytes            = std::min(config_.max_chunk_bytes, kMaxChunkBytes);
     config_.pack_bytes                 = std::min<uint64_t>(config_.pack_bytes, config_.max_chunk_bytes);
-    const uint64_t physical_pack_bytes = crowdb::protocol::framed_physical_length(config_.pack_bytes);
+    const uint64_t physical_pack_bytes = chunk_framed_length(config_.pack_bytes);
     if (physical_pack_bytes != 0) {
         const uint64_t packs_per_chunk = std::max<uint64_t>(1, config_.max_chunk_bytes / physical_pack_bytes);
         config_.max_chunk_bytes        = packs_per_chunk * config_.pack_bytes;
@@ -1077,7 +899,8 @@ const ChunkPagePack *ChunkPageStore::find_pack_at(const ChunkManifest &base, uin
 
 Status ChunkPageStore::validate_manifest(const ChunkManifest &manifest, const RootCatalog &catalog)
 {
-    if (manifest.format_version != kChunkManifestFormat || manifest.checksum != manifest_checksum(manifest)) {
+    if ((manifest.format_version != 6 && manifest.format_version != kChunkManifestFormat) ||
+        manifest.checksum != manifest_checksum(manifest)) {
         return Status::corruption("chunk manifest checksum mismatch");
     }
     const size_t expected_segments = (manifest.packs.size() + kReferencesPerSegment - 1) / kReferencesPerSegment;
@@ -1109,7 +932,10 @@ Status ChunkPageStore::validate_manifest(const ChunkManifest &manifest, const Ro
             if (pack.ordinal != ordinal || bad_layout || pack.ref.chunk_id.empty() || pack.ref.length == 0 ||
                 pack.logical_offset > manifest.logical_size ||
                 pack.ref.length > manifest.logical_size - pack.logical_offset || ref.chunk_id != pack.ref.chunk_id ||
-                ref.offset != pack.ref.offset || ref.length != pack.ref.length) {
+                ref.offset != pack.ref.offset || ref.length != pack.ref.length ||
+                ref.frame_revision != pack.ref.frame_revision || ref.length > kMaxChunkPackBytes ||
+                (ref.frame_revision != kLegacyChunkFrameRevision && ref.frame_revision != kChunkFrameRevision) ||
+                (manifest.format_version == 6 && ref.frame_revision != kLegacyChunkFrameRevision)) {
                 return Status::corruption("chunk manifest page-pack coverage or reference is invalid");
             }
             logical_offset = pack.logical_offset + pack.ref.length;
@@ -1162,65 +988,6 @@ Status ChunkPageStore::materialize_active(std::vector<uint8_t> *out) const
 Status ChunkPageStore::read_at(uint64_t off, uint8_t *buf, size_t len) const
 {
     return read_at_cancellable(off, buf, len, {});
-}
-
-Status ChunkPageStore::read_pack(const ChunkPageRef &ref, std::shared_ptr<const std::vector<uint8_t>> *out,
-                                 ChunkCancellation cancellation) const
-{
-    if (cancellation.cancelled()) {
-        return Status::unavailable("chunk page read cancelled");
-    }
-    const bool use_cache = cancellation.cancelled_id != nullptr;
-    auto       cached    = use_cache ? cached_pack_ : nullptr;
-    if (cached != nullptr && cached->ref.chunk_id == ref.chunk_id && cached->ref.offset == ref.offset &&
-        cached->ref.length == ref.length) {
-        if (cancellation.cancelled()) {
-            return Status::unavailable("chunk page read cancelled");
-        }
-        *out = cached->bytes;
-        coalesced_reads_.fetch_add(1, std::memory_order_relaxed);
-        coalesced_read_bytes_.fetch_add(ref.length, std::memory_order_relaxed);
-        return Status::Ok();
-    }
-    pack_reads_.fetch_add(1, std::memory_order_relaxed);
-    const size_t physical_length = crowdb::protocol::framed_physical_length(ref.length);
-    if (physical_length == 0) {
-        return Status::corruption("chunk page frame length overflows");
-    }
-    auto framed           = std::make_shared<std::vector<uint8_t>>(physical_length);
-    bool mirror_responded = false;
-    for (uint32_t mirror = 0; mirror < config_.mirror_copies; ++mirror) {
-        if (cancellation.cancelled()) {
-            return Status::unavailable("chunk page read cancelled");
-        }
-        const uint64_t started = monotonic_nanos();
-        Status read_status = transport_->read_mirror(ref.chunk_id, mirror, ref.offset, framed->data(), framed->size());
-        diskio_operations_.fetch_add(1, std::memory_order_relaxed);
-        diskio_latency_ns_.fetch_add(monotonic_nanos() - started, std::memory_order_relaxed);
-        if (!read_status.ok()) {
-            CRB_LOG_ERROR("chunk page store tree={} mirror={} read failed: chunk={}:{} offset={} length={} status={}",
-                          config_.tree_id, mirror, ref.chunk_id.high, ref.chunk_id.low, ref.offset, physical_length,
-                          read_status.to_string());
-            continue;
-        }
-        mirror_responded   = true;
-        auto       payload = std::make_shared<std::vector<uint8_t>>();
-        const auto frame_error =
-            crowdb::protocol::parse_frames(*framed, {.high = ref.chunk_id.high, .low = ref.chunk_id.low},
-                                           page_frame_magic(chunk_purpose(ref.chunk_id)), ref.length, payload.get());
-        if (frame_error == crowdb::protocol::FrameError::Ok) {
-            auto entry = std::make_shared<CachedPack>(CachedPack{.ref = ref, .bytes = payload});
-            if (use_cache) {
-                cached_pack_ = std::move(entry);
-            }
-            *out = std::move(payload);
-            return cancellation.cancelled() ? Status::unavailable("chunk page read cancelled") : Status::Ok();
-        }
-        CRB_LOG_ERROR("chunk page store tree={} mirror={} frame verification failed: chunk={}:{} offset={} length={}",
-                      config_.tree_id, mirror, ref.chunk_id.high, ref.chunk_id.low, ref.offset, physical_length);
-    }
-    return mirror_responded ? Status::corruption("chunk page frame verification failed on every mirror")
-                            : Status::unavailable("chunk page pack mirrors are unavailable");
 }
 
 Status ChunkPageStore::read_at_cancellable(uint64_t off, uint8_t *buf, size_t len, ChunkCancellation cancellation) const
@@ -1324,67 +1091,6 @@ Status ChunkPageStore::publication_base(std::shared_ptr<const ChunkManifest> *ou
     return Status::Ok();
 }
 
-uint32_t ChunkPageStore::reference_segment_checksum(const ChunkReferenceSegmentImage &segment)
-{
-    uint32_t crc = update_u64(0, segment.object_id);
-    crc          = update_u64(crc, segment.first_ordinal);
-    for (const ChunkPageRef &ref : segment.refs) {
-        crc = update_u64(crc, ref.chunk_id.high);
-        crc = update_u64(crc, ref.chunk_id.low);
-        crc = update_u64(crc, ref.offset);
-        crc = crowdb::common::crc32c_update(crc, reinterpret_cast<const uint8_t *>(&ref.length), sizeof(ref.length));
-    }
-    return crc;
-}
-
-uint32_t ChunkPageStore::manifest_checksum(const ChunkManifest &manifest)
-{
-    uint32_t crc = 0;
-    if (manifest.format_version != 0) {
-        crc = crowdb::common::crc32c_update(crc, reinterpret_cast<const uint8_t *>(&manifest.format_version),
-                                            sizeof(manifest.format_version));
-    }
-    crc = update_u64(crc, manifest.tree_id);
-    crc = update_u64(crc, manifest.generation);
-    crc = update_u64(crc, manifest.owner_epoch);
-    crc = update_u64(crc, manifest.logical_size);
-    crc = update_u64(crc, manifest.published_at_ms);
-    crc = update_u64(crc, manifest.packs_reused);
-    crc = update_u64(crc, manifest.pack_bytes_reused);
-    if (manifest.format_version >= 4) {
-        crc = update_u64(crc, manifest.wal_replay_offset);
-    }
-    for (const ChunkPagePack &pack : manifest.packs) {
-        if (manifest.format_version >= 2) {
-            crc = update_u64(crc, pack.owner_tree_id);
-        }
-        crc = update_u64(crc, pack.ordinal);
-        crc = update_u64(crc, pack.logical_offset);
-        crc = update_u64(crc, pack.ref.chunk_id.high);
-        crc = update_u64(crc, pack.ref.chunk_id.low);
-        crc = update_u64(crc, pack.ref.offset);
-        crc = crowdb::common::crc32c_update(crc, reinterpret_cast<const uint8_t *>(&pack.ref.length),
-                                            sizeof(pack.ref.length));
-        crc = crowdb::common::crc32c_update(crc, reinterpret_cast<const uint8_t *>(&pack.reused), sizeof(pack.reused));
-    }
-    for (const ChunkReferenceSegment &segment : manifest.reference_segments) {
-        if (manifest.format_version != 0) {
-            crc = update_u64(crc, reference_segment_owner(manifest, segment));
-        }
-        crc = update_u64(crc, segment.object_id);
-        crc = update_u64(crc, segment.first_ordinal);
-        crc = crowdb::common::crc32c_update(crc, reinterpret_cast<const uint8_t *>(&segment.ref_count),
-                                            sizeof(segment.ref_count));
-        crc = crowdb::common::crc32c_update(crc, reinterpret_cast<const uint8_t *>(&segment.checksum),
-                                            sizeof(segment.checksum));
-        if (manifest.format_version != 0) {
-            crc = crowdb::common::crc32c_update(crc, reinterpret_cast<const uint8_t *>(&segment.reused),
-                                                sizeof(segment.reused));
-        }
-    }
-    return crc;
-}
-
 Status ChunkPageStore::persist_reference_segments(ChunkManifest *manifest, const ChunkManifest *reuse_base)
 {
     for (size_t first = 0; first < manifest->packs.size(); first += kReferencesPerSegment) {
@@ -1399,7 +1105,8 @@ Status ChunkPageStore::persist_reference_segments(ChunkManifest *manifest, const
                 std::equal(manifest->packs.begin() + first_offset, manifest->packs.begin() + end_offset,
                            reuse_base->packs.begin() + first_offset, [](const auto &left, const auto &right) {
                                return left.ref.chunk_id == right.ref.chunk_id && left.ref.offset == right.ref.offset &&
-                                      left.ref.length == right.ref.length;
+                                      left.ref.length == right.ref.length &&
+                                      left.ref.frame_revision == right.ref.frame_revision;
                            });
             if (same) {
                 ChunkReferenceSegment shared = candidate;
@@ -1501,7 +1208,7 @@ Status ChunkPageStore::build_manifest(uint64_t expected_generation, std::shared_
         }
         if (!active_chunk_id_.empty() &&
             (chunk_purpose(active_chunk_id_) != purpose || length > config_.max_chunk_bytes - active_chunk_bytes_ ||
-             crowdb::protocol::framed_physical_length(length) > chunk_allocation_bytes() - active_chunk_cursor_)) {
+             chunk_framed_length(length) > chunk_allocation_bytes() - active_chunk_cursor_)) {
             Status seal_status = transport_->seal_chunk(active_chunk_id_, config_.owner_epoch, active_chunk_cursor_);
             if (!seal_status.ok()) {
                 return seal_status;
@@ -1512,7 +1219,7 @@ Status ChunkPageStore::build_manifest(uint64_t expected_generation, std::shared_
         }
         if (active_chunk_id_.empty()) {
             const uint64_t packs_per_chunk = (config_.max_chunk_bytes + config_.pack_bytes - 1) / config_.pack_bytes;
-            const uint64_t physical_pack_bytes = crowdb::protocol::framed_physical_length(config_.pack_bytes);
+            const uint64_t physical_pack_bytes = chunk_framed_length(config_.pack_bytes);
             if (physical_pack_bytes == 0) {
                 return Status::resource_exhausted("chunk page framing exceeds address space");
             }
@@ -1533,10 +1240,11 @@ Status ChunkPageStore::build_manifest(uint64_t expected_generation, std::shared_
         pack.ref.chunk_id                    = active_chunk_id_;
         pack.ref.offset                      = active_chunk_cursor_;
         pack.ref.length                      = static_cast<uint32_t>(length);
-        const size_t         physical_length = crowdb::protocol::framed_physical_length(length);
+        pack.ref.frame_revision              = kChunkFrameRevision;
+        const size_t         physical_length = chunk_framed_length(length);
         std::vector<uint8_t> framed;
         if (physical_length == 0 ||
-            crowdb::protocol::encode_frames(page_frame_magic(purpose),
+            crowdb::protocol::encode_frames(chunk_page_frame_magic(purpose),
                                             {.high = active_chunk_id_.high, .low = active_chunk_id_.low},
                                             std::span<const uint8_t>(staged_.data() + offset, length),
                                             monotonic_millis(), &framed) != crowdb::protocol::FrameError::Ok) {
@@ -1691,7 +1399,7 @@ Status ChunkPageStore::materialize_ownership(uint64_t *bytes_written, bool *comp
             return fail(std::move(read_status));
         }
         const auto   purpose         = chunk_purpose(base_pack.ref.chunk_id);
-        const size_t physical_length = crowdb::protocol::framed_physical_length(bytes->size());
+        const size_t physical_length = chunk_framed_length(bytes->size());
         if (!active_chunk_id_.empty() && (chunk_purpose(active_chunk_id_) != purpose ||
                                           base_pack.ref.length > config_.max_chunk_bytes - active_chunk_bytes_ ||
                                           physical_length > chunk_allocation_bytes() - active_chunk_cursor_)) {
@@ -1709,7 +1417,7 @@ Status ChunkPageStore::materialize_ownership(uint64_t *bytes_written, bool *comp
         }
         if (active_chunk_id_.empty()) {
             const uint64_t packs_per_chunk = (config_.max_chunk_bytes + config_.pack_bytes - 1) / config_.pack_bytes;
-            const uint64_t physical_pack_bytes = crowdb::protocol::framed_physical_length(config_.pack_bytes);
+            const uint64_t physical_pack_bytes = chunk_framed_length(config_.pack_bytes);
             if (physical_pack_bytes == 0) {
                 orphan_bytes_.fetch_add(copied_bytes, std::memory_order_relaxed);
                 return fail(Status::resource_exhausted("chunk materialization framing exceeds address space"));
@@ -1728,7 +1436,7 @@ Status ChunkPageStore::materialize_ownership(uint64_t *bytes_written, bool *comp
 
         std::vector<uint8_t> framed;
         if (physical_length == 0 ||
-            crowdb::protocol::encode_frames(page_frame_magic(purpose),
+            crowdb::protocol::encode_frames(chunk_page_frame_magic(purpose),
                                             {.high = active_chunk_id_.high, .low = active_chunk_id_.low}, *bytes,
                                             monotonic_millis(), &framed) != crowdb::protocol::FrameError::Ok) {
             orphan_bytes_.fetch_add(copied_bytes, std::memory_order_relaxed);
@@ -1766,12 +1474,13 @@ Status ChunkPageStore::materialize_ownership(uint64_t *bytes_written, bool *comp
             active_chunk_cursor_ = 0;
             return fail(std::move(advance_status));
         }
-        ChunkPagePack copied = base_pack;
-        copied.ordinal       = manifest->packs.size();
-        copied.owner_tree_id = config_.tree_id;
-        copied.ref.chunk_id  = active_chunk_id_;
-        copied.ref.offset    = active_chunk_cursor_;
-        copied.reused        = false;
+        ChunkPagePack copied      = base_pack;
+        copied.ordinal            = manifest->packs.size();
+        copied.owner_tree_id      = config_.tree_id;
+        copied.ref.chunk_id       = active_chunk_id_;
+        copied.ref.offset         = active_chunk_cursor_;
+        copied.ref.frame_revision = kChunkFrameRevision;
+        copied.reused             = false;
         manifest->packs.push_back(std::move(copied));
         active_chunk_bytes_ += base_pack.ref.length;
         active_chunk_cursor_ += physical_length;
@@ -2188,8 +1897,11 @@ Status CallbackRootCatalog::publish(uint64_t tree_id, uint64_t expected_generati
         return Status::invalid_argument("callback root catalog publish is unavailable");
     }
     const auto bytes = encode_manifest(*manifest);
-    const auto code  = callbacks_.publish(context_, tree_id, expected_generation, owner_epoch, manifest->generation,
-                                          bytes.data(), bytes.size());
+    if (bytes.empty()) {
+        return Status::corruption("invalid manifest encoding");
+    }
+    const auto code = callbacks_.publish(context_, tree_id, expected_generation, owner_epoch, manifest->generation,
+                                         bytes.data(), bytes.size());
     return callback_status(code, "callback root catalog publish failed");
 }
 
@@ -2200,8 +1912,11 @@ Status CallbackRootCatalog::persist_reference_segment(uint64_t                  
         return Status::invalid_argument("callback root catalog store is unavailable");
     }
     const auto bytes = encode_reference_segment(*segment);
-    const auto code  = callbacks_.store(context_, CT_ROOT_CATALOG_REFERENCE_SEGMENT, tree_id, segment->object_id,
-                                        bytes.data(), bytes.size());
+    if (bytes.empty()) {
+        return Status::corruption("invalid reference segment encoding");
+    }
+    const auto code = callbacks_.store(context_, CT_ROOT_CATALOG_REFERENCE_SEGMENT, tree_id, segment->object_id,
+                                       bytes.data(), bytes.size());
     return callback_status(code, "callback reference segment store failed");
 }
 

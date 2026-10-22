@@ -1485,7 +1485,8 @@ fn batch_shape(batch: &[PendingObject]) -> Result<(usize, usize, usize)> {
 }
 
 fn frame_bytes(payload_bytes: usize) -> Result<usize> {
-    crowdb_protocol::frame::framed_physical_length(payload_bytes as u64)
+    crowdb_protocol::frame::FrameLayout::OrdinaryV2
+        .physical_length(payload_bytes as u64)
         .map_err(|error| IoError::WriteFailed(error.to_string()))
         .and_then(|bytes| usize::try_from(bytes).map_err(|error| IoError::WriteFailed(error.to_string())))
 }

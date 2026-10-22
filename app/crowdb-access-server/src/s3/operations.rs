@@ -452,7 +452,7 @@ impl ProductionS3Operations {
             .and_then(|length| usize::try_from(length).ok())
             .filter(|length| *length <= self.config.small_object_limit)
         {
-            if length > crowdb_protocol::frame::MAX_FRAME_PAYLOAD_BYTES {
+            if length > crowdb_protocol::frame::MAX_FRAME_V2_PAYLOAD_BYTES {
                 return self
                     .storage
                     .chunks

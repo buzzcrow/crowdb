@@ -19,7 +19,7 @@ use crowdb_access_s3::streaming::{
 };
 use crowdb_chunk_client::{ChunkIoWriter, FeedStatus, FramedWriteBuffer, IoError};
 use crowdb_protocol::chunkdb::rpc::Location;
-use crowdb_protocol::frame::{MAX_FRAME_BYTES, MAX_FRAME_PAYLOAD_BYTES};
+use crowdb_protocol::frame::{MAX_FRAME_BYTES, MAX_FRAME_V2_PAYLOAD_BYTES};
 use hyper::body::{Body, Bytes, Frame, Http1BodyReceiveProvider, SizeHint};
 
 #[test]
@@ -292,13 +292,13 @@ async fn native_body_hashes_payload_and_hands_owner_to_writer_once() {
     let allocator = NativeBodyAllocator::new(MAX_FRAME_BYTES, MAX_FRAME_BYTES).unwrap();
     let receiver = allocator.object_receiver();
     receiver.enable_owner_handoff();
-    let mut allocation = poll_fn(|cx| receiver.poll_next_buffer(cx, MAX_FRAME_PAYLOAD_BYTES))
+    let mut allocation = poll_fn(|cx| receiver.poll_next_buffer(cx, MAX_FRAME_V2_PAYLOAD_BYTES))
         .await
         .unwrap();
     allocation
         .spare_capacity_mut()
         .fill(std::mem::MaybeUninit::new(0x5a));
-    allocation.advance(MAX_FRAME_PAYLOAD_BYTES).unwrap();
+    allocation.advance(MAX_FRAME_V2_PAYLOAD_BYTES).unwrap();
     let payload = receiver.on_data_ready(allocation).unwrap();
     let mut body = TestBody {
         frames: VecDeque::from([payload]),
@@ -320,9 +320,12 @@ async fn native_body_hashes_payload_and_hands_owner_to_writer_once() {
 
     assert_eq!(writer.generic_frames, 0);
     assert_eq!(writer.owner_frames, 1);
-    assert_eq!(writer.logical_bytes, MAX_FRAME_PAYLOAD_BYTES as u64);
+    assert_eq!(writer.logical_bytes, MAX_FRAME_V2_PAYLOAD_BYTES as u64);
     assert_eq!(checksum.len(), 16);
-    assert_eq!(metrics.snapshot().checksum_bytes, MAX_FRAME_PAYLOAD_BYTES as u64);
+    assert_eq!(
+        metrics.snapshot().checksum_bytes,
+        MAX_FRAME_V2_PAYLOAD_BYTES as u64
+    );
 }
 
 #[tokio::test]
