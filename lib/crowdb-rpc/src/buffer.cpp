@@ -105,6 +105,27 @@ void Buffer::release()
     }
 }
 
+Buffer *Buffer::slice(uint32_t offset, uint32_t size)
+{
+    if (offset > capacity || size > capacity - offset || data == nullptr || ref_clone() == nullptr)
+        return nullptr;
+    auto *view     = new Buffer;
+    view->data     = payload_data() + offset;
+    view->len      = size;
+    view->capacity = size;
+    view->type     = type;
+    view->ref      = new std::atomic<int32_t>(1);
+    view->ownership.store(BufferOwnership::CallerOwned, std::memory_order_relaxed);
+    view->capacity_class      = capacity_class;
+    view->registration_id     = registration_id;
+    view->registration_key    = registration_key;
+    view->registration_handle = registration_handle;
+    view->set_metadata(request_id, stream_id, sequence, logical_offset, registration_id);
+    view->free_cb  = [](void *parent) { static_cast<Buffer *>(parent)->release(); };
+    view->free_ctx = this;
+    return view;
+}
+
 bool Buffer::transition(BufferOwnership from, BufferOwnership to)
 {
     return ownership.compare_exchange_strong(from, to, std::memory_order_acq_rel, std::memory_order_acquire);

@@ -56,6 +56,10 @@ struct RdmaConfig
     uint8_t     min_rnr_timer                  = 1;
     uint8_t     retry_count                    = 7;
     uint8_t     rnr_retry_count                = 7;
+    bool        aggregation_enabled            = false;
+    uint32_t    aggregation_max_bytes          = RDMA_WIRE_SLOT_CAPACITY;
+    uint32_t    aggregation_max_frames         = 256;
+    uint32_t    send_queue_capacity            = 4096;
 
     [[nodiscard]] bool     apply_environment();
     [[nodiscard]] bool     valid() const;
@@ -124,6 +128,14 @@ class RdmaTransport : public Transport
         std::atomic<uint64_t> cm_attempts{0};
         std::atomic<uint64_t> preflight_attempts{0};
         std::atomic<uint64_t> preflight_failures{0};
+        std::atomic<uint64_t> protocol_errors{0};
+        std::atomic<uint64_t> rpc_frames_sent{0};
+        std::atomic<uint64_t> rpc_frames_received{0};
+        std::atomic<uint64_t> wire_bytes_sent{0};
+        std::atomic<uint64_t> wire_bytes_received{0};
+        std::atomic<uint64_t> submit_rejects{0};
+        std::atomic<uint64_t> send_queue_high_water{0};
+        std::atomic<uint64_t> send_errors{0};
     };
 
     explicit RdmaTransport(RdmaConfig config = {}, BufferPool *application_pool = nullptr);
@@ -227,6 +239,7 @@ class RdmaTransport : public Transport
         std::atomic<uint64_t>            token{0};
         WorkKind                         kind;
         std::shared_ptr<Connection>      conn;
+        std::atomic<Connection *>        connection_identity{nullptr};
         std::shared_ptr<ConnectionPools> pools;
         Buffer                          *slot           = nullptr;
         OutFrame                        *frame          = nullptr;
@@ -260,13 +273,18 @@ class RdmaTransport : public Transport
     CompletionQueue                              *reserve_cq(uint32_t capacity);
     bool                                          create_completion_queues(ibv_context *context);
     void                                          destroy_completion_queues();
-    int                       drain_queue(uint32_t index, uint32_t max_completions, bool wait_for_owner = false);
-    uint32_t                  process_deferred(CompletionQueue &queue, uint32_t max_completions);
-    void                      cancel_deferred(CompletionQueue &queue, Connection *connection);
-    void                      start_pollers();
-    void                      run_poller(CompletionQueue *queue);
-    void                      notify_queue(uint32_t index);
-    void                      install_frame_notifier(const std::shared_ptr<Connection> &connection, uint32_t index);
+    int      drain_queue(uint32_t index, uint32_t max_completions, bool wait_for_owner = false);
+    uint32_t process_deferred(CompletionQueue &queue, uint32_t max_completions);
+    void     cancel_deferred(CompletionQueue &queue, Connection *connection);
+    void     start_pollers();
+    void     run_poller(CompletionQueue *queue);
+    void     notify_queue(uint32_t index);
+    void     install_frame_notifier(const std::shared_ptr<Connection> &connection, uint32_t index);
+    uint32_t flush_sends(CompletionQueue &queue, uint32_t budget);
+    uint32_t flush_connection(Connection *connection, ConnectionPools &pools, uint32_t budget);
+    void     retire_sends(CompletionQueue &queue, Connection *connection);
+    bool     post_aggregate(Connection *connection, ConnectionPools &pools, Buffer *slot, OutFrame *frames,
+                            uint32_t frame_count);
     static constexpr uint64_t CM_EVENT_TAG  = 1;
     static constexpr uint64_t CQ_EVENT_BASE = 2;
 
@@ -324,6 +342,12 @@ class RdmaTransport : public Transport
 
     struct ConnectionPools : std::enable_shared_from_this<ConnectionPools>
     {
+        explicit ConnectionPools(uint32_t queue_capacity = 4096) : send_queue(queue_capacity)
+        {
+        }
+
+        ~ConnectionPools();
+
         ibv_qp_cap                      effective_capacity{};
         std::shared_ptr<RepostState>    posting_state = std::make_shared<RepostState>();
         std::unique_ptr<RdmaBufferPool> send;
@@ -333,6 +357,10 @@ class RdmaTransport : public Transport
         uint32_t                        peer_receive_slot_capacity = 0;
         uint32_t                        peer_receive_frame_limit   = 1;
         uint32_t                        qp_number                  = 0;
+        SendQueue                       send_queue;
+        std::atomic<uint32_t>           queued_frames{0};
+        OutFrame                       *pending_frame   = nullptr;
+        uint32_t                        sends_in_flight = 0; // CQ owner only
     };
 
     struct RepostContext
@@ -347,7 +375,7 @@ class RdmaTransport : public Transport
     void        release_completed_frame(WorkRequest *work, const struct ibv_wc &wc);
     void        release_completed_receive(WorkRequest *work, const struct ibv_wc &wc);
     void        record_completion_error(const struct ibv_wc &wc, bool expected_flush = false);
-    static void repost_frame_release(void *context, Buffer *data);
+    static void repost_frame_release(void *context, Buffer *slot);
     bool        adopt_cm_context(struct ibv_context *context);
 };
 

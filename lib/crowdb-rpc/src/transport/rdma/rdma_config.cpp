@@ -40,7 +40,11 @@ bool RdmaConfig::apply_environment()
            read("CROWDB_RDMA_REGISTERED_MEMORY_BUDGET_BYTES", registered_memory_budget_bytes) &&
            read("CROWDB_RDMA_CQ_COUNT", cq_count) && read("CROWDB_RDMA_POLL_BATCH", poll_batch) &&
            read("CROWDB_RDMA_VERBS_POLL_BATCH", verbs_poll_batch) &&
-           read("CROWDB_RDMA_POLL_EMPTY_BUDGET", poll_empty_budget);
+           read("CROWDB_RDMA_POLL_EMPTY_BUDGET", poll_empty_budget) &&
+           read("CROWDB_RDMA_AGGREGATION_ENABLED", aggregation_enabled) &&
+           read("CROWDB_RDMA_AGGREGATION_MAX_BYTES", aggregation_max_bytes) &&
+           read("CROWDB_RDMA_AGGREGATION_MAX_FRAMES", aggregation_max_frames) &&
+           read("CROWDB_RDMA_SEND_QUEUE_CAPACITY", send_queue_capacity);
 }
 
 bool RdmaConfig::valid() const
@@ -55,7 +59,10 @@ bool RdmaConfig::valid() const
            poll_batch <= static_cast<uint32_t>(INT32_MAX) && verbs_poll_batch > 0 && verbs_poll_batch <= 256 &&
            poll_empty_budget > 0 && send_arena_bytes >= wire_slot_capacity &&
            receive_arena_bytes >= static_cast<uint64_t>(posted_receive_target) * wire_slot_capacity &&
-           min_rnr_timer <= 31 && retry_count <= 7 && rnr_retry_count <= 7 && registration_budget() != 0;
+           min_rnr_timer <= 31 && retry_count <= 7 && rnr_retry_count <= 7 && registration_budget() != 0 &&
+           aggregation_max_bytes >= HEADER_SIZE && aggregation_max_bytes <= RDMA_WIRE_SLOT_CAPACITY &&
+           aggregation_max_frames > 0 && aggregation_max_frames <= 256 && send_queue_capacity >= 2 &&
+           send_queue_capacity <= (1U << 20) && (send_queue_capacity & (send_queue_capacity - 1)) == 0;
 }
 
 uint64_t RdmaConfig::registration_budget() const

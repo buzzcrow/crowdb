@@ -5,6 +5,7 @@
 
 #include "crowdb-common/log.h"
 #include "crowdb-rpc/transport/socket_transport.h"
+#include "rdma_aggregate.h"
 #include "rdma_channel.h"
 #include "rdma_cq.h"
 #include "rdma_device.h"
@@ -46,6 +47,7 @@ RdmaTransport::RdmaTransport(RdmaConfig config, BufferPool *application_pool)
         queue->index         = index;
         queue->work_requests = std::make_unique<WorkRequest[]>(config_.cq_depth);
         queue->deferred.reserve(config_.cq_depth);
+        queue->connections.reserve(config_.cq_depth / std::max(1U, config_.sq_depth + config_.posted_receive_target));
         queue->continuation_fd = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
         completion_queues_.push_back(std::move(queue));
     }
@@ -77,7 +79,7 @@ RdmaTransport::RdmaTransport(RdmaConfig config, BufferPool *application_pool)
     local_capability_.data_classes          = {RDMA_CONTROL_CAPACITY, RDMA_METADATA_CAPACITY, RDMA_AGGREGATE_CAPACITY,
                                                RDMA_DATAPATH_CAPACITY};
     local_capability_.receive_slot_capacity = config_.wire_slot_capacity;
-    local_capability_.receive_frame_limit   = 1;
+    local_capability_.receive_frame_limit   = RDMA_MAX_AGGREGATE_FRAMES;
     local_capability_.cm_address            = config_.source_address;
 
     int          device_count = 0;
@@ -182,107 +184,6 @@ std::unique_ptr<RdmaBufferPool> RdmaTransport::make_pool(uint64_t bytes, uint32_
         return nullptr;
     }
     return pool;
-}
-
-bool RdmaTransport::submit(Connection *conn, OutFrame *frame)
-{
-    Operation operation(repost_state_);
-    if (!operation)
-        return false;
-    if (conn == nullptr || !conn->is_open() || frame == nullptr || frame->control == nullptr) {
-        return false;
-    }
-    if (frame->data_views() > 1) {
-        return false;
-    }
-    auto *pools = pools_for(conn);
-    if (pools == nullptr || pools->send == nullptr || pools->cq_index >= completion_queues_.size() ||
-        completion_queues_[pools->cq_index]->cq == nullptr) {
-        return false;
-    }
-
-    Operation posting(pools->posting_state);
-    if (!posting || !conn->is_open() || conn->transport_handle == 0)
-        return false;
-
-    // TCP serializes the header and buffers independently. RDMA materializes
-    // the complete wire message in one registered slot so the receiver can
-    // post and recycle one contiguous buffer.
-    Buffer        *source_control = frame->control;
-    const uint32_t control_len    = source_control->len;
-    if (source_control->data == nullptr || control_len > source_control->capacity ||
-        control_len > RDMA_CONTROL_CAPACITY - HEADER_SIZE) {
-        CRB_LOG_WARN("rdma send: control buffer exceeds wire capacity len={} capacity={}", control_len,
-                     source_control->capacity);
-        return false;
-    }
-    Buffer *slot = pools->send->alloc(config_.wire_slot_capacity);
-    if (slot == nullptr)
-        return false;
-    if (!slot->transition(BufferOwnership::Available, BufferOwnership::SendInFlight)) {
-        slot->release();
-        return false;
-    }
-    const uint32_t data_len = frame->data == nullptr ? 0 : frame->data->len;
-    const uint64_t wire_len = static_cast<uint64_t>(HEADER_SIZE) + control_len + data_len;
-    if (wire_len > slot->capacity || wire_len > pools->peer_receive_slot_capacity) {
-        const auto capacity = slot->capacity;
-        (void)slot->transition(BufferOwnership::SendInFlight, BufferOwnership::Available);
-        slot->release();
-        CRB_LOG_WARN("rdma send: message exceeds wire slot control_len={} data_len={} capacity={}", control_len,
-                     data_len, capacity);
-        return false;
-    }
-    frame->header.msg_size  = control_len;
-    frame->header.data_size = data_len;
-    serialize_header(slot->data, frame->header);
-    if (control_len != 0)
-        std::memcpy(slot->data + HEADER_SIZE, source_control->data, control_len);
-    if (data_len != 0) {
-        if (frame->data->payload_data() == nullptr || data_len > frame->data->capacity) {
-            (void)slot->transition(BufferOwnership::SendInFlight, BufferOwnership::Available);
-            slot->release();
-            CRB_LOG_WARN("rdma send: data buffer exceeds capacity len={} capacity={}", data_len, frame->data->capacity);
-            return false;
-        }
-        std::memcpy(slot->data + HEADER_SIZE + control_len, frame->data->payload_data(), data_len);
-    }
-    slot->len            = static_cast<uint32_t>(wire_len);
-    slot->request_id     = source_control->request_id;
-    slot->stream_id      = source_control->stream_id;
-    slot->sequence       = source_control->sequence;
-    slot->logical_offset = source_control->logical_offset;
-
-    WorkRequest *work = acquire_work(WorkKind::Send, conn, slot, frame);
-    if (work == nullptr) {
-        (void)slot->transition(BufferOwnership::SendInFlight, BufferOwnership::Available);
-        slot->release();
-        return false;
-    }
-
-    ibv_sge sge{};
-    sge.addr   = reinterpret_cast<uintptr_t>(slot->data);
-    sge.length = slot->len;
-    sge.lkey   = slot->registration_key;
-    ibv_send_wr wr{};
-    wr.wr_id         = work->token.load(std::memory_order_acquire);
-    wr.sg_list       = &sge;
-    wr.num_sge       = 1;
-    wr.opcode        = IBV_WR_SEND;
-    wr.send_flags    = IBV_SEND_SIGNALED;
-    ibv_send_wr *bad = nullptr;
-    if (ibv_post_send(reinterpret_cast<ibv_qp *>(conn->transport_handle), &wr, &bad) != 0) {
-        release_work(work);
-        CRB_LOG_WARN("rdma send: post failed qp={} errno={}", reinterpret_cast<void *>(conn->transport_handle), errno);
-        (void)slot->transition(BufferOwnership::SendInFlight, BufferOwnership::Available);
-        slot->release();
-        return false;
-    }
-
-    // All work and frame ownership is published before posting. A CQ worker
-    // may already have released both by the time ibv_post_send returns.
-    stats_.sends.fetch_add(1, std::memory_order_relaxed);
-    return true;
 }
 
 bool RdmaTransport::post_receive(Connection *conn, Buffer *slot)

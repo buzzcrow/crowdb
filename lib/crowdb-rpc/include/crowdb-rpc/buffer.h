@@ -114,6 +114,10 @@ struct Buffer
     // allocation. Each consumer that needs to hold the buffer calls ref().
     Buffer *ref_clone();
 
+    // Independent immutable descriptor retaining this buffer's final-release
+    // lease. Offsets are relative to payload_data(); the parent is not mutated.
+    Buffer *slice(uint32_t offset, uint32_t size);
+
     // Decrement refcount. On ref == 0, recycle to pool or call free_cb.
     void release();
 

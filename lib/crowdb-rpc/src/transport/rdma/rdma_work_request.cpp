@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 #include "crowdb-rpc/transport/rdma/rdma_transport.h"
+#include "rdma_aggregate.h"
 #include "rdma_cq.h"
 
 #ifdef CROWDB_RPC_HAVE_RDMA
@@ -25,8 +26,9 @@ RdmaTransport::WorkRequest *RdmaTransport::acquire_work(WorkKind kind, Connectio
         uint64_t       empty = 0;
         if (!work.token.compare_exchange_strong(empty, WORK_RESERVED, std::memory_order_acq_rel))
             continue;
-        work.kind           = kind;
-        work.conn           = std::move(owner);
+        work.kind = kind;
+        work.conn = std::move(owner);
+        work.connection_identity.store(conn, std::memory_order_relaxed);
         work.pools          = pools == nullptr ? nullptr : pools->shared_from_this();
         work.slot           = slot;
         work.frame          = frame;
@@ -71,9 +73,13 @@ void RdmaTransport::dispatch_completion(const ibv_wc &wc)
     // Error completions do not provide a trustworthy opcode. The retained
     // work record owns dispatch, even after disconnect or QP destruction.
     if (work->kind == WorkKind::Receive && wc.status == IBV_WC_SUCCESS && !work->conn->has_frame_handler()) {
-        const bool handshake = wc.byte_len >= HEADER_SIZE && work->slot->capacity >= HEADER_SIZE &&
-                               parse_header(work->slot->data).msg_type == RDMA_HANDSHAKE_MSG_TYPE;
-        if (!handshake) {
+        RdmaAggregate aggregate;
+        const bool    valid       = wc.byte_len <= work->slot->capacity &&
+                                    parse_rdma_aggregate(std::span(work->slot->data, wc.byte_len), aggregate);
+        bool          application = false;
+        for (uint32_t index = 0; valid && index < aggregate.count; ++index)
+            application |= aggregate.frames[index].header.msg_type != RDMA_HANDSHAKE_MSG_TYPE;
+        if (application) {
             const uint32_t index = static_cast<uint32_t>(wc.wr_id) / config_.cq_depth;
             completion_queues_[index]->deferred.push_back({work, wc});
             stats_.pending_deferred_receives.fetch_add(1, std::memory_order_relaxed);
@@ -93,11 +99,13 @@ void RdmaTransport::cancel_work(Connection *connection)
     for (const auto &queue : completion_queues_) {
         while (queue->polling.test_and_set(std::memory_order_acquire))
             std::this_thread::yield();
+        retire_sends(*queue, connection);
         cancel_deferred(*queue, connection);
         for (uint32_t index = 0; index < config_.cq_depth; ++index) {
             auto          &work  = queue->work_requests[index];
             const uint64_t token = work.token.load(std::memory_order_acquire);
-            if (token == 0 || token == WORK_RESERVED || (connection != nullptr && work.conn.get() != connection))
+            if (token == 0 || token == WORK_RESERVED ||
+                (connection != nullptr && work.connection_identity.load(std::memory_order_acquire) != connection))
                 continue;
             ibv_wc completion{};
             completion.wr_id  = token;

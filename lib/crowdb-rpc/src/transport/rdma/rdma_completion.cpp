@@ -4,6 +4,7 @@
 #include "crowdb-common/log.h"
 #include "crowdb-rpc/transport/rdma/rdma_transport.h"
 #include "crowdb-rpc/transport/socket_transport.h"
+#include "rdma_aggregate.h"
 #include "rdma_cq.h"
 
 #ifdef CROWDB_RPC_HAVE_RDMA
@@ -37,12 +38,15 @@ int RdmaTransport::drain_queue(uint32_t index, uint32_t max_completions, bool wa
     }
     // Only the CQ consumer may clear its continuation. A competing worker
     // must leave the wakeup readable when it cannot acquire the CQ.
-    if (queue.continuation_fd >= 0) {
+    const bool managed = queue.managed.load(std::memory_order_acquire);
+    const bool woke    = !managed || queue.event_wakeup.exchange(false, std::memory_order_acq_rel);
+    if (woke && queue.continuation_fd >= 0) {
         uint64_t value = 0;
         (void)::read(queue.continuation_fd, &value, sizeof(value));
     }
     if (max_completions == 0)
         max_completions = std::max(1U, config_.poll_batch);
+    const uint32_t          sent             = flush_sends(queue, max_completions);
     uint32_t                drained          = process_deferred(queue, max_completions);
     uint32_t                empty_polls      = 0;
     const uint32_t          kEmptyPollBudget = config_.poll_empty_budget;
@@ -68,8 +72,7 @@ int RdmaTransport::drain_queue(uint32_t index, uint32_t max_completions, bool wa
             drained += static_cast<uint32_t>(batch);
         }
     };
-    const bool managed = queue.managed.load(std::memory_order_acquire);
-    if (queue.channel != nullptr && (!managed || queue.event_wakeup.exchange(false))) {
+    if (queue.channel != nullptr && woke) {
         ibv_cq *event_cq = nullptr;
         void   *context  = nullptr;
         while (ibv_get_cq_event(queue.channel, &event_cq, &context) == 0) {
@@ -78,9 +81,9 @@ int RdmaTransport::drain_queue(uint32_t index, uint32_t max_completions, bool wa
         }
     }
     poll_one(queue.cq);
-    if (managed && drained > 0) {
+    if (managed && (drained > 0 || sent > 0)) {
         queue.polling.clear(std::memory_order_release);
-        return static_cast<int>(drained);
+        return static_cast<int>(drained + sent);
     }
     (void)ibv_req_notify_cq(queue.cq, 0);
     // Completions arriving between the empty poll and notification arming
@@ -92,7 +95,7 @@ int RdmaTransport::drain_queue(uint32_t index, uint32_t max_completions, bool wa
         (void)::write(queue.continuation_fd, &value, sizeof(value));
     }
     queue.polling.clear(std::memory_order_release);
-    return static_cast<int>(drained);
+    return static_cast<int>(drained + sent);
 }
 
 void RdmaTransport::register_events(SocketEngine *engine)
@@ -200,100 +203,14 @@ void RdmaTransport::record_completion_error(const ibv_wc &wc, bool expected_flus
     }
 }
 
-void RdmaTransport::release_completed_receive(WorkRequest *work, const ibv_wc &wc)
-{
-
-    auto quarantine_and_release = [&] {
-        record_completion_error(wc, !work->conn->is_open());
-        work->conn->close();
-        (void)work->slot->quarantine();
-        work->slot->release();
-        release_work(work);
-    };
-    if (wc.status != IBV_WC_SUCCESS) {
-        if (wc.status != IBV_WC_WR_FLUSH_ERR || work->conn->is_open())
-            CRB_LOG_WARN("rdma receive: completion failed status={} vendor_err={} opcode={}",
-                         static_cast<unsigned>(wc.status), static_cast<unsigned>(wc.vendor_err),
-                         static_cast<unsigned>(wc.opcode));
-        quarantine_and_release();
-        return;
-    }
-    if (!work->slot->transition(BufferOwnership::PostedReceive, BufferOwnership::ReceiveInFlight)) {
-        quarantine_and_release();
-        return;
-    }
-    const uint32_t slot_capacity = work->slot->capacity;
-    if (slot_capacity < HEADER_SIZE || wc.byte_len < HEADER_SIZE || !work->conn->is_open()) {
-        CRB_LOG_WARN("rdma receive: slot capacity too small capacity={} header={}", slot_capacity, HEADER_SIZE);
-        quarantine_and_release();
-        return;
-    }
-    const Header   header         = parse_header(work->slot->data);
-    const uint64_t data_offset    = static_cast<uint64_t>(header.msg_offset) + header.msg_size;
-    const uint64_t expected_bytes = data_offset + header.data_size;
-    if (header.magic != MAGIC || header.msg_offset != HEADER_SIZE || data_offset > RDMA_CONTROL_CAPACITY ||
-        expected_bytes != wc.byte_len || expected_bytes > slot_capacity) {
-        CRB_LOG_WARN(
-            "rdma receive: invalid frame magic={} type={} msg_size={} data_size={} offset={} capacity={} byte_len={}",
-            header.magic, header.msg_type, header.msg_size, header.data_size, header.msg_offset, slot_capacity,
-            wc.byte_len);
-        quarantine_and_release();
-        return;
-    }
-
-    auto *frame   = new Frame;
-    frame->header = header;
-    if (header.msg_size != 0) {
-        frame->control.assign(work->slot->data + header.msg_offset,
-                              work->slot->data + header.msg_offset + header.msg_size);
-        extract_control_fields(work->slot->data + header.msg_offset, header.msg_size, frame->request_id,
-                               frame->rpc_create_nano, frame->response_create_nano);
-    }
-    work->request_id        = frame->request_id;
-    work->stream_id         = work->slot->stream_id;
-    work->sequence          = work->slot->sequence;
-    work->logical_offset    = work->slot->logical_offset;
-    work->slot->view_offset = static_cast<uint32_t>(data_offset);
-    work->slot->capacity    = slot_capacity - static_cast<uint32_t>(data_offset);
-    work->slot->len         = header.data_size;
-    if (!work->slot->transition(BufferOwnership::ReceiveInFlight, BufferOwnership::CallerOwned)) {
-        quarantine_and_release();
-        delete frame;
-        return;
-    }
-    auto  connection             = std::move(work->conn);
-    auto  pools                  = std::move(work->pools);
-    auto *repost                 = new RepostContext{repost_state_, connection, std::move(pools)};
-    frame->data_buf              = work->slot;
-    work->slot->last_release_cb  = &RdmaTransport::repost_frame_release;
-    work->slot->last_release_ctx = repost;
-    release_work(work);
-    // A callback may immediately release/repost the slot or submit a reply.
-    // Return this completed WR entry before either can need bounded admission.
-    stats_.receives.fetch_add(1, std::memory_order_relaxed);
-    connection->on_frame(frame);
-}
-
-void RdmaTransport::repost_frame_release(void *context, Buffer *slot)
-{
-    auto repost = std::unique_ptr<RepostContext>(static_cast<RepostContext *>(context));
-    slot->reset_view();
-    if (!slot->transition(BufferOwnership::CallerOwned, BufferOwnership::Available))
-        (void)slot->quarantine();
-    {
-        Operation operation(repost->state);
-        if (operation && slot->ownership.load(std::memory_order_acquire) == BufferOwnership::Available)
-            (void)repost->state->transport->post_receive(repost->connection.get(), slot);
-    }
-    slot->release();
-}
-
 void RdmaTransport::release_completed_frame(WorkRequest *work, const ibv_wc &wc)
 {
     OutFrame  *frame      = work->frame;
     auto       connection = std::move(work->conn);
     const auto pools      = std::move(work->pools);
     Buffer    *slot       = work->slot;
+    if (pools != nullptr && pools->sends_in_flight != 0)
+        --pools->sends_in_flight;
 
     if (wc.status != IBV_WC_SUCCESS) {
         record_completion_error(wc, connection != nullptr && !connection->is_open());
@@ -301,8 +218,6 @@ void RdmaTransport::release_completed_frame(WorkRequest *work, const ibv_wc &wc)
         // suffix to be appended to this RDMA connection.
         if (work->slot != nullptr)
             (void)work->slot->quarantine();
-        for (uint8_t i = 0; i < frame->data_views(); ++i)
-            (void)frame->data_view(i)->quarantine();
         if (connection != nullptr)
             connection->close();
     }
@@ -315,10 +230,7 @@ void RdmaTransport::release_completed_frame(WorkRequest *work, const ibv_wc &wc)
     release_work(work);
     if (slot != nullptr)
         slot->release();
-    if (frame->control != nullptr)
-        frame->control->release();
-    frame->release_data();
-    delete frame;
+    release_rdma_frames(frame, wc.status != IBV_WC_SUCCESS);
 }
 
 } // namespace crowdb::rpc

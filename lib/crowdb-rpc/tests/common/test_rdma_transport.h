@@ -17,6 +17,25 @@ namespace crowdb::rpc
 
 struct TestRdmaTransport
 {
+    static void set_aggregation_for_tests(RdmaTransport &transport, bool enabled)
+    {
+        transport.config_.aggregation_enabled = enabled;
+    }
+
+    static void bind_sender_for_tests(RdmaTransport &transport, const std::shared_ptr<Connection> &connection,
+                                      std::unique_ptr<RdmaBufferPool> pool, ibv_qp *qp, uint32_t peer_slot,
+                                      uint32_t peer_frames)
+    {
+        auto pools  = std::make_shared<RdmaTransport::ConnectionPools>(transport.config_.send_queue_capacity);
+        pools->send = std::move(pool);
+        pools->peer_receive_slot_capacity     = peer_slot;
+        pools->peer_receive_frame_limit       = peer_frames;
+        pools->effective_capacity.max_send_wr = transport.config_.sq_depth;
+        RdmaTransport::set_connection_pools(connection.get(), pools);
+        connection->transport_handle = reinterpret_cast<uint64_t>(qp);
+        transport.completion_queues_[0]->connections.push_back({connection, std::move(pools)});
+    }
+
     static void install_device_for_tests(RdmaTransport &transport, const std::shared_ptr<RdmaDevice> &device)
     {
         transport.device_       = device;

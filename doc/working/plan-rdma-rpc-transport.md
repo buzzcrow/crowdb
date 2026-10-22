@@ -526,7 +526,7 @@ CQ verification:
   preflight expectation, while still negotiating receive admission.
   Files: RDMA capability/CM sources, `socket_transport.cpp`, server readiness,
   capability/path and hardware tests.
-- [~] **Coalesce complete frames on the CQ owner**: use bounded lock-free
+- [x] **Coalesce complete frames on the CQ owner**: use bounded lock-free
   admission and per-QP queues; drain available frames without adding a waiting
   timer. Keep per-QP ordering and common frame/request IDs. Limit a SEND to
   `min(aggregation_max_bytes, local send slot capacity, peer receive slot
@@ -545,7 +545,7 @@ CQ verification:
   atomic-shared-pointer load with hidden locking on every poll. Wake a sleeping
   owner with a pending-publication/idle handshake rather than an eventfd write
   for every RPC. Retire admitted/pending frames on every failure path.
-- [ ] **Retain aggregate owners through completion**: one SEND WR retains all
+- [x] **Retain aggregate owners through completion**: one SEND WR retains all
   constituent frames until CQE; failure closes the uncertain stream and
   quarantines its slot once. Validate the entire received aggregate before
   publishing any frame. Give each frame an independent immutable buffer view
@@ -560,10 +560,43 @@ CQ verification:
   alone cannot represent different immutable offsets safely. Keep a parent
   reference until every frame has been dispatched. Defer a mixed capability/data
   aggregate if the application handler is not yet published.
-- [ ] **Expose aggregation observations**: export actual frames/SEND, wire
+- [~] **Expose aggregation observations**: export actual frames/SEND, wire
   bytes, queue high-water and rejects. Keep RPC TPS distinct from transport
   SEND rate; compare aggregation disabled/enabled for both TCP and RDMA.
   Files: transport statistics, C API/Rust FFI and benchmark reports.
+
+Aggregation checkpoint:
+
+- `rdma_aggregate.{h,cpp}` validates all header/control/payload ranges and a
+  maximum of 256 frames before dispatch. `Buffer::slice` creates independent
+  descriptors retaining one parent receive lease. `rdma_receive.cpp` holds the
+  parent across all callbacks and postpones mixed early aggregates as a whole.
+- `rdma_send.cpp` owns per-QP bounded MPSC admission and one pending next-slot
+  frame. The assigned CQ rotates QPs through its SEND budget, bounds posts by
+  effective SQ capacity, and retains the linked source chain until completion.
+  Queue retirement waits for producer publication. CQ cancellation uses an
+  atomic connection identity before reading retained owners from a WR that
+  may concurrently be reused by another QP.
+- Producers wake an idle CQ using one atomic IDLE/PENDING handshake; active
+  traffic performs no eventfd write per RPC, and busy polling no longer reads
+  the continuation fd on every iteration. Config exposes
+  `aggregation_enabled`, `aggregation_max_bytes`, `aggregation_max_frames`,
+  and `send_queue_capacity`; receive capabilities advertise parser support.
+- All 37 focused aggregate/completion/configuration/send cases pass. These
+  include exact fit and one byte over, malformed suffix, independent held
+  middle frame, capability/data deferral, chain release after CQ error,
+  frame/byte limits, disabled aggregation, queue exhaustion and failed post.
+  Send-post fixtures use real registered slots and a controlled QP post hook.
+- Real two-process strict RDMA, two QPs, window 32 completes 1000 validated
+  requests with zero RPC/CQ errors; aggregation uses 225 client SENDs and
+  248 server SENDs (including control traffic). Held receive/MR lifetime and
+  registration-budget HCA cases also pass. This fixed-count result is
+  functional evidence only; phase E owns sustained comparisons.
+- Full C++/FFI gate, all 29 Rust RPC FFI tests, formatting, scoped tree-lint
+  and workspace clippy pass. Full gate artifact:
+  `.crowdb-runtime/artifacts/unit/cpp-00a90cd3faa7480f894c80dee7ab03bc/`.
+  The no-verbs build passes all 133 CTest cases. Native statistics are present;
+  the status/FFI/CLI report exposure is the active continuation.
 
 Preflight verification:
 
@@ -599,13 +632,25 @@ Build parallelism checkpoint:
   existing TCP command behavior; no OS thread per loader. Reject inconsistent
   settings before starting. Files: CLI `bench.rs`, `bench/verb.rs`,
   `bench/rpc.rs`, shared workload/config modules.
+  Add cold, typed C ABI configuration before listen/start, rather than changing
+  process environment from a multithreaded Rust runtime. Explicit configuration
+  overrides environment defaults. Capture QP number/CQ/effective queue/peer-slot
+  information before publishing each connection; status must read immutable
+  snapshots rather than dereferencing a QP during teardown. Return versioned
+  transport status JSON in an owned C ABI buffer for FFI, and expose the same
+  status through an fb-server benchmark control RPC while workload QPs remain
+  live. Server readiness follows actual CM listen/start.
 - [ ] **Validate and measure each completion**: expose response data to
   `CoBenchHandler`, verify request ID, length and payload, count submission
   rejects/retries/timeouts/connection/payload/duplicate errors, and reconcile
   C++ coroutine statistics with Rust results. Warm up for one second, measure
   completions for ten seconds using a monotonic deadline, then drain separately;
-  exclude setup/warmup/drain from TPS. Define latency from submission to
-  validated response in nanoseconds. Never destroy a coroutine while a late
+  exclude setup/warmup/drain from TPS. Record native monotonic submission-to-
+  response-callback RTT in nanoseconds, only for validated responses. State
+  explicitly that request construction and Rust validation are outside the
+  latency sample; validation remains inside throughput work. Do not combine
+  C++ and Rust clock values to approximate a validation-inclusive interval.
+  Never destroy a coroutine while a late
   completion can resume it (the lifecycle prerequisite is in phase A).
   Files: `co_client.cpp`, FFI `co_bench.rs`, CLI echo
   handler and lifecycle tests.

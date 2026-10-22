@@ -57,8 +57,14 @@ void RdmaTransport::run_poller(CompletionQueue *queue)
     crowdb::common::set_current_thread_name(name.c_str());
     std::array<EngineEvent, 8> events{};
     while (running_.load(std::memory_order_acquire)) {
+        queue->wake_state.exchange(0, std::memory_order_acq_rel);
         if (drain_queue(queue->index, config_.poll_batch) > 0)
             continue;
+        const auto pending = queue->wake_state.fetch_or(CompletionQueue::IDLE, std::memory_order_acq_rel);
+        if ((pending & CompletionQueue::PENDING) != 0) {
+            queue->wake_state.fetch_and(~CompletionQueue::IDLE, std::memory_order_acq_rel);
+            continue;
+        }
         const int count = queue->engine->wait(events.data(), events.size(), 1000);
         if (count > 0) {
             queue->event_wakeup.store(true, std::memory_order_release);
@@ -69,8 +75,12 @@ void RdmaTransport::run_poller(CompletionQueue *queue)
 
 void RdmaTransport::notify_queue(uint32_t index)
 {
+    auto      &queue    = *completion_queues_[index];
+    const auto previous = queue.wake_state.exchange(CompletionQueue::PENDING, std::memory_order_acq_rel);
+    if (queue.managed.load(std::memory_order_acquire) && (previous & CompletionQueue::IDLE) == 0)
+        return;
     const uint64_t value = 1;
-    (void)::write(completion_queues_[index]->continuation_fd, &value, sizeof(value));
+    (void)::write(queue.continuation_fd, &value, sizeof(value));
 }
 
 void RdmaTransport::install_frame_notifier(const std::shared_ptr<Connection> &connection, uint32_t index)

@@ -70,17 +70,21 @@ is never upgraded to RDMA.
 
 ## 3. Message and wire-slot model
 
-ChunkIO and Chunk-KV retain ownership of aggregation and flush policy. RDMA
-receives an already aggregated buffer and transmits it without additional
-waiting or coalescing. The RDMA wire representation is contiguous inside one
-fixed-size wire slot:
+ChunkIO and Chunk-KV retain ownership of application aggregation and flush
+policy. The RDMA CQ owner may also pack available complete RPC frames into
+one SEND without a waiting timer. The wire representation is contiguous inside
+one fixed-size wire slot:
 
 ```text
-[common RPC header][control metadata][payload][unused slot bytes]
+[RPC header][control][payload] ... [RPC header][control][payload][unused bytes]
 ```
 
 The common header carries the control and payload lengths. The complete wire
-length must not exceed the slot capacity. A logical result larger than the
+length must fit `min(aggregation_max_bytes, wire_slot_capacity,
+peer_receive_slot_capacity)`, including every frame's header and control.
+`aggregation_max_frames` and the peer's advertised frame limit also bound each
+SEND; disabled aggregation sends one frame. Oversized individual frames fail
+admission without fragmentation or fallback. A logical result larger than the
 selected capacity is an ordered sequence identified by request ID, stream ID,
 sequence, logical offset, and START/DATA/END/ERROR flags.
 
@@ -92,8 +96,23 @@ SGE on each side keeps the wire layout independent of sender SGE boundaries.
 
 The transport may copy caller-owned control and payload buffers into the slot
 before posting SEND. This copy is the transport boundary needed to make the
-wire message contiguous; it is not an additional application-level message or
-aggregation step.
+wire message contiguous. RPC correlation and logical operation counts remain
+per frame, independently of SEND count.
+
+Each QP has a bounded `SendQueue` in `ConnectionPools`. Producers validate and
+transfer immutable frame ownership through its MPSC admission; the CQ owner
+alone drains it, carries one next-slot frame and posts SENDs within effective
+SQ admission. QPs on a CQ rotate through the SEND budget. A linked frame chain
+keeps every source owner alive until that SEND completes. Failure closes the
+uncertain stream; no suffix moves to TCP. Queue reservations, high-water and
+rejection counters include admitted frames awaiting publication.
+
+Receive parsing validates the entire aggregate and its bounded frame count
+before publishing any frame. Independent immutable `Buffer::slice` descriptors
+retain one parent receive-slot lease. Releasing one frame cannot change another
+frame's payload offset; the final view release alone allows repost. The parent
+also remains retained across dispatch of all frames. An early aggregate that
+contains application data waits for handler publication as a whole.
 
 ## 4. Registered arenas and slot ownership
 

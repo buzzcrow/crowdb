@@ -25,7 +25,21 @@ struct RdmaTransport::CompletionQueue
         ibv_wc       completion;
     };
 
-    std::vector<DeferredReceive>  deferred;
+    std::vector<DeferredReceive> deferred;
+
+    struct ConnectionBinding
+    {
+        std::shared_ptr<Connection>      connection;
+        std::shared_ptr<ConnectionPools> pools;
+    };
+
+    std::vector<ConnectionBinding> connections; // protected by CQ polling ownership
+    size_t                         next_connection = 0;
+    // Producers publish PENDING and clear IDLE atomically. Only the first
+    // producer observing IDLE writes the wake fd; active traffic needs none.
+    static constexpr uint32_t     IDLE    = 1;
+    static constexpr uint32_t     PENDING = 2;
+    std::atomic<uint32_t>         wake_state{0};
     std::unique_ptr<SocketEngine> engine;
     std::thread                   worker;
     std::atomic<bool>             managed{false};

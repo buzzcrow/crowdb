@@ -145,7 +145,7 @@ std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int 
         rdma_destroy_id(id);
         return nullptr;
     }
-    auto pools                = std::make_shared<ConnectionPools>();
+    auto pools                = std::make_shared<ConnectionPools>(config_.send_queue_capacity);
     pools->effective_capacity = qp_attr.cap;
     pools->cq_index           = reservation.queue->index;
     pools->reserved_capacity  = reservation.capacity;
@@ -356,7 +356,7 @@ std::shared_ptr<Connection> RdmaTransport::accept()
         rdma_destroy_id(id);
         return nullptr;
     }
-    auto pools                        = std::make_shared<ConnectionPools>();
+    auto pools                        = std::make_shared<ConnectionPools>(config_.send_queue_capacity);
     pools->peer_receive_slot_capacity = peer_offer.receive_slot_capacity;
     pools->peer_receive_frame_limit   = peer_offer.receive_frame_limit;
     pools->qp_number                  = id->qp->qp_num;

@@ -339,7 +339,7 @@ TEST_F(RdmaCompletionTest, CallerLeaseKeepsPayloadAfterFrameAndTransportRelease)
     ASSERT_NE(lease, nullptr);
     delete received;
     EXPECT_EQ(lease->ownership.load(), BufferOwnership::CallerOwned);
-    EXPECT_EQ(lease->view_offset, HEADER_SIZE);
+    EXPECT_EQ(lease->payload_data(), slot->data + HEADER_SIZE);
     source.reset();
     EXPECT_EQ(std::memcmp(lease->payload_data(), "held", 4), 0);
     lease->release();
@@ -368,6 +368,126 @@ TEST_F(RdmaCompletionTest, RejectsTruncatedOverflowedAndExtraWireBytes)
         EXPECT_FALSE(owner->is_open());
     }
     EXPECT_EQ(slots.quarantined_bytes(), 3U * RDMA_WIRE_SLOT_CAPACITY);
+}
+
+TEST_F(RdmaCompletionTest, MalformedAggregateSuffixPublishesNoPrefix)
+{
+    uint32_t published = 0;
+    connection->set_on_frame([&](Frame *frame, Connection *) {
+        ++published;
+        delete frame;
+    });
+    auto *slot = slots.alloc(RDMA_WIRE_SLOT_CAPACITY);
+    ASSERT_NE(slot, nullptr);
+    serialize_header(slot->data, Header{});
+    Header bad;
+    bad.data_size = 100;
+    serialize_header(slot->data + HEADER_SIZE, bad);
+    ASSERT_TRUE(slot->transition(BufferOwnership::Available, BufferOwnership::PostedReceive));
+    const auto token = TestRdmaTransport::receive(transport, connection, slot);
+    TestRdmaTransport::complete(transport, token, IBV_WC_SUCCESS, 2 * HEADER_SIZE);
+    EXPECT_EQ(published, 0U);
+    EXPECT_FALSE(connection->is_open());
+    EXPECT_EQ(transport.stats().protocol_errors.load(), 1U);
+    EXPECT_EQ(transport.stats().cq_errors.load(), 0U);
+}
+
+TEST_F(RdmaCompletionTest, AggregateViewsKeepMiddleFrameImmutableAndDelayRecycling)
+{
+    std::vector<Frame *> frames;
+    connection->set_on_frame([&](Frame *frame, Connection *) { frames.push_back(frame); });
+    auto *slot = slots.alloc(RDMA_WIRE_SLOT_CAPACITY);
+    ASSERT_NE(slot, nullptr);
+    Header header;
+    header.data_size = 1;
+    for (uint8_t index = 0; index < 3; ++index) {
+        const auto offset = index * (HEADER_SIZE + 1);
+        serialize_header(slot->data + offset, header);
+        slot->data[offset + HEADER_SIZE] = index + 41;
+    }
+    ASSERT_TRUE(slot->transition(BufferOwnership::Available, BufferOwnership::PostedReceive));
+    const auto token = TestRdmaTransport::receive(transport, connection, slot);
+    TestRdmaTransport::complete(transport, token, IBV_WC_SUCCESS, 3 * (HEADER_SIZE + 1));
+    ASSERT_EQ(frames.size(), 3U);
+    EXPECT_NE(frames[0]->data_buf, frames[1]->data_buf);
+    auto *held = frames[1]->data_buf->ref_clone();
+    for (auto *frame : frames)
+        delete frame;
+    EXPECT_EQ(slot->ref->load(), 1);
+    EXPECT_EQ(slot->ownership.load(), BufferOwnership::CallerOwned);
+    EXPECT_EQ(held->payload_data()[0], 42);
+    held->release();
+    EXPECT_EQ(slot->ref->load(), 0);
+    EXPECT_EQ(slot->ownership.load(), BufferOwnership::Available);
+}
+
+TEST_F(RdmaCompletionTest, MixedCapabilityAndApplicationAggregateWaitsForHandler)
+{
+    auto *slot = slots.alloc(RDMA_WIRE_SLOT_CAPACITY);
+    ASSERT_NE(slot, nullptr);
+    RdmaEndpointCapability capability;
+    capability.protocol_version = RDMA_PROTOCOL_VERSION;
+    capability.generation       = 123;
+    const auto bytes            = serialize_rdma_handshake(capability);
+    Header     handshake;
+    handshake.msg_type = RDMA_HANDSHAKE_MSG_TYPE;
+    handshake.msg_size = bytes.size();
+    serialize_header(slot->data, handshake);
+    std::memcpy(slot->data + HEADER_SIZE, bytes.data(), bytes.size());
+    const uint32_t offset = HEADER_SIZE + bytes.size();
+    Header         application;
+    application.data_size = 1;
+    serialize_header(slot->data + offset, application);
+    slot->data[offset + HEADER_SIZE] = 42;
+    ASSERT_TRUE(slot->transition(BufferOwnership::Available, BufferOwnership::PostedReceive));
+    const auto token = TestRdmaTransport::receive(transport, connection, slot);
+    TestRdmaTransport::complete(transport, token, IBV_WC_SUCCESS, offset + HEADER_SIZE + 1);
+    EXPECT_FALSE(connection->peer_handshake_received());
+    EXPECT_EQ(transport.stats().pending_deferred_receives.load(), 1U);
+    uint32_t published = 0;
+    connection->set_on_frame([&](Frame *frame, Connection *) {
+        EXPECT_TRUE(connection->peer_handshake_received());
+        EXPECT_EQ(frame->data_buf->payload_data()[0], 42);
+        ++published;
+        delete frame;
+    });
+    TestRdmaTransport::set_cq(transport, &queue.cq);
+    EXPECT_EQ(transport.drain_cq(), 1);
+    EXPECT_EQ(published, 1U);
+    EXPECT_EQ(connection->peer_capability().generation, 123U);
+    EXPECT_EQ(transport.stats().pending_deferred_receives.load(), 0U);
+    EXPECT_EQ(slot->ref->load(), 0);
+}
+
+TEST_F(RdmaCompletionTest, FailedSendReleasesEveryAggregateOwnerExactlyOnce)
+{
+    uint32_t released = 0;
+    auto     external = [&] {
+        auto *buffer     = new Buffer;
+        buffer->ref      = new std::atomic<int32_t>(1);
+        buffer->free_cb  = [](void *counter) { ++*static_cast<uint32_t *>(counter); };
+        buffer->free_ctx = &released;
+        return buffer;
+    };
+    auto *first           = new OutFrame;
+    first->data           = external();
+    auto *second          = new OutFrame;
+    second->data          = external();
+    first->next_aggregate = second;
+    auto *held            = second->data->ref_clone();
+    auto *slot            = slots.alloc(1024);
+    ASSERT_NE(slot, nullptr);
+    ASSERT_TRUE(slot->transition(BufferOwnership::Available, BufferOwnership::SendInFlight));
+    const auto token = TestRdmaTransport::send(transport, connection, slot, first);
+    ASSERT_NE(token, 0U);
+    TestRdmaTransport::complete(transport, token, IBV_WC_LOC_PROT_ERR);
+    EXPECT_EQ(released, 1U);
+    EXPECT_EQ(held->ownership.load(), BufferOwnership::Quarantined);
+    TestRdmaTransport::complete(transport, token, IBV_WC_LOC_PROT_ERR);
+    EXPECT_EQ(released, 1U);
+    held->release();
+    EXPECT_EQ(released, 2U);
+    EXPECT_EQ(slots.quarantined_bytes(), 1024U);
 }
 
 TEST_F(RdmaCompletionTest, PollAfterArmingClosesNotificationRace)

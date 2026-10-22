@@ -119,4 +119,30 @@ TEST(RdmaConfigTest, RegistrationBudgetParses64BitValuesStrictly)
     EXPECT_FALSE(config.apply_environment());
 }
 
+TEST(RdmaConfigTest, AggregationAndQueueLimitsRejectInvalidBounds)
+{
+    RdmaConfig config;
+    config.aggregation_enabled    = true;
+    config.aggregation_max_frames = 257;
+    EXPECT_FALSE(config.valid());
+    config.aggregation_max_frames = 0;
+    EXPECT_FALSE(config.valid());
+    config.aggregation_max_frames = 256;
+    config.aggregation_max_bytes  = 0;
+    EXPECT_FALSE(config.valid());
+    config.aggregation_max_bytes = 1024;
+    EXPECT_TRUE(config.valid());
+    config.send_queue_capacity = 3;
+    EXPECT_FALSE(config.valid());
+    config.send_queue_capacity = 1U << 31;
+    EXPECT_FALSE(config.valid());
+    config.send_queue_capacity = 4096;
+    EXPECT_TRUE(config.valid());
+    const TestEnvironment enabled("CROWDB_RDMA_AGGREGATION_ENABLED", "1");
+    EXPECT_TRUE(config.apply_environment());
+    EXPECT_TRUE(config.aggregation_enabled);
+    const TestEnvironment invalid("CROWDB_RDMA_AGGREGATION_ENABLED", "yes");
+    EXPECT_FALSE(config.apply_environment());
+}
+
 #endif

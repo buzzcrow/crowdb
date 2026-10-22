@@ -28,7 +28,13 @@ bool RdmaTransport::publish_cm_connection(rdma_cm_id *id, const std::shared_ptr<
         return false;
     cm_ids_.push_back(id);
     cm_connections_.emplace(id, connection);
-    cm_pools_.emplace(id, std::move(pools));
+    cm_pools_.emplace(id, pools);
+    auto &queue = *completion_queues_[pools->cq_index];
+    while (queue.polling.test_and_set(std::memory_order_acquire))
+        std::this_thread::yield();
+    queue.connections.push_back({connection, std::move(pools)});
+    queue.polling.clear(std::memory_order_release);
+    notify_queue(queue.index);
     return true;
 }
 
