@@ -571,6 +571,42 @@ adaptation rather than a new transport or storage engine.
   root is valid. Grouped writes use a fresh attached chunk afterwards. This does
   not infer any append boundary in an uncommitted V1 suffix.
 
+## Resumable conversion implementation evidence (partial T04/T09)
+
+- Added bounded History/Tail/Complete progress under tag 0x001a. Each conversion
+  batch selects at most 1024 locations from borrowed legacy columns, path-copies
+  the directory, and protects its base/current/historical roots with a kind-6
+  migration guard before storing pages. One conditional batch advances the
+  stable migration head revision, progress and retention control, and removes
+  the guard. Old snapshots cannot overwrite newer progress; identical staged
+  candidates retain their identities and can reconcile/reuse their pages.
+- After history reaches the published tail, the converter validates the legacy
+  active checkpoint against its final mapping, queries/seals at its persisted
+  cursor and scans only the bounded durable V1 range. It never infers append
+  groups in an uncommitted V1 suffix. The historical root retains the old
+  published tail; extra cursor-confirmed frames belong to the new root only.
+  Noncanonical legacy active descriptors or corrupt/incomplete durable frames
+  fail closed without resetting progress or changing the original source.
+- Final conversion persists both the original epoch/generation's finite root
+  and the complete new root, then atomically replaces the marker/removes progress
+  under the same control fence. The new head has no active chunk: grouped writes
+  must attach a fresh chunk before admission. Source backups are reasserted in
+  the marker CAS batch so cleanup winning before the fence cannot create a
+  dangling source reference. Future GC must enumerate migration progress/guards,
+  preserve their source pages and protect both root identities.
+- Added protocol phase/protection/key checks, cold resume after every three-row
+  KV batch, stale-snapshot publication, both retained root identities and legacy
+  tail/corruption recovery. One initial test fixture supplied an arbitrary cursor
+  checksum; the first divergence was MemoryStreamStore rejecting setup before
+  conversion. Corrected it to CRC32 of the exact staged durable prefix; the
+  exact tail case then passes. No production checksum rule was weakened.
+- All 363 Protocol/Stream cases, all-target clippy and fmt pass, zero ignored. Logs:
+  `migration-conversion-{clippy4,full-suite,fmt}.log` and the exact tail receipt
+  is `migration-conversion-tail-repro.log`. This is a production KV conversion
+  component with retained-byte chunk seams; actual ChunkDB lifecycle/production
+  restart acceptance, Group-0 authority and active Stream worker integration
+  remain subsequent tasks.
+
 ## Phase 0 — Establish evidence and settle contracts
 
 - [x] **T01 — Capture a matched implementation baseline**: retain release

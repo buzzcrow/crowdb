@@ -8,10 +8,8 @@ use crowdb_protocol::chunk_stream::{
     StreamDirectoryHead, StreamPublicationGuard,
 };
 use crowdb_protocol::key::{
-    BinaryKey, StreamDirectoryPageKey, StreamDirectoryRootKey, StreamManifestHeadKey,
-    StreamPublicationGuardKey,
+    BinaryKey, StreamDirectoryRootKey, StreamManifestHeadKey, StreamPublicationGuardKey,
 };
-use futures::{stream, StreamExt, TryStreamExt};
 
 use super::{kv_error, DirectoryHeadSnapshot, KvStreamMetadataStore};
 use crate::{DirectoryMutation, Result, StreamError};
@@ -64,18 +62,7 @@ impl KvStreamMetadataStore {
         .to_bytes();
         self.protect_directory_candidate(&head, &guard_key, &guard_bytes)
             .await?;
-        stream::iter(mutation.pages())
-            .map(|page| async move {
-                let key = StreamDirectoryPageKey {
-                    stream_name: head.stream_name,
-                    page_id: page.reference().id,
-                }
-                .to_bytes();
-                self.put_directory_immutable(&key, page.bytes()).await
-            })
-            .buffer_unordered(8)
-            .try_collect::<Vec<_>>()
-            .await?;
+        self.store_directory_pages(mutation).await?;
         let bytes = encode_stream_directory_head(&head).map_err(codec_error)?;
         let root_key = StreamDirectoryRootKey {
             stream_name: head.stream_name,

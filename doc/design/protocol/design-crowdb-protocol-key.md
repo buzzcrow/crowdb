@@ -269,13 +269,19 @@ Header for every binary key: `magic:1 | type_tag:2`.
   generation:u64 BE`. Total 35 bytes. Tag `0x0017`.
   Scan prefix `magic|0x0017|stream_name` selects retained immutable roots.
 - **StreamPublicationGuardKey** — `stream_name:16 bytes | publication_id:32
-  bytes`. Total 51 bytes. Tag `0x0018`. Publication identity is SHA-256 of the
-  canonical indexed head record. The value protects its base root and bounded
-  new page set until head publication is resolved.
+  bytes`. Total 51 bytes. Tag `0x0018`. Ordinary publication identity is SHA-256
+  of the canonical indexed head record. Migration uses the canonical migration
+  guard record's digest; its distinct record kind supplies domain separation.
+  The value protects base/historical roots and a bounded new page set until
+  publication is resolved.
 - **StreamDirectoryControlKey** — `stream_name:16 bytes`. Total 19 bytes.
   Tag `0x001b`. The fixed scope record's KV revision changes atomically with
   guard/root/pin visibility; conditional cleanup uses it to reject stale
   reachability observations.
+- **StreamMigrationProgressKey** — `stream_name:16 bytes | source_id:32 bytes`.
+  Total 51 bytes. Tag `0x001a`. Its bounded conversion cursor/root is replaced
+  only under the stable migration head's revision CAS, together with retention
+  control and candidate-guard removal.
 - **StreamLegacySourceKey** — `stream_name:16 bytes | source_id:32 bytes`.
   Total 51 bytes. Tag `0x001c`. Source identity is SHA-256 of the exact frozen
   legacy head bytes, with their original raw or version-1 encoding. This source
@@ -355,13 +361,19 @@ Frozen text key path shapes (the encoding spec; value types and scan
 patterns are in `design-crowdb-kv-group0.md` §3):
 
 - **StreamPublicationGuardKey** — `stream_name:16 bytes | publication_id:32
-  bytes`. Total 51 bytes. Tag `0x0018`. Publication identity is SHA-256 of the
-  canonical indexed head record. The value protects its base root and bounded
-  new page set until head publication is resolved.
+  bytes`. Total 51 bytes. Tag `0x0018`. Ordinary publication identity is SHA-256
+  of the canonical indexed head record. Migration uses the canonical migration
+  guard record's digest; its distinct record kind supplies domain separation.
+  The value protects base/historical roots and a bounded new page set until
+  publication is resolved.
 - **StreamDirectoryControlKey** — `stream_name:16 bytes`. Total 19 bytes.
   Tag `0x001b`. The fixed scope record's KV revision changes atomically with
   guard/root/pin visibility; conditional cleanup uses it to reject stale
   reachability observations.
+- **StreamMigrationProgressKey** — `stream_name:16 bytes | source_id:32 bytes`.
+  Total 51 bytes. Tag `0x001a`. Its bounded conversion cursor/root is replaced
+  only under the stable migration head's revision CAS, together with retention
+  control and candidate-guard removal.
 - **StreamLegacySourceKey** — `stream_name:16 bytes | source_id:32 bytes`.
   Total 51 bytes. Tag `0x001c`. Source identity is SHA-256 of the exact frozen
   legacy head bytes, with their original raw or version-1 encoding. This source

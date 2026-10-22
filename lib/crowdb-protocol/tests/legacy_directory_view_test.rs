@@ -8,6 +8,9 @@ use crowdb_protocol::chunk_stream::{
 };
 use crowdb_protocol::{chunkdb::rpc::ChunkType, common::ChunkId};
 
+#[path = "legacy_directory_view_test/progress.rs"]
+mod progress;
+
 #[test]
 fn bounded_migration_heads_fence_legacy_decoders_and_preserve_exact_source_identity() {
     use crowdb_protocol::chunk_stream::{

@@ -16,6 +16,10 @@ mod record;
 
 pub use directory::*;
 pub use legacy::{LegacyExtentPageView, LegacyManifestView};
+pub use migration::{
+    decode_stream_migration_guard, encode_stream_migration_guard, StreamMigrationGuard, StreamMigrationPhase,
+    StreamMigrationProgress,
+};
 pub use migration::{legacy_stream_source_id, StreamLegacySourceId, StreamMigrationHead};
 pub use record::*;
 

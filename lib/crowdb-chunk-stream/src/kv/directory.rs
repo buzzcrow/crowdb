@@ -10,9 +10,10 @@ use crowdb_protocol::chunk_stream::{
 use crowdb_protocol::key::{
     BinaryKey, StreamDirectoryPageKey, StreamDirectoryRootKey, StreamManifestHeadKey,
 };
+use futures::{stream, StreamExt, TryStreamExt};
 
 use super::{kv_error, GetOutcome, KvStreamMetadataStore, ReadMode};
-use crate::{Result, StreamDirectoryStore, StreamError};
+use crate::{DirectoryMutation, Result, StreamDirectoryStore, StreamError};
 
 mod cache;
 mod control;
@@ -20,7 +21,7 @@ mod migration;
 mod publication;
 pub(super) use cache::DirectoryRecordCache;
 pub use cache::{DirectoryCacheSnapshot, DIRECTORY_PAGE_CACHE_SLOTS};
-pub use migration::StreamMigrationSnapshot;
+pub use migration::{StreamMigrationSnapshot, StreamMigrationStep};
 
 /// An immutable indexed head and the KV revision that fenced its observation.
 #[derive(Clone, Debug)]
@@ -38,6 +39,21 @@ impl DirectoryHeadSnapshot {
 }
 
 impl KvStreamMetadataStore {
+    async fn store_directory_pages(&self, mutation: &DirectoryMutation) -> Result<()> {
+        stream::iter(mutation.pages())
+            .map(|page| async move {
+                let key = StreamDirectoryPageKey {
+                    stream_name: mutation.index().stream_name(),
+                    page_id: page.reference().id,
+                }
+                .to_bytes();
+                self.put_directory_immutable(&key, page.bytes()).await
+            })
+            .buffer_unordered(8)
+            .try_collect::<Vec<_>>()
+            .await?;
+        Ok(())
+    }
     #[must_use]
     pub fn directory_cache_snapshot(&self) -> DirectoryCacheSnapshot {
         self.directory_pages.snapshot()

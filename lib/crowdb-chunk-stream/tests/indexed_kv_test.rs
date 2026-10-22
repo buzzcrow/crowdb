@@ -3,6 +3,8 @@
 
 #[path = "indexed_kv_test/cache.rs"]
 mod cache;
+#[path = "indexed_kv_test/conversion.rs"]
+mod conversion;
 #[path = "common/indexed_metadata.rs"]
 mod indexed_metadata;
 #[path = "common/metadata_server.rs"]

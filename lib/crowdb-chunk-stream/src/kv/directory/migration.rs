@@ -14,12 +14,19 @@ use crowdb_protocol::key::{BinaryKey, StreamLegacySourceKey, StreamManifestHeadK
 use super::{kv_error, GetOutcome, KvStreamMetadataStore, ReadMode};
 use crate::{Result, StreamError};
 
+mod conversion;
+mod finalize;
+mod progress;
+mod tail;
+pub use conversion::StreamMigrationStep;
+
 /// Exact frozen source plus the revision of its bounded migration fence.
 #[derive(Clone, Debug)]
 pub struct StreamMigrationSnapshot {
     marker: StreamMigrationHead,
     revision: u64,
     source: Bytes,
+    store_id: u64,
 }
 
 impl StreamMigrationSnapshot {
@@ -130,7 +137,7 @@ impl KvStreamMetadataStore {
         }
         .to_bytes();
         self.put_directory_immutable(&source_key, &source).await?;
-        self.install_migration_fence(marker, revision, bytes, control)
+        self.install_migration_fence(marker, revision, bytes, control, source)
             .await
     }
 
@@ -157,6 +164,7 @@ impl KvStreamMetadataStore {
         revision: u64,
         value: Vec<u8>,
         control: BatchOp,
+        source: Bytes,
     ) -> Result<StreamMigrationSnapshot> {
         let key = StreamManifestHeadKey {
             stream_name: marker.stream_name,
@@ -164,6 +172,18 @@ impl KvStreamMetadataStore {
         .to_bytes();
         let ops = [
             control,
+            // Reassert the exact source atomically with the marker: an orphan
+            // cleanup that won before this CAS cannot leave a dangling source.
+            BatchOp::Put {
+                key: Bytes::from(
+                    StreamLegacySourceKey {
+                        stream_name: marker.stream_name,
+                        source: marker.source,
+                    }
+                    .to_bytes(),
+                ),
+                value: source,
+            },
             BatchOp::Put {
                 key: Bytes::copy_from_slice(&key),
                 value: Bytes::from(value),
@@ -234,6 +254,7 @@ impl KvStreamMetadataStore {
             marker,
             revision,
             source: value,
+            store_id: self.store_id,
         })
     }
 }

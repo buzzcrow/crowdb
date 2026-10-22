@@ -17,7 +17,7 @@ mod migration;
 pub use directory::{
     StreamDirectoryControlKey, StreamDirectoryPageKey, StreamDirectoryRootKey, StreamPublicationGuardKey,
 };
-pub use migration::StreamLegacySourceKey;
+pub use migration::{StreamLegacySourceKey, StreamMigrationProgressKey};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct StreamBindingKey {

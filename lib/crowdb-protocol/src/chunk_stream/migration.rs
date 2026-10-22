@@ -8,6 +8,11 @@ use sha2::{Digest, Sha256};
 
 use super::{LegacyManifestView, StreamDirectoryError, StreamName, StreamPurpose, StreamRootIdentity};
 
+mod progress;
+mod protection;
+pub use progress::{StreamMigrationPhase, StreamMigrationProgress};
+pub use protection::{decode_stream_migration_guard, encode_stream_migration_guard, StreamMigrationGuard};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct StreamLegacySourceId(pub [u8; 32]);
 

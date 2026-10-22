@@ -26,7 +26,7 @@ pub(super) fn children<'de, D: Deserializer<'de>>(decoder: D) -> Result<Vec<Stre
 
 struct Bounded<T, const LIMIT: usize>(PhantomData<T>);
 
-pub(super) fn publication_pages<'de, D: Deserializer<'de>>(
+pub(in crate::chunk_stream) fn publication_pages<'de, D: Deserializer<'de>>(
     decoder: D,
 ) -> Result<Vec<super::StreamDirectoryPageId>, D::Error> {
     decoder.deserialize_seq(Bounded::<

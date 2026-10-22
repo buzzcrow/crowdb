@@ -24,11 +24,11 @@ pub use directory::{
     MAX_DIRECTORY_MUTATION_EXTENTS,
 };
 pub use error::{Result, StreamError};
-pub use kv::StreamMigrationSnapshot;
 pub use kv::{
     DirectoryCacheSnapshot, DirectoryHeadSnapshot, KvStreamMetadataStore, KvStreamRegistry,
     DIRECTORY_PAGE_CACHE_SLOTS,
 };
+pub use kv::{StreamMigrationSnapshot, StreamMigrationStep};
 pub use metadata::{resolve_extent, validate_manifest, ExtentLocation};
 pub use metrics::{StreamMetrics, StreamMetricsSnapshot};
 pub use perf::{register_stream_perf_metrics, stream_perf_metrics};

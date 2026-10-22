@@ -37,7 +37,24 @@ impl KvStreamMetadataStore {
         guard_key: &[u8],
         bytes: &[u8],
     ) -> Result<()> {
-        let control = Self::directory_control_op(head)?;
+        self.protect_directory_records(
+            StreamDirectoryControl {
+                stream_name: head.stream_name,
+                purpose: head.purpose,
+            },
+            guard_key,
+            bytes,
+        )
+        .await
+    }
+
+    pub(super) async fn protect_directory_records(
+        &self,
+        scope: StreamDirectoryControl,
+        guard_key: &[u8],
+        bytes: &[u8],
+    ) -> Result<()> {
+        let control = Self::directory_control_scope_op(scope)?;
         let BatchOp::Put { key, value } = &control else {
             unreachable!()
         };

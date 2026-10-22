@@ -10,7 +10,7 @@ use super::{StreamName, StreamPurpose};
 use crate::common::ChunkId;
 use crate::frame::{ChunkLocation, FrameLayout};
 
-mod bounded;
+pub(super) mod bounded;
 mod codec;
 mod publication;
 mod validation;
