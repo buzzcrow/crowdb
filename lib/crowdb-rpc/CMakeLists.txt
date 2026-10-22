@@ -85,6 +85,10 @@ if(NOT TARGET crowdbcommon)
 endif()
 
 add_library(crowdb-rpc STATIC ${CROWDB_RPC_SRC})
+option(CROWDB_RPC_TEST_UTIL "Enable private RDMA test access" OFF)
+if(CROWDB_RPC_TEST_UTIL)
+  target_compile_definitions(crowdb-rpc PUBLIC CROWDB_RPC_TEST_UTIL=1)
+endif()
 target_include_directories(crowdb-rpc
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
          ${CMAKE_CURRENT_SOURCE_DIR}/../crowdb-protocol/cpp/include

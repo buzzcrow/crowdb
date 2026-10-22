@@ -129,7 +129,10 @@ void EpollEngine::add_external_fd(int fd, uint64_t tag)
     std::memset(&ev, 0, sizeof(ev));
     ev.events   = EPOLLIN;
     ev.data.u64 = EXTERNAL_EVENT | static_cast<uint64_t>(fd);
-    if (::epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, fd, &ev) < 0) {
+    int result  = ::epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, fd, &ev);
+    if (result < 0 && errno == EEXIST)
+        result = ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev);
+    if (result < 0) {
         std::scoped_lock lock(conn_mu_);
         external_fds_.erase(fd);
     }

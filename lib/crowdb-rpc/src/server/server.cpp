@@ -56,6 +56,7 @@ RpcServer::~RpcServer()
     // callback gauge (e.g. conn_count_gauge) that captures a raw
     // transport pointer returns 0 instead of accessing freed memory.
     alive_->store(false, std::memory_order_release);
+    transport_.reset();
     if (owns_pool_) {
         delete pool_;
     }

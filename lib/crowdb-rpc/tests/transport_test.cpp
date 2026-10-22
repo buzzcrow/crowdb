@@ -110,6 +110,7 @@ TEST(EpollEngineTest, ExternalDescriptorWakesAndReportsTag)
     const int fd = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     ASSERT_GE(fd, 0);
     engine.add_external_fd(fd, 0x55AA);
+    engine.add_external_fd(fd, 0x55AA);
     uint64_t one = 1;
     ASSERT_EQ(::write(fd, &one, sizeof(one)), static_cast<ssize_t>(sizeof(one)));
 

@@ -45,6 +45,119 @@ stable completion ownership mapping, and executing the single-node
 multi-container OCI profiles against a built `crowdb:test` image. Physical
 multi-node validation is deferred to [the separate follow-up plan](plan-rdma-multi-node.md).
 
+The completion ownership mapping now uses a bounded, generation-tagged
+`WorkRequest` table for SEND and RECV completions. It retains the connection,
+request, stream, sequence, and logical offset. Error dispatch uses the retained
+work kind rather than an undefined completion opcode. A receive lease is
+reposted by `Buffer::last_release_cb` only after the final C++/FFI owner drops
+it; held caller leases survive frame deletion and transport shutdown.
+
+The current code also preposts receives before `rdma_connect`/`rdma_accept`,
+uses a short configurable RNR timer, drains acknowledged CQ work before CM
+close, and fixes CQ registration and buffer-pool teardown ordering. The earlier
+64-request burst exposed RNR stalls and premature test-server teardown. The
+worker test now has a client-finished barrier, configurable workload size,
+worker count, QP count, bounded in-flight window, per-request payload validation,
+and TPS/P50/P95/P99 output.
+
+## Current continuation checkpoint
+
+- [x] **Use standard queue terminology**: `sq_depth`, `rq_depth`,
+  `posted_receive_target`, `cq_depth`, `wire_slot_capacity`, `send_arena_bytes`,
+  and `receive_arena_bytes` are the configuration variables. SQ/RQ map to
+  verbs `max_send_wr`/`max_recv_wr`; byte budgets use 64-bit values so a 4096
+  entry RQ with 1 MiB slots can represent its full 4 GiB receive arena.
+- [x] **Verify queue/buffer regressions**: the 32-way C++ build and 26 focused
+  configuration, buffer, work ownership, CQ/CM, and epoll tests passed.
+- [x] **Verify the small-message functional baseline**: 1000 requests,
+  128-byte payload, one worker, one QP, one in-flight request, 1 KiB wire
+  slots, `sq_depth = rq_depth = posted_receive_target = 1024`, and 1 MiB send
+  and receive arenas passed at 71,682 TPS, P50 13.08 us, P95 17.99 us,
+  P99 20.69 us, and zero RPC errors. Posted receives flushed at normal peer
+  shutdown are reported separately by the transport counters. These short
+  fixed-count results are functional evidence only, not sustained load evidence.
+- [x] **Complete staged small-message load acceptance**: discuss these actual code variables
+  with the user, then run each profile for one second of warmup and ten
+  seconds of measured traffic. Count successful completions inside that
+  interval; exclude warmup and post-window draining. Increase
+  `producer_count`, `io_workers`, and `connection_count` through 1, 2, 4, 8,
+  16, and 32, with a separate one-in-flight serial baseline and 32 in flight
+  per producer for pipelined profiles. Validate 1024 and 4096 RQ depths;
+  use small wire slots for small-message tests and larger slots/arenas for
+  later realistic payloads. `RdmaHardwareTest.RpcServerClientTimedLoad` and
+  `tools/rdma/run-timed-load.py` retain complete stage logs and CSV results
+  below `.crowdb-runtime/artifacts/rdma/`. Completion correlation, payload
+  contents, duplicate completion, accepted-versus-completed counts, and
+  server request totals must agree at every stage.
+- [x] **Rerun code gates**: `pixi run test-cpp`, the 26 Rust RPC FFI tests,
+  `cargo fmt --all -- --check`, `rs-lint`, changed C++ formatting, and
+  `tree-lint` passed on this diff. Tree-lint exits zero with style warnings.
+  The first full C++ run hit the existing 128-byte temporary-path limit;
+  rerunning under `CROWDB_RUNTIME_ROOT=.crowdb-runtime/rdma-check` passed.
+  Full gate artifacts:
+  `.crowdb-runtime/artifacts/unit/cpp-3ab318e0c5a04f27a8328be78ca1cab6/`.
+- [~] **Complete remaining transport and OCI acceptance**: negotiated TCP
+  capability preflight, real registered-lease PD/MR lifetime verification,
+  and multi-container profiles remain open. Do not treat the historical
+  gate record below as verification of these unfinished contracts.
+
+### Timed load evidence
+
+- `tools/rdma/run-timed-load.py` now runs one-second warmup followed by a
+  ten-second completion window for every profile. It validates unique QPs,
+  RDMA path selection, request correlation, 128-byte payload contents, drain
+  counts, and server totals. Metrics retain bounded per-producer histograms
+  and in-flight slots rather than one entry per request.
+- The 16-worker run exposed competing CM consumers taking passive setup
+  events. Passive setup now uses a private CM channel until ESTABLISHED,
+  and shared CM event handling has one atomic consumer.
+- The 32-worker run exposed a lost continuation: a competing worker could
+  clear `continuation_fd_` before acquiring the CQ. Only the CQ consumer now
+  clears it. The bounded epoll continuation test reproduces that contention
+  deterministically; all 26 focused tests pass after the fix.
+- Every profile in the corrected matrix completed its full ten seconds with
+  zero RPC, correlation, or payload errors. The single-in-flight baseline
+  completed 626,983 requests (62,698 TPS, P99 26.24 us).
+- All rows below use `producer_count = connection_count`,
+  `in_flight_per_producer = 32`, `wire_slot_capacity = 1024`,
+  `sq_depth = rq_depth = posted_receive_target = 1024`. Each I/O worker
+  count is **per peer**, with both peers on one physical host/HCA.
+
+| Producers / QPs | TPS: I/O workers = producers | TPS: I/O workers = 1 |
+|-----------------|------------------------------|---------------------|
+| 1               | 182,431                      | 183,340             |
+| 2               | 292,921                      | 322,559             |
+| 4               | 327,623                      | 356,282             |
+| 8               | 354,189                      | 396,683             |
+| 16              | 206,622                      | 392,360             |
+| 32              | 83,218                       | 292,424             |
+
+- Complete corrected matrix:
+  `.crowdb-runtime/artifacts/rdma/20261022T100944Z/results.csv`.
+- Fixed-I/O-worker control:
+  `.crowdb-runtime/artifacts/rdma/20261022T101119Z/results.csv`.
+- The `rq_depth = posted_receive_target = 4096` control, with
+  `receive_arena_bytes = 4 MiB` per QP and `io_workers = 1`, passed at
+  369,719 TPS for 8 producers/QPs (P99 761.86 us) and 278,266 TPS for 32
+  (P99 4653.06 us), both with zero errors. Complete logs:
+  `.crowdb-runtime/artifacts/rdma/20261022T101244Z/results.csv`.
+- The control supports investigating shared-CQ worker contention and CPU
+  scheduling before increasing receive depth. It does not establish the HCA
+  hardware throughput limit. CPU affinity and frequency are not fixed.
+- Remaining contract work is separate from this sustained small-message
+  acceptance: complete TCP capability preflight before CM probing and prove
+  fallback, retain real PD/MR lifetimes through held leases, and run the OCI
+  profiles. Existing capability serialization and state predicates alone do
+  not prove that every connection follows the negotiated setup contract.
+
+Provider references for the implementation choices:
+
+- [libibverbs QP capacity terminology](https://github.com/linux-rdma/rdma-core/blob/master/libibverbs/man/ibv_create_qp.3).
+- [RDMA-CM receive posting before connection readiness](https://github.com/linux-rdma/rdma-core/blob/master/librdmacm/man/rdma_create_qp.3).
+- [RDMA-CM RNR behavior and default delay](https://github.com/linux-rdma/rdma-core/blob/master/librdmacm/man/rdma_accept.3).
+
+## Historical verification record
+
 The C++ unit/integration gate and Rust FFI tests pass after the teardown and
 completion-error changes; `tree-lint` completes with the repository's existing
 clang-tidy warning set. The OCI runner now mounts a named data volume and uses
@@ -142,9 +255,10 @@ Remaining implementation and acceptance work:
 - [x] **Post one-slot receives**: prepost one full registered receive slot per
   receive ring entry, associate each with a stable `wr_id`, and replenish only
   after the owner releases it.
-- [~] **Resolve WR identity**: `wr_id` must identify connection, request ID,
-  stream ID, sequence, logical offset, buffers, and ownership state. Handle
-  success, flush, local protection, retry, and remote access errors distinctly.
+- [x] **Resolve WR identity**: `wr_id` identifies connection, request ID,
+  stream ID, sequence, logical offset, buffers, and ownership state. Success,
+  flush, local protection, retry, and remote access errors are accounted for;
+  injected provider-error coverage remains in the acceptance checklist.
 - [x] **Dispatch common callbacks**: validate lengths and class before parser
   publication, then invoke the existing C++ completion path and FFI callback.
 

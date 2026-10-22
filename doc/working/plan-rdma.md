@@ -18,14 +18,28 @@ single-node HCA local-loop with multiple containers.
 
 ## Current implementation status
 
-R238 is complete. The common RPC buffer layer and verbs-backed per-connection
+R238's foundation implementation is committed. The common RPC buffer layer and verbs-backed per-connection
 arenas share the four capacity classes, bounded admission, explicit owner
 transitions, safe release ordering, quarantine handling, shutdown quarantine,
 and C/Rust lease metadata accessors. R239's transport path is implemented and
 passes the prepared HCA
 local-loop plus the real `RpcServer`/`RpcClient` worker round trip. Its
-requirement is still open because the fault-injection, pre-payload fallback,
-multi-container, and final gate cases have not all passed.
+requirement is still open because negotiated capability preflight,
+pre-payload fallback, real PD/MR lifetime with held caller leases, and
+multi-container acceptance have not all passed.
+
+The latest transport handoff closes the completion ownership gap: SEND and
+RECV work requests now carry stable connection/request/stream metadata, receive
+leases remain caller-owned until their final C++/FFI reference is released
+before repost, and CQ send failures close the uncertain RDMA stream after quarantining
+its buffers. The worker test checks a non-empty response payload as well as
+request correlation. The current local-loop runtime is prepared. The single-worker baseline with
+1024 receive WRs and small wire slots passes. The staged 1/2/4/8/16/32
+producer/QP profiles now each run for ten measured seconds after warmup,
+with zero errors after fixing CM event ownership and CQ continuation races.
+The 1024 and 4096 RQ profiles, full C++ gate, Rust RPC FFI suite, formatting,
+clippy, and tree-lint pass. The transport plan records exact counts, latency,
+and the fixed-I/O-worker control; protocol and OCI acceptance remain open.
 
 This is the root plan. The five child plans contain implementation details;
 only this plan controls phase order, cross-backlog decisions, and final
@@ -35,7 +49,7 @@ the formal design first.
 ## Fixed design decisions
 
 - Use one common RPC abstraction for TCP and RDMA.
-- Use RC SEND/RECV, one 1 KiB control SGE and one selected data SGE.
+- Use RC SEND/RECV, one contiguous wire slot and one SGE per message.
 - Use service discovery for coarse RDMA capability and TCP handshake for the
   current RDMA endpoint, capability generation, and data classes.
 - Select RDMA before the first payload; fallback is RDMA to TCP only.

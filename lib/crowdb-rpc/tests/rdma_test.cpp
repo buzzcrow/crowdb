@@ -14,6 +14,7 @@
 #    include <unistd.h>
 
 #    include <algorithm>
+#    include <array>
 #    include <chrono>
 #    include <csignal>
 #    include <cstdint>
@@ -21,6 +22,8 @@
 #    include <cstring>
 #    include <mutex>
 #    include <thread>
+#    include <unordered_set>
+#    include <vector>
 
 namespace
 {
@@ -44,23 +47,6 @@ void install_rdma_test_crash_handler()
 }
 } // namespace
 
-struct WorkerCompletion
-{
-    std::atomic<uint32_t> completed{0};
-    std::atomic<uint32_t> failed{0};
-};
-
-extern "C" void rdma_worker_completion(uint64_t, crowdb_rpc_buffer_t control, crowdb_rpc_buffer_t data,
-                                       crowdb_rpc_status status, void *opaque)
-{
-    auto *state = static_cast<WorkerCompletion *>(opaque);
-    (status == CROWDB_RPC_OK ? state->completed : state->failed).fetch_add(1, std::memory_order_relaxed);
-    if (control != nullptr)
-        crowdb_rpc_buffer_release(control);
-    if (data != nullptr)
-        crowdb_rpc_buffer_release(data);
-}
-
 using crowdb::rpc::Buffer;
 using crowdb::rpc::BufferOwnership;
 using crowdb::rpc::Connection;
@@ -68,8 +54,8 @@ using crowdb::rpc::Frame;
 using crowdb::rpc::Header;
 using crowdb::rpc::HEADER_SIZE;
 using crowdb::rpc::OutFrame;
-using crowdb::rpc::RdmaConfig;
 using crowdb::rpc::RdmaBufferPool;
+using crowdb::rpc::RdmaConfig;
 using crowdb::rpc::RdmaTransport;
 using crowdb::rpc::RpcClient;
 using crowdb::rpc::RpcServer;
@@ -274,65 +260,6 @@ TEST(RdmaHardwareTest, CompleteCmQpSendReceiveFlow)
     EXPECT_GE(server.stats().posted_receives.load(), 1U);
     client.stop();
     server.stop();
-}
-
-TEST(RdmaHardwareTest, RpcServerClientWorkerRoundTrip)
-{
-    if (std::getenv("CROWDB_RDMA_RPC_E2E") == nullptr)
-        GTEST_SKIP() << "set CROWDB_RDMA_RPC_E2E=1 to run the worker flow";
-    install_rdma_test_crash_handler();
-    const char *address = std::getenv("CROWDB_RDMA_E2E_LISTEN_ADDR");
-    const char *role    = std::getenv("CROWDB_RDMA_E2E_ROLE");
-    ASSERT_NE(address, nullptr);
-    const int port =
-        std::getenv("CROWDB_RDMA_E2E_PORT") == nullptr ? 19101 : std::atoi(std::getenv("CROWDB_RDMA_E2E_PORT"));
-    constexpr uint32_t kRequests    = 8;
-    constexpr uint16_t kMessageType = 239;
-
-    if (role != nullptr && std::strcmp(role, "server") == 0) {
-        RpcServer server;
-        ASSERT_TRUE(server.listen(address, port));
-        std::atomic<uint32_t> received{0};
-        server.register_handler(kMessageType, [&received, &server](Frame *frame, Connection *) {
-            received.fetch_add(1, std::memory_order_relaxed);
-            OutFrame *response        = new OutFrame;
-            response->request_id      = frame->request_id;
-            response->header.msg_type = static_cast<uint16_t>(kMessageType);
-            response->control =
-                crowdb::rpc::build_ping_response(server.pool(), frame->request_id, frame->rpc_create_nano, 0);
-            response->header.msg_size = response->control == nullptr ? 0 : response->control->len;
-            delete frame;
-            return response;
-        });
-        server.start();
-        for (int i = 0; i < 100 && received.load(std::memory_order_relaxed) < kRequests; ++i)
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        EXPECT_EQ(received.load(std::memory_order_relaxed), kRequests);
-        server.stop();
-        return;
-    }
-
-    ASSERT_NE(role, nullptr);
-    ASSERT_STREQ(role, "client");
-    SocketTransport transport(1, 1);
-    transport.start();
-    auto connection = transport.connect(address, port);
-    ASSERT_NE(connection, nullptr);
-    RpcClient client;
-    client.set_completion_pool_size(kRequests);
-    client.attach(connection.get());
-    WorkerCompletion completion;
-    for (uint32_t i = 0; i < kRequests; ++i) {
-        Buffer *control = crowdb::rpc::build_ping_request(transport.pool(), i + 1, 0);
-        ASSERT_NE(control, nullptr);
-        ASSERT_TRUE(client.send(&transport, connection.get(), i + 1, control, nullptr, kMessageType,
-                                rdma_worker_completion, &completion));
-    }
-    for (int i = 0; i < 200 && completion.completed.load(std::memory_order_relaxed) < kRequests; ++i)
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    EXPECT_EQ(completion.completed.load(std::memory_order_relaxed), kRequests);
-    EXPECT_EQ(completion.failed.load(std::memory_order_relaxed), 0U);
-    transport.stop();
 }
 
 #endif

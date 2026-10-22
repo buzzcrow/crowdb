@@ -96,6 +96,11 @@ struct Buffer
     void (*free_cb)(void *) = nullptr;
     void *free_ctx          = nullptr;
 
+    // Transfer the final reference to an asynchronous receive recycler.
+    // The callback consumes that reference, including any repost attempt.
+    void (*last_release_cb)(void *, Buffer *) = nullptr;
+    void *last_release_ctx                    = nullptr;
+
     // Copy src into data, set len. Called once per buffer.
     void write(const void *src, uint32_t n);
 

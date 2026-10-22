@@ -328,7 +328,8 @@ class SocketTransport : public Transport
     // with io_workers total workers (per-engine = io_workers / io_engines).
     SocketTransport(uint32_t io_engines, uint32_t io_workers, BufferPool *pool = nullptr
 #ifdef CROWDB_RPC_HAVE_RDMA
-                    , RdmaConfig rdma_config = {}
+                    ,
+                    RdmaConfig rdma_config = {}
 #endif
     );
     // Deprecated alias: maps to (1, num_workers). Kept for backward compat.
@@ -380,8 +381,7 @@ class SocketTransport : public Transport
     std::shared_ptr<Connection> connect(const std::string &addr, int port);
 
     // Attach an RDMA connection to the common callback/registry lifecycle.
-    void attach_rdma_connection(const std::shared_ptr<Connection> &conn,
-                                Connection::OnFrameCallback on_frame = {},
+    void attach_rdma_connection(const std::shared_ptr<Connection> &conn, Connection::OnFrameCallback on_frame = {},
                                 Connection::OnCloseCallback on_close = {});
 
     using RdmaAcceptHandler = std::function<void(const std::shared_ptr<Connection> &)>;
@@ -510,11 +510,19 @@ class SocketTransport : public Transport
     bool send_rdma_handshake(const std::shared_ptr<Connection> &conn);
     bool listen_rdma(const std::string &addr, int port);
 
+#if defined(CROWDB_RPC_HAVE_RDMA) && defined(CROWDB_RPC_TEST_UTIL)
+    const RdmaTransport::Stats *rdma_stats_for_tests() const
+    {
+        return rdma_transport_ == nullptr ? nullptr : &rdma_transport_->stats();
+    }
+
+#endif
+
   private:
     BufferPool *pool_;
 #ifdef CROWDB_RPC_HAVE_RDMA
     std::unique_ptr<class RdmaTransport> rdma_transport_;
-    RdmaConfig                              rdma_config_;
+    RdmaConfig                           rdma_config_;
 #endif
     std::vector<std::unique_ptr<Worker>>       workers_;
     std::vector<std::unique_ptr<SocketEngine>> engines_; // transport owns all engines

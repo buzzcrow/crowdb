@@ -541,9 +541,11 @@ static bool on_writable_impl(Connection *conn, int fd, TransportStats *stats)
 
 SocketTransport::SocketTransport(uint32_t io_engines, uint32_t io_workers, BufferPool *pool
 #ifdef CROWDB_RPC_HAVE_RDMA
-                                 , RdmaConfig rdma_config
+                                 ,
+                                 RdmaConfig rdma_config
 #endif
-                                 ) : pool_(pool)
+                                 )
+    : pool_(pool)
 {
     assert(io_engines >= 1 && io_workers >= 1);
     assert(io_workers % io_engines == 0);
@@ -600,8 +602,8 @@ SocketTransport::~SocketTransport()
 {
     stop();
 #ifdef CROWDB_RPC_HAVE_RDMA
-    if (rdma_transport_ != nullptr)
-        rdma_transport_->shutdown();
+    // Finish CQ ownership before the engines and their wakeup fds disappear.
+    rdma_transport_.reset();
 #endif
 }
 
@@ -632,7 +634,7 @@ void SocketTransport::stop()
     }
 #ifdef CROWDB_RPC_HAVE_RDMA
     if (rdma_transport_ != nullptr)
-        rdma_transport_->stop();
+        rdma_transport_->shutdown();
 #endif
 }
 

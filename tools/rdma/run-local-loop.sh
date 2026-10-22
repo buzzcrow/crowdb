@@ -140,21 +140,42 @@ echo "RDMA $mode loop: client=$client_device/$client_if@$client_addr server=$ser
 
 cleanup() {
     if [[ -n "$server_pid" ]]; then
-        kill "$server_pid" 2>/dev/null || true
+        kill -- "-$server_pid" 2>/dev/null || true
         wait "$server_pid" 2>/dev/null || true
     fi
 }
 trap cleanup EXIT INT TERM
 
-common_env=(CROWDB_RDMA_E2E=1 CROWDB_RDMA_E2E_PORT="$port")
-run_in_ns "$server_ns" env "${common_env[@]}" \
+wire_slot_capacity=${CROWDB_RDMA_WIRE_SLOT_CAPACITY:-1024}
+sq_depth=${CROWDB_RDMA_SQ_DEPTH:-1024}
+rq_depth=${CROWDB_RDMA_RQ_DEPTH:-1024}
+posted_receive_target=${CROWDB_RDMA_POSTED_RECEIVE_TARGET:-$rq_depth}
+connections=${CROWDB_RDMA_TEST_CONNECTIONS:-1}
+cq_depth=${CROWDB_RDMA_CQ_DEPTH:-$((connections * (sq_depth + rq_depth)))}
+send_arena_bytes=${CROWDB_RDMA_SEND_ARENA_BYTES:-$((sq_depth * wire_slot_capacity))}
+receive_arena_bytes=${CROWDB_RDMA_RECEIVE_ARENA_BYTES:-$((posted_receive_target * wire_slot_capacity))}
+echo "RDMA config: sq_depth=$sq_depth rq_depth=$rq_depth posted_receive_target=$posted_receive_target wire_slot_capacity=$wire_slot_capacity cq_depth=$cq_depth send_arena_bytes=$send_arena_bytes receive_arena_bytes=$receive_arena_bytes"
+common_env=(CROWDB_RDMA_E2E=1 CROWDB_RDMA_E2E_PORT="$port"
+    CROWDB_RDMA_SQ_DEPTH="$sq_depth" CROWDB_RDMA_RQ_DEPTH="$rq_depth"
+    CROWDB_RDMA_POSTED_RECEIVE_TARGET="$posted_receive_target"
+    CROWDB_RDMA_WIRE_SLOT_CAPACITY="$wire_slot_capacity" CROWDB_RDMA_CQ_DEPTH="$cq_depth"
+    CROWDB_RDMA_SEND_ARENA_BYTES="$send_arena_bytes" CROWDB_RDMA_RECEIVE_ARENA_BYTES="$receive_arena_bytes")
+server_command=(env "${common_env[@]}"
     CROWDB_RDMA_E2E_ROLE=server \
     CROWDB_RDMA_E2E_LISTEN_ADDR="$server_addr" \
     CROWDB_RDMA_DEVICE="$server_device" \
-    "$pixi_bin" run "$test_bin" --gtest_filter="$filter" &
+    "$pixi_bin" run "$test_bin" --gtest_filter="$filter")
+if [[ "$server_ns" != root ]]; then
+    server_command=(ip netns exec "$server_ns" "${server_command[@]}")
+fi
+setsid "${server_command[@]}" &
 server_pid=$!
 
 sleep 1
+if ! kill -0 "$server_pid" 2>/dev/null; then
+    wait "$server_pid"
+    die "server exited before the client started"
+fi
 run_in_ns "$client_ns" env "${common_env[@]}" \
     CROWDB_RDMA_E2E_ROLE=client \
     CROWDB_RDMA_E2E_LISTEN_ADDR="$server_addr" \

@@ -40,7 +40,11 @@ use std::path::Path;
 const ECHO_MSG_TYPE: u16 = 100;
 
 pub async fn run(log_dir: &Path, args: RpcArgs) -> ExitCode {
-    let data_bytes = if args.value_size == 0 { Vec::new() } else { vec![0xAB; args.value_size] };
+    let data_bytes = if args.value_size == 0 {
+        Vec::new()
+    } else {
+        vec![0xAB; args.value_size]
+    };
 
     // Client-side server for connection management.
     let server = Arc::new(RpcServer::with_engines(None, args.io_engines, args.io_workers));
