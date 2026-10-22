@@ -315,6 +315,7 @@ class Connection : public std::enable_shared_from_this<Connection>
 
     ConnectionCallback<OnFrameCallback>       on_frame_callback_;
     ConnectionCallback<std::function<void()>> on_frame_ready_;
+    ConnectionCallback<std::function<void()>> on_transport_close_;
     ConnectionCallback<OnCloseCallback>       on_close_callback_;
     ConnectionCallback<OnCloseCallback>       on_rpc_close_callback_;
 };

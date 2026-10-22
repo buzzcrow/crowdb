@@ -768,7 +768,7 @@ Implementation checkpoint:
   execution remains pending in the task below. TCP uses writev/Nagle controls;
   RDMA uses bounded complete-frame SEND aggregation, so the sweep does not
   pretend these two transport mechanisms are the same switch.
-- [~] **Run gradual native hardware profiles**: first one coroutine/QP/CQ,
+- [x] **Run gradual native hardware profiles**: first one coroutine/QP/CQ,
   then loader sweep 1/2/4/8/16/32 and higher as needed, then QP and CQ sweeps;
   compare aggregation off/on, SQ/RQ 1024 and 4096, small slot classes and larger
   payload/slot pairs. Increase depth only when counters show it limits load.
@@ -798,12 +798,43 @@ Implementation checkpoint:
   then run TCP and matched two-container manifests. A larger pool or more QPs
   alone is not evidence of a higher hardware limit; retain CPU/resource data
   and the exact binary identities with every trial.
-- [ ] **Run matching OCI profiles and finish protocol tests**: use the same
+- [~] **Run matching OCI profiles and finish protocol tests**: use the same
   CLI workload and manifest in two host-network containers on this physical
   HCA; record separate process/container topology. Complete negotiated TCP
   preflight, fallback-before-payload, no mixed stream, no-device TCP and
   non-root device/memlock acceptance. Compare matching native/container rows
   and explain any gap. Files: RDMA OCI runner, capability/path tests.
+  Add an opt-in HCA case with a deliberately expired advertised CM endpoint:
+  valid TCP preflight must lead to one actual CM failure, strict rejection,
+  or one aligned TCP fallback echo before any RDMA payload. Set the fixture's
+  capability before worker startup through guarded `TestSocketTransport` /
+  `TestRdmaTransport` helpers. Add a real HCA peer-close case after request
+  delivery, with fallback allowed, asserting one failed completion, retained
+  RDMA path, no fallback and no TCP workload frame. Files:
+  `tests/rdma_failure_test.cpp`, `tests/common/test_rdma_transport.h`, and
+  the existing guarded transport test friendship. No new hot-path lock.
+- The expired-CM fixture passes strict rejection and one allowed TCP echo
+  after a real CM attempt, with no RDMA workload frame. The new peer-close
+  fixture initially failed: `Connection::close()` only published local state,
+  so the peer remained open and its pending request never failed. A private
+  transport-close notifier now wakes the assigned CQ owner; the owner calls
+  `rdma_disconnect` before stopping posting admission and retiring its send
+  queue. The existing per-QP operation gate pins the CM ID until that call
+  completes, and an atomic flag prevents duplicate requests from CQ/CM/shutdown.
+  Shutdown explicitly disconnects retained IDs before destruction. RDMA close
+  also unregisters socket-transport weak indexes, including a close/publication
+  race, while retained leases keep their arena/device ownership.
+- All three real-HCA failure cases now pass in 40 ms: expired endpoint, peer
+  close after payload, and server shutdown after payload. The latter two prove
+  one failed completion with fallback allowed, retained RDMA path, no fallback,
+  no TCP workload frame and empty connection indexes after shutdown.
+- The final close/disconnect source passes the full C++/FFI gate at
+  `.crowdb-runtime/artifacts/unit/cpp-93edc5b4128b456696da0095db768d20/`,
+  all 137 no-verbs CTest cases, all four CLI benchmark integration cases,
+  workspace clippy, Rust/C++ formatting and scoped tree-lint (exit zero with
+  style warnings). All thirteen runner contract tests pass. Six real-HCA
+  failure/lifetime/budget/fallback cases also pass together in 74 ms. The
+  release CLI rebuild exits zero; post-fix sustained benchmark checks remain.
 - [ ] **Gate and document each coherent change**: build with `-j32`; run all
   executables/tests/lints through `pixi run`, use `clean-env` before server
   tests, and keep complete failure output. Run affected tests, fmt, clippy,
@@ -822,6 +853,9 @@ Provider references for the implementation choices:
   an independently opened context for a CM-owned QP.
 - [RDMA-CM request private-data limit](https://github.com/linux-rdma/rdma-core/blob/master/librdmacm/man/rdma_connect.3)
   and [accept event lifetime](https://github.com/linux-rdma/rdma-core/blob/master/librdmacm/man/rdma_accept.3).
+- [RDMA disconnect and flush contract](https://github.com/linux-rdma/rdma-core/blob/master/librdmacm/man/rdma_disconnect.3),
+  [CM-ID destruction](https://github.com/linux-rdma/rdma-core/blob/master/librdmacm/cma.c)
+  and [kernel reported-event accounting](https://github.com/torvalds/linux/blob/master/drivers/infiniband/core/ucma.c).
 
 ## Historical verification record
 

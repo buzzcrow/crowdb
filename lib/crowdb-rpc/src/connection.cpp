@@ -426,6 +426,9 @@ void Connection::close()
     if (const auto *callback = on_close_callback_.get(); callback != nullptr && *callback) {
         (*callback)(this);
     }
+    if (const auto *callback = on_transport_close_.get(); callback != nullptr && *callback) {
+        (*callback)();
+    }
 }
 
 void Connection::on_frame(Frame *frame)

@@ -247,6 +247,15 @@ completions cannot publish data into a reused buffer. QP, CM, and CQ errors
 move the connection to draining or failed state and quarantine uncertain
 buffers.
 
+`Connection::close()` also wakes its assigned CQ through a private transport
+notifier. The CQ owner requests `rdma_disconnect` once, guarded by the same
+per-connection operation admission that protects posting and CM-ID lifetime.
+The notifier only wakes the owner; application callbacks do not drain their
+own CQ. CM retirement and transport shutdown use the same disconnect guard
+before stopping admission and destroying the QP. A close removes the logical
+connection from socket-transport indexes, including a close racing publication;
+retained buffer leases continue to own their arena and device resources.
+
 ## 7. Service interactions
 
 For S3/HTTP and DiskIO, HTTP or ChunkIO fills the Access Server registered send

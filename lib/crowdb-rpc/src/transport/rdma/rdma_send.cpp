@@ -152,6 +152,8 @@ uint32_t RdmaTransport::flush_sends(CompletionQueue &queue, uint32_t budget)
     // Closed producers finish publishing before their bounded queue retires.
     for (size_t index = 0; index < queue.connections.size();) {
         auto &entry = queue.connections[index];
+        if (!entry.connection->is_open())
+            request_disconnect(*entry.pools);
         if (!entry.connection->is_open() &&
             (entry.pools->posting_state->users.fetch_or(RepostState::STOPPED, std::memory_order_acq_rel) &
              ~RepostState::STOPPED) == 0) {

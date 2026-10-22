@@ -291,6 +291,8 @@ void RdmaTransport::shutdown()
     }
     for (const auto &[id, connection] : cm_connections_) {
         (void)id;
+        if (auto *pools = pools_for(connection.get()); pools != nullptr)
+            request_disconnect(*pools);
         connection->close();
     }
     {

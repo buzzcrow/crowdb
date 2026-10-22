@@ -6,6 +6,7 @@
 #include "../../src/transport/rdma/rdma_cq.h"
 #include "../../src/transport/rdma/rdma_device.h"
 #include "crowdb-rpc/transport/rdma/rdma_transport.h"
+#include "crowdb-rpc/transport/socket_transport.h"
 
 #if defined(CROWDB_RPC_HAVE_RDMA) && defined(CROWDB_RPC_TEST_UTIL)
 
@@ -17,6 +18,14 @@ namespace crowdb::rpc
 
 struct TestRdmaTransport
 {
+    static void advertise_expired_endpoint_for_tests(RdmaTransport &transport, const std::string &address,
+                                                     uint16_t port)
+    {
+        transport.local_capability_.cm_address = address;
+        transport.local_capability_.port       = port;
+        transport.listen_active_.store(true, std::memory_order_release);
+    }
+
     static void set_aggregation_for_tests(RdmaTransport &transport, bool enabled)
     {
         transport.config_.aggregation_enabled = enabled;
@@ -120,7 +129,7 @@ struct TestRdmaTransport
 
     static void watch_frames(RdmaTransport &transport, const std::shared_ptr<Connection> &connection, uint32_t index)
     {
-        transport.install_frame_notifier(connection, index);
+        transport.install_connection_notifiers(connection, index);
     }
 
     static bool pending(RdmaTransport &transport, uint64_t token)
@@ -172,6 +181,14 @@ struct TestCompletionQueue
         result.wr_id  = token;
         result.status = IBV_WC_SUCCESS;
         return result;
+    }
+};
+
+struct TestSocketTransport
+{
+    static RdmaTransport &rdma_for_tests(SocketTransport &transport)
+    {
+        return *transport.rdma_transport_;
     }
 };
 

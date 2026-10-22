@@ -889,11 +889,17 @@ size_t SocketTransport::connection_count() const
 void SocketTransport::attach_rdma_connection(const std::shared_ptr<Connection> &conn,
                                              Connection::OnFrameCallback on_frame, Connection::OnCloseCallback on_close)
 {
-    if (conn == nullptr)
+    if (conn == nullptr || !conn->is_open())
         return;
     conn->set_on_frame(std::move(on_frame));
-    conn->set_on_close(std::move(on_close));
+    conn->set_on_close([this, on_close = std::move(on_close)](Connection *connection) {
+        if (on_close)
+            on_close(connection);
+        unregister_conn(connection);
+    });
     register_conn(conn);
+    if (!conn->is_open())
+        unregister_conn(conn.get());
     if (!workers_.empty()) {
         Worker *worker  = get_worker();
         conn->io_worker = worker;

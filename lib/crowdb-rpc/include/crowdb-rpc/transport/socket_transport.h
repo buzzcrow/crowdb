@@ -533,6 +533,8 @@ class SocketTransport : public Transport
     [[nodiscard]] std::string status_json() const;
 
 #if defined(CROWDB_RPC_HAVE_RDMA) && defined(CROWDB_RPC_TEST_UTIL)
+    friend struct TestSocketTransport;
+
     const RdmaTransport::Stats *rdma_stats_for_tests() const
     {
         return rdma_transport_ == nullptr ? nullptr : &rdma_transport_->stats();

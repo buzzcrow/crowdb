@@ -161,7 +161,7 @@ std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int 
     reservation.committed = true;
     connection->set_path(ConnectionPath::Rdma);
     connection->transport_handle = reinterpret_cast<uint64_t>(id->qp);
-    install_frame_notifier(connection, pools->cq_index);
+    install_connection_notifiers(connection, pools->cq_index);
     if (!prime_receive(connection)) {
         destroy_connection_qp(connection.get(), id);
         rdma_destroy_id(id);
@@ -375,7 +375,7 @@ std::shared_ptr<Connection> RdmaTransport::accept()
     reservation.committed = true;
     connection->set_path(ConnectionPath::Rdma);
     connection->transport_handle = reinterpret_cast<uint64_t>(id->qp);
-    install_frame_notifier(connection, pools->cq_index);
+    install_connection_notifiers(connection, pools->cq_index);
     if (!prime_receive(connection)) {
         destroy_connection_qp(connection.get(), id);
         rdma_destroy_id(id);

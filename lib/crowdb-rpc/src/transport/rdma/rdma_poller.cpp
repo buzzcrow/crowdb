@@ -83,13 +83,15 @@ void RdmaTransport::notify_queue(uint32_t index)
     (void)::write(queue.continuation_fd, &value, sizeof(value));
 }
 
-void RdmaTransport::install_frame_notifier(const std::shared_ptr<Connection> &connection, uint32_t index)
+void RdmaTransport::install_connection_notifiers(const std::shared_ptr<Connection> &connection, uint32_t index)
 {
-    connection->set_frame_ready_notifier([state = repost_state_, index] {
+    auto notify = [state = repost_state_, index] {
         Operation operation(state);
         if (operation)
             state->transport->notify_queue(index);
-    });
+    };
+    connection->set_frame_ready_notifier(notify);
+    connection->on_transport_close_.set(std::move(notify));
 }
 
 uint32_t RdmaTransport::process_deferred(CompletionQueue &queue, uint32_t max_completions)

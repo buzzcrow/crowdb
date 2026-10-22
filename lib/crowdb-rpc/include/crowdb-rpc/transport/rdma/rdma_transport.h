@@ -252,7 +252,7 @@ class RdmaTransport : public Transport
     void     start_pollers();
     void     run_poller(CompletionQueue *queue);
     void     notify_queue(uint32_t index);
-    void     install_frame_notifier(const std::shared_ptr<Connection> &connection, uint32_t index);
+    void     install_connection_notifiers(const std::shared_ptr<Connection> &connection, uint32_t index);
     uint32_t flush_sends(CompletionQueue &queue, uint32_t budget);
     uint32_t flush_connection(Connection *connection, ConnectionPools &pools, uint32_t budget);
     void     retire_sends(CompletionQueue &queue, Connection *connection);
@@ -270,6 +270,7 @@ class RdmaTransport : public Transport
     void                    destroy_connection_qp(Connection *connection, rdma_cm_id *id);
     static ConnectionPools *pools_for(Connection *connection);
     static void             set_connection_pools(Connection *connection, std::shared_ptr<ConnectionPools> pools);
+    static void             request_disconnect(ConnectionPools &pools);
     bool                    publish_cm_connection(rdma_cm_id *id, const std::shared_ptr<Connection> &connection,
                                                   std::shared_ptr<ConnectionPools> pools);
 
@@ -330,6 +331,8 @@ class RdmaTransport : public Transport
         uint32_t                        peer_receive_slot_capacity = 0;
         uint32_t                        peer_receive_frame_limit   = 1;
         uint32_t                        qp_number                  = 0;
+        rdma_cm_id                     *cm_id                      = nullptr; // immutable after publication
+        std::atomic<bool>               disconnect_requested{false};
         SendQueue                       send_queue;
         std::atomic<uint32_t>           queued_frames{0};
         OutFrame                       *pending_frame   = nullptr;
