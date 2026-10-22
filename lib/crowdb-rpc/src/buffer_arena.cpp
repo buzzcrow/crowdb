@@ -180,7 +180,7 @@ bool BufferArena::detach(Buffer *buffer)
     const auto state = buffer->ownership.load(std::memory_order_acquire);
     if (state != BufferOwnership::Available && state != BufferOwnership::CallerOwned)
         return false;
-    auto context = std::make_unique<DetachedRelease>(DetachedRelease{this, buffer->pool_index});
+    auto context = std::make_unique<DetachedRelease>(DetachedRelease{this, buffer->pool_index, buffer});
     entries_[buffer->pool_index].buffer.store(nullptr, std::memory_order_release);
     buffer->pool     = nullptr;
     buffer->free_ctx = context.release();
@@ -191,6 +191,9 @@ bool BufferArena::detach(Buffer *buffer)
 void BufferArena::release_detached(void *context)
 {
     const auto release = std::unique_ptr<DetachedRelease>(static_cast<DetachedRelease *>(context));
+    const auto state   = release->buffer->ownership.load(std::memory_order_acquire);
+    if (state != BufferOwnership::Available && state != BufferOwnership::CallerOwned)
+        release->arena->quarantined.fetch_add(release->buffer->allocation_capacity, std::memory_order_relaxed);
     release->arena->outstanding.fetch_sub(1, std::memory_order_release);
     release->arena->push_entry(release->arena->unused_entries_, release->index);
 }

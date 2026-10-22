@@ -32,7 +32,8 @@ prove held registered/receive leases survive pool/transport/CM-ID destruction.
 The C ABI now returns independent handles for retained buffer references.
 
 Portable and verbs-backed pools now share the same arena/lifetime machinery.
-Still pending: registration admission across retired connections, bounded
+Registration admission remains charged while retired connections retain MRs.
+Still pending: negotiated TCP/CM preflight, bounded
 transport aggregation, `bench rdma`/shared coroutine reporting, unified regression
 orchestration, negotiated TCP capability preflight, failure injection, and the
 two-container acceptance profiles. Capability serialization and automatic
@@ -373,7 +374,7 @@ Verified histogram checkpoint:
   the detached byte range stays committed. Add `CROWDB_RPC_ENABLE_RDMA=OFF`
   as a supported CMake build switch so the no-verbs gate is reproducible even
   on this host with rdma-core installed.
-- [~] **Bound registration across connection retirement**: add a byte
+- [x] **Bound registration across connection retirement**: add a byte
   reservation to the existing `RdmaDevice` resource owner. A held lease must
   retain that reservation after its QP releases CQ admission; a new QP cannot
   bypass the registered-memory bound by replacing an arena that is still held.
@@ -388,6 +389,28 @@ Verified histogram checkpoint:
   resource lifetime tests. Expose these values in phase D's status/report API.
   Include final detached-buffer quarantine accounting in the shared arena and
   verify it with a no-device case.
+
+Registration budget checkpoint:
+
+- `RdmaDevice` retains atomic byte reservations through MR deregistration.
+  `RdmaConfig::registration_budget()` checks the derived bound and explicit
+  minimum; malformed 64-bit environment values and arithmetic overflow fail
+  configuration. Pool registration success is checked before connection
+  publication. Registration rejection and provider failure have separate
+  counters; failed construction returns the temporary byte charge.
+- Forty focused buffer/configuration/completion cases pass (one pre-CM copy
+  compatibility case skips). New cases cover 160,000 concurrent reservations,
+  failed-MR rollback, explicit/derived/overflowed budgets, and a real retired
+  MR that blocks replacement until its final buffer release.
+- The real HCA setup case admits one QP, rejects a second QP when the explicit
+  byte budget is exhausted despite spare CQ capacity, and preserves the first
+  connection and exact current/high-water charge. The held-receive/registered
+  copy test also passes ten repeated transport/CM teardown cycles with this
+  byte reservation owner in place.
+- Full enabled C++/FFI gate, all 29 Rust RPC FFI tests, formatting, scoped
+  tree-lint and workspace clippy pass. Complete gate artifact:
+  `.crowdb-runtime/artifacts/unit/cpp-cecb4460f864486aa296056ea8209115/`.
+  The updated no-verbs build also passes all 124 CTest cases.
 
 Portable pool verification:
 
@@ -481,7 +504,7 @@ CQ verification:
 
 ### C. Bounded aggregation
 
-- [ ] **Negotiate receive admission before coalescing**: finish TCP capability
+- [~] **Negotiate receive admission before coalescing**: finish TCP capability
   preflight before the CM attempt; reuse its TCP connection only for allowed
   pre-payload fallback. Publish actual CM address/port, per-instance generation,
   device/GID identity, receive slot capacity and supported aggregate frame count.
@@ -492,6 +515,13 @@ CQ verification:
   strict rejection before opening a socket. Retire a successful preflight TCP
   connection through the common worker cleanup path. This is a prerequisite
   for the peer-slot bound below; the remaining OCI/failure matrix stays in E.
+  Keep the compact CM offer within the RC request's 56-byte private-data limit;
+  use a fixed 48-byte offer with explicit encoding rather than a native struct
+  dump. It carries protocol, receive capacity/frame limit, local generation,
+  expected peer generation and endpoint identity digests. The full TCP
+  capability carries the CM endpoint and identities. Copy event private data
+  before acknowledging the CM event. Direct CM diagnostics omit only the
+  preflight expectation, while still negotiating receive admission.
   Files: RDMA capability/CM sources, `socket_transport.cpp`, server readiness,
   capability/path and hardware tests.
 - [ ] **Coalesce complete frames on the CQ owner**: use bounded lock-free
@@ -598,6 +628,8 @@ Provider references for the implementation choices:
   (`rdma_get_devices` increments device references; `rdma_free_devices`
   releases them). Retaining the matching CM context list avoids substituting
   an independently opened context for a CM-owned QP.
+- [RDMA-CM request private-data limit](https://github.com/linux-rdma/rdma-core/blob/master/librdmacm/man/rdma_connect.3)
+  and [accept event lifetime](https://github.com/linux-rdma/rdma-core/blob/master/librdmacm/man/rdma_accept.3).
 
 ## Historical verification record
 

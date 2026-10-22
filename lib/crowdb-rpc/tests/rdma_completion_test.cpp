@@ -22,6 +22,7 @@ RdmaConfig test_config()
     config.cq_depth              = 8;
     config.cq_count              = 2;
     config.rq_depth              = 4;
+    config.sq_depth              = 4;
     config.posted_receive_target = 4;
     config.poll_empty_budget     = 1;
     return config;

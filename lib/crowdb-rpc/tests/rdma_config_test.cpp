@@ -87,4 +87,36 @@ TEST(RdmaConfigTest, EnvironmentParsesCqAndPollingKnobsStrictly)
     EXPECT_FALSE(config.apply_environment());
 }
 
+TEST(RdmaConfigTest, RegistrationBudgetIncludesAdmittedQpsAndCopyPools)
+{
+    RdmaConfig config;
+    config.sq_depth = config.rq_depth = config.posted_receive_target = 8;
+    config.wire_slot_capacity                                        = 1024;
+    config.send_arena_bytes = config.receive_arena_bytes = 8192;
+    config.cq_depth                                      = 16;
+    EXPECT_EQ(config.registration_budget(), 32768U);
+    config.cq_depth = 32;
+    config.cq_count = 2;
+    EXPECT_EQ(config.registration_budget(), 81920U);
+    config.registered_memory_budget_bytes = 32767;
+    EXPECT_FALSE(config.valid());
+    config.registered_memory_budget_bytes = 32768;
+    EXPECT_TRUE(config.valid());
+    config.receive_arena_bytes = UINT64_MAX;
+    EXPECT_FALSE(config.valid());
+    config.registered_memory_budget_bytes = 0;
+    EXPECT_EQ(config.registration_budget(), 0U);
+}
+
+TEST(RdmaConfigTest, RegistrationBudgetParses64BitValuesStrictly)
+{
+    const TestEnvironment budget("CROWDB_RDMA_REGISTERED_MEMORY_BUDGET_BYTES", "8589934592");
+    RdmaConfig            config;
+    ASSERT_TRUE(config.apply_environment());
+    EXPECT_EQ(config.registered_memory_budget_bytes, uint64_t{8} << 30);
+    EXPECT_TRUE(config.valid());
+    const TestEnvironment invalid("CROWDB_RDMA_REGISTERED_MEMORY_BUDGET_BYTES", "-1");
+    EXPECT_FALSE(config.apply_environment());
+}
+
 #endif

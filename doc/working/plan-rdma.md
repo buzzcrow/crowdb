@@ -25,8 +25,7 @@ and C/Rust lease metadata accessors. R239's transport path is implemented and
 passes the prepared HCA
 local-loop plus the real `RpcServer`/`RpcClient` worker round trip. Its
 requirement is still open because negotiated capability preflight,
-pre-payload fallback, registration admission across retired connections,
-aggregation/CLI benchmarking and
+pre-payload fallback, aggregation/CLI benchmarking and
 multi-container acceptance have not all passed. Live HCA tests now verify
 held registered/receive leases after pool, transport and CM-ID destruction;
 the final release deregisters MR before PD release. Application reply allocation
@@ -158,7 +157,7 @@ TCP-only profile and build/mocked tests.
   tagged-index freelist machinery with the no-verbs registered pool, then
   verify concurrent bounds, held leases, quarantine and detach without an HCA.
   The detailed transport plan owns this continuation before aggregation.
-- [ ] **Bound retired registration admission**: keep registered bytes charged
+- [x] **Bound retired registration admission**: keep registered bytes charged
   to the existing device owner while old caller leases retain their MRs, reject
   failed MR setup before publishing a connection, and verify the current/high
   water budget and rejection counters. The transport plan owns this final

@@ -81,6 +81,22 @@ TEST(RegisteredBufferTest, CachedAndQuarantinedDescriptorsStayWithinTotalLimit)
     reused->release();
 }
 
+TEST(RegisteredBufferTest, DetachedQuarantineRemainsChargedAndRangeIsNotReused)
+{
+    RegisteredBufferPool pool(4096, 1);
+    auto                *buffer = pool.alloc(1);
+    ASSERT_NE(buffer, nullptr);
+    const auto *old_range = buffer->data;
+    ASSERT_TRUE(pool.detach(buffer));
+    ASSERT_TRUE(buffer->quarantine());
+    buffer->release();
+    EXPECT_EQ(pool.quarantined_bytes(), 1024U);
+    auto *next = pool.alloc(1);
+    ASSERT_NE(next, nullptr);
+    EXPECT_NE(next->data, old_range);
+    next->release();
+}
+
 TEST(RegisteredBufferTest, ConcurrentRecyclingKeepsSlotOwnershipExclusive)
 {
     RegisteredBufferPool              pool(32 * 1024, 32);

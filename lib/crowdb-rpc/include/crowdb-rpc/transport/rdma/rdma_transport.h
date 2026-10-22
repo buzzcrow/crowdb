@@ -27,33 +27,36 @@ namespace crowdb::rpc
 
 class SocketEngine;
 struct RdmaDevice;
+struct RdmaMemoryStats;
 
 constexpr uint32_t RDMA_WIRE_SLOT_CAPACITY = RDMA_DATAPATH_CAPACITY;
 
 struct RdmaConfig
 {
     std::string device;
-    uint8_t     port                  = 1;
-    uint32_t    cq_depth              = 8192;
-    uint32_t    cq_count              = 1;
-    uint32_t    wire_slot_capacity    = RDMA_WIRE_SLOT_CAPACITY;
-    uint64_t    send_arena_bytes      = 64ULL << 20;
-    uint64_t    receive_arena_bytes   = 1ULL << 30;
-    uint32_t    sq_depth              = 1024;
-    uint32_t    rq_depth              = 1024;
-    uint32_t    qp_max_send_sge       = 2;
-    uint32_t    qp_max_recv_sge       = 2;
-    uint32_t    poll_batch            = 256;
-    uint32_t    verbs_poll_batch      = 32;
-    uint32_t    poll_empty_budget     = 256;
-    uint32_t    shutdown_drain_ms     = 3000;
-    uint32_t    posted_receive_target = 1024;
-    uint8_t     min_rnr_timer         = 1;
-    uint8_t     retry_count           = 7;
-    uint8_t     rnr_retry_count       = 7;
+    uint8_t     port                           = 1;
+    uint32_t    cq_depth                       = 8192;
+    uint32_t    cq_count                       = 1;
+    uint32_t    wire_slot_capacity             = RDMA_WIRE_SLOT_CAPACITY;
+    uint64_t    send_arena_bytes               = 64ULL << 20;
+    uint64_t    receive_arena_bytes            = 1ULL << 30;
+    uint64_t    registered_memory_budget_bytes = 0;
+    uint32_t    sq_depth                       = 1024;
+    uint32_t    rq_depth                       = 1024;
+    uint32_t    qp_max_send_sge                = 2;
+    uint32_t    qp_max_recv_sge                = 2;
+    uint32_t    poll_batch                     = 256;
+    uint32_t    verbs_poll_batch               = 32;
+    uint32_t    poll_empty_budget              = 256;
+    uint32_t    shutdown_drain_ms              = 3000;
+    uint32_t    posted_receive_target          = 1024;
+    uint8_t     min_rnr_timer                  = 1;
+    uint8_t     retry_count                    = 7;
+    uint8_t     rnr_retry_count                = 7;
 
-    [[nodiscard]] bool apply_environment();
-    [[nodiscard]] bool valid() const;
+    [[nodiscard]] bool     apply_environment();
+    [[nodiscard]] bool     valid() const;
+    [[nodiscard]] uint64_t registration_budget() const;
 };
 
 // RdmaBufferPool: allocates buffers from ibv_mr-registered memory.
@@ -75,6 +78,7 @@ class RdmaBufferPool : public BufferPool
 
     [[nodiscard]] uint64_t quarantined_bytes() const;
     [[nodiscard]] bool     quiescent() const;
+    [[nodiscard]] bool     ready() const;
     void                   quarantine_inflight();
 
   private:
@@ -109,6 +113,11 @@ class RdmaTransport : public Transport
         std::atomic<uint64_t> cq_events{0};
         std::atomic<uint64_t> cq_wakeups{0};
         std::atomic<uint64_t> pending_deferred_receives{0};
+        std::atomic<uint64_t> registered_memory_budget_bytes{0};
+        std::atomic<uint64_t> registered_bytes{0};
+        std::atomic<uint64_t> registered_bytes_high_water{0};
+        std::atomic<uint64_t> registration_rejects{0};
+        std::atomic<uint64_t> registration_failures{0};
     };
 
     explicit RdmaTransport(RdmaConfig config = {}, BufferPool *application_pool = nullptr);
@@ -170,6 +179,7 @@ class RdmaTransport : public Transport
     std::atomic<bool>                                                    capability_available_{false};
     struct ibv_context                                                  *context_ = nullptr;
     std::shared_ptr<RdmaDevice>                                          device_;
+    std::shared_ptr<RdmaMemoryStats>                                     memory_stats_;
     struct ibv_pd                                                       *pd_         = nullptr;
     struct rdma_event_channel                                           *cm_channel_ = nullptr;
     struct rdma_cm_id                                                   *listen_id_  = nullptr;
@@ -189,9 +199,10 @@ class RdmaTransport : public Transport
     std::atomic<bool> running_{false};
     std::atomic_flag  cm_polling_ = ATOMIC_FLAG_INIT;
 
-    bool          prime_receive(const std::shared_ptr<Connection> &connection);
-    mutable Stats stats_;
-    void          refresh_poll_stats() const;
+    bool                            prime_receive(const std::shared_ptr<Connection> &connection);
+    std::unique_ptr<RdmaBufferPool> make_pool(uint64_t bytes, uint32_t buffers);
+    mutable Stats                   stats_;
+    void                            refresh_poll_stats() const;
 
     enum class WorkKind : uint8_t { Send, Receive };
     struct ConnectionPools;

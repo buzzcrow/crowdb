@@ -73,6 +73,11 @@ bool RdmaBufferPool::quiescent() const
     return arena_->outstanding.load(std::memory_order_acquire) == 0;
 }
 
+bool RdmaBufferPool::ready() const
+{
+    return arena_->region != nullptr && arena_->region->registration_handle != 0;
+}
+
 uint64_t RdmaBufferPool::quarantined_bytes() const
 {
     return arena_->quarantined.load(std::memory_order_relaxed);

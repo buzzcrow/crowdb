@@ -4,6 +4,7 @@
 #pragma once
 
 #include "../../src/transport/rdma/rdma_cq.h"
+#include "../../src/transport/rdma/rdma_device.h"
 #include "crowdb-rpc/transport/rdma/rdma_transport.h"
 
 #if defined(CROWDB_RPC_HAVE_RDMA) && defined(CROWDB_RPC_TEST_UTIL)
@@ -16,6 +17,18 @@ namespace crowdb::rpc
 
 struct TestRdmaTransport
 {
+    static void install_device_for_tests(RdmaTransport &transport, const std::shared_ptr<RdmaDevice> &device)
+    {
+        transport.device_       = device;
+        transport.memory_stats_ = device->memory;
+        transport.pd_           = device->pd;
+    }
+
+    static std::unique_ptr<RdmaBufferPool> make_pool_for_tests(RdmaTransport &transport, uint64_t bytes, uint32_t count)
+    {
+        return transport.make_pool(bytes, count);
+    }
+
     static std::weak_ptr<void> device_owner(RdmaTransport &transport)
     {
         return std::shared_ptr<void>(transport.device_);

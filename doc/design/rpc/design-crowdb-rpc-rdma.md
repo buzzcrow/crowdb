@@ -134,6 +134,20 @@ release. Their detached ranges remain committed and are not reused by another
 stream. Cached and quarantined descriptors both count toward the hard total.
 Application-pool count admission also uses one atomic reservation.
 
+The device owner charges MR creation against
+`registered_memory_budget_bytes`. Zero derives a checked bound from all
+CQ-admitted QPs, their send/receive arenas and the two compatibility copy
+arenas. An explicit budget must admit those compatibility arenas and at least
+one QP. Invalid and overflowed limits fail configuration. Reservation and MR
+creation failure reject setup before connection publication and return the
+temporary reservation. Releasing CQ admission does not release registered
+bytes while a closed connection or held lease still owns an MR; its final
+deregistration returns the charge. `registered_bytes`,
+`registered_bytes_high_water`, `registration_rejects` and
+`registration_failures` expose current reservations, peak reservations,
+budget rejection and provider failure separately. Reservations include pending
+MR creation and remain bounded during concurrent setup.
+
 ## 5. Shared CQ and completion model
 
 Connections share a bounded CQ pool. Each QP uses one assigned CQ for both

@@ -39,6 +39,7 @@ RdmaTransport::RdmaTransport(RdmaConfig config, BufferPool *application_pool)
         config_.cq_depth = 1;
         config_.cq_count = 1;
     }
+    memory_stats_ = std::make_shared<RdmaMemoryStats>(valid_config ? config_.registration_budget() : 0);
     for (uint32_t index = 0; index < config_.cq_count; ++index) {
         auto queue           = std::make_unique<CompletionQueue>();
         queue->index         = index;
@@ -112,7 +113,7 @@ bool RdmaTransport::adopt_cm_context(struct ibv_context *context)
     // arenas. Do not replace live QPs/registrations when another HCA appears.
     if (context_ != nullptr)
         return false;
-    auto device = RdmaDevice::retain(context);
+    auto device = RdmaDevice::retain(context, memory_stats_);
     if (device == nullptr)
         return false;
     if (!create_completion_queues(context)) {
@@ -121,10 +122,29 @@ bool RdmaTransport::adopt_cm_context(struct ibv_context *context)
     context_   = context;
     device_    = std::move(device);
     pd_        = device_->pd;
-    send_pool_ = std::make_unique<RdmaBufferPool>(pd_, config_.send_arena_bytes, config_.sq_depth, device_);
-    recv_pool_ = std::make_unique<RdmaBufferPool>(pd_, config_.send_arena_bytes, config_.sq_depth, device_);
+    send_pool_ = make_pool(config_.send_arena_bytes, config_.sq_depth);
+    recv_pool_ = make_pool(config_.send_arena_bytes, config_.sq_depth);
+    if (send_pool_ == nullptr || recv_pool_ == nullptr) {
+        send_pool_.reset();
+        recv_pool_.reset();
+        capability_available_.store(false, std::memory_order_release);
+        return false;
+    }
     register_events(event_engine_);
     return ready();
+}
+
+std::unique_ptr<RdmaBufferPool> RdmaTransport::make_pool(uint64_t bytes, uint32_t buffers)
+{
+    auto reservation = device_->reserve_bytes(bytes);
+    if (reservation == nullptr)
+        return nullptr;
+    auto pool = std::make_unique<RdmaBufferPool>(pd_, bytes, buffers, std::move(reservation));
+    if (!pool->ready()) {
+        memory_stats_->failures.fetch_add(1, std::memory_order_relaxed);
+        return nullptr;
+    }
+    return pool;
 }
 
 bool RdmaTransport::submit(Connection *conn, OutFrame *frame)

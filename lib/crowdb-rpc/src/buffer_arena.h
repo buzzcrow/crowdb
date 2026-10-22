@@ -58,6 +58,7 @@ class BufferArena : public BufferPool, public std::enable_shared_from_this<Buffe
     {
         BufferArena *arena;
         uint32_t     index;
+        Buffer      *buffer;
     };
 
     static void release_detached(void *context);
