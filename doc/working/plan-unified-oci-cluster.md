@@ -355,6 +355,53 @@ Existing implementation can be reused; these are the outstanding parts.
   fixture rather than asking the user to trade correctness for performance.
   Native Docker-free A31 remains an external-runner dependency under T34.
 
+## Stream latency attribution and first optimizations
+
+- [x] **F06 — Expose phase distributions and remove serial metadata waits**.
+  User requested perf metrics sufficient to attribute latency and asked to fix
+  the obvious bottlenecks first. Added process-wide atomic histograms for
+  admission-to-completion, queue dispatch, capacity preparation, batch encoding,
+  mirror writes, fenced cursor resolution, directory build/publication,
+  page CAS, head GET/CAS, and reads. Chunk-KV-server metrics registration includes
+  these histograms in periodic perf output; the benchmark prints cumulative
+  count/avg/p50/p99/max. Window flushes preserve full-run distributions.
+  Queue includes capacity preparation; nested stage percentiles are not additive.
+- Identical 4 KiB workloads, ten seconds per sample, same retained release
+  services and native fixture parameters, compilation outside measurement:
+  NullDisk 1T 134.29 -> 151.79 ops/s, average 7445 -> 6587 us, p99
+  9732 -> 7748 us; 32T 1017.09 -> 1838.39 ops/s, average 31456 ->
+  17384 us, p99 71552 -> 42448 us. MemDisk 1T 131.78 -> 145.80 ops/s;
+  32T 1008.04 -> 1847.55 ops/s, p99 70964 -> 36014 us. All eight samples
+  have zero errors and watchdogs; all four scoped shutdown receipts pass.
+- The pre-change NullDisk 1T batch averages identify the wait: mirror 1022 us,
+  cursor 2514 us, directory publication 3815 us; directory CPU build only 12 us.
+  The KV adapter now reuses the last observed/successful CAS revision only for
+  the exact stream/epoch/generation, still fencing every head mutation with KV
+  CAS. Immutable directory page writes run with a maximum concurrency of eight,
+  and all must complete before head publication. No append consistency or read
+  snapshot boundary changed. Single-thread head GET count falls from 1352 to 3;
+  publication average falls to 2998 us. The request still requires durable
+  mirror data and cursor advancement before completion.
+- Existing tests plus four new cases pass (59 stream integration cases): no
+  redundant head read after CAS/load, cold visibility of all 17 parallel pages,
+  stale-writer and immutable-purpose fences, conflicting immutable page rejection,
+  and periodic/cumulative perf distribution visibility. All 43 common-metrics
+  tests and the service perf-log shutdown/disable test pass. Rust fmt and
+  all-target common/stream/Chunk-KV-server clippy pass. Evidence, binary hashes, phase
+  distributions and receipt checks:
+  `.crowdb-runtime/artifacts/r243-stream-contract-audit/phase-comparison.json`,
+  `phase-{before,after}/`, `optimized-tests-final.log`,
+  `common-metrics-tests.log`, `service-perf-tests-final.log`,
+  `optimized-clippy-final.log`. The service exposes `--metrics-interval`
+  (one second by default; zero disables output), and shutdown flushes the
+  last metrics window.
+- Remaining: every append still rebuilds/rewrites historical directory pages;
+  the 32T NullDisk sample writes 10933 pages for 1154 publications. Bounded
+  concurrency reduces waits but does not remove this growing write amplification.
+  Original strict throughput/publication assertions remain unmodified and unmet;
+  T29b and R243 remain incomplete. Framed synthetic reads and T34's external
+  native runner proof remain outstanding.
+
 ## Completed foundation (brief)
 
 - Storage fixes: uncertain DiskDB gates stay closed until a new fenced process

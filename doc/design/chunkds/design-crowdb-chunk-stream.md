@@ -99,6 +99,13 @@ Group 0 stores only `StreamBinding {purpose, stream_name, metadata_group_id,
 binding_generation, state, owner_kind}`. One nonzero KV group stores one stable
 head per stream plus immutable extent pages under versioned keys.
 
+The KV adapter publishes at most eight immutable pages concurrently and waits
+for every page before the manifest CAS. A failed page leaves the previous head
+authoritative. The adapter caches one observed manifest and its KV revision;
+an exact stream/epoch/generation match reuses that revision for the next CAS.
+The cache grants no writer authority: a competing update rejects the stale
+revision, and conflict or ambiguous outcomes require a fresh head observation.
+
 `StreamManifest` contains the immutable purpose, writer epoch, generation, logical trim point,
 sealed tail, optional active descriptor, page fences, and closed state. Every
 head mutation uses conditional KV write; no competing writer may blind-write
@@ -268,6 +275,20 @@ Append and read watchdogs log the
 stream identity, epoch, logical range or offset, operation age, queue age,
 batch size, and stage at every interval while retaining the original future as
 the sole completion owner.
+
+Process perf histograms expose `stream.append.{e2e,queue,capacity,batch,encode,
+mirror,cursor}.lh`, `stream.metadata.{publish,build,page_cas,head_get,head_cas}.lh`,
+and `stream.read.e2e.lh`. The Chunk-KV server registers them in its periodic metrics
+output; the production benchmark also prints cumulative phase distributions.
+Observations use atomic histogram buckets and include failed operations. Values
+are nanoseconds in the metrics API and microseconds in benchmark phase output.
+Queue time runs from admission to batch dispatch, including capacity preparation.
+Batch samples exclude capacity preparation; metadata publication is nested
+inside batch duration and includes directory building and page/head operations.
+Request and batch sample counts differ when producers aggregate. Compare counts
+and mean durations for attribution; percentiles from nested or overlapping
+stages cannot be added. The fixed histogram's underflow bucket covers values
+below about 65 microseconds; its mean still uses the observed duration.
 
 The production regression baseline uses a three-node loopback deployment with
 three NullDisk instances, memory-backed KV/WAL, an Intel Core i9-7960X, and

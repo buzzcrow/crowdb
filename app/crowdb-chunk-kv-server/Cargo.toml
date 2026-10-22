@@ -35,6 +35,7 @@ toml = "0.8"
 tracing = { workspace = true }
 
 [dev-dependencies]
+crowdb-test-harness = { path = "../../lib/crowdb-test-harness" }
 crowdb-kv = { path = "../../lib/crowdb-kv" }
 crowdb-chunk-kv-server = { path = ".", features = ["test-util"] }
 crowdb-chunk-kv = { path = "../../lib/crowdb-chunk-kv", features = ["test-util"] }

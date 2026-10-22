@@ -51,6 +51,10 @@ struct Cli {
     #[arg(short = 'l', long)]
     log: bool,
 
+    /// Perf log interval in seconds; zero disables periodic metrics.
+    #[arg(long, default_value_t = 1)]
+    metrics_interval: u64,
+
     /// Maximum log file size in MiB before rotation.
     #[arg(long, default_value_t = crowdb_common::logging::DEFAULT_LOG_MAX_FILE_MB)]
     log_max_file_mb: usize,
@@ -141,6 +145,14 @@ async fn main() -> std::process::ExitCode {
         %rpc_advertise_addr,
         "crowdb-chunk-kv-server starting"
     );
+
+    let mut metrics_runner = crowdb_chunk_kv_server::metrics::start_stream_perf_log(
+        &log_dir,
+        args.metrics_interval,
+        args.log_max_file_mb,
+        args.log_max_files,
+    )
+    .expect("failed to open stream perf log");
 
     let storage = match connect_storage_with_transient_topology_retry(&config).await {
         Ok(storage) => Arc::new(storage),
@@ -529,6 +541,9 @@ async fn main() -> std::process::ExitCode {
     refresh_task.abort();
     if let Err(error) = service_registry.unregister("chunk-kv", config.instance_id).await {
         warn!(%error, "failed to unregister chunk KV instance");
+    }
+    if let Some(runner) = &mut metrics_runner {
+        runner.stop().await;
     }
     if serving.is_ok() {
         std::process::ExitCode::SUCCESS

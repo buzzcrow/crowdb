@@ -5,13 +5,18 @@
 
 use std::sync::Arc;
 
+use arc_swap::ArcSwapOption;
 use async_trait::async_trait;
 use crowdb_kv_client::{CrowdbKvClient, GetOutcome, ReadMode};
 use crowdb_protocol::chunk_stream::{StreamBinding, StreamExtentPage, StreamManifest, StreamName};
 use crowdb_protocol::key::{
     BinaryKey, StreamBindingKey, StreamExtentPageKey, StreamManifestHeadKey, TextKey,
 };
+use futures::{stream, StreamExt, TryStreamExt};
 
+mod pages;
+
+use crate::perf::{perf, PhaseTimer};
 use crate::{Result, StreamError, StreamMetadataStore, StreamRegistry};
 
 /// Group-0 readable stream binding registry.
@@ -84,6 +89,12 @@ pub struct KvStreamMetadataStore {
     kv: Arc<CrowdbKvClient>,
     store_id: u64,
     group_id: u64,
+    head: ArcSwapOption<CachedHead>,
+}
+
+struct CachedHead {
+    manifest: StreamManifest,
+    revision: u64,
 }
 
 impl KvStreamMetadataStore {
@@ -102,10 +113,12 @@ impl KvStreamMetadataStore {
             kv,
             store_id,
             group_id,
+            head: ArcSwapOption::empty(),
         })
     }
 
     async fn get_head(&self, stream_name: StreamName) -> Result<Option<(StreamManifest, u64)>> {
+        let _timer = PhaseTimer::start(&perf().head_get);
         let key = StreamManifestHeadKey { stream_name }.to_bytes();
         match self
             .kv
@@ -120,85 +133,56 @@ impl KvStreamMetadataStore {
                         "stream manifest identity or metadata group is invalid".into(),
                     ));
                 }
+                self.head.store(Some(Arc::new(CachedHead {
+                    manifest: manifest.clone(),
+                    revision,
+                })));
                 Ok(Some((manifest, revision)))
             }
             GetOutcome::NotFound => Ok(None),
         }
     }
-
-    async fn put_immutable_page(&self, page: &StreamExtentPage) -> Result<()> {
-        if page.chunk_ids.is_empty()
-            || page.logical_offsets.len() != page.chunk_ids.len() + 1
-            || page.physical_offsets.len() != page.chunk_ids.len()
-            || page
-                .logical_offsets
-                .windows(2)
-                .any(|window| window[0] >= window[1])
+    async fn publication_revision(
+        &self,
+        expected: Option<(u64, u64)>,
+        manifest: &StreamManifest,
+    ) -> Result<Option<u64>> {
+        // The revision returned by a successful CAS is already authoritative.
+        // Reusing it saves a linearizable read; another writer still wins or
+        // loses through the KV revision CAS, never through this cache.
+        let cached = self.head.load_full().filter(|head| {
+            head.manifest.stream_name == manifest.stream_name
+                && Some((head.manifest.writer_epoch, head.manifest.generation)) == expected
+        });
+        let observed = match cached {
+            Some(head) => Some((head.manifest.clone(), head.revision)),
+            None => self.get_head(manifest.stream_name).await?,
+        };
+        if observed
+            .as_ref()
+            .is_some_and(|(head, _)| head.purpose != manifest.purpose)
         {
-            return Err(StreamError::Corruption(
-                "refusing to publish malformed extent page".into(),
+            return Err(StreamError::Corruption("stream purpose is immutable".into()));
+        }
+        if observed
+            .as_ref()
+            .map(|(head, _)| (head.writer_epoch, head.generation))
+            != expected
+        {
+            if observed.as_ref().is_some_and(|(head, _)| head == manifest) {
+                return Ok(None);
+            }
+            if observed
+                .as_ref()
+                .is_some_and(|(head, _)| head.writer_epoch > manifest.writer_epoch)
+            {
+                return Err(StreamError::StaleWriter);
+            }
+            return Err(StreamError::Internal(
+                "stream manifest generation conflict".into(),
             ));
         }
-        let key = StreamExtentPageKey {
-            stream_name: page.stream_name,
-            writer_epoch: page.writer_epoch,
-            generation: page.generation,
-            page_index: page.page_index,
-        }
-        .to_bytes();
-        let value = encode(page)?;
-        match self
-            .kv
-            .put_cas(self.store_id, self.group_id, &key, &value, 0)
-            .await
-        {
-            Ok(_) => Ok(()),
-            Err(
-                error @ (crowdb_kv_client::Error::CasFailed { .. } | crowdb_kv_client::Error::OutcomeUnknown),
-            ) => {
-                match self
-                    .kv
-                    .get(self.store_id, self.group_id, &key, ReadMode::Linearizable, None)
-                    .await
-                    .map_err(kv_error)?
-                {
-                    GetOutcome::Found { value, .. } => {
-                        let observed: StreamExtentPage = decode(&value)?;
-                        if observed == *page {
-                            Ok(())
-                        } else {
-                            tracing::warn!(
-                                stream_high = page.stream_name.high,
-                                stream_low = page.stream_name.low,
-                                writer_epoch = page.writer_epoch,
-                                generation = page.generation,
-                                page_index = page.page_index,
-                                candidate = ?page,
-                                observed = ?observed,
-                                "immutable extent-page key has conflicting contents"
-                            );
-                            Err(StreamError::Corruption(
-                                "immutable extent-page key contains another value".into(),
-                            ))
-                        }
-                    }
-                    GetOutcome::NotFound => {
-                        tracing::warn!(
-                            stream_high = page.stream_name.high,
-                            stream_low = page.stream_name.low,
-                            writer_epoch = page.writer_epoch,
-                            generation = page.generation,
-                            page_index = page.page_index,
-                            %error,
-                            "immutable extent-page CAS was unresolved and its key is absent"
-                        );
-                        Err(StreamError::WriteStalled)
-                    }
-                }
-            }
-            Err(crowdb_kv_client::Error::CasBusy) => Err(StreamError::Backpressure),
-            Err(error) => Err(kv_error(error)),
-        }
+        Ok(Some(observed.map_or(0, |(_, revision)| revision)))
     }
 }
 
@@ -265,46 +249,32 @@ impl StreamMetadataStore for KvStreamMetadataStore {
                 "extent page identity differs from candidate manifest".into(),
             ));
         }
-        for page in &extent_pages {
-            self.put_immutable_page(page).await?;
-        }
-        let observed = self.get_head(manifest.stream_name).await?;
-        if observed
-            .as_ref()
-            .is_some_and(|(head, _)| head.purpose != manifest.purpose)
-        {
-            return Err(StreamError::Corruption("stream purpose is immutable".into()));
-        }
-        if observed
-            .as_ref()
-            .map(|(head, _)| (head.writer_epoch, head.generation))
-            != expected
-        {
-            if observed.as_ref().is_some_and(|(head, _)| head == &manifest) {
-                return Ok(());
-            }
-            if observed
-                .as_ref()
-                .is_some_and(|(head, _)| head.writer_epoch > manifest.writer_epoch)
-            {
-                return Err(StreamError::StaleWriter);
-            }
-            return Err(StreamError::Internal(
-                "stream manifest generation conflict".into(),
-            ));
-        }
-        let expected_revision = observed.map_or(0, |(_, revision)| revision);
+        stream::iter(extent_pages)
+            .map(|page| async move { self.put_immutable_page(&page).await })
+            .buffer_unordered(8)
+            .try_collect::<Vec<_>>()
+            .await?;
+        let Some(expected_revision) = self.publication_revision(expected, &manifest).await? else {
+            return Ok(());
+        };
         let key = StreamManifestHeadKey {
             stream_name: manifest.stream_name,
         }
         .to_bytes();
         let value = encode(&manifest)?;
+        let _timer = PhaseTimer::start(&perf().head_cas);
         match self
             .kv
             .put_cas(self.store_id, self.group_id, &key, &value, expected_revision)
             .await
         {
-            Ok(_) => Ok(()),
+            Ok(outcome) => {
+                self.head.store(Some(Arc::new(CachedHead {
+                    manifest,
+                    revision: outcome.revision,
+                })));
+                Ok(())
+            }
             Err(crowdb_kv_client::Error::CasBusy) => Err(StreamError::Backpressure),
             Err(crowdb_kv_client::Error::CasFailed { .. } | crowdb_kv_client::Error::OutcomeUnknown) => {
                 match self.get_head(manifest.stream_name).await? {

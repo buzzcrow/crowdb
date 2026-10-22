@@ -9,6 +9,7 @@ mod kv;
 mod metadata;
 mod metrics;
 mod mirror_shadow;
+mod perf;
 mod production;
 mod production_chunk;
 mod storage;
@@ -21,6 +22,7 @@ pub use error::{Result, StreamError};
 pub use kv::{KvStreamMetadataStore, KvStreamRegistry};
 pub use metadata::{resolve_extent, validate_manifest, ExtentLocation};
 pub use metrics::{StreamMetrics, StreamMetricsSnapshot};
+pub use perf::{register_stream_perf_metrics, stream_perf_metrics};
 pub use production::ProductionStreamRuntime;
 pub use production_chunk::ProductionStreamChunkStore;
 pub use storage::{

@@ -75,6 +75,16 @@ async fn run(config: BenchConfig) -> ExitCode {
     match workload::run(&stream_runtime, &config).await {
         Ok(result) => {
             println!("{result}");
+            for (name, phase) in crowdb_chunk_stream::stream_perf_metrics() {
+                println!(
+                    "stream-phase: name={name} count={} avg_us={:.2} p50_us={} p99_us={} max_us={}",
+                    phase.count,
+                    phase.avg / 1_000.0,
+                    phase.p50 / 1_000,
+                    phase.p99 / 1_000,
+                    phase.max / 1_000,
+                );
+            }
             if result.errors == 0 && result.operations > 0 {
                 ExitCode::SUCCESS
             } else {

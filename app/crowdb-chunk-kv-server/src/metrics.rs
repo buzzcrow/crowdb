@@ -150,3 +150,31 @@ impl ServerMetrics {
 fn increment(counter: &AtomicU64) {
     counter.fetch_add(1, Ordering::Relaxed);
 }
+
+/// Starts periodic stream phase output alongside the service logs.
+/// Zero interval disables output. Call `stop().await` to flush the last window.
+///
+/// # Errors
+/// Returns an IO error when the metrics log cannot be opened.
+///
+/// # Panics
+/// Panics if the metrics registry is poisoned or a histogram name conflicts.
+pub fn start_stream_perf_log(
+    log_dir: &str,
+    interval_secs: u64,
+    max_file_mb: usize,
+    max_files: usize,
+) -> std::io::Result<Option<crowdb_common::metrics::MetricsRunner>> {
+    if interval_secs == 0 {
+        return Ok(None);
+    }
+    let file =
+        crowdb_common::logging::open_metrics_log(log_dir, "crowdb-chunk-kv-server", max_file_mb, max_files)
+            .map_err(std::io::Error::other)?;
+    let mut runner = crowdb_common::metrics::MetricsRunner::new(file, interval_secs);
+    crowdb_chunk_stream::register_stream_perf_metrics(
+        &mut runner.registry().lock().expect("metrics registry poisoned"),
+    );
+    runner.start();
+    Ok(Some(runner))
+}

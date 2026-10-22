@@ -121,6 +121,23 @@ impl MetricsRegistry {
         h
     }
 
+    /// Include an existing histogram in this registry's periodic output.
+    ///
+    /// # Panics
+    /// Panics if the same name already identifies a different histogram.
+    pub fn register_shared_histogram(&mut self, handle: Arc<LatencyHistogram>) {
+        let name = handle.name().to_owned();
+        if let Some(existing) = self.histograms.iter().find(|entry| entry.name == name) {
+            assert!(
+                Arc::ptr_eq(&existing.handle, &handle),
+                "histogram name collision: {name}"
+            );
+            return;
+        }
+        self.max_name_len = self.max_name_len.max(name.len());
+        self.histograms.push(HistogramEntry { handle, name });
+    }
+
     /// Register a latency summary, returning a handle for `observe(ns)`.
     pub fn register_summary(&mut self, name: impl Into<MetricName>) -> Arc<LatencySummary> {
         let name = name.into();

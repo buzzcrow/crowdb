@@ -3,7 +3,8 @@
 
 //! Allocate, grow and rotate the worker-owned active chunk.
 
-use super::{publish_state, Duration, Ordering, Result, StreamError, WorkerState};
+use super::publication::publish_state;
+use super::{Duration, Ordering, Result, StreamError, WorkerState};
 
 pub(super) async fn prepare_active_for_append(state: &mut WorkerState, first_len: usize) -> Result<()> {
     loop {
