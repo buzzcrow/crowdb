@@ -28,6 +28,13 @@ SERVER_PATHS = (
     # Host launch resource flags do not enter the release artifact (stage.sh).
     ":(exclude)container/oci-image/runtime.py",
     ":(exclude)container/oci-image/run-node.py",
+    # These host CLI/cleanup modules are embedded only in crowdb-cli. stage.sh
+    # builds the node services and never reads or packages these Python files.
+    ":(exclude)container/oci-image/host_inputs.py",
+    ":(exclude)container/oci-image/host_runtime.py",
+    ":(exclude)container/oci-image/host_lifecycle.py",
+    ":(exclude)container/oci-image/host_cleanup.py",
+    ":(exclude)container/oci-image/host-clean.py",
     ":(exclude)container/oci-image/prepare-ci-host.py",
     # Host SDK client delegates are not read by staging or the OCI builder.
     ":(exclude)tools/pixi-tasks/test.py",

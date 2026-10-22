@@ -146,6 +146,15 @@ class HostCliTest(unittest.TestCase):
         self.assertEqual(self.runtime.effects, [('stop', 'owned-container')])
         self.assertEqual(self.record, saved)
 
+    def test_diskless_nerdctl_null_device_list_preserves_owned_mount_checks(self):
+        self.runtime.current = container(self.record)
+        self.runtime.current['HostConfig']['Devices'] = None
+        self.assertEqual(lifecycle.run(self.request)['container_id'], 'owned-container')
+        self.runtime.current['Mounts'][0]['Source'] = '/foreign'
+        with self.assertRaisesRegex(ValueError, 'mount differs'):
+            lifecycle.run(self.request)
+        self.assertEqual(self.runtime.effects, [])
+
     def test_raw_device_requires_exact_source_target_and_permissions(self):
         record = copy.deepcopy(self.record)
         record['disks'] = [dict(backend='block-device', source='/dev/vdf', path='/opt/crowdb/data/disks/vdf',

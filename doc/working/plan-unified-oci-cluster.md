@@ -246,8 +246,22 @@ Existing implementation can be reused; these are the outstanding parts.
   the full protocol/shared/monitor/Web gate passes 782 tests with zero failures
   or ignored cases across 165 test/doc-test binaries. Fourth owned native KVM
   host is prepared for actual non-voter admission and address recovery.
-  **Gap:** actual non-voter admission/cold changed-IP recovery acceptance and
-  final registered host-runtime fixture/CI migration. Verify real four-member
+  Actual image-Z later admission now passes on four Docker-free KVM hosts:
+  UUID `543959e6-713f-4900-82a1-de92a17f0577`; all four snapshots have initial
+  pins 1/2/3 and confirmed contacts 1/2/3/4, while every original manifest still
+  contains exactly three nodes. Node 4 is explicitly diskless with disabled data
+  services. All three serving members retain S3/Iceberg/Dataset witnesses after
+  admission. Evidence: `r243-native-kvm/node{1,2,3,4}-confirmed-contacts.json`,
+  guest VM1 `read-four-members.log` and `admit-four.log`. The fourth CLI launch
+  exposed nerdctl's null (rather than empty) Devices list on diskless nodes;
+  creation and server admission succeeded, but post-create verification returned
+  an error. Normalize this absent list while retaining exact mount/resource
+  checks. The regression and all 59 OCI helper tests, 20 image identity tests and
+  CLI clippy pass; fixed CLI resumes that exact fourth container and seals UUID.
+  Explicit source-guard exclusions cover only the audited host Python modules
+  embedded by CLI, never the node services, entrypoint or build inputs.
+  **Gap:** cold changed-IP recovery acceptance and final registered host-runtime
+  fixture/CI migration. Verify real four-member
   contacts with unchanged three-voter authority, preserved protocol witnesses
   and host-network address changes; retain all failed evidence.
   Owners: shared `deployment/recovery*`, `registry.rs`, Web `node/admission.rs`,

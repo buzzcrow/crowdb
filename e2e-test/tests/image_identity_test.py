@@ -253,6 +253,9 @@ class ImageIdentityTest(unittest.TestCase):
         (oci / "README.md").write_text("operator instructions\n")
         (oci / "runtime.py").write_text("host runtime commands\n")
         (oci / "run-node.py").write_text("host launcher\n")
+        host_modules = ("host_inputs.py", "host_runtime.py", "host_lifecycle.py", "host_cleanup.py", "host-clean.py")
+        for name in host_modules:
+            (oci / name).write_text("host CLI/cleanup only\n")
         (oci / "Dockerfile").write_text("release image recipe\n")
         (directory / "README.md").write_text("operator instructions\n")
         (directory / "dev-container.sh").write_text("host development container helper\n")
@@ -264,6 +267,8 @@ class ImageIdentityTest(unittest.TestCase):
         revision = self.git("rev-parse", "HEAD")
         (oci / "runtime.py").write_text("host CPU shares commands\n")
         (oci / "run-node.py").write_text("host CPU sharing options\n")
+        for name in host_modules:
+            (oci / name).write_text("changed host CLI/cleanup\n")
         (oci / "README.md").write_text("root containerd acceptance instructions\n")
         (directory / "README.md").write_text("new service-selection instructions\n")
         (directory / "dev-container.sh").write_text("changed host cleanup command\n")

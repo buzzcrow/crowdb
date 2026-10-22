@@ -103,7 +103,7 @@ def require_owned(current, record):
     for target, (source, writable) in expected.items():
         mount = mounts.get(target)
         # Raw devices are represented by HostConfig.Devices rather than Mounts.
-        device = next((device for device in current.get('HostConfig', {}).get('Devices', [])
+        device = next((device for device in (current.get('HostConfig', {}).get('Devices') or [])
                        if device.get('PathInContainer') == target), None)
         if device is not None:
             if device.get('PathOnHost') != source or device.get('CgroupPermissions') != 'rw':
