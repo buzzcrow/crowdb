@@ -82,6 +82,7 @@ bool SocketTransport::configure_rdma(RdmaConfig config, bool enabled, bool allow
         return false;
 #endif
     rdma_config_                 = std::move(config);
+    rdma_enabled_                = enabled;
     allow_tcp_fallback_          = allow_tcp_fallback;
     rdma_listen_enabled_         = enabled && listen_enabled;
     rdma_explicit_configuration_ = true;

@@ -18,8 +18,8 @@ TEST(TransportConfigTest, ExplicitTcpOverridesEnvironmentAndRejectsLateChanges)
     const TestEnvironment strict("CROWDB_RDMA_ALLOW_TCP_FALLBACK", "0");
     RpcServer             server;
     RdmaConfig            config;
-    ASSERT_TRUE(server.configure_rdma(config, false, true, false));
-    EXPECT_NE(server.transport()->status_json().find("\"allow_tcp_fallback\":true"), std::string::npos);
+    ASSERT_TRUE(server.configure_rdma(config, false, false, false));
+    EXPECT_NE(server.transport()->status_json().find("\"allow_tcp_fallback\":false"), std::string::npos);
     EXPECT_NE(server.transport()->status_json().find("\"rdma\":null"), std::string::npos);
     ASSERT_TRUE(server.listen("127.0.0.1", 0));
     EXPECT_FALSE(server.configure_rdma(config, false, true, false));

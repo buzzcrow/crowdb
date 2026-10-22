@@ -106,6 +106,12 @@ impl LatencyHistogram {
         self.total.capture(false).snapshot(0)
     }
 
+    /// Capture a mergeable cumulative shard. Join writers for an exact result.
+    #[must_use]
+    pub fn capture_total(&self) -> HistogramData {
+        self.total.capture(false)
+    }
+
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name

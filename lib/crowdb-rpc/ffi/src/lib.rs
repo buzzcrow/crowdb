@@ -20,6 +20,8 @@ pub mod logging;
 mod owned_route;
 mod server;
 pub mod sys;
+#[cfg(feature = "test-util")]
+mod test_support;
 mod transport;
 
 pub use buffer::{Buffer, BufferChain, BufferChainError, BufferLeaseMetadata, BufferOwnership, BufferPool};

@@ -63,6 +63,11 @@ partial control exchange closes it and uses a fresh socket. Strict RDMA policy
 permits this TCP control traffic and rejects TCP workload fallback. Disabled or
 unavailable local RDMA under strict policy fails before opening a socket.
 
+Cold explicit configuration distinguishes a deliberately selected TCP transport
+(`rdma_enabled_ = false`) from a failed RDMA attempt. That selection connects
+directly over TCP even when `allow_tcp_fallback_ = false`. It does not count as
+fallback. Explicit values override environment defaults before listen/start.
+
 One logical RPC connection chooses RDMA as its preferred path and TCP as its
 one-way fallback. The path is selected before the first payload. TCP is chosen
 when RDMA setup fails before payload submission; an established TCP connection
@@ -280,6 +285,22 @@ CQ depth is per CQ; arena budgets and SQ/RQ depths are per QP. For example,
 one 8192-entry CQ admits four QPs with the default send and posted-receive
 limits. `poller_count` follows the number of initialized CQs. Small-message
 benchmarks select 1024-byte slots and matching arena budgets explicitly.
+
+The versioned C ABI and Rust `RdmaConfig` expose cold configuration. Owned
+status JSON contains requested settings, actual QP/CQ/provider capacities,
+transport errors, registration budgets and process resource counters. Connection
+status caches immutable provider values before publication and retains them
+after close; it never dereferences a QP during teardown. Unsupported resource
+measurements are null.
+
+`bench rdma` requires strict RDMA workload connections and unique QPs.
+`bench rpc` explicitly selects TCP. Both use the same coroutine echo workload,
+nanosecond histogram and canonical result file. Each loader has one outstanding
+RPC; one startup thread creates the coroutines, and completion workers resume
+them. TPS counts validated response callbacks inside the measurement window;
+warmup and drain are separate. Native RTT starts after request construction,
+before submission, and ends before Rust validation. TCP status management
+connections run outside the traffic interval and close before measurement.
 
 The effective slot counts are bounded by registered bytes, QP send/receive
 depth, DiskIO queue bytes, and SDK-held slots. A configured slot size is a

@@ -77,4 +77,11 @@ fn concurrent_writers_have_exact_final_counts_and_sum() {
     let s = h.snapshot_total();
     assert_eq!((s.count, s.sum, s.min, s.max), (40_000, 199_980_000, 0, 9999));
     assert_eq!(s.zero_count, 4);
+    let captured = h.capture_total();
+    let mut merged = HistogramData::default();
+    merged.merge(&captured);
+    merged.merge(&captured);
+    let merged = merged.snapshot(0);
+    assert_eq!((merged.count, merged.sum), (80_000, 399_960_000));
+    assert_eq!((merged.p90, merged.min, merged.max), (s.p90, 0, 9999));
 }

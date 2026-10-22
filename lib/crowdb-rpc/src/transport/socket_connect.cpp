@@ -18,6 +18,8 @@ namespace crowdb::rpc
 {
 std::shared_ptr<Connection> SocketTransport::connect(const std::string &addr, int port)
 {
+    if (rdma_explicit_configuration_ && !rdma_enabled_)
+        return connect_tcp(addr, port);
 #ifdef CROWDB_RPC_HAVE_RDMA
     if (rdma_transport_ != nullptr && rdma_transport_->ready()) {
         auto &stats = rdma_transport_->stats();

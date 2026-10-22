@@ -547,6 +547,7 @@ class SocketTransport : public Transport
     bool                        allow_tcp_fallback_{true};
     RdmaConfig                  rdma_config_;
     bool                        rdma_explicit_configuration_ = false;
+    bool                        rdma_enabled_                = false;
     bool                        rdma_listen_enabled_         = false;
     std::atomic<bool>           started_{false};
 #ifdef CROWDB_RPC_HAVE_RDMA

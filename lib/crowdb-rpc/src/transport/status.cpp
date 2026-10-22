@@ -4,6 +4,7 @@
 #include "../status_json.h"
 
 #include <sys/resource.h>
+#include <unistd.h>
 #ifdef __linux__
 #    include <sched.h>
 #endif
@@ -25,6 +26,7 @@ std::string SocketTransport::status_json() const
 {
     StatusJson status;
     status.number("schema_version", 1);
+    status.number("process_id", static_cast<uint64_t>(::getpid()));
     status.number("io_engines", engines_.size());
     status.number("io_workers", workers_.size());
     status.number("connection_count", connection_count());

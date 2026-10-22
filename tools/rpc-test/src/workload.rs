@@ -1,303 +1,157 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Standalone test transport measurement over the real crowdb-rpc echo server.
-//!
-//! Connects to a standalone `crowdb-rpc-fb-server` (deployed via
-//! the owning test fixture) and fires `msg_type=100` echo
-//! requests at it for `--duration-secs`. Two concurrency models:
-//!
-//! - `coroutine` (default): C++ coroutines via
-//!   `crowdb_rpc_ffi::co_spawn`. One heap-allocated coroutine frame per
-//!   loader, zero per-op tokio scheduling — the high-throughput path.
-//!   Latency is recorded from the C++ `on_response` callback directly
-//!   into the shared [`BenchRecorder`].
-//! - `tokio`: `run_workload` spawns one tokio task per loader, each
-//!   looping `RpcClient::call` + `.await`. Lower throughput (tokio
-//!   scheduler round-trip per op) but exercises the Rust async path.
-//!
-//! The client creates its own `RpcServer` (for connection management)
-//! with I/O config matching the fb-server, then connects
-//! `--connections` connections to it.
+//! Shared timed echo benchmark for explicit TCP and strict RDMA transports.
 
-use std::process::ExitCode;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-
-use crowdb_protocol::fb::{ConnectionPingRequest, ConnectionPingRequestArgs};
-use crowdb_rpc_ffi::co_bench::{co_spawn, CoBenchHandler};
-use crowdb_rpc_ffi::{Buffer, Connection, RpcClient, RpcError, RpcServer};
-use flatbuffers::FlatBufferBuilder;
+mod control;
+mod report;
+mod runtime;
+mod status;
+mod workload;
 
 use super::args::{BenchMode, RpcArgs};
-use super::loader::{run_workload, BenchRecorder};
-use super::metrics::BenchMetrics;
-use super::result::{BenchOps, BenchResult};
+
+use std::process::ExitCode;
+use std::sync::Arc;
+use std::time::Duration;
+
+use crowdb_common::logging::open_named_log;
+use crowdb_common::metrics::{MetricsRegistry, MetricsRunner};
+use crowdb_rpc_ffi::RdmaConfig;
+use serde_json::{json, Value};
+
 use std::path::Path;
+use workload::EchoWorkload;
 
-/// Echo `msg_type` registered on the fb-server (`fb_server.cpp`).
-const ECHO_MSG_TYPE: u16 = 100;
-
-pub async fn run(log_dir: &Path, args: RpcArgs) -> ExitCode {
-    let data_bytes = if args.value_size == 0 {
-        Vec::new()
-    } else {
-        vec![0xAB; args.value_size]
-    };
-
-    // Client-side server for connection management.
-    let server = Arc::new(RpcServer::with_engines(None, args.io_engines, args.io_workers));
-    server.set_tcp_nodelay(!args.enable_nagle);
-    if server.listen("127.0.0.1", 0).is_err() {
-        eprintln!("error: client rpc server listen failed");
-        return ExitCode::from(2);
-    }
-    server.start();
-
-    // Connect `connections` connections to the fb-server.
-    let mut conns: Vec<Connection> = Vec::with_capacity(args.connections.max(1));
-    for _ in 0..args.connections.max(1) {
-        match server.connect(&args.server_host, i32::from(args.server_port)) {
-            Ok(c) => conns.push(c),
-            Err(e) => {
-                eprintln!(
-                    "error: connect to fb-server {}:{} failed: {e}",
-                    args.server_host, args.server_port
-                );
-                server.stop();
-                return ExitCode::from(2);
+pub async fn run(log_dir: &Path, mut args: RpcArgs) -> ExitCode {
+    let rdma = args.rdma;
+    let config = args.resolve(rdma);
+    let mut report = report::base(&args, rdma);
+    match config {
+        Ok(config) => {
+            if let Err(error) = run_case(log_dir, &args, config, rdma, &mut report).await {
+                report::fail(&mut report, &error);
             }
         }
+        Err(error) => report::fail(&mut report, &error),
     }
-
-    let client = Arc::new(RpcClient::new());
-    for c in &conns {
-        client.attach(c);
+    report["client_exit"] = json!(u8::from(report["valid"] != true));
+    if let Some(path) = &args.output {
+        let result = serde_json::to_vec_pretty(&report)
+            .map_err(std::io::Error::other)
+            .and_then(|bytes| std::fs::write(path, bytes));
+        if let Err(error) = result {
+            report::fail(&mut report, &format!("write result {}: {error}", path.display()));
+            report["report_errors"] = json!(1);
+        }
     }
-    // Size the slab completion pool >= max in-flight (loaders).
-    let loaders_u32 = u32::try_from(args.loader_num.max(1)).unwrap_or(u32::MAX);
-    client.set_completion_pool_size(next_pow2(loaders_u32));
-    client.start_reaper(30_000_000_000, 1_000_000_000);
-
-    let mut metrics = BenchMetrics::new(log_dir, args.metrics_interval);
-    metrics.start();
-
-    let duration = Duration::from_secs(args.duration_secs);
-    let start = Instant::now();
-    let recorder = Arc::clone(&metrics.recorder);
-    let recorder = match args.mode {
-        BenchMode::Coroutine => {
-            run_coroutine(
-                recorder,
-                Arc::clone(&client),
-                Arc::clone(&server),
-                conns,
-                args.loader_num,
-                duration,
-                data_bytes,
-            )
-            .await
-        }
-        BenchMode::Tokio => {
-            run_tokio(
-                recorder,
-                Arc::clone(&client),
-                Arc::clone(&server),
-                conns,
-                args.loader_num,
-                duration,
-                data_bytes,
-            )
-            .await
-        }
-    };
-    let duration_ms: u64 = start.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-
-    client.stop_reaper();
-    server.stop();
-
-    metrics.stop().await;
-
-    let snap = recorder.hist_snapshot();
-    eprintln!(
-        "bench rpc: {} ops, {} errors, {}ms ({} mode)",
-        recorder.ops(),
-        recorder.errors(),
-        duration_ms,
-        match args.mode {
-            BenchMode::Coroutine => "coroutine",
-            BenchMode::Tokio => "tokio",
-        }
-    );
-
-    let result = BenchResult {
-        total_ops: recorder.ops(),
-        duration_ms,
-        total_errors: recorder.errors(),
-        correctness_errors: None,
-        by_op: BenchOps::default().write(snap),
-        client_transport_stats: None,
-        server_metrics: None,
-    };
-    let json = serde_json::to_value(&result).unwrap_or_default();
-    tracing::info!(report = %json, "bench_report");
     if args.json {
-        println!("{json}");
+        println!("{report}");
     } else {
-        println!("{result}");
+        println!(
+            "bench {}: completed={} TPS={} avg_ns={} p90_ns={} p99_ns={} errors={} valid={}",
+            if rdma { "rdma" } else { "rpc" },
+            report["completed_in_window"],
+            report["rpc_tps"],
+            report["avg_ns"],
+            report["p90_ns"],
+            report["p99_ns"],
+            report["errors_total"],
+            report["valid"]
+        );
     }
-    if result.total_ops > 0 && result.total_errors == 0 {
+    if report["valid"] == true {
         ExitCode::SUCCESS
     } else {
-        eprintln!("error: RPC benchmark did not complete an error-free workload");
+        eprintln!("error: invalid benchmark result: {report}");
         ExitCode::FAILURE
     }
 }
 
-/// Build a `ConnectionPingRequest` control flatbuffer with `id=request_id`.
-/// The echo handler extracts `request_id` from this `id` field during
-/// parse and echoes it back in the response control — the response is
-/// correlated by this `id` against the slab slot's `request_id`.
-fn build_control(request_id: u64) -> Vec<u8> {
-    let mut fbb = FlatBufferBuilder::new();
-    let req = ConnectionPingRequest::create(
-        &mut fbb,
-        &ConnectionPingRequestArgs {
-            id: request_id,
-            rpc_create_nano: 0,
-        },
-    );
-    fbb.finish(req, None);
-    fbb.finished_data().to_vec()
+async fn run_case(
+    log_dir: &Path,
+    args: &RpcArgs,
+    config: RdmaConfig,
+    rdma: bool,
+    report: &mut Value,
+) -> Result<(), String> {
+    let session = runtime::Session::new(args, &config)?;
+    let connections = session
+        .conns
+        .iter()
+        .map(|conn| {
+            let bytes = conn.transport_status_json().map_err(|e| e.to_string())?;
+            serde_json::from_slice(&bytes).map_err(|e| e.to_string())
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let owners = report::paths(report, &connections, rdma)?;
+    runtime::validate_wire_bound(args, &report["client_connections"], rdma)?;
+    report["server_before"] = control::remote_status(args).await?;
+    report["client_before"] = control::local_status(&session.server)?;
+    status::validate(&report["client_before"], rdma)?;
+    status::validate(&report["server_before"], rdma)?;
+    let before = session.client.counters();
+    let mut runner = metrics_runner(log_dir, args)?;
+    let handler = create_workload(args, &owners, runner.as_ref());
+    if let Some(runner) = &mut runner {
+        runner.start();
+    }
+    let native = runtime::drive(args, &session, handler.clone()).await?;
+    session.client.stop_reaper();
+    if let Some(runner) = &mut runner {
+        runner.stop().await;
+    }
+    let mut counters = session.client.counters();
+    counters.submit_fail = counters.submit_fail.saturating_sub(before.submit_fail);
+    counters.submit_retry = counters.submit_retry.saturating_sub(before.submit_retry);
+    counters.resp_missed = counters.resp_missed.saturating_sub(before.resp_missed);
+    counters.reaped = counters.reaped.saturating_sub(before.reaped);
+    report["client_after"] = control::local_status(&session.server)?;
+    report["server_after"] = control::remote_status(args).await?;
+    report::finish(report, args, &handler, &native, &counters);
+    status::validate(&report["client_after"], rdma)?;
+    status::validate(&report["server_after"], rdma)?;
+    if session.conns.iter().any(|conn| !conn.is_open()) {
+        return Err("workload connection closed before final status collection".into());
+    }
+    if args.mode == BenchMode::Tokio {
+        report["latency_scope"] =
+            json!("Rust pre-call to awaited response; Tokio scheduling included; validation excluded");
+    }
+    Ok(())
 }
 
-/// Coroutine mode: drive `crowdb_rpc_ffi::co_spawn` on a blocking
-/// thread. The C++ call blocks until all coroutines finish (deadline
-/// driven by the handler returning false).
-async fn run_coroutine(
-    recorder: Arc<BenchRecorder>,
-    client: Arc<RpcClient>,
-    server: Arc<RpcServer>,
-    conns: Vec<Connection>,
-    loader_num: usize,
-    duration: Duration,
-    data_bytes: Vec<u8>,
-) -> Arc<BenchRecorder> {
-    let handler = Arc::new(EchoHandler::new(Arc::clone(&recorder), data_bytes, duration));
-    let num_co = u32::try_from(loader_num.max(1)).unwrap_or(u32::MAX);
-
-    // co_spawn blocks; run on a blocking thread so the tokio runtime
-    // is not stalled. The handler callbacks fire on C++ coroutine
-    // threads during the call.
-    let _ = tokio::task::spawn_blocking(move || {
-        co_spawn(&client, &server, &conns, num_co, ECHO_MSG_TYPE, handler);
-    })
-    .await;
-    recorder
+fn create_workload(args: &RpcArgs, owners: &[usize], runner: Option<&MetricsRunner>) -> Arc<EchoWorkload> {
+    let create = |registry: &mut MetricsRegistry| {
+        Arc::new(EchoWorkload::new(
+            args.loader_count,
+            owners,
+            args.payload_bytes,
+            Duration::from_secs(args.warmup_secs),
+            Duration::from_secs(args.duration_secs),
+            registry,
+        ))
+    };
+    if let Some(runner) = runner {
+        create(&mut runner.registry().lock().expect("metrics registry"))
+    } else {
+        create(&mut MetricsRegistry::new())
+    }
 }
 
-/// Tokio mode: one task per loader, each looping `RpcClient::call`.
-async fn run_tokio(
-    recorder: Arc<BenchRecorder>,
-    client: Arc<RpcClient>,
-    server: Arc<RpcServer>,
-    conns: Vec<Connection>,
-    loader_num: usize,
-    duration: Duration,
-    data_bytes: Vec<u8>,
-) -> Arc<BenchRecorder> {
-    let conns = Arc::new(conns);
-    let next_id = Arc::new(AtomicU64::new(1));
-    let run = run_workload(
-        recorder,
-        loader_num,
-        duration,
-        move |rec: Arc<BenchRecorder>| {
-            let client = Arc::clone(&client);
-            let server = Arc::clone(&server);
-            let conns = Arc::clone(&conns);
-            let next_id = Arc::clone(&next_id);
-            let data_bytes = data_bytes.clone();
-            async move {
-                let id = next_id.fetch_add(1, Ordering::Relaxed);
-                let conn_idx = usize::try_from(id).map_or(0, |v| v % conns.len());
-                let conn = &conns[conn_idx];
-                let ctrl = Buffer::from_bytes(&build_control(id));
-                let data = Buffer::from_bytes(&data_bytes);
-                let t0 = Instant::now();
-                match client.call(&server, conn, id, ctrl, Some(data), ECHO_MSG_TYPE) {
-                    Ok(fut) => match fut.await {
-                        Ok(_) => {
-                            rec.record_ok(
-                                t0.elapsed().as_micros().try_into().unwrap_or(u64::MAX),
-                                data_bytes.len() as u64,
-                            );
-                        }
-                        Err(_) => rec.record_err(),
-                    },
-                    Err(_) => rec.record_err(),
-                }
-            }
-        },
-        || {},
-    )
-    .await;
-    run.recorder
-}
-
-/// `CoBenchHandler` for the echo workload: builds per-request control
-/// (with `id=request_id`) + reused data buffer, records latency / errors
-/// into the shared recorder, and stops each coroutine at the deadline.
-struct EchoHandler {
-    recorder: Arc<BenchRecorder>,
-    data_bytes: Vec<u8>,
-    deadline: Instant,
-}
-
-impl EchoHandler {
-    fn new(recorder: Arc<BenchRecorder>, data_bytes: Vec<u8>, duration: Duration) -> Self {
-        Self {
-            recorder,
-            data_bytes,
-            deadline: Instant::now() + duration,
+fn metrics_runner(log_dir: &Path, args: &RpcArgs) -> Result<Option<MetricsRunner>, String> {
+    if args.metrics_interval == 0 {
+        return Ok(None);
+    }
+    let file = open_named_log(log_dir, "rpc-test-metrics", 50, 1)?;
+    let mut runner = MetricsRunner::new(file, args.metrics_interval);
+    runner.set_cpp_flush(|writer, seconds, stamp, width, count_w, tps_w| {
+        let width = width.max(crowdb_rpc_ffi::cpp_global_metrics_max_name_len());
+        if let Some(text) =
+            crowdb_rpc_ffi::flush_cpp_global_metrics(seconds, stamp, "cpp-rpc", width, count_w, tps_w)
+        {
+            let _ = std::io::Write::write_all(writer, text.as_bytes());
         }
-    }
-
-    fn before_deadline(&self) -> bool {
-        Instant::now() < self.deadline
-    }
-}
-
-impl CoBenchHandler for EchoHandler {
-    fn build_request(&self, request_id: u64) -> Option<(Buffer, Buffer)> {
-        if !self.before_deadline() {
-            return None;
-        }
-        let ctrl = Buffer::from_bytes(&build_control(request_id));
-        let data = Buffer::from_bytes(&self.data_bytes);
-        Some((ctrl, data))
-    }
-
-    fn on_response(&self, _request_id: u64, status: Result<(), RpcError>, latency_ns: u64) -> bool {
-        if status.is_ok() {
-            self.recorder
-                .record_ok_ns(latency_ns, self.data_bytes.len() as u64);
-        } else {
-            self.recorder.record_err();
-        }
-        self.before_deadline()
-    }
-}
-
-/// Next power of two >= n (min 1).
-fn next_pow2(n: u32) -> u32 {
-    if n <= 1 {
-        return 1;
-    }
-    let mut p = 1u32;
-    while p < n {
-        p = p.saturating_mul(2);
-    }
-    p
+    });
+    Ok(Some(runner))
 }

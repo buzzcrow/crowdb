@@ -561,9 +561,10 @@ CQ verification:
   alone cannot represent different immutable offsets safely. Keep a parent
   reference until every frame has been dispatched. Defer a mixed capability/data
   aggregate if the application handler is not yet published.
-- [~] **Expose aggregation observations**: export actual frames/SEND, wire
+- [x] **Expose aggregation observations**: export actual frames/SEND, wire
   bytes, queue high-water and rejects. Keep RPC TPS distinct from transport
-  SEND rate; compare aggregation disabled/enabled for both TCP and RDMA.
+  SEND rate. Export TCP frames/writev and Nagle settings alongside RDMA SEND
+  aggregation; phase E owns the sustained comparisons.
   Files: transport statistics, C API/Rust FFI and benchmark reports.
 
 Aggregation checkpoint:
@@ -666,7 +667,44 @@ Status/configuration checkpoint:
 
 ### D. CLI coroutine workload and canonical results
 
-- [ ] **Add `bench rdma` with shared echo workload**: reuse `bench rpc`
+Implementation checkpoint:
+
+- `bench rdma` and `bench rpc` now share the timed coroutine echo workload,
+  bounded loader correlation slots and per-completion-owner histogram shards.
+  `LatencyHistogram::capture_total` merges those shards after callbacks join.
+  Input uses the agreed queue/slot variables; CLI aliases preserve existing
+  `--loader-num`, `--connections` and `--value-size` invocations.
+- Canonical JSON goes directly to `--output`; it records warmup/window/drain,
+  native submission failures and correlation counters, verified payloads,
+  unique QPs and native client/server status. Missing required status counters
+  invalidate a run. Resource/transport deltas explicitly cover warmup/drain;
+  only validated response callbacks inside the duration contribute to TPS.
+- Four CLI integration cases pass for TCP coroutine/Tokio timing, corrupted
+  payload rejection, timeout reporting, unavailable strict RDMA and invalid
+  input. The initial integration run exposed explicit TCP being rejected by
+  the strict fallback guard. `rdma_enabled_` now distinguishes a deliberately
+  selected TCP connection from a failed RDMA attempt; legacy strict RDMA still
+  fails closed. The native regression tests this combination with environment
+  RDMA enabled and fallback disabled. All 187 enabled CTest cases and scoped
+  tree-lint pass. Common histogram merge tests and CLI clippy also pass.
+- All four CLI integration cases pass on the final source; the four shared
+  histogram tests, workspace clippy, formatting and scoped tree-lint pass.
+  Full C++/FFI gate passes at
+  `.crowdb-runtime/artifacts/unit/cpp-b17dc30f9af94d00ad083d4062a3c79e/`.
+  The no-verbs build passes all 137 CTest cases and all 33 FFI tests pass.
+- The primary regression script now launches the fb-server and release CLI,
+  consumes startup/status/result JSON files, and verifies errors, actual path
+  and unique QPs. Its first strict native HCA run uses one CQ/poller per peer,
+  one generic I/O worker per peer, 128-byte payload, 1024-byte wire slots,
+  SQ/RQ/post target 1024 and 1 MiB send/receive arenas per QP. Each row has
+  1 s warmup and 10 s measured traffic, with zero errors/fallback:
+  one loader gives 58,570 TPS (avg 16.54 us, P90 16.13 us); 32 loaders give
+  337,553 TPS with aggregation disabled and 436,374 TPS enabled. These are
+  initial single trials, not a maximum or repeatability claim. Wide canonical
+  tables, complete settings/counters and binary identities are retained at
+  `.crowdb-runtime/rdma-check/artifacts/bench/rdma-rpc-20261022T155651.230011Z/`.
+
+- [x] **Add `bench rdma` with shared echo workload**: reuse `bench rpc`
   coroutine machinery; expose `qpair_count`, loader count, warmup/duration,
   slot/aggregation and CQ/queue knobs using the same code variable names as
   the report. RDMA command requires RDMA and disables TCP fallback. Preserve
@@ -681,7 +719,7 @@ Status/configuration checkpoint:
   transport status JSON in an owned C ABI buffer for FFI, and expose the same
   status through an fb-server benchmark control RPC while workload QPs remain
   live. Server readiness follows actual CM listen/start.
-- [ ] **Validate and measure each completion**: expose response data to
+- [x] **Validate and measure each completion**: expose response data to
   `CoBenchHandler`, verify request ID, length and payload, count submission
   rejects/retries/timeouts/connection/payload/duplicate errors, and reconcile
   C++ coroutine statistics with Rust results. Warm up for one second, measure
@@ -695,7 +733,7 @@ Status/configuration checkpoint:
   completion can resume it (the lifecycle prerequisite is in phase A).
   Files: `co_client.cpp`, FFI `co_bench.rs`, CLI echo
   handler and lifecycle tests.
-- [ ] **Write the canonical report**: emit a versioned JSON result directly
+- [x] **Write the canonical report**: emit a versioned JSON result directly
   to a requested file, plus human output; serialize all schema columns above.
   Use explicit null for unavailable counters. Record measured errors and mark
   invalid on setup/client/server/report failure or RDMA path mismatch. Include
@@ -714,7 +752,7 @@ Status/configuration checkpoint:
   failed/early-exit server, disabled fallback and actual argument propagation.
   Files: `tools/benchmark/bench-{rdma-,}rpc-regression.sh`, common runner and
   `tools/benchmark/tests/rdma_regression_test.py`.
-- [ ] **Run gradual native hardware profiles**: first one coroutine/QP/CQ,
+- [~] **Run gradual native hardware profiles**: first one coroutine/QP/CQ,
   then loader sweep 1/2/4/8/16/32 and higher as needed, then QP and CQ sweeps;
   compare aggregation off/on, SQ/RQ 1024 and 4096, small slot classes and larger
   payload/slot pairs. Increase depth only when counters show it limits load.
