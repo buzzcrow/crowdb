@@ -34,6 +34,7 @@ struct RdmaConfig
     std::string device;
     uint8_t     port                  = 1;
     uint32_t    cq_depth              = 8192;
+    uint32_t    cq_count              = 1;
     uint32_t    wire_slot_capacity    = RDMA_WIRE_SLOT_CAPACITY;
     uint64_t    send_arena_bytes      = 64ULL << 20;
     uint64_t    receive_arena_bytes   = 1ULL << 30;
@@ -42,6 +43,7 @@ struct RdmaConfig
     uint32_t    qp_max_send_sge       = 2;
     uint32_t    qp_max_recv_sge       = 2;
     uint32_t    poll_batch            = 256;
+    uint32_t    verbs_poll_batch      = 32;
     uint32_t    poll_empty_budget     = 256;
     uint32_t    shutdown_drain_ms     = 3000;
     uint32_t    posted_receive_target = 1024;
@@ -124,6 +126,10 @@ class RdmaTransport : public Transport
         std::atomic<uint64_t> local_protection_errors{0};
         std::atomic<uint64_t> retry_exceeded_errors{0};
         std::atomic<uint64_t> remote_access_errors{0};
+        std::atomic<uint64_t> poller_count{0};
+        std::atomic<uint64_t> cq_events{0};
+        std::atomic<uint64_t> cq_wakeups{0};
+        std::atomic<uint64_t> pending_deferred_receives{0};
     };
 
     explicit RdmaTransport(RdmaConfig config = {});
@@ -146,10 +152,10 @@ class RdmaTransport : public Transport
     // with the common RPC worker before submitting frames.
     std::shared_ptr<Connection> accept();
 
-    // Enable completion handling. CQ draining is driven by the epoll worker.
+    // Start one dedicated polling/event worker per initialized CQ.
     void              start();
     void              stop();
-    [[nodiscard]] int completion_fd() const;
+    [[nodiscard]] int completion_fd(uint32_t index = 0) const;
     [[nodiscard]] int cm_event_fd() const;
     int               drain_cq(uint32_t max_completions = 0);
     void              register_events(SocketEngine *engine);
@@ -162,17 +168,19 @@ class RdmaTransport : public Transport
 
     [[nodiscard]] const Stats &stats() const
     {
+        refresh_poll_stats();
         return stats_;
     }
 
     Stats &stats()
     {
+        refresh_poll_stats();
         return stats_;
     }
 
     [[nodiscard]] bool ready() const
     {
-        return capability_available_;
+        return capability_available_.load(std::memory_order_acquire);
     }
 
   private:
@@ -180,14 +188,12 @@ class RdmaTransport : public Transport
     friend struct TestRdmaTransport;
 #    endif
     RdmaConfig                                                           config_;
-    bool                                                                 capability_available_ = false;
-    struct ibv_context                                                  *context_              = nullptr;
-    bool                                                                 owns_context_         = true;
-    struct ibv_pd                                                       *pd_                   = nullptr;
-    struct ibv_comp_channel                                             *comp_channel_         = nullptr;
-    struct ibv_cq                                                       *cq_                   = nullptr;
-    struct rdma_event_channel                                           *cm_channel_           = nullptr;
-    struct rdma_cm_id                                                   *listen_id_            = nullptr;
+    std::atomic<bool>                                                    capability_available_{false};
+    struct ibv_context                                                  *context_      = nullptr;
+    bool                                                                 owns_context_ = true;
+    struct ibv_pd                                                       *pd_           = nullptr;
+    struct rdma_event_channel                                           *cm_channel_   = nullptr;
+    struct rdma_cm_id                                                   *listen_id_    = nullptr;
     std::string                                                          requested_device_;
     uint8_t                                                              port_ = 1;
     std::vector<struct rdma_cm_id *>                                     cm_ids_;
@@ -200,39 +206,74 @@ class RdmaTransport : public Transport
     ConnectionHandler               connection_handler_;
 
     std::atomic<bool> running_{false};
-    std::atomic_flag  cq_polling_      = ATOMIC_FLAG_INIT;
-    std::atomic_flag  cm_polling_      = ATOMIC_FLAG_INIT;
-    int               continuation_fd_ = -1;
+    std::atomic_flag  cm_polling_ = ATOMIC_FLAG_INIT;
 
-    bool  prime_receive(const std::shared_ptr<Connection> &connection);
-    Stats stats_;
+    bool          prime_receive(const std::shared_ptr<Connection> &connection);
+    mutable Stats stats_;
+    void          refresh_poll_stats() const;
 
     enum class WorkKind : uint8_t { Send, Receive };
+    struct ConnectionPools;
 
     struct WorkRequest
     {
-        std::atomic<uint64_t>       token{0};
-        WorkKind                    kind;
-        std::shared_ptr<Connection> conn;
-        Buffer                     *slot           = nullptr;
-        OutFrame                   *frame          = nullptr;
-        uint64_t                    request_id     = 0;
-        uint64_t                    stream_id      = 0;
-        uint64_t                    sequence       = 0;
-        uint64_t                    logical_offset = 0;
+        std::atomic<uint64_t>            token{0};
+        WorkKind                         kind;
+        std::shared_ptr<Connection>      conn;
+        std::shared_ptr<ConnectionPools> pools;
+        Buffer                          *slot           = nullptr;
+        OutFrame                        *frame          = nullptr;
+        uint64_t                         request_id     = 0;
+        uint64_t                         stream_id      = 0;
+        uint64_t                         sequence       = 0;
+        uint64_t                         logical_offset = 0;
     };
 
-    static constexpr uint64_t      WORK_RESERVED = UINT64_MAX;
-    std::unique_ptr<WorkRequest[]> work_requests_;
-    std::atomic<uint32_t>          next_work_{0};
-    std::atomic<uint32_t>          work_generation_{1};
+    static constexpr uint64_t WORK_RESERVED = UINT64_MAX;
 
-    WorkRequest *acquire_work(WorkKind kind, Connection *conn, Buffer *slot, OutFrame *frame = nullptr);
-    WorkRequest *claim_work(uint64_t token);
-    void         release_work(WorkRequest *work);
-    void         dispatch_completion(const struct ibv_wc &wc);
-    void         cancel_work(Connection *connection = nullptr);
-    void         close_after_drain(Connection *connection);
+    struct CompletionQueue;
+
+    struct CqReservation
+    {
+        CompletionQueue *queue;
+        uint32_t         capacity;
+        bool             committed = false;
+
+        CqReservation(CompletionQueue *owner, uint32_t entries) : queue(owner), capacity(entries)
+        {
+        }
+
+        ~CqReservation();
+        CqReservation(const CqReservation &)            = delete;
+        CqReservation &operator=(const CqReservation &) = delete;
+    };
+
+    std::vector<std::unique_ptr<CompletionQueue>> completion_queues_;
+    std::atomic<uint32_t>                         next_cq_{0};
+    CompletionQueue                              *reserve_cq(uint32_t capacity);
+    bool                                          create_completion_queues(ibv_context *context);
+    void                                          destroy_completion_queues();
+    int                       drain_queue(uint32_t index, uint32_t max_completions, bool wait_for_owner = false);
+    uint32_t                  process_deferred(CompletionQueue &queue, uint32_t max_completions);
+    void                      cancel_deferred(CompletionQueue &queue, Connection *connection);
+    void                      start_pollers();
+    void                      run_poller(CompletionQueue *queue);
+    void                      notify_queue(uint32_t index);
+    void                      install_frame_notifier(const std::shared_ptr<Connection> &connection, uint32_t index);
+    static constexpr uint64_t CM_EVENT_TAG  = 1;
+    static constexpr uint64_t CQ_EVENT_BASE = 2;
+
+    WorkRequest            *acquire_work(WorkKind kind, Connection *conn, Buffer *slot, OutFrame *frame = nullptr);
+    WorkRequest            *claim_work(uint64_t token);
+    void                    release_work(WorkRequest *work);
+    void                    dispatch_completion(const struct ibv_wc &wc);
+    void                    cancel_work(Connection *connection = nullptr);
+    void                    close_after_drain(Connection *connection);
+    void                    destroy_connection_qp(Connection *connection, rdma_cm_id *id);
+    static ConnectionPools *pools_for(Connection *connection);
+    static void             set_connection_pools(Connection *connection, std::shared_ptr<ConnectionPools> pools);
+    bool                    publish_cm_connection(rdma_cm_id *id, const std::shared_ptr<Connection> &connection,
+                                                  std::shared_ptr<ConnectionPools> pools);
 
     struct RepostState
     {
@@ -276,8 +317,12 @@ class RdmaTransport : public Transport
 
     struct ConnectionPools : std::enable_shared_from_this<ConnectionPools>
     {
+        ibv_qp_cap                      effective_capacity{};
+        std::shared_ptr<RepostState>    posting_state = std::make_shared<RepostState>();
         std::unique_ptr<RdmaBufferPool> send;
         std::unique_ptr<RdmaBufferPool> recv;
+        uint32_t                        cq_index          = 0;
+        uint32_t                        reserved_capacity = 0;
     };
 
     struct RepostContext

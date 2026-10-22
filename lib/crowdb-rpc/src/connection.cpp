@@ -422,9 +422,19 @@ void Connection::close()
 
 void Connection::on_frame(Frame *frame)
 {
+    if (frame->header.msg_type == RDMA_HANDSHAKE_MSG_TYPE) {
+        RdmaEndpointCapability capability;
+        if (parse_rdma_handshake(frame->control, &capability)) {
+            set_peer_capability(capability);
+        }
+        delete frame;
+        return;
+    }
     if (const auto *callback = on_frame_callback_.get(); callback != nullptr && *callback) {
         (*callback)(frame, this);
+        return;
     }
+    delete frame;
 }
 
 } // namespace crowdb::rpc

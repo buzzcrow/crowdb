@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "../../src/transport/rdma/rdma_cq.h"
 #include "crowdb-rpc/transport/rdma/rdma_transport.h"
 
 #if defined(CROWDB_RPC_HAVE_RDMA) && defined(CROWDB_RPC_TEST_UTIL)
@@ -50,19 +51,47 @@ struct TestRdmaTransport
         transport.close_after_drain(connection);
     }
 
-    static void set_cq(RdmaTransport &transport, ibv_cq *cq)
+    static void set_cq(RdmaTransport &transport, ibv_cq *cq, uint32_t index = 0)
     {
-        transport.cq_ = cq;
+        transport.completion_queues_[index]->cq = cq;
         if (cq == nullptr)
             transport.event_engine_ = nullptr;
     }
 
-    static void set_cq_polling(RdmaTransport &transport, bool polling)
+    static void set_cq_polling(RdmaTransport &transport, bool polling, uint32_t index = 0)
     {
         if (polling)
-            transport.cq_polling_.test_and_set(std::memory_order_acquire);
+            transport.completion_queues_[index]->polling.test_and_set(std::memory_order_acquire);
         else
-            transport.cq_polling_.clear(std::memory_order_release);
+            transport.completion_queues_[index]->polling.clear(std::memory_order_release);
+    }
+
+    static std::shared_ptr<void> bind_cq(const std::shared_ptr<Connection> &connection, uint32_t index)
+    {
+        auto pools      = std::make_shared<RdmaTransport::ConnectionPools>();
+        pools->cq_index = index;
+        RdmaTransport::set_connection_pools(connection.get(), pools);
+        return pools;
+    }
+
+    static bool reserve(RdmaTransport &transport, uint32_t capacity, bool commit)
+    {
+        RdmaTransport::CqReservation reservation(transport.reserve_cq(capacity), capacity);
+        reservation.committed = commit;
+        return reservation.queue != nullptr;
+    }
+
+    static void watch_frames(RdmaTransport &transport, const std::shared_ptr<Connection> &connection, uint32_t index)
+    {
+        transport.install_frame_notifier(connection, index);
+    }
+
+    static bool pending(RdmaTransport &transport, uint64_t token)
+    {
+        const auto index = static_cast<uint32_t>(token);
+        return transport.completion_queues_[index / transport.config_.cq_depth]
+                   ->work_requests[index % transport.config_.cq_depth]
+                   .token.load(std::memory_order_acquire) == token;
     }
 };
 
@@ -72,14 +101,16 @@ struct TestCompletionQueue
     ibv_cq             cq{};
     std::deque<ibv_wc> ready;
     std::deque<ibv_wc> on_arm;
-    uint32_t           arms = 0;
+    uint32_t           arms       = 0;
+    uint64_t           poll_calls = 0;
 
     TestCompletionQueue()
     {
         cq.context          = &context;
         cq.cq_context       = this;
         context.ops.poll_cq = [](ibv_cq *queue, int capacity, ibv_wc *output) {
-            auto      &self  = *static_cast<TestCompletionQueue *>(queue->cq_context);
+            auto &self = *static_cast<TestCompletionQueue *>(queue->cq_context);
+            ++self.poll_calls;
             const auto count = std::min(static_cast<size_t>(capacity), self.ready.size());
             for (size_t index = 0; index < count; ++index) {
                 output[index] = self.ready.front();

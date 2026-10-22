@@ -6,6 +6,7 @@
 #include "crowdb-common/log.h"
 #include "crowdb-rpc/transport/socket_transport.h"
 #include "rdma_channel.h"
+#include "rdma_cq.h"
 
 #ifdef CROWDB_RPC_HAVE_RDMA
 
@@ -31,10 +32,18 @@ namespace crowdb::rpc
 RdmaTransport::RdmaTransport(RdmaConfig config) : config_(std::move(config))
 {
     const bool valid_config = config_.apply_environment() && config_.valid();
-    if (!valid_config)
+    if (!valid_config) {
         config_.cq_depth = 1;
-    work_requests_           = std::make_unique<WorkRequest[]>(config_.cq_depth);
-    continuation_fd_         = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+        config_.cq_count = 1;
+    }
+    for (uint32_t index = 0; index < config_.cq_count; ++index) {
+        auto queue           = std::make_unique<CompletionQueue>();
+        queue->index         = index;
+        queue->work_requests = std::make_unique<WorkRequest[]>(config_.cq_depth);
+        queue->deferred.reserve(config_.cq_depth);
+        queue->continuation_fd = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+        completion_queues_.push_back(std::move(queue));
+    }
     repost_state_            = std::make_shared<RepostState>();
     repost_state_->transport = this;
     if (!valid_config) {
@@ -46,12 +55,7 @@ RdmaTransport::RdmaTransport(RdmaConfig config) : config_(std::move(config))
             config_.device = requested_device;
     }
     requested_device_ = config_.device;
-    if (const char *requested_port = std::getenv("CROWDB_RDMA_PORT"); requested_port != nullptr) {
-        const int value = std::atoi(requested_port);
-        if (value > 0 && value <= 255 && config.port == 1)
-            config_.port = static_cast<uint8_t>(value);
-    }
-    port_ = config_.port;
+    port_             = config_.port;
 
     int          device_count = 0;
     ibv_device **devices      = ibv_get_device_list(&device_count);
@@ -81,17 +85,12 @@ RdmaTransport::RdmaTransport(RdmaConfig config) : config_(std::move(config))
 RdmaTransport::~RdmaTransport()
 {
     RdmaTransport::shutdown();
-    if (continuation_fd_ >= 0)
-        ::close(continuation_fd_);
     send_pool_.reset();
     recv_pool_.reset();
-    if (cq_ != nullptr) {
-        ibv_destroy_cq(cq_);
-        cq_ = nullptr;
-    }
-    if (comp_channel_ != nullptr) {
-        ibv_destroy_comp_channel(comp_channel_);
-        comp_channel_ = nullptr;
+    destroy_completion_queues();
+    for (const auto &queue : completion_queues_) {
+        if (queue->continuation_fd >= 0)
+            ::close(queue->continuation_fd);
     }
     if (pd_ != nullptr) {
         ibv_dealloc_pd(pd_);
@@ -107,55 +106,28 @@ bool RdmaTransport::adopt_cm_context(struct ibv_context *context)
 {
     if (context == nullptr)
         return false;
+    std::scoped_lock lock(cm_mu_);
     if (context_ == context)
-        return true;
+        return ready();
 
+    // A transport uses one device context for its CQ pool and registered
+    // arenas. Do not replace live QPs/registrations when another HCA appears.
+    if (context_ != nullptr)
+        return false;
     auto *new_pd = ibv_alloc_pd(context);
     if (new_pd == nullptr)
         return false;
-    auto *new_channel = ibv_create_comp_channel(context);
-    if (new_channel == nullptr) {
+    if (!create_completion_queues(context)) {
         ibv_dealloc_pd(new_pd);
         return false;
     }
-    rdma_detail::make_nonblocking(new_channel->fd);
-    auto *new_cq = ibv_create_cq(context, static_cast<int>(config_.cq_depth), this, new_channel, 0);
-    if (new_cq == nullptr || ibv_req_notify_cq(new_cq, 0) != 0) {
-        if (new_cq != nullptr)
-            ibv_destroy_cq(new_cq);
-        ibv_destroy_comp_channel(new_channel);
-        ibv_dealloc_pd(new_pd);
-        return false;
-    }
-    auto new_send = std::make_unique<RdmaBufferPool>(new_pd, config_.send_arena_bytes, config_.sq_depth);
-    auto new_recv = std::make_unique<RdmaBufferPool>(new_pd, config_.send_arena_bytes, config_.sq_depth);
-    if (new_send == nullptr || new_recv == nullptr) {
-        ibv_destroy_cq(new_cq);
-        ibv_destroy_comp_channel(new_channel);
-        ibv_dealloc_pd(new_pd);
-        return false;
-    }
-
-    send_pool_.reset();
-    recv_pool_.reset();
-    if (cq_ != nullptr)
-        ibv_destroy_cq(cq_);
-    if (comp_channel_ != nullptr)
-        ibv_destroy_comp_channel(comp_channel_);
-    if (pd_ != nullptr)
-        ibv_dealloc_pd(pd_);
-    if (context_ != nullptr && owns_context_)
-        ibv_close_device(context_);
-
     context_      = context;
     owns_context_ = false;
     pd_           = new_pd;
-    comp_channel_ = new_channel;
-    cq_           = new_cq;
-    send_pool_    = std::move(new_send);
-    recv_pool_    = std::move(new_recv);
+    send_pool_    = std::make_unique<RdmaBufferPool>(pd_, config_.send_arena_bytes, config_.sq_depth);
+    recv_pool_    = std::make_unique<RdmaBufferPool>(pd_, config_.send_arena_bytes, config_.sq_depth);
     register_events(event_engine_);
-    return true;
+    return ready();
 }
 
 bool RdmaTransport::submit(Connection *conn, OutFrame *frame)
@@ -163,17 +135,21 @@ bool RdmaTransport::submit(Connection *conn, OutFrame *frame)
     Operation operation(repost_state_);
     if (!operation)
         return false;
-    if (conn == nullptr || !conn->is_open() || frame == nullptr || cq_ == nullptr || frame->control == nullptr ||
-        conn->transport_handle == 0) {
+    if (conn == nullptr || !conn->is_open() || frame == nullptr || frame->control == nullptr) {
         return false;
     }
     if (frame->data_views() > 1) {
         return false;
     }
-    auto *pools = static_cast<ConnectionPools *>(conn->user_data);
-    if (pools == nullptr || pools->send == nullptr) {
+    auto *pools = pools_for(conn);
+    if (pools == nullptr || pools->send == nullptr || pools->cq_index >= completion_queues_.size() ||
+        completion_queues_[pools->cq_index]->cq == nullptr) {
         return false;
     }
+
+    Operation posting(pools->posting_state);
+    if (!posting || !conn->is_open() || conn->transport_handle == 0)
+        return false;
 
     // TCP serializes the header and buffers independently. RDMA materializes
     // the complete wire message in one registered slot so the receiver can
@@ -259,10 +235,16 @@ bool RdmaTransport::post_receive(Connection *conn, Buffer *slot)
     Operation operation(repost_state_);
     if (!operation)
         return false;
-    if (conn == nullptr || !conn->is_open() || slot == nullptr || slot->data == nullptr || cq_ == nullptr ||
-        conn->transport_handle == 0 || slot->capacity < config_.wire_slot_capacity) {
+    if (conn == nullptr || !conn->is_open() || slot == nullptr || slot->data == nullptr ||
+        slot->capacity < config_.wire_slot_capacity) {
         return false;
     }
+    auto *pools = pools_for(conn);
+    if (pools == nullptr)
+        return false;
+    Operation posting(pools->posting_state);
+    if (!posting || !conn->is_open() || conn->transport_handle == 0)
+        return false;
     ibv_sge sge{};
     sge.addr               = reinterpret_cast<uintptr_t>(slot->data);
     sge.length             = slot->capacity;
@@ -335,10 +317,12 @@ void RdmaTransport::shutdown()
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(config_.shutdown_drain_ms);
     while (true) {
         bool pending_sends = false;
-        for (uint32_t index = 0; index < config_.cq_depth; ++index) {
-            const auto    &work  = work_requests_[index];
-            const uint64_t token = work.token.load(std::memory_order_acquire);
-            pending_sends |= token != 0 && token != WORK_RESERVED && work.kind == WorkKind::Send;
+        for (const auto &queue : completion_queues_) {
+            for (uint32_t index = 0; index < config_.cq_depth; ++index) {
+                const auto    &work  = queue->work_requests[index];
+                const uint64_t token = work.token.load(std::memory_order_acquire);
+                pending_sends |= token != 0 && token != WORK_RESERVED && work.kind == WorkKind::Send;
+            }
         }
         if (!pending_sends || std::chrono::steady_clock::now() >= deadline)
             break;
@@ -370,6 +354,8 @@ void RdmaTransport::shutdown()
     while (drain_cq(config_.poll_batch) > 0) {
     }
     cancel_work();
+    for (const auto &queue : completion_queues_)
+        queue->reserved_capacity.store(0, std::memory_order_release);
     if (listen_id_ != nullptr) {
         if (listen_id_->qp != nullptr)
             rdma_destroy_qp(listen_id_);
@@ -384,23 +370,36 @@ void RdmaTransport::shutdown()
 
 void RdmaTransport::start()
 {
+    if (running_.exchange(true, std::memory_order_acq_rel))
+        return;
     if ((repost_state_->users.load(std::memory_order_acquire) & RepostState::STOPPED) != 0) {
         repost_state_            = std::make_shared<RepostState>();
         repost_state_->transport = this;
     }
-    running_.store(true, std::memory_order_relaxed);
+    stats_.poller_count.store(0, std::memory_order_relaxed);
+    start_pollers();
 }
 
 void RdmaTransport::stop()
 {
     running_.store(false, std::memory_order_release);
+    for (const auto &queue : completion_queues_)
+        if (queue->engine != nullptr)
+            queue->engine->notify_worker();
+    for (const auto &queue : completion_queues_) {
+        if (queue->worker.joinable())
+            queue->worker.join();
+        queue->managed.store(false, std::memory_order_release);
+    }
     if (event_engine_ != nullptr)
         event_engine_->notify_worker();
 }
 
-int RdmaTransport::completion_fd() const
+int RdmaTransport::completion_fd(uint32_t index) const
 {
-    return comp_channel_ == nullptr ? -1 : comp_channel_->fd;
+    if (index >= completion_queues_.size() || completion_queues_[index]->channel == nullptr)
+        return -1;
+    return completion_queues_[index]->channel->fd;
 }
 
 int RdmaTransport::cm_event_fd() const

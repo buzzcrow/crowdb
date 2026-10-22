@@ -186,7 +186,25 @@ class Connection : public std::enable_shared_from_this<Connection>
     // Callbacks (set by RpcClient / RpcServer).
     void set_on_frame(OnFrameCallback cb)
     {
+        const bool ready = static_cast<bool>(cb);
         on_frame_callback_.set(std::move(cb));
+        const auto *notify = on_frame_ready_.get();
+        if (ready && notify != nullptr && *notify) {
+            (*notify)();
+        }
+    }
+
+    [[nodiscard]] bool has_frame_handler() const
+    {
+        const auto *callback = on_frame_callback_.get();
+        return callback != nullptr && static_cast<bool>(*callback);
+    }
+
+    // The transport installs this before publishing the connection. Handler
+    // publication wakes an owner retaining an early completed receive.
+    void set_frame_ready_notifier(std::function<void()> notify)
+    {
+        on_frame_ready_.set(std::move(notify));
     }
 
     void set_on_close(OnCloseCallback cb)
@@ -250,6 +268,8 @@ class Connection : public std::enable_shared_from_this<Connection>
     }
 
   private:
+    friend class RdmaTransport;
+    std::shared_ptr<void>  transport_context_;
     int64_t                id_;
     std::string            name_;
     BufferPool            *pool_;
@@ -285,9 +305,10 @@ class Connection : public std::enable_shared_from_this<Connection>
     OutFrame *pending_frames_[BATCH_MAX];
     int       pending_count_{0};
 
-    ConnectionCallback<OnFrameCallback> on_frame_callback_;
-    ConnectionCallback<OnCloseCallback> on_close_callback_;
-    ConnectionCallback<OnCloseCallback> on_rpc_close_callback_;
+    ConnectionCallback<OnFrameCallback>       on_frame_callback_;
+    ConnectionCallback<std::function<void()>> on_frame_ready_;
+    ConnectionCallback<OnCloseCallback>       on_close_callback_;
+    ConnectionCallback<OnCloseCallback>       on_rpc_close_callback_;
 };
 
 } // namespace crowdb::rpc

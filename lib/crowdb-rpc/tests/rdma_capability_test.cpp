@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+#include "crowdb-rpc/connection.h"
 #include "crowdb-rpc/transport/rdma/rdma_capability.h"
 
 #include <gtest/gtest.h>
@@ -54,6 +55,24 @@ TEST(RdmaCapabilityTest, FallbackStopsAfterPayloadSubmission)
     EXPECT_TRUE(crowdb::rpc::can_fallback_to_tcp(RdmaPathState::Connecting, false));
     EXPECT_FALSE(crowdb::rpc::can_fallback_to_tcp(RdmaPathState::Ready, false));
     EXPECT_FALSE(crowdb::rpc::can_fallback_to_tcp(RdmaPathState::Failed, true));
+}
+
+TEST(RdmaCapabilityTest, ConnectionConsumesCapabilityBeforeApplicationHandlerPublication)
+{
+    SystemBufferPool        pool;
+    crowdb::rpc::Connection connection(1, "handshake", &pool);
+    RdmaEndpointCapability  source;
+    source.rdma_available   = true;
+    source.protocol_version = 1;
+    source.generation       = 17;
+    const auto wire         = crowdb::rpc::serialize_rdma_handshake(source);
+    auto      *frame        = new crowdb::rpc::Frame;
+    frame->header.msg_type  = crowdb::rpc::RDMA_HANDSHAKE_MSG_TYPE;
+    frame->control.assign(wire.begin(), wire.end());
+    connection.on_frame(frame);
+    EXPECT_TRUE(connection.peer_handshake_received());
+    EXPECT_EQ(connection.peer_capability().generation, source.generation);
+    EXPECT_FALSE(connection.has_frame_handler());
 }
 
 TEST(RdmaCapabilityTest, ConnectionStateRejectsIllegalUpgradeAndFallback)

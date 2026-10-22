@@ -8,6 +8,9 @@
 
 #    include <gtest/gtest.h>
 
+#    include <chrono>
+#    include <thread>
+
 using namespace crowdb::rpc;
 
 namespace
@@ -17,6 +20,7 @@ RdmaConfig test_config()
     RdmaConfig config;
     config.device                = "test-no-device";
     config.cq_depth              = 8;
+    config.cq_count              = 2;
     config.rq_depth              = 4;
     config.posted_receive_target = 4;
     config.poll_empty_budget     = 1;
@@ -27,14 +31,18 @@ class RdmaCompletionTest : public ::testing::Test
 {
   protected:
     RegisteredBufferPool        slots{16U << 20, 32};
-    SystemBufferPool            buffers{32};
+    SystemBufferPool            buffers{64};
     TestCompletionQueue         queue;
     RdmaTransport               transport{test_config()};
     std::shared_ptr<Connection> connection = std::make_shared<Connection>(1, "test", &slots);
 
     void TearDown() override
     {
+        transport.stop();
+        TestRdmaTransport::set_cq_polling(transport, false);
+        TestRdmaTransport::set_cq_polling(transport, false, 1);
         TestRdmaTransport::set_cq(transport, nullptr);
+        TestRdmaTransport::set_cq(transport, nullptr, 1);
         TestRdmaTransport::cancel(transport);
     }
 
@@ -48,7 +56,16 @@ class RdmaCompletionTest : public ::testing::Test
         frame->request_id = 239;
         frame->control    = buffers.alloc(1);
         frame->data       = buffers.alloc(16);
-        const auto token  = TestRdmaTransport::send(transport, owner == nullptr ? connection : owner, slot, frame);
+        if (frame->control == nullptr || frame->data == nullptr) {
+            (void)slot->transition(BufferOwnership::SendInFlight, BufferOwnership::Available);
+            slot->release();
+            if (frame->control != nullptr)
+                frame->control->release();
+            frame->release_data();
+            delete frame;
+            return 0;
+        }
+        const auto token = TestRdmaTransport::send(transport, owner == nullptr ? connection : owner, slot, frame);
         if (token == 0) {
             (void)slot->transition(BufferOwnership::SendInFlight, BufferOwnership::Available);
             slot->release();
@@ -103,6 +120,54 @@ TEST_F(RdmaCompletionTest, BoundedWorkTableRejectsExhaustionAndStaleCompletions)
         TestRdmaTransport::complete(transport, tokens[index]);
 }
 
+TEST_F(RdmaCompletionTest, QueueCapacityReservationRollsBackFailedSetup)
+{
+    EXPECT_TRUE(TestRdmaTransport::reserve(transport, 8, false));
+    EXPECT_TRUE(TestRdmaTransport::reserve(transport, 8, true));
+    EXPECT_TRUE(TestRdmaTransport::reserve(transport, 8, true));
+    EXPECT_FALSE(TestRdmaTransport::reserve(transport, 1, true));
+}
+
+TEST_F(RdmaCompletionTest, WorkTablesAndPollingOwnershipAreIndependentPerCq)
+{
+    auto       other       = std::make_shared<Connection>(6, "other-cq", &slots);
+    const auto binding     = TestRdmaTransport::bind_cq(other, 1);
+    int        user_marker = 42;
+    other->user_data       = &user_marker;
+    std::array<uint64_t, 8> first{};
+    std::array<uint64_t, 8> second{};
+    for (size_t index = 0; index < first.size(); ++index) {
+        first[index]  = send();
+        second[index] = send(other);
+        ASSERT_NE(first[index], 0U);
+        ASSERT_NE(second[index], 0U);
+        EXPECT_LT(static_cast<uint32_t>(first[index]), 8U);
+        EXPECT_GE(static_cast<uint32_t>(second[index]), 8U);
+        EXPECT_LT(static_cast<uint32_t>(second[index]), 16U);
+    }
+    EXPECT_EQ(send(), 0U);
+    EXPECT_EQ(send(other), 0U);
+    TestCompletionQueue other_queue;
+    queue.ready.push_back(TestCompletionQueue::completion(first.front()));
+    other_queue.ready.push_back(TestCompletionQueue::completion(second.front()));
+    TestRdmaTransport::set_cq(transport, &queue.cq);
+    TestRdmaTransport::set_cq(transport, &other_queue.cq, 1);
+    TestRdmaTransport::set_cq_polling(transport, true);
+    EXPECT_EQ(transport.drain_cq(8), 1);
+    EXPECT_EQ(queue.ready.size(), 1U);
+    EXPECT_TRUE(other_queue.ready.empty());
+    TestRdmaTransport::set_cq_polling(transport, false);
+    EXPECT_EQ(transport.drain_cq(8), 1);
+    for (size_t index = 1; index < first.size(); ++index) {
+        TestRdmaTransport::complete(transport, first[index]);
+        TestRdmaTransport::complete(transport, second[index]);
+    }
+    TestRdmaTransport::set_cq(transport, nullptr, 1);
+    EXPECT_TRUE(connection->is_open());
+    EXPECT_TRUE(other->is_open());
+    EXPECT_EQ(other->user_data, &user_marker);
+}
+
 TEST_F(RdmaCompletionTest, WorkRetainsConnectionUntilCompletion)
 {
     auto                      owner    = std::make_shared<Connection>(3, "retained", &slots);
@@ -137,6 +202,92 @@ TEST_F(RdmaCompletionTest, ReceiveWaitsForFrameReleaseBeforeRecycling)
     delete received;
     EXPECT_EQ(slot->ref->load(), 0);
     EXPECT_EQ(slot->ownership.load(), BufferOwnership::Available);
+}
+
+TEST_F(RdmaCompletionTest, CompletedReceiveReturnsWorkAdmissionBeforeApplicationCallback)
+{
+    std::array<uint64_t, 7> sends{};
+    for (auto &token : sends) {
+        token = send();
+        ASSERT_NE(token, 0U);
+    }
+    uint64_t reply = 0;
+    connection->set_on_frame([&](Frame *frame, Connection *) {
+        reply = send();
+        delete frame;
+    });
+    Buffer *slot = slots.alloc(RDMA_WIRE_SLOT_CAPACITY);
+    ASSERT_NE(slot, nullptr);
+    serialize_header(slot->data, Header{});
+    ASSERT_TRUE(slot->transition(BufferOwnership::Available, BufferOwnership::PostedReceive));
+    const auto received = TestRdmaTransport::receive(transport, connection, slot);
+    ASSERT_NE(received, 0U);
+    TestRdmaTransport::complete(transport, received, IBV_WC_SUCCESS, HEADER_SIZE);
+    ASSERT_NE(reply, 0U);
+    EXPECT_TRUE(TestRdmaTransport::pending(transport, reply));
+    EXPECT_FALSE(TestRdmaTransport::pending(transport, received));
+    TestRdmaTransport::complete(transport, reply);
+    for (const auto token : sends)
+        TestRdmaTransport::complete(transport, token);
+}
+
+TEST_F(RdmaCompletionTest, FixedPollerRetainsEarlyReceiveAndWakesOnHandlerPublication)
+{
+    Buffer *slot = slots.alloc(RDMA_WIRE_SLOT_CAPACITY);
+    ASSERT_NE(slot, nullptr);
+    Header header;
+    header.data_size = 4;
+    serialize_header(slot->data, header);
+    std::memcpy(slot->data + HEADER_SIZE, "late", 4);
+    ASSERT_TRUE(slot->transition(BufferOwnership::Available, BufferOwnership::PostedReceive));
+    const auto token      = TestRdmaTransport::receive(transport, connection, slot);
+    auto       completion = TestCompletionQueue::completion(token);
+    completion.byte_len   = HEADER_SIZE + 4;
+    queue.ready.push_back(completion);
+    TestRdmaTransport::set_cq(transport, &queue.cq);
+    TestRdmaTransport::watch_frames(transport, connection, 0);
+    EpollEngine generic;
+    ASSERT_EQ(generic.init(), 0);
+    transport.register_events(&generic);
+    transport.start();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (transport.stats().pending_deferred_receives.load() == 0 && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    ASSERT_EQ(transport.stats().pending_deferred_receives.load(), 1U);
+    EXPECT_EQ(transport.handle_external_event(3), 0);
+    std::array<EngineEvent, 8> events{};
+    EXPECT_EQ(generic.wait(events.data(), events.size(), 0), 0);
+    std::atomic<bool> received{false};
+    std::thread::id   callback_thread;
+    connection->set_on_frame([&](Frame *frame, Connection *) {
+        callback_thread = std::this_thread::get_id();
+        EXPECT_EQ(std::memcmp(frame->data_buf->payload_data(), "late", 4), 0);
+        delete frame;
+        received.store(true, std::memory_order_release);
+    });
+    while (!received.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    transport.stop();
+    EXPECT_TRUE(received.load());
+    EXPECT_NE(callback_thread, std::this_thread::get_id());
+    EXPECT_EQ(transport.stats().poller_count.load(), 1U);
+    EXPECT_EQ(transport.stats().pending_deferred_receives.load(), 0U);
+    EXPECT_EQ(slot->ref->load(), 0);
+}
+
+TEST_F(RdmaCompletionTest, CancellationRetiresReceiveDeferredBeforeHandlerInstallation)
+{
+    Buffer *slot = slots.alloc(RDMA_WIRE_SLOT_CAPACITY);
+    ASSERT_NE(slot, nullptr);
+    serialize_header(slot->data, Header{});
+    ASSERT_TRUE(slot->transition(BufferOwnership::Available, BufferOwnership::PostedReceive));
+    const auto token = TestRdmaTransport::receive(transport, connection, slot);
+    TestRdmaTransport::complete(transport, token, IBV_WC_SUCCESS, HEADER_SIZE);
+    ASSERT_EQ(transport.stats().pending_deferred_receives.load(), 1U);
+    TestRdmaTransport::cancel(transport);
+    EXPECT_EQ(transport.stats().pending_deferred_receives.load(), 0U);
+    EXPECT_EQ(slot->ref->load(), 0);
+    EXPECT_EQ(slots.quarantined_bytes(), RDMA_WIRE_SLOT_CAPACITY);
 }
 
 TEST_F(RdmaCompletionTest, ReceiveErrorAndShutdownQuarantineUncertainBuffers)
@@ -216,6 +367,8 @@ TEST_F(RdmaCompletionTest, PollAfterArmingClosesNotificationRace)
     EXPECT_EQ(transport.drain_cq(8), 1);
     EXPECT_TRUE(queue.ready.empty());
     EXPECT_EQ(queue.arms, 1U);
+    EXPECT_EQ(transport.stats().cq_polls.load(), queue.poll_calls);
+    EXPECT_LE(transport.stats().cq_empty_polls.load(), queue.poll_calls);
 }
 
 TEST_F(RdmaCompletionTest, CmDisconnectPublishesAlreadyCompletedResponseBeforeFailingRequests)

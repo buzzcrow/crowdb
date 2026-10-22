@@ -13,53 +13,30 @@ worker per CQ, using the existing RPC regression runners.
 
 ## Progress
 
-The transport implementation now includes validated endpoint capability data
-(protocol, generation, device, GID, port, and supported capacity classes),
-explicit RDMA path states, and a pre-payload-only TCP fallback predicate.
-Implemented since this checkpoint: active/passive RDMA-CM setup, RC QP
-creation, one-MR arena-backed wire slots, one-SGE SEND/RECV posting, bounded receive posting, and the initial completion-channel
-polling with CQ acknowledgement, error quarantine, validated receive-frame
-dispatch into `Connection::on_frame`, and epoll external-fd registration.
-The CQ path now uses one transport-wide shared CQ for all QPs. Its completion
-channel is registered with one epoll engine; the worker drains completions with
-a bounded busy-poll budget and rearms notification after the queue is idle.
-Epoll is therefore only the wakeup path, while completion dispatch remains in
-the CQ drain. Stop now wakes the owning engine, CQ polling and completion-error
-counters are exposed, and CM disconnect events close and retire their connection
-pools before QP/ID teardown. The OCI runner now also has an unprivileged
-shared-HCA profile with explicit verbs/CM devices, IPC_LOCK, and bounded
-memlock. Capability handshake bytes
-have a fixed wire representation with round-trip tests. Negotiated capability
-exchange through the existing TCP handshake, common transport path
-selection/fallback, receive repost after owner release, and two-peer OCI E2E
-execution are now wired at the RPC seam: TCP connections exchange the fixed
-capability frame, connections retain the peer capability, RDMA-enabled
-connections are selected before TCP fallback, and completed RDMA frames retain
-their buffers until the owning `Frame` is destroyed, then repost the receive
-pair. The live host HCA local-loop CM/QP/send/receive flow now passes, including
-receive repost and connection-level CQ handling. The actual `RpcServer`/
-`RpcClient` worker path now passes a live request/response round trip with
-multiple sequential frames on one QP, including CQ wakeup, frame dispatch,
-request correlation, response completion, and clean teardown. Remaining
-acceptance includes failure-injection coverage, pre-payload TCP fallback proof,
-stable completion ownership mapping, and executing the single-node
-multi-container OCI profiles against a built `crowdb:test` image. Physical
-multi-node validation is deferred to [the separate follow-up plan](plan-rdma-multi-node.md).
+The registered-buffer foundation and initial RC SEND/RECV flow are committed.
+SEND/RECV tokens retain stable owners, receive leases wait for final C++/FFI
+release, and strict RDMA tests reject TCP fallback. Nanosecond histogram and
+coroutine handoff/joining fixes are also committed and verified below.
 
-The completion ownership mapping now uses a bounded, generation-tagged
-`WorkRequest` table for SEND and RECV completions. It retains the connection,
-request, stream, sequence, and logical offset. Error dispatch uses the retained
-work kind rather than an undefined completion opcode. A receive lease is
-reposted by `Buffer::last_release_cb` only after the final C++/FFI owner drops
-it; held caller leases survive frame deletion and transport shutdown.
+The current CQ implementation assigns each QP to one bounded CQ, with one
+fixed polling/event thread per CQ and separate CM event handling. Early
+receives wait for application handler publication; QP teardown gates concurrent
+posting. Per-connection arena ownership no longer occupies application
+`Connection::user_data`. CQ and provider-returned QP capacity values are
+retained, and poll-call counters use per-CQ shards. The CQ diff passed focused
+tests, live HCA diagnostics, the full C++/FFI gate, formatting and workspace
+clippy and scoped tree-lint. Tree-lint exits zero with style warnings.
 
-The current code also preposts receives before `rdma_connect`/`rdma_accept`,
-uses a short configurable RNR timer, drains acknowledged CQ work before CM
-close, and fixes CQ registration and buffer-pool teardown ordering. The earlier
-64-request burst exposed RNR stalls and premature test-server teardown. The
-worker test now has a client-finished barrier, configurable workload size,
-worker count, QP count, bounded in-flight window, per-request payload validation,
-and TPS/P50/P95/P99 output.
+Still pending: application reply allocation independent of receive admission,
+real PD/MR lifetime after held leases and transport teardown, bounded transport
+aggregation, `bench rdma`/shared coroutine reporting, unified regression
+orchestration, negotiated TCP capability preflight, failure injection, and the
+two-container acceptance profiles. Capability serialization and automatic
+consumption at the connection seam do not establish negotiated preflight:
+`connect` still attempts CM before the required TCP preflight. Do not treat the
+historical benchmark comments or older subtask ledger as completed acceptance.
+Physical multi-node validation remains outside this scope in
+[the follow-up plan](plan-rdma-multi-node.md).
 
 ## Current continuation checkpoint
 
@@ -198,21 +175,19 @@ latency histogram to resolve sub-65-us RTTs.
   it allocates replies from `conn->pool()`, which is currently the RDMA
   receive pool, while the diagnostic echo uses `server.pool()`. A completely
   preposted receive pool leaves no allocation admission for those replies.
-- [ ] **Unify histogram semantics**: use nanosecond input, fixed bounded
+- [x] **Unify histogram semantics**: use nanosecond input, fixed bounded
   memory, mergeable per-polling-owner shards, explicit zero/overflow counts,
   exact count/sum/min/max, and avg/P50/P90/P95/P99/P99.9 output. Remove the
   common C++/Rust histograms' 65.5-us underflow floor; do not retain a separate
   benchmark-only precision contract. Specify a shared bucket layout and
   golden vectors. Record timing origin and exclude warmup/drain from TPS.
-- [ ] **Replace competing CQ consumers before expanding the performance matrix**:
-  current `RdmaTransport` has one `cq_` per peer, no dedicated polling
-  thread, and competing epoll workers protected by `cq_polling_`.
-  `RdmaTransport::start()` only changes lifecycle state. The recommended
-  agreed target is one assigned polling/event thread per CQ, with QPs assigned
-  to one CQ, bounded busy polling under traffic, and arm/poll/epoll sleep
-  after the idle budget. Add `cq_count`; derive `poller_count = cq_count`
-  rather than exposing two inconsistent knobs. Compare native and OCI runs with the same
-  manifest; neither single-host topology establishes physical-node isolation.
+- [x] **Replace competing CQ consumers before expanding the performance matrix**:
+  `RdmaTransport` now assigns QPs to a bounded CQ pool and starts one fixed
+  polling/event thread per CQ. Generic epoll workers handle CM events only.
+  Busy polling continues under traffic; idle workers arm, poll again, then
+  sleep on their private epoll engine. `poller_count` derives from `cq_count`.
+  Native and OCI comparison with the same manifest remains in phase E;
+  neither single-host topology establishes physical-node isolation.
 
 Required result schema (client/server resource values are separate):
 
@@ -221,7 +196,7 @@ Required result schema (client/server resource values are separate):
 | Identity    | case_id, run_id, git_sha, binary hashes, topology, CPU/HCA identity, CPU affinity, actual path, fallback policy/count             |
 | Workload    | client_mode, loader_count, producer_threads, in_flight_per_loader, connection_count, qpair_count, logical_ops_per_rpc, payload_bytes, wire_bytes, aggregation_enabled, aggregation_max_bytes, aggregation_max_frames, frames_per_send |
 | Scheduling  | io_engines, io_workers, cq_count, poller_count, poll_batch, verbs_poll_batch, poll_empty_budget, epoll_wakeups, CQ event/poll counts |
-| Capacity    | requested/effective sq_depth, rq_depth, posted_receive_target, cq_depth, wire_slot_capacity, arena bytes, queue/pool high-water marks |
+| Capacity    | requested/effective sq_depth, rq_depth, posted_receive_target, cq_depth, wire_slot_capacity, arena bytes, application_buffer_capacity, send_queue_capacity, queue/pool high-water marks |
 | Measurement | warmup_s, measure_s, repeat_index, latency_scope, submitted, completed_in_window, drain_completed, rpc_tps, logical_ops_s, payload_Bps |
 | Latency     | latency_count, avg_ns, p50_ns, p90_ns, p95_ns, p99_ns, p999_ns, min_ns, max_ns, histogram_zero_count, histogram_overflow_count       |
 | Errors      | errors_total, setup_errors, submit_rejects, timeouts, connection_errors, cq_errors, payload_mismatches, duplicate_completions, retries, report_errors, client_exit, server_exit, valid |
@@ -324,7 +299,7 @@ Verified histogram checkpoint:
 
 ### B. CQ owners and resource ownership
 
-- [~] **Create the bounded CQ pool**: add `RdmaConfig::cq_count`,
+- [x] **Create the bounded CQ pool**: add `RdmaConfig::cq_count`,
   `verbs_poll_batch`, and strict environment validation. Each CQ owns its
   completion channel, wake fd, fixed poller and bounded WR table. Assign each
   QP to one CQ at creation; SEND/RECV and repost retain that assignment.
@@ -332,7 +307,7 @@ Verified histogram checkpoint:
   CQ capacity for the configured QPs and posted receives before traffic.
   Files: `rdma_transport.h`, `rdma_config.cpp`, `rdma_connection.cpp`,
   `rdma_work_request.cpp`, new private CQ implementation under `transport/rdma/`.
-- [ ] **Run one polling/event worker per CQ**: continuously poll while busy,
+- [x] **Run one polling/event worker per CQ**: continuously poll while busy,
   dispatch callbacks on the owner, arm notification after the empty budget,
   poll again before sleeping, acknowledge events, and wake promptly on submit
   and stop. Keep CM management separate from CQ completion ownership; generic
@@ -340,7 +315,22 @@ Verified histogram checkpoint:
   drain/quarantine WRs, then destroy QPs/CQs/channels. Test idle/busy transitions,
   arm races, contention, multi-CQ mapping, partial setup and repeated teardown.
   Files: RDMA transport/completion sources, `socket_transport.cpp`, RPC tests.
-- [ ] **Separate application and receive allocators**: built-in echo and
+  Retain arenas in the connection's private transport context; leave
+  `Connection::user_data` to its caller. Gate per-QP posting before destruction,
+  and publish migrated CM IDs together with their owner map under the existing
+  lifecycle mutex. Reclaim a completed WR entry before invoking an application
+  callback or releasing source-buffer owners, so exact-depth handoffs can
+  admit a reply/repost. Poll-call counters count verbs invocations and use
+  per-CQ atomics with aggregation on status reads.
+  A CQ worker may receive data before CM returns and the caller installs its
+  frame handler. Retain those completed receives in a bounded per-CQ deferred
+  list, with their WR/connection/pool owners, until handler publication wakes
+  the CQ owner. Connection-level capability frames are consumed at the common
+  connection seam. Cancellation takes exclusive CQ ownership to retire deferred
+  work; shutdown joins pollers before destroying QPs/CQs. No hot-path lock is
+  introduced. Test early receive/late handler, deferred cancellation, fixed-owner
+  busy/idle wakeups and late buffer release.
+- [~] **Separate application and receive allocators**: built-in echo and
   default handlers allocate from the common application pool, not a fully
   preposted receive arena. Receive posting and repost explicitly use the
   connection's retained RDMA receive pool. Test `posted_receive_target ==
@@ -350,6 +340,37 @@ Verified histogram checkpoint:
   until the last held receive lease is released, including after transport
   shutdown; no deregister-before-release, double repost, premature recycle or
   silent PD leak. Files: RDMA buffer pool and lifecycle sources, lease tests.
+
+CQ verification:
+
+- 27 focused capability/configuration/completion tests pass, including CQ
+  reservation rollback, partitioned tokens, independent polling gates, deferred
+  receive ownership, wake-on-handler-publication, cancellation and exact-depth
+  callback admission. A fixture allocation failure was diagnosed in GDB and
+  fixed by separating application-buffer admission from the WR exhaustion
+  being tested; it was not a transport CQ crash.
+- The final diagnostic uses two native processes on one HCA, two QPs/two CQs
+  per peer, one polling thread per CQ, one generic I/O worker per peer, two
+  producer threads, 32 in flight each, 128-byte payload, 1 KiB slots,
+  SQ/RQ/post target 1024, CQ depth 4096 per CQ, and 1 MiB send/receive arenas
+  per QP. After 1 s warmup, 10 s measured traffic completed 8,278,071 RPCs:
+  827,807 TPS, avg 74.92 us, P90 86.02 us, P99 97.28 us, zero RPC errors and
+  zero histogram overflow; 62 requests drained afterward. Actual QP/CQ/poller
+  counts are asserted. This is a transport diagnostic, not the primary CLI
+  coroutine max-TPS result. Artifact and binary/source identity:
+  `.crowdb-runtime/artifacts/rdma/20261022T124101Z/`.
+- A prior successful diagnostic at
+  `.crowdb-runtime/artifacts/rdma/20261022T122640Z/` measured 829,227 TPS with
+  its retained binary hash. The subsequent source revision corrected/sharded
+  poll-call statistics; do not combine measurements from these two binaries.
+- `.crowdb-runtime/artifacts/rdma/20261022T122423Z/` is invalid: the runner
+  started with the previous binary after a failed incremental build. Its
+  `INVALID.md` explicitly excludes it from acceptance/comparisons. Later runs
+  require a successful build before launch and retain binary/source hashes.
+- The full C++ gate and all 29 Rust RPC FFI tests pass on the final CQ source.
+  Complete logs and results:
+  `.crowdb-runtime/artifacts/unit/cpp-c333ccb1d15145bfadc725c037c7be19/`.
+  Workspace clippy and changed C++ formatting also pass.
 
 ### C. Bounded aggregation
 
@@ -458,7 +479,7 @@ Completed:
 - connection-level PD and registered send/receive slot pools;
 - initial receive posting, CQ completion dispatch, owner-release repost, and
   RNR retry configuration;
-- RDMA-to-TCP capability negotiation and pre-payload fallback wiring;
+- capability serialization and explicit pre-payload fallback policy; TCP preflight remains pending;
 - epoll registration for CM and CQ wakeup events;
 - live HCA local-loop CM/QP/send/receive E2E with all frames received and clean CQ
   status, and clean client/server exit;

@@ -4,6 +4,7 @@
 #include "crowdb-common/log.h"
 #include "crowdb-rpc/transport/rdma/rdma_transport.h"
 #include "rdma_channel.h"
+#include "rdma_cq.h"
 
 #ifdef CROWDB_RPC_HAVE_RDMA
 
@@ -20,8 +21,7 @@ std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int 
 {
     if (!ready() || addr.empty() || port <= 0 || port > 65535) {
 
-        CRB_LOG_WARN("rdma connect: transport unavailable pd={} cq={} addr={} port={}", static_cast<const void *>(pd_),
-                     static_cast<const void *>(cq_), addr, port);
+        CRB_LOG_WARN("rdma connect: transport unavailable addr={} port={}", addr, port);
         return nullptr;
     }
     {
@@ -116,9 +116,17 @@ std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int 
         rdma_destroy_id(id);
         return nullptr;
     }
+    const uint64_t required_capacity = static_cast<uint64_t>(config_.sq_depth) + config_.posted_receive_target;
+    CqReservation  reservation(required_capacity > UINT32_MAX ? nullptr
+                                                              : reserve_cq(static_cast<uint32_t>(required_capacity)),
+                               static_cast<uint32_t>(required_capacity));
+    if (reservation.queue == nullptr) {
+        rdma_destroy_id(id);
+        return nullptr;
+    }
     ibv_qp_init_attr qp_attr{};
-    qp_attr.send_cq             = cq_;
-    qp_attr.recv_cq             = cq_;
+    qp_attr.send_cq             = reservation.queue->cq;
+    qp_attr.recv_cq             = reservation.queue->cq;
     qp_attr.qp_type             = IBV_QPT_RC;
     qp_attr.cap.max_send_wr     = std::min(config_.sq_depth, static_cast<uint32_t>(device_attributes.max_qp_wr));
     qp_attr.cap.max_recv_wr     = std::min(config_.rq_depth, static_cast<uint32_t>(device_attributes.max_qp_wr));
@@ -133,22 +141,25 @@ std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int 
         rdma_destroy_id(id);
         return nullptr;
     }
-    auto pools  = std::make_shared<ConnectionPools>();
-    pools->send = std::make_unique<RdmaBufferPool>(id->pd, config_.send_arena_bytes, config_.sq_depth);
-    pools->recv = std::make_unique<RdmaBufferPool>(id->pd, config_.receive_arena_bytes, config_.rq_depth);
+    auto pools                = std::make_shared<ConnectionPools>();
+    pools->effective_capacity = qp_attr.cap;
+    pools->cq_index           = reservation.queue->index;
+    pools->reserved_capacity  = reservation.capacity;
+    pools->send               = std::make_unique<RdmaBufferPool>(id->pd, config_.send_arena_bytes, config_.sq_depth);
+    pools->recv               = std::make_unique<RdmaBufferPool>(id->pd, config_.receive_arena_bytes, config_.rq_depth);
     if (pools->send == nullptr || pools->recv == nullptr) {
         rdma_destroy_qp(id);
         rdma_destroy_id(id);
         return nullptr;
     }
-    auto connection       = std::make_shared<Connection>(reinterpret_cast<int64_t>(id), addr, pools->recv.get());
-    connection->user_data = pools.get();
+    auto connection = std::make_shared<Connection>(reinterpret_cast<int64_t>(id), addr, pools->recv.get());
+    set_connection_pools(connection.get(), pools);
+    reservation.committed = true;
     connection->set_path(ConnectionPath::Rdma);
     connection->transport_handle = reinterpret_cast<uint64_t>(id->qp);
+    install_frame_notifier(connection, pools->cq_index);
     if (!prime_receive(connection)) {
-        connection->close();
-        rdma_destroy_qp(id);
-        cancel_work(connection.get());
+        destroy_connection_qp(connection.get(), id);
         rdma_destroy_id(id);
         return nullptr;
     }
@@ -160,9 +171,7 @@ std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int 
     if (rdma_connect(id, &params) != 0) {
 
         CRB_LOG_WARN("rdma connect: rdma_connect failed addr={} errno={}", addr, errno);
-        connection->close();
-        rdma_destroy_qp(id);
-        cancel_work(connection.get());
+        destroy_connection_qp(connection.get(), id);
         rdma_destroy_id(id);
         return nullptr;
     }
@@ -173,34 +182,22 @@ std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int 
                      event == nullptr ? -1 : event->event, event == nullptr ? 0 : event->status, errno);
         if (event != nullptr)
             rdma_ack_cm_event(event);
-        connection->close();
-        rdma_destroy_qp(id);
-        cancel_work(connection.get());
+        destroy_connection_qp(connection.get(), id);
         rdma_destroy_id(id);
         return nullptr;
     }
     rdma_ack_cm_event(event);
-    if (rdma_migrate_id(id, cm_channel_) != 0) {
-        connection->close();
-        rdma_destroy_qp(id);
-        cancel_work(connection.get());
-        rdma_destroy_id(id);
-        return nullptr;
-    }
     ibv_qp_attr receive_attributes{};
     receive_attributes.min_rnr_timer = config_.min_rnr_timer;
     if (ibv_modify_qp(id->qp, &receive_attributes, IBV_QP_MIN_RNR_TIMER) != 0) {
-        connection->close();
-        rdma_destroy_qp(id);
-        cancel_work(connection.get());
+        destroy_connection_qp(connection.get(), id);
         rdma_destroy_id(id);
         return nullptr;
     }
-    {
-        std::scoped_lock lock(cm_mu_);
-        cm_ids_.push_back(id);
-        cm_connections_.emplace(id, connection);
-        cm_pools_.emplace(id, std::move(pools));
+    if (!publish_cm_connection(id, connection, std::move(pools))) {
+        destroy_connection_qp(connection.get(), id);
+        rdma_destroy_id(id);
+        return nullptr;
     }
     return connection;
 }
@@ -266,16 +263,15 @@ std::shared_ptr<Connection> RdmaTransport::accept()
                     }
                     cm_ids_.erase(std::remove(cm_ids_.begin(), cm_ids_.end(), event_id), cm_ids_.end());
                 }
-                if (closed_connection != nullptr)
-                    close_after_drain(closed_connection.get());
+                if (closed_connection == nullptr)
+                    continue;
+                close_after_drain(closed_connection.get());
                 if (event_type == RDMA_CM_EVENT_DISCONNECTED || event_type == RDMA_CM_EVENT_CONNECT_ERROR)
                     stats_.cm_disconnects.fetch_add(1, std::memory_order_relaxed);
-                if (event_id->qp != nullptr)
+                if (closed_connection != nullptr)
+                    destroy_connection_qp(closed_connection.get(), event_id);
+                else if (event_id->qp != nullptr)
                     rdma_destroy_qp(event_id);
-                if (closed_connection != nullptr) {
-                    closed_connection->transport_handle = 0;
-                    cancel_work(closed_connection.get());
-                }
                 rdma_destroy_id(event_id);
             }
         }
@@ -301,9 +297,17 @@ std::shared_ptr<Connection> RdmaTransport::accept()
         return nullptr;
     }
 
+    const uint64_t required_capacity = static_cast<uint64_t>(config_.sq_depth) + config_.posted_receive_target;
+    CqReservation  reservation(required_capacity > UINT32_MAX ? nullptr
+                                                              : reserve_cq(static_cast<uint32_t>(required_capacity)),
+                               static_cast<uint32_t>(required_capacity));
+    if (reservation.queue == nullptr) {
+        rdma_destroy_id(id);
+        return nullptr;
+    }
     ibv_qp_init_attr qp_attr{};
-    qp_attr.send_cq             = cq_;
-    qp_attr.recv_cq             = cq_;
+    qp_attr.send_cq             = reservation.queue->cq;
+    qp_attr.recv_cq             = reservation.queue->cq;
     qp_attr.qp_type             = IBV_QPT_RC;
     qp_attr.cap.max_send_wr     = config_.sq_depth;
     qp_attr.cap.max_recv_wr     = config_.rq_depth;
@@ -317,22 +321,25 @@ std::shared_ptr<Connection> RdmaTransport::accept()
         rdma_destroy_id(id);
         return nullptr;
     }
-    auto pools  = std::make_shared<ConnectionPools>();
-    pools->send = std::make_unique<RdmaBufferPool>(id->pd, config_.send_arena_bytes, config_.sq_depth);
-    pools->recv = std::make_unique<RdmaBufferPool>(id->pd, config_.receive_arena_bytes, config_.rq_depth);
+    auto pools                = std::make_shared<ConnectionPools>();
+    pools->effective_capacity = qp_attr.cap;
+    pools->cq_index           = reservation.queue->index;
+    pools->reserved_capacity  = reservation.capacity;
+    pools->send               = std::make_unique<RdmaBufferPool>(id->pd, config_.send_arena_bytes, config_.sq_depth);
+    pools->recv               = std::make_unique<RdmaBufferPool>(id->pd, config_.receive_arena_bytes, config_.rq_depth);
     if (pools->send == nullptr || pools->recv == nullptr) {
         rdma_destroy_qp(id);
         rdma_destroy_id(id);
         return nullptr;
     }
-    auto connection       = std::make_shared<Connection>(reinterpret_cast<int64_t>(id), "rdma-peer", pools->recv.get());
-    connection->user_data = pools.get();
+    auto connection = std::make_shared<Connection>(reinterpret_cast<int64_t>(id), "rdma-peer", pools->recv.get());
+    set_connection_pools(connection.get(), pools);
+    reservation.committed = true;
     connection->set_path(ConnectionPath::Rdma);
     connection->transport_handle = reinterpret_cast<uint64_t>(id->qp);
+    install_frame_notifier(connection, pools->cq_index);
     if (!prime_receive(connection)) {
-        connection->close();
-        rdma_destroy_qp(id);
-        cancel_work(connection.get());
+        destroy_connection_qp(connection.get(), id);
         rdma_destroy_id(id);
         return nullptr;
     }
@@ -346,9 +353,7 @@ std::shared_ptr<Connection> RdmaTransport::accept()
 
     if (accept_rc != 0) {
         CRB_LOG_WARN("rdma accept: rdma_accept failed errno={}", errno);
-        connection->close();
-        rdma_destroy_qp(id);
-        cancel_work(connection.get());
+        destroy_connection_qp(connection.get(), id);
         rdma_destroy_id(id);
         return nullptr;
     }
@@ -360,36 +365,23 @@ std::shared_ptr<Connection> RdmaTransport::accept()
                      event == nullptr ? -1 : event->event, event == nullptr ? 0 : event->status, errno);
         if (event != nullptr)
             rdma_ack_cm_event(event);
-        connection->close();
-        rdma_destroy_qp(id);
-        cancel_work(connection.get());
+        destroy_connection_qp(connection.get(), id);
         rdma_destroy_id(id);
         return nullptr;
     }
     rdma_ack_cm_event(event);
 
-    if (rdma_migrate_id(id, cm_channel_) != 0) {
-        connection->close();
-        rdma_destroy_qp(id);
-        cancel_work(connection.get());
-        rdma_destroy_id(id);
-        return nullptr;
-    }
-
     ibv_qp_attr receive_attributes{};
     receive_attributes.min_rnr_timer = config_.min_rnr_timer;
     if (ibv_modify_qp(id->qp, &receive_attributes, IBV_QP_MIN_RNR_TIMER) != 0) {
-        connection->close();
-        rdma_destroy_qp(id);
-        cancel_work(connection.get());
+        destroy_connection_qp(connection.get(), id);
         rdma_destroy_id(id);
         return nullptr;
     }
-    {
-        std::scoped_lock lock(cm_mu_);
-        cm_ids_.push_back(id);
-        cm_connections_.emplace(id, connection);
-        cm_pools_.emplace(id, std::move(pools));
+    if (!publish_cm_connection(id, connection, std::move(pools))) {
+        destroy_connection_qp(connection.get(), id);
+        rdma_destroy_id(id);
+        return nullptr;
     }
     return connection;
 }

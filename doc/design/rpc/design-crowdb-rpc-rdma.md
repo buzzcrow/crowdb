@@ -109,36 +109,45 @@ message. A slot is never posted twice concurrently.
 
 ## 5. Shared CQ and completion model
 
-Connections share a bounded CQ pool. Each CQ owns one completion channel and
-is assigned to a polling worker. Every QP uses the same shared CQ for SEND and
-RECV completions. The CQ maps `qp_num` to the owning RPC connection; a
-completion never requires scanning every connection CQ.
+Connections share a bounded CQ pool. Each QP uses one assigned CQ for both
+SEND and RECV. Each CQ has its own completion channel, generation-tagged WR
+table, wake descriptor and fixed polling/event thread. QP admission reserves
+`sq_depth + posted_receive_target` entries on its assigned CQ; insufficient
+capacity rejects setup. Failed setup rolls the reservation back, and QP
+retirement releases it. Each WR retains its connection, arena owners, buffers
+and request metadata. Its token resolves the CQ partition, local entry and
+generation without scanning connections or trusting an error CQE's opcode.
 
-The polling worker is the primary completion path:
+Normal completion processing belongs to the assigned CQ thread:
 
-1. polls the assigned CQ in a bounded busy-poll loop;
-2. dispatches all currently available completions;
-3. after the configured empty-poll budget, arms CQ notification with
-   `ibv_req_notify_cq`;
-4. polls once more to close the notification race;
-5. registers the CQ completion fd with epoll only while idle.
+1. poll bounded verbs batches and dispatch completions;
+2. while traffic continues, return directly to polling;
+3. after the empty-poll budget, arm notification with `ibv_req_notify_cq`;
+4. poll again to close the notification race;
+5. enter the CQ's private epoll wait only when still idle;
+6. acknowledge completion events after waking and resume polling.
 
-Epoll is a wakeup path, not the completion processor. When the CQ completion
-fd becomes readable, the worker acknowledges the event, removes the idle
-state, and returns to polling. The RDMA-CM event fd follows the same worker
-ownership rule but remains a connection-management event source.
+The completion and wake descriptors stay registered with the private epoll
+engine. Generic socket workers handle the separately serialized CM channel and
+do not drain managed CQs. CM retirement can acquire exclusive CQ ownership to
+drain acknowledged responses before closing a connection, then destroy its QP
+and cancel unresolved work. Per-connection posting admission prevents QP
+destruction from racing SEND, receive posting or repost. Stop wakes and joins
+CQ threads before destroying their QPs, CQs and channels.
 
-The worker processes a CQ batch as follows:
+Completed receives that precede application handler installation stay in a
+bounded deferred list with their WR and arena owners. Publishing the handler
+wakes the CQ thread; only then are those frames dispatched. Connection
+capability frames are consumed by the common connection seam before application
+routing. Handlerless data is never discarded merely because CM setup and CQ
+processing ran on different threads.
 
-1. resolves the completion's `qp_num` to a connection;
-2. resolves the work request through its stable `wr_id` record;
-3. dispatches SEND or RECV completion;
-4. returns or quarantines the slot according to completion status.
-
-The RPC library controls polling. FFI receives only a completion callback or a
-buffer lease after C++ has validated the frame and resolved ownership. A
-connection does not own a CQ or completion channel; it owns only its QP and
-slot rings.
+A completed WR entry is released before invoking application callbacks or
+releasing original send-buffer owners. Immediate replies and receive reposts
+can therefore reuse bounded WR admission. The registered slot itself remains
+leased until all frame/C++/FFI owners release it. Work cancellation and deferred
+receive retirement take the same exclusive CQ ownership gate. FFI receives a
+callback or buffer lease only after frame validation and ownership resolution.
 
 ## 6. Failure and fallback
 
@@ -174,13 +183,23 @@ changing the lease contract.
 The transport configuration supplies defaults when the transport is created:
 
 ```toml
-rdma_wire_slot_size = "1MiB"
-rdma_send_slot_count = 64
-rdma_receive_slot_count = 64
-rdma_cq_count = 4
-rdma_poll_empty_budget = 50000
-rdma_registered_bytes = "128MiB"
+wire_slot_capacity = 1048576
+send_arena_bytes = 67108864
+receive_arena_bytes = 1073741824
+sq_depth = 1024
+rq_depth = 1024
+posted_receive_target = 1024
+cq_count = 1
+cq_depth = 8192
+poll_batch = 256
+verbs_poll_batch = 32
+poll_empty_budget = 256
 ```
+
+CQ depth is per CQ; arena budgets and SQ/RQ depths are per QP. For example,
+one 8192-entry CQ admits four QPs with the default send and posted-receive
+limits. `poller_count` follows the number of initialized CQs. Small-message
+benchmarks select 1024-byte slots and matching arena budgets explicitly.
 
 The effective slot counts are bounded by registered bytes, QP send/receive
 depth, DiskIO queue bytes, and SDK-held slots. A configured slot size is a

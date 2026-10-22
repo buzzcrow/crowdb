@@ -138,19 +138,28 @@ void test_timed_client(const char *address, int port, const TestLoadSettings &se
     transport.start();
     std::vector<std::shared_ptr<Connection>> connections;
     std::unordered_set<uint32_t>             qp_numbers;
+    std::unordered_set<ibv_cq *>             cq_pointers;
     for (uint32_t index = 0; index < settings.connection_count; ++index) {
         auto connection = transport.connect(address, port);
         ASSERT_NE(connection, nullptr);
         ASSERT_EQ(connection->path(), ConnectionPath::Rdma);
         auto *qp = reinterpret_cast<ibv_qp *>(connection->transport_handle);
         ASSERT_NE(qp, nullptr);
+        ASSERT_EQ(qp->send_cq, qp->recv_cq);
+        cq_pointers.insert(qp->send_cq);
         qp_numbers.insert(qp->qp_num);
         client.attach(connection.get());
         connections.push_back(std::move(connection));
     }
     ASSERT_EQ(qp_numbers.size(), settings.connection_count);
-    std::fprintf(stderr, "RDMA topology: physical_hosts=1 shared_hca=%s independent_client_qps=%zu\n",
-                 std::getenv("CROWDB_RDMA_DEVICE"), qp_numbers.size());
+    ASSERT_EQ(cq_pointers.size(), std::min(settings.connection_count, test_setting("CROWDB_RDMA_CQ_COUNT", 1)));
+#    ifdef CROWDB_RPC_TEST_UTIL
+    const auto *stats = transport.rdma_stats_for_tests();
+    ASSERT_NE(stats, nullptr);
+    ASSERT_EQ(stats->poller_count.load(), test_setting("CROWDB_RDMA_CQ_COUNT", 1));
+#    endif
+    std::fprintf(stderr, "RDMA topology: physical_hosts=1 shared_hca=%s independent_client_qps=%zu active_cqs=%zu\n",
+                 std::getenv("CROWDB_RDMA_DEVICE"), qp_numbers.size(), cq_pointers.size());
     std::vector<std::thread> threads;
     for (uint32_t index = 0; index < settings.producer_count; ++index)
         threads.emplace_back([&, index] {

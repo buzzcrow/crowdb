@@ -4,6 +4,7 @@
 #include "crowdb-common/log.h"
 #include "crowdb-rpc/transport/rdma/rdma_transport.h"
 #include "crowdb-rpc/transport/socket_transport.h"
+#include "rdma_cq.h"
 
 #ifdef CROWDB_RPC_HAVE_RDMA
 
@@ -16,29 +17,46 @@ namespace crowdb::rpc
 
 int RdmaTransport::drain_cq(uint32_t max_completions)
 {
-    if (cq_ == nullptr || cq_polling_.test_and_set(std::memory_order_acquire))
+    int drained = 0;
+    for (uint32_t index = 0; index < completion_queues_.size(); ++index)
+        drained += drain_queue(index, max_completions);
+    return drained;
+}
+
+int RdmaTransport::drain_queue(uint32_t index, uint32_t max_completions, bool wait_for_owner)
+{
+    auto &queue = *completion_queues_[index];
+    if (queue.cq == nullptr)
         return 0;
+    if (wait_for_owner) {
+        while (queue.polling.test_and_set(std::memory_order_acquire))
+            std::this_thread::yield();
+    }
+    else if (queue.polling.test_and_set(std::memory_order_acquire)) {
+        return 0;
+    }
     // Only the CQ consumer may clear its continuation. A competing worker
     // must leave the wakeup readable when it cannot acquire the CQ.
-    if (continuation_fd_ >= 0) {
+    if (queue.continuation_fd >= 0) {
         uint64_t value = 0;
-        (void)::read(continuation_fd_, &value, sizeof(value));
+        (void)::read(queue.continuation_fd, &value, sizeof(value));
     }
     if (max_completions == 0)
         max_completions = std::max(1U, config_.poll_batch);
-    stats_.cq_polls.fetch_add(1, std::memory_order_relaxed);
-    uint32_t               drained          = 0;
-    uint32_t               empty_polls      = 0;
-    const uint32_t         kEmptyPollBudget = config_.poll_empty_budget;
-    std::array<ibv_wc, 32> completions{};
-    auto                   poll_one = [&](ibv_cq *cq) {
+    uint32_t                drained          = process_deferred(queue, max_completions);
+    uint32_t                empty_polls      = 0;
+    const uint32_t          kEmptyPollBudget = config_.poll_empty_budget;
+    std::array<ibv_wc, 256> completions{};
+    auto                    poll_one = [&](ibv_cq *cq) {
         while (drained < max_completions && cq != nullptr) {
-            const int batch = ibv_poll_cq(cq, static_cast<int>(std::min<uint32_t>(32, max_completions - drained)),
-                                          completions.data());
+            queue.poll_calls.fetch_add(1, std::memory_order_relaxed);
+            const int batch =
+                ibv_poll_cq(cq, static_cast<int>(std::min(config_.verbs_poll_batch, max_completions - drained)),
+                            completions.data());
             if (batch < 0)
                 break;
             if (batch == 0) {
-                stats_.cq_empty_polls.fetch_add(1, std::memory_order_relaxed);
+                queue.empty_polls.fetch_add(1, std::memory_order_relaxed);
                 if (++empty_polls >= kEmptyPollBudget)
                     break;
                 continue;
@@ -50,24 +68,30 @@ int RdmaTransport::drain_cq(uint32_t max_completions)
             drained += static_cast<uint32_t>(batch);
         }
     };
-    if (comp_channel_ != nullptr) {
+    const bool managed = queue.managed.load(std::memory_order_acquire);
+    if (queue.channel != nullptr && (!managed || queue.event_wakeup.exchange(false))) {
         ibv_cq *event_cq = nullptr;
         void   *context  = nullptr;
-        while (ibv_get_cq_event(comp_channel_, &event_cq, &context) == 0) {
+        while (ibv_get_cq_event(queue.channel, &event_cq, &context) == 0) {
             ibv_ack_cq_events(event_cq, 1);
+            stats_.cq_events.fetch_add(1, std::memory_order_relaxed);
         }
     }
-    poll_one(cq_);
-    (void)ibv_req_notify_cq(cq_, 0);
+    poll_one(queue.cq);
+    if (managed && drained > 0) {
+        queue.polling.clear(std::memory_order_release);
+        return static_cast<int>(drained);
+    }
+    (void)ibv_req_notify_cq(queue.cq, 0);
     // Completions arriving between the empty poll and notification arming
     // need one final poll. A full batch gets an explicit epoll continuation.
     empty_polls = 0;
-    poll_one(cq_);
-    if (drained == max_completions && continuation_fd_ >= 0) {
+    poll_one(queue.cq);
+    if (!managed && drained == max_completions && queue.continuation_fd >= 0) {
         const uint64_t value = 1;
-        (void)::write(continuation_fd_, &value, sizeof(value));
+        (void)::write(queue.continuation_fd, &value, sizeof(value));
     }
-    cq_polling_.clear(std::memory_order_release);
+    queue.polling.clear(std::memory_order_release);
     return static_cast<int>(drained);
 }
 
@@ -75,26 +99,33 @@ void RdmaTransport::register_events(SocketEngine *engine)
 {
     if (engine == nullptr)
         return;
-    // A shared CQ has one completion channel. Register that channel with one
-    // epoll engine only; registering the same fd in every engine causes
-    // duplicate wakeups and lets different workers race the CQ event.
     if (event_engine_ != nullptr && event_engine_ != engine)
         return;
     event_engine_ = engine;
-    if (completion_fd() >= 0)
-        engine->add_external_fd(completion_fd(), 1);
     if (cm_event_fd() >= 0)
-        engine->add_external_fd(cm_event_fd(), 2);
-    if (continuation_fd_ >= 0)
-        engine->add_external_fd(continuation_fd_, 3);
+        engine->add_external_fd(cm_event_fd(), CM_EVENT_TAG);
+    for (const auto &queue : completion_queues_) {
+        if (queue->managed.load(std::memory_order_acquire))
+            continue;
+        const uint64_t tag = CQ_EVENT_BASE + 2 * queue->index;
+        if (queue->channel != nullptr)
+            engine->add_external_fd(queue->channel->fd, tag);
+        if (queue->continuation_fd >= 0)
+            engine->add_external_fd(queue->continuation_fd, tag + 1);
+    }
+    if (running_.load(std::memory_order_acquire))
+        start_pollers();
 }
 
 int RdmaTransport::handle_external_event(uint64_t tag, uint32_t max_completions)
 {
-    if (tag == 1 || tag == 3) {
-        return drain_cq(max_completions);
+    if (tag >= CQ_EVENT_BASE && tag < CQ_EVENT_BASE + 2 * config_.cq_count) {
+        const auto index = static_cast<uint32_t>((tag - CQ_EVENT_BASE) / 2);
+        if (completion_queues_[index]->managed.load(std::memory_order_acquire))
+            return 0;
+        return drain_queue(index, max_completions);
     }
-    if (tag == 2) {
+    if (tag == CM_EVENT_TAG) {
         // The shared CM channel has one consumer while passive setup waits
         // for ESTABLISHED. Another worker must not consume that event.
         if (cm_polling_.test_and_set(std::memory_order_acquire))
@@ -223,16 +254,17 @@ void RdmaTransport::release_completed_receive(WorkRequest *work, const ibv_wc &w
         delete frame;
         return;
     }
-    auto  pools                  = work->conn->user_data == nullptr
-                                     ? nullptr
-                                     : static_cast<ConnectionPools *>(work->conn->user_data)->shared_from_this();
-    auto *repost                 = new RepostContext{repost_state_, work->conn, std::move(pools)};
+    auto  connection             = std::move(work->conn);
+    auto  pools                  = std::move(work->pools);
+    auto *repost                 = new RepostContext{repost_state_, connection, std::move(pools)};
     frame->data_buf              = work->slot;
     work->slot->last_release_cb  = &RdmaTransport::repost_frame_release;
     work->slot->last_release_ctx = repost;
-    work->conn->on_frame(frame);
-    stats_.receives.fetch_add(1, std::memory_order_relaxed);
     release_work(work);
+    // A callback may immediately release/repost the slot or submit a reply.
+    // Return this completed WR entry before either can need bounded admission.
+    stats_.receives.fetch_add(1, std::memory_order_relaxed);
+    connection->on_frame(frame);
 }
 
 void RdmaTransport::repost_frame_release(void *context, Buffer *slot)
@@ -251,7 +283,10 @@ void RdmaTransport::repost_frame_release(void *context, Buffer *slot)
 
 void RdmaTransport::release_completed_frame(WorkRequest *work, const ibv_wc &wc)
 {
-    OutFrame *frame = work->frame;
+    OutFrame  *frame      = work->frame;
+    auto       connection = std::move(work->conn);
+    const auto pools      = std::move(work->pools);
+    Buffer    *slot       = work->slot;
 
     if (wc.status != IBV_WC_SUCCESS) {
         record_completion_error(wc);
@@ -261,22 +296,22 @@ void RdmaTransport::release_completed_frame(WorkRequest *work, const ibv_wc &wc)
             (void)work->slot->quarantine();
         for (uint8_t i = 0; i < frame->data_views(); ++i)
             (void)frame->data_view(i)->quarantine();
-        if (work->conn != nullptr)
-            work->conn->close();
+        if (connection != nullptr)
+            connection->close();
     }
     else if (work->slot != nullptr &&
              !work->slot->transition(BufferOwnership::SendInFlight, BufferOwnership::Available)) {
         (void)work->slot->quarantine();
-        if (work->conn != nullptr)
-            work->conn->close();
+        if (connection != nullptr)
+            connection->close();
     }
-    if (work->slot != nullptr)
-        work->slot->release();
+    release_work(work);
+    if (slot != nullptr)
+        slot->release();
     if (frame->control != nullptr)
         frame->control->release();
     frame->release_data();
     delete frame;
-    release_work(work);
 }
 
 } // namespace crowdb::rpc
