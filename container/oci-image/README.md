@@ -257,12 +257,21 @@ pixi run --manifest-path container/oci-image/pixi.toml -e runtime run --runtime 
 ```
 
 Host networking uses port 9090 directly; no `-p` mapping is needed. Fixed listener
-ports mean one node per host. Use `--seed host:9095` when multicast is unavailable.
+ports mean one node per host. Use `--seed http://host:9095` when multicast is unavailable.
 Explicit `--device /dev/...` permits individual block devices; the host must grant
 UID/GID 10001 access. The launcher checks device type and effective read/write
 permissions, actual cgroup v2 CPU/memory limits and the host network namespace.
-A failed check removes only the container created by that launch. Data remains.
+A failed check retains the owned container and its data for diagnosis and explicit
+cleanup. A startup error does not authorize removing runtime or storage state.
 Physical hardware I/O must also be validated for the selected deployment.
+
+Use `--node-policy-file /absolute/path/node.toml` to pass the normal node's TOML
+startup inputs, including explicit supplied-media setup and public protocol URIs.
+The launcher rejects symlinked, oversized, unreadable or malformed files before
+runtime creation. It mounts the file read-only; the monitor validates its complete
+semantics and seals accepted policy before identity, admission or storage setup.
+The file must be readable by container UID/GID 10001 and remain available for
+recreation with the same accepted inputs.
 
 For containerd, install the separate locked runtime environment:
 

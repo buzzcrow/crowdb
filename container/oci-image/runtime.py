@@ -6,12 +6,50 @@ import json
 import math
 import os
 import subprocess
+import stat
+import tomllib
 import uuid
+from pathlib import Path
 
 from builder import tool
 from storage import inputs, record_inputs, runtime_arguments, validate_retained_inputs
 
 OWNER = "org.crowdb.launcher"
+
+
+def node_policy_file(args):
+    """Check the bounded startup file; the monitor validates and seals its semantics."""
+    path = getattr(args, "node_policy_file", None)
+    if path is None:
+        return None
+    path = Path(path)
+    if (not path.is_absolute() or any(part.is_symlink() for part in (path, *path.parents))
+            or any(character in str(path) for character in (",", "\n", "\r"))):
+        raise ValueError("node policy must be an absolute non-symlink path without mount delimiters")
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 32768:
+            raise ValueError("node policy must be a regular TOML file of at most 32768 bytes")
+        if not (metadata.st_mode & 0o004
+                or metadata.st_uid == 10001 and metadata.st_mode & 0o400
+                or metadata.st_gid == 10001 and metadata.st_mode & 0o040):
+            raise ValueError("node policy must be readable by container uid 10001")
+        content = b""
+        while len(content) < 32769:
+            part = os.read(descriptor, 32769 - len(content))
+            if not part:
+                break
+            content += part
+    finally:
+        os.close(descriptor)
+    if len(content) > 32768:
+        raise ValueError("node policy exceeds 32768 bytes")
+    try:
+        tomllib.loads(content.decode("utf-8"))
+    except (UnicodeError, tomllib.TOMLDecodeError):
+        raise ValueError("node policy is not valid UTF-8 TOML") from None
+    return path
 
 
 class Runtime:
@@ -66,6 +104,7 @@ class Runtime:
                 raise RuntimeError("container does not share this host network namespace")
 
     def create(self, args):
+        policy = node_policy_file(args)
         disks = inputs(args)
         validate_retained_inputs(args.data_root, disks)
         token = str(uuid.uuid4())
@@ -87,6 +126,9 @@ class Runtime:
         if args.password_file:
             command += ["--mount", f"type=bind,source={args.password_file},target=/run/crowdb-ssh-password,readonly",
                         "-e", "CROWDB_SSH_PASSWORD_FILE=/run/crowdb-ssh-password"]
+        if policy is not None:
+            command += ["--mount", f"type=bind,source={policy},target=/run/crowdb-node-policy.toml,readonly",
+                        "-e", "CROWDB_NODE_POLICY_FILE=/run/crowdb-node-policy.toml"]
         command += runtime_arguments(disks)
         if args.seed:
             command += ["-e", "CROWDB_DISCOVERY_SEEDS=" + ",".join(args.seed)]
@@ -102,7 +144,8 @@ class Runtime:
             record_inputs(args.data_root, disks)
             return container
         except BaseException:
-            # A failed create can leave a container; only this operation owns it.
+            # A failed verification must retain owned runtime and storage state
+            # for diagnosis/resume. An independent explicit cleanup owns removal.
             try:
                 current = self.inspect(args.name)
                 if current.get("Config", {}).get("Labels", {}).get(OWNER) == token:
@@ -111,7 +154,7 @@ class Runtime:
                         print(self.invoke("logs", args.name), flush=True)
                     except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as log_error:
                         print(f"Startup failure logs unavailable: {log_error}", flush=True)
-                    self.invoke("rm", "-f", args.name)
+                    print(f"Owned failed container retained: {args.name}", flush=True)
             except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as cleanup_error:
                 print(f"Inspect/cleanup after launch failure: {cleanup_error}", flush=True)
             raise

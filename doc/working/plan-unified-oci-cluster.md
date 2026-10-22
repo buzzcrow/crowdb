@@ -270,6 +270,14 @@ Existing implementation can be reused; these are the outstanding parts.
   Seal daemon/context/endpoint, exact resources/mounts/image and owner before
   effects; namespace is a backend detail, never application cluster identity.
   Verify applied cgroups/host network and one node per physical host.
+  - Host launcher now forwards `--node-policy-file` read-only to the normal
+    entrypoint, validating bounded regular UTF-8 TOML and UID-10001 readability
+    before runtime effects. This permits explicit production supplied-media and
+    public-URI inputs without bypassing normal node policy. Failed resource
+    verification retains the owned container and data for explicit cleanup.
+    All 47 OCI helper tests pass, including both runtimes, rejected file inputs
+    before runtime access, and no implicit removal of failed/foreign containers.
+    Common CLI host/containerd lifecycle is still outstanding.
 - [x] **T25 — Register direct Docker/Compose reference acceptance** (A01/A03/A25).
   - Six registered `deployment.reference` cases cover direct Docker and the
     unchanged shipped one/three-node Compose files, plus real editable UIs in

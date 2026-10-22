@@ -11,7 +11,7 @@ import socket
 import stat
 from pathlib import Path
 
-from runtime import Runtime
+from runtime import Runtime, node_policy_file
 from storage import inputs
 
 
@@ -68,6 +68,7 @@ def validate(args, parser):
     elif not (args.data_root / "ssh/authorized_keys").is_file():
         parser.error("production requires a password file or preinstalled authorized_keys")
     try:
+        node_policy_file(args)
         inputs(args)
     except (OSError, ValueError) as error:
         parser.error(str(error))
@@ -105,6 +106,8 @@ def main():
     parser.add_argument("--memory-mib", type=int, required=True)
     parser.add_argument("--ui-port", type=int)
     parser.add_argument("--password-file", type=Path)
+    parser.add_argument("--node-policy-file", type=Path,
+                        help="Bounded TOML node inputs, mounted read-only and sealed by the monitor")
     parser.add_argument("--device", type=Path, action="append", default=[])
     parser.add_argument("--disk-file", type=Path, action="append", default=[],
                         help="Existing disk file, mapped beneath /opt/crowdb/data/disks by filename")

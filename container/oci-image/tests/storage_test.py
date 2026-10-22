@@ -40,7 +40,7 @@ class StorageTest(unittest.TestCase):
                 self.assertTrue((root / "container-storage.json").is_file())
                 self.assertEqual(source.read_bytes(), b"retained")
 
-    def test_failed_start_preserves_logs_before_owned_cleanup(self):
+    def test_failed_start_preserves_logs_and_runtime_until_explicit_cleanup(self):
         for owned in (True, False):
             with self.subTest(owned=owned), tempfile.TemporaryDirectory() as directory:
                 args = SimpleNamespace(data_root=Path(directory), disk_file=[], device=[],
@@ -65,8 +65,8 @@ class StorageTest(unittest.TestCase):
                         patch("builtins.print") as output:
                     with self.assertRaisesRegex(RuntimeError, "stopped"):
                         runtime.create(args)
-                self.assertEqual(calls[1:], [("logs", "node"), ("rm", "-f", "node")] if owned else [])
-                self.assertEqual(output.call_count, 2 * int(owned))
+                self.assertEqual(calls[1:], [("logs", "node")] if owned else [])
+                self.assertEqual(output.call_count, 3 * int(owned))
 
     def test_replacement_preserves_original_mappings_before_runtime_launch(self):
         with tempfile.TemporaryDirectory() as directory:
