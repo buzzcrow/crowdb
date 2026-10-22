@@ -104,6 +104,7 @@ class Case:
     oci_reference: str | None = None
     oci_editable_ui: bool = False
     oci_address_recovery: bool = False
+    oci_shortcuts: bool = False
     cli_workload: bool = False
     client_timeout: int = 120
 
@@ -176,7 +177,7 @@ DISKDB_CASES = (
 )
 
 DEPLOYMENT_CASES = (
-    Case("deployment.reference", "deployment::reference::direct_docker_one_node", oci_reference="docker-one"),
+    Case("deployment.reference", "deployment::reference::direct_docker_one_node", oci_reference="docker-one", oci_shortcuts=True),
     Case("deployment.reference", "deployment::reference::editable_ui_one_node", oci_reference="docker-one", oci_editable_ui=True),
     Case("deployment.reference", "deployment::reference::editable_ui_three_nodes", oci_reference="docker-three", oci_editable_ui=True),
     Case("deployment.reference", "deployment::reference::direct_docker_three_nodes", oci_reference="docker-three", oci_address_recovery=True),
@@ -562,7 +563,7 @@ def select_cases(layer="all", scope="all", case_name=None, partition=None):
 
 def case_nodes(case):
     if case.oci_reference:
-        return 4 if case.oci_address_recovery else 1 if case.oci_reference.endswith("-one") else 3
+        return 3 if case.oci_shortcuts else 4 if case.oci_address_recovery else 1 if case.oci_reference.endswith("-one") else 3
     if case.scope == "console.browser.discovery":
         return 2
     if case.native_browser or case.native_client:
@@ -615,7 +616,7 @@ def case_nodes(case):
 
 def case_resources(case, node_cpus):
     if case.oci_reference:
-        count = 1 if case.oci_reference.endswith("-one") else 3
+        count = 3 if case.oci_shortcuts else 1 if case.oci_reference.endswith("-one") else 3
         return count + 0.5 + (0.25 if case.oci_address_recovery else 0), count * 1536 + 512 + (768 if case.oci_address_recovery else 0)
     # CPU shares allow nodes to borrow idle capacity; memory remains a hard bound.
     if case.scope == "console.browser.discovery":
@@ -643,7 +644,7 @@ def allocate_cluster(case, image, artifacts, bundle, data_root):
     if case.oci_reference:
         return OciReferenceCluster(image, artifacts, bundle, reference=case.oci_reference,
                                    editable_ui=case.oci_editable_ui, cli_workload=case.cli_workload,
-                                   address_recovery=case.oci_address_recovery, data_root=data_root)
+                                   address_recovery=case.oci_address_recovery, shortcuts=case.oci_shortcuts, data_root=data_root)
     if case.scope == "console.browser.discovery":
         return DiscoveryBrowserCluster(image, artifacts, bundle, data_root=data_root)
     if case.native_browser or case.native_client:

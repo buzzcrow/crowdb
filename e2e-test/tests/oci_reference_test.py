@@ -95,7 +95,7 @@ class OciReferenceOwnershipTest(unittest.TestCase):
         self.assertEqual(len(cases), 6)
         for case in cases:
             count = 1 if case.oci_reference.endswith("one") else 3
-            self.assertEqual(case_nodes(case), 4 if case.oci_address_recovery else count)
+            self.assertEqual(case_nodes(case), 3 if case.oci_shortcuts else 4 if case.oci_address_recovery else count)
             cpu, memory = case_resources(case, 0.25)
             self.assertGreaterEqual(cpu, count)
             self.assertGreaterEqual(memory, count * 1536 + 512)
@@ -135,3 +135,9 @@ class OciReferenceOwnershipTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     runtime.validate_networks(cluster, [{'Id':'owned-id'}])
         cluster.command.assert_not_called()
+
+    def test_shortcut_acceptance_reserves_the_maximum_live_topology(self):
+        case = select_cases(case_name='deployment::reference::direct_docker_one_node')[0]
+        self.assertTrue(case.oci_shortcuts)
+        self.assertEqual(case_nodes(case), 3)
+        self.assertEqual(case_resources(case, .25), (3.5, 3 * 1536 + 512))

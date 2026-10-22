@@ -53,6 +53,52 @@ readiness, attached workloads and scoped cleanup.
   auxiliary socket. The 195 fixture tests pass; a fresh Docker-free VM4 public
   run will verify the final isolation settings. VM5's earlier native proof was
   saved before Docker installation; its Docker host profile is running separately.
+- Final image AB `console.cli.container` scope passes all nine registered cases
+  in `cli-container-ab/run-470fc8c775a84ba2b424b6c219b8eb38`: interruption and
+  distributed setup, pending-free accounting (actual separately ignored host test
+  executed), sustained DiskIO/terminal-writer replay, attachment, observation,
+  hardware, logical topology and data. No recovery deadline or assertions changed.
+- Five-crate functional gate passes 823 tests, zero failed; the one external-cluster
+  ignored test is exercised by the registered E2E above. The first doc-test pass
+  collided with another Cargo build replacing the unhashed KV-client artifact;
+  a serialized five-crate `--doc` pass succeeds. Full `rs-lint` and fmt pass.
+  Logs: `deployment-rust-final2.log`, `deployment-doctests-final.log`,
+  `final-rs-lint.log`, `final-fmt-gate.log` under the continuation artifact root.
+- Docker host attempt 3 reaches Local Ready and reaps 64 real orphan children,
+  but Iceberg namespace creation returns recoverable 503 after a Chunk-KV
+  operation deadline. Logs show slow Group-0 reads and namespace recovery budget
+  exhaustion; no write was retried. The migrated Local fixture omitted the
+  original explicit one-Tokio-worker setting; restored it in environment and
+  ownership validation before the next fresh run. CPU/memory/request deadlines
+  and protocol assertions remain unchanged. Failed node data/logs are preserved.
+- Registered actual Pixi acceptance passes in `registered-shortcuts-ab/`: direct
+  one-node protocol/recreation followed by real `oci-run`, `oci-run-1c`,
+  `oci-run-3c`, scoped stop/clean, retained recreation and explicit owned-root all
+  cleanup. Two named clusters have distinct UUIDs; cleaning one preserves the
+  other's original running containers/image, and a committed rack plus credential
+  hash survive recreation. A poison CLI would fail any invocation; none occurs.
+  Missing image fails without runtime creation or implicit build. All successful
+  nested volumes and primary fixture resources are deleted through checked owners.
+  The existing direct-one case owns this coverage and reserves its maximum three
+  live nodes; no extra alias or disconnected manual-only acceptance was added.
+- Final native public profile with isolated gRPC/ttrpc, disabled host imports and
+  NRI/CRI passes on Docker-free VM4: run `04f6d0f55f774177a746cbf5e4a74aeb`,
+  Local UUID `70ecf774-ab38-4849-8cd6-5bd1793c1746`. The earlier minimal daemon
+  configuration lost necessary pinned-runtime defaults and timed out importing;
+  the final configuration preserves full defaults and isolates host interfaces.
+  Docker-provisioned three-host profile also passes, independently labeled, in
+  `containerd-cluster-ab3/run-201ec525533b4d0db25fd810479af23e`, including actual
+  discovery, SSH admission, current Group-0 quorum writes and member restart.
+- Docker host supplied-media migration retains original blank/nonblank checks,
+  fsync/read, exact descriptors, Offline/Remove/Rejoin and physical-tail guards.
+  Its initial diskless policy is accepted by the real monitor before unadmitted
+  media are mounted; unknown populated roots remain rejected. Retired request
+  field `test_single_node` was replaced by `local_deployment=false`. The data
+  probe's old fixed fake-host whitelist rejected the real machine identity;
+  replaced it with a fresh confirmed registry/cluster/node check before I/O,
+  retaining exact physical-backing equality. New host client SHA256
+  `7e6f75348bfc8e51cf942c1a38569df88f21f6ea64fd9199114ec67aaa979ccc`;
+  affected clippy/fmt pass and actual probe qualification is running.
 - User requests completing R243 first, then implementing the already-authored
   R244 design and plan. Preserve those concurrent document edits until that work.
 - Actual Docker CPU inspection reports `NanoCpus` with zero period/quota.
@@ -234,7 +280,7 @@ Existing implementation can be reused; these are the outstanding parts.
     contract is rejection before runtime access. Shared bootstrap/supervisor
     correctness remains independently covered.
   Owners: CLI `commands/cluster/target.rs`, `commands.rs`, shared deployment target.
-- [ ] **T05–T07 — Finish formation negatives and interruption coverage**
+- [x] **T05–T07 — Finish formation negatives and interruption coverage**
   (A03–A05/A19–A21). One/three-node normal startup works. Verify missing/extra/
   duplicate/foreign peers, incompatible credentials/policies, simultaneous
   coordinators, sealed-manifest conflicts and lost replies without rebootstrap.
@@ -261,7 +307,7 @@ Existing implementation can be reused; these are the outstanding parts.
     `.crowdb-runtime/artifacts/r243-t29b-gates/` (`r243-monitor-inputs-tests.log`,
     `r243-final-fmt.log`, `r243-final-clippy.log`). Files: monitor `node/management.rs`,
     `node/runtime.rs`, `node_args.rs`, `tests/node_management_inputs_test.rs`.
-- [ ] **T15 — Complete editable startup acceptance** (A01/A02).
+- [x] **T15 — Complete editable startup acceptance** (A01/A02).
   Management starts while setup is pending. Migrate remaining readonly/legacy
   callers; verify authorized edits and actual rejection causes in both topologies.
   - [x] F07: real one/three-node Add Rack flows exposed polling cancelling a
@@ -271,7 +317,7 @@ Existing implementation can be reused; these are the outstanding parts.
     before the fix and passes afterward. All 277 UI tests/types pass; both real
     default UIs pass on image U. The existing browser flow retains DOM assertions
     and asserts the mutation's 201 separately, with independent step timings.
-- [~] **T15a–T15d — Finish member trust and retained recovery** (A32/A33).
+- [x] **T15a–T15d — Finish member trust and retained recovery** (A32/A33).
   Initial authenticated member pins, SSH-verified rediscovery, duplicate live
   identity rejection and identity-bound replica routing are implemented. Fresh
   three-node Docker changed-IP recovery with retained S3 bytes passed.
@@ -352,7 +398,7 @@ Existing implementation can be reused; these are the outstanding parts.
   and host-network address changes; retain all failed evidence.
   Owners: shared `deployment/recovery*`, `registry.rs`, Web `node/admission.rs`,
   monitor `node/runtime/{admission,recovery}*`, KV identity-route tests.
-- [ ] **T16 — Complete current dependency acceptance** (A15/A23/A26/A27).
+- [x] **T16 — Complete current dependency acceptance** (A15/A23/A26/A27).
   Group0/disk+binding → owner → space layers, current operations, stateless idle
   ChunkKV and owned-range writer readiness exist. Finish service stop, voter loss,
   stale evidence, mixed failures and bounded endpoint checks with non-repair proofs.
@@ -487,7 +533,7 @@ Existing implementation can be reused; these are the outstanding parts.
     storage, unrelated attachments, preexisting scope and negative-exit guards.
     CI inventory owns 388 named flows; inventory is not runtime execution.
     Evidence root: `.crowdb-runtime/artifacts/r243-deployment-continuation/`.
-- [ ] **T29 — Finish removing legacy public paths and migrate their callers**
+- [x] **T29 — Finish removing legacy public paths and migrate their callers**
   (A10/A12–A14/A17).
   - [x] T29a: remove public `launch`, `--registry`, system-address fallback,
     `cluster init/local-deploy/destroy/clean` and `kv server`, including dead CLI

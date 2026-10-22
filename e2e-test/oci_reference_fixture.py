@@ -15,10 +15,11 @@ import oci_reference_runtime as runtime
 import oci_reference_browser as browser
 import oci_reference_workloads as workloads
 import oci_reference_recovery as recovery
+import oci_shortcuts
 
 
 class OciReferenceCluster(CliClient, Cluster):
-    def __init__(self, image, artifacts, bundle, reference, editable_ui=False, cli_workload=False, address_recovery=False, **kwargs):
+    def __init__(self, image, artifacts, bundle, reference, editable_ui=False, cli_workload=False, address_recovery=False, shortcuts=False, **kwargs):
         implementation, topology = reference.split("-")
         if implementation not in ("docker", "compose") or topology not in ("one", "three"):
             raise ValueError("unsupported OCI reference case")
@@ -28,6 +29,7 @@ class OciReferenceCluster(CliClient, Cluster):
         self.editable_ui = editable_ui
         self.cli_workload = cli_workload
         self.address_recovery = address_recovery
+        self.shortcuts = shortcuts
         self.bundle = Path(bundle).resolve()
         self.root = (self.data_root / "client-runtime").resolve()
         self.phase_number = 0
@@ -101,6 +103,10 @@ class OciReferenceCluster(CliClient, Cluster):
         print("PASS OCI reference", self.implementation, self.node_count, cluster_id, flush=True)
         if self.address_recovery:
             recovery.verify(self, cluster_id, witness, private)
+        if self.shortcuts:
+            for name in self.expected_names:
+                self.command("stop", "--time", "30", name)
+            oci_shortcuts.verify(self)
 
     def diagnostics(self):
         if not self.runtime_accepted:
