@@ -3,6 +3,8 @@
 
 #[path = "common/group_creation.rs"]
 mod common;
+#[path = "common/system_bootstrap.rs"]
+mod system_bootstrap;
 
 use common::{request, TestGroupCreation};
 use crowdb_kv::cluster::{group::PxGroup, PxLocalReplica, PxLocalReplicaRole};
@@ -113,4 +115,79 @@ async fn corrupt_owner_cannot_be_replaced_or_open_group_storage() {
     assert_eq!(std::fs::read(fixture.ownership()).unwrap(), b"corrupt");
     assert!(!fixture.registry.config.wal_root.exists());
     assert!(!fixture.registry.config.data_root.exists());
+}
+
+#[tokio::test]
+async fn asymmetric_coordinators_cannot_accept_two_manifests_before_or_after_restart() {
+    use system_bootstrap::{identity, proposal, TestSystemBootstrap};
+    let mut nodes = Vec::new();
+    for _ in 0..4 {
+        nodes.push(TestSystemBootstrap::start().await);
+    }
+    let first = identity();
+    let second = identity();
+    let (accepted_first, accepted_second) = tokio::join!(
+        proposal(&nodes, [0, 1, 2], &first),
+        proposal(&nodes, [1, 2, 3], &second)
+    );
+    assert!(!(accepted_first && accepted_second));
+    let retained: Vec<_> = nodes
+        .iter()
+        .map(|node| std::fs::read(node.ownership()).unwrap())
+        .collect();
+    for node in &mut nodes {
+        node.assert_no_execution();
+        node.restart().await;
+    }
+    let (accepted_first, accepted_second) = tokio::join!(
+        proposal(&nodes, [0, 1, 2], &first),
+        proposal(&nodes, [1, 2, 3], &second)
+    );
+    assert!(!(accepted_first && accepted_second));
+    let late = identity();
+    assert!(!proposal(&nodes, [0, 1, 3], &late).await);
+    for (node, bytes) in nodes.iter().zip(retained) {
+        let rejected = serde_json::json!({"replica_id":1,"start_election":false,"bootstrap":late});
+        assert_eq!(
+            node.request("/system/init", &rejected).await,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(std::fs::read(node.ownership()).unwrap(), bytes);
+        node.assert_no_execution();
+    }
+}
+
+#[tokio::test]
+async fn lost_prepare_reply_resumes_the_exact_durable_owner_without_storage_creation() {
+    use std::{os::unix::fs::PermissionsExt, time::Duration};
+    use system_bootstrap::{identity, TestSystemBootstrap};
+    use tokio::io::AsyncWriteExt;
+    let mut node = TestSystemBootstrap::start().await;
+    let accepted = identity();
+    let body = serde_json::to_vec(&serde_json::json!({"replica_id":2,"bootstrap":accepted})).unwrap();
+    let mut connection = tokio::net::TcpStream::connect(node.origin.trim_start_matches("http://"))
+        .await
+        .unwrap();
+    connection.write_all(format!("POST /system/prepare HTTP/1.1\r\nHost: local\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).as_bytes()).await.unwrap();
+    connection.write_all(&body).await.unwrap();
+    // Discard the response once acceptance is durable, as a disconnected coordinator would.
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while !node.ownership().exists() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    drop(connection);
+    let bytes = std::fs::read(node.ownership()).unwrap();
+    assert_eq!(
+        std::fs::metadata(node.ownership()).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    node.restart().await;
+    assert_eq!(node.prepare(2, &accepted).await, StatusCode::OK);
+    assert_eq!(node.prepare(3, &accepted).await, StatusCode::CONFLICT);
+    assert_eq!(node.prepare(2, &identity()).await, StatusCode::CONFLICT);
+    assert_eq!(std::fs::read(node.ownership()).unwrap(), bytes);
+    node.assert_no_execution();
 }
