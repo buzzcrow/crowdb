@@ -99,6 +99,10 @@ pub(super) async fn start_kv(
     accepted: &AcceptedNode,
 ) -> Result<()> {
     ensure_process(profile, processes, accepted).await?;
+    wait_ready(processes).await
+}
+
+async fn wait_ready(processes: &mut ProcessManager) -> Result<()> {
     let client = reqwest::Client::builder()
         .no_proxy()
         .timeout(Duration::from_secs(1))
@@ -128,6 +132,25 @@ pub(super) async fn ensure_process(
     accepted: &AcceptedNode,
 ) -> Result<()> {
     super::recovery::check(&profile.paths.data_root, accepted)?;
+    spawn(profile, processes, accepted).await
+}
+
+// Explicit cleanup already validates the accepted bootstrap and seals retirement.
+// Its local deletion endpoint must remain available after recovery is fenced.
+pub(super) async fn start_for_cleanup(
+    profile: &DeploymentProfile,
+    processes: &mut ProcessManager,
+    accepted: &AcceptedNode,
+) -> Result<()> {
+    spawn(profile, processes, accepted).await?;
+    wait_ready(processes).await
+}
+
+async fn spawn(
+    profile: &DeploymentProfile,
+    processes: &mut ProcessManager,
+    accepted: &AcceptedNode,
+) -> Result<()> {
     if processes.owns("kv") && processes.alive("kv")? {
         return Ok(());
     }

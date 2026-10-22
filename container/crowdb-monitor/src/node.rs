@@ -67,3 +67,6 @@ pub use runtime::NodeServiceForTests;
 pub use runtime::rebind_recovery_services_for_tests;
 
 pub use runtime::read_recovery_identity;
+
+#[cfg(feature = "test-util")]
+pub use runtime::cleanup_node_for_tests;

@@ -312,3 +312,6 @@ pub use services::NodeServiceForTests;
 pub use recovery::rebind_recovery_services_for_tests;
 
 pub use recovery::read_recovery_identity;
+
+#[cfg(feature = "test-util")]
+pub use cleanup::cleanup_node_for_tests;

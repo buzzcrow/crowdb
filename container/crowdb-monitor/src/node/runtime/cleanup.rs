@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use super::super::durable;
-use super::{start_kv, AcceptedNode, Result};
+use super::{AcceptedNode, Result};
 use crate::{DeploymentProfile, ProcessManager};
 use crowdb_protocol::mgmt::SystemBootstrapIdentity;
 use serde_json::{json, Value};
@@ -42,7 +42,7 @@ pub(super) async fn execute(
                 .await?;
         }
     }
-    start_kv(profile, processes, &accepted).await?;
+    super::kv::start_for_cleanup(profile, processes, &accepted).await?;
     let client = reqwest::Client::builder()
         .no_proxy()
         .timeout(Duration::from_secs(30))
@@ -81,4 +81,18 @@ pub(super) async fn execute(
     }
     durable::write(&root.join("node-cleaned.json"), &bootstrap)?;
     Ok(json!({}))
+}
+
+#[cfg(feature = "test-util")]
+/// Execute the authenticated local cleanup after its worker quiescence checks.
+///
+/// # Errors
+/// Rejects unconfirmed or mismatched deletion and incomplete process/storage cleanup.
+pub async fn cleanup_node_for_tests(
+    profile: &DeploymentProfile,
+    processes: &mut ProcessManager,
+    bootstrap: SystemBootstrapIdentity,
+    confirmed: bool,
+) -> Result<Value> {
+    execute(profile, processes, bootstrap, confirmed).await
 }

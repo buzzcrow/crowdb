@@ -99,6 +99,16 @@ readiness, attached workloads and scoped cleanup.
   retaining exact physical-backing equality. New host client SHA256
   `7e6f75348bfc8e51cf942c1a38569df88f21f6ea64fd9199114ec67aaa979ccc`;
   affected clippy/fmt pass and actual probe qualification is running.
+- Docker supplied-media run `604ea13ee7e14b5283406cc51cb8dd25` passes
+  genuine candidate admission, nonblank rejection, write/fsync/read, exact physical
+  descriptors, Offline/Remove/Rejoin, retained recreation and unchanged tails.
+  Its final node cleanup exposes an ordering bug: retirement is sealed before
+  ordinary `start_kv`, whose recovery guard rejects the sealed operation. Explicit
+  cleanup now uses a separate local process start after accepted-identity and
+  confirmation checks; automatic recovery remains fenced. A regression verifies
+  wrong/unconfirmed requests have no effects and a failed deletion stops its
+  worker, retains retirement and completes on explicit retry. Focused test and
+  all-target clippy and the full monitor gate pass (179 tests); fresh-image runtime proof remains.
 - User requests completing R243 first, then implementing the already-authored
   R244 design and plan. Preserve those concurrent document edits until that work.
 - Actual Docker CPU inspection reports `NanoCpus` with zero period/quota.

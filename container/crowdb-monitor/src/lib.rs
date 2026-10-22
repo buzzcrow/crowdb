@@ -61,3 +61,6 @@ pub use supervisor::{Supervisor, SupervisorError};
 pub use node::rebind_recovery_services_for_tests;
 
 pub use node::read_recovery_identity;
+
+#[cfg(feature = "test-util")]
+pub use node::cleanup_node_for_tests;
