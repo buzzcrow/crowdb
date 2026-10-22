@@ -688,6 +688,49 @@ adaptation rather than a new transport or storage engine.
   cursor. Do not enable deferred append completion until owner exclusion and
   content-derived finalization protect both cases.
 
+## Allocation format proof execution notes (T04/T08/T15–T16)
+
+- A content scanner cannot safely choose legacy cursor authority versus grouped
+  content authority by guessing the first on-disk frame: a damaged first header
+  must not turn acknowledged grouped bytes beyond an old zero checkpoint into
+  an empty legacy chunk. Record the framing revision immutably in chunkinfo at
+  allocation, before any data admission. Keep logical owner identity unchanged;
+  do not overload owner_key with physical framing flags.
+- Add append-only frame_revision fields to the allocation request and returned
+  Chunk. Zero retains existing legacy semantics; revision 2 is canonical ordinary
+  framing for user-data/tree types and grouped framing for Wal/Stream. New V2
+  producers require the matching value in the allocation response before writing;
+  an older server that ignores the request cannot prove support and must fail
+  allocation instead of accepting bytes its finalizer cannot understand.
+- Freeze the current bincode Chunk/strip shape before adding the field. Use an
+  explicit versioned envelope for new revision-2 persisted chunks so an old
+  metadata reader cannot silently ignore a trailing physical-authority field.
+  Decode retained raw schemas explicitly with strict lengths; do not append a
+  field and rely on unversioned bincode EOF/trailing behavior. Unknown envelope
+  versions/revisions fail closed. Retain legacy owner attribution and placement.
+- Allocation proof must reach common small/large/native writers and the tree
+  allocator, not only standalone Stream tests. Keep the explicit legacy allocation
+  seam for retained V1 fixtures; add a grouped allocation seam for the new worker.
+  Finalizer/recovery scan limits derive from the persisted revision, then verify
+  each actual frame's matching revision, CRC and identity. This is an unresolved
+  implementation dependency, not a new human decision or a performance result.
+
+## Persisted cursor seal boundary evidence (partial T16)
+
+- Raw Stream/Wal sealing rejects an exact byte boundary below an already
+  persisted acknowledged cursor before touching reservations, strips, task state
+  or cleanup. Larger synchronized boundaries remain legal. The check runs under
+  existing lifecycle sequencing; no lock or unsafe scope was added.
+- Two actual pinned KV/DiskDB/ChunkDB lifecycle cases cover both Stream and Wal,
+  rejection at byte 16 after cursor 17 with complete state/version equality,
+  exact-byte seal, and sealing a newer boundary from an older zero checkpoint.
+  Full ChunkDB tests, all-target clippy and fmt pass; counts/logs are retained in
+  `stream-seal-{tests,clippy2,full-chunkdb,fmt}.log`.
+- This prevents regression of a persisted cursor only. Expiry/finalizer still
+  require allocation format authority, grouped content scans and owner/old-IO
+  exclusion before deferred-cursor ACK can be enabled. In particular zero in
+  old metadata cannot prove grouped data absence.
+
 ## Phase 0 — Establish evidence and settle contracts
 
 - [x] **T01 — Capture a matched implementation baseline**: retain release

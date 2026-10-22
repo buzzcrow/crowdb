@@ -8,6 +8,7 @@ use super::{
     Chunk, ChunkId, ChunkState, LifecycleError, LifecycleHandler, LockPolicy, ProtoChunkState, Segment,
     StripCleanupIntent, StripReservationState,
 };
+use crowdb_protocol::chunkdb::rpc::ChunkType;
 use tracing::info;
 
 impl LifecycleHandler {
@@ -45,12 +46,7 @@ impl LifecycleHandler {
         };
         let current_state = ChunkState::from_proto(chunk.state);
         current_state.check_can_seal()?;
-        if seal_length > chunk.capacity {
-            return Err(LifecycleError::InvalidRequest(format!(
-                "seal_length {seal_length} exceeds chunk capacity {}",
-                chunk.capacity
-            )));
-        }
+        validate_seal_bounds(&chunk, seal_bytes, seal_length)?;
 
         let reservation_groups = self.store.list_reservation_groups(chunk_id).await?;
         if reservation_groups
@@ -145,4 +141,23 @@ fn trim_sealed_strips(
         low: chunk_id.low ^ u64::from(seal_length),
     });
     (unused_segments, operation)
+}
+
+fn validate_seal_bounds(chunk: &Chunk, seal_bytes: u64, seal_length: u32) -> Result<(), LifecycleError> {
+    if (chunk.chunk_type == ChunkType::Wal as i32 || chunk.chunk_type == ChunkType::Stream as i32)
+        && seal_bytes < chunk.acknowledged_cursor
+    {
+        return Err(LifecycleError::InvalidRequest(format!(
+            "stream seal boundary {seal_bytes} precedes persisted cursor {}",
+            chunk.acknowledged_cursor
+        )));
+    }
+    if seal_length > chunk.capacity {
+        return Err(LifecycleError::InvalidRequest(format!(
+            "seal_length {seal_length} exceeds chunk capacity {}",
+            chunk.capacity
+        )));
+    }
+
+    Ok(())
 }
