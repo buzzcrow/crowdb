@@ -21,6 +21,12 @@ pub struct RoutedDiskWriter {
 }
 
 impl RoutedDiskWriter {
+    /// Reuse an already connected semantic client in an embedded storage stack.
+    #[must_use]
+    pub fn from_client(client: Arc<DiskioClient>) -> Self {
+        Self { client }
+    }
+
     /// Discover live DiskIO owners and connect to their endpoints.
     pub async fn connect(service: &ServiceRegistryClient, hardware: &HardwareClient) -> Result<Self> {
         Self::connect_with_connections(service, hardware, 1).await

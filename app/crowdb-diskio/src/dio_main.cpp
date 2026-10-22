@@ -116,13 +116,16 @@ static std::shared_ptr<crowdb::diskio::IoEngine> create_engine(const crowdb::dis
 #ifdef CROWDB_HAVE_LIBURING
     try {
         auto engine = std::make_shared<UringEngine>(cfg.sq_entries);
+        std::printf("crowdb-diskio engine: io_uring\n");
         return engine;
     }
     catch (const std::exception &e) {
         std::fprintf(stderr, "warning: uring engine creation failed (%s), falling back to blocking\n", e.what());
     }
 #endif
-    return std::make_shared<BlockingEngine>(cfg.thread_pool_size);
+    auto engine = std::make_shared<BlockingEngine>(cfg.thread_pool_size);
+    std::printf("crowdb-diskio engine: blocking\n");
+    return engine;
 }
 
 // Build the DiskSet from config. Disks with a non-empty path are
@@ -223,6 +226,7 @@ int main(int argc, char *argv[])
     dio_server->register_handlers(server);
 
     server.start();
+    std::printf("crowdb-diskio transport ready: %s\n", transport->status_json().c_str());
 
     // Scheduled executor for periodic tasks (group-0 sync, etc.).
     // The main loop polls run_due_tasks() every ~100ms.
@@ -284,6 +288,7 @@ int main(int argc, char *argv[])
     if (group0_sync != nullptr) {
         group0_sync->stop();
     }
+    std::printf("crowdb-diskio transport final: %s\n", transport->status_json().c_str());
     server.stop();
     disk_set->shutdown();
 

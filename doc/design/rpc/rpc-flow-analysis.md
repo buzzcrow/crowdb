@@ -160,6 +160,57 @@ require exactly one failed completion, retained RDMA path and no TCP payload.
 The sections below retain earlier 20-second TCP references. `Nagle` means TCP
 coalescing is enabled; old histogram precision and measurement scopes differ.
 
+### HTTP/ChunkIO and DiskIO functional acceptance — 2026-10-23
+
+`tools/rdma/run-datapath.py` runs a real Hyper HTTP socket, the production S3
+body transfer, ChunkIO framing/mirror writes and verified reads, and a separate
+DiskIO executable over O_DIRECT files. Only chunk placement/catalog state is
+injected; this case does not exercise namespace/authentication or Group-0.
+The corpus is 3,158,073 bytes, with an unaligned tail and two chunk locations.
+All successful TCP/RDMA profiles match SHA256, ETag and physical/logical
+location geometry. TPS and latency percentiles are not measured by this
+functional fixture; the RPC throughput runner above remains the common load
+measurement.
+
+| Topology                 | Path | Disk engine     | Downloaded bytes | Upload direct bytes | Download direct bytes | Transport copy bytes | TCP fallback | Expected errors | Verification errors |
+|--------------------------|------|-----------------|------------------|---------------------|-----------------------|----------------------|--------------|-----------------|---------------------|
+| Two native processes     | RDMA | io_uring        | 3,158,073        | 6,319,478           | 3,159,739             | 0                    | 0            | 0               | 0                   |
+| Two native processes     | TCP  | io_uring        | 3,158,073        | n/a                 | n/a                   | n/a                  | n/a          | 0               | 0                   |
+| Two non-root containers  | RDMA | BlockingEngine  | 3,158,073        | 6,319,478           | 3,159,739             | 0                    | 0            | 0               | 0                   |
+| Two non-root containers  | TCP  | BlockingEngine  | 3,158,073        | n/a                 | n/a                   | n/a                  | n/a          | 0               | 0                   |
+| Containers / peer close  | RDMA | BlockingEngine  | 3,144,096 prefix | 6,319,478           | 3,145,728             | 0                    | 0            | 1               | 0                   |
+
+The failure case gates HTTP delivery after one verified frame, closes DiskIO,
+then resumes delivery. The body terminates with an error and never publishes a
+successful complete object. Expected attempts to unavailable read replicas are
+visible in the raw preflight counters. Accepted RPC retry counts remain zero.
+The upload direct-byte count includes two replicas and physical frame overhead.
+HTTP's existing prefetched prefix copy is reported separately (8,098 bytes in
+the native RDMA case); transport payload copies remain zero.
+
+Shared RDMA settings: two QPs per peer, one CQ and polling/event thread,
+`sq_depth = rq_depth = posted_receive_target = 4`, requested `cq_depth = 16`
+(provider 31), `wire_slot_capacity = 1049600`, `control_slot_capacity = 1024`,
+`data_slot_capacity = 1048576`, `send_arena_bytes = 4194304` and
+`receive_arena_bytes = 4198400`. Transport aggregation and TCP fallback are
+disabled. One socket worker serves each peer. HTTP native admission peaks at
+2 MiB. Native disk I/O uses `sq_entries = 32`; default OCI seccomp rejects
+io_uring, so the service selects its asynchronous BlockingEngine. This disk
+engine selection is independent of the RDMA/TCP path.
+
+Both containers use UID 1000, host networking and the same host/HCA, with
+independent QPs. The pinned runtime image is
+`sha256:e3c9c5c6d5fc3424ac3f22cf4cdcc9b1c872f47336484f54962b2541c4ed6cef`.
+Manifests retain binary hashes, source/dirty state, actual server identity,
+engine, settings, complete logs and raw counters. Artifacts under
+`.crowdb-runtime/rdma-check/artifacts/rdma-datapath/` are:
+
+- `dd26085b76ef40f4bb61fe05813c9b17`: native RDMA;
+- `73f4fd013ea048338b7d3a18dc7bf53b`: native TCP;
+- `f7c807fcfbaa496ca02c4dd38d37e140`: shared-HCA OCI RDMA;
+- `e2de510290114a8ab2e59780235f0110`: OCI TCP without RDMA devices;
+- `24d2205fc7d94bbf92a52df176a2af8b`: OCI partial-download peer close.
+
 ### Linux — 2026-08-27
 
 AMD Ryzen 9 5950X, 16c/32t, x86_64, Linux 6.8. Single engine; coroutine

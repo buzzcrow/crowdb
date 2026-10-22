@@ -264,7 +264,7 @@ it does not add application aggregation or a flush timer.
   and assertions remain unchanged. Preserve the aggregate-limit log as
   `access-suite-shell-limit.log`. The complete per-program-bounded Access
   suite passes with zero failures; its complete log is `access.log`.
-- [~] **Verify real service flows**: run focused baseline and changed tests,
+- [x] **Verify real service flows**: run focused baseline and changed tests,
   then real DiskIO plus HTTP/ChunkIO upload/download of objects larger than
   1 MiB on the prepared HCA. Assert direct-payload counters and same data
   addresses at producer/SEND and receive/disk handoff, exact bytes and existing
@@ -285,56 +285,113 @@ it does not add application aggregation or a flush timer.
   error counters in machine-readable artifacts. Run the same fixture in two
   non-root host-network containers sharing the one configured HCA, recording
   this local-loop topology and pinned runtime image and executable identities.
+  The first real HTTP fixture stalls before any DiskIO RPC. Instrumentation
+  confirms placement and registered producer allocation succeed, then two
+  owners fill the 2 MiB HTTP budget without owner handoff. The new test wrapper
+  omitted `enable_owner_handoff()`, which production PUT/UploadPart already
+  call. Initialize handoff and deferred MD5 exactly as production does; retain
+  the original 10-second HTTP deadline and all byte/copy assertions. Remove
+  temporary per-frame diagnostics. Failed evidence is preserved under
+  `rdma-datapath/bff1ae9a76714199a7dabe9da47edde8`,
+  `391b25b30b174bb5bf6b456ac67a2f5a`, and `fc50a99060c84e33a99118fc966c2cf0`.
+  Upload then completes with actual RDMA writes, but GET fails before issuing a
+  disk read: the injected catalog seals the chunk without sealing its strips,
+  so the production reader correctly rejects zero durable strip bytes. Mirror
+  the production seal handler's bounded strip lengths in the injected catalog;
+  retain normal reader availability/integrity checks. Failed logs remain in
+  `ba2b03c512bb4989af8957434422ff1a` and `5f8600b20b364ea5bb2e8ce00d29c3ab`.
+  Native RDMA and TCP now pass the 3,158,073-byte corpus across two chunks.
+  Two non-root shared-HCA containers also pass. Registered transport payload
+  copies and TCP fallback are zero; HTTP's bounded prefetched header/body
+  prefix copy remains separately reported. OCI's default seccomp denies
+  io_uring, so that profile uses the existing asynchronous BlockingEngine;
+  report the actual engine explicitly, while native uses io_uring.
+  Add a partial-download failure variant: the HTTP fixture publishes one
+  verified frame, then pauses before further stream delivery. The runner
+  closes DiskIO and releases that gate. The HTTP body must fail as one object,
+  with no successful full download or TCP suffix. Preserve exact expected
+  failure counts separately from verification errors in its result artifact.
+  The completed five-profile matrix passes with identical SHA256, ETag and
+  physical/logical location geometry for all four successful profiles. Actual
+  upload direct payload is 6,319,478 bytes across two replicas; download direct
+  payload is 3,159,739 bytes. Transport payload copies/fallback/errors are zero.
+  Final artifacts under `.crowdb-runtime/rdma-check/artifacts/rdma-datapath/`:
+  native RDMA `dd26085b76ef40f4bb61fe05813c9b17`, native TCP
+  `73f4fd013ea048338b7d3a18dc7bf53b`, OCI RDMA
+  `f7c807fcfbaa496ca02c4dd38d37e140`, OCI TCP
+  `e2de510290114a8ab2e59780235f0110`, OCI peer-close
+  `24d2205fc7d94bbf92a52df176a2af8b`. OCI uses inspected UID 1000,
+  host networking and pinned image
+  `sha256:e3c9c5c6d5fc3424ac3f22cf4cdcc9b1c872f47336484f54962b2541c4ed6cef`.
+  The failed download returns 3,144,096 verified prefix bytes then one HTTP
+  body error, with zero verification errors/copy/fallback. Expected subsequent
+  reader attempts to unavailable replicas are retained in preflight counters;
+  the semantic client performs no accepted-RPC replay. Both peers use two QPs,
+  one CQ/poller, `sq_depth = rq_depth = posted_receive_target = 4`,
+  `cq_depth = 16` (provider 31), 4 MiB send arena, 4,198,400-byte receive arena,
+  and 1,049,600-byte control/data wire slots. HTTP admission peaks at 2 MiB.
+  Native disk engine is io_uring with `sq_entries = 32`; OCI uses BlockingEngine
+  under default seccomp. These are functional tests, not TPS measurements.
+  Final full C++/FFI gate passes at
+  `.crowdb-runtime/artifacts/unit/cpp-2032c286bd054ca089f560b5b6fced54/`.
+  All 278 affected Rust tests pass (three external/owned-fixture cases ignored
+  by the default suite and exercised separately where applicable). The semantic
+  read/write/fsync fault tests run on the actual HCA. Workspace all-feature
+  clippy, rs-lint, Rust/C++ format, scoped tree-lint (zero exit with existing
+  style warnings) and Python compile checks pass. Final environment-sanitized
+  OCI fault run is `fef1971b25904a9abff2cec49d6a9bed`, with one expected error
+  and zero verification errors consistently in both manifest and result.
+  Remaining work is requirement cleanup and advancing to the existing R241 plan.
 
 ## Phase 1: map existing data flow
 
-- [ ] **Trace upload flow**: identify where HTTP body bytes enter ChunkIO,
+- [x] **Trace upload flow**: identify where HTTP body bytes enter ChunkIO,
   become aggregated buffers, are submitted to DiskIO, and are released after
   durable completion. Files: `app/crowdb-access-server/`,
   `lib/crowdb-chunk-client/`, `lib/crowdb-diskio-client/`, and ChunkIO designs.
-- [ ] **Trace download flow**: identify how SDK/HTTP consumers receive data,
+- [x] **Trace download flow**: identify how SDK/HTTP consumers receive data,
   how read-ahead aggregation chooses message boundaries, and when a caller
   releases each buffer.
-- [ ] **Define transport adapter**: add the smallest Access/DiskIO adapter that
+- [x] **Define transport adapter**: add the smallest Access/DiskIO adapter that
   accepts an already formed buffer, actual length, request identity, sequence,
   and logical offset. Do not add a second flush timer or aggregation queue.
 
 ## Phase 2: upload to DiskIO
 
-- [ ] **Allocate 1 MiB datapath class**: select the configured 1 MiB data
+- [x] **Allocate 1 MiB datapath class**: select the configured 1 MiB data
   capacity plus 1 KiB control buffer for S3/HTTP/DiskIO streams; the configured
   total wire slot includes both regions and the header.
-- [ ] **Fill registered send buffer**: make the HTTP/ChunkIO producer write
+- [x] **Fill registered send buffer**: make the HTTP/ChunkIO producer write
   directly into the send-owned registered buffer and submit its actual length.
   The producer must stop when the send/registered budget is exhausted.
-- [ ] **Receive ownership handoff**: on RDMA receive completion, transfer the
+- [x] **Receive ownership handoff**: on RDMA receive completion, transfer the
   DiskIO buffer to the asynchronous disk writer. Keep request, sequence,
   logical offset, and expected length attached to the write.
-- [ ] **Repost after disk completion**: only reset and repost the receive buffer
+- [x] **Repost after disk completion**: only reset and repost the receive buffer
   after the disk write and integrity result are complete. Propagate disk errors
   to the stream and do not silently repost corrupted data.
 
 ## Phase 3: download to SDK/HTTP
 
-- [ ] **Prepost receive buffers**: use the R238 pool and R239 receive window;
+- [x] **Prepost receive buffers**: use the R238 pool and R239 receive window;
   publish a `BufferLease` only after header/class/length validation.
-- [ ] **Preserve caller ownership**: keep the lease caller-owned until explicit
+- [x] **Preserve caller ownership**: keep the lease caller-owned until explicit
   release. Do not let CQ completion or a stream callback recycle it.
-- [ ] **Implement multi-message assembly**: deliver messages in sequence and
+- [x] **Implement multi-message assembly**: deliver messages in sequence and
   logical offset order, preserving end/error flags and cancellation behavior.
-- [ ] **Keep TCP parity**: use the same access result and error mapping when the
+- [x] **Keep TCP parity**: use the same access result and error mapping when the
   stream selects TCP before RDMA payload submission.
 
 ## Phase 4: pressure and failure behavior
 
-- [ ] **Disk queue pressure**: stop reposting when the asynchronous disk queue
+- [x] **Disk queue pressure**: stop reposting when the asynchronous disk queue
   reaches its byte bound; let receive-window exhaustion backpressure the
   sender.
-- [ ] **SDK pressure**: stop publishing new leases when held bytes reach the
+- [x] **SDK pressure**: stop publishing new leases when held bytes reach the
   configured limit; resume after release.
-- [ ] **Partial stream failure**: fail the logical object/request after partial
+- [x] **Partial stream failure**: fail the logical object/request after partial
   RDMA transfer and quarantine uncertain buffers; never append TCP bytes.
-- [ ] **Cancellation**: stop new aggregation submissions, drain known WRs,
+- [x] **Cancellation**: stop new aggregation submissions, drain known WRs,
   preserve in-flight buffer lifetimes, and return only buffers proven safe.
 
 ## Tests

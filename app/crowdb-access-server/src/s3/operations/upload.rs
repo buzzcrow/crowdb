@@ -20,7 +20,7 @@ use crate::upload_flow::body_encoding::{UploadBody, UploadEncodingError};
 use crate::upload_flow::digest_pipe::DigestPipe;
 use crate::upload_flow::{drive_transfer, write_buffers, OfferStatus, UploadBuffer, WriteFlow};
 
-use super::ObjectWriter;
+use crowdb_chunk_client::ChunkIoWriter;
 
 const TARGET_BUFFER_BYTES: usize = 1024 * 1024;
 
@@ -32,9 +32,9 @@ fn failed(code: PutErrorCode, message: &impl ToString) -> PutOutcome {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn write_object_body(
+pub(crate) async fn write_object_body<W: ChunkIoWriter + ?Sized>(
     body: &mut UploadBody<Incoming>,
-    writer: &mut ObjectWriter,
+    writer: &mut W,
     native_receiver: Option<&NativeBodyReceiver>,
     declared_length: Option<u64>,
     expected_content_md5: Option<&str>,

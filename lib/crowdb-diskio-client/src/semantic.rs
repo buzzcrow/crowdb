@@ -317,6 +317,16 @@ impl std::fmt::Debug for DiskioClient {
 }
 
 impl DiskioClient {
+    /// Snapshot the owned RPC transport's versioned settings and counters.
+    ///
+    /// # Errors
+    /// Returns an error if the native snapshot cannot be allocated.
+    pub fn transport_status_json(&self) -> DiskioResult<Vec<u8>> {
+        self.server
+            .transport_status_json()
+            .map_err(|error| DiskioError::TransportUnavailable(error.to_string()))
+    }
+
     /// Producer storage uses the same device arena as the discovered routes.
     /// An exhausted active arena returns no allocation, including in mixed
     /// TCP/RDMA routing; it never expands the native registered budget.

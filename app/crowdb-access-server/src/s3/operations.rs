@@ -43,7 +43,7 @@ mod delete;
 mod multipart;
 mod upload;
 
-use upload::write_object_body;
+pub(crate) use upload::write_object_body;
 
 const DEFAULT_LIST_LIMIT: usize = 1_000;
 const DEFAULT_LIST_SCAN_BYTES: usize = 4 * 1024 * 1024;
