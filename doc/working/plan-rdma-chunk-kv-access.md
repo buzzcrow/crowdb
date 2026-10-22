@@ -169,6 +169,37 @@ Observed contract:
   - Repeat HTTP/DiskIO semantic profiles and matching 10-second CLI throughput
     controls after the common RPC changes, then update permanent evidence.
 
+Real service checkpoint:
+
+- Production RPC/service/native tree and partition WAL logic pass an eight-value
+  3,409,975-byte corpus in native and two non-root OCI processes. Only catalog,
+  serving authority and memory ChunkStream backing are injected. Metadata and
+  aggregate groups negotiate 64 KiB and 256 KiB with SQ/RQ/post target two.
+  Both value and mutation-result digests match strict RDMA, explicit no-device
+  TCP and pre-payload fallback; duplicate mutation IDs and multi-get order match.
+- Expired request and stale scan-continuation errors remain typed and equal.
+  Native and OCI failure profiles receive exactly one response fragment before
+  server close, publish no incomplete logical result and return connection
+  closed within the existing deadline. Fallback stays zero after payload.
+- The first real RDMA corpus exposed a fixed-descriptor staging defect: cached
+  smaller allocations could occupy every SQ descriptor and prevent a later
+  larger fragment from progressing. The dedicated HCA mixed-size case failed
+  before the fix and passes after control staging allocates the configured
+  data class while SEND retains the actual length. All seven HCA control cases
+  pass. Before/after evidence: `r241-control/mixed-sizes-before.log`,
+  `mixed-sizes-after.log`, and `mixed-sizes.xml` under the isolated artifacts.
+- Full C++/FFI gate passes after this fix at
+  `.crowdb-runtime/artifacts/unit/cpp-a4be5996987e48c68bf6fa53219fde7a/`:
+  543 tree, 191 RPC, 71 DiskIO and 35 common native cases plus both FFI suites.
+  Workspace all-feature clippy, scoped C++ lint and formatting pass.
+  The refreshed no-verbs build passes 160 cases. All 13 selected real HCA
+  transport/control cases and both direct DiskIO HCA cases also pass.
+  All 1,244 affected Rust cases pass again (four optional cases ignored),
+  workspace `rs-lint` passes, and all 13 canonical runner contract cases pass.
+- Keep this task active until the clean-source semantic rerun, HTTP/DiskIO
+  regression, matching release CLI 10-second controls and permanent evidence
+  are complete.
+
 ## Phase 1: access contract mapping
 
 - [x] **Map request/response types**: identify metadata, point, batch, range,
@@ -184,37 +215,37 @@ Observed contract:
 
 ## Phase 2: common client/server wiring
 
-- [ ] **Add RDMA transport choice**: make the Chunk-KV client use the R239
+- [x] **Add RDMA transport choice**: make the Chunk-KV client use the R239
   logical connection interface and preserve TCP as fallback. Do not duplicate
   request correlation in the Chunk-KV layer.
-- [ ] **Advertise selected class**: include class and capacity in stream setup
+- [x] **Advertise selected class**: include class and capacity in stream setup
   or request metadata, validate the peer's negotiated class, and reject a
   payload larger than that class before publishing it.
-- [ ] **Preserve request identity**: carry request ID, stream ID, sequence,
+- [x] **Preserve request identity**: carry request ID, stream ID, sequence,
   logical offset, generation, and operation type through RDMA completion and
   response assembly.
-- [ ] **Preserve access errors**: map transport, timeout, cancellation,
+- [x] **Preserve access errors**: map transport, timeout, cancellation,
   generation, integrity, and Chunk-KV errors identically for TCP and RDMA.
 
 ## Phase 3: multi-message response assembly
 
-- [ ] **Split aggregate responses**: when an existing aggregate exceeds 64 KiB
+- [x] **Split aggregate responses**: when an existing aggregate exceeds 64 KiB
   or 256 KiB, emit ordered messages without changing its logical result.
-- [ ] **Reassemble on client**: validate sequence, offset, total/end flags, and
+- [x] **Reassemble on client**: validate sequence, offset, total/end flags, and
   duplicate request identity; reject gaps, overlaps, stale generations, and
   wrong classes.
-- [ ] **Bound assembly memory**: use R238 classes and caller/consumer release
+- [x] **Bound assembly memory**: use R238 classes and caller/consumer release
   to keep aggregate response memory within the configured budget.
-- [ ] **Retry safely**: use shared request IDs and only retry operations whose
+- [x] **Retry safely**: use shared request IDs and only retry operations whose
   current semantics provide idempotency or duplicate suppression.
 
 ## Phase 4: fallback and compatibility
 
-- [ ] **Pre-payload fallback**: when RDMA setup fails, retry the same eligible
+- [x] **Pre-payload fallback**: when RDMA setup fails, retry the same eligible
   request on TCP with the same request ID and generation.
-- [ ] **Partial response failure**: fail the whole logical response after an
+- [x] **Partial response failure**: fail the whole logical response after an
   uncertain RDMA message; never append a TCP suffix or publish incomplete data.
-- [ ] **Config compatibility**: preserve TCP defaults and allow RDMA classes,
+- [x] **Config compatibility**: preserve TCP defaults and allow RDMA classes,
   endpoint selection, and enablement to be configured when creating the
   transport.
 

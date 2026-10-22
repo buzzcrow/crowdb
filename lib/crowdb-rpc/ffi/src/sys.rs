@@ -348,6 +348,11 @@ extern "C" {
 
     pub fn crowdb_rpc_frame_release(frame_handle: *mut c_void);
     pub fn crowdb_rpc_frame_close_connection(frame_handle: *mut c_void);
+    #[cfg(feature = "test-util")]
+    pub fn crowdb_rpc_server_limit_control_fragments_for_tests(
+        server: crowdb_rpc_server_t,
+        limit: u64,
+    ) -> c_int;
 
     pub fn crowdb_rpc_server_register_handler(
         server: crowdb_rpc_server_t,

@@ -36,6 +36,8 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 crowdb-test-harness = { path = "../../lib/crowdb-test-harness" }
+crowdb-chunk-kv-client = { path = "../../lib/crowdb-chunk-kv-client" }
+sha2 = "0.10"
 crowdb-kv = { path = "../../lib/crowdb-kv" }
 crowdb-chunk-kv-server = { path = ".", features = ["test-util"] }
 crowdb-chunk-kv = { path = "../../lib/crowdb-chunk-kv", features = ["test-util"] }

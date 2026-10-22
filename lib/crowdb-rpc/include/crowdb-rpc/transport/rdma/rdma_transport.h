@@ -195,9 +195,17 @@ class RdmaTransport : public Transport
         return capability_available_.load(std::memory_order_acquire);
     }
 
+#    ifdef CROWDB_RPC_TEST_UTIL
+    void limit_control_fragments_for_tests(uint64_t limit)
+    {
+        control_fragment_limit_for_tests_.store(limit, std::memory_order_release);
+    }
+#    endif
+
   private:
 #    ifdef CROWDB_RPC_TEST_UTIL
     friend struct TestRdmaTransport;
+    std::atomic<uint64_t> control_fragment_limit_for_tests_{UINT64_MAX};
 #    endif
     RdmaConfig                                                           config_;
     RdmaEndpointCapability                                               local_capability_;

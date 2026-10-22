@@ -123,6 +123,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if have_spdlog {
         build.define("CROWDB_HAVE_SPDLOG", "1");
     }
+    if std::env::var_os("CARGO_FEATURE_TEST_UTIL").is_some() {
+        build.define("CROWDB_RPC_TEST_UTIL", "1");
+    }
     if have_rdma {
         build.define("CROWDB_RPC_HAVE_RDMA", "1");
         if let Some(prefix) = &conda_prefix {

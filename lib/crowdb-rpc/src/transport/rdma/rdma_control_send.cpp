@@ -48,6 +48,12 @@ Buffer *RdmaTransport::admit_control_frame(const OutFrame &frame, const Connecti
 
 bool RdmaTransport::flush_control_fragment(Connection *connection, ConnectionPools &pools)
 {
+#    ifdef CROWDB_RPC_TEST_UTIL
+    if (stats_.control_fragments_sent.load(std::memory_order_relaxed) >=
+        control_fragment_limit_for_tests_.load(std::memory_order_acquire)) {
+        return false;
+    }
+#    endif
     if (pools.control_send == nullptr) {
         if (pools.next_control_stream_id == 0) {
             connection->close();
@@ -72,7 +78,10 @@ bool RdmaTransport::flush_control_fragment(Connection *connection, ConnectionPoo
     const auto length  = static_cast<uint32_t>(std::min<uint64_t>(f.capacity, f.total - f.offset));
     auto       release = [](Buffer *buffer) { buffer->release(); };
     std::unique_ptr<Buffer, decltype(release)> prefix(pools.send->alloc(RDMA_CONTROL_CAPACITY), release);
-    std::unique_ptr<Buffer, decltype(release)> data(send_pool_->alloc(length), release);
+    // Keep every staging descriptor in the configured data class. Smaller
+    // cached allocations cannot grow and would strand a later larger stream
+    // after the fixed SQ descriptor window has been carved.
+    std::unique_ptr<Buffer, decltype(release)> data(send_pool_->alloc(config_.data_slot_capacity()), release);
     if (prefix == nullptr || data == nullptr) {
         return false;
     }

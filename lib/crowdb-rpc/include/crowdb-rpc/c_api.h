@@ -361,6 +361,10 @@ typedef void (*crowdb_rpc_handler_release_fn)(void *user_data);
 void crowdb_rpc_frame_release(void *frame_handle);
 // Close the retained connection of a live handler Frame without releasing it.
 void crowdb_rpc_frame_close_connection(void *frame_handle);
+#ifdef CROWDB_RPC_TEST_UTIL
+// Deterministic service failure after a bounded number of control fragments.
+int crowdb_rpc_server_limit_control_fragments_for_tests(crowdb_rpc_server_t server, uint64_t limit);
+#endif
 
 // Register a custom dispatch callback for the given msg_type. The
 // callback is invoked for every incoming frame with that msg_type. This

@@ -49,13 +49,15 @@ version, and supported data classes. The client verifies that the generation
 and peer identity are current before creating the RDMA connection.
 
 `SocketTransport` performs this control exchange on a temporary nonblocking
-TCP socket with one deadline. The 160-byte version 3 capability advertises
-receive slot capacity, the maximum number of frames accepted in one SEND and
-`wire_layout`. Older capability versions can be decoded for pre-payload TCP
+TCP socket with one deadline. The 160-byte version 4 capability advertises
+receive slot capacity, the maximum number of frames accepted in one SEND,
+`wire_layout` and `max_control_message_bytes`. Older capability versions can be decoded for pre-payload TCP
 fallback; an RDMA connection requires the current protocol and matching layout.
-A 48-byte CM offer
+A 52-byte CM offer
 echoes the expected peer generation and identity digest, and declares the
-sender's generation, digest, layout and receive admission. Both CM sides validate it
+sender's generation, digest, layout, receive admission and maximum logical
+control length. The explicit limit is bound into the digest and validated
+against TCP capability when available. Both CM sides validate it
 before publishing the logical connection. The digest detects inconsistent or
 stale discovery; it does not authenticate a peer. Low-level CM diagnostics may
 omit the TCP expectation but still negotiate receive admission.
@@ -91,10 +93,9 @@ The common header carries the control and payload lengths. The complete wire
 length must fit `min(aggregation_max_bytes, wire_slot_capacity,
 peer_receive_slot_capacity)`, including every frame's header and control.
 `aggregation_max_frames` and the peer's advertised frame limit also bound each
-SEND; disabled aggregation sends one frame. Oversized individual frames fail
-admission without fragmentation or fallback. A logical result larger than the
-selected capacity is an ordered sequence identified by request ID, stream ID,
-sequence, logical offset, and START/DATA/END/ERROR flags.
+SEND; disabled aggregation sends one frame. Oversized individual frames in contiguous layout fail
+admission without fragmentation or fallback. Control/data layout also carries
+bounded streams of encoded logical control bytes.
 
 In the default `Contiguous` layout, each SEND uses one SGE pointing at the slot and the actual wire length. Each
 RECV is posted with one SGE pointing at a complete receive slot and its full
@@ -126,6 +127,55 @@ uses a bounded copy into the device arena. Per-CQ `direct_payload_bytes` and
 `copied_payload_bytes` distinguish these paths; `direct_sends` counts all SENDs
 using this layout. A failed SEND quarantines the canonical source allocation,
 including when the WR retains a nested view.
+
+### 3.1. Encoded logical control streams
+
+A control larger than the 1010-byte FlatBuffer prefix uses transport message
+`ERpcControlFragment`. Each fragment has the common correlation fields plus
+stream ID, transport generation, sequence, exact logical offset and total,
+negotiated data capacity, original message type/flags and START/END/ERROR flags.
+Its data SGE contains the next encoded-control bytes. The original application
+message has no separate data payload; ordinary small control plus direct data
+keeps its existing path.
+
+The sender admits one original encoding under `control_send_budget_bytes` and
+the logical queue count. Its CQ owner walks one cursor, stages only the next
+fragment and completes that cursor before taking the next logical frame on the
+QP. Every posted WR retains the original source until its own completion.
+Control staging descriptors use the configured `data_slot_capacity()` even
+when the negotiated capacity or final fragment length is smaller. This keeps
+the fixed SQ descriptor window reusable across mixed sizes and peer classes.
+SEND carries only the actual fragment length. Rejected queue publication
+restores the caller's original control ownership.
+
+QP data capacity is `min(local_data_capacity, peer_data_capacity)`. Active CM
+setup allocates and primes receives after validating the peer reply; passive
+setup already has the offer. Both actual RX allocation/posting and SEND
+validation use this minimum, which immutable connection status exposes as
+`effective_data_capacity`.
+
+The receiver reserves the complete logical length under
+`control_receive_budget_bytes` before assembly. One active message per QP
+validates generation, identity, sequence, offset, total, negotiated capacity
+and final flag. It copies each fragment once into one logical control owner
+and releases the consumed RQ slot immediately. A result may exceed the entire
+RQ window. Only a complete validated original Frame reaches the existing
+application handler or RPC completion table.
+
+Admission exhaustion retains only existing RQ owners in CQ FIFO order. It does
+not carve replacement buffers. Completed controls retain admission through the
+final native/FFI caller release; C ABI conversion moves their storage without a
+second full-message copy. Storage is destroyed before admission wakes CQ
+workers through the retained operation gate. Active partial messages expire
+under `control_assembly_timeout_ms`; a first fragment waiting for consumer byte
+admission has no arbitrary consumer hold deadline. Close, cancellation and
+expiry discard incomplete assembly, while completed caller-owned results stay
+valid after transport shutdown.
+
+Logical RPC counts, fragment counts and `copied_control_send_bytes` /
+`copied_control_receive_bytes` are distinct from direct application payload
+copy counters. Directional admission reports current bytes, high-water and
+stalls. Ordinary contiguous traffic does not scan control-stream deadlines.
 
 Each QP has a bounded `SendQueue` in `ConnectionPools`. Producers validate and
 transfer immutable frame ownership through its MPSC admission; the CQ owner
@@ -344,9 +394,33 @@ SEND sources and eventually stops new request receives. Eligible aligned
 O_DIRECT reads use that same allocation; alignment edges use explicit staging.
 TCP uses the ordinary application pool and the same disk result mapping.
 
-For Access Server and Chunk-KV, the existing access and aggregation layer
-selects the 64 KiB or 256 KiB class. RDMA transports each aggregate with the
-same request, sequence, and response semantics as TCP.
+For Access Server and Chunk-KV, `ChunkKvRpcTransport` has fixed metadata and
+aggregate connection groups. Point calls select 64 KiB; seek, bounded scan,
+scan, multi-get and batch mutation select 256 KiB. An explicit override can
+select 1 MiB. The server defaults to 256 KiB and negotiates the smaller class
+for each QP. These are encoded FlatBuffer control bytes, including values and
+aggregated results. Common control streaming reconstructs one existing message;
+it adds no Chunk-KV aggregation or correlation layer.
+
+Both groups share one `RpcClient`, completion reaper and global RPC ID
+sequence, while retaining separate connection indexes and generation-based
+invalidation. Existing logical mutation identities, duplicate suppression,
+result order, typed errors and eligible retries remain in the application
+layer. Transport generation validates fragments independently of the catalog
+and partition owner epochs.
+
+Access common `chunk_kv_rpc` settings provide `metadata_rdma` and
+`aggregate_rdma` overrides consistently to S3, Iceberg, Iceberg GC and Dataset.
+Missing overrides keep environment policy and fixed service classes. Server
+`rpc_rdma` config owns listener policy. Explicit disabled RDMA selects TCP;
+`allow_tcp_fallback` controls failed setup before payload. Client class groups
+always disable listener creation.
+
+An asynchronous C ABI handler's Frame retains its connection until final
+request release. This owner is also required for assembled controls, which no
+longer hold an RQ data lease. `ServerRequest::close_connection` closes that
+retained connection when response encoding or submission fails, waking the
+client instead of silently discarding its response.
 
 The fat client uses the access core directly. Its caller owns each completed
 host buffer lease until release. GPU support initially consists of an explicit
@@ -369,6 +443,10 @@ cq_depth = 8192
 poll_batch = 256
 verbs_poll_batch = 32
 poll_empty_budget = 256
+max_control_message_bytes = 33554432
+control_send_budget_bytes = 67108864
+control_receive_budget_bytes = 67108864
+control_assembly_timeout_ms = 30000
 ```
 
 CQ depth is per CQ; arena budgets and SQ/RQ depths are per QP. For example,
@@ -379,7 +457,13 @@ benchmarks select 1024-byte slots and matching arena budgets explicitly.
 The versioned C ABI and Rust `RdmaConfig` expose cold configuration.
 `crowdb_rpc_server_configure_rdma_v2` accepts `wire_layout` separately from the
 unchanged version-one config structure; the original entry selects contiguous
-layout. `CROWDB_RDMA_WIRE_LAYOUT` uses 0 for contiguous and 1 for control/data.
+layout. `crowdb_rpc_server_configure_rdma_v3` adds a separately versioned
+logical-stream config while preserving the version-one structure and previous
+entry points. Rust `RdmaConfig::with_control_data_capacity` derives wire and
+SQ/RQ arena capacities from an explicit service data class. Logical message
+limits must be nonzero, fit FlatBuffer length bounds and fit each directional
+logical byte budget; these budgets are independent of registered MR bytes.
+`CROWDB_RDMA_WIRE_LAYOUT` uses 0 for contiguous and 1 for control/data.
 Owned
 status JSON contains requested settings, actual QP/CQ/provider capacities,
 transport errors, registration budgets and process resource counters. Connection
@@ -426,6 +510,11 @@ slot class only when the complete wire message fits that class.
   dispatch occurs in the polling worker.
 - **I10:** Unsupported RDMA leaves the TCP service usable and does not require
   RDMA libraries or devices at runtime.
+- **I11:** An encoded logical control publishes exactly once after complete
+  validation. Its admission remains charged until final caller release;
+  incomplete controls never reach application dispatch.
+- **I12:** Fragment staging uses the configured data class, so smaller cached
+  allocations cannot consume every descriptor needed by a later larger stream.
 
 ## 10. Scope boundary
 

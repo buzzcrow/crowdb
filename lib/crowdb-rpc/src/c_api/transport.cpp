@@ -188,3 +188,16 @@ extern "C" void crowdb_rpc_server_register_status_handler(crowdb_rpc_server_t se
     catch (...) {
     }
 }
+
+#ifdef CROWDB_RPC_TEST_UTIL
+extern "C" int crowdb_rpc_server_limit_control_fragments_for_tests(crowdb_rpc_server_t server, uint64_t limit)
+{
+#    ifdef CROWDB_RPC_HAVE_RDMA
+    return server != nullptr && server->server->transport()->limit_control_fragments_for_tests(limit);
+#    else
+    (void)server;
+    (void)limit;
+    return 0;
+#    endif
+}
+#endif

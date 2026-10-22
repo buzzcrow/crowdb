@@ -6,6 +6,14 @@
 use crate::{sys, RpcServer, ServerRequest};
 
 impl RpcServer {
+    /// Pause encoded-control SENDs after the absolute fragment counter limit.
+    /// Used to fail a real service response at a deterministic partial boundary.
+    #[must_use]
+    pub fn limit_control_fragments_for_tests(&self, limit: u64) -> bool {
+        // SAFETY: self retains the native server; the hook changes one atomic.
+        unsafe { sys::crowdb_rpc_server_limit_control_fragments_for_tests(self.handle(), limit) != 0 }
+    }
+
     /// Register a synchronous reply fixture, keeping raw handles in the FFI.
     pub fn register_reply_for_tests<F>(&self, msg_type: u16, reply: F)
     where

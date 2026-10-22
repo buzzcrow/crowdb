@@ -264,3 +264,34 @@ TEST_F(RdmaControlHardwareTest, MalformedWireIdentityFailsTheWholeLogicalControl
     }
 }
 #endif
+
+#if defined(CROWDB_RPC_HAVE_RDMA) && defined(CROWDB_RPC_TEST_UTIL)
+TEST_F(RdmaControlHardwareTest, MixedControlSizesDoNotStrandTheFixedSendWindow)
+{
+    constexpr auto capacity = RDMA_AGGREGATE_CAPACITY;
+    auto           config   = test_control_config(capacity, capacity + 13);
+    auto           pair     = TestControlPeers::create(config, config);
+    ASSERT_NE(pair, nullptr);
+    uint32_t received = 0;
+    pair->incoming->set_on_frame([&](Frame *frame, Connection *connection) {
+        auto *reply = test_control_reply(frame);
+        if (!pair->server->submit(connection, reply)) {
+            ADD_FAILURE() << "logical response admission failed";
+            release_rdma_frames(reply);
+        }
+    });
+    pair->outgoing->set_on_frame([&](Frame *frame, Connection *) {
+        ++received;
+        delete frame;
+    });
+    for (uint64_t id : {1, 2}) {
+        ASSERT_TRUE(pair->client->submit(pair->outgoing.get(), test_control_frame(pair->application, id, 4096)));
+    }
+    ASSERT_TRUE(pair->drain_until([&] { return received == 2; }));
+    ASSERT_TRUE(pair->client->submit(pair->outgoing.get(), test_control_frame(pair->application, 3, capacity + 13)));
+    EXPECT_TRUE(pair->drain_until([&] { return received == 3; }))
+        << "cached smaller allocations must not strand the configured SQ data slots";
+    EXPECT_EQ(pair->client->stats().fallback_count.load(), 0U);
+    EXPECT_EQ(pair->server->stats().fallback_count.load(), 0U);
+}
+#endif

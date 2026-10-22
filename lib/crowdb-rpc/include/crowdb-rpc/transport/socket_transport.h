@@ -539,6 +539,15 @@ class SocketTransport : public Transport
         return rdma_transport_ == nullptr ? nullptr : &rdma_transport_->stats();
     }
 
+    bool limit_control_fragments_for_tests(uint64_t limit)
+    {
+        if (rdma_transport_ == nullptr) {
+            return false;
+        }
+        rdma_transport_->limit_control_fragments_for_tests(limit);
+        return true;
+    }
+
 #endif
 
   private:
