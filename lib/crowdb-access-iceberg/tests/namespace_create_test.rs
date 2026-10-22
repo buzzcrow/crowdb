@@ -30,6 +30,34 @@ fn request(fixture: &TestNamespace, names: &[&str]) -> NamespaceCreateRequest {
 }
 
 #[tokio::test]
+async fn simultaneous_helpers_preserve_the_same_namespace_result() {
+    let mut fixture = TestNamespace::new().await;
+    fixture.store = std::sync::Arc::new(common::TestStore {
+        values: arc_swap::ArcSwap::from(fixture.store.values.load_full()),
+        yield_operations: true,
+        ..Default::default()
+    });
+    let request = request(&fixture, &["reference"]);
+    let creators = std::array::from_fn::<_, 3, _>(|_| NamespaceCreator::new(fixture.store.clone()));
+    let (first, second, third) = tokio::join!(
+        creators[0].create(&request),
+        creators[1].create(&request),
+        creators[2].create(&request)
+    );
+    let first = first.unwrap();
+    assert_eq!(first.status, 200);
+    assert_eq!(second.unwrap(), first);
+    assert_eq!(third.unwrap(), first);
+    let selected = NamespaceRepository::new(fixture.store.clone())
+        .load(fixture.context, &request.identifier)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(selected.properties, request.properties);
+    assert_eq!(selected.pending_operation, None);
+}
+
+#[tokio::test]
 async fn native_create_publishes_top_level_and_nested_names_with_stable_replay() {
     let fixture = TestNamespace::new().await;
     let creator = NamespaceCreator::new(fixture.store.clone());
