@@ -164,14 +164,14 @@ def provision(media, data, node, cluster, request, wait):
                    "supplied media waits for actual DiskIO and rejects nonblank bytes", seconds=10)
     assert "not blank" in waiting[2]["error"], waiting
     defaults = request(f"/api/deployment-defaults?node_id={node}")["diskio"]
-    defaults.update(kind="diskio", instance_id=str(node), disk_group_id=1, rpc_port=7200, test_single_node=False)
+    defaults.update(kind="diskio", instance_id=str(node), disk_group_id=1, rpc_port=7200, local_deployment=False)
     request(f"/api/nodes/{node}/services/deploy", defaults)
     completed = wait(outcomes, lambda rows: [row["phase"] for row in rows] == ["registered", "registered", "failed"],
                      "real file/raw descriptor verification", seconds=10)
     assert not media.exclusive_available(), "DiskIO did not retain its exclusive raw-device claim"
     binding = media.binding(data)
     assert binding["bootstrap"]["cluster_id"] == cluster and binding["node_id"] == node
-    state = {"version": 1, "rack_id": 1, "node_id": node, "disk_group_id": 1,
+    state = {"version": 1, "cluster_id": cluster, "rack_id": 1, "node_id": node, "disk_group_id": 1,
              "physical_host_id": os.environ.get("CROWDB_MEDIA_HOST_ID", "containerd-acceptance-host"),
              "seeds": binding["management_seeds"], "disks": completed[:2]}
     media.probe(state, "write")

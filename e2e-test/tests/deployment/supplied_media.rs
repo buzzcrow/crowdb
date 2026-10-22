@@ -10,6 +10,22 @@ use crowdb_protocol::{common::HwStatus, key::DiskKey, mgmt::node::storage::DiskB
 use serde_json::Value;
 use std::time::Duration;
 
+async fn assert_selected_host(kv: &CrowdbKvClient, specification: &Value, host: &str) {
+    let (registry, _) = crowdb_console_shared::deployment::registry::read(kv)
+        .await
+        .unwrap()
+        .expect("current confirmed node registry");
+    assert_eq!(registry.cluster_id, specification["cluster_id"].as_str().unwrap());
+    let node = registry
+        .nodes
+        .iter()
+        .find(|node| {
+            node.node_id == specification["node_id"].as_u64().unwrap() && node.confirmed && !node.cancelled
+        })
+        .expect("confirmed supplied-media host");
+    assert_eq!(node.physical_host_id, host);
+}
+
 #[tokio::test]
 #[ignore = "requires an owned Linux host profile and its accepted disposable media"]
 async fn retained_data_probe() {
@@ -19,12 +35,10 @@ async fn retained_data_probe() {
     let mode = specification["mode"].as_str().unwrap();
     assert!(matches!(mode, "write" | "verify"));
     let host = specification["physical_host_id"].as_str().unwrap();
-    assert!(matches!(
-        host,
-        "containerd-acceptance-host" | "docker-acceptance-host"
-    ));
     let seeds: Vec<String> = serde_json::from_value(specification["seeds"].clone()).unwrap();
-    let hardware = HardwareClient::new(CrowdbKvClient::new(ClientConfig::new(seeds.clone())));
+    let kv = CrowdbKvClient::new(ClientConfig::new(seeds.clone()));
+    assert_selected_host(&kv, &specification, host).await;
+    let hardware = HardwareClient::new(kv);
     let disks = specification["disks"].as_array().unwrap();
     assert_eq!(disks.len(), 2);
     let unit = 1024 * 1024;

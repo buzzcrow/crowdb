@@ -11,7 +11,6 @@ import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
-from setup_choices import diskless_setup
 
 ROOT = Path(__file__).resolve().parents[2]
 HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -48,7 +47,7 @@ def wait(action, predicate, description, seconds=180):
 def control(host, operation):
     return docker("exec", host, "/bin/bash", "-euc",
                   'pixi run --as-is --manifest-path container/oci-image/pixi.toml -e runtime '
-                  'python container/oci-image/control.py --runtime containerd --snapshotter native --address "$(cat /tmp/crowdb-containerd-address)" "$1" crowdb-node',
+                  'python container/oci-image/control.py --runtime containerd --snapshotter native --namespace "crowdb-$CROWDB_CONTAINERD_CLUSTER" --address "$(cat /tmp/crowdb-containerd-address)" "$1" "$(cat /tmp/crowdb-containerd-name)"',
                   "_", operation)
 
 
@@ -68,21 +67,30 @@ def main():
             data = data_root / f"host{index}"
             data.mkdir(parents=True)
             docker("run", "-d", "--label", f"org.crowdb.e2e.run={prefix}",
-                   "--cpu-shares", "1024", "--env", "TOKIO_WORKER_THREADS=1", "--memory", "1536m", "--privileged", "--cgroupns", "host", "--network", prefix, "--name", host,
+                   "--cpu-shares", "1024", "--env", "TOKIO_WORKER_THREADS=1", "--memory", "2560m", "--privileged", "--cgroupns", "host", "--network", prefix, "--name", host,
                    "--mount", f"type=bind,source={ROOT},target={ROOT},readonly",
                    "--mount", f"type=bind,source={data},target=/opt/crowdb-e2e/data",
                    "--mount", f"type=bind,source={archive},target=/opt/crowdb-e2e/archive.tar,readonly",
                    "--mount", f"type=bind,source={archive}.json,target=/opt/crowdb-e2e/archive.tar.json,readonly",
                    "--env", "CROWDB_CONTAINERD_DATA=/opt/crowdb-e2e/data",
+                   "--mount", f"type=bind,source={os.environ['CROWDB_E2E_CLI_BUNDLE']},target=/opt/crowdb-e2e/client,readonly",
+                   "--env", "CROWDB_E2E_CLI_BUNDLE=/opt/crowdb-e2e/client",
+                   "--env", "CROWDB_CONTAINERD_CLUSTER=" + os.environ['CROWDB_CONTAINERD_CLUSTER'],
                    "--env", "CROWDB_CONTAINERD_NODE_CPUS=" + os.environ.get("CROWDB_CONTAINERD_NODE_CPUS", "2"),
                    "--mount", f"type=bind,source={pixi},target=/usr/local/bin/pixi,readonly",
                    "--mount", "type=bind,source=/etc/ssl/certs,target=/etc/ssl/certs,readonly",
                    "--workdir", str(ROOT), os.environ["CROWDB_CONTAINERD_HOST_IMAGE"], "/bin/bash", "-euc",
                    '! command -v docker; test ! -e /var/run/docker.sock; '
+                   'export DEBIAN_FRONTEND=noninteractive; apt-get update; '
+                   'apt-get install -y --no-install-recommends iproute2; '
                    'pixi run --as-is --manifest-path container/oci-image/pixi.toml -e runtime '
                    'python e2e-test/profiles/containerd-host.py /opt/crowdb-e2e/archive.tar --serve')
             address = json.loads(docker("inspect", host))[0]["NetworkSettings"]["Networks"][prefix]["IPAddress"]
             origins.append("http://" + address + ":9090")
+            # Host creation includes archive unpacking. Finish each owned host's
+            # ordinary management startup before importing into another daemon.
+            wait(lambda: request(origins[-1], '/api/node/candidates'),
+                 lambda value: bool(value['local']), 'containerd host management startup')
         snapshots = [wait(lambda origin=origin: request(origin, "/api/node/candidates"),
                           lambda value: bool(value["local"]), "containerd host discovery") for origin in origins]
         identities = {snapshot["local"]["advertisement"]["discovery_id"] for snapshot in snapshots}
@@ -91,7 +99,7 @@ def main():
              lambda value: len(value["candidates"]) == 3, "cross-host discovery")
         request(origins[0], "/api/racks", {"id": 1, "name": "containerd-cluster"})
         members = [request(origins[0], "/api/node/admit", {"discovery_id": identity, "rack_id": 1,
-                    "ssh_user": "crowdb", "ssh_port": 2222, "ssh_password": "containerd-test", "setup": diskless_setup()})["node_id"]
+                    "ssh_user": "crowdb", "ssh_port": 2222, "ssh_password": "oci-host-acceptance-password"})["node_id"]
                    for identity in sorted(identities)]
         request(origins[0], "/api/cluster/init", {"nodes": members})
         states = [wait(lambda origin=origin: request(origin, "/api/node/status"),
@@ -116,16 +124,22 @@ def main():
     finally:
         errors = []
         for host in hosts:
+            for kind, action in (
+                ('inspect', lambda: docker('inspect', host)),
+                ('node', lambda: control(host, 'logs')),
+                ('host', lambda: docker('logs', host)),
+            ):
+                try:
+                    output = action()
+                    (data_root / f'{host}-{kind}.log').write_text(output)
+                    print(output, flush=True)
+                except Exception as error:
+                    print(f'Containerd {kind} diagnostics failed for {host}: {error}', flush=True)
+                    errors.append(str(error))
             try:
-                print(control(host, "logs"), flush=True)
-                print(docker("logs", host), flush=True)
+                docker("rm", "-f", host)
             except Exception as error:
                 errors.append(str(error))
-            finally:
-                try:
-                    docker("rm", "-f", host)
-                except Exception as error:
-                    errors.append(str(error))
         try:
             docker("network", "rm", prefix)
         except Exception as error:

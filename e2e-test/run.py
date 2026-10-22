@@ -127,7 +127,12 @@ def main():
         from special_profiles import run_host
         run_host(args, parser)
         return
-    if args.profile in ("containerd-host", "containerd-cluster"):
+    if args.profile == "containerd-host":
+        signal.signal(signal.SIGTERM, interrupt)
+        from native_containerd_profile import run_profile
+        run_profile(args, parser)
+        return
+    if args.profile == "containerd-cluster":
         signal.signal(signal.SIGTERM, interrupt)
         from containerd_profile import run_profile
         run_profile(args, parser)

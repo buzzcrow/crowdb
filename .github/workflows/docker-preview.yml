@@ -7,6 +7,9 @@ concurrency:
   group: crowdb-container-preview-${{ github.ref_name }}
   cancel-in-progress: false
 
+env:
+  CROWDB_E2E_PRINT_SERVICE_ERRORS: "1"
+
 jobs:
   construct:
     runs-on: ubuntu-24.04
@@ -99,19 +102,24 @@ jobs:
         pixi run clean-env
         pixi run --skip-deps test-single-node-container
         pixi run test-container-e2e --profile bridge-admission --concurrency 1 --node-cpus 1 --cpus 4 --memory-mib 6144
-        pixi run test-container-e2e --profile host --concurrency 1 --cpus 4 --memory-mib 4096
+        pixi run sudo --preserve-env=CROWDB_E2E_PRINT_SERVICE_ERRORS "$(command -v pixi)" run --as-is test-container-e2e --profile host --concurrency 1 --cpus 4 --memory-mib 4096
         pixi install --locked --manifest-path container/oci-image/pixi.toml -e runtime
-        pixi run test-container-e2e --profile containerd-cluster --concurrency 1 --node-cpus 1 --cpus 4 --memory-mib 6144
+        pixi run test-container-e2e --profile containerd-cluster --concurrency 1 --node-cpus 1 --cpus 4 --memory-mib 8192
     - name: Record verified digest
       id: artifact
       run: pixi run python container/oci-image/ci-receipt.py target/crowdb.oci.tar
+    - name: Export bounded host and container diagnostics
+      if: always()
+      run: |
+        pixi run sudo "$(command -v pixi)" run --as-is python e2e-test/publish.py --source .crowdb-runtime/artifacts --output target/oci-acceptance-public
+        pixi run sudo "$(command -v pixi)" run --as-is python e2e-test/publish.py --source "${{ runner.temp }}/crowdb-preview-artifacts" --output target/oci-preview-public
     - uses: actions/upload-artifact@v4
       if: failure()
       with:
         name: docker-acceptance-diagnostics
         path: |
-          ${{ runner.temp }}/crowdb-preview-artifacts
-          .crowdb-runtime/artifacts
+          target/oci-acceptance-public
+          target/oci-preview-public
         if-no-files-found: ignore
 
   containerd:
@@ -142,7 +150,7 @@ jobs:
     - name: Verify containerd host-network startup and recovery
       run: |
         set -o pipefail
-        pixi run test-container-e2e --profile containerd-host --concurrency 1 --cpus 3 --memory-mib 2048 --archive "$PWD/target/crowdb.oci.tar" 2>&1 | pixi run tee target/containerd-acceptance.log
+        pixi run sudo --preserve-env=CROWDB_E2E_PRINT_SERVICE_ERRORS "$(command -v pixi)" run --as-is test-container-e2e --profile containerd-host --concurrency 1 --cpus 3 --memory-mib 3072 --archive "$PWD/target/crowdb.oci.tar" 2>&1 | pixi run tee target/containerd-acceptance.log
     - uses: actions/upload-artifact@v4
       if: failure()
       with:

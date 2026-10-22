@@ -1195,11 +1195,13 @@ the shared [`service configuration design`](../config/design-crowdb-config.md).
 
 ## 15. Full-Stack Deployment and Benchmark
 
-`crowdb-cli cluster local-deploy -t combined` creates the canonical local
-ChunkDB profile: six KV/storage nodes split evenly across three racks, one
-four-disk group and one DiskDB instance per node, one three-replica data
-group, three ChunkDB instances, and complete bucket ownership. Services share
-one configured log root and are registered before readiness is reported.
+The shared OCI node lifecycle prepares Group 0, the ordinary metadata group,
+DiskDB, DiskIO and ChunkDB through accepted node policy and committed service
+intent. The common cluster lifecycle creates runtime resources and observes
+readiness; benchmarks attach to the selected cluster without creating groups,
+resetting topology or starting and stopping servers. Production placement uses
+actual failure domains; a Local cluster on one physical host has zero physical
+host failure tolerance. See the [deployment design](../deploy/design-crowdb-deploy.md).
 
 `crowdb-cli bench chunkdb allocate` measures mirror or EC allocation with
 configurable shape, duration, seed, and concurrency. `bench chunkdb mix` uses
@@ -1210,11 +1212,14 @@ total to equal the DiskDB busy-space delta after compaction. Capacity
 exhaustion is a successful stop reason; any correctness error invalidates the
 sample.
 
-`tools/benchmark/bench-chunkdb-regression.sh` builds all four release binaries and uses
-a fresh timestamped combined cluster for mirror, EC 4+2, EC 8+4, lifecycle
-mix, concurrency, and capacity-exhaustion cases. It retains each case's logs,
-destroys each cluster, runs all later cases after a failure, and returns a
-nonzero aggregate status.
+The allocation regression uses an explicit test-only measurement fixture with
+three co-located logical nodes, one rack, three data groups and four logical
+4-TiB disks per DiskDB. It measures one EC 8+4 strip per allocation with varied
+concurrency and retains exact space-accounting checks. The fixture owns every
+server by PID and process-start identity, records accepted bootstrap inputs and
+provides normal clients with explicit targets. Each invocation retains metrics,
+logs and a checked shutdown receipt. This fixture does not qualify physical host
+redundancy or replace real-storage OCI acceptance.
 
 ## 16. Implementation Scope
 

@@ -1,121 +1,127 @@
 #!/usr/bin/env python3
 # Copyright 2026-present Gian <crow.db@outlook.com>
 # Licensed under the Apache License, Version 2.0.
+"""Common CLI Docker host lifecycle, protocols and supplied-media durability."""
 
-"""Same-image host networking, explicit credentials/resources and persistent recovery."""
 import json
 import os
 from pathlib import Path
-import subprocess
-import shutil
-import sys
-import tempfile
-import uuid
 import signal
-from contextlib import nullcontext
-from node import docker, request, wait, IMAGE
-from setup_choices import diskless_setup
+import sys
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'e2e-test'))
+from fixture import wait, redact
+from failure_logs import print_failure
+from oci_host_node import HostNode
+from oci_host_policy import accept_candidates
+from oci_local_host_node import LocalHostNode
+from node import request
 from node_resources import verify_reaping, verify_stopped
-from docker_media import DockerMedia, NodeRuntime
-from supplied_media import provision as provision_media, remove_and_rejoin, wait_for_descriptors
+from supplied_media import Media, provision, remove_and_rejoin, wait_for_descriptors
+from host_runtime import HostRuntime
+
+
+class NodeRuntime:
+    def __init__(self, runtime, name):
+        self.runtime, self.name = runtime, name
+
+    def invoke(self, *arguments):
+        return self.runtime.invoke(*(self.name if value == 'crowdb-node' else value for value in arguments))
+
+
+def protocols(root, bundle, image):
+    node = LocalHostNode(root, bundle, image, 'docker')
+    try:
+        report = node.start(fresh=True)
+        before = node.facts()
+        runtime = node.runtime()
+        name = node.record()['name']
+        verify_reaping(runtime.invoke, name, wait)
+        witness, credentials = node.protocols()
+        runtime.invoke('stop','--time','30',name)
+        verify_stopped(runtime.invoke, name)
+        node.recreate()
+        restored = json.loads(node.command(['cluster', 'check', '--wait', '180', '--json']))
+        assert report['observation']['cluster_id'] == restored['observation']['cluster_id']
+        _, current = node.protocols(witness)
+        assert current == credentials
+        after = node.facts()
+        assert before['container_id'] != after['container_id']
+        for field in ('daemon_id', 'image', 'discovery_id', 'host_network', 'cpu_max', 'memory_max'):
+            assert before[field] == after[field], field
+        (root / 'protocol-recreation-proof.json').write_text(json.dumps(dict(
+            before=before, after=after, cluster_id=report['observation']['cluster_id'],
+            s3_retained_bytes=True, iceberg_committed_properties=True, dataset_snapshot_manifest=True), indent=2))
+    except BaseException as error:
+        print_failure(root, [node.data], 'deployment.host.protocols', error, redact)
+        raise
+    finally:
+        node.cleanup()
+
+
+def supplied(root, bundle, image):
+    root.mkdir(mode=0o700)
+    os.environ['CROWDB_OWNED_MEDIA_ROOT'] = str(root)
+    media = Media(root / 'supplied-media')
+    node = None
+    try:
+        node = HostNode(root, bundle, image, 'docker', metadata_only=True, media=media)
+        # This fixture tests manual candidate admission after a genuine accepted
+        # diskless policy. Fresh populated automatic/diskless roots must reject.
+        accept_candidates(node)
+        node.start(fresh=True)
+        record = node.record()
+        os.environ['CROWDB_MEDIA_HOST_ID'] = record['options']['physical_host_id']
+        runtime = HostRuntime(record['options'], node.cluster)
+        api = lambda path, body=None: request(node.origin, path, body)
+        def observe(action, predicate, description, seconds=10):
+            return wait(action, predicate, description, seconds=seconds)
+        report = node.admit()
+        active = api('/api/node/status')
+        accepted = json.loads((node.data / 'accepted-node.json').read_text())
+        state = provision(media, node.data, accepted['node_id'], active['cluster_id'], api, observe)
+        owned = NodeRuntime(runtime, record['name'])
+        remove_and_rejoin(media, state, owned, api, observe)
+        key = (node.data / 'ssh/id_ed25519.pub').read_bytes()
+        node.recreate()
+        restored = api('/api/node/status')
+        assert restored['cluster_id'] == active['cluster_id'] == report['observation']['cluster_id']
+        assert (node.data / 'ssh/id_ed25519.pub').read_bytes() == key
+        wait_for_descriptors(media, state, owned, api, observe)
+        media.probe(state, 'verify')
+        assert not media.exclusive_available()
+        media.verify_tails()
+        cleanup = api('/api/node/cleanup', dict(operation_id=active['operation_id'], confirm_delete_system_store=True))
+        assert cleanup['pending'] == [], cleanup
+        (root / 'supplied-media-proof.json').write_text(json.dumps(dict(
+            retained_bytes=True, offline_releases_raw=True, remove_rejoin_preserves_id=True,
+            original_file_and_raw_descriptors=True, physical_tails_unchanged=True,
+            cluster_id=active['cluster_id']), indent=2))
+    except BaseException as error:
+        print_failure(root, [node.data] if node else [], 'deployment.host.supplied', error, redact)
+        raise
+    finally:
+        try:
+            if node:
+                node.cleanup()
+        finally:
+            media.close()
 
 
 def main():
-    name = os.environ.get("CROWDB_E2E_PROFILE_NAME", "crowdb-host-test-" + uuid.uuid4().hex[:8])
-    with (nullcontext(os.environ["CROWDB_E2E_PROFILE_DATA"]) if "CROWDB_E2E_PROFILE_DATA" in os.environ
-          else tempfile.TemporaryDirectory(prefix="crowdb-host-node-")) as directory:
-        root = Path(directory)
-        secret = root / "password"
-        secret.write_text("host-ssh-acceptance")
-        secret.chmod(0o600)
-        data = root / "node"
-        docker("run", "--rm", "--network", "none", "--entrypoint", "/bin/sh", "--mount",
-               f"type=bind,source={root},target=/test", IMAGE, "-c",
-               'mkdir /test/node; chown "10001:$1" /test/node; chmod 0770 /test/node', "sh", str(os.getgid()))
-        image = json.loads(docker("image", "inspect", IMAGE))[0]["Id"]
-        command = [sys.executable, "container/single-node-container/run-node.py", "--image", image,
-                   "--name", name, "--network", "host", "--data-root", str(data), "--physical-host-id", "docker-acceptance-host",
-                   "--interface", "lo", "--cpu-shares", "1024", "--worker-threads", "1", "--memory-mib", "1024", "--password-file", str(secret)]
-        media = None
-        runtime = NodeRuntime(name)
-        api = lambda path, body=None: request("http://127.0.0.1:9090", path, body)
-        observe = lambda action, predicate, description, seconds=10: wait(action, predicate, description, budget=seconds)
-        def launch():
-            # Only the owned fixture operator writes launcher receipts. SSH must
-            # subsequently see a parent directory without group write permission.
-            docker("exec", media.name, "chmod", "0770", "/owned/node")
-            try:
-                subprocess.run(command, check=True, timeout=60)
-            finally:
-                docker("exec", media.name, "chmod", "0755", "/owned/node")
-
-        try:
-            media = DockerMedia(root, name, image)
-            command.extend(media.arguments())
-            oversized = command.copy()
-            oversized[oversized.index("--memory-mib") + 1] = str(os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") // (1024 * 1024) + 1)
-            rejected = subprocess.run(oversized, text=True, capture_output=True, timeout=60)
-            assert rejected.returncode != 0 and "boundaries must fit the host" in rejected.stderr, rejected.stderr
-            launch()
-            origin = "http://127.0.0.1:9090"
-            snapshot = wait(lambda: request(origin, "/api/node/candidates"), lambda result: bool(result["local"]), "host-network discovery")
-            owner = docker("exec", name, "stat", "-c", "%u:%a", "/opt/crowdb/data/disks")
-            assert owner.split(":")[0] == "10001", f"supplied-media parent owner/mode: {owner}"
-            docker("exec", "--user", "10001:10001", name, "test", "-w", "/opt/crowdb/data/disks")
-            verify_reaping(docker, name, observe)
-            discovery_id = snapshot["local"]["advertisement"]["discovery_id"]
-            assert snapshot["local"]["hardware"]["memory_bytes"] <= 1024 * 1024 * 1024
-            assert snapshot["local"]["hardware"]["logical_cpus"] > 0
-            request(origin, "/api/racks", {"id":1,"name":"host-rack"})
-            record = request(origin, "/api/node/admit", {"discovery_id":discovery_id,"rack_id":1,
-                             "ssh_user":"crowdb","ssh_port":2222,"ssh_password":"host-ssh-acceptance", "setup":diskless_setup()})
-            request(origin, "/api/cluster/init", {"nodes":[record["node_id"]]})
-            active = wait(lambda: request(origin, "/api/node/status"), lambda state: state["phase"] == "active", "Group 0 bootstrap")
-            assert active["phase"] == "active", active
-            media_state = provision_media(media, data, record["node_id"], active["cluster_id"], api, observe)
-            remove_and_rejoin(media, media_state, runtime, api, observe)
-            key = docker("exec", name, "cat", "/opt/crowdb/data/ssh/id_ed25519.pub")
-            docker("stop", "--time", "30", name)
-            verify_stopped(docker, name)
-            docker("rm", name)
-            launch()
-            recovered = wait(lambda: request(origin, "/api/node/status"), lambda result: result["phase"] == "active", "host persistent recovery")
-            assert recovered["cluster_id"] == active["cluster_id"]
-            assert request(origin, "/api/node/candidates")["local"]["advertisement"]["discovery_id"] == discovery_id
-            assert docker("exec", name, "cat", "/opt/crowdb/data/ssh/id_ed25519.pub") == key
-            wait_for_descriptors(media, media_state, runtime, api, observe)
-            media.probe(media_state, "verify")
-            assert not media.exclusive_available()
-            media.verify_tails()
-            cleanup = request(origin, "/api/node/cleanup", {"operation_id":active["operation_id"],"confirm_delete_system_store":True})
-            assert cleanup["pending"] == [], cleanup
-            print("Host networking, explicit credentials/resources and same-image persistent recovery passed", flush=True)
-        except Exception:
-            artifact = Path(".crowdb-runtime/artifacts") / name
-            artifact.mkdir(parents=True, exist_ok=True)
-            print(docker("logs", name), flush=True)
-            logs = data / "log"
-            if logs.exists():
-                shutil.copytree(logs, artifact / "logs")
-            try:
-                topology = docker("exec", name, "curl", "-fsS", "http://127.0.0.1:10000/topology")
-                (artifact / "topology.json").write_text(topology)
-                print(topology, flush=True)
-            except RuntimeError as error:
-                print(f"Host topology diagnostic unavailable: {error}", flush=True)
-            print(f"Host failure logs retained at {artifact.resolve()}", flush=True)
-            raise
-        finally:
-            docker("rm", "-f", name)
-            if media:
-                media.close()
-            if "CROWDB_E2E_PROFILE_DATA" not in os.environ:
-                docker("run", "--rm", "--network", "none", "--entrypoint", "/bin/chmod", "--mount",
-                       f"type=bind,source={root},target=/test", IMAGE, "-R", "0777", "/test/node")
+    if os.geteuid() != 0:
+        raise RuntimeError('host acceptance requires an explicitly privileged disposable Linux host')
+    root = Path(os.environ['CROWDB_E2E_PROFILE_DATA'])
+    bundle = Path(os.environ['CROWDB_E2E_CLI_BUNDLE'])
+    image = os.environ['CROWDB_CONTAINER_IMAGE']
+    protocols(root / 'protocols', bundle, image)
+    supplied(root / 'supplied', bundle, image)
+    print('Docker host Local protocols, production metadata recreation and supplied-media lifecycle passed', flush=True)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     def interrupt(_signal, _frame):
-        raise KeyboardInterrupt("owned host profile interrupted")
+        raise KeyboardInterrupt('owned host acceptance interrupted')
     signal.signal(signal.SIGTERM, interrupt)
     main()
