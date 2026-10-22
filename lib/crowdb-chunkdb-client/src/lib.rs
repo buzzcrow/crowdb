@@ -12,6 +12,7 @@
 #![allow(clippy::must_use_candidate, clippy::missing_errors_doc)]
 
 pub mod client;
+mod readiness;
 pub mod rpc_transport;
 
 pub use client::{ChunkdbClient, NativeChunkRoutes, RetryConfig};

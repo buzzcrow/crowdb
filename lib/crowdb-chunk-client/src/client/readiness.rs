@@ -3,7 +3,7 @@
 
 //! Read-only ChunkDB and physical DiskIO evidence through current client routes.
 
-use crowdb_protocol::{chunkdb::rpc::ListChunksRequest, common::HwStatus, diskdb::rpc::Segment};
+use crowdb_protocol::{common::HwStatus, diskdb::rpc::Segment};
 use std::{future::Future, time::Duration};
 use tokio::time::Instant;
 
@@ -35,10 +35,7 @@ impl ChunkIoClient {
             observe("ChunkDB", deadline, &self.readiness.chunkdb, async {
                 topology
                     .chunkdb
-                    .list_chunks(ListChunksRequest {
-                        max_keys: 1,
-                        ..Default::default()
-                    })
+                    .observe_readiness()
                     .await
                     .map_err(|error| IoError::ReadFailed(format!("ChunkDB read: {error}")))
             }),

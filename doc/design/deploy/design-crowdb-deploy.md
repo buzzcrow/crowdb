@@ -715,6 +715,16 @@ supply their own read-only protocol proof. Historical setup completion cannot
 substitute for these observations. Missing or stale evidence remains unknown.
 Runtime/image facts remain unknown when runtime access was not supplied.
 
+Access dependency evidence comes from one backend sampler, independently of
+status reads and business request outcomes. ChunkDB evidence uses one routed
+point read in each of the system and user-data maintenance domains. An
+authoritative absent key is healthy evidence; routing, storage, ownership and
+protocol failures remain unhealthy. These observations never create probe
+objects or enumerate the chunk catalog. Hardware discovery and bounded header
+reads on online disks share the same overall probe deadline. Phase latency
+histograms retain failed and cancelled observations and are readable without
+issuing new probes.
+
 The aggregate route bypasses deployment recovery middleware and never reserves
 preparation, restores configuration or repairs topology. Valid unhealthy status
 returns success; `cluster check` returns one while readiness is unmet and zero

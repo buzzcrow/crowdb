@@ -234,6 +234,25 @@ Existing implementation can be reused; these are the outstanding parts.
     metrics tests, 182 Python fixture tests and all-target affected clippy pass.
     Fresh-image full-scope execution remains required; this is observability,
     not a claimed fix for the intermittent deadline failure.
+  - Image V full CLI scope finishes with seven passes and two failures. Both
+    startup replay cases, sustained terminal-writer recovery, attachment,
+    hardware/logical/data round trips pass. Observation fails on Access-1:
+    ChunkDB phase max 754.97 ms, hardware max 199.23 ms, DiskIO max 5.64 ms;
+    generation 6 is current. This rules out DiskIO refresh as that failure's
+    direct cause. `ListChunks(max_keys=1)` can enumerate pages of foreign-domain
+    or foreign-owner records before finding one result, and merges system/user
+    scans serially. Replace health listing with two routed point reads, accepting
+    only typed authoritative NotFound or the exact requested chunk identity.
+    Integration regression passes on real ChunkDB/KV RPC: empty and 320-record
+    catalogs each perform exactly two Gets, zero Scans and zero writes; a corrupt
+    chunk record fails. Fresh image and complete CLI rerun remain required.
+  - The other image-V failure is the pending-free fixture's missing exclusive
+    allocation precondition: ChunkDB reserves strips while the benchmark compares
+    global busy bytes (observed delta 289406976 vs own 19922944). The fixture now
+    explicitly stops Access, Chunk-KV and ChunkDB through normal service intent,
+    verifies stopped PIDs, and preserves KV/DiskDB/DiskIO processes. The original
+    strict assertion passes in `pending-free-quiesced` on image V (one test,
+    zero ignored). Three precondition tests and all 185 fixture tests pass.
   One earlier image-T Compose-three run returned HTTP 503 on namespace create,
   logging `malformed Iceberg record`. Exact-case reproduction and the final
   six-case image-U run pass, but no fix for that intermittent error is claimed.
