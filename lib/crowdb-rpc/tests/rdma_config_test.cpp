@@ -34,6 +34,16 @@ TEST(RdmaConfigTest, SmallWireSlotsAllowDeepRqWithinSmallArena)
     EXPECT_FALSE(config.valid());
 }
 
+TEST(RdmaConfigTest, EnvironmentWireSlotCapacityMatchesRunnerContract)
+{
+    const TestEnvironment slot("CROWDB_RDMA_WIRE_SLOT_CAPACITY", "1024");
+    const TestEnvironment receive_bytes("CROWDB_RDMA_RECEIVE_ARENA_BYTES", "1048576");
+    RdmaConfig            config;
+    ASSERT_TRUE(config.apply_environment());
+    EXPECT_EQ(config.wire_slot_capacity, 1024U);
+    EXPECT_TRUE(config.valid());
+}
+
 TEST(RdmaConfigTest, LargeWireSlotsAnd4096ReceivesUse64BitArenaBudget)
 {
     RdmaConfig config;

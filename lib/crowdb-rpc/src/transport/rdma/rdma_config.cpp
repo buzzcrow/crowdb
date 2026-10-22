@@ -33,7 +33,7 @@ bool RdmaConfig::apply_environment()
     };
     return (port != 1 || read("CROWDB_RDMA_PORT", port)) && read("CROWDB_RDMA_SQ_DEPTH", sq_depth) &&
            read("CROWDB_RDMA_RQ_DEPTH", rq_depth) && read("CROWDB_RDMA_POSTED_RECEIVE_TARGET", posted_receive_target) &&
-           read("CROWDB_RDMA_DATAPATH_CAPACITY", wire_slot_capacity) &&
+           read("CROWDB_RDMA_WIRE_SLOT_CAPACITY", wire_slot_capacity) &&
            read("CROWDB_RDMA_SEND_ARENA_BYTES", send_arena_bytes) &&
            read("CROWDB_RDMA_RECEIVE_ARENA_BYTES", receive_arena_bytes) && read("CROWDB_RDMA_CQ_DEPTH", cq_depth) &&
            read("CROWDB_RDMA_REGISTERED_MEMORY_BUDGET_BYTES", registered_memory_budget_bytes) &&

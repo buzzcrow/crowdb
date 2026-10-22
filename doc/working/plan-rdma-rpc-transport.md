@@ -650,9 +650,19 @@ Status/configuration checkpoint:
   four new status/configuration cases. The opt-in real-HCA typed configuration
   test separately proves immutable provider/QP status survives shutdown.
   Formatting, scoped tree-lint and FFI clippy pass. The legacy two-process
-  strict two-QP worker round trip also passes after extracting listener port
-  resolution. Readiness/runner acceptance and CLI integration remain pending;
+  strict two-QP worker round trip failed at its first client connection
+  (`rdma_worker_test.cpp:165`, null connection); diagnose this separately from
+  the passing typed-configuration HCA test before proceeding. The preceding
+  checkpoint prematurely recorded that last run as passing.
+  Readiness/runner acceptance and CLI integration remain pending;
   this checkpoint makes no new performance claim.
+- The first divergence was an accidental environment-key rename while moving
+  portable configuration: the runner's `CROWDB_RDMA_WIRE_SLOT_CAPACITY=1024`
+  was ignored, leaving 1 MiB slots and rejecting its 1 MiB receive arena.
+  Restore the established key and add an exact environment-contract regression.
+  The corrected two-process/two-QP aggregate diagnostic passes 1000 requests
+  with zero RPC/CQ errors, and all 187 enabled native tests pass. Scoped
+  tree-lint passes; this is functional verification only.
 
 ### D. CLI coroutine workload and canonical results
 
