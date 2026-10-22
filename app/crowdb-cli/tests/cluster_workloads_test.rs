@@ -2,6 +2,8 @@
 // Licensed under the Apache License, Version 2.0.
 
 //! Opt-in process regression against an existing disposable normal OCI cluster.
+//! The owning fixture stops `ChunkDB` and its upstream producers before comparing
+//! whole-group busy bytes, while retaining KV, `DiskDB` and `DiskIO` processes.
 
 use crowdb_console_shared::deployment::target;
 use crowdb_diskdb_client::{DiskdbClient, DiskdbRpcTransport};
