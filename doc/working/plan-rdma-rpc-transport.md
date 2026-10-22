@@ -260,13 +260,45 @@ deferring multiple CQs or forbidding transport coalescing.
 - [x] **Record the agreed scope**: amend this plan, the root decisions, and
   R239's high-level contract; preserve historical measurements as historical.
   Files: this plan, `plan-rdma.md`, `../backlog/R239-rdma-rpc-transport.md`.
-- [~] **Replace the histogram floor**: use a shared C++/Rust logarithmic
+- [x] **Replace the histogram floor**: use a shared C++/Rust logarithmic
   nanosecond bucket layout with bounded memory, explicit zero/overflow, exact
   count/sum/min/max, and P50/P90/P95/P99/P99.9. Keep existing metric callers
   compatible, expose mergeable snapshots, and verify shared golden vectors,
   sub-microsecond values, bucket boundaries, empty/reset and overflow cases.
   Files: `lib/crowdb-common/{cpp,rust}/` histogram implementations and tests;
   `app/crowdb-cli/src/commands/bench/{loader,result}.rs`.
+- [~] **Make coroutine completion safe before parallel CQ benchmarks**:
+  `co_on_complete` currently fails a CAS against `CO_RUNNING`, then stores
+  `CO_RESPONSE_READY`; `await_suspend` can change to `CO_SUSPENDED` between
+  those operations and lose the resume. Replace that handoff with one atomic
+  publication. Replace concurrent `coroutine_handle::done()` inspection and
+  forced timeout resume/destruction with explicit final-suspend publication
+  and callback quiescence. Keep timeout handling in the client's request
+  completion/reaper path. Add deterministic completion-before/after-suspend
+  and concurrent handoff tests, plus real coroutine echo/error coverage.
+  Files: `client/co_client.cpp`, a private coroutine state header, RPC tests
+  and FFI coroutine API. This is prerequisite to attributing multi-CQ errors
+  or performance to the transport.
+
+Verified histogram checkpoint:
+
+- C++/Rust share 18 golden vectors, inclusive bucket bounds, nearest-rank
+  quantiles, exact 0..255 ns resolution, 128 sub-buckets per magnitude below
+  `2^40 ns`, explicit zero/overflow counts and a 128-bit exact sum. Owned
+  shards merge without atomics; final cumulative captures are exact after
+  producers join. Concurrent live/window captures remain approximate.
+- Both language suites cover sub-microsecond samples, empty/reset, nearest
+  rank, exact extrema, overflow/carry, shard merge and concurrent final counts.
+  All 79 Rust common tests, workspace clippy, formatting and scoped tree-lint
+  pass. Latest full C++/FFI gate:
+  `.crowdb-runtime/artifacts/unit/cpp-0837d1ed9b1e4171a8c7afdd54f955c8/`.
+- The diagnostic thread workload now uses the common histogram. One 10 s
+  hardware run with 1 s warmup, one producer/QP/worker, 32 in flight and 1 KiB
+  slots completed 1,767,704 measured RPCs with zero errors or histogram overflow
+  (176,770 TPS; avg 174.61 us; P90 195.58 us; P99 215.04 us). Submitted count
+  equals measured + drained. This verifies the migrated diagnostic histogram,
+  not the future coroutine max-TPS claim. Artifact:
+  `.crowdb-runtime/artifacts/rdma/20261022T111938Z/results.csv`.
 
 ### B. CQ owners and resource ownership
 
@@ -336,7 +368,8 @@ deferring multiple CQs or forbidding transport coalescing.
   completions for ten seconds using a monotonic deadline, then drain separately;
   exclude setup/warmup/drain from TPS. Define latency from submission to
   validated response in nanoseconds. Never destroy a coroutine while a late
-  completion can resume it. Files: `co_client.cpp`, FFI `co_bench.rs`, CLI echo
+  completion can resume it (the lifecycle prerequisite is in phase A).
+  Files: `co_client.cpp`, FFI `co_bench.rs`, CLI echo
   handler and lifecycle tests.
 - [ ] **Write the canonical report**: emit a versioned JSON result directly
   to a requested file, plus human output; serialize all schema columns above.
@@ -531,6 +564,14 @@ E2E tests:
 
 ## Consolidated files
 
+- `lib/crowdb-common/cpp/include/crowdb-common/metrics/latency_histogram.h`
+- `lib/crowdb-common/cpp/src/metrics/latency_histogram.cpp`
+- `lib/crowdb-common/rust/src/metrics/histogram.rs` and `histogram/data.rs`
+- `lib/crowdb-common/testdata/latency_histogram.csv` and both language tests
+- `lib/crowdb-rpc/src/client/co_client.cpp` and private coroutine state header
+- `lib/crowdb-rpc/ffi/src/co_bench.rs` and C/Rust statistics bindings
+- `app/crowdb-cli/src/commands/bench/{verb,rpc,loader,result}.rs`
+- `tools/benchmark/bench-rdma-rpc-regression.sh`, shared RPC runner and tests
 - `lib/crowdb-rpc/include/crowdb-rpc/transport.h`
 - `lib/crowdb-rpc/include/crowdb-rpc/connection.h`
 - `lib/crowdb-rpc/include/crowdb-rpc/transport/epoll/epoll_engine.h`

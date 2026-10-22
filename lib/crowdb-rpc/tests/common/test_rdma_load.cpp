@@ -13,34 +13,6 @@
 namespace crowdb::rpc
 {
 
-void TestRdmaLatency::observe(uint64_t ns)
-{
-    ns                      = std::max(uint64_t{1}, ns);
-    const unsigned exponent = std::bit_width(ns) - 1;
-    const unsigned shift    = exponent > 7 ? exponent - 7 : 0;
-    const auto     sub      = static_cast<size_t>((ns - (uint64_t{1} << exponent)) >> shift);
-    buckets[exponent * SUB_BUCKETS + sub].fetch_add(1, std::memory_order_relaxed);
-    sum_ns.fetch_add(ns, std::memory_order_relaxed);
-    uint64_t maximum = max_ns.load(std::memory_order_relaxed);
-    while (maximum < ns && !max_ns.compare_exchange_weak(maximum, ns, std::memory_order_relaxed)) {
-    }
-}
-
-uint64_t TestRdmaLatency::percentile(const std::array<uint64_t, BUCKETS> &counts, uint64_t count, uint32_t percent)
-{
-    const uint64_t rank = std::max(uint64_t{1}, (count * percent + 99) / 100);
-    uint64_t       seen = 0;
-    for (size_t index = 0; index < counts.size(); ++index) {
-        seen += counts[index];
-        if (seen >= rank) {
-            const size_t exponent = index / SUB_BUCKETS;
-            const size_t shift    = exponent > 7 ? exponent - 7 : 0;
-            return (uint64_t{1} << exponent) + ((index % SUB_BUCKETS + 1) << shift);
-        }
-    }
-    return 0;
-}
-
 TestRdmaLoad::TestRdmaLoad(uint32_t count, uint32_t in_flight, uint32_t seconds)
     : producer_count(count),
       in_flight_per_producer(in_flight),

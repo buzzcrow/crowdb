@@ -92,10 +92,10 @@ TEST(MetricsHistogram, P50P99WithKnownDistribution)
     }
     auto snap = h.flush();
     EXPECT_EQ(snap.count, 100U);
-    // HDR bucket upper bound for 500us is 501'760ns (≤0.78% error).
-    EXPECT_EQ(snap.p50, 501'760U);
-    EXPECT_EQ(snap.p99, 501'760U);
-    EXPECT_EQ(snap.max, 501'760U);
+    // Quantile bucket bounds cannot exceed the exact observed maximum.
+    EXPECT_EQ(snap.p50, 500'000U);
+    EXPECT_EQ(snap.p99, 500'000U);
+    EXPECT_EQ(snap.max, 500'000U);
     // avg is exact (f64).
     EXPECT_DOUBLE_EQ(snap.avg, 500'000.0);
 }
@@ -103,7 +103,7 @@ TEST(MetricsHistogram, P50P99WithKnownDistribution)
 TEST(MetricsHistogram, MixedDistribution)
 {
     LatencyHistogram h("test.lh");
-    // 80 fast (200us), 20 slow (10ms) — both above LVD (65.5us).
+    // 80 fast (200us), 20 slow (10ms).
     for (int i = 0; i < 80; ++i) {
         h.observe(200'000);
     }
@@ -112,17 +112,15 @@ TEST(MetricsHistogram, MixedDistribution)
     }
     auto snap = h.flush();
     EXPECT_EQ(snap.count, 100U);
-    // p50 falls in the 200us bucket (upper bound 200'704ns).
-    EXPECT_EQ(snap.p50, 200'704U);
-    // p99 falls in the 10ms bucket (upper bound 10'027'008ns).
-    EXPECT_EQ(snap.p99, 10'027'008U);
-    EXPECT_EQ(snap.max, 10'027'008U);
+    EXPECT_EQ(snap.p50, 200'703U);
+    EXPECT_EQ(snap.p99, 10'000'000U);
+    EXPECT_EQ(snap.max, 10'000'000U);
 }
 
-TEST(MetricsHistogram, UnderflowAndOverflow)
+TEST(MetricsHistogram, LowLatencyResolution)
 {
     LatencyHistogram h("test.lh");
-    // Below LVD (65.5us) → underflow bucket.
+    // Low latencies now occupy separate nanosecond buckets.
     h.observe(1'000);
     h.observe(65'535);
     // In-range values (majority so p50 falls in-range).
@@ -132,10 +130,9 @@ TEST(MetricsHistogram, UnderflowAndOverflow)
     h.observe(500'000);
     auto snap = h.flush();
     EXPECT_EQ(snap.count, 6U);
-    // p50 (target=3) falls in the 100us bucket (upper bound 100'352ns).
-    EXPECT_EQ(snap.p50, 100'352U);
-    // max falls in the 500us bucket (upper bound 501'760ns).
-    EXPECT_EQ(snap.max, 501'760U);
+    EXPECT_EQ(snap.p50, 100'351U);
+    EXPECT_EQ(snap.min, 1'000U);
+    EXPECT_EQ(snap.max, 500'000U);
 }
 
 TEST(MetricsHistogram, WindowResetsAfterFlush)

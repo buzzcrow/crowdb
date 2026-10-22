@@ -282,7 +282,7 @@ impl CoBenchHandler for EchoHandler {
     fn on_response(&self, _request_id: u64, status: Result<(), RpcError>, latency_ns: u64) -> bool {
         if status.is_ok() {
             self.recorder
-                .record_ok(latency_ns / 1000, self.data_bytes.len() as u64);
+                .record_ok_ns(latency_ns, self.data_bytes.len() as u64);
         } else {
             self.recorder.record_err();
         }

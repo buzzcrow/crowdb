@@ -99,34 +99,33 @@ void test_timed_server(const char *address, int port, const TestLoadSettings &se
 
 void test_report_load(const TestLoadSettings &settings, TestRdmaLoad &load)
 {
-    std::array<uint64_t, TestRdmaLatency::BUCKETS> buckets{};
-    uint64_t completed = 0, submitted = 0, drained = 0, sum_ns = 0, maximum_ns = 0;
+    crowdb::common::metrics::LatencyHistogram::Data histogram;
+    uint64_t                                        completed = 0, submitted = 0, drained = 0;
     for (const auto &producer : load.producers) {
         completed += producer->window_completed.load();
         submitted += producer->measured_submitted;
         drained += producer->drain_completed.load();
-        sum_ns += producer->latency.sum_ns.load();
-        maximum_ns = std::max(maximum_ns, producer->latency.max_ns.load());
-        for (size_t index = 0; index < buckets.size(); ++index)
-            buckets[index] += producer->latency.buckets[index].load();
+        histogram.merge(producer->latency.capture_total());
     }
-    auto percentile_us = [&](uint32_t percent) {
-        return static_cast<double>(TestRdmaLatency::percentile(buckets, completed, percent)) / 1000.0;
-    };
+    const auto latency = histogram.snapshot();
+    EXPECT_EQ(latency.count, completed);
     EXPECT_EQ(load.errors.load(), 0U);
     EXPECT_GT(completed, 0U);
     EXPECT_EQ(completed + drained, submitted);
     std::fprintf(stderr,
                  "RDMA timed load: duration_s=%u warmup_s=%u producer_count=%u io_workers=%u connection_count=%u "
                  "in_flight_per_producer=%u payload_bytes=%u submitted=%llu completed=%llu drain_completed=%llu "
-                 "TPS=%.0f p50_us=%.2f p95_us=%.2f p99_us=%.2f mean_us=%.2f max_us=%.2f errors=%llu\n",
+                 "TPS=%.0f p50_us=%.2f p95_us=%.2f p99_us=%.2f mean_us=%.2f max_us=%.2f errors=%llu "
+                 "p90_us=%.2f p999_us=%.2f histogram_overflow=%llu\n",
                  settings.duration_seconds, settings.warmup_seconds, settings.producer_count, settings.io_workers,
                  settings.connection_count, settings.in_flight_per_producer, TestRdmaLoad::PAYLOAD_BYTES,
                  static_cast<unsigned long long>(submitted), static_cast<unsigned long long>(completed),
                  static_cast<unsigned long long>(drained), static_cast<double>(completed) / settings.duration_seconds,
-                 percentile_us(50), percentile_us(95), percentile_us(99),
-                 completed == 0 ? 0.0 : static_cast<double>(sum_ns) / completed / 1000.0,
-                 static_cast<double>(maximum_ns) / 1000.0, static_cast<unsigned long long>(load.errors.load()));
+                 static_cast<double>(latency.p50) / 1000.0, static_cast<double>(latency.p95) / 1000.0,
+                 static_cast<double>(latency.p99) / 1000.0, latency.avg / 1000.0,
+                 static_cast<double>(latency.max) / 1000.0, static_cast<unsigned long long>(load.errors.load()),
+                 static_cast<double>(latency.p90) / 1000.0, static_cast<double>(latency.p999) / 1000.0,
+                 static_cast<unsigned long long>(latency.overflow_count));
 }
 
 void test_timed_client(const char *address, int port, const TestLoadSettings &settings)

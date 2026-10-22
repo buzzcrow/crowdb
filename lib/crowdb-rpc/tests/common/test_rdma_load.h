@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "crowdb-common/metrics/latency_histogram.h"
 #include "crowdb-rpc/client/client.h"
 #include "crowdb-rpc/transport/socket_transport.h"
 
@@ -24,18 +25,6 @@ inline uint64_t test_rdma_clock_ns()
         std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
             .count());
 }
-
-struct TestRdmaLatency
-{
-    static constexpr size_t                    SUB_BUCKETS = 128;
-    static constexpr size_t                    BUCKETS     = 64 * SUB_BUCKETS;
-    std::array<std::atomic<uint64_t>, BUCKETS> buckets{};
-    std::atomic<uint64_t>                      sum_ns{0};
-    std::atomic<uint64_t>                      max_ns{0};
-
-    void            observe(uint64_t ns);
-    static uint64_t percentile(const std::array<uint64_t, BUCKETS> &buckets, uint64_t count, uint32_t percent);
-};
 
 struct TestRdmaProducer;
 
@@ -72,15 +61,15 @@ struct TestRdmaLoad
 
 struct TestRdmaProducer
 {
-    TestRdmaLoad                       &load;
-    uint32_t                            index;
-    std::unique_ptr<TestRdmaLoadSlot[]> slots;
-    TestRdmaLatency                     latency;
-    uint64_t                            total_submitted    = 0;
-    uint64_t                            measured_submitted = 0;
-    std::atomic<uint64_t>               total_completed{0};
-    std::atomic<uint64_t>               window_completed{0};
-    std::atomic<uint64_t>               drain_completed{0};
+    TestRdmaLoad                             &load;
+    uint32_t                                  index;
+    std::unique_ptr<TestRdmaLoadSlot[]>       slots;
+    crowdb::common::metrics::LatencyHistogram latency{"rdma.test.latency"};
+    uint64_t                                  total_submitted    = 0;
+    uint64_t                                  measured_submitted = 0;
+    std::atomic<uint64_t>                     total_completed{0};
+    std::atomic<uint64_t>                     window_completed{0};
+    std::atomic<uint64_t>                     drain_completed{0};
 
     TestRdmaProducer(TestRdmaLoad &owner, uint32_t producer_index);
     void run(RpcClient &client, SocketTransport &transport, Connection *connection);

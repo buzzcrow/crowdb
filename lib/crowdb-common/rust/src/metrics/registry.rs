@@ -477,8 +477,7 @@ mod tests {
         bw.observe(100);
         bw.observe(300);
         let h = reg.register_histogram("s.1.kv.get.lh");
-        // Values must be ≥ LVD (65_536 ns) to land in regular HDR buckets.
-        // 100_000 ns → bucket upper bound 100_352 ns.
+        // Identical samples have quantiles capped at the exact maximum.
         h.observe(100_000);
         h.observe(100_000);
         let s = reg.register_summary("s.1.kv.scan.l");
@@ -532,7 +531,7 @@ mod tests {
         });
         assert_eq!(
             histogram,
-            Some((2, 100_352, 100_352, 2)),
+            Some((2, 100_000, 100_000, 2)),
             "histogram count/p50/p99/total"
         );
 

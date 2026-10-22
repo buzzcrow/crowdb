@@ -4,144 +4,172 @@
 #include "crowdb-common/metrics/latency_histogram.h"
 
 #include <algorithm>
-#include <cstdint>
+#include <bit>
+#include <numeric>
 #include <utility>
 
 namespace crowdb::common::metrics
 {
 
-// ── HDR bucket parameters ────────────────────────────────────────
-//
-// HDR-style logarithmic buckets: each power-of-2 magnitude is divided
-// into SUB_BUCKET_COUNT equal sub-buckets, giving a bounded relative
-// error of <= 1 / SUB_BUCKET_COUNT ≈ 0.78% everywhere.
-//
-// Configuration tuned for the crowdb latency range:
-//   - LVD (lowest discernible value) = 2^UNIT_MAGNITUDE ≈ 65.5us.
-//     Values below this go into a single underflow bucket (index 0).
-//   - Max magnitude covers 2^(UNIT_MAGNITUDE + NUM_MAGNITUDES) = 2^34
-//     ≈ 17.2s. Values above go into the overflow bucket (last index).
-//   - 2 significant figures → SUB_BUCKET_COUNT = 128 (2^7).
-
-static constexpr uint32_t UNIT_MAGNITUDE   = 16;  // LVD ≈ 65.5us
-static constexpr size_t   SUB_BUCKET_COUNT = 128; // 2^7 → ≤0.78% error
-static constexpr uint32_t SUB_BUCKET_BITS  = 7;   // log2(SUB_BUCKET_COUNT)
-static constexpr uint64_t SUB_BUCKET_MASK  = 127; // SUB_BUCKET_COUNT - 1
-static constexpr size_t   NUM_MAGNITUDES   = 18;  // magnitudes 0..17 → up to 2^34
-// 1 underflow + NUM_MAGNITUDES * SUB_BUCKET_COUNT regular + 1 overflow.
-static constexpr size_t NUM_BUCKETS = 1 + (NUM_MAGNITUDES * SUB_BUCKET_COUNT) + 1;
-static constexpr size_t kUnderflow = 0;
-static constexpr size_t kOverflow  = NUM_BUCKETS - 1;
-
-// ── HDR index / boundary math ─────────────────────────────────────
-
-// Map a value to its HDR bucket index via O(1) bit manipulation.
-// Values < LVD go to the underflow bucket (0); values > max go to
-// the overflow bucket (NUM_BUCKETS - 1).
-static size_t bucket_index(uint64_t v)
+size_t LatencyHistogram::bucket_index(uint64_t ns)
 {
-    if (v < (1ULL << UNIT_MAGNITUDE)) {
-        return kUnderflow;
+    if (ns < 128) {
+        return static_cast<size_t>(ns);
     }
-    uint32_t highest_bit = 63 - static_cast<uint32_t>(__builtin_clzll(v));
-    uint32_t magnitude   = highest_bit - UNIT_MAGNITUDE;
-    if (magnitude >= NUM_MAGNITUDES) {
-        return kOverflow;
+    const auto magnitude = static_cast<uint32_t>(std::bit_width(ns) - 1);
+    if (magnitude >= 40) {
+        return NUM_BUCKETS - 1;
     }
-    uint64_t sub_bucket = (v >> (highest_bit - SUB_BUCKET_BITS)) & SUB_BUCKET_MASK;
-    return 1 + (static_cast<size_t>(magnitude) * SUB_BUCKET_COUNT) + static_cast<size_t>(sub_bucket);
+    return 128 + (static_cast<size_t>(magnitude - 7) * 128) + static_cast<size_t>((ns >> (magnitude - 7)) & 127);
 }
 
-// Upper bound (exclusive) of the bucket at `index`, in nanoseconds.
-// The underflow bucket returns the LVD; the overflow bucket returns
-// the max trackable value (2^(UNIT_MAGNITUDE + NUM_MAGNITUDES)).
-static uint64_t bucket_upper_bound(size_t index)
+static uint64_t upper_bound(size_t index)
 {
-    if (index == kUnderflow) {
-        return 1ULL << UNIT_MAGNITUDE;
+    if (index < 128) {
+        return index;
     }
-    if (index == kOverflow) {
-        return 1ULL << (UNIT_MAGNITUDE + static_cast<uint32_t>(NUM_MAGNITUDES));
+    if (index == LatencyHistogram::NUM_BUCKETS - 1) {
+        return UINT64_MAX;
     }
-    size_t   linear           = index - 1;
-    size_t   magnitude        = linear / SUB_BUCKET_COUNT;
-    size_t   sub_bucket       = linear % SUB_BUCKET_COUNT;
-    uint64_t magnitude_base   = 1ULL << (UNIT_MAGNITUDE + static_cast<uint32_t>(magnitude));
-    uint64_t sub_bucket_width = 1ULL << (UNIT_MAGNITUDE + static_cast<uint32_t>(magnitude) - SUB_BUCKET_BITS);
-    return magnitude_base + ((static_cast<uint64_t>(sub_bucket) + 1) * sub_bucket_width);
+    const size_t offset    = index - 128;
+    const auto   magnitude = 7 + static_cast<uint32_t>(offset / 128);
+    return (uint64_t{1} << magnitude) + (((offset % 128) + 1) * (uint64_t{1} << (magnitude - 7))) - 1;
 }
 
-// Compute the p-th percentile from bucket counts. Returns the upper
-// bound of the bucket that contains the p-th percentile value. The
-// overflow bucket is capped at the last regular bucket's upper bound
-// to avoid reporting the max-trackable sentinel.
-static uint64_t percentile(const std::vector<uint64_t> &bucket_counts, uint64_t count, uint64_t p)
+static uint64_t percentile(const LatencyHistogram::Data &data, uint64_t count, uint64_t permille)
 {
     if (count == 0) {
         return 0;
     }
-    uint64_t target     = count * p / 100;
-    uint64_t cumulative = 0;
-    for (size_t i = 0; i < bucket_counts.size(); ++i) {
-        cumulative += bucket_counts[i];
+    const uint64_t target     = (count / 1000 * permille) + (((count % 1000 * permille) + 999) / 1000);
+    uint64_t       cumulative = 0;
+    for (size_t i = 0; i < data.buckets.size(); ++i) {
+        cumulative += data.buckets[i];
         if (cumulative >= target) {
-            size_t capped = std::min(i, kOverflow - 1);
-            return bucket_upper_bound(capped);
-        }
-    }
-    return bucket_upper_bound(kOverflow - 1);
-}
-
-// Find the highest non-empty bucket's upper bound. The overflow
-// bucket is capped at the last regular bucket's upper bound.
-static uint64_t max_latency(const std::vector<uint64_t> &bucket_counts)
-{
-    for (size_t i = bucket_counts.size(); i-- > 0;) {
-        if (bucket_counts[i] > 0) {
-            size_t capped = std::min(i, kOverflow - 1);
-            return bucket_upper_bound(capped);
+            return i == LatencyHistogram::NUM_BUCKETS - 1 ? UINT64_MAX : std::min(upper_bound(i), data.max);
         }
     }
     return 0;
 }
 
-// ── LatencyHistogram ─────────────────────────────────────────────
-
-LatencyHistogram::LatencyHistogram(std::string name) : name_(std::move(name)), count_(0), sum_(0), total_count_(0)
+void LatencyHistogram::Data::observe(uint64_t ns)
 {
-    buckets_.reserve(NUM_BUCKETS);
-    for (size_t i = 0; i < NUM_BUCKETS; ++i) {
-        buckets_.push_back(std::make_unique<std::atomic<uint64_t>>(0));
+    ++buckets[bucket_index(ns)];
+    const uint64_t previous = sum_low;
+    sum_low += ns;
+    sum_high += sum_low < previous ? 1 : 0;
+    min = std::min(min, ns);
+    max = std::max(max, ns);
+}
+
+void LatencyHistogram::Data::merge(const Data &other)
+{
+    for (size_t i = 0; i < buckets.size(); ++i) {
+        buckets[i] += other.buckets[i];
     }
+    const uint64_t previous = sum_low;
+    sum_low += other.sum_low;
+    sum_high += other.sum_high + (sum_low < previous ? 1 : 0);
+    min = std::min(min, other.min);
+    max = std::max(max, other.max);
+}
+
+LatencyHistogram::Snapshot LatencyHistogram::Data::snapshot(uint64_t total_count) const
+{
+    Snapshot result;
+    result.count      = std::accumulate(buckets.begin(), buckets.end(), uint64_t{0});
+    result.sum_low    = sum_low;
+    result.sum_high   = sum_high;
+    result.avg        = result.count == 0
+                          ? 0.0
+                          : ((static_cast<double>(sum_high) * 18446744073709551616.0) + static_cast<double>(sum_low)) /
+                                static_cast<double>(result.count);
+    result.min        = result.count == 0 ? 0 : min;
+    result.max        = max;
+    result.p50        = percentile(*this, result.count, 500);
+    result.p90        = percentile(*this, result.count, 900);
+    result.p95        = percentile(*this, result.count, 950);
+    result.p99        = percentile(*this, result.count, 990);
+    result.p999       = percentile(*this, result.count, 999);
+    result.zero_count = buckets[0];
+    result.overflow_count = buckets.back();
+    result.total_count    = std::max(result.count, total_count);
+    return result;
+}
+
+LatencyHistogram::LatencyHistogram(std::string name) : name_(std::move(name))
+{
+}
+
+void LatencyHistogram::AtomicData::observe(uint64_t ns)
+{
+    buckets[bucket_index(ns)].fetch_add(1, std::memory_order_relaxed);
+    const uint64_t previous = sum_low.fetch_add(ns, std::memory_order_relaxed);
+    if (previous > UINT64_MAX - ns) {
+        sum_high.fetch_add(1, std::memory_order_relaxed);
+    }
+    uint64_t bound = min.load(std::memory_order_relaxed);
+    while (ns < bound && !min.compare_exchange_weak(bound, ns, std::memory_order_relaxed)) {
+    }
+    bound = max.load(std::memory_order_relaxed);
+    while (ns > bound && !max.compare_exchange_weak(bound, ns, std::memory_order_relaxed)) {
+    }
+}
+
+LatencyHistogram::Data LatencyHistogram::AtomicData::capture(bool reset)
+{
+    if (!reset) {
+        return std::as_const(*this).capture();
+    }
+    Data result;
+    for (size_t i = 0; i < buckets.size(); ++i) {
+        result.buckets[i] = buckets[i].exchange(0, std::memory_order_relaxed);
+    }
+    result.sum_low  = sum_low.exchange(0, std::memory_order_relaxed);
+    result.sum_high = sum_high.exchange(0, std::memory_order_relaxed);
+    result.min      = min.exchange(UINT64_MAX, std::memory_order_relaxed);
+    result.max      = max.exchange(0, std::memory_order_relaxed);
+    return result;
+}
+
+LatencyHistogram::Data LatencyHistogram::AtomicData::capture() const
+{
+    Data result;
+    for (size_t i = 0; i < buckets.size(); ++i) {
+        result.buckets[i] = buckets[i].load(std::memory_order_relaxed);
+    }
+    result.sum_low  = sum_low.load(std::memory_order_relaxed);
+    result.sum_high = sum_high.load(std::memory_order_relaxed);
+    result.min      = min.load(std::memory_order_relaxed);
+    result.max      = max.load(std::memory_order_relaxed);
+    return result;
 }
 
 void LatencyHistogram::observe(uint64_t ns)
 {
-    size_t idx = bucket_index(ns);
-    buckets_[idx]->fetch_add(1, std::memory_order_relaxed);
-    count_.fetch_add(1, std::memory_order_relaxed);
-    sum_.fetch_add(ns, std::memory_order_relaxed);
-    total_count_.fetch_add(1, std::memory_order_relaxed);
+    window_.observe(ns);
+    total_.observe(ns);
 }
 
 LatencyHistogram::Snapshot LatencyHistogram::flush()
 {
-    std::vector<uint64_t> bucket_counts(NUM_BUCKETS);
-    for (size_t i = 0; i < NUM_BUCKETS; ++i) {
-        bucket_counts[i] = buckets_[i]->exchange(0, std::memory_order_relaxed);
-    }
-    uint64_t count = count_.exchange(0, std::memory_order_relaxed);
-    uint64_t sum   = sum_.exchange(0, std::memory_order_relaxed);
-    uint64_t total = total_count_.load(std::memory_order_relaxed);
+    const auto cumulative = total_.capture().snapshot().count;
+    return window_.capture(true).snapshot(cumulative);
+}
 
-    Snapshot snap;
-    snap.count       = count;
-    snap.avg         = count > 0 ? static_cast<double>(sum) / static_cast<double>(count) : 0.0;
-    snap.p50         = percentile(bucket_counts, count, 50);
-    snap.p99         = percentile(bucket_counts, count, 99);
-    snap.max         = max_latency(bucket_counts);
-    snap.total_count = total;
-    return snap;
+LatencyHistogram::Snapshot LatencyHistogram::snapshot() const
+{
+    return window_.capture().snapshot(total_.capture().snapshot().count);
+}
+
+LatencyHistogram::Snapshot LatencyHistogram::snapshot_total() const
+{
+    return total_.capture().snapshot();
+}
+
+LatencyHistogram::Data LatencyHistogram::capture_total() const
+{
+    return total_.capture();
 }
 
 } // namespace crowdb::common::metrics
