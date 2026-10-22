@@ -15,6 +15,7 @@ use crowdb_protocol::chunk_stream::{
 use crate::{Result, StreamError};
 
 mod append;
+mod publication;
 mod read;
 mod trim;
 

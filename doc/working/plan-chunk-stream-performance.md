@@ -454,6 +454,14 @@ adaptation rather than a new transport or storage engine.
   protocol all-target clippy, fmt and all 270 protocol cases pass. Indexed head
   publication, migration, root guards/retention and append completion remain
   incomplete; record/schema tests alone do not establish them.
+- GC must also fence reuse of an old orphan with the same content identity.
+  Selection-before-resolution alone does not protect a selected orphan if an
+  equivalent new candidate resurrects it after guard enumeration. A per-stream
+  retention-control KV revision changes atomically with guard creation and with
+  head replacement/guard removal. GC captures that revision before resolving
+  roots/guards/pins and conditionally deletes candidates only if it still matches.
+  Pin creation/root retirement must use the same control revision. These are
+  lifecycle/checkpoint operations, never ordinary append operations.
 - Migration must first install a bounded versioned migration head by CAS,
   referring to a separately retained immutable legacy source. This fences old
   cached publishers while pages convert; only a final CAS exposes the indexed
@@ -483,6 +491,34 @@ adaptation rather than a new transport or storage engine.
   `directory-index-clippy4.log`. These APIs are not yet the active append/read
   state machine. Guarded KV publication, root retention, migration, bounded
   active-tail snapshots/cache and append completion remain unfinished.
+
+## Guarded KV publication evidence (partial T11/T13)
+
+- Added an identity/revision-bearing indexed-head snapshot and production KV
+  publication of prepared DirectoryMutation values. Candidate scope, base root,
+  monotonic generation/epoch/trim/tail and active original/checkpoint locations
+  are validated before writes. New pages and immutable root records use
+  create-if-absent CAS and exact-byte conflict/unknown-outcome reconciliation.
+- A bounded durable guard contains the candidate, base head and at most 128
+  new page identities. It precedes page storage. Head replacement and guard
+  removal are one conditional KV batch; failures retain the old head and guard.
+  The per-stream retention-control revision advances atomically on guard creation
+  and head replacement, fencing GC against both new guards and same-ID orphan
+  resurrection. Existing and future pin/retirement/cleanup transitions must
+  compose with this same revision; a plain check followed by deletion is unsafe.
+- Fixed a concurrent first-publication observation: a control read can precede
+  another publisher's atomic control/guard creation. A subsequently found guard
+  with that older absent-control observation returns backpressure, not corruption.
+  Concurrent identical candidates across 16 fresh stream scopes exercise this.
+- Two protocol and seven real-KV cases pass, including unknown record shapes,
+  scope/identity/allocation bounds, retained roots, page conflicts/protected retry,
+  stale owner CAS, active checkpoint disagreement, explicit legacy rejection and
+  both GC revision races. Full Protocol/Stream suites pass 349 cases, zero
+  ignored; all-target clippy and fmt pass. Logs:
+  `directory-publication-{protocol,tests,clippy4,full-suite2,fmt2}.log`.
+- The legacy Stream worker is deliberately not switched yet: migration,
+  root pins/GC, owner authority, content recovery and the new finite-view/ACK
+  contract must be wired together. No performance acceptance is claimed here.
 
 ## Phase 0 — Establish evidence and settle contracts
 

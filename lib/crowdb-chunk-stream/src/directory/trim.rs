@@ -40,8 +40,9 @@ impl DirectoryIndex {
                         .children
                         .partition_point(|child| child.end_logical <= watermark);
                     branch.children.drain(..first);
-                    next = branch.children[0];
-                    path.push(branch);
+                    let child = branch.children[0];
+                    path.push((next, branch, first != 0));
+                    next = child;
                 }
                 StreamDirectoryPage::Leaf(mut leaf) => {
                     let first = leaf.locations.partition_point(|location| {
@@ -57,9 +58,13 @@ impl DirectoryIndex {
                 }
             }
         }
-        for mut branch in path.into_iter().rev() {
-            branch.children[0] = replacement;
-            replacement = mutation.branch(branch.level, branch.children)?;
+        for (reference, mut branch, trimmed) in path.into_iter().rev() {
+            if !trimmed && branch.children[0] == replacement {
+                replacement = reference;
+            } else {
+                branch.children[0] = replacement;
+                replacement = mutation.branch(branch.level, branch.children)?;
+            }
         }
         mutation.index.root = Some(replacement);
         Ok(mutation)

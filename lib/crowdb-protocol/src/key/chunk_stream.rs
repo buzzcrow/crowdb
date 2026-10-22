@@ -13,7 +13,9 @@ use super::encoding::{
 };
 
 mod directory;
-pub use directory::{StreamDirectoryPageKey, StreamDirectoryRootKey};
+pub use directory::{
+    StreamDirectoryControlKey, StreamDirectoryPageKey, StreamDirectoryRootKey, StreamPublicationGuardKey,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct StreamBindingKey {

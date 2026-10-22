@@ -12,9 +12,14 @@ use crate::frame::{ChunkLocation, FrameLayout};
 
 mod bounded;
 mod codec;
+mod publication;
 mod validation;
 
 pub use codec::{decode_stream_directory_page, encode_stream_directory_page};
+pub use publication::{
+    decode_stream_publication_guard, encode_stream_publication_guard, stream_publication_id,
+    StreamDirectoryControl, StreamPublicationGuard, StreamPublicationId, MAX_STREAM_PUBLICATION_PAGES,
+};
 
 pub const MAX_STREAM_DIRECTORY_LOCATIONS: usize = 1024;
 pub const MAX_STREAM_DIRECTORY_CHILDREN: usize = 128;
