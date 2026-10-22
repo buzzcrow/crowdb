@@ -5,9 +5,9 @@
 
 ## Status
 
-The registered host-buffer foundation, common RDMA RPC transport and
-HTTP/ChunkIO/DiskIO datapath are accepted. Remaining child requirements R241
-and R242 retain the Chunk-KV and fat-client goals.
+The registered host-buffer foundation, common RDMA RPC transport,
+HTTP/ChunkIO/DiskIO datapath and Chunk-KV/access integration are accepted.
+Remaining child requirement R242 retains the fat-client goal.
 
 ## Problem
 
@@ -27,9 +27,9 @@ defined in [`design-crowdb-rpc-rdma.md`](../design/rpc/design-crowdb-rpc-rdma.md
 3. Reuse the accepted [HTTP/ChunkIO/DiskIO stream](../design/rpc/design-crowdb-rpc-rdma.md#7-service-interactions),
    preserving existing aggregation, aligned 1 MiB receive data, disk completion
    ownership, caller leases and partial-result failure without a TCP suffix.
-4. Implement Access Server to Chunk-KV integration in
-   [R241](R241-rdma-chunk-kv-access.md), using 64 KiB metadata and 256 KiB
-   aggregated result messages.
+4. Reuse the accepted [Chunk-KV/access stream](../design/rpc/design-crowdb-rpc-rdma.md#7-service-interactions),
+   using 64 KiB metadata and 256 KiB aggregate classes, bounded logical control
+   assembly, shared request identity and final-caller byte admission ownership.
 5. Implement the native fat client and FFI lease API in
    [R242](R242-rdma-fat-client-sdk.md), with host memory first and explicit
    host-to-GPU copy for the initial GPU simulation.
@@ -76,7 +76,7 @@ Run:
 
 ```bash
 pixi run -- cargo fmt --all -- --check
-pixi run -- cargo test -p crowdb-rpc --all-targets
+pixi run clean-env && pixi run test-cpp
 pixi run -- cargo test -p crowdb-access-server --all-targets
 pixi run -- cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```

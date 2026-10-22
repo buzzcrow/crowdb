@@ -6,7 +6,7 @@
 Upstream: [R242](../backlog/R242-rdma-fat-client-sdk.md),
 [root RDMA plan](plan-rdma.md), [registered buffers](../design/rpc/design-crowdb-rpc-rdma.md#4-registered-arenas-and-slot-ownership),
 [RDMA RPC transport](../design/rpc/design-crowdb-rpc-rdma.md), and
-[R241](../backlog/R241-rdma-chunk-kv-access.md).
+[accepted Chunk-KV/access integration](../design/rpc/design-crowdb-rpc-rdma.md#7-service-interactions).
 
 Goal: expose Access Server semantics through a native fat-client SDK that can
 consume the same RDMA stream directly, with caller-owned host buffer leases

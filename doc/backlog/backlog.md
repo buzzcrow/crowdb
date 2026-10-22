@@ -32,13 +32,9 @@ live in the linked document; implementation follows
 - **[R170](R170-s3-cuobject-rdma.md)** — optional cuObject RDMA data plane.
   **Area:** access server / S3 / DiskIO / RDMA. **Complexity:** High.
   **Status:** Deferred until the basic TCP S3 path is stable and measured.
-- **[R241](R241-rdma-chunk-kv-access.md)** — RDMA Access Server to Chunk-KV
-  transport with bounded metadata and aggregate messages. **Area:** access
-  server / Chunk-KV / RDMA. **Complexity:** High. **Dependencies:** accepted
-  registered buffers and RDMA RPC.
 - **[R242](R242-rdma-fat-client-sdk.md)** — native fat-client access SDK and
   FFI buffer leases. **Area:** access server / SDK / RDMA. **Complexity:** High.
-  **Dependencies:** accepted RDMA RPC and R241.
+  **Dependencies:** accepted RDMA RPC and Chunk-KV/access integration.
 - **[R185](R185-access-iceberg-cache-invalidation.md)** — bounded Iceberg cache
   and invalidation. **Area:** access server / Iceberg / Group 0 / Chunk-KV.
   **Complexity:** Medium. **Status:** Deferred pending focused cache measurements.
@@ -105,7 +101,8 @@ live in the linked document; implementation follows
   **Area:** crowdb-tree engine. **Complexity:** Medium.
 - **[R5](R5-rdma-alloc.md)** — RDMA host-buffer RPC and data transport umbrella.
   **Area:** RPC / access server / Chunk-KV / DiskIO / SDK / RDMA.
-  **Complexity:** High. **Status:** Foundation/transport/datapath accepted; R241–R242 remain.
+  **Complexity:** High. **Status:** Foundation/transport/datapath/Chunk-KV
+  accepted; R242 remains.
 - **[R60](R60-tree-scan-sibling-leaf-readahead.md)** — sibling-leaf readahead on
   cold scans. **Area:** crowdb-tree / scan / DiskIO. **Complexity:** Medium.
   **Status:** Deferred pending cold file/block-backed measurements.

@@ -4,9 +4,8 @@
 # CROWDB RDMA implementation Plan
 
 Upstream: [R5](../backlog/R5-rdma-alloc.md),
-[RDMA RPC design](../design/rpc/design-crowdb-rpc-rdma.md), and child
-backlogs [R241](../backlog/R241-rdma-chunk-kv-access.md) and
-[R242](../backlog/R242-rdma-fat-client-sdk.md).
+[RDMA RPC design](../design/rpc/design-crowdb-rpc-rdma.md), and the remaining
+child backlog [R242](../backlog/R242-rdma-fat-client-sdk.md).
 
 Goal: implement the host-memory RDMA SEND/RECV path end to end, with RDMA as
 the preferred connection path, TCP as the one-way fallback, shared aggregation
@@ -25,26 +24,43 @@ current endpoint and receive admission. QPs have one fixed polling/event owner
 per CQ; bounded aggregation preserves complete frames. Strict RDMA CLI tests
 share the coroutine workload and canonical results with TCP.
 
-The final transport source `55ffee38` passes full C++/FFI gates, 137 no-verbs
-cases, CLI/runner contract tests, real HCA lifetime/budget/fallback/disconnect
-cases, formatting and workspace lint. Native and two non-root containers on
-one shared HCA pass repeated 1 s warmup + 10 s measurement profiles. Median
-RDMA throughput is 2.903M TPS native and 2.954M TPS in OCI, with zero errors or
-fallback. The old 1.187M value labeled RDMA was TCP; matching current TCP
-measures 1.196M TPS. Exact identities, settings and artifact names are retained
-in [RPC flow analysis](../design/rpc/rpc-flow-analysis.md).
+The final transport source `944274af` passes 543 tree, 192 RPC, 71 DiskIO and
+35 common native cases plus both FFI suites, 160 no-verbs CTest cases, fourteen
+real-HCA cases, formatting and scoped C++ lint. The unchanged Rust integration
+passes 1,244 affected cases, workspace all-feature clippy and `rs-lint` at
+`018da2fc`. Native and two non-root containers on one shared HCA pass all 26
+final 1 s warmup + 10 s measurement trials. Median RDMA throughput is 3.027M
+TPS raw-server and 3.237M OCI, with zero errors/fallback. Matching TCP medians
+are 1.203M/2.168M raw-server and 1.095M/2.113M OCI with Nagle off/on. Exact
+settings, identities, latency tails and the old TCP mislabeling are retained
+in [RPC flow analysis](../design/rpc/rpc-flow-analysis.md) and both benchmark
+wrapper scripts.
 
-The HTTP/ChunkIO/DiskIO datapath is accepted at `ab1ffbfb`: immutable registered
-HTTP owners, aligned receive-to-disk handoff, read reuse through SEND completion,
-caller-held receive credits, retained asynchronous service owners and terminal
-accepted-RDMA failures. All 278 affected Rust cases and full C++/FFI gates pass.
-A 3,158,073-byte real HTTP corpus crosses two chunks and matches TCP/native/OCI
-bytes and metadata geometry. Peer-close fails a partial HTTP download with no
-TCP suffix. Exact functional settings, error counts, image and artifact
-identities are retained in RPC flow analysis.
+The HTTP/ChunkIO/DiskIO datapath is accepted: immutable registered HTTP owners,
+aligned receive-to-disk handoff, read reuse through SEND completion, caller-held
+receive credits, retained asynchronous service owners and terminal accepted-RDMA
+failures. A 3,158,073-byte HTTP corpus crosses two chunks and matches
+TCP/native/OCI bytes and geometry. All five functional profiles also pass the
+common-control regression at `018da2fc`; peer-close fails a partial download
+without a TCP suffix. The fixture injects placement/catalog state and records
+its actual io_uring/OCI BlockingEngine selection.
 
-Current work is R241, using its existing plan. R242 and physical
-multi-node validation remain outside the user's requested continuation.
+Chunk-KV/access integration is accepted with distinct 64 KiB metadata and
+256 KiB aggregate connection groups sharing request correlation. Protocol v4
+supports bounded logical controls beyond one RQ window, independent byte
+budgets, negotiated capacity and final-caller admission ownership. The real
+Chunk-KV service/tree/WAL corpus verifies eight values totalling 3,409,975 bytes,
+typed errors, mutation-ID replay and exact TCP/RDMA equality in seven native/OCI
+profiles. Partial-fragment peer close publishes no incomplete result or TCP
+suffix. Catalog/serving authority/memory ChunkStream backing are injected;
+Access construction is covered by the affected Rust suites. Formal service
+contracts and complete acceptance evidence are linked from the RDMA design
+and RPC flow analysis.
+
+The requested foundation, transport, datapath and Chunk-KV continuation is
+complete. Only the fat-client SDK child remains. R242 and physical multi-node
+validation are outside the completed continuation; no SDK implementation is
+started by this plan update.
 
 ## Fixed design decisions
 
@@ -61,8 +77,8 @@ multi-node validation remain outside the user's requested continuation.
   every SEND fits both the local send slot and peer receive slot, including
   headers, and retains each RPC's identity and completion ownership.
 - Assign each QP to one CQ and each CQ to one fixed polling/event worker.
-  Implement this together with `crowdb-cli bench rdma` and the existing RPC
-  regression runner; report QP count, slot size, aggregation and errors.
+  Use `crowdb-cli bench rdma` and the shared RPC regression runner to report
+  QP count, slot size, aggregation and errors.
 - Use 64 KiB metadata, 256 KiB aggregated Chunk-KV, and 1 MiB datapath
   capacities, configured as transport defaults.
 - Use posted receives as implicit data credit; do not add an extra credit
@@ -82,57 +98,30 @@ multi-node validation remain outside the user's requested continuation.
 - Physical multi-node testing is deferred to [the separate follow-up plan](plan-rdma-multi-node.md)
   and is not part of the current backlog scope.
 
-## Dependency graph
+## Remaining dependency order
 
 ```text
-R238 registered buffers
-        |
-        v
-R239 common RDMA RPC transport
-       / \
-      v   v
-R240   R241
-datapath Chunk-KV/access
-       \ /
-        v
-R242 fat client SDK and FFI lease
+Accepted registered host buffers and common RPC
+                  |
+Accepted HTTP/ChunkIO/DiskIO and Chunk-KV/access
+                  |
+                  v
+       R242 fat client SDK and FFI lease
 ```
 
-## Immediate implementation order
+The remaining child uses the existing [fat-client SDK plan](plan-rdma-fat-client-sdk.md)
+when the user includes that scope. Do not create a duplicate plan or repeat the
+completed service integration. The shared benchmark/functional `Runtime`
+already launches native, no-device TCP OCI and shared-HCA OCI profiles.
 
-The foundation, transport and datapath requirements are complete. Continue
-through R241 in this same task using its existing
-[Chunk-KV/access plan](plan-rdma-chunk-kv-access.md) and gates. Do not create
-duplicate plan files. R242 remains outside this requested continuation.
-
-1. Complete R241 using its existing Chunk-KV/access plan and parity gates.
-2. Rebuild matching CLI/server binaries and repeat the 10-second peak controls
-   after all service-related transport changes, retaining errors and latency.
-3. Keep R242 downstream until the user includes that scope.
-
-Before modifying each service path, run its focused baseline corpus and record
-it in that child's plan. Transport baseline, hardware topology, queue names and
-OCI runtime preparation are already verified. Service acceptance must prove
-actual RDMA, ownership through disk/caller completion, and bounded pressure;
-transport echo acceptance alone does not prove those properties.
-
-## Phase 3: Chunk-KV service integration
-
-- [~] **Execute R241 child plan**: connect Access Server/Chunk-KV with 64 KiB
-  metadata and 256 KiB aggregate classes, preserving existing request IDs,
-  ordering, and retry semantics.
-- [ ] **Run semantic parity**: for the same test corpus, compare TCP and RDMA
-  results byte-for-byte and compare errors, sequence, generation, and
-  cancellation behavior.
-
-Exit condition: S3/DiskIO and Chunk-KV paths use RDMA without a second
-aggregation layer, without an intermediate CPU payload copy, and with TCP
-fallback before payload submission.
+Before changing the SDK frontend, run its focused baseline corpus, retain the
+accepted transport/service settings and compare exact result bytes and errors.
+Transport echo acceptance alone does not prove SDK lease semantics.
 
 ## Phase 4: R242 fat client SDK
 
 - [ ] **Execute R242 child plan**: split access core from HTTP frontend, expose
-  FFI-safe host leases, and connect SDK operations to R241/R240 transports.
+  FFI-safe host leases, and reuse the accepted Chunk-KV/ChunkIO transports.
 - [ ] **Host-to-GPU simulation**: hold each lease until the explicit host-to-GPU
   copy completes, then release it; no GPU pointer is exposed by the base API.
 - [ ] **SDK pressure tests**: hold all returned leases, verify bounded admission,
@@ -141,22 +130,24 @@ fallback before payload submission.
 Exit condition: native SDK and HTTP frontend return equivalent access results,
 and the caller-controlled lease lifetime is visible and testable through FFI.
 
-## Phase 5: OCI E2E matrix
+## Phase 5: SDK OCI E2E matrix
 
-- [ ] **TCP-only profile**: run OCI containers without RDMA devices and assert
-  service discovery skips RDMA entirely.
-- [ ] **Single-node multi-container profile**: run `setup-rdma.sh local`, start
-  multiple containers on one physical host, share the configured HCA, and
-  assert independent QPs, request correlation, bounded buffers, and TCP
-  fallback.
-- [ ] **Automated local topology selection**: make the test runner execute the
-  TCP-only and single-node local-loop profiles when their prerequisites are
-  present.
+- [ ] **SDK TCP-only profile**: extend the shared launcher with the SDK corpus,
+  omit RDMA devices and require zero RDMA attempts with exact frontend parity.
+- [ ] **SDK shared-HCA profile**: run the SDK corpus in two non-root host-network
+  containers, requiring independent QPs, retained caller leases, bounded
+  pressure and setup-only TCP fallback.
+- [ ] **SDK topology selection**: reuse existing runtime/readiness/report
+  contracts for the SDK fixture when each profile's prerequisites are present.
 
-Exit condition: every profile reports its topology, RDMA capability, selected
-device, selected path, fallback count, buffer pressure, and final result.
+Exit condition: SDK profiles report topology, actual path/classes/QPs, fallback,
+held lease pressure, typed errors and exact frontend result equality. Existing
+HTTP/DiskIO and Chunk-KV native/OCI corpora remain regression controls.
 
-## Cross-phase invariants
+## Invariants to retain in SDK work
+
+The accepted transport/service tests already cover these properties. Reapply
+them to the new SDK frontend and its caller-controlled leases:
 
 - [ ] **No mixed stream**: never append TCP bytes to a partially completed RDMA
   stream.
@@ -181,7 +172,7 @@ Unit and integration gates:
 
 ```bash
 pixi run -- cargo fmt --all -- --check
-pixi run -- cargo test -p crowdb-rpc --all-targets
+pixi run clean-env && pixi run test-cpp
 pixi run -- cargo test -p crowdb-rpc-ffi --all-targets
 pixi run -- cargo test -p crowdb-chunk-kv-client --all-targets
 pixi run -- cargo test -p crowdb-access-server --all-targets
@@ -207,5 +198,5 @@ follow-up plan. Namespace profiles are not part of acceptance.
 Each child plan is marked `[x]` only after its own acceptance cases and gates
 pass. If a child discovers a protocol ambiguity, stop that child, record the
 question here, and resolve it before changing the formal design. If the host
-cannot provide RDMA, do not block R238/R239 mock work or TCP fallback tests;
-mark only hardware E2E as pending.
+cannot provide RDMA, continue portable SDK/TCP checks and mark only hardware
+E2E as pending.

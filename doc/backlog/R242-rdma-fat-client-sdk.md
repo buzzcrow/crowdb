@@ -31,7 +31,8 @@ recycling memory while the caller still reads it.
 
 ## Dependencies
 
-- Accepted registered buffers/RDMA RPC and R241.
+- Accepted registered buffers/RDMA RPC and
+  [Chunk-KV/access integration](../design/rpc/design-crowdb-rpc-rdma.md#7-service-interactions).
 - Existing Access Server access-core and FFI conventions.
 - R220 remains a separate Dataset SDK plan; this requirement supplies the
   transport and lease contract it may reuse.
