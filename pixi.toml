@@ -214,6 +214,7 @@ oci-run-3c = "python container/oci-image/docker-local.py run --nodes 3"
 oci-stop = "python container/oci-image/docker-local.py stop"
 # Remove owned containers and bridges; preserve data unless --delete-data is set.
 oci-clean = "python container/oci-image/docker-local.py clean"
+oci-host-clean = "python container/oci-image/host-clean.py"
 
 ################################################################################
 # Test environments — isolated client dependencies; run with pixi run -e <name>

@@ -4,6 +4,7 @@
 //! Runtime effects use host ownership receipts; readiness uses application evidence.
 
 mod docker;
+mod host;
 mod launch;
 mod state;
 
@@ -20,6 +21,8 @@ use std::process::ExitCode;
 
 #[derive(Args, Debug)]
 pub struct StartArgs {
+    #[command(flatten)]
+    host: host::HostArgs,
     /// Initial voter count, used only when accepting a new launch.
     #[arg(long, value_parser = clap::value_parser!(u8).range(1..=3))]
     nodes: Option<u8>,
@@ -101,6 +104,12 @@ pub(super) fn load_target(name: &str) -> Result<Option<ClusterTargetBinding>> {
 }
 
 pub(super) fn pending_origins(name: &str) -> Result<Vec<String>> {
+    if let Some(record) = host::load(name)? {
+        if Launch::load(name, &state::directory())?.is_some() {
+            return Err(invalid("conflicting host and bridge ownership receipts"));
+        }
+        return Ok(record.origins);
+    }
     Launch::load(name, &state::directory())?
         .map(|record| record.origins())
         .ok_or_else(|| {
@@ -134,6 +143,9 @@ pub(super) async fn start(cli: &Cli, args: &StartArgs) -> ExitCode {
 
 async fn start_inner(cli: &Cli, args: &StartArgs) -> Result<bool> {
     let name = selection(cli)?;
+    if host::selected(name, args)? {
+        return host::start(args, name).await;
+    }
     if args.nodes.is_some_and(|nodes| !matches!(nodes, 1 | 3)) {
         return Err(invalid("initial voter count must be one or three"));
     }
@@ -197,6 +209,9 @@ pub(super) async fn stop(cli: &Cli) -> ExitCode {
 
 async fn stop_inner(cli: &Cli) -> Result<()> {
     let name = selection(cli)?;
+    if let Some(record) = host::load(name)? {
+        return host::stop(name, record).await;
+    }
     let record = Launch::load(name, &state::directory())?
         .ok_or_else(|| invalid("selected cluster has no local runtime ownership receipt"))?;
     binding(&record)?;

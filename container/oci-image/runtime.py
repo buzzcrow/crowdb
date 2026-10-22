@@ -107,7 +107,7 @@ class Runtime:
         policy = node_policy_file(args)
         disks = inputs(args)
         validate_retained_inputs(args.data_root, disks)
-        token = str(uuid.uuid4())
+        token = getattr(args, "owner_token", None) or str(uuid.uuid4())
         shares = getattr(args, "cpu_shares", None)
         cpu_args = ["--cpu-shares", str(shares)] if shares is not None else ["--cpus", str(args.cpus)]
         command = ["run", "-d", "--name", args.name, "--label", f"{OWNER}={token}",

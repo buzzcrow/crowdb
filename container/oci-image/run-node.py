@@ -34,7 +34,7 @@ def check_host_ports(ports=HOST_PORTS):
                 raise ValueError(f"host node TCP port {port} is already occupied") from error
 
 
-def validate(args, parser):
+def validate(args, parser, check_ports=True):
     if (platform.system(), platform.machine()) != ("Linux", "x86_64"):
         parser.error("Linux amd64 host required; macOS VM backend is reserved")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,47}", args.cluster):
@@ -79,7 +79,8 @@ def validate(args, parser):
             parser.error("host networking uses the node's port 9090 directly")
         try:
             socket.if_nametoindex(args.interface)
-            check_host_ports()
+            if check_ports:
+                check_host_ports()
         except (OSError, ValueError) as error:
             parser.error(str(error))
     elif args.runtime != "docker":

@@ -43,8 +43,7 @@ readiness, attached workloads and scoped cleanup.
   holds an active I/O scope across close and requires the descriptors to remain
   valid until that scope ends, then close without transport shutdown. Follow-up
   full C++/FFI, 174 monitor tests, affected all-target clippy, targeted tree-lint
-  and Rust/C++ format gates pass. Rebuild the staged image with this final I/O
-  fence before running the fresh native cluster.
+  and Rust/C++ format gates pass. Image Y includes this final I/O fence and has been built and loaded.
   No A31 protocol/recreation pass claimed.
 - 2026-10-22: user authorized continuation past the prior retry limit and asked
   for diagnosis of the long-standing failure. User subsequently requested F03
@@ -296,8 +295,8 @@ Existing implementation can be reused; these are the outstanding parts.
   F01 addresses an uncertainty/readiness gap; do not conflate free bytes with
   allocatability. Preserve detailed successful facts as well as errors.
 - [ ] **T19–T20 — Add common CLI host/containerd lifecycle** (A08–A10/A29/A31).
-  Docker bridge lifecycle/ownership receipts work. Common CLI still lacks host
-  and containerd adapters. Reuse production resource/device/port/interface/
+  Docker bridge lifecycle/ownership receipts work. Host adapters are implemented;
+  finish actual host recreation and Docker host acceptance. Reuse production resource/device/port/interface/
   credential validation from `container/oci-image/{run-node.py,runtime.py,storage.py}`.
   Seal daemon/context/endpoint, exact resources/mounts/image and owner before
   effects; namespace is a backend detail, never application cluster identity.
@@ -309,7 +308,24 @@ Existing implementation can be reused; these are the outstanding parts.
     verification retains the owned container and data for explicit cleanup.
     All 47 OCI helper tests pass, including both runtimes, rejected file inputs
     before runtime access, and no implicit removal of failed/foreign containers.
-    Common CLI host/containerd lifecycle is still outstanding.
+    Common CLI now embeds those same host validators and accepts Docker or
+    containerd host start/stop with explicit production inputs. It seals the
+    private runtime/owner/input receipt before creation, verifies current daemon,
+    exact resources/mounts/startup policy and media lineage, and resumes lost
+    create replies without adopting foreign containers. Independent
+    `oci-host-clean` preserves all external data/media and receipts. Three
+    Docker-free native hosts have launched image Y through the actual CLI and
+    completed authenticated production admission/formation. Native protocol and
+    recreation proof remain pending. Initial read-only FD samples remain stable
+    at monitor 56 and DiskIO 187; no nofile increase was used.
+    Host code lives in CLI `local/host*` and OCI `host_{inputs,runtime,lifecycle,
+    cleanup}.py`; tests cover interrupted creation, daemon/input/owner drift,
+    exact raw mapping, stopped resource changes and independent cleanup.
+    The first protocol run stalled hashing a 389-MiB debug CLI over read-only
+    9p before issuing its check; it was stopped without data effects. The local
+    stripped client reaches Ready, but an immediate other-host status exposed
+    strict cross-host future timestamp rejection. Preserve that failed evidence
+    and diagnose the clock boundary before claiming the three-host pass.
 - [x] **T25 — Register direct Docker/Compose reference acceptance** (A01/A03/A25).
   - Six registered `deployment.reference` cases cover direct Docker and the
     unchanged shipped one/three-node Compose files, plus real editable UIs in
@@ -510,7 +526,7 @@ Existing implementation can be reused; these are the outstanding parts.
 - At the audit boundary the strict Stream performance checks remained red.
   The subsequent user decision below moves the directory redesign and framed
   synthetic-data fixture to R244; do not replace those failures with a pass.
-  Native Docker-free A31 remains an external-runner dependency under T34.
+  Native Docker-free A31 now has three owned KVM hosts; remaining proof is tracked under T34.
 
 ## Stream latency attribution and first optimizations
 

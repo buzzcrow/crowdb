@@ -267,6 +267,17 @@ for explicit stop, restart and cleanup. Host limits are upper bounds, not
 guaranteed CPU reservations. Block-device access stays explicit; no blanket
 privileged container is needed.
 
+The common cluster CLI supports Docker and containerd host lifecycle through
+these shared validators. A private receipt is sealed before runtime effects;
+it records the stable daemon identity, Unix endpoint, context or namespace,
+snapshotter, owner token, immutable image, resources, media lineage and input
+file hashes. Resume accepts the same inputs and exact owned container, or
+recreates that container against the retained data. A foreign same-name object,
+changed daemon or changed configuration fails before start/stop effects.
+Application UUID binding is separate and can be sealed only after observing
+that cluster. Independent host cleanup verifies the same ownership and removes
+only the container, preserving media, data and receipts.
+
 Explicit monitor liveness/readiness probes report node health. A dedicated
 systemd unit restarts the containerd daemon, and its restart plugin applies the
 node container’s `unless-stopped` policy. Monitor supervises child services.

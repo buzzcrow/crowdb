@@ -131,6 +131,40 @@ and console port 9090. It accepts `--image`, `--cpus`, `--memory-mib` and
 those inputs and resume existing state. `--wait` bounds readiness observation;
 an unmet check returns 1 and leaves accepted work resumable.
 
+For production, `cluster start --network host` runs one node on this physical
+host. Select `--runtime docker` or `--runtime containerd`; containerd also accepts
+`--runtime-endpoint` and `--snapshotter native|overlayfs`. Python 3.11 or newer
+and the selected runtime client must be installed on the host. Load the immutable
+node image first; this command never builds or pulls it.
+
+```bash
+pixi run crowdb-cli --cluster production cluster start --runtime containerd \
+  --network host --snapshotter native --image sha256:<verified-manifest> \
+  --nodes 3 --cpus 2 --memory-mib 2048 --data-root /srv/crowdb/data \
+  --physical-host-id <machine-id> --interface eth0 --management-address 192.0.2.10 \
+  --node-policy-file /srv/crowdb/node-policy.toml \
+  --password-file /srv/crowdb/private-password --device /dev/nvme1n1
+pixi run crowdb-cli --cluster production cluster stop
+pixi run crowdb-cli --cluster production cluster start
+pixi run oci-host-clean --cluster production
+```
+
+The existing data directory must be writable by UID 10001. The node policy
+must select production mode, the same cluster and initial voter count, supplied
+media and reachable public protocol URIs. `--nodes 3` selects the three-voter
+formation policy; run one node on each host. Host networking uses port 9090 and
+rejects `--port-base`. The management address must belong to the selected local
+interface. Disk files use `--disk-file`; files and devices are explicit existing
+inputs and are never created by the CLI.
+
+The CLI seals a private host receipt before creating a container. Start/resume
+and stop verify the recorded daemon, Unix endpoint, context/namespace, owner,
+image, resource limits, mounts and startup inputs. Resume preserves the accepted
+policy and media identities; foreign same-name containers are rejected.
+`oci-host-clean` works without the CLI binary and removes only that verified
+container. It preserves data, raw devices, files, credentials and both launch
+and application receipts, so the next start can recreate the container.
+
 Status/check and application commands need only management HTTP access. A named
 CLI target pins the observed cluster UUID; explicit management endpoints must
 agree with that UUID and with one another. An unavailable selected endpoint
