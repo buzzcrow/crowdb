@@ -3,6 +3,9 @@
 
 //! Aggregate chunk-client write-path metrics.
 
+mod readiness;
+pub use readiness::{ReadinessMetrics, ReadinessMetricsSnapshot};
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -68,6 +71,7 @@ impl Drop for OperationGuard {
 
 /// Hierarchical metrics for the large-write client path.
 pub struct ChunkClientMetrics {
+    pub readiness: Arc<ReadinessMetrics>,
     pub object_write: OperationMetrics,
     pub chunk_allocate: OperationMetrics,
     pub chunk_append: OperationMetrics,
@@ -92,6 +96,7 @@ impl ChunkClientMetrics {
     #[must_use]
     pub fn register(registry: &mut MetricsRegistry) -> Self {
         Self {
+            readiness: Arc::new(ReadinessMetrics::register(registry)),
             object_write: OperationMetrics::register(registry, "chunkio.object.write"),
             chunk_allocate: OperationMetrics::register(registry, "chunkio.chunk.allocate"),
             chunk_append: OperationMetrics::register(registry, "chunkio.chunk.append"),

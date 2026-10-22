@@ -6,11 +6,28 @@ import json
 import os
 import subprocess
 import time
+import urllib.error
+import urllib.request
 
 from fixture import redact
 
 
 class CliClient:
+    def diagnostics(self):
+        # Export cached counters before teardown, including a failed probe's
+        # latency. These reads never issue dependency health probes.
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        for index, address in enumerate(self.addresses):
+            try:
+                with opener.open(f"http://{address}:9091/_crowdb/metrics", timeout=2) as response:
+                    metrics = response.read(1024 * 1024 + 1)
+                if len(metrics) > 1024 * 1024:
+                    raise ValueError("Access metrics exceeded the diagnostic limit")
+                (self.artifacts / f"access-metrics-{index}.prom").write_text(redact(metrics.decode()))
+            except (OSError, ValueError, urllib.error.HTTPError) as error:
+                (self.artifacts / f"access-metrics-{index}.error").write_text(redact(str(error)))
+        super().diagnostics()
+
     def environment(self):
         environment = dict(os.environ, CROWDB_RUNTIME_ROOT=str(self.root), NO_PROXY="*", no_proxy="*")
         for name in ("CROWDB_CLUSTER", "CROWDB_SYSTEM_IP", "CROWDB_SYSTEM_PORT"):

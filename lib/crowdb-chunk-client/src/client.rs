@@ -4,6 +4,8 @@
 //! Application-facing chunk IO client and prepared large writes.
 
 mod readiness;
+#[cfg(feature = "test-util")]
+pub use readiness::observe_readiness_phase_for_tests;
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -83,6 +85,7 @@ pub struct ChunkIoClient {
     disk_writer: Arc<dyn DiskWriter>,
     topology: Option<Arc<ClientTopology>>,
     metrics: Option<Arc<ChunkClientMetrics>>,
+    readiness: Arc<crate::metrics::ReadinessMetrics>,
     small_pool: Arc<SmallWritePool>,
     reader: ChunkReader,
     failed_disks: Arc<FailedDiskList>,
@@ -158,6 +161,7 @@ impl ChunkIoClient {
                 disk_writer,
             })),
             metrics: None,
+            readiness: Arc::default(),
             small_pool,
             reader,
             failed_disks,
@@ -231,6 +235,7 @@ impl ChunkIoClient {
             disk_writer,
             topology: None,
             metrics: None,
+            readiness: Arc::default(),
             small_pool,
             reader,
             failed_disks,
@@ -242,6 +247,7 @@ impl ChunkIoClient {
     /// Attach aggregate write-path metrics registered by the embedding process.
     #[must_use]
     pub fn with_metrics(mut self, metrics: &Arc<ChunkClientMetrics>) -> Self {
+        self.readiness = Arc::clone(&metrics.readiness);
         self.allocator = Arc::new(MetricsChunkAllocator {
             inner: self.allocator,
             metrics: Arc::clone(metrics),

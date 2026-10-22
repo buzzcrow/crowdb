@@ -283,8 +283,47 @@ impl S3Metrics {
             append_chunk_metrics(&mut output, chunks.large_write_buffer_metrics());
             append_small_write_metrics(&mut output, &chunks.small_write_metrics());
             append_read_flow_metrics(&mut output, chunks.read_flow_metrics());
+            append_readiness_metrics(&mut output, chunks.readiness_metrics());
         }
         output
+    }
+}
+
+fn append_readiness_metrics(
+    output: &mut String,
+    metrics: crowdb_chunk_client::metrics::ReadinessMetricsSnapshot,
+) {
+    for (phase, snapshot) in [
+        ("total", metrics.total),
+        ("hardware", metrics.hardware),
+        ("chunkdb", metrics.chunkdb),
+        ("diskio", metrics.diskio),
+    ] {
+        let labels = format!("phase=\"{phase}\"");
+        append_metric(
+            output,
+            "crowdb_s3_chunk_readiness_observations_total",
+            &labels,
+            snapshot.observations,
+        );
+        append_metric(
+            output,
+            "crowdb_s3_chunk_readiness_errors_total",
+            &labels,
+            snapshot.errors,
+        );
+        for (statistic, value) in [
+            ("p50", snapshot.p50_ns),
+            ("p99", snapshot.p99_ns),
+            ("max", snapshot.max_ns),
+        ] {
+            append_metric(
+                output,
+                "crowdb_s3_chunk_readiness_latency_ns",
+                &format!("{labels},statistic=\"{statistic}\""),
+                value,
+            );
+        }
     }
 }
 

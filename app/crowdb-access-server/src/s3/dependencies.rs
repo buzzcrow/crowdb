@@ -32,13 +32,11 @@ impl ProductionS3Operations {
                     .map_err(|error| error.to_string())?;
                 Ok("Routed Chunk-KV bucket namespace read succeeded".into())
             }),
-            bounded("chunks", async {
-                self.storage
-                    .chunks
-                    .observe_readiness()
+            async {
+                Box::pin(self.storage.chunks.observe_readiness(Duration::from_millis(750)))
                     .await
                     .map_err(|error| error.to_string())
-            }),
+            },
         );
         StorageReadiness { metadata, chunks }
     }

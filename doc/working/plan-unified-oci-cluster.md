@@ -17,7 +17,12 @@ readiness, attached workloads and scoped cleanup.
   F07 fixes polling starvation of post-mutation UI reads. T30a explicitly runs
   the pending-free CLI regression against an owned normal node. All 180 Python
   fixture tests, 277 UI tests/types and 173 monitor tests pass. The full current
-  CLI container scope is running before closing startup interruption coverage.
+  CLI container scope completed: seven cases pass, including both startup
+  interruption checkpoints and sustained terminal-writer recovery. Observation
+  and data round trips fail on fresh Access chunk probes exceeding 750 ms;
+  both exact cases pass alone without changes. T16 owns the unresolved latency.
+  The full Console shared/Web/CLI component gate passes 389 tests (one ignored
+  pending-free case is explicitly executed by T30a).
 - 2026-10-22: user authorized continuation past the prior retry limit and asked
   for diagnosis of the long-standing failure. User subsequently requested F03
   and explicitly authorized continuing other R243 tasks afterward, starting T04.
@@ -155,7 +160,7 @@ Existing implementation can be reused; these are the outstanding parts.
     contract is rejection before runtime access. Shared bootstrap/supervisor
     correctness remains independently covered.
   Owners: CLI `commands/cluster/target.rs`, `commands.rs`, shared deployment target.
-- [~] **T05–T07 — Finish formation negatives and interruption coverage**
+- [ ] **T05–T07 — Finish formation negatives and interruption coverage**
   (A03–A05/A19–A21). One/three-node normal startup works. Verify missing/extra/
   duplicate/foreign peers, incompatible credentials/policies, simultaneous
   coordinators, sealed-manifest conflicts and lost replies without rebootstrap.
@@ -171,8 +176,9 @@ Existing implementation can be reused; these are the outstanding parts.
     init cannot create storage. A discarded prepare response resumes the exact
     owner after a new server/registry, rejecting changed replica/operation.
     All 7 group-creation tests and KV-server all-target clippy pass. The complete
-    monitor suite also passes all 173 tests. Distributed startup interruption
-    is being reverified on image U; this does not certify every A22/A24 fault.
+    monitor suite also passes all 173 tests. Both registered distributed startup
+    interruption cases pass on image U, preserving accepted bindings, storage,
+    container identity and retained bytes; this does not certify every A22/A24 fault.
   - [x] T05a: seed validation now has a dedicated diagnostic and runs before
     policy acceptance, identity creation or listener/service effects through
     `accept-policy`, `run`, and the standalone management entry point. Tests:
@@ -205,10 +211,29 @@ Existing implementation can be reused; these are the outstanding parts.
   add actual S3/Iceberg/Dataset and host-network recovery coverage.
   Owners: shared `deployment/recovery*`, `registry.rs`, Web `node/admission.rs`,
   monitor `node/runtime/{admission,recovery}*`, KV identity-route tests.
-- [ ] **T16 — Complete current dependency acceptance** (A15/A23/A26/A27).
+- [~] **T16 — Complete current dependency acceptance** (A15/A23/A26/A27).
   Group0/disk+binding → owner → space layers, current operations, stateless idle
   ChunkKV and owned-range writer readiness exist. Finish service stop, voter loss,
   stale evidence, mixed failures and bounded endpoint checks with non-repair proofs.
+  - Image-U full `console.cli.container` scope: seven pass; observation/data
+    round trips fail with current (not expired) health evidence reporting
+    `chunks read exceeded its 750 ms deadline`. Metadata and other admission
+    flags are Ready. Exact isolated observation/data cases pass. Logs:
+    `r243-deployment-continuation/{cli-container-full,observation-isolated,data-isolated}`.
+    No timeout increase, caller retry or assertion relaxation. DiskIO's five-second
+    inline topology refresh serially reads service and hardware metadata before
+    its existing read timer begins; this is a hypothesis, not a proven root cause.
+    Add cancellation-safe phase histograms and precise shared-budget timeout
+    diagnostics before attributing the failure or changing readiness semantics.
+    Phase instrumentation is implemented: `chunkio.readiness.{total,hardware,
+    chunkdb,diskio}` histogram/error/in-flight metrics, exposed through Access
+    `/_crowdb/metrics` with fixed phase labels. Each subphase uses the same
+    absolute 750 ms deadline; failures name the dependency. Cancellation retains
+    latency/error accounting. CLI fixtures collect bounded metrics before teardown.
+    Two focused deadline/cancellation tests, five cached-health tests, three S3
+    metrics tests, 182 Python fixture tests and all-target affected clippy pass.
+    Fresh-image full-scope execution remains required; this is observability,
+    not a claimed fix for the intermittent deadline failure.
   One earlier image-T Compose-three run returned HTTP 503 on namespace create,
   logging `malformed Iceberg record`. Exact-case reproduction and the final
   six-case image-U run pass, but no fix for that intermittent error is claimed.

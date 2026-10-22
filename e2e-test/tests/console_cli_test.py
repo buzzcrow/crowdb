@@ -5,12 +5,42 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 from console_cli_fixture import CliContainerCluster, LABEL, OWNER_LABEL
+from console_cli_target import CliAttachedCluster
+from fixture import Cluster
 
 
 class CliOwnershipTest(unittest.TestCase):
+    def test_diagnostics_export_bounded_access_metrics_before_teardown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cluster = CliAttachedCluster("image", Path(directory), Path(directory))
+            cluster.addresses = ["192.0.2.1"]
+            response = Mock()
+            response.read.return_value = b'crowdb_s3_chunk_readiness_errors_total{phase="diskio"} 1\n'
+            with patch("console_cli_client.urllib.request.build_opener") as build, \
+                    patch.object(Cluster, "diagnostics") as collect:
+                opener = build.return_value
+                opener.open.return_value = MagicMock()
+                opener.open.return_value.__enter__.return_value = response
+                cluster.diagnostics()
+            opener.open.assert_called_once_with("http://192.0.2.1:9091/_crowdb/metrics", timeout=2)
+            response.read.assert_called_once_with(1024 * 1024 + 1)
+            collect.assert_called_once()
+            self.assertIn('phase="diskio"', (cluster.artifacts / "access-metrics-0.prom").read_text())
+
+    def test_diagnostics_preserve_errors_and_continue_other_collection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cluster = CliAttachedCluster("image", Path(directory), Path(directory))
+            cluster.addresses = ["192.0.2.1"]
+            with patch("console_cli_client.urllib.request.build_opener") as build, \
+                    patch.object(Cluster, "diagnostics") as collect:
+                build.return_value.open.side_effect = TimeoutError("metrics unavailable")
+                cluster.diagnostics()
+            collect.assert_called_once()
+            self.assertEqual((cluster.artifacts / "access-metrics-0.error").read_text(), "metrics unavailable")
+
     def test_recovery_observation_rejects_foreign_owner_before_file_access(self):
         cluster = object.__new__(CliContainerCluster)
         cluster.servers = ["owned"]
