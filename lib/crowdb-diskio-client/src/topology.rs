@@ -96,14 +96,11 @@ pub(crate) async fn discover(
     service: &ServiceRegistryClient,
     hardware: &HardwareClient,
 ) -> DiskioResult<TopologyDraft> {
-    let instances = service
-        .read_all_diskio_instances()
-        .await
+    let (instances, disks) = tokio::join!(service.read_all_diskio_instances(), hardware.list_all_disks());
+    let instances = instances
         .map_err(|error| DiskioError::TopologyUnavailable(format!("read DiskIO instances: {error}")))?;
-    let mut disks = hardware
-        .list_all_disks()
-        .await
-        .map_err(|error| DiskioError::TopologyUnavailable(format!("read hardware disks: {error}")))?;
+    let mut disks =
+        disks.map_err(|error| DiskioError::TopologyUnavailable(format!("read hardware disks: {error}")))?;
     disks.retain(|disk| {
         !matches!(
             crowdb_protocol::common::HwStatus::try_from(disk.value.status),
@@ -118,15 +115,14 @@ pub(crate) async fn discover_disk(
     hardware: &HardwareClient,
     key: &crowdb_protocol::key::DiskKey,
 ) -> DiskioResult<TopologyDraft> {
-    let value = hardware
-        .get_disk(key.rack_id, key.node_id, key.disk_group_id, &key.disk_id)
-        .await
+    let (value, instances) = tokio::join!(
+        hardware.get_disk(key.rack_id, key.node_id, key.disk_group_id, &key.disk_id),
+        service.read_all_diskio_instances()
+    );
+    let value = value
         .map_err(|error| DiskioError::TopologyUnavailable(error.to_string()))?
         .ok_or_else(|| DiskioError::TopologyUnavailable("administrative disk membership missing".into()))?;
-    let instances = service
-        .read_all_diskio_instances()
-        .await
-        .map_err(|error| DiskioError::TopologyUnavailable(error.to_string()))?;
+    let instances = instances.map_err(|error| DiskioError::TopologyUnavailable(error.to_string()))?;
     let owners = instances
         .into_iter()
         .map(|(_, instance)| instance)

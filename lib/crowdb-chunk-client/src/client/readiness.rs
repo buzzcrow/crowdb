@@ -33,9 +33,7 @@ impl ChunkIoClient {
                     .map_err(|error| IoError::Topology(error.to_string()))
             }),
             observe("ChunkDB", deadline, &self.readiness.chunkdb, async {
-                topology
-                    .chunkdb
-                    .observe_readiness()
+                Box::pin(topology.chunkdb.observe_readiness())
                     .await
                     .map_err(|error| IoError::ReadFailed(format!("ChunkDB read: {error}")))
             }),

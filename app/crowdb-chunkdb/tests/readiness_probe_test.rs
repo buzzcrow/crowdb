@@ -63,18 +63,27 @@ async fn readiness_reads_both_domains_without_scanning_or_mutating_the_catalog()
     }
     let control = Arc::new(CrowdbKvClient::new(ClientConfig::new(Vec::new())));
     control.seed_leader(0, 0, test.server.listen_addr().unwrap().to_string());
-    let registry = ServiceRegistryClient::from_shared(control);
+    let registry = ServiceRegistryClient::from_shared(Arc::clone(&control));
     registry
         .heartbeat_chunkdb(1, &format!("127.0.0.1:{}", server.port()))
         .await
         .unwrap();
     let client = ChunkdbClient::new(registry, Arc::new(ChunkdbRpcTransport::new()));
+    let reference = crowdb_kv_client::RangeBindingClient::from_shared(Arc::clone(&control));
+    let _ = control.drain_window();
+    reference.refresh().await.unwrap();
+    let binding_scans = control.drain_window().scan.len();
     client.refresh_routes().await.unwrap();
+    assert_eq!(
+        control.drain_window().scan.len(),
+        binding_scans,
+        "a complete refresh must not rescan the registry beyond its binding snapshot"
+    );
 
     for records in [0, 320] {
         seed_catalog(&store, records).await;
         let _ = test.kv.drain_window();
-        client.observe_readiness().await.unwrap();
+        Box::pin(client.observe_readiness()).await.unwrap();
         let work = test.kv.drain_window();
         assert_eq!(work.get.len(), 2, "one point read for each domain");
         assert_eq!(work.scan.len(), 0, "readiness must not enumerate catalog records");
@@ -95,7 +104,7 @@ async fn readiness_reads_both_domains_without_scanning_or_mutating_the_catalog()
         .await
         .unwrap();
     assert!(matches!(
-        client.observe_readiness().await,
+        Box::pin(client.observe_readiness()).await,
         Err(ChunkdbClientError::Internal(_))
     ));
     server.stop();

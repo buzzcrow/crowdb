@@ -171,11 +171,22 @@ impl ChunkdbClient {
 
     /// Refresh `ChunkDB` service endpoints and range ownership bindings.
     pub async fn refresh_routes(&self) -> Result<()> {
-        self.refresh_endpoints().await?;
         self.range_binding
             .refresh()
             .await
             .map_err(|error| ChunkdbClientError::Unreachable(format!("slot refresh failed: {error}")))?;
+        // The validated binding snapshot already contains the current registry
+        // endpoints. Do not read that same registry a second time per refresh.
+        let endpoints = self
+            .range_binding
+            .snapshot()
+            .into_iter()
+            .filter(|binding| !binding.rpc_endpoint.is_empty())
+            .map(|binding| (binding.instance_id, binding.rpc_endpoint))
+            .collect();
+        self.endpoint_cache.store(Arc::new(endpoints));
+        self.last_registry_refresh_ms
+            .store(unix_time_ms(), Ordering::Release);
         Ok(())
     }
 

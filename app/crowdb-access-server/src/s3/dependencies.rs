@@ -22,11 +22,9 @@ impl ProductionS3Operations {
             bounded("metadata", async {
                 self.storage
                     .metadata
-                    .scan(
-                        MetadataKey::bucket_name_prefix(&self.config.tenant),
-                        MetadataKey::bucket_name_end(&self.config.tenant),
-                        1,
-                        4096,
+                    .get(
+                        MetadataKey::bucket_name(&self.config.tenant, b"crowdb-health-observation")
+                            .map_err(|error| error.to_string())?,
                     )
                     .await
                     .map_err(|error| error.to_string())?;
