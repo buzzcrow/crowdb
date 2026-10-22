@@ -10,16 +10,11 @@ use crate::common::ChunkId;
 pub const FRAME_HEADER_PREFIX_BYTES: usize = 14;
 pub const FRAME_FOOTER_BYTES: usize = 20;
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
-pub const MAX_FRAME_PAYLOAD_BYTES: usize = MAX_FRAME_BYTES - FRAME_HEADER_PREFIX_BYTES - FRAME_FOOTER_BYTES;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u16)]
 pub enum FrameMagic {
-    RepoSmallV1 = 0x0101,
-    RepoLargeV1 = 0x0201,
     StreamV1 = 0x0301,
-    BtreePageV1 = 0x0401,
-    PageIndexV1 = 0x0501,
     RepoSmallV2 = 0x0102,
     RepoLargeV2 = 0x0202,
     StreamV2 = 0x0302,
@@ -32,11 +27,7 @@ impl TryFrom<u16> for FrameMagic {
 
     fn try_from(value: u16) -> Result<Self, Self::Error> {
         match value {
-            0x0101 => Ok(Self::RepoSmallV1),
-            0x0201 => Ok(Self::RepoLargeV1),
             0x0301 => Ok(Self::StreamV1),
-            0x0401 => Ok(Self::BtreePageV1),
-            0x0501 => Ok(Self::PageIndexV1),
             0x0102 => Ok(Self::RepoSmallV2),
             0x0202 => Ok(Self::RepoLargeV2),
             0x0302 => Ok(Self::StreamV2),

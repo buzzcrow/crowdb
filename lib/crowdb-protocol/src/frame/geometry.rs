@@ -6,8 +6,8 @@
 use std::ops::Range;
 
 use super::{
-    ChunkId, FrameError, FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES, MAX_FRAME_BYTES,
-    MAX_FRAME_PAYLOAD_BYTES,
+    ChunkId, FrameError, FRAME_FOOTER_BYTES, FRAME_V2_HEADER_BYTES, MAX_FRAME_BYTES,
+    MAX_FRAME_V2_PAYLOAD_BYTES,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -18,7 +18,7 @@ pub struct ChunkLocation {
 }
 
 impl ChunkLocation {
-    /// Return the total bytes occupied by this location's frames.
+    /// Return the total bytes occupied by this location's ordinary frames.
     ///
     /// # Errors
     ///
@@ -133,7 +133,7 @@ pub fn framed_physical_length(logical_length: u64) -> Result<u64, FrameError> {
         Ok(full_bytes)
     } else {
         full_bytes
-            .checked_add(FRAME_HEADER_PREFIX_BYTES as u64)
+            .checked_add(FRAME_V2_HEADER_BYTES as u64)
             .and_then(|value| value.checked_add(tail))
             .and_then(|value| value.checked_add(FRAME_FOOTER_BYTES as u64))
             .ok_or(FrameError::LengthOverflow)
@@ -145,5 +145,5 @@ fn frame_count(logical_length: u64) -> u64 {
 }
 
 const fn max_payload_u64() -> u64 {
-    MAX_FRAME_PAYLOAD_BYTES as u64
+    MAX_FRAME_V2_PAYLOAD_BYTES as u64
 }

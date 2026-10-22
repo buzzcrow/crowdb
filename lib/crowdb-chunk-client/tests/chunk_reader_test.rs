@@ -22,9 +22,7 @@ use crowdb_protocol::chunkdb::rpc::{
 };
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::diskdb::rpc::Segment;
-use crowdb_protocol::frame::{
-    encode_frame, FrameMagic, MAX_FRAME_BYTES, MAX_FRAME_V2_PAYLOAD_BYTES as MAX_FRAME_PAYLOAD_BYTES,
-};
+use crowdb_protocol::frame::{encode_frame, FrameMagic, MAX_FRAME_BYTES, MAX_FRAME_V2_PAYLOAD_BYTES};
 use tokio::sync::{Notify, Semaphore};
 
 const KIB: usize = 1024;
@@ -681,7 +679,7 @@ async fn global_read_budget_remains_charged_while_http_keeps_frame_views() {
     let id = ChunkId { high: 29, low: 57 };
     let mut segment = segment(1);
     segment.unit_count = 2;
-    let payload = vec![0x5a; MAX_FRAME_PAYLOAD_BYTES];
+    let payload = vec![0x5a; MAX_FRAME_V2_PAYLOAD_BYTES];
     let frame = encode_frame(FrameMagic::RepoLargeV2, id, &payload, 1).unwrap();
     assert_eq!(frame.len(), MAX_FRAME_BYTES);
     let physical = Bytes::from(frame.repeat(32));
@@ -731,7 +729,7 @@ async fn global_read_budget_remains_charged_while_http_keeps_frame_views() {
     let location = Location {
         chunk_id: Some(id),
         length: 32 * MAX_FRAME_BYTES as u64,
-        logical_length: 32 * MAX_FRAME_PAYLOAD_BYTES as u64,
+        logical_length: 32 * MAX_FRAME_V2_PAYLOAD_BYTES as u64,
         ..Location::default()
     };
     let mut stream = reader.read_stream(&[location]).unwrap();

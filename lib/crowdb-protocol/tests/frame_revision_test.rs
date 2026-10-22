@@ -29,7 +29,9 @@ fn vectors() -> impl Iterator<Item = (&'static str, Vec<u8>)> {
 
 #[test]
 fn both_languages_read_all_shared_vectors_and_emit_canonical_v2() {
-    for (name, bytes) in vectors() {
+    let vectors: Vec<_> = vectors().collect();
+    assert_eq!(vectors.len(), 6);
+    for (name, bytes) in vectors {
         let parsed = parse_frame(&bytes, CHUNK).unwrap();
         assert_eq!(parsed.payload, &[1, 2, 3], "{name}");
         assert_eq!(parsed.header.write_time_ms, 42);
@@ -222,8 +224,8 @@ fn malformed_extensions_fail_without_panics_and_v2_crc_is_unambiguous() {
     let mut bytes = encode_frame(FrameMagic::RepoSmallV2, CHUNK, &[1, 2, 3], 42).unwrap();
     let footer = bytes.len() - FRAME_FOOTER_BYTES;
     let prefix_crc = crowdb_common::ec_isal::crc32c_update(0, &bytes[..footer]);
-    let legacy_crc = crowdb_common::ec_isal::crc32c_update(prefix_crc, &bytes[footer + 4..]);
-    bytes[footer..footer + 4].copy_from_slice(&legacy_crc.to_le_bytes());
+    let footer_inclusive_crc = crowdb_common::ec_isal::crc32c_update(prefix_crc, &bytes[footer + 4..]);
+    bytes[footer..footer + 4].copy_from_slice(&footer_inclusive_crc.to_le_bytes());
     assert_eq!(
         parse_frame(&bytes, CHUNK).err(),
         Some(FrameError::ChecksumMismatch)
@@ -234,4 +236,17 @@ fn malformed_extensions_fail_without_panics_and_v2_crc_is_unambiguous() {
     );
     assert!(encode_append_group_views(CHUNK, 0, &Bytes::new(), 42).is_err());
     assert!(encode_append_group_views(CHUNK, u64::MAX, &Bytes::from_static(b"x"), 42).is_err());
+}
+
+#[test]
+fn old_ordinary_magics_are_unsupported() {
+    let canonical = encode_frame(FrameMagic::RepoSmallV2, CHUNK, b"data", 42).unwrap();
+    for magic in [0x0101_u16, 0x0201, 0x0401, 0x0501, 0x0103] {
+        let mut bytes = canonical.clone();
+        bytes[..2].copy_from_slice(&magic.to_le_bytes());
+        assert!(matches!(parse_frame(&bytes, CHUNK), Err(FrameError::UnknownMagic(value)) if value == magic));
+        assert!(
+            matches!(parse_frame_views(&[&bytes], CHUNK), Err(FrameError::UnknownMagic(value)) if value == magic)
+        );
+    }
 }

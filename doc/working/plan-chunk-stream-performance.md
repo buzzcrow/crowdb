@@ -487,6 +487,38 @@ adaptation rather than a new transport or storage engine.
   `no-compat-{focused2,full-suite,clippy2,tree-lint,tree-lint-focused,full-cpp,
   fmt-final,cpp-fmt}.log` under `r244-chunk-stream/`.
 
+## Canonical ordinary-frame cleanup
+
+- Removed ordinary revision-1 magic variants in Rust/C++, both retained CRC
+  golden vectors and the alternate footer-inclusive CRC acceptance. The one
+  supported CRC covers header/group fields/payload; expected chunk identity is
+  separately verified. C++ now has only revision 2, without old-revision header
+  helpers. Current ordinary encoders/readers and tree packs use revision 2. Negative tests reject removed magic values and noncanonical CRC.
+- Native-body tests check wrong-purpose rejection before touching framing bytes.
+  The actual ChunkDB finalization test now writes current PageIndex frames.
+  These consumer tests plus frame tests pass 33 cases, zero ignored.
+- Product E2E small/large/repair/read fixtures still used old magic, the 65,502-
+  byte payload cap or 14-byte ordinary headers. Updated them to current 65,501-
+  byte payloads and 15-byte headers while preserving physical bytes, mirror
+  repair and subrange assertions. Object location arithmetic uses current
+  ordinary geometry; predecessor Stream accounting is private to that worker. Compile them through all-target
+  clippy. Actual OCI E2E needs the final matched current image; do not run an old
+  deployment image against the new strict client and call that acceptance.
+- The predecessor Rust Stream worker still emits revision 1; remove that last
+  Stream codec alongside grouped recovery/finalizer and indexed-worker wiring.
+  This is current implementation being replaced, with no old-format read or
+  migration commitment. The final shared codec supports only revision 2.
+
+- Final canonical-frame gates pass: all 481 Protocol/Stream/Chunk-client tests,
+  33 focused framing/native-body/finalizer cases, and two real TCP mirror-chain
+  cases; zero ignored. All-target clippy also compiles affected Access, ChunkDB,
+  Stream and product E2E consumers. Full `test-cpp` passes 720 native cases and
+  85 Rust FFI/tool cases, zero ignored; receipt
+  `unit/cpp-d0bbea06f8ee4685b2684386f3ef71da/results.json`. Full tree-lint exits
+  zero with existing warnings and no diagnostics in the changed codec/tests.
+  Rust/C++ format pass. Logs: `canonical-frame-{full-suite,consumers,mirror-chain,
+  clippy2,tree-lint,full-cpp,fmt,cpp-fmt}.log`. Actual product OCI E2E remains T26.
+
 ## Remaining bounded-publication wiring
 
 - An active 256 MiB chunk can hold more than 65,536 tiny append locations.

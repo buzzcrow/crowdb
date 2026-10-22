@@ -19,14 +19,8 @@ namespace crowdb::protocol
 inline constexpr size_t kFrameHeaderPrefixBytes = 14;
 inline constexpr size_t kFrameFooterBytes       = 20;
 inline constexpr size_t kMaxFrameBytes          = 64 * 1024;
-inline constexpr size_t kMaxFramePayloadBytes   = kMaxFrameBytes - kFrameHeaderPrefixBytes - kFrameFooterBytes;
 
 enum class FrameMagic : uint16_t {
-    RepoSmallV1 = 0x0101,
-    RepoLargeV1 = 0x0201,
-    StreamV1    = 0x0301,
-    BtreePageV1 = 0x0401,
-    PageIndexV1 = 0x0501,
     RepoSmallV2 = 0x0102,
     RepoLargeV2 = 0x0202,
     StreamV2    = 0x0302,
@@ -44,7 +38,7 @@ struct FrameChunkId
 
 struct FrameHeaderPrefix
 {
-    FrameMagic magic          = FrameMagic::RepoSmallV1;
+    FrameMagic magic          = FrameMagic::RepoSmallV2;
     uint16_t   payload_offset = 0;
     uint16_t   payload_size   = 0;
     uint64_t   write_time_ms  = 0;
@@ -77,16 +71,6 @@ struct FrameGroupFields
     uint32_t  count = 0;
 };
 
-[[nodiscard]] inline bool is_v2(FrameMagic magic)
-{
-    return (static_cast<uint16_t>(magic) & 0xffU) == 2;
-}
-
-[[nodiscard]] inline size_t ordinary_header_bytes(FrameMagic magic)
-{
-    return is_v2(magic) ? kFrameV2HeaderBytes : kFrameHeaderPrefixBytes;
-}
-
 struct ParsedFrame
 {
     FrameHeaderPrefix        header;
@@ -99,16 +83,6 @@ struct ParsedFrame
 [[nodiscard]] inline std::optional<FrameMagic> frame_magic(uint16_t value)
 {
     switch (value) {
-    case 0x0101:
-        return FrameMagic::RepoSmallV1;
-    case 0x0201:
-        return FrameMagic::RepoLargeV1;
-    case 0x0301:
-        return FrameMagic::StreamV1;
-    case 0x0401:
-        return FrameMagic::BtreePageV1;
-    case 0x0501:
-        return FrameMagic::PageIndexV1;
     case 0x0102:
         return FrameMagic::RepoSmallV2;
     case 0x0202:

@@ -11,12 +11,12 @@ use crowdb_protocol::frame::{parse_frame, FrameMagic, MAX_FRAME_BYTES, MAX_FRAME
 use hyper::body::{Bytes, Http1BodyReceiveProvider};
 
 #[tokio::test]
-async fn native_owner_rejects_incompatible_revisions_before_touching_reserved_regions() {
+async fn native_owner_rejects_wrong_purposes_before_touching_reserved_regions() {
     let allocator = NativeBodyAllocator::new(MAX_FRAME_BYTES, MAX_FRAME_BYTES).unwrap();
     let provider = allocator.object_receiver();
     for magic in [
-        FrameMagic::RepoSmallV1,
-        FrameMagic::RepoLargeV1,
+        FrameMagic::BtreePageV2,
+        FrameMagic::PageIndexV2,
         FrameMagic::StreamV2,
     ] {
         assert!(provider.enable_owner_handoff_with_magic(magic).is_err());
@@ -32,8 +32,8 @@ async fn native_owner_rejects_incompatible_revisions_before_touching_reserved_re
     drop(provider.on_data_ready(allocation).unwrap());
     let mut owner = provider.finish_owner_when_ready().await.unwrap().unwrap();
     for magic in [
-        FrameMagic::RepoSmallV1,
-        FrameMagic::RepoLargeV1,
+        FrameMagic::BtreePageV2,
+        FrameMagic::PageIndexV2,
         FrameMagic::StreamV2,
     ] {
         assert!(owner.prepare_frames(magic, 42).is_err());

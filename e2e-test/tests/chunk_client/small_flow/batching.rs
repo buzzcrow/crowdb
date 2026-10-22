@@ -125,7 +125,7 @@ async fn small_write_scales_out_on_queued_bytes_then_scales_in_when_empty() {
     configured.scale_out_queue_bytes = 64 * KIB;
     configured.scale_out_queue_objects = configured.queue_capacity;
     let stack = E2eStack::start(configured).await;
-    let completed = concurrent_writes(&stack, 64, MAX_FRAME_PAYLOAD_BYTES).await;
+    let completed = concurrent_writes(&stack, 64, MAX_FRAME_V2_PAYLOAD_BYTES).await;
 
     wait_for_metrics(&stack.client, || stack.client.small_write_metrics().scale_out > 0).await;
     assert_eq!(completed.len(), 64);

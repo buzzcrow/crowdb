@@ -45,8 +45,7 @@ namespace crowdb::protocol
     if (payload_offset < kFrameHeaderPrefixBytes) {
         return FrameError::InvalidPayloadOffset;
     }
-    if ((magic_value & 0xffU) == 2 && payload_offset != kFrameV2HeaderBytes &&
-        payload_offset != kFrameGroupHeaderBytes) {
+    if (payload_offset != kFrameV2HeaderBytes && payload_offset != kFrameGroupHeaderBytes) {
         return FrameError::InvalidPayloadOffset;
     }
     const size_t physical_length = static_cast<size_t>(payload_offset) + payload_size + kFrameFooterBytes;
@@ -59,16 +58,13 @@ namespace crowdb::protocol
     const size_t     footer_start = physical_length - kFrameFooterBytes;
     const auto       magic        = *parsed_magic;
     FrameGroupFields group;
-    if (is_v2(magic)) {
-        const FrameError role_error = parse_frame_role(bytes, magic, payload_offset, &group);
-        if (role_error != FrameError::Ok) {
-            return role_error;
-        }
+    const FrameError role_error = parse_frame_role(bytes, magic, payload_offset, &group);
+    if (role_error != FrameError::Ok) {
+        return role_error;
     }
     const uint32_t crc          = crowdb::common::crc32c(bytes.data(), footer_start);
     const uint32_t expected_crc = read_u32_le(bytes.data() + footer_start);
-    if (crc != expected_crc &&
-        (is_v2(magic) || crowdb::common::crc32c_update(crc, bytes.data() + footer_start + 4, 16) != expected_crc)) {
+    if (crc != expected_crc) {
         return FrameError::ChecksumMismatch;
     }
     const FrameChunkId chunk_id{
@@ -100,8 +96,7 @@ namespace crowdb::protocol
                                              FrameMagic expected_magic, size_t logical_length,
                                              std::vector<uint8_t> *payload)
 {
-    if (payload == nullptr ||
-        framed_physical_length(logical_length, ordinary_header_bytes(expected_magic)) != bytes.size()) {
+    if (payload == nullptr || framed_physical_length(logical_length, kFrameV2HeaderBytes) != bytes.size()) {
         return FrameError::Incomplete;
     }
     payload->clear();
@@ -124,7 +119,8 @@ namespace crowdb::protocol
 
 /// Validates a concatenated sequence whose first frame already identifies its
 /// public kind. DiskIO uses this boundary check without needing caller-private
-/// location metadata: each footer supplies the expected chunk ID for parsing.
+/// location metadata. This checks framing/CRC only; the footer supplies its claimed
+/// identity. Content readers must pass their external expected chunk ID to parse_frame.
 [[nodiscard]] inline FrameError validate_frame_sequence(std::span<const uint8_t> bytes)
 {
     size_t offset = 0;

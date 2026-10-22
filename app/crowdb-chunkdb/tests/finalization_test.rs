@@ -56,7 +56,7 @@ async fn finalizer_seals_a_readable_acknowledged_tree_frame() {
         .unwrap();
     let id = chunk.id.unwrap();
     let frame = crowdb_protocol::frame::encode_frame(
-        crowdb_protocol::frame::FrameMagic::PageIndexV1,
+        crowdb_protocol::frame::FrameMagic::PageIndexV2,
         id,
         &[0x53; 1024],
         1,

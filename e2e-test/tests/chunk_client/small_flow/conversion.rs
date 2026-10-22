@@ -188,7 +188,7 @@ async fn manual_chunkdb_trigger_converts_closed_active_range_end_to_end() {
             .await;
         assert_eq!(actual, expected);
     }
-    let appended_data = Bytes::from(vec![0xd3; MAX_FRAME_PAYLOAD_BYTES]);
+    let appended_data = Bytes::from(vec![0xd3; MAX_FRAME_V2_PAYLOAD_BYTES]);
     let appended = write_object(&stack.client, appended_data.clone()).await;
     assert_eq!(appended.chunk_id, location.chunk_id);
     assert_eq!(appended.offset, 8 * MIB as u64);

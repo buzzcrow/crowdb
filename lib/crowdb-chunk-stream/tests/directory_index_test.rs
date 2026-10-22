@@ -148,7 +148,7 @@ async fn trim_rewrites_only_left_path_and_preserves_old_root_reads() {
 }
 
 #[tokio::test]
-async fn compact_groups_and_legacy_short_frames_keep_their_physical_boundaries() {
+async fn compact_groups_keep_their_physical_boundaries() {
     let store = TestDirectoryStore::new();
     let mut large = test_locations(0, 1)[0];
     large.location.logical_length = 4 * 1024 * 1024;

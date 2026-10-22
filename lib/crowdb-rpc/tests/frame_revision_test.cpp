@@ -55,7 +55,18 @@ TEST(FrameRevisionTest, ReadsSharedVectorsAndEmitsCanonicalNewRevision)
         }
         ++count;
     }
-    EXPECT_EQ(count, 8);
+    EXPECT_EQ(count, 6);
+}
+
+TEST(FrameRevisionTest, OldMagicsAreUnsupported)
+{
+    std::vector<uint8_t> bytes;
+    ASSERT_EQ(encode_frame(FrameMagic::RepoSmallV2, kChunk, std::array<uint8_t, 1>{1}, 42, &bytes), FrameError::Ok);
+    for (const uint16_t magic : {0x0101, 0x0201, 0x0301, 0x0401, 0x0501, 0x0103}) {
+        bytes[0] = static_cast<uint8_t>(magic);
+        bytes[1] = static_cast<uint8_t>(magic >> 8U);
+        EXPECT_EQ(parse_frame(bytes, kChunk, nullptr), FrameError::UnknownMagic);
+    }
 }
 
 TEST(FrameRevisionTest, OrdinaryNewRevisionHasBoundedCanonicalFrames)
@@ -153,11 +164,11 @@ TEST(FrameRevisionTest, RejectsMalformedExtensionsAndAmbiguousCrc)
     std::vector<uint8_t> encoded;
     ASSERT_EQ(encode_frame(FrameMagic::RepoSmallV2, kChunk, std::array<uint8_t, 3>{1, 2, 3}, 42, &encoded),
               FrameError::Ok);
-    const size_t   footer     = encoded.size() - kFrameFooterBytes;
-    const uint32_t prefix_crc = crowdb::common::crc32c(encoded.data(), footer);
-    const uint32_t legacy_crc = crowdb::common::crc32c_update(prefix_crc, encoded.data() + footer + 4, 16);
+    const size_t   footer               = encoded.size() - kFrameFooterBytes;
+    const uint32_t prefix_crc           = crowdb::common::crc32c(encoded.data(), footer);
+    const uint32_t footer_inclusive_crc = crowdb::common::crc32c_update(prefix_crc, encoded.data() + footer + 4, 16);
     for (size_t index = 0; index < 4; ++index) {
-        encoded[footer + index] = static_cast<uint8_t>(legacy_crc >> (index * 8U));
+        encoded[footer + index] = static_cast<uint8_t>(footer_inclusive_crc >> (index * 8U));
     }
     EXPECT_EQ(parse_frame(encoded, kChunk, nullptr), FrameError::ChecksumMismatch);
     encoded[14] = 1;

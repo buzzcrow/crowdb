@@ -60,7 +60,7 @@ async fn partial_read_preserves_healthy_ec_shard_ranges_around_data_loss() {
         panic!("large write did not produce EC");
     };
     let reader = reader_with_segment_failures(&stack, ec.segments[1..3].to_vec()).await;
-    let payload_per_shard = 16 * MAX_FRAME_PAYLOAD_BYTES as u64;
+    let payload_per_shard = 16 * MAX_FRAME_V2_PAYLOAD_BYTES as u64;
     let partial = reader
         .read_range_partial(&result.locations, 0, 4 * MIB as u64)
         .await
@@ -105,7 +105,7 @@ async fn partial_read_preserves_healthy_ec_shard_ranges_around_data_loss() {
     assert!(matches!(
         stream.next_chunk().await.unwrap(),
         Err(ReadError::FailedRange { start, end, .. })
-            if start == payload_per_shard && end == payload_per_shard + MAX_FRAME_PAYLOAD_BYTES as u64
+            if start == payload_per_shard && end == payload_per_shard + MAX_FRAME_V2_PAYLOAD_BYTES as u64
     ));
     assert!(stream.next_chunk().await.is_none());
 }

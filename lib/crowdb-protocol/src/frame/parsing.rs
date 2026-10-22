@@ -59,9 +59,7 @@ pub fn parse_frame_views(
     } else {
         FrameRole::Ordinary
     };
-    if crc != expected_crc
-        && (header.magic.is_v2() || crowdb_common::ec_isal::crc32c_update(crc, &footer[4..]) != expected_crc)
-    {
+    if crc != expected_crc {
         return Err(FrameError::ChecksumMismatch);
     }
     let chunk_id = ChunkId {
@@ -130,10 +128,7 @@ pub fn parse_frame(bytes: &[u8], expected_chunk_id: ChunkId) -> Result<ParsedFra
     })?);
     let role = parse_role(header, bytes)?;
     let crc = crc32c_parts([&bytes[..footer_start]]);
-    if crc != checksum
-        && (header.magic.is_v2()
-            || crowdb_common::ec_isal::crc32c_update(crc, &bytes[footer_start + 4..length]) != checksum)
-    {
+    if crc != checksum {
         return Err(FrameError::ChecksumMismatch);
     }
     let chunk_id =
