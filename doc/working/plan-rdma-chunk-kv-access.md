@@ -409,3 +409,22 @@ pixi run tree-lint
 
 Do not hand off to R242 until Chunk-KV response assembly and TCP/RDMA semantic
 parity pass for metadata and multi-message aggregate responses.
+
+Final clean-source checkpoint:
+
+- All 26 final 1 s warmup + 10 s trials pass source `944274af` with matching
+  release binaries, valid reports, zero errors and zero fallback. RDMA peak
+  median is 3,026,938.6 TPS raw-server and 3,236,760.8 TPS OCI. TCP Nagle off/on
+  medians are 1,203,469.3 / 2,167,732.3 raw-server and
+  1,094,684.9 / 2,112,923.9 OCI. Single-loader RDMA measures 60,964.4 TPS,
+  average 15.88 us, P90 15.94 us and maximum 0.361 ms. Artifacts and current
+  gate logs are backed up in both runtime and `/tmp/crowdb-rdma-probe/`.
+- Both requested benchmark scripts now embed AMD Ryzen 9 5950X / 16-core /
+  32-thread hardware, raw-server/two non-root OCI topology, exact source/image,
+  queue/slot/CQ/worker/aggregation settings, repeats, latency tails and errors.
+  Permanent RPC flow analysis records service corpus/digests, memory/copy/error
+  counters, the five HTTP/DiskIO reruns, old TCP mislabeling, the mixed-size
+  staging and cold-response fixes, and known unchanged intermittent failures.
+- Implementation and acceptance are complete. Remaining work is final document
+  consistency/link verification and removal of this completed child plan, its
+  detail/index entry, and completed tasks in the persistent umbrella plan.

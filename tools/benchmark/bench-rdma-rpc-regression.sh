@@ -3,42 +3,47 @@
 # Licensed under the Apache License, Version 2.0.
 # Shared coroutine workload, structured readiness and canonical result files.
 #
-# Measured 2026-10-23, source 018da2fc, matching release CLI/server, protocol v4.
+# Measured 2026-10-23, clean source 944274af, matching release CLI/server, v4.
 # Environment: AMD Ryzen 9 5950X, 16 cores / 32 threads, about 62 GiB RAM.
 # HCA: rocep35s0f0 port 1, 100 Gb/s, PCIe 8 GT/s x4; one physical host.
 # raw-server = two native host processes. OCI = two non-root UID 1000
-# host-network containers sharing this HCA, with independent QPs and memlock
-# unlimited. Image: sha256:e3c9c5c6d5fc3424ac3f22cf4cdcc9b1c872f47336484f54962b2541c4ed6cef.
+# host-network containers; RDMA shares this HCA with independent QPs and
+# unlimited memlock. TCP OCI has no RDMA device mappings. Runtime image:
+# sha256:e3c9c5c6d5fc3424ac3f22cf4cdcc9b1c872f47336484f54962b2541c4ed6cef.
 # CPU affinity/frequency were not pinned. Native builds used -j32.
 # Workload: coroutine, 128-byte payload, one in-flight RPC per loader,
-# 1 s warmup + 10 s validated completion window, drain counted separately.
-# Peak rows select median TPS of three repeats; latency is from that same row.
+# 1 s warmup + 10 s validated completion window; drain counted separately.
+# request_timeout_secs=5. Peak rows select median TPS of three repeats;
+# avg/P90/P99/max are from that same trial. All 26 final trials have valid
+# reports, errors_total=0, report_errors=0 and fallback_count=0.
 #
-# topology     loaders  QPs  CQ/pollers  socket_workers  aggregation  TPS          avg_us  p90_us  p99_us   errors  fallback
-# raw-server   2048     16   16          1               on           2,901,185.6  755.61  802.82  954.37   0       0
-# OCI          2048     16   16          1               on           3,073,435.4  725.12  741.38  946.18   0       0
-# Raw TPS repeats: 2,911,356.0 / 2,814,582.2 / 2,901,185.6.
-# OCI TPS repeats: 3,073,435.4 / 3,067,371.3 / 3,121,091.5.
+# topology    loaders  QPs  CQ/pollers  socket_workers  aggregation  TPS          avg_us  p90_us  p99_us   max_ms  errors  fallback
+# raw-server  2048     16   16          1               on           3,026,938.6  675.55  823.29  1097.73  5.788   0       0
+# OCI         2048     16   16          1               on           3,236,760.8  631.64  704.51  892.93   3.559   0       0
+# Raw TPS repeats: 3,036,947.8 / 3,026,938.6 / 3,026,730.4.
+# OCI TPS repeats: 3,236,760.8 / 3,228,268.4 / 3,251,586.3.
 #
 # Progression, raw-server (one 10 s trial each):
-# loaders  QPs  CQ/pollers  aggregation  TPS          avg_us  p90_us  p99_us  errors
-# 1        1    1           off          57,620.7     18.57   16.00   30.08   0
-# 512      8    8           on           2,223,708.2  249.36  243.71  284.67  0
+# loaders  QPs  CQ/pollers  aggregation  TPS          avg_us  p90_us  p99_us  max_ms  errors
+# 1        1    1           off          60,964.4     15.88   15.94   21.25   0.361   0
+# 512      8    8           on           2,290,244.8  222.58  257.02  299.01  0.656   0
 #
-# Per peer: io_engines=1, io_workers=1; per QP: sq_depth=rq_depth=
-# posted_receive_target=1024, send_queue_capacity=4096 logical RPCs.
-# cq_depth=2048 requested per CQ (provider 4095); wire_slot_capacity=1024 B;
-# send_arena_bytes=receive_arena_bytes=1 MiB per QP; registered total 34 MiB
-# per peer, including shared pools. poll_batch/verbs_poll_batch/
-# poll_empty_budget=256/32/256. aggregation_max_bytes=1024,
+# Per peer: io_engines=1, io_workers=1; connection_count=16 counts RC QPs.
+# qpair_number in connection status is the provider QP ID, not a count.
+# Per QP: sq_depth=rq_depth=posted_receive_target=1024,
+# send_queue_capacity=4096 logical RPCs. cq_depth=2048 per CQ (provider 4095),
+# wire_slot_capacity=1024 B, send_arena_bytes=receive_arena_bytes=1 MiB;
+# registered peak=34 MiB per peer including shared pools. poll_batch/
+# verbs_poll_batch/poll_empty_budget=256/32/256. aggregation_max_bytes=1024,
 # aggregation_max_frames=256; complete frames only, bounded by both slots.
-#
-# Startup-tail caveat: observed cold first responses reached about 1.5-1.8 s;
-# the single-loader trial had zero warmup completions and max_ns=1460998030.
-# Completion-window latency includes requests submitted during warmup. P90 is
-# not maximum latency; retain this snapshot during the startup investigation.
-# Original canonical artifacts: .crowdb-runtime/rdma-check/artifacts/bench/
-# accepted-018da2fc-rdma-native/ and accepted-018da2fc-rdma-oci/.
+# Strict RDMA: TCP fallback disabled. Contiguous RQ is primed before CM;
+# single-loader warmup completed 57,184 RPCs, removing the previous 1.46 s
+# cold-response tail without changing warmup/deadlines. High-load latency
+# includes queueing; P90 is not maximum latency. This is the highest repeated
+# tested configuration, not a measured hardware ceiling.
+# Canonical JSON/CSV/TSV, full counters, errors and binary hashes:
+# .crowdb-runtime/rdma-check/artifacts/bench/
+# accepted-944274af-rdma-native-final/ and accepted-944274af-rdma-oci-final/.
 #
 set -Eeuo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
