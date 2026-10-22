@@ -3,6 +3,7 @@
 """Verify image provenance across client commits and dirty server edits."""
 
 import subprocess
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -33,6 +34,45 @@ class ImageIdentityTest(unittest.TestCase):
         self.git("add", ".")
         self.git("-c", "user.name=test", "-c", "user.email=test@example.invalid",
                  "commit", "-qm", "fixture")
+
+    def snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            environment = dict(os.environ, GIT_INDEX_FILE=str(Path(directory) / "index"))
+            for arguments in (("read-tree", "HEAD"), ("add", "--all", "--", ".")):
+                subprocess.run(["git", "-C", str(self.root), *arguments], env=environment, check=True)
+            return subprocess.check_output(["git", "-C", str(self.root), "write-tree"],
+                                           env=environment, text=True).strip()
+
+    def test_tree_verification_preserves_git_objects_and_real_index_with_dirty_image_inputs(self):
+        extra = self.root / "app/server/src/extra.rs"
+        extra.write_text("image contains this untracked server input\n")
+        tree = self.snapshot()
+        index = (self.root / ".git/index").read_bytes()
+        objects = set((self.root / ".git/objects").rglob("*"))
+        (self.root / "e2e-test/client.py").write_text("new host-only client\n")
+        (self.root / "e2e-test/new-client.py").write_text("new untracked client\n")
+        identity = verify_server_sources(self.root, self.revision, tree)
+        self.assertTrue(identity["server_sources_match"])
+        self.assertEqual((self.root / ".git/index").read_bytes(), index)
+        self.assertEqual(set((self.root / ".git/objects").rglob("*")), objects)
+        self.assertEqual(self.git("rev-parse", "HEAD"), self.revision)
+
+    def test_tree_comparison_rejects_new_changed_or_missing_server_inputs(self):
+        extra = self.root / "app/server/src/extra.rs"
+        extra.write_text("accepted image input\n")
+        tree = self.snapshot()
+        extra.write_text("changed image input\n")
+        with self.assertRaisesRegex(ValueError, "extra.rs"):
+            verify_server_sources(self.root, self.revision, tree)
+        extra.write_text("accepted image input\n")
+        newer = self.root / "app/server/src/newer.rs"
+        newer.write_text("new server input\n")
+        with self.assertRaisesRegex(ValueError, "newer.rs"):
+            verify_server_sources(self.root, self.revision, tree)
+        newer.unlink()
+        extra.unlink()
+        with self.assertRaisesRegex(ValueError, "extra.rs"):
+            verify_server_sources(self.root, self.revision, tree)
 
     def test_client_and_component_test_changes_reuse_release_image(self):
         (self.root / "e2e-test/client.py").write_text("new client\n")

@@ -832,6 +832,35 @@ Existing implementation can be reused; these are the outstanding parts.
   Preserve older J data/receipts too. Successful disposable fixtures delete their
   own data and containers/bridges through the independent helper.
 
+## Blocked
+
+- Public native host qualification reached five failed runs. R243 stays incomplete;
+  R244 implementation follows only after R243. User continuation requested under
+  the requirement skill before a sixth full run. Command (inside owned VM5):
+  `pixi run --as-is --manifest-path container/oci-image/pixi.toml -e runtime python
+  e2e-test/run.py --profile containerd-host --concurrency 1 --cpus 3 --memory-mib
+  3072 --archive target/r243-ab.oci.tar --artifacts /srv/crowdb-host-profile/native-results`.
+  Logs `/srv/crowdb-host-profile/native-profile{,2,3,4,5}.log` retain full output.
+  1. Read-only source validation attempted Git object writes; replaced with an
+     isolated temporary index preserving object DB and user's index. Regression
+     tests and actual read-only preflight pass.
+  2. Full single-voter Production storage correctly rejected protected placement.
+     Fixture now separates Production metadata lifecycle from explicit Local
+     full-protocol storage with zero node failure tolerance.
+  3. Production metadata fixture omitted required KV HTTP/RPC ports. Policy now
+     supplies 10000/10100; ordinary monitor validation remains unchanged.
+  4. Metadata fixture incorrectly required whole-cluster storage Ready. Current
+     authority is verified independently; diskless metadata is never claimed Ready.
+  5. UUID/authority and first CLI resume succeed, but immediate retained recreation
+     fails before container creation with `host node TCP port 9090 is already
+     occupied`, exit 2. Run `ff8341320cb14b729c1d9d43394559d3` retained. Owned
+     containers/private daemon were cleaned; data, identities and journals remain.
+     Port validation uses a bare bind and may misclassify TCP TIME_WAIT as a live
+     listener. Inspect socket states and reproduce before fixing; do not sleep,
+     enlarge budgets, skip validation or remove retained data. VM5 still has no
+     Docker installation. Three-host protected native proof and four-host AB cold
+     recovery remain valid separate evidence; public profile has no pass yet.
+
 ## Open questions
 
 - No unresolved product choice; retry-limit continuation was authorized.

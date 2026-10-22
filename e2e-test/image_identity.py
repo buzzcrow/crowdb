@@ -3,8 +3,9 @@
 """Allow client-only revisions to reuse an image with identical server sources."""
 
 import re
+import os
 import subprocess
-import sys
+import tempfile
 import tomllib
 from pathlib import Path
 
@@ -206,11 +207,19 @@ def lock_matches(before, after, manifests):
 
 
 def verify_server_sources(root, revision, source_tree=None):
+    with tempfile.TemporaryDirectory(prefix="crowdb-source-check-") as directory:
+        return _verify_with_index(root, revision, source_tree, Path(directory) / "index")
+
+
+def _verify_with_index(root, revision, source_tree, index):
     if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
         raise ValueError("release image needs a full source revision label")
 
+    environment = dict(os.environ, GIT_INDEX_FILE=str(index), GIT_OPTIONAL_LOCKS="0")
+
     def git(*arguments):
-        return subprocess.check_output(["git", "-C", str(root), *arguments], text=True).strip()
+        return subprocess.check_output(["git", "-C", str(root), *arguments],
+                                       env=environment, text=True).strip()
 
     try:
         git("rev-parse", "--verify", revision + "^{commit}")
@@ -221,15 +230,14 @@ def verify_server_sources(root, revision, source_tree=None):
                 raise ValueError("release image source tree label is invalid")
             if git("rev-parse", "--verify", source_tree + "^{tree}") != source_tree:
                 raise ValueError("release image source tree label must identify a tree")
-            tool = Path(__file__).resolve().parents[1] / "container/oci-image/source_tree.py"
-            current_tree = subprocess.check_output([sys.executable, str(tool), str(root)], text=True).strip()
             source = source_tree
-            comparison = [source, current_tree]
-            changed = git("diff", "--name-only", *comparison, "--", *SERVER_PATHS)
-            untracked = ""
-        else:
-            changed = git("diff", "--name-only", source, "--", *SERVER_PATHS)
-            untracked = git("ls-files", "--others", "--exclude-standard", "--", *SERVER_PATHS)
+        # A private baseline index includes dirty inputs staged into the image
+        # tree, even if the operator never added them to their real index.
+        # Comparing its working files writes neither that index nor Git objects.
+        git("read-tree", source)
+        comparison = [source]
+        changed = git("diff", "--name-only", *comparison, "--", *SERVER_PATHS)
+        untracked = git("ls-files", "--others", "--exclude-standard", "--", *SERVER_PATHS)
         added = set(git("diff", "--name-only", "--diff-filter=A", *comparison, "--", *SERVER_PATHS).splitlines())
     except subprocess.CalledProcessError as error:
         raise ValueError("image source revision cannot be verified locally; rebuild the shared OCI image") from error
