@@ -267,7 +267,7 @@ deferring multiple CQs or forbidding transport coalescing.
   sub-microsecond values, bucket boundaries, empty/reset and overflow cases.
   Files: `lib/crowdb-common/{cpp,rust}/` histogram implementations and tests;
   `app/crowdb-cli/src/commands/bench/{loader,result}.rs`.
-- [~] **Make coroutine completion safe before parallel CQ benchmarks**:
+- [x] **Make coroutine completion safe before parallel CQ benchmarks**:
   `co_on_complete` currently fails a CAS against `CO_RUNNING`, then stores
   `CO_RESPONSE_READY`; `await_suspend` can change to `CO_SUSPENDED` between
   those operations and lose the resume. Replace that handoff with one atomic
@@ -279,6 +279,28 @@ deferring multiple CQs or forbidding transport coalescing.
   Files: `client/co_client.cpp`, a private coroutine state header, RPC tests
   and FFI coroutine API. This is prerequisite to attributing multi-CQ errors
   or performance to the transport.
+
+Verified coroutine checkpoint:
+
+- `co_on_complete` publishes readiness with one atomic exchange, and final
+  suspension publishes completion once. The joining thread sleeps while
+  waiting and checks callback quiescence before reclaiming state or Rust
+  context; it never inspects a concurrently running coroutine handle or
+  force-resumes a pending await. Closed-connection submission rejection is
+  counted and stops that coroutine. Configure the existing request reaper for
+  stalled requests; its ordinary completion path handles timeouts.
+- Rust `co_spawn` returns native `CoStats`, including submission rejection
+  errors; `CoBenchHandler::on_response_data` borrows response bytes for payload
+  validation. CLI report integration remains pending in phase D.
+- Three C++ handoff cases pass, including 2,000 concurrent publication trials.
+  Three Rust integration cases pass: 2,048 validated echoes across 64
+  coroutines/four connections/four I/O workers, timeout completion, and a
+  rejected closed connection. The full 29-test RPC FFI suite, 133-case native
+  RPC CTest suite (four hardware cases skipped), fmt, workspace clippy and
+  scoped tree-lint pass. No sanitizer or multi-CQ claim is made by these tests.
+- The FFI build now tracks private source headers as well as public headers;
+  changes to the coroutine state or private transport headers cannot silently
+  leave the native client stale.
 
 Verified histogram checkpoint:
 
@@ -302,7 +324,7 @@ Verified histogram checkpoint:
 
 ### B. CQ owners and resource ownership
 
-- [ ] **Create the bounded CQ pool**: add `RdmaConfig::cq_count`,
+- [~] **Create the bounded CQ pool**: add `RdmaConfig::cq_count`,
   `verbs_poll_batch`, and strict environment validation. Each CQ owns its
   completion channel, wake fd, fixed poller and bounded WR table. Assign each
   QP to one CQ at creation; SEND/RECV and repost retain that assignment.

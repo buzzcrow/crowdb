@@ -254,6 +254,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for src in &sources {
         println!("cargo:rerun-if-changed={}", src.display());
     }
+    // Private implementation headers participate in the native build too.
+    println!("cargo:rerun-if-changed={}", src.display());
     println!("cargo:rerun-if-changed={}", include.display());
     println!("cargo:rerun-if-changed={}", common_include.display());
 

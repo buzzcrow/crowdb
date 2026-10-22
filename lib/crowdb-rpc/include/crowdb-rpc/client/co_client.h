@@ -46,6 +46,9 @@ typedef bool (*crowdb_rpc_co_on_response)(void *ctx, uint64_t request_id, crowdb
 // the given connection (round-robin if multiple). The coroutines run
 // until either rust_build_request or rust_on_response returns false.
 // Blocks until all coroutines complete.
+// Configure the client's timeout reaper before calling this for requests
+// that may stall. Timeouts complete the pending request normally; a pending
+// coroutine is never force-resumed or destroyed while a callback owns it.
 //
 // The client must have its completion pool sized
 // (crowdb_rpc_client_set_completion_pool_size) to >= num_coroutines

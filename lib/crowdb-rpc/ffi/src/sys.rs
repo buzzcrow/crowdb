@@ -350,6 +350,7 @@ extern "C" {
     pub fn crowdb_common_metrics_global_free(s: *mut c_char);
 
     // ── Coroutine client (Option 3: C++ coroutine + Rust FFI) ────
+    pub fn crowdb_rpc_co_get_stats(client: crowdb_rpc_client_t, out: *mut CrowdbRpcCoStats);
     pub fn crowdb_rpc_co_spawn(
         client: crowdb_rpc_client_t,
         server: crowdb_rpc_server_t,
@@ -361,4 +362,14 @@ extern "C" {
         on_response: crowdb_rpc_co_on_response,
         ctx: *mut c_void,
     );
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct CrowdbRpcCoStats {
+    pub total_ops: u64,
+    pub total_errors: u64,
+    pub total_latency_ns: u64,
+    pub min_latency_ns: u64,
+    pub max_latency_ns: u64,
 }

@@ -13,6 +13,8 @@
 //!
 //! `co_spawn` blocks until all coroutines finish; callers should run it
 //! on a blocking thread (e.g. `tokio::task::spawn_blocking`).
+//! Configure the client's request timeout reaper before spawning so stalled
+//! requests complete through the ordinary callback path.
 
 use std::ffi::c_void;
 use std::sync::Arc;
@@ -31,7 +33,23 @@ pub trait CoBenchHandler: Send + Sync {
     /// to stop this coroutine. The C++ layer releases the response
     /// buffers after this returns — do not release them here.
     fn on_response(&self, request_id: u64, status: Result<(), RpcError>, latency_ns: u64) -> bool;
+
+    /// Borrow response bytes for validation without cloning buffer owners.
+    /// The slices are valid only during this call.
+    fn on_response_data(
+        &self,
+        request_id: u64,
+        status: Result<(), RpcError>,
+        latency_ns: u64,
+        _control: &[u8],
+        _data: &[u8],
+    ) -> bool {
+        self.on_response(request_id, status, latency_ns)
+    }
 }
+
+/// Native coroutine totals include submission rejections and response errors.
+pub type CoStats = sys::CrowdbRpcCoStats;
 
 /// Shared state passed through the C ABI as `ctx`.
 struct CoCtx {
@@ -54,9 +72,9 @@ pub fn co_spawn(
     num_coroutines: u32,
     msg_type: u16,
     handler: Arc<dyn CoBenchHandler>,
-) {
+) -> CoStats {
     if conns.is_empty() || num_coroutines == 0 {
-        return;
+        return CoStats::default();
     }
     let ctx = Box::new(CoCtx { handler });
     let ctx_ptr = Box::into_raw(ctx) as *mut c_void;
@@ -81,6 +99,10 @@ pub fn co_spawn(
     }
     // SAFETY: co_spawn has returned; no callback will fire again.
     unsafe { drop(Box::from_raw(ctx_ptr.cast::<CoCtx>())) };
+    let mut stats = CoStats::default();
+    // SAFETY: all coroutines and callbacks joined; client remains borrowed.
+    unsafe { sys::crowdb_rpc_co_get_stats(client.handle(), &mut stats) };
+    stats
 }
 
 // SAFETY: ctx is a valid CoCtx* set up by co_spawn. out_control /
@@ -107,8 +129,8 @@ unsafe extern "C" fn build_cb(
 unsafe extern "C" fn resp_cb(
     ctx: *mut c_void,
     request_id: u64,
-    _control: sys::crowdb_rpc_buffer_t,
-    _data: sys::crowdb_rpc_buffer_t,
+    control: sys::crowdb_rpc_buffer_t,
+    data: sys::crowdb_rpc_buffer_t,
     status: sys::crowdb_rpc_status,
     latency_ns: u64,
 ) -> bool {
@@ -118,5 +140,25 @@ unsafe extern "C" fn resp_cb(
     } else {
         Err(RpcError::from_status(status))
     };
-    c.handler.on_response(request_id, r, latency_ns)
+    c.handler.on_response_data(
+        request_id,
+        r,
+        latency_ns,
+        response_bytes(control),
+        response_bytes(data),
+    )
+}
+
+// SAFETY: response buffer owners remain in the C++ coroutine until resp_cb
+// returns. Empty/null buffers produce an empty slice; no owner is transferred.
+unsafe fn response_bytes<'a>(handle: sys::crowdb_rpc_buffer_t) -> &'a [u8] {
+    if handle.is_null() {
+        return &[];
+    }
+    let length = sys::crowdb_rpc_buffer_len(handle) as usize;
+    let data = sys::crowdb_rpc_buffer_data(handle);
+    if data.is_null() || length == 0 {
+        return &[];
+    }
+    std::slice::from_raw_parts(data, length)
 }
