@@ -7,6 +7,7 @@
 #include "crowdb-rpc/transport/socket_transport.h"
 #include "rdma_channel.h"
 #include "rdma_cq.h"
+#include "rdma_device.h"
 
 #ifdef CROWDB_RPC_HAVE_RDMA
 
@@ -29,7 +30,9 @@ namespace crowdb::rpc
 
 // ── RdmaTransport ─────────────────────────────────────────────────
 
-RdmaTransport::RdmaTransport(RdmaConfig config) : config_(std::move(config))
+RdmaTransport::RdmaTransport(RdmaConfig config, BufferPool *application_pool)
+    : config_(std::move(config)),
+      application_pool_(application_pool == nullptr ? &default_application_pool_ : application_pool)
 {
     const bool valid_config = config_.apply_environment() && config_.valid();
     if (!valid_config) {
@@ -92,14 +95,9 @@ RdmaTransport::~RdmaTransport()
         if (queue->continuation_fd >= 0)
             ::close(queue->continuation_fd);
     }
-    if (pd_ != nullptr) {
-        ibv_dealloc_pd(pd_);
-        pd_ = nullptr;
-    }
-    if (context_ != nullptr && owns_context_) {
-        ibv_close_device(context_);
-        context_ = nullptr;
-    }
+    device_.reset();
+    pd_      = nullptr;
+    context_ = nullptr;
 }
 
 bool RdmaTransport::adopt_cm_context(struct ibv_context *context)
@@ -114,18 +112,17 @@ bool RdmaTransport::adopt_cm_context(struct ibv_context *context)
     // arenas. Do not replace live QPs/registrations when another HCA appears.
     if (context_ != nullptr)
         return false;
-    auto *new_pd = ibv_alloc_pd(context);
-    if (new_pd == nullptr)
+    auto device = RdmaDevice::retain(context);
+    if (device == nullptr)
         return false;
     if (!create_completion_queues(context)) {
-        ibv_dealloc_pd(new_pd);
         return false;
     }
-    context_      = context;
-    owns_context_ = false;
-    pd_           = new_pd;
-    send_pool_    = std::make_unique<RdmaBufferPool>(pd_, config_.send_arena_bytes, config_.sq_depth);
-    recv_pool_    = std::make_unique<RdmaBufferPool>(pd_, config_.send_arena_bytes, config_.sq_depth);
+    context_   = context;
+    device_    = std::move(device);
+    pd_        = device_->pd;
+    send_pool_ = std::make_unique<RdmaBufferPool>(pd_, config_.send_arena_bytes, config_.sq_depth, device_);
+    recv_pool_ = std::make_unique<RdmaBufferPool>(pd_, config_.send_arena_bytes, config_.sq_depth, device_);
     register_events(event_engine_);
     return ready();
 }
@@ -289,6 +286,9 @@ bool RdmaTransport::post_receive(Connection *conn, Buffer *slot)
 
 Buffer *RdmaTransport::register_buffer(Buffer *buf)
 {
+    Operation operation(repost_state_);
+    if (!operation)
+        return nullptr;
     if (buf == nullptr || buf->type == BufferType::Registered) {
         return buf; // already registered
     }
@@ -339,7 +339,6 @@ void RdmaTransport::shutdown()
             if (auto it = cm_pools_.find(id); it != cm_pools_.end()) {
                 it->second->send->quarantine_inflight();
                 it->second->recv->quarantine_inflight();
-                retired_pools_.push_back(std::move(it->second));
                 cm_pools_.erase(it);
             }
             if (id->qp != nullptr)

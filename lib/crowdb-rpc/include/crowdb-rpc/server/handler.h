@@ -34,6 +34,7 @@ using HandlerFn = std::function<OutFrame *(Frame *request, Connection *conn)>;
 
 // Built-in handlers.
 OutFrame *handle_ping(Frame *request, Connection *conn);
+OutFrame *handle_echo(Frame *request, Connection *conn);
 OutFrame *handle_unknown(Frame *request, Connection *conn);
 
 // HandlerRegistry: maps msg_type → HandlerFn. Thread-safe.

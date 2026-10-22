@@ -107,6 +107,23 @@ SDK lease budget, or a full DiskIO write queue applies backpressure to the
 existing producer or aggregation layer. RDMA adds no application-level credit
 message. A slot is never posted twice concurrently.
 
+`Connection::pool()` is the application allocator used by echo and default
+handlers. Initial receives and reposts use the separate retained receive arena;
+fully posting the RQ therefore does not consume reply allocation admission.
+Send and receive arenas enforce both byte and total descriptor limits. Tagged
+entry indices with atomic links protect their class freelists from concurrent
+allocation/recycle ABA; quarantined entries remain outside those freelists.
+
+Each outstanding registered buffer retains its shared arena even after the
+`RdmaBufferPool` facade or transport is destroyed. The arena retains the PD and
+the RDMA-CM device context list. The last lease release destroys arena
+descriptors, deregisters its MR, then drops the device owner; the last device
+owner deallocates its PD before releasing the context list. Completed receive
+leases additionally retain their connection and repost admission state. After
+shutdown, final release retires the slot without using the destroyed transport
+or posting another receive. QP retirement does not accumulate arenas in a
+transport-wide retired list.
+
 ## 5. Shared CQ and completion model
 
 Connections share a bounded CQ pool. Each QP uses one assigned CQ for both
@@ -150,6 +167,11 @@ receive retirement take the same exclusive CQ ownership gate. FFI receives a
 callback or buffer lease only after frame validation and ownership resolution.
 
 ## 6. Failure and fallback
+
+WR flushes on a closed connection are counted as `shutdown_flushes` separately
+from `cq_errors`. A flush on an open connection still fails that stream and
+counts as a workload error. Slots with uncertain completion are quarantined in
+both cases.
 
 RDMA setup failure, missing capability, or a transport error before the first
 payload may select TCP. The request ID is shared by both transports. Retry is

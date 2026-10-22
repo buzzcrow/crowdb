@@ -16,6 +16,11 @@ namespace crowdb::rpc
 
 struct TestRdmaTransport
 {
+    static std::weak_ptr<void> device_owner(RdmaTransport &transport)
+    {
+        return std::shared_ptr<void>(transport.device_);
+    }
+
     static uint64_t send(RdmaTransport &transport, const std::shared_ptr<Connection> &connection, Buffer *slot,
                          OutFrame *frame)
     {

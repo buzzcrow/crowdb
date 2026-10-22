@@ -145,14 +145,14 @@ std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int 
     pools->effective_capacity = qp_attr.cap;
     pools->cq_index           = reservation.queue->index;
     pools->reserved_capacity  = reservation.capacity;
-    pools->send               = std::make_unique<RdmaBufferPool>(id->pd, config_.send_arena_bytes, config_.sq_depth);
-    pools->recv               = std::make_unique<RdmaBufferPool>(id->pd, config_.receive_arena_bytes, config_.rq_depth);
+    pools->send = std::make_unique<RdmaBufferPool>(id->pd, config_.send_arena_bytes, config_.sq_depth, device_);
+    pools->recv = std::make_unique<RdmaBufferPool>(id->pd, config_.receive_arena_bytes, config_.rq_depth, device_);
     if (pools->send == nullptr || pools->recv == nullptr) {
         rdma_destroy_qp(id);
         rdma_destroy_id(id);
         return nullptr;
     }
-    auto connection = std::make_shared<Connection>(reinterpret_cast<int64_t>(id), addr, pools->recv.get());
+    auto connection = std::make_shared<Connection>(reinterpret_cast<int64_t>(id), addr, application_pool_);
     set_connection_pools(connection.get(), pools);
     reservation.committed = true;
     connection->set_path(ConnectionPath::Rdma);
@@ -258,7 +258,6 @@ std::shared_ptr<Connection> RdmaTransport::accept()
                         cm_connections_.erase(it);
                     }
                     if (auto it = cm_pools_.find(event_id); it != cm_pools_.end()) {
-                        retired_pools_.push_back(std::move(it->second));
                         cm_pools_.erase(it);
                     }
                     cm_ids_.erase(std::remove(cm_ids_.begin(), cm_ids_.end(), event_id), cm_ids_.end());
@@ -325,14 +324,14 @@ std::shared_ptr<Connection> RdmaTransport::accept()
     pools->effective_capacity = qp_attr.cap;
     pools->cq_index           = reservation.queue->index;
     pools->reserved_capacity  = reservation.capacity;
-    pools->send               = std::make_unique<RdmaBufferPool>(id->pd, config_.send_arena_bytes, config_.sq_depth);
-    pools->recv               = std::make_unique<RdmaBufferPool>(id->pd, config_.receive_arena_bytes, config_.rq_depth);
+    pools->send = std::make_unique<RdmaBufferPool>(id->pd, config_.send_arena_bytes, config_.sq_depth, device_);
+    pools->recv = std::make_unique<RdmaBufferPool>(id->pd, config_.receive_arena_bytes, config_.rq_depth, device_);
     if (pools->send == nullptr || pools->recv == nullptr) {
         rdma_destroy_qp(id);
         rdma_destroy_id(id);
         return nullptr;
     }
-    auto connection = std::make_shared<Connection>(reinterpret_cast<int64_t>(id), "rdma-peer", pools->recv.get());
+    auto connection = std::make_shared<Connection>(reinterpret_cast<int64_t>(id), "rdma-peer", application_pool_);
     set_connection_pools(connection.get(), pools);
     reservation.committed = true;
     connection->set_path(ConnectionPath::Rdma);

@@ -25,8 +25,12 @@ and C/Rust lease metadata accessors. R239's transport path is implemented and
 passes the prepared HCA
 local-loop plus the real `RpcServer`/`RpcClient` worker round trip. Its
 requirement is still open because negotiated capability preflight,
-pre-payload fallback, real PD/MR lifetime with held caller leases, and
-multi-container acceptance have not all passed.
+pre-payload fallback, portable pool parity, aggregation/CLI benchmarking and
+multi-container acceptance have not all passed. Live HCA tests now verify
+held registered/receive leases after pool, transport and CM-ID destruction;
+the final release deregisters MR before PD release. Application reply allocation
+is separate from receive admission, and every CQ has a fixed polling/event
+owner. The transport plan records the corresponding gates and diagnostics.
 
 The latest transport handoff closes the completion ownership gap: SEND and
 RECV work requests now carry stable connection/request/stream metadata, receive
@@ -149,6 +153,10 @@ TCP-only profile and build/mocked tests.
   uncertain completion cases.
 - [x] **Review handoff**: verify that R239 can obtain control/data buffers and
   that every asynchronous owner has a release transition.
+- [ ] **Close portable pool parity**: share the verified arena lifetime and
+  tagged-index freelist machinery with the no-verbs registered pool, then
+  verify concurrent bounds, held leases, quarantine and detach without an HCA.
+  The detailed transport plan owns this continuation before aggregation.
 
 Exit condition: no buffer can be recycled while transport, disk, or caller
 ownership remains unresolved.

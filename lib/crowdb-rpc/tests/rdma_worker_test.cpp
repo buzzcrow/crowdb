@@ -127,21 +127,10 @@ TEST(RdmaHardwareTest, RpcServerClientWorkerRoundTrip)
             delete frame;
             return static_cast<OutFrame *>(nullptr);
         });
-        server.register_handler(kMessageType, [&received, &server](Frame *frame, Connection *) {
+        server.register_handler(kMessageType, [&received, &server](Frame *frame, Connection *connection) {
+            EXPECT_EQ(connection->pool(), server.pool());
             received.fetch_add(1, std::memory_order_relaxed);
-            OutFrame *response        = new OutFrame;
-            response->request_id      = frame->request_id;
-            response->header.msg_type = static_cast<uint16_t>(kMessageType);
-            response->control =
-                crowdb::rpc::build_ping_response(server.pool(), frame->request_id, frame->rpc_create_nano, 0);
-            response->header.msg_size = response->control == nullptr ? 0 : response->control->len;
-            if (frame->data_buf != nullptr && frame->data_buf->len != 0) {
-                response->data = server.pool()->alloc(frame->data_buf->len);
-                if (response->data != nullptr)
-                    response->data->write(frame->data_buf->payload_data(), frame->data_buf->len);
-            }
-            delete frame;
-            return response;
+            return handle_echo(frame, connection);
         });
         server.start();
         for (int i = 0; i < 100 && !client_finished.load(std::memory_order_acquire); ++i)

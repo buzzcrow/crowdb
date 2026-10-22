@@ -128,6 +128,17 @@ TEST_F(RdmaCompletionTest, QueueCapacityReservationRollsBackFailedSetup)
     EXPECT_FALSE(TestRdmaTransport::reserve(transport, 1, true));
 }
 
+TEST_F(RdmaCompletionTest, ClosedConnectionFlushIsSeparateFromWorkloadErrors)
+{
+    const auto token = send();
+    ASSERT_NE(token, 0U);
+    connection->close();
+    TestRdmaTransport::complete(transport, token, IBV_WC_WR_FLUSH_ERR);
+    EXPECT_EQ(transport.stats().cq_errors.load(), 0U);
+    EXPECT_EQ(transport.stats().flush_errors.load(), 0U);
+    EXPECT_EQ(transport.stats().shutdown_flushes.load(), 1U);
+}
+
 TEST_F(RdmaCompletionTest, WorkTablesAndPollingOwnershipAreIndependentPerCq)
 {
     auto       other       = std::make_shared<Connection>(6, "other-cq", &slots);

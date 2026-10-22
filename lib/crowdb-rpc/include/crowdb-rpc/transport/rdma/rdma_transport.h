@@ -26,6 +26,7 @@ namespace crowdb::rpc
 {
 
 class SocketEngine;
+struct RdmaDevice;
 
 constexpr uint32_t RDMA_WIRE_SLOT_CAPACITY = RDMA_DATAPATH_CAPACITY;
 
@@ -59,48 +60,26 @@ struct RdmaConfig
 // The pool pre-registers a large memory region and carves out buffers
 // from it, avoiding per-buffer ibv_reg_mr calls (which are expensive).
 // Every buffer is a slice of the single MR, so registration is bounded by the
-// pool region and deregistration happens exactly once at pool shutdown. Class
-// freelists and arena admission are atomic; shutdown is the only lifecycle
-// operation that walks the full allocation list.
+// pool region. Leases retain the arena and its registration owner; the final
+// release deregisters the MR before dropping the PD/context owner.
 class RdmaBufferPool : public BufferPool
 {
   public:
     // mr_size: total registered memory size. max_buffers: pool capacity.
-    RdmaBufferPool(struct ibv_pd *pd, uint64_t mr_size = 1 << 20, uint32_t max_buffers = 1024);
+    RdmaBufferPool(struct ibv_pd *pd, uint64_t mr_size = 1 << 20, uint32_t max_buffers = 1024,
+                   std::shared_ptr<void> registration_owner = {});
     ~RdmaBufferPool() override;
 
     Buffer *alloc(uint32_t capacity) override;
     void    recycle(Buffer *buf) override;
 
-    [[nodiscard]] uint64_t quarantined_bytes() const
-    {
-        return quarantined_bytes_.load(std::memory_order_acquire);
-    }
-
-    [[nodiscard]] bool quiescent() const
-    {
-        return outstanding_.load(std::memory_order_acquire) == 0;
-    }
-
-    void quarantine_inflight();
+    [[nodiscard]] uint64_t quarantined_bytes() const;
+    [[nodiscard]] bool     quiescent() const;
+    void                   quarantine_inflight();
 
   private:
-    struct ibv_pd                       *pd_;
-    struct ibv_mr                       *mr_     = nullptr;
-    void                                *region_ = nullptr;
-    uint64_t                             mr_size_;
-    uint32_t                             max_buffers_;
-    std::atomic<uint32_t>                outstanding_{0};
-    std::atomic<uint64_t>                next_offset_{0};
-    std::array<std::atomic<Buffer *>, 4> free_heads_{};
-    std::atomic<Buffer *>                quarantine_head_{nullptr};
-    std::atomic<Buffer *>                all_head_{nullptr};
-    std::atomic<uint64_t>                quarantined_bytes_{0};
-
-    Buffer *alloc_fresh(uint32_t capacity);
-    Buffer *pop(std::atomic<Buffer *> &head);
-    void    push(std::atomic<Buffer *> &head, Buffer *buf);
-    bool    reserve_outstanding();
+    struct Arena;
+    std::shared_ptr<Arena> arena_;
 };
 
 // RdmaTransport: RDMA transport using libibverbs + librdmacm.
@@ -123,6 +102,7 @@ class RdmaTransport : public Transport
         std::atomic<uint64_t> cq_empty_polls{0};
         std::atomic<uint64_t> cm_disconnects{0};
         std::atomic<uint64_t> flush_errors{0};
+        std::atomic<uint64_t> shutdown_flushes{0};
         std::atomic<uint64_t> local_protection_errors{0};
         std::atomic<uint64_t> retry_exceeded_errors{0};
         std::atomic<uint64_t> remote_access_errors{0};
@@ -132,7 +112,7 @@ class RdmaTransport : public Transport
         std::atomic<uint64_t> pending_deferred_receives{0};
     };
 
-    explicit RdmaTransport(RdmaConfig config = {});
+    explicit RdmaTransport(RdmaConfig config = {}, BufferPool *application_pool = nullptr);
     ~RdmaTransport() override;
 
     bool    submit(Connection *conn, OutFrame *frame) override;
@@ -189,11 +169,11 @@ class RdmaTransport : public Transport
 #    endif
     RdmaConfig                                                           config_;
     std::atomic<bool>                                                    capability_available_{false};
-    struct ibv_context                                                  *context_      = nullptr;
-    bool                                                                 owns_context_ = true;
-    struct ibv_pd                                                       *pd_           = nullptr;
-    struct rdma_event_channel                                           *cm_channel_   = nullptr;
-    struct rdma_cm_id                                                   *listen_id_    = nullptr;
+    struct ibv_context                                                  *context_ = nullptr;
+    std::shared_ptr<RdmaDevice>                                          device_;
+    struct ibv_pd                                                       *pd_         = nullptr;
+    struct rdma_event_channel                                           *cm_channel_ = nullptr;
+    struct rdma_cm_id                                                   *listen_id_  = nullptr;
     std::string                                                          requested_device_;
     uint8_t                                                              port_ = 1;
     std::vector<struct rdma_cm_id *>                                     cm_ids_;
@@ -201,6 +181,8 @@ class RdmaTransport : public Transport
     SocketEngine                                                        *event_engine_ = nullptr;
     std::mutex                                                           cm_mu_;
 
+    SystemBufferPool                default_application_pool_;
+    BufferPool                     *application_pool_;
     std::unique_ptr<RdmaBufferPool> send_pool_;
     std::unique_ptr<RdmaBufferPool> recv_pool_;
     ConnectionHandler               connection_handler_;
@@ -333,11 +315,10 @@ class RdmaTransport : public Transport
     };
 
     std::unordered_map<struct rdma_cm_id *, std::shared_ptr<ConnectionPools>> cm_pools_;
-    std::vector<std::shared_ptr<ConnectionPools>>                             retired_pools_;
 
     void        release_completed_frame(WorkRequest *work, const struct ibv_wc &wc);
     void        release_completed_receive(WorkRequest *work, const struct ibv_wc &wc);
-    void        record_completion_error(const struct ibv_wc &wc);
+    void        record_completion_error(const struct ibv_wc &wc, bool expected_flush = false);
     static void repost_frame_release(void *context, Buffer *data);
     bool        adopt_cm_context(struct ibv_context *context);
 };

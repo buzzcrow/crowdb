@@ -27,9 +27,12 @@ retained, and poll-call counters use per-CQ shards. The CQ diff passed focused
 tests, live HCA diagnostics, the full C++/FFI gate, formatting and workspace
 clippy and scoped tree-lint. Tree-lint exits zero with style warnings.
 
-Still pending: application reply allocation independent of receive admission,
-real PD/MR lifetime after held leases and transport teardown, bounded transport
-aggregation, `bench rdma`/shared coroutine reporting, unified regression
+Application reply allocation now uses a separate pool, and real HCA tests
+prove held registered/receive leases survive pool/transport/CM-ID destruction.
+The C ABI now returns independent handles for retained buffer references.
+
+Still pending: portable registered-pool concurrency/lifetime parity, bounded
+transport aggregation, `bench rdma`/shared coroutine reporting, unified regression
 orchestration, negotiated TCP capability preflight, failure injection, and the
 two-container acceptance profiles. Capability serialization and automatic
 consumption at the connection seam do not establish negotiated preflight:
@@ -330,16 +333,81 @@ Verified histogram checkpoint:
   work; shutdown joins pollers before destroying QPs/CQs. No hot-path lock is
   introduced. Test early receive/late handler, deferred cancellation, fixed-owner
   busy/idle wakeups and late buffer release.
-- [~] **Separate application and receive allocators**: built-in echo and
+- [x] **Separate application and receive allocators**: built-in echo and
   default handlers allocate from the common application pool, not a fully
   preposted receive arena. Receive posting and repost explicitly use the
   connection's retained RDMA receive pool. Test `posted_receive_target ==
   rq_depth` with request and response payload validation. Files: `connection.h`,
   RDMA setup/completion, `c_api.cpp`, `server/handler.cpp`, transport tests.
-- [ ] **Finish real registered-lease shutdown**: retain PD/context/MR owners
+- [x] **Finish real registered-lease shutdown**: retain PD/context/MR owners
   until the last held receive lease is released, including after transport
   shutdown; no deregister-before-release, double repost, premature recycle or
   silent PD leak. Files: RDMA buffer pool and lifecycle sources, lease tests.
+  `RdmaBufferPool` becomes a facade over a shared arena; each outstanding
+  buffer retains that arena, including buffers returned by `register_buffer`.
+  The arena retains a shared `RdmaDevice` PD owner and the `rdma_get_devices`
+  context list. Deregister MR before releasing PD, then release the list.
+  Replace raw-pointer freelist heads with tagged entry indices and atomic
+  links to prevent concurrent allocation/recycle ABA and link data races.
+  Enforce a hard total buffer-entry bound as well as the arena byte bound.
+  Verify the C ABI handle layer too: `crowdb_rpc_buffer_ref` currently
+  increments the inner buffer reference but returns the same wrapper, while
+  `crowdb_rpc_buffer_release` deletes that wrapper. Return an independent
+  opaque handle per retained reference and test both release orders, an
+  external owner released exactly once, and a cloned real registered lease
+  surviving pool/PD facade destruction. This is part of the lease contract.
+- [~] **Finish portable pool parity**: the no-verbs `RegisteredBufferPool`
+  still uses raw-pointer freelist heads and a facade pointer in outstanding
+  buffers. Reuse the bounded shared-arena/index freelist machinery for that
+  pool too, retaining detach semantics and optional registration. Add no-device
+  concurrent recycle, held lease after facade destruction, byte/descriptor
+  bounds, quarantine and detach tests. Make `SystemBufferPool` outstanding
+  admission one atomic reservation so parallel reply allocation cannot exceed
+  its declared count. Files: `buffer.h`, `buffer.cpp`, private common arena
+  sources, RDMA pool wrapper and buffer tests. This closes the foundation
+  contract without leaving concurrency safety dependent on HCA availability.
+
+Application allocator verification:
+
+- `SocketTransport` passes its application pool into RDMA connections;
+  `prime_receive` allocates from private `ConnectionPools::recv` explicitly.
+  The C API and native test use the same built-in `handle_echo` implementation.
+- A real HCA worker round trip with RQ/post target 1024 and exactly 1 MiB of
+  1 KiB receive slots completed 1000 payload-validated requests with zero
+  request errors. The server asserts the connection application pool equals
+  `RpcServer::pool()`. This fixed-count case is functional evidence only.
+
+Registered lifetime verification:
+
+- A real registered lease, cloned through the C ABI, remains readable after
+  its pool facade is destroyed. Final release destroys the arena/MR before
+  the retained PD owner; `ibv_dealloc_pd` returns zero. Two separate C ABI cases
+  reproduce the original shared-wrapper bug before the fix and pass afterward,
+  covering both release orders and exactly one external-owner callback.
+- Eight producer threads complete 160,000 allocate/clone/recycle iterations
+  without duplicate live slot ownership or payload corruption. Oversized
+  allocation failures preserve smaller-class descriptor admission.
+- The live local-HCA CM case holds a receive lease and a `register_buffer`
+  copy across destruction of both transports, both CM IDs, and caller-held
+  connection handles. Both payloads remain readable; releasing their final
+  references expires the respective device owners. Ten repeated setup/teardown
+  cycles pass. This covers real MRs rather than only the emulated pool.
+- Closed-connection flushes count in `shutdown_flushes`; open-connection flush
+  and other CQ errors still fail the stream. The focused regression verifies
+  these counters independently.
+- Full C++/FFI gate before the final C ABI delta passes at
+  `.crowdb-runtime/artifacts/unit/cpp-df0a8b16e65c44dfb32c065e6a50cd1e/`.
+  After that delta, all 149 native RPC CTest cases pass (five opt-in cases skip
+  there), all 29 Rust RPC FFI tests pass, changed formatting and scoped
+  tree-lint and workspace clippy pass.
+- The same 2-QP/2-CQ/2-poller, 2-producer/window-32 diagnostic profile now
+  completes 7,828,933 measured RPCs in 10 s: 782,893 TPS, avg 78.96 us,
+  P90 88.58 us, P99 100.35 us, zero request errors/overflow, 57 drained.
+  The earlier CQ-only revision measured 827,807 TPS; this single run is about
+  5.4% lower and is not sufficient to attribute a stable regression or identify
+  max TPS. Keep both source/binary identities; do not sacrifice lease ownership
+  to recover throughput. Latest artifact:
+  `.crowdb-runtime/artifacts/rdma/20261022T131359Z/`.
 
 CQ verification:
 
@@ -374,6 +442,19 @@ CQ verification:
 
 ### C. Bounded aggregation
 
+- [ ] **Negotiate receive admission before coalescing**: finish TCP capability
+  preflight before the CM attempt; reuse its TCP connection only for allowed
+  pre-payload fallback. Publish actual CM address/port, per-instance generation,
+  device/GID identity, receive slot capacity and supported aggregate frame count.
+  Bind the CM private-data exchange to the preflight generation and capacities;
+  reject stale/mismatched peers before publishing an RDMA connection. Direct
+  low-level CM diagnostics also negotiate receive slot capacities. Strict RDMA
+  permits the TCP control preflight but never TCP workload bytes. Keep no-device
+  strict rejection before opening a socket. Retire a successful preflight TCP
+  connection through the common worker cleanup path. This is a prerequisite
+  for the peer-slot bound below; the remaining OCI/failure matrix stays in E.
+  Files: RDMA capability/CM sources, `socket_transport.cpp`, server readiness,
+  capability/path and hardware tests.
 - [ ] **Coalesce complete frames on the CQ owner**: use bounded lock-free
   admission and per-QP queues; drain available frames without adding a waiting
   timer. Keep per-QP ordering and common frame/request IDs. Limit a SEND to
@@ -381,7 +462,15 @@ CQ verification:
   capacity)` including every header/control byte and to
   `aggregation_max_frames`. Disabled mode sends one frame. Reject oversized
   single frames before admission; do not fragment or silently fall back.
-  Files: RDMA submit/owner loop, `out_frame.h`, config/capability validation.
+  Files: RDMA submit/owner loop, `transport.h`, config/capability validation.
+  Reuse `Connection::send_queue` for MPSC frame admission. Keep a bounded
+  per-CQ connection directory, changed only under its existing CQ ownership
+  gate during cold setup/retirement. The CQ owner drains per-QP queues with a
+  fixed SEND budget and retains one overflow frame for the next slot; do not
+  read a lifecycle-mutated owner map in the polling loop or introduce an
+  atomic-shared-pointer load with hidden locking on every poll. Wake a sleeping
+  owner with a pending-publication/idle handshake rather than an eventfd write
+  for every RPC. Retire admitted/pending frames on every failure path.
 - [ ] **Retain aggregate owners through completion**: one SEND WR retains all
   constituent frames until CQE; failure closes the uncertain stream and
   quarantines its slot once. Validate the entire received aggregate before
@@ -390,6 +479,13 @@ CQ verification:
   Test exact slot fit, one byte over, multi-frame correlation/order, malformed
   suffix, held middle frame, send errors, bounded exhaustion and shutdown.
   Files: RDMA completion/WR code, buffer views and focused RPC tests.
+  Link constituent `OutFrame` owners in the SEND WR without a per-frame vector
+  allocation. Parse the full receive slot into bounded header/offset records
+  before the first callback. Each published payload view has its own descriptor
+  and view offset, sharing only the parent slot lease; `ref_clone` on the parent
+  alone cannot represent different immutable offsets safely. Keep a parent
+  reference until every frame has been dispatched. Defer a mixed capability/data
+  aggregate if the application handler is not yet published.
 - [ ] **Expose aggregation observations**: export actual frames/SEND, wire
   bytes, queue high-water and rejects. Keep RPC TPS distinct from transport
   SEND rate; compare aggregation disabled/enabled for both TCP and RDMA.
@@ -459,6 +555,10 @@ Provider references for the implementation choices:
 - [libibverbs QP capacity terminology](https://github.com/linux-rdma/rdma-core/blob/master/libibverbs/man/ibv_create_qp.3).
 - [RDMA-CM receive posting before connection readiness](https://github.com/linux-rdma/rdma-core/blob/master/librdmacm/man/rdma_create_qp.3).
 - [RDMA-CM RNR behavior and default delay](https://github.com/linux-rdma/rdma-core/blob/master/librdmacm/man/rdma_accept.3).
+- [RDMA-CM device context retention](https://github.com/linux-rdma/rdma-core/blob/master/librdmacm/cma.c)
+  (`rdma_get_devices` increments device references; `rdma_free_devices`
+  releases them). Retaining the matching CM context list avoids substituting
+  an independently opened context for a CM-owned QP.
 
 ## Historical verification record
 
@@ -567,7 +667,7 @@ Remaining implementation and acceptance work:
 
 ## Phase 5: fallback and observability
 
-- [~] **Implement pre-payload fallback**: if CM/QP setup or first submission
+- [ ] **Implement pre-payload fallback**: if CM/QP setup or first submission
   fails before payload, select TCP with the same request identity.
 - [x] **Reject mixed completion**: after any payload submission, fail the stream
   on uncertainty and never enqueue a TCP suffix.

@@ -562,7 +562,7 @@ SocketTransport::SocketTransport(uint32_t io_engines, uint32_t io_workers, Buffe
     rdma_config_ = std::move(rdma_config);
     if (const char *enabled = std::getenv("CROWDB_RDMA_ENABLED");
         enabled != nullptr && std::strcmp(enabled, "1") == 0) {
-        rdma_transport_ = std::make_unique<RdmaTransport>(rdma_config_);
+        rdma_transport_ = std::make_unique<RdmaTransport>(rdma_config_, pool_);
     }
 #endif
     // Create N independent engines, each with M workers. When M>1, the

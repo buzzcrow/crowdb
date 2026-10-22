@@ -143,8 +143,8 @@ uint32_t crowdb_rpc_buffer_registration_id(crowdb_rpc_buffer_t buf)
 int crowdb_rpc_buffer_ownership(crowdb_rpc_buffer_t buf)
 {
     return (buf != nullptr && buf->buf != nullptr)
-               ? static_cast<int>(buf->buf->ownership.load(std::memory_order_acquire))
-               : -1;
+             ? static_cast<int>(buf->buf->ownership.load(std::memory_order_acquire))
+             : -1;
 }
 
 void crowdb_rpc_buffer_set_metadata(crowdb_rpc_buffer_t buf, uint64_t request_id, uint64_t stream_id, uint64_t sequence,
@@ -191,7 +191,9 @@ crowdb_rpc_buffer_t crowdb_rpc_buffer_ref(crowdb_rpc_buffer_t buf)
         if (buf == nullptr || buf->buf == nullptr) {
             return nullptr;
         }
-        return buf->buf->ref_clone() == nullptr ? nullptr : buf;
+        auto clone = std::make_unique<crowdb_rpc_buffer_s>();
+        clone->buf = buf->buf->ref_clone();
+        return clone->buf == nullptr ? nullptr : clone.release();
     }
     catch (...) {
         return nullptr;
@@ -894,40 +896,13 @@ void crowdb_rpc_conn_close(crowdb_rpc_conn_t conn)
 
 // ── Built-in echo handler ─────────────────────────────────────────
 
-// Echo handler: returns the request data as the response data, with a
-// ConnectionPingResponse control buffer echoing the request_id. Same
-// logic as the load_test.cpp echo handler, compiled into the library.
-static crowdb::rpc::OutFrame *echo_handler(crowdb::rpc::Frame *request, crowdb::rpc::Connection *conn)
-{
-    uint64_t                 req_id      = request->request_id;
-    uint64_t                 create_nano = request->rpc_create_nano;
-    crowdb::rpc::BufferPool *pool        = conn->pool();
-    uint64_t             resp_nano = static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
-    crowdb::rpc::Buffer *resp_ctrl = crowdb::rpc::build_ping_response(pool, req_id, create_nano, resp_nano);
-
-    crowdb::rpc::Buffer *resp_data = nullptr;
-    if (request->data_buf != nullptr && request->data_buf->len > 0) {
-        resp_data = pool->alloc(request->data_buf->len);
-        if (resp_data != nullptr) {
-            std::memcpy(resp_data->data, request->data_buf->payload_data(), request->data_buf->len);
-            resp_data->write(resp_data->data, request->data_buf->len);
-        }
-    }
-
-    // Capture msg_type from the request header so the response matches.
-    uint16_t msg_type = request->header.msg_type;
-
-    delete request;
-    return crowdb::rpc::build_out_frame(req_id, msg_type, resp_ctrl, resp_data);
-}
-
 void crowdb_rpc_server_register_echo_handler(crowdb_rpc_server_t server, uint16_t msg_type)
 {
     try {
         if (server == nullptr) {
             return;
         }
-        server->server->register_handler(msg_type, echo_handler);
+        server->server->register_handler(msg_type, crowdb::rpc::handle_echo);
     }
     catch (...) {
     }

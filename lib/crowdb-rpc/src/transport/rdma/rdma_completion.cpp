@@ -148,15 +148,17 @@ int RdmaTransport::handle_external_event(uint64_t tag, uint32_t max_completions)
 
 bool RdmaTransport::prime_receive(const std::shared_ptr<Connection> &connection)
 {
-    if (connection == nullptr || connection->pool() == nullptr) {
-
+    if (connection == nullptr) {
         return false;
     }
+    auto *pools = pools_for(connection.get());
+    if (pools == nullptr || pools->recv == nullptr)
+        return false;
     const uint32_t depth = config_.posted_receive_target;
     if (depth == 0 || depth > config_.rq_depth ||
         static_cast<uint64_t>(depth) * config_.wire_slot_capacity > config_.receive_arena_bytes)
         return false;
-    BufferPool *pool = connection->pool();
+    BufferPool *pool = pools->recv.get();
     for (uint32_t i = 0; i < depth; ++i) {
         Buffer *slot = pool->alloc(config_.wire_slot_capacity);
         if (slot == nullptr) {
@@ -173,8 +175,12 @@ bool RdmaTransport::prime_receive(const std::shared_ptr<Connection> &connection)
     return true;
 }
 
-void RdmaTransport::record_completion_error(const ibv_wc &wc)
+void RdmaTransport::record_completion_error(const ibv_wc &wc, bool expected_flush)
 {
+    if (wc.status == IBV_WC_WR_FLUSH_ERR && expected_flush) {
+        stats_.shutdown_flushes.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
     stats_.cq_errors.fetch_add(1, std::memory_order_relaxed);
     switch (wc.status) {
     case IBV_WC_WR_FLUSH_ERR:
@@ -198,16 +204,17 @@ void RdmaTransport::release_completed_receive(WorkRequest *work, const ibv_wc &w
 {
 
     auto quarantine_and_release = [&] {
-        record_completion_error(wc);
+        record_completion_error(wc, !work->conn->is_open());
         work->conn->close();
         (void)work->slot->quarantine();
         work->slot->release();
         release_work(work);
     };
     if (wc.status != IBV_WC_SUCCESS) {
-        CRB_LOG_WARN("rdma receive: completion failed status={} vendor_err={} opcode={}",
-                     static_cast<unsigned>(wc.status), static_cast<unsigned>(wc.vendor_err),
-                     static_cast<unsigned>(wc.opcode));
+        if (wc.status != IBV_WC_WR_FLUSH_ERR || work->conn->is_open())
+            CRB_LOG_WARN("rdma receive: completion failed status={} vendor_err={} opcode={}",
+                         static_cast<unsigned>(wc.status), static_cast<unsigned>(wc.vendor_err),
+                         static_cast<unsigned>(wc.opcode));
         quarantine_and_release();
         return;
     }
@@ -289,7 +296,7 @@ void RdmaTransport::release_completed_frame(WorkRequest *work, const ibv_wc &wc)
     Buffer    *slot       = work->slot;
 
     if (wc.status != IBV_WC_SUCCESS) {
-        record_completion_error(wc);
+        record_completion_error(wc, connection != nullptr && !connection->is_open());
         // A failed SEND makes the stream uncertain; do not allow a TCP
         // suffix to be appended to this RDMA connection.
         if (work->slot != nullptr)

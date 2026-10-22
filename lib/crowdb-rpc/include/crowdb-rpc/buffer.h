@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 
 namespace crowdb::rpc
 {
@@ -50,12 +51,15 @@ constexpr uint32_t RDMA_DATAPATH_CAPACITY  = 1U << 20;
 // recycle to pool when ref == 0.
 struct Buffer
 {
-    uint8_t                     *data     = nullptr;
-    uint32_t                     len      = 0; // bytes written (payload length)
-    uint32_t                     capacity = 0; // allocated capacity
-    BufferType                   type     = BufferType::System;
-    class BufferPool            *pool     = nullptr;
-    std::atomic<int32_t>        *ref      = nullptr; // shared refcount (pool-allocated or standalone)
+    uint8_t          *data     = nullptr;
+    uint32_t          len      = 0; // bytes written (payload length)
+    uint32_t          capacity = 0; // allocated capacity
+    BufferType        type     = BufferType::System;
+    class BufferPool *pool     = nullptr;
+    // Registered allocations retain their arena independently of its facade.
+    std::shared_ptr<void>        pool_owner;
+    uint32_t                     pool_index = 0;
+    std::atomic<int32_t>        *ref        = nullptr; // shared refcount (pool-allocated or standalone)
     std::atomic<BufferOwnership> ownership{BufferOwnership::Available};
     BufferCapacityClass          capacity_class      = BufferCapacityClass::Control;
     uint64_t                     request_id          = 0;
