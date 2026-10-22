@@ -218,6 +218,70 @@ adaptation rather than a new transport or storage engine.
   versioning, legacy cursor finalization and resumable migration remain T04/T08/
   T09 work and are not marked complete by this compatibility path.
 
+## Format execution notes (T04/T08 implementation target)
+
+- The audited legacy Rust and C++ codecs have different CRC coverage, including
+  different supposedly cross-language vectors. Preserve both retained V1 forms
+  explicitly when decoding. Keep each historical V1 encoder stable for fixtures;
+  V2 has one canonical CRC32C input (seed zero, header/group fields/payload),
+  with expected footer chunk identity checked separately.
+- V2 magic keeps purpose in the high byte and version 2 in the low byte. Retain
+  the 14-byte base prefix; byte 14 is role (ordinary 0, head 1, follower 2).
+  Ordinary payload begins at 15. Grouped payload begins at 27: heads add total
+  payload u64 and frame-count u32; followers add head physical offset u64 and
+  ordinal u32. Numeric header fields remain little-endian, footer identity stays
+  big-endian. Capacities are 65501 ordinary and 65489 grouped payload bytes.
+  Count-one heads remain mandatory for nonempty single-frame Stream appends.
+- Frame/group parsing and location arithmetic use explicit version/role geometry
+  and checked bounds. New ordinary object locations retain their existing five
+  fields: canonical physical/logical lengths select candidate geometry, and
+  frame magic/role validation must confirm it. Legacy unframed locations retain
+  their existing interpretation. No persisted object-layout field is appended
+  to an unversioned bincode sequence.
+- The existing writer-open path already recovers only to the persisted legacy
+  ChunkDB cursor, seals that last chunk and allocates a successor, even at the
+  same writer epoch. Preserve/test that ordering for V1: do not infer original
+  append groups beyond its cursor. New grouped writes require an attached new
+  chunk. Current old-format open still eagerly loads history; lazy indexed open
+  and resumable directory conversion remain T09–T17 work.
+- Directory records need an explicit magic/version/kind envelope and dedicated
+  legacy structs before changing their bincode bodies. Old roots stay retained
+  until new pages and head CAS are confirmed; unknown versions fail visibly.
+  Migration is one resumable transition, not repeated full-history conversion
+  on each open. Deploy compatible readers before V2 writers; concurrent old
+  publishers must be fenced or return a CAS conflict, never overwrite a new root.
+- These are implementation targets, not completed format support. Shared golden
+  vectors, legacy reads, actual consumer transitions and migration fault tests
+  must pass before the corresponding tasks are checked.
+
+## Shared codec implementation evidence (partial T04/T08)
+
+- The shared revision-2 codec is additive: production writers still use V1 until
+  the corresponding consumers migrate. Rust framing is split into encoding,
+  parsing, geometry, revision and group modules; the C++ facade has the same
+  ownership boundaries. Existing V1 encoders retain their original bytes.
+- Eight checked-in, independently CRC-generated vectors are read by both
+  languages: retained Rust/C++ V1 CRC variants, four ordinary V2 purposes, a
+  count-one Stream head and a follower. V2 has exactly one accepted CRC coverage.
+  V1 fallback uses incremental CRC extension over chunk identity without a
+  temporary payload allocation. Unknown versions and malformed roles fail.
+- Group validators use constant state, verify canonical payload sizes, declared
+  count/length, physical continuity, follower head offset/ordinal, timestamp and
+  chunk identity. Incomplete, reordered and cross-group frames cannot finish.
+  The Rust group encoder returns shared Bytes slices, preserving payload owners.
+  Ordinary V2 region/view encoding preserves native reserved-buffer support.
+- Focused Rust 17 and C++ 9 tests pass, including all split positions of the
+  shared vectors and interruption at each physical frame boundary. Protocol
+  all-target clippy passes after ordinary explicit-import/doc/attribute cleanup.
+  Final protocol tests pass 258 cases. Full `test-cpp` passes 715 native and 85
+  Rust FFI/tool tests, zero ignored, with receipt
+  `unit/cpp-3e91998b44ab4581aa78b3711214fca4/results.json`. Full tree-lint exits
+  zero with existing warnings; the touched public headers/tests have no focused
+  diagnostics. Rust fmt and protocol all-target clippy pass. Full native tests
+  were repeated after tightening overflow checks and explicit enum decoding.
+  These tests establish codec behavior only; consumer migration, directories and
+  recovery are pending.
+
 ## Phase 0 — Establish evidence and settle contracts
 
 - [x] **T01 — Capture a matched implementation baseline**: retain release

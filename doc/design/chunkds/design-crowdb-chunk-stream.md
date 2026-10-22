@@ -191,6 +191,23 @@ logical length, without one directory entry per frame. Existing `StreamV1` has
 a 14-byte header, at most 65,502 payload bytes, and a 20-byte footer; these legacy
 constants do not define the grouped revision's payload capacities.
 
+Revision 2 retains the 14-byte fixed prefix: little-endian magic, payload offset,
+payload size, and write timestamp. The low magic byte is 2; the high byte keeps
+the public purpose. The role byte follows the prefix. Ordinary frames use role
+0 and a 15-byte header, leaving 65,501 payload bytes. Stream heads use role 1
+and add total payload length (u64) and frame count (u32); followers use role 2
+and add head physical offset (u64) and ordinal (u32). Both grouped headers are
+27 bytes and leave 65,489 payload bytes. Group fields are little-endian.
+The 20-byte footer stores the little-endian CRC32C followed by the big-endian
+chunk identity. Revision-2 CRC starts at zero and excludes the footer.
+
+Legacy decoding accepts both retained revision-1 CRC conventions: header plus
+payload, and header plus payload plus chunk identity. Expected chunk identity
+is mandatory for both. New revision-2 frames accept only the canonical CRC
+coverage. Unknown revisions, roles outside their purpose, and noncanonical
+revision-2 header offsets are rejected. A legacy encoder's retained bytes do
+not define the new revision's wire format.
+
 The directory keeps one extent per append group and preserves its boundary.
 Recovery reconstructs that boundary from the head and followers. It does not
 merge groups in a way that loses append validity or use a valid follower as an

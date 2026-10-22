@@ -16,7 +16,7 @@ const REPO_SMALL_VECTOR: [u8; 37] = [
 ];
 
 #[test]
-fn frame_matches_cross_language_vector() {
+fn frame_matches_retained_rust_vector() {
     let encoded = encode_frame(FrameMagic::RepoSmallV1, CHUNK, &[1, 2, 3], 42).unwrap();
     assert_eq!(encoded, REPO_SMALL_VECTOR);
     assert_eq!(

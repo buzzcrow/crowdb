@@ -30,7 +30,7 @@ TEST(FrameTest, RoundTripAndDetectsCorruption)
     EXPECT_EQ(parse_frame(encoded, chunk, &decoded), FrameError::ChecksumMismatch);
 }
 
-TEST(FrameTest, MatchesCrossLanguageVector)
+TEST(FrameTest, MatchesRetainedCppVector)
 {
     constexpr FrameChunkId            chunk{.high = 7, .low = 11};
     constexpr std::array<uint8_t, 3>  payload{1, 2, 3};
