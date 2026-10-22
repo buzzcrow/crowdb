@@ -57,6 +57,30 @@ TEST(TransportConfigTest, VersionedCAbiRejectsMalformedBoundsBeforePublication)
     crowdb_rpc_server_destroy(server);
 }
 
+TEST(TransportConfigTest, VersionedLogicalControlBoundsRejectBeforeConfiguration)
+{
+    const auto server = crowdb_rpc_server_create(nullptr);
+    ASSERT_NE(server, nullptr);
+    crowdb_rpc_rdma_config_t config;
+    crowdb_rpc_rdma_config_init(&config);
+    crowdb_rpc_rdma_stream_config_t streams;
+    crowdb_rpc_rdma_stream_config_init(&streams);
+    EXPECT_EQ(streams.struct_size, sizeof(streams));
+    EXPECT_EQ(streams.version, 1U);
+    EXPECT_EQ(streams.max_control_message_bytes, 32U << 20);
+    EXPECT_EQ(crowdb_rpc_server_configure_rdma_v3(server, &config, 0, nullptr), CROWDB_RPC_ERR_INVALID_ARG);
+    streams.version = 2;
+    EXPECT_EQ(crowdb_rpc_server_configure_rdma_v3(server, &config, 0, &streams), CROWDB_RPC_ERR_INVALID_ARG);
+    streams.version                      = 1;
+    streams.control_receive_budget_bytes = streams.max_control_message_bytes - 1;
+    EXPECT_EQ(crowdb_rpc_server_configure_rdma_v3(server, &config, 0, &streams), CROWDB_RPC_ERR_INVALID_ARG);
+    streams.control_receive_budget_bytes = streams.max_control_message_bytes;
+    EXPECT_EQ(crowdb_rpc_server_configure_rdma_v3(server, &config, 0, &streams), CROWDB_RPC_OK);
+    EXPECT_EQ(config.version, 1U);
+    EXPECT_EQ(config.struct_size, sizeof(config));
+    crowdb_rpc_server_destroy(server);
+}
+
 TEST(TransportConfigTest, ClientErrorCountersSurviveMetricWindowFlush)
 {
     crowdb_rpc_client_counters_t before{}, pending{}, flushed{};

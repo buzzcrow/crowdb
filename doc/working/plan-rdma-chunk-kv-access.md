@@ -52,7 +52,7 @@ Observed contract:
   final caller release. Preserve a failed/blocked fragment's existing owner;
   blocked admission must not carve replacement storage. Files: private RPC
   control-stream modules, `framing.h` control owner, focused portable tests.
-- [~] **Negotiate and configure common streams**: add a small transport-owned
+- [x] **Negotiate and configure common streams**: add a small transport-owned
   fragment FlatBuffer in `common_msg.fbs`, preserving the common leading
   correlation fields, with reserved message type 4. Bump RDMA protocol to
   version four; the existing final 4 handshake bytes advertise maximum logical
@@ -69,7 +69,7 @@ Observed contract:
   depth and data capacity, as receive defaults already do. Preserve native
   `RdmaConfig::for_layout`'s existing 64 MiB send arena default for the accepted
   1 MiB datapath and ordinary RPC. Files: capability/offer/config/status, FFI.
-- [ ] **Integrate CQ-owned fragmentation and assembly**: enqueue one original
+- [~] **Integrate CQ-owned fragmentation and assembly**: enqueue one original
   logical frame under byte/count admission. The CQ owner walks it in order,
   builds only the next bounded fragment, and holds immutable source owners
   through all WR completions. Do not materialize an unbounded fragment list.
@@ -206,6 +206,25 @@ Portable stream checkpoint:
   Preserve the initial failure at
   `.crowdb-runtime/artifacts/unit/cpp-f0f7acd09fb541f59d048f81e3923cc2/00-tree.log`;
   this checkpoint does not claim to repair that intermittent tree failure.
+
+Negotiation checkpoint:
+
+- Protocol v4 carries maximum logical control bytes in the 160-byte TCP
+  capability and explicit 52-byte CM offer. Digest/generation/layout/receive
+  admission validation binds both ends; versions 1/2/3 remain decodable for
+  pre-payload fallback. Native/env/status and version-three C ABI configuration
+  expose independent logical send/receive budgets and partial-assembly timeout.
+  Version-one config layout and previous configure entries remain valid.
+- Full RPC binary passed (168 portable tests; 13 hardware cases skipped),
+  no-verbs build passed all 157 CTest cases with its hardware case skipped,
+  and protocol/FFI Rust suites passed. Three actual HCA cases passed: direct
+  payload/lease round trip, layout mismatch and explicit TCP fallback policy.
+  Native XML is under `.crowdb-runtime/rdma-check/artifacts/r241-control/`.
+- CLI's exhaustive typed-config literal now inherits the new stream defaults;
+  all four coroutine/timed RPC benchmark integration cases passed. Focused
+  all-feature Rust clippy, workspace `rs-lint`, format and scoped C++ lint
+  passed. The existing request-count worker fixture requires separate client
+  and server roles; its role-less invocation failed setup, not a payload test.
 
 ```bash
 pixi run -- cargo fmt --all -- --check

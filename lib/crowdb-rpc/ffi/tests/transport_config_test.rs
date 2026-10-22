@@ -40,6 +40,26 @@ fn invalid_queue_bounds_fail_before_start() {
 }
 
 #[test]
+fn logical_control_limits_are_typed_and_bounded_in_both_directions() {
+    let server = RpcServer::new(None);
+    let mut config = RdmaConfig::default();
+    assert_eq!(config.max_control_message_bytes, 32 << 20);
+    assert_eq!(config.control_send_budget_bytes, 64 << 20);
+    assert_eq!(config.control_receive_budget_bytes, 64 << 20);
+    config.max_control_message_bytes = 65536;
+    config.control_send_budget_bytes = 65535;
+    assert!(server.configure_rdma(&config).is_err());
+    config.control_send_budget_bytes = 65536;
+    config.control_receive_budget_bytes = 65535;
+    assert!(server.configure_rdma(&config).is_err());
+    config.control_receive_budget_bytes = 65536;
+    config.control_assembly_timeout_ms = 0;
+    assert!(server.configure_rdma(&config).is_err());
+    config.control_assembly_timeout_ms = 125;
+    server.configure_rdma(&config).unwrap();
+}
+
+#[test]
 fn service_layout_defaults_validate_capacity_and_preserve_explicit_tcp() {
     assert!(RpcServer::with_rdma_layout(None, 1, 1, RdmaWireLayout::ControlData, 4096).is_err());
     let server = RpcServer::with_rdma_layout(None, 1, 1, RdmaWireLayout::ControlData, 1 << 20).unwrap();

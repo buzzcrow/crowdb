@@ -64,6 +64,10 @@ std::array<uint8_t, RDMA_HANDSHAKE_SIZE> serialize_rdma_handshake(const RdmaEndp
         for (size_t i = 0; i < 4; ++i)
             bytes[152 + i] = static_cast<uint8_t>(layout >> (i * 8));
     }
+    if (capability.protocol_version >= 4) {
+        for (size_t i = 0; i < 4; ++i)
+            bytes[156 + i] = static_cast<uint8_t>(capability.max_control_message_bytes >> (i * 8));
+    }
     return bytes;
 }
 
@@ -114,12 +118,16 @@ bool parse_rdma_handshake(std::span<const uint8_t> bytes, RdmaEndpointCapability
         uint32_t layout = 0;
         for (size_t i = 0; i < 4; ++i) {
             layout |= static_cast<uint32_t>(bytes[152 + i]) << (i * 8);
-            if (bytes[156 + i] != 0)
+            if (out->protocol_version == 3 && bytes[156 + i] != 0)
                 return false;
         }
         if (layout > static_cast<uint32_t>(RdmaWireLayout::ControlData))
             return false;
         out->wire_layout = static_cast<RdmaWireLayout>(layout);
+    }
+    if (out->protocol_version >= 4) {
+        for (size_t i = 0; i < 4; ++i)
+            out->max_control_message_bytes |= static_cast<uint32_t>(bytes[156 + i]) << (i * 8);
     }
     return true;
 }
@@ -143,7 +151,8 @@ bool validate_rdma_capability(const RdmaEndpointCapability &capability, uint16_t
              (expected_protocol < 3 || capability.receive_frame_limit != 1)))
             return false;
     }
-    return capability.data_classes[0] == RDMA_CONTROL_CAPACITY &&
+    return (expected_protocol < 4 || capability.max_control_message_bytes != 0) &&
+           capability.data_classes[0] == RDMA_CONTROL_CAPACITY &&
            capability.data_classes[1] == RDMA_METADATA_CAPACITY &&
            capability.data_classes[2] == RDMA_AGGREGATE_CAPACITY &&
            capability.data_classes[3] == RDMA_DATAPATH_CAPACITY;

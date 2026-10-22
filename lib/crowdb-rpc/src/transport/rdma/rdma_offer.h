@@ -7,17 +7,18 @@
 
 namespace crowdb::rpc
 {
-constexpr size_t RDMA_CM_OFFER_SIZE = 48;
+constexpr size_t RDMA_CM_OFFER_SIZE = 52;
 
 struct RdmaCmOffer
 {
-    uint16_t       receive_frame_limit   = 0;
-    uint32_t       receive_slot_capacity = 0;
-    RdmaWireLayout wire_layout           = RdmaWireLayout::Contiguous;
-    uint64_t       generation            = 0;
-    uint64_t       expected_generation   = 0;
-    uint64_t       identity              = 0;
-    uint64_t       expected_identity     = 0;
+    uint16_t       receive_frame_limit       = 0;
+    uint32_t       receive_slot_capacity     = 0;
+    RdmaWireLayout wire_layout               = RdmaWireLayout::Contiguous;
+    uint64_t       generation                = 0;
+    uint64_t       expected_generation       = 0;
+    uint64_t       identity                  = 0;
+    uint64_t       expected_identity         = 0;
+    uint32_t       max_control_message_bytes = 0;
 };
 
 std::array<uint8_t, RDMA_CM_OFFER_SIZE> serialize_rdma_offer(const RdmaEndpointCapability &local,

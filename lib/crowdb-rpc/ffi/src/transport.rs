@@ -42,6 +42,10 @@ pub struct RdmaConfig {
     pub send_arena_bytes: u64,
     pub receive_arena_bytes: u64,
     pub registered_memory_budget_bytes: u64,
+    pub max_control_message_bytes: u32,
+    pub control_assembly_timeout_ms: u32,
+    pub control_send_budget_bytes: u64,
+    pub control_receive_budget_bytes: u64,
     pub device: String,
     pub source_address: String,
     pub gid: String,
@@ -56,9 +60,19 @@ fn native_defaults() -> sys::CrowdbRpcRdmaConfig {
     }
 }
 
+fn native_stream_defaults() -> sys::CrowdbRpcRdmaStreamConfig {
+    let mut config = MaybeUninit::uninit();
+    // SAFETY: initializer fills every field of this versioned C ABI struct.
+    unsafe {
+        sys::crowdb_rpc_rdma_stream_config_init(config.as_mut_ptr());
+        config.assume_init()
+    }
+}
+
 impl Default for RdmaConfig {
     fn default() -> Self {
         let raw = native_defaults();
+        let streams = native_stream_defaults();
         Self {
             enabled: raw.enabled != 0,
             allow_tcp_fallback: raw.allow_tcp_fallback != 0,
@@ -81,6 +95,10 @@ impl Default for RdmaConfig {
             send_arena_bytes: raw.send_arena_bytes,
             receive_arena_bytes: raw.receive_arena_bytes,
             registered_memory_budget_bytes: raw.registered_memory_budget_bytes,
+            max_control_message_bytes: streams.max_control_message_bytes,
+            control_assembly_timeout_ms: streams.control_assembly_timeout_ms,
+            control_send_budget_bytes: streams.control_send_budget_bytes,
+            control_receive_budget_bytes: streams.control_receive_budget_bytes,
             device: String::new(),
             source_address: String::new(),
             gid: String::new(),
@@ -121,9 +139,14 @@ impl RpcServer {
         raw.device = device.as_ptr();
         raw.source_address = source.as_ptr();
         raw.gid = gid.as_ptr();
+        let mut streams = native_stream_defaults();
+        streams.max_control_message_bytes = config.max_control_message_bytes;
+        streams.control_assembly_timeout_ms = config.control_assembly_timeout_ms;
+        streams.control_send_budget_bytes = config.control_send_budget_bytes;
+        streams.control_receive_budget_bytes = config.control_receive_budget_bytes;
         // SAFETY: handle is borrowed, struct and CStrings live through the call.
         let status = unsafe {
-            sys::crowdb_rpc_server_configure_rdma_v2(self.handle(), &raw, config.wire_layout as u32)
+            sys::crowdb_rpc_server_configure_rdma_v3(self.handle(), &raw, config.wire_layout as u32, &streams)
         };
         if status == sys::CROWDB_RPC_OK {
             Ok(())

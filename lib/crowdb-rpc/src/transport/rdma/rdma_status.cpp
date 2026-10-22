@@ -41,6 +41,10 @@ std::string RdmaTransport::status_json() const
     CONFIG_FIELD(send_queue_capacity);
     CONFIG_FIELD(aggregation_max_bytes);
     CONFIG_FIELD(aggregation_max_frames);
+    CONFIG_FIELD(max_control_message_bytes);
+    CONFIG_FIELD(control_send_budget_bytes);
+    CONFIG_FIELD(control_receive_budget_bytes);
+    CONFIG_FIELD(control_assembly_timeout_ms);
 #    undef CONFIG_FIELD
 #    define COUNTER_FIELD(name) status.number(#name, counters.name.load(std::memory_order_relaxed))
     COUNTER_FIELD(sends);

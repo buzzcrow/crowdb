@@ -19,6 +19,7 @@ enum FBMsgType : int16 {
     EUnknownResponse = 1,
     EConnectionPingRequest = 2,
     EConnectionPingResponse = 3,
+    ERpcControlFragment = 4,
     // diskio service (range 3600s, see diskio.fbs)
     EDiskWriteRequest = 3600,
     EDiskWriteResponse = 3601,

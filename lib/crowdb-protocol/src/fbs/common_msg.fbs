@@ -26,3 +26,20 @@ table UnknownMessage {
     rpc_create_nano:uint64;
     response_create_nano:uint64;
 }
+
+// Transport-owned framing for a large encoded control. The data SGE contains
+// one bounded part; handlers see only the complete original control message.
+table RpcControlFragment {
+    id:uint64;
+    rpc_create_nano:uint64;
+    response_create_nano:uint64;
+    stream_id:uint64;
+    generation:uint64;
+    sequence:uint64;
+    logical_offset:uint64;
+    total_length:uint64;
+    data_capacity:uint32;
+    original_msg_type:uint16;
+    original_flags:ubyte;
+    stream_flags:ubyte;
+}

@@ -58,7 +58,11 @@ bool RdmaConfig::apply_environment()
            read("CROWDB_RDMA_AGGREGATION_ENABLED", aggregation_enabled) &&
            read("CROWDB_RDMA_AGGREGATION_MAX_BYTES", aggregation_max_bytes) &&
            read("CROWDB_RDMA_AGGREGATION_MAX_FRAMES", aggregation_max_frames) &&
-           read("CROWDB_RDMA_SEND_QUEUE_CAPACITY", send_queue_capacity);
+           read("CROWDB_RDMA_SEND_QUEUE_CAPACITY", send_queue_capacity) &&
+           read("CROWDB_RDMA_MAX_CONTROL_MESSAGE_BYTES", max_control_message_bytes) &&
+           read("CROWDB_RDMA_CONTROL_SEND_BUDGET_BYTES", control_send_budget_bytes) &&
+           read("CROWDB_RDMA_CONTROL_RECEIVE_BUDGET_BYTES", control_receive_budget_bytes) &&
+           read("CROWDB_RDMA_CONTROL_ASSEMBLY_TIMEOUT_MS", control_assembly_timeout_ms);
 }
 
 bool RdmaConfig::valid() const
@@ -75,7 +79,9 @@ bool RdmaConfig::valid() const
            min_rnr_timer <= 31 && retry_count <= 7 && rnr_retry_count <= 7 && registration_budget() != 0 &&
            aggregation_max_bytes >= HEADER_SIZE && aggregation_max_bytes <= RDMA_DATAPATH_CAPACITY &&
            aggregation_max_frames > 0 && aggregation_max_frames <= 256 && send_queue_capacity >= 2 &&
-           send_queue_capacity <= (1U << 20) && (send_queue_capacity & (send_queue_capacity - 1)) == 0;
+           send_queue_capacity <= (1U << 20) && (send_queue_capacity & (send_queue_capacity - 1)) == 0 &&
+           max_control_message_bytes != 0 && max_control_message_bytes <= control_send_budget_bytes &&
+           max_control_message_bytes <= control_receive_budget_bytes && control_assembly_timeout_ms != 0;
 }
 
 uint64_t RdmaConfig::registration_budget() const

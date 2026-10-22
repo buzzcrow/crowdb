@@ -45,6 +45,45 @@ TEST(RdmaConfigTest, EnvironmentRejectsUnknownWireLayout)
     EXPECT_FALSE(config.apply_environment());
 }
 
+TEST(RdmaConfigTest, LogicalControlsRequireNonzeroLimitWithinEachDirectionalBudget)
+{
+    RdmaConfig config;
+    EXPECT_EQ(config.max_control_message_bytes, 32U << 20);
+    EXPECT_EQ(config.control_send_budget_bytes, 64ULL << 20);
+    EXPECT_EQ(config.control_receive_budget_bytes, 64ULL << 20);
+    config.max_control_message_bytes = 0;
+    EXPECT_FALSE(config.valid());
+    config.max_control_message_bytes = 32U << 20;
+    config.control_send_budget_bytes = (32U << 20) - 1;
+    EXPECT_FALSE(config.valid());
+    config.control_send_budget_bytes    = 32U << 20;
+    config.control_receive_budget_bytes = (32U << 20) - 1;
+    EXPECT_FALSE(config.valid());
+    config.control_receive_budget_bytes = 32U << 20;
+    EXPECT_TRUE(config.valid());
+    config.control_assembly_timeout_ms = 0;
+    EXPECT_FALSE(config.valid());
+}
+
+TEST(RdmaConfigTest, LogicalControlEnvironmentParses64BitBudgetsWithoutChangingMrAdmission)
+{
+    const TestEnvironment max("CROWDB_RDMA_MAX_CONTROL_MESSAGE_BYTES", "65536");
+    const TestEnvironment send("CROWDB_RDMA_CONTROL_SEND_BUDGET_BYTES", "8589934592");
+    const TestEnvironment receive("CROWDB_RDMA_CONTROL_RECEIVE_BUDGET_BYTES", "131072");
+    const TestEnvironment timeout("CROWDB_RDMA_CONTROL_ASSEMBLY_TIMEOUT_MS", "125");
+    RdmaConfig            config;
+    const auto            registered = config.registration_budget();
+    ASSERT_TRUE(config.apply_environment());
+    EXPECT_TRUE(config.valid());
+    EXPECT_EQ(config.max_control_message_bytes, 65536U);
+    EXPECT_EQ(config.control_send_budget_bytes, 8ULL << 30);
+    EXPECT_EQ(config.control_receive_budget_bytes, 131072U);
+    EXPECT_EQ(config.control_assembly_timeout_ms, 125U);
+    EXPECT_EQ(config.registration_budget(), registered);
+    const TestEnvironment invalid("CROWDB_RDMA_CONTROL_SEND_BUDGET_BYTES", "-1");
+    EXPECT_FALSE(config.apply_environment());
+}
+
 TEST(RdmaConfigTest, PostedReceiveTargetMustFitRqAndRegisteredBudget)
 {
     RdmaConfig config;

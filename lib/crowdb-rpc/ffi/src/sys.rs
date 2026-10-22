@@ -81,6 +81,16 @@ pub struct CrowdbRpcRdmaConfig {
 }
 
 #[repr(C)]
+pub struct CrowdbRpcRdmaStreamConfig {
+    pub struct_size: u32,
+    pub version: u32,
+    pub max_control_message_bytes: u32,
+    pub control_assembly_timeout_ms: u32,
+    pub control_send_budget_bytes: u64,
+    pub control_receive_budget_bytes: u64,
+}
+
+#[repr(C)]
 #[derive(Default, Debug)]
 pub struct CrowdbRpcClientCounters {
     pub submit_fail: u64,
@@ -151,6 +161,13 @@ pub type crowdb_rpc_co_on_response = Option<
 
 extern "C" {
     pub fn crowdb_rpc_rdma_config_init(config: *mut CrowdbRpcRdmaConfig);
+    pub fn crowdb_rpc_rdma_stream_config_init(config: *mut CrowdbRpcRdmaStreamConfig);
+    pub fn crowdb_rpc_server_configure_rdma_v3(
+        server: crowdb_rpc_server_t,
+        config: *const CrowdbRpcRdmaConfig,
+        wire_layout: u32,
+        streams: *const CrowdbRpcRdmaStreamConfig,
+    ) -> crowdb_rpc_status;
     pub fn crowdb_rpc_server_configure_rdma(
         server: crowdb_rpc_server_t,
         config: *const CrowdbRpcRdmaConfig,

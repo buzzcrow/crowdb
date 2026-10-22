@@ -23,16 +23,17 @@ namespace
 RdmaEndpointCapability test_capability(uint64_t generation)
 {
     return {
-        .rdma_available        = true,
-        .protocol_version      = RDMA_PROTOCOL_VERSION,
-        .generation            = generation,
-        .port                  = 19101,
-        .device                = "test-device",
-        .gid                   = "fe80::1",
-        .data_classes          = {1024, 65536, 262144, 1048576},
-        .receive_slot_capacity = 1024,
-        .receive_frame_limit   = 1,
-        .cm_address            = "10.200.1.1"
+        .rdma_available            = true,
+        .protocol_version          = RDMA_PROTOCOL_VERSION,
+        .generation                = generation,
+        .port                      = 19101,
+        .device                    = "test-device",
+        .gid                       = "fe80::1",
+        .data_classes              = {1024, 65536, 262144, 1048576},
+        .receive_slot_capacity     = 1024,
+        .receive_frame_limit       = 1,
+        .cm_address                = "10.200.1.1",
+        .max_control_message_bytes = 32U << 20
     };
 }
 
@@ -81,7 +82,7 @@ TEST(RdmaOfferTest, PrivateDataBindsPreflightIdentityAndReceiveAdmission)
     RdmaCmOffer decoded;
     const auto  wire = serialize_rdma_offer(client, &server);
     ASSERT_TRUE(parse_rdma_offer(wire, &decoded));
-    EXPECT_EQ(wire.size(), 48U);
+    EXPECT_EQ(wire.size(), 52U);
     EXPECT_EQ(decoded.receive_slot_capacity, 1024U);
     EXPECT_TRUE(validate_rdma_offer(decoded, server, &client, true));
     auto stale = server;
@@ -118,6 +119,7 @@ TEST(RdmaOfferTest, ControlDataLayoutIsBoundByBothCapabilityAndPrivateOffer)
     invalid[152] = 2;
     EXPECT_FALSE(parse_rdma_handshake(invalid, &decoded));
     invalid      = wire;
+    invalid[2]   = 3;
     invalid[156] = 1;
     EXPECT_FALSE(parse_rdma_handshake(invalid, &decoded));
     client.protocol_version      = 2;
@@ -126,6 +128,38 @@ TEST(RdmaOfferTest, ControlDataLayoutIsBoundByBothCapabilityAndPrivateOffer)
     ASSERT_TRUE(parse_rdma_handshake(serialize_rdma_handshake(client), &decoded));
     EXPECT_EQ(decoded.wire_layout, RdmaWireLayout::Contiguous);
     EXPECT_TRUE(validate_rdma_capability(decoded, 2, 11, "test-device"));
+}
+
+TEST(RdmaOfferTest, LogicalControlLimitIsExplicitAndBoundIntoBothIdentities)
+{
+    auto client                      = test_capability(31);
+    auto server                      = test_capability(37);
+    client.max_control_message_bytes = 1U << 20;
+    server.max_control_message_bytes = 16U << 20;
+    RdmaEndpointCapability decoded;
+    ASSERT_TRUE(parse_rdma_handshake(serialize_rdma_handshake(client), &decoded));
+    EXPECT_EQ(decoded.max_control_message_bytes, client.max_control_message_bytes);
+    RdmaCmOffer offer;
+    ASSERT_TRUE(parse_rdma_offer(serialize_rdma_offer(client, &server), &offer));
+    EXPECT_EQ(offer.max_control_message_bytes, client.max_control_message_bytes);
+    EXPECT_TRUE(validate_rdma_offer(offer, server, &client, true));
+    ++client.max_control_message_bytes;
+    EXPECT_FALSE(validate_rdma_offer(offer, server, &client, true));
+    --client.max_control_message_bytes;
+    ++offer.max_control_message_bytes;
+    EXPECT_FALSE(validate_rdma_offer(offer, server, &client, true));
+    --offer.max_control_message_bytes;
+    ++server.max_control_message_bytes;
+    EXPECT_FALSE(validate_rdma_offer(offer, server, &client, true));
+    client.max_control_message_bytes = 0;
+    EXPECT_FALSE(validate_rdma_capability(client, RDMA_PROTOCOL_VERSION, 31, "test-device"));
+    EXPECT_FALSE(parse_rdma_offer(serialize_rdma_offer(client), &offer));
+    for (const uint16_t version : {uint16_t{2}, uint16_t{3}}) {
+        client.protocol_version = version;
+        ASSERT_TRUE(parse_rdma_handshake(serialize_rdma_handshake(client), &decoded));
+        EXPECT_EQ(decoded.max_control_message_bytes, 0U);
+        EXPECT_FALSE(validate_rdma_capability(decoded, RDMA_PROTOCOL_VERSION, 31, "test-device"));
+    }
 }
 
 TEST(RdmaOfferTest, MissingPreflightAndMalformedAdmissionFailClosed)

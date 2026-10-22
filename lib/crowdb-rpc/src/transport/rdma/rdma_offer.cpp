@@ -37,6 +37,7 @@ std::array<uint8_t, RDMA_CM_OFFER_SIZE> serialize_rdma_offer(const RdmaEndpointC
     put(bytes, 24, expected_peer == nullptr ? 0 : expected_peer->generation, 8);
     put(bytes, 32, rdma_capability_identity(local), 8);
     put(bytes, 40, expected_peer == nullptr ? 0 : rdma_capability_identity(*expected_peer), 8);
+    put(bytes, 48, local.max_control_message_bytes, 4);
     return bytes;
 }
 
@@ -47,17 +48,18 @@ bool parse_rdma_offer(std::span<const uint8_t> bytes, RdmaCmOffer *out)
         get(bytes, 12, 4) > static_cast<uint32_t>(RdmaWireLayout::ControlData))
         return false;
     RdmaCmOffer offer;
-    offer.receive_frame_limit   = static_cast<uint16_t>(get(bytes, 6, 2));
-    offer.receive_slot_capacity = static_cast<uint32_t>(get(bytes, 8, 4));
-    offer.wire_layout           = static_cast<RdmaWireLayout>(get(bytes, 12, 4));
-    offer.generation            = get(bytes, 16, 8);
-    offer.expected_generation   = get(bytes, 24, 8);
-    offer.identity              = get(bytes, 32, 8);
-    offer.expected_identity     = get(bytes, 40, 8);
+    offer.receive_frame_limit       = static_cast<uint16_t>(get(bytes, 6, 2));
+    offer.receive_slot_capacity     = static_cast<uint32_t>(get(bytes, 8, 4));
+    offer.wire_layout               = static_cast<RdmaWireLayout>(get(bytes, 12, 4));
+    offer.generation                = get(bytes, 16, 8);
+    offer.expected_generation       = get(bytes, 24, 8);
+    offer.identity                  = get(bytes, 32, 8);
+    offer.expected_identity         = get(bytes, 40, 8);
+    offer.max_control_message_bytes = static_cast<uint32_t>(get(bytes, 48, 4));
     if (!valid_rdma_wire_capacity(offer.receive_slot_capacity, offer.wire_layout) || offer.receive_frame_limit == 0 ||
         offer.receive_frame_limit > 256 || offer.generation == 0 ||
         (offer.wire_layout == RdmaWireLayout::ControlData && offer.receive_frame_limit != 1) || offer.identity == 0 ||
-        (offer.expected_generation == 0) != (offer.expected_identity == 0))
+        (offer.expected_generation == 0) != (offer.expected_identity == 0) || offer.max_control_message_bytes == 0)
         return false;
     *out = offer;
     return true;
@@ -86,6 +88,7 @@ bool validate_rdma_offer(const RdmaCmOffer &offer, const RdmaEndpointCapability 
                                         offer.identity == rdma_capability_identity(*expected_peer) &&
                                         offer.receive_slot_capacity == expected_peer->receive_slot_capacity &&
                                         offer.wire_layout == expected_peer->wire_layout &&
+                                        offer.max_control_message_bytes == expected_peer->max_control_message_bytes &&
                                         offer.receive_frame_limit == expected_peer->receive_frame_limit);
 }
 } // namespace crowdb::rpc

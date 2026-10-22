@@ -42,6 +42,10 @@ struct RdmaConfig
     uint32_t          aggregation_max_bytes          = RDMA_DATAPATH_CAPACITY;
     uint32_t          aggregation_max_frames         = 256;
     uint32_t          send_queue_capacity            = 4096;
+    uint32_t          max_control_message_bytes      = 32U << 20;
+    uint64_t          control_send_budget_bytes      = 64ULL << 20;
+    uint64_t          control_receive_budget_bytes   = 64ULL << 20;
+    uint32_t          control_assembly_timeout_ms    = 30000;
 
     [[nodiscard]] bool     apply_environment();
     [[nodiscard]] bool     valid() const;

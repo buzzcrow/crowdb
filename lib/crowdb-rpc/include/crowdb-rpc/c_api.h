@@ -110,6 +110,23 @@ crowdb_rpc_status crowdb_rpc_server_configure_rdma(crowdb_rpc_server_t server, c
 // the version-one struct or initializer. wire_layout: 0 contiguous, 1 control/data.
 crowdb_rpc_status crowdb_rpc_server_configure_rdma_v2(crowdb_rpc_server_t             server,
                                                       const crowdb_rpc_rdma_config_t *config, uint32_t wire_layout);
+
+// Version-three entry adds bounded logical controls. The original config ABI
+// remains unchanged; previous configure entries select the stream defaults.
+typedef struct crowdb_rpc_rdma_stream_config
+{
+    uint32_t struct_size;
+    uint32_t version;
+    uint32_t max_control_message_bytes;
+    uint32_t control_assembly_timeout_ms;
+    uint64_t control_send_budget_bytes;
+    uint64_t control_receive_budget_bytes;
+} crowdb_rpc_rdma_stream_config_t;
+
+void              crowdb_rpc_rdma_stream_config_init(crowdb_rpc_rdma_stream_config_t *config);
+crowdb_rpc_status crowdb_rpc_server_configure_rdma_v3(crowdb_rpc_server_t             server,
+                                                      const crowdb_rpc_rdma_config_t *config, uint32_t wire_layout,
+                                                      const crowdb_rpc_rdma_stream_config_t *streams);
 // Owned, versioned UTF-8 JSON snapshots. Release using buffer_release.
 crowdb_rpc_buffer_t crowdb_rpc_server_status_json(crowdb_rpc_server_t server);
 crowdb_rpc_buffer_t crowdb_rpc_conn_status_json(crowdb_rpc_conn_t connection);

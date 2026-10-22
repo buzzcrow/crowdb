@@ -51,19 +51,48 @@ extern "C" crowdb_rpc_status crowdb_rpc_server_configure_rdma_v2(crowdb_rpc_serv
                                                                  const crowdb_rpc_rdma_config_t *config,
                                                                  uint32_t                        wire_layout)
 {
+    crowdb_rpc_rdma_stream_config_t streams;
+    crowdb_rpc_rdma_stream_config_init(&streams);
+    return crowdb_rpc_server_configure_rdma_v3(server, config, wire_layout, &streams);
+}
+
+extern "C" void crowdb_rpc_rdma_stream_config_init(crowdb_rpc_rdma_stream_config_t *config)
+{
+    if (config == nullptr) {
+        return;
+    }
+    const RdmaConfig defaults;
+    *config = {.struct_size                  = sizeof(*config),
+               .version                      = 1,
+               .max_control_message_bytes    = defaults.max_control_message_bytes,
+               .control_assembly_timeout_ms  = defaults.control_assembly_timeout_ms,
+               .control_send_budget_bytes    = defaults.control_send_budget_bytes,
+               .control_receive_budget_bytes = defaults.control_receive_budget_bytes};
+}
+
+extern "C" crowdb_rpc_status crowdb_rpc_server_configure_rdma_v3(crowdb_rpc_server_t                    server,
+                                                                 const crowdb_rpc_rdma_config_t        *config,
+                                                                 uint32_t                               wire_layout,
+                                                                 const crowdb_rpc_rdma_stream_config_t *streams)
+{
     if (server == nullptr || config == nullptr || config->struct_size != sizeof(*config) || config->version != 1 ||
         config->enabled > 1 || config->allow_tcp_fallback > 1 || config->listen_enabled > 1 ||
-        config->aggregation_enabled > 1 || config->port > UINT8_MAX)
+        config->aggregation_enabled > 1 || config->port > UINT8_MAX || streams == nullptr ||
+        streams->struct_size != sizeof(*streams) || streams->version != 1)
         return CROWDB_RPC_ERR_INVALID_ARG;
     try {
         RdmaConfig native;
-        native.wire_layout         = static_cast<RdmaWireLayout>(wire_layout);
-        native.use_environment     = false;
-        native.port                = static_cast<uint8_t>(config->port);
-        native.aggregation_enabled = config->aggregation_enabled != 0;
-        native.device              = config->device == nullptr ? "" : config->device;
-        native.source_address      = config->source_address == nullptr ? "" : config->source_address;
-        native.gid                 = config->gid == nullptr ? "" : config->gid;
+        native.wire_layout                  = static_cast<RdmaWireLayout>(wire_layout);
+        native.use_environment              = false;
+        native.port                         = static_cast<uint8_t>(config->port);
+        native.aggregation_enabled          = config->aggregation_enabled != 0;
+        native.device                       = config->device == nullptr ? "" : config->device;
+        native.source_address               = config->source_address == nullptr ? "" : config->source_address;
+        native.gid                          = config->gid == nullptr ? "" : config->gid;
+        native.max_control_message_bytes    = streams->max_control_message_bytes;
+        native.control_assembly_timeout_ms  = streams->control_assembly_timeout_ms;
+        native.control_send_budget_bytes    = streams->control_send_budget_bytes;
+        native.control_receive_budget_bytes = streams->control_receive_budget_bytes;
 #define COPY_VALUE(name) native.name = config->name;
         CONFIG_NUMBERS(COPY_VALUE)
 #undef COPY_VALUE

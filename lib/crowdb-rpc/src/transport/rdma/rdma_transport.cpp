@@ -80,6 +80,7 @@ RdmaTransport::RdmaTransport(RdmaConfig config, BufferPool *application_pool)
                                                RDMA_DATAPATH_CAPACITY};
     local_capability_.receive_slot_capacity = config_.wire_slot_capacity;
     local_capability_.wire_layout           = config_.wire_layout;
+    local_capability_.max_control_message_bytes = config_.max_control_message_bytes;
     local_capability_.receive_frame_limit =
         config_.wire_layout == RdmaWireLayout::ControlData ? 1 : RDMA_MAX_AGGREGATE_FRAMES;
     local_capability_.cm_address = config_.source_address;

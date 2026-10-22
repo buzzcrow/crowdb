@@ -176,6 +176,7 @@ impl RpcArgs {
             aggregation_enabled: q.aggregation_enabled,
             aggregation_max_bytes: q.aggregation_max_bytes,
             aggregation_max_frames: q.aggregation_max_frames,
+            ..RdmaConfig::default()
         })
     }
 }

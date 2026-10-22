@@ -40,12 +40,13 @@ struct RdmaEndpointCapability
     uint32_t                receive_slot_capacity = 0;
     uint32_t                receive_frame_limit   = 1;
     std::string             cm_address{};
-    RdmaWireLayout          wire_layout = RdmaWireLayout::Contiguous;
+    RdmaWireLayout          wire_layout               = RdmaWireLayout::Contiguous;
+    uint32_t                max_control_message_bytes = 0;
 };
 
 constexpr uint16_t RDMA_HANDSHAKE_MAGIC       = 0x5244;
 constexpr uint16_t RDMA_HANDSHAKE_MSG_TYPE    = 0xFFFE;
-constexpr uint16_t RDMA_PROTOCOL_VERSION      = 3;
+constexpr uint16_t RDMA_PROTOCOL_VERSION      = 4;
 constexpr size_t   RDMA_LEGACY_HANDSHAKE_SIZE = 128;
 constexpr size_t   RDMA_HANDSHAKE_SIZE        = 160;
 
