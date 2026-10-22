@@ -583,6 +583,13 @@ Preflight verification:
   requests with zero request/CQ errors and fallback disabled. This is
   functional evidence, not a sustained benchmark.
 
+Build parallelism checkpoint:
+
+- Native CMake builds use `-j32`. The RPC FFI build dependency enables `cc`'s
+  `parallel` feature so standalone Cargo builds also share Cargo's jobserver
+  budget instead of compiling native sources serially. `cargo check -j32`
+  passes; the FFI suite validates the resulting library separately.
+
 ### D. CLI coroutine workload and canonical results
 
 - [ ] **Add `bench rdma` with shared echo workload**: reuse `bench rpc`

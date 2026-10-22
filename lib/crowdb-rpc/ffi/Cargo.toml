@@ -34,4 +34,4 @@ flatbuffers = { workspace = true }
 crowdb-rpc-ffi = { path = ".", features = ["test-util"] }
 
 [build-dependencies]
-cc = "1"
+cc = { version = "1", features = ["parallel"] }
