@@ -1,16 +1,15 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-#include "crowdb-rpc/transport/rdma/rdma_transport.h"
+#include "crowdb-rpc/transport/rdma/rdma_config.h"
 
-#ifdef CROWDB_RPC_HAVE_RDMA
+#include "crowdb-common/log.h"
+#include "crowdb-rpc/framing.h"
 
-#    include "crowdb-common/log.h"
-
-#    include <charconv>
-#    include <cstdlib>
-#    include <limits>
-#    include <string_view>
+#include <charconv>
+#include <cstdlib>
+#include <limits>
+#include <string_view>
 
 namespace crowdb::rpc
 {
@@ -34,7 +33,7 @@ bool RdmaConfig::apply_environment()
     };
     return (port != 1 || read("CROWDB_RDMA_PORT", port)) && read("CROWDB_RDMA_SQ_DEPTH", sq_depth) &&
            read("CROWDB_RDMA_RQ_DEPTH", rq_depth) && read("CROWDB_RDMA_POSTED_RECEIVE_TARGET", posted_receive_target) &&
-           read("CROWDB_RDMA_WIRE_SLOT_CAPACITY", wire_slot_capacity) &&
+           read("CROWDB_RDMA_DATAPATH_CAPACITY", wire_slot_capacity) &&
            read("CROWDB_RDMA_SEND_ARENA_BYTES", send_arena_bytes) &&
            read("CROWDB_RDMA_RECEIVE_ARENA_BYTES", receive_arena_bytes) && read("CROWDB_RDMA_CQ_DEPTH", cq_depth) &&
            read("CROWDB_RDMA_REGISTERED_MEMORY_BUDGET_BYTES", registered_memory_budget_bytes) &&
@@ -60,7 +59,7 @@ bool RdmaConfig::valid() const
            poll_empty_budget > 0 && send_arena_bytes >= wire_slot_capacity &&
            receive_arena_bytes >= static_cast<uint64_t>(posted_receive_target) * wire_slot_capacity &&
            min_rnr_timer <= 31 && retry_count <= 7 && rnr_retry_count <= 7 && registration_budget() != 0 &&
-           aggregation_max_bytes >= HEADER_SIZE && aggregation_max_bytes <= RDMA_WIRE_SLOT_CAPACITY &&
+           aggregation_max_bytes >= HEADER_SIZE && aggregation_max_bytes <= RDMA_DATAPATH_CAPACITY &&
            aggregation_max_frames > 0 && aggregation_max_frames <= 256 && send_queue_capacity >= 2 &&
            send_queue_capacity <= (1U << 20) && (send_queue_capacity & (send_queue_capacity - 1)) == 0;
 }
@@ -85,5 +84,3 @@ uint64_t RdmaConfig::registration_budget() const
 }
 
 } // namespace crowdb::rpc
-
-#endif

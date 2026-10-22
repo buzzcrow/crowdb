@@ -102,16 +102,23 @@ R242 fat client SDK and FFI lease
 
 ## Immediate implementation order
 
+User continuation on 2026-10-22: complete R238 and R239, then continue through
+R240 and R241 in this same task. Finish transport/benchmark/OCI acceptance
+before advancing; implement R240, then R241, using their existing
+[datapath stream plan](plan-rdma-datapath-stream.md) and
+[Chunk-KV/access plan](plan-rdma-chunk-kv-access.md), with their own gates.
+Do not create duplicate plan files. R242 remains outside this requested continuation.
+
 1. Finish the R238 foundation contract and its gates. Do not add new R239
    transport behavior until the common and verbs-backed pools agree on class,
    ownership, quarantine, and shutdown semantics.
 2. Close R239 acceptance gaps: injectable CM/CQ failure coverage, stable
    `wr_id` ownership mapping, pre-payload retry on TCP, partial-transfer
    isolation, and the single-node multi-container OCI profile.
-3. Run the R238/R239 handoff gates and then start R240 and R241 in parallel.
+3. Run the R238/R239 handoff gates, complete R240, then complete R241.
    R242 remains downstream of R241 and the stable FFI lease surface.
 
-R240 and R241 may run in parallel after R239 passes its transport acceptance.
+R240 and R241 start after R239 passes its transport acceptance.
 R242 starts only after R241 establishes the access semantics and after the FFI
 lease contract from R238 is stable.
 

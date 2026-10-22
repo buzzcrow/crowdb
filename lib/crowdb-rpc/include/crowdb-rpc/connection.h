@@ -66,6 +66,8 @@ class Connection : public std::enable_shared_from_this<Connection>
         path_ = path;
     }
 
+    [[nodiscard]] std::string status_json() const;
+
     [[nodiscard]] bool peer_handshake_received() const
     {
         return peer_handshake_received_.load(std::memory_order_acquire);
@@ -273,6 +275,7 @@ class Connection : public std::enable_shared_from_this<Connection>
     }
 
   private:
+    std::string transport_info_json_ = "{}"; // immutable after connection publication
     friend class RdmaTransport;
     std::shared_ptr<void>  transport_context_;
     int64_t                id_;

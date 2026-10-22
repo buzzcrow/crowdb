@@ -7,6 +7,7 @@
 #include "crowdb-rpc/connection.h"
 #include "crowdb-rpc/transport.h"
 #include "crowdb-rpc/transport/rdma/rdma_capability.h"
+#include "crowdb-rpc/transport/rdma/rdma_config.h"
 
 #ifdef CROWDB_RPC_HAVE_RDMA
 
@@ -30,41 +31,6 @@ struct RdmaDevice;
 struct RdmaMemoryStats;
 
 constexpr uint32_t RDMA_WIRE_SLOT_CAPACITY = RDMA_DATAPATH_CAPACITY;
-
-struct RdmaConfig
-{
-    std::string device;
-    std::string source_address{};
-    std::string gid{};
-    bool        require_tcp_preflight          = false;
-    uint8_t     port                           = 1;
-    uint32_t    cq_depth                       = 8192;
-    uint32_t    cq_count                       = 1;
-    uint32_t    wire_slot_capacity             = RDMA_WIRE_SLOT_CAPACITY;
-    uint64_t    send_arena_bytes               = 64ULL << 20;
-    uint64_t    receive_arena_bytes            = 1ULL << 30;
-    uint64_t    registered_memory_budget_bytes = 0;
-    uint32_t    sq_depth                       = 1024;
-    uint32_t    rq_depth                       = 1024;
-    uint32_t    qp_max_send_sge                = 2;
-    uint32_t    qp_max_recv_sge                = 2;
-    uint32_t    poll_batch                     = 256;
-    uint32_t    verbs_poll_batch               = 32;
-    uint32_t    poll_empty_budget              = 256;
-    uint32_t    shutdown_drain_ms              = 3000;
-    uint32_t    posted_receive_target          = 1024;
-    uint8_t     min_rnr_timer                  = 1;
-    uint8_t     retry_count                    = 7;
-    uint8_t     rnr_retry_count                = 7;
-    bool        aggregation_enabled            = false;
-    uint32_t    aggregation_max_bytes          = RDMA_WIRE_SLOT_CAPACITY;
-    uint32_t    aggregation_max_frames         = 256;
-    uint32_t    send_queue_capacity            = 4096;
-
-    [[nodiscard]] bool     apply_environment();
-    [[nodiscard]] bool     valid() const;
-    [[nodiscard]] uint64_t registration_budget() const;
-};
 
 // RdmaBufferPool: allocates buffers from ibv_mr-registered memory.
 // The pool pre-registers a large memory region and carves out buffers
@@ -151,6 +117,13 @@ class RdmaTransport : public Transport
     std::shared_ptr<Connection>          connect(const std::string &addr, int port,
                                                  const RdmaEndpointCapability *expected_peer = nullptr);
     [[nodiscard]] RdmaEndpointCapability local_capability() const;
+
+    [[nodiscard]] const RdmaConfig &config() const
+    {
+        return config_;
+    }
+
+    [[nodiscard]] std::string status_json() const;
 
     [[nodiscard]] const std::string &source_address() const
     {

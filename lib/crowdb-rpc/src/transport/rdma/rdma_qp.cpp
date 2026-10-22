@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+#include "../../status_json.h"
 #include "rdma_cq.h"
 
 #ifdef CROWDB_RPC_HAVE_RDMA
@@ -23,6 +24,15 @@ bool RdmaTransport::publish_cm_connection(rdma_cm_id *id, const std::shared_ptr<
 {
     // The shared CM consumer must see the owner before a migrated terminal
     // event can retire this ID. Setup events stay private until this point.
+    StatusJson info;
+    info.number("qpair_number", pools->qp_number);
+    info.number("cq_index", pools->cq_index);
+    info.number("effective_sq_depth", pools->effective_capacity.max_send_wr);
+    info.number("effective_rq_depth", pools->effective_capacity.max_recv_wr);
+    info.number("effective_cq_depth", completion_queues_[pools->cq_index]->effective_depth);
+    info.number("peer_receive_slot_capacity", pools->peer_receive_slot_capacity);
+    info.number("peer_receive_frame_limit", pools->peer_receive_frame_limit);
+    connection->transport_info_json_ = info.finish();
     std::scoped_lock lock(cm_mu_);
     if (rdma_migrate_id(id, cm_channel_) != 0)
         return false;

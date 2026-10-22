@@ -282,8 +282,14 @@ retry:
         }
 
         ssize_t written = ::writev(fd, iovs, iov_count);
+        if (stats != nullptr)
+            stats->writev_calls.fetch_add(1, std::memory_order_relaxed);
         if (written > 0) {
             bw_writev().observe(static_cast<uint64_t>(written));
+            if (stats != nullptr) {
+                stats->writev_progress_calls.fetch_add(1, std::memory_order_relaxed);
+                stats->wire_bytes_sent.fetch_add(static_cast<uint64_t>(written), std::memory_order_relaxed);
+            }
         }
 
         if (written < 0) {
@@ -329,6 +335,8 @@ retry:
         pending_count_   = 0;
         for (int i = 0; i < frame_count; i++) {
             if (frames[i]->sent_offset >= frame_totals[i]) {
+                if (stats != nullptr)
+                    stats->rpc_frames_sent.fetch_add(1, std::memory_order_relaxed);
                 release_frame(frames[i]);
             }
             else {

@@ -12,8 +12,8 @@ namespace crowdb::rpc
 {
 struct RdmaTransport::CompletionQueue
 {
-    uint32_t                       index           = 0;
-    uint32_t                       effective_depth = 0;
+    uint32_t                       index = 0;
+    std::atomic<uint32_t>          effective_depth{0};
     ibv_cq                        *cq              = nullptr;
     ibv_comp_channel              *channel         = nullptr;
     int                            continuation_fd = -1;

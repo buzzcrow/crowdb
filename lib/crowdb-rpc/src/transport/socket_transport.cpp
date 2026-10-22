@@ -616,6 +616,7 @@ SocketTransport::~SocketTransport()
 
 void SocketTransport::start()
 {
+    started_.store(true, std::memory_order_release);
 #ifdef CROWDB_RPC_HAVE_RDMA
     if (rdma_transport_ != nullptr)
         rdma_transport_->start();
@@ -643,6 +644,7 @@ void SocketTransport::stop()
     if (rdma_transport_ != nullptr)
         rdma_transport_->shutdown();
 #endif
+    started_.store(false, std::memory_order_release);
 }
 
 void SocketTransport::add_listen_fd(int fd)

@@ -20,6 +20,7 @@ pub mod logging;
 mod owned_route;
 mod server;
 pub mod sys;
+mod transport;
 
 pub use buffer::{Buffer, BufferChain, BufferChainError, BufferLeaseMetadata, BufferOwnership, BufferPool};
 pub use client::{noop_completion, CallFuture, ClientRequest, Response, RpcClient};
@@ -31,6 +32,7 @@ pub use logging::{
 };
 pub use owned_route::{OwnedClientRoute, RpcClientHandle};
 pub use server::{Connection, RpcError, RpcServer, ServerRequest};
+pub use transport::RdmaConfig;
 
 pub use sys::{CrowdbRpcLatencyStats, CrowdbRpcTransportStats};
 

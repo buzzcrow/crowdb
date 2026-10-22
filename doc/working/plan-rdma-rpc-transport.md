@@ -36,7 +36,8 @@ Registration admission remains charged while retired connections retain MRs.
 TCP control preflight now precedes CM setup; the compact CM offer binds the
 preflight identity/generation and peer receive admission. Strict policy has
 passed a two-QP real-HCA RPC round trip and a TCP-only peer rejection case.
-Still pending: bounded transport aggregation, `bench rdma`/shared coroutine
+Bounded transport aggregation is implemented and verified below.
+Still pending: `bench rdma`/shared coroutine
 reporting, unified regression orchestration, failure injection, and the
 two-container acceptance profiles. Do not treat the
 historical benchmark comments or older subtask ledger as completed acceptance.
@@ -622,6 +623,36 @@ Build parallelism checkpoint:
   `parallel` feature so standalone Cargo builds also share Cargo's jobserver
   budget instead of compiling native sources serially. `cargo check -j32`
   passes; the FFI suite validates the resulting library separately.
+
+Status/configuration checkpoint:
+
+- Portable `RdmaConfig` now supports explicit cold configuration, with a
+  versioned C ABI and safe Rust wrapper. Configure before listen; explicit
+  values bypass process environment. Client configuration disables its CM
+  listener, while the fb-server starts its listener before readiness output.
+- Versioned owned JSON snapshots expose actual path, cached QP/CQ/provider
+  capacities, requested queue/slot/arena/aggregation settings, native errors,
+  memory budgets, CPU time, context switches and affinity. Unsupported fields
+  remain null; `quarantined_bytes` has no global retained-arena snapshot yet
+  and must not be represented by the old unused zero-valued transport counter.
+- Benchmark status control RPC uses message type 101. The CLI will query it
+  through an explicit short-lived TCP management connection before/after
+  traffic, since the complete status JSON is larger than small 1 KiB wire
+  slots. These are control exchanges outside the measurement interval, not
+  workload fallback; report `control_path=tcp` separately from verified RDMA
+  workload QPs and strict fallback count. Keep no extra management worker
+  active during measured traffic. Reuse the same status schema as local FFI.
+- Native client error reads now include flushed + current metric windows.
+  Stop periodic flush and join callbacks before exact final totals; a flush
+  must not erase evidence of earlier submit/retry/timeout/missed responses.
+- All 186 enabled native CTest cases and all 137 no-verbs cases pass; opt-in
+  HCA cases skip in the ordinary gate. All 33 Rust FFI tests pass, including
+  four new status/configuration cases. The opt-in real-HCA typed configuration
+  test separately proves immutable provider/QP status survives shutdown.
+  Formatting, scoped tree-lint and FFI clippy pass. The legacy two-process
+  strict two-QP worker round trip also passes after extracting listener port
+  resolution. Readiness/runner acceptance and CLI integration remain pending;
+  this checkpoint makes no new performance claim.
 
 ### D. CLI coroutine workload and canonical results
 

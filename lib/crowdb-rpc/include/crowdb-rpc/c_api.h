@@ -70,6 +70,44 @@ crowdb_rpc_pool_t crowdb_rpc_pool_create(uint32_t max_buffers);
 void              crowdb_rpc_pool_destroy(crowdb_rpc_pool_t pool);
 
 // ── Server ────────────────────────────────────────────────────────
+typedef struct crowdb_rpc_rdma_config
+{
+    uint32_t    struct_size;
+    uint32_t    version;
+    uint32_t    enabled;
+    uint32_t    allow_tcp_fallback;
+    uint32_t    listen_enabled;
+    uint32_t    port;
+    uint32_t    cq_count;
+    uint32_t    cq_depth;
+    uint32_t    sq_depth;
+    uint32_t    rq_depth;
+    uint32_t    posted_receive_target;
+    uint32_t    wire_slot_capacity;
+    uint32_t    poll_batch;
+    uint32_t    verbs_poll_batch;
+    uint32_t    poll_empty_budget;
+    uint32_t    send_queue_capacity;
+    uint32_t    aggregation_enabled;
+    uint32_t    aggregation_max_bytes;
+    uint32_t    aggregation_max_frames;
+    uint64_t    send_arena_bytes;
+    uint64_t    receive_arena_bytes;
+    uint64_t    registered_memory_budget_bytes;
+    const char *device;
+    const char *source_address;
+    const char *gid;
+} crowdb_rpc_rdma_config_t;
+
+void crowdb_rpc_rdma_config_init(crowdb_rpc_rdma_config_t *config);
+// Explicit cold configuration overrides environment; rejected after listen.
+crowdb_rpc_status crowdb_rpc_server_configure_rdma(crowdb_rpc_server_t server, const crowdb_rpc_rdma_config_t *config);
+// Owned, versioned UTF-8 JSON snapshots. Release using buffer_release.
+crowdb_rpc_buffer_t crowdb_rpc_server_status_json(crowdb_rpc_server_t server);
+crowdb_rpc_buffer_t crowdb_rpc_conn_status_json(crowdb_rpc_conn_t connection);
+void                crowdb_rpc_server_register_status_handler(crowdb_rpc_server_t server, uint16_t msg_type);
+int                 crowdb_rpc_server_rdma_listening(crowdb_rpc_server_t server);
+
 crowdb_rpc_server_t crowdb_rpc_server_create(crowdb_rpc_pool_t pool);
 crowdb_rpc_server_t crowdb_rpc_server_create_with_workers(crowdb_rpc_pool_t pool, uint32_t num_workers);
 crowdb_rpc_server_t crowdb_rpc_server_create_with_engines(crowdb_rpc_pool_t pool, uint32_t io_engines,
@@ -121,6 +159,8 @@ void crowdb_rpc_server_transport_stats(crowdb_rpc_server_t server, crowdb_rpc_tr
 // Global (static) — shared across all RpcClient instances. Read via
 // crowdb_rpc_client_get_counters (the client param is ignored, kept for
 // ABI compatibility).
+// Includes flushed and current windows. Exact after writers and metric flush
+// join; live reads can overlap a flush and are approximate.
 typedef struct crowdb_rpc_client_counters
 {
     uint64_t submit_fail;  // send() submit failed

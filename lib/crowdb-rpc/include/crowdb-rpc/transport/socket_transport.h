@@ -5,6 +5,7 @@
 
 #include "crowdb-rpc/connection.h"
 #include "crowdb-rpc/transport.h"
+#include "crowdb-rpc/transport/rdma/rdma_config.h"
 #ifdef CROWDB_RPC_HAVE_RDMA
 #    include "crowdb-rpc/transport/rdma/rdma_transport.h"
 #endif
@@ -86,6 +87,10 @@ struct TransportStats
     LatencyHistogram submit_to_writev;
     // Total enqueue_send rejections (queue full or connection closed).
     std::atomic<uint64_t> send_queue_rejects{0};
+    std::atomic<uint64_t> writev_calls{0};
+    std::atomic<uint64_t> writev_progress_calls{0};
+    std::atomic<uint64_t> wire_bytes_sent{0};
+    std::atomic<uint64_t> rpc_frames_sent{0};
 };
 
 // ── SocketEngine: platform-specific event loop primitives ─────────
@@ -510,6 +515,22 @@ class SocketTransport : public Transport
     bool                                 send_rdma_handshake(const std::shared_ptr<Connection> &conn);
     [[nodiscard]] RdmaEndpointCapability local_rdma_capability() const;
     bool                                 listen_rdma(const std::string &addr, int port);
+    bool                                 listen_rdma_service(const std::string &address, int tcp_port);
+    // Cold configuration, before any listener, worker or connection exists.
+    bool               configure_rdma(RdmaConfig config, bool enabled, bool allow_tcp_fallback, bool listen_enabled);
+    [[nodiscard]] bool rdma_listener_enabled() const;
+
+    [[nodiscard]] bool explicit_rdma_configuration() const
+    {
+        return rdma_explicit_configuration_;
+    }
+
+    [[nodiscard]] const RdmaConfig &rdma_config() const
+    {
+        return rdma_config_;
+    }
+
+    [[nodiscard]] std::string status_json() const;
 
 #if defined(CROWDB_RPC_HAVE_RDMA) && defined(CROWDB_RPC_TEST_UTIL)
     const RdmaTransport::Stats *rdma_stats_for_tests() const
@@ -524,9 +545,12 @@ class SocketTransport : public Transport
     void                        prepare_tcp_socket(int fd) const;
     BufferPool                 *pool_;
     bool                        allow_tcp_fallback_{true};
+    RdmaConfig                  rdma_config_;
+    bool                        rdma_explicit_configuration_ = false;
+    bool                        rdma_listen_enabled_         = false;
+    std::atomic<bool>           started_{false};
 #ifdef CROWDB_RPC_HAVE_RDMA
     std::unique_ptr<class RdmaTransport> rdma_transport_;
-    RdmaConfig                           rdma_config_;
 #endif
     std::vector<std::unique_ptr<Worker>>       workers_;
     std::vector<std::unique_ptr<SocketEngine>> engines_; // transport owns all engines

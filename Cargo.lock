@@ -1248,6 +1248,7 @@ dependencies = [
  "crowdb-rpc-ffi",
  "ctor",
  "flatbuffers",
+ "serde_json",
  "tokio",
 ]
 

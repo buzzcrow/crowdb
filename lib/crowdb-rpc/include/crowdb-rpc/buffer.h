@@ -167,6 +167,16 @@ class SystemBufferPool : public BufferPool
     void    recycle(Buffer *buf) override;
     bool    detach(Buffer *buf) override;
 
+    [[nodiscard]] uint32_t max_buffers() const
+    {
+        return max_buffers_;
+    }
+
+    [[nodiscard]] uint32_t outstanding() const
+    {
+        return outstanding_.load(std::memory_order_relaxed);
+    }
+
   private:
     uint32_t              max_buffers_;
     std::atomic<uint32_t> outstanding_{0}; // in-use buffers (allocated, not yet freed)

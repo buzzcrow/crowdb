@@ -23,6 +23,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <string>
 
 static std::atomic<bool> g_running{true};
@@ -47,6 +48,8 @@ DEFINE_bool(n, false, "Alias for --enable_nagle");
 DEFINE_bool(quickack, false, "Enable TCP_QUICKACK on connections (Linux only). Breaks Nagle + delayed-ACK deadlock.");
 DEFINE_bool(event_write, false, "Event-write mode: submit() enqueues to I/O worker for coalesced writev.");
 DEFINE_uint32(send_queue_capacity, 4096, "Per-connection send queue capacity (backpressure bound).");
+DEFINE_bool(require_rdma, false, "Fail startup unless the RDMA CM listener is active.");
+DEFINE_string(status_file, "", "Write startup transport status JSON after listener readiness.");
 DEFINE_string(logdir, "", "Log directory for server + metrics logs. Default: workspace runtime root.");
 DEFINE_string(l, "", "Alias for --logdir");
 DEFINE_uint32(metrics_interval, 5, "Metrics flush interval in seconds.");
@@ -117,15 +120,38 @@ int main(int argc, char *argv[])
     }
 
     int actual_port = crowdb_rpc_server_port(server);
-    // Print the port so the parent process can read it.
-    std::printf("listening port=%d\n", actual_port);
-    std::fflush(stdout);
-
     // Register the built-in echo handler for msg_type 100.
     const uint16_t ECHO_MSG_TYPE = 100;
     crowdb_rpc_server_register_echo_handler(server, ECHO_MSG_TYPE);
+    crowdb_rpc_server_register_status_handler(server, 101);
 
     crowdb_rpc_server_start(server);
+    if (FLAGS_require_rdma && crowdb_rpc_server_rdma_listening(server) == 0) {
+        std::fprintf(stderr, "error: required RDMA CM listener is unavailable\n");
+        crowdb_rpc_server_stop(server);
+        crowdb_rpc_server_destroy(server);
+        return 1;
+    }
+    auto status = crowdb_rpc_server_status_json(server);
+    if (status == nullptr) {
+        std::fprintf(stderr, "error: startup transport status allocation failed\n");
+        crowdb_rpc_server_destroy(server);
+        return 1;
+    }
+    if (!FLAGS_status_file.empty()) {
+        std::ofstream file(FLAGS_status_file);
+        file.write(reinterpret_cast<const char *>(crowdb_rpc_buffer_data(status)), crowdb_rpc_buffer_len(status));
+        file.close();
+        if (!file) {
+            std::fprintf(stderr, "error: cannot write startup status file %s\n", FLAGS_status_file.c_str());
+            crowdb_rpc_buffer_release(status);
+            crowdb_rpc_server_destroy(server);
+            return 1;
+        }
+    }
+    crowdb_rpc_buffer_release(status);
+    std::printf("listening port=%d\n", actual_port);
+    std::fflush(stdout);
 
     // Start metrics flush — the RPC lib registers all histograms,
     // bandwidths, and counters with MetricsRegistry::global() via

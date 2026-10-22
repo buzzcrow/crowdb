@@ -36,7 +36,7 @@ RdmaTransport::RdmaTransport(RdmaConfig config, BufferPool *application_pool)
     : config_(std::move(config)),
       application_pool_(application_pool == nullptr ? &default_application_pool_ : application_pool)
 {
-    const bool valid_config = config_.apply_environment() && config_.valid();
+    const bool valid_config = (!config_.use_environment || config_.apply_environment()) && config_.valid();
     if (!valid_config) {
         config_.cq_depth = 1;
         config_.cq_count = 1;
@@ -57,17 +57,17 @@ RdmaTransport::RdmaTransport(RdmaConfig config, BufferPool *application_pool)
         CRB_LOG_WARN("rdma configuration: inconsistent queue depths, slot capacity, or arena budget; using TCP");
         return;
     }
-    if (config_.device.empty()) {
+    if (config_.use_environment && config_.device.empty()) {
         if (const char *requested_device = std::getenv("CROWDB_RDMA_DEVICE"); requested_device != nullptr)
             config_.device = requested_device;
     }
     requested_device_ = config_.device;
     port_             = config_.port;
-    if (config_.source_address.empty()) {
+    if (config_.use_environment && config_.source_address.empty()) {
         if (const char *source = std::getenv("CROWDB_RDMA_SOURCE_ADDR"); source != nullptr)
             config_.source_address = source;
     }
-    if (config_.gid.empty()) {
+    if (config_.use_environment && config_.gid.empty()) {
         if (const char *gid = std::getenv("CROWDB_RDMA_GID"); gid != nullptr)
             config_.gid = gid;
     }

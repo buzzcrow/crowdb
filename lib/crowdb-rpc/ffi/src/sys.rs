@@ -51,6 +51,36 @@ pub struct CrowdbRpcTransportStats {
 }
 
 #[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct CrowdbRpcRdmaConfig {
+    pub struct_size: u32,
+    pub version: u32,
+    pub enabled: u32,
+    pub allow_tcp_fallback: u32,
+    pub listen_enabled: u32,
+    pub port: u32,
+    pub cq_count: u32,
+    pub cq_depth: u32,
+    pub sq_depth: u32,
+    pub rq_depth: u32,
+    pub posted_receive_target: u32,
+    pub wire_slot_capacity: u32,
+    pub poll_batch: u32,
+    pub verbs_poll_batch: u32,
+    pub poll_empty_budget: u32,
+    pub send_queue_capacity: u32,
+    pub aggregation_enabled: u32,
+    pub aggregation_max_bytes: u32,
+    pub aggregation_max_frames: u32,
+    pub send_arena_bytes: u64,
+    pub receive_arena_bytes: u64,
+    pub registered_memory_budget_bytes: u64,
+    pub device: *const c_char,
+    pub source_address: *const c_char,
+    pub gid: *const c_char,
+}
+
+#[repr(C)]
 #[derive(Default, Debug)]
 pub struct CrowdbRpcClientCounters {
     pub submit_fail: u64,
@@ -120,6 +150,14 @@ pub type crowdb_rpc_co_on_response = Option<
 >;
 
 extern "C" {
+    pub fn crowdb_rpc_rdma_config_init(config: *mut CrowdbRpcRdmaConfig);
+    pub fn crowdb_rpc_server_configure_rdma(
+        server: crowdb_rpc_server_t,
+        config: *const CrowdbRpcRdmaConfig,
+    ) -> crowdb_rpc_status;
+    pub fn crowdb_rpc_server_status_json(server: crowdb_rpc_server_t) -> crowdb_rpc_buffer_t;
+    pub fn crowdb_rpc_conn_status_json(connection: crowdb_rpc_conn_t) -> crowdb_rpc_buffer_t;
+    pub fn crowdb_rpc_server_register_status_handler(server: crowdb_rpc_server_t, msg_type: u16);
     pub fn crowdb_rpc_buffer_alloc(pool: crowdb_rpc_pool_t, capacity: u32) -> crowdb_rpc_buffer_t;
     pub fn crowdb_rpc_buffer_write(buf: crowdb_rpc_buffer_t, data: *const u8, len: u32);
     pub fn crowdb_rpc_buffer_data(buf: crowdb_rpc_buffer_t) -> *const u8;

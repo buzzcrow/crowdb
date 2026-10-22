@@ -33,6 +33,12 @@ class RpcServer
     // If port is 0, the OS assigns an ephemeral port.
     bool listen(const std::string &addr, int port);
 
+    bool configure_rdma(RdmaConfig config, bool enabled, bool allow_tcp_fallback, bool listen_enabled)
+    {
+        return listen_fd_ < 0 && !running_.load(std::memory_order_acquire) &&
+               transport_->configure_rdma(std::move(config), enabled, allow_tcp_fallback, listen_enabled);
+    }
+
     int listen_port() const
     {
         return listen_port_;

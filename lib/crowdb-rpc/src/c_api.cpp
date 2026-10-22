@@ -437,10 +437,11 @@ void crowdb_rpc_client_get_counters(crowdb_rpc_client_t /*client*/, crowdb_rpc_c
         if (out == nullptr) {
             return;
         }
-        out->submit_fail  = crowdb::rpc::cnt_send_queue_full().window();
-        out->submit_retry = crowdb::rpc::rpc_submit_retry().window();
-        out->resp_missed  = crowdb::rpc::rpc_resp_missed().window();
-        out->reaped       = crowdb::rpc::rpc_reaped().window();
+        const auto cumulative = [](const auto &counter) { return counter.total() + counter.window(); };
+        out->submit_fail      = cumulative(crowdb::rpc::cnt_send_queue_full());
+        out->submit_retry     = cumulative(crowdb::rpc::rpc_submit_retry());
+        out->resp_missed      = cumulative(crowdb::rpc::rpc_resp_missed());
+        out->reaped           = cumulative(crowdb::rpc::rpc_reaped());
     }
     catch (...) {
     }

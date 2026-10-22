@@ -180,9 +180,7 @@ void RpcServer::start()
         return;
     }
     CRB_LOG_INFO("rpc server: starting");
-    if (const char *enabled = std::getenv("CROWDB_RDMA_ENABLED");
-        enabled != nullptr && std::strcmp(enabled, "1") == 0 &&
-        !(std::getenv("CROWDB_RDMA_LISTEN") != nullptr && std::strcmp(std::getenv("CROWDB_RDMA_LISTEN"), "0") == 0)) {
+    if (transport_->rdma_listener_enabled()) {
         transport_->set_rdma_accept_handler([this](const std::shared_ptr<Connection> &conn) {
             transport_->attach_rdma_connection(
                 conn, [this](Frame *frame, Connection *c) { dispatch(frame, c); },
@@ -192,52 +190,7 @@ void RpcServer::start()
                 });
             transport_->send_rdma_handshake(conn);
         });
-        int rdma_port = 0;
-        if (const char *rdma_port_env = std::getenv("CROWDB_RDMA_E2E_PORT");
-            rdma_port_env != nullptr && *rdma_port_env != '\0') {
-            char *end                  = nullptr;
-            errno                      = 0;
-            const long configured_port = std::strtol(rdma_port_env, &end, 10);
-            if (errno == 0 && end != rdma_port_env && *end == '\0' && configured_port > 0 && configured_port <= 65535) {
-                rdma_port = static_cast<int>(configured_port);
-            }
-            else {
-                CRB_LOG_WARN("rpc server: invalid RDMA CM port value={}", rdma_port_env);
-            }
-        }
-        else {
-            rdma_port = listen_port_;
-            if (const char *offset_env = std::getenv("CROWDB_PORT_OFFSET");
-                offset_env != nullptr && *offset_env != '\0') {
-                char *end         = nullptr;
-                errno             = 0;
-                const long offset = std::strtol(offset_env, &end, 10);
-                if (errno != 0 || end == offset_env || *end != '\0' || offset < 0 || offset > 65535 - rdma_port) {
-                    CRB_LOG_WARN("rpc server: invalid RDMA port offset value={}", offset_env);
-                    rdma_port = 0;
-                }
-                else {
-                    rdma_port += static_cast<int>(offset);
-                }
-            }
-        }
-        if (rdma_port != 0) {
-            if (const char *slot_env = std::getenv("CROWDB_RDMA_SERVICE_SLOT");
-                slot_env != nullptr && *slot_env != '\0') {
-                char *end       = nullptr;
-                errno           = 0;
-                const long slot = std::strtol(slot_env, &end, 10);
-                if (errno != 0 || end == slot_env || *end != '\0' || slot < 0 || slot > 65535 - rdma_port) {
-                    CRB_LOG_WARN("rpc server: invalid RDMA service slot value={}", slot_env);
-                    rdma_port = 0;
-                }
-                else {
-                    rdma_port += static_cast<int>(slot);
-                }
-            }
-        }
-        const char *rdma_addr = std::getenv("CROWDB_RDMA_SOURCE_ADDR");
-        if (rdma_port == 0 || !transport_->listen_rdma(rdma_addr == nullptr ? listen_addr_ : rdma_addr, rdma_port))
+        if (!transport_->listen_rdma_service(listen_addr_, listen_port_))
             CRB_LOG_WARN("rpc server: RDMA listener unavailable; TCP remains active");
     }
     transport_->start();
