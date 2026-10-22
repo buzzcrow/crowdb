@@ -282,6 +282,22 @@ adaptation rather than a new transport or storage engine.
   These tests establish codec behavior only; consumer migration, directories and
   recovery are pending.
 
+## Object reader compatibility evidence (partial T08)
+
+- Object reads infer candidate V1/V2 ordinary geometry from the existing
+  physical/logical length pair and then require verified magic/header geometry
+  to match. No field is appended to the persisted Location sequence. Grouped
+  Stream frames cannot pass the ordinary object decoder.
+- Extracted framing, streaming and strip-layout logic from the 1500-line reader
+  into owning private modules; the parent is below 1000 lines. Shared payload
+  views, read-credit retention, bounded windows and layout reuse are preserved.
+- Three new cases cover retained V1 adjacent to V2 objects, multi-frame ranges,
+  one-byte streaming windows, short final frames and deliberately wrong location
+  geometry. All 14 reader tests and the full 133-test ChunkClient suite pass.
+  All-target clippy and Rust fmt pass after ordinary extraction-import and test
+  fixture type cleanup. Evidence: `frame-reader-rust3.log` and
+  `frame-reader-suite.log`. Writers/native buffers/tree are not yet migrated.
+
 ## Phase 0 — Establish evidence and settle contracts
 
 - [x] **T01 — Capture a matched implementation baseline**: retain release

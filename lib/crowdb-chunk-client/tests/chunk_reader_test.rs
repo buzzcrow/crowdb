@@ -28,6 +28,9 @@ use tokio::sync::{Notify, Semaphore};
 const KIB: usize = 1024;
 const SHARD: usize = 64 * KIB;
 
+#[path = "chunk_reader_test/frame_revision.rs"]
+mod frame_revision;
+
 struct MemoryDiskIo {
     shards: Vec<(DiskId, Bytes)>,
     failed: Vec<DiskId>,
