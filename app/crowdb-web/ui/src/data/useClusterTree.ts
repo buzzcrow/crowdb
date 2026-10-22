@@ -61,8 +61,10 @@ export function useClusterTree({
   const hasLoadedRef = useRef(false);
   const requestRef = useRef<AbortController | null>(null);
 
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async (fresh = false) => {
     if (!enabled || document.visibilityState === 'hidden') return;
+    // Polling must not starve a slow read or a read started after a mutation.
+    if (requestRef.current && !requestRef.current.signal.aborted && !fresh) return;
     requestRef.current?.abort();
     const controller = new AbortController();
     requestRef.current = controller;
@@ -110,6 +112,7 @@ export function useClusterTree({
       setError(err instanceof Error ? err : new Error('Unknown error fetching cluster tree'));
     } finally {
       if (!controller.signal.aborted) { hasLoadedRef.current = true; setLoading(false); }
+      if (requestRef.current === controller) requestRef.current = null;
     }
   }, [enabled, recursive, managed]);
 
@@ -156,7 +159,7 @@ export function useClusterTree({
     [nodes],
   );
 
-  const refresh = useCallback(async () => { await Promise.all([fetchData(), disks.refresh()]); }, [fetchData, disks.refresh]);
+  const refresh = useCallback(async () => { await Promise.all([fetchData(true), disks.refresh()]); }, [fetchData, disks.refresh]);
 
   return {
     services,
