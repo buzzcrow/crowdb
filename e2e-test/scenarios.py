@@ -37,6 +37,7 @@ from console_shell_fixture import ShellBrowserCluster
 from console_discovery_browser_fixture import DiscoveryBrowserCluster
 from console_cli_fixture import CliContainerCluster
 from console_cli_target import CliAttachedCluster
+from oci_reference_fixture import OciReferenceCluster
 from console_native_fixture import NativeConsoleCluster
 from console_standalone_fixture import StandaloneWebCluster
 from console_registry_fixture import RegistryWebCluster
@@ -100,6 +101,9 @@ class Case:
     shell_observations: bool = False
     console_browser: str | None = None
     cli_replay: str | None = None
+    oci_reference: str | None = None
+    oci_editable_ui: bool = False
+    cli_workload: bool = False
     client_timeout: int = 120
 
 
@@ -171,6 +175,12 @@ DISKDB_CASES = (
 )
 
 DEPLOYMENT_CASES = (
+    Case("deployment.reference", "deployment::reference::direct_docker_one_node", oci_reference="docker-one"),
+    Case("deployment.reference", "deployment::reference::editable_ui_one_node", oci_reference="docker-one", oci_editable_ui=True),
+    Case("deployment.reference", "deployment::reference::editable_ui_three_nodes", oci_reference="docker-three", oci_editable_ui=True),
+    Case("deployment.reference", "deployment::reference::direct_docker_three_nodes", oci_reference="docker-three"),
+    Case("deployment.reference", "deployment::reference::compose_one_node", oci_reference="compose-one"),
+    Case("deployment.reference", "deployment::reference::compose_three_nodes", oci_reference="compose-three"),
     Case("deployment.balance", "deployment::balance::single_node_disables_local_chunk_kv_split_planning", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
     Case("deployment.listeners", "deployment::listeners::fixed_s3_listener_recovers_after_explicit_termination", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
     Case("deployment.listeners", "deployment::listeners::fixed_iceberg_listener_recovers_after_explicit_termination", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
@@ -409,6 +419,7 @@ CONSOLE_OPERATION_CASES = (
     Case("console.browser.logical", "console::browser_logical::delete", native_browser="deletes a replica and a group through the UI and verifies the real backend"),
     Case("console.browser.inspector", "console::browser_inspector::activity", shell_browser="records mutations and async operations, and clear empties the log"),
     Case("console.browser.inspector", "console::browser_inspector::selection", shell_browser="clears stale properties when the domain changes or the cluster resets"),
+    Case("console.cli.container", "console::cli_container::pending_free_accounting", oci_reference="docker-one", cli_workload=True),
     Case("console.cli.container", "console::cli_container::confirmed_group_zero_replay", cli_replay="bound"),
     Case("console.cli.container", "console::cli_container::confirmed_storage_replay", cli_replay="storage"),
     Case("console.cli.container", "console::cli_container::terminal_chunk_writer_recovery", cli_replay="terminal-writer"),
@@ -549,6 +560,8 @@ def select_cases(layer="all", scope="all", case_name=None, partition=None):
 
 
 def case_nodes(case):
+    if case.oci_reference:
+        return 1 if case.oci_reference.endswith("-one") else 3
     if case.scope == "console.browser.discovery":
         return 2
     if case.native_browser or case.native_client:
@@ -600,6 +613,9 @@ def case_nodes(case):
     return 2 if case.scope.startswith(("diskdb.", "chunkdb.")) else len(case.stores_per_node or case.stores)
 
 def case_resources(case, node_cpus):
+    if case.oci_reference:
+        count = case_nodes(case)
+        return count + 0.5, count * 1536 + 512
     # CPU shares allow nodes to borrow idle capacity; memory remains a hard bound.
     if case.scope == "console.browser.discovery":
         return 1.5, 3072
@@ -623,6 +639,9 @@ def case_resources(case, node_cpus):
 
 
 def allocate_cluster(case, image, artifacts, bundle, data_root):
+    if case.oci_reference:
+        return OciReferenceCluster(image, artifacts, bundle, reference=case.oci_reference,
+                                   editable_ui=case.oci_editable_ui, cli_workload=case.cli_workload, data_root=data_root)
     if case.scope == "console.browser.discovery":
         return DiscoveryBrowserCluster(image, artifacts, bundle, data_root=data_root)
     if case.native_browser or case.native_client:
@@ -747,7 +766,9 @@ def run_cases(image, artifacts, bundle, slots, data_root=None, scope="all", case
     def run(case, owned=None):
         cluster = owned if owned is not None else prepare(case)
         with nullcontext(cluster) if owned is not None else cluster:
-            if case.cli_replay:
+            if case.oci_reference:
+                cluster.verify_reference()
+            elif case.cli_replay:
                 cluster.replay(case.cli_replay)
             elif case.native_browser:
                 config = "native.config.ts" if case.scope.startswith("console.native.") else "shell.config.ts"

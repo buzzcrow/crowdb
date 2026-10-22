@@ -12,6 +12,12 @@ readiness, attached workloads and scoped cleanup.
 - **R243 remains incomplete.** Keep the requirement/backlog entry and outstanding
   acceptance work below. The sustained all-DiskIO recovery case now passes;
   this does not certify every runtime, protocol or formation/recovery acceptance.
+- Latest continuation: T25's six direct Docker/Compose/default-UI flows pass on
+  image U, including actual container recreation with retained protocol state.
+  F07 fixes polling starvation of post-mutation UI reads. T30a explicitly runs
+  the pending-free CLI regression against an owned normal node. All 180 Python
+  fixture tests, 277 UI tests/types and 173 monitor tests pass. The full current
+  CLI container scope is running before closing startup interruption coverage.
 - 2026-10-22: user authorized continuation past the prior retry limit and asked
   for diagnosis of the long-standing failure. User subsequently requested F03
   and explicitly authorized continuing other R243 tasks afterward, starting T04.
@@ -149,7 +155,7 @@ Existing implementation can be reused; these are the outstanding parts.
     contract is rejection before runtime access. Shared bootstrap/supervisor
     correctness remains independently covered.
   Owners: CLI `commands/cluster/target.rs`, `commands.rs`, shared deployment target.
-- [ ] **T05–T07 — Finish formation negatives and interruption coverage**
+- [~] **T05–T07 — Finish formation negatives and interruption coverage**
   (A03–A05/A19–A21). One/three-node normal startup works. Verify missing/extra/
   duplicate/foreign peers, incompatible credentials/policies, simultaneous
   coordinators, sealed-manifest conflicts and lost replies without rebootstrap.
@@ -158,6 +164,15 @@ Existing implementation can be reused; these are the outstanding parts.
   physical-host identity. Split the diagnostic and validate seeds before node
   effects; include malformed/credential-bearing seeds without leaking values.
   Owners: Web auto-join/initialization, shared bootstrap/admission, monitor tests.
+  - [x] T05b: 8 Web formation and 19 monitor policy/candidate/initialization/
+    bootstrap tests pass. Two new KV-server integration cases exercise actual
+    `/system/prepare` persistence: asymmetric overlapping coordinator sets cannot
+    accept two manifests; restart preserves every accepted byte; late conflicting
+    init cannot create storage. A discarded prepare response resumes the exact
+    owner after a new server/registry, rejecting changed replica/operation.
+    All 7 group-creation tests and KV-server all-target clippy pass. The complete
+    monitor suite also passes all 173 tests. Distributed startup interruption
+    is being reverified on image U; this does not certify every A22/A24 fault.
   - [x] T05a: seed validation now has a dedicated diagnostic and runs before
     policy acceptance, identity creation or listener/service effects through
     `accept-policy`, `run`, and the standalone management entry point. Tests:
@@ -169,6 +184,13 @@ Existing implementation can be reused; these are the outstanding parts.
 - [ ] **T15 — Complete editable startup acceptance** (A01/A02).
   Management starts while setup is pending. Migrate remaining readonly/legacy
   callers; verify authorized edits and actual rejection causes in both topologies.
+  - [x] F07: real one/three-node Add Rack flows exposed polling cancelling a
+    slow post-mutation rack read. Trace proves POST 201 followed by aborted rack
+    reads and a stale sidebar. Polls now let an active read finish; explicit
+    refresh starts a fresh read and fences older responses. The regression fails
+    before the fix and passes afterward. All 277 UI tests/types pass; both real
+    default UIs pass on image U. The existing browser flow retains DOM assertions
+    and asserts the mutation's 201 separately, with independent step timings.
 - [ ] **T15a–T15d — Finish member trust and retained recovery** (A32/A33).
   Initial authenticated member pins, SSH-verified rediscovery, duplicate live
   identity rejection and identity-bound replica routing are implemented. Fresh
@@ -187,6 +209,14 @@ Existing implementation can be reused; these are the outstanding parts.
   Group0/disk+binding → owner → space layers, current operations, stateless idle
   ChunkKV and owned-range writer readiness exist. Finish service stop, voter loss,
   stale evidence, mixed failures and bounded endpoint checks with non-repair proofs.
+  One earlier image-T Compose-three run returned HTTP 503 on namespace create,
+  logging `malformed Iceberg record`. Exact-case reproduction and the final
+  six-case image-U run pass, but no fix for that intermittent error is claimed.
+  Retained failed volumes recover the namespace on every member. A separate
+  instrumented diagnostic completed 100 creates; concurrent helper tests and
+  41 namespace/retry tests pass. Temporary diagnostic code was removed and
+  modified diagnostic containers are not acceptance evidence. Keep the original
+  failed logs/volumes and investigate a future recurrence without blind retries.
   F01 addresses an uncertainty/readiness gap; do not conflate free bytes with
   allocatability. Preserve detailed successful facts as well as errors.
 - [ ] **T19–T20 — Add common CLI host/containerd lifecycle** (A08–A10/A29/A31).
@@ -196,10 +226,34 @@ Existing implementation can be reused; these are the outstanding parts.
   Seal daemon/context/endpoint, exact resources/mounts/image and owner before
   effects; namespace is a backend detail, never application cluster identity.
   Verify applied cgroups/host network and one node per physical host.
-- [ ] **T25 — Register direct Docker/Compose reference acceptance** (A01/A03/A25).
-  Examples/helpers exist. Execute documented one/three-node commands and Compose
-  without host bootstrap helpers, with published access to all three protocols.
-- [~] **T29 — Finish removing legacy public paths and migrate their callers**
+- [x] **T25 — Register direct Docker/Compose reference acceptance** (A01/A03/A25).
+  - Six registered `deployment.reference` cases cover direct Docker and the
+    unchanged shipped one/three-node Compose files, plus real editable UIs in
+    both node counts. Normal entrypoints, dedicated bridges/named volumes and
+    published UI/S3/Iceberg/Dataset ports supply neither fixed IPs nor seeds.
+    Endpoint-only clients create no CLI runtime ownership receipt.
+  - Current image `crowdb-node:r243-u`, Docker config
+    `sha256:6858601c47671889ff6bb0c90971d5f737e786c327d873a3254e3cacf97ca93a`;
+    OCI manifest `sha256:79b755857632825444a10c0d894e7d8e37f3a849a6e8f0297034d62cb45d2e91`.
+    Verified archive/receipt: `target/r243-u.oci.tar{,.json}`. Includes F07 below.
+  - All six actual fixtures pass in `final-reference/run-237c44f371c54fb7b030895283c0b2c0`:
+    management writes, signed S3 retained bytes, Iceberg property commit/read,
+    Dataset inline snapshot publish/manifest read, unauthenticated rejection,
+    matching UUIDs and unchanged credentials/data after actual container
+    recreation. Direct Docker recreates in reverse order without a fixed IP.
+    All six checked cleanup receipts have zero retained successful volumes.
+  - Direct three-node cases first hold back the third voter: check exits 1 in
+    the bounded wait with phase waiting, no admitted nodes/racks and no accepted
+    bootstrap. The runner's phase rollup incorrectly treated this expected exit
+    as failure despite passing fixture lifecycles. CLI phase receipts now record
+    the expected exit; report regressions preserve unexpected-exit/cleanup failures.
+    Both affected cases pass with correct final reports under `report-docker-three`
+    and `report-ui-three`; successful scoped cleanup is verified separately.
+  - All 180 Python fixture tests pass, including image/name/project, foreign
+    storage, unrelated attachments, preexisting scope and negative-exit guards.
+    CI inventory owns 388 named flows; inventory is not runtime execution.
+    Evidence root: `.crowdb-runtime/artifacts/r243-deployment-continuation/`.
+- [ ] **T29 — Finish removing legacy public paths and migrate their callers**
   (A10/A12–A14/A17).
   - [x] T29a: remove public `launch`, `--registry`, system-address fallback,
     `cluster init/local-deploy/destroy/clean` and `kv server`, including dead CLI
@@ -293,10 +347,16 @@ Existing implementation can be reused; these are the outstanding parts.
   isolated names, missing peers, interruption/lost replies, changed UUID/context/
   ownership, unrelated/shared resources, scoped cleanup, all attached workloads,
   current health/quorum and actual authorization need traceable owners.
-  Wire the ignored `cluster_workloads_test.rs` pending-free accounting regression
-  explicitly using `CROWDB_TEST_CLUSTER_MANAGEMENT_ENDPOINT`; default ignored
-  execution is not coverage. `test-container-e2e-fixture` currently has 159 cases;
-  the case inventory checker is not evidence that container flows ran.
+  - [x] T30a: `console::cli_container::pending_free_accounting` owns a fresh
+    normal one-node Docker fixture and explicitly runs the otherwise ignored
+    `cluster_workloads_test` with `CROWDB_TEST_CLUSTER_MANAGEMENT_ENDPOINT`.
+    The host test executable and actual CLI are pinned in the client bundle;
+    it executes exactly one test, with no ignored cases. Real pending frees
+    precede the mix baseline; positive expected delta equals actual busy delta
+    and errors remain zero. The registered run and checked cleanup pass under
+    `r243-deployment-continuation/pending-free`. CLI all-target clippy passes.
+  - Python fixture suite: 180 tests; CI inventory: 388 owned flows. Inventory
+    does not substitute for runtime execution of the remaining acceptance.
 - [ ] **T34 — Verify host runtimes honestly** (A08/A09/A31).
   Docker-hosted containerd profiles are separate from native Docker-free A31.
   Native rootful containerd is unavailable locally: socket root:root 0660;
@@ -350,9 +410,9 @@ Existing implementation can be reused; these are the outstanding parts.
   Exact binary hash, parameters, operation counts, publications and successful
   scoped shutdown receipts are retained. All-target stream clippy and fmt pass;
   no production behavior or performance threshold changed.
-- T29b remains unfinished while its strict stream performance checks fail;
-  address the append directory publication cost and framed synthetic-data
-  fixture rather than asking the user to trade correctness for performance.
+- At the audit boundary the strict Stream performance checks remained red.
+  The subsequent user decision below moves the directory redesign and framed
+  synthetic-data fixture to R244; do not replace those failures with a pass.
   Native Docker-free A31 remains an external-runner dependency under T34.
 
 ## Stream latency attribution and first optimizations
@@ -428,6 +488,18 @@ Existing implementation can be reused; these are the outstanding parts.
   and separate RPC tooling. Pending-free accounting correction is verified.
 - Preserve data safety: never truncate below acknowledged cursor; distinguish
   missing/superseded execution; retain exact monitor observation failures.
+
+## Current continuation files
+
+- UI: `app/crowdb-web/ui/src/data/useClusterTree{,.test}.ts` and existing
+  `e2e-test/clients/console-ui/e2e/flows/10-cluster-rack-node.spec.ts`.
+- Runtime acceptance: `e2e-test/oci_reference_{fixture,runtime,protocols,browser,workloads}.py`,
+  `run.py`, `scenarios.py`, `client.py`, `console_cli_client.py`, `report.py` and
+  fixture/report/selection tests under `e2e-test/tests/`.
+- Bootstrap integration: KV-server `tests/group_creation_test.rs` and
+  `tests/common/system_bootstrap.rs`; namespace concurrency: Iceberg
+  `tests/namespace_create_test.rs` and `tests/common/store.rs`.
+- Explicit attached workload: CLI `tests/cluster_workloads_test.rs`.
 
 ## Verification and retained resources
 

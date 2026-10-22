@@ -32,7 +32,8 @@ class CliClient:
         (self.artifacts / f"client-cli-{self.phase_number}.log").write_text(redact(output))
         (self.artifacts / f"client-cli-{self.phase_number}.json").write_text(json.dumps({
             "case": self.case_name, "phase": ".".join(arguments[:2]), "execution": "host",
-            "seconds": time.monotonic() - started, "exit_code": result.returncode}, indent=2))
+            "seconds": time.monotonic() - started, "exit_code": result.returncode,
+            "expected_exit_code": expected_exit}, indent=2))
         if result.returncode != expected_exit:
             print(output, flush=True)
             raise AssertionError(output)

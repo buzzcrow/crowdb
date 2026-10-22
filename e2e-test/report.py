@@ -14,7 +14,7 @@ def write_report(root, timings):
         fixture_path = directory / "timing.json"
         fixture = json.loads(fixture_path.read_text()) if fixture_path.exists() else {}
         completed = fixture.get("status") == "pass" and bool(phases) and all(
-            phase.get("exit_code") == 0 for phase in phases)
+            phase.get("exit_code") == phase.get("expected_exit_code", 0) for phase in phases)
         actions = [json.loads(action.read_text()) for action in sorted(
             (directory / "control").glob("*.response.json"))]
         cases.append({**case, "actions": actions, "artifacts": str(directory), "phases": phases,

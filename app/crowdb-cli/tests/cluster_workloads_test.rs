@@ -60,7 +60,9 @@ async fn mixed_disk_workload_normalizes_frees_predating_its_baseline() {
         busy,
         "fixture must retain a pending free before compaction"
     );
-    let output = Command::new(env!("CARGO_BIN_EXE_crowdb-cli"))
+    let binary =
+        std::env::var_os("CROWDB_E2E_CLI_BIN").unwrap_or_else(|| env!("CARGO_BIN_EXE_crowdb-cli").into());
+    let output = Command::new(binary)
         .env_remove("CROWDB_CLUSTER")
         .env_remove("CROWDB_SYSTEM_IP")
         .env_remove("CROWDB_SYSTEM_PORT")
