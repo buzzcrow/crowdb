@@ -8,21 +8,21 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from host_cli_test import HostCliTest, container
+import host_cli_test as fixture
 from host_cleanup import clean, selected
 
 
 class HostCleanupTest(unittest.TestCase):
-    setUp = HostCliTest.setUp
+    setUp = fixture.HostCliTest.setUp
     def test_exact_owner_is_stopped_then_removed_without_data_effects(self):
-        self.runtime.current = container(self.record)
+        self.runtime.current = fixture.container(self.record)
         with patch('host_cleanup.HostRuntime', return_value=self.runtime):
             clean(self.record)
         self.assertEqual(self.runtime.effects, [('stop', 'owned-container'), ('rm', 'owned-container')])
 
     def test_foreign_owner_or_daemon_never_receives_effects(self):
         for changed_daemon in (False, True):
-            self.runtime.current = container(self.record)
+            self.runtime.current = fixture.container(self.record)
             if changed_daemon: self.runtime.daemon['daemon'] = 'foreign'
             else: self.runtime.current['Config']['Labels']['org.crowdb.launcher'] = 'foreign'
             with patch('host_cleanup.HostRuntime', return_value=self.runtime), self.assertRaises(ValueError):

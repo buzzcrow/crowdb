@@ -321,11 +321,23 @@ Existing implementation can be reused; these are the outstanding parts.
     Host code lives in CLI `local/host*` and OCI `host_{inputs,runtime,lifecycle,
     cleanup}.py`; tests cover interrupted creation, daemon/input/owner drift,
     exact raw mapping, stopped resource changes and independent cleanup.
-    The first protocol run stalled hashing a 389-MiB debug CLI over read-only
-    9p before issuing its check; it was stopped without data effects. The local
-    stripped client reaches Ready, but an immediate other-host status exposed
+    The first protocol run repeatedly hashed a 389-MiB debug CLI over read-only
+    9p. It created a durable protocol witness, then was stopped during later
+    verification; the witness and data remain. A write retry was correctly
+    rejected by the already-existing namespace. Use retained witness reads
+    without resetting any state. The local stripped client reaches Ready, but
+    an immediate other-host status exposed
     strict cross-host future timestamp rejection. Preserve that failed evidence
     and diagnose the clock boundary before claiming the three-host pass.
+    Current collection/CLI reduction now waits for a small peer timestamp only
+    inside the original monotonic request budget and each fact's freshness
+    horizon (at most three seconds), then applies unchanged pure freshness and
+    operation fences against the real local clock. Large/far-future offsets,
+    insufficient remaining time and expired evidence remain unknown. Twelve
+    shared readiness regressions and seven actual CLI HTTP tests pass, including
+    a single HTTP observation with an 80-ms offset and rejected 10-second offset;
+    affected all-target clippy and Rust fmt pass. Native retained-witness proof
+    remains in progress; no timeouts or readiness assertions were relaxed.
 - [x] **T25 — Register direct Docker/Compose reference acceptance** (A01/A03/A25).
   - Six registered `deployment.reference` cases cover direct Docker and the
     unchanged shipped one/three-node Compose files, plus real editable UIs in

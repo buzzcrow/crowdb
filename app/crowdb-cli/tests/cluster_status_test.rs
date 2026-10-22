@@ -40,6 +40,16 @@ impl TestStatusServer {
         unavailable_after: Option<usize>,
         stalled: bool,
     ) -> Self {
+        Self::with_clock(identities, ready_after, invalid, unavailable_after, stalled, 0).await
+    }
+    async fn with_clock(
+        identities: Vec<Option<String>>,
+        ready_after: usize,
+        invalid: bool,
+        unavailable_after: Option<usize>,
+        stalled: bool,
+        clock_offset_ms: u64,
+    ) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let seen = Arc::new(AtomicUsize::new(0));
@@ -69,7 +79,7 @@ impl TestStatusServer {
                         bound,
                         initial_voters: 1,
                         policy: Some(NodeDeploymentPolicy::default()),
-                        observed_at_unix_ms: now,
+                        observed_at_unix_ms: now + clock_offset_ms,
                         members: Vec::new(),
                         operation_id: None,
                         work_accepted: true,
@@ -94,7 +104,7 @@ impl TestStatusServer {
                             } else {
                                 DependencyState::Unknown
                             },
-                            observed_at_unix_ms: now,
+                            observed_at_unix_ms: now + clock_offset_ms,
                             max_age_ms: 3000,
                             revision: None,
                             operation_id: None,
@@ -223,4 +233,25 @@ async fn accepted_identity_cannot_change_after_an_unbound_observation_gap() {
     let output = run(&[&server.origin], &["check", "--json", "--wait", "2"]);
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&output.stderr).contains("disagree on identity"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn one_http_observation_can_wait_for_a_small_clock_offset_without_accepting_far_future_data() {
+    for (offset, code) in [(80, 0), (10_000, 1)] {
+        let server = TestStatusServer::with_clock(
+            vec![Some(uuid::Uuid::new_v4().to_string())],
+            0,
+            false,
+            None,
+            false,
+            offset,
+        )
+        .await;
+        let output = run(&[&server.origin], &["check", "--json", "--wait", "0"]);
+        let report = report(&output, code);
+        assert_eq!(
+            report.phase == crowdb_protocol::mgmt::cluster::ClusterPhase::Ready,
+            code == 0
+        );
+    }
 }

@@ -10,6 +10,8 @@ use crowdb_protocol::mgmt::cluster::{
 
 mod collect;
 pub use collect::collect;
+mod clock;
+pub use clock::reduce_current;
 mod member;
 pub use member::member_evidence;
 

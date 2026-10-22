@@ -719,6 +719,11 @@ registry's fifteen-second liveness window. Per-member service evidence matches
 the current committed operation; required S3, Iceberg and Dataset listeners each
 supply their own read-only protocol proof. Historical setup completion cannot
 substitute for these observations. Missing or stale evidence remains unknown.
+A bounded observation may wait for a slightly faster peer's timestamp within
+its existing monotonic deadline and that evidence's freshness window, capped
+at three seconds. It then evaluates the unmodified timestamps against the
+actual local clock. It never treats future evidence as current, extends a
+request deadline or refreshes old evidence to compensate for clock offsets.
 Runtime/image facts remain unknown when runtime access was not supplied.
 
 Access dependency evidence comes from one backend sampler, independently of

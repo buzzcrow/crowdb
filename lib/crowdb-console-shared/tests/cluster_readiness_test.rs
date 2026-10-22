@@ -200,3 +200,55 @@ fn missing_execution_is_not_reported_as_a_superseded_operation() {
         .iter()
         .any(|reason| reason.code == "operation-superseded"));
 }
+
+fn live_observation(ahead_ms: u64) -> ClusterObservation {
+    let now = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap();
+    let mut input = observation();
+    input.observed_at_unix_ms = now;
+    for fact in &mut input.dependencies {
+        fact.observed_at_unix_ms = now + ahead_ms;
+        fact.max_age_ms = 3000;
+    }
+    input
+}
+
+#[tokio::test]
+async fn slightly_future_evidence_waits_for_the_clock_without_rewriting_timestamps() {
+    use crowdb_console_shared::ops::cluster::readiness::reduce_current;
+    use tokio::time::{Duration, Instant};
+    let input = live_observation(40);
+    let mut original = input.dependencies.clone();
+    original.sort();
+    assert_ne!(
+        reduce(input.clone(), input.observed_at_unix_ms).phase,
+        ClusterPhase::Ready
+    );
+    let report = reduce_current(input, Instant::now() + Duration::from_secs(1)).await;
+    assert_eq!(report.phase, ClusterPhase::Ready);
+    assert_eq!(report.observation.dependencies, original);
+}
+
+#[tokio::test]
+async fn future_wait_cannot_extend_the_deadline_or_refresh_old_evidence() {
+    use crowdb_console_shared::ops::cluster::readiness::reduce_current;
+    use tokio::time::{Duration, Instant};
+    for (ahead, budget) in [(5000, 1000), (1000, 10)] {
+        let input = live_observation(ahead);
+        let before = Instant::now();
+        let report = reduce_current(input, before + Duration::from_millis(budget)).await;
+        assert_eq!(report.phase, ClusterPhase::Unavailable);
+        assert!(before.elapsed() < Duration::from_millis(500));
+    }
+    let mut input = live_observation(40);
+    input.dependencies[0].observed_at_unix_ms = input.observed_at_unix_ms - 10_000;
+    let old = input.dependencies[0].clone();
+    let report = reduce_current(input, Instant::now() + Duration::from_secs(1)).await;
+    assert_eq!(report.phase, ClusterPhase::Unavailable);
+    assert_eq!(report.observation.dependencies[0], old);
+}

@@ -245,10 +245,7 @@ async fn read(client: &reqwest::Client, origin: &str, deadline: Instant) -> Resu
         {
             return Err(ReadError::Invalid("invalid cluster status identity or policy"));
         }
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |value| u64::try_from(value.as_millis()).unwrap_or(u64::MAX));
-        let report = readiness::reduce(observation, now);
+        let report = readiness::reduce_current(observation, deadline).await;
         if report
             .reasons
             .iter()

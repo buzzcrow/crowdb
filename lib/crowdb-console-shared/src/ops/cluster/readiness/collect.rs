@@ -71,7 +71,7 @@ pub async fn collect(ctx: &OpContext, local: NodeRuntimeObservation) -> Result<C
         )),
     }
     observation.observed_at_unix_ms = now_ms();
-    Ok(super::reduce(observation, now_ms()))
+    Ok(super::reduce_current(observation, deadline).await)
 }
 
 fn base(local: &NodeRuntimeObservation) -> ClusterObservation {
