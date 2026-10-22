@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 
 from rpc_bench_cases import client_arguments, load_cases, server_environment
@@ -147,6 +148,12 @@ def main():
     cases = load_cases(args.manifest, args.transport)
     (args.output_dir / "manifest.json").write_text(json.dumps(dict(schema_version=1, cases=cases), indent=2))
     metadata = identity(ROOT, dict(server=args.server_bin, client=args.cli_bin), args.device, args.hca_port)
+    metadata.update(container_image=None, container_image_id=None, application_uid=os.getuid())
+    if args.topology != "native":
+        metadata["container_image"] = args.image
+        args.image = subprocess.check_output([shutil.which("pixi"), "run", "--", "docker", "image", "inspect",
+                                               args.image, "--format", "{{.Id}}"], cwd=ROOT, text=True).strip()
+        metadata["container_image_id"] = args.image
     rows = []
     for case in cases:
         row = run_case(args, case, len(rows), metadata)
