@@ -5,9 +5,9 @@
 
 ## Status
 
-This umbrella requirement is decomposed into R238 through R242. The child
-requirements are independently implementable and retain this requirement's
-registered-host-buffer, RDMA RPC, datapath, Chunk-KV, and fat-client goals.
+The registered host-buffer foundation and common RDMA RPC transport are
+accepted. Remaining child requirements R240 through R242 retain the datapath,
+Chunk-KV, and fat-client goals.
 
 ## Problem
 
@@ -20,13 +20,10 @@ defined in [`design-crowdb-rpc-rdma.md`](../design/rpc/design-crowdb-rpc-rdma.md
 
 ## Solution
 
-1. Implement the registered host-buffer foundation in
-   [R238](R238-rdma-registered-buffer-foundation.md), including 64 KiB,
-   256 KiB, and 1 MiB classes, bounded ownership, and quarantine.
-2. Implement the common RC SEND/RECV RPC transport in
-   [R239](R239-rdma-rpc-transport.md), using service discovery plus TCP
-   handshake endpoint exchange, epoll wakeups, bounded CQ polling, and
-   RDMA-to-TCP fallback.
+1. Reuse the accepted [registered-buffer and RDMA RPC contract](../design/rpc/design-crowdb-rpc-rdma.md):
+   bounded 64 KiB/256 KiB/1 MiB classes, explicit ownership and quarantine,
+   TCP preflight, per-CQ polling/event workers and one-way fallback.
+2. Retain the verified transport and benchmark invariants when adding services.
 3. Implement the S3/HTTP/DiskIO stream in
    [R240](R240-rdma-datapath-stream.md), reusing existing ChunkIO aggregation
    and 1 MiB datapath buffers.

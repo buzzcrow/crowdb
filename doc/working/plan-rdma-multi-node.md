@@ -4,7 +4,7 @@
 # RDMA physical multi-node validation Plan
 
 Upstream: [R5](../backlog/R5-rdma-alloc.md), with transport behavior supplied
-by [R239](../backlog/R239-rdma-rpc-transport.md) and the current
+by [RDMA RPC transport](../design/rpc/design-crowdb-rpc-rdma.md) and the current
 [RDMA implementation plan](plan-rdma.md).
 
 Goal: validate the already implemented RDMA RPC and data paths across physical
@@ -33,7 +33,7 @@ HCA physical port is not part of the offset.
 - [ ] **Bind endpoint devices**: configure one local device/address mapping per
   container and verify that the negotiated peer identity matches the intended
   node.
-- [ ] **Run transport corpus**: exercise CM/QP setup, two-SGE frames,
+- [ ] **Run transport corpus**: exercise CM/QP setup, bounded wire-slot frames,
   receive repost, request correlation, disconnect/error handling, and
   pre-payload TCP fallback across the fabric.
 - [ ] **Run service corpus**: compare TCP and RDMA results for Access Server,

@@ -28,8 +28,7 @@ I/O still uses it.
 
 ## Dependencies
 
-- R238 registered buffers.
-- R239 RDMA RPC transport.
+- Accepted [registered buffers and RDMA RPC](../design/rpc/design-crowdb-rpc-rdma.md).
 - Existing ChunkIO aggregation, Access Server S3, DiskIO asynchronous I/O, and
   integrity contracts.
 

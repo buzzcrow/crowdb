@@ -5,9 +5,7 @@
 
 Upstream: [R5](../backlog/R5-rdma-alloc.md),
 [RDMA RPC design](../design/rpc/design-crowdb-rpc-rdma.md), and child
-backlogs [R238](../backlog/R238-rdma-registered-buffer-foundation.md),
-[R239](../backlog/R239-rdma-rpc-transport.md),
-[R240](../backlog/R240-rdma-datapath-stream.md),
+backlogs [R240](../backlog/R240-rdma-datapath-stream.md),
 [R241](../backlog/R241-rdma-chunk-kv-access.md), and
 [R242](../backlog/R242-rdma-fat-client-sdk.md).
 
@@ -16,40 +14,29 @@ the preferred connection path, TCP as the one-way fallback, shared aggregation
 semantics, bounded buffer leases, and automated OCI verification using a
 single-node HCA local-loop with multiple containers.
 
+This root plan persists until the umbrella goal is complete. Completed child
+plans are deleted; remaining child plans retain their implementation detail.
+
 ## Current implementation status
 
-R238's foundation implementation is committed. The common RPC buffer layer and verbs-backed per-connection
-arenas share the four capacity classes, bounded admission, explicit owner
-transitions, safe release ordering, quarantine handling, shutdown quarantine,
-and C/Rust lease metadata accessors. R239's transport path is implemented and
-passes the prepared HCA
-local-loop plus the real `RpcServer`/`RpcClient` worker round trip. Its
-requirement is still open because negotiated capability preflight,
-pre-payload fallback, aggregation/CLI benchmarking and
-multi-container acceptance have not all passed. Live HCA tests now verify
-held registered/receive leases after pool, transport and CM-ID destruction;
-the final release deregisters MR before PD release. Application reply allocation
-is separate from receive admission, and every CQ has a fixed polling/event
-owner. The transport plan records the corresponding gates and diagnostics.
+Registered host buffers and the common RC SEND/RECV transport are accepted.
+The shared arena has bounded lock-free admission, retained MR/PD/device
+ownership, explicit leases and quarantine. TCP preflight binds CM setup to the
+current endpoint and receive admission. QPs have one fixed polling/event owner
+per CQ; bounded aggregation preserves complete frames. Strict RDMA CLI tests
+share the coroutine workload and canonical results with TCP.
 
-The latest transport handoff closes the completion ownership gap: SEND and
-RECV work requests now carry stable connection/request/stream metadata, receive
-leases remain caller-owned until their final C++/FFI reference is released
-before repost, and CQ send failures close the uncertain RDMA stream after quarantining
-its buffers. The worker test checks a non-empty response payload as well as
-request correlation. The current local-loop runtime is prepared. The single-worker baseline with
-1024 receive WRs and small wire slots passes. The staged 1/2/4/8/16/32
-producer/QP profiles now each run for ten measured seconds after warmup,
-with zero errors after fixing CM event ownership and CQ continuation races.
-The 1024 and 4096 RQ profiles, full C++ gate, Rust RPC FFI suite, formatting,
-clippy, and tree-lint pass. The transport plan records exact counts, latency,
-and the fixed-I/O-worker control; protocol and OCI acceptance remain open.
+The final transport source `55ffee38` passes full C++/FFI gates, 137 no-verbs
+cases, CLI/runner contract tests, real HCA lifetime/budget/fallback/disconnect
+cases, formatting and workspace lint. Native and two non-root containers on
+one shared HCA pass repeated 1 s warmup + 10 s measurement profiles. Median
+RDMA throughput is 2.903M TPS native and 2.954M TPS in OCI, with zero errors or
+fallback. The old 1.187M value labeled RDMA was TCP; matching current TCP
+measures 1.196M TPS. Exact identities, settings and artifact names are retained
+in [RPC flow analysis](../design/rpc/rpc-flow-analysis.md).
 
-This is the root plan. The five child plans contain implementation details;
-only this plan controls phase order, cross-backlog decisions, and final
-acceptance. The agreed joint CQ/benchmark/aggregation work is detailed in
-[the transport plan](plan-rdma-rpc-transport.md#agreed-implementation-sequence).
-Update the formal design with each implemented architecture change.
+Current work is R240, then R241, using their existing plans. R242 and physical
+multi-node validation remain outside the user's requested continuation.
 
 ## Fixed design decisions
 
@@ -109,85 +96,15 @@ before advancing; implement R240, then R241, using their existing
 [Chunk-KV/access plan](plan-rdma-chunk-kv-access.md), with their own gates.
 Do not create duplicate plan files. R242 remains outside this requested continuation.
 
-1. Finish the R238 foundation contract and its gates. Do not add new R239
-   transport behavior until the common and verbs-backed pools agree on class,
-   ownership, quarantine, and shutdown semantics.
-2. Close R239 acceptance gaps: injectable CM/CQ failure coverage, stable
-   `wr_id` ownership mapping, pre-payload retry on TCP, partial-transfer
-   isolation, and the single-node multi-container OCI profile.
-3. Run the R238/R239 handoff gates, complete R240, then complete R241.
-   R242 remains downstream of R241 and the stable FFI lease surface.
+1. Complete R240 using its existing datapath stream plan and service gates.
+2. Complete R241 using its existing Chunk-KV/access plan and parity gates.
+3. Keep R242 downstream until the user includes that scope.
 
-R240 and R241 start after R239 passes its transport acceptance.
-R242 starts only after R241 establishes the access semantics and after the FFI
-lease contract from R238 is stable.
-
-## Phase 0: baseline and decision lock
-
-- [x] **Lock hardware test model**: use `setup-rdma.sh local` and
-  `run-local-loop.sh local` for single-node validation; do not use namespace
-  setup in product or acceptance tests. Multiple containers on one node share
-  the local HCA loop and open independent QPs.
-- [ ] **Record baseline**: run the existing TCP RPC, Access Server, DiskIO, and
-  Chunk-KV gates before modifying production code. Root files: affected crate
-  manifests and CI configuration.
-- [ ] **Confirm host capabilities**: record `ibv_devices`, `rdma link`, the
-  selected HCA port, GID/IP mapping, and whether the local HCA loop is usable.
-  Record the container-to-QP mapping for the single-node shared-HCA run.
-  Do not treat an unavailable host device as an implementation failure.
-- [ ] **Lock configuration names**: agree on RDMA enablement, device/port/local
-  address, control/data class defaults, registered bytes, receive depth, and
-  fallback policy. Root files: configuration schema and formal design.
-- [ ] **Prepare OCI image**: include `libibverbs`, `librdmacm`, and provider
-  libraries; keep a TCP-only image invocation that exposes no RDMA device.
-  Root files: Dockerfile/OCI test scripts and CI documentation.
-
-Exit condition: TCP baseline passes, the host topology is recorded, and the
-configuration contract is stable. If the host has no RDMA, continue with the
-TCP-only profile and build/mocked tests.
-
-## Phase 1: R238 registered buffers
-
-- [x] **Close R238 pool contract**: align `RegisteredBufferPool` and the
-  verbs-backed `RdmaBufferPool` on the four classes, lease metadata, owner
-  transitions, quarantine accounting, and bounded shutdown. Keep registration
-  optional and do not introduce a new lock on the allocation/recycle path.
-  Files: `lib/crowdb-rpc/include/crowdb-rpc/buffer.h`,
-  `lib/crowdb-rpc/src/buffer.cpp`, and
-  `lib/crowdb-rpc/src/transport/rdma/rdma_transport.*`.
-- [x] **Run R238 gates**: unit and integration tests pass with RDMA disabled
-  and enabled build configurations, including registration failure and
-  uncertain completion cases.
-- [x] **Review handoff**: verify that R239 can obtain control/data buffers and
-  that every asynchronous owner has a release transition.
-- [x] **Close portable pool parity**: share the verified arena lifetime and
-  tagged-index freelist machinery with the no-verbs registered pool, then
-  verify concurrent bounds, held leases, quarantine and detach without an HCA.
-  The detailed transport plan owns this continuation before aggregation.
-- [x] **Bound retired registration admission**: keep registered bytes charged
-  to the existing device owner while old caller leases retain their MRs, reject
-  failed MR setup before publishing a connection, and verify the current/high
-  water budget and rejection counters. The transport plan owns this final
-  resource admission continuation.
-
-Exit condition: no buffer can be recycled while transport, disk, or caller
-ownership remains unresolved.
-
-## Phase 2: R239 common RDMA RPC
-
-- [ ] **Close R239 acceptance**: add mock/integration coverage for CQ
-  success/error/flush, CM disconnect/QP error, receive exhaustion, stable
-  `wr_id` ownership, pre-payload fallback, and no mixed TCP/RDMA stream.
-- [x] **Local-loop verification**: run `setup-rdma.sh local` followed by
-  `run-local-loop.sh local`; both CM roles, framed SEND/RECV, receive repost,
-  and exact payload lengths have passed on the prepared HCA.
-- [ ] **Container local-loop verification**: start multiple containers on one
-  node after the local setup; verify each container opens independent QPs over
-  the same HCA port and that request correlation and bounded buffers remain
-  correct.
-
-Exit condition: R239 can carry a framed stream, report completion to the common
-  RPC layer, and leave TCP fully usable when RDMA is absent or fails.
+Before modifying each service path, run its focused baseline corpus and record
+it in that child's plan. Transport baseline, hardware topology, queue names and
+OCI runtime preparation are already verified. Service acceptance must prove
+actual RDMA, ownership through disk/caller completion, and bounded pressure;
+transport echo acceptance alone does not prove those properties.
 
 ## Phase 3: R240 and R241 service integration
 

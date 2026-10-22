@@ -4,8 +4,8 @@
 # RDMA datapath stream Plan
 
 Upstream: [R240](../backlog/R240-rdma-datapath-stream.md),
-[root RDMA plan](plan-rdma.md), [R238](../backlog/R238-rdma-registered-buffer-foundation.md),
-and [R239](../backlog/R239-rdma-rpc-transport.md).
+[root RDMA plan](plan-rdma.md), [registered buffers](../design/rpc/design-crowdb-rpc-rdma.md#4-registered-arenas-and-slot-ownership),
+and [RDMA RPC transport](../design/rpc/design-crowdb-rpc-rdma.md).
 
 Goal: connect existing HTTP/ChunkIO aggregation to the RDMA RPC stream and
 DiskIO receive loop without introducing another aggregation or CPU payload

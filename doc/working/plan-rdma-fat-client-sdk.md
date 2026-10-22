@@ -4,8 +4,8 @@
 # RDMA fat client SDK and FFI lease Plan
 
 Upstream: [R242](../backlog/R242-rdma-fat-client-sdk.md),
-[root RDMA plan](plan-rdma.md), [R238](../backlog/R238-rdma-registered-buffer-foundation.md),
-[R239](../backlog/R239-rdma-rpc-transport.md), and
+[root RDMA plan](plan-rdma.md), [registered buffers](../design/rpc/design-crowdb-rpc-rdma.md#4-registered-arenas-and-slot-ownership),
+[RDMA RPC transport](../design/rpc/design-crowdb-rpc-rdma.md), and
 [R241](../backlog/R241-rdma-chunk-kv-access.md).
 
 Goal: expose Access Server semantics through a native fat-client SDK that can

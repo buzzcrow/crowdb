@@ -30,18 +30,135 @@ The callback mode avoids a tokio scheduler round trip. The tokio mode uses
 `RpcClient::call`, an oneshot channel, and a task wake for each response. Both
 models share `RpcClient`, `Connection`, `BufferPool`, and `RpcServer`.
 
-The hot path uses connection pointers in epoll/kqueue user data, per-worker
+The TCP hot path uses connection pointers in epoll/kqueue user data, per-worker
 receive buffers, caller-thread `writev`, batched server responses, and a
 slab completion pool with a map fallback. The timeout reaper handles lost
 responses outside the hot path. Reference-count operations are O(1); frame
 construction, the echo memcpy, flatbuffer serialization, and kernel socket
-copies are unavoidable.
+copies contribute to this workload's cost.
+
+RDMA uses the same native coroutine loaders and echo handler. Submission enters
+a bounded per-QP send queue; its assigned CQ owner packs complete RPC frames
+into a registered slot and posts one SGE. Each CQ has one fixed polling/event
+thread. Receive frame views retain their registered slot until the final
+consumer releases it; socket workers handle CM rather than competing for CQ
+polling. The echo workload still copies its response payload and does not
+measure a storage or zero-copy application path.
 
 ## 2. Latest Benchmark Results
 
-Both runs use 128B values, a standalone server, loopback, and a 20s duration.
-The Linux run is the current regression reference. The macOS run is the latest
-retained standalone baseline. `nagle` means TCP coalescing is enabled.
+### Linux TCP/RDMA — 2026-10-23
+
+The common runners are `bench-rdma-rpc-regression.sh` and
+`bench-rpc-regression.sh`. They launch fb-server and `crowdb-cli bench rdma`
+or `bench rpc` from the same manifest and retain canonical JSON/CSV/TSV,
+complete logs, binary hashes, source identity, settings and raw peer status.
+Missing reports, process failures, nonzero errors, fallback or path mismatches
+fail the runner. RDMA remote request totals must equal accepted submissions.
+
+Hardware: Ryzen 9 5950X, 16 physical/32 logical CPUs, approximately 62 GiB RAM,
+`rocep35s0f0` port 1, 100 Gb/s link, PCIe 8 GT/s x4. Both peers share this
+physical host/HCA. Native means two processes; OCI means two host-network
+containers using independent QPs, UID 1000, required Infiniband device mappings
+and unlimited memlock. CPU affinity/frequency are not pinned. This topology
+measures local HCA traversal rather than physical-node isolation.
+
+Every trial warms up for 1 s, counts validated completions in a 10 s window,
+then drains separately. Coroutine loaders have one request in flight each;
+there is no producer OS thread per loader. Latency is native submit-to-response
+callback RTT: payload construction and Rust response validation are outside
+the latency sample but remain inside throughput work. Histograms use bounded
+nanosecond buckets, exact count/sum/extrema, nearest-rank upper bounds and
+explicit zero/overflow counts. Resource and transport counter deltas include
+warmup and drain, as declared in each row.
+
+The following rows select the median TPS of three peak repeats and retain
+latency from that same trial. All use 128-byte payloads, zero errors and valid
+reports. RDMA rows use clean source `55ffee38`; the Nagle-enabled TCP control
+is retained from the preceding runner revision with its own binary identity.
+
+| Path / topology          | Loaders | Connections / QPs | CQ / pollers per peer | Socket workers per peer | Aggregation / Nagle | RPC TPS   | Avg us | P90 us   | P99 us   | Errors | Valid |
+|--------------------------|---------|-------------------|-----------------------|-------------------------|---------------------|-----------|--------|----------|----------|--------|-------|
+| RDMA native              | 2048    | 16                | 16                    | 1                       | aggregation on      | 2,903,006 | 704.47 | 819.20   | 987.14   | 0      | true  |
+| RDMA two OCI containers  | 2048    | 16                | 16                    | 1                       | aggregation on      | 2,954,105 | 692.26 | 851.97   | 1015.81  | 0      | true  |
+| TCP native               | 1000    | 32                | n/a                   | 16                      | Nagle off           | 1,196,115 | 834.50 | 1679.36  | 6815.74  | 0      | true  |
+| TCP native               | 1000    | 32                | n/a                   | 16                      | Nagle on            | 2,114,935 | 471.48 | 872.45   | 1597.44  | 0      | true  |
+
+RDMA queue settings for both topology rows:
+
+| Code variable                      | Requested value              | Observed / scope                         |
+|------------------------------------|------------------------------|------------------------------------------|
+| `io_engines`, `io_workers`          | 1, 1                         | per peer                                 |
+| `cq_count`, `poller_count`          | 16, 16                       | one fixed thread per CQ per peer         |
+| `sq_depth`, `rq_depth`              | 1024, 1024                   | per QP; provider values in canonical row |
+| `posted_receive_target`             | 1024                         | per QP                                   |
+| `cq_depth`                         | 2048                         | per CQ; provider returns 4095            |
+| `wire_slot_capacity`               | 1024 bytes                   | all headers/control/data included        |
+| `send_arena_bytes`                 | 1 MiB                        | per QP                                   |
+| `receive_arena_bytes`              | 1 MiB                        | per QP                                   |
+| `send_queue_capacity`              | 4096                         | per QP                                   |
+| `poll_batch`, `verbs_poll_batch`   | 256, 32                      | per owner                                |
+| `poll_empty_budget`               | 256                          | per owner                                |
+| `aggregation_max_bytes`           | 1024                         | also bounded by peer receive slot        |
+| `aggregation_max_frames`          | 256                          | complete frames only, no flush timer     |
+| `registered_bytes`                | derived budget               | 34 MiB per peer at 16 QPs                |
+| `rnr_nak_retry_err`                | cumulative provider counter  | 53 before/after; delta 0                 |
+| CPU migrations/quarantined bytes  | unavailable aggregate        | null, never fabricated zero              |
+
+CPU user/system time, context switches, affinity, SEND counts/rate,
+frames per SEND, effective capacities and all error categories are present
+in the wide canonical tables alongside the raw before/after peer snapshots.
+The primary artifacts under `.crowdb-runtime/rdma-check/artifacts/bench/` are
+`rdma-rpc-20261022T170138.574260Z` (native),
+`rdma-rpc-20261022T170225.046025Z` (OCI),
+`tcp-rpc-20261022T170313.500461Z` (TCP Nagle off) and
+`tcp-rpc-20261022T162548.233330Z` (TCP Nagle on).
+RDMA repeat TPS values are 2,892,325 / 2,907,907 / 2,903,006 native and
+2,896,746 / 2,954,105 / 3,002,761 OCI. The OCI median is 1.76% higher;
+the observed variation does not establish a container overhead or benefit.
+
+The staged sweep retained 24 rows and 203,195,362 measured completions at
+`rdma-rpc-20261022T160711.769136Z`, then nine higher-load rows at
+`rdma-rpc-20261022T161241.180591Z`. With one QP/CQ, increasing coroutine
+loaders from 1 to 512 raises throughput from about 60k to 566k TPS.
+Aggregation raises the 512-loader case to about 701k. With eight QPs, CQ
+counts 2/4/8 produce about 880k/1.48M/2.21M TPS. At higher load, 16 CQs
+reach approximately 2.9M; 32 CQs per peer fall to 2.02M and P99 4.00 ms
+because both peers together have 64 polling threads on 32 logical CPUs.
+RQ 4096 and larger 64/256 KiB slots do not improve matching controls.
+Polling-budget and slot controls are retained at
+`rdma-rpc-20261022T162311.140989Z`; this is the best repeatable tested
+configuration, not proof of the HCA's hardware maximum.
+
+Payload controls at `rdma-rpc-20261022T163008.055655Z` cover 512 bytes through
+1,048,490 bytes with matching 1 KiB/64 KiB/256 KiB/1 MiB wire slots,
+64 loaders, two QPs/CQs and SQ/RQ/post target 64. Large-payload echo throughput
+plateaus around 1.5 GB/s of validated payload. The full-payload validation,
+echo copies and PCIe x4 link all warrant profiling; the 100 Gb/s link rate
+alone does not predict this round-trip workload's TPS. The largest payload
+has average/P90 latency about 44 ms, so small-message latency must not be
+presented as the latency of every size/load case. The no-device TCP OCI
+corpus at `tcp-rpc-20261022T163555.799432Z` also passes with zero RDMA attempts.
+
+Historical audit: the 1,186,876 TPS value once labeled RDMA came from TCP
+socket reads/writev in
+`.crowdb-runtime/artifacts/bench/rdma-rpc-20261018-220617/server/metrics.log`.
+Its old TSV records error rows despite a successful script exit. The new
+matching TCP Nagle-off median is 1,196,115 TPS (+0.78%), explaining that
+baseline without attributing it to RDMA. The older 2,213,182 Nagle-on TCP
+reference is 4.4% above the new 2,114,935 control, but timing, validation and
+histogram contracts changed; it is not a controlled transport regression.
+
+The accepted transport source passes full C++/FFI verification at
+`.crowdb-runtime/artifacts/unit/cpp-93edc5b4128b456696da0095db768d20/`, all
+137 no-verbs CTest cases, four CLI benchmark cases, thirteen runner contract
+cases, formatting and workspace lint. Separate real-HCA cases cover held
+receive/MR lifetime, registration exhaustion, TCP-only peers, expired CM
+endpoints and peer/server close after payload. Close tests allow fallback but
+require exactly one failed completion, retained RDMA path and no TCP payload.
+
+The sections below retain earlier 20-second TCP references. `Nagle` means TCP
+coalescing is enabled; old histogram precision and measurement scopes differ.
 
 ### Linux — 2026-08-27
 

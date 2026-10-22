@@ -4,8 +4,8 @@
 # RDMA Chunk-KV access Plan
 
 Upstream: [R241](../backlog/R241-rdma-chunk-kv-access.md),
-[root RDMA plan](plan-rdma.md), [R238](../backlog/R238-rdma-registered-buffer-foundation.md),
-and [R239](../backlog/R239-rdma-rpc-transport.md).
+[root RDMA plan](plan-rdma.md), [registered buffers](../design/rpc/design-crowdb-rpc-rdma.md#4-registered-arenas-and-slot-ownership),
+and [RDMA RPC transport](../design/rpc/design-crowdb-rpc-rdma.md).
 
 Goal: use the common RDMA stream for Access Server to Chunk-KV operations while
 preserving existing aggregation, request numbering, generation checks, and TCP

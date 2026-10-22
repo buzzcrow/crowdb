@@ -26,7 +26,7 @@ without changing access semantics.
 
 ## Dependencies
 
-- R238 and R239.
+- Accepted [registered buffers and RDMA RPC](../design/rpc/design-crowdb-rpc-rdma.md).
 - Existing Chunk-KV client/server and Access Server access semantics.
 - Existing ChunkIO aggregation and request-number system.
 
