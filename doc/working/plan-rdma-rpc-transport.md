@@ -31,7 +31,8 @@ Application reply allocation now uses a separate pool, and real HCA tests
 prove held registered/receive leases survive pool/transport/CM-ID destruction.
 The C ABI now returns independent handles for retained buffer references.
 
-Still pending: portable registered-pool concurrency/lifetime parity, bounded
+Portable and verbs-backed pools now share the same arena/lifetime machinery.
+Still pending: registration admission across retired connections, bounded
 transport aggregation, `bench rdma`/shared coroutine reporting, unified regression
 orchestration, negotiated TCP capability preflight, failure injection, and the
 two-container acceptance profiles. Capability serialization and automatic
@@ -356,7 +357,7 @@ Verified histogram checkpoint:
   opaque handle per retained reference and test both release orders, an
   external owner released exactly once, and a cloned real registered lease
   surviving pool/PD facade destruction. This is part of the lease contract.
-- [~] **Finish portable pool parity**: the no-verbs `RegisteredBufferPool`
+- [x] **Finish portable pool parity**: the no-verbs `RegisteredBufferPool`
   still uses raw-pointer freelist heads and a facade pointer in outstanding
   buffers. Reuse the bounded shared-arena/index freelist machinery for that
   pool too, retaining detach semantics and optional registration. Add no-device
@@ -366,6 +367,44 @@ Verified histogram checkpoint:
   its declared count. Files: `buffer.h`, `buffer.cpp`, private common arena
   sources, RDMA pool wrapper and buffer tests. This closes the foundation
   contract without leaving concurrency safety dependent on HCA availability.
+  The shared private `BufferArena` owns descriptors; `BufferRegion` owns its
+  allocation and optional MR/PD owner. Detached portable descriptors keep arena
+  ownership until their final callback, returning index admission only then;
+  the detached byte range stays committed. Add `CROWDB_RPC_ENABLE_RDMA=OFF`
+  as a supported CMake build switch so the no-verbs gate is reproducible even
+  on this host with rdma-core installed.
+- [~] **Bound registration across connection retirement**: add a byte
+  reservation to the existing `RdmaDevice` resource owner. A held lease must
+  retain that reservation after its QP releases CQ admission; a new QP cannot
+  bypass the registered-memory bound by replacing an arena that is still held.
+  Add `registered_memory_budget_bytes` (zero derives a checked bound from the
+  CQ-admitted QP count, per-QP arenas and compatibility copy pools), current and
+  high-water reserved bytes, and registration rejection/failure counters. Keep
+  reservations atomic and retained by the MR owner until deregistration.
+  Reject setup when either send or receive MR creation fails: a non-null pool
+  facade alone does not prove registration succeeded. Test retained-lease
+  exhaustion/release and concurrent reservations, plus invalid/overflowed
+  budgets. Files: `rdma_device.{h,cpp}`, RDMA config/setup/pool sources and
+  resource lifetime tests. Expose these values in phase D's status/report API.
+  Include final detached-buffer quarantine accounting in the shared arena and
+  verify it with a no-device case.
+
+Portable pool verification:
+
+- `BufferArena`/`BufferRegion` back both registered pool facades; detach keeps
+  its arena owner, and final detach release returns descriptor admission. Six
+  portable tests cover held/detached leases, the hard descriptor and byte
+  bounds, quarantine, 160,000 concurrent recycling iterations and concurrent
+  `SystemBufferPool` count admission.
+- `CROWDB_RPC_ENABLE_RDMA=OFF` builds successfully; all 123 CTest cases pass
+  in that build. The enabled build passes all 42 focused buffer/completion
+  cases (one compatibility-copy case skips before CM adoption). The real HCA
+  held receive/registered-copy test passes ten repeated CM setup/teardown cycles
+  after the shared-arena extraction.
+- Full enabled C++/FFI gate and all 29 Rust RPC FFI tests pass:
+  `.crowdb-runtime/artifacts/unit/cpp-26a123727c20408cbc7ef7f73be952f1/`.
+  Formatting, scoped tree-lint and workspace clippy pass. Tree-lint retains its
+  non-blocking style warning set.
 
 Application allocator verification:
 
@@ -712,6 +751,8 @@ E2E tests:
 - `lib/crowdb-common/rust/src/metrics/histogram.rs` and `histogram/data.rs`
 - `lib/crowdb-common/testdata/latency_histogram.csv` and both language tests
 - `lib/crowdb-rpc/src/client/co_client.cpp` and private coroutine state header
+- `lib/crowdb-rpc/src/buffer_arena.{h,cpp}`, `registered_buffer_pool.cpp`,
+  shared buffer facade and registered/real-MR lifetime tests
 - `lib/crowdb-rpc/ffi/src/co_bench.rs` and C/Rust statistics bindings
 - `app/crowdb-cli/src/commands/bench/{verb,rpc,loader,result}.rs`
 - `tools/benchmark/bench-rdma-rpc-regression.sh`, shared RPC runner and tests

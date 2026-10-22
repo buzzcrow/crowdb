@@ -78,8 +78,7 @@ class RdmaBufferPool : public BufferPool
     void                   quarantine_inflight();
 
   private:
-    struct Arena;
-    std::shared_ptr<Arena> arena_;
+    std::shared_ptr<BufferArena> arena_;
 };
 
 // RdmaTransport: RDMA transport using libibverbs + librdmacm.

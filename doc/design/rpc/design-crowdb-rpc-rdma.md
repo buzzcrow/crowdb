@@ -124,6 +124,16 @@ shutdown, final release retires the slot without using the destroyed transport
 or posting another receive. QP retirement does not accumulate arenas in a
 transport-wide retired list.
 
+`RegisteredBufferPool` uses the same `BufferArena` descriptor admission,
+ownership transitions and tagged class freelists without requiring verbs or an
+HCA. `BufferRegion` owns the bounded allocation; a verbs-backed region adds
+registration metadata and retains its PD owner. `committed_bytes` reports carved
+arena bytes, while the region capacity bounds the reserved allocation. Detached
+portable buffers keep the region alive and reserve their descriptor until final
+release. Their detached ranges remain committed and are not reused by another
+stream. Cached and quarantined descriptors both count toward the hard total.
+Application-pool count admission also uses one atomic reservation.
+
 ## 5. Shared CQ and completion model
 
 Connections share a bounded CQ pool. Each QP uses one assigned CQ for both

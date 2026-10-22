@@ -12,6 +12,8 @@
 namespace crowdb::rpc
 {
 
+class BufferArena;
+
 // Buffer type determines the allocation strategy and memory registration.
 // System: aligned system malloc (posix_memalign), recycled to a
 // SystemBufferPool. Registered: ibv_reg_mr'd for RDMA, recycled to an
@@ -178,15 +180,8 @@ class RegisteredBufferPool : public BufferPool
     void    recycle(Buffer *buf) override;
     bool    detach(Buffer *buf) override;
 
-    [[nodiscard]] uint64_t committed_bytes() const
-    {
-        return committed_bytes_.load();
-    }
-
-    [[nodiscard]] uint64_t quarantined_bytes() const
-    {
-        return quarantined_bytes_.load();
-    }
+    [[nodiscard]] uint64_t committed_bytes() const;
+    [[nodiscard]] uint64_t quarantined_bytes() const;
 
     [[nodiscard]] uint32_t registration_id() const
     {
@@ -194,23 +189,8 @@ class RegisteredBufferPool : public BufferPool
     }
 
   private:
-    static constexpr size_t                        CLASS_COUNT = 4;
-    uint64_t                                       max_bytes_;
-    uint32_t                                       max_buffers_;
-    uint32_t                                       registration_id_;
-    std::atomic<uint64_t>                          committed_bytes_{0};
-    std::atomic<uint32_t>                          outstanding_{0};
-    std::array<std::atomic<Buffer *>, CLASS_COUNT> free_heads_{};
-    std::atomic<Buffer *>                          quarantine_head_{nullptr};
-    std::atomic<uint64_t>                          quarantined_bytes_{0};
-
-    static size_t index(BufferCapacityClass cls)
-    {
-        return static_cast<size_t>(cls);
-    }
-
-    Buffer *pop(std::atomic<Buffer *> &head);
-    void    push(std::atomic<Buffer *> &head, Buffer *buf);
+    std::shared_ptr<BufferArena> arena_;
+    uint32_t                     registration_id_;
 };
 
 } // namespace crowdb::rpc

@@ -50,16 +50,19 @@ endif()
 # Gated behind CROWDB_RPC_HAVE_RDMA. No macOS RNICs, so RDMA sources are
 # excluded from the build entirely when not found (mirrors crowdb-tree's
 # liburing gate). rdma-core (conda-forge) provides both libraries on Linux.
-find_path(IBVERBS_INCLUDE_DIR infiniband/verbs.h)
-find_library(IBVERBS_LIB NAMES ibverbs)
-find_path(RDMACM_INCLUDE_DIR rdma/rdma_cma.h)
-find_library(RDMACM_LIB NAMES rdmacm)
-if(IBVERBS_INCLUDE_DIR AND IBVERBS_LIB AND RDMACM_INCLUDE_DIR AND RDMACM_LIB)
+option(CROWDB_RPC_ENABLE_RDMA "Enable RDMA when libibverbs and librdmacm are available" ON)
+if(CROWDB_RPC_ENABLE_RDMA)
+  find_path(IBVERBS_INCLUDE_DIR infiniband/verbs.h)
+  find_library(IBVERBS_LIB NAMES ibverbs)
+  find_path(RDMACM_INCLUDE_DIR rdma/rdma_cma.h)
+  find_library(RDMACM_LIB NAMES rdmacm)
+endif()
+if(CROWDB_RPC_ENABLE_RDMA AND IBVERBS_INCLUDE_DIR AND IBVERBS_LIB AND RDMACM_INCLUDE_DIR AND RDMACM_LIB)
   set(CROWDB_RPC_HAVE_RDMA TRUE)
   message(STATUS "crowdb-rpc RDMA: enabled (${IBVERBS_LIB}, ${RDMACM_LIB})")
 else()
   set(CROWDB_RPC_HAVE_RDMA FALSE)
-  message(STATUS "crowdb-rpc RDMA: not found (TCP-only build)")
+  message(STATUS "crowdb-rpc RDMA: disabled or unavailable (TCP-only build)")
 endif()
 
 # ── Library ───────────────────────────────────────────────────────
