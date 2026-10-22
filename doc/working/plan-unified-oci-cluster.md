@@ -434,9 +434,14 @@ Existing implementation can be reused; these are the outstanding parts.
   Production discovery, authenticated admission and formation pass. First full
   check correctly remains degraded: supplied media use compatible per-class
   disk groups from their sealed journals, while aggregate observation assumes
-  the automatic-medium group reservation. Fix this observation mismatch and
-  verify all supplied disks/groups, then run actual three-protocol retained
-  read/write and container recreation before marking A31 complete.
+  the automatic-medium group reservation. The collector now resolves every
+  sealed supplied disk ID from fresh identity-checked member evidence through
+  its unique authoritative Group-0 disk and group membership. Every resulting
+  group retains metadata-binding, live-owner and space checks. Missing/duplicate
+  identity, unfinished media and conflicting setup remain unhealthy. Two new
+  supplied-media regressions plus 12 existing storage/readiness tests pass;
+  affected shared/Web all-target clippy and Rust fmt pass. New-image actual
+  three-protocol retained read/write and recreation remain required for A31.
 - [ ] **T35 — Final documentation/gates/cleanup** (A17/all acceptance IDs).
   Update deployment/OCI designs, help, examples, credentials/ports, tool guides
   and CI only for verified behavior. Old standard/single/bare-metal registry

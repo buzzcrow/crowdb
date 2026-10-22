@@ -708,7 +708,13 @@ runtime socket. Its collector has an six-second monotonic deadline after the
 bounded local monitor observation. Current linearizable Group-0 publication,
 accepted ordinary metadata replicas and ordinary-group authority, physical disk
 placement/bindings, live DiskDB owner leases and allocatable capacity are
-independent dependencies. Capacity summaries must be no older than the service
+independent dependencies. Automatic file storage uses its accepted initial group
+reservation. Supplied storage resolves every accepted disk ID from a fresh,
+identity-checked member setup observation through its unique Group-0 disk and
+group membership. All resulting media-class groups must satisfy metadata
+binding, current owner and space checks; a missing, duplicated or conflicting
+medium stays unknown. Observation never changes sealed placement or creates the
+automatic reservation for a supplied-media node. Capacity summaries must be no older than the service
 registry's fifteen-second liveness window. Per-member service evidence matches
 the current committed operation; required S3, Iceberg and Dataset listeners each
 supply their own read-only protocol proof. Historical setup completion cannot

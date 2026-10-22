@@ -10,6 +10,7 @@ use crowdb_protocol::mgmt::{
     node::{observation::NodeRuntimeObservation, NodeServiceIntent},
 };
 use futures::StreamExt;
+use std::collections::BTreeMap;
 use tokio::time::Instant;
 
 pub(super) async fn read(
@@ -19,13 +20,14 @@ pub(super) async fn read(
     registry: registry::NodeRegistry,
     intents: Option<Vec<NodeServiceIntent>>,
     deadline: Instant,
-) {
+) -> BTreeMap<u64, NodeRuntimeObservation> {
+    let mut verified = BTreeMap::new();
     let client = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .build();
     let Ok(client) = client else {
-        return;
+        return verified;
     };
     let expected: Vec<_> = registry
         .nodes
@@ -73,16 +75,30 @@ pub(super) async fn read(
                 }
             )],
         });
-        observation.dependencies.extend(super::super::member_evidence(
+        let now = now_ms();
+        let facts = super::super::member_evidence(
             bootstrap,
             &node,
             &local.policy,
             intents.as_deref(),
             observed.as_ref(),
-            now_ms(),
-        ));
+            now,
+        );
+        if facts
+            .first()
+            .is_some_and(|fact| fact.kind == DependencyKind::Member && fact.state == DependencyState::Ready)
+            && observed.as_ref().is_some_and(|value| {
+                value.observed_at_unix_ms <= now && now - value.observed_at_unix_ms <= 3000
+            })
+        {
+            if let Some(value) = observed {
+                verified.insert(node.node_id, value);
+            }
+        }
+        observation.dependencies.extend(facts);
     }
     observation.members.sort_by_key(|member| member.node_id);
+    verified
 }
 
 async fn member(client: &reqwest::Client, node: &registry::NodeRecord) -> Option<NodeRuntimeObservation> {

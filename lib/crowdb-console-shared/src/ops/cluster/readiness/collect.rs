@@ -142,17 +142,9 @@ async fn gather(
                 "metadata-unavailable",
             )
         }));
-    observation
-        .dependencies
-        .extend(storage.ok().and_then(Result::ok).unwrap_or_else(|| {
-            vec![fact(
-                "cluster/storage",
-                DependencyKind::Storage,
-                DependencyState::Unknown,
-                "storage-unavailable",
-            )]
-        }));
+    let storage = storage.ok().and_then(Result::ok);
     let Ok(Ok(Some((registry, _)))) = nodes else {
+        append_storage(observation, storage.as_ref(), &std::collections::BTreeMap::new());
         return;
     };
     if registry.cluster_id != bootstrap.identity.cluster_id || registry.nodes.len() > 4096 {
@@ -164,7 +156,7 @@ async fn gather(
         ));
         return;
     }
-    members::read(
+    let member_nodes = members::read(
         bootstrap,
         local,
         observation,
@@ -173,6 +165,25 @@ async fn gather(
         deadline,
     )
     .await;
+    append_storage(observation, storage.as_ref(), &member_nodes);
+}
+
+fn append_storage(
+    observation: &mut ClusterObservation,
+    storage: Option<&storage::StorageSnapshot>,
+    nodes: &std::collections::BTreeMap<u64, NodeRuntimeObservation>,
+) {
+    observation.dependencies.extend(storage.map_or_else(
+        || {
+            vec![fact(
+                "cluster/storage",
+                DependencyKind::Storage,
+                DependencyState::Unknown,
+                "storage-unavailable",
+            )]
+        },
+        |snapshot| snapshot.observe(nodes),
+    ));
 }
 
 pub(super) fn fact(
