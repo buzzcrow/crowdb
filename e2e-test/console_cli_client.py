@@ -15,6 +15,7 @@ class CliClient:
         environment = dict(os.environ, CROWDB_RUNTIME_ROOT=str(self.root), NO_PROXY="*", no_proxy="*")
         for name in ("CROWDB_CLUSTER", "CROWDB_SYSTEM_IP", "CROWDB_SYSTEM_PORT"):
             environment.pop(name, None)
+        environment.update(getattr(self, "extra_environment", {}))
         return environment
 
     def arguments(self, *arguments):
@@ -36,4 +37,3 @@ class CliClient:
             print(output, flush=True)
             raise AssertionError(output)
         return result.stdout
-

@@ -136,9 +136,17 @@ fn help_is_console_first_and_uses_http_operation_names() {
     let output = cli().arg("--help").output().expect("run CLI help");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("--system-ip"));
-    assert!(stdout.contains("--system-port"));
-    for removed in ["--config", "--json", "--log-root", "Group-0 leader"] {
+    assert!(stdout.contains("--cluster"));
+    assert!(stdout.contains("--management-endpoint"));
+    for removed in [
+        "--config",
+        "--json",
+        "--log-root",
+        "--registry",
+        "--system-ip",
+        "--system-port",
+        "Group-0 leader",
+    ] {
         assert!(
             !stdout.contains(removed),
             "unexpected {removed} in help: {stdout}"

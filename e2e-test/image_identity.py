@@ -81,7 +81,11 @@ SERVER_PATHS = (
     ":(glob,exclude)app/crowdb-cli/src/commands/s3/**",
     ":(exclude)app/crowdb-cli/src/commands/cluster.rs",
     ":(glob,exclude)app/crowdb-cli/src/commands/cluster/**",
-    ":(exclude)app/crowdb-cli/src/commands/kv/server/registry.rs",
+    ":(exclude)app/crowdb-cli/src/main.rs",
+    ":(exclude)app/crowdb-cli/src/commands/kv.rs",
+    ":(exclude)app/crowdb-cli/src/commands/kv/server.rs",
+    ":(glob,exclude)app/crowdb-cli/src/commands/kv/server/**",
+    ":(exclude)app/crowdb-cli/src/commands/launch.rs",
     # Audited host-only crate: every consumer uses a dev-dependency. A new
     # runtime/build dependency changes its owning manifest and rejects reuse.
     ":(exclude)lib/crowdb-test-harness/Cargo.toml",

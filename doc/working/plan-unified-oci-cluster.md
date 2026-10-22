@@ -15,6 +15,7 @@ readiness, attached workloads and scoped cleanup.
 - 2026-10-22: user authorized continuation past the prior retry limit and asked
   for diagnosis of the long-standing failure. User subsequently requested F03
   and explicitly authorized continuing other R243 tasks afterward, starting T04.
+  User now explicitly requests completion of every remaining R243 task.
 - Branch `task-stable`; local commits only, no push authorized.
   Earlier storage fixes: `532af33e`; common CLI fixture: `be0efd32`.
 - Failed fixture data/logs and earlier retained J/L data remain preserved.
@@ -101,7 +102,7 @@ end-to-end recovery rounds. Harness setup failures are excluded from this count.
 Only mark tasks complete after their acceptance is registered and verified.
 Existing implementation can be reused; these are the outstanding parts.
 
-- [~] **T04 — Finish common target coverage** (A14/A28).
+- [x] **T04 — Finish common target coverage** (A14/A28).
   Named/endpoint-only UUID-checked targeting and native signed S3/workloads work.
   All retained hardware/KV/S3/workload commands now require a selected target
   before dispatch. Their Group-0 connection has no system-address fallback and
@@ -115,10 +116,13 @@ Existing implementation can be reused; these are the outstanding parts.
     endpoint-only stop pass. The fixture declares reachable public protocol URIs.
     32 affected CLI tests, all-target clippy, fmt and 159 fixture tests pass;
     CI inventory verifies 390 named flows (execution is separate).
-  - [ ] T04b: migrate the old system-address/registry CLI E2E callers together
-    with T29 before certifying complete retained-command acceptance. The useful
-    hardware, logical topology and KV round-trip cases still use the old
-    direct-only fixture; the new acceptance does not certify those old paths.
+  - [x] T04b: retained CLI E2E callers now run against normal admitted Docker
+    nodes with explicit targets. Observation (including topology and stale local
+    state), cross-member hardware mutations, store/group lifecycle and actual
+    data put/get/delete/scan passed as registered container cases. Removed
+    registry-specific/retired process-path cases; their remaining public-surface
+    contract is rejection before runtime access. Shared bootstrap/supervisor
+    correctness remains independently covered.
   Owners: CLI `commands/cluster/target.rs`, `commands.rs`, shared deployment target.
 - [ ] **T05–T07 — Finish formation negatives and interruption coverage**
   (A03–A05/A19–A21). One/three-node normal startup works. Verify missing/extra/
@@ -162,10 +166,20 @@ Existing implementation can be reused; these are the outstanding parts.
 - [ ] **T25 — Register direct Docker/Compose reference acceptance** (A01/A03/A25).
   Examples/helpers exist. Execute documented one/three-node commands and Compose
   without host bootstrap helpers, with published access to all three protocols.
-- [ ] **T29 — Finish removing legacy public paths and migrate their callers**
+- [~] **T29 — Finish removing legacy public paths and migrate their callers**
   (A10/A12–A14/A17).
-  - Still public: `launch`, `--registry`, legacy system-address fallback,
-    `cluster init/local-deploy/destroy/clean`, `kv server`.
+  - [x] T29a: remove public `launch`, `--registry`, system-address fallback,
+    `cluster init/local-deploy/destroy/clean` and `kv server`, including dead CLI
+    executors. Migrate retained observation, hardware, logical topology and KV
+    data semantics to normal three-node Docker acceptance. Full CLI tests pass
+    (38 executed, one separate pending-free test ignored), as do fmt, all-target
+    clippy (CLI and E2E clients), E2E test compilation, 159 fixture tests and
+    CI ownership checks (381 named flows). Five
+    registered real Docker cases passed with final timings and scoped cleanup.
+    Retired process-path
+    assertions become command-tree rejection tests; shared bootstrap and
+    supervisor correctness tests remain independent owners.
+  - [ ] T29b: migrate profiling/benchmark/sanitizer fixture ownership and flags.
   - Profiling, benchmark and sanitizer scripts still call old config/reset/
     deployment APIs. Preserve useful measurement purposes in narrow test-owned
     fixtures before removing the executors; no product compatibility aliases.
@@ -232,6 +246,17 @@ Existing implementation can be reused; these are the outstanding parts.
   Final timing is pass (140.18 seconds including owned cleanup); containers,
   bridge and successful disposable volumes were removed.
 
+- T04b/T29a evidence: `.crowdb-runtime/artifacts/r243-t29-registered/`,
+  image S with verified server-source identity and current rebuilt host CLI.
+  Registered cases all passed on local Docker Linux bridge with three nodes:
+  observation `afcfbd7963cc4e21b4aa26207b4a0263` (57.07 s), hardware
+  `d1a44ab68c4546c8bddc68a3b8cdd94a` (56.38 s), logical topology
+  `5be96b75349541ac85cc7b322d22000d` (52.65 s), data
+  `d396adef22f6416293d6bf4a96e56ac1` (53.49 s), attachment
+  `ea37195fc2e34324ac813dcb304c7e67` (53.87 s); each ID has prefix
+  `crowdb-e2e-`. Operation/attachment proofs preserve cluster UUID and runtime
+  process/container inventory. All owned containers/bridges were removed;
+  bind-mounted data and logs remain in the evidence tree.
 - T04a evidence: `.crowdb-runtime/artifacts/r243-t04-registered-5/`.
   Registered `console::cli_container::plain_docker_target_attachment` passed on
   image S after server-source verification. Direct Docker startup (no CLI

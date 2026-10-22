@@ -7,6 +7,7 @@ from pathlib import Path
 
 from allocation import create_network, node_data, start_node
 from console_cli_client import CliClient
+import console_cli_operations
 from fixture import Cluster, LABEL, request
 
 
@@ -68,14 +69,31 @@ class CliAttachedCluster(CliClient, Cluster):
         return {"containers": [(item["Id"], item["Image"]) for item in containers],
                 "processes": sorted((item["id"], item["pid"]) for item in services)}
 
-    def replay(self, _checkpoint):
+    def replay(self, checkpoint):
+        if checkpoint != "attachment":
+            before = self.inventory()
+            operation = {"observation": console_cli_operations.observation,
+                         "hardware": console_cli_operations.hardware,
+                         "logical": console_cli_operations.logical,
+                         "data": console_cli_operations.data}[checkpoint]
+            operation(self)
+            assert self.inventory() == before, "logical CLI operation changed runtime lifecycle"
+            report = json.loads(self.invoke("cluster", "check", "--json"))
+            assert report["phase"] == "ready" and report["observation"]["cluster_id"] == self.cluster_id
+            (self.artifacts / "operation-proof.json").write_text(json.dumps({
+                "cluster_id": self.cluster_id, "operation": checkpoint, "inventory": before}, indent=2))
+            print("PASS selected-cluster CLI", checkpoint, flush=True)
+            return
+        self.attachment()
+
+    def attachment(self):
         before = self.inventory()
         for domain in ("rack", "node", "disk-group", "disk"):
             assert self.invoke("cluster", domain, "list", endpoint=self.endpoint(1)).strip()
         assert self.invoke("kv", "store", "list").strip()
         assert self.invoke("kv", "group", "list", "--store", "0").strip()
         key, value = "cli-attach/" + self.run_id, "verified-selected-cluster"
-        self.invoke("--registry", "/missing/launches.toml", "kv", "data", "put",
+        self.invoke("kv", "data", "put",
                     "--store", "0", "--group", "0", "--key", key, "--value", value)
         for index in range(3):
             found = self.invoke("kv", "data", "get", "--store", "0", "--group", "0", "--key", key,

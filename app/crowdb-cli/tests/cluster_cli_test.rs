@@ -23,7 +23,7 @@ fn non_benchmark_command_does_not_create_log_directory() {
         .current_dir(&root)
         .env("CROWDB_RUNTIME_ROOT", root.join(".crowdb-runtime"))
         .env("CROWDB_CLI_STATE", config)
-        .args(["cluster", "local-deploy", "--service-type", "invalid"])
+        .args(["cluster", "status", "--timeout", "1"])
         .output()
         .expect("run crowdb-cli");
     assert!(!output.status.success());

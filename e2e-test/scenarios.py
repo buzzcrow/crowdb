@@ -413,6 +413,10 @@ CONSOLE_OPERATION_CASES = (
     Case("console.cli.container", "console::cli_container::confirmed_storage_replay", cli_replay="storage"),
     Case("console.cli.container", "console::cli_container::terminal_chunk_writer_recovery", cli_replay="terminal-writer"),
     Case("console.cli.container", "console::cli_container::plain_docker_target_attachment", cli_replay="attachment"),
+    Case("console.cli.container", "console::cli_container::observation_round_trip", cli_replay="observation"),
+    Case("console.cli.container", "console::cli_container::hardware_round_trip", cli_replay="hardware"),
+    Case("console.cli.container", "console::cli_container::logical_round_trip", cli_replay="logical"),
+    Case("console.cli.container", "console::cli_container::data_round_trip", cli_replay="data"),
     Case("console.managed", "console::managed::authority_outage", console_browser="Managed native authority outage hides stale topology and retains monitor observation"),
     Case("console.managed", "console::managed::hardware_and_user_flows", console_browser="Managed native KV, Iceberg, S3 and Chunk operations retain hardware boundaries"),
     Case("console.browser.kv", "console::browser_kv::pagination", shell_browser="Group selection opens data directly; pages replace rows and expose complete values"),
@@ -509,24 +513,11 @@ CONSOLE_OPERATION_CASES = (
     Case("console.deployment", "console::deployment::authenticated_node_update_preserves_ids_and_converges_from_another_console", (0, 0, 0), True, groups=(0,)),
     Case("console.bootstrap", "console::cluster::clean_requires_confirmed_group_replicas", (0, 0, 0), True, groups=(0,)),
 
-    Case("console.cli", "console::cli_direct::cluster_status_via_direct_group0", (0, 0, 0), True, groups=(0,)),
-    Case("console.cli", "console::cli_direct::cluster_rack_list_ignores_legacy_local_state", (0, 0, 0), True, groups=(0,)),
-    Case("console.cli", "console::cli_direct::cluster_node_list_ignores_legacy_local_state", (0, 0, 0), True, groups=(0,)),
-    Case("console.cli", "console::cli_direct::kv_server_controls_require_launch_registry", (0, 0, 0), True, groups=(0,)),
-    Case("console.cli", "console::cli_direct::incremental_local_deploy_reads_group_zero_instead_of_legacy_file", (0, 0, 0), True, groups=(0,)),
-    Case("console.cli", "console::cli_direct::destroy_reads_group_zero_and_requires_launch_registry", (0, 0, 0), True, groups=(0,)),
 
-    Case("console.cli", "console::cli_observation::cluster_status_topology_via_direct_group0", (0, 0, 0), True, groups=(0,)),
 
     Case("console.clients", "console::server_management::full_store_group_remote_cycle", stores_per_node=((),), groups=()),
     Case("console.clients", "console::server_data::put_get_delete_cycle", stores_per_node=((),), groups=()),
-    Case("console.cli", "console::cli_management::store_group_replica_round_trip", (0, 0, 0), True, groups=(0,)),
-    Case("console.cli", "console::cli_hardware::rack_node_lifecycle", (0, 0, 0), True, groups=(0,)),
-    Case("console.cli", "console::cli_data::kv_put_get_delete_round_trip", (0, 0, 0), True, groups=(0,)),
-    Case("console.cli", "console::cli_registry::registry_hardware_uses_group_zero_across_cli_invocations", (0, 0, 0), True, groups=(0,)),
-    Case("console.cli", "console::cli_registry::registry_bootstrap_uses_sealed_intent_without_legacy_topology_file", (0, 0, 0), True, groups=(0,)),
 
-    Case("console.cli", "console::cli_registry::cli_uses_launch_registry_and_runtime_identity_without_legacy_state", (0, 0, 0), True, groups=(0,)),
     Case("console.web.authority", "console::web_authority::bare_metal_hardware_routes_share_confirmed_group_zero_state", console_web=True),
     Case("console.web.authority", "console::web_authority::bare_metal_snapshot_requires_live_authority_without_a_docker_monitor", console_web=True),
     Case("console.web.authority", "console::web_authority::snapshot_validates_later_replica_hosts_as_well_as_original_store_hosts", console_web=True),
@@ -646,7 +637,7 @@ def allocate_cluster(case, image, artifacts, bundle, data_root):
                                     diskless_nodes=case.native_diskless_nodes,
                                     data_root=data_root)
     if case.cli_replay:
-        if case.cli_replay == "attachment":
+        if case.cli_replay in ("attachment", "observation", "hardware", "logical", "data"):
             return CliAttachedCluster(image, artifacts, bundle, data_root=data_root)
         return CliContainerCluster(image, artifacts, bundle, checkpoint=case.cli_replay, data_root=data_root)
     if case.shell_browser:

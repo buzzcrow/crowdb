@@ -100,7 +100,7 @@ async fn cli_http_only_target_fails_native_workload_without_localhost_fallback()
 }
 
 #[test]
-fn cli_explicit_targets_conflict_with_legacy_system_address_flags() {
+fn cli_rejects_removed_system_address_flags() {
     let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("cli-target-flags");
     let error = run(
         root.path(),
@@ -111,7 +111,7 @@ fn cli_explicit_targets_conflict_with_legacy_system_address_flags() {
             "127.0.0.1",
         ],
     );
-    assert!(error.contains("cannot be used with"), "{error}");
+    assert!(error.contains("unexpected argument '--system-ip'"), "{error}");
 }
 
 #[test]
@@ -148,14 +148,9 @@ fn retained_workloads_require_a_target_before_any_runtime_or_native_effect() {
 fn every_attached_operation_rejects_legacy_address_fallback_before_connecting() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
-    let port = listener.local_addr().unwrap().port().to_string();
     for args in test_operations() {
         let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("operation-no-target");
-        let error = test_rejected_operation(
-            root.path(),
-            &["--system-ip", "127.0.0.1", "--system-port", &port],
-            &args,
-        );
+        let error = test_rejected_operation(root.path(), &[], &args);
         assert!(
             error.contains("select --cluster or --management-endpoint"),
             "{args:?}: {error}"
@@ -183,20 +178,11 @@ fn every_attached_operation_rejects_an_unreachable_management_target() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn native_operations_reject_unreachable_rpc_without_reading_a_launch_registry() {
+async fn native_operations_reject_unreachable_rpc_without_runtime_fallback() {
     let server = TestTargetServer::start(&uuid::Uuid::new_v4().to_string()).await;
     for args in test_operations().into_iter().filter(|args| !args.contains(&"s3")) {
         let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("operation-native");
-        let error = test_rejected_operation(
-            root.path(),
-            &[
-                "--management-endpoint",
-                &server.origin,
-                "--registry",
-                "/missing/launches.toml",
-            ],
-            &args,
-        );
+        let error = test_rejected_operation(root.path(), &["--management-endpoint", &server.origin], &args);
         assert!(
             error.contains("native RPC endpoint is unreachable"),
             "{args:?}: {error}"
