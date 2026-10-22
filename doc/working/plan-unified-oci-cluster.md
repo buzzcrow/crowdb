@@ -12,22 +12,32 @@ readiness, attached workloads and scoped cleanup.
 - **R243 remains incomplete.** Keep the requirement/backlog entry and outstanding
   acceptance work below. The sustained all-DiskIO recovery case now passes;
   this does not certify every runtime, protocol or formation/recovery acceptance.
-- Latest continuation: image W full CLI scope finishes **five passes, four failures**.
-  Pending-free accounting, Group-0 replay, sustained terminal-writer recovery,
-  hardware and logical round trips pass. Storage restart fails because ChunkDB
-  exits when a persisted retired-segment cleanup intent has no advertised DiskDB
-  owner; Access subsequently exhausts startup attempts. Attachment/observation/
-  data fail on current 750 ms metadata, ChunkDB or DiskIO observations. Preserve
-  `r243-deployment-continuation/cli-container-w/run-360b7c15aef94491aa29faa69a5f4a4e/`.
-  Current narrow latency fixes remove duplicate registry reads, parallelize
-  independent binding/registry and hardware/registry queries, and replace the
-  Access metadata scan with a routed point Get. Component gates pass; a fresh
-  image and complete acceptance rerun remain required.
-  Three Docker-free KVM Linux hosts now run the same W artifact through native
-  rootful containerd. Discovery, authenticated production admission and Group-0
-  formation pass. Whole-cluster check fails because supplied-media placement
-  differs from the automatic-only reserved disk-group IDs used by storage
-  observation. No native protocol/recreation pass is claimed yet.
+- Latest continuation: image X full `console.cli.container` scope passes **all
+  nine cases**, including both interruption/restart checkpoints, terminal-writer
+  recovery, plain Docker attachment, observations, hardware/logical/data and
+  explicit pending-free accounting. Evidence:
+  `r243-deployment-continuation/cli-container-x/run-c118f264580c44b98592477f10169933/`.
+  Image X manifest `sha256:21926e0868bf3282c925bb04890e24ba9e7e42a807bc8216d899c746a2883cdb`,
+  Docker config `sha256:64a74415871503d19d34e7647d3b9b310f34abe469963d1211620e8a90b5eb7f`.
+  The shared/Web extended gate passes 353 tests. This resolves the observed
+  image-W four failures without deadline, assertion or restart-budget changes.
+- Native containerd exposes a separate sustained-runtime bug: monitor RPC pings
+  add about two established socket descriptors per second, eventually hitting
+  its inherited soft nofile=1024. The probe drops/explicitly closes the safe
+  connection, but idle socket cleanup awaits an I/O event that never arrives.
+  Failure reproduces in a standalone regression: 128 completed pings retain
+  527 FDs vs baseline 19 while the same executor remains alive. Worker-owned
+  atomic close queues now retain connection identity and wake descriptor cleanup
+  without new locks; the regression and five existing probe tests pass. Full
+  `test-cpp` (including FFI), full `tree-lint`, monitor all-target clippy and
+  fmt pass. Fourteen focused C++ transport/disconnect cases pass, including
+  concurrent explicit closes on two engines/four workers while retaining old
+  handles. The final targeted lint/format checks also pass. Fresh-image native
+  proof remains required. Failed W/X native state remains preserved; all three old
+  owned native containers are stopped. Another four independent blank 8-GiB
+  raw test devices per VM are attached and their serials/lineage recorded for
+  a fresh post-fix cluster; old accepted disks and journals are not reset.
+  No A31 protocol/recreation pass claimed.
 - 2026-10-22: user authorized continuation past the prior retry limit and asked
   for diagnosis of the long-standing failure. User subsequently requested F03
   and explicitly authorized continuing other R243 tasks afterward, starting T04.

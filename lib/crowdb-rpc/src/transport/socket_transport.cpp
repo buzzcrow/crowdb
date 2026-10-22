@@ -75,13 +75,51 @@ Worker::~Worker()
 
 void Worker::close_connections()
 {
-    std::scoped_lock lock(conns_mu_);
-    for (auto &[fd, conn] : connections_) {
-        (void)fd;
-        conn->close();
-        close_connection_fds(engine_, conn.get(), transport_);
+    {
+        std::scoped_lock lock(conns_mu_);
+        for (auto &[fd, conn] : connections_) {
+            (void)fd;
+            conn->close();
+            close_connection_fds(engine_, conn.get(), transport_);
+        }
+        connections_.clear();
     }
-    connections_.clear();
+    discard_closes();
+}
+
+void Worker::request_close(std::shared_ptr<Connection> conn)
+{
+    auto *request = new CloseRequest{.connection = std::move(conn), .next = nullptr};
+    auto *head    = pending_closes_.load(std::memory_order_relaxed);
+    do {
+        request->next = head;
+    } while (
+        !pending_closes_.compare_exchange_weak(head, request, std::memory_order_release, std::memory_order_relaxed));
+    engine_->notify_worker();
+}
+
+void Worker::drain_closes(ClosedConnections &closed_fds)
+{
+    auto *request = pending_closes_.exchange(nullptr, std::memory_order_acquire);
+    while (request != nullptr) {
+        auto     *next = request->next;
+        auto     *conn = request->connection.get();
+        const int fd   = static_cast<int>(conn->transport_handle);
+        close_connection_fds(engine_, conn, transport_);
+        closed_fds.emplace_back(fd, conn->id());
+        delete request;
+        request = next;
+    }
+}
+
+void Worker::discard_closes()
+{
+    auto *request = pending_closes_.exchange(nullptr, std::memory_order_acquire);
+    while (request != nullptr) {
+        auto *next = request->next;
+        delete request;
+        request = next;
+    }
 }
 
 void Worker::start()
@@ -203,6 +241,7 @@ void Worker::run_loop()
                 }
             }
 
+            drain_closes(closed_fds);
             flush_responses(closed_fds);
             retire_closed(closed_fds);
         }
@@ -710,6 +749,9 @@ std::shared_ptr<Connection> SocketTransport::create_connection(int fd, const std
     // safely resolve an event even after an explicit caller-side close.
     conn->set_on_frame(std::move(on_frame));
     conn->set_on_close([this, on_close = std::move(on_close)](Connection *c) {
+        if (auto *worker = static_cast<Worker *>(c->io_worker); worker != nullptr) {
+            worker->request_close(c->shared_from_this());
+        }
         if (on_close) {
             on_close(c);
         }

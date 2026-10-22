@@ -221,6 +221,9 @@ class Worker
     // read_fd and write_fd are dup'd fds for independent epoll arming.
     void add_connection(int read_fd, int write_fd, std::shared_ptr<Connection> conn);
 
+    // Schedule descriptor cleanup on the owning worker, including idle sockets.
+    void request_close(std::shared_ptr<Connection> conn);
+
     // Check if the current thread is this worker's thread. Used by
     // submit() to detect inline calls (coroutine resumed on I/O worker
     // thread) and use submit_inline instead of notify.
@@ -263,11 +266,22 @@ class Worker
     // writev all pending responses in one syscall.
     std::vector<Connection *> pending_write_conns_;
 
+    struct CloseRequest
+    {
+        std::shared_ptr<Connection> connection;
+        CloseRequest               *next;
+    };
+
+    // Producers retain identity until the owner retires its map entry after I/O.
+    std::atomic<CloseRequest *> pending_closes_{nullptr};
+
     friend class SocketTransport;
 
     using ClosedConnections = std::vector<std::pair<int, int64_t>>;
     void run_loop();
     void drain_notified();
+    void drain_closes(ClosedConnections &closed_fds);
+    void discard_closes();
     void process_readable(const EngineEvent &ev, ClosedConnections &closed_fds);
     void process_writable(const EngineEvent &ev, ClosedConnections &closed_fds);
     void process_error(const EngineEvent &ev, ClosedConnections &closed_fds);

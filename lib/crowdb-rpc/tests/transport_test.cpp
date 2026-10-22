@@ -11,6 +11,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstring>
@@ -425,5 +426,57 @@ TEST_F(TransportLoopbackTest, CrossThreadSubmitRejectsFreedPeerAfterClose)
     EXPECT_EQ(frame->create_nano, 0U);
     frame->control->release();
     delete frame;
+    transport.stop();
+}
+
+TEST_F(TransportLoopbackTest, ExplicitIdleCloseReclaimsSocketsAcrossWorkersWhileHandlesAreRetained)
+{
+    SocketTransport transport(2, 4);
+    transport.start();
+    std::vector<std::shared_ptr<Connection>> connections;
+    std::vector<int>                         peers;
+    std::vector<int>                         descriptors;
+    connections.reserve(128);
+    peers.reserve(128);
+    descriptors.reserve(256);
+    for (int i = 0; i < 128; ++i) {
+        int sockets[2];
+        ASSERT_EQ(socketpair_nonblocking(sockets), 0);
+        auto connection = transport.create_connection(sockets[0], "idle-close");
+        descriptors.push_back(sockets[0]);
+        descriptors.push_back(connection->write_fd);
+        connections.push_back(std::move(connection));
+        peers.push_back(sockets[1]);
+    }
+    std::vector<std::thread> closers;
+    closers.reserve(8);
+    for (size_t worker = 0; worker < 8; ++worker) {
+        closers.emplace_back([&, worker] {
+            for (size_t i = worker; i < connections.size(); i += 8) {
+                connections[i]->close();
+            }
+        });
+    }
+    for (auto &closer : closers) {
+        closer.join();
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    const auto closed   = [&] {
+        return transport.connection_count() == 0 &&
+               std::all_of(descriptors.begin(), descriptors.end(), [](int fd) { return ::fcntl(fd, F_GETFD) == -1; });
+    };
+    while (!closed() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_EQ(transport.connection_count(), 0U);
+    for (int fd : descriptors) {
+        EXPECT_EQ(::fcntl(fd, F_GETFD), -1);
+        EXPECT_EQ(errno, EBADF);
+    }
+    for (int peer : peers) {
+        char byte{};
+        EXPECT_EQ(::read(peer, &byte, 1), 0);
+        ::close(peer);
+    }
     transport.stop();
 }
