@@ -81,11 +81,11 @@ def start(cluster):
 def create_docker_nodes(cluster, indexes):
     for index in indexes:
         name = cluster.expected_names[index]
-        volume = f"{name}-data"
+        volume = node_volume(cluster, index)
         cluster.command("volume", "create", "--label", f"{LABEL}={cluster.run_id}", volume)
         cluster.containers.append(name)
         arguments = ["create", "--name", name, "--label", f"{LABEL}={cluster.run_id}",
-                     "--network", cluster.run_id, "--cpus", "1", "--memory", "1536m",
+                     "--network", getattr(cluster, 'reference_network', cluster.run_id), "--cpus", "1", "--memory", "1536m",
                      "--mount", f"type=volume,source={volume},target=/opt/crowdb/data",
                      "--env", f"CROWDB_CLUSTER={cluster.run_id}",
                      "--env", f"CROWDB_INITIAL_VOTERS={cluster.node_count}"]
@@ -142,7 +142,12 @@ def expected_volumes(cluster):
     if cluster.implementation == "compose":
         services = ["node"] if cluster.node_count == 1 else ["node1", "node2", "node3"]
         return {f"{cluster.run_id}_{service}-data" for service in services}
-    return {f"{name}-data" for name in cluster.expected_names}
+    return {node_volume(cluster, index) for index in range(len(cluster.expected_names))}
+
+
+def node_volume(cluster, index):
+    retained = getattr(cluster, 'reference_volumes', None)
+    return retained[index] if retained is not None else f"{cluster.expected_names[index]}-data"
 
 
 def validate_networks(cluster, containers):
@@ -151,7 +156,7 @@ def validate_networks(cluster, containers):
     for network in inventory(cluster, "network"):
         if any(identity not in owned_ids for identity in network.get("Containers", {})):
             raise ValueError("reference network has an unrelated attachment")
-        if network.get("Name") != expected_name:
+        if network.get("Name") not in getattr(cluster, 'reference_networks', {expected_name}):
             raise ValueError("unexpected reference network name")
 
 
@@ -162,7 +167,7 @@ def refresh(cluster):
     items.sort(key=lambda item: item["Name"])
     cluster.servers = [item["Name"].removeprefix("/") for item in items]
     cluster.containers = list(cluster.servers)
-    if len(items) != cluster.node_count:
+    if len(items) != len(cluster.expected_names):
         raise AssertionError("reference deployment did not create the intended node count")
     for item in items:
         if not item["State"]["Running"]:

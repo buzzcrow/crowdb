@@ -103,6 +103,7 @@ class Case:
     cli_replay: str | None = None
     oci_reference: str | None = None
     oci_editable_ui: bool = False
+    oci_address_recovery: bool = False
     cli_workload: bool = False
     client_timeout: int = 120
 
@@ -178,7 +179,7 @@ DEPLOYMENT_CASES = (
     Case("deployment.reference", "deployment::reference::direct_docker_one_node", oci_reference="docker-one"),
     Case("deployment.reference", "deployment::reference::editable_ui_one_node", oci_reference="docker-one", oci_editable_ui=True),
     Case("deployment.reference", "deployment::reference::editable_ui_three_nodes", oci_reference="docker-three", oci_editable_ui=True),
-    Case("deployment.reference", "deployment::reference::direct_docker_three_nodes", oci_reference="docker-three"),
+    Case("deployment.reference", "deployment::reference::direct_docker_three_nodes", oci_reference="docker-three", oci_address_recovery=True),
     Case("deployment.reference", "deployment::reference::compose_one_node", oci_reference="compose-one"),
     Case("deployment.reference", "deployment::reference::compose_three_nodes", oci_reference="compose-three"),
     Case("deployment.balance", "deployment::balance::single_node_disables_local_chunk_kv_split_planning", service_selection=("kv", "diskdb", "diskio", "chunkdb", "chunk-kv", "access", "web")),
@@ -561,7 +562,7 @@ def select_cases(layer="all", scope="all", case_name=None, partition=None):
 
 def case_nodes(case):
     if case.oci_reference:
-        return 1 if case.oci_reference.endswith("-one") else 3
+        return 4 if case.oci_address_recovery else 1 if case.oci_reference.endswith("-one") else 3
     if case.scope == "console.browser.discovery":
         return 2
     if case.native_browser or case.native_client:
@@ -614,8 +615,8 @@ def case_nodes(case):
 
 def case_resources(case, node_cpus):
     if case.oci_reference:
-        count = case_nodes(case)
-        return count + 0.5, count * 1536 + 512
+        count = 1 if case.oci_reference.endswith("-one") else 3
+        return count + 0.5 + (0.25 if case.oci_address_recovery else 0), count * 1536 + 512 + (768 if case.oci_address_recovery else 0)
     # CPU shares allow nodes to borrow idle capacity; memory remains a hard bound.
     if case.scope == "console.browser.discovery":
         return 1.5, 3072
@@ -641,7 +642,8 @@ def case_resources(case, node_cpus):
 def allocate_cluster(case, image, artifacts, bundle, data_root):
     if case.oci_reference:
         return OciReferenceCluster(image, artifacts, bundle, reference=case.oci_reference,
-                                   editable_ui=case.oci_editable_ui, cli_workload=case.cli_workload, data_root=data_root)
+                                   editable_ui=case.oci_editable_ui, cli_workload=case.cli_workload,
+                                   address_recovery=case.oci_address_recovery, data_root=data_root)
     if case.scope == "console.browser.discovery":
         return DiscoveryBrowserCluster(image, artifacts, bundle, data_root=data_root)
     if case.native_browser or case.native_client:

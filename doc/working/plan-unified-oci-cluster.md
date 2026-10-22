@@ -23,6 +23,36 @@ readiness, attached workloads and scoped cleanup.
   `one-voter-nonvoter-negative-ab.json`. All four trust containers are stopped
   with preserved volumes. Registered changed-address and public host-profile
   qualification remain outstanding; the native proof is not their substitute.
+- Registered native public profile now passes on Docker-free owned VM5 with image
+  AB and CLI SHA256 `50aa68421b48948dfc51a4f6f547b5ad9663c9151604fd61ac3766a8ff122d19`.
+  Run `365f160c18a948dca3168730f448723f` separately verifies Production diskless
+  metadata admission/authority/CLI recreation, then Local full S3/Iceberg/Dataset
+  retained recreation with zero node failure tolerance. The Local UUID stays
+  `5764be58-a805-460f-86f2-aa6fff41de3c`; container IDs differ and cgroups/network,
+  credentials, discovery identity and original protocol data remain unchanged.
+  Evidence copied before installing Docker in VM5:
+  `r243-native-kvm/native-public-profile-ab-{results,identity,metadata,protocol}.json`
+  and `native-public-profile-ab-log.log`. The original output's earlier
+  "production protocol" label was inaccurate; the proof explicitly records
+  Local protocol policy and separate Production metadata lifecycle.
+- Registered A32 now passes on image AB in `registered-cold-ab6/`
+  `run-4857c19a2fed45afa7d4d1b7b80106b5`: three
+  serving members plus a fourth confirmed nonvoter, fresh names and bridge
+  addresses, inaccessible former transports, negative one-voter quorum, restored
+  two-voter authority, unchanged original voter manifest and retained protocol
+  credentials/data. Checked independent cleanup retains zero successful volumes.
+  The short-client and immediate-listener setup failures remain diagnostic history.
+- Final five-crate Rust rebuild hit `/nv` capacity exhaustion during linking
+  (Bus error, before test execution). Compacted debug sections of 163 unused
+  test executables older than one day, preserving code/data/logs and all live
+  client bundles; recovered 60.12 GiB. Ledger:
+  `r243-deployment-continuation/build-cache-debug-compaction.json`. Rerun uses
+  two build jobs, with all test contracts unchanged.
+- Containerd test-daemon configuration now uses only owned gRPC/ttrpc sockets,
+  no system config imports and disabled CRI. Defaults had selected a system
+  auxiliary socket. The 195 fixture tests pass; a fresh Docker-free VM4 public
+  run will verify the final isolation settings. VM5's earlier native proof was
+  saved before Docker installation; its Docker host profile is running separately.
 - User requests completing R243 first, then implementing the already-authored
   R244 design and plan. Preserve those concurrent document edits until that work.
 - Actual Docker CPU inspection reports `NanoCpus` with zero period/quota.
@@ -470,7 +500,7 @@ Existing implementation can be reused; these are the outstanding parts.
     Retired process-path
     assertions become command-tree rejection tests; shared bootstrap and
     supervisor correctness tests remain independent owners.
-  - [ ] T29b: migrate profiling/benchmark/sanitizer fixture ownership and flags.
+  - [x] T29b: migrate profiling/benchmark/sanitizer fixture ownership and flags.
     Current implementation uses a `test-util` native example plus private
     `tools/benchmark/fixture.py` controller. The worker owns exact PID/start
     identities, seals genuine Group-0 bootstrap, and supplies a target to normal
@@ -582,7 +612,9 @@ Existing implementation can be reused; these are the outstanding parts.
   - Repeated FD samples remain monitor 56 and DiskIO 187 on VM1;
     unchanged soft nofile=1024, no larger restart budget. Old failed W/X data
     remains preserved separately; no accepted media was reset.
-  - [ ] Actual Docker host profile and changed-address host-network proof remain.
+  - [x] Actual changed-address four-host AB proof and the registered native public
+    profile pass; details and exact artifacts are in Current handoff.
+  - [ ] Actual Docker host profile remains.
 - [ ] **T35 — Final documentation/gates/cleanup** (A17/all acceptance IDs).
   Update deployment/OCI designs, help, examples, credentials/ports, tool guides
   and CI only for verified behavior. Old standard/single/bare-metal registry
@@ -679,8 +711,10 @@ Existing implementation can be reused; these are the outstanding parts.
   the 32T NullDisk sample writes 10933 pages for 1154 publications. Bounded
   concurrency reduces waits but does not remove this growing write amplification.
   Original strict throughput/publication assertions remain unmodified and unmet;
-  T29b and R243 remain incomplete. Framed synthetic reads and T34's external
-  native runner proof remain outstanding.
+  Those performance failures remain recorded rather than treated as a pass.
+  The subsequent user decision assigns directory redesign and framed synthetic
+  reads to R244; deployment fixture migration is complete. The native public
+  host runner has now passed as recorded in Current handoff.
 - User subsequently deferred the directory redesign to
   [R244](../backlog/R244-chunk-stream-incremental-directory-publication.md).
   It owns incremental page references, active-tail commitment/checkpoint
@@ -838,7 +872,10 @@ Existing implementation can be reused; these are the outstanding parts.
   contains `.19` seeds. The assertion still failed because the fixture used a
   five-second health client for the aggregate's six-second bounded gather of
   an absent third voter. Replace that caller with the existing public CLI status
-  command's unchanged ten-second observation budget. This does not change the
+  observation budget. A CLI invocation during the initial cold listener startup
+  then failed before the bounded readiness wait could retry that read; the
+  fixture now uses a read-only HTTP observation with the same ten-second bound.
+  This does not change the
   product deadline, 180-second recovery bound, negative quorum assertions or
   required protocols. Failed state/logs are retained under `registered-cold-ab4`.
 

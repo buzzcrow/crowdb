@@ -95,7 +95,7 @@ class OciReferenceOwnershipTest(unittest.TestCase):
         self.assertEqual(len(cases), 6)
         for case in cases:
             count = 1 if case.oci_reference.endswith("one") else 3
-            self.assertEqual(case_nodes(case), count)
+            self.assertEqual(case_nodes(case), 4 if case.oci_address_recovery else count)
             cpu, memory = case_resources(case, 0.25)
             self.assertGreaterEqual(cpu, count)
             self.assertGreaterEqual(memory, count * 1536 + 512)
@@ -107,3 +107,31 @@ class OciReferenceOwnershipTest(unittest.TestCase):
         self.assertTrue(cases[0].cli_workload)
         self.assertEqual(cases[0].oci_reference, "docker-one")
         self.assertEqual(case_nodes(cases[0]), 1)
+
+    def test_cold_recovery_reserves_the_later_nonvoter_without_reducing_existing_nodes(self):
+        case = select_cases(case_name='deployment::reference::direct_docker_three_nodes')[0]
+        self.assertTrue(case.oci_address_recovery)
+        self.assertEqual(case_nodes(case), 4)
+        self.assertEqual(case_resources(case, .25), (3.75, 3 * 1536 + 768 + 512))
+
+    def test_recreated_names_reuse_exact_retained_volumes_on_the_accepted_new_network(self):
+        cluster = self.cluster()
+        cluster.expected_names = ['owned-node1-cold']
+        cluster.reference_volumes = ['owned-node1-data']
+        cluster.reference_network = 'owned-recovered'
+        cluster.port_base, cluster.image, cluster.containers = 20000, 'expected', []
+        runtime.create_docker_nodes(cluster, [0])
+        self.assertEqual(runtime.expected_volumes(cluster), {'owned-node1-data'})
+        create = cluster.command.call_args.args
+        self.assertIn('type=volume,source=owned-node1-data,target=/opt/crowdb/data', create)
+        self.assertEqual(create[create.index('--network') + 1], 'owned-recovered')
+        self.assertNotIn('owned-node1-cold-data', create)
+
+    def test_cold_network_scope_still_rejects_foreign_names_and_attachments(self):
+        cluster = self.cluster()
+        cluster.reference_networks = {'owned', 'owned-recovered'}
+        for name, peers in [('foreign', {}), ('owned-recovered', {'foreign-id':{}})]:
+            with patch.object(runtime, 'inventory', return_value=[{'Name':name,'Containers':peers}]):
+                with self.assertRaises(ValueError):
+                    runtime.validate_networks(cluster, [{'Id':'owned-id'}])
+        cluster.command.assert_not_called()

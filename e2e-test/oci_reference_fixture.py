@@ -14,10 +14,11 @@ import oci_reference_protocols as protocols
 import oci_reference_runtime as runtime
 import oci_reference_browser as browser
 import oci_reference_workloads as workloads
+import oci_reference_recovery as recovery
 
 
 class OciReferenceCluster(CliClient, Cluster):
-    def __init__(self, image, artifacts, bundle, reference, editable_ui=False, cli_workload=False, **kwargs):
+    def __init__(self, image, artifacts, bundle, reference, editable_ui=False, cli_workload=False, address_recovery=False, **kwargs):
         implementation, topology = reference.split("-")
         if implementation not in ("docker", "compose") or topology not in ("one", "three"):
             raise ValueError("unsupported OCI reference case")
@@ -26,6 +27,7 @@ class OciReferenceCluster(CliClient, Cluster):
         self.implementation = implementation
         self.editable_ui = editable_ui
         self.cli_workload = cli_workload
+        self.address_recovery = address_recovery
         self.bundle = Path(bundle).resolve()
         self.root = (self.data_root / "client-runtime").resolve()
         self.phase_number = 0
@@ -37,12 +39,13 @@ class OciReferenceCluster(CliClient, Cluster):
 
     def start(self):
         self.root.mkdir(parents=True, mode=0o700)
+        port_count = 34 if self.address_recovery else 24
         result = subprocess.run([str(self.bundle / "crowdb-cli"), "port-alloc", "--service", "web",
-            "--count", "24", "--owner-pid", str(os.getpid())], capture_output=True,
+            "--count", str(port_count), "--owner-pid", str(os.getpid())], capture_output=True,
             text=True, timeout=10, check=True)
         allocated = [int(port) for port in result.stdout.split()]
-        if len(allocated) != 24 or allocated != list(range(allocated[0], allocated[0] + 24)):
-            raise AssertionError("reference fixture needs 24 contiguous host ports")
+        if len(allocated) != port_count or allocated != list(range(allocated[0], allocated[0] + port_count)):
+            raise AssertionError("reference fixture needs its reserved contiguous host ports")
         self.port_base = allocated[0]
         self.image_id = json.loads(self.command("image", "inspect", self.image))[0]["Id"]
         runtime.start(self)
@@ -96,6 +99,8 @@ class OciReferenceCluster(CliClient, Cluster):
             "editable_management": True, "recreated_retained_identity": True,
             "retained_credentials": True}, indent=2))
         print("PASS OCI reference", self.implementation, self.node_count, cluster_id, flush=True)
+        if self.address_recovery:
+            recovery.verify(self, cluster_id, witness, private)
 
     def diagnostics(self):
         if not self.runtime_accepted:

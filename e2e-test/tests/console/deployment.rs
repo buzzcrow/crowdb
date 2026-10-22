@@ -45,6 +45,7 @@ async fn concurrent_admissions_allocate_unique_stable_ids_through_group_zero() {
         ssh_user: "crowdb".into(),
         operation_id: uuid.into(),
         confirmed: false,
+        host_key: None,
         cancelled: false,
     };
     let a = node("12345678-1234-4234-8234-123456789abc", "127.0.0.1");
@@ -181,6 +182,7 @@ async fn authenticated_node_update_preserves_ids_and_converges_from_another_cons
         ssh_user: "crowdb".into(),
         operation_id: uuid::Uuid::new_v4().to_string(),
         confirmed: true,
+        host_key: None,
         cancelled: false,
     };
     let mut node = config().nodes.remove(0);
