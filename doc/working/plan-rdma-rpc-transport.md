@@ -776,6 +776,28 @@ Implementation checkpoint:
   three times and retain all rows. Require zero workload errors/fallback and
   report avg/P90/tails with the highest repeatable TPS. Do not claim a hardware
   maximum when CPU/affinity/topology still limits the result.
+- Sustained checkpoint: the 24-row gradual matrix completed 203,195,362
+  measured validated RPCs with zero errors/fallback. At 512 loaders, 8 QPs
+  and 8 CQs/pollers, peak repeats give 2,201,203 / 2,234,423 / 2,277,181 TPS.
+  RQ 4096 does not improve the matching four-CQ control; queue admission and
+  the HCA RNR-retry-error counter show no new errors. Artifact:
+  `.crowdb-runtime/rdma-check/artifacts/bench/rdma-rpc-20261022T160711.769136Z/`.
+- The next nine-row matrix increases loaders to 4096 and QPs/CQs to 32/16.
+  Its 2048-loader, 32-QP, 16-CQ candidate repeats at 2,886,026 / 2,892,625 /
+  2,913,750 TPS, all error-free. The middle trial has avg 707.02 us,
+  P90 815.10 us and P99 954.37 us; this is the throughput/latency pair for
+  that trial. Artifact:
+  `.crowdb-runtime/rdma-check/artifacts/bench/rdma-rpc-20261022T161241.180591Z/`.
+  All 33 rows also reconcile remote RDMA request-frame deltas exactly with
+  accepted client submissions. The runner now enforces this relation and its
+  thirteenth contract test detects a forged remote total.
+- The real-HCA held receive/MR/CM lifetime, registration-budget exhaustion,
+  and TCP-only-peer strict/allowed fallback cases all pass separately. Workspace
+  `clippy --all-targets --all-features` also passes on this source.
+- Next controls: vary the idle polling budget and slot size at multiple CQs,
+  then run TCP and matched two-container manifests. A larger pool or more QPs
+  alone is not evidence of a higher hardware limit; retain CPU/resource data
+  and the exact binary identities with every trial.
 - [ ] **Run matching OCI profiles and finish protocol tests**: use the same
   CLI workload and manifest in two host-network containers on this physical
   HCA; record separate process/container topology. Complete negotiated TCP

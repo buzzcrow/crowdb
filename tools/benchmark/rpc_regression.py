@@ -112,9 +112,20 @@ def run_case(args, case, index, metadata):
     row.update(server_startup=startup, provider_counters_before=before,
                provider_counters_after=provider_counters(args.device, args.hca_port),
                topology=args.topology, physical_hosts=1, parameters=case)
+    row["server_request_frames"] = None
+    if args.transport == "rdma":
+        try:
+            row["server_request_frames"] = row["server_after"]["rdma"]["rpc_frames_received"] - row["server_before"]["rdma"]["rpc_frames_received"]
+        except (KeyError, TypeError):
+            pass
     after = row["provider_counters_after"] or {}
-    row["rnr_provider_counters"] = {name: dict(before=(before or {}).get(name), after=value)
-                                    for name, value in after.items() if "rnr" in name.lower()} or None
+    row["rnr_provider_counters"] = {}
+    for name, value in after.items():
+        if "rnr" in name.lower():
+            previous = (before or {}).get(name)
+            delta = value - previous if type(value) is int and type(previous) is int and value >= previous else None
+            row["rnr_provider_counters"][name] = dict(before=previous, after=value, delta=delta)
+    row["rnr_provider_counters"] = row["rnr_provider_counters"] or None
     row["valid"] = (row.get("valid") is True and row.get("errors_total") == 0
                     and row.get("report_errors") == 0 and row["client_exit"] == 0
                     and row["server_exit"] == 0 and failure is None)

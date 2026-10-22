@@ -50,7 +50,7 @@ def validate(row, case, transport):
         errors.append("missing/unsupported report schema")
     if type(row.get("valid")) is not bool:
         errors.append("missing/invalid validity flag")
-    required = ("errors_total", "report_errors", "setup_errors", "completed_in_window", "latency_count",
+    required = ("errors_total", "report_errors", "setup_errors", "submitted", "completed_in_window", "latency_count",
                 "submit_rejects", "timeouts", "connection_errors", "cq_errors", "payload_mismatches",
                 "duplicate_completions", "retries", "histogram_overflow_count", "measure_s")
     for name in required:
@@ -78,13 +78,19 @@ def validate(row, case, transport):
     if any(type(value) is not int or value < 0 for value in latency) or latency != sorted(latency):
         errors.append("invalid/missing latency bounds")
     if transport == "rdma":
+        try:
+            received = row["server_after"]["rdma"]["rpc_frames_received"] - row["server_before"]["rdma"]["rpc_frames_received"]
+            if received != row["submitted"]:
+                errors.append("server request total does not match accepted submissions")
+        except (KeyError, TypeError):
+            errors.append("missing server request totals")
         connections = row.get("client_connections", [])
         if not isinstance(connections, list) or not all(isinstance(conn, dict) for conn in connections):
             return errors + ["missing/malformed connection statuses"]
         qpairs = [(conn.get("info") or {}).get("qpair_number") if isinstance(conn.get("info"), dict)
                   else None for conn in connections]
-        if (len(qpairs) != case["connection_count"] or len(set(qpairs)) != len(qpairs)
-                or any(type(qp) is not int or qp <= 0 for qp in qpairs)
+        if (len(qpairs) != case["connection_count"] or any(type(qp) is not int or qp <= 0 for qp in qpairs)
+                or len(set(qpairs)) != len(qpairs)
                 or any(conn.get("path") != "rdma" or conn.get("open") is not True for conn in connections)
                 or row.get("qpair_count") != case["connection_count"]):
             errors.append("actual unique QP count/path mismatch")

@@ -85,6 +85,8 @@ sys.exit(int(os.environ["RDMA_FIXTURE_EXIT"]))
         row = dict(schema_version=1, case_id="fixture", valid=errors == 0, errors_total=errors,
                    actual_path=transport, allow_tcp_fallback=False, fallback_count=0,
                    loader_count=4, connection_count=2, payload_bytes=128,
+                   submitted=1100, server_before=dict(rdma=dict(rpc_frames_received=100)),
+                   server_after=dict(rdma=dict(rpc_frames_received=1200)),
                    completed_in_window=1000, latency_count=1000, measure_s=10, rpc_tps=100.0,
                    qpair_count=2 if transport == "rdma" else 0,
                    min_ns=1, avg_ns=20.0, p50_ns=20, p90_ns=30, p95_ns=40, p99_ns=50, p999_ns=60, max_ns=100)
@@ -143,6 +145,14 @@ sys.exit(int(os.environ["RDMA_FIXTURE_EXIT"]))
         self.assertNotEqual(process.returncode, 0)
         self.assertEqual(row["errors_total"], "3")
         self.assertNotEqual(row["report_errors"], "0")
+
+    def test_server_request_count_must_match_all_accepted_requests(self):
+        report = json.loads(self.report())
+        report["server_after"]["rdma"]["rpc_frames_received"] += 1
+        process, row = self.run_case(json.dumps(report))
+        self.assertNotEqual(process.returncode, 0)
+        self.assertEqual(row["server_request_frames"], "1101")
+        self.assertEqual(row["valid"], "false")
 
     def test_malformed_counter_and_connection_types_retain_a_failure_row(self):
         report = json.loads(self.report())
