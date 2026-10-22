@@ -19,6 +19,7 @@ use crate::{
     state::AppState,
 };
 type Failure = (StatusCode, Json<ErrorBody>);
+mod recovery;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -404,6 +405,7 @@ async fn confirm_admission(
     )
     .await
     .map_err(map_config_err)?;
+    recovery::distribute(&ctx, binding, key).await?;
     Ok(())
 }
 

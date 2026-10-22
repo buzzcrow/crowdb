@@ -87,6 +87,9 @@ pub enum NodeControl {
     AcceptMemberTrust {
         trust: serde_json::Value,
     },
+    AcceptConfirmedMemberTrust {
+        trust: serde_json::Value,
+    },
     CheckRetainedDisk {
         request: storage::CheckRetainedDisk,
     },

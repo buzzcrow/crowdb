@@ -43,6 +43,7 @@ pub(super) async fn execute(
         request @ (NodeControl::Initialize { .. }
         | NodeControl::PrepareBootstrap { .. }
         | NodeControl::AcceptMemberTrust { .. }
+        | NodeControl::AcceptConfirmedMemberTrust { .. }
         | NodeControl::StartKv { .. }) => bootstrap(profile, processes, initialization, request).await,
         NodeControl::Initialization => initialization::Initialization::status(root),
         NodeControl::DiskInventory => disk_inventory(root),
@@ -116,6 +117,11 @@ async fn bootstrap(
             super::recovery::accept(root, &serde_json::from_value(trust)?)?;
             Ok(json!({}))
         }
+        NodeControl::AcceptConfirmedMemberTrust { trust } => {
+            authorize_bound(root).await?;
+            super::recovery::accept_confirmed(root, &serde_json::from_value(trust)?).await?;
+            Ok(json!({}))
+        }
         NodeControl::StartKv {
             node_id,
             bootstrap,
@@ -129,6 +135,7 @@ async fn bootstrap(
             authorize_bound(root).await?;
             kv::ensure_start_allowed(profile).await?;
             let accepted = preparation::accept(root, node_id, bootstrap, manifest, credentials, admission)?;
+            super::recovery::prepare_admitted(root, &accepted).await?;
             start_kv(profile, processes, &accepted).await?;
             Ok(json!({"node_id": node_id, "management_port": 10000, "rpc_port": 10100}))
         }

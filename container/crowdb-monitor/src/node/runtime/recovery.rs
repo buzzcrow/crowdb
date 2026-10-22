@@ -13,9 +13,11 @@ use ssh_key::PublicKey;
 
 use super::{durable, AcceptedNode, Result};
 use crate::NodeIdentity;
+mod confirmed;
 mod discovery;
 mod owners;
 mod publication;
+pub(super) use confirmed::{accept as accept_confirmed, prepare_admitted};
 pub(super) use discovery::start;
 #[cfg(feature = "test-util")]
 pub use discovery::unique_member_endpoints_for_tests;
@@ -41,6 +43,9 @@ pub(super) fn identity(root: &Path) -> Result<crowdb_protocol::mgmt::node::recov
     let accepted: AcceptedNode =
         durable::read(&root.join("accepted-node.json"))?.ok_or("node is not prepared")?;
     check(root, &accepted)?;
+    if accepted.admission.is_some() && !ready(root, &accepted)? {
+        return Err("member admission is not confirmed for address recovery".into());
+    }
     if super::admission::is_cancelled(root, &accepted)
         || root
             .join(format!(
@@ -162,12 +167,25 @@ pub(super) fn accept(root: &Path, trust: &MemberTrust) -> Result<()> {
 }
 
 pub(super) fn check(root: &Path, accepted: &AcceptedNode) -> Result<()> {
-    if accepted.admission.is_some() {
-        return Ok(());
+    if super::admission::is_cancelled(root, accepted)
+        || root
+            .join(format!(
+                "retired-bootstrap-{}.json",
+                accepted.bootstrap.operation_id
+            ))
+            .exists()
+    {
+        return Err("member recovery is retired".into());
     }
-    let trust = MemberTrust::load(&root.join("member-trust.json"))?;
+    let trust = if accepted.admission.is_some() {
+        confirmed::admitted(root, accepted)?
+    } else {
+        MemberTrust::load(&root.join("member-trust.json"))?
+    };
     let operation = PreparedBootstrap::load(&root.join("prepared-bootstrap.json"))?;
-    trust.validate_bootstrap(&operation)?;
+    if accepted.admission.is_none() {
+        trust.validate_bootstrap(&operation)?;
+    }
     let local = NodeIdentity::load_existing(root)?.uuid().to_string();
     let member = trust
         .members
@@ -178,6 +196,10 @@ pub(super) fn check(root: &Path, accepted: &AcceptedNode) -> Result<()> {
         root.join("ssh/ssh_host_ed25519_key.pub"),
     )?)?;
     if trust.bootstrap != accepted.bootstrap
+        || accepted
+            .admission
+            .as_ref()
+            .is_some_and(|grant| member.admission_operation_id != grant.operation_id)
         || current.key_data() != PublicKey::from_openssh(&member.host_key)?.key_data()
     {
         return Err("retained member trust differs from local identity".into());
@@ -187,7 +209,28 @@ pub(super) fn check(root: &Path, accepted: &AcceptedNode) -> Result<()> {
 
 pub(super) fn ready(root: &Path, accepted: &AcceptedNode) -> Result<bool> {
     if accepted.admission.is_some() {
-        return Ok(true);
+        for name in [
+            "prepared-bootstrap.json",
+            "member-trust.json",
+            "admitted-member-trust.json",
+            "confirmed-member-trust.json",
+        ] {
+            match std::fs::symlink_metadata(root.join(name)) {
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+                Err(error) => return Err(error.into()),
+            }
+        }
+        check(root, accepted)?;
+        let operation = PreparedBootstrap::load(&root.join("prepared-bootstrap.json"))?;
+        let admitted = confirmed::admitted(root, accepted)?;
+        let own = admitted
+            .members
+            .iter()
+            .find(|member| member.node_id == accepted.node_id)
+            .ok_or("local admitted pin is absent")?;
+        return Ok(confirmed::snapshot(root, &operation)?
+            .is_some_and(|snapshot| snapshot.current.members.contains(own)));
     }
     match std::fs::symlink_metadata(root.join("member-trust.json")) {
         Ok(_) => {
@@ -212,6 +255,14 @@ pub fn accept_member_trust_for_tests(root: &Path, trust: &MemberTrust) -> Result
 pub fn check_member_trust_for_tests(root: &Path) -> Result<()> {
     let accepted = durable::read(&root.join("accepted-node.json"))?.ok_or("missing accepted node")?;
     check(root, &accepted)
+}
+
+#[cfg(feature = "test-util")]
+/// # Errors
+/// Uses the production retained-trust admission fence without starting services.
+pub fn member_trust_ready_for_tests(root: &Path) -> Result<bool> {
+    let accepted = durable::read(&root.join("accepted-node.json"))?.ok_or("missing accepted node")?;
+    ready(root, &accepted)
 }
 
 #[cfg(feature = "test-util")]

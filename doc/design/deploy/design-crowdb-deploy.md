@@ -374,7 +374,16 @@ cannot establish trust. Before bootstrap replicas start, each selected member
 durably accepts the same member-to-host-key bindings alongside its fixed
 manifest. Subsequent admissions and revocations use committed Group-0 authority;
 participants retain the applicable bindings locally for recovery without quorum.
-Discovery cannot promote a pending admission or revive a removed member. Missing
+A pending non-voter seals the initial manifest's authenticated pins and its own
+admission pin before its first KV start. This does not authorize recovery: only
+confirmation distributes `ConfirmedMemberTrust`, whose registry and pins each
+monitor verifies through current linearizable authority. The retained snapshot
+adds contact hints while preserving the original voting/store configuration.
+The independently running contact worker refreshes it when authority returns;
+its cached confirmed pins permit SSH identity proofs during quorum loss.
+Current authority retirement durably fences the local admission before owned
+KV/storage services stop. Missing or corrupt later-member snapshots cannot
+resume the member or answer a recovery identity request. Discovery cannot promote a pending admission or revive a removed member. Missing
 or corrupt trust records fail closed; a new address never triggers first-use
 trust or automatic key replacement for an existing identity.
 

@@ -4,7 +4,10 @@
 //! Discovery supplies hints; only pinned SSH proofs enter the local route view.
 
 use super::super::{durable, AcceptedNode, Result};
-use crowdb_console_shared::deployment::{recovery::MemberTrust, PreparedBootstrap};
+use crowdb_console_shared::{
+    deployment::{recovery::MemberTrust, PreparedBootstrap},
+    ConsoleConfig,
+};
 use crowdb_protocol::mgmt::node::{
     recovery::{MemberEndpoint, MemberEndpoints},
     CandidateSnapshot,
@@ -49,9 +52,12 @@ async fn refresh(root: &Path, port: u16) -> Result<()> {
     {
         return Err("member recovery is retired".into());
     }
-    let trust = MemberTrust::load(&root.join("member-trust.json"))?;
+    if let Err(error) = super::confirmed::refresh(root, &accepted).await {
+        tracing::debug!(%error, "confirmed recovery contacts await current authority");
+    }
     super::check(root, &accepted)?;
     let operation = PreparedBootstrap::load(&root.join("prepared-bootstrap.json"))?;
+    let (trust, config) = super::confirmed::contacts(root, &operation)?;
     let local = super::identity(root)?.endpoint;
     let client = reqwest::Client::builder()
         .no_proxy()
@@ -67,7 +73,7 @@ async fn refresh(root: &Path, port: u16) -> Result<()> {
         return Err("candidate reply too large".into());
     }
     let snapshot: CandidateSnapshot = response.json().await?;
-    let nodes = destinations(root, &operation, &trust, snapshot)?;
+    let nodes = destinations(root, &config, &trust, snapshot)?;
     let replies = futures::future::join_all(nodes.iter().map(|node| trust.endpoint(node))).await;
     let endpoints = std::iter::once(local.clone()).chain(
         replies
@@ -90,7 +96,7 @@ async fn refresh(root: &Path, port: u16) -> Result<()> {
     durable::write(&root.join("member-endpoints.json"), &snapshot)?;
     match tokio::time::timeout(
         Duration::from_secs(3),
-        super::publication::reconcile(root, &operation, &snapshot),
+        super::publication::reconcile(root, &operation, &snapshot, &config),
     )
     .await
     {
@@ -103,11 +109,10 @@ async fn refresh(root: &Path, port: u16) -> Result<()> {
 
 fn destinations(
     root: &Path,
-    operation: &PreparedBootstrap,
+    config: &ConsoleConfig,
     trust: &MemberTrust,
     snapshot: CandidateSnapshot,
 ) -> Result<Vec<crowdb_console_shared::config::NodeEntry>> {
-    let config = operation.intent.to_config();
     let mut probes = Vec::new();
     let mut destinations = BTreeSet::new();
     for candidate in snapshot.nodes.into_iter().take(128) {

@@ -42,6 +42,10 @@ impl NodeHealth {
         if let Some(accepted) =
             durable::read::<AcceptedNode>(&profile.paths.data_root.join("accepted-node.json"))?
         {
+            if super::admission::is_cancelled(&profile.paths.data_root, &accepted) {
+                self.retire_services(profile, processes).await?;
+                return Ok(());
+            }
             if super::kv::resume_allowed(profile, &accepted)?
                 && (!processes.owns("kv") || !processes.alive("kv")?)
             {
@@ -137,6 +141,28 @@ impl NodeHealth {
             return Err(format!("{id} exceeded monitor restart budget").into());
         }
         *attempts += 1;
+        Ok(())
+    }
+
+    async fn retire_services(
+        &mut self,
+        profile: &DeploymentProfile,
+        processes: &mut ProcessManager,
+    ) -> Result<()> {
+        let mut ids: Vec<_> = super::services::retained(profile)?
+            .into_iter()
+            .map(|intent| intent.service_id)
+            .collect();
+        ids.reverse();
+        ids.push("kv".into());
+        for id in ids {
+            if processes.owns(&id) && processes.alive(&id)? {
+                processes.stop(&id, Duration::from_secs(5)).await?;
+            }
+        }
+        self.status.services.clear();
+        self.status.phase = MonitorPhase::Failed;
+        self.store.publish(&mut self.status)?;
         Ok(())
     }
 }

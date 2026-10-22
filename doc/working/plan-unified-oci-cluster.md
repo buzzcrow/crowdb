@@ -231,14 +231,25 @@ Existing implementation can be reused; these are the outstanding parts.
   Initial sealed trust remains immutable. Eleven shared recovery tests and
   affected shared/Web/monitor all-target clippy pass. Thirteen affected Web
   auto-join, target and preflight tests also pass.
-  **Gap:** runtime distribution/use of later non-voter trust and non-voter
-  changed-IP recovery. Current trust file is immutable initial membership;
-  `recovery::accept/check/ready` special-case admitted nodes and discovery loads
-  the initial PreparedBootstrap. Extend only through confirmed Group-0 authority
-  and admission operation/host-key pins, never discovery TOFU. NodeRegistry does
-  not currently store the authenticated host key. Preserve retirement fencing.
-  Verify wrong key/bootstrap, cancellation, copied IDs and missing/corrupt trust;
-  add actual S3/Iceberg/Dataset and host-network recovery coverage.
+  Runtime integration is implemented and under verification: pending StartKv
+  first seals the Group-0 manifest's initial pins plus the authenticated local
+  admission pin. Confirmation distributes a fresh-authority-verified snapshot to
+  all confirmed monitors. Independent workers retain current confirmed contact
+  pins/topology for quorum-free SSH proofs, while keeping the original voter
+  manifest unchanged. Pending/missing/corrupt snapshots cannot authorize a later
+  member's restart or RecoveryIdentity; current authority retirement writes the
+  local cancellation fence and stops owned storage/KV services. Existing
+  initial trust remains immutable and is never learned from discovery.
+  Ten monitor member-trust tests pass, including later-member quorum-free
+  identity, unchanged voting/store configuration, exact own key and pending,
+  missing, corrupt, foreign and retirement failures. Affected clippy/fmt pass;
+  the full protocol/shared/monitor/Web gate passes 782 tests with zero failures
+  or ignored cases across 165 test/doc-test binaries. Fourth owned native KVM
+  host is prepared for actual non-voter admission and address recovery.
+  **Gap:** actual non-voter admission/cold changed-IP recovery acceptance and
+  final registered host-runtime fixture/CI migration. Verify real four-member
+  contacts with unchanged three-voter authority, preserved protocol witnesses
+  and host-network address changes; retain all failed evidence.
   Owners: shared `deployment/recovery*`, `registry.rs`, Web `node/admission.rs`,
   monitor `node/runtime/{admission,recovery}*`, KV identity-route tests.
 - [ ] **T16 — Complete current dependency acceptance** (A15/A23/A26/A27).

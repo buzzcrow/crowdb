@@ -7,6 +7,7 @@ use super::super::{durable, Result};
 use crowdb_console_shared::{
     deployment::{node_update, recovery::rebind_service, registry, services, PreparedBootstrap},
     ops::OpContext,
+    ConsoleConfig,
 };
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
 use crowdb_protocol::mgmt::node::{recovery::MemberEndpoints, NodeServiceAction};
@@ -16,9 +17,10 @@ pub(super) async fn reconcile(
     root: &Path,
     operation: &PreparedBootstrap,
     endpoints: &MemberEndpoints,
+    topology: &ConsoleConfig,
 ) -> Result<()> {
     let local = super::identity(root)?.endpoint;
-    let mut config = operation.intent.to_config();
+    let mut config = topology.clone();
     let mut seeds = Vec::new();
     for node in &mut config.nodes {
         let Some(peer) = endpoints.members.iter().find(|peer| peer.node_id == node.id) else {
@@ -125,15 +127,16 @@ async fn rebind(
     complete: bool,
 ) -> Result<bool> {
     let path = root.join("service-address.json");
-    let old: String = durable::read(&path)?.unwrap_or(
-        operation
+    let old: String = match durable::read(&path)? {
+        Some(address) => address,
+        None => operation
             .intent
             .to_config()
             .node(node)
             .ok_or("original node missing")?
             .host
             .clone(),
-    );
+    };
     let binding: Option<crowdb_protocol::mgmt::node::NodeBinding> =
         durable::read(&root.join("node-binding.json"))?;
     // A partial discovery round is not an address change. In particular,

@@ -54,6 +54,7 @@ impl MemberTrust {
                 });
             }
         }
+        members.sort_by_key(|member| member.node_id);
         let current = Self {
             version: self.version,
             bootstrap: self.bootstrap.clone(),

@@ -53,7 +53,9 @@ use ipc::read_request;
 #[cfg(feature = "test-util")]
 pub use recovery::unique_member_endpoints_for_tests;
 #[cfg(feature = "test-util")]
-pub use recovery::{accept_member_trust_for_tests, check_member_trust_for_tests};
+pub use recovery::{
+    accept_member_trust_for_tests, check_member_trust_for_tests, member_trust_ready_for_tests,
+};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 

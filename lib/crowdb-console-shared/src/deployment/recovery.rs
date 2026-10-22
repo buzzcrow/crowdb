@@ -6,8 +6,10 @@
 mod endpoints;
 mod services;
 pub use services::rebind_service;
+mod confirmed;
 mod persistence;
 mod registry;
+pub use confirmed::ConfirmedMemberTrust;
 
 use std::collections::BTreeSet;
 

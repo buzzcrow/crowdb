@@ -186,3 +186,98 @@ async fn ssh_identity_command_is_independent_of_the_lifecycle_control_loop() {
     drop(liveness);
     assert!(crowdb_monitor::read_recovery_identity(root).await.is_err());
 }
+
+#[path = "common/admitted_member.rs"]
+mod admitted;
+
+#[test]
+fn confirmed_nonvoter_contacts_preserve_original_votes_and_require_exact_local_pin() {
+    let dir = tempdir_in_test_data("nonvoter-retained-trust");
+    let root = dir.path();
+    let snapshot = admitted::fixture(root);
+    check_member_trust_for_tests(root).unwrap();
+    assert!(crowdb_monitor::member_trust_ready_for_tests(root).unwrap());
+    let operation =
+        crowdb_console_shared::deployment::PreparedBootstrap::load(&root.join("prepared-bootstrap.json"))
+            .unwrap();
+    let original = operation.intent.to_config();
+    let contacts = snapshot.topology(&operation).unwrap();
+    assert_eq!(operation.intent.members(), &[1, 2, 3]);
+    assert_eq!(contacts.nodes.len(), 4);
+    assert_eq!(contacts.stores, original.stores);
+    assert_eq!(contacts.groups, original.groups);
+    std::fs::write(root.join("ssh/ssh_host_ed25519_key.pub"), trust::key(5)).unwrap();
+    assert!(check_member_trust_for_tests(root).is_err());
+    assert!(crowdb_monitor::member_trust_ready_for_tests(root).is_err());
+}
+
+#[test]
+fn pending_missing_corrupt_and_retired_nonvoter_trust_never_authorize_resume() {
+    for change in ["pending", "missing", "corrupt", "foreign", "cancelled", "retired"] {
+        let dir = tempdir_in_test_data("nonvoter-trust-fence");
+        let root = dir.path();
+        let mut snapshot = admitted::fixture(root);
+        let path = root.join("confirmed-member-trust.json");
+        match change {
+            "pending" => {
+                snapshot.registry.nodes[3].confirmed = false;
+                snapshot.current = snapshot.initial.confirmed_registry(&snapshot.registry).unwrap();
+                trust::write(&path, &snapshot);
+            }
+            "missing" => std::fs::remove_file(&path).unwrap(),
+            "corrupt" => std::fs::write(&path, "corrupt").unwrap(),
+            "foreign" => {
+                snapshot.current.bootstrap.cluster_id = uuid::Uuid::new_v4().to_string();
+                trust::write(&path, &snapshot);
+            }
+            "cancelled" => trust::write(
+                &root.join(format!(
+                    "ssh/cancelled-{}.json",
+                    snapshot.registry.nodes[3].operation_id
+                )),
+                &true,
+            ),
+            "retired" => trust::write(
+                &root.join(format!(
+                    "retired-bootstrap-{}.json",
+                    snapshot.initial.bootstrap.operation_id
+                )),
+                &true,
+            ),
+            _ => unreachable!(),
+        }
+        assert!(
+            !crowdb_monitor::member_trust_ready_for_tests(root).unwrap_or(false),
+            "{change}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn confirmed_nonvoter_can_prove_identity_without_live_group_zero_but_pending_cannot() {
+    use crowdb_protocol::mgmt::node::recovery::MemberEndpoint;
+    let dir = tempdir_in_test_data("nonvoter-ssh-recovery");
+    let root = dir.path();
+    let mut snapshot = admitted::fixture(root);
+    trust::write(
+        &root.join("node-endpoint.json"),
+        &MemberEndpoint {
+            discovery_id: snapshot.registry.nodes[3].discovery_id.clone(),
+            node_id: 0,
+            boot_id: uuid::Uuid::new_v4().to_string(),
+            addresses: vec!["192.0.2.44".parse().unwrap()],
+        },
+    );
+    let liveness = crowdb_monitor::LivenessServer::start(root).unwrap();
+    let identity = crowdb_monitor::read_recovery_identity(root).await.unwrap();
+    assert_eq!(identity.binding.node_id, 4);
+    assert_eq!(
+        identity.endpoint.addresses,
+        vec!["192.0.2.44".parse::<std::net::IpAddr>().unwrap()]
+    );
+    snapshot.registry.nodes[3].confirmed = false;
+    snapshot.current = snapshot.initial.confirmed_registry(&snapshot.registry).unwrap();
+    trust::write(&root.join("confirmed-member-trust.json"), &snapshot);
+    assert!(crowdb_monitor::read_recovery_identity(root).await.is_err());
+    drop(liveness);
+}
