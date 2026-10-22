@@ -11,16 +11,103 @@ Goal: use the common RDMA stream for Access Server to Chunk-KV operations while
 preserving existing aggregation, request numbering, generation checks, and TCP
 semantic parity.
 
+## Execution checkpoint and implementation order
+
+The datapath is accepted at `ab1ffbfb`; its cleanup is `b38d3d78`. Preserve its
+1 MiB direct payload path and the ordinary contiguous RPC benchmark. The
+focused Chunk-KV baseline passes all 22 client/CLI cases before these changes.
+All 278 affected Access/ChunkIO/DiskIO cases and full native/FFI gates passed
+at the preceding service checkpoint.
+
+Observed contract:
+
+- `ChunkKvRpcTransport` encodes point/seek/scan/multi-get/batch requests as
+  FlatBuffer control buffers and calls the existing `RpcClient::call`. Its
+  connection pool and completion IDs remain the correlation owner. The
+  server's `ChunkKvRpcService` decodes one complete control, checks the same
+  RPC ID and submits one encoded response. Large values and aggregates are
+  inside these control bytes, not the RPC data field.
+- The routing/composition layer retains logical mutation identities during
+  retries and retries only unresolved group operations. Seek/scan retain
+  partition generation and bounded-page semantics. Do not add a separate
+  Chunk-KV request table or retry scheduler.
+- Native RDMA currently rejects control beyond 1010 bytes. Control/data gives
+  independently aligned data with exact 64 KiB/256 KiB/1 MiB classes; use this
+  existing layout for encoded-control fragments. Keep the current direct
+  path for ordinary small control plus real datapath data.
+- Metadata point calls use 64 KiB; grouped/seek/scan calls use 256 KiB. An
+  explicit class config may select 1 MiB. Each class owns a fixed native
+  connection group and common RPC completion engine, with no producer thread
+  per loader. Server default is 256 KiB. QP data capacity is the minimum of
+  the two advertised capacities and is used for actual RX allocation/posting
+  as well as SEND admission; expose that effective value in immutable status.
+
+- [~] **Build bounded common control-stream primitives**: add portable byte
+  admission, fragment metadata validation and one-message assembly, tested
+  without verbs. Reserve full logical length, validate request/stream ID,
+  sequence, exact offset, total, class, generation and final flag. Default
+  maximum encoded control is 32 MiB, covering existing 16 MiB response limits;
+  independent send/receive budgets default to 64 MiB each. Reject invalid
+  arithmetic/limits before allocation. Retain completed reservation until
+  final caller release. Preserve a failed/blocked fragment's existing owner;
+  blocked admission must not carve replacement storage. Files: private RPC
+  control-stream modules, `framing.h` control owner, focused portable tests.
+- [ ] **Negotiate and configure common streams**: add a small transport-owned
+  fragment FlatBuffer in `common_msg.fbs`, preserving the common leading
+  correlation fields, with reserved message type 4. Bump RDMA protocol to
+  version four; the existing final 4 handshake bytes advertise maximum logical
+  control length and participate in the CM capability digest. Legacy decode
+  remains for explicit pre-payload TCP fallback. Extend native/env/status and
+  a new versioned C ABI config entry without changing the version-one struct
+  or existing configure entries. Rust typed config carries max message,
+  per-direction budget and partial-assembly timeout (default 30 seconds).
+  `RdmaConfig::for_layout` derives send arena bytes from SQ depth and selected
+  data capacity, as receive defaults already do; 1 MiB and ordinary defaults
+  preserve their current values. Files: capability/offer/config/status, FFI.
+- [ ] **Integrate CQ-owned fragmentation and assembly**: enqueue one original
+  logical frame under byte/count admission. The CQ owner walks it in order,
+  builds only the next bounded fragment, and holds immutable source owners
+  through all WR completions. Do not materialize an unbounded fragment list.
+  Receive validates metadata before copying into one logical owner and returns
+  each consumed RQ credit immediately; result size may exceed the entire RQ
+  window. On exhausted assembly admission retain at most the existing RQ
+  frames. Final lease release wakes the owning polling/event worker through
+  the existing retained operation gate, including safe release after shutdown.
+  Active partial assemblies expire; consumer-blocked first fragments remain
+  backpressured without an arbitrary consumer hold deadline. Dispatch only a
+  complete original Frame. Move quota-owned control storage through C ABI
+  without another full-message malloc/copy. Files: RDMA send/receive/CQ/CM
+  pools, common framing/C ABI conversion and owner-lifetime tests.
+- [ ] **Wire Chunk-KV classes and typed settings**: add service defaults and
+  explicit RDMA configuration for metadata/aggregate connection groups,
+  preserve TCP defaults and current serializers/errors/retries, and wire the
+  Chunk-KV server plus Access storage construction. Cover point, mutation,
+  seek, bounded scan, multi-get and batch mutation, including duplicate result
+  order and stable logical mutation IDs. Files: client transport/config,
+  server startup/RPC boundary, Access storage config and tests.
+- [ ] **Verify real service and clean up**: test malformed sequence/offset,
+  duplicate/end/generation/class, byte exhaustion, held final leases,
+  cancellation/close/expiry, and TCP setup fallback. Run the actual Chunk-KV
+  service on the HCA with metadata and results larger than 256 KiB, then two
+  non-root host-network containers and a no-device TCP profile. Compare bytes,
+  typed errors and identity using the same corpus. Rerun the HTTP/DiskIO
+  acceptance after common transport changes. Finish native/no-verbs/FFI,
+  workspace format/lint and affected service gates. Rebuild matching release
+  CLI/fb-server and repeat the 1 s warmup + 10 s peak controls before cleanup.
+  Record all settings, actual classes/QPs, memory and error categories. Delete
+  this completed child plan/detail/index entry after permanent docs/evidence
+  are updated. R242 remains outside the requested scope.
+
 ## Phase 1: access contract mapping
 
-- [ ] **Map request/response types**: identify metadata, point, batch, range,
+- [x] **Map request/response types**: identify metadata, point, batch, range,
   and aggregate operations; record idempotency, request ID, generation, error,
   and retry behavior. Files: `lib/crowdb-chunk-kv-client/`, Chunk-KV server
   modules, and Access Server access-core modules.
-- [ ] **Map aggregation owner**: identify where Chunk-KV combines responses and
+- [x] **Map aggregation owner**: identify where Chunk-KV combines responses and
   where it decides flush/end boundaries. RDMA must receive the aggregate after
   that decision, never create another aggregation layer.
-- [ ] **Define class selection**: metadata defaults to 64 KiB, aggregated
+- [x] **Define class selection**: metadata defaults to 64 KiB, aggregated
   Chunk-KV results default to 256 KiB, and 1 MiB remains a configured option for
   larger value/range results. Transport creation receives defaults from config.
 
