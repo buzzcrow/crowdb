@@ -54,6 +54,33 @@ pub trait DiskWriter: Send + Sync {
         ))
     }
 
+    /// Complete an offset write only after its disk synchronization.
+    /// Production adapters combine write and flush in one supported wire request.
+    async fn write_synchronized_at_byte_offset(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Bytes,
+    ) -> Result<()> {
+        self.write_at_byte_offset(seg, unit_bytes, byte_offset, data)
+            .await?;
+        self.fsync(seg).await
+    }
+
+    /// Synchronize ordered immutable views while retaining their owners.
+    async fn write_synchronized_views_at_byte_offset(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Vec<Bytes>,
+    ) -> Result<()> {
+        self.write_views_at_byte_offset(seg, unit_bytes, byte_offset, data)
+            .await?;
+        self.fsync(seg).await
+    }
+
     /// Write a conversion-data range without queueing behind ordinary writes.
     async fn write_priority_at_byte_offset(
         &self,

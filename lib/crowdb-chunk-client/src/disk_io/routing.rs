@@ -55,6 +55,12 @@ impl RoutedDiskWriter {
         })
     }
 
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn from_client_for_tests(client: Arc<DiskioClient>) -> Self {
+        Self { client }
+    }
+
     /// Publish a refreshed complete route generation.
     pub async fn refresh(&self, _service: &ServiceRegistryClient, _hardware: &HardwareClient) -> Result<()> {
         self.client
@@ -140,6 +146,46 @@ impl DiskWriter for RoutedDiskWriter {
                 byte_offset,
                 data,
                 Durability::Buffered,
+                self.client.normal_options(),
+            )
+            .await
+            .map_err(map_write_error)
+    }
+
+    async fn write_synchronized_at_byte_offset(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Bytes,
+    ) -> Result<()> {
+        let target = Self::target(seg, unit_bytes)?;
+        self.client
+            .write(
+                target,
+                byte_offset,
+                data,
+                Durability::Fsync,
+                self.client.normal_options(),
+            )
+            .await
+            .map_err(map_write_error)
+    }
+
+    async fn write_synchronized_views_at_byte_offset(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Vec<Bytes>,
+    ) -> Result<()> {
+        let target = Self::target(seg, unit_bytes)?;
+        self.client
+            .write_views(
+                target,
+                byte_offset,
+                data,
+                Durability::Fsync,
                 self.client.normal_options(),
             )
             .await

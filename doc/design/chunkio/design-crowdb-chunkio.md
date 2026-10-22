@@ -27,6 +27,15 @@ writer derives its shard scheme from that strip's metadata and retains its
 separate parity and repair flow. `ChunkReader` likewise dispatches each strip
 to mirror or EC recovery based on stored geometry.
 
+`MirrorStripFlow` routes both ordinary mirror writes and replacement images
+through synchronized `DiskWriter` operations. The production routing and metrics
+adapters preserve that completion contract: matching DiskIO peers perform ordered
+write and flush before one response. Oversized immutable view lists complete in
+byte order and only their final request synchronizes the preceding range. An old
+peer without synchronization proof uses the semantic client's explicit fsync
+compatibility path. A replacement is synchronized before ChunkDB publishes its
+new segment mapping; successful surviving replicas are retained.
+
 EC shard capacity is the persisted segment's `unit_count × unit_kb × 1024`,
 independent of the allocation-unit size. ISA-L consumes only each data shard's
 actual byte prefix. A partial first shard produces equally short code shards;

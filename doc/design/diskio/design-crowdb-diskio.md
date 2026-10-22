@@ -656,14 +656,20 @@ handle three message types. Message type IDs are in the diskio range
 Each request's control message is a flatbuffer with
 `{disk_id, zone_index, zone_offset, size}` (read also has
 `test_pattern_offset`); the write request additionally carries an
-`ordering_zone_offset` and a raw data payload of `size` bytes. The handler:
+`ordering_zone_offset`, `write_create_time_ms`, a `sync` option, and a raw data
+payload of exactly `size` bytes. The write handler validates the FlatBuffer,
+zone bounds and payload length before IO. The handler:
 1. Resolves `disk_id` to a `Disk` via `DiskSet`.
 2. Computes the physical offset: `zone.base_offset + zone_offset`.
-3. Calls `AlignedWriter::submit` for writes or `IoEngine::read`/`fsync` for
+3. Calls `AlignedWriter::submit_ordered` for writes or `IoEngine::read`/`fsync` for
    the other operations, with the disk handle, physical offset, buffer, and a
    completion callback.
-4. The completion callback builds the response and calls
-   `crowdb_rpc_server_submit_response`.
+4. A synchronized write submits its disk flush only after a complete successful
+   write. Its sole response follows that flush; buffered writes reply after the
+   write. Failed or short writes never flush or report synchronized success.
+5. Completion retains the disk, shared connection and request buffer through
+   both operations, then submits the response through the transport. Rejected
+   submission releases the caller-owned response frame.
 
 The data payload is passed from the crowdb-rpc frame decoder to
 `AlignedWriter`. Block-size-one writes remain zero-copy on the server; padded
@@ -677,8 +683,8 @@ field is ignored and retained only for schema compatibility.
 
 Flatbuffer schemas (`diskio.fbs`):
 - `DiskWriteRequest { disk_id, zone_index, zone_offset, size,
-  ordering_zone_offset }`
-- `DiskWriteResponse { ret_code }`
+  ordering_zone_offset, write_create_time_ms, sync }`
+- `DiskWriteResponse { ret_code, sync_completed }`
 - `DiskReadRequest { disk_id, zone_index, zone_offset, size, test_pattern_offset }`
   (`test_pattern_offset` used by NullDisk for deterministic content;
   default 0 = start of disk/object)
@@ -732,7 +738,8 @@ permit concurrent submission: connections can reorder arrivals, and the
 aligned writer's partial-tail padding can overwrite a later frame. Separate
 caller operations on that block must obey the same ordering. Independently
 owned strip blocks and different disks holding EC shards or mirror replicas
-may run concurrently. Requested fsync runs once after every frame succeeds;
+may run concurrently. Only the final frame requests synchronization, after
+preceding frames have completed. Its flush covers the whole preceding range;
 a frame error stops the remaining submissions.
 
 Input arithmetic, segment bounds, and wire-size limits are checked before RPC
@@ -740,9 +747,14 @@ admission. Reads retry transient transport outcomes within the original
 deadline. Writes can retry only the same immutable bytes at the same allocated
 location; partial writes and permanent disk errors return immediately, while
 an unresolved admitted write is reported as ambiguous. Durable writes are not
-acknowledged until a successful disk fsync; an fsync can be repeated after an
-ambiguous response. The lifecycle no-reuse window is what makes an identical
-write retry safe.
+acknowledged until successful synchronization. A new server proves this with
+`sync_completed=true` after write and flush, requiring one request/reply. Old
+peers omit that proof; only then the client uses explicit fsync within the same
+original deadline. The compatibility path does not repeat the write. A failed
+flush returns `FsyncFailed`, exposed as `DurabilityFailure`; no failure is a
+proof of synchronization. Independent fsync remains available and can be
+repeated after an ambiguous response. The lifecycle no-reuse window is what
+makes an identical write retry safe.
 
 Status exposes route generation and age, topology and pool counts, healthy
 connections, operation/retry/backpressure/ambiguity counters, and operation
@@ -757,8 +769,10 @@ the crate's `test-util` feature.
   followed by a `read(segment, None)` on the same `Segment` returns
   the same bytes. Holds for `UringEngine`, `BlockingEngine`, and
   `DummyEngine` (with rule-based read content).
-- **I2 (durability)**: A `write` followed by `fsync` followed by
-  process restart returns the written data on re-read.
+- **I2 (durability)**: A successful synchronized write, or a write followed
+  by successful explicit fsync, retains the written data across process restart
+  when its backing media remains available. A synchronized response follows
+  both write and flush, with exactly one completion.
 - **I3 (offset correctness)**: The physical offset for an I/O is
   `zone.base_offset + zone_offset`, where `zone` is looked up by
   `zone_index` from the `Disk`'s zone records.

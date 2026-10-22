@@ -108,16 +108,16 @@ impl MirrorStripFlow {
                 last_error = "replacement allocation returned no segment".into();
                 continue;
             };
-            let write = self
-                .disk_writer
-                .write_at_byte_offset(&replacement, unit_bytes, 0, image.clone())
-                .await;
-            let sync = if write.is_ok() && self.sync {
-                self.disk_writer.fsync(&replacement).await
+            let write = if self.sync {
+                self.disk_writer
+                    .write_synchronized_at_byte_offset(&replacement, unit_bytes, 0, image.clone())
+                    .await
             } else {
-                Ok(())
+                self.disk_writer
+                    .write_at_byte_offset(&replacement, unit_bytes, 0, image.clone())
+                    .await
             };
-            if let Err(error) = write.and(sync) {
+            if let Err(error) = write {
                 last_error = error.to_string();
                 if let Some(disk) = replacement.disk_id {
                     self.failed_disks.insert(disk);

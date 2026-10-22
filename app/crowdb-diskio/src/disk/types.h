@@ -70,6 +70,7 @@ enum class IoRetCode : int16_t {
     InvalidAlignment = 5,
     ConnectionError  = 6,
     OldRequest       = 8,
+    FsyncFailed      = 9,
 };
 
 } // namespace crowdb::diskio

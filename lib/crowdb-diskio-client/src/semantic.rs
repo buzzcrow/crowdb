@@ -24,6 +24,7 @@ use crate::{DiskId, DiskioError, DiskioResult, DiskioStatus, SegmentTarget};
 mod connection;
 mod native_routes;
 pub use native_routes::NativeDiskRouteResolver;
+mod write;
 mod write_views;
 
 const TOPOLOGY_REFRESH_INTERVAL_MS: u64 = 5_000;
@@ -527,131 +528,6 @@ impl DiskioClient {
         Err(DiskioError::DeadlineExceeded)
     }
 
-    /// Write caller-owned bytes to an exact segment-relative range.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed input, topology, backpressure, disk, durability, or
-    /// ambiguous-outcome error.
-    pub async fn write(
-        &self,
-        target: SegmentTarget,
-        offset: u64,
-        data: Bytes,
-        durability: Durability,
-        options: OperationOptions,
-    ) -> DiskioResult<()> {
-        self.write_payload(
-            target,
-            offset,
-            WritePayload::Contiguous(data),
-            durability,
-            options,
-        )
-        .await
-    }
-
-    async fn write_payload(
-        &self,
-        target: SegmentTarget,
-        offset: u64,
-        data: WritePayload,
-        durability: Durability,
-        options: OperationOptions,
-    ) -> DiskioResult<()> {
-        self.refresh_topology_if_due().await;
-        if data.is_empty() {
-            return Err(DiskioError::InvalidInput("write data must be nonempty".into()));
-        }
-        let (zone_offset, _) = target.checked_range(offset, data.len())?;
-        let _inflight = self.begin_operation(OperationKind::Write, options.lane)?;
-        let mut backoff = self.config.reconnect_initial_backoff;
-        let mut last_error = None;
-        let mut only_backpressure = true;
-        for attempt in 0..self.config.retry_attempts {
-            let (route, selected) = self.select(target.disk_id, options.lane)?;
-            let write_target = WireWriteTarget {
-                disk_id: target.disk_id,
-                zone_index: target.zone_index,
-                zone_offset,
-                ordering_zone_offset: target.segment_base,
-            };
-            let submitted = match &data {
-                WritePayload::Contiguous(data) => {
-                    self.wire
-                        .write_segment_bytes(&self.server, &selected, write_target, data.clone())
-                }
-                WritePayload::Views(views) => self.wire.write_segment_views(
-                    &self.server,
-                    &selected,
-                    write_target,
-                    views.iter().cloned().collect(),
-                ),
-            };
-            let future = match submitted {
-                Ok(future) => future,
-                Err(error) => {
-                    let error = Self::classify_wire(error, OperationKind::Write);
-                    only_backpressure &= matches!(error, DiskioError::Backpressure(_));
-                    last_error = Some(error);
-                    if attempt + 1 < self.config.retry_attempts {
-                        if self
-                            .prepare_retry(&route, options.lane, &selected, &mut backoff, options.deadline)
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
-                        continue;
-                    }
-                    break;
-                }
-            };
-            match self
-                .await_write(future, options.deadline, OperationKind::Write)
-                .await
-            {
-                Ok(()) => {
-                    if durability == Durability::Fsync {
-                        self.fsync_inner(target.disk_id, options, true).await?;
-                    }
-                    return Ok(());
-                }
-                Err(DiskioError::PartialWrite) => return Err(DiskioError::PartialWrite),
-                Err(
-                    error @ (DiskioError::DiskFailure(_)
-                    | DiskioError::DiskNotFound
-                    | DiskioError::InvalidInput(_)),
-                ) => {
-                    return Err(error);
-                }
-                Err(error) => {
-                    only_backpressure = false;
-                    last_error = Some(error);
-                    if attempt + 1 < self.config.retry_attempts
-                        && self
-                            .prepare_retry(&route, options.lane, &selected, &mut backoff, options.deadline)
-                            .await
-                            .is_err()
-                    {
-                        break;
-                    }
-                }
-            }
-        }
-        self.counters.ambiguous_writes.fetch_add(1, Ordering::Relaxed);
-        if only_backpressure {
-            let Some(error @ DiskioError::Backpressure(_)) = last_error.as_ref() else {
-                return Err(DiskioError::AmbiguousWrite("completion was not observed".into()));
-            };
-            return Err(error.clone());
-        }
-        Err(DiskioError::AmbiguousWrite(last_error.map_or_else(
-            || "completion was not observed".into(),
-            |error| error.to_string(),
-        )))
-    }
-
     /// Flush all prior writes to one disk on the selected lane.
     ///
     /// # Errors
@@ -937,6 +813,9 @@ impl DiskioClient {
             WireError::Protocol(message) => DiskioError::Protocol(message),
             WireError::IoError(DiskIoRetCode::DiskNotExist) => DiskioError::DiskNotFound,
             WireError::IoError(DiskIoRetCode::PartialWrite) => DiskioError::PartialWrite,
+            WireError::IoError(DiskIoRetCode::FsyncFailed) => {
+                DiskioError::DurabilityFailure("DiskIO synchronized write flush failed".into())
+            }
             WireError::IoError(DiskIoRetCode::InvalidAlignment) => {
                 DiskioError::InvalidInput("DiskIO rejected address alignment".into())
             }

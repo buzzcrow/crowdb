@@ -36,6 +36,7 @@ pub struct WireWriteTarget {
     pub zone_index: u32,
     pub zone_offset: u64,
     pub ordering_zone_offset: u64,
+    pub sync: bool,
 }
 
 /// Disk I/O return codes (mirrors `FBDiskIoRetCode`).
@@ -52,6 +53,7 @@ pub enum DiskIoRetCode {
     /// Compatibility response from an older `DiskIO` server.
     StaleAllocation = 7,
     OldRequest = 8,
+    FsyncFailed = 9,
 }
 
 #[derive(Clone, Copy)]
@@ -61,6 +63,7 @@ struct WriteTarget {
     zone_offset: u64,
     size: u32,
     ordering_zone_offset: u64,
+    sync: bool,
 }
 
 impl From<i16> for DiskIoRetCode {
@@ -74,6 +77,7 @@ impl From<i16> for DiskIoRetCode {
             6 => Self::ConnectionError,
             7 => Self::StaleAllocation,
             8 => Self::OldRequest,
+            9 => Self::FsyncFailed,
             _ => Self::IoError,
         }
     }
@@ -165,6 +169,7 @@ impl WireClient {
                 zone_offset,
                 size,
                 ordering_zone_offset: zone_offset,
+                sync: false,
             },
             Buffer::from_vec(data),
         )
@@ -196,6 +201,7 @@ impl WireClient {
                 zone_offset,
                 size,
                 ordering_zone_offset: zone_offset,
+                sync: false,
             },
             Buffer::from_owned_bytes(data),
         )
@@ -224,6 +230,7 @@ impl WireClient {
                 zone_offset: target.zone_offset,
                 size,
                 ordering_zone_offset: target.ordering_zone_offset,
+                sync: target.sync,
             },
             Buffer::from_owned_bytes(data),
         )
@@ -259,6 +266,7 @@ impl WireClient {
                 size,
                 ordering_zone_offset: target.ordering_zone_offset,
                 write_create_time_ms: unix_time_ms(),
+                sync: target.sync,
             },
         );
         fbb.finish(off, None);
@@ -296,6 +304,7 @@ impl WireClient {
                 size: target.size,
                 ordering_zone_offset: target.ordering_zone_offset,
                 write_create_time_ms: unix_time_ms(),
+                sync: target.sync,
             },
         );
         fbb.finish(off, None);
@@ -390,6 +399,22 @@ impl WireClient {
     pub async fn await_write_response(fut: CallFuture) -> WireResult<DiskIoRetCode> {
         let resp = fut.await.map_err(WireError::from)?;
         parse_ret_code(&resp)
+    }
+
+    /// Parse the server's proof that a successful write was synchronized.
+    ///
+    /// # Errors
+    /// Rejects failed or invalid replies; old peers return no synchronization proof.
+    pub async fn await_synchronized_write_response(future: CallFuture) -> WireResult<bool> {
+        let response = future.await.map_err(WireError::from)?;
+        parse_ret_code(&response)?;
+        let control = response
+            .control
+            .as_ref()
+            .ok_or_else(|| WireError::Protocol("missing write response control".into()))?;
+        let reply = flatbuffers::root::<FBDiskWriteResponse>(control.bytes())
+            .map_err(|error| WireError::Protocol(format!("invalid write response: {error}")))?;
+        Ok(reply.sync_completed())
     }
 
     /// Parse a read response from a completed `CallFuture`.

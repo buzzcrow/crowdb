@@ -3,6 +3,9 @@
 
 //! Application-facing chunk IO client and prepared large writes.
 
+mod disk_metrics;
+use disk_metrics::MetricsDiskWriter;
+
 mod readiness;
 #[cfg(feature = "test-util")]
 pub use readiness::observe_readiness_phase_for_tests;
@@ -644,118 +647,6 @@ impl ChunkAllocator for MetricsChunkAllocator {
         req: DiscardReplacementSegmentRequest,
     ) -> Result<DiscardReplacementSegmentResponse> {
         self.inner.discard_replacement_segment(req).await
-    }
-}
-
-struct MetricsDiskWriter {
-    inner: Arc<dyn DiskWriter>,
-    metrics: Arc<ChunkClientMetrics>,
-}
-
-#[async_trait]
-impl DiskWriter for MetricsDiskWriter {
-    async fn write(&self, seg: &Segment, unit_bytes: u64, data: Bytes) -> Result<()> {
-        let bytes = u64::try_from(data.len()).unwrap_or(u64::MAX);
-        let mut operation = self.metrics.diskio_write.start();
-        let result = self.inner.write(seg, unit_bytes, data).await;
-        if result.is_ok() {
-            self.metrics.diskio_write_bytes.observe(bytes);
-            operation.mark_success();
-        }
-        result
-    }
-
-    async fn write_views(&self, seg: &Segment, unit_bytes: u64, data: Vec<Bytes>) -> Result<()> {
-        let bytes = data.iter().fold(0_u64, |total, view| {
-            total.saturating_add(u64::try_from(view.len()).unwrap_or(u64::MAX))
-        });
-        let mut operation = self.metrics.diskio_write.start();
-        let result = self.inner.write_views(seg, unit_bytes, data).await;
-        if result.is_ok() {
-            self.metrics.diskio_write_bytes.observe(bytes);
-            operation.mark_success();
-        }
-        result
-    }
-
-    async fn fsync(&self, seg: &Segment) -> Result<()> {
-        self.inner.fsync(seg).await
-    }
-
-    async fn write_views_at_byte_offset(
-        &self,
-        seg: &Segment,
-        unit_bytes: u64,
-        byte_offset: u64,
-        data: Vec<Bytes>,
-    ) -> Result<()> {
-        let bytes = data.iter().map(|view| view.len() as u64).sum();
-        let mut operation = self.metrics.diskio_write.start();
-        let result = self
-            .inner
-            .write_views_at_byte_offset(seg, unit_bytes, byte_offset, data)
-            .await;
-        if result.is_ok() {
-            self.metrics.diskio_write_bytes.observe(bytes);
-            operation.mark_success();
-        }
-        result
-    }
-
-    async fn write_priority_at_byte_offset(
-        &self,
-        seg: &Segment,
-        unit_bytes: u64,
-        byte_offset: u64,
-        data: Bytes,
-    ) -> Result<()> {
-        let bytes = u64::try_from(data.len()).unwrap_or(u64::MAX);
-        let mut operation = self.metrics.diskio_write.start();
-        let result = self
-            .inner
-            .write_priority_at_byte_offset(seg, unit_bytes, byte_offset, data)
-            .await;
-        if result.is_ok() {
-            self.metrics.diskio_write_bytes.observe(bytes);
-            operation.mark_success();
-        }
-        result
-    }
-
-    async fn fsync_priority(&self, seg: &Segment) -> Result<()> {
-        self.inner.fsync_priority(seg).await
-    }
-
-    async fn read(&self, seg: &Segment, unit_bytes: u64, segment_offset: u64, length: u32) -> Result<Bytes> {
-        let mut operation = self.metrics.diskio_read.start();
-        let result = self.inner.read(seg, unit_bytes, segment_offset, length).await;
-        if let Ok(data) = &result {
-            self.metrics
-                .diskio_read_bytes
-                .observe(u64::try_from(data.len()).unwrap_or(u64::MAX));
-            operation.mark_success();
-        }
-        result
-    }
-
-    async fn write_at_byte_offset(
-        &self,
-        seg: &Segment,
-        unit_bytes: u64,
-        byte_offset: u64,
-        data: Bytes,
-    ) -> Result<()> {
-        let bytes = u64::try_from(data.len()).unwrap_or(u64::MAX);
-        let mut operation = self.metrics.diskio_write.start();
-        let result = self
-            .inner
-            .write_at_byte_offset(seg, unit_bytes, byte_offset, data)
-            .await;
-        if result.is_ok() {
-            self.metrics.diskio_write_bytes.observe(bytes);
-            operation.mark_success();
-        }
-        result
     }
 }
 

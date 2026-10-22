@@ -39,7 +39,7 @@ namespace crowdb::diskio
 class DiskioServer
 {
   public:
-    DiskioServer(std::shared_ptr<DiskSet> disk_set, crowdb::rpc::SocketTransport *transport,
+    DiskioServer(std::shared_ptr<DiskSet> disk_set, crowdb::rpc::Transport *transport,
                  uint64_t max_write_request_age_ms = protocol::kDefaultMaxWriteRequestAgeMs,
                  uint64_t max_clock_skew_ms        = protocol::kDefaultMaxClockSkewMs);
 
@@ -56,7 +56,7 @@ class DiskioServer
 
   private:
     std::shared_ptr<DiskSet>                   disk_set_;
-    crowdb::rpc::SocketTransport              *transport_;
+    crowdb::rpc::Transport                    *transport_;
     AlignedWriter                              aligned_writer_;
     crowdb::common::metrics::LatencyHistogram *read_latency_;
     crowdb::common::metrics::LatencyHistogram *write_latency_;
@@ -68,7 +68,8 @@ class DiskioServer
     // ret_code is a proto::FBDiskIoRetCode value (int16_t to avoid
     // pulling the generated header into this .h).
     crowdb::rpc::Buffer *build_response_ctrl(crowdb::rpc::BufferPool *pool, uint64_t request_id,
-                                             uint64_t rpc_create_nano, int16_t ret_code, uint16_t msg_type);
+                                             uint64_t rpc_create_nano, int16_t ret_code, uint16_t msg_type,
+                                             bool sync_completed = false);
 
     // Send an error response synchronously (disk not found, parse error).
     void send_error_response(crowdb::rpc::Connection *conn, uint64_t request_id, uint64_t rpc_create_nano,

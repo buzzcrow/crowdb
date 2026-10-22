@@ -195,10 +195,17 @@ impl MirrorStripFlow {
             let segment = *segment;
             let disk_writer = Arc::clone(&self.disk_writer);
             let data = data.clone();
+            let sync = self.sync;
             writes.spawn(async move {
-                let result = disk_writer
-                    .write_views_at_byte_offset(&segment, unit_bytes, block_offset, data)
-                    .await;
+                let result = if sync {
+                    disk_writer
+                        .write_synchronized_views_at_byte_offset(&segment, unit_bytes, block_offset, data)
+                        .await
+                } else {
+                    disk_writer
+                        .write_views_at_byte_offset(&segment, unit_bytes, block_offset, data)
+                        .await
+                };
                 (segment, result)
             });
         }
@@ -209,24 +216,6 @@ impl MirrorStripFlow {
             if let Err(error) = result {
                 tracing::warn!(?chunk_id, strip_sequence, ?segment, %error, "mirror strip disk write failed");
                 failed.push(segment);
-            }
-        }
-        if self.sync {
-            let mut syncs = JoinSet::new();
-            for segment in segments {
-                if !failed.contains(segment) {
-                    let segment = *segment;
-                    let disk_writer = Arc::clone(&self.disk_writer);
-                    syncs.spawn(async move { (segment, disk_writer.fsync(&segment).await) });
-                }
-            }
-            while let Some(result) = syncs.join_next().await {
-                let (segment, result) = result
-                    .map_err(|error| IoError::WriteFailed(format!("mirror fsync task failed: {error}")))?;
-                if let Err(error) = result {
-                    tracing::warn!(?chunk_id, strip_sequence, ?segment, %error, "mirror strip fsync failed");
-                    failed.push(segment);
-                }
             }
         }
         Ok(failed)

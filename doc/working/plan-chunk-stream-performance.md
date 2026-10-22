@@ -14,8 +14,8 @@ KV work, with compact locations, incremental directories, and bounded recovery.
 - Code audit: 2026-10-23, against the shared working tree. The first observed
   HEAD was `6a2a8796`; unrelated deployment work is proceeding independently.
 - Implementation starts after completed OCI deployment cleanup at `c3d7d64d`.
-  T01 is active: build matched release binaries, record baseline identities and
-  run the existing MemDisk/mem-block sentinels without changing their gates.
+  T01/T05–T07 are complete; T04 is active. Matched release identities and unchanged
+  sentinel results are retained under `r244-chunk-stream/baseline/`.
 - T02/T03 record Q1–Q4 design decisions only. The new append completion,
   framing, ownership, directory and performance contracts are not implemented.
 - Keep this plan live during implementation and delete it only with completed
@@ -139,9 +139,88 @@ adaptation rather than a new transport or storage engine.
   boundary only after these dependencies exist. T21–T26 provide consumer and
   production acceptance. No intermediate speed sample substitutes for them.
 
+## Matched baseline evidence
+
+- HEAD `fceee28e` code baseline; ten executable/library SHA256 identities in
+  `r244-chunk-stream/baseline/binaries.json`. Service, test-util fixture and bench
+  builds are outside measurement. Three logical native nodes use mem-block KV/
+  WAL and retained MemDisk; original mirror counts, queue/batch geometry and
+  regression gates are unchanged. All five deployment KVM guests are gracefully
+  stopped before measurement, with disks preserved.
+- Stream: all seven workloads complete with zero data errors/watchdogs. Six
+  original performance checks fail, as expected for the design gap. 4 KiB/1T:
+  147.47 ops/s, avg 6780 us, p99 7865 us; mirror avg 1222 us, cursor avg 2503 us,
+  directory publication avg 2969 us, directory build avg 11.79 us. 4 KiB/32T:
+  1841.59 ops/s, avg 17371 us, p99 36948 us. Large 1 MiB: 42.01 MiB/s;
+  rollover 4 MiB: 97.88 MiB/s; random 4 KiB: 22101.41 ops/s; replay: 159.42
+  MiB/s; GC: 11110.75 MiB/s. Complete counts/distributions/RSS/queues and fixture
+  data/logs are in `baseline/stream/` and `baseline/stream.log`.
+- Actual Chunk-KV: unchanged regression passes 30000 operations, 32 producers,
+  512-byte values, 25% reads; 2836 ops/s, avg 11015 us, p99 32363 us, zero errors.
+  Split/owner redistribution and retained replay pass. `baseline/chunk-kv/`
+  contains server phase perf logs, configs, RSS and results. Both exact fixture
+  shutdown receipts have `ok=true,error=null`. These are baseline results,
+  not completion of the new append/ownership/format contract.
+
+## Synchronized write implementation evidence
+
+- Request/response append-only schema slots, old-peer absence of proof and flush
+  failure values pass 16 protocol tests. The Rust and C++ schemas are generated
+  by their ordinary build paths, with no generated-file edits.
+- The semantic client propagates synchronization through contiguous and bounded
+  view requests. Old peers use explicit fsync; matching peers require one write
+  request/reply. Five actual TCP cases cover no early completion, legacy
+  fallback, buffered behavior, ordered view splitting and typed write/flush
+  failures without extra requests.
+- The actual C++ write handler retains disk/connection/payload through ordered
+  write and flush. Nine new delayed/failure/lifetime/ordering tests pass; all
+  165 DiskIO/build-tree CTests pass. Invalid control/payload/zone input performs
+  no IO. Full tree-lint exits 0 (existing warnings remain); the two new C++
+  files' focused lint has no diagnostics after ordinary style cleanup.
+- Mirror and replacement paths now use synchronized seams. Metrics forwarding
+  delegates those seams directly; it cannot reintroduce two requests. Two
+  production adapter-chain TCP tests pass for three required replicas and a
+  delayed replacement, with exactly one synchronized request per copy and no
+  explicit fsync. The full two-client suite passes 141 tests.
+- Final gates pass: full `test-cpp` has 709 native tests plus 85 Rust FFI/tool
+  tests, zero ignored; receipt `unit/cpp-abe7f7e1cc1f42b2b83021beea62b0ba/`
+  `results.json`. Three affected crates' all-target clippy, Access-server and
+  E2E-test compilation, Rust fmt and changed C++ format pass. One ordinary
+  clippy failure was redundant default updates in the new test allocator;
+  removed them and repeated the focused test/gate successfully. Logs are
+  `synchronized-{full-cpp,client-suite,rust-gate2,fmt-final,cpp-fmt}.log` under
+  `r244-chunk-stream/`. The two-client suite includes purpose, mirror repair,
+  reads and native-buffer forwarding. New bytes/recovery/lifecycle contracts
+  still require the later production acceptance.
+- This changes RPC synchronization only. Append still commits ChunkDB cursors
+  and Stream directories until the ownership/framing/recovery dependencies are
+  implemented; the six failing baseline performance gates remain unmet.
+
+## Compatibility execution notes
+
+- Synchronized writes append `sync` after the existing request fields and
+  `sync_completed` after the existing response fields. A successful new server
+  sets the proof only after ordered write and flush. An absent/false proof on an
+  otherwise successful synchronized request uses the existing explicit fsync
+  path within the original deadline; this is the safe old-server path, not a
+  repeated write. New matching peers need one request/reply. No capability cache
+  grants durability authority. Buffered requests retain their original behavior.
+- A dedicated flush-failure return code preserves `DurabilityFailure` separately
+  from failed/partial writes. Every constructor, the native C++ enum and the
+  Rust semantic classifier must agree. Unknown/failed responses cannot be
+  interpreted as synchronized success.
+- The actual C++ handler tests use delayed write/flush completions with real
+  FlatBuffers requests. Retain the disk, request buffer and shared connection
+  until the sole completion; rejected response submission retains caller
+  ownership and must release its frame. A transport-interface constructor seam
+  permits deterministic inspection without adding production locks.
+- These notes settle the wire portion of T04 only. Persisted directory/frame
+  versioning, legacy cursor finalization and resumable migration remain T04/T08/
+  T09 work and are not marked complete by this compatibility path.
+
 ## Phase 0 — Establish evidence and settle contracts
 
-- [~] **T01 — Capture a matched implementation baseline**: retain release
+- [x] **T01 — Capture a matched implementation baseline**: retain release
   identities, exact three-node fixture parameters, mirror count, checkpoints,
   queue/batch geometry, RSS, phase distributions, head/page counts, errors, and
   cleanup receipts for Stream and actual Chunk-KV. Use retained MemDisk and
@@ -167,7 +246,7 @@ adaptation rather than a new transport or storage engine.
   this check does not claim tests or code are complete. Files:
   `doc/backlog/R244-chunk-stream-incremental-directory-publication.md`,
   `doc/design/chunkds/design-crowdb-chunk-stream.md`.
-- [ ] **T04 — Define format and wire compatibility**: inventory old bincode
+- [~] **T04 — Define format and wire compatibility**: inventory old bincode
   manifests/pages, shared frames, and current wire consumers; define version
   detection and supported read/migration/rollout behavior. Finalize legacy Stream
   chunks at their persisted durable cursor before grouped writes, preserving
@@ -187,7 +266,7 @@ adaptation rather than a new transport or storage engine.
 
 ## Phase 1 — Combine write and synchronization
 
-- [ ] **T05 — Add the synchronized wire contract**: append the sync option
+- [x] **T05 — Add the synchronized wire contract**: append the sync option
   without reusing retired slots; update contiguous and view wire constructors
   and protocol tests. Exercise both generated Rust and C++ schemas through
   their existing generators; do not hand-edit generated files. Apply T04's
@@ -196,7 +275,7 @@ adaptation rather than a new transport or storage engine.
   `lib/crowdb-protocol/build.rs`, `lib/crowdb-rpc/CMakeLists.txt`,
   `lib/crowdb-diskio-client/src/client.rs`,
   `lib/crowdb-protocol/tests/diskio_wire_test.rs` (new).
-- [ ] **T06 — Complete write/flush through one server response**: make
+- [x] **T06 — Complete write/flush through one server response**: make
   `DiskioServer::handle_write` await ordered write and, when requested, flush
   before its sole reply. Retain buffer/disk/connection lifetimes through both
   callbacks. Short/failed writes and failed flushes cannot produce success or
@@ -205,7 +284,7 @@ adaptation rather than a new transport or storage engine.
   `app/crowdb-diskio/src/rpc/dio_server.h`,
   `app/crowdb-diskio/tests/dio_server_write_test.cpp` (new),
   `app/crowdb-diskio/CMakeLists.txt`.
-- [ ] **T07 — Propagate synchronization through mirror writes and repair**:
+- [x] **T07 — Propagate synchronization through mirror writes and repair**:
   replace the client write-reply/fsync-reply sequence for supported peers.
   Preserve bounded view splitting and same-strip ordering; flush coverage must
   include preceding fragments before append completion. Extend the `DiskWriter`

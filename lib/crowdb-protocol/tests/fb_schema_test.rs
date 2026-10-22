@@ -164,6 +164,7 @@ fn disk_write_request_round_trip() {
             size: 4096,
             ordering_zone_offset: 2048,
             write_create_time_ms: 1234,
+            sync: false,
         },
     );
     fbb.finish(req, None);

@@ -12,8 +12,8 @@ impl DiskioClient {
     ///
     /// Returns a typed input, topology, backpressure, disk, durability, or
     /// ambiguous-outcome error. Larger view lists use consecutive bounded RPC
-    /// frames without copying payload. Frames complete in byte order; requested
-    /// fsync follows the whole range.
+    /// frames without copying payload. Frames complete in byte order; the last
+    /// request synchronizes the whole range when requested.
     pub async fn write_views(
         &self,
         target: SegmentTarget,
@@ -66,14 +66,15 @@ impl DiskioClient {
                 target,
                 position,
                 WritePayload::Views(batch.into()),
-                Durability::Buffered,
+                if views.len() == 0 {
+                    durability
+                } else {
+                    Durability::Buffered
+                },
                 options,
             )
             .await?;
             position += length as u64;
-        }
-        if durability == Durability::Fsync {
-            self.fsync(target.disk_id, options).await?;
         }
         Ok(())
     }
