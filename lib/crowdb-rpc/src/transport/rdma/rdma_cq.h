@@ -26,6 +26,8 @@ struct RdmaTransport::CompletionQueue
     };
 
     std::vector<DeferredReceive> deferred;
+    uint64_t                     deferred_epoch = 0;
+    std::atomic<int>             control_wait_ms{1000};
 
     struct ConnectionBinding
     {

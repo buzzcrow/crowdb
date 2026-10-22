@@ -4,6 +4,7 @@
 #include "rdma_cq.h"
 
 #include "crowdb-rpc/transport/rdma/rdma_transport.h"
+#include "rdma_control_stream.h"
 #include "rdma_device.h"
 
 #ifdef CROWDB_RPC_HAVE_RDMA
@@ -90,6 +91,14 @@ void RdmaTransport::refresh_poll_stats() const
                                       std::memory_order_relaxed);
     stats_.registration_failures.store(memory_stats_->failures.load(std::memory_order_relaxed),
                                        std::memory_order_relaxed);
+    if (control_send_budget_ != nullptr) {
+        stats_.control_send_bytes.store(control_send_budget_->used(), std::memory_order_relaxed);
+        stats_.control_send_bytes_high_water.store(control_send_budget_->high_water(), std::memory_order_relaxed);
+        stats_.control_send_stalls.store(control_send_budget_->stalls(), std::memory_order_relaxed);
+        stats_.control_receive_bytes.store(control_receive_budget_->used(), std::memory_order_relaxed);
+        stats_.control_receive_bytes_high_water.store(control_receive_budget_->high_water(), std::memory_order_relaxed);
+        stats_.control_receive_stalls.store(control_receive_budget_->stalls(), std::memory_order_relaxed);
+    }
 }
 
 void RdmaTransport::destroy_completion_queues()

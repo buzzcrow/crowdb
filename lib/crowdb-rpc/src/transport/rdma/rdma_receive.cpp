@@ -8,11 +8,10 @@
 
 namespace crowdb::rpc
 {
-void RdmaTransport::release_completed_receive(WorkRequest *work, const ibv_wc &wc)
+bool RdmaTransport::release_completed_receive(WorkRequest *work, const ibv_wc &wc)
 {
     if (work->prefix != nullptr) {
-        release_completed_direct_receive(work, wc);
-        return;
+        return release_completed_direct_receive(work, wc);
     }
     auto fail = [&] {
         if (wc.status != IBV_WC_SUCCESS)
@@ -29,14 +28,14 @@ void RdmaTransport::release_completed_receive(WorkRequest *work, const ibv_wc &w
     if (wc.status != IBV_WC_SUCCESS || !work->conn->is_open() ||
         !work->slot->transition(BufferOwnership::PostedReceive, BufferOwnership::ReceiveInFlight)) {
         fail();
-        return;
+        return true;
     }
     RdmaAggregate aggregate;
     if (wc.byte_len > work->slot->capacity ||
         !parse_rdma_aggregate(std::span(work->slot->data, wc.byte_len), aggregate) ||
         !work->slot->transition(BufferOwnership::ReceiveInFlight, BufferOwnership::CallerOwned)) {
         fail();
-        return;
+        return true;
     }
 
     auto  connection       = std::move(work->conn);
@@ -67,6 +66,7 @@ void RdmaTransport::release_completed_receive(WorkRequest *work, const ibv_wc &w
             delete frame;
     }
     slot->release();
+    return true;
 }
 
 void RdmaTransport::repost_frame_release(void *context, Buffer *slot)

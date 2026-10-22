@@ -3,7 +3,9 @@
 
 #include "../../status_json.h"
 #include "crowdb-common/log.h"
+#include "rdma_control_stream.h"
 #include "rdma_cq.h"
+#include "rdma_offer.h"
 
 #ifdef CROWDB_RPC_HAVE_RDMA
 
@@ -14,12 +16,31 @@ namespace crowdb::rpc
 
 bool RdmaTransport::create_connection_pools(ConnectionPools &pools)
 {
-    const auto control_bytes = config_.receive_control_bytes();
-    pools.send               = make_pool(config_.send_arena_bytes, config_.sq_depth);
-    pools.recv               = make_pool(config_.receive_arena_bytes - control_bytes, config_.rq_depth);
+    const auto     control_bytes = config_.receive_control_bytes();
+    const uint64_t data_bytes    = config_.wire_layout == RdmaWireLayout::ControlData
+                                     ? uint64_t{config_.posted_receive_target} * pools.effective_data_capacity
+                                     : config_.receive_arena_bytes;
+    pools.send                   = make_pool(config_.send_arena_bytes, config_.sq_depth);
+    pools.recv                   = make_pool(data_bytes, config_.rq_depth);
     if (control_bytes != 0)
         pools.recv_control = make_pool(control_bytes, config_.posted_receive_target);
     return pools.send != nullptr && pools.recv != nullptr && (control_bytes == 0 || pools.recv_control != nullptr);
+}
+
+void RdmaTransport::configure_peer(ConnectionPools &pools, const RdmaCmOffer &peer)
+{
+    pools.peer_receive_slot_capacity     = peer.receive_slot_capacity;
+    pools.peer_receive_frame_limit       = peer.receive_frame_limit;
+    pools.peer_generation                = peer.generation;
+    pools.peer_max_control_message_bytes = peer.max_control_message_bytes;
+    pools.effective_data_capacity        = config_.data_slot_capacity();
+    if (config_.wire_layout == RdmaWireLayout::ControlData) {
+        pools.effective_data_capacity = std::min(
+            pools.effective_data_capacity, rdma_data_slot_capacity(peer.receive_slot_capacity, config_.wire_layout));
+        pools.control_receive = std::make_shared<ControlStreamReceiver>(
+            *control_receive_budget_, pools.effective_data_capacity, peer.generation, config_.max_control_message_bytes,
+            std::chrono::milliseconds(config_.control_assembly_timeout_ms));
+    }
 }
 
 RdmaTransport::ConnectionPools *RdmaTransport::pools_for(Connection *connection)
@@ -51,6 +72,11 @@ bool RdmaTransport::publish_cm_connection(rdma_cm_id *id, const std::shared_ptr<
     info.number("effective_max_recv_sge", pools->effective_capacity.max_recv_sge);
     info.string("wire_layout", config_.wire_layout == RdmaWireLayout::Contiguous ? "contiguous" : "control_data");
     info.number("peer_receive_frame_limit", pools->peer_receive_frame_limit);
+    info.number("effective_data_capacity", pools->effective_data_capacity);
+    info.number("peer_generation", pools->peer_generation);
+    info.number("peer_max_control_message_bytes", pools->peer_max_control_message_bytes);
+    info.number("effective_max_control_message_bytes",
+                std::min(config_.max_control_message_bytes, pools->peer_max_control_message_bytes));
     connection->transport_info_json_ = info.finish();
     std::scoped_lock lock(cm_mu_);
     if (rdma_migrate_id(id, cm_channel_) != 0)

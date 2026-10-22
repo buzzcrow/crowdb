@@ -155,22 +155,12 @@ std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int 
     pools->effective_capacity = qp_attr.cap;
     pools->cq_index           = reservation.queue->index;
     pools->reserved_capacity  = reservation.capacity;
-    if (!create_connection_pools(*pools)) {
-        rdma_destroy_qp(id);
-        rdma_destroy_id(id);
-        return nullptr;
-    }
-    auto connection = std::make_shared<Connection>(reinterpret_cast<int64_t>(id), addr, application_pool_);
+    auto connection           = std::make_shared<Connection>(reinterpret_cast<int64_t>(id), addr, application_pool_);
     set_connection_pools(connection.get(), pools);
     reservation.committed = true;
     connection->set_path(ConnectionPath::Rdma);
     connection->transport_handle = reinterpret_cast<uint64_t>(id->qp);
     install_connection_notifiers(connection, pools->cq_index);
-    if (!prime_receive(connection)) {
-        destroy_connection_qp(connection.get(), id);
-        rdma_destroy_id(id);
-        return nullptr;
-    }
     rdma_conn_param params{};
     const auto      local      = local_capability();
     const auto      offer      = serialize_rdma_offer(local, expected_peer);
@@ -210,9 +200,13 @@ std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int 
         rdma_destroy_id(id);
         return nullptr;
     }
-    pools->peer_receive_slot_capacity = peer_offer.receive_slot_capacity;
-    pools->peer_receive_frame_limit   = peer_offer.receive_frame_limit;
-    pools->qp_number                  = id->qp->qp_num;
+    configure_peer(*pools, peer_offer);
+    if (!create_connection_pools(*pools) || !prime_receive(connection)) {
+        destroy_connection_qp(connection.get(), id);
+        rdma_destroy_id(id);
+        return nullptr;
+    }
+    pools->qp_number = id->qp->qp_num;
     ibv_qp_attr receive_attributes{};
     receive_attributes.min_rnr_timer = config_.min_rnr_timer;
     if (ibv_modify_qp(id->qp, &receive_attributes, IBV_QP_MIN_RNR_TIMER) != 0) {
@@ -360,13 +354,12 @@ std::shared_ptr<Connection> RdmaTransport::accept()
         rdma_destroy_id(id);
         return nullptr;
     }
-    auto pools                        = std::make_shared<ConnectionPools>(config_.send_queue_capacity);
-    pools->peer_receive_slot_capacity = peer_offer.receive_slot_capacity;
-    pools->peer_receive_frame_limit   = peer_offer.receive_frame_limit;
-    pools->qp_number                  = id->qp->qp_num;
-    pools->effective_capacity         = qp_attr.cap;
-    pools->cq_index                   = reservation.queue->index;
-    pools->reserved_capacity          = reservation.capacity;
+    auto pools = std::make_shared<ConnectionPools>(config_.send_queue_capacity);
+    configure_peer(*pools, peer_offer);
+    pools->qp_number          = id->qp->qp_num;
+    pools->effective_capacity = qp_attr.cap;
+    pools->cq_index           = reservation.queue->index;
+    pools->reserved_capacity  = reservation.capacity;
     if ((config_.wire_layout == RdmaWireLayout::ControlData &&
          (qp_attr.cap.max_send_sge < 2 || qp_attr.cap.max_recv_sge < 2)) ||
         !create_connection_pools(*pools)) {

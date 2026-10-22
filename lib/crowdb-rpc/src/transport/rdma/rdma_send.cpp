@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 #include "rdma_aggregate.h"
+#include "rdma_control_send.h"
 #include "rdma_cq.h"
 #include "rdma_direct_frame.h"
 
@@ -25,7 +26,8 @@ bool RdmaTransport::submit(Connection *connection, OutFrame *frame)
         return false;
     };
     Operation operation(repost_state_);
-    if (!operation || connection == nullptr || frame == nullptr || !connection->is_open())
+    if (!operation || connection == nullptr || frame == nullptr || !connection->is_open() ||
+        frame->header.msg_type == RPC_CONTROL_FRAGMENT_MSG_TYPE)
         return reject();
     auto *pools = pools_for(connection);
     if (pools == nullptr || pools->send == nullptr || pools->cq_index >= completion_queues_.size())
@@ -37,17 +39,40 @@ bool RdmaTransport::submit(Connection *connection, OutFrame *frame)
         direct
             ? std::min(config_.wire_slot_capacity, pools->peer_receive_slot_capacity)
             : std::min({config_.wire_slot_capacity, pools->peer_receive_slot_capacity, config_.aggregation_max_bytes});
-    if (!posting || !connection->is_open() ||
-        !(direct ? rdma_direct_frame_size(*frame, limit, bytes) : rdma_frame_size(*frame, limit, bytes)))
+    if (!posting || !connection->is_open())
         return reject();
+    const bool stream =
+        direct && frame->control != nullptr && frame->control->len > RDMA_CONTROL_CAPACITY - HEADER_SIZE;
+    Buffer *original_control = frame->control;
+    if (stream) {
+        auto *charged = admit_control_frame(*frame, *pools);
+        if (charged == nullptr) {
+            return reject();
+        }
+        frame->control = charged;
+        // The charged slice now owns the original reference before the CQ can
+        // consume it. Rejected publication restores the caller's ownership.
+        original_control->release();
+    }
+    else if (!(direct ? rdma_direct_frame_size(*frame, limit, bytes) : rdma_frame_size(*frame, limit, bytes))) {
+        return reject();
+    }
+    auto restore = [&] {
+        if (stream) {
+            auto *charged  = frame->control;
+            frame->control = original_control->ref_clone();
+            charged->release();
+        }
+        return reject();
+    };
     uint32_t queued = pools->queued_frames.load(std::memory_order_relaxed);
     do {
         if (queued >= config_.send_queue_capacity)
-            return reject();
+            return restore();
     } while (!pools->queued_frames.compare_exchange_weak(queued, queued + 1, std::memory_order_acq_rel));
     if (!pools->send_queue.try_push(frame)) {
         pools->queued_frames.fetch_sub(1, std::memory_order_release);
-        return reject();
+        return restore();
     }
     uint64_t peak = stats_.send_queue_high_water.load(std::memory_order_relaxed);
     while (peak < queued + 1 &&
@@ -181,6 +206,10 @@ void RdmaTransport::retire_sends(CompletionQueue &queue, Connection *connection)
         if (connection != nullptr && entry.connection.get() != connection)
             return false;
         auto &pools = *entry.pools;
+        pools.control_send.reset();
+        if (pools.control_receive != nullptr) {
+            pools.control_receive->reset();
+        }
         release_rdma_frames(std::exchange(pools.pending_frame, nullptr));
         OutFrame *frame = nullptr;
         while (pools.send_queue.drain(&frame, 1) != 0)

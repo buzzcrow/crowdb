@@ -63,6 +63,7 @@ void RdmaTransport::release_work(WorkRequest *work)
 {
     work->conn.reset();
     work->pools.reset();
+    work->control_send.reset();
     work->slot   = nullptr;
     work->prefix = nullptr;
     work->frame  = nullptr;
@@ -76,14 +77,17 @@ void RdmaTransport::dispatch_completion(const ibv_wc &wc)
         return;
     // Error completions do not provide a trustworthy opcode. The retained
     // work record owns dispatch, even after disconnect or QP destruction.
-    if (work->kind == WorkKind::Receive && wc.status == IBV_WC_SUCCESS && !work->conn->has_frame_handler()) {
+    bool deferred = work->kind == WorkKind::Receive && wc.status == IBV_WC_SUCCESS && work->pools != nullptr &&
+                    work->pools->deferred_receives != 0;
+    if (!deferred && work->kind == WorkKind::Receive && wc.status == IBV_WC_SUCCESS &&
+        !work->conn->has_frame_handler()) {
         RdmaAggregate aggregate;
         bool          valid       = false;
         bool          application = false;
         if (work->prefix != nullptr) {
             Header header;
             valid       = parse_rdma_direct_control(std::span(work->prefix->data, RDMA_CONTROL_CAPACITY),
-                                                    config_.data_slot_capacity(), wc.byte_len, header);
+                                                    work->pools->effective_data_capacity, wc.byte_len, header);
             application = valid && header.msg_type != RDMA_HANDSHAKE_MSG_TYPE;
         }
         else {
@@ -92,17 +96,20 @@ void RdmaTransport::dispatch_completion(const ibv_wc &wc)
             for (uint32_t index = 0; valid && index < aggregate.count; ++index)
                 application |= aggregate.frames[index].header.msg_type != RDMA_HANDSHAKE_MSG_TYPE;
         }
-        if (application) {
-            const uint32_t index = static_cast<uint32_t>(wc.wr_id) / config_.cq_depth;
-            completion_queues_[index]->deferred.push_back({work, wc});
-            stats_.pending_deferred_receives.fetch_add(1, std::memory_order_relaxed);
-            return;
-        }
+        deferred = application;
     }
-    if (work->kind == WorkKind::Receive)
-        release_completed_receive(work, wc);
-    else
+    if (work->kind != WorkKind::Receive) {
         release_completed_frame(work, wc);
+        return;
+    }
+    if (deferred || !release_completed_receive(work, wc)) {
+        const uint32_t index = static_cast<uint32_t>(wc.wr_id) / config_.cq_depth;
+        completion_queues_[index]->deferred.push_back({work, wc});
+        if (work->pools != nullptr) {
+            ++work->pools->deferred_receives;
+        }
+        stats_.pending_deferred_receives.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 void RdmaTransport::cancel_work(Connection *connection)

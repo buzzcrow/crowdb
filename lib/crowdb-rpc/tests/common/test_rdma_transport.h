@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "../../src/transport/rdma/rdma_control_codec.h"
 #include "../../src/transport/rdma/rdma_cq.h"
 #include "../../src/transport/rdma/rdma_device.h"
 #include "crowdb-rpc/transport/rdma/rdma_transport.h"
@@ -138,6 +139,53 @@ struct TestRdmaTransport
         return transport.completion_queues_[index / transport.config_.cq_depth]
                    ->work_requests[index % transport.config_.cq_depth]
                    .token.load(std::memory_order_acquire) == token;
+    }
+
+    static uint32_t flush_for_tests(RdmaTransport &transport, Connection *connection, uint32_t budget)
+    {
+        return transport.flush_connection(connection, *RdmaTransport::pools_for(connection), budget);
+    }
+
+    static bool post_fragment_for_tests(RdmaTransport &transport, Connection *connection,
+                                        const ControlFragment &fragment, std::span<const uint8_t> bytes)
+    {
+        auto *pools  = RdmaTransport::pools_for(connection);
+        auto *prefix = pools->send->alloc(RDMA_CONTROL_CAPACITY);
+        auto *data   = transport.send_pool_->alloc(static_cast<uint32_t>(bytes.size()));
+        if (prefix == nullptr || data == nullptr) {
+            if (prefix != nullptr) {
+                prefix->release();
+            }
+            if (data != nullptr) {
+                data->release();
+            }
+            return false;
+        }
+        if (!write_control_fragment(std::span(prefix->data, RDMA_CONTROL_CAPACITY), fragment, bytes.size())) {
+            prefix->release();
+            data->release();
+            return false;
+        }
+        prefix->len = RDMA_CONTROL_CAPACITY;
+        std::memcpy(data->data, bytes.data(), bytes.size());
+        data->len = static_cast<uint32_t>(bytes.size());
+        return transport.post_direct(connection, *pools, data, prefix, nullptr);
+    }
+
+    static std::vector<uint32_t> receive_capacities_for_tests(RdmaTransport &transport, Connection *connection)
+    {
+        std::vector<uint32_t> capacities;
+        for (const auto &queue : transport.completion_queues_) {
+            for (uint32_t index = 0; index < transport.config_.cq_depth; ++index) {
+                const auto &work  = queue->work_requests[index];
+                const auto  token = work.token.load(std::memory_order_acquire);
+                if (token != 0 && token != RdmaTransport::WORK_RESERVED &&
+                    work.kind == RdmaTransport::WorkKind::Receive && work.conn.get() == connection) {
+                    capacities.push_back(work.slot->capacity);
+                }
+            }
+        }
+        return capacities;
     }
 };
 

@@ -80,6 +80,7 @@ class ControlStreamReceiver
                                std::unique_ptr<Frame> &completed);
     [[nodiscard]] bool  active() const;
     [[nodiscard]] bool  expired(Clock::time_point now) const;
+    [[nodiscard]] int   wait_ms(Clock::time_point now) const;
     void                reset();
 
   private:

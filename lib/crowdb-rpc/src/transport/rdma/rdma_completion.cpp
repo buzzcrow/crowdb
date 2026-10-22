@@ -46,6 +46,7 @@ int RdmaTransport::drain_queue(uint32_t index, uint32_t max_completions, bool wa
     }
     if (max_completions == 0)
         max_completions = std::max(1U, config_.poll_batch);
+    check_control_deadlines(queue);
     const uint32_t          sent             = flush_sends(queue, max_completions);
     uint32_t                drained          = process_deferred(queue, max_completions);
     uint32_t                empty_polls      = 0;
@@ -163,7 +164,7 @@ bool RdmaTransport::prime_receive(const std::shared_ptr<Connection> &connection)
         return false;
     BufferPool *pool = pools->recv.get();
     for (uint32_t i = 0; i < depth; ++i) {
-        Buffer *slot = pool->alloc(config_.data_slot_capacity());
+        Buffer *slot = pool->alloc(pools->effective_data_capacity);
         if (slot == nullptr) {
             return false;
         }

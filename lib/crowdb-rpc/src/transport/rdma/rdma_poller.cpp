@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+#include "rdma_control_stream.h"
 #include "rdma_cq.h"
 
 #ifdef CROWDB_RPC_HAVE_RDMA
@@ -65,7 +66,8 @@ void RdmaTransport::run_poller(CompletionQueue *queue)
             queue->wake_state.fetch_and(~CompletionQueue::IDLE, std::memory_order_acq_rel);
             continue;
         }
-        const int count = queue->engine->wait(events.data(), events.size(), 1000);
+        const int count =
+            queue->engine->wait(events.data(), events.size(), queue->control_wait_ms.load(std::memory_order_relaxed));
         if (count > 0) {
             queue->event_wakeup.store(true, std::memory_order_release);
             stats_.cq_wakeups.fetch_add(1, std::memory_order_relaxed);
@@ -98,18 +100,30 @@ uint32_t RdmaTransport::process_deferred(CompletionQueue &queue, uint32_t max_co
 {
     uint32_t completed = 0;
     size_t   retained  = 0;
+    if (++queue.deferred_epoch == 0) {
+        ++queue.deferred_epoch;
+    }
     for (auto pending : queue.deferred) {
+        auto pools = pending.work->pools;
         if (completed < max_completions &&
-            (pending.work->conn->has_frame_handler() || !pending.work->conn->is_open())) {
+            (!pending.work->conn->is_open() ||
+             (pending.work->conn->has_frame_handler() &&
+              (pools == nullptr || pools->deferred_blocked_epoch != queue.deferred_epoch)))) {
             if (!pending.work->conn->is_open())
                 pending.completion.status = IBV_WC_WR_FLUSH_ERR;
-            release_completed_receive(pending.work, pending.completion);
-            stats_.pending_deferred_receives.fetch_sub(1, std::memory_order_relaxed);
-            ++completed;
+            if (release_completed_receive(pending.work, pending.completion)) {
+                if (pools != nullptr) {
+                    --pools->deferred_receives;
+                }
+                stats_.pending_deferred_receives.fetch_sub(1, std::memory_order_relaxed);
+                ++completed;
+                continue;
+            }
+            if (pools != nullptr) {
+                pools->deferred_blocked_epoch = queue.deferred_epoch;
+            }
         }
-        else {
-            queue.deferred[retained++] = pending;
-        }
+        queue.deferred[retained++] = pending;
     }
     queue.deferred.resize(retained);
     return completed;
@@ -120,8 +134,12 @@ void RdmaTransport::cancel_deferred(CompletionQueue &queue, Connection *connecti
     size_t retained = 0;
     for (auto pending : queue.deferred) {
         if (connection == nullptr || pending.work->conn.get() == connection) {
+            auto pools                = pending.work->pools;
             pending.completion.status = IBV_WC_WR_FLUSH_ERR;
-            release_completed_receive(pending.work, pending.completion);
+            (void)release_completed_receive(pending.work, pending.completion);
+            if (pools != nullptr) {
+                --pools->deferred_receives;
+            }
             stats_.pending_deferred_receives.fetch_sub(1, std::memory_order_relaxed);
         }
         else {
@@ -129,6 +147,30 @@ void RdmaTransport::cancel_deferred(CompletionQueue &queue, Connection *connecti
         }
     }
     queue.deferred.resize(retained);
+}
+
+void RdmaTransport::check_control_deadlines(CompletionQueue &queue)
+{
+    if (config_.wire_layout != RdmaWireLayout::ControlData) {
+        return;
+    }
+    int        wait_ms = 1000;
+    const auto now     = ControlStreamReceiver::Clock::now();
+    for (const auto &binding : queue.connections) {
+        auto &receiver = binding.pools->control_receive;
+        if (receiver == nullptr || !binding.connection->is_open()) {
+            continue;
+        }
+        if (receiver->expired(now)) {
+            stats_.control_stream_timeouts.fetch_add(1, std::memory_order_relaxed);
+            binding.connection->close();
+            receiver->reset();
+        }
+        else {
+            wait_ms = std::min(wait_ms, receiver->wait_ms(now));
+        }
+    }
+    queue.control_wait_ms.store(wait_ms, std::memory_order_relaxed);
 }
 
 } // namespace crowdb::rpc

@@ -3,6 +3,8 @@
 
 #include "rdma_control_stream.h"
 
+#include "crowdb-rpc/transport/rdma/rdma_capability.h"
+
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
@@ -20,7 +22,8 @@ ControlStreamReceiver::ControlStreamReceiver(ControlStreamBudget budget, uint32_
     BufferCapacityClass type;
     uint32_t            rounded = 0;
     if (!classify_rdma_capacity(capacity, &type, &rounded) || rounded != capacity || generation == 0 ||
-        max_message_bytes == 0 || max_message_bytes > budget_.limit() || timeout.count() <= 0)
+        max_message_bytes == 0 || max_message_bytes > INT32_MAX || max_message_bytes > budget_.limit() ||
+        timeout.count() <= 0)
         throw std::invalid_argument("invalid logical control stream bounds");
 }
 
@@ -29,7 +32,8 @@ bool ControlStreamReceiver::valid(const ControlFragment &f, size_t bytes) const
     if (f.request_id == 0 || f.stream_id == 0 || f.generation != generation_ || f.capacity != capacity_ ||
         f.total == 0 || f.total > max_message_bytes_ || f.offset > f.total || bytes > f.total - f.offset ||
         bytes > capacity_ || f.message_type == RPC_CONTROL_FRAGMENT_MSG_TYPE ||
-        (f.message_flags & ~FLAG_ONE_WAY) != 0 || (f.stream_flags & ~uint8_t{7}) != 0)
+        f.message_type == RDMA_HANDSHAKE_MSG_TYPE || (f.message_flags & ~FLAG_ONE_WAY) != 0 ||
+        (f.stream_flags & ~uint8_t{7}) != 0)
         return false;
     const bool start = (f.stream_flags & CONTROL_STREAM_START) != 0;
     const bool end   = (f.stream_flags & CONTROL_STREAM_END) != 0;
@@ -42,6 +46,9 @@ bool ControlStreamReceiver::valid(const ControlFragment &f, size_t bytes) const
 
 bool ControlStreamReceiver::matches(const ControlFragment &f) const
 {
+    if (!assembly_) {
+        return false;
+    }
     const auto &a     = *assembly_;
     const auto &first = a.first;
     return f.request_id == first.request_id && f.rpc_create_nano == first.rpc_create_nano &&
@@ -102,6 +109,15 @@ bool ControlStreamReceiver::active() const
 bool ControlStreamReceiver::expired(Clock::time_point now) const
 {
     return assembly_ && now >= assembly_->deadline;
+}
+
+int ControlStreamReceiver::wait_ms(Clock::time_point now) const
+{
+    if (!assembly_) {
+        return 1000;
+    }
+    const auto remaining = std::chrono::ceil<std::chrono::milliseconds>(assembly_->deadline - now).count();
+    return static_cast<int>(std::clamp<int64_t>(remaining, 1, 1000));
 }
 
 void ControlStreamReceiver::reset()

@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 #include "rdma_aggregate.h"
+#include "rdma_control_send.h"
 #include "rdma_cq.h"
 #include "rdma_direct_frame.h"
 
@@ -41,8 +42,16 @@ uint32_t RdmaTransport::flush_direct_connection(Connection *connection, Connecti
     auto      &queue = *completion_queues_[pools.cq_index];
     while (sent < budget && connection->is_open() &&
            pools.sends_in_flight < std::min(config_.sq_depth, pools.effective_capacity.max_send_wr)) {
-        if (pools.pending_frame == nullptr && pools.send_queue.drain(&pools.pending_frame, 1) == 0)
+        if (pools.control_send == nullptr && pools.pending_frame == nullptr &&
+            pools.send_queue.drain(&pools.pending_frame, 1) == 0)
             break;
+        if (pools.control_send != nullptr || pools.pending_frame->control->len > RDMA_CONTROL_CAPACITY - HEADER_SIZE) {
+            if (!flush_control_fragment(connection, pools)) {
+                break;
+            }
+            ++sent;
+            continue;
+        }
         auto    *frame = pools.pending_frame;
         uint32_t bytes = 0;
         if (!rdma_direct_frame_size(*frame, limit, bytes)) {
@@ -101,7 +110,7 @@ uint32_t RdmaTransport::flush_direct_connection(Connection *connection, Connecti
 }
 
 bool RdmaTransport::post_direct(Connection *connection, ConnectionPools &pools, Buffer *slot, Buffer *prefix,
-                                OutFrame *frame)
+                                OutFrame *frame, std::shared_ptr<ControlSendState> control_send)
 {
     Operation    posting(pools.posting_state);
     WorkRequest *work = nullptr;
@@ -110,6 +119,7 @@ bool RdmaTransport::post_direct(Connection *connection, ConnectionPools &pools, 
         (prefix == nullptr || prefix->transition(BufferOwnership::Available, BufferOwnership::SendInFlight)))
         work = acquire_work(WorkKind::Send, connection, slot, frame, prefix);
     if (work != nullptr) {
+        work->control_send             = std::move(control_send);
         auto                  *control = prefix == nullptr ? slot : prefix;
         std::array<ibv_sge, 2> regions{};
         regions[0] = {reinterpret_cast<uintptr_t>(control->data), RDMA_CONTROL_CAPACITY, control->registration_key};
@@ -125,7 +135,10 @@ bool RdmaTransport::post_direct(Connection *connection, ConnectionPools &pools, 
         if (ibv_post_send(reinterpret_cast<ibv_qp *>(connection->transport_handle), &request, &bad) == 0) {
             ++pools.sends_in_flight;
             stats_.sends.fetch_add(1, std::memory_order_relaxed);
-            stats_.rpc_frames_sent.fetch_add(1, std::memory_order_relaxed);
+            if (work->control_send == nullptr ||
+                work->control_send->fragment.offset + slot->len == work->control_send->fragment.total) {
+                stats_.rpc_frames_sent.fetch_add(1, std::memory_order_relaxed);
+            }
             stats_.wire_bytes_sent.fetch_add(RDMA_CONTROL_CAPACITY + (prefix == nullptr ? 0 : slot->len),
                                              std::memory_order_relaxed);
             return true;

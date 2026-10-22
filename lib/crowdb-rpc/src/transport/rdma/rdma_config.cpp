@@ -80,7 +80,8 @@ bool RdmaConfig::valid() const
            aggregation_max_bytes >= HEADER_SIZE && aggregation_max_bytes <= RDMA_DATAPATH_CAPACITY &&
            aggregation_max_frames > 0 && aggregation_max_frames <= 256 && send_queue_capacity >= 2 &&
            send_queue_capacity <= (1U << 20) && (send_queue_capacity & (send_queue_capacity - 1)) == 0 &&
-           max_control_message_bytes != 0 && max_control_message_bytes <= control_send_budget_bytes &&
+           max_control_message_bytes != 0 && max_control_message_bytes <= INT32_MAX &&
+           max_control_message_bytes <= control_send_budget_bytes &&
            max_control_message_bytes <= control_receive_budget_bytes && control_assembly_timeout_ms != 0;
 }
 

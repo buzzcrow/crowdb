@@ -69,7 +69,7 @@ Observed contract:
   depth and data capacity, as receive defaults already do. Preserve native
   `RdmaConfig::for_layout`'s existing 64 MiB send arena default for the accepted
   1 MiB datapath and ordinary RPC. Files: capability/offer/config/status, FFI.
-- [~] **Integrate CQ-owned fragmentation and assembly**: enqueue one original
+- [x] **Integrate CQ-owned fragmentation and assembly**: enqueue one original
   logical frame under byte/count admission. The CQ owner walks it in order,
   builds only the next bounded fragment, and holds immutable source owners
   through all WR completions. Do not materialize an unbounded fragment list.
@@ -83,7 +83,27 @@ Observed contract:
   complete original Frame. Move quota-owned control storage through C ABI
   without another full-message malloc/copy. Files: RDMA send/receive/CQ/CM
   pools, common framing/C ABI conversion and owner-lifetime tests.
-- [ ] **Wire Chunk-KV classes and typed settings**: add service defaults and
+
+  Implementation order within this task:
+  - Add private fragment codec and CQ-only sender cursor. Charge the original
+    control using a Buffer slice whose retained owner is the byte lease;
+    rejected submit restores the caller's original buffer. WR records retain
+    the single original cursor until every posted SEND has completed.
+  - Set effective data capacity and peer generation/maximum from CM. Active
+    connections create/prime receive storage after the validated CM reply and
+    before application publication, so asymmetric classes allocate/post the
+    actual minimum rather than a larger local default.
+  - Extend the existing CQ deferred receive vector for byte admission. A
+    per-QP count preserves FIFO, and a per-pass epoch prevents later fragments
+    overtaking an admission-blocked first fragment. Existing RQ owners stay
+    intact; no replacement buffers are carved.
+  - Check active assembly deadlines under CQ ownership and bound the event
+    wait to the nearest active deadline. Shared receive budget release wakes
+    CQ workers through the retained transport operation gate. Keep storage
+    destruction before returning byte admission.
+  - Record logical-message, fragment, copied-control, directional admission
+    and timeout counters separately from direct application payload counters.
+- [~] **Wire Chunk-KV classes and typed settings**: add service defaults and
   explicit RDMA configuration for metadata/aggregate connection groups,
   preserve TCP defaults and current serializers/errors/retries, and wire the
   Chunk-KV server plus Access storage construction. Cover point, mutation,
@@ -225,6 +245,28 @@ Negotiation checkpoint:
   all-feature Rust clippy, workspace `rs-lint`, format and scoped C++ lint
   passed. The existing request-count worker fixture requires separate client
   and server roles; its role-less invocation failed setup, not a payload test.
+
+CQ integration checkpoint:
+
+- The CQ walks one retained source control at a time. Each fragment fits the
+  actual negotiated 64 KiB/256 KiB/1 MiB data capacity; active CM setup primes
+  receive storage only after the reply establishes that minimum. Source bytes
+  stay charged through the final WR, and rejected queue publication restores
+  the caller's original buffer/reference.
+- Six actual HCA cases passed: asymmetric classes and exact round trips larger
+  than the entire two-slot RQ window; fixed polling/event worker FIFO pressure
+  with a held completed result and release wakeup; idle partial expiry;
+  source-owner/queue rejection; peer logical limit; invalid generation and
+  mismatched encoded-control identity. The 1 MiB case reconstructs 2,097,165
+  bytes per direction. A completed control remains readable after transport
+  destruction, then safely returns admission on final release.
+- `pixi run test-cpp` passed at
+  `.crowdb-runtime/artifacts/unit/cpp-6d344d3e3eaf45ba8d8e1d20a0cd1437/`:
+  543 tree, 189 RPC, 71 DiskIO and 35 common CTest cases, plus both FFI suites.
+  Optional HCA cases are skipped by that default gate and exercised separately.
+  No-verbs build passed all 159 CTest cases (one hardware skip). Format and
+  scoped C++ lint passed. Final RPC/XML and six HCA case results are under
+  `.crowdb-runtime/rdma-check/artifacts/r241-control/`.
 
 ```bash
 pixi run -- cargo fmt --all -- --check

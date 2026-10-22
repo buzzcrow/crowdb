@@ -20,6 +20,7 @@ std::string RdmaTransport::status_json() const
     status.string("cm_address", capability.cm_address);
     status.number("cm_port", capability.port);
     status.number("generation", capability.generation);
+    status.number("protocol_version", capability.protocol_version);
     status.boolean("aggregation_enabled", config_.aggregation_enabled);
     status.string("wire_layout", config_.wire_layout == RdmaWireLayout::Contiguous ? "contiguous" : "control_data");
     status.number("data_slot_capacity", config_.data_slot_capacity());
@@ -84,6 +85,17 @@ std::string RdmaTransport::status_json() const
     COUNTER_FIELD(cm_attempts);
     COUNTER_FIELD(preflight_attempts);
     COUNTER_FIELD(preflight_failures);
+    COUNTER_FIELD(control_fragments_sent);
+    COUNTER_FIELD(control_fragments_received);
+    COUNTER_FIELD(copied_control_send_bytes);
+    COUNTER_FIELD(copied_control_receive_bytes);
+    COUNTER_FIELD(control_stream_timeouts);
+    COUNTER_FIELD(control_send_bytes);
+    COUNTER_FIELD(control_send_bytes_high_water);
+    COUNTER_FIELD(control_send_stalls);
+    COUNTER_FIELD(control_receive_bytes);
+    COUNTER_FIELD(control_receive_bytes_high_water);
+    COUNTER_FIELD(control_receive_stalls);
 #    undef COUNTER_FIELD
     status.null("quarantined_bytes");
     std::string depths = "[";
