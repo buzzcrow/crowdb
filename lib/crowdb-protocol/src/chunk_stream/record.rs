@@ -21,6 +21,7 @@ pub enum StreamRecordEncoding {
     Legacy,
     Version1,
     Version2,
+    Version3,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -74,6 +75,7 @@ pub fn decode_stream_extent_page_record(
     let body = match encoding {
         StreamRecordEncoding::Legacy => bytes,
         StreamRecordEncoding::Version2 => return Err(StreamRecordError::UnsupportedVersion(2)),
+        StreamRecordEncoding::Version3 => return Err(StreamRecordError::UnsupportedVersion(3)),
         StreamRecordEncoding::Version1 => {
             if !bytes.starts_with(MAGIC) {
                 return Err(StreamRecordError::InvalidEnvelope);
@@ -166,6 +168,7 @@ pub(super) fn decode_versioned_envelope(
 pub enum StreamHeadRecord {
     Legacy(StreamManifest),
     Indexed(super::StreamDirectoryHead),
+    Migrating(super::StreamMigrationHead),
 }
 
 /// # Errors
@@ -177,6 +180,17 @@ pub fn encode_stream_directory_head(
         .validate()
         .map_err(|error| StreamRecordError::InvalidDirectory(error.to_string()))?;
     encode_versioned_record(2, MANIFEST, value)
+}
+
+/// # Errors
+/// Rejects invalid migration scope or an unencodable record.
+pub fn encode_stream_migration_head(
+    value: &super::StreamMigrationHead,
+) -> Result<Vec<u8>, StreamRecordError> {
+    value
+        .validate()
+        .map_err(|error| StreamRecordError::InvalidDirectory(error.to_string()))?;
+    encode_versioned_record(3, MANIFEST, value)
 }
 
 /// # Errors
@@ -197,6 +211,16 @@ pub fn decode_stream_head_record(bytes: &[u8]) -> Result<StreamHeadRecord, Strea
                 .validate()
                 .map_err(|error| StreamRecordError::InvalidDirectory(error.to_string()))?;
             Ok(StreamHeadRecord::Indexed(decoded.value))
+        }
+        3 => {
+            let body = decode_versioned_envelope(3, MANIFEST, bytes)?;
+            let decoded: DecodedStreamRecord<super::StreamMigrationHead> =
+                decode_body(body, StreamRecordEncoding::Version3)?;
+            decoded
+                .value
+                .validate()
+                .map_err(|error| StreamRecordError::InvalidDirectory(error.to_string()))?;
+            Ok(StreamHeadRecord::Migrating(decoded.value))
         }
         other => Err(StreamRecordError::UnsupportedVersion(other)),
     }

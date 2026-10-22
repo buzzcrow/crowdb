@@ -11,16 +11,20 @@ use crate::{Result, StreamError};
 
 impl KvStreamMetadataStore {
     pub(super) fn directory_control_op(head: &StreamDirectoryHead) -> Result<BatchOp> {
-        let key = StreamDirectoryControlKey {
-            stream_name: head.stream_name,
-        }
-        .to_bytes();
-        let value = StreamDirectoryControl {
+        Self::directory_control_scope_op(StreamDirectoryControl {
             stream_name: head.stream_name,
             purpose: head.purpose,
+        })
+    }
+
+    pub(super) fn directory_control_scope_op(scope: StreamDirectoryControl) -> Result<BatchOp> {
+        let key = StreamDirectoryControlKey {
+            stream_name: scope.stream_name,
         }
-        .encode()
-        .map_err(|error| StreamError::Corruption(error.to_string()))?;
+        .to_bytes();
+        let value = scope
+            .encode()
+            .map_err(|error| StreamError::Corruption(error.to_string()))?;
         Ok(BatchOp::Put {
             key: Bytes::from(key),
             value: Bytes::from(value),

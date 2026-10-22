@@ -276,6 +276,11 @@ Header for every binary key: `magic:1 | type_tag:2`.
   Tag `0x001b`. The fixed scope record's KV revision changes atomically with
   guard/root/pin visibility; conditional cleanup uses it to reject stale
   reachability observations.
+- **StreamLegacySourceKey** — `stream_name:16 bytes | source_id:32 bytes`.
+  Total 51 bytes. Tag `0x001c`. Source identity is SHA-256 of the exact frozen
+  legacy head bytes, with their original raw or version-1 encoding. This source
+  namespace is separate from immutable indexed roots of the same historical
+  epoch/generation.
 - **RackKey** — `rack_id:u64 BE`. Total 11 bytes.
   Tag `0x0002`. Scan prefix `magic|0x0002` = all racks.
 - **NodeKey** — `rack_id:u64 BE | node_id:u64 BE`. Total 19 bytes.
@@ -357,6 +362,11 @@ patterns are in `design-crowdb-kv-group0.md` §3):
   Tag `0x001b`. The fixed scope record's KV revision changes atomically with
   guard/root/pin visibility; conditional cleanup uses it to reject stale
   reachability observations.
+- **StreamLegacySourceKey** — `stream_name:16 bytes | source_id:32 bytes`.
+  Total 51 bytes. Tag `0x001c`. Source identity is SHA-256 of the exact frozen
+  legacy head bytes, with their original raw or version-1 encoding. This source
+  namespace is separate from immutable indexed roots of the same historical
+  epoch/generation.
 - **RackKey** — `/hw/rack/<rack_id>`.
 - **NodeKey** — `/hw/node/<rack_id>/<node_id>`.
 - **DiskGroupKey** — `/hw/dg/<rack_id>/<node_id>/<dg_id>`.

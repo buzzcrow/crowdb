@@ -10,9 +10,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod directory;
+mod legacy;
+mod migration;
 mod record;
 
 pub use directory::*;
+pub use legacy::{LegacyExtentPageView, LegacyManifestView};
+pub use migration::{legacy_stream_source_id, StreamLegacySourceId, StreamMigrationHead};
 pub use record::*;
 
 /// Durable purpose of a logical stream; absent legacy values are not inferred.

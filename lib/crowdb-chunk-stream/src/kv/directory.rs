@@ -16,9 +16,11 @@ use crate::{Result, StreamDirectoryStore, StreamError};
 
 mod cache;
 mod control;
+mod migration;
 mod publication;
 pub(super) use cache::DirectoryRecordCache;
 pub use cache::{DirectoryCacheSnapshot, DIRECTORY_PAGE_CACHE_SLOTS};
+pub use migration::StreamMigrationSnapshot;
 
 /// An immutable indexed head and the KV revision that fenced its observation.
 #[derive(Clone, Debug)]

@@ -13,9 +13,11 @@ use super::encoding::{
 };
 
 mod directory;
+mod migration;
 pub use directory::{
     StreamDirectoryControlKey, StreamDirectoryPageKey, StreamDirectoryRootKey, StreamPublicationGuardKey,
 };
+pub use migration::StreamLegacySourceKey;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct StreamBindingKey {

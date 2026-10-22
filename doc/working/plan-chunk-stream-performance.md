@@ -538,6 +538,39 @@ adaptation rather than a new transport or storage engine.
   `directory-cache-{clippy4,full-suite,fmt}.log`. Legacy worker open/read remains
   unchanged until migration and the complete indexed state machine are wired.
 
+## Legacy migration fence evidence (partial T04/T09)
+
+- Added zero-allocation borrowed views over the frozen legacy head/page column
+  formats. Selecting one fence/extent does not build Vec copies or walk all
+  history. Arrays have checked byte spans, matching column counts, strict
+  option/bool/version handling and no trailing data. Per-frame geometry remains
+  explicitly V1; arbitrary legacy page identities never select an envelope.
+- Four protocol cases use independent retained vectors, all optional head
+  fields, a 100000-fence head, malicious lengths, truncation, short V1 frames,
+  unknown versions and the bounded version-3 migration head. The migration head
+  names the exact immutable source by SHA, old epoch/generation and new session;
+  its reserved generation is not an indexed finite view.
+- Production KV saves the raw exact source under tag 0x001c before CAS-installing
+  the migration head and advancing retention control atomically. Existing cached
+  V1 publishers lose that head CAS and cannot reinterpret version 3. Reopening
+  the same session reloads the saved source without changing the marker revision.
+  Different sessions cannot silently adopt it before the owner-authority path.
+  Missing/corrupt sources fail without undoing the durable fence. Initial indexed
+  publication now checks an existing head before creating guards/control, so a
+  caller cannot stage an incompatible new stream over a legacy/migrating head.
+- Three additional real-KV cases pass for raw and enveloped retained heads,
+  17 unchanged source pages, cached old publishers, cold resume, foreign sessions,
+  stale epochs, conflicting backup keys and missing/corrupt sources. All-target
+  clippy, fmt and all 359 Protocol/Stream cases pass, zero ignored. Logs:
+  `migration-fence-{clippy2,protocol,tests,full-suite,fmt}.log`.
+- Remaining migration work is implementation, not a human decision: persist
+  bounded progress under the same head/control fence; protect its base and new
+  paths before staging pages; finalize legacy active bytes strictly at its
+  persisted cursor; preserve a converted old-generation root at the original
+  published tail; atomically replace the marker only when the entire converted
+  root is valid. Grouped writes use a fresh attached chunk afterwards. This does
+  not infer any append boundary in an uncommitted V1 suffix.
+
 ## Phase 0 — Establish evidence and settle contracts
 
 - [x] **T01 — Capture a matched implementation baseline**: retain release

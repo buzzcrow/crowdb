@@ -7,6 +7,8 @@ mod cache;
 mod indexed_metadata;
 #[path = "common/metadata_server.rs"]
 mod metadata_server;
+#[path = "indexed_kv_test/migration.rs"]
+mod migration;
 
 use bytes::Bytes;
 use crowdb_chunk_stream::{DirectoryIndex, KvStreamMetadataStore, StreamError, StreamMetadataStore};

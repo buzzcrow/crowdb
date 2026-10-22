@@ -15,6 +15,7 @@ use crowdb_protocol::key::{
 use futures::{stream, StreamExt, TryStreamExt};
 
 mod directory;
+pub use directory::StreamMigrationSnapshot;
 pub use directory::{DirectoryCacheSnapshot, DirectoryHeadSnapshot, DIRECTORY_PAGE_CACHE_SLOTS};
 mod pages;
 

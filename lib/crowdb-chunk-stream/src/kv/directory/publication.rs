@@ -39,6 +39,18 @@ impl KvStreamMetadataStore {
         mutation
             .validate_head(self, &head, expected.map(|snapshot| &snapshot.head))
             .await?;
+        if expected.is_none() {
+            if let Some(current) = self.load_directory_head(head.stream_name).await? {
+                if current.head == head {
+                    return Ok(current);
+                }
+                return Err(if current.head.writer_epoch > head.writer_epoch {
+                    StreamError::StaleWriter
+                } else {
+                    StreamError::WriteStalled
+                });
+            }
+        }
         let guard = StreamPublicationGuard {
             head: head.clone(),
             base: expected.map(|snapshot| snapshot.head.clone()),
