@@ -260,7 +260,22 @@ Existing implementation can be reused; these are the outstanding parts.
   CLI clippy pass; fixed CLI resumes that exact fourth container and seals UUID.
   Explicit source-guard exclusions cover only the audited host Python modules
   embedded by CLI, never the node services, entrypoint or build inputs.
-  **Gap:** cold changed-IP recovery acceptance and final registered host-runtime
+  Cold image-Z acceptance exposed a startup cycle: retained voter startup waits
+  ten seconds for KV health before exposing discovery, while the KV quorum needs
+  authenticated discovery to replace old IPs. Original voters repeatedly exit
+  with `KV server did not become ready`; the later nonvoter stays available.
+  All old management/SSH/RPC endpoints were proven unreachable; an independent
+  fifth host forwards only the explicitly stable public protocol URIs. Failed
+  state, old image, trust/identity hashes and all data remain preserved.
+  Split retained process startup from explicit admission's health wait. Startup
+  and health restarts now spawn promptly; current KV health is independently
+  probed, and a live unready child consumes no additional restart attempts.
+  The production resume/health regression passes with an unavailable health
+  endpoint, six observations, recovery on the same PID, failed health after one
+  actual restart and changed-key rejection. Full monitor tests, all-target clippy
+  and Rust format gates pass. The first gate caught an over-eager test helper
+  requiring unrelated fixtures' runtime directories; health setup is now lazy.
+  **Gap:** fresh-image cold changed-IP recovery acceptance and final registered host-runtime
   fixture/CI migration. Verify real four-member
   contacts with unchanged three-voter authority, preserved protocol witnesses
   and host-network address changes; retain all failed evidence.

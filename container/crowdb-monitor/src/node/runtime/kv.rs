@@ -24,7 +24,7 @@ pub(super) fn resume_allowed(profile: &DeploymentProfile, accepted: &AcceptedNod
 pub(super) async fn resume(profile: &DeploymentProfile, processes: &mut ProcessManager) -> Result<()> {
     if let Some(accepted) = durable::read(&profile.paths.data_root.join("accepted-node.json"))? {
         if resume_allowed(profile, &accepted)? {
-            start_kv(profile, processes, &accepted).await?;
+            ensure_process(profile, processes, &accepted).await?;
         }
     }
     Ok(())
@@ -98,6 +98,35 @@ pub(super) async fn start_kv(
     processes: &mut ProcessManager,
     accepted: &AcceptedNode,
 ) -> Result<()> {
+    ensure_process(profile, processes, accepted).await?;
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(1))
+        .build()?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if client
+            .get("http://127.0.0.1:10000/health")
+            .send()
+            .await
+            .is_ok_and(|reply| reply.status().is_success())
+        {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline || !processes.alive("kv")? {
+            return Err("KV server did not become ready".into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+// Retained replicas need authenticated discovery before they can form a quorum.
+// Starting their process must not make discovery wait for that quorum.
+pub(super) async fn ensure_process(
+    profile: &DeploymentProfile,
+    processes: &mut ProcessManager,
+    accepted: &AcceptedNode,
+) -> Result<()> {
     super::recovery::check(&profile.paths.data_root, accepted)?;
     if processes.owns("kv") && processes.alive("kv")? {
         return Ok(());
@@ -141,25 +170,7 @@ pub(super) async fn start_kv(
         }
     }
     processes.start(&kv, &BTreeMap::new()).await?;
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(1))
-        .build()?;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        if client
-            .get("http://127.0.0.1:10000/health")
-            .send()
-            .await
-            .is_ok_and(|reply| reply.status().is_success())
-        {
-            return Ok(());
-        }
-        if tokio::time::Instant::now() >= deadline || !processes.alive("kv")? {
-            return Err("KV server did not become ready".into());
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    Ok(())
 }
 pub(super) async fn ensure_start_allowed(profile: &crate::DeploymentProfile) -> super::Result<()> {
     use crowdb_protocol::mgmt::node::NodeServiceAction;

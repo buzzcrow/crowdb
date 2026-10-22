@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use super::{durable, start_kv, AcceptedNode, Result};
+use super::{durable, AcceptedNode, Result};
 use crate::{
     DeploymentProfile, MonitorPhase, MonitorStatus, ProcessManager, ServiceProfile, ServiceStatus,
     StatusStore,
@@ -50,7 +50,7 @@ impl NodeHealth {
                 && (!processes.owns("kv") || !processes.alive("kv")?)
             {
                 self.restart_allowed("kv")?;
-                start_kv(profile, processes, &accepted).await?;
+                super::kv::ensure_process(profile, processes, &accepted).await?;
             }
         }
         self.reconcile_services(profile, processes).await?;
@@ -62,7 +62,13 @@ impl NodeHealth {
             if processes.owns(id) {
                 let mut healthy = processes.alive(id)?;
                 if healthy {
-                    if let Some(intent) = retained
+                    if id == "kv" {
+                        healthy = self
+                            .probes
+                            .probe_service(&super::service(profile, "kv")?, &BTreeMap::new())
+                            .await
+                            .is_ok();
+                    } else if let Some(intent) = retained
                         .iter()
                         .find(|intent| intent.service_id == *id && intent.kind != "kv")
                     {
