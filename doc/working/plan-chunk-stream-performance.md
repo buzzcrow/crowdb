@@ -12,8 +12,7 @@ KV work, with compact locations, incremental directories, and bounded recovery.
 ## Status and scope
 
 - Deployment requirement R243 is complete at `c3d7d64d`; R244 is in progress.
-- T01/T02/T03/T05–T07 foundations are committed. T04 is the active cleanup and
-  integration task. Directory, shared-codec, ordinary writer and local-progress
+- T01/T02/T03/T05–T07 foundations are committed. T13 is the active retention foundation task. Directory, shared-codec, ordinary writer and local-progress
   foundations exist; the main Stream worker still needs grouped/indexed wiring,
   safe ownership/recovery, bounded retention and production acceptance.
 - User instruction: this product has never shipped. Support only the chosen
@@ -25,6 +24,11 @@ KV work, with compact locations, incremental directories, and bounded recovery.
   `r244-chunk-stream/baseline/`; six Stream performance gates are still red.
   No postimplementation performance acceptance is claimed.
 - The two pre-existing unrelated user edits stay outside this requirement.
+
+- With compatibility removed, finish independent directory retention foundations
+  before switching the main worker. T04's remaining predecessor Stream codec is
+  removed together with T08/T20 wiring; the ordinary codec and migration/service
+  fallback cleanup are already committed. No old-format support is reintroduced.
 
 ## Gap assessment
 
@@ -519,6 +523,43 @@ adaptation rather than a new transport or storage engine.
   Rust/C++ format pass. Logs: `canonical-frame-{full-suite,consumers,mirror-chain,
   clippy2,tree-lint,full-cpp,fmt,cpp-fmt}.log`. Actual product OCI E2E remains T26.
 
+## Bounded retention inventory foundation (partial T13)
+
+- `DirectoryRecords::scan_keys` reads only bounded keys/revisions through KV's
+  bounded scan. Typed root/page/publication inventory pages enforce a maximum of
+  128 keys, strict ordering/scope/shape, exclusive continuation and explicit
+  incomplete zero-progress errors. No record bodies are loaded for enumeration.
+- Memory uses its existing test lock and an ordered metadata map, selecting one
+  bounded lexicographic range without sorting or cloning all metadata. Production
+  gets no new lock or unsafe scope.
+- Two actual shared-backend tests pass: five root generations/pages paginate
+  exactly, scopes/groups do not leak, scans do not publish heads, invalid limits
+  fail, a malformed 128 KiB body is not decoded by key enumeration, and a damaged
+  key fails closed. Full Stream/clippy/fmt gates pass with the atomic-root tests
+  below.
+- This is an inventory primitive, not completed collection. Pins, root retirement,
+  chunk spans, reachability and control-revision-conditional deletion still need
+  implementation. Enumeration never authorizes deletion on its own.
+
+## Atomic retained-root publication (partial T11/T13)
+
+- Retained root records are now written in the same head-revision CAS batch as
+  the stable head, retention control and guard removal. Page writes remain
+  protected and precede that batch. A rejected head CAS cannot leave a root
+  record that looks published. No separate publication receipt is needed.
+- Existing root bytes are checked for conflicts before the batch. Competing
+  normal publishers cannot overwrite a retained root: they consume the same
+  expected head revision, so only one batch can win.
+- Deterministic and actual KV cases pass: injected failure/revision conflict
+  leaves pages guarded but no new root; retry keeps page identities and commits
+  head/root with identical bytes and the same KV revision. Existing earlier
+  roots survive. All nine indexed KV/cache tests also pass.
+- This establishes a published-root identity for later pins/retirement, not
+  completed pin/GC/consumer integration. Full Stream passes 82 tests, zero ignored;
+  all-target clippy and Rust fmt pass. Logs are
+  `directory-{root-atomic-tests,retention-full-stream,retention-clippy,
+  retention-fmt}.log` under `r244-chunk-stream/`.
+
 ## Remaining bounded-publication wiring
 
 - An active 256 MiB chunk can hold more than 65,536 tiny append locations.
@@ -565,7 +606,7 @@ adaptation rather than a new transport or storage engine.
   this check does not claim tests or code are complete. Files:
   `doc/backlog/R244-chunk-stream-incremental-directory-publication.md`,
   `doc/design/chunkds/design-crowdb-chunk-stream.md`.
-- [~] **T04 — Remove unpublished format/service compatibility**: the user
+- [ ] **T04 — Remove unpublished format/service compatibility**: the user
   confirms no product release or supported persisted old format exists. Remove
   old raw Chunk/Stream decoders, frozen schema copies, directory conversion,
   migration guards/progress/source keys, old-server sync fallback and revision-1
@@ -688,7 +729,7 @@ adaptation rather than a new transport or storage engine.
   `lib/crowdb-chunk-stream/src/extent_cache.rs`,
   `lib/crowdb-chunk-client/src/chunk/chunk_reader.rs`,
   `lib/crowdb-chunk-stream/tests/read_publication_test.rs`.
-- [ ] **T13 — Reclaim by roots and whole-chunk retention**: associate consumer
+- [~] **T13 — Reclaim by roots and whole-chunk retention**: associate consumer
   generation horizons with retained root references; protect current, pinned,
   and in-flight roots/pages. Replace generation-only page deletion. Trim cannot
   free a chunk while another extent or consumer still needs it. Bound cleanup

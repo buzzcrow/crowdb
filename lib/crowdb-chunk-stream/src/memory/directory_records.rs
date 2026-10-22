@@ -8,7 +8,7 @@ use std::sync::{
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use crowdb_kv_client::{BatchOp, Error, GetOutcome, Result, WriteOutcome};
+use crowdb_kv_client::{BatchOp, Error, GetOutcome, Result, ScanOutcome, WriteOutcome};
 use crowdb_protocol::key::{BinaryKey, StreamManifestHeadKey};
 use tokio::sync::Mutex;
 
@@ -57,6 +57,40 @@ impl DirectoryRecords for MemoryDirectoryRecords {
         ))
     }
 
+    async fn scan_keys(&self, prefix: &[u8], after: &[u8], limit: u32) -> Result<ScanOutcome> {
+        use std::ops::Bound::{Excluded, Included, Unbounded};
+        if limit == 0 || limit > u32::try_from(crate::MAX_DIRECTORY_SCAN_KEYS).expect("bounded key count") {
+            return Err(Error::Server("directory key scan limit is invalid".into()));
+        }
+        let limit = usize::try_from(limit).expect("bounded key count");
+        let state = self.state.lock().await;
+        let start = if after.is_empty() {
+            Included((self.group_id, prefix.to_vec()))
+        } else {
+            Excluded((self.group_id, after.to_vec()))
+        };
+        let mut records = state
+            .metadata_records
+            .range((start, Unbounded))
+            .take_while(|((group, key), _)| *group == self.group_id && key.starts_with(prefix));
+        let mut items = Vec::with_capacity(limit);
+        let mut commit_slots = Vec::with_capacity(limit);
+        for _ in 0..limit {
+            let Some(((_, key), record)) = records.next() else {
+                break;
+            };
+            items.push((Bytes::copy_from_slice(key), Bytes::new()));
+            commit_slots.push(record.revision);
+        }
+        Ok(ScanOutcome {
+            truncated: records.next().is_some(),
+            timed_out: false,
+            read_slot: state.metadata_revision,
+            scan_cutoff: state.metadata_revision,
+            items,
+            commit_slots,
+        })
+    }
     async fn put_cas(&self, key: &[u8], value: &[u8], revision: u64) -> Result<WriteOutcome> {
         self.batch_write_cas(
             &[BatchOp::Put {

@@ -19,9 +19,11 @@ mod cache;
 mod control;
 mod publication;
 mod records;
+mod scan;
 use cache::DirectoryRecordCache;
 pub use cache::{DirectoryCacheSnapshot, DIRECTORY_PAGE_CACHE_SLOTS};
 pub(crate) use records::DirectoryRecords;
+pub use scan::{DirectoryKeyScan, MAX_DIRECTORY_SCAN_KEYS};
 
 /// Shared indexed metadata state machine over conditional immutable records.
 #[derive(Clone)]

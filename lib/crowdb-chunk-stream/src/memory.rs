@@ -3,7 +3,7 @@
 
 //! In-memory storage and deterministic fault controls for stream tests.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -65,7 +65,7 @@ struct MemoryState {
     pages: HashMap<(StreamName, u64, u64, u64), StreamExtentPage>,
     chunks: HashMap<ChunkId, Chunk>,
     cursor_faults: VecDeque<CursorFault>,
-    metadata_records: HashMap<(u64, Vec<u8>), directory_records::MemoryRecord>,
+    metadata_records: BTreeMap<(u64, Vec<u8>), directory_records::MemoryRecord>,
     metadata_revision: u64,
     metadata_heads: HashMap<StreamName, u64>,
 }

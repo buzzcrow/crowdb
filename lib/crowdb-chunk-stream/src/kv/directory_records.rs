@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use async_trait::async_trait;
-use crowdb_kv_client::{BatchOp, CrowdbKvClient, GetOutcome, ReadMode, Result, WriteOutcome};
+use crowdb_kv_client::{BatchOp, CrowdbKvClient, GetOutcome, ReadMode, Result, ScanOutcome, WriteOutcome};
 use std::sync::Arc;
 
 use crate::directory::DirectoryRecords;
@@ -28,6 +28,20 @@ impl DirectoryRecords for KvDirectoryRecords {
     async fn get(&self, key: &[u8]) -> Result<GetOutcome> {
         self.kv
             .get(self.store_id, self.group_id, key, ReadMode::Linearizable, None)
+            .await
+    }
+    async fn scan_keys(&self, prefix: &[u8], after: &[u8], limit: u32) -> Result<ScanOutcome> {
+        self.kv
+            .scan_bounded(
+                self.store_id,
+                self.group_id,
+                prefix,
+                after,
+                &[],
+                limit,
+                true,
+                None,
+            )
             .await
     }
     async fn put_cas(&self, key: &[u8], value: &[u8], revision: u64) -> Result<WriteOutcome> {

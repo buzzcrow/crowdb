@@ -11,12 +11,12 @@ use crowdb_protocol::key::{
     BinaryKey, StreamDirectoryRootKey, StreamManifestHeadKey, StreamPublicationGuardKey,
 };
 
-use super::{kv_error, DirectoryHeadSnapshot, DirectoryMetadataStore};
+use super::{kv_error, DirectoryHeadSnapshot, DirectoryMetadataStore, GetOutcome};
 use crate::{DirectoryMutation, Result, StreamError};
 
 impl DirectoryMetadataStore {
-    /// Store a protected path mutation, retain its immutable root, then atomically
-    /// replace the head and remove its guard. No ordinary append calls this API.
+    /// Store protected immutable pages, then atomically retain their published
+    /// root, replace the head and remove its guard. Ordinary append does not call this.
     ///
     /// # Errors
     /// Rejects invalid candidates, conflicting immutable bytes, stale revision/epoch
@@ -69,9 +69,19 @@ impl DirectoryMetadataStore {
             identity: head.identity(),
         }
         .to_bytes();
-        self.put_directory_immutable(&root_key, &bytes).await?;
+        self.validate_directory_root_record(&root_key, &bytes).await?;
         self.replace_directory_head(expected, head, bytes, guard_key)
             .await
+    }
+
+    async fn validate_directory_root_record(&self, key: &[u8], bytes: &[u8]) -> Result<()> {
+        match self.records.get(key).await.map_err(kv_error)? {
+            GetOutcome::NotFound => Ok(()),
+            GetOutcome::Found { value, .. } if value.as_ref() == bytes => Ok(()),
+            GetOutcome::Found { .. } => Err(StreamError::Corruption(
+                "immutable directory root contains conflicting bytes".into(),
+            )),
+        }
     }
 
     async fn replace_directory_head(
@@ -85,11 +95,21 @@ impl DirectoryMetadataStore {
             stream_name: head.stream_name,
         }
         .to_bytes();
+        let root_key = StreamDirectoryRootKey {
+            stream_name: head.stream_name,
+            identity: head.identity(),
+        }
+        .to_bytes();
+        let value = Bytes::from(bytes);
         let ops = [
             Self::directory_control_op(&head)?,
             BatchOp::Put {
+                key: Bytes::from(root_key),
+                value: value.clone(),
+            },
+            BatchOp::Put {
                 key: Bytes::copy_from_slice(&key),
-                value: Bytes::from(bytes),
+                value,
             },
             BatchOp::Delete {
                 key: Bytes::from(guard_key),

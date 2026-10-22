@@ -21,8 +21,8 @@ pub mod memory;
 
 pub use directory::DirectoryMetadataStore;
 pub use directory::{
-    DirectoryIndex, DirectoryMutation, DirectoryRecord, DirectoryScan, StreamDirectoryStore,
-    MAX_DIRECTORY_MUTATION_EXTENTS,
+    DirectoryIndex, DirectoryKeyScan, DirectoryMutation, DirectoryRecord, DirectoryScan,
+    StreamDirectoryStore, MAX_DIRECTORY_MUTATION_EXTENTS, MAX_DIRECTORY_SCAN_KEYS,
 };
 pub use error::{Result, StreamError};
 pub use kv::{

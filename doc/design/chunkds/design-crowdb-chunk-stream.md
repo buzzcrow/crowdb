@@ -220,8 +220,11 @@ never increases the caller's logical offset.
 
 ### 3.4 Publication
 
-New pages are persisted before the manifest CAS, with at most eight page writes
-in flight. A partial publication leaves the previous root authoritative.
+New pages are protected and persisted before the manifest CAS, with at most
+eight page writes in flight. The retained immutable root record, stable head,
+retention control and candidate-guard removal commit in one head-revision CAS
+batch. A root record is therefore evidence of publication; a rejected CAS does
+not create one. A partial publication leaves the previous root authoritative.
 Unchanged pages retain their identities. The KV adapter may reuse the revision
 from an exact prior observed or successful head CAS. Conflict or ambiguous
 publication requires observing the durable head; the cache grants no authority.

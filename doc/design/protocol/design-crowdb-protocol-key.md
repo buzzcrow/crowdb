@@ -267,7 +267,8 @@ Header for every binary key: `magic:1 | type_tag:2`.
   Scan prefix `magic|0x0016|stream_name` selects one stream's independent pages.
 - **StreamDirectoryRootKey** — `stream_name:16 bytes | writer_epoch:u64 BE |
   generation:u64 BE`. Total 35 bytes. Tag `0x0017`.
-  Scan prefix `magic|0x0017|stream_name` selects retained immutable roots.
+  Scan prefix `magic|0x0017|stream_name` selects retained published roots. Root
+  records commit atomically with the stable head and retention control.
 - **StreamPublicationGuardKey** — `stream_name:16 bytes | publication_id:32
   bytes`. Total 51 bytes. Tag `0x0018`. Ordinary publication identity is SHA-256
   of the canonical indexed head record. The value protects the base root
