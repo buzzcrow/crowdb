@@ -47,9 +47,10 @@ pub(super) fn map_error(e: &LifecycleError) -> (FBChunkdbRetCode, String, u32, u
         }
         LifecycleError::Storage(_) => (FBChunkdbRetCode::Internal, e.to_string(), 0, 0),
         LifecycleError::InvalidRequest(_) => (FBChunkdbRetCode::InvalidArgument, e.to_string(), 0, 0),
-        LifecycleError::LockBusy | LifecycleError::LockTimeout | LifecycleError::ReservationLimit => {
-            (FBChunkdbRetCode::Unavailable, e.to_string(), 0, 0)
-        }
+        LifecycleError::LockBusy
+        | LifecycleError::LockTimeout
+        | LifecycleError::ReservationLimit
+        | LifecycleError::RecoveryDependency(_) => (FBChunkdbRetCode::Unavailable, e.to_string(), 0, 0),
         LifecycleError::StripIndexOutOfRange { .. } => {
             (FBChunkdbRetCode::StripIndexOutOfRange, e.to_string(), 0, 0)
         }

@@ -12,17 +12,22 @@ readiness, attached workloads and scoped cleanup.
 - **R243 remains incomplete.** Keep the requirement/backlog entry and outstanding
   acceptance work below. The sustained all-DiskIO recovery case now passes;
   this does not certify every runtime, protocol or formation/recovery acceptance.
-- Latest continuation: T25's six direct Docker/Compose/default-UI flows pass on
-  image U, including actual container recreation with retained protocol state.
-  F07 fixes polling starvation of post-mutation UI reads. T30a explicitly runs
-  the pending-free CLI regression against an owned normal node. All 180 Python
-  fixture tests, 277 UI tests/types and 173 monitor tests pass. The full current
-  CLI container scope completed: seven cases pass, including both startup
-  interruption checkpoints and sustained terminal-writer recovery. Observation
-  and data round trips fail on fresh Access chunk probes exceeding 750 ms;
-  both exact cases pass alone without changes. T16 owns the unresolved latency.
-  The full Console shared/Web/CLI component gate passes 389 tests (one ignored
-  pending-free case is explicitly executed by T30a).
+- Latest continuation: image W full CLI scope finishes **five passes, four failures**.
+  Pending-free accounting, Group-0 replay, sustained terminal-writer recovery,
+  hardware and logical round trips pass. Storage restart fails because ChunkDB
+  exits when a persisted retired-segment cleanup intent has no advertised DiskDB
+  owner; Access subsequently exhausts startup attempts. Attachment/observation/
+  data fail on current 750 ms metadata, ChunkDB or DiskIO observations. Preserve
+  `r243-deployment-continuation/cli-container-w/run-360b7c15aef94491aa29faa69a5f4a4e/`.
+  Current narrow latency fixes remove duplicate registry reads, parallelize
+  independent binding/registry and hardware/registry queries, and replace the
+  Access metadata scan with a routed point Get. Component gates pass; a fresh
+  image and complete acceptance rerun remain required.
+  Three Docker-free KVM Linux hosts now run the same W artifact through native
+  rootful containerd. Discovery, authenticated production admission and Group-0
+  formation pass. Whole-cluster check fails because supplied-media placement
+  differs from the automatic-only reserved disk-group IDs used by storage
+  observation. No native protocol/recreation pass is claimed yet.
 - 2026-10-22: user authorized continuation past the prior retry limit and asked
   for diagnosis of the long-standing failure. User subsequently requested F03
   and explicitly authorized continuing other R243 tasks afterward, starting T04.
@@ -253,6 +258,15 @@ Existing implementation can be reused; these are the outstanding parts.
     verifies stopped PIDs, and preserves KV/DiskDB/DiskIO processes. The original
     strict assertion passes in `pending-free-quiesced` on image V (one test,
     zero ignored). Three precondition tests and all 185 fixture tests pass.
+  - Startup recovery now retains the process in Initializing while exact durable
+    commit/free intents await DiskDB routing or transport recovery. Typed segment
+    corruption and permanent RPC failures remain terminal; stop cancels pending
+    work before RPC admission. Free results retain uncertain outcomes as pending.
+    Four new real-KV/DiskDB regression tests cover retired cleanup, deleted-chunk
+    free, cancellation and malformed segments. All 38 full-stack lifecycle tests,
+    three runtime/routed-probe tests, five Access cached-health tests, six DiskIO
+    client tests and three binding-fence/partition tests pass. Rust fmt and
+    affected all-target clippy pass. Fresh-image startup replay remains required.
   One earlier image-T Compose-three run returned HTTP 503 on namespace create,
   logging `malformed Iceberg record`. Exact-case reproduction and the final
   six-case image-U run pass, but no fix for that intermittent error is claimed.
@@ -411,10 +425,18 @@ Existing implementation can be reused; these are the outstanding parts.
     does not substitute for runtime execution of the remaining acceptance.
 - [ ] **T34 — Verify host runtimes honestly** (A08/A09/A31).
   Docker-hosted containerd profiles are separate from native Docker-free A31.
-  Native rootful containerd is unavailable locally: socket root:root 0660;
-  `sudo -n` requires a password. nerdctl 2.4.1 executes, which proves only tool
-  availability. Provide an actual Docker-free native runner and record artifact
-  digest/runtime-local image ID, hosts and results; do not count skips as passes.
+  Three independent KVM Linux VMs are now available under
+  `.crowdb-runtime/artifacts/r243-native-kvm/`, each with four supplied raw disks,
+  unique physical-host identity and private multicast-capable interfaces.
+  Native rootful containerd 2.2.1 + nerdctl 2.4.1 launch image W without any Docker
+  client/socket/daemon inside the hosts. Applied host network namespace, CPU and
+  memory cgroups are recorded; actual containerd restart preserves daemon ID.
+  Production discovery, authenticated admission and formation pass. First full
+  check correctly remains degraded: supplied media use compatible per-class
+  disk groups from their sealed journals, while aggregate observation assumes
+  the automatic-medium group reservation. Fix this observation mismatch and
+  verify all supplied disks/groups, then run actual three-protocol retained
+  read/write and container recreation before marking A31 complete.
 - [ ] **T35 — Final documentation/gates/cleanup** (A17/all acceptance IDs).
   Update deployment/OCI designs, help, examples, credentials/ports, tool guides
   and CI only for verified behavior. Old standard/single/bare-metal registry

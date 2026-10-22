@@ -25,6 +25,7 @@ use crowdb_protocol::chunk_domain::ChunkDomain;
 
 mod background;
 mod executor;
+mod recovery;
 
 #[derive(Clone)]
 pub struct RuntimeContext {
@@ -103,7 +104,7 @@ impl RuntimeContext {
                 .with_layout_validity(Duration::from_millis(config.lifecycle.layout_validity_ms)),
         );
         handler.rebuild_reservation_admission().await?;
-        handler.reconcile_pending_chunks().await?;
+        recovery::recover(&handler, self.stop_rx.clone()).await?;
         // Build the crowdb-rpc server. The RpcServer listens on the RPC
         // port and dispatches to ChunkdbRpcService handlers.
         let rpc_rt_handle = tokio::runtime::Handle::current();
