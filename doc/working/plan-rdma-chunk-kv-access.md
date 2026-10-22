@@ -42,7 +42,7 @@ Observed contract:
   the two advertised capacities and is used for actual RX allocation/posting
   as well as SEND admission; expose that effective value in immutable status.
 
-- [~] **Build bounded common control-stream primitives**: add portable byte
+- [x] **Build bounded common control-stream primitives**: add portable byte
   admission, fragment metadata validation and one-message assembly, tested
   without verbs. Reserve full logical length, validate request/stream ID,
   sequence, exact offset, total, class, generation and final flag. Default
@@ -52,18 +52,23 @@ Observed contract:
   final caller release. Preserve a failed/blocked fragment's existing owner;
   blocked admission must not carve replacement storage. Files: private RPC
   control-stream modules, `framing.h` control owner, focused portable tests.
-- [ ] **Negotiate and configure common streams**: add a small transport-owned
+- [~] **Negotiate and configure common streams**: add a small transport-owned
   fragment FlatBuffer in `common_msg.fbs`, preserving the common leading
   correlation fields, with reserved message type 4. Bump RDMA protocol to
   version four; the existing final 4 handshake bytes advertise maximum logical
-  control length and participate in the CM capability digest. Legacy decode
+  control length and participate in the CM capability digest. Extend the CM
+  offer from 48 to 52 bytes to carry that limit explicitly: the listener does
+  not retain the client's TCP preflight capability, so its digest alone cannot
+  provide the client's receive limit for response admission. Validate the
+  explicit limit against the capability when it is available. Legacy decode
   remains for explicit pre-payload TCP fallback. Extend native/env/status and
   a new versioned C ABI config entry without changing the version-one struct
   or existing configure entries. Rust typed config carries max message,
   per-direction budget and partial-assembly timeout (default 30 seconds).
-  `RdmaConfig::for_layout` derives send arena bytes from SQ depth and selected
-  data capacity, as receive defaults already do; 1 MiB and ordinary defaults
-  preserve their current values. Files: capability/offer/config/status, FFI.
+  The Chunk-KV typed class factory derives send arena bytes from selected SQ
+  depth and data capacity, as receive defaults already do. Preserve native
+  `RdmaConfig::for_layout`'s existing 64 MiB send arena default for the accepted
+  1 MiB datapath and ordinary RPC. Files: capability/offer/config/status, FFI.
 - [ ] **Integrate CQ-owned fragmentation and assembly**: enqueue one original
   logical frame under byte/count admission. The CQ owner walks it in order,
   builds only the next bounded fragment, and holds immutable source owners
@@ -184,6 +189,23 @@ E2E tests:
 - OCI E2E test configuration
 
 ## Verification gates
+
+Portable stream checkpoint:
+
+- All 11 focused native control-stream/C ABI cases passed, including exact
+  original allocation transfer through cloned FFI handles and held admission.
+- `pixi run test-cpp` passed: 543 tree, 177 RPC, 71 DiskIO and 35 common native
+  cases, plus both FFI suites. Full logs:
+  `.crowdb-runtime/artifacts/unit/cpp-4548393f6da54a0e9d3d3ba47a5cc115/`.
+- TCP-only/no-verbs build and all 155 CTest cases passed (hardware case skipped).
+  Changed C++ format and scoped `tree-lint` passed; style warnings remain.
+- The first full tree run failed the unchanged
+  `DoubleBuffer.ConcurrentReadersDuringFrequentFreezeAndDrainNoCorruption`
+  assertion `bad.load() == false`. The isolated 13-case DoubleBuffer suite
+  and subsequent complete 543-case tree run passed without source changes.
+  Preserve the initial failure at
+  `.crowdb-runtime/artifacts/unit/cpp-f0f7acd09fb541f59d048f81e3923cc2/00-tree.log`;
+  this checkpoint does not claim to repair that intermittent tree failure.
 
 ```bash
 pixi run -- cargo fmt --all -- --check

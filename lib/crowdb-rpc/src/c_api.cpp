@@ -337,50 +337,6 @@ void crowdb_rpc_client_destroy(crowdb_rpc_client_t client)
 namespace crowdb::rpc
 {
 
-// Wrap a pool Buffer in a crowdb_rpc_buffer_s handle. The handle holds a
-// ref_clone so the frame's release doesn't free the buffer.
-static crowdb_rpc_buffer_t wrap_pool_buffer(Buffer *buf)
-{
-    if (buf == nullptr || buf->len == 0) {
-        return nullptr;
-    }
-    Buffer *clone = buf->ref_clone();
-    if (clone == nullptr) {
-        return nullptr;
-    }
-    return new crowdb_rpc_buffer_s{clone};
-}
-
-void frame_to_c_handles(Frame *frame, crowdb_rpc_buffer_t *out_ctrl, crowdb_rpc_buffer_t *out_data)
-{
-    *out_ctrl = nullptr;
-    *out_data = nullptr;
-    if (frame == nullptr) {
-        return;
-    }
-    // Control: raw bytes from frame->control (flatbuffer). Wrap in a
-    // malloc'd Buffer with a standalone refcount so release() and
-    // ref_clone() work normally (no pool recycle on last ref).
-    if (!frame->control.empty()) {
-        auto *buf = new Buffer;
-        buf->data = static_cast<uint8_t *>(std::malloc(frame->control.size()));
-        if (buf->data != nullptr) {
-            std::memcpy(buf->data, frame->control.data(), frame->control.size());
-            buf->len      = static_cast<uint32_t>(frame->control.size());
-            buf->capacity = buf->len;
-            buf->ref      = new std::atomic<int32_t>(1);
-            buf->pool     = nullptr;
-            *out_ctrl     = new crowdb_rpc_buffer_s{buf};
-        }
-        else {
-            delete buf;
-        }
-    }
-    // Data is a pool Buffer — ref_clone so the frame's release doesn't free.
-    *out_data = wrap_pool_buffer(frame->data_buf);
-    delete frame;
-}
-
 static crowdb_rpc_status rpc_error_to_status(RpcError err)
 {
     switch (err) {

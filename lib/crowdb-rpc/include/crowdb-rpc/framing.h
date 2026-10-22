@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <vector>
 
 namespace crowdb::rpc
@@ -59,7 +60,10 @@ struct Frame
     // msg_size > 0. Common handlers (ping, unknown) use only request_id +
     // rpc_create_nano and ignore this; service-specific handlers (diskio)
     // parse the full flatbuffer from here.
-    std::vector<uint8_t> control;
+    // Optional logical-control admission retained through the final caller.
+    // Storage is destroyed before admission wakes blocked receivers.
+    std::shared_ptr<void> control_owner;
+    std::vector<uint8_t>  control;
 
     ~Frame()
     {
