@@ -14,6 +14,17 @@
 namespace crowdb::rpc
 {
 
+RdmaConfig RdmaConfig::for_layout(RdmaWireLayout layout, uint32_t data_capacity)
+{
+    RdmaConfig config;
+    config.wire_layout = layout;
+    const uint64_t wire =
+        static_cast<uint64_t>(data_capacity) + (layout == RdmaWireLayout::ControlData ? RDMA_CONTROL_CAPACITY : 0);
+    config.wire_slot_capacity  = wire > UINT32_MAX ? 0 : static_cast<uint32_t>(wire);
+    config.receive_arena_bytes = static_cast<uint64_t>(config.posted_receive_target) * config.wire_slot_capacity;
+    return config;
+}
+
 bool RdmaConfig::apply_environment()
 {
     auto read = []<typename T>(const char *name, T &destination) {

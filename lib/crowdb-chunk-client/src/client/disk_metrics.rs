@@ -12,6 +12,9 @@ pub(super) struct MetricsDiskWriter {
 
 #[async_trait]
 impl DiskWriter for MetricsDiskWriter {
+    fn producer_allocator(&self) -> Option<crowdb_rpc_ffi::ProducerBufferAllocator> {
+        self.inner.producer_allocator()
+    }
     async fn write(&self, seg: &Segment, unit_bytes: u64, data: Bytes) -> Result<()> {
         let bytes = u64::try_from(data.len()).unwrap_or(u64::MAX);
         let mut operation = self.metrics.diskio_write.start();

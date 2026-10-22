@@ -314,6 +314,14 @@ impl std::fmt::Debug for DiskioClient {
 }
 
 impl DiskioClient {
+    /// Producer storage uses the same device arena as the discovered routes.
+    /// An exhausted active arena returns no allocation, including in mixed
+    /// TCP/RDMA routing; it never expands the native registered budget.
+    #[must_use]
+    pub fn producer_allocator(&self) -> crowdb_rpc_ffi::ProducerBufferAllocator {
+        crowdb_rpc_ffi::ProducerBufferAllocator::new(Arc::clone(&self.server), false)
+    }
+
     /// Classify an actual wire return code without broadening ordinary read retries.
     #[cfg(feature = "test-util")]
     #[must_use]
@@ -330,7 +338,16 @@ impl DiskioClient {
     #[cfg(feature = "test-util")]
     pub fn connect_for_tests(routes: Vec<TestDiskRoute>, config: DiskioClientConfig) -> DiskioResult<Self> {
         config.validate(false)?;
-        let server = Arc::new(RpcServer::with_engines(None, 1, config.rpc_workers));
+        let server = Arc::new(
+            RpcServer::with_rdma_layout(
+                None,
+                1,
+                config.rpc_workers,
+                crowdb_rpc_ffi::RdmaWireLayout::ControlData,
+                1 << 20,
+            )
+            .map_err(|error| DiskioError::TransportUnavailable(format!("create RPC client: {error}")))?,
+        );
         server.set_send_queue_capacity(config.send_queue_capacity);
         server
             .listen("127.0.0.1", 0)

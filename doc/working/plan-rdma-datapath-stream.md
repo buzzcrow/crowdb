@@ -143,7 +143,7 @@ it does not add application aggregation or a flush timer.
   quarantine both regions exactly once on post/CQE/cancel/shutdown failure.
   Files: `rdma_receive.cpp`, receive posting, WorkRequest and repost context,
   real HCA ownership tests. Keep generic receive credit implicit in RQ slots.
-- [~] **Connect the actual HTTP producer**: allow `NativeBodyAllocator` to
+- [x] **Connect the actual HTTP producer**: allow `NativeBodyAllocator` to
   obtain its owner storage from the retained DiskIO producer allocator after
   route setup. Preserve its existing byte admission, AtomicWaker pressure and
   framed-owner API. Wire it through `ChunkIoClient` / `RoutedDiskWriter` /
@@ -165,13 +165,41 @@ it does not add application aggregation or a flush timer.
   malloc replacement or a terminal upload error. Keep the existing AtomicWaker
   release wakeups; add a bounded retry wake for native credits held by other
   producers or asynchronous transport completion.
-- [ ] **Close DiskIO handoff and read lifetime**: use exact view pointer/length,
+  The producer seam and 12 existing native-owner cases plus two new native
+  admission/view cases pass. The new opt-in real HCA case also passes: Hyper's
+  provider regions fill one complete 1 MiB framed owner, `BufferChain` retains
+  those views, and native status reports exactly 1 MiB direct payload and zero
+  client transport copy/fallback. This is provider-to-HCA integration, not yet
+  the full HTTP/DiskIO end-to-end acceptance. The first native build after
+  splitting server C ABI functions fails because the pool handle definition
+  was local to the old translation unit; move it into the existing internal
+  opaque-handle header. The corrected native build exits zero before tests.
+  All DiskIO-client tests and all RPC FFI tests pass with the new constructor.
+  Workspace clippy catches a missing doc-code backtick around `DiskIO`; fix
+  only that documentation warning and rerun the gate.
+  Final full C++/FFI gate passes at
+  `.crowdb-runtime/artifacts/unit/cpp-cba652da52b248cca3721baebc228927/`.
+  All 31 focused ChunkIO and 11 Access Server config/service cases pass;
+  workspace all-feature clippy, rs-lint, Rust/C++ format, scoped tree-lint
+  (zero exit with style warnings), and 146 TCP-only CTest items also pass
+  (one HCA-only item skipped). This closes producer wiring, while disk lifetime
+  and complete HTTP/service/OCI acceptance remain below.
+- [~] **Close DiskIO handoff and read lifetime**: use exact view pointer/length,
   validate request bounds before disk submission, transition data to DiskOwned
   until the callback returns, and retain connection state across delayed I/O.
   Registered read storage must cover engine completion and SEND completion;
   client receive storage remains held through returned Bytes. Preserve existing
   alignment handling and short-I/O/error semantics. Test delayed I/O, queue
   pressure, held caller buffers, error, cancellation and connection shutdown.
+  Retain `SocketTransport` and its default application pool through asynchronous
+  DiskIO callbacks: `RpcServer` owns a shared transport, and that transport owns
+  its default pool. Expose the shared transport for the DiskIO constructor;
+  completion closures retain it and their connection, with global metric
+  pointers and static response builders rather than raw `DiskioServer *`.
+  A stopped connection skips reply submission. The existing AlignedWriter
+  destructor drains its own queued operations; its block-size-one fast path,
+  reads and fsync callbacks must remain independently safe after the service
+  facade is destroyed. No new completion-path mutex is needed.
 - [ ] **Verify real service flows**: run focused baseline and changed tests,
   then real DiskIO plus HTTP/ChunkIO upload/download of objects larger than
   1 MiB on the prepared HCA. Assert direct-payload counters and same data

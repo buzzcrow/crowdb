@@ -6,10 +6,11 @@
 #![allow(unsafe_code)]
 
 use std::cell::UnsafeCell;
-use std::future::poll_fn;
+use std::future::{poll_fn, Future};
 use std::io;
 use std::mem::MaybeUninit;
 use std::ops::Range;
+use std::pin::Pin;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
@@ -25,6 +26,7 @@ use crowdb_protocol::frame::{
     encode_frame_regions, prepare_frame_regions, set_frame_chunk_id, FrameError, FrameMagic,
     FRAME_FOOTER_BYTES, FRAME_V2_HEADER_BYTES, MAX_FRAME_BYTES, MAX_FRAME_V2_PAYLOAD_BYTES,
 };
+use crowdb_rpc_ffi::{ProducerBufferAllocator, WritableBuffer};
 use hyper::body::{Bytes, Http1BodyReceiveBuffer, Http1BodyReceiveProvider};
 
 #[derive(Clone)]
@@ -66,6 +68,7 @@ struct ReceiverState {
     payload_lengths: Vec<u16>,
     append_slot: Option<usize>,
     credit_wait_started: Option<Instant>,
+    native_retry: Option<Pin<Box<tokio::time::Sleep>>>,
     magic: FrameMagic,
     owner_bytes: usize,
 }
@@ -88,6 +91,7 @@ struct AllocatorState {
     backpressure_events: AtomicUsize,
     backpressure_wait_ns: AtomicUsize,
     credit_waiters: ArcSwap<Vec<Weak<AtomicWaker>>>,
+    producer: Option<ProducerBufferAllocator>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
@@ -168,7 +172,8 @@ impl NativeBodyReceiver {
             return Poll::Ready(Ok(()));
         }
         let owner_bytes = state.owner_bytes;
-        if !self.allocator.try_reserve(owner_bytes) {
+        let mut owner = self.allocator.try_owner(owner_bytes)?;
+        if owner.is_none() {
             if state.credit_wait_started.is_none() {
                 state.credit_wait_started = Some(Instant::now());
                 self.allocator
@@ -177,28 +182,20 @@ impl NativeBodyReceiver {
                     .fetch_add(1, Ordering::Relaxed);
             }
             self.credit_waker.register(cx.waker());
-            if !self.allocator.try_reserve(owner_bytes) {
+            owner = self.allocator.try_owner(owner_bytes)?;
+            if owner.is_none() {
+                self.poll_native_credit(state, cx);
                 return Poll::Pending;
             }
         }
+        state.native_retry = None;
         if let Some(started) = state.credit_wait_started.take() {
             self.allocator.state.backpressure_wait_ns.fetch_add(
                 usize::try_from(started.elapsed().as_nanos()).unwrap_or(usize::MAX),
                 Ordering::Relaxed,
             );
         }
-        let owner = match NativeOwner::new(owner_bytes, Arc::clone(&self.allocator.state)) {
-            Ok(owner) => Arc::new(owner),
-            Err(error) => {
-                self.allocator
-                    .state
-                    .retained_bytes
-                    .fetch_sub(owner_bytes, Ordering::AcqRel);
-                self.allocator.wake_credit_waiters();
-                return Poll::Ready(Err(error));
-            }
-        };
-        self.allocator.state.allocations.fetch_add(1, Ordering::Relaxed);
+        let owner = owner.expect("owner was admitted above");
         if let Some(prefix) = state.pending_prefetched.take() {
             if let Err(error) = self.populate_prefetched(state, owner, &prefix) {
                 return Poll::Ready(Err(error));
@@ -207,6 +204,22 @@ impl NativeBodyReceiver {
             state.owner = Some(owner);
         }
         Poll::Ready(Ok(()))
+    }
+
+    fn poll_native_credit(&self, state: &mut ReceiverState, cx: &mut Context<'_>) {
+        if self.allocator.state.producer.is_none() {
+            return;
+        }
+        // Other producers and native SEND completion can return arena credit
+        // without dropping this HTTP allocator's owner. Keep their retry wake
+        // bounded; ordinary owner release still wakes through AtomicWaker.
+        let retry = state
+            .native_retry
+            .get_or_insert_with(|| Box::pin(tokio::time::sleep(std::time::Duration::from_millis(1))));
+        if retry.as_mut().poll(cx).is_ready() {
+            state.native_retry = None;
+            cx.waker().wake_by_ref();
+        }
     }
 
     fn populate_prefetched(
@@ -733,22 +746,10 @@ impl Http1BodyReceiveProvider for NativeBodyReceiver {
                 "HTTP read-ahead exceeds one native owner",
             ));
         }
-        if !self.allocator.try_reserve(owner_bytes) {
+        let Some(owner) = self.allocator.try_owner(owner_bytes)? else {
             state.pending_prefetched = Some(data.clone());
             return Ok(data);
-        }
-        let owner = match NativeOwner::new(owner_bytes, Arc::clone(&self.allocator.state)) {
-            Ok(owner) => Arc::new(owner),
-            Err(error) => {
-                self.allocator
-                    .state
-                    .retained_bytes
-                    .fetch_sub(owner_bytes, Ordering::AcqRel);
-                self.allocator.wake_credit_waiters();
-                return Err(error);
-            }
         };
-        self.allocator.state.allocations.fetch_add(1, Ordering::Relaxed);
         self.populate_prefetched(state, owner, &data)?;
         Ok(data)
     }
@@ -758,6 +759,7 @@ struct NativeOwner {
     pointer: NonNull<u8>,
     capacity: usize,
     allocator: Arc<AllocatorState>,
+    native: Option<WritableBuffer>,
 }
 
 // SAFETY: provider-issued regions are disjoint physical-frame payload slots.
@@ -767,6 +769,21 @@ unsafe impl Sync for NativeOwner {}
 
 impl NativeOwner {
     fn new(capacity: usize, allocator: Arc<AllocatorState>) -> io::Result<Self> {
+        if let Some(producer) = &allocator.producer {
+            let capacity32 = u32::try_from(capacity)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "native owner exceeds u32"))?;
+            let mut native = producer.allocate(capacity32).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::WouldBlock, "native producer arena exhausted")
+            })?;
+            let pointer = NonNull::new(native.uninit_bytes_mut().as_mut_ptr().cast::<u8>())
+                .expect("native allocation is non-null");
+            return Ok(Self {
+                pointer,
+                capacity,
+                allocator,
+                native: Some(native),
+            });
+        }
         // SAFETY: malloc returns either a suitably aligned allocation of at
         // least `capacity` bytes or null; ownership is immediately wrapped.
         let pointer = NonNull::new(unsafe { libc::malloc(capacity).cast::<u8>() })
@@ -775,14 +792,21 @@ impl NativeOwner {
             pointer,
             capacity,
             allocator,
+            native: None,
         })
     }
 }
 
 impl Drop for NativeOwner {
     fn drop(&mut self) {
-        // SAFETY: `pointer` came from malloc and this owner frees it once.
-        unsafe { libc::free(self.pointer.as_ptr().cast()) };
+        let native = self.native.take();
+        if native.is_none() {
+            // SAFETY: absent native backing, pointer came from malloc and
+            // this owner frees it once, after all immutable views are gone.
+            unsafe { libc::free(self.pointer.as_ptr().cast()) };
+        }
+        // Return native admission before waking credit waiters.
+        drop(native);
         self.allocator
             .retained_bytes
             .fetch_sub(self.capacity, Ordering::AcqRel);

@@ -11,6 +11,12 @@
 
 // Concrete struct definitions for the C API opaque handles.
 // Defined here so both c_api.cpp and co_client.cpp can access them.
+struct crowdb_rpc_pool_s
+{
+    crowdb::rpc::BufferPool *pool;
+    bool                     owns;
+};
+
 struct crowdb_rpc_buffer_s
 {
     crowdb::rpc::Buffer *buf;

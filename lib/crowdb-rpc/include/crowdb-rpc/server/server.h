@@ -26,7 +26,8 @@ class RpcServer
   public:
     // Multi-engine ctor: io_engines independent epoll/kqueue instances,
     // with io_workers total workers (per-engine = io_workers / io_engines).
-    RpcServer(BufferPool *pool = nullptr, uint32_t io_engines = 1, uint32_t io_workers = 1);
+    RpcServer(BufferPool *pool = nullptr, uint32_t io_engines = 1, uint32_t io_workers = 1,
+              RdmaConfig rdma_config = {});
     ~RpcServer();
 
     // Listen on the given address + port. Must be called before start().

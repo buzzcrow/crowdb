@@ -215,6 +215,13 @@ extern "C" {
         io_engines: u32,
         io_workers: u32,
     ) -> crowdb_rpc_server_t;
+    pub fn crowdb_rpc_server_create_with_layout(
+        pool: crowdb_rpc_pool_t,
+        io_engines: u32,
+        io_workers: u32,
+        wire_layout: u32,
+        data_capacity: u32,
+    ) -> crowdb_rpc_server_t;
     pub fn crowdb_rpc_server_destroy(server: crowdb_rpc_server_t);
     pub fn crowdb_rpc_server_clear_handlers(server: crowdb_rpc_server_t);
     pub fn crowdb_rpc_server_listen(

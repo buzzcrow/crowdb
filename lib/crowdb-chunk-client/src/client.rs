@@ -103,6 +103,12 @@ struct ClientTopology {
 }
 
 impl ChunkIoClient {
+    /// Reuse the DiskIO transport's bounded native producer allocation source.
+    #[must_use]
+    pub fn producer_allocator(&self) -> Option<crowdb_rpc_ffi::ProducerBufferAllocator> {
+        self.disk_writer.producer_allocator()
+    }
+
     /// Discover services and build lock-free DiskIO routing.
     pub async fn connect(config: ChunkIoClientConfig) -> Result<Self> {
         let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
@@ -644,6 +650,7 @@ impl ChunkAllocator for MetricsChunkAllocator {
         self.inner.discard_replacement_segment(req).await
     }
 }
+
 
 async fn discover_current_range_bindings(
     service: &ServiceRegistryClient,

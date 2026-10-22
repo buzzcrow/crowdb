@@ -216,6 +216,21 @@ uninitialized capacity until its producer publishes an initialized prefix;
 immutable views then retain the lease through their final release. Allocation
 alone does not bypass the contiguous transport's payload copy.
 
+The DiskIO client exposes a retained `ProducerBufferAllocator` through the
+ChunkIO disk-writer interface. S3 attaches it to `NativeBodyAllocator` before
+sharing that allocator. Hyper fills disjoint payload regions in this native
+backing; `NativeFramedOwner` finalizes frame regions in place and publishes
+immutable views. The backing lease returns before HTTP credit waiters wake.
+An exhausted active producer arena pauses body intake. HTTP owner release
+wakes existing AtomicWakers; a 1 ms retry wake also observes credits returned
+by other producers or native SEND completion. This retry does not flush or
+reassemble application messages.
+
+Service constructors can supply layout and data-capacity defaults before
+environment overrides. DiskIO server/client select control/data with 1 MiB
+data capacity. Ordinary RPC constructors retain contiguous defaults; this
+selection alone does not enable RDMA or change the explicit fallback policy.
+
 The device owner charges MR creation against
 `registered_memory_budget_bytes`. Zero derives a checked bound from all
 CQ-admitted QPs, their send/receive arenas and the two compatibility copy

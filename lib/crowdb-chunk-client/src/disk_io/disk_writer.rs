@@ -12,6 +12,11 @@ use crate::{IoError, Result};
 /// Block-IO seam. Production routing is owned by `crowdb-diskio-client`.
 #[async_trait]
 pub trait DiskWriter: Send + Sync {
+    /// Optional native storage for an owner-backed upstream producer.
+    fn producer_allocator(&self) -> Option<crowdb_rpc_ffi::ProducerBufferAllocator> {
+        None
+    }
+
     /// Write `data` to the disk/zone/offset described by `seg`.
     async fn write(&self, seg: &Segment, unit_bytes: u64, data: Bytes) -> Result<()>;
 

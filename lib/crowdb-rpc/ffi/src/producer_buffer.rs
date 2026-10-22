@@ -4,8 +4,32 @@
 //! Unique producer storage before immutable buffer publication.
 
 use std::mem::MaybeUninit;
+use std::sync::Arc;
 
 use crate::{sys, Buffer, RpcError, RpcServer};
+
+/// Retained allocation source shared with a service's existing RPC transport.
+#[derive(Clone, Debug)]
+pub struct ProducerBufferAllocator {
+    server: Arc<RpcServer>,
+    require_registered: bool,
+}
+
+impl ProducerBufferAllocator {
+    #[must_use]
+    pub fn new(server: Arc<RpcServer>, require_registered: bool) -> Self {
+        Self {
+            server,
+            require_registered,
+        }
+    }
+
+    #[must_use]
+    pub fn allocate(&self, capacity: u32) -> Option<WritableBuffer> {
+        self.server
+            .allocate_producer_buffer(capacity, self.require_registered)
+    }
+}
 
 /// A unique allocation that cannot be submitted or cloned while writable.
 /// Its storage retains the native recycler independently of the server.

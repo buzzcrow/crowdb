@@ -216,7 +216,11 @@ async fn run_s3(
             "CROWDB_S3_NATIVE_BUDGET_BYTES",
         )?
         .unwrap_or(256 * 1024 * 1024);
-        let body_allocator = Arc::new(NativeBodyAllocator::new(native_budget, 1024 * 1024)?);
+        let mut body_allocator = NativeBodyAllocator::new(native_budget, 1024 * 1024)?;
+        if let Some(producer) = chunks.producer_allocator() {
+            body_allocator = body_allocator.with_producer_allocator(producer)?;
+        }
+        let body_allocator = Arc::new(body_allocator);
         let handler = Arc::new(
             S3Dispatcher::new(
                 authenticator,

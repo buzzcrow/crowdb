@@ -34,7 +34,7 @@ pub use logging::{
     shutdown_logging,
 };
 pub use owned_route::{OwnedClientRoute, RpcClientHandle};
-pub use producer_buffer::WritableBuffer;
+pub use producer_buffer::{ProducerBufferAllocator, WritableBuffer};
 pub use server::{Connection, RpcError, RpcServer, ServerRequest};
 pub use transport::{RdmaConfig, RdmaWireLayout};
 

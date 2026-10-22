@@ -124,6 +124,10 @@ crowdb_rpc_server_t crowdb_rpc_server_create(crowdb_rpc_pool_t pool);
 crowdb_rpc_server_t crowdb_rpc_server_create_with_workers(crowdb_rpc_pool_t pool, uint32_t num_workers);
 crowdb_rpc_server_t crowdb_rpc_server_create_with_engines(crowdb_rpc_pool_t pool, uint32_t io_engines,
                                                           uint32_t io_workers);
+// Service defaults precede environment overrides; this does not enable RDMA.
+crowdb_rpc_server_t crowdb_rpc_server_create_with_layout(crowdb_rpc_pool_t pool, uint32_t io_engines,
+                                                         uint32_t io_workers, uint32_t wire_layout,
+                                                         uint32_t data_capacity);
 // Set per-connection send queue capacity (backpressure bound). Must be
 // called before listen/connect creates connections. Default 1024.
 // Rounded up to next power of two internally.

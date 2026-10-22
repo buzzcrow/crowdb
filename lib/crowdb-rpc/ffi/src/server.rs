@@ -55,6 +55,28 @@ impl RpcServer {
     /// differences. Linux (epoll) is unaffected. A warning is logged
     /// once per process when the clamp activates.
     pub fn with_engines(pool: Option<&crate::BufferPool>, io_engines: u32, io_workers: u32) -> Self {
+        Self::with_rdma_layout(
+            pool,
+            io_engines,
+            io_workers,
+            crate::RdmaWireLayout::Contiguous,
+            1 << 20,
+        )
+        .expect("valid RPC engine and layout defaults")
+    }
+
+    /// Set service layout/capacity defaults before environment configuration.
+    /// This preserves the process's existing RDMA enablement/fallback policy.
+    ///
+    /// # Errors
+    /// Rejects invalid engine counts or a data capacity outside the RDMA classes.
+    pub fn with_rdma_layout(
+        pool: Option<&crate::BufferPool>,
+        io_engines: u32,
+        io_workers: u32,
+        layout: crate::RdmaWireLayout,
+        data_capacity: u32,
+    ) -> Result<Self, RpcError> {
         #[cfg(feature = "test-util")]
         crate::logging::init_test_logging();
 
@@ -71,9 +93,19 @@ impl RpcServer {
             io_workers
         };
         let pool_handle = pool.map(|p| p.handle()).unwrap_or(ptr::null_mut());
-        let handle =
-            unsafe { sys::crowdb_rpc_server_create_with_engines(pool_handle, io_engines, effective_workers) };
-        RpcServer { handle }
+        let handle = unsafe {
+            sys::crowdb_rpc_server_create_with_layout(
+                pool_handle,
+                io_engines,
+                effective_workers,
+                layout as u32,
+                data_capacity,
+            )
+        };
+        if handle.is_null() {
+            return Err(RpcError::InvalidArg);
+        }
+        Ok(RpcServer { handle })
     }
 
     /// Listen on the given address and port. If port is 0, the OS assigns

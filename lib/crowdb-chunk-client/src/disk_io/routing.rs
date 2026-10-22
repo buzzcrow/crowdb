@@ -104,6 +104,10 @@ impl RoutedDiskWriter {
 
 #[async_trait]
 impl DiskWriter for RoutedDiskWriter {
+    fn producer_allocator(&self) -> Option<crowdb_rpc_ffi::ProducerBufferAllocator> {
+        Some(self.client.producer_allocator())
+    }
+
     async fn write(&self, seg: &Segment, unit_bytes: u64, data: Bytes) -> Result<()> {
         let target = Self::target(seg, unit_bytes)?;
         self.client

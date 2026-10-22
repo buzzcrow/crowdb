@@ -40,6 +40,15 @@ fn invalid_queue_bounds_fail_before_start() {
 }
 
 #[test]
+fn service_layout_defaults_validate_capacity_and_preserve_explicit_tcp() {
+    assert!(RpcServer::with_rdma_layout(None, 1, 1, RdmaWireLayout::ControlData, 4096).is_err());
+    let server = RpcServer::with_rdma_layout(None, 1, 1, RdmaWireLayout::ControlData, 1 << 20).unwrap();
+    server.configure_rdma(&RdmaConfig::default()).unwrap();
+    let status: Value = serde_json::from_slice(&server.transport_status_json().unwrap()).unwrap();
+    assert!(status["rdma"].is_null());
+}
+
+#[test]
 fn typed_control_data_layout_accounts_for_control_and_forbids_aggregation() {
     let server = RpcServer::new(None);
     let mut config = RdmaConfig {

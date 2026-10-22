@@ -39,14 +39,14 @@ std::string listener_key(const std::string &addr, int port)
 }
 } // namespace
 
-RpcServer::RpcServer(BufferPool *pool, uint32_t io_engines, uint32_t io_workers)
+RpcServer::RpcServer(BufferPool *pool, uint32_t io_engines, uint32_t io_workers, RdmaConfig rdma_config)
     : pool_(pool),
       owns_pool_(pool == nullptr)
 {
     if (pool_ == nullptr) {
         pool_ = new SystemBufferPool();
     }
-    transport_ = std::make_unique<SocketTransport>(io_engines, io_workers, pool_);
+    transport_ = std::make_unique<SocketTransport>(io_engines, io_workers, pool_, std::move(rdma_config));
 }
 
 RpcServer::~RpcServer()

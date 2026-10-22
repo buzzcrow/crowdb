@@ -539,12 +539,7 @@ static bool on_writable_impl(Connection *conn, int fd, TransportStats *stats)
 
 // ── SocketTransport ───────────────────────────────────────────────
 
-SocketTransport::SocketTransport(uint32_t io_engines, uint32_t io_workers, BufferPool *pool
-#ifdef CROWDB_RPC_HAVE_RDMA
-                                 ,
-                                 RdmaConfig rdma_config
-#endif
-                                 )
+SocketTransport::SocketTransport(uint32_t io_engines, uint32_t io_workers, BufferPool *pool, RdmaConfig rdma_config)
     : pool_(pool)
 {
     assert(io_engines >= 1 && io_workers >= 1);
@@ -559,9 +554,9 @@ SocketTransport::SocketTransport(uint32_t io_engines, uint32_t io_workers, Buffe
         owned_pool_ = std::make_unique<SystemBufferPool>();
         pool_       = owned_pool_.get();
     }
-#ifdef CROWDB_RPC_HAVE_RDMA
     rdma_config_                       = std::move(rdma_config);
     rdma_config_.require_tcp_preflight = true;
+#ifdef CROWDB_RPC_HAVE_RDMA
     if (const char *enabled = std::getenv("CROWDB_RDMA_ENABLED");
         enabled != nullptr && std::strcmp(enabled, "1") == 0) {
         rdma_transport_ = std::make_unique<RdmaTransport>(rdma_config_, pool_);

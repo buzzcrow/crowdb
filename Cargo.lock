@@ -693,6 +693,7 @@ dependencies = [
  "crowdb-common",
  "crowdb-kv-client",
  "crowdb-protocol",
+ "crowdb-rpc-ffi",
  "flatbuffers",
  "futures",
  "hmac",
