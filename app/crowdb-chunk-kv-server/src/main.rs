@@ -506,11 +506,13 @@ async fn main() -> std::process::ExitCode {
         }
     });
 
-    let rpc_server = Arc::new(crowdb_rpc_ffi::RpcServer::with_engines(
-        None,
-        1,
-        config.rpc_workers,
-    ));
+    let rpc_server = match ChunkKvRpcService::create_server(config.rpc_workers, config.rpc_rdma.as_ref()) {
+        Ok(server) => server,
+        Err(error) => {
+            error!(%error, "data RPC transport configuration failed");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
     if let Err(error) = rpc_server.listen(&rpc_addr.ip().to_string(), i32::from(rpc_addr.port())) {
         error!(%rpc_addr, %error, "data RPC bind failed");
         return std::process::ExitCode::FAILURE;

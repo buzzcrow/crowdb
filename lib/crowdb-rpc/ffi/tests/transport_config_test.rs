@@ -60,6 +60,37 @@ fn logical_control_limits_are_typed_and_bounded_in_both_directions() {
 }
 
 #[test]
+fn serialized_control_data_settings_derive_the_selected_sq_and_rq_windows() {
+    for capacity in [65_536, 262_144, 1_048_576] {
+        let config = RdmaConfig {
+            sq_depth: 8,
+            rq_depth: 4,
+            posted_receive_target: 4,
+            cq_depth: 16,
+            ..RdmaConfig::default()
+        }
+        .with_control_data_capacity(capacity)
+        .unwrap();
+        assert_eq!(config.control_data_capacity(), Some(capacity));
+        assert_eq!(config.wire_slot_capacity, capacity + 1024);
+        assert_eq!(config.send_arena_bytes, u64::from(capacity) * 8);
+        assert_eq!(config.receive_arena_bytes, u64::from(capacity + 1024) * 4);
+        let encoded = serde_json::to_value(&config).unwrap();
+        assert_eq!(encoded["wire_layout"], "control_data");
+        assert_eq!(serde_json::from_value::<RdmaConfig>(encoded).unwrap(), config);
+        RpcServer::new(None).configure_rdma(&config).unwrap();
+    }
+    assert!(RdmaConfig::default().with_control_data_capacity(4096).is_err());
+    assert!(RdmaConfig {
+        aggregation_enabled: true,
+        ..RdmaConfig::default()
+    }
+    .with_control_data_capacity(65_536)
+    .is_err());
+    assert!(serde_json::from_str::<RdmaConfig>(r#"{"receive_queue_length": 1024}"#).is_err());
+}
+
+#[test]
 fn service_layout_defaults_validate_capacity_and_preserve_explicit_tcp() {
     assert!(RpcServer::with_rdma_layout(None, 1, 1, RdmaWireLayout::ControlData, 4096).is_err());
     let server = RpcServer::with_rdma_layout(None, 1, 1, RdmaWireLayout::ControlData, 1 << 20).unwrap();

@@ -824,6 +824,7 @@ dependencies = [
  "crowdb-rpc-ffi",
  "futures",
  "rand 0.8.6",
+ "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
@@ -1249,6 +1250,7 @@ dependencies = [
  "crowdb-rpc-ffi",
  "ctor",
  "flatbuffers",
+ "serde",
  "serde_json",
  "tokio",
 ]

@@ -53,4 +53,51 @@ void frame_to_c_handles(Frame *frame, crowdb_rpc_buffer_t *out_ctrl, crowdb_rpc_
     *out_ctrl = wrap_control(*incoming);
     *out_data = wrap_data(incoming->data_buf);
 }
+
+void invoke_c_handler(crowdb_rpc_handler_fn callback, void *user_data, Frame *request, Connection *conn)
+{
+    if (callback == nullptr || request == nullptr) {
+        delete request;
+        return;
+    }
+    request->connection_owner  = conn == nullptr ? nullptr : conn->weak_from_this().lock();
+    uint64_t       req_id      = request->request_id;
+    uint64_t       create_nano = request->rpc_create_nano;
+    uint16_t       msg_type    = request->header.msg_type;
+    const uint8_t *ctrl_ptr    = request->control.empty() ? nullptr : request->control.data();
+    auto           ctrl_len    = static_cast<uint32_t>(request->control.size());
+    const uint8_t *data_ptr    = nullptr;
+    uint32_t       data_len    = 0;
+    if (request->data_buf != nullptr && request->data_buf->len > 0) {
+        data_ptr = request->data_buf->payload_data();
+        data_len = request->data_buf->len;
+    }
+    void *conn_handle  = static_cast<void *>(conn);
+    void *frame_handle = static_cast<void *>(request);
+
+    // Transfer frame ownership to the callback. The callback must call
+    // crowdb_rpc_frame_release(frame_handle) when done.
+    callback(req_id, create_nano, msg_type, ctrl_ptr, ctrl_len, data_ptr, data_len, conn_handle, frame_handle,
+             user_data);
+}
+
 } // namespace crowdb::rpc
+
+extern "C" void crowdb_rpc_frame_release(void *frame_handle)
+{
+    delete static_cast<crowdb::rpc::Frame *>(frame_handle);
+}
+
+extern "C" void crowdb_rpc_frame_close_connection(void *frame_handle)
+{
+    try {
+        if (frame_handle != nullptr) {
+            auto connection = static_cast<crowdb::rpc::Frame *>(frame_handle)->connection_owner;
+            if (connection != nullptr) {
+                connection->close();
+            }
+        }
+    }
+    catch (...) {
+    }
+}

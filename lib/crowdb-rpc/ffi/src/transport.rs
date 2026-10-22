@@ -6,10 +6,13 @@
 use std::ffi::CString;
 use std::mem::MaybeUninit;
 
+use serde::{Deserialize, Serialize};
+
 use crate::{sys, Buffer, Connection, RpcError, RpcServer};
 
 /// Layout selected during TCP preflight and bound into the CM offer.
-#[derive(Debug, Default, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Default, Clone, Copy, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
 #[repr(u32)]
 pub enum RdmaWireLayout {
     #[default]
@@ -18,7 +21,8 @@ pub enum RdmaWireLayout {
 }
 
 /// Explicit configuration overrides native environment defaults before listen.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct RdmaConfig {
     pub enabled: bool,
@@ -103,6 +107,35 @@ impl Default for RdmaConfig {
             source_address: String::new(),
             gid: String::new(),
         }
+    }
+}
+
+impl RdmaConfig {
+    /// Select a data class and derive arenas from the configured SQ/RQ window.
+    /// Existing `Default` and native service defaults remain unchanged.
+    ///
+    /// # Errors
+    /// Rejects classes outside 64 KiB/256 KiB/1 MiB and transport aggregation.
+    pub fn with_control_data_capacity(mut self, capacity: u32) -> Result<Self, RpcError> {
+        if !matches!(capacity, 65_536 | 262_144 | 1_048_576) || self.aggregation_enabled {
+            return Err(RpcError::InvalidArg);
+        }
+        self.wire_layout = RdmaWireLayout::ControlData;
+        self.wire_slot_capacity = capacity + 1024;
+        self.send_arena_bytes = u64::from(self.sq_depth) * u64::from(capacity);
+        self.receive_arena_bytes = u64::from(self.posted_receive_target) * u64::from(self.wire_slot_capacity);
+        Ok(self)
+    }
+
+    /// The selected control/data class, if it is a supported service class.
+    #[must_use]
+    pub fn control_data_capacity(&self) -> Option<u32> {
+        if self.wire_layout != RdmaWireLayout::ControlData {
+            return None;
+        }
+        self.wire_slot_capacity
+            .checked_sub(1024)
+            .filter(|capacity| matches!(capacity, 65_536 | 262_144 | 1_048_576))
     }
 }
 

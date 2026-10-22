@@ -20,4 +20,4 @@ pub use compose::{
 };
 pub use config::ClientConfig;
 pub use error::{ClientError, Result};
-pub use transport::{ChunkKvRpcTransport, ChunkKvTransport};
+pub use transport::{ChunkKvRpcTransport, ChunkKvRpcTransportConfig, ChunkKvTransport};

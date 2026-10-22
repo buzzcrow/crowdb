@@ -58,6 +58,7 @@ pub struct CommonConfig {
     pub management_seeds: Vec<String>,
     pub diskio_connections_per_endpoint: usize,
     pub diskio_rpc_workers: u32,
+    pub chunk_kv_rpc: crowdb_chunk_kv_client::ChunkKvRpcTransportConfig,
 }
 
 impl Default for CommonConfig {
@@ -66,6 +67,7 @@ impl Default for CommonConfig {
             management_seeds: Vec::new(),
             diskio_connections_per_endpoint: 2,
             diskio_rpc_workers: 2,
+            chunk_kv_rpc: crowdb_chunk_kv_client::ChunkKvRpcTransportConfig::default(),
         }
     }
 }
@@ -311,6 +313,10 @@ pub struct IcebergGcConfig {
 impl BaseConfig for AccessConfig {
     #[allow(clippy::too_many_lines)]
     fn validate(&self) -> Result<(), String> {
+        self.common
+            .chunk_kv_rpc
+            .validate()
+            .map_err(|error| error.to_string())?;
         if self.common.diskio_connections_per_endpoint == 0 || self.common.diskio_rpc_workers == 0 {
             return Err("common DiskIO connections and RPC workers must be nonzero".into());
         }

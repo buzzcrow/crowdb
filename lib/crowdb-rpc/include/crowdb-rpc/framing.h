@@ -14,6 +14,7 @@
 
 namespace crowdb::rpc
 {
+class Connection;
 
 // ── Wire format (14-byte header) ──────────────────────────────────
 //
@@ -63,7 +64,9 @@ struct Frame
     // Optional logical-control admission retained through the final caller.
     // Storage is destroyed before admission wakes blocked receivers.
     std::shared_ptr<void> control_owner;
-    std::vector<uint8_t>  control;
+    // Asynchronous FFI handlers retain their connection through Frame release.
+    std::shared_ptr<Connection> connection_owner;
+    std::vector<uint8_t>        control;
 
     ~Frame()
     {

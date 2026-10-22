@@ -103,14 +103,44 @@ Observed contract:
     destruction before returning byte admission.
   - Record logical-message, fragment, copied-control, directional admission
     and timeout counters separately from direct application payload counters.
-- [~] **Wire Chunk-KV classes and typed settings**: add service defaults and
+- [x] **Wire Chunk-KV classes and typed settings**: add service defaults and
   explicit RDMA configuration for metadata/aggregate connection groups,
   preserve TCP defaults and current serializers/errors/retries, and wire the
   Chunk-KV server plus Access storage construction. Cover point, mutation,
   seek, bounded scan, multi-get and batch mutation, including duplicate result
   order and stable logical mutation IDs. Files: client transport/config,
   server startup/RPC boundary, Access storage config and tests.
-- [ ] **Verify real service and clean up**: test malformed sequence/offset,
+
+  Implementation order within this task:
+  - Serialize the existing Rust `RdmaConfig` for cold service configuration;
+    preserve its native defaults. Add an explicit
+    `with_control_data_capacity` helper that derives wire capacity and SQ/RQ
+    arena bytes from the selected data class and configured depths.
+  - Add `ChunkKvRpcTransportConfig` with optional `metadata_rdma` and
+    `aggregate_rdma` overrides. Missing overrides preserve environment policy
+    and select native 64 KiB/256 KiB service defaults. Explicit enabled
+    overrides require control/data and one of 64 KiB/256 KiB/1 MiB. Each
+    group retains its own existing connection index and one fixed transport;
+    the transport shares one `RpcClient`, reaper and request-ID generator.
+  - Split the current client transport runtime and endpoint parsing into
+    private child modules before extending the 337-line facade. Add read-only
+    class/endpoint status for actual path, QP and provider capacities.
+  - Configure the Chunk-KV server with a 256 KiB control/data service default
+    and optional explicit `rpc_rdma`. Server construction owns listener
+    policy; client groups are always non-listeners. Wire Access common
+    `chunk_kv_rpc` settings through S3, Iceberg and Dataset storage construction,
+    preserving existing convenience constructors with default configuration.
+  - Pin the native connection in Frames transferred to asynchronous FFI
+    handlers. A completed logical control has no RQ data lease to retain that
+    connection; the existing raw handler pointer otherwise outlives CM teardown.
+    Add safe `ServerRequest::close_connection` backed by that retained owner.
+    Close and report rejected Chunk-KV response submissions instead of silently
+    dropping a response. Cover handler hold/peer close/final release.
+  - Preserve the current serializers, stable logical mutation IDs, exact pool
+    generation invalidation and retry/error behavior. Cover class selection,
+    serialized settings, invalid bounds and existing client/server RPC cases
+    before the real service corpus.
+- [~] **Verify real service and clean up**: test malformed sequence/offset,
   duplicate/end/generation/class, byte exhaustion, held final leases,
   cancellation/close/expiry, and TCP setup fallback. Run the actual Chunk-KV
   service on the HCA with metadata and results larger than 256 KiB, then two
@@ -122,6 +152,22 @@ Observed contract:
   Record all settings, actual classes/QPs, memory and error categories. Delete
   this completed child plan/detail/index entry after permanent docs/evidence
   are updated. R242 remains outside the requested scope.
+
+  Implementation order within this task:
+  - Run production `ChunkKvRpcService`, `CrowdbPartitionTree` and partition WAL
+    logic in a separate process. Inject only catalog/serving authority and the
+    memory ChunkStream backing; label that scope explicitly. Use the same
+    point/conditional/seek/scan/multi-get/batch corpus and stable mutation IDs
+    for strict RDMA, explicit TCP and pre-payload setup fallback.
+  - Reuse the canonical benchmark `Runtime` for native and two non-root OCI
+    processes. Record exact binaries, source, image, UID, actual connections,
+    classes, queues, copied-control bytes, directional admission and errors.
+  - Add a `test-util`-only native fragment gate. After the normal real-service
+    corpus, pause the response after exactly one posted control fragment and
+    close the server. Verify one fragment arrived, no logical result was
+    published, the caller fails promptly and TCP fallback remains zero.
+  - Repeat HTTP/DiskIO semantic profiles and matching 10-second CLI throughput
+    controls after the common RPC changes, then update permanent evidence.
 
 ## Phase 1: access contract mapping
 
@@ -267,6 +313,32 @@ CQ integration checkpoint:
   No-verbs build passed all 159 CTest cases (one hardware skip). Format and
   scoped C++ lint passed. Final RPC/XML and six HCA case results are under
   `.crowdb-runtime/rdma-check/artifacts/r241-control/`.
+
+Chunk-KV class wiring checkpoint:
+
+- All 1,244 client/server and Access/S3/Iceberg/Dataset target cases passed
+  (three optional cases ignored), including
+  serialized class settings, point/scan pool separation, one global RPC ID
+  sequence and existing routing/retry/duplicate-result semantics. Logs:
+  `/tmp/r241-class-rust-tests.log`.
+- Full C++/FFI gate passed at
+  `.crowdb-runtime/artifacts/unit/cpp-c2122fc1d6a14e7e9beb7959fe2ad245/`:
+  543 tree, 190 RPC, 71 DiskIO and 35 common native cases plus both FFI suites.
+  No-verbs build passed 160 CTest cases (one hardware skip). The added C ABI
+  handler lifetime case proves a control-only Frame pins its connection until
+  final release; all eight Rust transport config cases passed.
+- Workspace all-feature clippy passed. The first `rs-lint` invocation expired
+  while waiting for another Cargo build lock; rerun it without competing Cargo
+  work passed. Format and scoped C++ lint passed (existing style warnings).
+  All six real HCA control cases passed again at `r241-control/class-wiring.xml`.
+- The first complete native gate failed the unchanged
+  `SqFullBackpressureTest.UringEngineTinySqManyWrites`: five callbacks returned
+  `-ENOMEM` at `sq_full_test.cpp:240`. Existing `DiskIOUring::submit_lockfree`
+  returns that error when its 1000 yield attempts cannot obtain an SQ slot.
+  The exact case, its 14-case suite and subsequent full native gate passed
+  without source changes. Preserve initial evidence at
+  `.crowdb-runtime/artifacts/unit/cpp-bdbe5707db274b8aa625247ce0eb00eb/`;
+  this task does not claim to repair that existing scheduling sensitivity.
 
 ```bash
 pixi run -- cargo fmt --all -- --check

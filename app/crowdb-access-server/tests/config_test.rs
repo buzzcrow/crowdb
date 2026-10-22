@@ -7,6 +7,30 @@ use crowdb_access_server::config::{load_args, AccessConfig, SmallWriteConfig};
 use crowdb_common::config::{load_from_file, BaseConfig};
 
 #[test]
+fn all_access_frontends_share_the_serialized_chunk_kv_rpc_class_settings() {
+    let mut config = AccessConfig::default();
+    let native = crowdb_rpc_ffi::RdmaConfig {
+        enabled: true,
+        ..crowdb_rpc_ffi::RdmaConfig::default()
+    };
+    config.common.chunk_kv_rpc.metadata_rdma =
+        Some(native.clone().with_control_data_capacity(65_536).unwrap());
+    config.common.chunk_kv_rpc.aggregate_rdma = Some(native.with_control_data_capacity(262_144).unwrap());
+    config.validate().unwrap();
+    let encoded = serde_json::to_vec(&config).unwrap();
+    let decoded: AccessConfig = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(decoded.common.chunk_kv_rpc, config.common.chunk_kv_rpc);
+    config
+        .common
+        .chunk_kv_rpc
+        .metadata_rdma
+        .as_mut()
+        .unwrap()
+        .wire_layout = crowdb_rpc_ffi::RdmaWireLayout::Contiguous;
+    assert!(config.validate().unwrap_err().contains("metadata_rdma"));
+}
+
+#[test]
 fn tracked_access_configs_load_and_set_bounded_read_resources() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let canonical: AccessConfig =

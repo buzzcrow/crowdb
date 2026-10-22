@@ -347,6 +347,7 @@ extern "C" {
     pub fn crowdb_rpc_server_register_echo_handler(server: crowdb_rpc_server_t, msg_type: u16);
 
     pub fn crowdb_rpc_frame_release(frame_handle: *mut c_void);
+    pub fn crowdb_rpc_frame_close_connection(frame_handle: *mut c_void);
 
     pub fn crowdb_rpc_server_register_handler(
         server: crowdb_rpc_server_t,

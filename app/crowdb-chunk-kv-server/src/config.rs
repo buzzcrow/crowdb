@@ -39,6 +39,7 @@ pub struct ChunkKvServerConfig {
     pub max_split_catchup_lag_records: u64,
     pub shutdown_drain_timeout_ms: u64,
     pub rpc_workers: u32,
+    pub rpc_rdma: Option<crowdb_rpc_ffi::RdmaConfig>,
     pub storage: StorageConfig,
     pub bootstrap_partition: Option<BootstrapPartitionConfig>,
     pub monitor: DomainMonitorDescriptor,
@@ -60,6 +61,7 @@ impl Default for ChunkKvServerConfig {
             max_split_catchup_lag_records: 1_024,
             shutdown_drain_timeout_ms: 30_000,
             rpc_workers: 2,
+            rpc_rdma: None,
             storage: StorageConfig::default(),
             bootstrap_partition: None,
             monitor: default_monitor(),
@@ -130,6 +132,15 @@ impl ChunkKvServerConfig {
             ));
         }
         self.storage.validate()?;
+        if self
+            .rpc_rdma
+            .as_ref()
+            .is_some_and(|config| config.enabled && config.control_data_capacity().is_none())
+        {
+            return Err(ConfigError::Invalid(
+                "rpc_rdma requires control_data with a supported data capacity".into(),
+            ));
+        }
         if let Some(bootstrap) = &self.bootstrap_partition {
             bootstrap.validate()?;
         }

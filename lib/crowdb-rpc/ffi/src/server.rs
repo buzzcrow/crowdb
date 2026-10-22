@@ -537,6 +537,13 @@ pub struct ServerRequest {
 }
 
 impl ServerRequest {
+    /// Fail this logical connection when a response cannot be submitted.
+    /// The native Frame retains the connection through this request's release.
+    pub fn close_connection(&self) {
+        // SAFETY: this wrapper owns the handler Frame for the duration of self.
+        unsafe { crate::sys::crowdb_rpc_frame_close_connection(self.frame_handle) };
+    }
+
     /// Borrow the control (flatbuffer) bytes. Valid as long as `self`
     /// is alive.
     #[must_use]

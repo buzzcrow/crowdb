@@ -165,11 +165,7 @@ async fn run_s3(
         .clone()
         .or_else(|| std::env::var("CROWDB_S3_LISTEN").ok())
     {
-        let management_seeds = if access_config.common.management_seeds.is_empty() {
-            management_seeds()?
-        } else {
-            access_config.common.management_seeds.clone()
-        };
+        let management_seeds = configured_management_seeds(access_config)?;
         let tenant_name = match &access_config.s3.tenant {
             Some(name) => name.clone(),
             None => required_env("CROWDB_S3_TENANT")?,
@@ -179,12 +175,13 @@ async fn run_s3(
         let credential_cipher = Arc::new(CredentialCipher::new(&master_key));
         let continuation_key = credential_cipher.continuation_key().to_vec();
         let write_policies = s3_write_policies(access_config)?;
-        let storage = S3StorageClients::connect_with_read_policy(
+        let storage = S3StorageClients::connect_with_chunk_kv_config(
             management_seeds,
             access_config.common.diskio_connections_per_endpoint,
             access_config.common.diskio_rpc_workers,
             write_policies.small,
             access_config.read.policy(),
+            &access_config.common.chunk_kv_rpc,
         )
         .await?;
         let chunks = Arc::clone(&storage.chunks);
@@ -256,6 +253,15 @@ async fn run_s3(
         shutdown_result?;
     }
     Ok(())
+}
+
+#[cfg(feature = "s3")]
+fn configured_management_seeds(config: &AccessConfig) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    if config.common.management_seeds.is_empty() {
+        management_seeds()
+    } else {
+        Ok(config.common.management_seeds.clone())
+    }
 }
 
 #[cfg(feature = "s3")]

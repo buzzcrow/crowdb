@@ -18,12 +18,17 @@ use crowdb_protocol::chunk_kv_group_wire::{
 use crowdb_protocol::chunk_kv_ordered_wire::{
     decode_bounded_scan_request, decode_scan_request, decode_seek_request,
 };
-use crowdb_protocol::chunk_kv_wire::{decode_point_request, encode_point_response};
+use crowdb_protocol::chunk_kv_wire::decode_point_request;
 use crowdb_protocol::fb::FBMsgType;
 use crowdb_rpc_ffi::{Buffer, RpcServer, ServerRequest};
 use tokio::runtime::Handle;
 
 use crate::ChunkKvService;
+
+mod response;
+mod transport;
+
+use response::{submit_group_response, submit_response};
 
 pub struct ChunkKvRpcService {
     service: Arc<ChunkKvService>,
@@ -74,7 +79,6 @@ impl ChunkKvRpcService {
         let server = Arc::clone(server);
         self.runtime.spawn(async move {
             let rpc_request_id = request.request_id;
-            let rpc_create_nano = request.rpc_create_nano;
             let response = match decode_point_request(request.control()) {
                 Ok(envelope) if envelope.rpc_request_id == rpc_request_id => {
                     service
@@ -84,13 +88,7 @@ impl ChunkKvRpcService {
                 Ok(_) => invalid_response("RPC frame and control request IDs differ"),
                 Err(error) => invalid_response(&error.to_string()),
             };
-            submit_response(
-                &server,
-                request.conn_handle,
-                rpc_request_id,
-                rpc_create_nano,
-                &response,
-            );
+            submit_response(&server, &request, &response);
         });
     }
 
@@ -99,7 +97,6 @@ impl ChunkKvRpcService {
         let server = Arc::clone(server);
         self.runtime.spawn(async move {
             let rpc_request_id = request.request_id;
-            let rpc_create_nano = request.rpc_create_nano;
             let response = match decode_seek_request(request.control()) {
                 Ok(envelope) if envelope.rpc_request_id == rpc_request_id => {
                     service
@@ -109,13 +106,7 @@ impl ChunkKvRpcService {
                 Ok(_) => invalid_response("RPC frame and control request IDs differ"),
                 Err(error) => invalid_response(&error.to_string()),
             };
-            submit_response(
-                &server,
-                request.conn_handle,
-                rpc_request_id,
-                rpc_create_nano,
-                &response,
-            );
+            submit_response(&server, &request, &response);
         });
     }
 
@@ -124,7 +115,6 @@ impl ChunkKvRpcService {
         let server = Arc::clone(server);
         self.runtime.spawn(async move {
             let rpc_request_id = request.request_id;
-            let rpc_create_nano = request.rpc_create_nano;
             let response = match decode_scan_request(request.control()) {
                 Ok(envelope) if envelope.rpc_request_id == rpc_request_id => {
                     service
@@ -134,13 +124,7 @@ impl ChunkKvRpcService {
                 Ok(_) => invalid_response("RPC frame and control request IDs differ"),
                 Err(error) => invalid_response(&error.to_string()),
             };
-            submit_response(
-                &server,
-                request.conn_handle,
-                rpc_request_id,
-                rpc_create_nano,
-                &response,
-            );
+            submit_response(&server, &request, &response);
         });
     }
 
@@ -149,7 +133,6 @@ impl ChunkKvRpcService {
         let server = Arc::clone(server);
         self.runtime.spawn(async move {
             let id = request.request_id;
-            let created = request.rpc_create_nano;
             let response = match decode_bounded_scan_request(request.control()) {
                 Ok((envelope, budget)) if envelope.rpc_request_id == id => {
                     service
@@ -159,7 +142,7 @@ impl ChunkKvRpcService {
                 Ok(_) => invalid_response("RPC frame and control request IDs differ"),
                 Err(error) => invalid_response(&error.to_string()),
             };
-            submit_response(&server, request.conn_handle, id, created, &response);
+            submit_response(&server, &request, &response);
         });
     }
 
@@ -178,14 +161,17 @@ impl ChunkKvRpcService {
                 Ok(_) => invalid_multi_get("RPC frame and control request IDs differ"),
                 Err(error) => invalid_multi_get(&error.to_string()),
             };
-            if let Ok(bytes) = encode_multi_get_response(id, create_nano, &response) {
-                submit_group_response(
+            match encode_multi_get_response(id, create_nano, &response) {
+                Ok(bytes) => submit_group_response(
                     &server,
-                    request.conn_handle,
-                    id,
+                    &request,
                     Buffer::from_vec(bytes),
                     FBMsgType::EChunkKvMultiGetResponse.0 as u16,
-                );
+                ),
+                Err(error) => {
+                    tracing::error!(request_id = id, %error, "Chunk-KV multi-get response encoding failed; closing connection");
+                    request.close_connection();
+                }
             }
         });
     }
@@ -205,14 +191,17 @@ impl ChunkKvRpcService {
                 Ok(_) => invalid_batch("RPC frame and control request IDs differ"),
                 Err(error) => invalid_batch(&error.to_string()),
             };
-            if let Ok(bytes) = encode_batch_mutation_response(id, create_nano, &response) {
-                submit_group_response(
+            match encode_batch_mutation_response(id, create_nano, &response) {
+                Ok(bytes) => submit_group_response(
                     &server,
-                    request.conn_handle,
-                    id,
+                    &request,
                     Buffer::from_vec(bytes),
                     FBMsgType::EChunkKvBatchMutationResponse.0 as u16,
-                );
+                ),
+                Err(error) => {
+                    tracing::error!(request_id = id, %error, "Chunk-KV batch response encoding failed; closing connection");
+                    request.close_connection();
+                }
             }
         });
     }
@@ -253,38 +242,6 @@ fn invalid_response(message: &str) -> ChunkKvResponse {
             latest_map_revision: None,
             owner_hint: None,
         }),
-    }
-}
-
-fn submit_response(
-    server: &RpcServer,
-    conn_handle: *mut std::ffi::c_void,
-    rpc_request_id: u64,
-    rpc_create_nano: u64,
-    response: &ChunkKvResponse,
-) {
-    let (bytes, offset) = encode_point_response(rpc_request_id, rpc_create_nano, response);
-    let buffer = Buffer::from_vec_offset(bytes, offset);
-    unsafe {
-        let _ = server.submit_response_buffer(
-            conn_handle,
-            buffer,
-            None,
-            FBMsgType::EChunkKvPointResponse.0 as u16,
-            rpc_request_id,
-        );
-    }
-}
-
-fn submit_group_response(
-    server: &RpcServer,
-    conn_handle: *mut std::ffi::c_void,
-    rpc_request_id: u64,
-    buffer: Buffer,
-    message_type: u16,
-) {
-    unsafe {
-        let _ = server.submit_response_buffer(conn_handle, buffer, None, message_type, rpc_request_id);
     }
 }
 

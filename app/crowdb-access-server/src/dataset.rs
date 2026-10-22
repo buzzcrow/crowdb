@@ -162,7 +162,12 @@ pub async fn run_with_shutdown(
     let control = Arc::new(CrowdbKvClient::new(KvConfig::new(seeds.clone())));
     let source = Arc::new(Group0ChunkKvRangeCatalogSource::from_shared(Arc::clone(&control)));
     let chunk_config = ChunkKvConfig::default();
-    let transport = Arc::new(ChunkKvRpcTransport::new(chunk_config.max_owner_connections, 1, 2));
+    let transport = Arc::new(ChunkKvRpcTransport::with_config(
+        chunk_config.max_owner_connections,
+        1,
+        2,
+        &access.common.chunk_kv_rpc,
+    )?);
     let client = Arc::new(ChunkKvClient::new(chunk_config, source, transport)?);
     client.refresh_catalog().await?;
     let store = Arc::new(ChunkKvDatasetStore::new(client));

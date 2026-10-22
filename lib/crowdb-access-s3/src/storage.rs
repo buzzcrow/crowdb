@@ -11,7 +11,8 @@ use crowdb_chunk_client::{
     SmallWritePolicy,
 };
 use crowdb_chunk_kv_client::{
-    ChunkKvClient, ChunkKvRpcTransport, ClientConfig as ChunkKvConfig, Group0ChunkKvRangeCatalogSource,
+    ChunkKvClient, ChunkKvRpcTransport, ChunkKvRpcTransportConfig, ClientConfig as ChunkKvConfig,
+    Group0ChunkKvRangeCatalogSource,
 };
 use crowdb_common::ec::EcScheme;
 use crowdb_kv_client::{ClientConfig as KvConfig, CrowdbKvClient};
@@ -159,14 +160,38 @@ impl S3StorageClients {
         management_seeds: Vec<String>,
         diskio_connections_per_endpoint: usize,
         diskio_rpc_workers: u32,
+        small_write: SmallWritePolicy,
+        read_policy: ChunkReadPolicy,
+    ) -> Result<Self, StorageConnectError> {
+        Self::connect_with_chunk_kv_config(
+            management_seeds,
+            diskio_connections_per_endpoint,
+            diskio_rpc_workers,
+            small_write,
+            read_policy,
+            &ChunkKvRpcTransportConfig::default(),
+        )
+        .await
+    }
+
+    /// # Errors
+    /// Returns before readiness on invalid transport settings or discovery failure.
+    pub async fn connect_with_chunk_kv_config(
+        management_seeds: Vec<String>,
+        diskio_connections_per_endpoint: usize,
+        diskio_rpc_workers: u32,
         mut small_write: SmallWritePolicy,
         read_policy: ChunkReadPolicy,
+        chunk_kv_rpc: &ChunkKvRpcTransportConfig,
     ) -> Result<Self, StorageConnectError> {
         small_write.chunk_type = ChunkType::S3;
         let kv = Arc::new(CrowdbKvClient::new(KvConfig::new(management_seeds.clone())));
         let config = ChunkKvConfig::default();
         let catalog = Arc::new(Group0ChunkKvRangeCatalogSource::from_shared(Arc::clone(&kv)));
-        let transport = Arc::new(ChunkKvRpcTransport::new(config.max_owner_connections, 1, 2));
+        let transport = Arc::new(
+            ChunkKvRpcTransport::with_config(config.max_owner_connections, 1, 2, chunk_kv_rpc)
+                .map_err(|error| StorageConnectError::ChunkKv(error.to_string()))?,
+        );
         let metadata = ChunkKvClient::new(config, catalog, transport)
             .map_err(|error| StorageConnectError::ChunkKv(error.to_string()))?;
         metadata

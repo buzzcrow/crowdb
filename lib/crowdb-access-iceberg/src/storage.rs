@@ -11,7 +11,8 @@ use crowdb_chunk_client::{
     FramedWriteBuffer, IoError, LargeWritePolicy, SmallWritePolicy,
 };
 use crowdb_chunk_kv_client::{
-    ChunkKvClient, ChunkKvRpcTransport, ClientConfig, Group0ChunkKvRangeCatalogSource,
+    ChunkKvClient, ChunkKvRpcTransport, ChunkKvRpcTransportConfig, ClientConfig,
+    Group0ChunkKvRangeCatalogSource,
 };
 use crowdb_common::ec::EcScheme;
 use crowdb_kv_client::{ClientConfig as KvConfig, CrowdbKvClient};
@@ -230,19 +231,43 @@ impl IcebergLargeWriteSettings {
 pub async fn connect(
     seeds: Vec<String>,
     read_policy: ChunkReadPolicy,
+    small_write: SmallWritePolicy,
+    diskio_connections_per_endpoint: usize,
+    diskio_rpc_workers: u32,
+) -> Result<(Arc<CatalogRepository>, Arc<RoutedCatalogStore>, ChunkIoClient), IcebergStorageError> {
+    connect_with_chunk_kv_config(
+        seeds,
+        read_policy,
+        small_write,
+        diskio_connections_per_endpoint,
+        diskio_rpc_workers,
+        &ChunkKvRpcTransportConfig::default(),
+    )
+    .await
+}
+
+/// Connects metadata through the configured fixed RPC data classes.
+///
+/// # Errors
+/// Returns a transport, discovery or storage configuration failure.
+pub async fn connect_with_chunk_kv_config(
+    seeds: Vec<String>,
+    read_policy: ChunkReadPolicy,
     mut small_write: SmallWritePolicy,
     diskio_connections_per_endpoint: usize,
     diskio_rpc_workers: u32,
+    chunk_kv_rpc: &ChunkKvRpcTransportConfig,
 ) -> Result<(Arc<CatalogRepository>, Arc<RoutedCatalogStore>, ChunkIoClient), IcebergStorageError> {
     small_write.chunk_type = ChunkType::IcebergTable;
     let control = Arc::new(CrowdbKvClient::new(KvConfig::new(seeds.clone())));
     let client_config = ClientConfig::default();
     let source = Arc::new(Group0ChunkKvRangeCatalogSource::from_shared(Arc::clone(&control)));
-    let transport = Arc::new(ChunkKvRpcTransport::new(
+    let transport = Arc::new(ChunkKvRpcTransport::with_config(
         client_config.max_owner_connections,
         1,
         2,
-    ));
+        chunk_kv_rpc,
+    )?);
     let client = Arc::new(ChunkKvClient::new(client_config, source, transport)?);
     client.refresh_catalog().await?;
     let store = Arc::new(RoutedCatalogStore::new(client));

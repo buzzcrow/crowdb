@@ -4,6 +4,37 @@
 use crowdb_chunk_kv_server::{BalanceConfig, ChunkKvServerConfig, ConfigError};
 
 #[test]
+fn rpc_rdma_settings_round_trip_and_require_a_stream_layout() {
+    let mut config = ChunkKvServerConfig {
+        instance_id: 1,
+        ..ChunkKvServerConfig::default()
+    };
+    config.rpc_rdma = Some(crowdb_rpc_ffi::RdmaConfig {
+        enabled: true,
+        ..crowdb_rpc_ffi::RdmaConfig::default()
+    });
+    assert!(config.validate().is_err());
+    config.rpc_rdma = Some(
+        config
+            .rpc_rdma
+            .take()
+            .unwrap()
+            .with_control_data_capacity(262_144)
+            .unwrap(),
+    );
+    config.validate().unwrap();
+    let encoded = toml::to_string(&config).unwrap();
+    assert_eq!(toml::from_str::<ChunkKvServerConfig>(&encoded).unwrap(), config);
+    let server = crowdb_chunk_kv_server::ChunkKvRpcService::create_server(
+        1,
+        Some(&crowdb_rpc_ffi::RdmaConfig::default()),
+    )
+    .unwrap();
+    let status: serde_json::Value = serde_json::from_slice(&server.transport_status_json().unwrap()).unwrap();
+    assert!(status["rdma"].is_null());
+}
+
+#[test]
 fn defaults_close_the_documented_timing_contract() {
     let mut config = ChunkKvServerConfig {
         instance_id: 1,

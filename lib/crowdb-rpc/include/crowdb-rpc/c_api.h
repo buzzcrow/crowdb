@@ -359,6 +359,8 @@ typedef void (*crowdb_rpc_handler_release_fn)(void *user_data);
 // Release a frame_handle previously passed to a crowdb_rpc_handler_fn.
 // Must be called exactly once per frame_handle. Passing nullptr is a no-op.
 void crowdb_rpc_frame_release(void *frame_handle);
+// Close the retained connection of a live handler Frame without releasing it.
+void crowdb_rpc_frame_close_connection(void *frame_handle);
 
 // Register a custom dispatch callback for the given msg_type. The
 // callback is invoked for every incoming frame with that msg_type. This
