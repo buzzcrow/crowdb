@@ -343,8 +343,9 @@ Never mount a Docker or containerd socket into the node to manage its storage.
 Standard startup prepares the common disk directory for UID/GID 10001. It does
 not recursively change the ownership or mode of supplied files or devices.
 
-- With no supplied inputs, standard node setup defaults to one 16-GiB managed
-  file with preallocation and a 1-GiB host reserve. It is created in the retained
+- With no supplied inputs, Local node setup defaults to one 16-GiB sparse
+  managed file and a 1-GiB host reserve. Production automatic storage uses
+  preallocation and rejects sparse allocation. It is created in the retained
   data directory. Additional Create File Disk operations use generated paths in
   that same directory. Sparse allocation is an explicit advanced choice;
   failed preallocation remains a failure.
@@ -364,11 +365,12 @@ not recursively change the ownership or mode of supplied files or devices.
   while retaining its bytes, ID, geometry and allocation metadata. Rejoin uses
   that retained identity Offline; explicit validated Online restores participation.
   Removal does not evacuate data or establish recovery/redundancy.
-- Explicit single mode retains the development profile's four sparse 16-GiB
-  files and one-voter Store-0/Group-0 initialization. It is not inferred from
-  seeing only one standard node and cannot replace an accepted standard mode.
-  Supplied external media require manual mode. Single startup keeps its initial
-  root pristine until bootstrap accepts the manifest.
+- The accepted deployment policy explicitly selects Local or Production and one
+  or three initial voters. Local permits simulated placement with zero physical
+  host failure tolerance. Production requires configured credentials and real
+  placement; a single production voter cannot satisfy protected ChunkDB
+  placement. Supplied or diskless storage is an explicit policy choice. Retained
+  policy, identity and bootstrap inputs cannot be replaced by image defaults.
 
 ## Daemon and node lifecycle
 
@@ -413,19 +415,20 @@ Workflow execution and live registry signing require a release dispatch.
 pixi run test-oci-image
 pixi run --skip-deps test-single-node-container
 pixi run test-container-e2e --profile bridge-admission --concurrency 1 --node-cpus 1 --cpus 4 --memory-mib 6144
-pixi run test-container-e2e --profile host --concurrency 1 --cpus 4 --memory-mib 4096
-pixi run test-container-e2e --profile containerd-cluster --concurrency 1 --node-cpus 1 --cpus 4 --memory-mib 6144
+pixi run sudo "$(command -v pixi)" run --as-is test-container-e2e --profile host --concurrency 1 --cpus 4 --memory-mib 4096
+pixi run test-container-e2e --profile containerd-cluster --concurrency 1 --node-cpus 1 --cpus 4 --memory-mib 8192
 # One disposable privileged Linux host, with native containerd and no Docker socket inside:
-pixi run test-container-e2e --profile containerd-host --concurrency 1 --cpus 3 --memory-mib 2048 \
+pixi run sudo "$(command -v pixi)" run --as-is test-container-e2e --profile containerd-host --concurrency 1 --cpus 3 --memory-mib 3072 \
   --archive "$PWD/target/crowdb.oci.tar"
 ```
 
 Developer-only `tests/build-sandbox.py` and `tests/runtime-sandbox.py` use system
 Docker to provide disposable privileged Linux hosts. Inside those hosts the
 builder/runtime tests have no Docker CLI/socket. They verify the isolated process
-contract, not a bare-metal installation. The runtime gate exercises both modes,
-Group-0 admission/bootstrap, enforced resources, probes, SIGTERM and persisted
-identity/key recovery. Three isolated Linux namespace hosts additionally cover
+contract, not a bare-metal installation. The native host gate exercises production metadata lifecycle separately from
+Local full-protocol readiness and retained recreation. Production metadata alone
+is not whole-cluster Ready. Enforced resources, host networking and retained
+identity/key checks apply to both policies. Three isolated Linux namespace hosts additionally cover
 discovery, SSH admission, Group-0 quorum and member recovery. This simulation is
 not a physical multi-host network qualification. Existing Docker tests cover
 application writes and crash recovery. Local registry transfer retained the exact
