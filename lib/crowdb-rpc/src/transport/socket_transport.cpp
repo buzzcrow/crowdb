@@ -556,7 +556,8 @@ SocketTransport::SocketTransport(uint32_t io_engines, uint32_t io_workers, Buffe
         }
     }
     if (pool_ == nullptr) {
-        pool_ = new SystemBufferPool(); // own a default pool
+        owned_pool_ = std::make_unique<SystemBufferPool>();
+        pool_       = owned_pool_.get();
     }
 #ifdef CROWDB_RPC_HAVE_RDMA
     rdma_config_                       = std::move(rdma_config);

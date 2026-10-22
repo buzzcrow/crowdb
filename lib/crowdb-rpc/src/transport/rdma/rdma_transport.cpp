@@ -169,6 +169,7 @@ bool RdmaTransport::adopt_cm_context(struct ibv_context *context)
         capability_available_.store(false, std::memory_order_release);
         return false;
     }
+    producer_pool_.store(send_pool_.get(), std::memory_order_release);
     register_events(event_engine_);
     return ready();
 }

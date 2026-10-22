@@ -349,6 +349,10 @@ class SocketTransport : public Transport
         return buf;
     } // noop for TCP
 
+    // Producer storage is bounded by the selected transport's arena/pool.
+    // A required registration never substitutes an ordinary allocation.
+    Buffer *allocate_producer_buffer(uint32_t capacity, bool require_registered);
+
     void shutdown() override;
 
     // Shared I/O logic (called by Worker::run_loop).
@@ -543,15 +547,16 @@ class SocketTransport : public Transport
 #endif
 
   private:
-    std::shared_ptr<Connection> connect_tcp(const std::string &addr, int port);
-    void                        prepare_tcp_socket(int fd) const;
-    BufferPool                 *pool_;
-    bool                        allow_tcp_fallback_{true};
-    RdmaConfig                  rdma_config_;
-    bool                        rdma_explicit_configuration_ = false;
-    bool                        rdma_enabled_                = false;
-    bool                        rdma_listen_enabled_         = false;
-    std::atomic<bool>           started_{false};
+    std::shared_ptr<Connection>       connect_tcp(const std::string &addr, int port);
+    void                              prepare_tcp_socket(int fd) const;
+    BufferPool                       *pool_;
+    std::unique_ptr<SystemBufferPool> owned_pool_;
+    bool                              allow_tcp_fallback_{true};
+    RdmaConfig                        rdma_config_;
+    bool                              rdma_explicit_configuration_ = false;
+    bool                              rdma_enabled_                = false;
+    bool                              rdma_listen_enabled_         = false;
+    std::atomic<bool>                 started_{false};
 #ifdef CROWDB_RPC_HAVE_RDMA
     std::unique_ptr<class RdmaTransport> rdma_transport_;
 #endif

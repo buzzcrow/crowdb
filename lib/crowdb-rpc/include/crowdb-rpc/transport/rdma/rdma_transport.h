@@ -110,7 +110,14 @@ class RdmaTransport : public Transport
     bool    submit(Connection *conn, OutFrame *frame) override;
     bool    post_receive(Connection *conn, Buffer *slot);
     Buffer *register_buffer(Buffer *buf) override;
-    void    shutdown() override;
+    Buffer *allocate_producer_buffer(uint32_t capacity);
+
+    [[nodiscard]] bool has_producer_pool() const
+    {
+        return producer_pool_.load(std::memory_order_acquire) != nullptr;
+    }
+
+    void shutdown() override;
 
     // RDMA-specific: connect to a peer endpoint.
     // Returns a new Connection on success, nullptr on failure.
@@ -193,6 +200,7 @@ class RdmaTransport : public Transport
     SystemBufferPool                default_application_pool_;
     BufferPool                     *application_pool_;
     std::unique_ptr<RdmaBufferPool> send_pool_;
+    std::atomic<RdmaBufferPool *>   producer_pool_{nullptr};
     std::unique_ptr<RdmaBufferPool> recv_pool_;
     ConnectionHandler               connection_handler_;
 

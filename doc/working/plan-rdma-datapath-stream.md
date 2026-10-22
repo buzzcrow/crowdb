@@ -17,6 +17,8 @@ The transport/foundation acceptance is complete at `55ffee38`; cleanup is
 committed at `d6bedf94`. Preserve the verified contiguous-slot benchmark path.
 The six existing DiskIO-client integration cases pass before service changes.
 The full C++ gate already covers DiskIO engines and AlignedWriter.
+The 31 focused ChunkIO configuration/mirror/stream cases and 11 Access Server
+configuration/service cases also pass before production changes.
 
 Observed flow and the first missing seam:
 
@@ -51,6 +53,43 @@ two-SGE capability. This avoids rewriting payload prefixes during fanout.
 The layout is an implementation decision for the required zero-copy path;
 it does not add application aggregation or a flush timer.
 
+- [x] **Expose bounded producer allocation first**: add native transport and
+  C ABI allocation from the already device-owned send arena, with explicit
+  `require_registered` policy and no replacement allocation on exhaustion.
+  Publish the arena pointer only after CM/device adoption using release/acquire;
+  the existing operation gate pins shutdown. Add unique writable Rust storage
+  with an uninitialized-capacity view and an explicit initialization contract.
+  Test no-device allocation, hard bounds, pointer-preserving commit and real
+  registered storage retained across server destruction. This API alone does
+  not establish zero-copy SEND; direct layout and producer wiring follow.
+  The new ordinary-buffer lifetime test first reproduces a SIGSEGV in
+  `Buffer::release()` after the `SystemBufferPool` facade is destroyed (GDB
+  confirms the retained raw recycler pointer). Move ordinary pool admission
+  and recycling into a retained shared State, keeping its CAS admission and
+  avoiding a new lock. Outstanding buffers must remain releasable after their
+  facade is destroyed, as registered leases already do. Verify existing detach
+  and concurrent outstanding-admission tests alongside the new regression.
+  Use the admission reservation itself as the allocation's State lifetime
+  reference, plus one facade bit. This retains the prior one-CAS acquire and
+  one-counter-release hot path; final release and facade destruction atomically
+  choose the sole State destructor. Add their concurrent race test.
+  The first HCA producer case reached its readiness assertion before calling
+  `RpcServer::start`; the listener is created during start. Add that missing
+  setup action and rerun the case without changing deadlines or assertions.
+  The next run confirms listen readiness but rejects allocation: PD/arenas are
+  adopted on the first real CM connection, not on listen. Establish a real
+  client QP before the allocation assertions; also assert required allocation
+  is unavailable before that CM adoption. This matches route-before-producer
+  initialization in the planned service wiring.
+  The corrected real-HCA test passes in 14 ms: exact arena exhaustion,
+  no optional system replacement, release/reallocation, and a cloned lease
+  surviving server/CM teardown. Held receive and peer-close cases also pass.
+  The final production source passes full C++/FFI verification at
+  `.crowdb-runtime/artifacts/unit/cpp-9266930ffd4142d18fd3d5c5318082de/`,
+  all 141 no-verbs CTest cases (one HCA case skips there), both new Rust
+  producer tests, workspace clippy/rs-lint, formatting and scoped tree-lint.
+  Tree-lint exits zero with style warnings. The test's corrected startup/CM
+  setup is rebuilt and verified separately after that full gate.
 - [~] **Add negotiated direct layout**: add `RdmaWireLayout::Contiguous` and
   `ControlData`, defaulting to `Contiguous`. For `ControlData`, the control
   region is `RDMA_CONTROL_CAPACITY` including the 14-byte RPC header; derive
@@ -62,6 +101,9 @@ it does not add application aggregation or a flush timer.
   and follows the existing explicit fallback policy. Reject direct layout with
   transport aggregation enabled or provider SGE capacity below two. Extend
   typed C/Rust cold config, environment parsing and status with the same names.
+  Preserve the existing C ABI configuration initializer/struct size. Add a
+  versioned configure entry accepting the existing config plus `wire_layout`,
+  rather than writing new fields past a version-one caller's storage.
   Files: `rdma_config.h`, capability/offer/preflight modules, config ABI/FFI,
   `rdma_connection.cpp`, config/status tests.
 - [ ] **Allocate and send immutable registered data**: expose bounded producer
@@ -207,3 +249,13 @@ pixi run tree-lint
 
 Do not hand off to R242 until both upload and download have explicit lease
 ownership tests and the DiskIO receive loop proves repost-after-disk-completion.
+
+## Provider references
+
+- [libibverbs receive work requests](https://github.com/linux-rdma/rdma-core/blob/master/libibverbs/man/ibv_post_recv.3)
+  defines the SGE address/length/lkey array and completion-before-buffer-reuse
+  requirement. CrowDB additionally waits for the disk/caller lease to end.
+- [libibverbs send work requests](https://github.com/linux-rdma/rdma-core/blob/master/libibverbs/man/ibv_post_send.3)
+  defines scatter/gather submission and its completion ownership. The fixed
+  1 KiB control region, total wire admission and layout negotiation are
+  CrowDB's own protocol contract.

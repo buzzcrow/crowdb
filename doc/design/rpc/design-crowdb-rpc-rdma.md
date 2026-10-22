@@ -173,6 +173,22 @@ release. Their detached ranges remain committed and are not reused by another
 stream. Cached and quarantined descriptors both count toward the hard total.
 Application-pool count admission also uses one atomic reservation.
 
+`SystemBufferPool` retains its admission counter and recycler in a shared
+state owned by every outstanding allocation. Destroying the facade therefore
+does not invalidate a TCP/application buffer still held by an asynchronous
+consumer. Clones share one allocation charge; its final release returns that
+charge. The transport owns any default application-pool facade it creates.
+
+`allocate_producer_buffer` lends storage from the device-owned send arena after
+CM context adoption publishes that arena. Its registration charge and arena
+owner survive the transport. `require_registered` rejects unavailable
+registration; an exhausted active arena never substitutes an ordinary heap
+allocation. Without an active registered arena, optional allocation uses the
+ordinary bounded application pool. `WritableBuffer` exposes only unique
+uninitialized capacity until its producer publishes an initialized prefix;
+immutable views then retain the lease through their final release. Allocation
+alone does not bypass the contiguous transport's payload copy.
+
 The device owner charges MR creation against
 `registered_memory_budget_bytes`. Zero derives a checked bound from all
 CQ-admitted QPs, their send/receive arenas and the two compatibility copy

@@ -37,13 +37,17 @@ crowdb_rpc_buffer_t crowdb_rpc_buffer_alloc(crowdb_rpc_pool_t pool, uint32_t cap
 void                crowdb_rpc_buffer_write(crowdb_rpc_buffer_t buf, const uint8_t *data, uint32_t len);
 const uint8_t      *crowdb_rpc_buffer_data(crowdb_rpc_buffer_t buf);
 uint32_t            crowdb_rpc_buffer_len(crowdb_rpc_buffer_t buf);
-uint32_t            crowdb_rpc_buffer_capacity(crowdb_rpc_buffer_t buf);
-uint64_t            crowdb_rpc_buffer_request_id(crowdb_rpc_buffer_t buf);
-uint64_t            crowdb_rpc_buffer_stream_id(crowdb_rpc_buffer_t buf);
-uint64_t            crowdb_rpc_buffer_sequence(crowdb_rpc_buffer_t buf);
-uint64_t            crowdb_rpc_buffer_logical_offset(crowdb_rpc_buffer_t buf);
-uint32_t            crowdb_rpc_buffer_registration_id(crowdb_rpc_buffer_t buf);
-int                 crowdb_rpc_buffer_ownership(crowdb_rpc_buffer_t buf);
+// Writable access requires the unique, uncommitted allocation owner. Commit
+// only an initialized prefix; success permanently ends writable access.
+uint8_t *crowdb_rpc_buffer_mutable_data(crowdb_rpc_buffer_t handle);
+int      crowdb_rpc_buffer_commit(crowdb_rpc_buffer_t handle, uint32_t initialized_length);
+uint32_t crowdb_rpc_buffer_capacity(crowdb_rpc_buffer_t buf);
+uint64_t crowdb_rpc_buffer_request_id(crowdb_rpc_buffer_t buf);
+uint64_t crowdb_rpc_buffer_stream_id(crowdb_rpc_buffer_t buf);
+uint64_t crowdb_rpc_buffer_sequence(crowdb_rpc_buffer_t buf);
+uint64_t crowdb_rpc_buffer_logical_offset(crowdb_rpc_buffer_t buf);
+uint32_t crowdb_rpc_buffer_registration_id(crowdb_rpc_buffer_t buf);
+int      crowdb_rpc_buffer_ownership(crowdb_rpc_buffer_t buf);
 void crowdb_rpc_buffer_set_metadata(crowdb_rpc_buffer_t buf, uint64_t request_id, uint64_t stream_id, uint64_t sequence,
                                     uint64_t logical_offset, uint32_t registration_id);
 int  crowdb_rpc_buffer_transition(crowdb_rpc_buffer_t buf, int from, int to);
@@ -107,6 +111,10 @@ crowdb_rpc_buffer_t crowdb_rpc_server_status_json(crowdb_rpc_server_t server);
 crowdb_rpc_buffer_t crowdb_rpc_conn_status_json(crowdb_rpc_conn_t connection);
 void                crowdb_rpc_server_register_status_handler(crowdb_rpc_server_t server, uint16_t msg_type);
 int                 crowdb_rpc_server_rdma_listening(crowdb_rpc_server_t server);
+// Null means bounded exhaustion/unavailable registration. No replacement
+// system allocation is made when require_registered is nonzero.
+crowdb_rpc_buffer_t crowdb_rpc_server_alloc_producer_buffer(crowdb_rpc_server_t server, uint32_t capacity,
+                                                            int require_registered);
 
 crowdb_rpc_server_t crowdb_rpc_server_create(crowdb_rpc_pool_t pool);
 crowdb_rpc_server_t crowdb_rpc_server_create_with_workers(crowdb_rpc_pool_t pool, uint32_t num_workers);

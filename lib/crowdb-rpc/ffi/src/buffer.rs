@@ -167,6 +167,10 @@ impl std::fmt::Debug for Buffer {
 }
 
 impl Buffer {
+    pub(crate) fn handle(&self) -> sys::crowdb_rpc_buffer_t {
+        self.handle
+    }
+
     /// Transfer a receive buffer out of its pool, preserving its allocation.
     /// Returns false for pool types that cannot detach receive memory.
     pub fn detach(&mut self) -> bool {

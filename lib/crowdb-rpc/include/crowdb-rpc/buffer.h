@@ -161,25 +161,20 @@ class SystemBufferPool : public BufferPool
   public:
     // max_buffers: outstanding allocation bound (safety valve).
     SystemBufferPool(uint32_t max_buffers = 8192);
-    ~SystemBufferPool() override = default;
+    ~SystemBufferPool() override;
+    SystemBufferPool(const SystemBufferPool &)            = delete;
+    SystemBufferPool &operator=(const SystemBufferPool &) = delete;
 
     Buffer *alloc(uint32_t capacity) override;
     void    recycle(Buffer *buf) override;
     bool    detach(Buffer *buf) override;
 
-    [[nodiscard]] uint32_t max_buffers() const
-    {
-        return max_buffers_;
-    }
-
-    [[nodiscard]] uint32_t outstanding() const
-    {
-        return outstanding_.load(std::memory_order_relaxed);
-    }
+    [[nodiscard]] uint32_t max_buffers() const;
+    [[nodiscard]] uint32_t outstanding() const;
 
   private:
-    uint32_t              max_buffers_;
-    std::atomic<uint32_t> outstanding_{0}; // in-use buffers (allocated, not yet freed)
+    struct State;
+    State *state_;
 };
 
 // Bounded registered-memory abstraction. The pool remains usable without an

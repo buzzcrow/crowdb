@@ -18,6 +18,7 @@ mod connection_pool;
 mod cpp_global_metrics;
 pub mod logging;
 mod owned_route;
+mod producer_buffer;
 mod server;
 pub mod sys;
 #[cfg(feature = "test-util")]
@@ -33,6 +34,7 @@ pub use logging::{
     shutdown_logging,
 };
 pub use owned_route::{OwnedClientRoute, RpcClientHandle};
+pub use producer_buffer::WritableBuffer;
 pub use server::{Connection, RpcError, RpcServer, ServerRequest};
 pub use transport::RdmaConfig;
 

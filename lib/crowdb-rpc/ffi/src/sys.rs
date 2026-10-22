@@ -162,6 +162,13 @@ extern "C" {
     pub fn crowdb_rpc_buffer_write(buf: crowdb_rpc_buffer_t, data: *const u8, len: u32);
     pub fn crowdb_rpc_buffer_data(buf: crowdb_rpc_buffer_t) -> *const u8;
     pub fn crowdb_rpc_buffer_len(buf: crowdb_rpc_buffer_t) -> u32;
+    pub fn crowdb_rpc_buffer_mutable_data(buf: crowdb_rpc_buffer_t) -> *mut u8;
+    pub fn crowdb_rpc_buffer_commit(buf: crowdb_rpc_buffer_t, initialized_length: u32) -> c_int;
+    pub fn crowdb_rpc_server_alloc_producer_buffer(
+        server: crowdb_rpc_server_t,
+        capacity: u32,
+        require_registered: c_int,
+    ) -> crowdb_rpc_buffer_t;
     pub fn crowdb_rpc_buffer_capacity(buf: crowdb_rpc_buffer_t) -> u32;
     pub fn crowdb_rpc_buffer_request_id(buf: crowdb_rpc_buffer_t) -> u64;
     pub fn crowdb_rpc_buffer_stream_id(buf: crowdb_rpc_buffer_t) -> u64;
