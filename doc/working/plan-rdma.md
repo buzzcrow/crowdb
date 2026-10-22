@@ -5,8 +5,7 @@
 
 Upstream: [R5](../backlog/R5-rdma-alloc.md),
 [RDMA RPC design](../design/rpc/design-crowdb-rpc-rdma.md), and child
-backlogs [R240](../backlog/R240-rdma-datapath-stream.md),
-[R241](../backlog/R241-rdma-chunk-kv-access.md), and
+backlogs [R241](../backlog/R241-rdma-chunk-kv-access.md) and
 [R242](../backlog/R242-rdma-fat-client-sdk.md).
 
 Goal: implement the host-memory RDMA SEND/RECV path end to end, with RDMA as
@@ -35,14 +34,23 @@ fallback. The old 1.187M value labeled RDMA was TCP; matching current TCP
 measures 1.196M TPS. Exact identities, settings and artifact names are retained
 in [RPC flow analysis](../design/rpc/rpc-flow-analysis.md).
 
-Current work is R240, then R241, using their existing plans. R242 and physical
+The HTTP/ChunkIO/DiskIO datapath is accepted at `ab1ffbfb`: immutable registered
+HTTP owners, aligned receive-to-disk handoff, read reuse through SEND completion,
+caller-held receive credits, retained asynchronous service owners and terminal
+accepted-RDMA failures. All 278 affected Rust cases and full C++/FFI gates pass.
+A 3,158,073-byte real HTTP corpus crosses two chunks and matches TCP/native/OCI
+bytes and metadata geometry. Peer-close fails a partial HTTP download with no
+TCP suffix. Exact functional settings, error counts, image and artifact
+identities are retained in RPC flow analysis.
+
+Current work is R241, using its existing plan. R242 and physical
 multi-node validation remain outside the user's requested continuation.
 
 ## Fixed design decisions
 
 - Use one common RPC abstraction for TCP and RDMA.
 - Use RC SEND/RECV. The accepted contiguous RPC layout uses one wire slot
-  and one SGE per message. R240 adds a negotiated control/data layout with
+  and one SGE per message. The accepted datapath adds a negotiated control/data layout with
   separate SGEs for immutable producer payload and per-target control; its
   total wire admission includes both regions.
 - Use service discovery for coarse RDMA capability and TCP handshake for the
@@ -92,15 +100,14 @@ R242 fat client SDK and FFI lease
 
 ## Immediate implementation order
 
-User continuation on 2026-10-22: complete R238 and R239, then continue through
-R240 and R241 in this same task. Finish transport/benchmark/OCI acceptance
-before advancing; implement R240, then R241, using their existing
-[datapath stream plan](plan-rdma-datapath-stream.md) and
-[Chunk-KV/access plan](plan-rdma-chunk-kv-access.md), with their own gates.
-Do not create duplicate plan files. R242 remains outside this requested continuation.
+The foundation, transport and datapath requirements are complete. Continue
+through R241 in this same task using its existing
+[Chunk-KV/access plan](plan-rdma-chunk-kv-access.md) and gates. Do not create
+duplicate plan files. R242 remains outside this requested continuation.
 
-1. Complete R240 using its existing datapath stream plan and service gates.
-2. Complete R241 using its existing Chunk-KV/access plan and parity gates.
+1. Complete R241 using its existing Chunk-KV/access plan and parity gates.
+2. Rebuild matching CLI/server binaries and repeat the 10-second peak controls
+   after all service-related transport changes, retaining errors and latency.
 3. Keep R242 downstream until the user includes that scope.
 
 Before modifying each service path, run its focused baseline corpus and record
@@ -109,12 +116,9 @@ OCI runtime preparation are already verified. Service acceptance must prove
 actual RDMA, ownership through disk/caller completion, and bounded pressure;
 transport echo acceptance alone does not prove those properties.
 
-## Phase 3: R240 and R241 service integration
+## Phase 3: Chunk-KV service integration
 
-- [ ] **Execute R240 child plan**: connect ChunkIO-produced 1 MiB buffers to
-  Access Server/DiskIO, retain DiskIO buffers through disk completion, and test
-  large multi-message streams.
-- [ ] **Execute R241 child plan**: connect Access Server/Chunk-KV with 64 KiB
+- [~] **Execute R241 child plan**: connect Access Server/Chunk-KV with 64 KiB
   metadata and 256 KiB aggregate classes, preserving existing request IDs,
   ordering, and retry semantics.
 - [ ] **Run semantic parity**: for the same test corpus, compare TCP and RDMA

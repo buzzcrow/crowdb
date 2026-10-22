@@ -201,15 +201,16 @@ engine selection is independent of the RDMA/TCP path.
 Both containers use UID 1000, host networking and the same host/HCA, with
 independent QPs. The pinned runtime image is
 `sha256:e3c9c5c6d5fc3424ac3f22cf4cdcc9b1c872f47336484f54962b2541c4ed6cef`.
-Manifests retain binary hashes, source/dirty state, actual server identity,
+All five profiles use clean source `ab1ffbfb`. Manifests retain binary hashes,
+source/dirty state, actual server identity,
 engine, settings, complete logs and raw counters. Artifacts under
 `.crowdb-runtime/rdma-check/artifacts/rdma-datapath/` are:
 
-- `dd26085b76ef40f4bb61fe05813c9b17`: native RDMA;
-- `73f4fd013ea048338b7d3a18dc7bf53b`: native TCP;
-- `f7c807fcfbaa496ca02c4dd38d37e140`: shared-HCA OCI RDMA;
-- `e2de510290114a8ab2e59780235f0110`: OCI TCP without RDMA devices;
-- `24d2205fc7d94bbf92a52df176a2af8b`: OCI partial-download peer close.
+- `7852ce8aef7a49e6804b1f25241f8424`: native RDMA;
+- `9235eeb5ad6f407dae9a8fab190d0f73`: native TCP;
+- `5268f02d8ffb4e458113d39e6a5f9dd2`: shared-HCA OCI RDMA;
+- `a09e1892158d4b1aa2499c39d926f3fb`: OCI TCP without RDMA devices;
+- `227f2ddb147a4fedb5fff32ffe187eda`: OCI partial-download peer close.
 
 ### Linux — 2026-08-27
 

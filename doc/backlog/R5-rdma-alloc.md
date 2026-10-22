@@ -5,9 +5,9 @@
 
 ## Status
 
-The registered host-buffer foundation and common RDMA RPC transport are
-accepted. Remaining child requirements R240 through R242 retain the datapath,
-Chunk-KV, and fat-client goals.
+The registered host-buffer foundation, common RDMA RPC transport and
+HTTP/ChunkIO/DiskIO datapath are accepted. Remaining child requirements R241
+and R242 retain the Chunk-KV and fat-client goals.
 
 ## Problem
 
@@ -24,9 +24,9 @@ defined in [`design-crowdb-rpc-rdma.md`](../design/rpc/design-crowdb-rpc-rdma.md
    bounded 64 KiB/256 KiB/1 MiB classes, explicit ownership and quarantine,
    TCP preflight, per-CQ polling/event workers and one-way fallback.
 2. Retain the verified transport and benchmark invariants when adding services.
-3. Implement the S3/HTTP/DiskIO stream in
-   [R240](R240-rdma-datapath-stream.md), reusing existing ChunkIO aggregation
-   and 1 MiB datapath buffers.
+3. Reuse the accepted [HTTP/ChunkIO/DiskIO stream](../design/rpc/design-crowdb-rpc-rdma.md#7-service-interactions),
+   preserving existing aggregation, aligned 1 MiB receive data, disk completion
+   ownership, caller leases and partial-result failure without a TCP suffix.
 4. Implement Access Server to Chunk-KV integration in
    [R241](R241-rdma-chunk-kv-access.md), using 64 KiB metadata and 256 KiB
    aggregated result messages.
