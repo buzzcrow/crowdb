@@ -11,6 +11,7 @@ use crowdb_protocol::key::{StreamProcessLeaseKey, TextKey};
 use crate::{CrowdbKvClient, Error, GetOutcome, ReadMode};
 
 mod authority;
+mod observation;
 pub use authority::{
     StreamProcessAuthority, StreamProcessContext, StreamProcessLeaseStatus, StreamProcessLeaseTiming,
 };

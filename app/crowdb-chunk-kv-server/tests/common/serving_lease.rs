@@ -64,12 +64,14 @@ impl TestServingLease {
 
         let (head, page) = catalog(Id128 { high: 1, low: 2 }, stream_name, EPOCH, 1, None);
 
-        let service = ChunkKvService::new(INSTANCE_ID, 8).unwrap();
+        let service =
+            ChunkKvService::new(super::test_process::TestProcess::authority(INSTANCE_ID), 8).unwrap();
         service
             .install_catalog_and_reconcile(&head, &[page], std::slice::from_ref(&partition))
             .unwrap();
         let mut grant = ServingGrant {
             instance_id: INSTANCE_ID,
+            process_epoch: 1,
             lease_sequence: 1,
             catalog_generation: 1,
             issued_at_ms: 1_000,
@@ -99,6 +101,7 @@ impl TestServingLease {
     pub fn renew_authority(&self) {
         let mut grant = ServingGrant {
             instance_id: INSTANCE_ID,
+            process_epoch: 1,
             lease_sequence: 2,
             catalog_generation: 1,
             issued_at_ms: 1_100,

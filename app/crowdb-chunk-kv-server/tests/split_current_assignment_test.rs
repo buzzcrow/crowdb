@@ -1,6 +1,9 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+#[path = "common/process.rs"]
+mod test_process;
+
 #[path = "common/split_storage.rs"]
 mod split_storage;
 
@@ -72,6 +75,7 @@ fn publish(service: &ChunkKvService, generation: u64, partitions: &[Partition]) 
         .unwrap();
     let mut grant = ServingGrant {
         instance_id: 1,
+        process_epoch: 1,
         lease_sequence: generation,
         catalog_generation: generation,
         issued_at_ms: 1000,
@@ -132,7 +136,7 @@ async fn current_assignment_supersedes_historical_split_dispatcher() {
     let parent_tree = Arc::new(MemoryPartitionTree::with_tree_id(90));
     let parent = open_parent(&storage, id, &parent_tree).await;
     write(&parent, 1, b"old-view").await;
-    let service = ChunkKvService::new(1, 8).unwrap();
+    let service = ChunkKvService::new(test_process::TestProcess::authority(1), 8).unwrap();
     publish(&service, 1, std::slice::from_ref(&parent));
     let plan = SplitPlan {
         transition_id: TransitionId { high: 90, low: 2 },

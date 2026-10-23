@@ -11,6 +11,7 @@ use crowdb_chunk_kv::{
     ChunkKvError, CompareCondition, JournalPosition, MutationOperation, MutationResult, Partition,
     PreparedSplitWriterArtifact, RequestId, SplitArtifact, ValueRevision,
 };
+use crowdb_kv_client::StreamProcessAuthority;
 use crowdb_protocol::chunk_kv::{
     BatchMutationRequest, BatchMutationResponse, BatchMutationResult, ChunkKvRangeCatalogEntry,
     ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPartitionState, ChunkKvResponse,
@@ -164,9 +165,9 @@ impl ChunkKvService {
     /// # Errors
     ///
     /// Returns an invalid-request error for zero identity or capacity.
-    pub fn new(instance_id: u64, max_partitions: usize) -> Result<Self, ChunkKvError> {
+    pub fn new(process: Arc<StreamProcessAuthority>, max_partitions: usize) -> Result<Self, ChunkKvError> {
         Self::new_with_limits(
-            instance_id,
+            process,
             max_partitions,
             DEFAULT_SCAN_RESPONSE_BYTES,
             DEFAULT_INITIALIZATION_WAITERS,
@@ -180,13 +181,19 @@ impl ChunkKvService {
     ///
     /// Returns an invalid-request error when any identity or bound is zero.
     pub fn new_with_limits(
-        instance_id: u64,
+        process: Arc<StreamProcessAuthority>,
         max_partitions: usize,
         max_scan_response_bytes: usize,
         max_initialization_waiters: usize,
         initialization_wait_ms: u64,
     ) -> Result<Self, ChunkKvError> {
-        if instance_id == 0
+        let identity = process
+            .capture(Instant::now())
+            .map_err(|error| ChunkKvError::InvalidRequest(error.to_string()))?
+            .identity();
+        let instance_id = identity.instance_id;
+        if identity.purpose != crowdb_protocol::chunk_stream::StreamPurpose::Wal
+            || instance_id == 0
             || max_partitions == 0
             || max_scan_response_bytes == 0
             || max_initialization_waiters == 0
@@ -198,7 +205,7 @@ impl ChunkKvService {
         }
         Ok(Self {
             instance_id,
-            authority: Arc::new(ServingAuthority::new(instance_id)),
+            authority: Arc::new(ServingAuthority::new(process)),
             catalog: ArcSwap::from_pointee(CatalogSnapshot::default()),
             partitions: ArcSwap::from_pointee(HashMap::new()),
             prepared_transfer_targets: ArcSwap::from_pointee(HashMap::new()),
@@ -322,7 +329,8 @@ impl ChunkKvService {
         partitions.sort_unstable_by_key(|partition| partition.partition_id);
         let lifecycle = if !self.admitting.load(Ordering::Acquire) {
             ServerLifecycle::Draining
-        } else if catalog_generation != 0
+        } else if self.authority.process().capture(Instant::now()).is_ok()
+            && catalog_generation != 0
             && (!catalog.entries.iter().any(|entry| {
                 entry.owner.instance_id == self.instance_id
                     && entry.state != ChunkKvRangeCatalogPartitionState::Retired
@@ -401,6 +409,13 @@ impl ChunkKvService {
             .collect();
         hosted.sort_unstable_by_key(|partition| partition.partition_id);
         ChunkKvExtra {
+            process_epoch: self
+                .authority
+                .process()
+                .status(Instant::now())
+                .lease
+                .identity
+                .process_epoch,
             capacity_bytes,
             durable_bytes,
             request_rate,

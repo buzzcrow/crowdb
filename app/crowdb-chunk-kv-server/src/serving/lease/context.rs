@@ -4,7 +4,9 @@
 //! Immutable admission context and shared grant-snapshot validation.
 
 use super::{AuthorityError, AuthoritySnapshot, AuthorityState, ServingAuthority};
+use crowdb_kv_client::StreamProcessContext;
 use crowdb_protocol::chunk_kv::{Id128, ServingAssignment};
+use std::time::Instant;
 
 /// One admitted assignment; later grants cannot revive it after exclusion.
 #[derive(Clone, Copy, Debug)]
@@ -13,6 +15,7 @@ pub struct ServingContext {
     assignment: ServingAssignment,
     continuity: u64,
     deadline_ms: u64,
+    process: StreamProcessContext,
 }
 
 impl ServingContext {
@@ -34,6 +37,10 @@ impl ServingAuthority {
         owner_epoch: u64,
         now_monotonic_ms: u64,
     ) -> Result<ServingContext, AuthorityError> {
+        let process = self
+            .process
+            .capture(Instant::now())
+            .map_err(|_| AuthorityError::LeaseExpired)?;
         let state = self.state.load();
         let snapshot = live_snapshot(&state, now_monotonic_ms.max(self.monotonic_ms()))?;
         if catalog_generation != snapshot.grant.catalog_generation {
@@ -52,7 +59,16 @@ impl ServingAuthority {
             instance_id: self.instance_id,
             assignment,
             continuity: snapshot.continuity[index],
-            deadline_ms: snapshot.local_deadline_ms,
+            deadline_ms: snapshot.local_deadline_ms.min(
+                u64::try_from(
+                    process
+                        .deadline()
+                        .saturating_duration_since(self.clock_origin)
+                        .as_millis(),
+                )
+                .unwrap_or(u64::MAX),
+            ),
+            process,
         })
     }
 
@@ -72,12 +88,18 @@ impl ServingAuthority {
         contexts: &[ServingContext],
         now_monotonic_ms: u64,
     ) -> Result<(), AuthorityError> {
+        self.process
+            .capture(Instant::now())
+            .map_err(|_| AuthorityError::LeaseExpired)?;
         if contexts.is_empty() {
             return Ok(());
         }
         let state = self.state.load();
         let snapshot = live_snapshot(&state, now_monotonic_ms.max(self.monotonic_ms()))?;
         for context in contexts {
+            self.process
+                .validate_context(&context.process, Instant::now())
+                .map_err(|_| AuthorityError::LeaseExpired)?;
             if context.instance_id != self.instance_id {
                 return Err(AuthorityError::WrongInstance);
             }

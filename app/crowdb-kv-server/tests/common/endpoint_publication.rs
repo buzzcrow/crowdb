@@ -168,6 +168,7 @@ async fn endpoint_fixture() -> Group0ControlPlane {
         &control,
         1,
         ChunkKvExtra {
+            process_epoch: 1,
             hosted: vec![HostedPartition {
                 partition_id: page.entries[0].partition_id,
                 owner_epoch: 1,

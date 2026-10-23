@@ -19,6 +19,9 @@ impl ChunkKvService {
         received_monotonic_ms: u64,
     ) -> ChunkKvResponse {
         let started = Instant::now();
+        let Ok(process) = self.authority.process().capture(Instant::now()) else {
+            return authority_failure(generation, &super::AuthorityError::LeaseExpired, Some(entry));
+        };
         // A catching-up target uses the already validated transfer artifact.
         // Serving assignments use their independently renewable grant context.
         let context = if entry.state == ChunkKvRangeCatalogPartitionState::TargetCatchingUp {
@@ -38,6 +41,14 @@ impl ChunkKvService {
             .execute_point_operation(partition, entry, generation, request, transfer)
             .await;
         if response.result.is_ok() {
+            if self
+                .authority
+                .process()
+                .validate_context(&process, Instant::now())
+                .is_err()
+            {
+                return authority_failure(generation, &super::AuthorityError::LeaseExpired, Some(entry));
+            }
             if let Some(context) = context {
                 if let Err(error) = self.authority.validate_context(
                     &context,

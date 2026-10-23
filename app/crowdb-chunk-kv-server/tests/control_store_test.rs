@@ -486,6 +486,7 @@ async fn group0_serving_grant_load_rejects_invalid_authority() {
     let store = Group0ControlStore::new(kv.clone());
     let mut grant = ServingGrant {
         instance_id: 7,
+        process_epoch: 1,
         lease_sequence: 2,
         catalog_generation: 3,
         issued_at_ms: 1_000,

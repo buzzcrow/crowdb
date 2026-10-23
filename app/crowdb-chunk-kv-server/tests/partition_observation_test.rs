@@ -1,6 +1,9 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+#[path = "common/process.rs"]
+mod test_process;
+
 use std::sync::Arc;
 
 use axum::{
@@ -110,7 +113,7 @@ async fn get(app: axum::Router, id: &str, generation: u64, epoch: u64) -> (Statu
 
 #[tokio::test]
 async fn observation_keeps_exact_fences_and_does_not_confuse_serving_with_live_authority() {
-    let service = Arc::new(ChunkKvService::new(7, 8).unwrap());
+    let service = Arc::new(ChunkKvService::new(test_process::TestProcess::authority(7), 8).unwrap());
     let (head, page) = catalog();
     service.install_catalog(&head, &[page]).unwrap();
     let id = format!("{:016x}{:016x}", ID.high, ID.low);
@@ -264,7 +267,7 @@ async fn native_page_windows_preserve_bytes_and_reject_changed_cursors() {
             .unwrap();
     }
     tree.checkpoint(0).await.unwrap();
-    let service = Arc::new(ChunkKvService::new(7, 8).unwrap());
+    let service = Arc::new(ChunkKvService::new(test_process::TestProcess::authority(7), 8).unwrap());
     let (head, catalog) = catalog();
     service.install_catalog(&head, &[catalog]).unwrap();
     service.install_partition(&partition).unwrap();
@@ -362,7 +365,7 @@ async fn native_page_partition() -> (Arc<crowdb_chunk_kv::CrowdbPartitionTree>, 
 #[tokio::test]
 async fn terminal_apply_uncertainty_requests_restart_without_reactivating_writer() {
     use crowdb_chunk_kv::{ChunkKvError, MutationOperation, PartitionLifecycle, RequestId};
-    let service = ChunkKvService::new(7, 8).unwrap();
+    let service = ChunkKvService::new(test_process::TestProcess::authority(7), 8).unwrap();
     let (head, page) = catalog();
     service.install_catalog(&head, &[page]).unwrap();
     assert!(

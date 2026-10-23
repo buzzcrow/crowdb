@@ -1230,9 +1230,8 @@ adaptation rather than a new transport or storage engine.
   protocol records: idempotence, simultaneous claimants, stale boots, expiry,
   grant retention, key-purpose isolation and malformed metadata. Protocol tests,
   two-package all-target clippy and fmt pass in `process-lease-*` receipts.
-- This is metadata/claim infrastructure only. Local process-deadline projection,
-  independent renewal, conditional service heartbeat/grant publication, startup
-  exclusion and Stream IO binding remain. A claim alone is not an old-IO drain
+- Local projection and conditional boot/heartbeat/grant wiring are implemented
+  below. Startup exclusion and Stream IO binding remain. A claim alone is not an old-IO drain
   or permission to adopt predecessor data. Normal WAL authority still requires
   the existing exact serving grant; preparation IO uses the process scope.
 
@@ -1250,20 +1249,49 @@ adaptation rather than a new transport or storage engine.
   protocol/client all-target clippy and workspace fmt pass. Receipts:
   `process-authority-final-focused.log`, `process-authority-clippy-final.log`,
   and `process-authority-fmt.log` under the requirement artifact directory.
-- This is a tested primitive. Production boot, independent renewal, grant
-  publication and Stream IO still need to use it; this does not complete T18.
+- Production boot/renewal and grant publication now use it as described below.
+  Stream IO still needs the captured deadline; this does not complete T18.
+
+## Process-bound service authority implementation (partial T18)
+
+- Chunk-KV claims one fixed WAL process lease before initial partition recovery.
+  A dedicated task renews it independently of recovery, observation sampling and
+  request IO. Expiry/replacement permanently fences it and wakes service shutdown.
+  Health exposes the accepted record, remaining duration and effective fence.
+- Serving grants and service observations require the process epoch. A boot
+  rejects another boot's grant; capture/completion checks include process scope.
+  The explicit catching-up transfer path also checks process scope around point
+  execution. Idle readiness cannot outlive the process lease.
+- Monitor publication atomically updates the grant and retained grant sequence/
+  greatest expiry under the process-record revision. Process replacement and
+  renewal use the same key, preventing a concurrent grant extension from being
+  lost during replacement. A stale epoch's observation receives no new grant.
+- Heartbeat and withdrawal condition on exact boot identity and the same lease
+  revision. The unconditional Chunk-KV registry wrappers are removed; withdrawal
+  preserves the process fence and cannot delete a successor's observation.
+- Required process/load fields have no missing-field defaults. The former old
+  registration compatibility test now checks the complete current record and
+  rejects omissions. Current fixtures explicitly carry their boot epoch.
+- Four affected crates pass 592 tests across 106 targets, with no ignored cases.
+  `process-boot-tests-final.log` records the full run. The initial full run found
+  one idle-owner fixture still using a zero default process epoch; fixing that
+  fixture preserved the strict production contract.
+- Strict all-target clippy passes for protocol, KV client/server, Chunk-KV
+  server, Web and E2E; workspace fmt passes. Receipts:
+  `process-boot-clippy-complete.log` and `process-boot-fmt.log`. The small
+  let/else and renewal-loop lint refactors pass the final 36-case focused flow
+  rerun in `process-boot-final-flow-tests.log`.
+- Startup predecessor exclusion, absolute IO-deadline propagation, background
+  preparation IO and ordered physical drain/release remain. This does not yet
+  complete the writer-ownership acceptance or enable ordinary append without KV.
 
 ## Ownership execution notes (T18/T19 target)
 
-- `ServingGrant` currently binds a persistent instance ID, not a process boot.
-  The monitor can renew that identity while a paused predecessor still exists.
-  Bind grants and conditional service heartbeat to one fixed per-boot session,
-  using the existing DiskDB session fencing pattern without adding a second WAL
-  authority. A new boot must respect the prior grant's safe exclusion boundary
+- Grants and conditional heartbeat now bind one fixed per-boot process lease.
+  A new boot must respect the prior grant's safe exclusion boundary
   before observing the abandoned tail; a cached instance ID cannot prove that.
-- Captured assignment continuity and the sequence high-water fence are implemented
-  above. Add the fixed process boot identity to the same context when wiring the
-  Group-0 session, so process replacement also permanently fences old work.
+- Captured assignment continuity, sequence high-water fences and the fixed
+  process identity now fence admitted work across clear, expiry and replacement.
 - Point execution and grouped RPCs now revalidate captured contexts around their
   asynchronous work. Bind
   Stream IO to the minimum captured Group-0/liveness absolute deadline; checking

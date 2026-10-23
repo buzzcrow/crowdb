@@ -1,6 +1,9 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+#[path = "common/process.rs"]
+mod test_process;
+
 use std::sync::Arc;
 
 use crowdb_chunk_kv::memory::MemoryPartitionTree;
@@ -431,6 +434,7 @@ fn install_local_split_catalog(
         .unwrap();
     let mut grant = ServingGrant {
         instance_id: INSTANCE_ID,
+        process_epoch: 1,
         lease_sequence: 2,
         catalog_generation: 2,
         issued_at_ms: 1_100,
@@ -577,6 +581,7 @@ async fn assert_old_parent_scan_continuation(service: &ChunkKvService) {
 async fn assert_retained_seek_needs_no_child_grant(service: &ChunkKvService) {
     let mut grant = ServingGrant {
         instance_id: INSTANCE_ID,
+        process_epoch: 1,
         lease_sequence: 3,
         catalog_generation: 2,
         issued_at_ms: 1_200,
@@ -659,13 +664,14 @@ async fn fixture() -> (ChunkKvService, Partition) {
 async fn matching_grant_activation_promotes_a_replayed_partition() {
     let stream_name = StreamName { high: 30, low: 32 };
     let partition = prepared_partition(PartitionId { high: 1, low: 3 }, stream_name, EPOCH).await;
-    let service = ChunkKvService::new(INSTANCE_ID, 4).unwrap();
+    let service = ChunkKvService::new(test_process::TestProcess::authority(INSTANCE_ID), 4).unwrap();
     let (head, page) = catalog(Id128 { high: 1, low: 3 }, stream_name, EPOCH, 1, None);
     service
         .install_catalog_and_reconcile(&head, &[page], std::slice::from_ref(&partition))
         .unwrap();
     let mut grant = ServingGrant {
         instance_id: INSTANCE_ID,
+        process_epoch: 1,
         lease_sequence: 1,
         catalog_generation: 1,
         issued_at_ms: 1_000,
@@ -714,7 +720,7 @@ async fn matching_grant_activation_promotes_a_replayed_partition() {
 
 #[test]
 fn an_idle_stateless_instance_needs_no_owned_range_or_serving_grant() {
-    let service = ChunkKvService::new(INSTANCE_ID + 1, 4).unwrap();
+    let service = ChunkKvService::new(test_process::TestProcess::authority(INSTANCE_ID + 1), 4).unwrap();
     assert!(!service.health(50_100).ready, "A catalog must first be loaded");
     let (head, page) = catalog(
         Id128 { high: 1, low: 3 },
@@ -766,7 +772,7 @@ async fn committed_transfer_activates_a_recovered_overlay() {
         checksum: [0; 32],
     };
     head.seal().unwrap();
-    let service = ChunkKvService::new(INSTANCE_ID, 4).unwrap();
+    let service = ChunkKvService::new(test_process::TestProcess::authority(INSTANCE_ID), 4).unwrap();
     service
         .install_catalog_and_reconcile(&head, &[page], std::slice::from_ref(&partition))
         .unwrap();
@@ -1038,7 +1044,9 @@ async fn catching_up_target_appends_unconditional_write_before_initialization() 
 #[tokio::test]
 async fn catching_up_read_waits_are_time_and_count_bounded() {
     let target = pending_transfer_partition().await;
-    let service = Arc::new(ChunkKvService::new_with_limits(7, 4, 1_024, 1, 20).unwrap());
+    let service = Arc::new(
+        ChunkKvService::new_with_limits(test_process::TestProcess::authority(7), 4, 1_024, 1, 20).unwrap(),
+    );
     let (head, mut page) = catalog(
         Id128 { high: 1, low: 2 },
         target.snapshot().stream_name,

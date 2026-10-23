@@ -5,6 +5,41 @@ use super::*;
 use serving_fixture::TestServingLease;
 
 #[tokio::test]
+async fn process_revocation_during_wal_io_prevents_acknowledgment() {
+    let fixture = TestServingLease::start().await;
+    fixture.store.pause_writes();
+    let request = PointRequest {
+        routing: routing(1),
+        operation: PointOperation::Put {
+            key: b"key".to_vec(),
+            value: b"value".to_vec(),
+        },
+    };
+    let pending = fixture.service.handle_point(request.clone(), 1_000, 50_000);
+    tokio::pin!(pending);
+    fixture.wait_for_write(pending.as_mut()).await;
+    fixture.service.authority().process().fence();
+    fixture.store.resume_writes();
+    let response = pending.await;
+    assert!(
+        matches!(response.result, Err(ref error) if error.code == ChunkKvRpcErrorCode::LeaseExpired),
+        "{response:?}"
+    );
+    assert!(response.journal_position.is_none());
+    assert!(fixture
+        .partition
+        .get(EPOCH, b"key", None)
+        .await
+        .unwrap()
+        .is_some());
+    let retry = fixture.service.handle_point(request, 1_100, 50_100).await;
+    assert!(
+        matches!(retry.result, Err(ref error) if error.code == ChunkKvRpcErrorCode::LeaseExpired),
+        "{retry:?}"
+    );
+}
+
+#[tokio::test]
 async fn revoked_inflight_wal_write_cannot_acknowledge_under_a_replacement_grant() {
     let fixture = TestServingLease::start().await;
     fixture.store.pause_writes();

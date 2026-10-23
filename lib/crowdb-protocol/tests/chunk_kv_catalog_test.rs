@@ -92,6 +92,7 @@ fn catalog_rejects_holes_overlaps_and_checksum_changes() {
 fn serving_grant_digest_binds_sorted_partition_epochs() {
     let mut grant = ServingGrant {
         instance_id: 9,
+        process_epoch: 1,
         lease_sequence: 2,
         catalog_generation: 5,
         issued_at_ms: 100,

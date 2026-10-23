@@ -7,6 +7,7 @@
 pub mod balance;
 pub mod lease;
 pub mod monitor;
+pub mod process;
 pub mod split;
 pub mod transfer;
 mod transition_runtime;

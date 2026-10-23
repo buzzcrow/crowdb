@@ -79,10 +79,23 @@ seconds, `Suspect` begins at six seconds, and `Dead` recovery begins at ten.
 
 ## 3. Serving Authority
 
-The monitor issues one aggregate grant per instance. It contains a monotonic
+Each boot claims one fixed Group-0 WAL process lease. It retains its predecessor
+identity while claiming; a replaced boot cannot claim again or renew. Independent
+background renewal starts before partition recovery. Local expiry or a renewal
+gap permanently fences that boot. Lease records retain process epochs and prior
+process/grant expiry boundaries after expiration.
+
+The monitor issues one aggregate grant per instance and process epoch. It contains a monotonic
 lease sequence, catalog generation, wall-clock expiry, sorted exact
 `(partition_id, owner_epoch)` assignments, and their canonical digest. An
 instance heartbeat advertises health but cannot authorize a request.
+
+Heartbeat publication compares the exact process identity and mutates the same
+lease key atomically with the observation. Grant publication compares that key
+and atomically preserves its sequence and greatest expiry alongside the grant.
+Replacement, renewal and grant publication therefore serialize on one record;
+replacement cannot miss a concurrent extension. An observation for another
+process epoch cannot receive a grant, and a boot rejects grants for other epochs.
 
 On receipt, an owner subtracts maximum clock skew and its self-fence margin
 from the wall-clock remaining duration, then projects that duration onto its
@@ -106,6 +119,8 @@ and validates it again before returning success. A revoked context returns
 data remains available to replay and a retry with the same request identity.
 The captured IO deadline stays at its original value across continuous renewal.
 Catching-up targets retain their separately validated transfer-artifact authority.
+Both paths also require the live process scope before execution and before
+returning success. Grant installation cannot revive a locally fenced process.
 
 Client catalog revisions and owner epochs are routing references, not serving
 authority. A server may resolve an older reference through a process-local

@@ -57,6 +57,7 @@ async fn chunk_kv_raw_observation_preserves_load_and_partition_state() {
     let cluster = KvCluster::start().await;
     let svc = cluster.make_service_registry_client();
     let payload = ChunkKvExtra {
+        process_epoch: 1,
         node_id: Some(1),
         http_endpoint: Some("http://127.0.0.1:15508".into()),
         capacity_bytes: 10_000,
@@ -69,7 +70,26 @@ async fn chunk_kv_raw_observation_preserves_load_and_partition_state() {
         }],
         partition_loads: Vec::new(),
     };
-    svc.register_chunk_kv(7, "127.0.0.1:15507", &payload)
+    let lease_client = crowdb_kv_client::StreamProcessLeaseClient::new(svc.shared_kv());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+        .try_into()
+        .unwrap();
+    let lease = lease_client
+        .claim(
+            crowdb_protocol::chunk_stream::StreamPurpose::Wal,
+            7,
+            [1; 16],
+            None,
+            now,
+            60_000,
+        )
+        .await
+        .unwrap();
+    lease_client
+        .publish_chunk_kv_observation(lease.identity, "127.0.0.1:15507", &payload, now)
         .await
         .expect("register chunk KV");
 

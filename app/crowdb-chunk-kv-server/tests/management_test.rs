@@ -1,6 +1,9 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+#[path = "common/process.rs"]
+mod test_process;
+
 use std::sync::Arc;
 
 use axum::body::{to_bytes, Body};
@@ -9,7 +12,7 @@ use crowdb_chunk_kv_server::{management_router, ChunkKvService, ManagementState}
 use tower::ServiceExt;
 
 fn app() -> axum::Router {
-    let service = Arc::new(ChunkKvService::new(7, 8).unwrap());
+    let service = Arc::new(ChunkKvService::new(test_process::TestProcess::authority(7), 8).unwrap());
     management_router(ManagementState::new(service))
 }
 
@@ -23,6 +26,8 @@ async fn health_is_live_while_unleased_server_is_not_ready() {
     let body = to_bytes(health.into_body(), usize::MAX).await.unwrap();
     let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(body["instance_id"], 7);
+    assert_eq!(body["process_lease"]["lease"]["identity"]["process_epoch"], 1);
+    assert_eq!(body["process_lease"]["fenced"], false);
     assert_eq!(body["lifecycle"], "prepared");
     assert_eq!(body["ready"], false);
 

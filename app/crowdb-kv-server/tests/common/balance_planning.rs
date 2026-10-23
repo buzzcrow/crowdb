@@ -93,6 +93,7 @@ async fn seed_instances(control: &Group0ControlPlane, partition_ids: &[Id128]) {
         (
             1,
             ChunkKvExtra {
+                process_epoch: 1,
                 capacity_bytes: 1_000,
                 durable_bytes: 200,
                 request_rate: 0,
@@ -111,6 +112,7 @@ async fn seed_instances(control: &Group0ControlPlane, partition_ids: &[Id128]) {
         (
             2,
             ChunkKvExtra {
+                process_epoch: 1,
                 capacity_bytes: 1_000,
                 ..ChunkKvExtra::default()
             },

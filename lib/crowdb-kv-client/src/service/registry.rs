@@ -466,32 +466,6 @@ impl ServiceRegistryClient {
 // ── chunk-kv convenience wrappers ──────────────────────────────
 
 impl ServiceRegistryClient {
-    /// Register a chunk-KV owner and its current partition/load observation.
-    pub async fn register_chunk_kv(
-        &self,
-        instance_id: InstanceId,
-        rpc_endpoint: &str,
-        observation: &crowdb_protocol::common::ChunkKvExtra,
-    ) -> Result<()> {
-        let extra = ServiceExtra {
-            diskdb: None,
-            kv_server: None,
-            chunk_kv: Some(observation.clone()),
-        };
-        self.register("chunk-kv", instance_id, rpc_endpoint, &extra).await
-    }
-
-    /// Heartbeat a chunk-KV owner with a complete replacement observation.
-    pub async fn heartbeat_chunk_kv(
-        &self,
-        instance_id: InstanceId,
-        rpc_endpoint: &str,
-        observation: &crowdb_protocol::common::ChunkKvExtra,
-    ) -> Result<()> {
-        self.register_chunk_kv(instance_id, rpc_endpoint, observation)
-            .await
-    }
-
     /// Read raw chunk-KV owner observations, including expired registrations.
     pub async fn read_all_chunk_kv_observations(
         &self,
@@ -510,6 +484,7 @@ impl ServiceRegistryClient {
                         })?;
                 Ok(crowdb_protocol::chunk_kv::ChunkKvInstanceObservation {
                     instance_id,
+                    process_epoch: observation.process_epoch,
                     rpc_endpoint: value.rpc_endpoint,
                     last_heartbeat_ms: value.last_heartbeat_ms,
                     capacity_bytes: observation.capacity_bytes,

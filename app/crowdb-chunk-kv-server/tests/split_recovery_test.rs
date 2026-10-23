@@ -1,6 +1,9 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+#[path = "common/process.rs"]
+mod test_process;
+
 use crowdb_chunk_kv::{
     memory::MemoryPartitionTree, Checkpoint, MutationOperation, Partition, PartitionConfig, PartitionId,
     PartitionLifecycle, PartitionRange, PartitionTree, PreparedSplitWriterArtifact, StreamPartitionJournal,
@@ -23,7 +26,7 @@ async fn committed_split_proves_both_recovered_writers_and_rejects_mismatches() 
     for retained in [true, false] {
         let entry = entry(&transition, retained);
         let partition = recovered(&entry).await;
-        let service = ChunkKvService::new(1, 4).unwrap();
+        let service = ChunkKvService::new(test_process::TestProcess::authority(1), 4).unwrap();
         install(&service, &entry, &partition);
         assert!(service
             .activate_recovered_partition(entry.partition_id, 2)
@@ -84,7 +87,7 @@ async fn committed_split_recovers_both_writers_after_the_same_owner_changes_addr
         let mut entry = entry(&transition, retained);
         entry.owner.rpc_endpoint = "192.0.2.12:7401".into();
         let partition = recovered(&entry).await;
-        let service = ChunkKvService::new(1, 4).unwrap();
+        let service = ChunkKvService::new(test_process::TestProcess::authority(1), 4).unwrap();
         install(&service, &entry, &partition);
         service
             .activate_recovered_split_partition(entry.partition_id, entry.owner_epoch, &transition)
@@ -100,7 +103,7 @@ async fn materialized_split_half_recovers_while_sibling_keeps_the_transition_mar
         let mut clean = entry(&transition, retained);
         clean.artifact.tail_overlay = None;
         let partition = recovered(&clean).await;
-        let service = ChunkKvService::new(1, 4).unwrap();
+        let service = ChunkKvService::new(test_process::TestProcess::authority(1), 4).unwrap();
         install(&service, &clean, &partition);
         assert_eq!(service.catalog_overlay_transition_id(clean.partition_id), None);
         let sibling = entry(&transition, !retained);
@@ -123,7 +126,7 @@ async fn materialized_catalog_replaces_unactivated_overlay_with_independent_reco
     let transition = transition();
     let original = entry(&transition, true);
     let overlay = recovered(&original).await;
-    let service = ChunkKvService::new(1, 4).unwrap();
+    let service = ChunkKvService::new(test_process::TestProcess::authority(1), 4).unwrap();
     install(&service, &original, &overlay);
     let mut clean = original;
     clean.artifact.tail_overlay = None;

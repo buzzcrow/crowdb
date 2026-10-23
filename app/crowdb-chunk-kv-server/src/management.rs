@@ -28,6 +28,7 @@ impl ManagementState {
 #[derive(Debug, Serialize)]
 struct HealthResponse {
     instance_id: u64,
+    process_lease: crowdb_kv_client::StreamProcessLeaseStatus,
     lifecycle: &'static str,
     catalog_generation: u64,
     hosted_partitions: usize,
@@ -150,6 +151,11 @@ fn health_response(state: &ManagementState) -> HealthResponse {
     let health = state.service.health(state.service.monotonic_ms());
     HealthResponse {
         instance_id: health.instance_id,
+        process_lease: state
+            .service
+            .authority()
+            .process()
+            .status(std::time::Instant::now()),
         lifecycle: lifecycle_name(health.lifecycle),
         catalog_generation: health.catalog_generation,
         hosted_partitions: health.partitions.len(),

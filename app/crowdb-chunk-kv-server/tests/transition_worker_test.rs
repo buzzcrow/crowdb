@@ -1,6 +1,9 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+#[path = "common/process.rs"]
+mod test_process;
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -410,7 +413,7 @@ async fn source_worker_quiesces_before_returning_release_proof() {
     )
     .await;
     let unused = partition(id(9), KeyRange::default(), 1, &artifact(99), true).await;
-    let service = Arc::new(ChunkKvService::new(1, 4).unwrap());
+    let service = Arc::new(ChunkKvService::new(test_process::TestProcess::authority(1), 4).unwrap());
     service.install_partition(&source).unwrap();
     let worker = TransitionExecutor::with_storage(
         1,
@@ -453,7 +456,7 @@ async fn source_worker_quiesces_before_returning_release_proof() {
 async fn target_worker_recovers_but_does_not_activate_assignment() {
     let target_artifact = transfer(TransferPhase::TargetPreparing).target_artifact;
     let recovered = partition(id(1), KeyRange::default(), 4, &target_artifact, true).await;
-    let service = Arc::new(ChunkKvService::new(2, 4).unwrap());
+    let service = Arc::new(ChunkKvService::new(test_process::TestProcess::authority(2), 4).unwrap());
     let worker = TransitionExecutor::with_storage(
         2,
         Arc::clone(&service),
@@ -553,7 +556,7 @@ async fn final_target_catchup_reuses_the_live_prepared_partition() {
         true,
     )
     .await;
-    let service = Arc::new(ChunkKvService::new(2, 4).unwrap());
+    let service = Arc::new(ChunkKvService::new(test_process::TestProcess::authority(2), 4).unwrap());
     service.install_partition(&recovered).unwrap();
     let storage = Arc::new(LiveCatchupStorage {
         recovered,
@@ -581,7 +584,7 @@ async fn split_worker_reports_only_a_common_child_frontier() {
     )
     .await;
     let unused = partition(id(9), KeyRange::default(), 1, &artifact(99), true).await;
-    let service = Arc::new(ChunkKvService::new(1, 4).unwrap());
+    let service = Arc::new(ChunkKvService::new(test_process::TestProcess::authority(1), 4).unwrap());
     service.install_partition(&parent).unwrap();
     let worker = TransitionExecutor::with_storage(
         1,
@@ -698,7 +701,7 @@ async fn service_after_local_split(first: &SplitTransition) -> (Arc<ChunkKvServi
         false,
     )
     .await;
-    let service = Arc::new(ChunkKvService::new(1, 8).unwrap());
+    let service = Arc::new(ChunkKvService::new(test_process::TestProcess::authority(1), 8).unwrap());
     service.install_partition(&parent).unwrap();
     let retained = install_zero_seq_local_split(&service, &parent, first).await;
     (service, retained)
@@ -765,7 +768,7 @@ async fn processor_persists_target_preparing_before_readiness() {
         1
     );
     let recovered = partition(id(1), KeyRange::default(), 4, &artifact(11), true).await;
-    let service = Arc::new(ChunkKvService::new(2, 4).unwrap());
+    let service = Arc::new(ChunkKvService::new(test_process::TestProcess::authority(2), 4).unwrap());
     let executor = Arc::new(
         TransitionExecutor::with_storage(
             2,
@@ -805,7 +808,7 @@ async fn processor_recovers_durable_prepared_target_and_cleans_authoritative_abo
         });
         store.persist_transfer_transition(&transition, 0).await.unwrap();
         let recovered = partition(id(1), KeyRange::default(), 4, &artifact(11), true).await;
-        let service = Arc::new(ChunkKvService::new(2, 4).unwrap());
+        let service = Arc::new(ChunkKvService::new(test_process::TestProcess::authority(2), 4).unwrap());
         let storage = Arc::new(LiveCatchupStorage {
             recovered: recovered.clone(),
             recover_calls: AtomicUsize::new(0),
@@ -855,7 +858,7 @@ async fn processor_resumes_planned_split_through_durable_readiness() {
     )
     .await;
     let recovered = partition(id(9), KeyRange::default(), 1, &artifact(99), true).await;
-    let service = Arc::new(ChunkKvService::new(1, 4).unwrap());
+    let service = Arc::new(ChunkKvService::new(test_process::TestProcess::authority(1), 4).unwrap());
     service.install_partition(&parent).unwrap();
     let executor = Arc::new(
         TransitionExecutor::with_storage(
@@ -900,7 +903,7 @@ async fn failed_transfer_does_not_starve_independent_split_processing() {
         false,
     )
     .await;
-    let service = Arc::new(ChunkKvService::new(1, 4).unwrap());
+    let service = Arc::new(ChunkKvService::new(test_process::TestProcess::authority(1), 4).unwrap());
     service.install_partition(&parent).unwrap();
     let executor = Arc::new(
         TransitionExecutor::with_storage(

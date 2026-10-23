@@ -29,6 +29,11 @@ use crowdb_protocol::key::{
     DomainMonitorKey, InstanceKey, ServingGrantKey, TextKey,
 };
 
+#[path = "common/grant_process.rs"]
+mod grant_process;
+#[path = "common/process_lease.rs"]
+mod test_process;
+
 #[path = "common/catalog_publication.rs"]
 mod catalog_publication;
 #[path = "common/endpoint_publication.rs"]
@@ -203,6 +208,8 @@ async fn assert_ready_transfer_publication() -> (Group0ControlPlane, TransferTra
 
     let (_, store) = registry_with_group_zero(PxLocalReplicaRole::Leader);
     let control = Group0ControlPlane::acquire(&store).await.unwrap();
+    test_process::TestProcessLease::seed(&control, 1).await;
+    test_process::TestProcessLease::seed(&control, 2).await;
     let partition_id = Id128 { high: 1, low: 1 };
     let transition_id = Id128 { high: 9, low: 9 };
     let artifact = PartitionArtifact {
@@ -327,6 +334,7 @@ async fn assert_ready_transfer_publication() -> (Group0ControlPlane, TransferTra
             last_heartbeat_ms: u64::MAX,
             extra: Some(ServiceExtra {
                 chunk_kv: Some(ChunkKvExtra {
+                    process_epoch: 1,
                     hosted: vec![HostedPartition {
                         partition_id,
                         owner_epoch: 1,
@@ -357,6 +365,7 @@ async fn assert_ready_transfer_publication() -> (Group0ControlPlane, TransferTra
         last_heartbeat_ms: u64::MAX,
         extra: Some(ServiceExtra {
             chunk_kv: Some(ChunkKvExtra {
+                process_epoch: 1,
                 hosted: vec![HostedPartition {
                     partition_id,
                     owner_epoch: 2,
@@ -503,15 +512,7 @@ async fn chunk_kv_driver_plans_dead_owner_recovery_once_and_waits_for_target() {
             instance_id: 2,
         }
         .to_path(),
-        &InstanceValue {
-            instance_id: 2,
-            rpc_endpoint: "127.0.0.1:17002".into(),
-            last_heartbeat_ms: u64::MAX,
-            extra: Some(ServiceExtra {
-                chunk_kv: Some(ChunkKvExtra::default()),
-                ..ServiceExtra::default()
-            }),
-        },
+        &test_process::TestProcessLease::idle_instance(2, "127.0.0.1:17002"),
     )
     .await;
     let mut policy = descriptor();
@@ -616,6 +617,7 @@ async fn assert_chunk_kv_split_plan(
             last_heartbeat_ms: u64::MAX,
             extra: Some(ServiceExtra {
                 chunk_kv: Some(ChunkKvExtra {
+                    process_epoch: 1,
                     capacity_bytes: 1_000,
                     durable_bytes: 600,
                     request_rate: 0,
@@ -853,6 +855,7 @@ async fn put_balance_fixture(control: &Group0ControlPlane) {
         (
             1,
             ChunkKvExtra {
+                process_epoch: 1,
                 capacity_bytes: 1_000,
                 durable_bytes: 200,
                 request_rate: 0,
@@ -871,6 +874,7 @@ async fn put_balance_fixture(control: &Group0ControlPlane) {
         (
             2,
             ChunkKvExtra {
+                process_epoch: 1,
                 capacity_bytes: 1_000,
                 ..ChunkKvExtra::default()
             },

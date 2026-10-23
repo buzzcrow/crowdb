@@ -1,6 +1,9 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+#[path = "common/process.rs"]
+mod test_process;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,7 +20,7 @@ use crowdb_rpc_ffi::{Buffer, RpcClient, RpcServer};
 #[tokio::test]
 async fn point_request_crosses_real_rpc_boundary_with_typed_response() {
     crowdb_rpc_ffi::init_test_logging();
-    let service = Arc::new(ChunkKvService::new(7, 8).unwrap());
+    let service = Arc::new(ChunkKvService::new(test_process::TestProcess::authority(7), 8).unwrap());
     let rpc_service = Arc::new(ChunkKvRpcService::new(service, tokio::runtime::Handle::current()));
     let server = Arc::new(RpcServer::new(None));
     server.listen("127.0.0.1", 0).unwrap();

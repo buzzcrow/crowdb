@@ -56,6 +56,7 @@ pub async fn seed(control: &Group0ControlPlane, distribution: &[(u64, u64)], gen
     ];
     for owner in [1, 2] {
         let mut extra = ChunkKvExtra {
+            process_epoch: 1,
             capacity_bytes: 10_000,
             ..Default::default()
         };

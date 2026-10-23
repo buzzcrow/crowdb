@@ -362,6 +362,7 @@ pub struct HostedPartition {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChunkKvInstanceObservation {
     pub instance_id: u64,
+    pub process_epoch: u64,
     pub rpc_endpoint: String,
     pub last_heartbeat_ms: u64,
     pub capacity_bytes: u64,
@@ -547,8 +548,10 @@ pub struct ServingAssignment {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServingGrant {
     pub instance_id: u64,
+    pub process_epoch: u64,
     pub lease_sequence: u64,
     pub catalog_generation: u64,
     pub issued_at_ms: u64,
@@ -911,6 +914,7 @@ impl ServingGrant {
     /// Returns an error for malformed or ambiguous authority.
     pub fn validate(&self) -> Result<(), ChunkKvProtocolError> {
         if self.instance_id == 0
+            || self.process_epoch == 0
             || self.lease_sequence == 0
             || self.catalog_generation == 0
             || self.expires_at_ms <= self.issued_at_ms

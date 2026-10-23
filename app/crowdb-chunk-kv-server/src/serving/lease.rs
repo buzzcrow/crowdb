@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use arc_swap::ArcSwap;
+use crowdb_kv_client::StreamProcessAuthority;
 use crowdb_protocol::chunk_kv::{DomainMonitorDescriptor, Id128, InstanceHealth, ServingGrant};
 use thiserror::Error;
 
@@ -32,6 +33,8 @@ pub enum AuthorityError {
     InvalidGrant,
     #[error("serving grant belongs to another instance")]
     WrongInstance,
+    #[error("serving grant belongs to another process boot")]
+    WrongProcess,
     #[error("serving grant has expired or reached its safety deadline")]
     LeaseExpired,
     #[error("serving grant is older than the installed authority")]
@@ -45,15 +48,17 @@ pub enum AuthorityError {
 /// Lock-free request-path authority derived from monitor-issued serving grants.
 pub struct ServingAuthority {
     instance_id: u64,
+    process: Arc<StreamProcessAuthority>,
     clock_origin: Instant,
     state: ArcSwap<AuthorityState>,
 }
 
 impl ServingAuthority {
     #[must_use]
-    pub fn new(instance_id: u64) -> Self {
+    pub fn new(process: Arc<StreamProcessAuthority>) -> Self {
         Self {
-            instance_id,
+            instance_id: process.status(Instant::now()).lease.identity.instance_id,
+            process,
             clock_origin: Instant::now(),
             state: ArcSwap::from_pointee(AuthorityState::default()),
         }
@@ -80,6 +85,13 @@ impl ServingAuthority {
         grant.validate().map_err(|_| AuthorityError::InvalidGrant)?;
         if grant.instance_id != self.instance_id {
             return Err(AuthorityError::WrongInstance);
+        }
+        let process = self
+            .process
+            .capture(Instant::now())
+            .map_err(|_| AuthorityError::LeaseExpired)?;
+        if grant.process_epoch != process.identity().process_epoch {
+            return Err(AuthorityError::WrongProcess);
         }
         let local_deadline_ms = grant_deadline(&grant, policy, received_wall_ms, received_monotonic_ms)?;
         let grant = Arc::new(grant);
@@ -150,6 +162,9 @@ impl ServingAuthority {
 
     #[must_use]
     pub fn has_live_grant(&self, catalog_generation: u64, now_monotonic_ms: u64) -> bool {
+        if self.process.capture(Instant::now()).is_err() {
+            return false;
+        }
         let now_monotonic_ms = now_monotonic_ms.max(self.monotonic_ms());
         self.state.load().current.as_ref().is_some_and(|snapshot| {
             snapshot.grant.catalog_generation == catalog_generation
@@ -160,6 +175,11 @@ impl ServingAuthority {
     fn current_time(&self, received: u64, started: Instant) -> u64 {
         let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         self.monotonic_ms().max(received.saturating_add(elapsed))
+    }
+
+    #[must_use]
+    pub fn process(&self) -> &Arc<StreamProcessAuthority> {
+        &self.process
     }
 }
 
