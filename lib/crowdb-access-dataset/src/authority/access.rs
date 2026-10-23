@@ -85,6 +85,7 @@ impl DatasetAuthority {
                 .unwrap_or_default();
             change(&mut access)?;
             let bytes = encode_access(access)?;
+            let submitted = std::time::Instant::now();
             match self
                 .store
                 .compare_exchange(&key, old.as_ref().map(|v| v.bytes.as_slice()), &bytes)
@@ -98,8 +99,12 @@ impl DatasetAuthority {
                     if attempt % 2 == 1 && attempt < 63 {
                         // Concurrent acquisitions and asynchronous releases must not
                         // repeatedly rejoin the same CAS wave and starve each other.
-                        let window = 1_u64 << (attempt / 2).min(4);
-                        let delay = 1 + u64::from(uuid::Uuid::new_v4().as_bytes()[0]) % window;
+                        // Include the durable store round trip: a fixed sub-RTT
+                        // window keeps slow writers in the same contention wave.
+                        let round_trip = submitted.elapsed().as_millis().clamp(1, 32);
+                        let window = round_trip * (1_u128 << (attempt / 2).min(3));
+                        let delay = 1 + u128::from(uuid::Uuid::new_v4().as_bytes()[0]) % window;
+                        let delay = u64::try_from(delay).expect("contention window is at most 256 ms");
                         tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
                         // The conflict observation predates the contention window.
                         old = self.store.get(&key).await?;

@@ -160,3 +160,19 @@ windows allow all acquisitions and releases to finish. The CAS budget remains
 retry, lock, or lease/reclaim invariant is changed. Focused contention and reclaim
 tests, formatting and affected all-feature clippy pass. Rebuilt real-service
 acceptance remains necessary before claiming this resolves the load failure.
+
+The fixed short window still failed in `ec575a0475a541e782ac269756cda8f5`.
+Temporary complete conflict histories in diagnostic run
+`cf24af1bf19a4c8c8307fd35d64e00e2` show other handles advancing the record at
+every attempt, with durable CAS round trips around 28-35 ms. The contention
+window now scales with that measured round trip (capped at 256 ms), refreshes
+after waiting and preserves the 64-attempt bound. All diagnostics are removed.
+Dataset all-target tests, fmt and workspace rs-lint pass.
+
+The exact HTTP reproduction `387d9466a9814362b11494353f2d605e` now completes
+all six measured trials (1,536 requests plus warmups) with exact bytes and zero
+errors. This is correctness evidence, not a throughput win: singleton rates
+are 30.6-36.0 requests/s, while concurrency-three repeats degrade from 17.7 to
+11.5 to 6.1 requests/s and tails reach seconds. The full common-snapshot
+HTTP/native/Python comparison must retain this elapsed-run/state limitation;
+sequential phase results cannot establish a transport speedup by themselves.
