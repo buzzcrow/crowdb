@@ -3,6 +3,7 @@
 
 //! Metadata-consistent HEAD and pull-based GET preparation.
 
+use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
 use crowdb_chunk_client::{ChunkIoClient, ChunkReadStream, ReadError};
@@ -32,18 +33,29 @@ pub struct PreparedGet {
 }
 
 pub struct VerifiedGetStream {
-    inner: ChunkReadStream,
+    inner: Option<ChunkReadStream>,
     integrity: Option<SinglePartIntegrity>,
     expected_checksum: Vec<u8>,
     terminal: bool,
+    failure: Option<GetStreamError>,
+    expected_length: u64,
+    delivered: u64,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Clone, Debug, thiserror::Error)]
 pub enum GetStreamError {
     #[error("chunk read failed: {0}")]
-    Chunk(#[from] ReadError),
+    Chunk(Arc<ReadError>),
     #[error("object checksum does not match its published metadata")]
     Integrity,
+    #[error("object length mismatch: expected={expected} delivered={delivered}")]
+    Length { expected: u64, delivered: u64 },
+}
+
+impl From<ReadError> for GetStreamError {
+    fn from(error: ReadError) -> Self {
+        Self::Chunk(Arc::new(error))
+    }
 }
 
 impl VerifiedGetStream {
@@ -53,24 +65,64 @@ impl VerifiedGetStream {
         if self.terminal {
             return None;
         }
-        match self.inner.next_chunk().await {
+        self.next_verified().await.transpose()
+    }
+
+    /// Successful EOF includes length and applicable object integrity checks.
+    /// A terminal failure remains visible on every subsequent pull.
+    /// # Errors
+    /// Returns storage, length or final checksum failure without successful EOF.
+    pub async fn next_verified(&mut self) -> Result<Option<Bytes>, GetStreamError> {
+        if let Some(error) = &self.failure {
+            return Err(error.clone());
+        }
+        if self.terminal {
+            return Ok(None);
+        }
+        let next = match &mut self.inner {
+            Some(inner) => inner.next_chunk().await,
+            None => None,
+        };
+        match next {
             Some(Ok(bytes)) => {
+                self.delivered = self.delivered.saturating_add(bytes.len() as u64);
+                if self.delivered > self.expected_length {
+                    return self.fail(GetStreamError::Length {
+                        expected: self.expected_length,
+                        delivered: self.delivered,
+                    });
+                }
                 if let Some(integrity) = &mut self.integrity {
                     integrity.update(&bytes);
                 }
-                Some(Ok(bytes))
+                Ok(Some(bytes))
             }
-            Some(Err(error)) => {
-                self.terminal = true;
-                Some(Err(error.into()))
-            }
+            Some(Err(error)) => self.fail(error.into()),
             None => {
                 self.terminal = true;
-                let integrity = self.integrity.take()?;
-                let (_, checksum) = integrity.finish();
-                (checksum != self.expected_checksum).then_some(Err(GetStreamError::Integrity))
+                self.inner = None;
+                if self.delivered != self.expected_length {
+                    return self.fail(GetStreamError::Length {
+                        expected: self.expected_length,
+                        delivered: self.delivered,
+                    });
+                }
+                if let Some(integrity) = self.integrity.take() {
+                    let (_, checksum) = integrity.finish();
+                    if checksum != self.expected_checksum {
+                        return self.fail(GetStreamError::Integrity);
+                    }
+                }
+                Ok(None)
             }
         }
+    }
+
+    fn fail(&mut self, error: GetStreamError) -> Result<Option<Bytes>, GetStreamError> {
+        self.terminal = true;
+        self.inner = None;
+        self.failure = Some(error.clone());
+        Err(error)
     }
 }
 
@@ -114,26 +166,56 @@ pub fn prepare_get(
 ) -> Result<PreparedGet, RetrievalError> {
     check_conditions(record, conditions)?;
     let requested = resolve_range(range_header, record.logical_length).map_err(RetrievalError::Range)?;
+    build_get(client, record, requested)
+}
+
+/// Prepares the same selected generation using a typed half-open range.
+/// # Errors
+/// Rejects conditions or intervals outside the published object length.
+pub fn prepare_get_range(
+    client: &ChunkIoClient,
+    record: &ObjectRecord,
+    requested: Option<ByteRange>,
+    conditions: &ObjectConditions<'_>,
+) -> Result<PreparedGet, RetrievalError> {
+    check_conditions(record, conditions)?;
+    if requested.is_some_and(|range| range.start >= range.end || range.end > record.logical_length) {
+        return Err(RetrievalError::Range(RangeError::Unsatisfiable));
+    }
+    build_get(client, record, requested)
+}
+
+fn build_get(
+    client: &ChunkIoClient,
+    record: &ObjectRecord,
+    requested: Option<ByteRange>,
+) -> Result<PreparedGet, RetrievalError> {
     let interval = requested.unwrap_or(ByteRange {
         start: 0,
         end: record.logical_length,
     });
-    let stream = if interval.start == interval.end {
+    let inner = if interval.start == interval.end {
         None
     } else {
         let locations: Vec<Location> =
             bincode::deserialize(&record.data_reference).map_err(|_| RetrievalError::DataReference)?;
-        Some(VerifiedGetStream {
-            inner: client
+        Some(
+            client
                 .read_range_stream(&locations, interval.start, interval.end)
                 .map_err(|_| RetrievalError::ChunkRead)?,
-            integrity: (requested.is_none()
-                && !crate::integrity::is_multipart_checksum(&record.checksum, &record.etag))
-            .then(SinglePartIntegrity::default),
-            expected_checksum: record.checksum.clone(),
-            terminal: false,
-        })
+        )
     };
+    let stream = Some(VerifiedGetStream {
+        inner,
+        integrity: (requested.is_none()
+            && !crate::integrity::is_multipart_checksum(&record.checksum, &record.etag))
+        .then(SinglePartIntegrity::default),
+        expected_checksum: record.checksum.clone(),
+        terminal: false,
+        failure: None,
+        expected_length: interval.end - interval.start,
+        delivered: 0,
+    });
     Ok(PreparedGet {
         headers: headers(record, requested),
         stream,

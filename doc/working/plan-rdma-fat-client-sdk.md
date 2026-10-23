@@ -233,6 +233,16 @@ transport acceptance alone cannot establish SDK completion.
   `BufferLease` tests establish its own storage/credit behavior only; they do
   not establish end-to-end native RDMA receive ownership or actual-capacity
   propagation through DiskIO/ChunkIO. Phase 4 must complete that audit and path.
+- Shared GET now offers typed half-open ranges and `next_verified`, with sticky
+  storage/length/integrity failures. Empty full reads also verify their checksum.
+  The legacy HTTP `next_chunk` remains fused after its first terminal result.
+  Three focused cases and the complete S3 library suite/clippy pass. Native
+  object metadata/body adaptation is still pending.
+- Before completing native GET delivery, carry retained allocation identity,
+  actual capacity and source ownership from RPC through DiskIO/ChunkIO. Use an
+  owner-backed payload type with slices preserving one allocation owner; do
+  not rediscover receive ranges by scanning connection tables or adding a hot
+  lock, and do not substitute a guessed capacity for the actual native class.
 
 ## Subsequent Dataset integration under R220
 
