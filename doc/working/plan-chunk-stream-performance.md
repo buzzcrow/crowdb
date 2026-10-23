@@ -94,10 +94,10 @@ KV work, with compact locations, incremental directories, and bounded recovery.
   output are retained alongside the Stream runs.
 - This host has 16 physical / 32 logical CPUs, `powersave`, and `intel_idle`;
   the reported C6 exit latency is 92 us with 276 us target residency. The
-  controlled experiments establish a large CPU-placement/idle-wakeup effect.
-  They do not separately identify how much comes from C-states, CPU frequency,
-  migration, cache locality, or scheduler dispatch. System power policy was
-  not modified. Merely reducing Tokio workers to two yields 657 us; reducing
+  initial affinity experiment also changes Tokio's default worker count, so
+  its result alone does not isolate CPU placement; the fixed-worker follow-up
+  below removes that ambiguity. System power policy was not modified.
+  Reducing only the benchmark's Tokio workers to two yields 657 us; reducing
   connections to one yields 673 us against adjacent 700/702 us controls, and
   also reducing RPC workers to one yields 694 us.
 - Follow-up implementation should reduce avoidable thread handoffs in the
@@ -113,6 +113,56 @@ KV work, with compact locations, incremental directories, and bounded recovery.
   `tree-lint` and diff whitespace checks pass. The final C++ lint cleanup only
   changes aggregate initialization spelling and the SQE pointer conversion;
   both CPU-placement measurements used the identical pre-cleanup binaries.
+
+### Fixed-worker affinity follow-up
+
+- Throughput is successful application appends divided by measured elapsed
+  seconds, in `production_bounds/result.rs`. The original 6,477 and 6,468
+  ops/s represent 64,771 and 64,684 completed 4 KiB appends over approximately
+  ten seconds each. One append waits for both synchronized mirrors and counts
+  once; the replica RPCs are not counted as separate operations. Concurrency
+  one means one outstanding application append, not one OS thread.
+- The original `taskset -c 0-3` constrained the fixture, every service, and
+  the benchmark to four physical cores. It did not assign each thread its
+  own core. Tokio's unconfigured worker count follows available parallelism.
+  The follow-up exports `TOKIO_WORKER_THREADS=4` or `32` before starting both
+  fixture and client, independently sets their CPU masks, and directly invokes
+  the same benchmark binary without rebuilding. RPC workers, connections,
+  retained MemDisk, two synchronized mirrors, and workload remain unchanged.
+- Ten serial ten-second cases are retained in the same evidence directory:
+  `controlled-w4-all-20261023T221953Z`,
+  `controlled-w32-four-20261023T222057Z`,
+  `controlled-w32-all-20261023T222130Z`, and
+  `controlled-w4-four-20261023T222210Z`.
+  `controlled-affinity-comparison.json` aggregates the receipts. Every case
+  has zero errors/watchdogs/cursor checkpoints, one append per batch, and a
+  maximum of one queued request. All binary manifests match the original run
+  and all four fixture cleanup receipts succeed.
+
+| Tokio worker setting | Service/client CPUs | Append ops/s, two runs | Mean latency, two runs |
+| -------------------- | ------------------- | ---------------------- | ---------------------- |
+| 4                    | Both 0–31           | 1,473 / 1,513          | 678 / 660 us           |
+| 32                   | Both 0–31           | 1,510 / 1,560          | 661 / 640 us           |
+| 4                    | Both 0–3            | 6,475 / 6,422          | 153 / 155 us           |
+| 32                   | Both 0–3            | 6,452 / 6,439          | 154 / 154 us           |
+
+- With four workers, restricting only the client gives 1,563 ops/s / 638 us;
+  restricting only the services gives 2,028 ops/s / 492 us. Concentrating both
+  ends produces the large improvement. Worker-count reduction does not
+  explain it, and client-only affinity does not reproduce it.
+- Per-thread `/proc` snapshots verify CPU masks and the benchmark's exact
+  worker count; service snapshots also record inherited worker settings.
+  During the 32-worker runs, five-second steady-window kernel cpuidle counters
+  report CPU 0–3 C6 residency of 82.7–84.1% with unrestricted placement versus
+  about 0.1% when both ends share those CPUs. The unrestricted 32-CPU average
+  is 81.2–82.4%. Sampled cluster-plus-client CPU time is approximately 2.6–2.7
+  core equivalents in either placement. Counters describe the host's idle
+  behavior, not per-request attribution or hardware power measurements.
+- With 32 workers held constant, server write means drop from 141–146 us to
+  26–27 us, while RPC means drop from 419–434 us to 81–82 us. The evidence
+  supports a low-in-flight thread-handoff/idle-wakeup problem. It does not
+  separate C6 exit cost from frequency, migration, locality, or dispatch;
+  the affinity result remains diagnostic, not the default performance claim.
 
 ## Cursor-free append integration (current)
 
