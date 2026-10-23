@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use crowdb_diskio_client::{DiskId, DiskioClient, DiskioClientConfig, TestDiskRoute};
@@ -17,6 +17,8 @@ use super::storage::TestReadStorage;
 pub struct TestRpcReadServer {
     pub server: Arc<RpcServer>,
     pub replies: Arc<AtomicUsize>,
+    pub requests: Arc<AtomicUsize>,
+    pub reply_enabled: Arc<AtomicBool>,
     address: String,
     config: RdmaConfig,
 }
@@ -51,6 +53,10 @@ impl TestRpcReadServer {
         server.listen(&address, 0).unwrap();
         let replies = Arc::new(AtomicUsize::new(0));
         let count = replies.clone();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let received = requests.clone();
+        let reply_enabled = Arc::new(AtomicBool::new(true));
+        let enabled = reply_enabled.clone();
         let data = backend.data[0].clone();
         server.register_owned_handler(
             u16::try_from(FBMsgType::EDiskReadRequest.0).unwrap(),
@@ -58,6 +64,10 @@ impl TestRpcReadServer {
                 let read = flatbuffers::root::<FBDiskReadRequest<'_>>(request.control()).unwrap();
                 assert_eq!(read.zone_offset(), 0);
                 assert_eq!(read.size() as usize, data.len());
+                received.fetch_add(1, Ordering::Release);
+                if !enabled.load(Ordering::Acquire) {
+                    return;
+                }
                 let mut builder = FlatBufferBuilder::new();
                 let response = FBDiskReadResponse::create(
                     &mut builder,
@@ -82,12 +92,18 @@ impl TestRpcReadServer {
         Self {
             server,
             replies,
+            requests,
+            reply_enabled,
             address,
             config,
         }
     }
 
     pub fn client(&self) -> Arc<DiskioClient> {
+        self.client_with_retries(1, !self.config.enabled)
+    }
+
+    pub fn client_with_retries(&self, retry_attempts: usize, allow_tcp_fallback: bool) -> Arc<DiskioClient> {
         Arc::new(
             DiskioClient::connect_for_tests(
                 vec![TestDiskRoute {
@@ -101,12 +117,13 @@ impl TestRpcReadServer {
                 DiskioClientConfig {
                     rdma: Some(RdmaConfig {
                         listen_enabled: false,
+                        allow_tcp_fallback,
                         ..self.config.clone()
                     }),
                     normal_connections_per_endpoint: 1,
                     priority_connections_per_endpoint: 1,
                     rpc_workers: 1,
-                    retry_attempts: 1,
+                    retry_attempts,
                     ..DiskioClientConfig::default()
                 },
             )

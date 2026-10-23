@@ -28,6 +28,7 @@ pub enum ReadFailureKind {
     DataLoss,
     Metadata,
     DiskIo,
+    Interrupted,
     EcDecode,
     FailedRange,
 }

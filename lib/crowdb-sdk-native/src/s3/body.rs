@@ -143,6 +143,7 @@ fn read_error(error: GetStreamError) -> Error {
                 ReadError::DataLoss(_) => ReadFailureKind::DataLoss,
                 ReadError::Metadata(_) => ReadFailureKind::Metadata,
                 ReadError::DiskIo(_) => ReadFailureKind::DiskIo,
+                ReadError::Interrupted(_) => ReadFailureKind::Interrupted,
                 ReadError::EcDecode(_) => ReadFailureKind::EcDecode,
                 ReadError::FailedRange { .. } => ReadFailureKind::FailedRange,
             };

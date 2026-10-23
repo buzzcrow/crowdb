@@ -399,11 +399,21 @@ transport acceptance alone cannot establish SDK completion.
   pass. Explicit HCA native producer framing still sends 1 MiB directly with
   zero staging-copy bytes. Native PUT attachment is the next task.
 
-- Audit accepted RDMA read failures above semantic DiskIO: the routed adapter
-  and strip recovery currently have read retry paths. Ensure a native accepted
-  failure cannot turn into a TCP suffix across these layers, while retaining
-  qualified ordinary mirror/EC recovery. Add native GET fault coverage before
-  claiming the final fallback boundary.
+- Accepted RDMA read transport, deadline and malformed-response failures now
+  retain `AcceptedReadInterrupted` through routed DiskIO, mirror/EC readers,
+  physical/frame windows and native `ReadFailureKind::Interrupted`. No route,
+  replica, recovery-candidate or layout retry can replay that accepted read.
+  Ordinary disk/CRC recovery controls still pass. Four new CPU cases cover
+  direct mirror/EC, interrupted recovery and framed-stream propagation.
+  Explicit shared-HCA GET accepts a read, stops the peer with TCP fallback
+  enabled and three retries configured, and reports the same sticky terminal
+  error without any additional semantic read, connect, reconnect or retry.
+  A prior caller-held receive remains readable through owned runtime shutdown.
+  The three DiskIO HCA failure cases also pass. Native (49 cases), DiskIO and
+  ChunkIO all-target suites, focused three-crate clippy and formatting pass.
+
+- Next: native RPC write/registered producer acceptance and the complete
+  real-service native/OCI S3 corpus, including frontend parity and restart.
 
 ## Subsequent Dataset integration under R220
 

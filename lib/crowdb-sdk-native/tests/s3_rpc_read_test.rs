@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use crowdb_chunk_client::RoutedDiskWriter;
 use crowdb_sdk_native::s3::{GetOptions, LocalityOptions};
+use crowdb_sdk_native::{error::ReadFailureKind, Error};
 use storage::{context, TestFixture, TestReadStorage};
 
 async fn assert_rpc_delivery(rdma: bool) {
@@ -118,4 +119,73 @@ async fn hardware_rdma_get_preserves_registered_receive_capacity_and_shutdown_li
     if std::env::var_os("CROWDB_RDMA_E2E").is_some() {
         assert_rpc_delivery(true).await;
     }
+}
+
+#[tokio::test]
+async fn hardware_accepted_rdma_get_failure_is_sticky_without_routed_or_replica_replay() {
+    if std::env::var_os("CROWDB_RDMA_E2E").is_none() {
+        return;
+    }
+    let backend = Arc::new(TestReadStorage::new());
+    let server = rpc::TestRpcReadServer::start(&backend, true);
+    let disk = server.client_with_retries(3, true);
+    let fixture = TestFixture::with_disk(
+        65_536,
+        backend,
+        Arc::new(RoutedDiskWriter::from_client(disk.clone())),
+    )
+    .await;
+    fixture.publish(&fixture.record(0)).await;
+    let mut successful = fixture
+        .client
+        .get_object(context(201), b"bucket", b"key", &GetOptions::default())
+        .await
+        .unwrap();
+    let held = successful.body.next().await.unwrap().unwrap();
+    assert_ne!(held.metadata().registration_id, 0);
+    assert!(successful.body.next().await.unwrap().is_none());
+    server.reply_enabled.store(false, Ordering::Release);
+    let baseline = disk.status();
+    let mut interrupted = fixture
+        .client
+        .get_object(context(202), b"bucket", b"key", &GetOptions::default())
+        .await
+        .unwrap();
+    let pending = tokio::spawn(async move {
+        let error = interrupted.body.next().await.err().expect("read must fail");
+        (interrupted, error)
+    });
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while server.requests.load(Ordering::Acquire) < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    server.server.stop();
+    let (mut interrupted, error) = pending.await.unwrap();
+    assert!(
+        matches!(
+            error,
+            Error::Read {
+                kind: ReadFailureKind::Interrupted,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert_eq!(
+        interrupted.body.next().await.err().expect("failure must persist"),
+        error
+    );
+    assert!(!interrupted.body.is_complete());
+    let status = disk.status();
+    assert_eq!(status.read_operations, baseline.read_operations + 1);
+    assert_eq!(status.retries, baseline.retries);
+    assert_eq!(status.connect_attempts, baseline.connect_attempts);
+    assert_eq!(status.reconnect_attempts, baseline.reconnect_attempts);
+    assert_eq!(server.requests.load(Ordering::Acquire), 2);
+    assert_eq!(fixture.runtime.resources().status().requests, 0);
+    fixture.runtime.shutdown().await.unwrap();
+    assert_eq!(held.as_slice(), b"original");
 }

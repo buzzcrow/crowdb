@@ -18,6 +18,8 @@ pub enum IoError {
     ReadFailed(String),
     #[error("transient disk read failed: {0}")]
     TransientRead(String),
+    #[error("accepted disk read interrupted: {0}")]
+    ReadInterrupted(String),
     #[error("chunk not found: {0}")]
     ChunkNotFound(String),
     #[error("chunk metadata conflict: {0}")]
@@ -65,6 +67,8 @@ pub enum ReadError {
     Metadata(String),
     #[error("disk read failed: {0}")]
     DiskIo(String),
+    #[error("accepted read interrupted: {0}")]
+    Interrupted(String),
     #[error("EC reconstruction failed: {0}")]
     EcDecode(String),
     #[error("object bytes [{start}, {end}) could not be read: {message}")]

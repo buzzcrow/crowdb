@@ -19,6 +19,17 @@ enum TestOperation {
     Fsync,
 }
 
+fn assert_terminal_error(operation: TestOperation, error: &DiskioError) {
+    match operation {
+        TestOperation::Write => assert!(matches!(error, DiskioError::AmbiguousWrite(_)), "{error:?}"),
+        TestOperation::Read => assert!(
+            matches!(error, DiskioError::AcceptedReadInterrupted(_)),
+            "{error:?}"
+        ),
+        TestOperation::Fsync => assert!(matches!(error, DiskioError::TransportUnavailable(_)), "{error:?}"),
+    }
+}
+
 fn test_rdma_config(address: &str) -> RdmaConfig {
     RdmaConfig {
         enabled: true,
@@ -124,11 +135,7 @@ async fn assert_accepted_rdma_failure(operation: TestOperation) {
         .unwrap()
         .unwrap()
         .unwrap_err();
-    if matches!(operation, TestOperation::Write) {
-        assert!(matches!(error, DiskioError::AmbiguousWrite(_)), "{error:?}");
-    } else {
-        assert!(matches!(error, DiskioError::TransportUnavailable(_)), "{error:?}");
-    }
+    assert_terminal_error(operation, &error);
     let status = client.status();
     assert_eq!(received.load(Ordering::Acquire), 1);
     assert_eq!(status.retries, baseline.retries);

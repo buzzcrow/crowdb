@@ -455,6 +455,13 @@ uncertain operation through TCP. Writes report their ambiguous outcome and
 fsync preserves durability failure mapping. Known pre-submit rejection and
 the existing TCP retry policy retain their separate handling.
 
+An accepted read interruption retains its terminal type through the routed
+DiskIO adapter, mirror/EC readers, frame verification and native object stream.
+It cannot become a route refresh, replica switch, EC recovery or layout retry.
+Ordinary disk failures and verified corruption retain their qualified recovery
+rules. A native object body keeps the interruption visible on later pulls;
+caller-held buffers remain valid independently of that failure.
+
 `Connection::close()` also wakes its assigned CQ through a private transport
 notifier. The CQ owner requests `rdma_disconnect` once, guarded by the same
 per-connection operation admission that protects posting and CM-ID lifetime.

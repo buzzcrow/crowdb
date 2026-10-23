@@ -169,6 +169,7 @@ impl ChunkReader {
                         end: range_end,
                         data,
                     }),
+                    Err(error @ ReadError::Interrupted(_)) => return Err(error),
                     Err(error) => partial.failures.push(FailedReadRange {
                         start: range_start,
                         end: range_end,

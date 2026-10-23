@@ -411,6 +411,7 @@ fn map_write_error(error: DiskioError) -> IoError {
 #[allow(clippy::needless_pass_by_value, reason = "used directly as a map_err adapter")]
 fn map_read_error(error: DiskioError) -> IoError {
     match error {
+        DiskioError::AcceptedReadInterrupted(detail) => IoError::ReadInterrupted(detail),
         DiskioError::TopologyUnavailable(_)
         | DiskioError::TransportUnavailable(_)
         | DiskioError::Backpressure(_)

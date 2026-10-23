@@ -585,6 +585,18 @@ impl DiskioClient {
             match result {
                 Ok(data) => return Ok(data),
                 Err(error)
+                    if selected.connection().is_rdma()
+                        && matches!(
+                            error,
+                            DiskioError::TransportUnavailable(_)
+                                | DiskioError::Backpressure(_)
+                                | DiskioError::DeadlineExceeded
+                                | DiskioError::Protocol(_)
+                        ) =>
+                {
+                    return Err(DiskioError::AcceptedReadInterrupted(error.to_string()));
+                }
+                Err(error)
                     if !selected.connection().is_rdma()
                         && error.is_retryable_read()
                         && attempt + 1 < self.config.retry_attempts =>
