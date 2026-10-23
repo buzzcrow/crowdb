@@ -248,10 +248,6 @@ impl ChunkAllocator for TestAllocator {
         })
     }
 
-    async fn update_chunk_strip(&self, _req: UpdateChunkStripRequest) -> Result<UpdateChunkStripResponse> {
-        unreachable!()
-    }
-
     async fn query_chunk(&self, req: QueryChunkRequest) -> Result<QueryChunkResponse> {
         let id = req.chunk_id.unwrap();
         let state = self.state.load();

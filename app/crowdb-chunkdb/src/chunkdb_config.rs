@@ -408,8 +408,7 @@ pub struct ServerConfig {
     #[serde(default = "default_rpc_workers")]
     pub rpc_workers: u32,
     pub http_listen_addr: String,
-    /// crowdb-rpc listen address (R116 migration — runs alongside the
-    /// HTTP listener).
+    /// crowdb-rpc listen address, separate from the HTTP listener.
     #[serde(default = "default_rpc_listen_addr")]
     pub rpc_listen_addr: String,
     pub instance_id: Option<String>,

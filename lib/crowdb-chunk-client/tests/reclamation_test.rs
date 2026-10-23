@@ -5,8 +5,7 @@ use crowdb_chunk_client::{reclaim_location, ChunkAllocator, IoError, ReclaimOutc
 use crowdb_protocol::chunkdb::rpc::{
     AllocateChunkRequest, AllocateChunkResponse, AppendChunkRequest, AppendChunkResponse, Chunk, ChunkState,
     DeleteChunkRangeRequest, DeleteChunkRangeResponse, DeleteChunkRequest, DeleteChunkResponse, Location,
-    QueryChunkRequest, QueryChunkResponse, SealChunkRequest, SealChunkResponse, UpdateChunkStripRequest,
-    UpdateChunkStripResponse,
+    QueryChunkRequest, QueryChunkResponse, SealChunkRequest, SealChunkResponse,
 };
 use crowdb_protocol::common::ChunkId;
 
@@ -59,10 +58,6 @@ impl ChunkAllocator for TestAllocator {
     }
 
     async fn seal_chunk(&self, _: SealChunkRequest) -> Result<SealChunkResponse> {
-        unreachable!()
-    }
-
-    async fn update_chunk_strip(&self, _: UpdateChunkStripRequest) -> Result<UpdateChunkStripResponse> {
         unreachable!()
     }
 

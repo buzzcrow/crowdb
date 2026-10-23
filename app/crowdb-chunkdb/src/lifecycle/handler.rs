@@ -707,36 +707,6 @@ impl LifecycleHandler {
         Ok(chunk)
     }
 
-    /// Compatibility wrapper for a fenced one-strip range replacement.
-    pub async fn update_chunk_strip(
-        &self,
-        chunk_id: &ChunkId,
-        strip_index: u32,
-        new_strip: ChunkStrip,
-    ) -> Result<Chunk, LifecycleError> {
-        let chunk = self.query_chunk(chunk_id).await?;
-        let idx = usize::try_from(strip_index).unwrap_or(usize::MAX);
-        if idx >= chunk.strips.len() {
-            return Err(LifecycleError::StripIndexOutOfRange {
-                index: strip_index,
-                len: chunk.strips.len(),
-            });
-        }
-        let operation_id = ChunkId {
-            high: chunk_id.high ^ chunk.modify_ts,
-            low: chunk_id.low ^ u64::from(strip_index),
-        };
-        self.replace_chunk_strip_range(
-            chunk_id,
-            chunk.modify_ts,
-            strip_index,
-            std::slice::from_ref(&chunk.strips[idx]),
-            std::slice::from_ref(&new_strip),
-            operation_id,
-        )
-        .await
-    }
-
     /// Atomically replace a capacity-compatible strip range under a revision
     /// fence. Newly introduced segments are committed before publication;
     /// removed segments stay allocated until the reader-layout grace expires.

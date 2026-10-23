@@ -1,18 +1,10 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>.
 
 #![allow(clippy::missing_errors_doc)]
-#![allow(dead_code)] // Wired in Phase 5 (ChunkdbClient transport selection)
 
-//! crowdb-rpc client transport for `ChunkdbService` (R116 migration).
-//! Mirrors `kv_rpc_transport.rs` (R117): builds flatbuffer requests,
-//! sends via `RpcClient::call`, awaits `CallFuture`, parses flatbuffer
-//! responses via the zero-copy `Ref` wrappers, and maps them to the
-//! existing tonic proto response types so the retry/routing logic in
-//! `client.rs` is unchanged.
-//!
-//! Runs alongside the tonic channel pool during the mixed-rollout
-//! window; `ChunkdbClient` selects the transport via
-//! `with_rpc_transport`.
+//! Current `ChunkDB` control transport over crowdb-rpc.
+//! Builds typed `FlatBuffer` requests, awaits correlated replies and validates
+//! response records before returning them to the routing/retry client.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -28,7 +20,7 @@ use crowdb_protocol::chunkdb::rpc::{
     QuerySegmentOwnerResponse, RelocateSegmentHandoffResponse, ReplaceChunkStripRangeResponse,
     ReserveStripGroupResponse, SealChunkResponse, StripCleanupIntent, StripReservationAction,
     StripReservationGroup, StripReservationState, StripType as ProtoStripType,
-    TriggerConversionBatchResponse, TriggerConversionResponse, UpdateChunkStripResponse,
+    TriggerConversionBatchResponse, TriggerConversionResponse,
 };
 use crowdb_protocol::chunkdb::rpc::{EcState as ProtoEcState, EcStrip, MirrorStrip, Strip as ProtoStrip};
 use crowdb_protocol::chunkdb_fb::{
@@ -50,8 +42,7 @@ use crowdb_protocol::chunkdb_fb::{
     FBSealChunkRequest, FBSealChunkRequestArgs, FBSegment, FBStripBody, FBStripReservationAction,
     FBStripReservationGroup, FBStripReservationState, FBStripType, FBTriggerConversionBatchRequest,
     FBTriggerConversionBatchRequestArgs, FBTriggerConversionBatchResponse, FBTriggerConversionRequest,
-    FBTriggerConversionRequestArgs, FBTriggerConversionResponse, FBUpdateChunkStripRequest,
-    FBUpdateChunkStripRequestArgs,
+    FBTriggerConversionRequestArgs, FBTriggerConversionResponse,
 };
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::fb::FBMsgType;
@@ -241,8 +232,7 @@ impl ChunkdbRpcTransport {
 
     // ── AllocateChunk ─────────────────────────────────────────────
 
-    /// Send an `AllocateChunk` request via crowdb-rpc. Returns the tonic
-    /// `AllocateChunkResponse` so the caller's retry logic is unchanged.
+    /// Send an allocation request and decode its typed response.
     pub async fn send_allocate_chunk(
         &self,
         rpc_endpoint: &str,
@@ -697,46 +687,6 @@ impl ChunkdbRpcTransport {
         }
         check_ret_code(r.ret_code(), r.error_msg())?;
         Ok(DeleteChunkRangeResponse {})
-    }
-
-    // ── UpdateChunkStrip ──────────────────────────────────────────
-
-    /// Send an `UpdateChunkStrip` request via crowdb-rpc.
-    pub async fn send_update_chunk_strip(
-        &self,
-        rpc_endpoint: &str,
-        req: &crowdb_protocol::chunkdb::rpc::UpdateChunkStripRequest,
-    ) -> Result<UpdateChunkStripResponse> {
-        let req_id = self.next_id();
-        let conn = self.conn_for(rpc_endpoint)?;
-        let mut builder = FlatBufferBuilder::new();
-        let chunk_id_off = req.chunk_id.as_ref().map(|id| FBInt128::new(id.high, id.low));
-        let strip_off = req
-            .strip
-            .as_ref()
-            .map(|s| build_chunk_strip_offset(&mut builder, s));
-        let args = FBUpdateChunkStripRequestArgs {
-            id: req_id,
-            rpc_create_nano: 0,
-            chunk_id: chunk_id_off.as_ref(),
-            strip_index: req.strip_index,
-            strip: strip_off,
-        };
-        let fb_req = FBUpdateChunkStripRequest::create(&mut builder, &args);
-        builder.finish(fb_req, None);
-        let control = Buffer::from_bytes(builder.finished_data());
-        let msg_type = FBMsgType::EUpdateChunkStripRequest.0 as u16;
-        let resp = call_rpc(self, &conn, req_id, control, msg_type, rpc_endpoint).await?;
-        let r = FBAllocateChunkResponseRef::new(resp.bytes());
-        if !r.valid() {
-            return Err(ChunkdbClientError::Rpc(
-                "update_chunk_strip response malformed".into(),
-            ));
-        }
-        check_ret_code(r.ret_code(), r.error_msg())?;
-        Ok(UpdateChunkStripResponse {
-            chunk: r.chunk().map(|fb_chunk| parse_fb_chunk(&fb_chunk)).transpose()?,
-        })
     }
 
     pub async fn send_allocate_replacement_segment(
@@ -1392,7 +1342,7 @@ fn build_fb_segment(segment: &crowdb_protocol::diskdb::rpc::Segment) -> FBSegmen
 // ── Request building: ChunkStrip offset ───────────────────────────
 
 /// Build a `FBChunkStrip` `WIPOffset` from a proto `ChunkStrip` for
-/// request construction (`UpdateChunkStrip`).
+/// fenced range replacement requests.
 fn build_chunk_strip_offset<'a>(
     fbb: &mut FlatBufferBuilder<'a>,
     strip: &ChunkStrip,
@@ -1578,14 +1528,6 @@ fn fb_ec_state_to_proto(s: crowdb_protocol::chunkdb_fb::FBEcState) -> ProtoEcSta
 }
 
 // ── Endpoint helpers ──────────────────────────────────────────────
-
-fn rpc_error_to_client(e: RpcError) -> ChunkdbClientError {
-    if e.is_retryable() {
-        ChunkdbClientError::Unavailable(format!("rpc transient: {e:?}"))
-    } else {
-        ChunkdbClientError::Rpc(format!("rpc error: {e:?}"))
-    }
-}
 
 fn normalize_endpoint(endpoint: &str) -> String {
     let with_scheme = if endpoint.starts_with("http://") || endpoint.starts_with("https://") {

@@ -485,18 +485,6 @@ pub struct DeleteChunkRangeRequest {
 pub struct DeleteChunkRangeResponse {}
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
-pub struct UpdateChunkStripRequest {
-    pub chunk_id: Option<ChunkId>,
-    pub strip_index: u32,
-    pub strip: Option<ChunkStrip>,
-}
-
-#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
-pub struct UpdateChunkStripResponse {
-    pub chunk: Option<Chunk>,
-}
-
-#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct AllocateReplacementSegmentRequest {
     pub chunk_id: Option<ChunkId>,
     pub old_segment: Option<Segment>,

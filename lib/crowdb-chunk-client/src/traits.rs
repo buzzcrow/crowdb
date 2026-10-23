@@ -19,7 +19,6 @@ use crowdb_protocol::chunkdb::rpc::{
     PrepareMirrorToEcConversionRequest, PrepareMirrorToEcConversionResponse, QueryChunkRequest,
     QueryChunkResponse, ReplaceChunkStripRangeRequest, ReplaceChunkStripRangeResponse,
     ReserveStripGroupRequest, ReserveStripGroupResponse, SealChunkRequest, SealChunkResponse,
-    UpdateChunkStripRequest, UpdateChunkStripResponse,
 };
 use std::sync::Arc;
 
@@ -54,7 +53,6 @@ pub trait ChunkAllocator: Send + Sync {
     async fn delete_chunk_range(&self, _req: DeleteChunkRangeRequest) -> Result<DeleteChunkRangeResponse> {
         Err(crate::IoError::Unsupported("chunk range deletion".into()))
     }
-    async fn update_chunk_strip(&self, req: UpdateChunkStripRequest) -> Result<UpdateChunkStripResponse>;
     async fn query_chunk(&self, req: QueryChunkRequest) -> Result<QueryChunkResponse>;
     async fn ad_hoc_ec_recovery(&self, _req: AdHocEcRecoveryRequest) -> Result<AdHocEcRecoveryResponse> {
         Err(crate::IoError::MetadataConflict(
@@ -134,9 +132,6 @@ impl<T: ChunkAllocator + ?Sized> ChunkAllocator for Arc<T> {
     async fn delete_chunk_range(&self, req: DeleteChunkRangeRequest) -> Result<DeleteChunkRangeResponse> {
         (**self).delete_chunk_range(req).await
     }
-    async fn update_chunk_strip(&self, req: UpdateChunkStripRequest) -> Result<UpdateChunkStripResponse> {
-        (**self).update_chunk_strip(req).await
-    }
     async fn query_chunk(&self, req: QueryChunkRequest) -> Result<QueryChunkResponse> {
         (**self).query_chunk(req).await
     }
@@ -208,9 +203,6 @@ impl ChunkAllocator for crowdb_chunkdb_client::ChunkdbClient {
     }
     async fn delete_chunk_range(&self, req: DeleteChunkRangeRequest) -> Result<DeleteChunkRangeResponse> {
         Ok(crowdb_chunkdb_client::ChunkdbClient::delete_chunk_range(self, req).await?)
-    }
-    async fn update_chunk_strip(&self, req: UpdateChunkStripRequest) -> Result<UpdateChunkStripResponse> {
-        Ok(crowdb_chunkdb_client::ChunkdbClient::update_chunk_strip(self, req).await?)
     }
     async fn query_chunk(&self, req: QueryChunkRequest) -> Result<QueryChunkResponse> {
         Ok(crowdb_chunkdb_client::ChunkdbClient::query_chunk(self, req).await?)

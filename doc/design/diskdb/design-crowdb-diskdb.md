@@ -273,12 +273,9 @@ routing (§3.2); it is not stored in record keys or `Segment`.
 
 ### Protocol
 
-Schema definitions are split across multiple files in
-`lib/crowdb-protocol/src/fbs/` (`error_code`, `common_type`,
-`diskdb_type`, `diskdb_op`, `diskdb_sys_op`, `diskdb_service`,
-`diskdb_sys_service`, `chunkdb_type`, `chunkdb_op`, `chunkdb_service`,
-`diskio_op`, `diskio_service`). See the schema files for field-level
-detail.
+`diskdb.fbs`, `chunkdb.fbs` and `diskio.fbs` define the storage services,
+with shared identities and message types. Rust and C++ use generated definitions
+from the same current schemas.
 
 The storage path uses three RPC services:
 - **`DiskdbService`** (served by the diskdb server): `AllocateBlocks`
@@ -290,24 +287,20 @@ The storage path uses three RPC services:
   caller uses this operation only after frame parse or write-frame checksum
   proves corruption; the server checks owner, geometry, allocation timestamp,
   and committed state before a revision-fenced `Corrupt` update. Ordinary I/O
-  failures do not change the block state. The service ships
-  with allocate/free returning `Unimplemented`; the rest are later
-  requirements.
+  failures do not change the block state. Allocation and ownership-qualified
+  free update the durable allocator records.
 - **Hardware admin** (no rpc surface): rack/node/disk-group/disk
   add/remove and `set_*_status` are writes to group-0 sysdata
   performed through `HardwareClient` in `crowdb-kv-client`, invoked by
-  the console (`crowdb-web` / `crowdb-cli`). The previous
-  `DiskdbAdminService` schema (`diskdb_sys_service.fbs` /
-  `diskdb_sys_op.fbs`) is removed — `FetchHardware` is replaced by
-  `HardwareClient` prefix scans, `Keepalive` by
-  `ServiceRegistryClient.heartbeat`, and the add/remove/status ops by
-  `HardwareClient` methods. The diskdb server reads hardware state
+  the console (`crowdb-web` / `crowdb-cli`). Hardware reads use
+  `HardwareClient` prefix scans; liveness uses `ServiceRegistryClient.heartbeat`.
+  The diskdb server reads hardware state
   from group 0 via `HardwareClient` in its sync loop; it does not
   serve hardware admin. See `doc/design/kv/design-crowdb-kv-group0.md`
   §2.8.
 - **`ChunkdbService`**: `AllocateChunk`,
   `AppendChunk`, `QueryChunk`, `SealChunk`, `DeleteChunk`,
-  `DeleteChunkRange`, `UpdateChunkStrip`, `ListChunks`, exact-segment owner
+  `DeleteChunkRange`, `ReplaceChunkStripRange`, `ListChunks`, exact-segment owner
   queries, and relocation handoff.
 - **`DiskioService`**: `DiskWrite`, `DiskRead`, and `DiskFsync`.
 

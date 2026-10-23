@@ -29,7 +29,7 @@ use crowdb_protocol::chunkdb::rpc::{
     RelocateSegmentHandoffResponse, ReplaceChunkStripRangeRequest, ReplaceChunkStripRangeResponse,
     ReserveStripGroupRequest, ReserveStripGroupResponse, SealChunkRequest, SealChunkResponse,
     TriggerConversionBatchRequest, TriggerConversionBatchResponse, TriggerConversionRequest,
-    TriggerConversionResponse, UpdateChunkStripRequest, UpdateChunkStripResponse,
+    TriggerConversionResponse,
 };
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::InstanceId;
@@ -345,16 +345,6 @@ impl ChunkdbClient {
         self.with_rpc_retry(chunk_id.as_ref(), |t, ep| {
             let req = req.clone();
             async move { t.send_delete_chunk_range(&ep, &req).await }
-        })
-        .await
-    }
-
-    /// Update a single strip within a chunk.
-    pub async fn update_chunk_strip(&self, req: UpdateChunkStripRequest) -> Result<UpdateChunkStripResponse> {
-        let chunk_id = req.chunk_id;
-        self.with_rpc_retry(chunk_id.as_ref(), |t, ep| {
-            let req = req.clone();
-            async move { t.send_update_chunk_strip(&ep, &req).await }
         })
         .await
     }

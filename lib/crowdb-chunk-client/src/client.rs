@@ -27,7 +27,6 @@ use crowdb_protocol::chunkdb::rpc::{
     AppendChunkResponse, DeleteChunkRequest, DeleteChunkResponse, DiscardReplacementSegmentRequest,
     DiscardReplacementSegmentResponse, Location, QueryChunkRequest, QueryChunkResponse,
     ReplaceChunkStripRangeRequest, ReplaceChunkStripRangeResponse, SealChunkRequest, SealChunkResponse,
-    UpdateChunkStripRequest, UpdateChunkStripResponse,
 };
 use crowdb_protocol::diskdb::rpc::Segment;
 use crowdb_protocol::frame::MAX_FRAME_V2_PAYLOAD_BYTES;
@@ -606,10 +605,6 @@ impl ChunkAllocator for MetricsChunkAllocator {
             operation.mark_success();
         }
         result
-    }
-
-    async fn update_chunk_strip(&self, req: UpdateChunkStripRequest) -> Result<UpdateChunkStripResponse> {
-        self.inner.update_chunk_strip(req).await
     }
 
     async fn query_chunk(&self, req: QueryChunkRequest) -> Result<QueryChunkResponse> {

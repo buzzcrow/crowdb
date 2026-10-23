@@ -20,7 +20,7 @@ use crowdb_protocol::chunkdb::rpc::{
     AppendChunkResponse, Chunk, ChunkState, ChunkStrip, DeleteChunkRequest, DeleteChunkResponse,
     DiscardReplacementSegmentRequest, DiscardReplacementSegmentResponse, MirrorStrip, QueryChunkRequest,
     QueryChunkResponse, ReplaceChunkStripRangeRequest, ReplaceChunkStripRangeResponse, SealChunkRequest,
-    SealChunkResponse, Strip, StripType, UpdateChunkStripRequest, UpdateChunkStripResponse,
+    SealChunkResponse, Strip, StripType,
 };
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::diskdb::rpc::Segment;
@@ -253,13 +253,6 @@ impl ChunkAllocator for Allocator {
         Ok(DeleteChunkResponse {
             chunk: Some(chunk.clone()),
         })
-    }
-
-    async fn update_chunk_strip(
-        &self,
-        _request: UpdateChunkStripRequest,
-    ) -> crowdb_chunk_client::Result<UpdateChunkStripResponse> {
-        unreachable!()
     }
 
     async fn query_chunk(

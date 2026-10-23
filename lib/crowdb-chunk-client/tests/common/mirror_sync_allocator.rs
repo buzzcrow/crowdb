@@ -8,7 +8,7 @@ use crowdb_protocol::chunkdb::rpc::{
     AllocateReplacementSegmentResponse, AppendChunkRequest, AppendChunkResponse, Chunk, ChunkStrip,
     DeleteChunkRequest, DeleteChunkResponse, MirrorStrip, QueryChunkRequest, QueryChunkResponse,
     ReplaceChunkStripRangeRequest, ReplaceChunkStripRangeResponse, SealChunkRequest, SealChunkResponse,
-    Strip, UpdateChunkStripRequest, UpdateChunkStripResponse,
+    Strip,
 };
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::diskdb::rpc::Segment;
@@ -56,9 +56,6 @@ impl ChunkAllocator for TestAllocator {
     }
     async fn delete_chunk(&self, _: DeleteChunkRequest) -> Result<DeleteChunkResponse> {
         Err(IoError::Internal("unexpected deletion".into()))
-    }
-    async fn update_chunk_strip(&self, _: UpdateChunkStripRequest) -> Result<UpdateChunkStripResponse> {
-        Err(IoError::Internal("unexpected strip update".into()))
     }
     async fn query_chunk(&self, _: QueryChunkRequest) -> Result<QueryChunkResponse> {
         Err(IoError::Internal("unexpected metadata query".into()))

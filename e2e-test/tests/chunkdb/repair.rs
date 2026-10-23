@@ -3,7 +3,8 @@
 
 mod topology;
 
-use crowdb_protocol::chunkdb::rpc::{QueryChunkRequest, Strip, UpdateChunkStripRequest};
+use crowdb_protocol::chunkdb::rpc::{QueryChunkRequest, ReplaceChunkStripRangeRequest, Strip};
+use crowdb_protocol::common::ChunkId;
 use std::time::{Duration, Instant};
 
 #[tokio::test]
@@ -19,10 +20,16 @@ async fn four_missing_shards_repair_partial_data_and_parity() {
     let missing: Vec<_> = [0, 7, 8, 9].map(|index| before.segments[index]).to_vec();
     damaged.unavailable_segments = missing.clone();
     let marked = client
-        .update_chunk_strip(UpdateChunkStripRequest {
+        .replace_chunk_strip_range(ReplaceChunkStripRangeRequest {
             chunk_id: Some(id),
-            strip_index: 0,
-            strip: Some(damaged),
+            expected_modify_ts: converted.modify_ts,
+            start_index: 0,
+            old_strips: vec![converted.strips[0].clone()],
+            replacement_strips: vec![damaged],
+            operation_id: Some(ChunkId {
+                high: id.high ^ converted.modify_ts,
+                low: id.low,
+            }),
         })
         .await
         .unwrap()

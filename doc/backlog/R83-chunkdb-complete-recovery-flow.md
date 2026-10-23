@@ -48,7 +48,7 @@
   `chunkdb.fbs` (`Chunk`, `ChunkStrip`, `MirrorStrip`,
   `EcStrip`, `StripType`, `ECState`, `ChunkState`,
   `ChunkdbService` — `AllocateChunk` /
-  `AppendChunk` / `SealChunk` / `DeleteChunk` / `UpdateChunkStrip` /
+  `AppendChunk` / `SealChunk` / `DeleteChunk` / `ReplaceChunkStripRange` /
   `ListChunks`), `diskio.fbs` (`DiskWrite` / `DiskRead`).
   CROWDB's chunkdb owns disk-failure recovery: it rebuilds lost blocks
   from mirror/EC at the chunk layer, driving rebuild I/O and pacing it.
@@ -60,7 +60,7 @@
     disks, reads the surviving data via `diskio` `DiskRead`, allocates
     a new segment on a healthy disk via diskdb `AllocateBlocks`, writes
     the rebuilt replica via `diskio` `DiskWrite`, and updates the
-    chunk's strip (`UpdateChunkStrip`) to reference the new `Segment`.
+    chunk's strip (`ReplaceChunkStripRange`) to reference the new `Segment`.
     The old segment on the `Bad` disk is freed (`FreeBlocks`) once the
     disk is replaced/removed. The chunk is whole again.
   - **EC data-block reconstruction** — an EC strip (`data_num` + `code_num`)
@@ -105,7 +105,7 @@
   1. **chunkdb server component (prerequisite)** —
      `app/crowdb-chunkdb` (new crate, not yet existing) implementing
      `ChunkdbService` (`AllocateChunk` / `AppendChunk` / `SealChunk` /
-     `DeleteChunk` / `UpdateChunkStrip` / `ListChunks`). This is a
+     `DeleteChunk` / `ReplaceChunkStripRange` / `ListChunks`). This is a
      prerequisite for R83, not part of it — it should be filed as its
      own backlog item. R83 assumes chunkdb exists and owns the
      chunk→strip→segment mapping persisted to CROWDB KV.
@@ -124,7 +124,7 @@
      affinity against the `Bad` disk). Prerequisite: the `diskio`
      server component (also unbuilt; should be its own backlog item).
   4. **Strip update + old-segment free** — after a rebuilt block is
-     durably written to its new segment, `UpdateChunkStrip` the chunk's
+     durably written to its new segment, `ReplaceChunkStripRange` the chunk's
      strip to reference the new `Segment`, then `FreeBlocks` the old
      segment on the `Bad` disk (after the disk is replaced/removed, or
      once the strip no longer references it).
@@ -167,7 +167,7 @@
   diskdb AllocateBlocks (healthy disk, exclude Bad) ──► diskio DiskWrite (new segment)
                  │
                  ▼
-  UpdateChunkStrip (new Segment) ──► FreeBlocks (old segment on Bad disk)
+  ReplaceChunkStripRange (new Segment) ──► FreeBlocks (old segment on Bad disk)
                  │
                  ▼
   persist per-chunk/strip progress (item 6) ──► next strip / next chunk
@@ -223,7 +223,7 @@
   replicas (one on the `Bad` disk, one on a healthy disk) → chunkdb
   reads the surviving replica via `diskio`, allocates a new segment on
   a healthy disk (excluding the `Bad` disk), writes the rebuilt
-  replica, `UpdateChunkStrip`s to the new `Segment`, and frees the old
+  replica, `ReplaceChunkStripRange` updates to the new `Segment`, and frees the old
   segment → the chunk reads back correctly from the new replica. E2E
   test (pending chunkdb + diskio).
 - **EC data-block reconstruction**: an EC strip (`data_num=4`,

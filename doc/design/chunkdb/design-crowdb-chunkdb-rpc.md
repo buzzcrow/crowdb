@@ -3,277 +3,109 @@
 
 # CROWDB - Design: ChunkdbService RPC
 
-Depends on: [`design-crowdb-rpc.md`](../rpc/design-crowdb-rpc.md) §4.4, §5, §6; [`design-crowdb-chunkdb.md`](design-crowdb-chunkdb.md) §4
-Satisfies: [`design-crowdb-chunkdb.md`](design-crowdb-chunkdb.md) §4 (RPC layer)
+Depends on: [RPC transport](../rpc/design-crowdb-rpc.md),
+[ChunkDB lifecycle](design-crowdb-chunkdb.md).
+Satisfies: ChunkDB control-plane transport, routing and mutation fences.
 
-The chunkdb service (Allocate/Append/AdvanceWrite/Query/Seal/Delete/DeleteRange/
-UpdateStrip/ListChunks plus replacement allocate/swap/discard) uses the
-**crowdb-rpc flatbuffer transport** — the
-same engine as the KV consensus hot path, on a dedicated port with a
-dedicated schema (`chunkdb.fbs`). The transport is selected
-programmatically (`ChunkdbClient::with_rpc_transport`). Architecture
-decisions and rationale live in the root RPC design; this doc covers the
-chunkdb-specific schema, handler, and transport detail.
+ChunkDB uses the crowdb-rpc FlatBuffer transport for lifecycle, placement,
+reservation, replacement, conversion and repair operations. Clients and services
+use one current schema. Unknown messages and malformed requests fail explicitly.
 
 ## Table of Contents
 
-- [1. Port Allocation](#1-port-allocation)
-- [2. Flatbuffer Schema (chunkdb.fbs)](#2-flatbuffer-schema-chunkdbfbs)
-- [3. Zero-Copy Wrapper Classes](#3-zero-copy-wrapper-classes)
-- [4. Server-Side Handler (ChunkdbRpcService)](#4-server-side-handler-chunkdbrpcservice)
-- [5. Client-Side Transport (ChunkdbRpcTransport)](#5-client-side-transport-chunkdbrpctransport)
-- [6. ChunkdbClient Transport Selection](#6-chunkdbclient-transport-selection)
-- [7. Server Wiring](#7-server-wiring)
-- [8. Error Model](#8-error-model)
+- [1. Transport and routing](#1-transport-and-routing)
+- [2. Wire records](#2-wire-records)
+- [3. Mutation contracts](#3-mutation-contracts)
+- [4. Dispatch and responses](#4-dispatch-and-responses)
+- [5. Errors and retry](#5-errors-and-retry)
 
----
+## 1. Transport and routing
 
-## 1. Port Allocation
+- `ChunkdbClient` requires an `Arc<ChunkdbRpcTransport>` at construction.
+  `RangeBindingClient` resolves a chunk's service-slot owner from Group 0.
+  `ServiceRegistryClient` supplies live endpoints; endpoint cache refresh does
+  not change ownership.
+- `ChunkdbRpcTransport` uses an immutable `ConnectionPoolIndex`. Cold connection
+  creation happens outside the index, followed by compare-and-swap installation.
+  Retry invalidates only the selected connection generation.
+- `ChunkdbRpcService` dispatches to the independently scoped system/user-data
+  lifecycle and task runtimes. Each mutation checks current range authority.
+- The RPC listener defaults to port 9961; HTTP health and metrics default to
+  9972. The configured RPC address must parse as a socket address.
 
-The chunkdb RPC port is `CHUNKDB_RPC_BASE = 9961` (stride 1, paired
-with HTTP 9972).
+## 2. Wire records
 
-```rust
-pub const CHUNKDB_RPC_BASE: u16 = 9961;
-```
+- Requests start with `id` and `rpc_create_nano`, followed by operation fields.
+  Responses carry request identity, `ret_code`, optional `error_msg`, diagnostic
+  `range_start`/`range_end`, and typed result data.
+- Message identities are defined by `FBMsgType`. Generated Rust/C++ definitions
+  derive from the same schema; native producers use the same request contract.
+- `FBChunkType` requires explicit Wal, BtreePage, PageIndex, Stream, S3 or
+  IcebergTable purpose. Reserved zero is invalid. Chunk-ID purpose, stored type
+  and owner attribution must agree. Stream/Wal carry their logical Stream name;
+  other types have an empty owner key.
+- `FBChunk` includes writer epoch, exact acknowledged byte cursor, lease deadline,
+  physical strips, coarse capacity/sealed geometry, cleanup intents and the last
+  replacement operation. `FBChunkStrip` identifies sequence, logical interval,
+  unit geometry, mirror/EC segments and unavailable segment identities.
+- Segment identity includes disk, zone, unit range, allocation incarnation and
+  owning chunk. Mirror and EC bodies carry their explicit physical geometry.
+- `QueryChunkResponse` also returns reader-layout validity duration.
+  `ListChunksResponse` carries a bounded chunk page and continuation identity.
+- Response `Ref` wrappers parse one root and expose typed borrowed accessors.
+  Invalid buffers remain invalid; callers check validity and return codes before
+  accepting data.
 
-Fills the gap between diskdb RPC (9931-9940) and chunkdb HTTP
-(9972). Stride 1 (one port per instance). The `ChunkdbRpc` variant
-in `ServicePort` provides `base() => CHUNKDB_RPC_BASE`, `stride() => 1`.
+## 3. Mutation contracts
 
-## 2. Flatbuffer Schema (chunkdb.fbs)
+- Allocation specifies purpose, writer epoch, lease and applicable owner key.
+  The active chunk and its finalization task are created atomically. Allocation
+  retries retain operation identity rather than create unrelated chunks.
+- Append and strip reservation extend physical layout under their current fences.
+  Reservations remain hidden until confirmation. A consumed reservation prevents
+  conflicting seal transitions.
+- `AdvanceChunkWrite` carries expected metadata revision, writer epoch, exact
+  byte cursor and optional closed-strip sequence. It cannot move progress backward
+  or beyond capacity.
+- `SealChunkRequest.seal_bytes` is the exact effective byte boundary, including
+  zero for an empty seal. KiB geometry does not authorize extra readable bytes.
+  Native clients validate the returned identity, epoch, exact cursor and state.
+- `ReplaceChunkStripRange` carries expected revision, exact old strips, replacement
+  strips and a stable operation ID. The lifecycle validates geometry and ownership,
+  commits new segments before publication, and retains retired segments through
+  cleanup grace. One-strip changes use this same fenced range contract.
+- Replacement allocation and discard manage tentative segments. Conversion and
+  repair publish through their fenced lifecycle transitions and durable tasks.
+- Delete publishes a tombstone with durable cleanup work before freeing blocks.
+  Whole-chunk retries are idempotent. `DeleteChunkRange` returns `Unimplemented`
+  until shared-object range reclamation is supported; overlap alone cannot free
+  a strip containing other live objects.
 
-File: `lib/crowdb-protocol/src/fbs/chunkdb.fbs`
+## 4. Dispatch and responses
 
-Includes `common_type.fbs` (provides `FBInt128`) and `diskdb.fbs`
-(provides `FBSegment` as an inline struct in the `crowdb.diskdb`
-namespace).
+- Each registered message has a request metric guard and typed handler. Dispatch
+  validates its FlatBuffer and required identities before spawning lifecycle work.
+- Handlers execute on the service runtime and retain captured ownership checks
+  around external operations. Responses are submitted through the RPC server.
+- Successful responses contain current typed state. Lifecycle errors map to a
+  typed return code; `NotMyRange` includes routing diagnostics for the client.
+- Layout replacement, conversion and relocation share the `layout_mutation`
+  request metric family. Allocate, append, reservation, cursor, query, seal,
+  deletion, listing and ad-hoc recovery retain their own families.
+- Startup validates topology and service/storage slot maps, constructs separate
+  domain runtimes, registers RPC handlers and starts discovery refresh plus HTTP
+  observability. Shutdown stops background work and transport through the runtime.
 
-**Enums:**
+## 5. Errors and retry
 
-- `FBChunkdbRetCode` — Success, InvalidArgument, NotFound, AlreadyExists,
-  FailedPrecondition, Aborted, Internal, Unavailable, NotMyRange,
-  StripIndexOutOfRange
-- `FBEcState` — NoParity, Parity
-- `FBChunkState` — Init, Active, Sealed, Deleted
-- `FBStripType` — Mirror, Ec
-- `FBChunkType` — Wal, BtreePage, PageIndex, Stream, S3, IcebergTable.
-  Wire value zero is Reserved and rejected; allocation requires explicit purpose.
-  Chunk ID prefix, stored purpose, and stream owner attribution must agree.
-
-**Nested types:**
-
-- `FBMirrorStrip` — `segments:[FBSegment]`
-- `FBEcStrip` — `data_num`, `code_num`, `ec_state`, `segments:[FBSegment]`
-- `FBStripBody` union — None, Mirror, Ec (the strip body union)
-- `FBChunkStrip` — `chunk_offset`, `strip_sequence`, `unit_kb`,
-  `capacity`, `create_ts_ms`, `sealed_ts_ms`, `sealed_length`,
-  `strip_type`, `strip_body:FBStripBody`, `usage_bitmap:[ubyte]`, and
-  unavailable segment identities
-- `FBChunk` — `id:FBInt128`, `state`, `create_ts_ms`, `sealed_ts_ms`,
-  `capacity`, `sealed_length`, `strips:[FBChunkStrip]`, `chunk_type`,
-  monotonic next sequence, cleanup intents, and last replacement operation
-
-**Request/response tables:**
-
-All 12 request types follow the same shape: `id` + `rpc_create_nano`
-first, then the schema fields. All 12 response types carry `id` +
-`rpc_create_nano` + `ret_code` + `error_msg` + `range_start` +
-`range_end` (diagnostic for `NotMyRange`) + the response data.
-
-The `range_start`/`range_end` fields are on every response (default 0) —
-they are only populated when `ret_code = NotMyRange`. This avoids a
-separate `NotMyRangeHint` message.
-
-`UpdateChunkStripRequest` embeds a `FBChunkStrip` (the `strip` field).
-`ListChunksResponse` carries `chunks:[FBChunk]` +
-`next_token:FBInt128`. `QueryChunkResponse` also advertises the reader layout
-validity duration. Replacement requests carry tentative segment geometry,
-failed-disk exclusions, exact old/new strip ranges, expected revision, and a
-stable operation identity.
-
-**Message type IDs** (3300-3323 range):
-
-- `EAllocateChunkRequest = 3300` … `EListChunksResponse = 3315`
-- `EAdvanceChunkWriteRequest = 3316` … `EAdvanceChunkWriteResponse = 3317`
-- `EAllocateReplacementSegmentRequest = 3318` …
-  `EDiscardReplacementSegmentResponse = 3323`
-
-**Build + re-exports:**
-
-`build.rs` adds `chunkdb.fbs` to `fbs_files` + a `flatc --rust --gen-all`
-invocation (inlines `common_type.fbs` + `diskdb.fbs` so `FBInt128` +
-`FBSegment` resolve). `lib.rs` adds the `chunkdb_generated` private
-module + `chunkdb_fb` public re-export module.
-
-## 3. Zero-Copy Wrapper Classes
-
-File: `lib/crowdb-protocol/src/fb_wrappers/chunkdb.rs`
-
-Frequently accessed responses use a zero-copy `Ref` wrapper. Each follows the
-zero-copy pattern: parse the root pointer once, read fields through it
-without copying.
-
-```rust
-pub struct FBAllocateChunkResponseRef<'a> {
-    root: Option<FBAllocateChunkResponse<'a>>,
-}
-```
-
-Each `Ref` provides: `new`, `valid`, `ret_code`, `error_msg`,
-`request_id`, `ok`, `range_start`, `range_end`, plus per-response data
-accessor (e.g. `chunk()` for chunk-carrying responses, `chunks()` +
-`next_token()` for `ListChunksResponse`).
-
-Invalid buffer → `valid()` returns false, `ret_code()` returns
-`Internal`, all data accessors return `None`/0.
-
-## 4. Server-Side Handler (ChunkdbRpcService)
-
-File: `app/crowdb-chunkdb/src/service/chunkdb_rpc_service.rs`
-
-The `ChunkdbRpcService` struct holds `Arc<LifecycleHandler>` + a
-`tokio::runtime::Handle`. The handler delegates to `LifecycleHandler`
-for all 12 RPCs — same lifecycle logic, different
-wire format. No transparent forwarding (chunkdb has no leader — range
-routing is client-side via `RangeBindingClient`).
-
-`register_handlers` wires one handler per request `msg_type` into the
-`RpcServer`, using the `make_handler` closure pattern. Each handler:
-
-a. Extract `request_id`, `rpc_create_nano`, `msg_type` from
-   `ServerRequest`.
-b. Parse the request flatbuffer via `flatbuffers::root::<FB<Type>Request>`.
-   On parse failure, submit an error response with
-   `ret_code = InvalidArgument`.
-c. Extract fields from the request (chunk_id, strip_type, etc.).
-d. Spawn a tokio task (via `Handle::spawn`) that calls the
-   `LifecycleHandler` method.
-e. On success, build the flatbuffer response with `ret_code = Success`
-   + the chunk data.
-f. On `LifecycleError::NotMyRange`, build the response with
-   `ret_code = NotMyRange` + `range_start`/`range_end`.
-g. On other errors, map `LifecycleError` to `FBChunkdbRetCode` +
-   `error_msg`.
-h. Submit via `server.submit_response`.
-
-**Response builders:** one `build_<type>_response` function per
-response type. The `Chunk` → `FBChunk` conversion builds nested
-`FBChunkStrip` + `FBMirrorStrip`/`FBEcStrip` + `FBSegment` vectors —
-the most complex part since the `Chunk` flatbuffer has nested `Vec<ChunkStrip>`
-with a `oneof strip` field.
-
-## 5. Client-Side Transport (ChunkdbRpcTransport)
-
-File: `lib/crowdb-chunkdb-client/src/rpc_transport.rs`
-
-```rust
-pub struct ChunkdbRpcTransport {
-    server: Arc<RpcServer>,
-    rpc: Arc<RpcClient>,
-    connections: ConnectionPoolIndex,
-    next_req_id: AtomicU64,
-}
-```
-
-The `RpcServer` is the client-side transport — it does not listen but
-establishes connections to remote endpoints. `conn_for(endpoint)` normalizes
-the endpoint and selects from an immutable generated pool. Cold connections
-are established outside the index and installed with compare-and-swap;
-retryable failures invalidate only the selected generation.
-
-12 `send_*` methods (one per RPC): build request flatbuffer →
-`rpc.call(&server, &conn, req_id, control, None, msg_type)` →
-`fut.await` → parse response via `Ref` wrapper → map to the response
-type → return.
-
-The response types are still returned — the caller's retry +
-`RangeBindingClient` logic is unchanged; only the wire send changes.
-
-## 6. ChunkdbClient Transport Selection
-
-File: `lib/crowdb-chunkdb-client/src/client.rs`
-
-`ChunkdbClient` holds an `Option<Arc<ChunkdbRpcTransport>>` field, set
-via `with_rpc_transport`. Each public method (`allocate_chunk`,
-`append_chunk`, `query_chunk`, `seal_chunk`, `delete_chunk`,
-`delete_chunk_range`, `update_chunk_strip`, `list_chunks`) checks
-`self.rpc_transport` first:
-
-a. When set, delegate to the transport's `send_*` method via
-   `with_rpc_retry`: resolve endpoint via `range_binding.route(chunk_id)`
-   or `first_endpoint()`, call `transport.send_*(endpoint, req)`, on
-   `NotMyRange` refresh binding + re-route, on transient error retry
-   with backoff.
-
-The `with_rpc_retry` helper implements the retry loop — retry semantics
-and `RangeBindingClient` integration, with the crowdb-rpc wire send.
-
-## 7. Server Wiring
-
-File: `app/crowdb-chunkdb/src/main.rs`
-
-The chunkdb server runs inside `#[tokio::main]` so
-`tokio::runtime::Handle::current()` is available. The crowdb-rpc server
-is the chunkdb RPC transport.
-
-Startup sequence:
-
-1. Load config from TOML.
-2. Build KV client for group-0 topology access.
-3. Create topology cache + refresh loop + notify handler.
-4. Validate complete fixed service/storage slot maps and install caches.
-5. Create independent system and user-data lifecycle/task runtimes.
-6. Spawn service endpoint/binding refresh without changing ownership.
-7. Register service-registry keep-alive.
-8. Create diskdb client pool + chunk allocator.
-9. Create per-chunk lock map + metrics.
-10. Spawn sweep task for idle lock reaping.
-11. Create lifecycle handler.
-12. Create crowdb-rpc server: parse `rpc_listen_addr`, `RpcServer::new`,
-      `listen`, `start`, `ChunkdbRpcService::new(handler, Handle)`,
-      `register_handlers`.
-13. Start HTTP health + metrics + cache invalidation server.
-14. On shutdown: stop crowdb-rpc server via shutdown signal.
-
-The `handler` is shared between the crowdb-rpc service — same
-`Arc<LifecycleHandler>`.
-
-The `rpc_listen_addr` config field (default `0.0.0.0:9961`) is
-validated as a `SocketAddr` in `ChunkdbConfig::validate`.
-
-## 8. Error Model
-
-**`LifecycleError` → `FBChunkdbRetCode` mapping:**
-
-- `InvalidStateTransition` → `FailedPrecondition`
-- `ChunkNotFound` → `NotFound`
-- `ChunkAlreadyExists` → `AlreadyExists`
-- `StateConflict` → `Aborted`
-- `Allocation` / `Storage` → `Internal`
-- `InvalidRequest` → `InvalidArgument`
-- `NotMyRange { bucket }` → `NotMyRange` + `range_start`/`range_end`
-- `LockBusy` / `LockTimeout` → `Unavailable`
-- `StripIndexOutOfRange` → `StripIndexOutOfRange`
-
-**`FBChunkdbRetCode` → `ChunkdbClientError` mapping** (client side):
-
-- `Success` → Ok
-- `InvalidArgument` / `StripIndexOutOfRange` → `InvalidArgument`
-- `NotFound` → `NotFound`
-- `AlreadyExists` → `AlreadyExists`
-- `FailedPrecondition` → `FailedPrecondition`
-- `Aborted` → `Aborted`
-- `Internal` → `Internal`
-- `Unavailable` → `Unavailable` (transient — retryable)
-- `NotMyRange` → `NotMyRange` (transient — refresh binding + re-route)
-
-**`RpcError` → `ChunkdbClientError` mapping:**
-
-- All `RpcError` variants → `ChunkdbClientError::Rpc` (not retryable
-  by default; connection-level errors surface as `Unreachable` during
-  endpoint resolution)
-
-`NotMyRange` is a response, not an error — the client checks `ret_code`
-and re-routes. The `is_transient` predicate covers `Unavailable`,
-`DeadlineExceeded`, `Unreachable`, and `NotMyRange`.
+- Invalid arguments and strip indices map to `InvalidArgument` or
+  `StripIndexOutOfRange`. Missing/existing chunks map to `NotFound`/`AlreadyExists`.
+- Invalid lifecycle transitions map to `FailedPrecondition`; revision/operation
+  conflicts map to `Aborted`. Storage/allocation failures map to `Internal`.
+- Lock admission failures map to `Unavailable`. Ownership failures return
+  `NotMyRange`, causing binding refresh and routing to the current owner.
+- Client retries are bounded and apply only to transient failures. Typed fence
+  failures and malformed responses do not become successes. Mutations that may
+  have completed retain their operation identity and reconcile durable state.
+- A transport response alone does not establish Stream writer ownership or a
+  synchronized DiskIO write; those contracts belong to their respective layers.

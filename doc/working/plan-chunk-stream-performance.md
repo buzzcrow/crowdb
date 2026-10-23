@@ -986,6 +986,28 @@ adaptation rather than a new transport or storage engine.
   Receipts use `exact-seal-*`, including the original `exact-seal-native-red.log`
   failure. Main indexed worker/lease wiring remains.
 
+## Single fenced strip replacement interface (partial T04)
+
+- Audited `UpdateChunkStrip`: production only forwarded the old request to
+  `replace_chunk_strip_range`; the sole real caller was E2E repair fault injection.
+  Removed its typed/FBS messages, message IDs, response wrapper, dispatch,
+  lifecycle wrapper, client methods, allocator trait forwarding and test stubs.
+- Deleted the empty former tonic service module and its deprecated type, removed
+  obsolete mixed-rollout comments and the transport-wide dead-code allowance,
+  and deleted the unused error adapter exposed by that allowance.
+- Repair injection now supplies the exact old range, expected revision and stable
+  operation identity through the canonical replacement RPC. Replacement,
+  conversion and relocation metrics use the current `layout_mutation` family.
+- Updated the RPC design to describe mandatory current transport and fenced
+  mutations, removing obsolete optional-transport and fixed-request-count claims.
+  Neighboring designs and the pending recovery requirement use the same API.
+- Verification: 895 Rust tests across 148 targets pass. All-target clippy passes
+  in eleven packages, including Access-server, CLI and E2E. Four E2E seal fixtures
+  now initialize the complete exact-byte request directly. Full native verification
+  passes (734 C++ cases and 85 Rust FFI cases); format checks pass. Receipts use
+  `strip-wrapper-*`. The indexed worker still replaces
+  the old flat directory together with its runtime wiring.
+
 ## Immutable view and bounded repair-image wiring (partial T14/T20/T22)
 
 - Removed the duplicate whole-batch byte buffer. Frame header/payload/footer

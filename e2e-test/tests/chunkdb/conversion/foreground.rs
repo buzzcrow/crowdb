@@ -16,7 +16,6 @@ async fn expired_client_claim_preserves_dirty_destination_tail_and_completes_onc
         .seal_chunk(SealChunkRequest {
             chunk_id: Some(id),
             seal_bytes: length,
-            ..Default::default()
         })
         .await
         .unwrap()

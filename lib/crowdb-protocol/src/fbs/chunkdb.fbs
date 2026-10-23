@@ -440,26 +440,6 @@ table FBDeleteChunkRangeResponse {
     range_end:uint32;
 }
 
-// ── UpdateChunkStrip ─────────────────────────────────────────────
-
-table FBUpdateChunkStripRequest {
-    id:uint64;
-    rpc_create_nano:uint64;
-    chunk_id:crowdb.rpc.proto.FBInt128;
-    strip_index:uint32;
-    strip:FBChunkStrip;
-}
-
-table FBUpdateChunkStripResponse {
-    id:uint64;
-    rpc_create_nano:uint64;
-    ret_code:FBChunkdbRetCode;
-    error_msg:string;
-    range_start:uint32;
-    range_end:uint32;
-    chunk:FBChunk;
-}
-
 // ── Replacement Allocation + Fenced Range Swap ─────────────────
 
 table FBAllocateReplacementSegmentRequest {

@@ -943,8 +943,6 @@ mutating RPC acquires the per-chunk lock before its RMW cycle:
   returns `Unimplemented` without changing storage until shared-object range
   reclamation is supported. An intersecting strip is not permission to free
   its blocks while neighbouring objects remain live.
-- `update_chunk_strip`: compatibility wrapper over the one-strip form of
-  `replace_chunk_strip_range`.
 - `replace_chunk_strip_range`: `check_range` → `acquire` → validate Active or
   Sealed state, expected revision, exact old range, contiguous capacity,
   monotonic sequences, segment ownership, and mirror/EC geometry → commit only
@@ -1115,7 +1113,6 @@ app/crowdb-chunkdb/              # chunkdb server binary
 │   │   └── state.rs          # lifecycle state transitions
 │   ├── service.rs            # pure service index
 │   ├── service/
-│   │   ├── chunkdb_service.rs
 │   │   ├── chunkdb_rpc_service.rs
 │   │   └── chunkdb_rpc_service/
 │   │       ├── service.rs    # state and handler registration

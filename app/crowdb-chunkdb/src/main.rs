@@ -451,7 +451,7 @@ async fn main() {
     rpc_service.register_handlers(&rpc_server);
     rpc_server.start();
     prepared.store(true, std::sync::atomic::Ordering::Release);
-    info!(%rpc_listen_addr, "crowdb-rpc server listening (R116 migration)");
+    info!(%rpc_listen_addr, "crowdb-rpc server listening");
 
     // Start HTTP health + metrics + cache invalidation server.
     let readiness = HttpReadiness {

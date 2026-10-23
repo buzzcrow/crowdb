@@ -51,7 +51,6 @@ async fn crash_recovery_preserves_exact_chunk_records_and_placement() {
             .seal_chunk(SealChunkRequest {
                 chunk_id: Some(id),
                 seal_bytes: 100 * 1024 - 17,
-                ..Default::default()
             })
             .await
             .unwrap()

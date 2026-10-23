@@ -402,7 +402,7 @@ Edge cases:
 ## 8. Interaction with Neighbors
 
 - **chunkdb** — the writer calls allocate / append / seal / delete /
-  update_chunk_strip / query via `ChunkAllocator`. chunkdb handles
+  fenced strip-range replacement / query via `ChunkAllocator`. chunkdb handles
   placement and lifecycle; the writer is unaware of internal placement
   logic — it receives `Segment` placements and writes to them.
 - **diskio** — the writer writes data and parity blocks through the single
