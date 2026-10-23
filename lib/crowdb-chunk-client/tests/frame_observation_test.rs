@@ -3,6 +3,8 @@
 
 #[path = "common/frame_observation.rs"]
 mod fixture;
+#[path = "common/mirrored_frames.rs"]
+mod mirrored_fixture;
 
 use crowdb_chunk_client::{
     observe_frame_prefix, replay_frame_prefix, select_frame_prefix, FrameObservationError, FrameWindowReader,
@@ -13,6 +15,8 @@ use tokio::time::Instant;
 
 #[path = "frame_observation_test/faults.rs"]
 mod faults;
+#[path = "frame_observation_test/mirrored.rs"]
+mod mirrored;
 
 #[tokio::test]
 async fn shortest_complete_replica_prefix_is_selected_and_replayed_without_history_buffers() {

@@ -11,12 +11,14 @@ use thiserror::Error;
 
 use crate::IoError;
 
+mod mirrored;
 mod prefix;
+pub use mirrored::MirroredFrameReaders;
 mod replicas;
 pub use prefix::{observe_frame_prefix, replay_frame_prefix};
 pub use replicas::{select_frame_prefix, FrameReplicaSelection};
 
-pub const MAX_FRAME_OBSERVATION_REPLICAS: usize = 3;
+pub const MAX_FRAME_OBSERVATION_REPLICAS: usize = 5;
 
 /// Supplies exact physical windows from one stable layout observation. Callers
 /// establish owner exclusion and layout/read deadlines before constructing it.
@@ -59,6 +61,8 @@ impl FrameObservation {
 
 #[derive(Debug, Error)]
 pub enum FrameObservationError {
+    #[error("invalid physical frame layout: {0}")]
+    InvalidLayout(String),
     #[error("invalid physical prefix observation bounds or replica budget")]
     InvalidRequest,
     #[error("physical prefix observation deadline expired")]

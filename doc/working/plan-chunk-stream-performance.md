@@ -791,7 +791,7 @@ adaptation rather than a new transport or storage engine.
   ordinary object read bounds are unchanged. No IO failure becomes zero-filled
   data or an empty candidate. Owner exclusion and stable layout authority remain
   constructor/caller prerequisites for the later backend adapter.
-- Up to three replica observations run concurrently within the same absolute
+- Up to five configured replica observations run concurrently within the same absolute
   deadline. Failed, short, corrupt and timed-out observations are excluded whole.
   The shortest healthy complete prefix wins; equal prefixes compare their full
   digest, longer replicas are reobserved only through that selected boundary.
@@ -810,6 +810,35 @@ adaptation rather than a new transport or storage engine.
 - This is the shared observation/replay engine. Current-layout physical readers,
   old-owner exclusion, initial/tail zero headers, finalizer wiring and replacing
   the main worker remain unfinished; no production performance result is claimed.
+
+## Pinned mirrored physical layout (partial T15)
+
+- `MirroredFrameReaders` owns one immutable current Chunk snapshot and explicit
+  local deadline, validates Stream/Wal purpose/owner/epoch/state and contiguous
+  allocated geometry, and constructs at most five replica readers, matching the
+  current adapter's supported configuration. Allocation
+  identity/capacity and independent replica disk identities must be present;
+  missing current fields are rejected without compatibility fallback.
+- Reads use binary strip lookup and split bounded windows at actual strip
+  boundaries. A contiguous result retains its IO buffer; cross-strip assembly
+  stays within one window. The adapter makes no allocator query per frame/window
+  and never widens ordinary ChunkReader reads. Only this explicit excluded-owner
+  tail context can inspect allocation beyond an older checkpoint.
+- Every subread enforces the captured monotonic deadline, including in-flight
+  timeout and clones retained after expiry. Known unavailable copies and short
+  physical reads fail instead of producing synthetic bytes. Layout captures do
+  not mutate replica health or adopt writer state.
+- Six physical-adapter cases use real grouped bytes through the DiskWriter
+  seam: 100 KiB across frames/13 strips with checkpoint zero, pinned snapshots,
+  unavailable replicas, scope/short-read rejection, expired clones/in-flight IO
+  and invalid owner/layout/allocation identity before IO. The five-copy boundary
+  is also exercised. All 15 observation cases pass. Full Client/Stream: 259 passed,
+  zero ignored; strict all-target
+  clippy and Rust fmt pass. Checked integer conversions fixed test-fixture lint.
+  Logs: `mirrored-frame-{check,tests,full-suite,clippy-final,fmt}.log`.
+- Runtime owner exclusion, zero-header emission/initialization, sealed-EC tail
+  adaptation and finalizer/main-worker wiring still remain. Do not activate
+  deferred ACKs yet. Preserve Q4 read-only capture semantics separately.
 
 ## Recovery IO execution notes (T15/T16 target)
 

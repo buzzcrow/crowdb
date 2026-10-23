@@ -42,7 +42,7 @@ pub use benchmark::{
 pub use chunk::frame_observation::{
     observe_frame_prefix, replay_frame_prefix, select_frame_prefix, FrameExtentSink, FrameObservation,
     FrameObservationError, FrameObservationResult, FrameReplicaSelection, FrameWindowReader,
-    MAX_FRAME_OBSERVATION_REPLICAS,
+    MirroredFrameReaders, MAX_FRAME_OBSERVATION_REPLICAS,
 };
 pub use chunk::{
     ChunkPrefetch, ChunkReadPolicy, ChunkReadStream, ChunkReader, ChunkWriter, EcStripWriter,
