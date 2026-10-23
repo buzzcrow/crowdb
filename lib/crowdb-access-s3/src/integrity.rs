@@ -139,6 +139,12 @@ fn hex_digest(bytes: &[u8]) -> String {
     value
 }
 
+/// Formats a retained part digest using the canonical single-part `ETag` form.
+#[must_use]
+pub fn raw_md5_etag(bytes: [u8; 16]) -> String {
+    hex_digest(&bytes)
+}
+
 /// Encodes a composite multipart `ETag` as a distinct 18-byte metadata
 /// checksum marker: 16 digest bytes followed by the part count.
 #[must_use]

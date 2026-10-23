@@ -6,16 +6,15 @@
 use crowdb_access_s3::condition::ObjectConditions;
 use crowdb_access_s3::error::S3ErrorCode;
 use crowdb_access_s3::execution::{CopyFailure, CopyMetadata, S3WritePolicy};
-use crowdb_access_s3::metadata::{MultipartPartRecord, ObjectRecord};
+use crowdb_access_s3::metadata::ObjectRecord;
 use crowdb_access_s3::route::{S3Operation, S3Route};
 use crowdb_access_s3::{copy, retrieval, wire};
 use hyper::{body::Incoming, Request, Response};
 use std::sync::Arc;
 
-use super::multipart::{map_multipart_error, parse_md5};
 use super::{
-    map_put_outcome, map_retrieval, required_bucket, required_key, strict_header, unix_millis,
-    ProductionS3Operations, ResponseBody,
+    map_put_outcome, map_retrieval, required_bucket, required_key, strict_header, ProductionS3Operations,
+    ResponseBody,
 };
 
 impl ProductionS3Operations {
@@ -140,45 +139,26 @@ impl ProductionS3Operations {
         if length > session.max_part_bytes {
             return Err(S3ErrorCode::InvalidRequest);
         }
-        let mut writer_key = self.config.tenant.as_bytes().to_vec();
-        writer_key.extend_from_slice(session.bucket_id.as_bytes());
-        writer_key.extend_from_slice(&session.upload_id);
-        writer_key.extend_from_slice(&number.to_be_bytes());
         let range = range.map(str::to_owned);
         let operations = self.clone();
         crate::s3::copy_body::response(
             async move {
-                let copied = operations
+                let part = operations
                     .execution
-                    .stream_copy(
+                    .copy_part_record(
                         &record,
+                        &session,
+                        number,
                         range.as_deref(),
-                        &writer_key,
                         &S3WritePolicy {
                             small_object_limit: operations.config.small_object_limit,
                             large_write: operations.config.large_write.clone(),
                         },
                     )
-                    .await?;
-                let etag = copied.etag;
-                let locations = copied.locations;
-                let now = unix_millis();
-                let part = MultipartPartRecord {
-                    bucket_id: session.bucket_id,
-                    upload_id: session.upload_id,
-                    number,
-                    revision: 1,
-                    modified_ms: now,
-                    length,
-                    raw_md5: parse_md5(&etag)?,
-                    locations,
-                };
-                operations
-                    .multipart()
-                    .put_stream_part(&session, &part, now)
                     .await
-                    .map_err(|error| map_multipart_error(&error))?
-                    .ok_or(S3ErrorCode::SlowDown)?;
+                    .map_err(|error| error.code())?;
+                let etag = crowdb_access_s3::integrity::raw_md5_etag(part.raw_md5);
+                let now = part.modified_ms;
                 Ok(wire::copy_result(&etag, now, true))
             },
             request.uri().path().to_owned(),

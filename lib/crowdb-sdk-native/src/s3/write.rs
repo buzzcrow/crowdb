@@ -7,12 +7,14 @@ use super::{ObjectMetadata, PutObjectInfo, S3Client};
 use crate::buffer::{BufferLease, FrozenObjectBuffer};
 use crate::runtime::RequestLease;
 use crate::{Error, OperationContext, Result};
-use crowdb_access_s3::execution::PreparedPut;
+use crowdb_access_s3::execution::PreparedPart;
+mod session;
 use crowdb_access_s3::integrity::SinglePartIntegrity;
 use crowdb_access_s3::streaming::{PutErrorCode, PutOutcome};
 use crowdb_access_s3::S3ErrorCode;
 use crowdb_chunk_client::ChunkIoWriter;
 use crowdb_protocol::frame::MAX_FRAME_PAYLOAD_BYTES;
+use session::{UploadResult, UploadSession};
 
 #[derive(Default)]
 pub struct PutOptions {
@@ -23,7 +25,7 @@ pub struct PutOptions {
 pub struct PutObject {
     client: S3Client,
     request: Option<RequestLease>,
-    session: Option<PreparedPut>,
+    session: Option<UploadSession>,
     integrity: SinglePartIntegrity,
     expected_md5: Option<[u8; 16]>,
     expected_length: Option<u64>,
@@ -56,7 +58,7 @@ impl S3Client {
         Ok(PutObject {
             client: self.clone(),
             request: Some(request),
-            session: Some(session),
+            session: Some(UploadSession::Object(session)),
             integrity: SinglePartIntegrity::default(),
             expected_md5: options.expected_md5,
             expected_length,
@@ -91,6 +93,26 @@ impl S3Client {
 }
 
 impl PutObject {
+    pub(super) fn from_part(
+        client: S3Client,
+        request: RequestLease,
+        session: PreparedPart,
+        length: u64,
+        expected_md5: Option<[u8; 16]>,
+    ) -> Self {
+        Self {
+            client,
+            request: Some(request),
+            session: Some(UploadSession::Part(session)),
+            integrity: SinglePartIntegrity::default(),
+            expected_md5,
+            expected_length: Some(length),
+            length: 0,
+            final_frame: false,
+            failure: None,
+        }
+    }
+
     #[must_use]
     pub fn accepted_bytes(&self) -> u64 {
         self.length
@@ -181,7 +203,17 @@ impl PutObject {
     /// Returns success only after data durability and object publication.
     /// # Errors
     /// Returns incomplete input, checksum failure or an uncertain publication.
-    pub async fn finish(mut self) -> Result<ObjectMetadata> {
+    pub async fn finish(self) -> Result<ObjectMetadata> {
+        let client = self.client.clone();
+        let selected = self.finish_upload().await?.object()?;
+        Ok(client.bind_object(selected)?.metadata().clone())
+    }
+
+    pub(super) async fn finish_part(self) -> Result<crowdb_access_s3::metadata::MultipartPartRecord> {
+        self.finish_upload().await?.part()
+    }
+
+    async fn finish_upload(mut self) -> Result<UploadResult> {
         let (request, mut session) = self.take_active()?;
         if let Some(expected) = self.expected_length.filter(|expected| *expected != self.length) {
             session.abort().await;
@@ -199,15 +231,7 @@ impl PutObject {
             return Err(Error::Integrity);
         }
         let id = request.context().request_id.get();
-        let selected = request
-            .run_mutation(async {
-                session
-                    .finish(etag, checksum)
-                    .await
-                    .map_err(|outcome| map_outcome(outcome, id))
-            })
-            .await?;
-        Ok(self.client.bind_object(selected)?.metadata().clone())
+        request.run_mutation(session.finish(etag, checksum, id)).await
     }
 
     fn check_input(&self, count: u64) -> Result<u64> {
@@ -222,7 +246,7 @@ impl PutObject {
         Ok(next)
     }
 
-    fn take_active(&mut self) -> Result<(RequestLease, PreparedPut)> {
+    fn take_active(&mut self) -> Result<(RequestLease, UploadSession)> {
         if let Some(error) = &self.failure {
             return Err(error.clone());
         }
@@ -233,7 +257,7 @@ impl PutObject {
         ))
     }
 
-    fn restore(&mut self, result: Result<()>, request: RequestLease, session: PreparedPut) -> Result<()> {
+    fn restore(&mut self, result: Result<()>, request: RequestLease, session: UploadSession) -> Result<()> {
         match result {
             Ok(()) => {
                 self.request = Some(request);

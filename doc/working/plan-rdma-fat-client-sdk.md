@@ -115,7 +115,7 @@ RDMA plan. Native SDK implementation and acceptance remain outstanding.
   `app/crowdb-access-server/src/s3/operations.rs`,
   `lib/crowdb-sdk-native/src/s3/`,
   `lib/crowdb-chunk-client/src/chunk/chunk_reader.rs`.
-- [~] **Extract PUT and copy**: separate HTTP decoding from bounded input,
+- [x] **Extract PUT and copy**: separate HTTP decoding from bounded input,
   checksums, ChunkIO writes, publication, and definite-failure cleanup. Add
   ordinary-input and frozen native-buffer entry points. Preserve
   `PutOutcome::Timeout` uncertainty; final success requires durable data and
@@ -124,7 +124,7 @@ RDMA plan. Native SDK implementation and acceptance remain outstanding.
   `app/crowdb-access-server/src/s3/operations/copy.rs`,
   `app/crowdb-access-server/src/s3/operations/upload.rs`,
   `lib/crowdb-sdk-native/src/s3/`.
-- [ ] **Attach multipart**: reuse the repository and multipart engine for
+- [x] **Attach multipart**: reuse the repository and multipart engine for
   begin, upload/list parts, list uploads, complete, and abort. Preserve upload
   identity, validation, publication uncertainty, and deferred cleanup. Files:
   `lib/crowdb-access-s3/src/metadata/multipart_repository/`,
@@ -338,6 +338,20 @@ transport acceptance alone cannot establish SDK completion.
   service/inspection/multipart tests, three-crate clippy and formatting pass.
 
 ## Immediate dependent implementation
+
+- HTTP and native multipart now share session creation/expiry, part writer
+  preparation, copied-part execution, exact generation publication, completion
+  freeze and abort. Retained native upload identities are tenant/authority-bound;
+  admission refreshes durable phase/expiry instead of trusting an old handle.
+  Native part input shares PUT's bounded ordinary/framed buffers and cancellation.
+  Five new cases cover 5 MiB plus framed-tail composition, paged parts/uploads,
+  replacement/captured-source copy, abort/reconnect, confirmed lost replies and
+  an applied object publication whose confirmation reads also fail. That failure
+  remains uncertain; the same frozen selection later confirms without data
+  replay. Native/S3/Access Server all-target suites pass (46 native cases), as
+  do three-crate clippy and formatting. Access Server required more than the
+  default 60-second outer compilation limit; continuing its cached build and
+  complete test run passes without changing any test timeout.
 
 - HTTP object copy and upload-part copy now use shared verified copy execution.
   Native copy accepts ordinary source names or a tenant/authority-bound retained

@@ -10,9 +10,7 @@ use base64::Engine as _;
 use crowdb_access_s3::condition::ObjectConditions;
 use crowdb_access_s3::continuation::ContinuationTokenSigner;
 use crowdb_access_s3::error::{S3Error, S3ErrorCode};
-use crowdb_access_s3::execution::{
-    ObjectListRequest, ObjectWriter, PutObjectInfo, S3Executor, S3WritePolicy,
-};
+use crowdb_access_s3::execution::{ObjectListRequest, PutObjectInfo, S3Executor, S3WritePolicy};
 use crowdb_access_s3::metadata::{ObjectRecord, TenantId};
 use crowdb_access_s3::retrieval::{ObjectHeaders, RetrievalError};
 use crowdb_access_s3::route::{S3Operation, S3Route};
@@ -380,23 +378,6 @@ impl ProductionS3Operations {
     async fn object(&self, route: &S3Route) -> Result<ObjectRecord, S3ErrorCode> {
         self.execution
             .object(required_bucket(route)?, required_key(route)?)
-            .await
-    }
-
-    async fn prepare_writer(
-        &self,
-        content_length: Option<u64>,
-        key: &[u8],
-    ) -> Result<ObjectWriter, S3ErrorCode> {
-        self.execution
-            .prepare_writer(
-                content_length,
-                key,
-                &S3WritePolicy {
-                    small_object_limit: self.config.small_object_limit,
-                    large_write: self.config.large_write.clone(),
-                },
-            )
             .await
     }
 }

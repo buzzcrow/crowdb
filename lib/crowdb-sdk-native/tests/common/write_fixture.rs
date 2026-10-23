@@ -20,11 +20,17 @@ pub fn context(id: u64) -> OperationContext {
 }
 
 pub async fn fixture(loss: Option<Arc<AtomicBool>>) -> (ClientRuntime, S3Client, Arc<TestWriteStorage>) {
-    let backend = TestWriteStorage::new();
     let metadata = match loss {
         Some(loss) => metadata::client_with_loss(loss).await,
         None => metadata::client().await,
     };
+    fixture_with_metadata(metadata).await
+}
+
+pub async fn fixture_with_metadata(
+    metadata: Arc<crowdb_chunk_kv_client::ChunkKvClient>,
+) -> (ClientRuntime, S3Client, Arc<TestWriteStorage>) {
+    let backend = TestWriteStorage::new();
     let runtime = backend.runtime(metadata);
     let mut config = S3ClientConfig::from(TenantId::new(b"tenant".to_vec()).unwrap());
     let mut policy = S3WritePolicy::basic(0);

@@ -30,17 +30,47 @@ enum TestCommand {
 pub struct TestMetadataTransport {
     sender: mpsc::Sender<TestCommand>,
     lose_mutation_reply: Arc<AtomicBool>,
+    blackout: Option<Arc<TestMutationBlackout>>,
+}
+
+#[derive(Default)]
+pub struct TestMutationBlackout {
+    pub key: arc_swap::ArcSwapOption<Vec<u8>>,
+    pub blocked: AtomicBool,
 }
 
 #[async_trait]
 impl ChunkKvTransport for TestMetadataTransport {
     async fn point(&self, _: &str, request: &PointRequest) -> Result<ChunkKvResponse> {
+        if self
+            .blackout
+            .as_ref()
+            .is_some_and(|fault| fault.blocked.load(Ordering::Acquire))
+        {
+            return Err(crowdb_chunk_kv_client::ClientError::Transport(
+                "test metadata blackout".into(),
+            ));
+        }
         let (sender, receiver) = oneshot::channel();
         self.sender
             .send(TestCommand::Point(request.operation.clone(), sender))
             .await
             .unwrap();
         let response = receiver.await.unwrap();
+        if !matches!(request.operation, PointOperation::Get { .. }) {
+            if let Some(fault) = self.blackout.as_ref().filter(|fault| {
+                fault
+                    .key
+                    .load()
+                    .as_ref()
+                    .is_some_and(|key| key.as_slice() == request.operation.key())
+            }) {
+                fault.blocked.store(true, Ordering::Release);
+                return Err(crowdb_chunk_kv_client::ClientError::Transport(
+                    "test lost applied publication and confirmation reads".into(),
+                ));
+            }
+        }
         if !matches!(request.operation, PointOperation::Get { .. })
             && self.lose_mutation_reply.load(Ordering::Acquire)
         {
@@ -193,7 +223,13 @@ pub fn catalog(
 }
 
 pub async fn client_with_source(source: Arc<dyn ChunkKvRangeCatalogSource>) -> Arc<ChunkKvClient> {
-    client_with_options(source, Arc::new(AtomicBool::new(false)), ClientConfig::default()).await
+    client_with_options(
+        source,
+        Arc::new(AtomicBool::new(false)),
+        ClientConfig::default(),
+        None,
+    )
+    .await
 }
 
 #[allow(dead_code)] // Used by namespace uncertainty tests only.
@@ -206,6 +242,22 @@ pub async fn client_with_loss(loss: Arc<AtomicBool>) -> Arc<ChunkKvClient> {
             max_attempts: 1,
             ..ClientConfig::default()
         },
+        None,
+    )
+    .await
+}
+
+#[allow(dead_code)] // Used by multipart publication fault acceptance.
+pub async fn client_with_blackout(blackout: Arc<TestMutationBlackout>) -> Arc<ChunkKvClient> {
+    let (head, pages) = catalog(1, 1);
+    client_with_options(
+        Arc::new(TestCatalog(head, pages)),
+        Arc::new(AtomicBool::new(false)),
+        ClientConfig {
+            max_attempts: 1,
+            ..ClientConfig::default()
+        },
+        Some(blackout),
     )
     .await
 }
@@ -214,6 +266,7 @@ async fn client_with_options(
     source: Arc<dyn ChunkKvRangeCatalogSource>,
     loss: Arc<AtomicBool>,
     config: ClientConfig,
+    blackout: Option<Arc<TestMutationBlackout>>,
 ) -> Arc<ChunkKvClient> {
     let (sender, mut receiver) = mpsc::channel(64);
     tokio::spawn(async move {
@@ -240,6 +293,7 @@ async fn client_with_options(
             Arc::new(TestMetadataTransport {
                 sender,
                 lose_mutation_reply: loss,
+                blackout,
             }),
         )
         .unwrap(),

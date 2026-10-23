@@ -15,6 +15,7 @@ mod body;
 mod config;
 mod copy;
 mod locality;
+mod multipart;
 mod namespace;
 mod object;
 mod read;
@@ -28,11 +29,15 @@ pub use copy::CopyOptions;
 pub use crowdb_access_s3::condition::{EtagSelection, ReadPreconditions};
 pub use crowdb_access_s3::execution::CopyMetadata;
 pub use crowdb_access_s3::execution::{PutObjectInfo, S3WritePolicy};
+pub use crowdb_access_s3::metadata::CompletionPart;
 pub use crowdb_access_s3::metadata::UserMetadata;
 pub use crowdb_access_s3::range::ByteRange;
 pub use locality::{
     ChunkLayoutObservation, FragmentPlacement, FragmentRole, LocalityOptions, ObjectExtent, ObjectLocality,
     StripPlacement,
+};
+pub use multipart::{
+    CompletedMultipart, ListUploads, MultipartUpload, PartMetadata, PartPage, UploadPart, UploadsPage,
 };
 pub use object::{ObjectMetadata, ResolvedObject};
 pub use read::{GetObject, GetOptions};
