@@ -3,6 +3,7 @@
 
 #include "crowdb-rpc/transport/rdma/rdma_transport.h"
 #include "rdma_aggregate.h"
+#include "rdma_cq.h"
 
 #ifdef CROWDB_RPC_HAVE_RDMA
 
@@ -25,18 +26,26 @@ bool RdmaTransport::release_completed_receive(WorkRequest *work, const ibv_wc &w
         connection->close();
         slot->release();
     };
-    if (wc.status != IBV_WC_SUCCESS || !work->conn->is_open() ||
-        !work->slot->transition(BufferOwnership::PostedReceive, BufferOwnership::ReceiveInFlight)) {
+    if (wc.status != IBV_WC_SUCCESS || !work->conn->is_open()) {
         fail();
         return true;
     }
     RdmaAggregate aggregate;
     if (wc.byte_len > work->slot->capacity ||
-        !parse_rdma_aggregate(std::span(work->slot->data, wc.byte_len), aggregate) ||
+        !parse_rdma_aggregate(std::span(work->slot->data, wc.byte_len), aggregate)) {
+        fail();
+        return true;
+    }
+    auto &queue = *completion_queues_[work->pools == nullptr ? 0 : work->pools->cq_index];
+    if (!queue.can_receive(wc.byte_len, aggregate.count)) {
+        return false;
+    }
+    if (!work->slot->transition(BufferOwnership::PostedReceive, BufferOwnership::ReceiveInFlight) ||
         !work->slot->transition(BufferOwnership::ReceiveInFlight, BufferOwnership::CallerOwned)) {
         fail();
         return true;
     }
+    queue.charge_receive(wc.byte_len, aggregate.count);
 
     auto  connection       = std::move(work->conn);
     auto  pools            = std::move(work->pools);
@@ -78,10 +87,23 @@ void RdmaTransport::repost_frame_release(void *context, Buffer *slot)
     {
         Operation operation(repost->state);
         if (operation && repost->connection->is_open() &&
-            slot->ownership.load(std::memory_order_acquire) == BufferOwnership::Available &&
-            !repost->state->transport->post_receive(repost->connection.get(), slot)) {
-            repost->state->transport->stats_.receive_post_errors.fetch_add(1, std::memory_order_relaxed);
-            repost->connection->close();
+            slot->ownership.load(std::memory_order_acquire) == BufferOwnership::Available) {
+            auto *transport = repost->state->transport;
+            if (transport->config_.receive_batch_size > 1 && repost->pools != nullptr) {
+                Operation posting(repost->pools->posting_state);
+                if (posting && repost->pools->receive_reposts.try_push(slot)) {
+                    transport->notify_queue(repost->pools->cq_index);
+                    return;
+                }
+                if (posting) {
+                    transport->stats_.receive_post_errors.fetch_add(1, std::memory_order_relaxed);
+                    repost->connection->close();
+                }
+            }
+            else if (!transport->post_receive(repost->connection.get(), slot)) {
+                transport->stats_.receive_post_errors.fetch_add(1, std::memory_order_relaxed);
+                repost->connection->close();
+            }
         }
     }
     slot->release();

@@ -40,14 +40,14 @@ void complete_first_response(uint64_t id, crowdb_rpc_buffer_t control, crowdb_rp
 }
 } // namespace
 
-TEST(RdmaHardwareTest, ContiguousFirstResponseCompletesWithinTheWarmupWindow)
+static void test_first_response(RdmaWireLayout layout)
 {
     const auto *address = std::getenv("CROWDB_RDMA_E2E_LISTEN_ADDR");
     if (std::getenv("CROWDB_RDMA_E2E") == nullptr || address == nullptr)
         GTEST_SKIP() << "set CROWDB_RDMA_E2E and local HCA address";
     RdmaConfig config;
     config.use_environment = false;
-    config.wire_layout     = RdmaWireLayout::Contiguous;
+    config.wire_layout     = layout;
     config.source_address  = address;
     if (const auto *device = std::getenv("CROWDB_RDMA_DEVICE"))
         config.device = device;
@@ -55,6 +55,15 @@ TEST(RdmaHardwareTest, ContiguousFirstResponseCompletesWithinTheWarmupWindow)
     config.sq_depth = config.rq_depth = config.posted_receive_target = 1024;
     config.cq_depth                                                  = 2048;
     config.send_arena_bytes = config.receive_arena_bytes = 1024 * 1024;
+    if (layout == RdmaWireLayout::ControlData) {
+        config.wire_slot_capacity = RDMA_DATAPATH_CAPACITY + RDMA_CONTROL_CAPACITY;
+        config.sq_depth = config.rq_depth = config.posted_receive_target = 4;
+        config.cq_depth                                                  = 8;
+        config.send_arena_bytes                                          = 4 * RDMA_DATAPATH_CAPACITY;
+        config.receive_arena_bytes                                       = uint64_t{4} * config.wire_slot_capacity;
+        config.send_batch_size = config.receive_batch_size = 16;
+        config.aggregation_enabled                         = true;
+    }
     TestFirstResponse result;
     RpcClient         caller;
     RpcServer         server;
@@ -69,21 +78,42 @@ TEST(RdmaHardwareTest, ContiguousFirstResponseCompletesWithinTheWarmupWindow)
     ASSERT_NE(connection, nullptr);
     ASSERT_EQ(connection->path(), ConnectionPath::Rdma);
     caller.attach(connection.get());
-    auto *data = client.pool()->alloc(128);
-    ASSERT_NE(data, nullptr);
-    std::memset(data->data, 0xab, 128);
-    data->len = 128;
-    ASSERT_TRUE(caller.send(&client, connection.get(), 42, build_ping_request(client.pool(), 42, 0), data, 100,
-                            complete_first_response, &result));
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
-    while (!result.completed.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    const bool completed_in_time = result.completed.load(std::memory_order_acquire);
+    bool completed_in_time = true;
+    for (uint32_t round = 0; round < 3; ++round) {
+        result.completed.store(false, std::memory_order_release);
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        auto *data = client.pool()->alloc(128);
+        ASSERT_NE(data, nullptr);
+        std::memset(data->data, 0xab, 128);
+        data->len = 128;
+        ASSERT_TRUE(caller.send(&client, connection.get(), 42, build_ping_request(client.pool(), 42, 0), data, 100,
+                                complete_first_response, &result));
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        while (!result.completed.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        completed_in_time = result.completed.load(std::memory_order_acquire);
+        if (!completed_in_time) {
+            break;
+        }
+        EXPECT_TRUE(result.matches);
+    }
+    EXPECT_TRUE(completed_in_time) << "singleton exceeded the one-second progress bound; client="
+                                   << client.status_json() << " server=" << server.transport()->status_json();
     client.stop();
     server.stop();
     caller.fail_all(nullptr, RpcError::ConnectionClosed);
-    EXPECT_TRUE(completed_in_time) << "first RPC exceeded the unchanged one-second benchmark warmup";
     EXPECT_TRUE(result.matches);
     EXPECT_EQ(client.rdma_stats_for_tests()->fallback_count.load(), 0U);
+}
+
+TEST(RdmaHardwareTest, ContiguousFirstResponseCompletesWithinTheWarmupWindow)
+{
+    test_first_response(RdmaWireLayout::Contiguous);
+}
+
+TEST(RdmaHardwareTest, ControlDataSingletonAfterIdleDoesNotWaitForTheNextMessage)
+{
+    test_first_response(RdmaWireLayout::ControlData);
 }
 #endif

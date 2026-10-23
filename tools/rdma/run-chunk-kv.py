@@ -18,6 +18,7 @@ import uuid
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools/benchmark"))
 from rpc_bench_process import Runtime, start  # noqa: E402
+from posting import add_posting_arguments, posting_settings, posting_environment, check_posting
 
 CASE = "real_chunk_kv_service_preserves_large_controls_and_typed_results"
 
@@ -92,7 +93,9 @@ def main():
     parser.add_argument("--address", default="10.200.1.1")
     parser.add_argument("--device", default="rocep35s0f0")
     parser.add_argument("--image", default="crowdb-node:dev")
+    add_posting_arguments(parser)
     args = parser.parse_args()
+    posting = posting_settings(args)
     pixi = shutil.which("pixi")
     if not pixi:
         raise RuntimeError("pixi is required")
@@ -111,9 +114,11 @@ def main():
     env.update(CROWDB_RUNTIME_ROOT=str(output / "runtime"), CROWDB_RDMA_DEVICE=args.device,
                CROWDB_RDMA_CHUNK_KV_ENDPOINT=f"{address}:{port}", CROWDB_RDMA_CHUNK_KV_OUTPUT=str(output),
                CROWDB_RDMA_CHUNK_KV_PROFILE=args.profile)
+    env.update(posting_environment(posting))
     topology = "containers-tcp" if args.topology == "containers" and args.profile == "tcp" else args.topology
     runtime = Runtime(ROOT, output, pixi, topology, args.image)
     manifest = {"profile": args.profile, "topology": args.topology, "physical_hosts": 1,
+                "posting": posting,
                 "image": args.image if args.topology == "containers" else None,
                 "source": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
                 "source_dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True)),
@@ -147,6 +152,7 @@ def main():
             raise RuntimeError("Chunk-KV server failed")
         result = json.loads((output / "client.json").read_text())
         server = json.loads((output / "server-final.json").read_text())
+        check_posting(posting, server, *(result["transport"][group]["transport"] for group in ("metadata", "aggregate")))
         check(result, server, args.profile)
         if args.topology == "containers" and result["effective_uid"] == "0":
             raise RuntimeError("client container must be non-root")

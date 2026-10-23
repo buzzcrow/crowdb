@@ -48,7 +48,8 @@ TEST(RdmaHardwareTest, DirectDataPreservesBytesAlignmentAndLeaseAdmission)
     const auto *address = std::getenv("CROWDB_RDMA_E2E_LISTEN_ADDR");
     if (std::getenv("CROWDB_RDMA_E2E") == nullptr || address == nullptr)
         GTEST_SKIP() << "set CROWDB_RDMA_E2E and local HCA address";
-    const auto       config = direct_config();
+    auto config            = direct_config();
+    config.send_batch_size = 4;
     SystemBufferPool application;
     auto             server = std::make_unique<RdmaTransport>(config, &application);
     auto             client = std::make_unique<RdmaTransport>(config, &application);
@@ -175,5 +176,127 @@ TEST(RdmaHardwareTest, LayoutMismatchFailsBeforeCmOrUsesExplicitTcpFallback)
         EXPECT_EQ(stats->cm_attempts.load(), 0U);
         EXPECT_EQ(stats->fallback_count.load(), static_cast<uint64_t>(fallback));
     }
+}
+
+static void test_mixed_staging(bool packed, uint32_t receive_batch = 1)
+{
+    const auto *address = std::getenv("CROWDB_RDMA_E2E_LISTEN_ADDR");
+    if (std::getenv("CROWDB_RDMA_E2E") == nullptr || address == nullptr)
+        GTEST_SKIP() << "set CROWDB_RDMA_E2E and local HCA address";
+    auto config                = direct_config();
+    config.send_batch_size     = 4;
+    config.aggregation_enabled = packed;
+    config.receive_batch_size  = receive_batch;
+    SystemBufferPool application;
+    RdmaTransport    server(config, &application), client(config, &application);
+    ASSERT_TRUE(server.listen(address, 19392));
+    std::shared_ptr<Connection> incoming;
+    std::thread                 acceptor([&] {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (incoming == nullptr && std::chrono::steady_clock::now() < deadline) {
+            incoming = server.accept();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    });
+    auto                        outgoing = client.connect(address, 19392);
+    acceptor.join();
+    ASSERT_NE(outgoing, nullptr);
+    ASSERT_NE(incoming, nullptr);
+    uint32_t replies = 0;
+    incoming->set_on_frame([&](Frame *frame, Connection *connection) {
+        auto *reply =
+            build_out_frame(frame->request_id, 100, build_ping_response(&application, frame->request_id, 0, 0),
+                            frame->data_buf->ref_clone());
+        delete frame;
+        const bool accepted = server.submit(connection, reply);
+        EXPECT_TRUE(accepted);
+        if (!accepted)
+            release_rdma_frames(reply);
+    });
+    std::vector<Buffer *> held;
+    outgoing->set_on_frame([&](Frame *frame, Connection *) {
+        EXPECT_EQ(frame->request_id, replies + 1);
+        const uint32_t expected = frame->request_id <= 4 ? 128 : 65536;
+        EXPECT_EQ(frame->data_buf->len, expected);
+        EXPECT_TRUE(std::all_of(frame->data_buf->payload_data(), frame->data_buf->payload_data() + expected,
+                                [id = frame->request_id](uint8_t byte) { return byte == id; }));
+        if (packed && frame->request_id <= 4) {
+            held.push_back(frame->data_buf->ref_clone());
+        }
+        if (expected == 65536) {
+            EXPECT_EQ(reinterpret_cast<uintptr_t>(frame->data_buf->payload_data()) % 4096, 0U);
+        }
+        ++replies;
+        delete frame;
+    });
+    auto submit = [&](uint64_t id, uint32_t size) {
+        auto *data = application.alloc(size);
+        EXPECT_NE(data, nullptr);
+        if (data == nullptr)
+            return false;
+        std::memset(data->data, static_cast<int>(id), size);
+        data->len   = size;
+        auto *frame = build_out_frame(id, 100, build_ping_request(&application, id, 0), data);
+        if (client.submit(outgoing.get(), frame))
+            return true;
+        release_rdma_frames(frame);
+        return false;
+    };
+    for (uint64_t id = 1; id <= 4; ++id)
+        ASSERT_TRUE(submit(id, 128));
+    if (!packed) {
+        ASSERT_EQ(TestRdmaTransport::flush_for_tests(client, outgoing.get(), 4), 4U);
+        // Compatibility staging cannot consume the registered producer's
+        // independent admission while completed SENDs await CQ retirement.
+        auto *producer = client.allocate_producer_buffer(128);
+        ASSERT_NE(producer, nullptr);
+        producer->release();
+    }
+    ASSERT_TRUE(drain_until(client, server, [&] { return replies == 4; }));
+    EXPECT_EQ(client.stats().sends.load(), packed ? 1U : 4U);
+    EXPECT_EQ(client.stats().send_post_calls.load(), 1U);
+    EXPECT_EQ(client.stats().send_completions.load(), 1U);
+    ASSERT_TRUE(submit(5, 65536));
+    ASSERT_TRUE(drain_until(client, server, [&] { return replies == 5; }));
+    EXPECT_EQ(client.stats().send_post_calls.load(), 2U);
+    EXPECT_EQ(client.stats().copied_payload_bytes.load(), 4U * 128 + 65536);
+    EXPECT_EQ(client.stats().copied_aggregate_payload_bytes.load(), packed ? 4U * 128 : 0U);
+    EXPECT_EQ(client.stats().copied_staging_payload_bytes.load(), packed ? 65536U : 4U * 128 + 65536);
+    if (packed) {
+        const auto posted = client.stats().posted_receives.load();
+        ASSERT_EQ(held.size(), 4U);
+        for (size_t index = 0; index < held.size(); ++index) {
+            EXPECT_EQ(held[index]->payload_data()[127], index + 1);
+            if (index == 3 && receive_batch > 1) {
+                std::thread release([buffer = held[index]] { buffer->release(); });
+                release.join();
+            }
+            else {
+                held[index]->release();
+            }
+            EXPECT_EQ(client.stats().posted_receives.load(),
+                      posted + static_cast<uint64_t>(index == 3 && receive_batch == 1));
+        }
+        client.drain_cq();
+        EXPECT_EQ(client.stats().posted_receives.load(), posted + 1);
+    }
+    EXPECT_EQ(client.stats().send_errors.load(), 0U);
+    EXPECT_EQ(client.stats().cq_errors.load(), 0U);
+}
+
+TEST(RdmaHardwareTest, DirectStagingReusesSmallBurstSlotsForLaterLargePayload)
+{
+    test_mixed_staging(false);
+}
+
+TEST(RdmaHardwareTest, PackedSmallBurstKeepsOrderAlignmentAndSharedReceiveLease)
+{
+    test_mixed_staging(true);
+}
+
+TEST(RdmaHardwareTest, BatchedReceiveRepostsFlushSingletonAndCrossThreadFinalLease)
+{
+    test_mixed_staging(true, 4);
+    test_mixed_staging(false, 4);
 }
 #endif

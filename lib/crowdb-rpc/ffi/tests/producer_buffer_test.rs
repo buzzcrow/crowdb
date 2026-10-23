@@ -36,3 +36,27 @@ fn oversize_initialization_releases_producer_admission() {
     assert!(buffer.write(b"too large").is_err());
     assert!(server.allocate_producer_buffer(1, false).is_some());
 }
+
+#[test]
+fn generated_prefix_keeps_storage_and_freezes_only_initialized_bytes() {
+    let pool = BufferPool::new(1);
+    let server = RpcServer::new(Some(&pool));
+    server.configure_rdma(&RdmaConfig::default()).unwrap();
+    let mut writable = server.allocate_producer_buffer(512, false).unwrap();
+    let pointer = writable.uninit_bytes_mut().as_ptr().cast::<u8>();
+    let buffer = writable
+        .initialize_with(127, 0xAB, |bytes| {
+            assert!(bytes.iter().all(|byte| *byte == 0xAB));
+            for (index, byte) in bytes.iter_mut().enumerate() {
+                *byte = u8::try_from(index).unwrap();
+            }
+        })
+        .unwrap();
+    assert_eq!(buffer.bytes().as_ptr(), pointer);
+    assert_eq!(buffer.bytes(), (0_u8..127).collect::<Vec<_>>());
+    assert!(server.allocate_producer_buffer(1, false).is_none());
+    drop(server);
+    assert_eq!(buffer.bytes().len(), 127);
+    drop(buffer);
+    assert!(pool.alloc_buffer(1).is_some());
+}

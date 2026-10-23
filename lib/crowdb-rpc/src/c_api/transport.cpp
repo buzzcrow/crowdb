@@ -75,10 +75,36 @@ extern "C" crowdb_rpc_status crowdb_rpc_server_configure_rdma_v3(crowdb_rpc_serv
                                                                  uint32_t                               wire_layout,
                                                                  const crowdb_rpc_rdma_stream_config_t *streams)
 {
+    crowdb_rpc_rdma_post_config_t sends;
+    crowdb_rpc_rdma_post_config_init(&sends);
+    return crowdb_rpc_server_configure_rdma_v4(server, config, wire_layout, streams, &sends);
+}
+
+extern "C" void crowdb_rpc_rdma_post_config_init(crowdb_rpc_rdma_post_config_t *config)
+{
+    if (config == nullptr) {
+        return;
+    }
+    const RdmaConfig defaults;
+    *config = {.struct_size        = sizeof(*config),
+               .version            = 1,
+               .send_batch_size    = defaults.send_batch_size,
+               .receive_batch_size = defaults.receive_batch_size,
+               .send_window_size   = defaults.send_window_size,
+               .send_window_bytes  = defaults.send_window_bytes};
+}
+
+extern "C" crowdb_rpc_status crowdb_rpc_server_configure_rdma_v4(crowdb_rpc_server_t                    server,
+                                                                 const crowdb_rpc_rdma_config_t        *config,
+                                                                 uint32_t                               wire_layout,
+                                                                 const crowdb_rpc_rdma_stream_config_t *streams,
+                                                                 const crowdb_rpc_rdma_post_config_t   *sends)
+{
     if (server == nullptr || config == nullptr || config->struct_size != sizeof(*config) || config->version != 1 ||
         config->enabled > 1 || config->allow_tcp_fallback > 1 || config->listen_enabled > 1 ||
         config->aggregation_enabled > 1 || config->port > UINT8_MAX || streams == nullptr ||
-        streams->struct_size != sizeof(*streams) || streams->version != 1)
+        streams->struct_size != sizeof(*streams) || streams->version != 1 || sends == nullptr ||
+        sends->struct_size != sizeof(*sends) || sends->version != 1)
         return CROWDB_RPC_ERR_INVALID_ARG;
     try {
         RdmaConfig native;
@@ -93,6 +119,10 @@ extern "C" crowdb_rpc_status crowdb_rpc_server_configure_rdma_v3(crowdb_rpc_serv
         native.control_assembly_timeout_ms  = streams->control_assembly_timeout_ms;
         native.control_send_budget_bytes    = streams->control_send_budget_bytes;
         native.control_receive_budget_bytes = streams->control_receive_budget_bytes;
+        native.send_batch_size              = sends->send_batch_size;
+        native.receive_batch_size           = sends->receive_batch_size;
+        native.send_window_size             = sends->send_window_size;
+        native.send_window_bytes            = sends->send_window_bytes;
 #define COPY_VALUE(name) native.name = config->name;
         CONFIG_NUMBERS(COPY_VALUE)
 #undef COPY_VALUE

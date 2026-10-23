@@ -44,6 +44,36 @@ def provider_counters(device, port):
     return result or None
 
 
+def validate_sizes(row, case):
+    sizes = row.get("size_results")
+    expected = {int(part.split(":")[0]) for part in case["payload_mix"].split(",")}
+    if not isinstance(sizes, list) or len(sizes) != len(expected):
+        return ["missing/incomplete per-size results"]
+    seen, completed, payload = set(), 0, 0
+    for item in sizes:
+        if not isinstance(item, dict):
+            return ["invalid per-size results"]
+        size, count = item.get("payload_bytes"), item.get("completed")
+        if (type(size) is not int or size not in expected or size in seen
+                or type(count) is not int or count < 0
+                or item.get("payload_bytes_completed") != size * count):
+            return ["invalid per-size class/count/bytes"]
+        latency = [item.get(key) for key in ("p50_ns", "p99_ns", "p999_ns", "max_ns")]
+        if any(type(value) is not int or value < 0 for value in latency) or latency != sorted(latency):
+            return ["invalid per-size latency bounds"]
+        seen.add(size)
+        completed += count
+        payload += size * count
+    if completed != row.get("completed_in_window") or payload != row.get("payload_bytes_completed"):
+        return ["mixed completion/byte totals mismatch"]
+    duration = row.get("measure_s")
+    bandwidth = row.get("payload_Bps")
+    if (type(duration) is not int or duration <= 0 or type(bandwidth) not in (int, float)
+            or not math.isfinite(bandwidth) or not math.isclose(bandwidth, payload / duration, rel_tol=1e-9)):
+        return ["mixed payload bandwidth mismatch"]
+    return []
+
+
 def validate(row, case, transport):
     errors = []
     if row.get("schema_version") != 1:
@@ -59,6 +89,8 @@ def validate(row, case, transport):
             errors.append(f"missing/invalid {name}")
     if row.get("actual_path") != transport or row.get("allow_tcp_fallback") is not False:
         errors.append("actual path/fallback policy mismatch")
+    if "mode" in case and row.get("client_mode") != case["mode"]:
+        errors.append("client mode mismatch")
     if row.get("fallback_count") != 0:
         errors.append("missing/nonzero fallback count")
     if row.get("case_id") != case["case_id"] or row.get("measure_s") != case["duration_secs"]:
@@ -68,6 +100,12 @@ def validate(row, case, transport):
             errors.append(f"workload mismatch: {name}")
     if row.get("latency_count") != row.get("completed_in_window"):
         errors.append("latency/completion count mismatch")
+    if case.get("payload_mix"):
+        parameters = row.get("parameters") or {}
+        if (parameters.get("payload_mix") != case["payload_mix"]
+                or parameters.get("payload_seed") != case.get("payload_seed", 1)):
+            errors.append("payload mix/seed mismatch")
+        errors.extend(validate_sizes(row, case))
     measure, completed = row.get("measure_s", 0), row.get("completed_in_window", 0)
     tps = row.get("rpc_tps")
     if (type(tps) not in (int, float) or not math.isfinite(tps)

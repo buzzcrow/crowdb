@@ -47,7 +47,11 @@ bool RdmaConfig::apply_environment()
         return false;
     wire_layout = static_cast<RdmaWireLayout>(layout);
     return (port != 1 || read("CROWDB_RDMA_PORT", port)) && read("CROWDB_RDMA_SQ_DEPTH", sq_depth) &&
-           read("CROWDB_RDMA_RQ_DEPTH", rq_depth) && read("CROWDB_RDMA_POSTED_RECEIVE_TARGET", posted_receive_target) &&
+           read("CROWDB_RDMA_SEND_BATCH_SIZE", send_batch_size) &&
+           read("CROWDB_RDMA_RECEIVE_BATCH_SIZE", receive_batch_size) &&
+           read("CROWDB_RDMA_SEND_WINDOW_SIZE", send_window_size) &&
+           read("CROWDB_RDMA_SEND_WINDOW_BYTES", send_window_bytes) && read("CROWDB_RDMA_RQ_DEPTH", rq_depth) &&
+           read("CROWDB_RDMA_POSTED_RECEIVE_TARGET", posted_receive_target) &&
            read("CROWDB_RDMA_WIRE_SLOT_CAPACITY", wire_slot_capacity) &&
            read("CROWDB_RDMA_SEND_ARENA_BYTES", send_arena_bytes) &&
            read("CROWDB_RDMA_RECEIVE_ARENA_BYTES", receive_arena_bytes) && read("CROWDB_RDMA_CQ_DEPTH", cq_depth) &&
@@ -68,11 +72,13 @@ bool RdmaConfig::apply_environment()
 bool RdmaConfig::valid() const
 {
     const bool direct = wire_layout == RdmaWireLayout::ControlData;
-    return port > 0 && valid_rdma_wire_capacity(wire_slot_capacity, wire_layout) &&
-           (!direct || (!aggregation_enabled && qp_max_send_sge >= 2 && qp_max_recv_sge >= 2)) && sq_depth > 0 &&
-           rq_depth > 0 && posted_receive_target > 0 && posted_receive_target <= rq_depth &&
-           cq_depth > posted_receive_target && cq_depth <= static_cast<uint32_t>(INT32_MAX) && cq_count > 0 &&
-           cq_count <= 256 && static_cast<uint64_t>(cq_count) * cq_depth < UINT32_MAX && poll_batch > 0 &&
+    return send_batch_size > 0 && send_batch_size <= 256 && receive_batch_size > 0 && receive_batch_size <= 256 &&
+           send_window_size <= sq_depth && (send_window_bytes == 0 || send_window_bytes >= wire_slot_capacity) &&
+           port > 0 && valid_rdma_wire_capacity(wire_slot_capacity, wire_layout) &&
+           (!direct || (qp_max_send_sge >= 2 && qp_max_recv_sge >= 2)) && sq_depth > 0 && rq_depth > 0 &&
+           posted_receive_target > 0 && posted_receive_target <= rq_depth && cq_depth > posted_receive_target &&
+           cq_depth <= static_cast<uint32_t>(INT32_MAX) && cq_count > 0 && cq_count <= 256 &&
+           static_cast<uint64_t>(cq_count) * cq_depth < UINT32_MAX && poll_batch > 0 &&
            poll_batch <= static_cast<uint32_t>(INT32_MAX) && verbs_poll_batch > 0 && verbs_poll_batch <= 256 &&
            poll_empty_budget > 0 && send_arena_bytes >= data_slot_capacity() &&
            receive_arena_bytes >= static_cast<uint64_t>(posted_receive_target) * wire_slot_capacity &&

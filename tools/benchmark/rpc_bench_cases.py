@@ -17,6 +17,9 @@ DEFAULTS = dict(loader_count=1, connection_count=1, payload_bytes=128,
                 request_timeout_secs=5, registered_memory_budget_bytes=0)
 
 ENV_FIELDS = dict(cq_count="CQ_COUNT", cq_depth="CQ_DEPTH", sq_depth="SQ_DEPTH",
+                  send_batch_size="SEND_BATCH_SIZE", send_window_size="SEND_WINDOW_SIZE",
+                  receive_batch_size="RECEIVE_BATCH_SIZE",
+                  send_window_bytes="SEND_WINDOW_BYTES",
                   rq_depth="RQ_DEPTH", posted_receive_target="POSTED_RECEIVE_TARGET",
                   wire_slot_capacity="WIRE_SLOT_CAPACITY", send_arena_bytes="SEND_ARENA_BYTES",
                   receive_arena_bytes="RECEIVE_ARENA_BYTES", poll_batch="POLL_BATCH",
@@ -28,6 +31,13 @@ ENV_FIELDS = dict(cq_count="CQ_COUNT", cq_depth="CQ_DEPTH", sq_depth="SQ_DEPTH",
 
 def resolve(case, defaults=None):
     resolved = DEFAULTS | (defaults or {}) | case
+    if resolved.get("mode", "coroutine") not in ("coroutine", "tokio"):
+        raise ValueError("invalid client mode")
+    layout = resolved.get("wire_layout", "contiguous")
+    if layout not in ("contiguous", "control-data"):
+        raise ValueError("invalid wire layout")
+    if layout == "control-data" and resolved["wire_slot_capacity"] <= 1024:
+        raise ValueError("control-data requires payload capacity")
     qps, cqs = resolved["connection_count"], resolved["cq_count"]
     if not 0 < cqs <= 256 or not 0 < qps <= resolved["loader_count"]:
         raise ValueError("invalid CQ, QP/connection or loader count")
@@ -39,7 +49,7 @@ def resolve(case, defaults=None):
     if not resolved.get("receive_arena_bytes"):
         resolved["receive_arena_bytes"] = slot * resolved["posted_receive_target"]
     if not resolved.get("aggregation_max_bytes"):
-        resolved["aggregation_max_bytes"] = slot
+        resolved["aggregation_max_bytes"] = min(slot, 1 << 20)
     return resolved
 
 
@@ -84,14 +94,18 @@ def server_environment(case, transport, address, device, hca_port, port, runtime
                CROWDB_RDMA_ALLOW_TCP_FALLBACK="0", CROWDB_RDMA_E2E_PORT=str(port),
                CROWDB_RDMA_DEVICE=device, CROWDB_RDMA_SOURCE_ADDR=address,
                CROWDB_RDMA_PORT=str(hca_port), CROWDB_PORT_OFFSET="0")
+    env["CROWDB_RDMA_WIRE_LAYOUT"] = str(int(case.get("wire_layout") == "control-data"))
     for field, suffix in ENV_FIELDS.items():
+        if field not in case:
+            continue
         value = case[field]
         env[f"CROWDB_RDMA_{suffix}"] = str(int(value)) if isinstance(value, bool) else str(value)
     return env
 
 
 def client_arguments(case):
-    keys = set(DEFAULTS) | set(ENV_FIELDS) | {"case_id", "repeat_index"}
+    keys = set(DEFAULTS) | set(ENV_FIELDS) | {"case_id", "repeat_index", "payload_mix", "payload_seed",
+                                            "wire_layout", "registered_payload"}
     args = []
     for key in sorted(keys):
         if key not in case:

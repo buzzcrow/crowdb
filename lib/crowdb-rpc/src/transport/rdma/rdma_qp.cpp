@@ -16,6 +16,8 @@ namespace crowdb::rpc
 
 bool RdmaTransport::create_connection_pools(ConnectionPools &pools)
 {
+    pools.prepared_sends.reserve(config_.send_batch_size);
+    pools.prepared_receives.reserve(config_.receive_batch_size);
     const auto     control_bytes = config_.receive_control_bytes();
     const uint64_t data_bytes    = config_.wire_layout == RdmaWireLayout::ControlData
                                      ? uint64_t{config_.posted_receive_target} * pools.effective_data_capacity

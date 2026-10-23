@@ -31,6 +31,15 @@ std::string RdmaTransport::status_json() const
     CONFIG_FIELD(cq_count);
     CONFIG_FIELD(cq_depth);
     CONFIG_FIELD(sq_depth);
+    CONFIG_FIELD(send_batch_size);
+    CONFIG_FIELD(receive_batch_size);
+    CONFIG_FIELD(send_window_size);
+    CONFIG_FIELD(send_window_bytes);
+    status.number("sends_per_round", CompletionQueue::SENDS_PER_ROUND);
+    status.number("prepare_frames_per_round", CompletionQueue::PREPARE_FRAMES_PER_ROUND);
+    status.number("prepare_bytes_per_round", CompletionQueue::PREPARE_BYTES_PER_ROUND);
+    status.number("receive_frames_per_round", CompletionQueue::RECEIVE_FRAMES_PER_ROUND);
+    status.number("receive_bytes_per_round", CompletionQueue::RECEIVE_BYTES_PER_ROUND);
     CONFIG_FIELD(rq_depth);
     CONFIG_FIELD(posted_receive_target);
     CONFIG_FIELD(wire_slot_capacity);
@@ -51,6 +60,8 @@ std::string RdmaTransport::status_json() const
     COUNTER_FIELD(sends);
     COUNTER_FIELD(receives);
     COUNTER_FIELD(rpc_frames_sent);
+    COUNTER_FIELD(send_post_calls);
+    COUNTER_FIELD(send_completions);
     COUNTER_FIELD(rpc_frames_received);
     COUNTER_FIELD(wire_bytes_sent);
     COUNTER_FIELD(wire_bytes_received);
@@ -58,9 +69,13 @@ std::string RdmaTransport::status_json() const
     COUNTER_FIELD(protocol_errors);
     COUNTER_FIELD(send_errors);
     COUNTER_FIELD(receive_post_errors);
+    COUNTER_FIELD(receive_post_calls);
     COUNTER_FIELD(direct_sends);
     COUNTER_FIELD(direct_payload_bytes);
     COUNTER_FIELD(copied_payload_bytes);
+    COUNTER_FIELD(copied_aggregate_payload_bytes);
+    COUNTER_FIELD(copied_staging_payload_bytes);
+    COUNTER_FIELD(copied_framing_control_bytes);
     COUNTER_FIELD(submit_rejects);
     COUNTER_FIELD(send_queue_high_water);
     COUNTER_FIELD(fallback_count);

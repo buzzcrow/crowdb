@@ -32,6 +32,10 @@ pub struct RdmaConfig {
     pub cq_count: u32,
     pub cq_depth: u32,
     pub sq_depth: u32,
+    pub send_batch_size: u32,
+    pub receive_batch_size: u32,
+    pub send_window_size: u32,
+    pub send_window_bytes: u64,
     pub rq_depth: u32,
     pub posted_receive_target: u32,
     pub wire_slot_capacity: u32,
@@ -73,10 +77,20 @@ fn native_stream_defaults() -> sys::CrowdbRpcRdmaStreamConfig {
     }
 }
 
+fn native_post_defaults() -> sys::CrowdbRpcRdmaPostConfig {
+    let mut config = MaybeUninit::uninit();
+    // SAFETY: initializer fills every field of the send configuration ABI.
+    unsafe {
+        sys::crowdb_rpc_rdma_post_config_init(config.as_mut_ptr());
+        config.assume_init()
+    }
+}
+
 impl Default for RdmaConfig {
     fn default() -> Self {
         let raw = native_defaults();
         let streams = native_stream_defaults();
+        let sends = native_post_defaults();
         Self {
             enabled: raw.enabled != 0,
             allow_tcp_fallback: raw.allow_tcp_fallback != 0,
@@ -85,6 +99,10 @@ impl Default for RdmaConfig {
             cq_count: raw.cq_count,
             cq_depth: raw.cq_depth,
             sq_depth: raw.sq_depth,
+            send_batch_size: sends.send_batch_size,
+            receive_batch_size: sends.receive_batch_size,
+            send_window_size: sends.send_window_size,
+            send_window_bytes: sends.send_window_bytes,
             rq_depth: raw.rq_depth,
             posted_receive_target: raw.posted_receive_target,
             wire_slot_capacity: raw.wire_slot_capacity,
@@ -115,9 +133,9 @@ impl RdmaConfig {
     /// Existing `Default` and native service defaults remain unchanged.
     ///
     /// # Errors
-    /// Rejects classes outside 64 KiB/256 KiB/1 MiB and transport aggregation.
+    /// Rejects classes outside 64 KiB/256 KiB/1 MiB.
     pub fn with_control_data_capacity(mut self, capacity: u32) -> Result<Self, RpcError> {
-        if !matches!(capacity, 65_536 | 262_144 | 1_048_576) || self.aggregation_enabled {
+        if !matches!(capacity, 65_536 | 262_144 | 1_048_576) {
             return Err(RpcError::InvalidArg);
         }
         self.wire_layout = RdmaWireLayout::ControlData;
@@ -173,13 +191,28 @@ impl RpcServer {
         raw.source_address = source.as_ptr();
         raw.gid = gid.as_ptr();
         let mut streams = native_stream_defaults();
+        let sends = sys::CrowdbRpcRdmaPostConfig {
+            struct_size: u32::try_from(std::mem::size_of::<sys::CrowdbRpcRdmaPostConfig>())
+                .expect("fixed ABI size"),
+            version: 1,
+            send_batch_size: config.send_batch_size,
+            receive_batch_size: config.receive_batch_size,
+            send_window_size: config.send_window_size,
+            send_window_bytes: config.send_window_bytes,
+        };
         streams.max_control_message_bytes = config.max_control_message_bytes;
         streams.control_assembly_timeout_ms = config.control_assembly_timeout_ms;
         streams.control_send_budget_bytes = config.control_send_budget_bytes;
         streams.control_receive_budget_bytes = config.control_receive_budget_bytes;
         // SAFETY: handle is borrowed, struct and CStrings live through the call.
         let status = unsafe {
-            sys::crowdb_rpc_server_configure_rdma_v3(self.handle(), &raw, config.wire_layout as u32, &streams)
+            sys::crowdb_rpc_server_configure_rdma_v4(
+                self.handle(),
+                &raw,
+                config.wire_layout as u32,
+                &streams,
+                &sends,
+            )
         };
         if status == sys::CROWDB_RPC_OK {
             Ok(())

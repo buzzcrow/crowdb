@@ -10,6 +10,37 @@
 
 using crowdb::rpc::RdmaConfig;
 
+TEST(RdmaConfigTest, SendWindowAndBatchRemainBoundedIndependentlyOfAllocatedSq)
+{
+    RdmaConfig config;
+    config.send_batch_size = 0;
+    EXPECT_FALSE(config.valid());
+    config.send_batch_size = 257;
+    EXPECT_FALSE(config.valid());
+    config.send_batch_size  = 16;
+    config.send_window_size = config.sq_depth + 1;
+    EXPECT_FALSE(config.valid());
+    config.send_window_size  = 1;
+    config.send_window_bytes = config.wire_slot_capacity - 1;
+    EXPECT_FALSE(config.valid());
+    config.send_window_bytes = config.wire_slot_capacity;
+    EXPECT_TRUE(config.valid());
+    const TestEnvironment batch("CROWDB_RDMA_SEND_BATCH_SIZE", "8");
+    const TestEnvironment receive_batch("CROWDB_RDMA_RECEIVE_BATCH_SIZE", "16");
+    const TestEnvironment window("CROWDB_RDMA_SEND_WINDOW_SIZE", "32");
+    const TestEnvironment bytes("CROWDB_RDMA_SEND_WINDOW_BYTES", "8589934592");
+    ASSERT_TRUE(config.apply_environment());
+    EXPECT_EQ(config.send_batch_size, 8U);
+    EXPECT_EQ(config.receive_batch_size, 16U);
+    EXPECT_EQ(config.send_window_size, 32U);
+    EXPECT_EQ(config.send_window_bytes, 8ULL << 30);
+    EXPECT_TRUE(config.valid());
+    config.receive_batch_size = 0;
+    EXPECT_FALSE(config.valid());
+    config.receive_batch_size = 257;
+    EXPECT_FALSE(config.valid());
+}
+
 TEST(RdmaConfigTest, ControlDataChargesBothRegionsAndRequiresTwoSges)
 {
     RdmaConfig config;
@@ -23,7 +54,7 @@ TEST(RdmaConfigTest, ControlDataChargesBothRegionsAndRequiresTwoSges)
     EXPECT_FALSE(config.valid());
     ++config.receive_arena_bytes;
     config.aggregation_enabled = true;
-    EXPECT_FALSE(config.valid());
+    EXPECT_TRUE(config.valid());
     config.aggregation_enabled = false;
     config.qp_max_send_sge     = 1;
     EXPECT_FALSE(config.valid());

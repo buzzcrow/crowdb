@@ -12,6 +12,11 @@ and subsequent [Dataset integration R220](../backlog/R220-dataset-fat-client-pla
 Goal: embed trusted internal storage access through a shared topology-aware
 native runtime, implement S3 first, and let Dataset attach to the accepted API.
 
+Status: mixed-size transport acceptance passes with repeatable CPU/request
+benefit and unchanged per-size latency bounds. Continue this requirement under
+`/implement-requirement`; the accepted prerequisite is recorded in the root
+RDMA plan. Native SDK implementation and acceptance remain outstanding.
+
 ## Scope and current boundary
 
 - The embedding data-processing or AI system is in the Access Server trust
@@ -35,7 +40,7 @@ native runtime, implement S3 first, and let Dataset attach to the accepted API.
 
 ## Phase 1: shared runtime and native API
 
-- [ ] **Create native crate and baseline**: register `crowdb-sdk-native` with
+- [~] **Create native crate and baseline**: register `crowdb-sdk-native` with
   `runtime`, `topology`, `buffer`, and `s3` modules and tests under `tests/`.
   Run focused existing S3/RPC/access and standalone SDK baselines before
   moving operation code. Files: `Cargo.toml`, `lib/crowdb-sdk-native/`,

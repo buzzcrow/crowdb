@@ -69,7 +69,7 @@ def run_case(args, case, index, metadata):
     if case["enable_nagle"]:
         server_argv.append("--enable_nagle")
     server_command = runtime.command(server_argv, env, "server", args.server_cpus)
-    client_argv = [args.cli_bin, "--log-dir", directory / "client-log", "--mode", "coroutine",
+    client_argv = [args.cli_bin, "--log-dir", directory / "client-log", "--mode", case.get("mode", "coroutine"),
                    "--server-host", args.address, "--server-port", args.port, "--output", report_file,
                    "--device", args.device, "--source-address", args.address, "--hca-port", args.hca_port,
                    *client_arguments(case)]

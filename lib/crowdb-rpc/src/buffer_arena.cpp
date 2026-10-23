@@ -147,30 +147,6 @@ Buffer *BufferArena::alloc(uint32_t requested)
     return buffer;
 }
 
-Buffer *BufferArena::borrow_range(const uint8_t *data, uint32_t size)
-{
-    if (region == nullptr || region->registration_handle == 0 || entries_ == nullptr || size == 0)
-        return nullptr;
-    const auto address = reinterpret_cast<uintptr_t>(data);
-    const auto begin   = reinterpret_cast<uintptr_t>(region->data);
-    if (address < begin || size > bytes || address - begin > bytes - size)
-        return nullptr;
-    const auto count = next_entry_.load(std::memory_order_acquire);
-    for (uint32_t index = 0; index < count; ++index) {
-        auto *buffer = entries_[index].buffer.load(std::memory_order_acquire);
-        if (buffer == nullptr)
-            continue;
-        const auto start = reinterpret_cast<uintptr_t>(buffer->allocation_data);
-        if (address >= start && address - start <= buffer->allocation_capacity &&
-            size <= buffer->allocation_capacity - (address - start)) {
-            // The immutable source owner still pins this allocation. Retain
-            // that same allocation, not merely any MR containing the address.
-            return buffer->slice(static_cast<uint32_t>(address - start), size);
-        }
-    }
-    return nullptr;
-}
-
 void BufferArena::recycle(Buffer *buffer)
 {
     // Retain this receiver until after publication; another allocator may

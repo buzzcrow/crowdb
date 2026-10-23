@@ -18,6 +18,7 @@ import uuid
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools/benchmark"))
 from rpc_bench_process import Runtime, start  # noqa: E402
+from posting import add_posting_arguments, posting_settings, posting_environment, check_posting
 
 
 def build(pixi, output):
@@ -66,8 +67,9 @@ def ready(server, log, rdma):
     raise RuntimeError("DiskIO readiness deadline expired")
 
 
-def checked_result(output, transport, final, fault):
+def checked_result(output, transport, final, fault, posting):
     result = json.loads((output / "client.json").read_text())
+    check_posting(posting, final, result["transport"])
     if result["errors"] != int(fault) or result["verification_errors"] != 0 or result["payload_bytes"] <= 3 << 20:
         raise RuntimeError("datapath corpus or error count is invalid")
     if transport == "rdma":
@@ -95,7 +97,9 @@ def main():
     parser.add_argument("--device", default=os.environ.get("CROWDB_RDMA_DEVICE", "rocep35s0f0"))
     parser.add_argument("--image", default="crowdb-node:dev")
     parser.add_argument("--fault-disconnect", action="store_true")
+    add_posting_arguments(parser)
     args = parser.parse_args()
+    posting = posting_settings(args)
     pixi = shutil.which("pixi")
     if pixi is None:
         raise RuntimeError("pixi is required")
@@ -134,9 +138,11 @@ def main():
                CROWDB_RDMA_DATAPATH_PAUSED=str(output / "download-paused"),
                CROWDB_RDMA_DATAPATH_RESUME=str(output / "download-resume"),
                CROWDB_RDMA_DATAPATH_TOPOLOGY=args.topology + ("_hca_local_loop" if rdma else "_tcp_loopback"))
+    env.update(posting_environment(posting))
     topology = args.topology if rdma or args.topology == "native" else "containers-tcp"
     runtime = Runtime(ROOT, output, pixi, topology, args.image)
     manifest = {"transport": args.transport, "topology": env["CROWDB_RDMA_DATAPATH_TOPOLOGY"],
+                "posting": posting,
                 "image": args.image if args.topology == "containers" else None,
                 "source": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
                 "source_dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True)),
@@ -182,7 +188,7 @@ def main():
         final = status(server_log, "crowdb-diskio transport final: ")
         if final is None:
             raise RuntimeError("DiskIO did not retain its final transport counters")
-        checked_result(output, args.transport, final, args.fault_disconnect)
+        checked_result(output, args.transport, final, args.fault_disconnect, posting)
         manifest["errors"] = int(args.fault_disconnect)
         manifest["verification_errors"] = 0
     except Exception as error:

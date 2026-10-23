@@ -107,7 +107,7 @@ uint32_t RdmaTransport::process_deferred(CompletionQueue &queue, uint32_t max_co
         auto pools = pending.work->pools;
         if (completed < max_completions &&
             (!pending.work->conn->is_open() ||
-             (pending.work->conn->has_frame_handler() &&
+             (!queue.receive_budget_exhausted && pending.work->conn->has_frame_handler() &&
               (pools == nullptr || pools->deferred_blocked_epoch != queue.deferred_epoch)))) {
             if (!pending.work->conn->is_open())
                 pending.completion.status = IBV_WC_WR_FLUSH_ERR;

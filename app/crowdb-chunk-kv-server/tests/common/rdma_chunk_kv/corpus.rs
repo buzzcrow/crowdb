@@ -124,6 +124,7 @@ pub(super) async fn run(transport: &ChunkKvRpcTransport, endpoint: &str) -> Valu
     assert_eq!(stale.unwrap_err().code, ChunkKvRpcErrorCode::RefreshRequired);
     json!({
         "records": records.len(), "payload_bytes": records.iter().map(|(_, v)| v.len()).sum::<usize>(),
+        "value_sizes_bytes": records.iter().map(|(_, value)| value.len()).collect::<Vec<_>>(),
         "values_sha256": format!("{:x}", Sha256::digest(serde_json::to_vec(&expected).unwrap())),
         "mutation_results_sha256": format!("{:x}", Sha256::digest(serde_json::to_vec(&results).unwrap())),
         "expected_typed_errors": 2, "typed_errors": [error.code, ChunkKvRpcErrorCode::RefreshRequired], "logical_mutation_sequences": (1..=8).collect::<Vec<_>>(),

@@ -57,10 +57,100 @@ Access construction is covered by the affected Rust suites. Formal service
 contracts and complete acceptance evidence are linked from the RDMA design
 and RPC flow analysis.
 
-The requested foundation, transport, datapath and Chunk-KV continuation is
-complete. Only the fat-client SDK child remains. R242 and physical multi-node
-validation are outside the completed continuation; no SDK implementation is
-started by this plan update.
+The foundation, transport, datapath and Chunk-KV continuation is complete.
+The subsequent mixed-size send optimization also passes its local-HCA
+acceptance, as recorded below. The user authorized continuation with R242
+after a repeatable benefit; its implementation now follows the existing
+[SDK plan](plan-rdma-fat-client-sdk.md). Physical multi-node validation remains
+in its separate plan.
+
+## Accepted mixed-size send optimization
+
+- Registered producer storage is filled once in place. A retained native
+  descriptor supplies a constant-time ownership check; external HTTP/FFI
+  wrappers retain the bounded canonical range lookup. Compatibility staging
+  preserves usable allocation classes across small/large transitions.
+- The existing second device MR now owns producer descriptors separately from
+  staging/packing, without raising the registered-memory budget. Both native
+  and external-view direct reuse are covered by HCA regressions.
+- Linked SEND lists retain stable WR/SGE records and signal their actual tail,
+  including a singleton. FIFO success retirement replenishes independent WR
+  and wire-byte windows while several batches remain in flight. Partial post
+  and error completions retain uncertain owners until drain, without replay.
+- Control/data separation remains. Optional negotiated packing copies only
+  adjacent eligible small messages, at most 32 frames / 64 KiB, without a
+  batch-fill timer. Large data and alignment-sensitive DiskIO stay direct.
+  SEND preparation and receive dispatch each have separate logical-frame and
+  byte quanta; SEND, receive repost and CQ polling remain independently bounded.
+- TCP preflight permits active ControlData RQs to be primed before CM connect.
+  Repeated idle singleton tests caught and then verified the cold-start race
+  without extending their one-second completion deadline.
+- Default SEND batch is 16. Receive batching remains optional with default 1;
+  its additional CPU benefit was absent. Packing remains opt-in on both peers.
+  The reproducible mixed profile is
+  `tools/benchmark/profiles/rdma-mixed-size.json`.
+- Accepted final binary hashes: CLI
+  `0df668817118cfab7dfc12966690afad9cd05ab4504741284ec9ceef3c1104c9`;
+  native server
+  `92794c08a31250f57ecbffb3755b1eeaf7e2e83b45011d27fd4f7b03f8ee1197`.
+  Binaries, tracked diff and new sources are retained under
+  `.crowdb-runtime/rdma-check/binaries/mixed-send-final/`.
+- Final correctness gates: 209 native RPC cases pass with three explicit
+  environment/process-pair skips; 128 no-verbs cases pass with one hardware
+  skip; all FFI tests, five CLI cases, seventeen runner cases, Rust fmt/clippy,
+  C++ formatting and scoped tree-lint pass. Scoped tree-lint still reports
+  existing style warnings and exits zero.
+- Actual multi-producer progress passes with four producers sharing one QP
+  and with four QPs / 128 outstanding requests. Mixed coroutine, Tokio and
+  four-CQ cases all validate every payload with no errors.
+- Final repeated fixed-CPU mixed evidence is in
+  `.crowdb-runtime/rdma-check/artifacts/bench/mixed-steady-final/`, with the
+  declared original thresholds in `mixed-pinned-baseline/acceptance-limits.json`.
+  Each peer is pinned to one distinct physical core (client 2, server 4), on a
+  Ryzen 5950X and one shared 100G HCA. The deterministic synthetic mix includes
+  0, 128, 513, 4096, 65535, 262144 and 1048576 bytes; seed 93; warmup 5 s,
+  measurement 10 s, three repeats. No production-frequency claim is made.
+- Against `mixed-steady-baseline`, median completed requests/s are singleton
+  16,655.9 -> 16,919.2, 64 loaders / one QP 43,437.6 -> 48,842.7, and 128
+  loaders / four QPs 50,180.5 -> 51,657.7. Total client+server CPU ns/callback
+  over warmup/measurement/drain are 62,097 -> 60,587, 26,743 -> 19,224, and
+  30,944 -> 23,153. Every size's P99 passes the declared baseline plus 10%;
+  all rows have zero allocation, validation, timeout or transport errors.
+  Copy echo is unchanged in both versions and included in CPU cost. P999 is
+  recorded, without inferring open-arrival latency from closed-loop loaders.
+- The fixed 128-byte regression control uses the same two-core pinning,
+  512 loaders / four QPs, unchanged copy echo and packing in both versions.
+  Its two repeats are 702,145 / 696,953 requests/s before and 877,811 / 879,331
+  after, retained in `mixed-fixed-baseline/` and `mixed-fixed-final/`.
+  These CPU-constrained controls are distinct from the earlier unrestricted
+  3M headline; both final rows validate all requests with zero errors.
+- Failed experiments remain retained: shared-owner baseline staging exhaustion,
+  scalar and double-fill registered initializers, shared producer/staging
+  descriptor exhaustion, and a fast-only borrow check that missed external
+  HTTP/FFI owners. No failed row is counted as accepted performance.
+- Service revalidation with TX/RX 16 and packing enabled preserves HTTP bytes,
+  aligned DiskIO and zero copied payload bytes in native/OCI HCA profiles
+  `rdma-datapath/c562dc95cc9841d6921b2dce5334a57f` and
+  `rdma-datapath/f6a02c215e8d4f39ac695d4b98f1c4a6`. Native partial-download
+  disconnect `670211f0f3d345269342eebd3d045717` terminates without a TCP suffix;
+  no-device OCI TCP `926068fccb004ed9981e0e82cdf3af22` preserves exact bytes.
+  Native uses io_uring; the container's existing EPERM fallback uses blocking
+  disk I/O and is functional evidence only.
+- Real Chunk-KV/tree/WAL passes native RDMA
+  `rdma-chunk-kv/36d69f7a97764016950e28753b54340a`, final OCI RDMA
+  `778a5ee288b543f38433f696afd148fa`, OCI TCP
+  `b6333c5e1ddd4a859ed53720052de6fc`, native setup-only fallback
+  `372dd806ab434dc28b917f841cfb1613`, and OCI partial-response disconnect
+  `7f4dc5c2c0e54678b9d0a523a8b0bbed`. Corpus values cross the 64/256 KiB
+  classes and 1 MiB control-fragment boundary. These are service-path tests
+  with injected catalog/storage seams, not physical cross-host measurements.
+
+Further tuning remains separate from this accepted mechanism: intended-arrival
+open-load latency, sampled queue-age/peer-pressure telemetry and a retained-echo
+benchmark mode. Transport counters already distinguish direct payload,
+aggregation, compatibility staging and framing/control copies; application echo
+copy remains explicitly identified. Physical multi-node performance continues
+under `plan-rdma-multi-node.md`.
 
 ## Fixed design decisions
 

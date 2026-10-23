@@ -610,3 +610,53 @@ do not touch the RPC transport layer. This run confirms no
 transport-level regression: results are within noise (−1% to −5% vs
 2026-08-31). Reference retained per regression policy. See the
 "Linux — 2026-09-02" subsection above for the full table.
+
+## Mixed-size posting and CPU comparison
+
+The mixed-size continuation uses registered producer allocation, optional bounded
+small-frame packing, linked WR posting, selective tail completion and per-QP WR
+and wire-byte windows. Its formal ownership and scheduling contract is in
+[RDMA RPC](design-crowdb-rpc-rdma.md#5-shared-cq-and-completion-model), and the persistent
+[RDMA execution record](../../working/plan-rdma.md#accepted-mixed-size-send-optimization)
+retains binary identities, failed experiments, final per-size latency gates and
+native/OCI service results. The checked profile is
+`tools/benchmark/profiles/rdma-mixed-size.json`.
+
+A producer thread, closed-loop loader, outstanding RPC, posted SEND WR, packed
+frame, CQE and CQ owner are distinct quantities. Completed validated client
+requests/s remains the primary TPS metric, including useful small-message
+aggregation. Both payload initialization and the unchanged application echo copy
+are included in the paired CPU measurements. Large registered messages reuse
+source owners; small eligible messages may copy into one aggregate. No future
+arrival is required to flush a singleton or partial WR list.
+
+The 2026-10-23 repeated two-core mixed comparison improves median one-owner
+throughput from 43,437.6 to 48,842.7 requests/s and total CPU cost from 26,743 to
+19,224 ns/callback. Four QPs sharing an owner improve CPU cost from 30,944 to
+23,153 ns/callback with similar throughput (50,180.5 to 51,657.7). Every size's
+P99 passes the previously declared baseline plus 10%, with zero errors. This
+synthetic mix and shared-HCA local-loop establish a bounded mixed-size benefit;
+physical-network and intended-arrival latency need their own measurements.
+
+Primary comparison references inspected on 2026-10-23:
+
+- [bRPC RDMA guide](https://github.com/apache/brpc/blob/master/docs/cn/rdma.md)
+  and [endpoint implementation](https://github.com/apache/brpc/blob/master/src/brpc/rdma/rdma_endpoint.cpp)
+  describe registered IOBuf storage, RC, peer RQ windows, selective signaling
+  and event/polling modes. The inspected send loop posts individual WRs;
+  dispatch aggregation does not establish linked-WR submission or CQE removal.
+- [bRPC RDMA dispatch](https://github.com/apache/brpc/blob/master/src/brpc/rdma_transport.cpp)
+  defaults to bthread application dispatch in polling mode. Its
+  [performance client](https://github.com/apache/brpc/blob/master/example/rdma_performance/client.cpp)
+  replenishes outstanding requests through callbacks; `thread_num` starts
+  bthreads and `queue_depth` is application concurrency. Attachments are reused
+  and echo is optional. Poller count alone does not establish process CPU cost.
+  The official guide supplies no directly comparable single-core RDMA QPS claim.
+- [eRPC paper, sections 4 and 6](https://www.usenix.org/system/files/nsdi19-kalia.pdf)
+  uses registered application buffers and preallocated short responses. Its
+  10M symmetric experiment combines outgoing and incoming RPC processing;
+  it is not a mixed-size storage benchmark or an identical client TPS measure.
+- [ibv_post_send](https://man7.org/linux/man-pages/man3/ibv_post_send.3.html)
+  and [InfiniBand section 10.8.6](https://www.afs.enea.it/asantoro/V1r1_2_1.Release_12062007.pdf)
+  define partial posting and successful later completion of earlier unsignaled
+  sends on the same SQ. Error/flush teardown retains separate ownership rules.

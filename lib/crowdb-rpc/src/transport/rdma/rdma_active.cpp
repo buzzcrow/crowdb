@@ -84,7 +84,8 @@ bool resolve_active_route(rdma_cm_id *id, rdma_event_channel *channel, const std
 } // namespace
 
 std::shared_ptr<Connection> RdmaTransport::create_active_connection(rdma_cm_id *id, const std::string &addr,
-                                                                    std::shared_ptr<ConnectionPools> &pools)
+                                                                    std::shared_ptr<ConnectionPools> &pools,
+                                                                    const RdmaEndpointCapability     *expected_peer)
 {
     if (!adopt_cm_context(id->verbs)) {
         return nullptr;
@@ -110,7 +111,7 @@ std::shared_ptr<Connection> RdmaTransport::create_active_connection(rdma_cm_id *
     qp_attr.cap.max_send_sge    = std::min(config_.qp_max_send_sge, static_cast<uint32_t>(device_attributes.max_sge));
     qp_attr.cap.max_recv_sge    = std::min(config_.qp_max_recv_sge, static_cast<uint32_t>(device_attributes.max_sge));
     qp_attr.cap.max_inline_data = 0;
-    qp_attr.sq_sig_all          = 1;
+    qp_attr.sq_sig_all          = 0;
     qp_attr.qp_context          = id;
 
     if (rdma_create_qp(id, pd_, &qp_attr) != 0) {
@@ -122,7 +123,8 @@ std::shared_ptr<Connection> RdmaTransport::create_active_connection(rdma_cm_id *
         rdma_destroy_qp(id);
         return nullptr;
     }
-    pools                     = std::make_shared<ConnectionPools>(config_.send_queue_capacity);
+    pools = std::make_shared<ConnectionPools>(config_.send_queue_capacity,
+                                              config_.receive_batch_size > 1 ? config_.posted_receive_target : 0);
     pools->effective_capacity = qp_attr.cap;
     pools->cq_index           = reservation.queue->index;
     pools->reserved_capacity  = reservation.capacity;
@@ -132,10 +134,20 @@ std::shared_ptr<Connection> RdmaTransport::create_active_connection(rdma_cm_id *
     connection->set_path(ConnectionPath::Rdma);
     connection->transport_handle = reinterpret_cast<uint64_t>(id->qp);
     install_connection_notifiers(connection, pools->cq_index);
-    // Contiguous RQ slots have a fixed local wire capacity. Prepost before CM
-    // connect so an immediate response cannot enter an RNR retry cycle.
-    if (config_.wire_layout == RdmaWireLayout::Contiguous) {
-        pools->effective_data_capacity = config_.data_slot_capacity();
+    // Preflight already binds the direct receive class. Prepost its negotiated
+    // slots before CM connect so an immediate peer response finds RQ credits.
+    if (config_.wire_layout == RdmaWireLayout::Contiguous || expected_peer != nullptr) {
+        if (config_.wire_layout == RdmaWireLayout::ControlData) {
+            RdmaCmOffer peer{.receive_frame_limit       = static_cast<uint16_t>(expected_peer->receive_frame_limit),
+                             .receive_slot_capacity     = expected_peer->receive_slot_capacity,
+                             .wire_layout               = expected_peer->wire_layout,
+                             .generation                = expected_peer->generation,
+                             .max_control_message_bytes = expected_peer->max_control_message_bytes};
+            configure_peer(*pools, peer);
+        }
+        else {
+            pools->effective_data_capacity = config_.data_slot_capacity();
+        }
         if (!create_connection_pools(*pools) || !prime_receive(connection)) {
             destroy_connection_qp(connection.get(), id);
             return nullptr;
@@ -187,7 +199,10 @@ std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int 
                                                    const RdmaEndpointCapability *expected_peer)
 {
     if (!ready() || addr.empty() || port <= 0 || port > 65535 ||
-        (config_.require_tcp_preflight && expected_peer == nullptr)) {
+        (config_.require_tcp_preflight && expected_peer == nullptr) ||
+        (expected_peer != nullptr &&
+         (expected_peer->wire_layout != config_.wire_layout ||
+          !validate_rdma_capability(*expected_peer, RDMA_PROTOCOL_VERSION, expected_peer->generation, "")))) {
 
         CRB_LOG_WARN("rdma connect: transport unavailable addr={} port={}", addr, port);
         return nullptr;
@@ -221,15 +236,20 @@ std::shared_ptr<Connection> RdmaTransport::connect(const std::string &addr, int 
     if (!resolve_active_route(id, setup_channel.get(), addr, port, config_.source_address))
         return nullptr;
     std::shared_ptr<ConnectionPools> pools;
-    connection = create_active_connection(id, addr, pools);
+    connection = create_active_connection(id, addr, pools, expected_peer);
     if (connection == nullptr)
         return nullptr;
     RdmaCmOffer peer_offer;
     if (!establish_active_connection(id, setup_channel.get(), addr, expected_peer, peer_offer))
         return nullptr;
-    configure_peer(*pools, peer_offer);
-    if (pools->recv == nullptr && (!create_connection_pools(*pools) || !prime_receive(connection))) {
-        return nullptr;
+    if (pools->recv == nullptr) {
+        configure_peer(*pools, peer_offer);
+        if (!create_connection_pools(*pools) || !prime_receive(connection)) {
+            return nullptr;
+        }
+    }
+    else if (config_.wire_layout == RdmaWireLayout::Contiguous) {
+        configure_peer(*pools, peer_offer);
     }
     pools->qp_number = id->qp->qp_num;
     ibv_qp_attr receive_attributes{};

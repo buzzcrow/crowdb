@@ -9,11 +9,27 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
 
 class RdmaRegressionTest(unittest.TestCase):
+    def test_mixed_control_data_profile_keeps_wire_and_aggregate_bounds_distinct(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from rpc_bench_cases import client_arguments, resolve, server_environment
+        case = resolve(dict(wire_layout="control-data", wire_slot_capacity=1049600,
+                            payload_mix="0:5,127:70,1048576:25", payload_seed=93))
+        self.assertEqual(case["aggregation_max_bytes"], 1048576)
+        args = client_arguments(case)
+        self.assertEqual(args[args.index("--payload-mix") + 1], case["payload_mix"])
+        env = server_environment(case, "rdma", "10.200.1.1", "rocep35s0f0", 1, 19101, Path("/tmp/test"))
+        self.assertEqual(env["CROWDB_RDMA_WIRE_LAYOUT"], "1")
+        packed = resolve(case | dict(aggregation_enabled=True))
+        self.assertIn("--aggregation-enabled", client_arguments(packed))
+        with self.assertRaises(ValueError):
+            resolve(dict(wire_layout="control-data", aggregation_enabled=True))
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="rdma-runner-")
         self.addCleanup(temporary.cleanup)
@@ -57,6 +73,24 @@ sys.exit(int(os.environ["RDMA_FIXTURE_EXIT"]))
         self.manifest = self.directory / "cases.json"
         self.manifest.write_text(json.dumps(dict(schema_version=1, cases=[
             dict(case_id="fixture", loader_count=4, connection_count=2, cq_count=2)])))
+
+    def test_mixed_report_rejects_missing_classes_and_fabricated_byte_totals(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from rpc_bench_report import validate_sizes
+        case = dict(payload_mix="0:1,127:1")
+        row = dict(completed_in_window=10, payload_bytes_completed=635, measure_s=10,
+                   payload_Bps=63.5, size_results=[
+                       dict(payload_bytes=size, completed=5, payload_bytes_completed=size * 5,
+                            p50_ns=1, p99_ns=2, p999_ns=3, max_ns=4) for size in (0, 127)])
+        self.assertEqual(validate_sizes(row, case), [])
+        row["size_results"][1]["payload_bytes"] = 0
+        self.assertTrue(validate_sizes(row, case))
+        row["size_results"][1]["payload_bytes"] = 127
+        row["payload_bytes_completed"] += 1
+        self.assertTrue(validate_sizes(row, case))
+        row["payload_bytes_completed"] -= 1
+        row["size_results"][1]["completed"] = -1
+        self.assertTrue(validate_sizes(row, case))
 
     def run_case(self, report, client_exit=0, server_mode="ok", transport="rdma"):
         prefix = "RDMA" if transport == "rdma" else "RPC"

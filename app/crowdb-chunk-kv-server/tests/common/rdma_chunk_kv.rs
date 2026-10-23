@@ -38,6 +38,11 @@ impl TestChunkKvProfile {
             cq_count: 1,
             cq_depth: 16,
             sq_depth: 2,
+            send_batch_size: std::env::var("CROWDB_RDMA_SEND_BATCH_SIZE")
+                .map_or(1, |value| value.parse().unwrap()),
+            receive_batch_size: std::env::var("CROWDB_RDMA_RECEIVE_BATCH_SIZE")
+                .map_or(1, |value| value.parse().unwrap()),
+            aggregation_enabled: std::env::var("CROWDB_RDMA_AGGREGATION_ENABLED").as_deref() == Ok("1"),
             rq_depth: 2,
             posted_receive_target: 2,
             device: std::env::var("CROWDB_RDMA_DEVICE").unwrap_or_default(),

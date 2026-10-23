@@ -149,6 +149,7 @@ pub(super) fn finish(
     .map(|field| sum_rdma_delta(report, field))
     .sum();
     let errors = native.total_errors
+        + get(Count::BuildErrors)
         + get(Count::PayloadMismatches)
         + get(Count::Duplicates)
         + counters.resp_missed
@@ -157,6 +158,11 @@ pub(super) fn finish(
         + transport_errors
         + u64::from(reconcile);
     let tps = ratio(histogram.count, args.duration_secs);
+    let sizes = workload.size_results();
+    let completed_bytes: u64 = sizes
+        .iter()
+        .filter_map(|row| row["payload_bytes_completed"].as_u64())
+        .sum();
     let fields = json!({
         "submitted": accepted, "build_attempts": get(Count::Attempts),
         "submitted_in_window": get(Count::SubmittedInWindow),
@@ -165,7 +171,8 @@ pub(super) fn finish(
         "callbacks_total": get(Count::Responses), "native_total_ops": native.total_ops,
         "native_total_errors": native.total_errors, "started_loaders": workload.started_loaders(),
         "late_loaders": get(Count::LateLoaders), "rpc_tps": tps, "logical_ops_s": tps,
-        "payload_Bps": tps * f64::from(u32::try_from(args.payload_bytes).unwrap_or(u32::MAX)), "latency_count": histogram.count,
+        "payload_Bps": ratio(completed_bytes, args.duration_secs),
+        "payload_bytes_completed": completed_bytes, "size_results": sizes, "latency_count": histogram.count,
         "avg_ns": histogram.avg, "p50_ns": histogram.p50, "p90_ns": histogram.p90,
         "p95_ns": histogram.p95, "p99_ns": histogram.p99, "p999_ns": histogram.p999,
         "min_ns": histogram.min, "max_ns": histogram.max, "histogram_zero_count": histogram.zero_count,
@@ -174,6 +181,7 @@ pub(super) fn finish(
     extend(report, &fields);
     let fields = json!({
         "errors_total": errors, "submit_rejects": rejects, "response_errors": get(Count::ResponseErrors),
+        "build_errors": get(Count::BuildErrors),
         "timeouts": get(Count::Timeouts), "reaped": counters.reaped,
         "connection_errors": get(Count::ConnectionErrors), "cq_errors": cq_errors,
         "payload_mismatches": get(Count::PayloadMismatches), "duplicate_completions": get(Count::Duplicates),

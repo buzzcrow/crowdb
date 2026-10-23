@@ -35,6 +35,8 @@ RdmaTransport::WorkRequest *RdmaTransport::acquire_work(WorkKind kind, Connectio
         work.slot           = slot;
         work.prefix         = prefix;
         work.frame          = frame;
+        work.send_next      = nullptr;
+        work.send_posted    = false;
         work.request_id     = frame == nullptr ? slot->request_id : frame->request_id;
         work.stream_id      = slot->stream_id;
         work.sequence       = slot->sequence;
@@ -77,8 +79,9 @@ void RdmaTransport::dispatch_completion(const ibv_wc &wc)
         return;
     // Error completions do not provide a trustworthy opcode. The retained
     // work record owns dispatch, even after disconnect or QP destruction.
-    bool deferred = work->kind == WorkKind::Receive && wc.status == IBV_WC_SUCCESS && work->pools != nullptr &&
-                    work->pools->deferred_receives != 0;
+    auto &queue   = *completion_queues_[static_cast<uint32_t>(wc.wr_id) / config_.cq_depth];
+    bool deferred = work->kind == WorkKind::Receive && wc.status == IBV_WC_SUCCESS &&
+                    (queue.receive_budget_exhausted || (work->pools != nullptr && work->pools->deferred_receives != 0));
     if (!deferred && work->kind == WorkKind::Receive && wc.status == IBV_WC_SUCCESS &&
         !work->conn->has_frame_handler()) {
         RdmaAggregate aggregate;
@@ -99,7 +102,7 @@ void RdmaTransport::dispatch_completion(const ibv_wc &wc)
         deferred = application;
     }
     if (work->kind != WorkKind::Receive) {
-        release_completed_frame(work, wc);
+        complete_send(work, wc);
         return;
     }
     if (deferred || !release_completed_receive(work, wc)) {

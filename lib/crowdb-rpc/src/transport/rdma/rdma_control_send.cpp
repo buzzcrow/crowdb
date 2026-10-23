@@ -7,6 +7,7 @@
 
 #ifdef CROWDB_RPC_HAVE_RDMA
 #    include "rdma_aggregate.h"
+#    include "rdma_cq.h"
 
 #    include <algorithm>
 #    include <cstring>
@@ -73,10 +74,15 @@ bool RdmaTransport::flush_control_fragment(Connection *connection, ConnectionPoo
         f.message_flags    = state->frame->header.flags;
         pools.control_send = std::move(state);
     }
-    auto       state   = pools.control_send;
-    auto      &f       = state->fragment;
-    const auto length  = static_cast<uint32_t>(std::min<uint64_t>(f.capacity, f.total - f.offset));
-    auto       release = [](Buffer *buffer) { buffer->release(); };
+    auto       state  = pools.control_send;
+    auto      &f      = state->fragment;
+    const auto length = static_cast<uint32_t>(std::min<uint64_t>(f.capacity, f.total - f.offset));
+    auto      &queue  = *completion_queues_[pools.cq_index];
+    if (!send_window_available(pools, RDMA_CONTROL_CAPACITY + length) ||
+        !queue.can_prepare(RDMA_CONTROL_CAPACITY + length)) {
+        return false;
+    }
+    auto                                       release = [](Buffer *buffer) { buffer->release(); };
     std::unique_ptr<Buffer, decltype(release)> prefix(pools.send->alloc(RDMA_CONTROL_CAPACITY), release);
     // Keep every staging descriptor in the configured data class. Smaller
     // cached allocations cannot grow and would strand a later larger stream
@@ -93,6 +99,7 @@ bool RdmaTransport::flush_control_fragment(Connection *connection, ConnectionPoo
     }
     prefix->len = RDMA_CONTROL_CAPACITY;
     std::memcpy(data->data, state->frame->control->data + f.offset, length);
+    queue.charge_preparation(RDMA_CONTROL_CAPACITY + length);
     data->len = length;
     data->set_metadata(f.request_id, f.stream_id, f.sequence, f.offset, data->registration_id);
     auto *data_slot    = data.release();

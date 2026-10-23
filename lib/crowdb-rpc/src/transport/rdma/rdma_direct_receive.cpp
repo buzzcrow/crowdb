@@ -3,7 +3,9 @@
 
 #include "crowdb-rpc/transport/rdma/rdma_transport.h"
 #include "rdma_control_codec.h"
+#include "rdma_cq.h"
 #include "rdma_direct_frame.h"
+#include "rdma_packed_frame.h"
 
 #ifdef CROWDB_RPC_HAVE_RDMA
 namespace crowdb::rpc
@@ -45,11 +47,16 @@ bool RdmaTransport::post_direct_receive(Connection *connection, Buffer *slot)
     std::array<ibv_sge, 2> regions{};
     regions[0] = {reinterpret_cast<uintptr_t>(prefix->data), RDMA_CONTROL_CAPACITY, prefix->registration_key};
     regions[1] = {reinterpret_cast<uintptr_t>(slot->data), pools->effective_data_capacity, slot->registration_key};
+    if (config_.receive_batch_size > 1) {
+        (void)prefix.release();
+        return stage_receive(work, regions);
+    }
     ibv_recv_wr request{};
     request.wr_id    = work->token.load(std::memory_order_acquire);
     request.sg_list  = regions.data();
     request.num_sge  = 2;
     ibv_recv_wr *bad = nullptr;
+    stats_.receive_post_calls.fetch_add(1, std::memory_order_relaxed);
     if (ibv_post_recv(reinterpret_cast<ibv_qp *>(connection->transport_handle), &request, &bad) != 0) {
         release_work(work);
         rollback();
@@ -69,6 +76,13 @@ bool RdmaTransport::release_completed_direct_receive(WorkRequest *work, const ib
     bool   valid = completion.status == IBV_WC_SUCCESS && work->conn->is_open() &&
                    parse_rdma_direct_control(std::span(prefix->data, RDMA_CONTROL_CAPACITY),
                                              work->pools->effective_data_capacity, completion.byte_len, header);
+    if (valid && header.msg_type == RDMA_PACKED_MSG_TYPE) {
+        return release_completed_packed_receive(work, completion);
+    }
+    auto &queue = *completion_queues_[work->pools->cq_index];
+    if (valid && !queue.can_receive(completion.byte_len)) {
+        return false;
+    }
     std::unique_ptr<Frame> logical;
     const bool             fragment = valid && header.msg_type == RPC_CONTROL_FRAGMENT_MSG_TYPE;
     if (fragment) {
@@ -113,6 +127,7 @@ bool RdmaTransport::release_completed_direct_receive(WorkRequest *work, const ib
         prefix->release();
         return true;
     }
+    queue.charge_receive(completion.byte_len);
     auto connection        = std::move(work->conn);
     auto pools             = std::move(work->pools);
     slot->last_release_cb  = &RdmaTransport::repost_frame_release;

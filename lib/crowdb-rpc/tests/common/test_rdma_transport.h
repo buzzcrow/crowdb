@@ -32,6 +32,34 @@ struct TestRdmaTransport
         transport.config_.aggregation_enabled = enabled;
     }
 
+    static void set_send_policy_for_tests(RdmaTransport &transport, uint32_t batch, uint32_t window = 0,
+                                          uint64_t bytes = 0)
+    {
+        transport.config_.send_batch_size   = batch;
+        transport.config_.send_window_size  = window;
+        transport.config_.send_window_bytes = bytes;
+    }
+
+    static void set_receive_policy_for_tests(RdmaTransport &transport, uint32_t batch)
+    {
+        transport.config_.receive_batch_size = batch;
+    }
+
+    static void set_preparation_budget_for_tests(RdmaTransport &transport, uint32_t bytes)
+    {
+        transport.completion_queues_[0]->prepare_byte_limit = bytes;
+    }
+
+    static void set_receive_budget_for_tests(RdmaTransport &transport, uint32_t bytes)
+    {
+        transport.completion_queues_[0]->receive_byte_limit = bytes;
+    }
+
+    static bool flush_receive_batch_for_tests(RdmaTransport &transport, Connection *connection)
+    {
+        return transport.post_prepared_receives(connection, *RdmaTransport::pools_for(connection));
+    }
+
     static void bind_sender_for_tests(RdmaTransport &transport, const std::shared_ptr<Connection> &connection,
                                       std::unique_ptr<RdmaBufferPool> pool, ibv_qp *qp, uint32_t peer_slot,
                                       uint32_t peer_frames)
@@ -143,7 +171,14 @@ struct TestRdmaTransport
 
     static uint32_t flush_for_tests(RdmaTransport &transport, Connection *connection, uint32_t budget)
     {
-        return transport.flush_connection(connection, *RdmaTransport::pools_for(connection), budget);
+        auto *pools                 = RdmaTransport::pools_for(connection);
+        auto &queue                 = *transport.completion_queues_[pools->cq_index];
+        queue.prepare_bytes_left    = RdmaTransport::CompletionQueue::PREPARE_BYTES_PER_ROUND;
+        queue.prepare_frames_left   = RdmaTransport::CompletionQueue::PREPARE_FRAMES_PER_ROUND;
+        queue.preparation_exhausted = false;
+        const auto count            = transport.flush_connection(connection, *pools, budget);
+        (void)transport.post_prepared(connection, *pools);
+        return count;
     }
 
     static bool post_fragment_for_tests(RdmaTransport &transport, Connection *connection,

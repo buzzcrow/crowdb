@@ -115,9 +115,37 @@ inside that region. Receive uses two SGEs with matching region capacities;
 data starts at its own registered allocation base. Data classes of 64 KiB and
 above have 4096-byte alignment. Control and data consume the configured receive
 arena budget; a 1 MiB data capacity requires `wire_slot_capacity = 1049600`.
-Header and CQE lengths must match exactly before dispatch. This layout sends
-one RPC per SEND and rejects transport aggregation or fewer than two provider
-SGEs during setup. It leaves the HTTP/ChunkIO producer's aggregation intact.
+Header and CQE lengths must match exactly before dispatch. A direct envelope
+sends one RPC per SEND. Setup requires at least two provider SGEs. It leaves
+the HTTP/ChunkIO producer's aggregation intact.
+
+Optional small-frame aggregation uses the same fixed prefix and separate data
+region. A control/data capability and CM offer with `receive_frame_limit > 1`
+explicitly advertise packed-envelope support; `1` permits direct envelopes
+only. The advertised limit remains bound into the capability identity. A sender
+uses packing only when enabled locally and the peer advertises at least two
+frames. Direct envelopes remain valid on the same QP. Legacy peers reject the
+extended advertisement before workload submission; use disabled aggregation
+for their existing direct RDMA policy, or the explicit setup-only TCP fallback.
+
+The packed envelope uses reserved transport message type `0xFFFD`, one-way
+flags, and the ordinary fixed-prefix header carrying its actual packed length.
+Its padded control begins with `RDPK`, little-endian version 1 and a 16-bit frame
+count. Remaining prefix bytes are zero. Its data region contains complete
+ordinary `[header][control][data]` frames, bounded by local/peer capacity,
+aggregate byte/frame limits, and the advertised receive frame count. The count,
+all lengths, every inner frame and the complete suffix validate before any
+logical frame is published. Nested envelopes, capability messages and control
+fragments cannot appear inside it.
+
+Only complete frames at most 4096 bytes are eligible. DiskIO messages bypass
+packing, including control-only READ requests whose receive allocation later
+becomes the disk destination. Other services enabling aggregation accept
+unaligned retained data views for small messages; services requiring independent
+aligned allocations keep aggregation disabled. Large payloads remain direct.
+The owner looks ahead only into available input, packs at least two eligible
+adjacent frames and stops at a direct/control-stream barrier. A singleton goes
+direct immediately. The final view release permits parent receive repost.
 
 Immutable contiguous data already owned by the device's producer arena or
 the connection's receive arena is borrowed by exact allocation range. SEND
@@ -127,6 +155,21 @@ uses a bounded copy into the device arena. Per-CQ `direct_payload_bytes` and
 `copied_payload_bytes` distinguish these paths; `direct_sends` counts all SENDs
 using this layout. A failed SEND quarantines the canonical source allocation,
 including when the WR retains a nested view.
+The immutable source descriptor identifies its canonical allocation and arena
+directly, so the send path validates its range without scanning cached arena
+descriptors. Nested view offsets and detached C/FFI leases retain that same
+allocation and registration.
+An external descriptor whose enclosing owner retains a native allocation uses
+the bounded arena range lookup when direct descriptor identification is
+unavailable. That lookup retains the canonical registered owner before posting;
+such views do not require a compatibility staging copy.
+
+Producer sources and compatibility/packing staging use separate bounded
+device arenas with independent descriptor admission. Both are registered at
+device adoption under the existing two-arena memory reservation. A burst of
+unretired staging SENDs cannot consume producer descriptors. Staging allocations
+use the configured maximum data class so cached small slots cannot prevent
+later larger transfers; actual copied and transmitted lengths remain unchanged.
 
 ### 3.1. Encoded logical control streams
 
@@ -149,8 +192,10 @@ SEND carries only the actual fragment length. Rejected queue publication
 restores the caller's original control ownership.
 
 Control/data QP data capacity is `min(local_data_capacity, peer_data_capacity)`.
-Active CM setup allocates and primes those receives after validating the peer
-reply; passive setup already has the offer. Both actual RX allocation/posting
+When TCP preflight supplies the bound peer capability, active CM setup allocates
+and primes the negotiated receives before connect; the CM reply must confirm
+that same capability before publication. Low-level diagnostics without preflight
+prime after validating the reply. Passive setup already has the offer. Actual RX allocation/posting
 and SEND validation use this minimum, which immutable connection status exposes
 as `effective_data_capacity`. Contiguous slots retain their fixed local wire
 capacity and are posted before active CM connect, so an immediate peer response
@@ -289,8 +334,8 @@ selection alone does not enable RDMA or change the explicit fallback policy.
 
 The device owner charges MR creation against
 `registered_memory_budget_bytes`. Zero derives a checked bound from all
-CQ-admitted QPs, their send/receive arenas and the two compatibility copy
-arenas. An explicit budget must admit those compatibility arenas and at least
+CQ-admitted QPs, their send/receive arenas and the device producer/staging
+arenas. An explicit budget must admit those device arenas and at least
 one QP. Invalid and overflowed limits fail configuration. Reservation and MR
 creation failure reject setup before connection publication and return the
 temporary reservation. Releasing CQ admission does not release registered
@@ -342,6 +387,49 @@ can therefore reuse bounded WR admission. The registered slot itself remains
 leased until all frame/C++/FFI owners release it. Work cancellation and deferred
 receive retirement take the same exclusive CQ ownership gate. FFI receives a
 callback or buffer lease only after frame validation and ownership resolution.
+
+The CQ owner prepares bounded lists of SEND WRs for one QP and submits each
+list with one `ibv_post_send`. This batches posting without packing payloads:
+each WR retains its own variable-length SGEs and source owners. Input exhaustion,
+the software window, or the round budget flushes the actual list immediately,
+including a singleton. No message waits for a future request to fill a batch.
+One preparation round admits at most 64 SEND WRs, 256 logical frames/fragments
+and 4 MiB of wire preparation. QPs rotate between rounds, which continue CQ
+progress when preparation or SQ admission runs out. Packed envelopes also
+stop at 32 frames or 64 KiB of packed bytes. These limits bound the work done
+before returning to completions independently of the CQ poll budget.
+
+Receive dispatch independently admits at most 256 logical frames/fragments
+and 4 MiB of wire data per round. A packed CQE counts every enclosed frame.
+An envelope that cannot fit the remaining budget stays intact in the bounded
+deferred receive list, retaining its posted slot until the next round. Later
+receives preserve per-QP order while SEND CQEs can still retire. Control-stream
+admission backpressure does not consume dispatch credits. Every valid envelope
+fits a fresh round, so budget deferral always has a continuation with progress.
+
+Both QP directions use `sq_sig_all = 0`. The owner signals the last WR of every
+actual posted batch and retains a FIFO of posted sends. A successful tail CQE
+retires that WR and its preceding unretired sends on the same SQ. Multiple
+batches may remain outstanding; completion replenishes WR and wire-byte
+admission without waiting for the entire window. This reduces successful SEND
+CQEs only; each completed RECV still produces its own CQE. Posted receive
+capacity and final consumer release remain independent peer credits.
+
+A failed linked post uses `bad_wr` to retain the accepted prefix and release
+only the unposted suffix. It closes the uncertain connection without replay.
+An accepted prefix missing its planned signaled tail retains its owners until
+error/flush completion or QP destruction and cancellation. Error CQEs use their
+generation-tagged work records, including unsignaled WRs, rather than treating
+an error as a successful FIFO watermark. Uncertain buffers are quarantined.
+
+Optional receive batching transfers fully released slots through a bounded
+per-QP MPSC repost queue. The queue holds each slot's final reference; it
+does not allocate replacement receive storage. The CQ owner rotates QPs,
+prepares stable linked RECV lists and flushes the actual partial list at the
+round boundary and before idle. A singleton or cross-thread final release
+therefore cannot wait for another message. Cold receive priming also flushes
+its tail before connection publication. Partial provider failure retains only
+the accepted prefix, releases unposted owners and closes the connection.
 
 ## 6. Failure and fallback
 
@@ -438,6 +526,10 @@ wire_slot_capacity = 1048576
 send_arena_bytes = 67108864
 receive_arena_bytes = 1073741824
 sq_depth = 1024
+send_batch_size = 16
+receive_batch_size = 1
+send_window_size = 0
+send_window_bytes = 0
 rq_depth = 1024
 posted_receive_target = 1024
 cq_count = 1
@@ -465,6 +557,23 @@ entry points. Rust `RdmaConfig::with_control_data_capacity` derives wire and
 SQ/RQ arena capacities from an explicit service data class. Logical message
 limits must be nonzero, fit FlatBuffer length bounds and fit each directional
 logical byte budget; these budgets are independent of registered MR bytes.
+`crowdb_rpc_server_configure_rdma_v4` adds a separately versioned posting config;
+earlier entry points select its defaults without changing their structures.
+`send_batch_size` bounds each linked post (1 through 256). `send_window_size = 0`
+uses SQ admission; a nonzero value cannot exceed allocated SQ depth and is
+also capped by provider capacity. Prepared and posted WRs share this window.
+`send_window_bytes = 0` disables the additional wire-byte cap; a nonzero cap
+must fit the maximum configured wire message. It charges prepared and posted
+wire bytes until retirement, independently of arena allocation budgets.
+The matching environment names are `CROWDB_RDMA_SEND_BATCH_SIZE`,
+`CROWDB_RDMA_SEND_WINDOW_SIZE`, and `CROWDB_RDMA_SEND_WINDOW_BYTES`.
+`receive_batch_size` independently bounds linked RECV posts (1 through 256),
+with `CROWDB_RDMA_RECEIVE_BATCH_SIZE` as its environment setting. A value of
+one keeps immediate final-release posting. Status separates actual send/receive
+post calls, successful send CQEs, logical frames, direct payload bytes,
+aggregate payload copy bytes, compatibility staging bytes and control-framing
+copy bytes. Copy counters include actual preparation work, including retries
+after temporary admission pressure.
 `CROWDB_RDMA_WIRE_LAYOUT` uses 0 for contiguous and 1 for control/data.
 Owned
 status JSON contains requested settings, actual QP/CQ/provider capacities,

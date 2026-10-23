@@ -57,8 +57,7 @@ bool parse_rdma_offer(std::span<const uint8_t> bytes, RdmaCmOffer *out)
     offer.expected_identity         = get(bytes, 40, 8);
     offer.max_control_message_bytes = static_cast<uint32_t>(get(bytes, 48, 4));
     if (!valid_rdma_wire_capacity(offer.receive_slot_capacity, offer.wire_layout) || offer.receive_frame_limit == 0 ||
-        offer.receive_frame_limit > 256 || offer.generation == 0 ||
-        (offer.wire_layout == RdmaWireLayout::ControlData && offer.receive_frame_limit != 1) || offer.identity == 0 ||
+        offer.receive_frame_limit > 256 || offer.generation == 0 || offer.identity == 0 ||
         (offer.expected_generation == 0) != (offer.expected_identity == 0) || offer.max_control_message_bytes == 0)
         return false;
     *out = offer;

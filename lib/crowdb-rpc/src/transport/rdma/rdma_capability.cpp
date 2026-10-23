@@ -147,8 +147,7 @@ bool validate_rdma_capability(const RdmaEndpointCapability &capability, uint16_t
             ::inet_pton(AF_INET6, capability.gid.c_str(), &gid) != 1 || capability.generation == 0 ||
             !valid_rdma_wire_capacity(capability.receive_slot_capacity, capability.wire_layout) ||
             capability.receive_frame_limit == 0 || capability.receive_frame_limit > 256 ||
-            (capability.wire_layout == RdmaWireLayout::ControlData &&
-             (expected_protocol < 3 || capability.receive_frame_limit != 1)))
+            (capability.wire_layout == RdmaWireLayout::ControlData && expected_protocol < 3))
             return false;
     }
     return (expected_protocol < 4 || capability.max_control_message_bytes != 0) &&

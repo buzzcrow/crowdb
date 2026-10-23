@@ -24,6 +24,11 @@ fn test_rdma_config(enabled: bool) -> RdmaConfig {
         wire_layout: RdmaWireLayout::ControlData,
         wire_slot_capacity: (1 << 20) + 1024,
         sq_depth: 4,
+        send_batch_size: std::env::var("CROWDB_RDMA_SEND_BATCH_SIZE")
+            .map_or(1, |value| value.parse().unwrap()),
+        receive_batch_size: std::env::var("CROWDB_RDMA_RECEIVE_BATCH_SIZE")
+            .map_or(1, |value| value.parse().unwrap()),
+        aggregation_enabled: std::env::var("CROWDB_RDMA_AGGREGATION_ENABLED").as_deref() == Ok("1"),
         rq_depth: 4,
         posted_receive_target: 4,
         cq_depth: 16,
@@ -146,7 +151,10 @@ async fn http_chunkio_round_trip_uses_selected_transport_and_exact_framed_bytes(
     let status: serde_json::Value = serde_json::from_slice(&client.transport_status_json().unwrap()).unwrap();
     if std::env::var("CROWDB_RDMA_DATAPATH_TRANSPORT").unwrap() == "rdma" {
         let rdma = &status["rdma"];
-        assert!(rdma["direct_payload_bytes"].as_u64().unwrap() >= 2 * cursor);
+        assert!(
+            rdma["direct_payload_bytes"].as_u64().unwrap() >= 2 * cursor,
+            "{rdma}"
+        );
         for field in [
             "copied_payload_bytes",
             "fallback_count",

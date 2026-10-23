@@ -79,14 +79,23 @@ pub(super) fn validate_wire_bound(args: &RpcArgs, connections: &Value, rdma: boo
     );
     builder.finish(response, None);
     let control_bytes = builder.finished_data().len().max(build_control(u64::MAX).len());
-    let frame_bytes = 14 + control_bytes + args.payload_bytes;
+    let maximum = args.payload_profile()?.maximum();
+    let direct = args.queues.wire_layout == "control-data";
+    let frame_bytes = if direct {
+        1024 + maximum
+    } else {
+        14 + control_bytes + maximum
+    };
     for connection in connections.as_array().ok_or("missing connection statuses")? {
         let peer = connection["info"]["peer_receive_slot_capacity"]
             .as_u64()
             .ok_or("missing peer receive admission")?;
-        let bound = peer
-            .min(u64::from(args.queues.wire_slot_capacity))
-            .min(u64::from(args.queues.aggregation_max_bytes));
+        let bound = peer.min(u64::from(args.queues.wire_slot_capacity));
+        let bound = if direct {
+            bound
+        } else {
+            bound.min(u64::from(args.queues.aggregation_max_bytes))
+        };
         if frame_bytes as u64 > bound {
             return Err(format!(
                 "frame_bytes={frame_bytes} exceeds negotiated wire bound={bound} (header/control included)"

@@ -66,23 +66,30 @@ bool RdmaTransport::create_completion_queues(ibv_context *context)
 
 void RdmaTransport::refresh_poll_stats() const
 {
-    uint64_t polls        = 0;
-    uint64_t empty        = 0;
-    uint64_t direct_sends = 0;
-    uint64_t direct_bytes = 0;
-    uint64_t copied_bytes = 0;
+    uint64_t polls           = 0;
+    uint64_t empty           = 0;
+    uint64_t direct_sends    = 0;
+    uint64_t direct_bytes    = 0;
+    uint64_t copied_bytes    = 0;
+    uint64_t aggregate_bytes = 0, staging_bytes = 0, control_bytes = 0;
     for (const auto &queue : completion_queues_) {
         polls += queue->poll_calls.load(std::memory_order_relaxed);
         empty += queue->empty_polls.load(std::memory_order_relaxed);
         direct_sends += queue->direct_sends.load(std::memory_order_relaxed);
         direct_bytes += queue->direct_payload_bytes.load(std::memory_order_relaxed);
         copied_bytes += queue->copied_payload_bytes.load(std::memory_order_relaxed);
+        aggregate_bytes += queue->copied_aggregate_payload_bytes.load(std::memory_order_relaxed);
+        staging_bytes += queue->copied_staging_payload_bytes.load(std::memory_order_relaxed);
+        control_bytes += queue->copied_framing_control_bytes.load(std::memory_order_relaxed);
     }
     stats_.cq_polls.store(polls, std::memory_order_relaxed);
     stats_.cq_empty_polls.store(empty, std::memory_order_relaxed);
     stats_.direct_sends.store(direct_sends, std::memory_order_relaxed);
     stats_.direct_payload_bytes.store(direct_bytes, std::memory_order_relaxed);
     stats_.copied_payload_bytes.store(copied_bytes, std::memory_order_relaxed);
+    stats_.copied_aggregate_payload_bytes.store(aggregate_bytes, std::memory_order_relaxed);
+    stats_.copied_staging_payload_bytes.store(staging_bytes, std::memory_order_relaxed);
+    stats_.copied_framing_control_bytes.store(control_bytes, std::memory_order_relaxed);
     stats_.registered_memory_budget_bytes.store(memory_stats_->budget, std::memory_order_relaxed);
     stats_.registered_bytes.store(memory_stats_->current.load(std::memory_order_acquire), std::memory_order_relaxed);
     stats_.registered_bytes_high_water.store(memory_stats_->high_water.load(std::memory_order_relaxed),

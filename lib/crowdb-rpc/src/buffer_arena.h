@@ -40,6 +40,7 @@ class BufferArena : public BufferPool, public std::enable_shared_from_this<Buffe
     ~BufferArena() override;
     Buffer *alloc(uint32_t requested) override;
     Buffer *borrow_range(const uint8_t *data, uint32_t size);
+    Buffer *borrow_owned_range(Buffer *source, const uint8_t *data, uint32_t size);
     void    recycle(Buffer *buffer) override;
     bool    detach(Buffer *buffer) override;
     void    quarantine_inflight();

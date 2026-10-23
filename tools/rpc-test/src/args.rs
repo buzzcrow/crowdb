@@ -9,6 +9,7 @@ use crowdb_rpc_ffi::RdmaConfig;
 use serde::Serialize;
 
 use clap::ValueEnum;
+use crate::workload::payload::PayloadProfile;
 
 #[derive(clap::Args, Debug, Serialize)]
 pub struct RpcArgs {
@@ -31,6 +32,14 @@ pub struct RpcArgs {
     pub connection_count: u32,
     #[arg(long, visible_alias = "value-size", default_value_t = 128)]
     pub payload_bytes: usize,
+    /// Per-request sizes and relative weights, for example 0:5,128:70,4096:25.
+    #[arg(long)]
+    pub payload_mix: Option<String>,
+    #[arg(long, default_value_t = 1)]
+    pub payload_seed: u64,
+    /// Generate payloads directly in the connected transport's registered arena.
+    #[arg(long)]
+    pub registered_payload: bool,
     #[arg(long, default_value_t = 1)]
     pub io_engines: u32,
     #[arg(long, default_value_t = 1)]
@@ -61,6 +70,8 @@ pub struct RpcArgs {
 
 #[derive(clap::Args, Debug, Serialize)]
 pub struct QueueArgs {
+    #[arg(long, default_value = "contiguous", value_parser = ["contiguous", "control-data"])]
+    pub wire_layout: String,
     #[arg(long, default_value = "")]
     pub device: String,
     #[arg(long, default_value = "")]
@@ -76,6 +87,16 @@ pub struct QueueArgs {
     pub cq_depth: u32,
     #[arg(long, default_value_t = 1024)]
     pub sq_depth: u32,
+    #[arg(long, default_value_t = 16)]
+    pub send_batch_size: u32,
+    #[arg(long, default_value_t = 1)]
+    pub receive_batch_size: u32,
+    /// Zero uses the configured SQ depth.
+    #[arg(long, default_value_t = 0)]
+    pub send_window_size: u32,
+    /// Wire bytes awaiting send completion; zero uses the WR limit only.
+    #[arg(long, default_value_t = 0)]
+    pub send_window_bytes: u64,
     #[arg(long, default_value_t = 1024)]
     pub rq_depth: u32,
     #[arg(long, default_value_t = 1024)]
@@ -108,6 +129,10 @@ pub struct QueueArgs {
 }
 
 impl RpcArgs {
+    pub(super) fn payload_profile(&self) -> Result<PayloadProfile, String> {
+        PayloadProfile::new(self.payload_bytes, self.payload_mix.as_deref(), self.payload_seed)
+    }
+
     pub(super) fn resolve(&mut self, rdma: bool) -> Result<RdmaConfig, String> {
         if self.duration_secs == 0
             || self.duration_secs > 3600
@@ -127,7 +152,19 @@ impl RpcArgs {
         {
             return Err("invalid duration, loader/connection count, workers, timeout or payload size".into());
         }
+        self.payload_profile()?;
+        if self.registered_payload && !rdma {
+            return Err("registered payload generation requires strict RDMA".into());
+        }
         let q = &mut self.queues;
+        let layout = if q.wire_layout == "control-data" {
+            if q.wire_slot_capacity <= 1024 {
+                return Err("control-data requires payload capacity".into());
+            }
+            crowdb_rpc_ffi::RdmaWireLayout::ControlData
+        } else {
+            crowdb_rpc_ffi::RdmaWireLayout::Contiguous
+        };
         if q.cq_count == 0 || q.cq_count > 256 {
             return Err("cq_count must be in 1..=256".into());
         }
@@ -149,7 +186,7 @@ impl RpcArgs {
             q.receive_arena_bytes = u64::from(q.posted_receive_target) * u64::from(q.wire_slot_capacity);
         }
         if q.aggregation_max_bytes == 0 {
-            q.aggregation_max_bytes = q.wire_slot_capacity;
+            q.aggregation_max_bytes = q.wire_slot_capacity.min(1 << 20);
         }
         Ok(RdmaConfig {
             enabled: rdma,
@@ -162,10 +199,14 @@ impl RpcArgs {
             cq_count: q.cq_count,
             cq_depth: q.cq_depth,
             sq_depth: q.sq_depth,
+            send_batch_size: q.send_batch_size,
+            receive_batch_size: q.receive_batch_size,
+            send_window_size: q.send_window_size,
+            send_window_bytes: q.send_window_bytes,
             rq_depth: q.rq_depth,
             posted_receive_target: q.posted_receive_target,
             wire_slot_capacity: q.wire_slot_capacity,
-            wire_layout: crowdb_rpc_ffi::RdmaWireLayout::Contiguous,
+            wire_layout: layout,
             send_arena_bytes: q.send_arena_bytes,
             receive_arena_bytes: q.receive_arena_bytes,
             registered_memory_budget_bytes: q.registered_memory_budget_bytes,

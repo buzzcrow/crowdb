@@ -36,17 +36,19 @@ impl ProducerBufferAllocator {
 #[derive(Debug)]
 pub struct WritableBuffer {
     buffer: Buffer,
+    capacity: usize,
+    registration_id: u32,
 }
 
 impl WritableBuffer {
     #[must_use]
     pub fn capacity(&self) -> usize {
-        self.buffer.lease_metadata().capacity as usize
+        self.capacity
     }
 
     #[must_use]
     pub fn registration_id(&self) -> u32 {
-        self.buffer.lease_metadata().registration_id
+        self.registration_id
     }
 
     /// Spare storage for an I/O producer. No initialized bytes are published.
@@ -77,6 +79,31 @@ impl WritableBuffer {
         }
         self.buffer.write(bytes);
         Ok(self.buffer)
+    }
+
+    /// Fill a prefix once, then initialize fields in the final allocation.
+    ///
+    /// # Errors
+    /// Rejects an empty prefix or a length exceeding capacity.
+    pub fn initialize_with(
+        mut self,
+        length: usize,
+        initial: u8,
+        initialize: impl FnOnce(&mut [u8]),
+    ) -> Result<Buffer, RpcError> {
+        if length == 0 || length > self.capacity() {
+            return Err(RpcError::InvalidArg);
+        }
+        let storage = &mut self.uninit_bytes_mut()[..length];
+        storage.fill(MaybeUninit::new(initial));
+        // SAFETY: the prefix was initialized above and this unique mutable
+        // borrow cannot escape the initializer callback.
+        let initialized =
+            unsafe { std::slice::from_raw_parts_mut(storage.as_mut_ptr().cast::<u8>(), length) };
+        initialize(initialized);
+        // SAFETY: every published byte was initialized above; the unique
+        // mutable borrow ended before ownership is frozen by assume_init.
+        unsafe { self.assume_init(length) }
     }
 
     /// Publish an initialized prefix without copying it.
@@ -119,6 +146,11 @@ impl RpcServer {
         };
         (!handle.is_null()).then(|| WritableBuffer {
             buffer: Buffer::from_raw(handle),
+            // SAFETY: this newly allocated unique handle retains immutable
+            // capacity and registration metadata until publication.
+            capacity: unsafe { sys::crowdb_rpc_buffer_capacity(handle) } as usize,
+            // SAFETY: the same unique allocation owns this registration.
+            registration_id: unsafe { sys::crowdb_rpc_buffer_registration_id(handle) },
         })
     }
 }

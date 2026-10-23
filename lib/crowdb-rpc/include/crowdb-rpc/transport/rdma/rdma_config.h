@@ -27,6 +27,10 @@ struct RdmaConfig
     uint64_t          receive_arena_bytes            = 1ULL << 30;
     uint64_t          registered_memory_budget_bytes = 0;
     uint32_t          sq_depth                       = 1024;
+    uint32_t          send_batch_size                = 16;
+    uint32_t          receive_batch_size             = 1;
+    uint32_t          send_window_size               = 0;
+    uint64_t          send_window_bytes              = 0;
     uint32_t          rq_depth                       = 1024;
     uint32_t          qp_max_send_sge                = 2;
     uint32_t          qp_max_recv_sge                = 2;

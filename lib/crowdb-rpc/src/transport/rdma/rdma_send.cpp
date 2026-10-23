@@ -5,6 +5,7 @@
 #include "rdma_control_send.h"
 #include "rdma_cq.h"
 #include "rdma_direct_frame.h"
+#include "rdma_packed_frame.h"
 
 #ifdef CROWDB_RPC_HAVE_RDMA
 #    include <algorithm>
@@ -14,9 +15,14 @@ namespace crowdb::rpc
 RdmaTransport::ConnectionPools::~ConnectionPools()
 {
     release_rdma_frames(pending_frame);
+    release_rdma_frames(lookahead_frame);
     OutFrame *frame = nullptr;
     while (send_queue.drain(&frame, 1) != 0)
         release_rdma_frames(frame);
+    Buffer *slot = nullptr;
+    while (receive_reposts.drain(&slot, 1) != 0) {
+        slot->release();
+    }
 }
 
 bool RdmaTransport::submit(Connection *connection, OutFrame *frame)
@@ -27,7 +33,7 @@ bool RdmaTransport::submit(Connection *connection, OutFrame *frame)
     };
     Operation operation(repost_state_);
     if (!operation || connection == nullptr || frame == nullptr || !connection->is_open() ||
-        frame->header.msg_type == RPC_CONTROL_FRAGMENT_MSG_TYPE)
+        frame->header.msg_type == RPC_CONTROL_FRAGMENT_MSG_TYPE || frame->header.msg_type == RDMA_PACKED_MSG_TYPE)
         return reject();
     auto *pools = pools_for(connection);
     if (pools == nullptr || pools->send == nullptr || pools->cq_index >= completion_queues_.size())
@@ -55,6 +61,9 @@ bool RdmaTransport::submit(Connection *connection, OutFrame *frame)
         original_control->release();
     }
     else if (!(direct ? rdma_direct_frame_size(*frame, limit, bytes) : rdma_frame_size(*frame, limit, bytes))) {
+        return reject();
+    }
+    if (!stream && config_.send_window_bytes != 0 && bytes > config_.send_window_bytes) {
         return reject();
     }
     auto restore = [&] {
@@ -90,11 +99,16 @@ uint32_t RdmaTransport::flush_connection(Connection *connection, ConnectionPools
         std::min({config_.wire_slot_capacity, pools.peer_receive_slot_capacity, config_.aggregation_max_bytes});
     const auto frame_limit =
         config_.aggregation_enabled ? std::min(config_.aggregation_max_frames, pools.peer_receive_frame_limit) : 1U;
-    uint32_t sent = 0;
-    while (sent < budget && connection->is_open() &&
-           pools.sends_in_flight < std::min(config_.sq_depth, pools.effective_capacity.max_send_wr)) {
+    auto    &queue = *completion_queues_[pools.cq_index];
+    uint32_t sent  = 0;
+    while (sent < budget && connection->is_open() && send_window_available(pools)) {
         if (pools.pending_frame == nullptr && pools.send_queue.drain(&pools.pending_frame, 1) == 0)
             break;
+        uint32_t next_bytes = 0;
+        if (!rdma_frame_size(*pools.pending_frame, byte_limit, next_bytes) ||
+            !send_window_available(pools, next_bytes) || !queue.can_prepare(next_bytes)) {
+            break;
+        }
         auto *slot = pools.send->alloc(config_.wire_slot_capacity);
         if (slot == nullptr)
             break;
@@ -110,11 +124,17 @@ uint32_t RdmaTransport::flush_connection(Connection *connection, ConnectionPools
                 connection->close();
                 break;
             }
-            if (bytes > byte_limit - slot->len)
+            if (bytes > byte_limit - slot->len || !send_window_available(pools, slot->len + bytes) ||
+                !queue.can_prepare(bytes))
                 break;
             copy_rdma_frame(slot->data + slot->len, *frame);
+            queue.charge_preparation(bytes);
             completion_queues_[pools.cq_index]->copied_payload_bytes.fetch_add(
                 bytes - HEADER_SIZE - frame->control->len, std::memory_order_relaxed);
+            completion_queues_[pools.cq_index]->copied_aggregate_payload_bytes.fetch_add(
+                bytes - HEADER_SIZE - frame->control->len, std::memory_order_relaxed);
+            completion_queues_[pools.cq_index]->copied_framing_control_bytes.fetch_add(frame->control->len,
+                                                                                       std::memory_order_relaxed);
             slot->len += bytes;
             frame->next_aggregate = nullptr;
             *tail                 = frame;
@@ -140,48 +160,24 @@ uint32_t RdmaTransport::flush_connection(Connection *connection, ConnectionPools
 bool RdmaTransport::post_aggregate(Connection *connection, ConnectionPools &pools, Buffer *slot, OutFrame *frames,
                                    uint32_t frame_count)
 {
-    Operation    posting(pools.posting_state);
-    WorkRequest *work = nullptr;
-    if (posting && connection->is_open() && connection->transport_handle != 0 &&
-        slot->transition(BufferOwnership::Available, BufferOwnership::SendInFlight))
-        work = acquire_work(WorkKind::Send, connection, slot, frames);
-    if (work != nullptr) {
-        ibv_sge sge{};
-        sge.addr   = reinterpret_cast<uintptr_t>(slot->data);
-        sge.length = slot->len;
-        sge.lkey   = slot->registration_key;
-        ibv_send_wr wr{};
-        wr.wr_id         = work->token.load(std::memory_order_acquire);
-        wr.sg_list       = &sge;
-        wr.num_sge       = 1;
-        wr.opcode        = IBV_WR_SEND;
-        wr.send_flags    = IBV_SEND_SIGNALED;
-        ibv_send_wr *bad = nullptr;
-        if (ibv_post_send(reinterpret_cast<ibv_qp *>(connection->transport_handle), &wr, &bad) == 0) {
-            ++pools.sends_in_flight;
-            stats_.sends.fetch_add(1, std::memory_order_relaxed);
-            stats_.rpc_frames_sent.fetch_add(frame_count, std::memory_order_relaxed);
-            stats_.wire_bytes_sent.fetch_add(slot->len, std::memory_order_relaxed);
-            return true;
-        }
-        release_work(work);
-    }
-    stats_.send_errors.fetch_add(1, std::memory_order_relaxed);
-    connection->close();
-    (void)slot->transition(BufferOwnership::SendInFlight, BufferOwnership::Available);
-    slot->release();
-    release_rdma_frames(frames);
-    return false;
+    return prepare_send(connection, pools, slot, nullptr, frames, frame_count, slot->len);
 }
 
 uint32_t RdmaTransport::flush_sends(CompletionQueue &queue, uint32_t budget)
 {
-    uint32_t sent = 0;
-    for (size_t visited = 0; visited < queue.connections.size() && sent < budget; ++visited) {
+    queue.prepare_bytes_left    = queue.prepare_byte_limit;
+    queue.prepare_frames_left   = CompletionQueue::PREPARE_FRAMES_PER_ROUND;
+    queue.preparation_exhausted = false;
+    budget                      = std::min(budget, CompletionQueue::SENDS_PER_ROUND);
+    uint32_t sent               = 0;
+    for (size_t visited = 0; visited < queue.connections.size() && sent < budget && !queue.preparation_exhausted;
+         ++visited) {
         const auto &entry     = queue.connections[queue.next_connection % queue.connections.size()];
         queue.next_connection = (queue.next_connection + 1) % queue.connections.size();
-        if (entry.connection->is_open())
+        if (entry.connection->is_open()) {
             sent += flush_connection(entry.connection.get(), *entry.pools, budget - sent);
+            (void)post_prepared(entry.connection.get(), *entry.pools);
+        }
     }
     // Closed producers finish publishing before their bounded queue retires.
     for (size_t index = 0; index < queue.connections.size();) {
@@ -211,6 +207,7 @@ void RdmaTransport::retire_sends(CompletionQueue &queue, Connection *connection)
             pools.control_receive->reset();
         }
         release_rdma_frames(std::exchange(pools.pending_frame, nullptr));
+        release_rdma_frames(std::exchange(pools.lookahead_frame, nullptr));
         OutFrame *frame = nullptr;
         while (pools.send_queue.drain(&frame, 1) != 0)
             release_rdma_frames(frame);

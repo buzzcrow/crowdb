@@ -4,6 +4,7 @@
 //! Shared timed echo benchmark for explicit TCP and strict RDMA transports.
 
 mod control;
+pub(super) mod payload;
 mod report;
 mod runtime;
 mod status;
@@ -17,7 +18,7 @@ use std::time::Duration;
 
 use crowdb_common::logging::open_named_log;
 use crowdb_common::metrics::{MetricsRegistry, MetricsRunner};
-use crowdb_rpc_ffi::RdmaConfig;
+use crowdb_rpc_ffi::{ProducerBufferAllocator, RdmaConfig, RpcServer};
 use serde_json::{json, Value};
 
 use std::path::Path;
@@ -92,7 +93,7 @@ async fn run_case(
     status::validate(&report["server_before"], rdma)?;
     let before = session.client.counters();
     let mut runner = metrics_runner(log_dir, args)?;
-    let handler = create_workload(args, &owners, runner.as_ref());
+    let handler = create_workload(args, &owners, runner.as_ref(), session.server.clone())?;
     if let Some(runner) = &mut runner {
         runner.start();
     }
@@ -121,21 +122,31 @@ async fn run_case(
     Ok(())
 }
 
-fn create_workload(args: &RpcArgs, owners: &[usize], runner: Option<&MetricsRunner>) -> Arc<EchoWorkload> {
+fn create_workload(
+    args: &RpcArgs,
+    owners: &[usize],
+    runner: Option<&MetricsRunner>,
+    server: Arc<RpcServer>,
+) -> Result<Arc<EchoWorkload>, String> {
+    let profile = args.payload_profile()?;
+    let allocator = args
+        .registered_payload
+        .then(|| ProducerBufferAllocator::new(server, true));
     let create = |registry: &mut MetricsRegistry| {
         Arc::new(EchoWorkload::new(
             args.loader_count,
             owners,
-            args.payload_bytes,
+            profile.clone(),
+            allocator.clone(),
             Duration::from_secs(args.warmup_secs),
             Duration::from_secs(args.duration_secs),
             registry,
         ))
     };
     if let Some(runner) = runner {
-        create(&mut runner.registry().lock().expect("metrics registry"))
+        Ok(create(&mut runner.registry().lock().expect("metrics registry")))
     } else {
-        create(&mut MetricsRegistry::new())
+        Ok(create(&mut MetricsRegistry::new()))
     }
 }
 

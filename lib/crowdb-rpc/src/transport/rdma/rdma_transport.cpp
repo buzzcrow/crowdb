@@ -92,9 +92,10 @@ RdmaTransport::RdmaTransport(RdmaConfig config, BufferPool *application_pool)
     local_capability_.receive_slot_capacity = config_.wire_slot_capacity;
     local_capability_.wire_layout           = config_.wire_layout;
     local_capability_.max_control_message_bytes = config_.max_control_message_bytes;
-    local_capability_.receive_frame_limit =
-        config_.wire_layout == RdmaWireLayout::ControlData ? 1 : RDMA_MAX_AGGREGATE_FRAMES;
-    local_capability_.cm_address = config_.source_address;
+    local_capability_.receive_frame_limit       = config_.wire_layout == RdmaWireLayout::ControlData
+                                                    ? (config_.aggregation_enabled ? config_.aggregation_max_frames : 1)
+                                                    : RDMA_MAX_AGGREGATE_FRAMES;
+    local_capability_.cm_address                = config_.source_address;
 
     int          device_count = 0;
     ibv_device **devices      = ibv_get_device_list(&device_count);
@@ -141,7 +142,7 @@ RdmaTransport::~RdmaTransport()
 {
     RdmaTransport::shutdown();
     send_pool_.reset();
-    recv_pool_.reset();
+    source_pool_.reset();
     destroy_completion_queues();
     for (const auto &queue : completion_queues_) {
         if (queue->continuation_fd >= 0)
@@ -172,18 +173,18 @@ bool RdmaTransport::adopt_cm_context(struct ibv_context *context)
     if (!create_completion_queues(context)) {
         return false;
     }
-    context_   = context;
-    device_    = std::move(device);
-    pd_        = device_->pd;
-    send_pool_ = make_pool(config_.send_arena_bytes, config_.sq_depth);
-    recv_pool_ = make_pool(config_.send_arena_bytes, config_.sq_depth);
-    if (send_pool_ == nullptr || recv_pool_ == nullptr) {
+    context_     = context;
+    device_      = std::move(device);
+    pd_          = device_->pd;
+    send_pool_   = make_pool(config_.send_arena_bytes, config_.sq_depth);
+    source_pool_ = make_pool(config_.send_arena_bytes, config_.sq_depth);
+    if (send_pool_ == nullptr || source_pool_ == nullptr) {
         send_pool_.reset();
-        recv_pool_.reset();
+        source_pool_.reset();
         capability_available_.store(false, std::memory_order_release);
         return false;
     }
-    producer_pool_.store(send_pool_.get(), std::memory_order_release);
+    producer_pool_.store(source_pool_.get(), std::memory_order_release);
     register_events(event_engine_);
     return ready();
 }
@@ -238,12 +239,16 @@ bool RdmaTransport::post_receive(Connection *conn, Buffer *slot)
         slot->release();
         return false;
     }
+    if (config_.receive_batch_size > 1) {
+        return stage_receive(work, std::span(&sge, 1));
+    }
     ibv_recv_wr wr{};
     wr.wr_id             = work->token.load(std::memory_order_acquire);
     wr.sg_list           = &sge;
     wr.num_sge           = 1;
     ibv_recv_wr *bad     = nullptr;
     int          post_rc = -1;
+    stats_.receive_post_calls.fetch_add(1, std::memory_order_relaxed);
     if (slot_posted)
         post_rc = ibv_post_recv(reinterpret_cast<ibv_qp *>(conn->transport_handle), &wr, &bad);
     if (!slot_posted || post_rc != 0) {

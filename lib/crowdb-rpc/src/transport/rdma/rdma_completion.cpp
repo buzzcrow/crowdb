@@ -46,7 +46,11 @@ int RdmaTransport::drain_queue(uint32_t index, uint32_t max_completions, bool wa
     }
     if (max_completions == 0)
         max_completions = std::max(1U, config_.poll_batch);
+    queue.receive_frames_left      = CompletionQueue::RECEIVE_FRAMES_PER_ROUND;
+    queue.receive_bytes_left       = queue.receive_byte_limit;
+    queue.receive_budget_exhausted = false;
     check_control_deadlines(queue);
+    uint32_t                reposted         = flush_receive_reposts(queue, CompletionQueue::SENDS_PER_ROUND);
     const uint32_t          sent             = flush_sends(queue, max_completions);
     uint32_t                drained          = process_deferred(queue, max_completions);
     uint32_t                empty_polls      = 0;
@@ -82,21 +86,23 @@ int RdmaTransport::drain_queue(uint32_t index, uint32_t max_completions, bool wa
         }
     }
     poll_one(queue.cq);
-    if (managed && (drained > 0 || sent > 0)) {
+    reposted += flush_receive_reposts(queue, CompletionQueue::SENDS_PER_ROUND);
+    if (managed && (drained > 0 || sent > 0 || reposted > 0)) {
         queue.polling.clear(std::memory_order_release);
-        return static_cast<int>(drained + sent);
+        return static_cast<int>(drained + sent + reposted);
     }
     (void)ibv_req_notify_cq(queue.cq, 0);
     // Completions arriving between the empty poll and notification arming
     // need one final poll. A full batch gets an explicit epoll continuation.
     empty_polls = 0;
     poll_one(queue.cq);
+    reposted += flush_receive_reposts(queue, CompletionQueue::SENDS_PER_ROUND);
     if (!managed && drained == max_completions && queue.continuation_fd >= 0) {
         const uint64_t value = 1;
         (void)::write(queue.continuation_fd, &value, sizeof(value));
     }
     queue.polling.clear(std::memory_order_release);
-    return static_cast<int>(drained + sent);
+    return static_cast<int>(drained + sent + reposted);
 }
 
 void RdmaTransport::register_events(SocketEngine *engine)
@@ -176,7 +182,7 @@ bool RdmaTransport::prime_receive(const std::shared_ptr<Connection> &connection)
         // owns the slot after the caller reference is released.
         slot->release();
     }
-    return true;
+    return post_prepared_receives(connection.get(), *pools);
 }
 
 void RdmaTransport::record_completion_error(const ibv_wc &wc, bool expected_flush)
@@ -211,8 +217,10 @@ void RdmaTransport::release_completed_frame(WorkRequest *work, const ibv_wc &wc)
     const auto pools      = std::move(work->pools);
     Buffer    *slot       = work->slot;
     Buffer    *prefix     = work->prefix;
-    if (pools != nullptr && pools->sends_in_flight != 0)
+    if (pools != nullptr && work->send_posted && pools->sends_in_flight != 0) {
         --pools->sends_in_flight;
+        pools->send_bytes_in_flight -= work->send_wire_bytes;
+    }
 
     if (wc.status != IBV_WC_SUCCESS) {
         record_completion_error(wc, connection != nullptr && !connection->is_open());

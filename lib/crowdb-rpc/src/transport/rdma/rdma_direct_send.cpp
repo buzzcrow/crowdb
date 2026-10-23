@@ -14,7 +14,7 @@ namespace crowdb::rpc
 {
 namespace
 {
-const uint8_t *contiguous_data(const OutFrame &frame)
+const uint8_t *contiguous_data(const OutFrame &frame, Buffer *&owner)
 {
     const uint8_t *first = nullptr;
     uintptr_t      next  = 0;
@@ -25,6 +25,7 @@ const uint8_t *contiguous_data(const OutFrame &frame)
         const auto address = reinterpret_cast<uintptr_t>(view->payload_data());
         if (first == nullptr) {
             first = view->payload_data();
+            owner = frame.data_view(index);
             next  = address;
         }
         if (address != next || view->len > UINTPTR_MAX - next)
@@ -40,8 +41,7 @@ uint32_t RdmaTransport::flush_direct_connection(Connection *connection, Connecti
     const auto limit = std::min(config_.wire_slot_capacity, pools.peer_receive_slot_capacity);
     uint32_t   sent  = 0;
     auto      &queue = *completion_queues_[pools.cq_index];
-    while (sent < budget && connection->is_open() &&
-           pools.sends_in_flight < std::min(config_.sq_depth, pools.effective_capacity.max_send_wr)) {
+    while (sent < budget && connection->is_open() && send_window_available(pools)) {
         if (pools.control_send == nullptr && pools.pending_frame == nullptr &&
             pools.send_queue.drain(&pools.pending_frame, 1) == 0)
             break;
@@ -52,30 +52,47 @@ uint32_t RdmaTransport::flush_direct_connection(Connection *connection, Connecti
             ++sent;
             continue;
         }
+        bool packed = false;
+        if (!prepare_packed_send(connection, pools, packed)) {
+            break;
+        }
+        if (packed) {
+            ++sent;
+            continue;
+        }
         auto    *frame = pools.pending_frame;
         uint32_t bytes = 0;
         if (!rdma_direct_frame_size(*frame, limit, bytes)) {
             connection->close();
             break;
         }
+        if (!send_window_available(pools, bytes) || !queue.can_prepare(bytes)) {
+            break;
+        }
         auto *prefix = pools.send->alloc(RDMA_CONTROL_CAPACITY);
         if (prefix == nullptr)
             break;
         write_rdma_direct_control(prefix->data, *frame);
+        queue.copied_framing_control_bytes.fetch_add(frame->control->len, std::memory_order_relaxed);
         prefix->len         = RDMA_CONTROL_CAPACITY;
         const auto length   = bytes - RDMA_CONTROL_CAPACITY;
         Buffer    *data     = nullptr;
         bool       borrowed = false;
         if (length != 0) {
-            const auto *source = contiguous_data(*frame);
+            Buffer     *source_owner = nullptr;
+            const auto *source       = contiguous_data(*frame, source_owner);
             if (source != nullptr) {
-                data = send_pool_->borrow_range(source, length);
+                data = send_pool_->borrow_owned_range(source_owner, source, length);
                 if (data == nullptr)
-                    data = pools.recv->borrow_range(source, length);
+                    data = source_pool_->borrow_owned_range(source_owner, source, length);
+                if (data == nullptr)
+                    data = pools.recv->borrow_owned_range(source_owner, source, length);
             }
             borrowed = data != nullptr;
             if (data == nullptr) {
-                data = send_pool_->alloc(length);
+                // Staging descriptors must remain usable for every length in
+                // this data class after a burst fills the bounded pool.
+                data = send_pool_->alloc(config_.data_slot_capacity());
                 if (data != nullptr) {
                     uint32_t offset = 0;
                     for (uint8_t index = 0; index < frame->data_views(); ++index) {
@@ -86,6 +103,7 @@ uint32_t RdmaTransport::flush_direct_connection(Connection *connection, Connecti
                     }
                     data->len = length;
                     queue.copied_payload_bytes.fetch_add(length, std::memory_order_relaxed);
+                    queue.copied_staging_payload_bytes.fetch_add(length, std::memory_order_relaxed);
                 }
             }
             if (data == nullptr) {
@@ -96,7 +114,8 @@ uint32_t RdmaTransport::flush_direct_connection(Connection *connection, Connecti
                 (void)data->transition(BufferOwnership::CallerOwned, BufferOwnership::Available);
             data->request_id = frame->request_id;
         }
-        pools.pending_frame = nullptr;
+        pools.pending_frame = std::exchange(pools.lookahead_frame, nullptr);
+        queue.charge_preparation(bytes);
         pools.queued_frames.fetch_sub(1, std::memory_order_release);
         frame->next_aggregate = nullptr;
         if (!post_direct(connection, pools, data == nullptr ? prefix : data, data == nullptr ? nullptr : prefix, frame))
@@ -112,49 +131,10 @@ uint32_t RdmaTransport::flush_direct_connection(Connection *connection, Connecti
 bool RdmaTransport::post_direct(Connection *connection, ConnectionPools &pools, Buffer *slot, Buffer *prefix,
                                 OutFrame *frame, std::shared_ptr<ControlSendState> control_send)
 {
-    Operation    posting(pools.posting_state);
-    WorkRequest *work = nullptr;
-    if (posting && connection->is_open() && connection->transport_handle != 0 &&
-        slot->transition(BufferOwnership::Available, BufferOwnership::SendInFlight) &&
-        (prefix == nullptr || prefix->transition(BufferOwnership::Available, BufferOwnership::SendInFlight)))
-        work = acquire_work(WorkKind::Send, connection, slot, frame, prefix);
-    if (work != nullptr) {
-        work->control_send             = std::move(control_send);
-        auto                  *control = prefix == nullptr ? slot : prefix;
-        std::array<ibv_sge, 2> regions{};
-        regions[0] = {reinterpret_cast<uintptr_t>(control->data), RDMA_CONTROL_CAPACITY, control->registration_key};
-        if (prefix != nullptr)
-            regions[1] = {reinterpret_cast<uintptr_t>(slot->payload_data()), slot->len, slot->registration_key};
-        ibv_send_wr request{};
-        request.wr_id      = work->token.load(std::memory_order_acquire);
-        request.sg_list    = regions.data();
-        request.num_sge    = prefix == nullptr ? 1 : 2;
-        request.opcode     = IBV_WR_SEND;
-        request.send_flags = IBV_SEND_SIGNALED;
-        ibv_send_wr *bad   = nullptr;
-        if (ibv_post_send(reinterpret_cast<ibv_qp *>(connection->transport_handle), &request, &bad) == 0) {
-            ++pools.sends_in_flight;
-            stats_.sends.fetch_add(1, std::memory_order_relaxed);
-            if (work->control_send == nullptr ||
-                work->control_send->fragment.offset + slot->len == work->control_send->fragment.total) {
-                stats_.rpc_frames_sent.fetch_add(1, std::memory_order_relaxed);
-            }
-            stats_.wire_bytes_sent.fetch_add(RDMA_CONTROL_CAPACITY + (prefix == nullptr ? 0 : slot->len),
-                                             std::memory_order_relaxed);
-            return true;
-        }
-        release_work(work);
-    }
-    stats_.send_errors.fetch_add(1, std::memory_order_relaxed);
-    connection->close();
-    (void)slot->transition(BufferOwnership::SendInFlight, BufferOwnership::Available);
-    slot->release();
-    if (prefix != nullptr) {
-        (void)prefix->transition(BufferOwnership::SendInFlight, BufferOwnership::Available);
-        prefix->release();
-    }
-    release_rdma_frames(frame);
-    return false;
+    const bool last =
+        control_send == nullptr || control_send->fragment.offset + slot->len == control_send->fragment.total;
+    return prepare_send(connection, pools, slot, prefix, frame, last ? 1U : 0U,
+                        RDMA_CONTROL_CAPACITY + (prefix == nullptr ? 0 : slot->len), std::move(control_send));
 }
 } // namespace crowdb::rpc
 #endif

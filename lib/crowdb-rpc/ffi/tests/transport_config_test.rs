@@ -40,6 +40,32 @@ fn invalid_queue_bounds_fail_before_start() {
 }
 
 #[test]
+fn send_post_batch_and_software_window_are_independent_bounded_settings() {
+    let server = RpcServer::new(None);
+    let mut config = RdmaConfig {
+        send_batch_size: 16,
+        receive_batch_size: 8,
+        send_window_size: 4,
+        ..RdmaConfig::default()
+    };
+    config.send_window_bytes = u64::from(config.wire_slot_capacity);
+    server.configure_rdma(&config).unwrap();
+    let encoded = serde_json::to_value(&config).unwrap();
+    assert_eq!(serde_json::from_value::<RdmaConfig>(encoded).unwrap(), config);
+    config.send_window_size = config.sq_depth + 1;
+    assert!(server.configure_rdma(&config).is_err());
+    config.send_window_size = 4;
+    config.send_window_bytes -= 1;
+    assert!(server.configure_rdma(&config).is_err());
+    config.send_window_bytes = 0;
+    config.receive_batch_size = 0;
+    assert!(server.configure_rdma(&config).is_err());
+    config.receive_batch_size = 8;
+    config.send_batch_size = 0;
+    assert!(server.configure_rdma(&config).is_err());
+}
+
+#[test]
 fn logical_control_limits_are_typed_and_bounded_in_both_directions() {
     let server = RpcServer::new(None);
     let mut config = RdmaConfig::default();
@@ -86,7 +112,7 @@ fn serialized_control_data_settings_derive_the_selected_sq_and_rq_windows() {
         ..RdmaConfig::default()
     }
     .with_control_data_capacity(65_536)
-    .is_err());
+    .is_ok());
     assert!(serde_json::from_str::<RdmaConfig>(r#"{"receive_queue_length": 1024}"#).is_err());
 }
 
@@ -100,7 +126,7 @@ fn service_layout_defaults_validate_capacity_and_preserve_explicit_tcp() {
 }
 
 #[test]
-fn typed_control_data_layout_accounts_for_control_and_forbids_aggregation() {
+fn typed_control_data_layout_accounts_for_both_regions_with_optional_packing() {
     let server = RpcServer::new(None);
     let mut config = RdmaConfig {
         wire_layout: RdmaWireLayout::ControlData,
@@ -110,7 +136,7 @@ fn typed_control_data_layout_accounts_for_control_and_forbids_aggregation() {
     };
     server.configure_rdma(&config).unwrap();
     config.aggregation_enabled = true;
-    assert!(server.configure_rdma(&config).is_err());
+    server.configure_rdma(&config).unwrap();
     config.aggregation_enabled = false;
     config.receive_arena_bytes -= 1;
     assert!(server.configure_rdma(&config).is_err());

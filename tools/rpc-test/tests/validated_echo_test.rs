@@ -144,6 +144,9 @@ fn strict_rdma_and_invalid_input_produce_setup_failure_reports() {
     for (verb, args) in [
         ("rdma", vec!["--device", "crowdb-missing-device"]),
         ("rpc", vec!["--loader-count", "0"]),
+        ("rpc", vec!["--payload-mix", "128:0"]),
+        ("rpc", vec!["--payload-mix", "128:1,128:2"]),
+        ("rpc", vec!["--payload-mix", "1048577:1"]),
     ] {
         let (output, report) = run(&server, verb, &args);
         assert!(!output.status.success(), "{output:?}");
@@ -152,5 +155,48 @@ fn strict_rdma_and_invalid_input_produce_setup_failure_reports() {
         assert_eq!(report["allow_tcp_fallback"], false);
         assert!(report["actual_path"].is_null());
         assert!(report["submit_rejects"].is_null());
+    }
+}
+
+#[test]
+fn mixed_sizes_validate_each_request_and_account_actual_completed_bytes() {
+    let server = TestServer::new();
+    server.0.register_echo_handler(100);
+    server.0.start();
+    for mode in ["coroutine", "tokio"] {
+        let (output, report) = run(
+            &server,
+            "rpc",
+            &[
+                "--loader-count",
+                "8",
+                "--connections",
+                "2",
+                "--mode",
+                mode,
+                "--payload-mix",
+                "0:1,127:2,4097:1",
+                "--payload-seed",
+                "93",
+            ],
+        );
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(report["valid"], true, "{report}");
+        let sizes = report["size_results"].as_array().unwrap();
+        assert_eq!(sizes.len(), 3);
+        let mut completed = 0;
+        let mut bytes = 0;
+        for (row, size) in sizes.iter().zip([0, 127, 4097]) {
+            assert_eq!(row["payload_bytes"], size);
+            let count = row["completed"].as_u64().unwrap();
+            assert!(count > 0, "{report}");
+            completed += count;
+            bytes += count * row["payload_bytes"].as_u64().unwrap();
+            assert!(row["p99_ns"].as_u64().unwrap() <= row["max_ns"].as_u64().unwrap());
+        }
+        assert_eq!(report["completed_in_window"], completed);
+        assert_eq!(report["payload_bytes_completed"], bytes);
+        let expected = f64::from(u32::try_from(bytes).unwrap());
+        assert!((report["payload_Bps"].as_f64().unwrap() - expected).abs() < f64::EPSILON);
     }
 }

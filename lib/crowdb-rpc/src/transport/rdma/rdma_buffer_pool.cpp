@@ -69,6 +69,15 @@ Buffer *RdmaBufferPool::borrow_range(const uint8_t *data, uint32_t size)
     return arena_->borrow_range(data, size);
 }
 
+Buffer *RdmaBufferPool::borrow_owned_range(Buffer *source, const uint8_t *data, uint32_t size)
+{
+    auto *borrowed = arena_->borrow_owned_range(source, data, size);
+    // External FFI views may retain a registered native allocation through
+    // their enclosing owner rather than its native descriptor. Preserve the
+    // bounded range lookup for those views before considering a staging copy.
+    return borrowed == nullptr ? arena_->borrow_range(data, size) : borrowed;
+}
+
 void RdmaBufferPool::recycle(Buffer *buffer)
 {
     arena_->recycle(buffer);

@@ -104,6 +104,19 @@ typedef struct crowdb_rpc_rdma_config
 } crowdb_rpc_rdma_config_t;
 
 void crowdb_rpc_rdma_config_init(crowdb_rpc_rdma_config_t *config);
+
+// Posting settings are separate to preserve earlier config layouts.
+typedef struct crowdb_rpc_rdma_post_config
+{
+    uint32_t struct_size;
+    uint32_t version;
+    uint32_t send_batch_size;
+    uint32_t receive_batch_size;
+    uint32_t send_window_size;
+    uint64_t send_window_bytes;
+} crowdb_rpc_rdma_post_config_t;
+
+void crowdb_rpc_rdma_post_config_init(crowdb_rpc_rdma_post_config_t *config);
 // Explicit cold configuration overrides environment; rejected after listen.
 crowdb_rpc_status crowdb_rpc_server_configure_rdma(crowdb_rpc_server_t server, const crowdb_rpc_rdma_config_t *config);
 // Version-two configuration adds the negotiated wire layout without changing
@@ -122,6 +135,11 @@ typedef struct crowdb_rpc_rdma_stream_config
     uint64_t control_send_budget_bytes;
     uint64_t control_receive_budget_bytes;
 } crowdb_rpc_rdma_stream_config_t;
+
+crowdb_rpc_status crowdb_rpc_server_configure_rdma_v4(crowdb_rpc_server_t             server,
+                                                      const crowdb_rpc_rdma_config_t *config, uint32_t wire_layout,
+                                                      const crowdb_rpc_rdma_stream_config_t *streams,
+                                                      const crowdb_rpc_rdma_post_config_t   *sends);
 
 void              crowdb_rpc_rdma_stream_config_init(crowdb_rpc_rdma_stream_config_t *config);
 crowdb_rpc_status crowdb_rpc_server_configure_rdma_v3(crowdb_rpc_server_t             server,

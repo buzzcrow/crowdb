@@ -130,6 +130,28 @@ TEST(RdmaOfferTest, ControlDataLayoutIsBoundByBothCapabilityAndPrivateOffer)
     EXPECT_TRUE(validate_rdma_capability(decoded, 2, 11, "test-device"));
 }
 
+TEST(RdmaOfferTest, PackedControlDataAdmissionIsExplicitAndBoundIntoTheOffer)
+{
+    auto client        = test_capability(11);
+    auto server        = test_capability(17);
+    client.wire_layout = server.wire_layout = RdmaWireLayout::ControlData;
+    client.receive_slot_capacity = server.receive_slot_capacity = RDMA_METADATA_CAPACITY + RDMA_CONTROL_CAPACITY;
+    client.receive_frame_limit                                  = 32;
+    server.receive_frame_limit                                  = 1;
+    RdmaEndpointCapability decoded;
+    ASSERT_TRUE(parse_rdma_handshake(serialize_rdma_handshake(client), &decoded));
+    EXPECT_EQ(decoded.receive_frame_limit, 32U);
+    EXPECT_TRUE(validate_rdma_capability(decoded, RDMA_PROTOCOL_VERSION, 11, "test-device"));
+    RdmaCmOffer offer;
+    ASSERT_TRUE(parse_rdma_offer(serialize_rdma_offer(client, &server), &offer));
+    EXPECT_TRUE(validate_rdma_offer(offer, server, &client, true));
+    EXPECT_EQ(offer.receive_frame_limit, 32U);
+    offer.receive_frame_limit = 1;
+    EXPECT_FALSE(validate_rdma_offer(offer, server, &client, true));
+    client.receive_frame_limit = 257;
+    EXPECT_FALSE(parse_rdma_offer(serialize_rdma_offer(client, &server), &offer));
+}
+
 TEST(RdmaOfferTest, LogicalControlLimitIsExplicitAndBoundIntoBothIdentities)
 {
     auto client                      = test_capability(31);

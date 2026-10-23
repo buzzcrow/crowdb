@@ -143,14 +143,15 @@ std::shared_ptr<Connection> RdmaTransport::accept()
     qp_attr.cap.max_send_sge    = config_.qp_max_send_sge;
     qp_attr.cap.max_recv_sge    = config_.qp_max_recv_sge;
     qp_attr.cap.max_inline_data = 0;
-    qp_attr.sq_sig_all          = 1;
+    qp_attr.sq_sig_all          = 0;
     qp_attr.qp_context          = id;
 
     if (rdma_create_qp(id, pd_, &qp_attr) != 0) {
         rdma_destroy_id(id);
         return nullptr;
     }
-    auto pools = std::make_shared<ConnectionPools>(config_.send_queue_capacity);
+    auto pools = std::make_shared<ConnectionPools>(config_.send_queue_capacity,
+                                                   config_.receive_batch_size > 1 ? config_.posted_receive_target : 0);
     configure_peer(*pools, peer_offer);
     pools->qp_number          = id->qp->qp_num;
     pools->effective_capacity = qp_attr.cap;
