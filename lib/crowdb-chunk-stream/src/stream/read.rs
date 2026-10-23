@@ -9,7 +9,6 @@ use crate::perf::{perf, PhaseTimer};
 use crate::{ChunkId, Result, StreamError, StreamExtentPage, StreamExtentPageFence, StreamManifest};
 use bytes::{Bytes, BytesMut};
 use crowdb_protocol::frame::{parse_frame, FrameLayout, FrameMagic, FrameRole, FRAME_GROUP_HEADER_BYTES};
-use futures::{stream, StreamExt, TryStreamExt};
 use std::sync::{atomic::Ordering, Arc};
 use std::time::Instant;
 
@@ -100,21 +99,43 @@ impl ChunkStream {
         self.metrics
             .physical_read_requests
             .fetch_add(reads.len() as u64, Ordering::Relaxed);
-        stream::iter(reads.iter().copied())
-            .map(|read| async move {
-                let frame = self
-                    .read_chunk_with_watchdog(
-                        read.chunk_id,
-                        read.frame_start,
-                        read.frame_length,
-                        read.logical_start,
-                    )
-                    .await?;
-                decode_segment(read, &frame)
-            })
-            .buffered(self.config.read_concurrency)
-            .try_collect()
-            .await
+        if let [read] = reads {
+            return Ok(vec![self.read_physical(*read).await?]);
+        }
+        let mut output = vec![None; reads.len()];
+        let mut tasks = tokio::task::JoinSet::new();
+        let mut next = 0;
+        while next < reads.len() || !tasks.is_empty() {
+            while next < reads.len() && tasks.len() < self.config.read_concurrency {
+                let index = next;
+                let read = reads[index];
+                let stream = self.clone();
+                tasks.spawn(async move { stream.read_physical(read).await.map(|value| (index, value)) });
+                next += 1;
+            }
+            let (index, value) = tasks
+                .join_next()
+                .await
+                .ok_or_else(|| StreamError::Internal("physical read task set ended early".into()))?
+                .map_err(|error| StreamError::Internal(format!("physical read task failed: {error}")))??;
+            output[index] = Some(value);
+        }
+        output
+            .into_iter()
+            .map(|value| value.ok_or_else(|| StreamError::Internal("physical read result is missing".into())))
+            .collect()
+    }
+
+    async fn read_physical(&self, read: PhysicalRead) -> Result<ReadSegment> {
+        let frame = self
+            .read_chunk_with_watchdog(
+                read.chunk_id,
+                read.frame_start,
+                read.frame_length,
+                read.logical_start,
+            )
+            .await?;
+        decode_segment(read, &frame)
     }
 
     /// Creates a bounded sequential reader ending at the current durable tail.

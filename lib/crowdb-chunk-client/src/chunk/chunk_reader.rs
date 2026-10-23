@@ -29,9 +29,11 @@ use crate::{ChunkAllocator, DiskWriter, IoError, ReadError, ReadResult};
 
 mod framing;
 mod layout;
+mod layout_cache;
 mod streaming;
 
 use layout::{strip_end, strip_read_parts, validate_strip_layout};
+use layout_cache::FrameLayoutCache;
 
 const KIB: u64 = 1024;
 const DEFAULT_STREAM_WINDOW: usize = 1024 * 1024;
@@ -133,6 +135,7 @@ pub struct ChunkReader {
     policy: ChunkReadPolicy,
     flow_metrics: Arc<crate::metrics::ReadFlowMetrics>,
     stream_budget: Arc<ReadBudget>,
+    frame_layouts: Arc<FrameLayoutCache>,
 }
 
 impl ChunkReader {
@@ -172,6 +175,7 @@ impl ChunkReader {
             policy,
             flow_metrics,
             stream_budget,
+            frame_layouts: Arc::default(),
         })
     }
 
@@ -401,8 +405,8 @@ impl ChunkReader {
             .ok_or_else(|| ReadError::InvalidLocations("frame end overflows".into()))?;
         for attempt in 1..=self.policy.max_layout_retries {
             let query_started = Instant::now();
-            let response = match self.query_chunk_timed(chunk_id).await {
-                Ok(response) => response,
+            let layout = match self.frame_layout(chunk_id, frame_end).await {
+                Ok(layout) => layout,
                 Err(error) => {
                     tracing::warn!(
                         chunk_high = chunk_id.high,
@@ -413,15 +417,12 @@ impl ChunkReader {
                         error = %error,
                         "verified frame layout query failed"
                     );
-                    return Err(map_metadata_error(error));
+                    return Err(error);
                 }
             };
-            let layout_validity_ms = response.layout_validity_ms;
-            let validity = Duration::from_millis(layout_validity_ms);
-            let deadline = query_started + validity.saturating_sub(self.policy.layout_safety_margin);
-            let mut chunk = response
-                .chunk
-                .ok_or_else(|| ReadError::ChunkDeleted(format!("{}:{}", chunk_id.high, chunk_id.low)))?;
+            let deadline = layout.deadline;
+            let layout_validity_ms = deadline.saturating_duration_since(Instant::now()).as_millis();
+            let mut chunk = (*layout.chunk).clone();
             tracing::debug!(
                 chunk_high = chunk_id.high,
                 chunk_low = chunk_id.low,
@@ -438,6 +439,7 @@ impl ChunkReader {
             {
                 Ok(result) => result,
                 Err(error) => {
+                    layout.invalidate();
                     tracing::warn!(
                         chunk_high = chunk_id.high,
                         chunk_low = chunk_id.low,
@@ -453,6 +455,7 @@ impl ChunkReader {
             let bytes = match extract_physical_range(&physical.ranges, frame_offset..frame_end) {
                 Ok(bytes) if physical.failures.is_empty() => bytes,
                 Ok(_) | Err(_) => {
+                    layout.invalidate();
                     let failed_start = physical.failures.first().map(|failure| failure.start);
                     let failed_end = physical.failures.first().map(|failure| failure.end);
                     let failed_error = physical.failures.first().map(|failure| failure.error.to_string());
@@ -492,7 +495,8 @@ impl ChunkReader {
             self.flow_metrics.frame_parse_wait_ns.inc_by(parse_ns);
             match parsed_frame {
                 Ok(frame) if frame.header.magic == expected_magic => {
-                    if Instant::now() >= deadline {
+                    if !layout.usable() {
+                        layout.invalidate();
                         tracing::warn!(
                             chunk_high = chunk_id.high,
                             chunk_low = chunk_id.low,
@@ -505,10 +509,14 @@ impl ChunkReader {
                         );
                         continue;
                     }
-                    self.mark_observed_failures(&mut chunk, observations).await?;
+                    if layout.has_new_failures(&observations) {
+                        layout.invalidate();
+                        self.mark_observed_failures(&mut chunk, observations).await?;
+                    }
                     return Ok(bytes);
                 }
                 Ok(frame) => {
+                    layout.invalidate();
                     tracing::warn!(
                         chunk_high = chunk_id.high,
                         chunk_low = chunk_id.low,
@@ -524,6 +532,7 @@ impl ChunkReader {
                     ));
                 }
                 Err(error) => {
+                    layout.invalidate();
                     let served_segments: Vec<Segment> = observations
                         .iter()
                         .flat_map(|observation| observation.served_segments.iter().copied())

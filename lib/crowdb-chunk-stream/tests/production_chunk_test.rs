@@ -28,6 +28,9 @@ use crowdb_protocol::diskdb::rpc::Segment;
 #[path = "production_chunk_test/local_progress.rs"]
 mod local_progress;
 
+#[path = "production_chunk_test/growth.rs"]
+mod growth;
+
 #[path = "production_chunk_test/scope.rs"]
 mod scope;
 
@@ -172,40 +175,44 @@ impl ChunkAllocator for Allocator {
                 chunk: Some(chunk.clone()),
             });
         }
-        let first = chunk.strips.first().unwrap();
-        let capacity = request.strip_size * first.unit_kb;
-        let offset = chunk.capacity;
-        let sequence = chunk.next_strip_sequence;
+        let unit_kb = chunk.strips.first().unwrap().unit_kb;
+        let capacity = request.strip_size * unit_kb;
         let chunk_id = chunk.id.unwrap();
-        let segments = (1..=request.copy_count)
-            .map(|disk| Segment {
-                disk_id: Some(DiskId {
-                    high: u64::from(sequence) * 10 + u64::from(disk),
-                    low: 0,
-                }),
-                owner_chunk: Some(chunk_id),
-                unit_offset: 0,
-                zone_index: 0,
-                unit_count: request.strip_size,
-                allocation_ts: 1,
-            })
-            .collect();
-        let strip = ChunkStrip {
-            chunk_offset: offset,
-            strip_sequence: sequence,
-            unit_kb: first.unit_kb,
-            capacity,
-            strip_type: StripType::Mirror as i32,
-            strip: Some(Strip::MirrorStrip(MirrorStrip { segments })),
-            ..ChunkStrip::default()
-        };
-        chunk.strips.push(strip.clone());
-        chunk.capacity += capacity;
-        chunk.next_strip_sequence += 1;
+        let mut added = Vec::new();
+        for _ in 0..request.strip_count {
+            let offset = chunk.capacity;
+            let sequence = chunk.next_strip_sequence;
+            let segments = (1..=request.copy_count)
+                .map(|disk| Segment {
+                    disk_id: Some(DiskId {
+                        high: u64::from(sequence) * 10 + u64::from(disk),
+                        low: 0,
+                    }),
+                    owner_chunk: Some(chunk_id),
+                    unit_offset: 0,
+                    zone_index: 0,
+                    unit_count: request.strip_size,
+                    allocation_ts: 1,
+                })
+                .collect();
+            let strip = ChunkStrip {
+                chunk_offset: offset,
+                strip_sequence: sequence,
+                unit_kb,
+                capacity,
+                strip_type: StripType::Mirror as i32,
+                strip: Some(Strip::MirrorStrip(MirrorStrip { segments })),
+                ..ChunkStrip::default()
+            };
+            chunk.strips.push(strip.clone());
+            added.push(strip);
+            chunk.capacity += capacity;
+            chunk.next_strip_sequence += 1;
+        }
         chunk.modify_ts += 1;
         Ok(AppendChunkResponse {
             modify_ts: chunk.modify_ts,
-            strips: vec![strip],
+            strips: added,
             chunk: None,
         })
     }
@@ -517,7 +524,7 @@ async fn production_store_grows_and_writes_across_mirror_strips() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(grown.capacity, 2 * 1024 * 1024);
+    assert_eq!(grown.capacity, 8 * 1024 * 1024);
     let payload = Bytes::from(vec![0x5a; 1024 * 1024 + 5]);
     let data = Bytes::from(
         crowdb_protocol::frame::encode_append_group_views(active.chunk_id, 0, &payload, 1)
@@ -751,7 +758,7 @@ async fn stream_repair_preserves_a_batch_crossing_mirror_strips() {
     assert_eq!(&read[prefix.len()..], suffix.as_ref());
     assert_eq!(stream.metrics().rollovers, 0);
     let chunk = allocator.chunk.lock().unwrap().clone().unwrap();
-    assert_eq!(chunk.strips.len(), 2);
+    assert_eq!(chunk.strips.len(), 8);
     let Some(Strip::MirrorStrip(mirror)) = &chunk.strips[1].strip else {
         panic!("expected mirror strip");
     };

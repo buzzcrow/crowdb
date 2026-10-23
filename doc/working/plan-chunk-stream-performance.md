@@ -24,10 +24,11 @@ KV work, with compact locations, incremental directories, and bounded recovery.
   old-service fallback or capability negotiation. Remove compatibility code and
   its fixtures. Existing development runtime artifacts remain preserved; a test
   fixture creates data in its current format.
-- Matched retained-MemDisk baseline remains under
-  `r244-chunk-stream/baseline/`; six Stream performance gates are still red.
-  The intermediate rerun at `377870bb` also fails six gates; its measured
-  comparison is recorded below. No completed performance acceptance is claimed.
+- The matched retained-MemDisk baseline and intermediate rerun at `377870bb`
+  fail six performance gates. The first hot-path run at `fc6ae4e4` passes the
+  single-producer append gate and directory-publication bounds, but fails five
+  gates, including a replay regression being corrected. Evidence locations and
+  measured comparisons are recorded below. Performance acceptance is incomplete.
 - The two pre-existing unrelated user edits stay outside this requirement.
 
 - The main worker now uses current grouped frames and one location per append.
@@ -53,9 +54,10 @@ KV work, with compact locations, incremental directories, and bounded recovery.
   reads through that barrier. Remote persisted fallback can lag; WAL checkpoints
   and split cutovers explicitly flush before publishing their recovery proof.
 - Read planning validates each immutable extent page on cache insertion instead
-  of rescanning all entries for every frame. Bounded read futures preserve order
-  without spawning one Tokio task per physical frame. Frame CRC, role and chunk
-  identity checks remain on every data read.
+  of rescanning all entries for every frame. The first same-task buffered-read
+  implementation regressed replay; restore bounded multi-task execution for
+  multi-frame reads, retaining a direct path for single-frame reads. Frame CRC,
+  role and chunk identity checks remain on every data read.
 - Add perf distributions for local mapping publication, owner checkpoint, read
   planning and physical reads. Retain original performance workloads and gates.
 - Verification: 276 tests across Stream, Chunk-KV and Chunk-KV server pass with
@@ -69,9 +71,59 @@ KV work, with compact locations, incremental directories, and bounded recovery.
   `/home/cj/.cache/crowdb-r244-live-directory-debug-archive/`, freeing 16.39 GiB.
   No source, persistent fixture or release baseline was removed. The complete
   rerun passed after restoring free space.
-- Matched performance results are pending. The flat directory
-  still rebuilds at lifecycle checkpoints; lazy indexed runtime wiring and
+- After the successful gates and commit, the entire project runtime/build
+  directories disappeared during the session. This work issued no deletion of
+  those directories; the cause is unestablished. Earlier raw artifacts are no
+  longer available at their recorded paths. Their numbers below are historical
+  records, not re-created raw evidence. New logs and receipts are saved outside
+  the project at `/home/cj/.cache/crowdb-r244-live-directory-results/`.
+- The flat directory still rebuilds at lifecycle checkpoints; lazy indexed runtime wiring and
   process-authorized content recovery remain unfinished. Do not mark R244 complete.
+
+### First hot-path measurement and follow-up
+
+- Full rebuild and unchanged seven-case regression at `fc6ae4e4`: artifacts in
+  `/home/cj/.cache/crowdb-r244-live-directory-results/20261023T095340Z/`, including
+  `intent.json`, `run.log`, `receipt.json`, original `stream/results.tsv`, phase
+  logs and successful fixture-stop receipt. Previous measurements are explicitly
+  transcribed from the recorded history in `previous-measurements.json`.
+- Compared with `377870bb`: 4 KiB/1T 156.68 -> 294.51 ops/s, average
+  6.381 -> 3.394 ms, p99 7.461 -> 3.933 ms; 4 KiB/32T 1894.28 -> 3451.04 ops/s,
+  p99 39.568 -> 22.394 ms. 1 MiB/8T 46.74 -> 53.80 MiB/s; 4 MiB rollover
+  94.23 -> 93.50 MiB/s; random 4 KiB 22019.79 -> 21761.24 ops/s;
+  replay 159.29 -> 88.41 MiB/s. GC's single sample is 22.693 ms.
+- All workloads have zero errors/watchdogs; queue/RSS bounds pass. Directory
+  publications are attachment-only: 1 for 2946 single-producer batches, 1 for
+  2045 concurrent batches, 3 for 545 large batches, and 2 for 65 rollover batches.
+  The script exits 1 with five performance gate failures; this is not acceptance.
+- Follow-up targets the measured causes: large-append capacity handling averages
+  11.151 ms, and replay's physical-read phase accounts for 87.673 of 87.723 ms
+  per 8 MiB window. Add bounded 8 MiB growth windows with at most eight parallel
+  strip initializations; expose capacity only after all required replica syncs.
+  Record allocator growth and strip initialization separately in perf histograms.
+- Cache up to 64 verified-frame layouts under their original server deadline.
+  Reuse requires a valid snapshot covering the requested durable prefix;
+  growth, expiry, physical failures and checksum failures force refresh. Reader
+  clones share invalidation. No payload integrity check or required replica
+  synchronization is removed. Focused tests cover growth amortization/hard caps,
+  uncertain initialization drain, cache deadline, prefix growth and corruption.
+- The corrupt-replica regression also exposed unnecessary cache invalidation
+  when a read skipped an already recorded unavailable segment. Invalidate only
+  newly observed failures; the refreshed healthy fallback layout remains reusable
+  under its original grant. The test verifies both exact bytes and query counts.
+- Follow-up verification: all 431 tests in the four affected crates (Chunk
+  client, Stream, Chunk-KV, Chunk-KV server) pass with zero failures/ignored cases.
+  Full logs and the receipt are in
+  `/home/cj/.cache/crowdb-r244-live-directory-results/checks-20261023T101920Z/tests-verified.log`.
+  The preceding compile failure was a borrowed stream-future `Send` inference
+  limitation, replaced by an explicitly bounded `FuturesUnordered` queue.
+  Growth expectations now assert the exact 8 MiB window, and corruption query
+  counts include the existing confirmed-observation metadata refresh.
+- Strict all-target clippy for the same four crates and workspace fmt pass.
+  After the MSRV-compatible `Option::map_or` spelling and checked test conversion,
+  all 42 reader/production-adapter tests pass again. Logs are
+  `clippy-verified.log`, `focused-verified.log` and `fmt-verified.log` in that
+  checks directory. No lint suppression, timeout extension or gate change was used.
 
 ## Gap assessment
 
@@ -1671,13 +1723,16 @@ adaptation rather than a new transport or storage engine.
   `app/crowdb-chunk-kv-server/src/storage.rs`.
 - [~] **T20a — Remove the per-batch directory wait and read amplification**:
   publish lock-free local append mappings, add an ordered checkpoint/finite view,
-  flush WAL recovery proofs, validate cached directory pages once and execute
-  bounded frame reads without per-frame tasks. Keep cursor fencing until T18/T19
+  flush WAL recovery proofs, validate cached directory pages once, reuse bounded
+  valid chunk layouts and preserve parallel multi-frame reads. Amortize physical
+  growth and initialize new strips concurrently with bounded memory. Keep cursor fencing until T18/T19
   and cold recovery are complete. Verify affected Stream/WAL/server tests and
   repeat the unchanged seven-case retained-MemDisk benchmark.
   Files: `lib/crowdb-chunk-stream/src/stream/view.rs`,
   `lib/crowdb-chunk-stream/src/stream/{append,read,worker,publication}.rs`,
   `lib/crowdb-chunk-stream/src/{metadata,production,perf}.rs`,
+  `lib/crowdb-chunk-stream/src/production_chunk/{allocation,growth}.rs`,
+  `lib/crowdb-chunk-client/src/chunk/chunk_reader{,/layout_cache}.rs`,
   `lib/crowdb-chunk-kv/src/partition/{journal,split}.rs`.
 - [ ] **T20 — Integrate mirror-completion append**: after T05–T19 dependencies
   pass, replace `resolve_cursor_advance` and per-batch `publish_state` with

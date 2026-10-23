@@ -31,6 +31,9 @@ const SHARD: usize = 64 * KIB;
 #[path = "chunk_reader_test/frame_revision.rs"]
 mod frame_revision;
 
+#[path = "chunk_reader_test/layout_cache.rs"]
+mod layout_cache;
+
 struct MemoryDiskIo {
     shards: Vec<(DiskId, Bytes)>,
     failed: Vec<DiskId>,

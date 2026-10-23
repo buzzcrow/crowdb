@@ -7,7 +7,10 @@ use super::{
     chunk_capacity, io_error, update_state, write_cursor, ActiveChunkDescriptor, ChunkId, Ordering,
     ProductionStreamChunkStore, Result, StreamError, StreamName,
 };
+use crate::perf::{perf, PhaseTimer};
 use crowdb_protocol::chunkdb::rpc::{AppendChunkRequest, AppendChunkResponse, Chunk, Strip, StripType};
+
+const GROWTH_WINDOW_BYTES: u64 = 8 * 1024 * 1024;
 
 impl ProductionStreamChunkStore {
     pub(super) async fn grow_active_chunk(
@@ -43,7 +46,13 @@ impl ProductionStreamChunkStore {
                     capacity,
                 }));
             }
-            let response = self.request_growth(&chunk, required_capacity, capacity).await?;
+            let target = required_capacity
+                .div_ceil(GROWTH_WINDOW_BYTES)
+                .saturating_mul(GROWTH_WINDOW_BYTES)
+                .min(self.chunk_capacity_bytes);
+            let growth_timer = PhaseTimer::start(&perf().growth);
+            let response = self.request_growth(&chunk, target, capacity).await?;
+            drop(growth_timer);
             if let Some(current) = response.chunk {
                 update_state(&state, current);
                 if attempt == 0 {
@@ -63,11 +72,9 @@ impl ProductionStreamChunkStore {
             updated.capacity = updated.strips.iter().map(|strip| strip.capacity).sum();
             let capacity = chunk_capacity(&updated)?;
             update_state(&state, updated.clone());
-            for strip in &added {
-                self.initialize_strip(&updated, strip).await.map_err(|error| {
-                    StreamError::InvalidRequest(format!("stream growth initialization is uncertain: {error}"))
-                })?;
-            }
+            self.initialize_strips(&updated, &added).await.map_err(|error| {
+                StreamError::InvalidRequest(format!("stream growth initialization is uncertain: {error}"))
+            })?;
             state.initialized_capacity.store(capacity, Ordering::Release);
             return Ok(Some(ActiveChunkDescriptor {
                 chunk_id,

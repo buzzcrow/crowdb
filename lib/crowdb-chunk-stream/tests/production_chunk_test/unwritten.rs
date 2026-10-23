@@ -191,11 +191,11 @@ async fn cross_strip_tail_header_survives_later_growth_and_the_next_append() {
         chunks.durable_cursor(chunk_id, 9).await.unwrap().offset,
         complete_end
     );
-    assert_eq!(chunks.current_capacity(chunk_id).await.unwrap(), 2 * 1024 * 1024);
+    assert_eq!(chunks.current_capacity(chunk_id).await.unwrap(), 8 * 1024 * 1024);
     assert_eq!(observed_end(&allocator, &disks, name).await, complete_end);
     let publications = metadata.metadata_publish_count();
     chunks
-        .grow_mirrored(name, 9, chunk_id, 3 * 1024 * 1024)
+        .grow_mirrored(name, 9, chunk_id, 9 * 1024 * 1024)
         .await
         .unwrap()
         .unwrap();
@@ -275,6 +275,9 @@ async fn uncertain_growth_initialization_cannot_be_retried_or_written() {
         .grow_mirrored(name, 9, active.chunk_id, active.capacity + 1)
         .await
         .is_err());
+    // All seven added strips complete their submitted work, including the healthy
+    // replica of the failing strip, before uncertain initialization is returned.
+    assert_eq!(disks.fsyncs.load(Ordering::Acquire), 17);
     let submissions = disks.writes.lock().unwrap().len();
     assert!(store
         .grow_mirrored(name, 9, active.chunk_id, active.capacity + 1)

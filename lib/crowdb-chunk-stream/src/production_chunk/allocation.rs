@@ -3,10 +3,12 @@
 
 //! Fresh attributed Stream/Wal allocation before attachment publication.
 
+use crate::perf::{perf, PhaseTimer};
 use bytes::Bytes;
 use crowdb_chunk_client::STREAM_STRIP_BYTES;
 use crowdb_protocol::chunk_stream::StreamPurpose;
 use crowdb_protocol::chunkdb::rpc::{AllocateChunkRequest, Chunk, ChunkState, ChunkStrip, Strip, StripType};
+use futures::{stream::FuturesUnordered, StreamExt};
 
 use super::{
     io_error, progress, ActiveChunkDescriptor, Ordering, ProductionStreamChunkStore, Result, StreamError,
@@ -68,7 +70,27 @@ impl ProductionStreamChunkStore {
         })
     }
 
+    pub(super) async fn initialize_strips(&self, chunk: &Chunk, strips: &[ChunkStrip]) -> Result<()> {
+        // Await every submitted synchronization even if another strip failed.
+        let mut pending = FuturesUnordered::new();
+        let mut strips = strips.iter();
+        for strip in strips.by_ref().take(8) {
+            pending.push(self.initialize_strip(chunk, strip));
+        }
+        let mut error = None;
+        while let Some(result) = pending.next().await {
+            if let Err(failure) = result {
+                error.get_or_insert(failure);
+            }
+            if let Some(strip) = strips.next() {
+                pending.push(self.initialize_strip(chunk, strip));
+            }
+        }
+        error.map_or(Ok(()), Err)
+    }
+
     pub(super) async fn initialize_strip(&self, chunk: &Chunk, strip: &ChunkStrip) -> Result<()> {
+        let _timer = PhaseTimer::start(&perf().initialize);
         progress::ensure_mirror_copies(strip, self.mirror_copies)?;
         if u64::from(strip.capacity) * 1024 != STREAM_STRIP_BYTES {
             return Err(StreamError::Corruption(

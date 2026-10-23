@@ -132,6 +132,7 @@ pub struct ReadFlowMetrics {
     pub(crate) stream_bytes_reserved: Arc<Counter>,
     pub(crate) stream_bytes_released: Arc<Counter>,
     pub(crate) layout_queries: Arc<Counter>,
+    pub(crate) layout_cache_hits: Arc<Counter>,
     pub(crate) layout_query_wait_ns: Arc<Counter>,
     pub(crate) strip_read_wait_ns: Arc<Counter>,
     pub(crate) chunk_read_wait_ns: Arc<Counter>,
@@ -153,6 +154,7 @@ pub struct ReadFlowMetricsSnapshot {
     pub stream_bytes_reserved: u64,
     pub stream_bytes_released: u64,
     pub layout_queries: u64,
+    pub layout_cache_hits: u64,
     pub layout_query_wait_ns: u64,
     pub strip_read_wait_ns: u64,
     pub chunk_read_wait_ns: u64,
@@ -190,6 +192,7 @@ impl ReadFlowMetricsSnapshot {
                 .stream_bytes_released
                 .saturating_sub(earlier.stream_bytes_released),
             layout_queries: self.layout_queries.saturating_sub(earlier.layout_queries),
+            layout_cache_hits: self.layout_cache_hits.saturating_sub(earlier.layout_cache_hits),
             layout_query_wait_ns: self
                 .layout_query_wait_ns
                 .saturating_sub(earlier.layout_query_wait_ns),
@@ -229,6 +232,7 @@ impl ReadFlowMetrics {
             stream_bytes_reserved: counter("chunkio.read.stream_bytes_reserved.c"),
             stream_bytes_released: counter("chunkio.read.stream_bytes_released.c"),
             layout_queries: counter("chunkio.read.layout_queries.c"),
+            layout_cache_hits: counter("chunkio.read.layout_cache_hits.c"),
             layout_query_wait_ns: counter("chunkio.read.layout_query_wait_ns.c"),
             strip_read_wait_ns: counter("chunkio.read.strip_read_wait_ns.c"),
             chunk_read_wait_ns: counter("chunkio.read.chunk_read_wait_ns.c"),
@@ -251,6 +255,7 @@ impl ReadFlowMetrics {
             stream_bytes_reserved: self.stream_bytes_reserved.snapshot().total,
             stream_bytes_released: self.stream_bytes_released.snapshot().total,
             layout_queries: self.layout_queries.snapshot().total,
+            layout_cache_hits: self.layout_cache_hits.snapshot().total,
             layout_query_wait_ns: self.layout_query_wait_ns.snapshot().total,
             strip_read_wait_ns: self.strip_read_wait_ns.snapshot().total,
             chunk_read_wait_ns: self.chunk_read_wait_ns.snapshot().total,
