@@ -1,57 +1,20 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+#[path = "common/read_payload_fixture.rs"]
+mod fixture;
 #[path = "common/read_payload.rs"]
 mod storage;
 
 use crowdb_chunk_client::{ChunkReadPolicy, ChunkReader};
-use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkState, ChunkStrip, Location, MirrorStrip, Strip};
-use crowdb_protocol::common::{ChunkId, DiskId};
-use crowdb_protocol::diskdb::rpc::Segment;
-use crowdb_protocol::frame::{encode_frame, FrameMagic};
-use crowdb_rpc_ffi::OwnedPayload;
 use std::sync::Arc;
 
 #[tokio::test]
 async fn framing_and_stream_credits_preserve_original_allocation_metadata() {
-    let id = ChunkId { high: 13, low: 37 };
-    let mut data = Vec::with_capacity(4096);
-    data.extend_from_slice(&encode_frame(FrameMagic::RepoSmallV1, id, b"payload", 1).unwrap());
-    let frame_length = data.len();
-    let original = OwnedPayload::from(data);
-    let backing = Arc::clone(original.allocation().unwrap());
-    let segment = Segment {
-        disk_id: Some(DiskId { high: 1, low: 1 }),
-        unit_count: 1,
-        ..Segment::default()
-    };
-    let storage = Arc::new(storage::TestPayloadStorage {
-        chunk: Chunk {
-            id: Some(id),
-            state: ChunkState::Sealed as i32,
-            capacity: 1,
-            sealed_length: 1,
-            strips: vec![ChunkStrip {
-                unit_kb: 1,
-                capacity: 1,
-                sealed_length: 1,
-                sealed_ts_ms: 1,
-                strip: Some(Strip::MirrorStrip(MirrorStrip {
-                    segments: vec![segment],
-                })),
-                ..ChunkStrip::default()
-            }],
-            ..Chunk::default()
-        },
-        data: original,
-    });
+    let (storage, location) = fixture::storage();
+    let frame_length = storage.data.len();
+    let backing = Arc::clone(storage.data.allocation().unwrap());
     let reader = ChunkReader::new(storage.clone(), storage, ChunkReadPolicy::default()).unwrap();
-    let location = Location {
-        chunk_id: Some(id),
-        length: frame_length as u64,
-        logical_length: 7,
-        ..Location::default()
-    };
     let mut stream = reader.read_stream(&[location]).unwrap();
     let payload = stream.next_payload().await.unwrap().unwrap();
     assert_eq!(payload.as_ref(), b"payload");
@@ -71,4 +34,45 @@ async fn framing_and_stream_credits_preserve_original_allocation_metadata() {
         reader.flow_metrics_snapshot().stream_bytes_released,
         frame_length as u64
     );
+}
+
+#[tokio::test]
+async fn metrics_preserve_payload_ownership_and_record_one_read() {
+    use crowdb_chunk_client::{ChunkClientMetrics, ChunkIoClient};
+    use crowdb_common::metrics::{MetricPoint, MetricsRegistry};
+    use crowdb_protocol::chunkdb::rpc::ChunkType;
+
+    let (storage, location) = fixture::storage();
+    let backing = Arc::clone(storage.data.allocation().unwrap());
+    let frame_length = storage.data.len();
+    let mut registry = MetricsRegistry::new();
+    let metrics = Arc::new(ChunkClientMetrics::register(&mut registry));
+    let client = ChunkIoClient::from_parts(storage.clone(), storage, ChunkType::S3).with_metrics(&metrics);
+    assert_eq!(
+        client.transport_status_json().unwrap(),
+        br#"{"source":"original"}"#
+    );
+    let mut stream = client.read_stream(&[location]).unwrap();
+    let payload = stream.next_payload().await.unwrap().unwrap();
+    assert_eq!(payload.as_ref(), b"payload");
+    assert!(Arc::ptr_eq(payload.allocation().unwrap(), &backing));
+    assert_eq!(payload.allocation().unwrap().capacity(), 4096);
+    assert_eq!(
+        payload.as_ptr(),
+        backing.bytes()[payload.allocation_offset()..].as_ptr()
+    );
+    assert!(stream.next_payload().await.is_none());
+    drop(stream);
+    assert_eq!(metrics.read_flow.snapshot().stream_bytes_released, 0);
+    drop(payload);
+    assert_eq!(
+        metrics.read_flow.snapshot().stream_bytes_released,
+        frame_length as u64
+    );
+    assert!(matches!(
+        registry.snapshot_named("chunkio.diskio.read.e2e.lh", 1.0),
+        Some(MetricPoint::Histogram { total: 1, .. })
+    ));
+    assert!(matches!(registry.snapshot_named("chunkio.diskio.read.bw", 1.0),
+        Some(MetricPoint::Bandwidth { total_bytes, .. }) if total_bytes == frame_length as u64));
 }

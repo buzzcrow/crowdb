@@ -44,6 +44,10 @@ impl ChunkAllocator for TestPayloadStorage {
 
 #[async_trait]
 impl DiskWriter for TestPayloadStorage {
+    fn transport_observation(&self) -> Result<Option<Vec<u8>>> {
+        Ok(Some(br#"{"source":"original"}"#.to_vec()))
+    }
+
     async fn write(&self, _: &Segment, _: u64, _: Bytes) -> Result<()> {
         panic!("read wrote storage")
     }

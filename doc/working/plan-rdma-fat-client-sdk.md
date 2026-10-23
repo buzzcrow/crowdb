@@ -53,13 +53,13 @@ RDMA plan. Native SDK implementation and acceptance remain outstanding.
   shared clients instead of reconnecting for each facade. Files:
   `lib/crowdb-sdk-native/src/runtime.rs`, `lib/crowdb-access-s3/src/storage.rs`,
   `lib/crowdb-chunk-client/src/client.rs`.
-- [~] **Define business context**: expose `S3Client::new(runtime, config)` with
+- [x] **Define business context**: expose `S3Client::new(runtime, config)` with
   tenant/write policy and typed per-operation request identity, deadline,
   cancellation, conditions, and range. Preserve S3 errors and uncertain
   outcomes without HTTP headers, XML, or `CredentialProvider`. Files:
   `lib/crowdb-sdk-native/src/s3/`, `lib/crowdb-access-s3/src/error.rs`,
   `lib/crowdb-access-s3/src/condition.rs`, `lib/crowdb-access-s3/src/range.rs`.
-- [~] **Define common delivery**: reads return metadata plus a pull-based
+- [x] **Define common delivery**: reads return metadata plus a pull-based
   `next() -> Result<Option<BufferLease>, _>` body; `Ok(None)` means applicable
   length/integrity checks passed. Preserve terminal failure across subsequent
   polling; early drop is cancellation, not successful EOF. Define unique
@@ -89,7 +89,7 @@ RDMA plan. Native SDK implementation and acceptance remain outstanding.
   `lib/crowdb-sdk-native/src/topology.rs`,
   `lib/crowdb-access-s3/src/metadata/record.rs`,
   `lib/crowdb-chunk-client/src/client.rs`.
-- [~] **Handle stale observations**: retain catalog invalidation, endpoint
+- [ ] **Handle stale observations**: retain catalog invalidation, endpoint
   refresh, ownership epochs, and generation fencing. Old views stay safe to
   inspect but cannot force execution past validation. Return typed
   stale/fenced/deadline outcomes when refresh fails; never replay ambiguous
@@ -107,7 +107,7 @@ RDMA plan. Native SDK implementation and acceptance remain outstanding.
   `app/crowdb-access-server/src/s3/operations.rs`,
   `app/crowdb-access-server/src/s3/operations/delete.rs`,
   `lib/crowdb-sdk-native/src/s3/`.
-- [~] **Extract streaming GET**: adapt `PreparedGet`/`VerifiedGetStream` to
+- [x] **Extract streaming GET**: adapt `PreparedGet`/`VerifiedGetStream` to
   typed metadata and a lazy native body with logical offsets. Preserve
   selected generation, range checks, storage checksums, and final checksum
   errors. Do not expose HTTP strings or RPC fragments as native object data.
@@ -131,12 +131,16 @@ RDMA plan. Native SDK implementation and acceptance remain outstanding.
   `lib/crowdb-access-multipart/`,
   `app/crowdb-access-server/src/s3/operations/multipart.rs`,
   `lib/crowdb-sdk-native/src/s3/`.
-- [ ] **Verify native TCP parity first**: compare supported operations through
+- [x] **Verify native TCP parity first**: compare supported operations through
   HTTP and native entry points, then run native access without an HTTP
   listener or S3 credential store. Compare bytes, metadata, conditions,
   errors, publication, and cancellation before enabling RDMA. Files:
   `lib/crowdb-sdk-native/tests/`, `lib/crowdb-access-s3/tests/`,
-  `app/crowdb-access-server/tests/`.
+  `app/crowdb-access-server/tests/`, `e2e-test/tests/access_s3/native/`.
+  The `s3.native` owned fixture starts only KV, Diskdb, DiskIO, Chunkdb and
+  Chunk-KV. Its client corpus covers mixed sizes, framed input, multipart,
+  generation-bound copy, paged listing, range/topology and restart. A separate
+  `s3.native.parity` fixture compares the native and trusted HTTP entry points.
 
 ## Phase 4: retained leases, RDMA, and bounded lifecycle
 
@@ -158,7 +162,7 @@ RDMA plan. Native SDK implementation and acceptance remain outstanding.
   `lib/crowdb-diskio-client/src/semantic.rs`,
   `lib/crowdb-chunk-client/src/chunk/chunk_reader.rs`,
   `lib/crowdb-access-s3/src/retrieval.rs`.
-- [~] **Wire producer buffers**: reuse `ProducerBufferAllocator` and
+- [x] **Wire producer buffers**: reuse `ProducerBufferAllocator` and
   `WritableBuffer`, expose only initialized frozen prefixes, and retain
   submitted owners through transport/disk completion. Ordinary input
   adapters stay bounded and account for copies. Files:
@@ -186,7 +190,7 @@ RDMA plan. Native SDK implementation and acceptance remain outstanding.
 
 ## Phase 5: S3 acceptance and Dataset handoff
 
-- [ ] **Run native and OCI profiles**: extend accepted launcher/runtime
+- [~] **Run native and OCI profiles**: extend accepted launcher/runtime
   conventions with the S3 SDK corpus, no-device TCP and shared-HCA profiles.
   Record topology, actual path/classes, independent QPs, held-capacity high
   water, errors, and exact HTTP/native parity. Native-only execution must not
@@ -412,8 +416,27 @@ transport acceptance alone cannot establish SDK completion.
   The three DiskIO HCA failure cases also pass. Native (49 cases), DiskIO and
   ChunkIO all-target suites, focused three-crate clippy and formatting pass.
 
-- Next: native RPC write/registered producer acceptance and the complete
-  real-service native/OCI S3 corpus, including frontend parity and restart.
+- The real-service `s3.native` and `s3.native.parity` TCP profiles pass in
+  `run-0ae636d32f1c4b228918a4bf1099708c`. Twelve storage services run without
+  Access Server or credential lookup; host and unprivileged no-device OCI
+  clients verify the corpus before and after all storage services restart.
+  The separate thirteen-service fixture verifies HTTP/native bytes, ETags,
+  user metadata, conditions/range errors, signed copy and multipart delivery.
+  Corpus sizes span empty through 4 MiB plus 31 bytes, crossing frame and
+  small/large boundaries. Reader compatibility copies are zero; held capacity
+  reaches exactly the configured 8 MiB pressure limit and resumes on release.
+  A simulated asynchronous copy retains the last lease through owned shutdown.
+  Small writer input remains retained for open-strip mirror repair until pool
+  drain; after owned shutdown both producer and held charges return to zero.
+  Fresh reader runtime artifacts intentionally have zero producer high water.
+  The fixture suite (157 cases), focused E2E clippy and workspace Rust lint pass.
+- [x] **Preserve observed reads with metrics**: forward owned payloads and
+  transport/topology observations through `MetricsDiskWriter`; test original
+  allocation identity and read accounting through the public client facade.
+  Both read-owner cases, all-target ChunkIO clippy, Rust formatting and
+  tree-lint pass.
+- Next: native RPC write/registered producer and shared-HCA native/OCI corpus,
+  stale endpoint acceptance, distribution documentation and final gates.
 
 ## Subsequent Dataset integration under R220
 
