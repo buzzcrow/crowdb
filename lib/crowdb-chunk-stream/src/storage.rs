@@ -37,6 +37,14 @@ pub struct MirrorStripImage {
     pub full_image: Bytes,
 }
 
+/// Ordered bounded strip images and the exact complete data boundary of one batch.
+#[derive(Clone, Copy)]
+pub struct StreamMirrorWrite<'a> {
+    pub physical_offset: u64,
+    pub complete_end: u64,
+    pub images: &'a [MirrorStripImage],
+}
+
 #[async_trait]
 pub trait StreamRegistry: Send + Sync {
     async fn load(&self, stream_name: StreamName) -> Result<Option<StreamBinding>>;
@@ -72,6 +80,8 @@ pub trait StreamMetadataStore: Send + Sync {
 
 #[async_trait]
 pub trait StreamChunkStore: Send + Sync {
+    /// Required synchronized replica count for append traffic accounting.
+    fn mirror_copies(&self) -> u32;
     /// Current physical capacity from the chunk layer, independent of a cached
     /// Stream checkpoint.
     /// # Errors
@@ -95,14 +105,12 @@ pub trait StreamChunkStore: Send + Sync {
     ) -> Result<Option<ActiveChunkDescriptor>> {
         Ok(None)
     }
-    async fn write_mirrors_with_images(
+    async fn write_mirrors(
         &self,
         stream_name: StreamName,
         writer_epoch: u64,
         chunk_id: ChunkId,
-        physical_offset: u64,
-        data: Bytes,
-        images: &[MirrorStripImage],
+        write: StreamMirrorWrite<'_>,
     ) -> Result<()>;
     async fn advance_cursor(
         &self,

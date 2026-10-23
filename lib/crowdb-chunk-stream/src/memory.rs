@@ -21,7 +21,8 @@ mod directory_records;
 mod metadata;
 
 use crate::{
-    CursorAdvance, DurableCursor, Result, StreamChunkStore, StreamError, StreamRegistry, TrimmedChunk,
+    CursorAdvance, DurableCursor, Result, StreamChunkStore, StreamError, StreamMirrorWrite, StreamRegistry,
+    TrimmedChunk,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -208,6 +209,56 @@ impl MemoryStreamStore {
         Bytes::copy_from_slice(&chunk.bytes[..usize::try_from(chunk.synchronized_cursor).unwrap()])
     }
 
+    /// Writes actual encoded groups through the same image contract as production.
+    /// # Errors
+    /// Returns invalid bounds, owner or write failures.
+    /// # Panics
+    /// Panics if the test chunk is absent or its cursor exceeds addressable memory.
+    pub async fn write_groups_for_tests(
+        &self,
+        name: StreamName,
+        epoch: u64,
+        chunk_id: ChunkId,
+        offset: u64,
+        data: Bytes,
+    ) -> Result<()> {
+        let start = usize::try_from(offset)
+            .map_err(|_| StreamError::InvalidRequest("test offset overflows".into()))?;
+        let mut prefix = self.synchronized_bytes_for_tests(chunk_id).await.to_vec();
+        if prefix.len() != start {
+            return Err(StreamError::InvalidRequest("test write is not contiguous".into()));
+        }
+        prefix.extend_from_slice(&data);
+        let complete_end = u64::try_from(prefix.len())
+            .map_err(|_| StreamError::InvalidRequest("test write overflows".into()))?;
+        let strip_bytes = usize::try_from(crowdb_chunk_client::STREAM_STRIP_BYTES).expect("bounded strip");
+        let first = start / strip_bytes * strip_bytes;
+        let images: Vec<_> = (first..prefix.len())
+            .step_by(strip_bytes)
+            .map(|strip| {
+                let end = (strip + strip_bytes).min(prefix.len());
+                let offset = start.saturating_sub(strip);
+                let full_image = Bytes::copy_from_slice(&prefix[strip..end]);
+                crate::MirrorStripImage {
+                    block_offset: offset as u64,
+                    data: full_image.slice(offset..),
+                    full_image,
+                }
+            })
+            .collect();
+        self.write_mirrors(
+            name,
+            epoch,
+            chunk_id,
+            StreamMirrorWrite {
+                physical_offset: offset,
+                complete_end,
+                images: &images,
+            },
+        )
+        .await
+    }
+
     #[must_use]
     pub fn chunk_write_count(&self) -> u64 {
         self.chunk_writes.load(Ordering::Acquire)
@@ -269,6 +320,9 @@ impl StreamRegistry for MemoryStreamStore {
 
 #[async_trait]
 impl StreamChunkStore for MemoryStreamStore {
+    fn mirror_copies(&self) -> u32 {
+        1
+    }
     async fn current_capacity(&self, chunk_id: ChunkId) -> Result<u64> {
         self.state
             .lock()
@@ -287,14 +341,12 @@ impl StreamChunkStore for MemoryStreamStore {
         self.allocate_active_chunk(writer_epoch, purpose).await
     }
 
-    async fn write_mirrors_with_images(
+    async fn write_mirrors(
         &self,
         _stream_name: StreamName,
         writer_epoch: u64,
         chunk_id: ChunkId,
-        physical_offset: u64,
-        data: Bytes,
-        _images: &[crate::MirrorStripImage],
+        write: StreamMirrorWrite<'_>,
     ) -> Result<()> {
         self.chunk_writes.fetch_add(1, Ordering::AcqRel);
         if self
@@ -310,10 +362,16 @@ impl StreamChunkStore for MemoryStreamStore {
                 self.resume_write.notified().await;
             }
         }
+        let physical_offset = write.physical_offset;
         let start = usize::try_from(physical_offset)
             .map_err(|_| StreamError::InvalidRequest("physical offset exceeds addressable range".into()))?;
+        let length = write
+            .images
+            .iter()
+            .try_fold(0_usize, |sum, image| sum.checked_add(image.data.len()))
+            .ok_or_else(|| StreamError::InvalidRequest("stream image length overflows".into()))?;
         let end = start
-            .checked_add(data.len())
+            .checked_add(length)
             .ok_or_else(|| StreamError::InvalidRequest("physical write range overflows".into()))?;
         let mut state = self.state.lock().await;
         let chunk = state
@@ -326,15 +384,32 @@ impl StreamChunkStore for MemoryStreamStore {
         if chunk.sealed || u64::try_from(end).unwrap_or(u64::MAX) > chunk.capacity {
             return Err(StreamError::InvalidRequest("write exceeds writable chunk".into()));
         }
-        let grouped = crowdb_protocol::frame::parse_header(&data)
-            .is_ok_and(|header| header.magic == crowdb_protocol::frame::FrameMagic::StreamV2);
+        let prefix: Vec<_> = write
+            .images
+            .iter()
+            .flat_map(|image| image.data.iter().copied())
+            .take(15)
+            .collect();
+        let grouped = crowdb_protocol::frame::parse_header(&prefix)
+            .is_ok_and(|header| header.magic == crowdb_protocol::frame::FrameMagic::StreamV2)
+            && prefix.get(14) == Some(&1);
+        if write.complete_end != end as u64 {
+            return Err(StreamError::InvalidRequest(
+                "image bytes differ from complete append end".into(),
+            ));
+        }
         if !grouped || physical_offset != chunk.synchronized_cursor {
             return Err(StreamError::InvalidRequest(
                 "stream writes require contiguous complete append groups".into(),
             ));
         }
         chunk.bytes.resize(chunk.bytes.len().max(end), 0);
-        chunk.bytes[start..end].copy_from_slice(&data);
+        let mut cursor = start;
+        for image in write.images {
+            let next = cursor + image.data.len();
+            chunk.bytes[cursor..next].copy_from_slice(&image.data);
+            cursor = next;
+        }
         chunk.synchronized_cursor = chunk.synchronized_cursor.max(end as u64);
         Ok(())
     }

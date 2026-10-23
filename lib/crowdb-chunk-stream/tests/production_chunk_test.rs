@@ -518,7 +518,16 @@ async fn production_store_grows_and_writes_across_mirror_strips() {
         })
         .collect();
     store
-        .write_mirrors_with_images(name, 9, active.chunk_id, 0, data.clone(), &images)
+        .write_mirrors(
+            name,
+            9,
+            active.chunk_id,
+            crowdb_chunk_stream::StreamMirrorWrite {
+                physical_offset: 0,
+                complete_end: data.len() as u64,
+                images: &images,
+            },
+        )
         .await
         .unwrap();
     let end = data.len() as u64;
@@ -573,9 +582,10 @@ async fn configured_stream_chunk_capacity_limits_growth_without_changing_strip_s
 #[tokio::test]
 async fn chunk_stream_runs_end_to_end_over_the_production_chunk_adapter() {
     let allocator: Arc<dyn ChunkAllocator> = Arc::new(Allocator::new());
-    let disks: Arc<dyn DiskWriter> = Arc::new(Disks::default());
+    let disks = Arc::new(Disks::default());
     let chunks: Arc<dyn StreamChunkStore> = Arc::new(
-        ProductionStreamChunkStore::new(allocator, disks, 30_000, ChunkReadPolicy::default()).unwrap(),
+        ProductionStreamChunkStore::new(allocator, disks.clone(), 30_000, ChunkReadPolicy::default())
+            .unwrap(),
     );
     let metadata = Arc::new(MemoryStreamStore::new(1));
     let registry: Arc<dyn StreamRegistry> = metadata.clone();
@@ -605,6 +615,11 @@ async fn chunk_stream_runs_end_to_end_over_the_production_chunk_adapter() {
     assert_eq!((range.begin, range.end), (0, 5));
     assert_eq!(stream.read_at(0, 5).await.unwrap(), Bytes::from_static(b"frame"));
     assert_eq!(range.chunk_id.unwrap().low, 8);
+    let retained_bytes: usize = disks.bytes.lock().unwrap().values().map(Vec::len).sum();
+    assert_eq!(
+        stream.metrics().physical_append_bytes,
+        u64::try_from(retained_bytes).unwrap()
+    );
 }
 
 #[tokio::test]

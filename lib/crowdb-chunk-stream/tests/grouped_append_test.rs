@@ -50,6 +50,7 @@ async fn every_append_has_one_location_and_subranges_read_only_intersecting_fram
         let active = manifest.active.as_ref().unwrap();
         physical += FrameLayout::StreamGroupV2.physical_length(size as u64).unwrap();
         assert_eq!(active.acknowledged_cursor, physical);
+        assert_eq!(stream.metrics().physical_append_bytes, physical);
         for offset in [0, size / 2, size - 1] {
             let count = (size - offset).min(101);
             let before = stream.metrics().physical_read_requests;

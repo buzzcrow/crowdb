@@ -39,7 +39,7 @@ impl TestChunkCollection {
         );
         let data = Bytes::from([first_bytes.as_ref(), second_bytes.as_ref()].concat());
         store
-            .write_mirrors_with_images(Test::NAME, 1, active.chunk_id, 0, data, &[])
+            .write_groups_for_tests(Test::NAME, 1, active.chunk_id, 0, data)
             .await
             .unwrap();
         store

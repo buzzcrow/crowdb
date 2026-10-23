@@ -877,6 +877,30 @@ adaptation rather than a new transport or storage engine.
   in `grouped-worker-{initial,suite}.log` identify stale fixture geometry and
   the now-rejected attempt to discard synchronized bytes using an older cursor.
 
+## Immutable view and bounded repair-image wiring (partial T14/T20/T22)
+
+- Removed the duplicate whole-batch byte buffer. Frame header/payload/footer
+  owners now reach MirrorShadow as immutable views, and only bounded strip
+  repair images assemble their bytes. The data view is a slice of that same
+  repair image. Single-buffer append admission keeps its Bytes owner; multiple
+  caller buffers normalize once. There is no per-frame payload allocation.
+- Replaced the redundant global-data-plus-images API with StreamMirrorWrite:
+  physical start, complete data end and ordered strip images. Production checks
+  complete coverage and image ranges before acknowledging; the current data
+  boundary is exact. Production and Memory share this contract; test fixtures
+  stage actual encoded bytes into valid strip images.
+- The repair shadow retains only the strip containing the next write boundary,
+  rather than a whole active tail. Its explicit complete boundary also prevents
+  a writer from rewinding within retained zero-valued payload bytes.
+- Physical append accounting now uses submitted image lengths and the backend's
+  required mirror count, replacing the fixed multiplier of three. A production
+  test compares it with bytes retained on all its mirror disks; the compact
+  append test checks canonical physical bytes with its one-media seam.
+  Repair/failed-attempt traffic still needs its separate T22 counters.
+- Stream full targets, all-target clippy and workspace fmt pass. Receipts:
+  `view-images-{full,clippy,fmt}.log`. This changes byte preparation and IO
+  ownership; it does not remove per-batch cursor or root publication.
+
 ## Single production Stream write path cleanup (partial T04/T14)
 
 - Removed the unused raw-byte `MirrorChunkWriter` and its public exports. Its
@@ -961,6 +985,17 @@ adaptation rather than a new transport or storage engine.
   commit frame, per-append KV operation or extra ordinary-append sync request.
   Do not silently reinterpret stale/corrupt bytes as EOF. Ordinary producers keep
   their existing persisted cursor authority; Stream/Wal get the grouped contract.
+- Reserve the full header before an active chunk can grow again: capacity
+  preparation includes 14 bytes beyond the next complete data end while below
+  the configured physical chunk limit. Clipping is legal only at that hard
+  limit, or after a seal retires excess strips. Otherwise a crash after growth
+  could expose stale bytes after a formerly partial zero header. Memory fixtures
+  include the tail-header space in their physical capacity.
+- StreamMirrorWrite distinguishes complete data end from image coverage. Marker
+  bytes do not enter group locations, checkpoints or their CRC. MirrorShadow may
+  truncate only its known at-most-14-byte zero pad at the exact previous complete
+  boundary. Retain at most two strip images when this pad crosses a strip edge;
+  drop earlier images. The next append must overwrite both halves correctly.
 
 ## Phase 0 — Establish evidence and settle contracts
 

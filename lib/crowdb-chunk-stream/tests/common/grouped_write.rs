@@ -31,17 +31,19 @@ impl TestGroupedStrip {
         );
         self.prefix.extend_from_slice(&bytes);
         store
-            .write_mirrors_with_images(
+            .write_mirrors(
                 name,
                 epoch,
                 chunk,
-                offset,
-                bytes.clone(),
-                &[MirrorStripImage {
-                    block_offset: offset,
-                    data: bytes,
-                    full_image: Bytes::copy_from_slice(&self.prefix),
-                }],
+                crowdb_chunk_stream::StreamMirrorWrite {
+                    physical_offset: offset,
+                    complete_end: offset + bytes.len() as u64,
+                    images: &[MirrorStripImage {
+                        block_offset: offset,
+                        data: bytes,
+                        full_image: Bytes::copy_from_slice(&self.prefix),
+                    }],
+                },
             )
             .await
             .unwrap();

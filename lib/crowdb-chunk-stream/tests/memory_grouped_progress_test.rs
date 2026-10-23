@@ -20,7 +20,7 @@ async fn grouped_memory_progress_remains_local_until_an_explicit_seal() {
         let data = Bytes::from(views.concat());
         let length = data.len() as u64;
         store
-            .write_mirrors_with_images(name, 9, chunk.chunk_id, offset, data, &[])
+            .write_groups_for_tests(name, 9, chunk.chunk_id, offset, data)
             .await
             .unwrap();
         offset += length;

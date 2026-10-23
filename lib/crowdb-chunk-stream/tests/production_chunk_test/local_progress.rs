@@ -42,17 +42,19 @@ async fn configured_replica_count_cannot_silently_accept_a_two_copy_layout() {
             .concat(),
         );
         let result = store
-            .write_mirrors_with_images(
+            .write_mirrors(
                 name,
                 9,
                 active.chunk_id,
-                0,
-                data.clone(),
-                &[MirrorStripImage {
-                    block_offset: 0,
-                    data: data.clone(),
-                    full_image: data,
-                }],
+                crowdb_chunk_stream::StreamMirrorWrite {
+                    physical_offset: 0,
+                    complete_end: data.len() as u64,
+                    images: &[MirrorStripImage {
+                        block_offset: 0,
+                        data: data.clone(),
+                        full_image: data,
+                    }],
+                },
             )
             .await;
         assert!(
@@ -151,17 +153,19 @@ async fn a_grouped_chunk_rejects_removed_magic_after_synchronized_progress() {
     let legacy = Bytes::from(removed);
     assert!(matches!(
         store
-            .write_mirrors_with_images(
+            .write_mirrors(
                 name,
                 9,
                 active.chunk_id,
-                offset,
-                legacy.clone(),
-                &[MirrorStripImage {
-                    block_offset: offset,
-                    data: legacy.clone(),
-                    full_image: legacy
-                }]
+                crowdb_chunk_stream::StreamMirrorWrite {
+                    physical_offset: offset,
+                    complete_end: offset + legacy.len() as u64,
+                    images: &[MirrorStripImage {
+                        block_offset: offset,
+                        data: legacy.clone(),
+                        full_image: legacy
+                    }]
+                }
             )
             .await,
         Err(crowdb_chunk_stream::StreamError::InvalidRequest(_))
@@ -208,17 +212,19 @@ async fn a_cold_adapter_cannot_overwrite_the_previous_owners_uncheckpointed_grou
     .unwrap();
     let bytes = Bytes::from(views.concat());
     assert!(matches!(
-        cold.write_mirrors_with_images(
+        cold.write_mirrors(
             name,
             9,
             active.chunk_id,
-            0,
-            bytes.clone(),
-            &[MirrorStripImage {
-                block_offset: 0,
-                data: bytes.clone(),
-                full_image: bytes
-            }]
+            crowdb_chunk_stream::StreamMirrorWrite {
+                physical_offset: 0,
+                complete_end: bytes.len() as u64,
+                images: &[MirrorStripImage {
+                    block_offset: 0,
+                    data: bytes.clone(),
+                    full_image: bytes
+                }]
+            }
         )
         .await,
         Err(crowdb_chunk_stream::StreamError::InvalidRequest(_))

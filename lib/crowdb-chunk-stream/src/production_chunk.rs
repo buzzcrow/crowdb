@@ -23,7 +23,7 @@ use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::frame::FrameMagic;
 
 use crate::{
-    CursorAdvance, DurableCursor, MirrorStripImage, Result, StreamChunkStore, StreamError, TrimmedChunk,
+    CursorAdvance, DurableCursor, Result, StreamChunkStore, StreamError, StreamMirrorWrite, TrimmedChunk,
 };
 
 mod allocation;
@@ -220,6 +220,9 @@ fn update_state(state: &ChunkStateView, chunk: Chunk) {
 
 #[async_trait]
 impl StreamChunkStore for ProductionStreamChunkStore {
+    fn mirror_copies(&self) -> u32 {
+        self.mirror_copies
+    }
     async fn current_capacity(&self, chunk_id: ChunkId) -> Result<u64> {
         let state = self.state(chunk_id).await?;
         chunk_capacity(&state.chunk.load())
@@ -323,21 +326,21 @@ impl StreamChunkStore for ProductionStreamChunkStore {
         unreachable!("two append attempts either return or fail")
     }
 
-    async fn write_mirrors_with_images(
+    async fn write_mirrors(
         &self,
         stream_name: StreamName,
         writer_epoch: u64,
         chunk_id: ChunkId,
-        physical_offset: u64,
-        data: Bytes,
-        images: &[MirrorStripImage],
+        write: StreamMirrorWrite<'_>,
     ) -> Result<()> {
         let state = self.state(chunk_id).await?;
         let mut chunk = (*state.chunk.load_full()).clone();
         if StreamName::from_chunk_owner_key(&chunk.owner_key) != Some(stream_name) {
             return Err(StreamError::StaleWriter);
         }
-        let data_end = admit_write(&state, &chunk, writer_epoch, physical_offset, &data)?;
+        let data_end = admit_write(&state, &chunk, writer_epoch, &write)?;
+        let physical_offset = write.physical_offset;
+        let images = write.images;
         let flow = MirrorStripFlow::with_shared_failures(
             Arc::clone(&self.allocator),
             Arc::clone(&self.disk_writer),
@@ -365,7 +368,15 @@ impl StreamChunkStore for ProductionStreamChunkStore {
                 .get(image_index)
                 .ok_or_else(|| StreamError::InvalidRequest("stream mirror image is missing".into()))?;
             if image.block_offset != write_start - strip_start
-                || image.data != data.slice(copied..copied + count)
+                || image.data.len() != count
+                || image.full_image.len()
+                    != usize::try_from(image.block_offset)
+                        .unwrap_or(usize::MAX)
+                        .saturating_add(count)
+                || image
+                    .full_image
+                    .get(usize::try_from(image.block_offset).unwrap_or(usize::MAX)..)
+                    != Some(image.data.as_ref())
             {
                 return Err(StreamError::InvalidRequest(
                     "stream mirror image does not match data".into(),
@@ -399,12 +410,14 @@ impl StreamChunkStore for ProductionStreamChunkStore {
             copied += count;
             image_index += 1;
         }
-        if copied != data.len() || image_index != images.len() {
+        if physical_offset.checked_add(copied as u64) != Some(data_end) || image_index != images.len() {
             return Err(StreamError::Corruption(
                 "stream mirror images do not cover the write range".into(),
             ));
         }
-        state.synchronized_cursor.fetch_max(data_end, Ordering::AcqRel);
+        state
+            .synchronized_cursor
+            .fetch_max(write.complete_end, Ordering::AcqRel);
         state.writer_started.store(true, Ordering::Release);
         Ok(())
     }

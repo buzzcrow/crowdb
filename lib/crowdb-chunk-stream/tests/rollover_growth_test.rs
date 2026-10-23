@@ -6,9 +6,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bytes::Bytes;
 use crowdb_chunk_stream::{
-    memory::MemoryStreamStore, ActiveChunkDescriptor, ChunkStream, CursorAdvance, DurableCursor,
-    MirrorStripImage, Result, StreamBinding, StreamBindingState, StreamChunkStore, StreamConfig,
-    StreamManifest, StreamMetadataStore, StreamName, StreamPurpose, StreamRegistry, TrimmedChunk,
+    memory::MemoryStreamStore, ActiveChunkDescriptor, ChunkStream, CursorAdvance, DurableCursor, Result,
+    StreamBinding, StreamBindingState, StreamChunkStore, StreamConfig, StreamManifest, StreamMetadataStore,
+    StreamName, StreamPurpose, StreamRegistry, TrimmedChunk,
 };
 use crowdb_protocol::common::ChunkId;
 
@@ -22,6 +22,9 @@ struct TestGrowingChunks {
 
 #[async_trait]
 impl StreamChunkStore for TestGrowingChunks {
+    fn mirror_copies(&self) -> u32 {
+        self.store.mirror_copies()
+    }
     async fn current_capacity(&self, chunk: ChunkId) -> Result<u64> {
         self.store.current_capacity(chunk).await
     }
@@ -56,18 +59,14 @@ impl StreamChunkStore for TestGrowingChunks {
         }))
     }
 
-    async fn write_mirrors_with_images(
+    async fn write_mirrors(
         &self,
         name: StreamName,
         epoch: u64,
         chunk: ChunkId,
-        offset: u64,
-        data: Bytes,
-        images: &[MirrorStripImage],
+        write: crowdb_chunk_stream::StreamMirrorWrite<'_>,
     ) -> Result<()> {
-        self.store
-            .write_mirrors_with_images(name, epoch, chunk, offset, data, images)
-            .await
+        self.store.write_mirrors(name, epoch, chunk, write).await
     }
 
     async fn advance_cursor(
@@ -200,7 +199,8 @@ async fn stale_stream_capacity_does_not_reject_a_newer_durable_chunk_layout() {
         .unwrap()
         .unwrap();
     chunks
-        .write_mirrors_with_images(name, 1, active.chunk_id, 0, data.clone(), &[])
+        .store
+        .write_groups_for_tests(name, 1, active.chunk_id, 0, data.clone())
         .await
         .unwrap();
     chunks

@@ -8,7 +8,7 @@ use super::publication::publish_state;
 use super::worker::rotate_externally_sealed_active;
 use super::{AppendRange, AppendRequest, BatchFailure, WorkerState};
 use crate::perf::{perf, PhaseTimer};
-use crate::{ChunkId, CursorAdvance, Result, StreamError};
+use crate::{ChunkId, CursorAdvance, Result, StreamError, StreamMirrorWrite};
 use std::sync::{atomic::Ordering, Arc};
 use std::time::{Duration, Instant};
 
@@ -71,7 +71,7 @@ async fn write_batch_with_watchdog(
         .batch_requests
         .fetch_add(requests.len() as u64, Ordering::Relaxed);
     let _batch_timer = PhaseTimer::start(&perf().batch);
-    let write = write_batch(state, requests, bytes);
+    let write = write_batch(state, requests);
     tokio::pin!(write);
     let started = Instant::now();
     loop {
@@ -100,7 +100,6 @@ async fn write_batch_with_watchdog(
 async fn write_batch(
     state: &mut WorkerState,
     requests: &[AppendRequest],
-    bytes: usize,
 ) -> std::result::Result<Vec<AppendRange>, BatchFailure> {
     let active = state
         .manifest
@@ -115,45 +114,46 @@ async fn write_batch(
         &active,
         state.tail_view.load(Ordering::Acquire),
         requests,
-        bytes,
     )
     .map_err(BatchFailure::Other)?;
-    let staging = encoded.bytes;
     let new_cursor = encoded.physical_end;
     let logical_cursor = encoded.logical_end;
     let images = state
         .mirror_shadow
-        .stage(active.chunk_id, expected_cursor, &staging)
+        .stage(active.chunk_id, expected_cursor, new_cursor, &encoded.views)
         .map_err(BatchFailure::Other)?;
     drop(encode_timer);
     let mirror_timer = PhaseTimer::start(&perf().mirror);
     let write = state
         .chunks
-        .write_mirrors_with_images(
+        .write_mirrors(
             state.stream_name,
             state.writer_epoch,
             active.chunk_id,
-            expected_cursor,
-            staging.clone(),
-            &images,
+            StreamMirrorWrite {
+                physical_offset: expected_cursor,
+                complete_end: new_cursor,
+                images: &images,
+            },
         )
         .await;
+    let physical_bytes = images.iter().map(|image| image.data.len() as u64).sum::<u64>();
     drop(mirror_timer);
     drop(images);
     state.mirror_shadow.finish();
     if let Err(error) = write {
         return Err(BatchFailure::MirrorWrite(error));
     }
-    state
-        .metrics
-        .physical_append_bytes
-        .fetch_add((bytes as u64).saturating_mul(3), Ordering::Relaxed);
+    state.metrics.physical_append_bytes.fetch_add(
+        physical_bytes.saturating_mul(u64::from(state.chunks.mirror_copies())),
+        Ordering::Relaxed,
+    );
     resolve_cursor_advance(
         state,
         active.chunk_id,
         expected_cursor,
         new_cursor,
-        crc32fast::hash(&staging),
+        encoded.checksum,
     )
     .await
     .map_err(BatchFailure::Other)?;

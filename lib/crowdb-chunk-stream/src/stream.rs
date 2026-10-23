@@ -587,15 +587,12 @@ impl ChunkStream {
         }
         self.record_queue_high_watermarks();
         self.metrics.submitted.fetch_add(1, Ordering::Relaxed);
-        let mut data = BytesMut::with_capacity(length);
-        for bytes in buffers {
-            data.extend_from_slice(bytes);
-        }
+        let data = owned_payload(buffers, length);
         let (completion, result) = oneshot::channel();
         if self
             .sender
             .try_send(Command::Append(AppendRequest {
-                data: data.freeze(),
+                data,
                 enqueued_at: Instant::now(),
                 completion,
             }))
@@ -632,11 +629,8 @@ impl ChunkStream {
                 "chunk-bound append exceeds maximum chunk capacity".into(),
             ));
         }
-        let mut data = BytesMut::with_capacity(length);
-        for bytes in buffers {
-            data.extend_from_slice(bytes);
-        }
-        self.enqueue_append(data.freeze()).await
+        let data = owned_payload(buffers, length);
+        self.enqueue_append(data).await
     }
 
     /// Enqueues several chunk-bound records in input order and returns their
@@ -861,6 +855,17 @@ fn finish_failed(state: &WorkerState, requests: Vec<AppendRequest>, error: &Stre
         state.metrics.failed.fetch_add(1, Ordering::Relaxed);
         let _ = request.completion.send(Err(error.clone()));
     }
+}
+
+fn owned_payload(buffers: &[Bytes], length: usize) -> Bytes {
+    if let [only] = buffers {
+        return only.clone();
+    }
+    let mut data = BytesMut::with_capacity(length);
+    for bytes in buffers {
+        data.extend_from_slice(bytes);
+    }
+    data.freeze()
 }
 
 fn reserve_bytes(counter: &AtomicU64, limit: u64, bytes: u64) -> Result<()> {

@@ -69,14 +69,7 @@ async fn check_tail(advance: bool, corrupt: bool) {
     let data = staging.freeze();
     let end = active.acknowledged_cursor + u64::try_from(data.len()).unwrap();
     store
-        .write_mirrors_with_images(
-            name,
-            9,
-            active.chunk_id,
-            active.acknowledged_cursor,
-            data.clone(),
-            &[],
-        )
+        .write_groups_for_tests(name, 9, active.chunk_id, active.acknowledged_cursor, data.clone())
         .await
         .unwrap();
     if advance {

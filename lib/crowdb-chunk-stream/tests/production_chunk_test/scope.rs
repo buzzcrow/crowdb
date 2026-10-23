@@ -62,13 +62,31 @@ async fn another_stream_cannot_write_or_checkpoint_an_attributed_chunk() {
     }];
     assert!(matches!(
         store
-            .write_mirrors_with_images(other, 9, active.chunk_id, 0, data.clone(), &images)
+            .write_mirrors(
+                other,
+                9,
+                active.chunk_id,
+                crowdb_chunk_stream::StreamMirrorWrite {
+                    physical_offset: 0,
+                    complete_end: data.len() as u64,
+                    images: &images
+                }
+            )
             .await,
         Err(crowdb_chunk_stream::StreamError::StaleWriter)
     ));
     assert_eq!(disks.fsyncs.load(Ordering::Acquire), 0);
     store
-        .write_mirrors_with_images(name, 9, active.chunk_id, 0, data, &images)
+        .write_mirrors(
+            name,
+            9,
+            active.chunk_id,
+            crowdb_chunk_stream::StreamMirrorWrite {
+                physical_offset: 0,
+                complete_end: data.len() as u64,
+                images: &images,
+            },
+        )
         .await
         .unwrap();
     assert!(matches!(
