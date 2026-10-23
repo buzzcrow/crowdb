@@ -1275,6 +1275,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "crowdb-sdk-native"
+version = "0.3.0"
+dependencies = [
+ "arc-swap",
+ "async-trait",
+ "bincode",
+ "bytes",
+ "crowdb-access-multipart",
+ "crowdb-access-s3",
+ "crowdb-chunk-client",
+ "crowdb-chunk-kv-client",
+ "crowdb-diskio-client",
+ "crowdb-kv-client",
+ "crowdb-protocol",
+ "crowdb-rpc-ffi",
+ "crowdb-sdk-native",
+ "futures",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "crowdb-test-harness"
 version = "0.3.0"
 dependencies = [

@@ -9,6 +9,8 @@ use disk_metrics::MetricsDiskWriter;
 mod readiness;
 #[cfg(feature = "test-util")]
 pub use readiness::observe_readiness_phase_for_tests;
+mod observation;
+mod writer_policy;
 
 use std::collections::VecDeque;
 use std::sync::Arc;

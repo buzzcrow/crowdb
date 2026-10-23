@@ -1,0 +1,39 @@
+[package]
+name = "crowdb-sdk-native"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Trusted embedded CROWDB runtime and native S3 client"
+
+[lints]
+workspace = true
+
+[features]
+test-util = []
+
+[dependencies]
+bytes = "1"
+arc-swap = "1.9"
+bincode = "1"
+crowdb-access-s3 = { path = "../crowdb-access-s3" }
+crowdb-access-multipart = { path = "../crowdb-access-multipart" }
+crowdb-chunk-client = { path = "../crowdb-chunk-client" }
+crowdb-chunk-kv-client = { path = "../crowdb-chunk-kv-client" }
+crowdb-diskio-client = { path = "../crowdb-diskio-client" }
+crowdb-kv-client = { path = "../crowdb-kv-client" }
+crowdb-protocol = { path = "../crowdb-protocol" }
+crowdb-rpc-ffi = { path = "../crowdb-rpc/ffi" }
+futures = "0.3"
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["time", "sync", "macros"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+async-trait = "0.1"
+crowdb-sdk-native = { path = ".", features = ["test-util"] }
+crowdb-chunk-client = { path = "../crowdb-chunk-client", features = ["test-util"] }
+crowdb-rpc-ffi = { path = "../crowdb-rpc/ffi", features = ["test-util"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
+serde_json = "1"

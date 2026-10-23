@@ -40,12 +40,12 @@ RDMA plan. Native SDK implementation and acceptance remain outstanding.
 
 ## Phase 1: shared runtime and native API
 
-- [~] **Create native crate and baseline**: register `crowdb-sdk-native` with
+- [x] **Create native crate and baseline**: register `crowdb-sdk-native` with
   `runtime`, `topology`, `buffer`, and `s3` modules and tests under `tests/`.
   Run focused existing S3/RPC/access and standalone SDK baselines before
   moving operation code. Files: `Cargo.toml`, `lib/crowdb-sdk-native/`,
   `lib/crowdb-access-s3/tests/`, `app/crowdb-access-server/tests/`.
-- [ ] **Define runtime ownership**: implement `ClientRuntime::connect(config)`
+- [~] **Define runtime ownership**: implement `ClientRuntime::connect(config)`
   and shutdown, sharing discovery, compatible transport groups, producer
   allocation, and hard request/byte limits across handles. Preserve distinct
   S3/Dataset chunk types and writer policies; do not create a generic Repo
@@ -203,6 +203,36 @@ RDMA plan. Native SDK implementation and acceptance remain outstanding.
 R242 exit: accepted runtime/topology/lease APIs and native S3 semantics,
 TCP/RDMA parity, bounded pressure, and shutdown-safe caller ownership. Existing
 transport acceptance alone cannot establish SDK completion.
+
+## Execution evidence
+
+- Mixed-size optimization prerequisite is committed as `f3de1109`; repeated
+  final HCA measurements and service parity pass under the root RDMA plan.
+- Existing S3 library all-target tests, Access Server all-target tests, and
+  standalone SDK boundary/functional controls pass before extraction.
+- `crowdb-sdk-native` is registered in the main workspace. Initial tests cover
+  actual Vec capacity, shared-slice accounting, frozen native producer owners,
+  request cancellation/deadline, shutdown-safe held data, two tenant handles
+  without an HTTP listener/credential store, and separate typed writer groups.
+  Nine native cases pass, including asynchronous-copy and interrupted-mutation
+  outcomes. The S3, ChunkIO and DiskIO all-target suites, affected HTTP tests
+  and focused four-crate all-target clippy also pass.
+- Runtime connection and attachment reuse control/catalog/chunk clients.
+  Compatible writer policies share a bounded group; incompatible policies get
+  separate small-writer pools sharing transports, reader and SDK budgets.
+  Shutdown currently closes SDK admission and drains small writers. Completing
+  native transport/completion teardown remains in Phase 4.
+- Disk routes now have a retained inspection view with local generation and
+  publication age. Native catalog/service/transport observations do not invent
+  a global epoch. Attached catalog age is explicitly unknown until refreshed.
+  Full stale-view/locality acceptance remains outstanding.
+- Basic bucket and point object lookup/delete orchestration is extracted into
+  `S3Executor`, and HTTP delegates to it. Streaming GET/PUT, copy, multipart,
+  typed native results and real HTTP/native parity are not complete.
+- The existing FFI completion still has detach/copy branches. The initial
+  `BufferLease` tests establish its own storage/credit behavior only; they do
+  not establish end-to-end native RDMA receive ownership or actual-capacity
+  propagation through DiskIO/ChunkIO. Phase 4 must complete that audit and path.
 
 ## Subsequent Dataset integration under R220
 

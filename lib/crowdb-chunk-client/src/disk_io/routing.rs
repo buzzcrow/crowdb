@@ -21,6 +21,15 @@ pub struct RoutedDiskWriter {
 }
 
 impl RoutedDiskWriter {
+    #[must_use]
+    pub fn topology(&self) -> crowdb_diskio_client::DiskTopologyView {
+        self.client.topology()
+    }
+
+    pub fn transport_status_json(&self) -> Result<Vec<u8>> {
+        self.client.transport_status_json().map_err(map_topology_error)
+    }
+
     /// Reuse an already connected semantic client in an embedded storage stack.
     #[must_use]
     pub fn from_client(client: Arc<DiskioClient>) -> Self {

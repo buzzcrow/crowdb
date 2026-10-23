@@ -23,8 +23,10 @@ use crate::{DiskId, DiskioError, DiskioResult, DiskioStatus, SegmentTarget};
 
 mod connection;
 mod native_routes;
+mod observation;
 pub use native_routes::NativeDiskRouteResolver;
 mod drain;
+pub use observation::{DiskPlacement, DiskTopologyView};
 mod write;
 mod write_views;
 

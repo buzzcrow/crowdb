@@ -7,14 +7,14 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
-use crowdb_access_s3::bucket::{self, BucketError, DeleteBucketResult, RandomBucketIdGenerator};
 use crowdb_access_s3::condition::ObjectConditions;
 use crowdb_access_s3::continuation::ContinuationTokenSigner;
 use crowdb_access_s3::error::{S3Error, S3ErrorCode};
+use crowdb_access_s3::execution::S3Executor;
 use crowdb_access_s3::metadata::{ObjectRecord, TenantId};
 use crowdb_access_s3::object::{self, ListObjectsV2Request, ObjectMetadataError};
 use crowdb_access_s3::publication::PublicationRequest;
-use crowdb_access_s3::retrieval::{self, ObjectHeaders, RetrievalError};
+use crowdb_access_s3::retrieval::{ObjectHeaders, RetrievalError};
 use crowdb_access_s3::route::{S3Operation, S3Route};
 use crowdb_access_s3::streaming::{publish_completed_locations, PutErrorCode, PutOutcome};
 use crowdb_chunk_client::{
@@ -99,7 +99,7 @@ pub struct ProductionS3Operations {
     pub(super) storage: S3StorageClients,
     pub(super) config: S3ServiceConfig,
     signer: ContinuationTokenSigner,
-    bucket_ids: RandomBucketIdGenerator,
+    execution: S3Executor,
     metrics: Option<Arc<crowdb_access_s3::metrics::S3Metrics>>,
 }
 
@@ -113,10 +113,10 @@ impl ProductionS3Operations {
         let signer = ContinuationTokenSigner::new(config.continuation_key.clone())
             .map_err(|_| S3ErrorCode::InvalidRequest)?;
         Ok(Self {
+            execution: S3Executor::new(storage.clone(), config.tenant.clone()),
             storage,
             config,
             signer,
-            bucket_ids: RandomBucketIdGenerator,
             metrics: None,
         })
     }
@@ -165,50 +165,25 @@ impl ProductionS3Operations {
 
     async fn create_bucket(&self, route: S3Route) -> Result<Response<ResponseBody>, S3ErrorCode> {
         let name = required_bucket(&route)?;
-        bucket::create_bucket(
-            &self.storage.metadata,
-            &self.bucket_ids,
-            &self.config.tenant,
-            name,
-        )
-        .await
-        .map_err(|error| map_bucket_error(&error))?;
+        self.execution.create_bucket(name).await?;
         response(StatusCode::OK, Vec::new())
     }
 
     async fn head_bucket(&self, route: S3Route) -> Result<Response<ResponseBody>, S3ErrorCode> {
         let name = required_bucket(&route)?;
-        let exists = bucket::head_bucket(&self.storage.metadata, &self.config.tenant, name)
-            .await
-            .map_err(|error| map_bucket_error(&error))?
-            .is_some();
-        if !exists {
-            return Err(S3ErrorCode::NoSuchBucket);
-        }
+        self.execution.resolve_bucket(name).await?;
         response(StatusCode::OK, Vec::new())
     }
 
     async fn list_buckets(&self) -> Result<Response<ResponseBody>, S3ErrorCode> {
-        let buckets = bucket::list_buckets(&self.storage.metadata, &self.config.tenant, DEFAULT_LIST_LIMIT)
-            .await
-            .map_err(|error| {
-                tracing::error!(%error, "S3 bucket listing failed; returning a service error");
-                map_bucket_error(&error)
-            })?;
+        let buckets = self.execution.list_buckets(DEFAULT_LIST_LIMIT).await?;
         xml_response(wire::list_buckets(self.config.tenant.as_bytes(), &buckets))
     }
 
     async fn delete_bucket(&self, route: S3Route) -> Result<Response<ResponseBody>, S3ErrorCode> {
         let name = required_bucket(&route)?;
-        match bucket::delete_bucket(&self.storage.metadata, &self.config.tenant, name)
-            .await
-            .map_err(|error| map_bucket_error(&error))?
-        {
-            DeleteBucketResult::Deleted => response(StatusCode::NO_CONTENT, Vec::new()),
-            DeleteBucketResult::Missing => Err(S3ErrorCode::NoSuchBucket),
-            DeleteBucketResult::NotEmpty => Err(S3ErrorCode::BucketNotEmpty),
-            DeleteBucketResult::Conflict => Err(S3ErrorCode::ServiceUnavailable),
-        }
+        self.execution.delete_bucket(name).await?;
+        response(StatusCode::NO_CONTENT, Vec::new())
     }
 
     async fn put_object(
@@ -309,7 +284,7 @@ impl ProductionS3Operations {
         request: &Request<Incoming>,
     ) -> Result<Response<ResponseBody>, S3ErrorCode> {
         let record = self.object(&route).await?;
-        let headers = match retrieval::prepare_head(&record, &conditions(request)) {
+        let headers = match self.execution.prepare_head(&record, &conditions(request)) {
             Ok(headers) => headers,
             Err(RetrievalError::NotModified) => return not_modified(&record.etag),
             Err(error) => return Err(map_retrieval(&error)),
@@ -324,12 +299,10 @@ impl ProductionS3Operations {
         request_id: &str,
     ) -> Result<Response<ResponseBody>, S3ErrorCode> {
         let record = self.object(&route).await?;
-        let prepared = match retrieval::prepare_get(
-            &self.storage.chunks,
-            &record,
-            header(request, RANGE),
-            &conditions(request),
-        ) {
+        let prepared = match self
+            .execution
+            .prepare_get(&record, header(request, RANGE), &conditions(request))
+        {
             Ok(prepared) => prepared,
             Err(RetrievalError::NotModified) => return not_modified(&record.etag),
             Err(error) => return Err(map_retrieval(&error)),
@@ -416,31 +389,18 @@ impl ProductionS3Operations {
     async fn delete_object(&self, route: S3Route) -> Result<Response<ResponseBody>, S3ErrorCode> {
         let bucket_name = required_bucket(&route)?;
         let key = required_key(&route)?;
-        let bucket_id = self.resolve_bucket(bucket_name).await?;
-        object::delete(&self.storage.metadata, &self.config.tenant, bucket_id, key)
-            .await
-            .map_err(|error| map_object_error(&error))?;
+        self.execution.delete_object(bucket_name, key).await?;
         response(StatusCode::NO_CONTENT, Vec::new())
     }
 
     async fn resolve_bucket(&self, name: &[u8]) -> Result<crowdb_access_s3::metadata::BucketId, S3ErrorCode> {
-        bucket::head_bucket(&self.storage.metadata, &self.config.tenant, name)
-            .await
-            .map_err(|error| map_bucket_error(&error))?
-            .ok_or(S3ErrorCode::NoSuchBucket)
+        self.execution.resolve_bucket(name).await
     }
 
     async fn object(&self, route: &S3Route) -> Result<ObjectRecord, S3ErrorCode> {
-        let bucket = self.resolve_bucket(required_bucket(route)?).await?;
-        object::head(
-            &self.storage.metadata,
-            &self.config.tenant,
-            bucket,
-            required_key(route)?,
-        )
-        .await
-        .map_err(|error| map_object_error(&error))?
-        .ok_or(S3ErrorCode::NoSuchKey)
+        self.execution
+            .object(required_bucket(route)?, required_key(route)?)
+            .await
     }
 
     async fn prepare_writer(
@@ -665,14 +625,6 @@ fn map_retrieval(error: &RetrievalError) -> S3ErrorCode {
         RetrievalError::NotModified | RetrievalError::DataReference | RetrievalError::ChunkRead => {
             S3ErrorCode::InternalError
         }
-    }
-}
-
-fn map_bucket_error(error: &BucketError) -> S3ErrorCode {
-    match error {
-        BucketError::Key(_) => S3ErrorCode::InvalidRequest,
-        BucketError::Record(_) => S3ErrorCode::InternalError,
-        BucketError::Store(_) => S3ErrorCode::ServiceUnavailable,
     }
 }
 

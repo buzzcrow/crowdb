@@ -1,0 +1,200 @@
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use crowdb_chunk_kv_client::{
+    ChunkKvClient, ChunkKvRangeCatalogSource, ChunkKvTransport, ClientConfig, Result,
+};
+use crowdb_protocol::chunk_kv::*;
+use crowdb_protocol::chunk_stream::StreamName;
+use tokio::sync::{mpsc, oneshot};
+
+struct TestCatalog(ChunkKvRangeCatalogHead, Vec<ChunkKvRangeCatalogPage>);
+
+#[async_trait]
+impl ChunkKvRangeCatalogSource for TestCatalog {
+    async fn load(&self) -> Result<(ChunkKvRangeCatalogHead, Vec<ChunkKvRangeCatalogPage>)> {
+        Ok((self.0.clone(), self.1.clone()))
+    }
+}
+
+enum TestCommand {
+    Point(PointOperation, oneshot::Sender<ChunkKvResponse>),
+    Scan(ScanRequest, oneshot::Sender<ChunkKvResponse>),
+}
+
+pub struct TestMetadataTransport(mpsc::Sender<TestCommand>);
+
+#[async_trait]
+impl ChunkKvTransport for TestMetadataTransport {
+    async fn point(&self, _: &str, request: &PointRequest) -> Result<ChunkKvResponse> {
+        let (sender, receiver) = oneshot::channel();
+        self.0
+            .send(TestCommand::Point(request.operation.clone(), sender))
+            .await
+            .unwrap();
+        Ok(receiver.await.unwrap())
+    }
+
+    async fn seek(&self, _: &str, _: &SeekRequest) -> Result<ChunkKvResponse> {
+        panic!("unexpected seek")
+    }
+
+    async fn scan(&self, _: &str, request: &ScanRequest) -> Result<ChunkKvResponse> {
+        let (sender, receiver) = oneshot::channel();
+        self.0
+            .send(TestCommand::Scan(request.clone(), sender))
+            .await
+            .unwrap();
+        Ok(receiver.await.unwrap())
+    }
+}
+
+fn matches(observed: Option<&RpcValue>, condition: &RpcCompareCondition) -> bool {
+    observed.is_some_and(|observed| match condition {
+        RpcCompareCondition::Value(value) => observed.value == *value,
+        RpcCompareCondition::Revision(revision) => observed.revision == *revision,
+    })
+}
+
+fn point(
+    operation: PointOperation,
+    values: &mut BTreeMap<Vec<u8>, RpcValue>,
+    revision: &mut u64,
+) -> OperationResult {
+    let key = operation.key().to_vec();
+    let observed = values.get(&key).cloned();
+    let (applied, value) = match operation {
+        PointOperation::Get { .. } => return OperationResult::Value(observed),
+        PointOperation::Put { value, .. } => (true, Some(value)),
+        PointOperation::PutIfAbsent { value, .. } => (observed.is_none(), Some(value)),
+        PointOperation::Delete { .. } => (observed.is_some(), None),
+        PointOperation::CompareExchange { value, condition, .. } => {
+            (matches(observed.as_ref(), &condition), Some(value))
+        }
+        PointOperation::ConditionalDelete { condition, .. } => (matches(observed.as_ref(), &condition), None),
+    };
+    if applied {
+        *revision += 1;
+        if let Some(value) = value {
+            values.insert(
+                key.clone(),
+                RpcValue {
+                    key,
+                    value,
+                    revision: *revision,
+                },
+            );
+        } else {
+            values.remove(&key);
+        }
+    }
+    OperationResult::Mutation {
+        applied,
+        revision: applied.then_some(*revision),
+        observed,
+    }
+}
+
+fn scan(request: &ScanRequest, values: &BTreeMap<Vec<u8>, RpcValue>) -> OperationResult {
+    let mut items: Vec<_> = values
+        .values()
+        .filter(|value| {
+            request.start.as_ref().map_or(true, |start| value.key >= *start)
+                && request.end.as_ref().map_or(true, |end| value.key < *end)
+                && request
+                    .continuation
+                    .as_ref()
+                    .map_or(true, |token| value.key > token.last_key)
+        })
+        .cloned()
+        .collect();
+    if request.direction == ScanDirection::Reverse {
+        items.reverse();
+    }
+    let truncated = items.len() > request.limit as usize;
+    items.truncate(request.limit as usize);
+    let continuation = if truncated {
+        items.last().map(|last| ScanContinuation {
+            direction: request.direction,
+            last_key: last.key.clone(),
+            partition_id: request.routing.partition_id,
+            owner_epoch: request.routing.owner_epoch,
+            map_revision: request.routing.map_revision,
+        })
+    } else {
+        None
+    };
+    OperationResult::Scan { items, continuation }
+}
+
+pub async fn client() -> Arc<ChunkKvClient> {
+    let (sender, mut receiver) = mpsc::channel(64);
+    tokio::spawn(async move {
+        let mut values = BTreeMap::new();
+        let mut revision = 0;
+        while let Some(command) = receiver.recv().await {
+            let (result, response) = match command {
+                TestCommand::Point(operation, response) => {
+                    (point(operation, &mut values, &mut revision), response)
+                }
+                TestCommand::Scan(request, response) => (scan(&request, &values), response),
+            };
+            let _ = response.send(ChunkKvResponse {
+                map_revision: 1,
+                journal_position: None,
+                result: Ok(result),
+            });
+        }
+    });
+    let mut page = ChunkKvRangeCatalogPage {
+        generation: 1,
+        page_index: 0,
+        entries: vec![ChunkKvRangeCatalogEntry {
+            partition_id: Id128 { high: 1, low: 1 },
+            range: KeyRange {
+                start: Vec::new(),
+                end: None,
+            },
+            owner: OwnerDescriptor {
+                instance_id: 1,
+                rpc_endpoint: "test-owner".into(),
+            },
+            owner_epoch: 1,
+            state: ChunkKvRangeCatalogPartitionState::Serving,
+            artifact: PartitionArtifact {
+                tree_id: 1,
+                stream_name: StreamName { high: 1, low: 1 },
+                tail_overlay: None,
+            },
+            transition_id: None,
+        }],
+        checksum: [0; 32],
+    };
+    page.seal().unwrap();
+    let mut head = ChunkKvRangeCatalogHead {
+        generation: 1,
+        previous_generation: None,
+        pages: vec![ChunkKvRangeCatalogPageRef {
+            page_generation: 1,
+            page_index: 0,
+            first_key: Vec::new(),
+            page_checksum: page.checksum,
+        }],
+        checksum: [0; 32],
+    };
+    head.seal().unwrap();
+    let client = Arc::new(
+        ChunkKvClient::new(
+            ClientConfig::default(),
+            Arc::new(TestCatalog(head, vec![page])),
+            Arc::new(TestMetadataTransport(sender)),
+        )
+        .unwrap(),
+    );
+    client.refresh_catalog().await.unwrap();
+    client
+}
