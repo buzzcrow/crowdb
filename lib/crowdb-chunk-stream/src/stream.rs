@@ -363,9 +363,7 @@ impl ChunkStream {
         let mut tail = manifest.sealed_tail;
         if let Some(active) = &mut manifest.active {
             let durable = chunks.durable_cursor(active.chunk_id, writer_epoch).await?;
-            if let Some(capacity) = chunks.current_capacity(active.chunk_id).await? {
-                active.capacity = capacity;
-            }
+            active.capacity = chunks.current_capacity(active.chunk_id).await?;
             if durable.offset < active.physical_start || durable.offset > active.capacity {
                 return Err(StreamError::Corruption(
                     "recovered active cursor is outside chunk bounds".into(),
@@ -461,9 +459,7 @@ impl ChunkStream {
         validate_manifest(&manifest, &pages)?;
         if let Some(active) = &mut manifest.active {
             let durable = chunks.durable_cursor(active.chunk_id, writer_epoch).await?;
-            if let Some(capacity) = chunks.current_capacity(active.chunk_id).await? {
-                active.capacity = capacity;
-            }
+            active.capacity = chunks.current_capacity(active.chunk_id).await?;
             if durable.offset < active.physical_start || durable.offset > active.capacity {
                 return Err(StreamError::Corruption(
                     "observed active cursor is outside chunk bounds".into(),

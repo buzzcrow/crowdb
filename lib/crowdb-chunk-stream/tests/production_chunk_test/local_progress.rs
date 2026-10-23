@@ -39,7 +39,7 @@ async fn grouped_progress_survives_checkpoint_query_renew_growth_and_mirror_repa
     store.durable_cursor(active.chunk_id, 9).await.unwrap();
     assert_eq!(
         store.current_capacity(active.chunk_id).await.unwrap(),
-        Some(2 * 1024 * 1024)
+        2 * 1024 * 1024
     );
     disks.fail_disk_once.store(1, Ordering::Release);
     let second = strip.append(&store, name, 9, active.chunk_id, b"second").await;

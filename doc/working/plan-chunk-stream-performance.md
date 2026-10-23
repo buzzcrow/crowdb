@@ -416,12 +416,11 @@ adaptation rather than a new transport or storage engine.
 
 ## Current capacity isolation evidence (partial T14)
 
-- StreamChunkStore can report current chunk-layer capacity. Production uses its
-  authoritative layout cache and Memory reports backing capacity. Injected
-  stores can explicitly return None; that temporary injected-store path still publishes
-  cached capacity on growth. The supported production path no longer creates a
-  Stream head/directory publication solely for internal growth.
-- Legacy writer/read-only open refresh capacity from the chunk layer after its
+- StreamChunkStore reports current chunk-layer capacity. Production uses its
+  authoritative layout cache and Memory reports backing capacity. This is now
+  required of test adapters too; no missing-query publication branch remains.
+  Growth never creates a Stream head/directory publication solely for capacity.
+- The predecessor writer/read-only open refresh capacity from the chunk layer after its
   durable query rather than rejecting newer valid storage against a cached
   manifest capacity. The read-only view still stops at its captured root; it
   never combines a newer physical cursor with an older logical directory.
@@ -436,11 +435,10 @@ adaptation rather than a new transport or storage engine.
   reply after growth and verifies capacity/progress remain current. Focused
   14 cases and clippy pass. All 92 Stream cases and fmt pass, zero ignored. Logs:
   `capacity-isolation-{clippy3,tests,full-stream,fmt}.log`.
-- T16 must still align expiry/finalization and reject stale shortening: the
-  current raw ChunkDB seal helper can accept seal_bytes below an existing cursor,
-  and a grouped owner's synchronized position can be newer than that persisted
-  cursor. Do not enable deferred append completion until owner exclusion and
-  content-derived finalization protect both cases.
+- The seal boundary correction below rejects stale shortening. T16 must still
+  align expiry/finalization: a grouped owner's synchronized position can exceed
+  its persisted cursor. Do not enable deferred append completion until owner
+  exclusion and content-derived finalization protect that progress.
 
 ## Persisted cursor seal boundary evidence (partial T16)
 
@@ -587,6 +585,20 @@ adaptation rather than a new transport or storage engine.
   enforce local conservative deadlines and background renewal. T13 must add
   expiry/read-IO grace, retirement policy, sealed spans, page/data reachability
   and bounded conditional cleanup before enabling deletion.
+
+## Required current adapters (partial T04/T14)
+
+- `StreamChunkStore::current_capacity` is required and returns a capacity, with
+  no unsupported/`None` branch. Open reads current chunk geometry directly.
+  Growth updates local capacity without a legacy-store publication fallback.
+- Indexed directory binding and liveness renewal are required adapter methods.
+  Test wrappers explicitly forward both capabilities to their real backend;
+  missing implementations cannot silently compile with an unsupported binding
+  or successful no-op renewal.
+- Existing successor-growth/stale-capacity, local synchronized-progress,
+  publication ordering, liveness, reads and reopen tests cover the current
+  contract. Full Stream passes 88 tests, zero ignored. Strict all-target clippy
+  and Rust fmt gate this cleanup; logs are `adapter-cleanup-{tests,clippy,fmt}.log`.
 
 ## Remaining bounded-publication wiring
 

@@ -147,13 +147,7 @@ async fn grow_active(state: &mut WorkerState, bytes: usize) -> Result<bool> {
                 "grown chunk capacity does not cover the requested append".into(),
             ));
         }
-        let chunk_id = active.chunk_id;
         state.manifest.active = Some(grown);
-        if state.chunks.current_capacity(chunk_id).await?.is_none() {
-            // Legacy injected stores without current-layout queries must keep
-            // their cached capacity durable until their read/open seam upgrades.
-            publish_state(state).await?;
-        }
         return Ok(true);
     }
     Ok(false)

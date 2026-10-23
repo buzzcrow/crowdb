@@ -47,12 +47,8 @@ pub trait StreamRegistry: Send + Sync {
 #[async_trait]
 pub trait StreamMetadataStore: Send + Sync {
     /// # Errors
-    /// Rejects unsupported stores or a group that differs from the bound metadata.
-    fn directory_metadata(&self, _metadata_group_id: u64) -> Result<crate::DirectoryMetadataStore> {
-        Err(crate::StreamError::InvalidRequest(
-            "metadata store does not provide indexed directories".into(),
-        ))
-    }
+    /// Rejects a group that differs from the bound metadata.
+    fn directory_metadata(&self, metadata_group_id: u64) -> Result<crate::DirectoryMetadataStore>;
     async fn load_current(&self, stream_name: StreamName) -> Result<Option<StreamManifest>>;
     async fn load_extent_page(
         &self,
@@ -78,12 +74,10 @@ pub trait StreamMetadataStore: Send + Sync {
 #[async_trait]
 pub trait StreamChunkStore: Send + Sync {
     /// Current physical capacity from the chunk layer, independent of a cached
-    /// Stream checkpoint. None retains compatibility for legacy injected stores.
+    /// Stream checkpoint.
     /// # Errors
-    /// Returns chunk metadata/availability errors when this store provides capacity.
-    async fn current_capacity(&self, _chunk_id: ChunkId) -> Result<Option<u64>> {
-        Ok(None)
-    }
+    /// Returns chunk metadata/availability errors.
+    async fn current_capacity(&self, chunk_id: ChunkId) -> Result<u64>;
     async fn allocate_mirrored(
         &self,
         stream_name: StreamName,
@@ -122,9 +116,7 @@ pub trait StreamChunkStore: Send + Sync {
     ) -> Result<CursorAdvance>;
     async fn durable_cursor(&self, chunk_id: ChunkId, writer_epoch: u64) -> Result<DurableCursor>;
     /// Renews the one Active-chunk liveness task without advancing its cursor.
-    async fn renew_liveness(&self, _chunk_id: ChunkId, _writer_epoch: u64) -> Result<()> {
-        Ok(())
-    }
+    async fn renew_liveness(&self, chunk_id: ChunkId, writer_epoch: u64) -> Result<()>;
     async fn seal(&self, chunk_id: ChunkId, writer_epoch: u64, cursor: u64) -> Result<()>;
     async fn read(&self, chunk_id: ChunkId, physical_offset: u64, length: usize) -> Result<Bytes>;
     /// Reads and validates a public stream frame before its payload is exposed.

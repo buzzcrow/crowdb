@@ -23,6 +23,10 @@ struct TestPublicationGate {
 
 #[async_trait]
 impl StreamMetadataStore for TestPublicationGate {
+    fn directory_metadata(&self, group_id: u64) -> Result<crowdb_chunk_stream::DirectoryMetadataStore> {
+        self.store.directory_metadata(group_id)
+    }
+
     async fn load_current(&self, name: StreamName) -> Result<Option<StreamManifest>> {
         self.store.load_current(name).await
     }

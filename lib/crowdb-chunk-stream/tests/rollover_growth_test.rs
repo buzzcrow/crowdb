@@ -22,8 +22,8 @@ struct TestGrowingChunks {
 
 #[async_trait]
 impl StreamChunkStore for TestGrowingChunks {
-    async fn current_capacity(&self, _chunk: ChunkId) -> Result<Option<u64>> {
-        Ok(Some(CAPACITY))
+    async fn current_capacity(&self, chunk: ChunkId) -> Result<u64> {
+        self.store.current_capacity(chunk).await
     }
     async fn allocate_mirrored(
         &self,
@@ -86,6 +86,10 @@ impl StreamChunkStore for TestGrowingChunks {
 
     async fn durable_cursor(&self, chunk: ChunkId, epoch: u64) -> Result<DurableCursor> {
         self.store.durable_cursor(chunk, epoch).await
+    }
+
+    async fn renew_liveness(&self, chunk: ChunkId, epoch: u64) -> Result<()> {
+        self.store.renew_liveness(chunk, epoch).await
     }
 
     async fn seal(&self, chunk: ChunkId, epoch: u64, cursor: u64) -> Result<()> {

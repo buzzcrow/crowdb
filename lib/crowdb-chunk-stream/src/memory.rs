@@ -268,13 +268,13 @@ impl StreamRegistry for MemoryStreamStore {
 
 #[async_trait]
 impl StreamChunkStore for MemoryStreamStore {
-    async fn current_capacity(&self, chunk_id: ChunkId) -> Result<Option<u64>> {
+    async fn current_capacity(&self, chunk_id: ChunkId) -> Result<u64> {
         self.state
             .lock()
             .await
             .chunks
             .get(&chunk_id)
-            .map(|chunk| Some(chunk.capacity))
+            .map(|chunk| chunk.capacity)
             .ok_or_else(|| StreamError::ReadUnavailable("chunk is missing".into()))
     }
     async fn allocate_mirrored(

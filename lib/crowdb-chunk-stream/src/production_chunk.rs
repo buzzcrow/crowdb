@@ -221,9 +221,9 @@ fn update_state(state: &ChunkStateView, chunk: Chunk) {
 
 #[async_trait]
 impl StreamChunkStore for ProductionStreamChunkStore {
-    async fn current_capacity(&self, chunk_id: ChunkId) -> Result<Option<u64>> {
+    async fn current_capacity(&self, chunk_id: ChunkId) -> Result<u64> {
         let state = self.state(chunk_id).await?;
-        chunk_capacity(&state.chunk.load()).map(Some)
+        chunk_capacity(&state.chunk.load())
     }
     async fn allocate_mirrored(
         &self,
