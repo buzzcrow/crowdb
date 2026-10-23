@@ -13,6 +13,7 @@ use std::sync::{
 pub struct TestAccessStore {
     pub inner: Arc<dyn DatasetStore>,
     pub race: AtomicBool,
+    pub interleave: bool,
     pub renewals: AtomicU64,
     pub identity: DatasetIdentity,
     pub snapshot: SnapshotId,
@@ -61,6 +62,9 @@ impl DatasetStore for TestAccessStore {
         expected: Option<&[u8]>,
         value: &[u8],
     ) -> Result<CasOutcome, StoreError> {
+        if self.interleave {
+            tokio::task::yield_now().await;
+        }
         self.inner.compare_exchange(key, expected, value).await
     }
 }

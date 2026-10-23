@@ -77,7 +77,7 @@ impl DatasetAuthority {
     ) -> Result<(), AuthorityError> {
         let key = key::read_lease(identity, snapshot)?;
         let mut old = self.store.get(&key).await?;
-        for _ in 0..64 {
+        for attempt in 0..64 {
             let mut access = old
                 .as_ref()
                 .map(|v| decode_access(&v.bytes))
@@ -93,7 +93,18 @@ impl DatasetAuthority {
                 CasOutcome::Applied(_) => return Ok(()),
                 // Recompute against the sequencer's observation without opening another
                 // point-read race against concurrent acquisitions and releases.
-                CasOutcome::Conflict(observed) => old = observed,
+                CasOutcome::Conflict(observed) => {
+                    old = observed;
+                    if attempt % 2 == 1 && attempt < 63 {
+                        // Concurrent acquisitions and asynchronous releases must not
+                        // repeatedly rejoin the same CAS wave and starve each other.
+                        let window = 1_u64 << (attempt / 2).min(4);
+                        let delay = 1 + u64::from(uuid::Uuid::new_v4().as_bytes()[0]) % window;
+                        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                        // The conflict observation predates the contention window.
+                        old = self.store.get(&key).await?;
+                    }
+                }
             }
         }
         Err(AuthorityError::HeadConflict)

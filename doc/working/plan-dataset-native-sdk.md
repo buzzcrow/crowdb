@@ -149,3 +149,14 @@ acquisition. A deterministic competing-renewal test fails before this fix and
 passes afterward, including independent release and terminal reclaim protection.
 Temporary diagnostics are removed. Full affected tests and rebuilt real-service
 acceptance are running before this item can close.
+
+Run `9b155417702648d88850778d946737df` still exhausted the same lease CAS bound
+at concurrency three after that first fix. Reusing the conflict observation
+alone does not prevent competing acquisitions and asynchronous releases from
+repeatedly colliding. A second regression synchronizes 96 independent readers:
+the previous implementation fails acquisition; bounded randomized contention
+windows allow all acquisitions and releases to finish. The CAS budget remains
+64; only repeated conflicts wait 1-16 ms, then refresh the observation. No HTTP
+retry, lock, or lease/reclaim invariant is changed. Focused contention and reclaim
+tests, formatting and affected all-feature clippy pass. Rebuilt real-service
+acceptance remains necessary before claiming this resolves the load failure.
