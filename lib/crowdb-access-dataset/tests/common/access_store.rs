@@ -6,26 +6,28 @@
 mod dataset_store;
 use crowdb_access_dataset::*;
 use std::sync::{
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicU64, Ordering},
     Arc,
 };
 
+#[derive(Default)]
 pub struct TestAccessStore {
-    pub inner: Arc<dyn DatasetStore>,
-    pub race: AtomicBool,
-    pub interleave: bool,
-    pub renewals: AtomicU64,
-    pub identity: DatasetIdentity,
-    pub snapshot: SnapshotId,
-    pub other: OperationId,
+    inner: dataset_store::TestDatasetStore,
+    pub writes: AtomicU64,
+    pub reads: AtomicU64,
 }
-
-pub fn store() -> Arc<dyn DatasetStore> {
-    Arc::new(dataset_store::TestDatasetStore::default())
+impl TestAccessStore {
+    pub fn shared() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
 }
-
 #[async_trait::async_trait]
 impl DatasetStore for TestAccessStore {
+    async fn get(&self, key: &[u8]) -> Result<Option<StoredValue>, StoreError> {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        tokio::task::yield_now().await;
+        self.inner.get(key).await
+    }
     async fn get_bounded(
         &self,
         key: &[u8],
@@ -34,7 +36,6 @@ impl DatasetStore for TestAccessStore {
     ) -> Result<Option<StoredValue>, StoreError> {
         self.inner.get_bounded(key, budget, cancel).await
     }
-
     async fn scan_page(
         &self,
         request: &MetadataScan,
@@ -42,29 +43,17 @@ impl DatasetStore for TestAccessStore {
     ) -> Result<MetadataPage, StoreError> {
         self.inner.scan_page(request, cancel).await
     }
-
-    async fn get(&self, key: &[u8]) -> Result<Option<StoredValue>, StoreError> {
-        let value = self.inner.get(key).await?;
-        if self.race.load(Ordering::Relaxed) {
-            // A different reader renews between our point read and conditional write.
-            let time = u64::MAX / 2 + self.renewals.fetch_add(1, Ordering::Relaxed);
-            DatasetAuthority::new(self.inner.clone())
-                .touch_read_handle(&self.identity, self.snapshot, self.other, time, 3600)
-                .await
-                .unwrap();
-        }
-        Ok(value)
-    }
-
     async fn compare_exchange(
         &self,
         key: &[u8],
         expected: Option<&[u8]>,
         value: &[u8],
     ) -> Result<CasOutcome, StoreError> {
-        if self.interleave {
-            tokio::task::yield_now().await;
-        }
+        self.writes.fetch_add(1, Ordering::Relaxed);
         self.inner.compare_exchange(key, expected, value).await
+    }
+    async fn delete(&self, key: &[u8]) -> Result<(), StoreError> {
+        self.writes.fetch_add(1, Ordering::Relaxed);
+        self.inner.delete(key).await
     }
 }

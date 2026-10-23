@@ -57,6 +57,7 @@ impl DatasetAuthority {
         {
             return Err(SplitLifecycleError::Frozen);
         }
+        self.require_reclaim_ready(identity, snapshot).await?;
         let mut prefix = b"DS\0SD\0".to_vec();
         prefix.extend(identity.key().map_err(AuthorityError::from)?);
         let mut cursor_key = b"DS\0GSD\0".to_vec();
@@ -109,7 +110,6 @@ impl DatasetAuthority {
                     {
                         return Ok(progress);
                     }
-                    self.release_split_draft_leases(identity, &state).await?;
                 }
             }
             progress.after = Some(key.clone());

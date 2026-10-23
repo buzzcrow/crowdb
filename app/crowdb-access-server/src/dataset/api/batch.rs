@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use super::{error::ApiError, read_json, snapshot, ApiResult};
-use crate::dataset::{unix_seconds, DatasetBody, DatasetHttpService};
+use crate::dataset::{DatasetBody, DatasetHttpService};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use crowdb_access_dataset::{DatasetIdentity, FieldLocator, SampleView, SnapshotId};
 use futures::stream;
@@ -12,10 +12,7 @@ use hyper::{
     Request, Response,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
+use std::sync::Arc;
 
 #[derive(Deserialize)]
 pub(super) struct BatchRequest {
@@ -86,33 +83,7 @@ impl DatasetHttpService {
         let id = snapshot(&request.snapshot)?;
         let ids = request.ids()?;
         let authority = self.reads.authority();
-        let lease = Lease::acquire(authority.clone(), identity, id, session).await?;
-        let weak = Arc::downgrade(&lease);
-        tokio::spawn(async move {
-            let period = std::time::Duration::from_secs(15);
-            let mut timer = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
-            loop {
-                timer.tick().await;
-                let Some(lease) = weak.upgrade() else { break };
-                let result = async {
-                    if let Some(session) = lease.session {
-                        crowdb_access_dataset::DatasetSessions::new(lease.authority.clone())
-                            .resume(&lease.identity, session, unix_seconds())
-                            .await?;
-                    }
-                    lease
-                        .authority
-                        .touch_read_handle(&lease.identity, lease.snapshot, lease.handle, unix_seconds(), 60)
-                        .await
-                }
-                .await;
-                if let Err(error) = result {
-                    lease.failed.store(true, Ordering::Release);
-                    tracing::error!(%error,"Dataset stream lease renewal failed; delivery cancelled");
-                    break;
-                }
-            }
-        });
+        let admission = ReadAdmission::acquire(authority.clone(), identity, id, session).await?;
         let samples = if ids.is_empty() {
             Vec::new()
         } else if request.sample_id_limit.is_some() {
@@ -155,7 +126,7 @@ impl DatasetHttpService {
             part: 0,
             pending: Some(Bytes::from(prefix)),
             finished: false,
-            lease,
+            admission,
         };
         Ok(Response::builder()
             .header("content-type", "application/vnd.crowdb.dataset-batch.v1")
@@ -199,46 +170,24 @@ fn make_header(
         end,
     }
 }
-pub(super) struct Lease {
+pub(super) struct ReadAdmission {
     authority: Arc<crowdb_access_dataset::DatasetAuthority>,
     identity: DatasetIdentity,
-    snapshot: SnapshotId,
-    handle: crowdb_access_dataset::OperationId,
     session: Option<crowdb_access_dataset::OperationId>,
-    failed: AtomicBool,
 }
-impl Lease {
+impl ReadAdmission {
     pub(super) async fn acquire(
         authority: Arc<crowdb_access_dataset::DatasetAuthority>,
         identity: &DatasetIdentity,
         snapshot: SnapshotId,
         session: Option<crowdb_access_dataset::OperationId>,
     ) -> Result<Arc<Self>, ApiError> {
-        let handle = crowdb_access_dataset::OperationId::random();
-        authority
-            .touch_read_handle(identity, snapshot, handle, unix_seconds(), 60)
-            .await?;
+        authority.check_snapshot_readable(identity, snapshot).await?;
         Ok(Arc::new(Self {
             authority,
             identity: identity.clone(),
-            snapshot,
-            handle,
             session,
-            failed: AtomicBool::new(false),
         }))
-    }
-}
-impl Drop for Lease {
-    fn drop(&mut self) {
-        let authority = self.authority.clone();
-        let identity = self.identity.clone();
-        let snapshot = self.snapshot;
-        let handle = self.handle;
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            runtime.spawn(async move {
-  if let Err(error)=authority.release_read_handle(&identity,snapshot,handle).await {tracing::error!(%error,"Dataset read release failed; lease expiry protects disconnected reads");}
- });
-        }
     }
 }
 struct BatchState {
@@ -249,7 +198,7 @@ struct BatchState {
     part: u32,
     pending: Option<Bytes>,
     finished: bool,
-    lease: Arc<Lease>,
+    admission: Arc<ReadAdmission>,
 }
 fn stream_body(state: BatchState) -> DatasetBody {
     let frames = stream::unfold(state, |mut state| async move {
@@ -265,28 +214,15 @@ fn stream_body(state: BatchState) -> DatasetBody {
                 frame(4, &Bytes::from(record.to_string())).expect("bounded error frame")
             }
         };
-        let owner = FrameOwner {
-            bytes,
-            lease: state.lease.clone(),
-        };
-        Some((
-            Ok::<_, crate::dataset::BoxError>(Frame::data(Bytes::from_owner(owner))),
-            state,
-        ))
+        Some((Ok::<_, crate::dataset::BoxError>(Frame::data(bytes)), state))
     });
     StreamBody::new(frames).boxed_unsync()
 }
 impl BatchState {
     async fn next(&mut self) -> Result<Bytes, ApiError> {
-        if self.lease.failed.load(Ordering::Acquire) {
-            return Err(crowdb_access_dataset::AuthorityError::from(
-                crowdb_access_dataset::DatasetError::ReadCancelled,
-            )
-            .into());
-        }
-        if let Some(session) = self.lease.session {
-            crowdb_access_dataset::DatasetSessions::new(self.lease.authority.clone())
-                .check_open(&self.lease.identity, session)
+        if let Some(session) = self.admission.session {
+            crowdb_access_dataset::DatasetSessions::new(self.admission.authority.clone())
+                .check_open(&self.admission.identity, session)
                 .await?;
         }
         if let Some(bytes) = self.pending.take() {
@@ -344,14 +280,4 @@ fn frame(kind: u8, bytes: &Bytes) -> Result<Bytes, ApiError> {
     output.extend_from_slice(&length.to_be_bytes());
     output.extend_from_slice(bytes);
     Ok(Bytes::from(output))
-}
-struct FrameOwner {
-    bytes: Bytes,
-    lease: Arc<Lease>,
-}
-impl AsRef<[u8]> for FrameOwner {
-    fn as_ref(&self) -> &[u8] {
-        let _ = &self.lease;
-        &self.bytes
-    }
 }

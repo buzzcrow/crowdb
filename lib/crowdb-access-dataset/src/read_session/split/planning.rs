@@ -53,18 +53,6 @@ impl DatasetSessions {
             .prepare_split_read_step(identity, spec, expected_page, now, cancel)
             .await;
         if cancel.is_cancelled() {
-            match self
-                .bound_split_read_spec(identity, spec.read.id, &ReadCancellation::new())
-                .await
-            {
-                Ok(bound) => {
-                    self.authority
-                        .release_read_handle(identity, bound.snapshot, spec.read.id)
-                        .await?;
-                }
-                Err(AuthorityError::NotFound) => {}
-                Err(error) => return Err(error),
-            }
             return Err(DatasetError::ReadCancelled.into());
         }
         result
@@ -91,7 +79,7 @@ impl DatasetSessions {
             .require_committed_snapshot(identity, bound.snapshot)
             .await?;
         self.authority
-            .touch_read_handle(identity, bound.snapshot, spec.read.id, now, super::super::TTL)
+            .check_snapshot_readable(identity, bound.snapshot)
             .await?;
         match self.record(identity, spec.read.id).await {
             Ok(_) => return self.prepared_split_read(identity, &bound, &progress, now).await,

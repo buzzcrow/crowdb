@@ -101,11 +101,15 @@ impl DatasetAuthority {
         identity: &DatasetIdentity,
         snapshot: SnapshotId,
     ) -> Result<(), AuthorityError> {
-        match self
-            .store
-            .compare_exchange(&retired_key(identity, snapshot)?, None, &[1])
-            .await?
-        {
+        let key = retired_key(identity, snapshot)?;
+        if let Some(value) = self.store.get(&key).await? {
+            return if value.bytes == [1] {
+                Ok(())
+            } else {
+                Err(AuthorityError::Corrupt)
+            };
+        }
+        match self.store.compare_exchange(&key, None, &[1]).await? {
             CasOutcome::Applied(_) => Ok(()),
             CasOutcome::Conflict(Some(value)) if value.bytes == [1] => Ok(()),
             CasOutcome::Conflict(_) => Err(AuthorityError::Corrupt),

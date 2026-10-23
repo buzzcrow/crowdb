@@ -70,7 +70,7 @@ The data head transition makes data and initial Splits visible together.
 ## 3. Split evaluation and publication
 
 Standalone Split drafts pin owner Snapshot and expected current revision at begin.
-Source leases protect effective values while active. Whole-set edits invalidate
+Preparation checks source availability; deletion may interrupt unfinished work. Whole-set edits invalidate
 evaluation; prepare requires complete membership and valid overlap/coverage policy.
 Defaults are disjoint and allow-unassigned. Frozen inherited membership is explicit;
 reevaluation is a deliberate definition change.
@@ -105,14 +105,14 @@ reject oversized external values before materializing their contents.
 
 Old snapshots without projections require explicit resumable inspection preparation.
 Unsupported or oversized legacy state is reported, never represented as an empty
-Snapshot. Field preview is explicit and capped at 64 KiB under an owned lease; it
+Snapshot. Field preview is explicit and capped at 64 KiB after read-only admission; it
 does not create a read plan or acknowledge application consumption.
 
 V2 read planning pins Snapshot and optional Split revision once, intersects Selection
 with Split membership, then orders/shuffles and partitions workers before fetching
 projected payloads. Planning advances twenty-Sample windows with fixed total ID/byte
 limits. Fetch/preview/status never advance the acknowledged cursor; only explicit
-application acknowledgement does so. Cancel releases owned source protection.
+application acknowledgement does so. Cancel stops local work without a persistent reader release.
 
 ## 5. Ownership and cleanup
 
@@ -129,14 +129,15 @@ payload writes so failed admissions can also be retired. Small receipt/fence rec
 remain after bulk cleanup to preserve replay and non-resurrection guarantees.
 
 Snapshot reclaim checks latest/stable, retained Snapshots, live children, candidate
-ownership and scoped leases under a terminal owner fence. It retires upload owners,
+ownership under a terminal owner fence. A durable five-minute grace deadline
+separates deletion admission from cleanup. After that deadline it retires upload owners,
 Snapshot-scoped Split drafts, possible index writes and ordinary metadata in phases.
 Completion reports logical retirement; physical upload deletion remains deferred
 to its registry cleanup. There is no independent committed Split revision pruning.
 
 `GET snapshots/{snapshot}/reclaim` is bounded, read-only observation. It returns
-publication operation identity where available, latest/stable/retained/read-lease
-facts, and not_started/pending/completed retirement state. Parent reachability is
+publication operation identity where available, latest/stable/retained flags,
+`reclaim_after` and the compatibility `active_read_lease=false` field, and not_started/pending/completed retirement state. Parent reachability is
 explicitly not evaluated in this small read; observed flags are never permission
 to reclaim. Rust/Python `control().lifecycle(snapshot)` share this contract.
 Metadata HTTP reads remain capped at five seconds, while bounded mutation steps

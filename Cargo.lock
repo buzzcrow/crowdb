@@ -615,6 +615,7 @@ dependencies = [
  "async-trait",
  "bincode",
  "bytes",
+ "crowdb-access-dataset",
  "crowdb-chunk-client",
  "crowdb-chunk-kv-client",
  "crowdb-protocol",

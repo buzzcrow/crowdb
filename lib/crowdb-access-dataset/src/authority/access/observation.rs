@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{decode_access, now};
+use super::decode_access;
 use crate::{
     authority::{decode, decode_head},
     inspection::{work::InspectionWork, InspectionError},
@@ -21,6 +21,7 @@ pub struct SnapshotLifecycle {
     pub stable: bool,
     pub retained: bool,
     pub active_read_lease: bool,
+    pub reclaim_after: Option<u64>,
     pub retiring: bool,
     pub completed: bool,
 }
@@ -68,6 +69,11 @@ impl DatasetAuthority {
             .map(|value| decode_access(&value.bytes))
             .transpose()?
             .unwrap_or_default();
+        let completed = if access.target.is_some() {
+            access.cleanup_complete
+        } else {
+            completed
+        };
         if !completed
             && !access.retiring
             && !self
@@ -90,15 +96,14 @@ impl DatasetAuthority {
         let operation = self
             .inspection_snapshot_operation(identity, snapshot, &mut work)
             .await?;
-        let time = now();
         Ok(SnapshotLifecycle {
             snapshot,
             operation,
             latest: head.as_ref().is_some_and(|head| head.latest == Some(snapshot)),
             stable: head.as_ref().is_some_and(|head| head.stable == Some(snapshot)),
             retained,
-            active_read_lease: (access.legacy > 0 && access.deadline > time)
-                || access.leases.iter().any(|(_, deadline)| *deadline > time),
+            active_read_lease: false,
+            reclaim_after: access.retiring.then_some(access.reclaim_after),
             retiring: access.reclaiming,
             completed,
         })

@@ -8,13 +8,13 @@ use super::{
     InspectionError, InspectionPreparation, InspectionState, PreparationLimits, PreparationState,
 };
 use crate::{
-    AuthorityError, CasOutcome, DatasetAuthority, DatasetIdentity, ManifestRecord, OperationId,
-    PublicationState, ReadCancellation, SnapshotId, SnapshotPublication, SnapshotRecord,
+    AuthorityError, CasOutcome, DatasetAuthority, DatasetIdentity, ManifestRecord, PublicationState,
+    ReadCancellation, SnapshotId, SnapshotPublication, SnapshotRecord,
 };
 use bincode::Options;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 #[derive(Deserialize)]
 struct LegacyRecord<T> {
@@ -64,14 +64,9 @@ impl DatasetAuthority {
         let source = self
             .load_legacy_inspection(identity, snapshot, limits, cancel)
             .await?;
-        let lease = OperationId::random();
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
         tokio::time::timeout(
             Duration::from_secs(2),
-            self.touch_read_handle(identity, snapshot, lease, now, 60),
+            self.check_snapshot_readable(identity, snapshot),
         )
         .await
         .map_err(|_| InspectionError::Limit)??;
@@ -80,13 +75,7 @@ impl DatasetAuthority {
             self.prepare_inspection_inner(identity, snapshot, limits, cancel, source),
         )
         .await;
-        let released = tokio::time::timeout(
-            Duration::from_secs(2),
-            self.release_read_handle(identity, snapshot, lease),
-        )
-        .await;
         let progress = result.map_err(|_| InspectionError::Limit)??;
-        released.map_err(|_| InspectionError::Limit)??;
         Ok(progress)
     }
 

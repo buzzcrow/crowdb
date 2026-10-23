@@ -120,7 +120,7 @@ impl DatasetAuthority {
         ) {
             return Err(SplitLifecycleError::Frozen);
         }
-        self.renew_split_draft_lease(identity, &state).await?;
+        self.check_split_draft_sources(identity, &state).await?;
         let mut progress = state
             .evaluation
             .clone()

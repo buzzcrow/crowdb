@@ -55,6 +55,7 @@ thiserror = { workspace = true }
 sync_wrapper = { version = "1", features = ["futures"] }
 
 [dev-dependencies]
+crowdb-access-dataset = { path = "../../lib/crowdb-access-dataset", features = ["test-util"] }
 crowdb-kv = { path = "../../lib/crowdb-kv" }
 bytes = "1"
 tempfile = "3"

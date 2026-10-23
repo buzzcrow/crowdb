@@ -2093,6 +2093,12 @@ components:
           type: boolean
         active_read_lease:
           type: boolean
+          const: false
+          description: Compatibility field; readers do not register persistent activity.
+        reclaim_after:
+          type: [integer, 'null']
+          minimum: 0
+          description: Durable Unix-seconds deadline for destructive cleanup.
         state:
           type: string
           enum: [not_started, pending, completed]
@@ -2113,12 +2119,16 @@ components:
         snapshot: *composition001
         phase:
           enum:
+          - grace_period
           - upload_owners
           - split_drafts
           - index_fences
           - metadata
           - complete
         complete: *composition005
+        reclaim_after:
+          type: integer
+          minimum: 0
         physical_cleanup_deferred:
           const: true
     CommitStatus:

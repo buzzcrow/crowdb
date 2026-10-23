@@ -8,9 +8,10 @@ use super::{
     DatasetHttpService, MAX_REQUEST_BYTES,
 };
 use crowdb_access_dataset::{
-    DatasetManifestResponse, DatasetPublishRequest, DatasetPublishResponse, DatasetReadRequest,
-    DatasetReclaimResponse, DatasetRetentionResponse, DatasetScanRequest, DatasetSnapshotRequest,
-    DatasetSnapshotResponse, DatasetSnapshotsResponse, OperationId, ReadTransportError,
+    AuthorityError, DatasetManifestResponse, DatasetPublishRequest, DatasetPublishResponse,
+    DatasetReadRequest, DatasetReclaimResponse, DatasetRetentionResponse, DatasetScanRequest,
+    DatasetSnapshotRequest, DatasetSnapshotResponse, DatasetSnapshotsResponse, OperationId,
+    ReadTransportError,
 };
 use http_body_util::{BodyExt, Full};
 use hyper::{
@@ -252,6 +253,13 @@ impl DatasetHttpService {
                 &DatasetReclaimResponse {
                     snapshot: request.snapshot,
                     reclaimed: true,
+                },
+            ),
+            Err(AuthorityError::ReclaimPending { .. }) => encode(
+                StatusCode::OK,
+                &DatasetReclaimResponse {
+                    snapshot: request.snapshot,
+                    reclaimed: false,
                 },
             ),
             Err(error) => response(status_for_authority(&error), error.to_string().into_bytes()),

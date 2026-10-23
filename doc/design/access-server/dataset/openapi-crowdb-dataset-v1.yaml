@@ -904,7 +904,7 @@
     "/api/dataset/v1/namespaces/{namespace}/datasets/{dataset}/snapshots/{snapshot}/reclaim": {
       "post": {
         "operationId": "ReclaimSnapshot",
-        "description": "Completed only after eligible Dataset metadata and owned payload reclamation are complete. Latest/stable/retained/parent/active-read snapshots conflict; deferred physical cleanup stays pending.",
+        "description": "Deletion marks the snapshot unavailable to new requests and persists a five-minute grace deadline before cleanup. Latest/stable/retained/parent snapshots conflict. Active readers do not block deletion; overdue reads may fail. Deferred physical cleanup stays pending.",
         "parameters": [
           {
             "in": "path",
@@ -1737,7 +1737,7 @@
       },
       "delete": {
         "operationId": "CloseReadPlan",
-        "description": "Idempotent scoped close/cancel; other sessions continue. No activity for 60 seconds expires the scoped lease. Application processing is at least once around acknowledgement.",
+        "description": "Idempotent scoped close/cancel; other sessions continue. No activity for 60 seconds expires the read session; it is not a snapshot GC lease. Application processing is at least once around acknowledgement.",
         "parameters": [
           {
             "in": "path",
@@ -2898,6 +2898,6 @@
     "batch": "Content-Type application/vnd.crowdb.dataset-batch.v1. Magic is 8 ASCII bytes CDBDS001. Each frame: type u8, body length u32 big endian, then body. Types: 1 JSON BatchHeader (at most 8 MiB); 2 data (16-byte MD5 followed by 1..4 MiB bytes); 3 field end (zero length); 0 batch end (zero length); 4 terminal JSON Error (at most 64 KiB, only after the header). Header declares every sample/field in requested order. Value fields are delivered sequentially with one or more type-2 frames and one type-3; empty values have just type-3. Missing/tombstone have no data frames. Validate each frame MD5, exact whole-field length/MD5, field ends, batch end and HTTP EOF with no trailing bytes. A batch is successful only after completion. A streaming destination may contain verified partial data on error and must be discarded; download-to-path publishes only a verified temporary file. A type-4 frame reports a failed operation, may follow verified partial data, and never permits successful completion. It carries the same structured error model as control responses. The SDK must report the error and discard partial output.",
     "retry": "SDK uses one overall deadline and stable logical tokens; bounded attempts/backoff only on documented idempotent operations with replayable bodies. Do not retry authorization, integrity or semantic conflicts. Ambiguous mutation errors retain operation/upload identity for status recovery. Never invent new tokens on retry.",
     "integrity": "Seekable file convenience upload makes a bounded digest pass then a bounded transfer pass. Upload complete independently verifies durable parts and whole MD5. These are deliberate integrity passes, not whole-file buffering. Nonseekable uploads require known length/digest or later explicit streaming-session design.",
-    "lifecycle": "Remote durability is guaranteed after successful snapshot publication; local staging/checkpoint flush semantics are future SDK work. Read leases and byte credits survive until streaming completes/drops, with periodic renewal during slow active transfers. Keep-alive uses bounded idle/header timeouts and shutdown drain. Upload ownership and reclaim are durable authority state, never client authority. Whole-file integrity completion has a 30-minute server deadline; clients use their configurable transfer deadline. Candidate reclamation retains an aborted operation tombstone; publication retry cannot resurrect it. chunks_reclaimed counts whole chunks, not retired shared ranges."
+    "lifecycle": "Remote durability is guaranteed after successful snapshot publication; local staging/checkpoint flush semantics are future SDK work. Reads perform no persistent activity registration or renewal. Snapshot deletion rejects new requests and defers cleanup for five minutes; admitted reads may complete or fail if overdue. Local byte credits survive until streaming completes/drops. Keep-alive uses bounded idle/header timeouts and shutdown drain. Upload ownership and reclaim are durable authority state, never client authority. Whole-file integrity completion has a 30-minute server deadline; clients use their configurable transfer deadline. Candidate reclamation retains an aborted operation tombstone; publication retry cannot resurrect it. chunks_reclaimed counts whole chunks, not retired shared ranges."
   }
 }

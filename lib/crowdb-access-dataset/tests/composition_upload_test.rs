@@ -247,7 +247,9 @@ async fn child_candidate_claims_inherited_upload_and_cancellation_preserves_pare
 
 #[tokio::test]
 async fn reclaimed_snapshot_retires_its_upload_owner_after_index_cleanup() {
-    let f = TestComposition::new().await;
+    let mut f = TestComposition::new().await;
+    let clock = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1000));
+    f.authority = f.authority.with_reclaim_clock_for_tests(clock.clone());
     let snapshot = f.prepare().await;
     f.own().await;
     let attempt = common::attempt(&f.authority, &f.identity, snapshot).await;
@@ -282,6 +284,8 @@ async fn reclaimed_snapshot_retires_its_upload_owner_after_index_cleanup() {
         )
         .await
         .unwrap();
+    f.authority.begin_reclaim(&f.identity, snapshot).await.unwrap();
+    clock.store(1300, std::sync::atomic::Ordering::Release);
     f.authority
         .reclaim_snapshot_metadata(&f.identity, snapshot)
         .await

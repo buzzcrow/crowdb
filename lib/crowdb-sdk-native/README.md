@@ -106,13 +106,13 @@ async fn read_object(seeds: Vec<String>) -> Result<(), Box<dyn std::error::Error
   its `next_page` until complete. `next_batch` fetches without acknowledging;
   `resume_read` returns the acknowledged cursor. Only `acknowledge(expected,
   next)` advances it. Releasing buffers or reaching EOF never acknowledges.
-- Active reads renew the existing 60-second storage-protection lease while
-  their operation remains live. Cancelling/dropping a batch stops its producer
-  and starts protection cleanup; `close_read` closes the durable session.
-  Verified EOF waits for cleanup, bounded by five seconds and the operation
-  context. Cancellation/drop returns promptly, while cleanup retains the request
-  credit until completion or that bound. Interrupted cleanup retains TTL expiry.
-  Caller-held buffer leases remain valid and charged independently.
+- Reads check snapshot deletion state at admission and perform no persistent
+  reader registration, renewal or release. Deletion rejects new requests and
+  defers cleanup for five minutes. Admitted transfers may finish; overdue reads
+  can fail when their remaining data is reclaimed. EOF/cancel/drop return local
+  request credits without a remote cleanup wait. Caller-held buffers remain
+  valid and charged independently. `close_read` closes the durable session;
+  session acknowledgement remains separate from fetching.
 - Upload parts accept runtime-owned `BufferLease` or `FrozenObjectBuffer`.
   Complete verifies stored parts before publication. Use `begin_composition`,
   `edit_composition`, bounded evaluate/prepare, publish and cleanup: these

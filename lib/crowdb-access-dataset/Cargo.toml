@@ -10,6 +10,9 @@ description = "Native Dataset authority and bounded sample access."
 [lints]
 workspace = true
 
+[features]
+test-util = []
+
 [dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
 async-trait = "0.1"
@@ -29,5 +32,6 @@ thiserror = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+crowdb-access-dataset = { path = ".", features = ["test-util"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 arc-swap = "1.9"

@@ -138,18 +138,21 @@ within the group. The client advances a cursor after batch confirmation. A crash
 may replay the last unconfirmed batch, but may not skip or change the snapshot.
 Epoch and sampler state remain client state.
 
-An active-read lease protects payloads reachable from the selected snapshot while
-the read is in progress. Normal close or cancel starts its release. Native
-verified EOF waits for bounded cleanup; cancellation stops production promptly
-and retains request admission through cleanup completion or its five-second
-bound. Caller-held buffers retain their own byte credits independently. If the
-connection has no activity for 60 seconds, the lease is invalid and GC may treat
-the read as disconnected; this TTL is the crash and network-failure fallback.
+Read admission checks the selected snapshot's authoritative deletion state without
+registering a reader. Deletion durably fences new reads and records a five-minute
+`reclaim_after` deadline; retries and restarts preserve that deadline. Existing
+streams can finish using resolved metadata and payloads during the grace period.
+Unusually long reads may fail after reclamation; partial delivery is never complete
+success. Access Servers and native clients do not acknowledge deletion. Session
+progress and local request/buffer admission have independent lifetimes. EOF,
+cancel and drop release local request admission without remote cleanup writes;
+caller-held buffers remain valid and charged until their final release.
 
 Dataset owns the lifetime of its metadata and payload references. Reclamation
-requires that no retained snapshot, tombstone needed by a retained history, or
-active read lease can reach the value or chunk. External S3 or Iceberg references
-are provenance unless an explicit cross-model retention contract says otherwise.
+preserves explicit retention, live snapshot ancestry and shared payload owners.
+External S3 or Iceberg references are provenance unless an explicit cross-model
+retention contract says otherwise. Physical I/O identity checks and buffer ownership
+remain necessary when storage is reclaimed or reused.
 
 ## 8. Interactions
 
@@ -256,10 +259,10 @@ Snapshot remains available.
 
 The public binary response streams a bounded JSON header, integrity-checked
 payload frames, field terminators and a batch terminator. Success also requires
-HTTP EOF with no trailing bytes. Each active transfer owns a unique scoped read
-lease and admission credits through transport delivery/drop. Heartbeats renew
-leases during active streaming. Cancellation stops the producer and returns
-credits; retained SDK-owned buffers keep their byte credits until released.
+HTTP EOF with no trailing bytes. Each active transfer owns local admission
+credits through delivery/drop. Snapshot reads perform no persistent activity
+updates or heartbeat writes. Cancellation stops the producer and returns credits;
+retained SDK-owned buffers keep their byte credits until released.
 The internal legacy scan adapter retains its compatibility behavior; public
 fetch never implies application acknowledgement.
 
@@ -270,8 +273,10 @@ head nonce, and rechecks latest, stable, explicit retention and all live committ
 child branches. Temporary child admission fences do not prove retirement. A
 reclaimer owns a CAS token; only that owner can reopen admission or enter the
 irreversible retiring phase. Concurrent stale reclaimers cannot undo retirement.
-An Aborted Snapshot tombstone preserves the original Manifest while payload
-cleanup is pending and prevents publication retry resurrection. Upload ownership
+After the terminal deletion mark, cleanup waits until the persisted grace
+deadline. The Access Server scans bounded pages of deletion records and resumes
+cleanup independently of reader processes. An Aborted Snapshot tombstone preserves
+the original Manifest while payload cleanup is pending and prevents publication retry resurrection. Upload ownership
 is released for that operation only; other Snapshot owners preserve shared
 bytes. Deferred physical cleanup remains pending. Shared range retirement does
 not count as a reclaimed whole chunk.
@@ -354,9 +359,10 @@ conflicts are not blanket retried. File downloads use a private temporary file
 and rename only after successful integrity verification.
 
 Head envelopes decode legacy versions and use version 3 for commit-attempt
-markers. Access envelopes decode versions 1 and 2 and write version 3 with scoped
-leases, reclaim ownership and terminal retirement. Upload sessions decode version
-2; permanent owner retirement upgrades a session to version 3 so an older writer
+markers. Access envelopes decode versions 1 through 4 and write version 4 with
+reclaim ownership, terminal deletion, grace deadline, cleanup target and completion.
+Legacy reader activity is ignored; all authority writers must use this contract.
+Upload sessions decode version 2; permanent owner retirement upgrades a session to version 3 so an older writer
 cannot ignore revocation. This metadata upgrade is one-way:
 do not downgrade an upgraded authority or run old and new authority writers
 against the same Dataset store. Immutable Dataset/Snapshot/Manifest encodings

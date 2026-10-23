@@ -54,7 +54,7 @@ impl DatasetHttpService {
                     .await?;
                 return json(&serde_json::json!({"snapshot": value.snapshot.to_string(),
                     "operation": value.operation.map(|id| id.to_string()), "latest": value.latest,
-                    "stable": value.stable, "retained": value.retained, "active_read_lease": value.active_read_lease,
+                    "stable": value.stable, "retained": value.retained, "active_read_lease": value.active_read_lease, "reclaim_after":value.reclaim_after,
                     "state": if value.completed { "completed" } else if value.retiring { "pending" } else { "not_started" },
                     "physical_cleanup_deferred": value.retiring || value.completed,
                     "parent_protection": "not_evaluated"}));
@@ -66,7 +66,7 @@ impl DatasetHttpService {
                     .reclaim_snapshot_step(identity, snapshot(id)?, uploads, &ReadCancellation::new())
                     .await?;
                 return json(
-                    &serde_json::json!({"snapshot":progress.snapshot.to_string(),"phase":progress.phase,"complete":progress.complete,"physical_cleanup_deferred":progress.physical_cleanup_deferred}),
+                    &serde_json::json!({"snapshot":progress.snapshot.to_string(),"phase":progress.phase,"complete":progress.complete,"physical_cleanup_deferred":progress.physical_cleanup_deferred,"reclaim_after":authority.snapshot_reclaim_after(identity, progress.snapshot).await?}),
                 );
             }
             (Method::GET, ["commits", id]) => {

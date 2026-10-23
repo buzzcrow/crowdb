@@ -123,10 +123,6 @@ impl DatasetAuthority {
         next.edit = None;
         self.replace_composition(identity, &old, &state, &next).await?;
         if let Some(preparation) = &next.draft.preparation {
-            if let Some(split_operation) = preparation.split_operation {
-                self.release_initial_split_leases(identity, split_operation)
-                    .await?;
-            }
             if let Some(receipt) = self
                 .abort_uncommitted_candidate(identity, preparation.candidate)
                 .await?
@@ -136,9 +132,6 @@ impl DatasetAuthority {
                     .await?;
                 return Err(CompositionError::Frozen);
             }
-        }
-        if let Some(parent) = next.draft.record.parent {
-            self.release_read_handle(identity, parent, operation).await?;
         }
         Ok(next.draft)
     }

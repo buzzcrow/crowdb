@@ -26,6 +26,7 @@ pub enum SnapshotReclaimError {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SnapshotReclaimPhase {
+    GracePeriod,
     UploadOwners,
     SplitDrafts,
     IndexFences,
@@ -74,6 +75,15 @@ impl DatasetAuthority {
             complete: false,
             physical_cleanup_deferred: true,
         };
+        self.begin_reclaim(identity, snapshot).await?;
+        match self.require_reclaim_ready(identity, snapshot).await {
+            Ok(()) => {}
+            Err(AuthorityError::ReclaimPending { .. }) => {
+                status.phase = SnapshotReclaimPhase::GracePeriod;
+                return Ok(status);
+            }
+            Err(error) => return Err(error.into()),
+        }
         if !self
             .reclaim_snapshot_uploads_step(identity, snapshot, uploads)
             .await?
@@ -118,6 +128,11 @@ impl DatasetAuthority {
         {
             status.phase = SnapshotReclaimPhase::Complete;
             status.complete = true;
+            self.update_access(identity, snapshot, |access| {
+                access.cleanup_complete = true;
+                Ok(())
+            })
+            .await?;
         }
         Ok(status)
     }

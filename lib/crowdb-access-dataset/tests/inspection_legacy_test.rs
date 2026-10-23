@@ -204,7 +204,7 @@ async fn legacy_limits_cancellation_and_opaque_data_are_explicit() {
     );
 }
 #[tokio::test]
-async fn legacy_work_releases_its_lease_after_limit_failure() {
+async fn legacy_work_never_persists_reader_activity_on_limit_failure() {
     let (store, identity, snapshot, _) = fixture(false).await;
     let authority = DatasetAuthority::new(store.clone());
     let _ = authority
@@ -218,7 +218,7 @@ async fn legacy_work_releases_its_lease_after_limit_failure() {
             &ReadCancellation::new(),
         )
         .await;
-    // The existing reclaim operation tests the same durable lease authority.
+    // Preparing inspection work must not register snapshot reader activity.
     let mut key = b"DS\0L\0".to_vec();
     key.extend_from_slice(&identity.key().unwrap());
     key.extend_from_slice(snapshot.as_bytes());
@@ -233,10 +233,8 @@ async fn legacy_work_releases_its_lease_after_limit_failure() {
             &ReadCancellation::new(),
         )
         .await
-        .unwrap()
         .unwrap();
-    let access: TestEnvelope = bincode::deserialize(&stored.bytes).unwrap();
-    assert!(access.payload.leases.is_empty());
+    assert!(stored.is_none());
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]

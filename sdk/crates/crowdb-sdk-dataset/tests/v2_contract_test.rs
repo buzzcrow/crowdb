@@ -10,6 +10,23 @@ use serde_json::json;
 mod peer;
 
 #[test]
+fn reclaim_accepts_grace_deadlines_and_older_responses() {
+    use crowdb_sdk_dataset::v2::{ReclaimPhase, SnapshotReclaim};
+    let mut value = json!({
+        "snapshot": "01".repeat(16), "phase": "grace_period", "complete": false,
+        "physical_cleanup_deferred": true, "reclaim_after": 1300
+    });
+    let status: SnapshotReclaim = serde_json::from_value(value.clone()).unwrap();
+    assert!(matches!(status.phase, ReclaimPhase::GracePeriod));
+    assert_eq!(status.reclaim_after, Some(1300));
+    value["phase"] = json!("upload_owners");
+    value.as_object_mut().unwrap().remove("reclaim_after");
+    let status: SnapshotReclaim = serde_json::from_value(value).unwrap();
+    assert!(matches!(status.phase, ReclaimPhase::UploadOwners));
+    assert_eq!(status.reclaim_after, None);
+}
+
+#[test]
 fn v2_stream_accepts_long_binary_ids_without_changing_v1_bounds() {
     use bytes::BytesMut;
     use crowdb_sdk_dataset::wire::{BatchDecoder, BATCH_MAGIC};

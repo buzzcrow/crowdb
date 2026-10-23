@@ -59,6 +59,12 @@ async fn retirement_respects_retention_and_finishes_split_and_composition_cleanu
     response(client.post(format!("{snapshot}/retain")), 200).await;
     response(client.post(format!("{snapshot}/reclaim")), 409).await;
     response(client.post(format!("{snapshot}/release")), 200).await;
+    let marked = response(client.post(format!("{snapshot}/reclaim")), 200).await;
+    assert_eq!(marked["phase"], "grace_period");
+    assert_eq!(marked["complete"], false);
+    assert_eq!(marked["reclaim_after"], 1300);
+    response(client.get(format!("{snapshot}/summary")), 404).await;
+    test.clock.store(1300, std::sync::atomic::Ordering::Release);
     for step in 0..100 {
         let progress = response(client.post(format!("{snapshot}/reclaim")), 200).await;
         assert_eq!(progress["physical_cleanup_deferred"], true);

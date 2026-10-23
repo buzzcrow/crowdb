@@ -32,6 +32,7 @@ impl DatasetAuthority {
             return Err(DatasetError::ReadCancelled.into());
         }
         let record = self.begin_reclaim(identity, snapshot).await?;
+        self.require_reclaim_ready(identity, snapshot).await?;
         let scopes = cleanup_scopes(identity, snapshot, record.publication.parent)?;
         let key = scoped(b"DS\0GMC\0", identity, snapshot)?;
         let budget = MetadataScanBudget {

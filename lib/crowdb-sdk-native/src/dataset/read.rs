@@ -1,9 +1,9 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+mod admission;
 mod body;
 mod field;
-mod protection;
 pub use body::{BatchBody, FieldBuffer};
 
 use super::{now, DatasetClient};
@@ -90,9 +90,7 @@ impl DatasetClient {
         end: bool,
         session: Option<OperationId>,
     ) -> Result<ReadBatch> {
-        let request = Arc::new(request);
-        let protection =
-            protection::ReadProtection::acquire(self, Arc::clone(&request), batch.snapshot, session).await?;
+        let admission = admission::ReadAdmission::admit(self, &request, batch.snapshot, session).await?;
         let samples = if batch.sample_ids.is_empty() {
             Vec::new()
         } else {
@@ -125,7 +123,7 @@ impl DatasetClient {
             request,
             Arc::clone(&self.runtime.resources),
             Arc::clone(&self.uploads),
-            protection,
+            admission,
         );
         Ok(ReadBatch { header, body })
     }

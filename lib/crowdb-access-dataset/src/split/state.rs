@@ -7,7 +7,7 @@ use crate::{
     StoredValue,
 };
 use serde::{Deserialize, Serialize};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -164,7 +164,7 @@ impl DatasetAuthority {
             CasOutcome::Conflict(_) => Err(SplitLifecycleError::Conflict),
         }
     }
-    pub(super) async fn renew_split_draft_lease(
+    pub(super) async fn check_split_draft_sources(
         &self,
         identity: &DatasetIdentity,
         state: &DraftState,
@@ -178,11 +178,9 @@ impl DatasetAuthority {
             self.validate_split_sources(identity, record).await?;
         }
         for source in super::inheritance::source_owners(record) {
-            self.touch_read_handle(identity, source, record.operation, now(), 3600)
-                .await?;
+            self.check_snapshot_readable(identity, source).await?;
         }
-        self.touch_read_handle(identity, record.snapshot, record.operation, now(), 3600)
-            .await?;
+        self.check_snapshot_readable(identity, record.snapshot).await?;
         Ok(())
     }
 }
@@ -199,10 +197,4 @@ pub(super) fn state_key(
         key.extend_from_slice(edit.as_bytes());
     }
     Ok(key)
-}
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }

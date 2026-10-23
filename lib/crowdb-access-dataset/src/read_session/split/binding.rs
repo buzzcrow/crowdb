@@ -14,7 +14,7 @@ impl DatasetSessions {
         &self,
         identity: &DatasetIdentity,
         spec: &SessionSpecV2,
-        now: u64,
+        _now: u64,
         cancel: &ReadCancellation,
     ) -> Result<BoundSplitSpec, AuthorityError> {
         self.reserve_session_version(identity, spec.read.id, 2).await?;
@@ -62,9 +62,7 @@ impl DatasetSessions {
         };
         self.validate_split_read_schema(identity, snapshot, spec, cancel)
             .await?;
-        self.authority
-            .touch_read_handle(identity, snapshot, spec.read.id, now, super::super::TTL)
-            .await?;
+        self.authority.check_snapshot_readable(identity, snapshot).await?;
         let bound = BoundSplitSpec {
             version: 2,
             spec: spec.clone(),
@@ -79,11 +77,6 @@ impl DatasetSessions {
             Ok(()) => Ok(bound),
             Err(AuthorityError::CursorConflict) => {
                 let winner = self.bound_split_read_spec(identity, spec.read.id, cancel).await?;
-                if winner.snapshot != snapshot {
-                    self.authority
-                        .release_read_handle(identity, snapshot, spec.read.id)
-                        .await?;
-                }
                 if winner.spec != *spec {
                     return Err(AuthorityError::CursorConflict);
                 }

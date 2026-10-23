@@ -12,6 +12,8 @@ use crowdb_access_dataset::*;
 #[tokio::test]
 async fn retired_snapshot_cleans_all_revision_pages_without_touching_other_owners() {
     let (store, authority, identity, snapshot) = split_store::fixture().await;
+    let clock = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1000));
+    let authority = authority.with_reclaim_clock_for_tests(clock.clone());
     let first = split_store::prepared(&authority, &identity, snapshot, None).await;
     let first_attempt = split_store::attempt(&authority, &identity, &first).await;
     authority
@@ -42,13 +44,16 @@ async fn retired_snapshot_cleans_all_revision_pages_without_touching_other_owner
         )
         .await
         .unwrap();
+    authority.begin_reclaim(&identity, snapshot).await.unwrap();
+    clock.store(1300, std::sync::atomic::Ordering::Release);
     let cancel = ReadCancellation::new();
     let partial = authority
         .reclaim_snapshot_metadata_step(&identity, snapshot, &cancel)
         .await
         .unwrap();
     assert!(!partial.complete);
-    let restarted = DatasetAuthority::new(store.clone());
+    clock.store(1300, std::sync::atomic::Ordering::Release);
+    let restarted = DatasetAuthority::new(store.clone()).with_reclaim_clock_for_tests(clock);
     let mut completed = false;
     for _ in 0..100 {
         if restarted
@@ -110,6 +115,8 @@ async fn retired_snapshot_cleans_all_revision_pages_without_touching_other_owner
 #[tokio::test]
 async fn cleanup_completion_is_helped_after_final_status_write_failure() {
     let (store, authority, identity, snapshot) = split_store::fixture().await;
+    let clock = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1000));
+    let authority = authority.with_reclaim_clock_for_tests(clock.clone());
     let root = authority
         .prepare_snapshot_candidate(
             &identity,
@@ -123,6 +130,8 @@ async fn cleanup_completion_is_helped_after_final_status_write_failure() {
         .publish_snapshot_candidate(&identity, &common::attempt(&authority, &identity, root).await)
         .await
         .unwrap();
+    authority.begin_reclaim(&identity, snapshot).await.unwrap();
+    clock.store(1300, std::sync::atomic::Ordering::Release);
     store
         .reject_cleanup_finish
         .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -146,7 +155,7 @@ async fn cleanup_completion_is_helped_after_final_status_write_failure() {
             .state,
         ReclaimState::Pending
     );
-    let restarted = DatasetAuthority::new(store);
+    let restarted = DatasetAuthority::new(store).with_reclaim_clock_for_tests(clock);
     assert!(
         restarted
             .reclaim_snapshot_metadata_step(&identity, snapshot, &ReadCancellation::new())

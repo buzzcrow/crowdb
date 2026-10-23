@@ -63,7 +63,7 @@ impl DatasetAuthority {
                 .await?;
             return Ok(receipt);
         }
-        self.renew_split_draft_lease(identity, &state).await?;
+        self.check_split_draft_sources(identity, &state).await?;
         match state.record.progress {
             DraftProgress::Prepared { .. } => {
                 let mut next = state.clone();
@@ -170,7 +170,7 @@ impl DatasetAuthority {
             attempt: receipt.attempt.id,
         };
         self.replace_split_draft(identity, old, state, &next).await?;
-        self.release_split_draft_leases(identity, state).await?;
+
         Ok(())
     }
 }

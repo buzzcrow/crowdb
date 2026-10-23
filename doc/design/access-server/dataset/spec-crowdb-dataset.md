@@ -54,8 +54,8 @@ The following terms have one meaning throughout this specification:
   shuffle to one immutable Snapshot.
 - **Cursor** records progress for one Read Plan and is acknowledged only after
   the corresponding batch is accepted by the caller.
-- **Active-read lease** protects data reachable from one Dataset/Snapshot while
-  a read is admitted or executing.
+- **Deletion grace period** separates a durable snapshot deletion mark from
+  destructive cleanup; it does not guarantee completion of every admitted read.
 
 Dataset does not infer semantics from a locator, a Snapshot ID's numeric
 ordering, a sample ID's encoding, or an external source URI.
@@ -67,7 +67,7 @@ the configured `dataset-ns` root namespace for every Dataset. Names are unique
 within that namespace and are compared as opaque UTF-8 names after validation.
 
 `SnapshotId` is immutable and opaque. `latest` and `stable` are mutable names
-whose values are Snapshot IDs. A Read Plan, Cursor, Manifest, or lease stores
+whose values are Snapshot IDs. A Read Plan, Cursor, or Manifest stores
 the resolved Snapshot ID and never stores a mutable name in its place.
 
 A Snapshot has zero or one declared parent. Parentage is explicit; ID ordering
@@ -122,12 +122,12 @@ specified below and in its versioned OpenAPI contract.
 | `GetSample` / `GetBatch` | Snapshot ID, sample IDs, projection | Returns ordered samples and verified field values. |
 | `Scan` | Read Plan, optional Cursor | Returns one bounded batch and the next Cursor. |
 | `SaveProgress` / `Resume` | Read Plan, Cursor | Persists or loads plan-bound progress. |
-| `Cancel` | Bound read or service | Stops admission and releases the active-read lease. |
+| `Cancel` | Bound read or service | Stops local admission and production without a remote reader release. |
 
 `PrepareSnapshot` and `PublishSnapshot` share the same operation token and
 validation rules. A complete publication may be implemented as one call that
 performs preparation and completion internally; it MUST have the same durable
-state transitions. Read operations are side-effect free except for lease and
+state transitions. Ordinary data reads do not persist activity. Explicit sessions retain
 cursor state required by their documented lifecycle.
 
 ## 5. Manifest and field values
@@ -228,12 +228,11 @@ Requested sample and projection order is preserved unless the plan explicitly
 requests another ordering. Unknown samples, invalid projections, checksum
 mismatches, and malformed cursors are errors.
 
-Each admitted transfer owns a unique scoped active-read lease for its Dataset
-and Snapshot. Normal completion, cancellation, and explicit close release that
-lease without releasing another reader's lease. Streaming renews its lease
-while bytes are in flight. Transport-owned buffers retain protection and
-admission through delivery or drop. A bounded inactivity TTL expires a disconnected lease; the expiry is a
-GC safety policy, not a publication or cursor transition.
+Each request checks authoritative snapshot availability at admission and MUST NOT
+register, renew or release persistent reader activity. A durable deletion mark
+rejects new requests. Previously admitted transfers may continue; neither EOF nor
+cancellation waits for a remote cleanup operation. Local byte/request credits and
+caller-owned buffers retain their existing lifetime guarantees.
 
 HTTP and native reads use the same authority semantics. Transport framing,
 serialization, and topology discovery may differ, but the resolved Snapshot,
@@ -244,7 +243,14 @@ equivalent.
 
 `retain` and `release` apply to an immutable Snapshot ID. The latest Snapshot,
 stable Snapshot, retained Snapshots, parents of live committed Snapshots on any
-branch, and Snapshots with active-read leases are protected from reclamation.
+branch are protected from reclamation. Active reads do not prevent deletion.
+
+Deletion first persists a terminal mark and a five-minute `reclaim_after` deadline.
+Cleanup MUST NOT remove snapshot-owned metadata or payload references before
+that deadline. Restart and retry MUST preserve it. No Access Server or client
+acknowledgements are required. Reads that exceed the grace period may return
+an error after partial delivery; they MUST NOT report successful completion or
+switch snapshots. Deletion completion does not revoke bytes already delivered.
 
 Reclamation is idempotent. It removes only unreachable Dataset-owned metadata
 and payload references. A payload shared by two retained or readable
@@ -358,8 +364,9 @@ extensions.
 - **DATA-S6 — Plan binding:** a Cursor is valid only for its exact Read Plan.
 - **DATA-S7 — Bounded delivery:** configured memory, batch, and in-flight
   limits are enforced before payload admission.
-- **DATA-S8 — Lease protection:** active reads protect all reachable metadata
-  and payloads until release or expiry.
+- **DATA-S8 — Delayed reclamation:** deletion rejects new reads and defers
+  cleanup to its durable grace deadline; overdue reads may fail without
+  successful truncation or snapshot substitution.
 - **DATA-S9 — Ownership-safe GC:** reclamation deletes only unowned Dataset
   data and never external source objects.
 - **DATA-S10 — Surface parity:** HTTP and native surfaces preserve the same

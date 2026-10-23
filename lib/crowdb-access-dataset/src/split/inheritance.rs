@@ -2,8 +2,8 @@
 // Licensed under the Apache License, Version 2.0.
 
 use super::{
-    key, state::DraftState, MembershipOrigin, MembershipPage, SplitDraftRecord, SplitLifecycleError,
-    SplitName, SplitRevisionRecord,
+    key, MembershipOrigin, MembershipPage, SplitDraftRecord, SplitLifecycleError, SplitName,
+    SplitRevisionRecord,
 };
 use crate::{
     inspection::work::InspectionWork, DatasetAuthority, DatasetIdentity, MetadataScanBudget,
@@ -64,19 +64,7 @@ impl DatasetAuthority {
         }
         Ok(())
     }
-    pub(super) async fn release_split_draft_leases(
-        &self,
-        identity: &DatasetIdentity,
-        state: &DraftState,
-    ) -> Result<(), SplitLifecycleError> {
-        let mut snapshots: BTreeSet<_> = state.source_leases.iter().copied().collect();
-        snapshots.insert(state.record.snapshot);
-        for snapshot in snapshots {
-            self.release_read_handle(identity, snapshot, state.record.operation)
-                .await?;
-        }
-        Ok(())
-    }
+
     pub(crate) async fn frozen_split_contains(
         &self,
         identity: &DatasetIdentity,

@@ -75,6 +75,7 @@ impl DatasetAuthority {
             .await?
             .ok_or(AuthorityError::SnapshotNotFound)?;
         let record = self.begin_reclaim(identity, snapshot).await?;
+        self.require_reclaim_ready(identity, snapshot).await?;
         if record.publication.manifest.len() > 8 * 1024 * 1024 {
             return Err(UploadReclaimError::Limit);
         }

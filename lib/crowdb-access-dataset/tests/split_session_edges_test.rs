@@ -66,7 +66,7 @@ async fn v2_session_accepts_empty_inline_equality_without_changing_legacy_plans(
 }
 
 #[tokio::test]
-async fn interrupted_preparation_releases_its_lease_without_losing_durable_progress() {
+async fn interrupted_preparation_preserves_progress_without_blocking_deletion() {
     let (store, authority, identity, parent) = split_store::fixture().await;
     let snapshot = split_store::publish_binary_samples(&authority, &identity, parent).await;
     let authority = Arc::new(authority);
@@ -115,10 +115,7 @@ async fn interrupted_preparation_releases_its_lease_without_losing_durable_progr
         .publish_snapshot_candidate(&identity, &attempt)
         .await
         .unwrap();
-    assert!(matches!(
-        authority.begin_reclaim(&identity, snapshot).await,
-        Err(AuthorityError::SnapshotProtected)
-    ));
+    authority.begin_reclaim(&identity, snapshot).await.unwrap();
     cancel.cancel();
     assert!(sessions
         .prepare_split_read(&identity, &spec, resumed.next_page, now, &cancel)

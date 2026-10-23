@@ -62,13 +62,17 @@ pub enum AuthorityError {
     AncestryCycle,
     #[error("read cursor lost its compare-and-exchange race")]
     CursorConflict,
-    #[error("snapshot is protected by a head, retention marker, parent chain, or active read")]
+    #[error("snapshot is protected by a head, retention marker, or parent chain")]
     SnapshotProtected,
+    #[error("snapshot deletion grace period ends at {reclaim_after}")]
+    ReclaimPending { reclaim_after: u64 },
 }
 
 pub struct DatasetAuthority {
     pub(crate) store: Arc<dyn DatasetStore>,
     chunk_reader: Arc<dyn ChunkReader>,
+    #[cfg(feature = "test-util")]
+    reclaim_clock: Option<Arc<std::sync::atomic::AtomicU64>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -86,6 +90,8 @@ impl DatasetAuthority {
         Self {
             store,
             chunk_reader: unavailable_chunk_reader(),
+            #[cfg(feature = "test-util")]
+            reclaim_clock: None,
         }
     }
 
@@ -93,7 +99,12 @@ impl DatasetAuthority {
     /// # Panics
     /// The built-in non-zero lease duration is always valid.
     pub fn with_chunk_reader(store: Arc<dyn DatasetStore>, chunk_reader: Arc<dyn ChunkReader>) -> Self {
-        Self { store, chunk_reader }
+        Self {
+            store,
+            chunk_reader,
+            #[cfg(feature = "test-util")]
+            reclaim_clock: None,
+        }
     }
 
     /// # Errors

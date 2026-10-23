@@ -117,15 +117,6 @@ impl DatasetAuthority {
             attempt: receipt.attempt.id,
         };
         self.replace_composition(identity, old, state, &next).await?;
-        if let Some(parent) = next.draft.record.parent {
-            self.release_read_handle(identity, parent, next.draft.record.operation)
-                .await?;
-        }
-        if let Some(preparation) = &next.draft.preparation {
-            if let Some(operation) = preparation.split_operation {
-                self.release_initial_split_leases(identity, operation).await?;
-            }
-        }
         Ok(())
     }
 }

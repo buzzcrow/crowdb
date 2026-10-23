@@ -8,56 +8,79 @@ mod observation;
 pub use lifecycle::{SnapshotReclaimError, SnapshotReclaimPhase, SnapshotReclaimStatus};
 pub use observation::SnapshotLifecycle;
 mod reclaim;
-use crate::{key, AuthorityError, CasOutcome, DatasetError, DatasetIdentity, OperationId, SnapshotId};
+mod sweep;
+use crate::{key, AuthorityError, CasOutcome, DatasetIdentity, OperationId, SnapshotId};
 pub use cleanup::MetadataCleanupProgress;
 use serde::{Deserialize, Serialize};
+
+/// Default delay between logical deletion and destructive cleanup.
+const RECLAIM_GRACE_SECONDS: u64 = 300;
 
 #[derive(Default, Serialize, Deserialize)]
 struct Access {
     reclaiming: bool,
-    legacy: u64,
-    deadline: u64,
-    leases: Vec<(OperationId, u64)>,
     reclaim_owner: Option<OperationId>,
     retiring: bool,
+    reclaim_after: u64,
+    target: Option<(DatasetIdentity, SnapshotId)>,
+    cleanup_complete: bool,
 }
 #[derive(Deserialize)]
 struct AccessV2 {
     reclaiming: bool,
-    legacy: u64,
-    deadline: u64,
-    leases: Vec<(OperationId, u64)>,
+    _legacy: u64,
+    _deadline: u64,
+    _leases: Vec<(OperationId, u64)>,
+}
+#[derive(Deserialize)]
+struct AccessV3 {
+    reclaiming: bool,
+    _legacy: u64,
+    _deadline: u64,
+    _leases: Vec<(OperationId, u64)>,
+    reclaim_owner: Option<OperationId>,
+    retiring: bool,
 }
 fn decode_access(bytes: &[u8]) -> Result<Access, AuthorityError> {
-    if bytes.get(..2) == Some(1u16.to_le_bytes().as_slice()) {
-        let old: crate::ActiveReadLease = decode(bytes)?;
-        return Ok(Access {
-            legacy: old.active,
-            deadline: old.deadline,
-            ..Access::default()
-        });
-    }
-    if bytes.get(..2) == Some(2u16.to_le_bytes().as_slice()) {
-        let record: VersionedRecord<AccessV2> =
-            bincode::deserialize(bytes).map_err(|_| AuthorityError::Corrupt)?;
-        let old = record.payload;
-        return Ok(Access {
-            reclaiming: old.reclaiming,
-            legacy: old.legacy,
-            deadline: old.deadline,
-            leases: old.leases,
-            ..Access::default()
-        });
-    }
-    let record: VersionedRecord<Access> = bincode::deserialize(bytes).map_err(|_| AuthorityError::Corrupt)?;
-    if record.version != 3 || (record.payload.retiring && !record.payload.reclaiming) {
+    let version = bytes.get(..2).ok_or(AuthorityError::Corrupt)?;
+    let access = match u16::from_le_bytes([version[0], version[1]]) {
+        1 => {
+            let _: crate::ActiveReadLease = decode(bytes)?;
+            Access::default()
+        }
+        2 => {
+            let old: VersionedRecord<AccessV2> =
+                bincode::deserialize(bytes).map_err(|_| AuthorityError::Corrupt)?;
+            Access {
+                reclaiming: old.payload.reclaiming,
+                ..Access::default()
+            }
+        }
+        3 => {
+            let old: VersionedRecord<AccessV3> =
+                bincode::deserialize(bytes).map_err(|_| AuthorityError::Corrupt)?;
+            Access {
+                reclaiming: old.payload.reclaiming,
+                reclaim_owner: old.payload.reclaim_owner,
+                retiring: old.payload.retiring,
+                ..Access::default()
+            }
+        }
+        4 => {
+            let record: VersionedRecord<Access> =
+                bincode::deserialize(bytes).map_err(|_| AuthorityError::Corrupt)?;
+            record.payload
+        }
+        _ => return Err(AuthorityError::Corrupt),
+    };
+    if access.retiring && !access.reclaiming {
         return Err(AuthorityError::Corrupt);
     }
-    Ok(record.payload)
+    Ok(access)
 }
 fn encode_access(record: Access) -> Result<Vec<u8>, AuthorityError> {
     bincode::serialize(&VersionedRecord {
-        version: 3,
+        version: 4,
         payload: record,
     })
     .map_err(|_| AuthorityError::Corrupt)
@@ -77,15 +100,18 @@ impl DatasetAuthority {
     ) -> Result<(), AuthorityError> {
         let key = key::read_lease(identity, snapshot)?;
         let mut old = self.store.get(&key).await?;
-        for attempt in 0..64 {
+        for _ in 0..64 {
             let mut access = old
                 .as_ref()
                 .map(|v| decode_access(&v.bytes))
                 .transpose()?
                 .unwrap_or_default();
             change(&mut access)?;
+            access.target = Some((identity.clone(), snapshot));
             let bytes = encode_access(access)?;
-            let submitted = std::time::Instant::now();
+            if old.as_ref().is_some_and(|v| v.bytes == bytes) {
+                return Ok(());
+            }
             match self
                 .store
                 .compare_exchange(&key, old.as_ref().map(|v| v.bytes.as_slice()), &bytes)
@@ -93,23 +119,8 @@ impl DatasetAuthority {
             {
                 CasOutcome::Applied(_) => return Ok(()),
                 // Recompute against the sequencer's observation without opening another
-                // point-read race against concurrent acquisitions and releases.
-                CasOutcome::Conflict(observed) => {
-                    old = observed;
-                    if attempt % 2 == 1 && attempt < 63 {
-                        // Concurrent acquisitions and asynchronous releases must not
-                        // repeatedly rejoin the same CAS wave and starve each other.
-                        // Include the durable store round trip: a fixed sub-RTT
-                        // window keeps slow writers in the same contention wave.
-                        let round_trip = submitted.elapsed().as_millis().clamp(1, 32);
-                        let window = round_trip * (1_u128 << (attempt / 2).min(3));
-                        let delay = 1 + u128::from(uuid::Uuid::new_v4().as_bytes()[0]) % window;
-                        let delay = u64::try_from(delay).expect("contention window is at most 256 ms");
-                        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-                        // The conflict observation predates the contention window.
-                        old = self.store.get(&key).await?;
-                    }
-                }
+                // point-read race against concurrent lifecycle changes.
+                CasOutcome::Conflict(observed) => old = observed,
             }
         }
         Err(AuthorityError::HeadConflict)
@@ -126,107 +137,71 @@ impl DatasetAuthority {
         }
         Ok(())
     }
-    /// Acquires legacy aggregate activity, preserving older persisted records.
+    /// Checks authoritative admission once without registering or renewing a reader.
+    /// Requests admitted before deletion may continue until storage is reclaimed.
+    /// The caller resolves snapshot existence and publication separately.
     /// # Errors
-    /// Returns expired/fenced snapshots, invalid TTL or storage failures.
-    pub async fn acquire_snapshot_read(
+    /// Returns `SnapshotNotFound` for deletion fences, or storage/decoding failures.
+    pub async fn check_snapshot_readable(
         &self,
         identity: &DatasetIdentity,
         snapshot: SnapshotId,
-        time: u64,
-        ttl: u64,
     ) -> Result<(), AuthorityError> {
-        if ttl == 0 {
-            return Err(DatasetError::InvalidManifest.into());
+        if let Some(value) = self.store.get(&key::read_lease(identity, snapshot)?).await? {
+            if decode_access(&value.bytes)?.reclaiming {
+                return Err(AuthorityError::SnapshotNotFound);
+            }
         }
-        self.update_access(identity, snapshot, |a| {
-            if a.reclaiming {
-                return Err(AuthorityError::SnapshotProtected);
-            }
-            if time >= a.deadline {
-                a.legacy = 0;
-            }
-            a.legacy = a.legacy.checked_add(1).ok_or(AuthorityError::Corrupt)?;
-            a.deadline = time.saturating_add(ttl);
-            Ok(())
-        })
-        .await
+        Ok(())
     }
+
+    /// Returns the durable deadline after a successful deletion mark.
     /// # Errors
-    /// Returns malformed or unavailable storage.
-    pub async fn release_snapshot_read(
+    /// Rejects snapshots without a terminal deletion mark or malformed storage.
+    pub async fn snapshot_reclaim_after(
         &self,
         identity: &DatasetIdentity,
         snapshot: SnapshotId,
-    ) -> Result<(), AuthorityError> {
-        self.update_access(identity, snapshot, |a| {
-            a.legacy = a.legacy.saturating_sub(1);
-            Ok(())
-        })
-        .await
-    }
-    /// # Errors
-    /// Returns expired activity or unavailable storage.
-    pub async fn renew_snapshot_read(
-        &self,
-        identity: &DatasetIdentity,
-        snapshot: SnapshotId,
-        time: u64,
-        ttl: u64,
-    ) -> Result<(), AuthorityError> {
-        self.update_access(identity, snapshot, |a| {
-            if a.reclaiming || a.legacy == 0 || time >= a.deadline {
-                return Err(DatasetError::ReadCancelled.into());
-            }
-            a.deadline = time.saturating_add(ttl);
-            Ok(())
-        })
-        .await
-    }
-    /// Acquires/renews one independently owned lease; another handle cannot release it.
-    /// # Errors
-    /// Returns fenced snapshots, exhausted capacity or unavailable storage.
-    pub async fn touch_read_handle(
-        &self,
-        identity: &DatasetIdentity,
-        snapshot: SnapshotId,
-        id: OperationId,
-        time: u64,
-        ttl: u64,
-    ) -> Result<(), AuthorityError> {
-        if ttl == 0 {
-            return Err(DatasetError::InvalidManifest.into());
+    ) -> Result<u64, AuthorityError> {
+        let value = self
+            .store
+            .get(&key::read_lease(identity, snapshot)?)
+            .await?
+            .ok_or(AuthorityError::SnapshotProtected)?;
+        let access = decode_access(&value.bytes)?;
+        if !access.retiring {
+            return Err(AuthorityError::SnapshotProtected);
         }
-        self.update_access(identity, snapshot, |a| {
-            if a.reclaiming {
-                return Err(AuthorityError::SnapshotProtected);
-            }
-            a.leases.retain(|(_, deadline)| *deadline > time);
-            if let Some((_, deadline)) = a.leases.iter_mut().find(|(lease, _)| *lease == id) {
-                *deadline = time.saturating_add(ttl);
-            } else {
-                if a.leases.len() >= 4096 {
-                    return Err(DatasetError::ReadLimitExceeded.into());
-                }
-                a.leases.push((id, time.saturating_add(ttl)));
-            }
-            Ok(())
-        })
-        .await
+        Ok(access.reclaim_after)
     }
-    /// # Errors
-    /// Returns malformed or unavailable storage.
-    pub async fn release_read_handle(
+
+    pub(crate) async fn require_reclaim_ready(
         &self,
         identity: &DatasetIdentity,
         snapshot: SnapshotId,
-        id: OperationId,
     ) -> Result<(), AuthorityError> {
-        self.update_access(identity, snapshot, |a| {
-            a.leases.retain(|(lease, _)| *lease != id);
-            Ok(())
-        })
-        .await
+        let reclaim_after = self.snapshot_reclaim_after(identity, snapshot).await?;
+        if self.reclaim_time() < reclaim_after {
+            return Err(AuthorityError::ReclaimPending { reclaim_after });
+        }
+        Ok(())
+    }
+
+    fn reclaim_time(&self) -> u64 {
+        #[cfg(feature = "test-util")]
+        if let Some(clock) = &self.reclaim_clock {
+            return clock.load(std::sync::atomic::Ordering::Acquire);
+        }
+        now()
+    }
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn with_reclaim_clock_for_tests(
+        mut self,
+        clock: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    ) -> Self {
+        self.reclaim_clock = Some(clock);
+        self
     }
 }
 

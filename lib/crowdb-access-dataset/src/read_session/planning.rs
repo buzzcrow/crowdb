@@ -58,9 +58,7 @@ impl DatasetSessions {
             deadline: now.saturating_add(TTL),
             closed: false,
         };
-        self.authority
-            .touch_read_handle(identity, snapshot, spec.id, now, TTL)
-            .await?;
+        self.authority.check_snapshot_readable(identity, snapshot).await?;
         match self
             .authority
             .store

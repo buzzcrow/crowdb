@@ -96,6 +96,7 @@ pub struct InspectionPreparation {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReclaimPhase {
+    GracePeriod,
     UploadOwners,
     SplitDrafts,
     IndexFences,
@@ -108,6 +109,8 @@ pub struct SnapshotReclaim {
     pub phase: ReclaimPhase,
     pub complete: bool,
     pub physical_cleanup_deferred: bool,
+    #[serde(default)]
+    pub reclaim_after: Option<u64>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RetainedSnapshot {
@@ -127,6 +130,8 @@ pub struct SnapshotLifecycle {
     pub stable: bool,
     pub retained: bool,
     pub active_read_lease: bool,
+    #[serde(default)]
+    pub reclaim_after: Option<u64>,
     pub state: LifecycleState,
     pub physical_cleanup_deferred: bool,
     pub parent_protection: String,

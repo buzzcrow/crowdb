@@ -38,10 +38,10 @@ bounded owner-backed delivery and independently packaged Python bindings.
 - [x] **Deliver bounded batches**: separate immutable field metadata, payload
   leases, verified EOF and acknowledgement. Pull at most a bounded part ahead;
   charge retained allocations, preserve pending data if a pull future is
-  dropped, and make terminal errors sticky. Renew the existing 60-second
-  active-read lease while producing; close/cancel stops production and releases
-  protection without acknowledging or invalidating caller-held buffers.
-  Files: native `dataset/read/`, shared session/lease code as needed.
+  dropped, and make terminal errors sticky. Check deletion admission once;
+  close/cancel returns local request credit without persistent reader cleanup,
+  acknowledgement or invalidation of caller-held buffers.
+  Files: native `dataset/read/`, shared authority admission.
 - [x] **Share topology and lifetime**: expose existing runtime observations
   with Dataset locations as hints only. S3 and Dataset use independent facades
   and writer policies over shared admission/transports; closing a facade or
@@ -263,7 +263,7 @@ This `--semantics-only` run is functional evidence, not performance acceptance.
 
 ## Handoff 2026-10-23
 
-### Current stop point
+### Historical stop point (superseded by the deletion redesign)
 
 - Metadata memory is fixed at `b18efa9a`: unchanged full run
   `dataset-workload/c7fd408b216a451e81feb9009e2eeac1` stays below 280 MiB,
@@ -272,7 +272,7 @@ This `--semantics-only` run is functional evidence, not performance acceptance.
   bounded task; focused lifecycle tests pass. This is a resource-accounting fix,
   not a claim that the contention failure or R220 acceptance is complete.
 - After five contention corrections, the slow durable-CAS regression still
-  fails. See [Blocked](#blocked) before further implementation. The unaccepted
+  fails. The approved deletion redesign below replaces this model. The unaccepted
   authority RTT experiment and failing regression are preserved in stash
   `a6e19f404d9cb614a3004a09575051196d6d0727`; no experiment is discarded.
 - The recorded HCA/Python semantics evidence below predates the final memory
@@ -501,62 +501,48 @@ remaining user design decision and no requirement `Blocked` condition.
   initially passed alone but failed in the component suite and again alone;
   this is not accepted contention evidence.
 
-## Blocked
+## Approved deletion redesign
 
-- Failure: `slow_durable_cas_completes_with_bounded_reader_lifetimes` returns
-  `HeadConflict` at `access_contention_test.rs:154`, after one update exhausts
-  the unchanged 64-attempt bound. The isolated rerun also fails, excluding
-  interference from other component tests. Three readers each perform 96
-  acquire/read/release cycles over a sequencer with 100-ms durable mutations;
-  reads see committed state and failed conditions still consume a mutation.
-- Exact failing commands:
+- The user replaced active-read GC protection with durable deletion admission and
+  a five-minute grace deadline. Remove per-reader activity CAS, renewal tasks and
+  asynchronous release writes; reads may fail if reclamation interrupts them.
+- Implementation and Access Server coordination cleanup inventory are tracked in
+  [Access simplification](plan-access-simplification.md). Historical contention
+  experiments below are not acceptance requirements for the removed lease model.
+- Preserve existing mixed-size workload, HTTP/native parity, memory, publication,
+  shared payload ownership and local buffer/admission tests. Same-source workload
+  and final HCA acceptance are still required before closing the SDK requirement.
 
-  ```bash
-  pixi run -- cargo test -p crowdb-sdk-native -p crowdb-access-dataset -p crowdb-access-server --all-targets
-  pixi run -- cargo test -p crowdb-access-dataset --test access_contention_test slow_durable_cas_completes_with_bounded_reader_lifetimes -- --exact --nocapture
-  ```
+## Prior contention investigation (superseded)
 
-- Attempts and evidence:
-  1. `93aefa43`: recompute from the CAS observation; delay the first HTTP
-     heartbeat. The real workload still exhausts attempts.
-  2. `4127a966`: randomized short contention windows. The real workload still
-     exhausts attempts.
-  3. `a8e1571e`: scale the window with durable RTT, capped at 256 ms. HTTP
-     completes, but native multi-flight still exhausts attempts after memory
-     fixes; its observed CAS RTT is 69–454 ms.
-  4. Remove the RTT clamp and use full-width random jitter. The slow sequencer
-     with detached releases still exhausts attempts.
-  5. Bound native cleanup within the admitted read lifetime. Native lifecycle
-     regressions pass, but the corresponding bounded slow-sequencer model still
-     exhausts attempts in both the suite and the isolated rerun.
-- Diagnosis: independent read/modify/CAS loops on the same snapshot lease
-  record have no fairness guarantee. Queueing latency and freshly arriving
-  updates can repeatedly invalidate a slower contender. Random windows and
-  bounded producer lifetime reduce pressure but do not provide ordered progress.
-  The fifth change has not been rebuilt into a full-service acceptance image:
-  its failing component model prevents claiming end-to-end resolution.
-- Preserve the fourth experiment and slow-store regression with
-  `git stash apply a6e19f404d9cb614a3004a09575051196d6d0727` when resuming.
-  This stash contains only the four shared-authority experimental files,
-  including the untracked sequencer fixture; it does not contain the native
-  cleanup fix. Applying it preserves the stash for recovery.
-- Recommended next direction: bounded per-snapshot scheduling and merging of
-  lease changes, retaining the existing persisted record and remote CAS fences.
-  Specify queue capacity, per-handle completion/cancellation, cleanup ownership,
-  and fairness across processes before implementation. A local queue alone is
-  not a proof of distributed fairness; keep the failing model and real workload.
-- Alternative: independently stored per-reader leases. This reduces contention
-  on one record but changes reclamation fencing, bounded scans, compatibility
-  and crash recovery; it requires a broader protocol/design change.
-- Human choice required by the requirement workflow after five root-cause
-  attempts. Do not raise deadlines/retry limits, suppress the failing test,
-  reduce the workload, or mark R220 complete. The verified native cleanup fix
-  can be committed separately with this blocked record; the failed experiment
-  remains recoverable and explicitly unaccepted.
-- The native cleanup commit passes `clean-env` followed by all targets of
-  `crowdb-sdk-native`, `crowdb-access-dataset`, and `crowdb-access-server`;
-  workspace all-target/all-feature clippy, `rs-lint`, Rust fmt and diff checks
-  also pass. These checks exclude the explicitly preserved, failing authority
-  experiment. Existing environment-gated hardware/installed-Python cases are
-  not claimed as passing acceptance. No new production lock, unsafe exception,
-  C++ change, request retry or deadline increase was introduced.
+- The old model updated one snapshot-wide reader record on admission, renewal
+  and release. Returned CAS observations avoid extra GETs but do not prevent
+  independent readers from repeatedly invalidating each other's base.
+- The 96-reader test exhausted the 64-attempt bound with
+  `reader 32, release=false: publication lost its head race`. The slow durable
+  model also failed `slow_durable_cas_completes_with_bounded_reader_lifetimes`.
+  Jitter/RTT backoff and retaining local request credit through cleanup did not
+  establish distributed fairness. The slow model is diagnostic, not a faithful
+  production sequencer or accepted end-to-end result.
+- Preserve experiment stash `a6e19f404d9cb614a3004a09575051196d6d0727` as historical
+  evidence. Do not apply it to the replacement design: its lease model and tests
+  are obsolete. No queue or independent-reader lease replacement was selected.
+- The replacement concurrency test runs 96 readers with 64 admission checks each
+  and verifies zero persistent mutations. Full workload throughput remains an
+  independent acceptance gate; do not infer TPS from this component test.
+
+## Deletion redesign verification (2026-10-24)
+
+- Implemented persistent deletion marks and five-minute grace, read-only
+  admission, restartable background cleanup, and immediate local EOF/cancel
+  credit return. New reads reject marked snapshots; already admitted bodies
+  can finish, and unusually long reads may fail after reclamation.
+- Shared Dataset, native SDK and Access Server all-target tests pass. Focused
+  regressions cover duplicate marks/restart, legacy record decoding, cleanup
+  boundaries, held buffers, corrupt-mark isolation and owner/index cleanup after
+  metadata completion.
+- Workspace all-target/all-feature clippy, standard Rust lint, independent SDK
+  tests/lint and dependency-boundary checks pass. Environment-gated hardware or
+  installed-Python cases are not current-source hardware acceptance.
+- Next: rebuild/import the same source and rerun unchanged mixed-size workload,
+  then final real-service restart/local-HCA acceptance. R220 stays open.

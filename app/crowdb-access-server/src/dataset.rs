@@ -94,6 +94,7 @@ fn status_for_authority(error: &AuthorityError) -> StatusCode {
         | AuthorityError::ParentConflict
         | AuthorityError::HeadConflict
         | AuthorityError::CursorConflict
+        | AuthorityError::ReclaimPending { .. }
         | AuthorityError::SnapshotProtected => StatusCode::CONFLICT,
         AuthorityError::NotFound | AuthorityError::SnapshotNotFound => StatusCode::NOT_FOUND,
         AuthorityError::AncestryCycle | AuthorityError::Corrupt | AuthorityError::Store(_) => {
@@ -191,7 +192,7 @@ pub async fn run_with_shutdown(
         std::env::var("CROWDB_DATASET_NAME").unwrap_or_else(|_| "default".into()),
     )?;
     let reads = Arc::new(DatasetReadService::with_ttl(
-        authority,
+        Arc::clone(&authority),
         identity,
         access.dataset.max_in_flight,
         unix_seconds(),
@@ -214,21 +215,39 @@ pub async fn run_with_shutdown(
         service = service.with_bearer(Arc::<str>::from(token));
     }
     let listener = TcpListener::bind(address).await?;
-    let expiry = tokio::spawn(async move {
-        let mut tick = tokio::time::interval(Duration::from_secs(15));
-        loop {
-            tick.tick().await;
-            if let Err(error) = uploads.expire(unix_seconds()).await {
-                tracing::error!(%error, "Dataset upload cleanup failed; retaining cleanup records for retry");
-            }
-        }
-    });
+    let expiry = start_cleanup(authority, uploads);
     let result = serve(listener, Arc::new(service), shutdown).await;
     expiry.abort();
     let _ = expiry.await;
     chunks.shutdown_small_writes().await?;
     result?;
     Ok(())
+}
+
+fn start_cleanup(
+    authority: Arc<DatasetAuthority>,
+    uploads: Arc<DatasetUploads>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(15));
+        let mut after = None;
+        loop {
+            tick.tick().await;
+            if let Err(error) = authority
+                .reclaim_due_page(
+                    &uploads,
+                    &mut after,
+                    &crowdb_access_dataset::ReadCancellation::new(),
+                )
+                .await
+            {
+                tracing::error!(%error, "Dataset snapshot cleanup failed; durable deletion marks retained for retry");
+            }
+            if let Err(error) = uploads.expire(unix_seconds()).await {
+                tracing::error!(%error, "Dataset upload cleanup failed; retaining cleanup records for retry");
+            }
+        }
+    })
 }
 
 async fn connect_payloads(

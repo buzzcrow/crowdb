@@ -38,6 +38,7 @@ impl From<AuthorityError> for Error {
             AuthorityError::NotFound | AuthorityError::SnapshotNotFound => FailureKind::NotFound,
             AuthorityError::AncestryCycle | AuthorityError::Corrupt => FailureKind::Integrity,
             AuthorityError::Store(_) => FailureKind::Storage,
+            AuthorityError::ReclaimPending { .. } => FailureKind::Pending,
             _ => FailureKind::Conflict,
         };
         error(kind, value)

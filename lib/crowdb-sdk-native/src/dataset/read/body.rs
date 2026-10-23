@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{field::FieldReader, protection::ReadProtection, BatchHeader};
+use super::{admission::ReadAdmission, field::FieldReader, BatchHeader};
 use crate::{buffer::BufferLease, runtime::RequestLease, Error, Result, RuntimeResources};
 use crowdb_access_dataset::{DatasetUploads, FieldLocator};
 use crowdb_rpc_ffi::OwnedPayload;
@@ -19,12 +19,11 @@ pub struct BatchBody {
     locators: VecDeque<(usize, FieldLocator)>,
     field: Option<FieldReader>,
     pending: Option<OwnedPayload>,
-    request: Option<Arc<RequestLease>>,
+    request: Option<RequestLease>,
     resources: Arc<RuntimeResources>,
     uploads: Arc<DatasetUploads>,
-    protection: Option<ReadProtection>,
+    admission: Option<ReadAdmission>,
     sequence: u64,
-    finishing: bool,
     complete: bool,
     failure: Option<Error>,
 }
@@ -33,10 +32,10 @@ impl BatchBody {
     pub(super) fn new(
         header: Arc<BatchHeader>,
         locators: Vec<(usize, FieldLocator)>,
-        request: Arc<RequestLease>,
+        request: RequestLease,
         resources: Arc<RuntimeResources>,
         uploads: Arc<DatasetUploads>,
-        protection: ReadProtection,
+        admission: ReadAdmission,
     ) -> Self {
         Self {
             header,
@@ -46,9 +45,8 @@ impl BatchBody {
             request: Some(request),
             resources,
             uploads,
-            protection: Some(protection),
+            admission: Some(admission),
             sequence: 0,
-            finishing: false,
             complete: false,
             failure: None,
         }
@@ -64,7 +62,7 @@ impl BatchBody {
     }
 
     /// Successful EOF certifies all field and part digests, never processing ack.
-    /// It waits for bounded read-protection cleanup before returning admission.
+    /// EOF releases local request admission without metadata writes.
     /// # Errors
     /// Returns sticky integrity/transport/cancellation failures or expired admission.
     pub async fn next(&mut self) -> Result<Option<FieldBuffer>> {
@@ -100,22 +98,18 @@ impl BatchBody {
         self.field = None;
         self.pending = None;
         self.locators.clear();
-        self.protection = None;
+        self.admission = None;
         self.request = None;
     }
 
     async fn pull(&mut self) -> Result<Option<FieldBuffer>> {
-        if self.finishing {
-            return self.finish().await;
-        }
         let request = self.request.as_ref().ok_or(Error::Cancelled)?;
-        let protection = self.protection.as_ref().ok_or(Error::Cancelled)?;
-        request.run(protection.check()).await?;
+        let admission = self.admission.as_ref().ok_or(Error::Cancelled)?;
+        request.run(admission.check()).await?;
         loop {
             if self.field.is_none() {
                 let Some((index, locator)) = self.locators.pop_front() else {
-                    self.finishing = true;
-                    return self.finish().await;
+                    return Ok(None);
                 };
                 self.field = Some(FieldReader::new(index, locator)?);
             }
@@ -143,12 +137,5 @@ impl BatchBody {
                 buffer,
             }));
         }
-    }
-
-    async fn finish(&mut self) -> Result<Option<FieldBuffer>> {
-        let request = self.request.as_ref().ok_or(Error::Cancelled)?;
-        let protection = self.protection.as_mut().ok_or(Error::Cancelled)?;
-        request.run(protection.finish()).await?;
-        Ok(None)
     }
 }

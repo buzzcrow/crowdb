@@ -171,8 +171,7 @@ impl DatasetAuthority {
     ) -> Result<(), CompositionError> {
         if let Some(parent) = draft.record.parent {
             self.require_committed_snapshot(identity, parent).await?;
-            self.touch_read_handle(identity, parent, draft.record.operation, now(), 3600)
-                .await?;
+            self.check_snapshot_readable(identity, parent).await?;
             if let CompositionSource::Split { source, .. } = &draft.record.source {
                 let revision = self
                     .get_split_revision(

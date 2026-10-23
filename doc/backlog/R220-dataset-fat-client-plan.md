@@ -26,7 +26,7 @@ and [SDK API guide](../../lib/crowdb-sdk-native/README.md).
    user-secret database, nor external-user capability issuance.
 2. Reuse `crowdb-access-dataset` authority, sessions, composition, Split, and
    upload logic. Preserve Snapshot/Read Plan binding, selection, worker
-   partitioning, integrity, cleanup, and active-read protection. Topology is
+   partitioning, integrity, cleanup, and deletion admission. Topology is
    a supported scheduling surface, not placement authority.
 3. Preserve explicit acknowledgement and resume: fetching data, releasing a
    buffer, and acknowledging processing are separate events. Native delivery
@@ -34,7 +34,9 @@ and [SDK API guide](../../lib/crowdb-sdk-native/README.md).
    stops producers; caller-held leases remain valid and charged until release.
 4. Compare native Chunk-KV and chunk-range reads with the HTTP baseline,
    including topology refresh, stale owners, failures, digest costs, and the
-   existing 60-second active-read inactivity TTL. Keep placement, fencing,
+   snapshot deletion contract: reject new reads after a durable deletion mark,
+   preserve a five-minute cleanup grace period, and allow overdue reads to fail.
+   Ordinary reads must not register, renew or release persistent reader leases. Keep placement, fencing,
    durability, and publication rules in their existing components.
 5. Expose native Dataset through an opt-in main-workspace Python extension
    (`crowdb_dataset_native`) to the same Rust data plane. The existing
@@ -73,6 +75,11 @@ and [SDK API guide](../../lib/crowdb-sdk-native/README.md).
   executes, it refreshes, retries where eligible, or fails without changing
   selection/snapshot or publishing placement. Invariant: non-authoritative
   topology. Integration test.
+- Given concurrent reads of one snapshot, when requests start, stream and end,
+  no snapshot activity mutations occur. Given a deletion mark, new requests fail
+  while admitted streams may finish; cleanup waits for the persisted grace
+  deadline across retries/restarts. Invariant: read independence and delayed GC.
+  Integration test.
 - Given caller-held buffers and a slow consumer, when prefetch or cancellation
   occurs, memory stays bounded and held data stays valid until final release.
   Invariant: bounded owner-backed delivery. Integration test.

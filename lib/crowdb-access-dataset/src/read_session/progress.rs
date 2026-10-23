@@ -25,7 +25,7 @@ impl DatasetSessions {
                 .require_committed_snapshot(identity, record.snapshot)
                 .await?;
             self.authority
-                .touch_read_handle(identity, record.snapshot, id, now, TTL)
+                .check_snapshot_readable(identity, record.snapshot)
                 .await?;
             record.deadline = now.saturating_add(TTL);
             if matches!(
@@ -62,7 +62,7 @@ impl DatasetSessions {
                 .clone();
             r.deadline = now.saturating_add(TTL);
             self.authority
-                .touch_read_handle(identity, r.snapshot, id, now, TTL)
+                .check_snapshot_readable(identity, r.snapshot)
                 .await?;
             if matches!(
                 self.authority
@@ -108,7 +108,7 @@ impl DatasetSessions {
             r.cursor = next.into();
             r.deadline = now.saturating_add(TTL);
             self.authority
-                .touch_read_handle(identity, r.snapshot, id, now, TTL)
+                .check_snapshot_readable(identity, r.snapshot)
                 .await?;
             if matches!(
                 self.authority
@@ -153,9 +153,6 @@ impl DatasetSessions {
                     .await?,
                 CasOutcome::Applied(_)
             ) {
-                self.authority
-                    .release_read_handle(identity, r.snapshot, id)
-                    .await?;
                 return Ok(r.public());
             }
         }

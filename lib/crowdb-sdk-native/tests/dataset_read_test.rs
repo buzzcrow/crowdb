@@ -37,6 +37,56 @@ fn spec() -> SessionSpecV2 {
 }
 
 #[tokio::test]
+async fn deletion_rejects_new_requests_without_interrupting_an_admitted_body() {
+    use crowdb_access_dataset::{CommitAttempt, CommitTarget};
+    let fixture = TestFixture::new(1024).await;
+    let batch = || BatchRequest {
+        snapshot: fixture.snapshot,
+        sample_ids: vec![vec![1]],
+        fields: vec!["value".into()],
+    };
+    let mut old = fixture.client.read_batch(context(2), batch()).await.unwrap();
+    fixture
+        .client
+        .control(context(3), |scope| async move {
+            let next = scope
+                .authority
+                .prepare_snapshot_candidate(&scope.identity, None, dataset::manifest(), OperationId::random())
+                .await?;
+            scope
+                .authority
+                .publish_snapshot_candidate(
+                    &scope.identity,
+                    &CommitAttempt {
+                        version: 1,
+                        id: OperationId::random(),
+                        target: CommitTarget::Snapshot { snapshot: next },
+                        expected_head: scope.authority.inspect_head(&scope.identity).await?.generation,
+                    },
+                )
+                .await?;
+            scope
+                .authority
+                .begin_reclaim(&scope.identity, fixture.snapshot)
+                .await?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        fixture.client.read_batch(context(4), batch()).await,
+        Err(Error::Dataset {
+            kind: crowdb_sdk_native::dataset::FailureKind::NotFound,
+            ..
+        })
+    ));
+    let held = old.body.next().await.unwrap().unwrap().buffer;
+    assert_eq!(held.as_slice(), &[0; 16]);
+    assert!(old.body.next().await.unwrap().is_none());
+    assert_eq!(held.as_slice(), &[0; 16]);
+}
+
+#[tokio::test]
 async fn fetching_and_releasing_owners_never_acknowledge_progress() {
     let fixture = TestFixture::new(1024).await;
     let spec = spec();

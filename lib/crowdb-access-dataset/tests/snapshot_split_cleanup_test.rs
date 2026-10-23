@@ -12,6 +12,8 @@ use crowdb_access_dataset::{split::*, *};
 #[tokio::test]
 async fn retired_owner_recovers_all_draft_work_without_touching_other_snapshots() {
     let (store, authority, identity, parent) = split_store::fixture().await;
+    let clock = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1000));
+    let authority = authority.with_reclaim_clock_for_tests(clock.clone());
     let snapshot = split_store::publish_binary_samples(&authority, &identity, parent).await;
     let record = split_store::prepared(&authority, &identity, snapshot, None).await;
     assert!(matches!(
@@ -24,11 +26,7 @@ async fn retired_owner_recovers_all_draft_work_without_touching_other_snapshots(
     let key = key::membership_page(&identity, snapshot, record.revision, &split.name, 0).unwrap();
     let delayed = store.get(&key).await.unwrap().unwrap();
     store.delete(&key).await.unwrap();
-    // A terminated draft worker leaves only its expiring target lease.
-    authority
-        .release_read_handle(&identity, snapshot, record.operation)
-        .await
-        .unwrap();
+    // A terminated draft worker does not block snapshot deletion.
     let root = authority
         .prepare_snapshot_candidate(
             &identity,
@@ -45,7 +43,8 @@ async fn retired_owner_recovers_all_draft_work_without_touching_other_snapshots(
     let foreign = split_store::prepared(&authority, &identity, root, None).await;
     split_store::publish_revision(&authority, &identity, &foreign).await;
     authority.begin_reclaim(&identity, snapshot).await.unwrap();
-    let restarted = DatasetAuthority::new(store.clone());
+    clock.store(1300, std::sync::atomic::Ordering::Release);
+    let restarted = DatasetAuthority::new(store.clone()).with_reclaim_clock_for_tests(clock);
     let mut complete = false;
     for _ in 0..100 {
         let progress = restarted

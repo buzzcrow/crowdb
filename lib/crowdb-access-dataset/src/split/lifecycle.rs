@@ -96,7 +96,7 @@ impl DatasetAuthority {
             current.record.progress,
             DraftProgress::Abandoned | DraftProgress::Published { .. }
         ) {
-            self.renew_split_draft_lease(identity, &current).await?;
+            self.check_split_draft_sources(identity, &current).await?;
         }
         Ok(current.record)
     }
@@ -141,7 +141,7 @@ impl DatasetAuthority {
         if state.record.revision != edit.expected_revision {
             return Err(SplitLifecycleError::Conflict);
         }
-        self.renew_split_draft_lease(identity, &state).await?;
+        self.check_split_draft_sources(identity, &state).await?;
         let mut next = state.clone();
         next.record
             .progress
@@ -156,7 +156,7 @@ impl DatasetAuthority {
         sources.extend(super::inheritance::source_owners(&next.record));
         next.source_leases = sources.into_iter().collect();
         self.replace_split_draft(identity, &old, &state, &next).await?;
-        self.renew_split_draft_lease(identity, &next).await?;
+        self.check_split_draft_sources(identity, &next).await?;
         Ok(next.record)
     }
 
@@ -209,7 +209,7 @@ impl DatasetAuthority {
         next.record.progress = DraftProgress::Abandoned;
         next.edit = None;
         self.replace_split_draft(identity, &old, &state, &next).await?;
-        self.release_split_draft_leases(identity, &next).await?;
+
         Ok(next.record)
     }
 }

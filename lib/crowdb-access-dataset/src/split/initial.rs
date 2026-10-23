@@ -9,7 +9,7 @@ use crate::{
     composition::DraftProgress, AuthorityError, DatasetAuthority, DatasetIdentity, OperationId, SnapshotId,
     SplitRevisionId,
 };
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 impl DatasetAuthority {
     pub(crate) async fn fence_initial_split_reservation(
@@ -21,7 +21,6 @@ impl DatasetAuthority {
         let stored = self.split_state_get(&key).await?;
         if let Some(stored) = &stored {
             if stored.bytes != super::cleanup::SEALED {
-                self.release_initial_split_leases(identity, operation).await?;
                 return Ok(true);
             }
         } else {
@@ -50,17 +49,6 @@ impl DatasetAuthority {
             crate::CasOutcome::Conflict(Some(v)) if v.bytes == super::cleanup::SEALED => Ok(false),
             crate::CasOutcome::Conflict(_) => Err(SplitLifecycleError::Conflict),
         }
-    }
-    pub(crate) async fn release_initial_split_leases(
-        &self,
-        identity: &DatasetIdentity,
-        operation: OperationId,
-    ) -> Result<(), SplitLifecycleError> {
-        let (_, state) = self.load_split_draft(identity, operation).await?;
-        if !state.initial {
-            return Err(SplitLifecycleError::Conflict);
-        }
-        self.release_split_draft_leases(identity, &state).await
     }
 
     pub(crate) async fn begin_initial_split(
@@ -132,7 +120,7 @@ impl DatasetAuthority {
         if !current.initial {
             return Err(SplitLifecycleError::Conflict);
         }
-        self.renew_split_draft_lease(identity, &current).await?;
+        self.check_split_draft_sources(identity, &current).await?;
         Ok(current.record)
     }
     pub(crate) async fn require_initial_split_owner(
@@ -151,12 +139,7 @@ impl DatasetAuthority {
         if let Some(parent) = candidate.parent {
             self.require_committed_snapshot(identity, parent).await?;
         }
-        let time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        self.touch_read_handle(identity, snapshot, operation, time, 3600)
-            .await
+        self.check_snapshot_readable(identity, snapshot).await
     }
     pub(crate) async fn validate_initial_split(
         &self,

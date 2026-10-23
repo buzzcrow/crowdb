@@ -500,23 +500,7 @@ async fn authority_persists_snapshot_bound_manifest_partitions_idempotently() {
         crowdb_access_dataset::ReclaimState::Pending
     );
     authority
-        .acquire_snapshot_read(
-            &identity,
-            snapshot,
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-            60,
-        )
-        .await
-        .unwrap();
-    assert!(matches!(
-        authority.reclaim_snapshot_metadata(&identity, snapshot).await,
-        Err(AuthorityError::SnapshotProtected)
-    ));
-    authority
-        .release_snapshot_read(&identity, snapshot)
+        .check_snapshot_readable(&identity, snapshot)
         .await
         .unwrap();
     let manifest = ManifestRecord {

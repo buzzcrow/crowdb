@@ -61,7 +61,7 @@ impl TestFixture {
     }
 }
 
-fn manifest() -> Vec<u8> {
+pub fn manifest() -> Vec<u8> {
     let manifest = ManifestRecord {
         version: 1,
         snapshot: SnapshotId::random(),

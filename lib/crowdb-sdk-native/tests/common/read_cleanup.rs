@@ -28,6 +28,7 @@ impl TestCleanupFixture {
             metadata,
         )
         .await;
+        gate.hold.store(true, Ordering::Release);
         let mut read = dataset
             .client
             .read_batch(
@@ -41,7 +42,6 @@ impl TestCleanupFixture {
             .await
             .unwrap();
         let held = read.body.next().await.unwrap().unwrap().buffer;
-        gate.hold.store(true, Ordering::Release);
         Self {
             dataset,
             gate,
