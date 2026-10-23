@@ -784,6 +784,33 @@ adaptation rather than a new transport or storage engine.
 - This is shared parsing, not completed mirror observation/finalizer/runtime
   integration. Continue with bounded physical-window IO and Q2 comparison.
 
+## Shared physical-window observation (partial T15)
+
+- Added a chunk-client physical-window seam with exact-length reads, at most
+  1 MiB windows, scanner-bounded output and explicit caller deadlines. Existing
+  ordinary object read bounds are unchanged. No IO failure becomes zero-filled
+  data or an empty candidate. Owner exclusion and stable layout authority remain
+  constructor/caller prerequisites for the later backend adapter.
+- Up to three replica observations run concurrently within the same absolute
+  deadline. Failed, short, corrupt and timed-out observations are excluded whole.
+  The shortest healthy complete prefix wins; equal prefixes compare their full
+  digest, longer replicas are reobserved only through that selected boundary.
+  Conflicting valid bytes fail explicitly, with no arbitration operation.
+- Bounded mapping replay uses the selected prefix and its original deadline,
+  checks its digest/identity/end again, and fails changed data or sink errors.
+  Partial sink work is staging only and cannot publish a stable root. It does
+  not retain a full mapping vector per replica. Success exposes reads/bytes and
+  scanner progress for later recovery metrics.
+- Nine shared-IO cases pass: unequal valid ends, corruption and mid-read failure,
+  equal/unequal conflicting contents, no healthy source, short read, one shared
+  concurrent timeout, changed replay, sink deadline/error, bounded 3,000-location
+  replay and no extra exact-capacity read. Complete Client/Stream tests, strict
+  all-target clippy and Rust fmt pass; logs:
+  `frame-observation-{check,tests,full-suite,clippy-final,fmt}.log`.
+- This is the shared observation/replay engine. Current-layout physical readers,
+  old-owner exclusion, initial/tail zero headers, finalizer wiring and replacing
+  the main worker remain unfinished; no production performance result is claimed.
+
 ## Recovery IO execution notes (T15/T16 target)
 
 - Shared parsing uses only current revision-2 ordinary/grouped frames. Separate

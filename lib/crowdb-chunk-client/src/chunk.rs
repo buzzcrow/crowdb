@@ -17,6 +17,7 @@ pub mod chunk_reader;
 pub mod chunk_writer;
 pub(crate) mod client_recovery;
 pub mod ec_strip_writer;
+pub mod frame_observation;
 pub mod mirror_chunk_writer;
 pub mod mirror_flow;
 pub mod mirror_strip_writer;
