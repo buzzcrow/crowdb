@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{check_ret_code, PxRpcTransport};
+use super::{check_ret_code, PxRpcTransport, ReplicaDestination};
 use crate::cluster::replica::{HeartbeatReply, HeartbeatRequestPayload, PxReplicaError};
 use crowdb_protocol::{
     fb::FBMsgType,
@@ -15,14 +15,19 @@ impl PxRpcTransport {
     /// Send a `Heartbeat` request via crowdb-rpc.
     pub async fn send_heartbeat(
         &self,
-        rpc_endpoint: &str,
+        destination: ReplicaDestination<'_>,
         req: HeartbeatRequestPayload,
         group_id: u64,
     ) -> Result<HeartbeatReply, PxReplicaError> {
+        let rpc_endpoint = destination.endpoint;
+        let target_replica_id = destination.replica_id;
         let req_id = self.next_id();
         let conn = self.conn_for(rpc_endpoint)?;
         let mut builder = FlatBufferBuilder::new();
+        let target_cluster_id = self.cluster_id.as_deref().map(|id| builder.create_string(id));
         let args = FBHeartbeatRequestArgs {
+            target_replica_id,
+            target_cluster_id,
             id: req_id,
             rpc_create_nano: 0,
             version: 1,

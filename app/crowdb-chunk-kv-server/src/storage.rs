@@ -642,17 +642,14 @@ impl ChunkKvStorage {
         )
         .await?;
         let checkpoint = source
-            .checkpoint(transition.source_epoch)
-            .await
-            .map_err(|error| storage_plan_error(&error.to_string()))?;
-        source
-            .retain_generation_pin(
+            .checkpoint_with_pin(
+                transition.source_epoch,
                 crowdb_chunk_kv::TransitionId {
                     high: transition.transition_id.high,
                     low: transition.transition_id.low,
                 },
-                checkpoint.root_manifest_generation,
             )
+            .await
             .map_err(|error| storage_plan_error(&error.to_string()))?;
         let frontier = source
             .capture_journal_frontier(transition.source_epoch)

@@ -712,3 +712,6 @@ async fn reopen_recovers_tail_record_and_reads_before_another_append() {
     assert_eq!(observed.chunk.logical_end, 9);
     assert!(observed.chunk.mapping_count <= 3);
 }
+
+#[path = "stream_test/reclamation.rs"]
+mod reclamation;

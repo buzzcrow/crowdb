@@ -1358,3 +1358,5 @@ mod serving_fixture;
 
 #[path = "server_test/split_scan.rs"]
 mod split_scan;
+#[path = "server_test/maintenance.rs"]
+mod maintenance;

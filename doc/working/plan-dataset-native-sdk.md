@@ -59,13 +59,22 @@ bounded owner-backed delivery and independently packaged Python bindings.
   replay, TTL, corruption/truncation, cancellation, dropped pulls, held memory,
   stale routing, partial transport failure and S3/runtime coexistence. Files:
   native and access-dataset `tests/`, access-server parity tests.
-- [~] **Bound shared KV retention**: retain acceptor nodes through concurrent
+- [x] **Bound shared KV retention**: retain acceptor nodes through concurrent
   lookup/reclamation, reclaim only below an all-learner and durable-snapshot
   certificate, and propagate that certificate to followers with membership
   and term fencing. Verify RPC, maintenance, replay and concurrent access;
-  prove the unchanged full workload no longer OOMs before closing this task.
+  full-workload memory acceptance
+  also requires the separate immutable metadata cleanup below.
   Files: `lib/crowdb-kv/src/{paxos,cluster,rpc}/`, related tests, protocol schema.
-- [ ] **Run real services and compare**: use the same corpus/snapshot for HTTP
+- [x] **Reclaim serving metadata history**: run bounded immutable extent-page
+  reclamation for independent serving assignments; keep WAL bytes and tree
+  checkpoint retention unchanged. Serialize source checkpoint pins with metadata
+  GC using existing maintenance exclusion, batch deletion, and verify old-root
+  recovery, retained retry results and Split/transfer pins. Fix complete-chunk
+  trim eligibility before any existing explicit trim can delete a partial chunk.
+  Files: chunk-kv `partition/checkpoint.rs`, `partition/maintenance.rs`, server
+  maintenance/storage, chunk-stream `kv.rs`, focused integration tests.
+- [~] **Run real services and compare**: use the same corpus/snapshot for HTTP
   and native Rust/Python, restart storage, validate explicit resume and held
   buffers, TCP and local shared-HCA policies. Run the same pinned workload and
   report measured trade-offs, not an assumed throughput win. Physical multi-node
@@ -254,10 +263,10 @@ This `--semantics-only` run is functional evidence, not performance acceptance.
 
 ## Handoff 2026-10-23
 
-### Scope and pause
+### Scope and resume
 
-- User requested a handoff, commit of completed work, and deferred long-running
-  acceptance. Stop after the commit; do not start another image build or workload.
+- The handoff was committed in `0f5d94a8`. The user has resumed work and
+  authorized completing the remaining acceptance and cleanup.
 - Branch: `task-rdma`. R5 is complete; retain its accepted evidence in
   [RDMA acceptance record](plan-rdma.md). Physical multi-node testing is only a
   refined [independent plan](plan-rdma-multi-node.md), not a remaining R5 gate.
@@ -338,7 +347,7 @@ This `--semantics-only` run is functional evidence, not performance acceptance.
 Commands from the repository root (run long commands asynchronously and poll):
 
 ```bash
-pixi run image-build --privileged
+pixi run image-build
 pixi run image-import target/crowdb.oci.tar --image crowdb-node:dev
 pixi run -- python tools/sdk/dataset_workload.py
 pixi run -- python tools/rdma/run-native-dataset.py --address 10.200.1.1 --device rocep35s0f0
@@ -357,3 +366,49 @@ Rust singleton trials completed, then native multi-flight failed with a Chunk-KV
 deadline; metadata replicas 1 and 2 exited 137 with `OOMKilled=true` at 2 GiB.
 Those partial rates are not accepted comparative performance. There is no
 remaining user design decision and no requirement `Blocked` condition.
+
+### Resumed verification
+
+- Standard rootless `pixi run image-build` and image import pass from
+  `0f5d94a8`, source tree `9299ad506bccb2c0080cd60970627a9a6717014e`.
+  Image config is `sha256:74c2be3126997b3899d803dd64ba224019608d0a39a5ecc345f4ef1353b62da5`.
+  The old handoff's `--privileged` command was inapplicable to the current
+  non-root user; no source/build policy was changed to use the standard path.
+- Complete unchanged workload failed in
+  `dataset-workload/6581a65b0b9243be9b048b16b2caca71`. Three metadata containers
+  remain capped at 2 GiB. Extra read-only topology/cgroup observations are
+  retained as `retention-observations.jsonl` in that run directory.
+
+- Run `6581a65b0b9243be9b048b16b2caca71` completed all six HTTP and three native
+  Rust singleton trials. Native multi-flight failed with `chunk KV operation
+  deadline elapsed`; all three metadata replicas were OOM-killed (exit 137).
+  Acceptor reclamation advanced correctly (64,877 slots: trim 64,161, retained
+  716), while tree live value bytes grew from 343 MB to 663 MB before failure.
+  Cgroup observations show anonymous RSS plus substantial swap, not file cache.
+  These partial rates are not accepted comparative performance.
+- Second OOM root-cause fix is in progress: ordinary partitions never call
+  checkpoint metadata reclamation, while each append publishes fresh copies
+  of historical extent pages. Do not change the workload or resource limits.
+
+- Recovery regression exposed a pre-existing WAL trim gap: the checkpoint's
+  replay offset retains recent results but does not persist expired client
+  floors. Automatic maintenance therefore reclaims only superseded extent
+  directories; it does not invoke WAL/tree checkpoint reclamation. Recovery
+  through an older root must still replay the complete required WAL and reject
+  an expired request. Persisting retry-floor state is required before enabling
+  automatic physical WAL trim, outside the metadata-memory fix.
+
+- Focused regressions pass for bounded obsolete-page batches, old-checkpoint
+  replay and expired-request rejection, concurrent exact-root pins, and active/
+  boundary chunk retention. Nonzero physical WAL trim now fails explicitly until
+  durable retry-floor metadata exists, instead of deleting recovery evidence.
+
+- Verification passes for this metadata fix: all targets of `crowdb-chunk-stream`,
+  `crowdb-chunk-kv`, and `crowdb-chunk-kv-server`; the added physical-WAL guard
+  and modified trim/serving maintenance paths were rerun after final edits.
+  Production KV batch deletion preserves the protected manifest generation.
+  Workspace all-target/all-feature clippy, `rs-lint`, Rust fmt and diff checks
+  pass. No C++ source, new dependency, lock or unsafe exception was introduced.
+- Next: rebuild/import this source, then rerun the unchanged full workload.
+  Metadata history cleanup is verified at component level; full-service memory
+  and comparative performance remain unaccepted until that run completes.

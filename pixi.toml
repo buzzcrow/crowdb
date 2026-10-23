@@ -225,7 +225,3 @@ test-boto3-copy-error = { cmd = "python tools/pixi-tasks/test.py unit boto3" }
 [feature.iceberg-ecosystem.tasks]
 test-iceberg-container-ecosystem = "bash e2e-test/clients/ecosystem/run.sh"
 
-[pypi-dependencies]
-maturin = ">=1.15, <2"
-pip = ">=25, <27"
-auditwheel = ">=6, <7"

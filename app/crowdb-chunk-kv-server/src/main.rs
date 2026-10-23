@@ -453,12 +453,26 @@ async fn main() -> std::process::ExitCode {
     let materialization_interval = std::time::Duration::from_millis(config.catalog_refresh_interval_ms);
     let materialization_task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(materialization_interval);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         interval.tick().await;
+        let mut pending = false;
         loop {
-            interval.tick().await;
-            if let Err(error) = materialization_service.materialize_split_overlays().await {
-                warn!(%error, "chunk KV split-overlay materialization pass failed");
+            tokio::select! {
+                biased;
+                _ = interval.tick() => {
+                    if let Err(error) = materialization_service.materialize_split_overlays().await {
+                        warn!(%error, "chunk KV split-overlay materialization pass failed");
+                    }
+                }
+                () = std::future::ready(()), if pending => tokio::task::yield_now().await,
             }
+            pending = match materialization_service.maintain_serving_metadata().await {
+                Ok(pending) => pending,
+                Err(error) => {
+                    warn!(%error, "chunk KV extent metadata maintenance failed; retaining watermark for next pass");
+                    false
+                }
+            };
         }
     });
     let heartbeat_service = Arc::clone(&service);

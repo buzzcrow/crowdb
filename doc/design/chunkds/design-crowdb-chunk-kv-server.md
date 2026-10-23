@@ -344,8 +344,15 @@ match the current Serving catalog entry. Transfer overlays retain their separate
 committed-transfer validation. Missing or conflicting evidence leaves the writer
 Prepared; repeated matching grant refresh is idempotent.
 
-The local maintenance loop performs bounded ownership materialization and a
-serving checkpoint. A heartbeat then proves independent recovery, group 0
+For independent serving assignments, the local maintenance loop reclaims
+superseded immutable WAL extent directories in bounded batches. It requires a
+live serving grant, an exact local assignment, and no catalog transition or tail
+overlay. Backlogged batches yield across hosted partitions while periodic split
+materialization keeps its cadence. WAL bytes and tree-root retention do not
+advance as part of extent metadata cleanup.
+
+For split overlays, the maintenance loop performs bounded ownership
+materialization and a serving checkpoint. A heartbeat then proves independent recovery, group 0
 publishes a generation that clears both the overlay and the completed split
 `transition_id`, and only that catalog state is eligible for another split or
 owner balance. Releasing both markers atomically prevents a later transfer from

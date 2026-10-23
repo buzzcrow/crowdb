@@ -1359,12 +1359,8 @@ async fn transition_generation_pin_suppresses_source_checkpoint_branching() {
         )
         .await
         .unwrap();
-    let checkpoint = partition.checkpoint(10).await.unwrap();
     let transition = TransitionId { high: 70, low: 71 };
-
-    partition
-        .retain_generation_pin(transition, checkpoint.root_manifest_generation)
-        .unwrap();
+    partition.checkpoint_with_pin(10, transition).await.unwrap();
     assert!(matches!(
         partition.checkpoint(10).await,
         Err(ChunkKvError::SplitRetry(_))

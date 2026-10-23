@@ -14,14 +14,12 @@ use crate::paxos::PxNodeId;
 /// repair step, and peer-applied injection — to integration tests under
 /// `tests/` without permanently widening the production public API.
 impl PxGroup {
-<<<<<<< HEAD
     /// Whether a conditional mutation currently owns one key's admission.
     #[must_use]
     pub fn conditional_write_pending_for_tests(&self, key: &[u8]) -> bool {
         self.cas_transient_map.get(key).is_some()
     }
 
-=======
     pub fn reclamation_certificate_for_tests(&self) -> u64 {
         self.reclamation_certificate()
     }
@@ -33,7 +31,6 @@ impl PxGroup {
     pub fn record_reclamation_heartbeat_for_tests(&self, request: &super::replica::HeartbeatRequestPayload) {
         self.record_reclamation_heartbeat(request);
     }
->>>>>>> 0f5d94a8 (Reclaim snapshot-backed Paxos history with retained readers)
     /// Run one heartbeat round without depending on the election timer.
     pub async fn heartbeat_round_for_tests(self: &std::sync::Arc<Self>) -> bool {
         matches!(
