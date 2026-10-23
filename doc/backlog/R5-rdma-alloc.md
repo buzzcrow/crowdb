@@ -7,8 +7,8 @@
 
 The registered host-buffer foundation, common RDMA RPC transport,
 HTTP/ChunkIO/DiskIO datapath, Chunk-KV/access integration and native S3 runtime
-are accepted. The deployment-policy questions below remain separate from the
-completed native SDK functional acceptance.
+are accepted. Final verification settles endpoint capability and opt-in
+deployment policy using the existing TCP preflight and cold configuration.
 
 ## Problem
 
@@ -35,6 +35,14 @@ defined in [`design-crowdb-rpc-rdma.md`](../design/rpc/design-crowdb-rpc-rdma.md
    with host memory first and explicit host-to-GPU copy completion before final
    lease release. Native and unprivileged OCI TCP/shared-HCA acceptance evidence
    is retained in the [root plan](../working/plan-rdma.md).
+6. Discovery supplies the RPC endpoint; the live TCP preflight supplies
+   `RdmaEndpointCapability` and CM binds its generation/identity. Do not add
+   another authoritative Group-0 copy of transient transport capability.
+   Disabled or incompatible peers follow configured TCP fallback before payload.
+7. Keep RDMA opt-in through explicit cold configuration or environment enablement.
+   Hardware discovery alone cannot enable it. Typed settings override environment;
+   explicit TCP remains usable even with fallback disabled. Strict enabled RDMA
+   fails if local setup or peer capability cannot satisfy the connection.
 
 The base transfer mechanism is SEND/RECV. Large client buffers are split into
 ordered messages with request ID, sequence, and logical offset. RDMA READ and
@@ -66,13 +74,14 @@ WRITE are outside this requirement.
   work applies bounded backpressure and resumes after release. Invariant:
   caller-controlled lifetime. Integration test.
 
-## Open Questions
-
-- Which service-discovery record supplies the coarse RDMA capability and
-  capability generation? The TCP handshake remains the authoritative dynamic
-  endpoint exchange.
-- Which deployments enable the RDMA transport by default after hardware
-  capability is detected? Unsupported deployments remain TCP-only.
+- Given a discovered endpoint whose RDMA identity changes after preflight,
+  when CM validates the offer, the stale identity fails before payload. A
+  TCP-only peer causes no CM attempt. Invariant: live capability authority.
+  Integration test.
+- Given default, explicitly disabled and strict enabled configuration, when
+  connections start, defaults remain TCP, explicit TCP overrides environment,
+  and strict enabled failures cannot fall back. Invariant: explicit deployment
+  policy. Integration test.
 
 Run:
 

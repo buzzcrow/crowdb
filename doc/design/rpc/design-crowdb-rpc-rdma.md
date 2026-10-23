@@ -38,15 +38,24 @@ logical result is an ordered stream of messages with logical offsets.
 
 ## 2. Endpoint discovery and path selection
 
-Service discovery first publishes coarse capability: whether the endpoint is
-RDMA-capable and whether an RDMA address is currently available. If either
-side lacks capability, or local configuration or device probing disables RDMA,
-the client uses TCP without attempting RDMA CM.
+Service discovery resolves the RPC endpoint. The current endpoint's TCP
+preflight supplies `RdmaEndpointCapability`, including availability, RDMA CM
+address and port, GID/device identity, generation, protocol version and data
+classes. Group 0 does not store a second authoritative copy of this transient
+transport state. A discovered endpoint alone cannot authorize RDMA CM.
 
-When coarse capability permits RDMA, the TCP handshake exchanges the current
-RDMA CM address and port, GID/device identity, capability generation, protocol
-version, and supported data classes. The client verifies that the generation
-and peer identity are current before creating the RDMA connection.
+RDMA is opt-in through explicit cold configuration or `CROWDB_RDMA_ENABLED=1`.
+Hardware presence alone does not enable it. Defaults permit TCP fallback;
+strict workloads explicitly disable fallback. Typed configuration overrides
+environment settings and rejects an unavailable requested RDMA device before
+startup. Environment-based probing can remain on TCP when fallback is allowed.
+A deliberately disabled typed configuration selects TCP directly, independently
+of the fallback flag.
+
+An enabled, locally ready client checks the live TCP capability before CM.
+An unavailable or incompatible peer skips CM and follows the fallback policy.
+The CM offer binds that exact generation and identity, so a changed endpoint
+between preflight and connection cannot silently replace its negotiated peer.
 
 `SocketTransport` performs this control exchange on a temporary nonblocking
 TCP socket with one deadline. The 160-byte version 4 capability advertises

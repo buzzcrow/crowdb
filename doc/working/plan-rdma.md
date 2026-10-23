@@ -13,10 +13,16 @@ semantics, bounded buffer leases, and automated OCI verification using a
 single-node HCA local-loop with multiple containers.
 
 Persistent-plan exception: retain this root record for accepted local-HCA
-measurements and the physical multi-node handoff. Completed child plans and
+measurements. Completed child plans and
 implementation checklists are removed; the evidence remains reproducible.
 
 ## Current implementation status
+
+Status: implementation and local-HCA acceptance complete. Endpoint discovery
+and opt-in defaults are settled by the existing implementation. Final policy
+checks pass 31 native capability/configuration/preflight cases, including a
+real-HCA TCP-only peer with strict and allowed fallback, plus nine Rust FFI
+configuration cases. No production behavior changed during this closure.
 
 Registered host buffers and the common RC SEND/RECV transport are accepted.
 The shared arena has bounded lock-free admission, retained MR/PD/device
@@ -61,8 +67,7 @@ and RPC flow analysis.
 The foundation, transport, datapath and Chunk-KV continuation is complete.
 The subsequent mixed-size send optimization also passes its local-HCA
 acceptance, as recorded below. The resulting shared native runtime and S3
-frontend pass their TCP and shared-HCA ownership profiles. Physical multi-node
-validation remains in its separate plan.
+frontend pass their TCP and shared-HCA ownership profiles.
 
 ## Accepted mixed-size send optimization
 
@@ -149,8 +154,7 @@ Further tuning remains separate from this accepted mechanism: intended-arrival
 open-load latency, sampled queue-age/peer-pressure telemetry and a retained-echo
 benchmark mode. Transport counters already distinguish direct payload,
 aggregation, compatibility staging and framing/control copies; application echo
-copy remains explicitly identified. Physical multi-node performance continues
-under `plan-rdma-multi-node.md`.
+copy remains explicitly identified.
 
 ## Fixed design decisions
 
@@ -159,8 +163,12 @@ under `plan-rdma-multi-node.md`.
   and one SGE per message. The accepted datapath adds a negotiated control/data layout with
   separate SGEs for immutable producer payload and per-target control; its
   total wire admission includes both regions.
-- Use service discovery for coarse RDMA capability and TCP handshake for the
-  current RDMA endpoint, capability generation, and data classes.
+- Service discovery resolves the RPC endpoint. Live TCP preflight supplies
+  capability, generation, CM identity and data classes; CM binds that exact
+  identity. Group 0 holds no second authoritative transient capability copy.
+- RDMA is opt-in through explicit cold configuration or environment enablement.
+  Hardware detection alone cannot activate it. Typed settings override the
+  environment, explicit TCP remains usable, and strict RDMA cannot fall back.
 - Select RDMA before the first payload; fallback is RDMA to TCP only.
 - Preserve existing ChunkIO and Chunk-KV aggregation. Additionally permit
   bounded transport coalescing of complete RPC frames without a batching timer;
@@ -185,8 +193,6 @@ under `plan-rdma-multi-node.md`.
   Benchmark servers use `CROWDB_PORT_OFFSET`. The real-service SDK fixture
   assigns separate loopback endpoints and nonoverlapping RPC/CM ports, while
   keeping the HCA physical port unchanged.
-- Physical multi-node testing is deferred to [the separate follow-up plan](plan-rdma-multi-node.md)
-  and is not part of the current backlog scope.
 
 ## Accepted native runtime and S3 delivery
 
@@ -251,8 +257,8 @@ The [native SDK guide](../../lib/crowdb-sdk-native/README.md) and
 [architecture](../design/access-server/design-crowdb-native-sdk.md) define the
 supported API. [R220](../backlog/R220-dataset-fat-client-plan.md) attaches
 Dataset authority, Snapshot/Split binding and explicit acknowledgement to the
-same runtime after its HTTP workload measurements. Dataset binding work,
-GPUDirect and physical multi-node measurements remain separate follow-ups.
+same runtime after its HTTP workload measurements. Dataset binding work and
+GPUDirect remain separate follow-ups.
 
 ## Final verification
 
@@ -271,9 +277,8 @@ pixi run tree-lint
 ```
 
 OCI E2E verification must run the TCP-only and single-node HCA local-loop
-multi-container profiles when their prerequisites are available. Physical
-multi-node verification is outside this plan and is covered by the separate
-follow-up plan. Namespace profiles are not part of acceptance.
+multi-container profiles when their prerequisites are available. Namespace
+profiles are not part of acceptance.
 
 ## Test and setup files
 
