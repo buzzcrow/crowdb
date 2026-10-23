@@ -191,18 +191,36 @@ async fn process_trim(state: &mut WorkerState, offset: u64) -> Result<u64> {
     }
     let mut reclaimed = 0_u64;
     let mut removed = 0_usize;
-    for extent in &state.extents {
-        if extent.logical_end > offset || (removed > 0 && reclaimed >= state.config.gc_bytes_per_pass) {
+    while removed < state.extents.len() {
+        if removed > 0 && reclaimed >= state.config.gc_bytes_per_pass {
+            break;
+        }
+        let remaining = &state.extents[removed..];
+        let chunk_id = remaining[0].chunk_id;
+        if state
+            .manifest
+            .active
+            .as_ref()
+            .is_some_and(|active| active.chunk_id == chunk_id)
+        {
+            break;
+        }
+        let count = remaining
+            .iter()
+            .take_while(|extent| extent.chunk_id == chunk_id)
+            .count();
+        let last = &remaining[count - 1];
+        if last.logical_end > offset {
             break;
         }
         reclaimed = reclaimed.saturating_add(
             state
                 .chunks
-                .release_trimmed(extent.chunk_id, extent.logical_end)
+                .release_trimmed(chunk_id, last.logical_end)
                 .await?
                 .reclaimed_bytes,
         );
-        removed += 1;
+        removed += count;
     }
     if removed > 0 {
         state.extents.drain(..removed);

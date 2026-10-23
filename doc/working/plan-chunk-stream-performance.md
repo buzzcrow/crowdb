@@ -686,8 +686,30 @@ adaptation rather than a new transport or storage engine.
   Rust fmt pass. Logs: `sealed-span-{tests-final,full-suite-final,clippy-final,
   fmt}.log`. Whole-chunk reachability/release and main-worker wiring remain.
 
+## Predecessor whole-chunk trim correction (partial T13)
+
+- The existing trim loop released whole chunks one extent at a time. Two focused
+  cases failed before the fix: trimming one completed frame of a sealed chunk
+  with a retained suffix, and trimming one record while its chunk remained
+  active. Both incorrectly released 100,068 bytes instead of zero.
+- Cleanup now groups contiguous extents by chunk, checks the complete final
+  logical end and excludes the current active chunk. One release removes the
+  whole eligible group. The byte budget stops between whole chunks, while one
+  eligible chunk can exceed that budget to ensure progress. Trim still publishes
+  its logical watermark before any release.
+- All three regression cases pass after the correction, including later append
+  to the trimmed active chunk, partial suffix reads, rollover, whole final release
+  and a one-byte GC budget. Full Stream: 106 passed, zero ignored; strict
+  all-target clippy and Rust fmt pass. Logs:
+  `whole-chunk-trim-{before,after,full-stream,clippy,fmt}.log`.
+- This fixes the currently running worker. It does not claim new indexed
+  root/pin retention or the no-KV append completion boundary is wired.
+
 ## Remaining bounded-publication wiring
 
+- New indexed retention still requires whole-span root/pin proofs and
+  crash-retryable physical release. Preserve the predecessor whole-chunk trim
+  regression cases when replacing that worker.
 - An active 256 MiB chunk can hold more than 65,536 tiny append locations.
   `MAX_DIRECTORY_MUTATION_EXTENTS` and the 128-page publication guard cannot be
   raised to accommodate a whole chunk in one allocation. During rollover,
