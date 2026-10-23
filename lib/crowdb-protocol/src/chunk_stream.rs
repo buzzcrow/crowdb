@@ -10,9 +10,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod directory;
+mod ownership;
 mod record;
 
 pub use directory::*;
+pub use ownership::{StreamLeaseRecordError, StreamProcessIdentity, StreamProcessLease};
 pub use record::*;
 
 /// Durable purpose of a logical stream.

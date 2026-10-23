@@ -13,11 +13,13 @@ use super::encoding::{
 };
 
 mod directory;
+mod ownership;
 mod pin;
 mod span;
 pub use directory::{
     StreamDirectoryControlKey, StreamDirectoryPageKey, StreamDirectoryRootKey, StreamPublicationGuardKey,
 };
+pub use ownership::StreamProcessLeaseKey;
 pub use pin::StreamRootPinKey;
 pub use span::StreamSealedChunkSpanKey;
 

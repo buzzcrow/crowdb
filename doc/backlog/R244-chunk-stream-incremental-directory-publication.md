@@ -201,6 +201,12 @@ under Open Questions instead of being selected here.
    Compose Chunk-KV's existing serving grants/transfer proofs with Stream
    ownership, rather than add conflicting authorities. A cached epoch,
    lifecycle CAS, or raw DiskIO success alone cannot authorize stale replies.
+   Bind a runtime to one fixed per-boot process lease in Group 0. Claims retain
+   one predecessor identity; replacement and recorded expiry cannot silently
+   renew or reclaim it. Retain prior process/grant expiry fences across boots.
+   Preparation IO requires that live process scope; normal WAL mutations also
+   require the existing exact serving assignment. Renew independently of data
+   IO and compose the conservative deadlines in the local writer context.
    Do not reintroduce per-append KV operations. Invariants I1, I3.
 
 10. **D10 — Finite views and WAL consumers; design sections 1, 5, 6.**

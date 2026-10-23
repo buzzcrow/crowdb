@@ -1214,6 +1214,28 @@ adaptation rather than a new transport or storage engine.
   all-target clippy and formatting. The original failure is `group-lease-red.log`;
   focused and full evidence use `group-lease-*` receipts.
 
+## Process-lease metadata implementation (partial T18)
+
+- Added one fixed Group-0 `StreamProcessLeaseKey` per purpose/owner instance.
+  Its current JSON record carries a boot nonce, monotonically increasing process
+  epoch, expiry, prior exclusion boundary and retained WAL grant fences. Stream
+  and Wal owners have separate keys; records reject unknown/missing fields and
+  impossible successor/grant state. Ordinary expiry never deletes the epoch fence.
+- `StreamProcessLeaseClient` captures one predecessor and reuses one boot nonce
+  through CAS reconciliation. A competing/replaced process cannot recapture a
+  new predecessor implicitly. Expired own claims and renewals fail; a new boot
+  advances the epoch and retains the latest prior process/grant expiry. Renewal
+  preserves grant high-water fields changed by the control plane.
+- Six focused cases pass using a real pinned Group-0 KV dependency and current
+  protocol records: idempotence, simultaneous claimants, stale boots, expiry,
+  grant retention, key-purpose isolation and malformed metadata. Protocol tests,
+  two-package all-target clippy and fmt pass in `process-lease-*` receipts.
+- This is metadata/claim infrastructure only. Local process-deadline projection,
+  independent renewal, conditional service heartbeat/grant publication, startup
+  exclusion and Stream IO binding remain. A claim alone is not an old-IO drain
+  or permission to adopt predecessor data. Normal WAL authority still requires
+  the existing exact serving grant; preparation IO uses the process scope.
+
 ## Ownership execution notes (T18/T19 target)
 
 - `ServingGrant` currently binds a persistent instance ID, not a process boot.

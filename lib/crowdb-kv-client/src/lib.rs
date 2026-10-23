@@ -51,8 +51,8 @@ pub use hardware::{
 pub use membership::{GroupMembershipClient, GroupMembershipSnapshot};
 pub use metrics::{ClientMetrics, ClientMetricsSnapshot, LeaderChangeEpisode, WindowLatencySnapshot};
 pub use service::{
-    DomainMonitorClient, ServiceDiscoveryClient, ServiceRegistryClient, WatchNotify, WatchNotifyClient,
-    WatchSubscription,
+    DomainMonitorClient, ServiceDiscoveryClient, ServiceRegistryClient, StreamProcessLeaseClient,
+    StreamProcessLeaseError, WatchNotify, WatchNotifyClient, WatchSubscription,
 };
 pub use transport::{KVClusterAdmin, KVClusterMetaClient, KvRpcTransport};
 
