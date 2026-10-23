@@ -24,6 +24,7 @@ mod publication_retirement;
 pub use publication_retirement::DirectoryPublicationRetirement;
 mod records;
 mod retirement;
+mod span;
 pub use collection::{DirectoryPageCollection, DirectoryPageCollectionStep};
 pub use pin::DirectoryRootPinSnapshot;
 mod scan;

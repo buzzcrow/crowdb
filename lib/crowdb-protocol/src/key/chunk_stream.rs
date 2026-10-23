@@ -14,10 +14,12 @@ use super::encoding::{
 
 mod directory;
 mod pin;
+mod span;
 pub use directory::{
     StreamDirectoryControlKey, StreamDirectoryPageKey, StreamDirectoryRootKey, StreamPublicationGuardKey,
 };
 pub use pin::StreamRootPinKey;
+pub use span::StreamSealedChunkSpanKey;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct StreamBindingKey {

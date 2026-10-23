@@ -6,6 +6,7 @@ use crowdb_kv_client::BatchOp;
 use crowdb_protocol::chunk_stream::{
     decode_stream_publication_guard, encode_stream_directory_head, encode_stream_publication_guard,
     stream_publication_id, StreamDirectoryHead, StreamName, StreamPublicationGuard, StreamPublicationId,
+    StreamSealedChunkSpan,
 };
 use crowdb_protocol::key::{
     BinaryKey, StreamDirectoryRootKey, StreamManifestHeadKey, StreamPublicationGuardKey,
@@ -96,7 +97,10 @@ impl DirectoryMetadataStore {
         }
         .to_bytes();
         self.validate_directory_root_record(&root_key, &bytes).await?;
-        self.replace_directory_head(expected, head, bytes, guard_key)
+        if let Some(span) = mutation.sealed_span {
+            self.validate_sealed_span_record(&span).await?;
+        }
+        self.replace_directory_head(expected, head, bytes, guard_key, mutation.sealed_span)
             .await
     }
 
@@ -116,6 +120,7 @@ impl DirectoryMetadataStore {
         head: StreamDirectoryHead,
         bytes: Vec<u8>,
         guard_key: Vec<u8>,
+        sealed_span: Option<StreamSealedChunkSpan>,
     ) -> Result<DirectoryHeadSnapshot> {
         let key = StreamManifestHeadKey {
             stream_name: head.stream_name,
@@ -127,7 +132,7 @@ impl DirectoryMetadataStore {
         }
         .to_bytes();
         let value = Bytes::from(bytes);
-        let ops = [
+        let mut ops = vec![
             Self::directory_control_op(&head)?,
             BatchOp::Put {
                 key: Bytes::from(root_key),
@@ -141,6 +146,9 @@ impl DirectoryMetadataStore {
                 key: Bytes::from(guard_key),
             },
         ];
+        if let Some(span) = sealed_span {
+            ops.push(Self::sealed_span_op(&span)?);
+        }
         match self
             .records
             .batch_write_cas(&ops, &key, expected.map_or(0, |snapshot| snapshot.revision))

@@ -14,10 +14,12 @@ pub(super) mod bounded;
 mod codec;
 mod pin;
 mod publication;
+mod span;
 pub use pin::{
     decode_stream_root_pin, encode_stream_root_pin, StreamRootPin, StreamRootPinId, MAX_STREAM_ROOT_PINS,
     MAX_STREAM_ROOT_PIN_LEASE_MS,
 };
+pub use span::{decode_stream_sealed_chunk_span, encode_stream_sealed_chunk_span, StreamSealedChunkSpan};
 mod validation;
 
 pub use codec::{

@@ -668,6 +668,24 @@ adaptation rather than a new transport or storage engine.
   deletion. All 98 Stream tests, strict all-target clippy and Rust fmt pass.
   Logs: `guard-retirement-{tests,full-stream,clippy,fmt}.log`.
 
+## Exact sealed chunk spans (partial T13)
+
+- One immutable current-format span records chunk identity/purpose, original
+  logical base, complete final logical end and physical end. The independent
+  key uses tag `0x001a`; bounded key-only scans enumerate spans without decoding
+  bodies. Fixed record bounds reject wrong scope/geometry and unknown envelopes.
+- Ending an active attachment now requires exactly one matching span in the
+  prepared mutation. It must match its original attachment, successor base,
+  prior checkpoint and complete final append. A same-chunk checkpoint cannot
+  invent a sealed span. The stable head/root, span, control and guard removal
+  commit in one CAS; conflicting immutable span bytes fail.
+- Protocol and Memory/actual-KV tests cover invalid/missing/partial spans, failed
+  head publication with no span residue, retry, equal head/span KV revisions,
+  cold loading, empty chunks and partial trim retaining the original full span.
+  Full Protocol/Stream: 379 passed, zero ignored; strict all-target clippy and
+  Rust fmt pass. Logs: `sealed-span-{tests-final,full-suite-final,clippy-final,
+  fmt}.log`. Whole-chunk reachability/release and main-worker wiring remain.
+
 ## Remaining bounded-publication wiring
 
 - An active 256 MiB chunk can hold more than 65,536 tiny append locations.

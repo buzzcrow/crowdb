@@ -5,6 +5,8 @@
 mod fixture;
 #[path = "stream_directory_test/record.rs"]
 mod record;
+#[path = "stream_directory_test/span.rs"]
+mod span;
 
 use crowdb_protocol::chunk_stream::{
     decode_stream_directory_page, decode_stream_head_record, decode_stream_manifest_record,

@@ -279,6 +279,11 @@ Header for every binary key: `magic:1 | type_tag:2`.
   selects bounded consumer and reader pins. Each value carries the complete
   bounded directory head and its captured logical interval, independently of
   the retained-root index. Pin mutations also change the retention control.
+- **StreamSealedChunkSpanKey** — `stream_name:16 bytes | chunk_id:16 bytes BE`.
+  Total 35 bytes. Tag `0x001a`. Scan prefix `magic|0x001a|stream_name`
+  selects exact whole-chunk bounds. Each span commits atomically with the head
+  that ends its original active attachment; root generation does not enter the
+  span identity.
 - **StreamDirectoryControlKey** — `stream_name:16 bytes`. Total 19 bytes.
   Tag `0x001b`. The fixed scope record's KV revision changes atomically with
   guard/root/pin visibility; conditional cleanup uses it to reject stale

@@ -8,7 +8,7 @@ use bytes::Bytes;
 use crowdb_protocol::chunk_stream::{
     decode_stream_directory_page, encode_stream_directory_page, StreamDirectoryBranch, StreamDirectoryLeaf,
     StreamDirectoryPage, StreamDirectoryPageId, StreamDirectoryRef, StreamExtentLocation, StreamName,
-    StreamPurpose, MAX_STREAM_DIRECTORY_CHILDREN, MAX_STREAM_DIRECTORY_HEIGHT,
+    StreamPurpose, StreamSealedChunkSpan, MAX_STREAM_DIRECTORY_CHILDREN, MAX_STREAM_DIRECTORY_HEIGHT,
     MAX_STREAM_DIRECTORY_LOCATIONS,
 };
 
@@ -54,6 +54,7 @@ pub struct DirectoryMutation {
     index: DirectoryIndex,
     base: Option<StreamDirectoryRef>,
     pages: Vec<DirectoryRecord>,
+    sealed_span: Option<StreamSealedChunkSpan>,
 }
 
 pub struct DirectoryRecord {
@@ -74,6 +75,23 @@ impl DirectoryRecord {
 }
 
 impl DirectoryMutation {
+    /// Associates one exact sealed predecessor with an attachment transition.
+    /// The span commits atomically with the stable head; publication validates
+    /// its original base, final location and successor attachment.
+    /// # Errors
+    /// Rejects invalid bounds or a different stream/purpose.
+    pub fn with_sealed_chunk_span(mut self, span: StreamSealedChunkSpan) -> Result<Self> {
+        span.validate().map_err(invalid_directory)?;
+        if span.stream_name != self.index.stream_name || span.purpose != self.index.purpose {
+            return Err(invalid_directory("sealed chunk span scope is invalid"));
+        }
+        if self.sealed_span.is_some_and(|previous| previous != span) {
+            return Err(invalid_directory("mutation already seals a different chunk span"));
+        }
+        self.sealed_span = Some(span);
+        Ok(self)
+    }
+
     #[must_use]
     pub const fn index(&self) -> &DirectoryIndex {
         &self.index
@@ -154,6 +172,7 @@ impl DirectoryIndex {
             index: self.clone(),
             base: self.root,
             pages: Vec::new(),
+            sealed_span: None,
         }
     }
 

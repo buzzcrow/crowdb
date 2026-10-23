@@ -6,6 +6,7 @@ use bytes::Bytes;
 use crowdb_protocol::chunk_stream::{StreamDirectoryHead, StreamDirectoryPageId, StreamName};
 
 use super::{invalid_directory, DirectoryMutation, Result, StreamDirectoryStore};
+mod span;
 
 struct CandidateRecords<'a> {
     candidate: &'a DirectoryMutation,
@@ -43,6 +44,7 @@ impl DirectoryMutation {
                 "candidate head does not match its prepared mutation",
             ));
         }
+        self.validate_sealed_span(store, head, base).await?;
         let Some(active) = head.active else { return Ok(()) };
         if active.logical_start == active.checkpoint_logical {
             return Ok(());

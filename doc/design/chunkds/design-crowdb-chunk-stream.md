@@ -420,6 +420,15 @@ logical trim point. Only afterward may it release complete sealed chunks whose
 logical end is at or below `g`. A chunk containing the boundary or retained
 extents remains allocated even if individual mappings precede `g`.
 
+Ending an active attachment publishes an immutable sealed-chunk span in the
+same CAS batch as the new stable head/root and guard removal. The span records
+the original logical base, complete final logical end and exact physical end.
+It matches the prior attachment, the complete final append and the successor's
+original logical base; a same-chunk checkpoint does not create a sealed span.
+Empty chunks have zero logical/physical length. A partial logical trim preserves
+the original complete span. Missing/inconsistent spans reject the transition,
+and a failed head publication cannot leave a span that appears committed.
+
 Cleanup is idempotent and bounded by `gc_bytes_per_pass`, with at least one
 eligible whole chunk processed so a large chunk cannot stop progress. Released
 chunks are removed from the directory through bounded changes to the retained
