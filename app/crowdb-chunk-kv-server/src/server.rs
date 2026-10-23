@@ -29,6 +29,7 @@ use crate::{
 
 mod activation;
 mod assignments;
+mod authority;
 use assignments::{local_partition_for_entry, partition_matches_entry};
 mod load_sampling;
 mod observation;
@@ -119,7 +120,6 @@ impl CatalogSnapshot {
 /// changes replace a snapshot; admitted partition operations retain their own
 /// handles until completion.
 pub struct ChunkKvService {
-    started: Instant,
     instance_id: u64,
     authority: Arc<ServingAuthority>,
     catalog: ArcSwap<CatalogSnapshot>,
@@ -196,7 +196,6 @@ impl ChunkKvService {
             ));
         }
         Ok(Self {
-            started: Instant::now(),
             instance_id,
             authority: Arc::new(ServingAuthority::new(instance_id)),
             catalog: ArcSwap::from_pointee(CatalogSnapshot::default()),
@@ -287,11 +286,11 @@ impl ChunkKvService {
     /// Milliseconds elapsed on the process-local monotonic clock.
     #[must_use]
     pub fn monotonic_ms(&self) -> u64 {
-        u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX)
+        self.authority.monotonic_ms()
     }
 
-    /// Stops new admission and clears serving authority. Operations already
-    /// admitted to an R142 sequencer retain their partition handle and finish.
+    /// Stops new admission and revokes successful serving replies. Admitted
+    /// operations retain their partition handle and can finish durable work.
     pub fn begin_drain(&self) {
         self.admitting.store(false, Ordering::Release);
         self.authority.clear();
@@ -799,8 +798,8 @@ impl ChunkKvService {
     /// Handles a point request directly; it never proxies to another owner.
     ///
     /// The wall-clock deadline is checked before sequencer admission. Once a
-    /// mutation is admitted, this method awaits its single durable result even
-    /// if the caller drops the surrounding transport future.
+    /// mutation is admitted, this method awaits its durable result and checks
+    /// serving authority again before returning success.
     pub async fn handle_point(
         &self,
         request: PointRequest,
@@ -895,12 +894,13 @@ impl ChunkKvService {
             }
         };
 
-        self.execute_point_operation(
+        self.execute_authorized_point(
             &partition,
             entry,
             catalog.generation,
             request,
             transfer_append_artifact,
+            now_monotonic_ms,
         )
         .await
     }

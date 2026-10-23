@@ -93,6 +93,20 @@ one-second self-fence margin fence the old owner by ten seconds. A replacement
 waits until the old wall-clock expiry plus skew unless an explicit source fence
 is durably proven.
 
+Authority revocation retains the highest accepted grant sequence. The same old
+grant cannot reinstall after a clear. Each assignment also carries local
+continuity across live renewal: expiry, removal or clear permanently invalidates
+an admitted context, even if a later grant restores the same partition and epoch.
+Grant publication uses the current monotonic time, so delayed installation
+cannot hide a local expiry gap.
+
+Normal point execution captures that context before asynchronous WAL/tree work
+and validates it again before returning success. A revoked context returns
+`LeaseExpired` without advertising a successful journal position; already durable
+data remains available to replay and a retry with the same request identity.
+The captured IO deadline stays at its original value across continuous renewal.
+Catching-up targets retain their separately validated transfer-artifact authority.
+
 Client catalog revisions and owner epochs are routing references, not serving
 authority. A server may resolve an older reference through a process-local
 lineage, but it always authorizes the resolved current assignment against one

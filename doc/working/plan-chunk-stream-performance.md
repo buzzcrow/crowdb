@@ -12,7 +12,8 @@ KV work, with compact locations, incremental directories, and bounded recovery.
 ## Status and scope
 
 - Deployment requirement R243 is complete at `c3d7d64d`; R244 is in progress.
-- T01/T02/T03/T05–T07 foundations are committed. T15 is the active recovery task.
+- T01/T02/T03/T05–T07 foundations are committed. T18 is the active ownership task;
+  T15's bounded observation primitives await the same runtime authority wiring.
   T13's indexed retention primitives are committed; expiry/read-IO grace and
   runtime/consumer wiring remain. Directory, shared-codec, ordinary writer and local-progress
   foundations exist; the main Stream worker still needs indexed wiring,
@@ -1168,6 +1169,30 @@ adaptation rather than a new transport or storage engine.
   Do not interpret stale/corrupt bytes or IO errors as EOF. Ordinary object
   producers retain persisted cursor authority; Stream/Wal use complete groups.
 
+## Captured serving-context implementation (partial T18)
+
+- The first regression proved `clear()` discarded sequence history and allowed
+  reinstalling the identical old grant. A second blocked actual Stream-backed
+  WAL IO, cleared authority and installed a replacement grant; the old request
+  incorrectly returned success with a journal position.
+- `ServingAuthority` now retains sequence high-water state across clear and tracks
+  continuity per exact assignment. Continuous live renewal preserves a captured
+  context; gaps, assignment removal and clear never revive one. Installation and
+  request checks use one owner monotonic clock, including time spent paused while
+  installing a grant. Captured IO deadlines do not extend with renewal.
+- Normal point execution captures authority before WAL/tree work and validates
+  it before successful acknowledgment. Revocation returns LeaseExpired and no
+  journal position; the gate test checks durable data is retained and a stable-ID
+  retry succeeds. Catching-up targets keep their explicit transfer-artifact path.
+  Existing grants remain the authority; no per-request KV operation or lock is
+  added. Fixture setup moved into `tests/common/serving_lease.rs`.
+- Verification passes: 905 Rust cases across 149 targets, eleven-package
+  all-target clippy and formatting. Two context regressions, continuous renewal
+  and the blocked WAL acknowledgment case also pass after retaining grants by
+  immutable Arc ownership. Red/green receipts use `lease-continuity-*`.
+  Group-level contexts, process-boot binding, Stream
+  admission/IO context and independent renewal remain before deferred completion.
+
 ## Ownership execution notes (T18/T19 target)
 
 - `ServingGrant` currently binds a persistent instance ID, not a process boot.
@@ -1176,13 +1201,11 @@ adaptation rather than a new transport or storage engine.
   using the existing DiskDB session fencing pattern without adding a second WAL
   authority. A new boot must respect the prior grant's safe exclusion boundary
   before observing the abandoned tail; a cached instance ID cannot prove that.
-- `ServingAuthority.install` currently accepts a higher sequence after the old
-  local deadline expired. Add captured assignment continuity to admission/ACK
-  checks: continuous renewal may preserve the context; a gap, clear, assignment
-  removal or process change permanently fences an old in-flight context. Preserve
-  the sequence high-water mark across clear so an old grant cannot reinstall.
-- Point and batch execution currently authorize before asynchronous WAL work.
-  They need current captured-context validation before success as well. Bind
+- Captured assignment continuity and the sequence high-water fence are implemented
+  above. Add the fixed process boot identity to the same context when wiring the
+  Group-0 session, so process replacement also permanently fences old work.
+- Point execution now revalidates its captured context after asynchronous WAL
+  work. Grouped RPCs also need a context spanning their whole execution. Bind
   Stream IO to the minimum captured Group-0/liveness absolute deadline; checking
   only before creating an async future permits a paused producer to resume with
   a fresh request timestamp. Renewal must run independently of blocked data IO.
@@ -1373,7 +1396,7 @@ adaptation rather than a new transport or storage engine.
   `lib/crowdb-chunk-stream/src/memory.rs`,
   `lib/crowdb-chunk-stream/tests/production_chunk_test.rs`,
   `lib/crowdb-chunk-stream/tests/rollover_growth_test.rs`.
-- [~] **T15 — Implement bounded tail observation and scanning**: establish a
+- [ ] **T15 — Implement bounded tail observation and scanning**: establish a
   chunk-layer read mode/bound that can inspect the last allocated chunk beyond
   an older checkpoint without globally widening ordinary object reads. Read
   bounded windows, parse multiple frames locally, and carry frames across read
@@ -1416,7 +1439,7 @@ adaptation rather than a new transport or storage engine.
   `lib/crowdb-chunk-stream/src/stream/publication.rs`,
   `lib/crowdb-chunk-stream/tests/rollover_growth_test.rs`,
   `lib/crowdb-chunk-stream/tests/stream_test.rs`.
-- [ ] **T18 — Enforce the selected Group-0 writer lease**: implement Q3 for busy
+- [~] **T18 — Enforce the selected Group-0 writer lease**: implement Q3 for busy
   workers, long IO, paused/resumed owners, renewal failure, delayed old writes,
   and takeover. Acknowledgment requires current authority even when all writes
   succeeded; no per-append KV fallback. Compose serving grants and Stream owner

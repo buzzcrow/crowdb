@@ -99,3 +99,73 @@ fn renewal_is_monotonic_and_epoch_change_revokes_old_assignment() {
     );
     assert!(authority.authorize(3, partition, 12, 8_201).is_ok());
 }
+
+#[test]
+fn clearing_authority_preserves_the_sequence_fence() {
+    let authority = ServingAuthority::new(7);
+    authority.install(grant(4, 11), &policy(), 1_000, 8_000).unwrap();
+    authority.clear();
+    assert_eq!(
+        authority.install(grant(4, 11), &policy(), 1_100, 8_100),
+        Err(AuthorityError::StaleGrant)
+    );
+    assert!(!authority.has_live_grant(3, 8_101));
+    authority.install(grant(5, 11), &policy(), 1_200, 8_200).unwrap();
+    assert!(authority
+        .authorize(3, assignment(11).partition_id, 11, 8_201)
+        .is_ok());
+}
+
+#[test]
+fn continuous_renewal_preserves_acknowledgment_but_not_the_original_io_deadline() {
+    let authority = ServingAuthority::new(7);
+    authority.install(grant(4, 11), &policy(), 1_000, 8_000).unwrap();
+    let context = authority
+        .capture(3, assignment(11).partition_id, 11, 8_001)
+        .unwrap();
+    assert_eq!(context.deadline_ms(), 18_000);
+    let mut renewed = grant(5, 11);
+    renewed.issued_at_ms = 1_100;
+    renewed.expires_at_ms = 13_100;
+    renewed.seal();
+    authority.install(renewed, &policy(), 1_100, 8_100).unwrap();
+    assert!(authority.validate_context(&context, 18_001).is_ok());
+    assert_eq!(context.deadline_ms(), 18_000);
+}
+
+#[test]
+fn renewing_after_a_gap_does_not_resurrect_an_admitted_context() {
+    let authority = ServingAuthority::new(7);
+    authority.install(grant(4, 11), &policy(), 1_000, 8_000).unwrap();
+    let context = authority
+        .capture(3, assignment(11).partition_id, 11, 8_001)
+        .unwrap();
+    let mut renewed = grant(5, 11);
+    renewed.issued_at_ms = 12_000;
+    renewed.expires_at_ms = 25_000;
+    renewed.seal();
+    authority.install(renewed, &policy(), 12_000, 19_000).unwrap();
+    assert_eq!(
+        authority.validate_context(&context, 19_001),
+        Err(AuthorityError::LeaseExpired)
+    );
+    let fresh = authority
+        .capture(3, assignment(11).partition_id, 11, 19_001)
+        .unwrap();
+    assert!(authority.validate_context(&fresh, 19_002).is_ok());
+}
+
+#[test]
+fn restoring_an_assignment_cannot_restore_its_old_context() {
+    let authority = ServingAuthority::new(7);
+    authority.install(grant(4, 11), &policy(), 1_000, 8_000).unwrap();
+    let context = authority
+        .capture(3, assignment(11).partition_id, 11, 8_001)
+        .unwrap();
+    authority.install(grant(5, 12), &policy(), 1_100, 8_100).unwrap();
+    authority.install(grant(6, 11), &policy(), 1_200, 8_200).unwrap();
+    assert_eq!(
+        authority.validate_context(&context, 8_201),
+        Err(AuthorityError::LeaseExpired)
+    );
+}

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crowdb_chunk_kv::memory::MemoryPartitionTree;
 use crowdb_chunk_kv::{
     Checkpoint, Partition, PartitionConfig, PartitionId, PartitionJournal, PartitionLifecycle,
-    PartitionRange, PartitionTree, PreparedSplitWriterArtifact, SplitArtifact, SplitChild, SplitPlan,
+    PartitionRange, PreparedSplitWriterArtifact, SplitArtifact, SplitChild, SplitPlan,
     StreamPartitionJournal, TransitionId,
 };
 use crowdb_chunk_kv_server::{ChunkKvService, ServerLifecycle, TransferStateMachine};
@@ -651,65 +651,8 @@ fn assert_hosts_exact_child_assignment(service: &ChunkKvService, child: &Partiti
 }
 
 async fn fixture() -> (ChunkKvService, Partition) {
-    let stream_name = StreamName { high: 30, low: 31 };
-    let store = Arc::new(MemoryStreamStore::new(4_096));
-    let stream = ChunkStream::create(
-        StreamBinding {
-            purpose: crowdb_protocol::chunk_stream::StreamPurpose::Wal,
-            stream_name,
-            metadata_group_id: 7,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("chunk-kv-partition".into()),
-        },
-        EPOCH,
-        StreamConfig::default(),
-        store.clone() as Arc<dyn StreamRegistry>,
-        store.clone() as Arc<dyn StreamMetadataStore>,
-        store as Arc<dyn StreamChunkStore>,
-    )
-    .await
-    .unwrap();
-    let tree: Arc<dyn PartitionTree> = Arc::new(MemoryPartitionTree::default());
-    let journal: Arc<dyn PartitionJournal> =
-        Arc::new(StreamPartitionJournal::new(stream, stream_name).unwrap());
-    let partition = Partition::open(
-        PartitionId { high: 1, low: 2 },
-        PartitionRange {
-            start: Some(Vec::new()),
-            end: None,
-        },
-        EPOCH,
-        PartitionConfig::default(),
-        tree,
-        journal,
-    )
-    .unwrap();
-
-    let (head, page) = catalog(Id128 { high: 1, low: 2 }, stream_name, EPOCH, 1, None);
-
-    let service = ChunkKvService::new(INSTANCE_ID, 8).unwrap();
-    service
-        .install_catalog_and_reconcile(&head, &[page], std::slice::from_ref(&partition))
-        .unwrap();
-    let mut grant = ServingGrant {
-        instance_id: INSTANCE_ID,
-        lease_sequence: 1,
-        catalog_generation: 1,
-        issued_at_ms: 1_000,
-        expires_at_ms: 13_000,
-        assignments: vec![ServingAssignment {
-            partition_id: Id128 { high: 1, low: 2 },
-            owner_epoch: EPOCH,
-        }],
-        assignment_digest: [0; 32],
-    };
-    grant.seal();
-    service
-        .authority()
-        .install(grant, &policy(), 1_000, 50_000)
-        .unwrap();
-    (service, partition)
+    let fixture = serving_fixture::TestServingLease::start().await;
+    (fixture.service, fixture.partition)
 }
 
 #[tokio::test]
@@ -1394,3 +1337,8 @@ async fn ordered_seek_and_scan_preserve_inclusive_range_start() {
 
 #[path = "server_test/bounded_scan.rs"]
 mod bounded_scan;
+
+#[path = "server_test/lease.rs"]
+mod lease;
+#[path = "common/serving_lease.rs"]
+mod serving_fixture;

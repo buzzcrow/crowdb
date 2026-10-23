@@ -2,8 +2,9 @@
 // Licensed under the Apache License, Version 2.0.
 
 use std::sync::Arc;
+use std::time::Instant;
 
-use arc_swap::ArcSwapOption;
+use arc_swap::ArcSwap;
 use crowdb_protocol::chunk_kv::{
     DomainMonitorDescriptor, Id128, InstanceHealth, ServingAssignment, ServingGrant,
 };
@@ -11,8 +12,32 @@ use thiserror::Error;
 
 #[derive(Clone, Debug)]
 struct AuthoritySnapshot {
-    grant: ServingGrant,
+    grant: Arc<ServingGrant>,
     local_deadline_ms: u64,
+    continuity: Vec<u64>,
+}
+
+#[derive(Default)]
+struct AuthorityState {
+    highest_sequence: u64,
+    current: Option<AuthoritySnapshot>,
+}
+
+/// One admitted assignment; later grants cannot revive it after exclusion.
+#[derive(Clone, Copy, Debug)]
+pub struct ServingContext {
+    instance_id: u64,
+    assignment: ServingAssignment,
+    continuity: u64,
+    deadline_ms: u64,
+}
+
+impl ServingContext {
+    /// Original IO admission deadline; renewal does not extend already issued IO.
+    #[must_use]
+    pub const fn deadline_ms(&self) -> u64 {
+        self.deadline_ms
+    }
 }
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -36,7 +61,8 @@ pub enum AuthorityError {
 /// Lock-free request-path authority derived from monitor-issued serving grants.
 pub struct ServingAuthority {
     instance_id: u64,
-    snapshot: ArcSwapOption<AuthoritySnapshot>,
+    clock_origin: Instant,
+    state: ArcSwap<AuthorityState>,
 }
 
 impl ServingAuthority {
@@ -44,19 +70,20 @@ impl ServingAuthority {
     pub fn new(instance_id: u64) -> Self {
         Self {
             instance_id,
-            snapshot: ArcSwapOption::empty(),
+            clock_origin: Instant::now(),
+            state: ArcSwap::from_pointee(AuthorityState::default()),
         }
     }
 
-    /// Installs a validated grant and derives its conservative local deadline.
-    ///
-    /// `received_wall_ms` and `received_monotonic_ms` must be sampled together.
-    /// Request authorization subsequently relies only on the monotonic clock.
-    ///
+    /// Local monotonic clock shared by receipt, installation and request checks.
+    #[must_use]
+    pub fn monotonic_ms(&self) -> u64 {
+        u64::try_from(self.clock_origin.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+
+    /// Install a grant using wall/monotonic clocks sampled together at receipt.
     /// # Errors
-    ///
-    /// Returns a typed error for unsafe policy, invalid identity, expiry, or a
-    /// grant that loses a concurrent monotonic installation race.
+    /// Rejects invalid policy, identity, expiry and superseded grant sequences.
     pub fn install(
         &self,
         grant: ServingGrant,
@@ -64,60 +91,58 @@ impl ServingAuthority {
         received_wall_ms: u64,
         received_monotonic_ms: u64,
     ) -> Result<(), AuthorityError> {
+        let started = Instant::now();
         policy.validate().map_err(|_| AuthorityError::InvalidPolicy)?;
         grant.validate().map_err(|_| AuthorityError::InvalidGrant)?;
         if grant.instance_id != self.instance_id {
             return Err(AuthorityError::WrongInstance);
         }
-        let safety_margin = policy
-            .max_clock_skew_ms
-            .checked_add(policy.self_fence_margin_ms)
-            .ok_or(AuthorityError::InvalidPolicy)?;
-        let safe_wall_deadline = grant
-            .expires_at_ms
-            .checked_sub(safety_margin)
-            .ok_or(AuthorityError::LeaseExpired)?;
-        let safe_remaining = safe_wall_deadline
-            .checked_sub(received_wall_ms)
-            .ok_or(AuthorityError::LeaseExpired)?;
-        if safe_remaining == 0 {
+        let local_deadline_ms = grant_deadline(&grant, policy, received_wall_ms, received_monotonic_ms)?;
+        let grant = Arc::new(grant);
+        self.state.rcu(|installed| {
+            if grant.lease_sequence <= installed.highest_sequence {
+                return Arc::clone(installed);
+            }
+            let published_at = self.current_time(received_monotonic_ms, started);
+            let continuity = grant
+                .assignments
+                .iter()
+                .map(|assignment| {
+                    installed
+                        .current
+                        .as_ref()
+                        .and_then(|previous| {
+                            (published_at < previous.local_deadline_ms)
+                                .then(|| previous.grant.assignments.binary_search(assignment).ok())
+                                .flatten()
+                                .map(|index| previous.continuity[index])
+                        })
+                        .unwrap_or(grant.lease_sequence)
+                })
+                .collect();
+            Arc::new(AuthorityState {
+                highest_sequence: grant.lease_sequence,
+                current: Some(AuthoritySnapshot {
+                    grant: Arc::clone(&grant),
+                    local_deadline_ms,
+                    continuity,
+                }),
+            })
+        });
+        let installed = self.state.load();
+        let current = installed.current.as_ref().ok_or(AuthorityError::StaleGrant)?;
+        if current.grant != grant {
+            return Err(AuthorityError::StaleGrant);
+        }
+        if self.current_time(received_monotonic_ms, started) >= current.local_deadline_ms {
             return Err(AuthorityError::LeaseExpired);
         }
-        let local_deadline_ms = received_monotonic_ms
-            .checked_add(safe_remaining)
-            .ok_or(AuthorityError::InvalidGrant)?;
-        let candidate = Arc::new(AuthoritySnapshot {
-            grant,
-            local_deadline_ms,
-        });
-
-        self.snapshot.rcu(|current| {
-            if current
-                .as_ref()
-                .is_some_and(|installed| installed.grant.lease_sequence >= candidate.grant.lease_sequence)
-            {
-                current.clone()
-            } else {
-                Some(Arc::clone(&candidate))
-            }
-        });
-        if self
-            .snapshot
-            .load_full()
-            .as_ref()
-            .is_some_and(|installed| installed.grant == candidate.grant)
-        {
-            Ok(())
-        } else {
-            Err(AuthorityError::StaleGrant)
-        }
+        Ok(())
     }
 
-    /// Checks one partition request without taking a lock.
-    ///
+    /// Check an assignment before request admission.
     /// # Errors
-    ///
-    /// Returns the precise fence reason before a request reaches its WAL.
+    /// Returns the precise lease, catalog or assignment fence reason.
     pub fn authorize(
         &self,
         catalog_generation: u64,
@@ -125,10 +150,22 @@ impl ServingAuthority {
         owner_epoch: u64,
         now_monotonic_ms: u64,
     ) -> Result<(), AuthorityError> {
-        let snapshot = self.snapshot.load_full().ok_or(AuthorityError::LeaseExpired)?;
-        if now_monotonic_ms >= snapshot.local_deadline_ms {
-            return Err(AuthorityError::LeaseExpired);
-        }
+        self.capture(catalog_generation, partition_id, owner_epoch, now_monotonic_ms)
+            .map(|_| ())
+    }
+
+    /// Capture continuity and the original deadline before asynchronous work.
+    /// # Errors
+    /// Rejects expired, unassigned or stale-catalog admission.
+    pub fn capture(
+        &self,
+        catalog_generation: u64,
+        partition_id: Id128,
+        owner_epoch: u64,
+        now_monotonic_ms: u64,
+    ) -> Result<ServingContext, AuthorityError> {
+        let state = self.state.load();
+        let snapshot = live_snapshot(&state, now_monotonic_ms.max(self.monotonic_ms()))?;
         if catalog_generation != snapshot.grant.catalog_generation {
             return Err(AuthorityError::StaleCatalog);
         }
@@ -136,23 +173,95 @@ impl ServingAuthority {
             partition_id,
             owner_epoch,
         };
-        if snapshot.grant.assignments.binary_search(&assignment).is_err() {
-            return Err(AuthorityError::NotAssigned);
+        let index = snapshot
+            .grant
+            .assignments
+            .binary_search(&assignment)
+            .map_err(|_| AuthorityError::NotAssigned)?;
+        Ok(ServingContext {
+            instance_id: self.instance_id,
+            assignment,
+            continuity: snapshot.continuity[index],
+            deadline_ms: snapshot.local_deadline_ms,
+        })
+    }
+
+    /// Validate the admitted assignment before acknowledging asynchronous work.
+    /// # Errors
+    /// Rejects expiry, replacement, removal or a break in lease continuity.
+    pub fn validate_context(
+        &self,
+        context: &ServingContext,
+        now_monotonic_ms: u64,
+    ) -> Result<(), AuthorityError> {
+        if context.instance_id != self.instance_id {
+            return Err(AuthorityError::WrongInstance);
+        }
+        let state = self.state.load();
+        let snapshot = live_snapshot(&state, now_monotonic_ms.max(self.monotonic_ms()))?;
+        let index = snapshot
+            .grant
+            .assignments
+            .binary_search(&context.assignment)
+            .map_err(|_| AuthorityError::LeaseExpired)?;
+        if snapshot.continuity[index] != context.continuity {
+            return Err(AuthorityError::LeaseExpired);
         }
         Ok(())
     }
 
+    /// Revoke authority without discarding the accepted sequence fence.
     pub fn clear(&self) {
-        self.snapshot.store(None);
+        self.state.rcu(|state| {
+            Arc::new(AuthorityState {
+                highest_sequence: state.highest_sequence,
+                current: None,
+            })
+        });
     }
 
     #[must_use]
     pub fn has_live_grant(&self, catalog_generation: u64, now_monotonic_ms: u64) -> bool {
-        self.snapshot.load().as_ref().is_some_and(|snapshot| {
+        let now_monotonic_ms = now_monotonic_ms.max(self.monotonic_ms());
+        self.state.load().current.as_ref().is_some_and(|snapshot| {
             snapshot.grant.catalog_generation == catalog_generation
                 && now_monotonic_ms < snapshot.local_deadline_ms
         })
     }
+
+    fn current_time(&self, received: u64, started: Instant) -> u64 {
+        let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        self.monotonic_ms().max(received.saturating_add(elapsed))
+    }
+}
+
+fn live_snapshot(state: &AuthorityState, now: u64) -> Result<&AuthoritySnapshot, AuthorityError> {
+    state
+        .current
+        .as_ref()
+        .filter(|snapshot| now < snapshot.local_deadline_ms)
+        .ok_or(AuthorityError::LeaseExpired)
+}
+
+fn grant_deadline(
+    grant: &ServingGrant,
+    policy: &DomainMonitorDescriptor,
+    wall: u64,
+    monotonic: u64,
+) -> Result<u64, AuthorityError> {
+    let margin = policy
+        .max_clock_skew_ms
+        .checked_add(policy.self_fence_margin_ms)
+        .ok_or(AuthorityError::InvalidPolicy)?;
+    let remaining = grant
+        .expires_at_ms
+        .checked_sub(margin)
+        .and_then(|safe| safe.checked_sub(wall))
+        .filter(|remaining| *remaining > 0)
+        .ok_or(AuthorityError::LeaseExpired)?;
+    monotonic
+        .checked_add(remaining)
+        .ok_or(AuthorityError::InvalidGrant)
 }
 
 #[must_use]

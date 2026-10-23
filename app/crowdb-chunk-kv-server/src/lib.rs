@@ -31,7 +31,7 @@ pub use serving::{
     choose_split, choose_transfer, classify_instance, desired_partition_count, replacement_may_activate,
     AuthorityError, BalanceConfig, DomainMonitorDriver, DomainMonitorRegistry, MonitorDescriptorStore,
     MonitorError, MonitorTick, OwnerLoad, PartitionLoad, PreparedLocalSplit, PreparedMonitor,
-    ServingAuthority, SplitAction, SplitProposal, SplitStateMachine, TransferAction, TransferProposal,
-    TransferStateMachine, TransitionExecutor, TransitionProcessor, TransitionStorage,
+    ServingAuthority, ServingContext, SplitAction, SplitProposal, SplitStateMachine, TransferAction,
+    TransferProposal, TransferStateMachine, TransitionExecutor, TransitionProcessor, TransitionStorage,
 };
 pub use storage::{ChunkKvStorage, StorageRuntimeError};
