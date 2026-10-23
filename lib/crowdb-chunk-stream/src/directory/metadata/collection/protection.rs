@@ -1,13 +1,9 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_protocol::chunk_stream::{
-    decode_stream_publication_guard, StreamPublicationGuard, StreamPublicationId,
-};
-use crowdb_protocol::key::{BinaryKey, StreamPublicationGuardKey};
+use crowdb_protocol::chunk_stream::{StreamPublicationGuard, StreamPublicationId};
 
 use super::{CollectionStage, DirectoryPageCollection};
-use crate::directory::metadata::{kv_error, GetOutcome};
 use crate::{DirectoryMetadataStore, Result, StreamError};
 
 impl DirectoryMetadataStore {
@@ -89,16 +85,10 @@ impl DirectoryMetadataStore {
         cursor: &DirectoryPageCollection,
         id: StreamPublicationId,
     ) -> Result<StreamPublicationGuard> {
-        let key = StreamPublicationGuardKey {
-            stream_name: cursor.scope.stream_name,
-            publication_id: id,
-        }
-        .to_bytes();
-        let GetOutcome::Found { value, .. } = self.records.get(&key).await.map_err(kv_error)? else {
-            return Err(StreamError::Backpressure);
-        };
-        let guard = decode_stream_publication_guard(&value, id, cursor.scope.stream_name)
-            .map_err(|error| StreamError::Corruption(error.to_string()))?;
+        let guard = self
+            .load_directory_publication(cursor.scope.stream_name, id)
+            .await?
+            .ok_or(StreamError::Backpressure)?;
         if guard.head.metadata_group_id != cursor.group_id || guard.head.purpose != cursor.scope.purpose {
             return Err(StreamError::Corruption(
                 "publication protection scope is invalid".into(),

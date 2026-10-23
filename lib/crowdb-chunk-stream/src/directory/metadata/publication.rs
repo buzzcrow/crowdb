@@ -4,8 +4,8 @@
 use bytes::Bytes;
 use crowdb_kv_client::BatchOp;
 use crowdb_protocol::chunk_stream::{
-    encode_stream_directory_head, encode_stream_publication_guard, stream_publication_id,
-    StreamDirectoryHead, StreamPublicationGuard,
+    decode_stream_publication_guard, encode_stream_directory_head, encode_stream_publication_guard,
+    stream_publication_id, StreamDirectoryHead, StreamName, StreamPublicationGuard, StreamPublicationId,
 };
 use crowdb_protocol::key::{
     BinaryKey, StreamDirectoryRootKey, StreamManifestHeadKey, StreamPublicationGuardKey,
@@ -15,6 +15,32 @@ use super::{kv_error, DirectoryHeadSnapshot, DirectoryMetadataStore, GetOutcome}
 use crate::{DirectoryMutation, Result, StreamError};
 
 impl DirectoryMetadataStore {
+    /// # Errors
+    /// Rejects malformed, wrong-scope or unavailable publication protection.
+    pub async fn load_directory_publication(
+        &self,
+        name: StreamName,
+        id: StreamPublicationId,
+    ) -> Result<Option<StreamPublicationGuard>> {
+        let key = StreamPublicationGuardKey {
+            stream_name: name,
+            publication_id: id,
+        }
+        .to_bytes();
+        match self.records.get(&key).await.map_err(kv_error)? {
+            GetOutcome::NotFound => Ok(None),
+            GetOutcome::Found { value, .. } => {
+                let guard = decode_stream_publication_guard(&value, id, name).map_err(codec_error)?;
+                if guard.head.metadata_group_id != self.group_id {
+                    return Err(StreamError::Corruption(
+                        "publication metadata group is invalid".into(),
+                    ));
+                }
+                Ok(Some(guard))
+            }
+        }
+    }
+
     /// Store protected immutable pages, then atomically retain their published
     /// root, replace the head and remove its guard. Ordinary append does not call this.
     ///

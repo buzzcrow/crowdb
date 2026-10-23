@@ -483,6 +483,15 @@ local bounded cache entry; interrupted collection can restart without trusting
 an incomplete persisted sweep. Physical chunk collection has its own span and
 logical-interval proof and cannot follow from a page's generation or deletion.
 
+Publication guards can be retired once the revalidated stable head has reached
+or exceeded the candidate's generation. Generations increase strictly, so the
+candidate's original head CAS can no longer win; an identical already-committed
+candidate is resolved as well. Cleanup scans at most 128 guard keys with an
+exclusive continuation, validates each body, and deletes eligible records under
+the captured retention-control revision. It does not delete their pages. A
+candidate newer than the head keeps protection until publication or independent
+owner exclusion resolves its outcome; elapsed time alone grants no authority.
+
 ## 8. Bounds and Observation
 
 Defaults bound admission at 1,024 requests and 64 MiB, a batch at 64 requests

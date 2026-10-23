@@ -20,6 +20,8 @@ mod collection;
 mod control;
 mod pin;
 mod publication;
+mod publication_retirement;
+pub use publication_retirement::DirectoryPublicationRetirement;
 mod records;
 mod retirement;
 pub use collection::{DirectoryPageCollection, DirectoryPageCollectionStep};

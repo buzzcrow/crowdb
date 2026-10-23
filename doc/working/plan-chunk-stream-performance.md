@@ -649,6 +649,25 @@ adaptation rather than a new transport or storage engine.
   clippy-final,fmt}.log`. Whole-chunk spans/data collection, expiry grace,
   abandoned-guard cleanup and runtime wiring remain unfinished.
 
+## Resolved publication-guard retirement (partial T13)
+
+- Added bounded typed guard loading and exclusive-continuation retirement. A
+  guard at/below the exact revalidated stable head generation is resolved or
+  superseded: strictly increasing head generations prevent its original CAS
+  from winning again. A guard newer than the head remains protected. No timeout
+  or old-format fallback is used as authority.
+- Cleanup captures control before head/guard observations, validates records,
+  and atomically advances control with eligible deletes. It reuses the root
+  retirement conditional-delete/reconciliation boundary and does not delete
+  pages. A guard with an excluded owner but still-next generation needs the
+  later ownership proof; this path does not guess exclusion from elapsed time.
+- Two additional tests cover five guards in single-record pages: four resolved
+  or losing candidates retire, the live successor remains, and its retry still
+  publishes correctly. The old unshared base subtree becomes collectable only
+  after retirement. Actual KV malformed guards block both retirement and page
+  deletion. All 98 Stream tests, strict all-target clippy and Rust fmt pass.
+  Logs: `guard-retirement-{tests,full-stream,clippy,fmt}.log`.
+
 ## Remaining bounded-publication wiring
 
 - An active 256 MiB chunk can hold more than 65,536 tiny append locations.

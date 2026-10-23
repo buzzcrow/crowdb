@@ -18,6 +18,8 @@ use metadata_server::TestMetadataServer;
 
 #[path = "page_collection_test/faults.rs"]
 mod faults;
+#[path = "page_collection_test/retirement.rs"]
+mod retirement;
 
 async fn check_collection(directory: &DirectoryMetadataStore) {
     let state = State::new(directory, 10).await;

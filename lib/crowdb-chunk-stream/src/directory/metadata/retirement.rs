@@ -72,11 +72,16 @@ impl DirectoryMetadataStore {
                 .to_bytes(),
             );
         }
-        self.delete_directory_roots(control, revision, &keys).await?;
+        self.delete_retention_records(control, revision, &keys).await?;
         Ok(keys.len())
     }
 
-    async fn delete_directory_roots(&self, control: BatchOp, revision: u64, keys: &[Vec<u8>]) -> Result<()> {
+    pub(super) async fn delete_retention_records(
+        &self,
+        control: BatchOp,
+        revision: u64,
+        keys: &[Vec<u8>],
+    ) -> Result<()> {
         if keys.is_empty() {
             return Ok(());
         }
