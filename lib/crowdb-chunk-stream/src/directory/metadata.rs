@@ -17,8 +17,10 @@ use std::sync::Arc;
 
 mod cache;
 mod control;
+mod pin;
 mod publication;
 mod records;
+pub use pin::DirectoryRootPinSnapshot;
 mod scan;
 use cache::DirectoryRecordCache;
 pub use cache::{DirectoryCacheSnapshot, DIRECTORY_PAGE_CACHE_SLOTS};

@@ -54,21 +54,9 @@ impl DirectoryMetadataStore {
         guard_key: &[u8],
         bytes: &[u8],
     ) -> Result<()> {
-        let control = Self::directory_control_scope_op(scope)?;
-        let BatchOp::Put { key, value } = &control else {
+        let (control, revision) = self.load_directory_control(scope).await?;
+        let BatchOp::Put { key, .. } = &control else {
             unreachable!()
-        };
-        let revision = match self.records.get(key).await.map_err(kv_error)? {
-            GetOutcome::Found {
-                value: observed,
-                revision,
-            } if observed == *value => revision,
-            GetOutcome::Found { .. } => {
-                return Err(StreamError::Corruption(
-                    "directory control scope is invalid".into(),
-                ))
-            }
-            GetOutcome::NotFound => 0,
         };
         if self.directory_guard_matches(guard_key, bytes).await? {
             if revision == 0 {
@@ -102,6 +90,29 @@ impl DirectoryMetadataStore {
             }
             Err(error) => Err(kv_error(error)),
         }
+    }
+
+    pub(super) async fn load_directory_control(
+        &self,
+        scope: StreamDirectoryControl,
+    ) -> Result<(BatchOp, u64)> {
+        let control = Self::directory_control_scope_op(scope)?;
+        let BatchOp::Put { key, value } = &control else {
+            unreachable!()
+        };
+        let revision = match self.records.get(key).await.map_err(kv_error)? {
+            GetOutcome::Found {
+                value: observed,
+                revision,
+            } if observed == *value => revision,
+            GetOutcome::Found { .. } => {
+                return Err(StreamError::Corruption(
+                    "directory control scope is invalid".into(),
+                ))
+            }
+            GetOutcome::NotFound => 0,
+        };
+        Ok((control, revision))
     }
 
     async fn directory_guard_matches(&self, key: &[u8], bytes: &[u8]) -> Result<bool> {

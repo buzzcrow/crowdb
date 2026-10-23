@@ -103,7 +103,7 @@ impl DirectoryMetadataStore {
         .await
     }
 
-    async fn scan_directory_ids<K: BinaryKey, T: Copy>(
+    pub(super) async fn scan_directory_ids<K: BinaryKey, T: Copy>(
         &self,
         prefix: &[u8],
         after: Option<&[u8]>,

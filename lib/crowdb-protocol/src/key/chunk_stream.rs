@@ -13,9 +13,11 @@ use super::encoding::{
 };
 
 mod directory;
+mod pin;
 pub use directory::{
     StreamDirectoryControlKey, StreamDirectoryPageKey, StreamDirectoryRootKey, StreamPublicationGuardKey,
 };
+pub use pin::StreamRootPinKey;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct StreamBindingKey {

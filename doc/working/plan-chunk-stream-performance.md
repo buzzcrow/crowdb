@@ -176,8 +176,9 @@ adaptation rather than a new transport or storage engine.
   failure values pass 16 protocol tests. The Rust and C++ schemas are generated
   by their ordinary build paths, with no generated-file edits.
 - The semantic client propagates synchronization through contiguous and bounded
-  view requests. Old peers use explicit fsync; matching peers require one write
-  request/reply. Five actual TCP cases cover no early completion, missing-proof errors, buffered behavior, ordered view splitting and typed write/flush
+  view requests. Matching peers require one write request/reply; missing
+  synchronization proof fails without a fallback request. Five actual TCP cases
+  cover no early completion, missing-proof errors, buffered behavior, ordered view splitting and typed write/flush
   failures without extra requests.
 - The actual C++ write handler retains disk/connection/payload through ordered
   write and flush. Nine new delayed/failure/lifetime/ordering tests pass; all
@@ -225,7 +226,7 @@ adaptation rather than a new transport or storage engine.
   artifacts. Old-format support from that milestone is being deleted under T04.
   Current remaining group integration is not claimed complete.
 
-## Object reader compatibility evidence (partial T08)
+## Object reader framing evidence (partial T08)
 
 - Ordinary object reads validate one canonical revision-2 geometry from compact
   locations and actual verified headers. Bounded read windows and credits retain
@@ -537,7 +538,7 @@ adaptation rather than a new transport or storage engine.
   fail, a malformed 128 KiB body is not decoded by key enumeration, and a damaged
   key fails closed. Full Stream/clippy/fmt gates pass with the atomic-root tests
   below.
-- This is an inventory primitive, not completed collection. Pins, root retirement,
+- This is an inventory primitive, not completed collection. Root retirement,
   chunk spans, reachability and control-revision-conditional deletion still need
   implementation. Enumeration never authorizes deletion on its own.
 
@@ -559,6 +560,33 @@ adaptation rather than a new transport or storage engine.
   all-target clippy and Rust fmt pass. Logs are
   `directory-{root-atomic-tests,retention-full-stream,retention-clippy,
   retention-fmt}.log` under `r244-chunk-stream/`.
+
+## Exact root pins (partial T13/T19)
+
+- Current-format pin records contain a full bounded directory head and fixed
+  needed/captured interval, not an old-generation conversion or compatibility
+  descriptor. Keys use tag `0x0019`; records are at most 1 KiB with 512 identities
+  per stream. Key scans remain bounded to 128 entries. No new production lock.
+- New identities require an exact retained published root. Existing identical
+  pins and live reader renewal survive retirement of the root-index row;
+  retained page roots remain in the pin descriptor. Durable consumers have no
+  expiry; requested reader leases are at most 60 seconds and cannot renew after
+  expiry. Stale snapshots cannot release or renew superseding pin revisions,
+  including identity reuse. Lifecycle writes cannot recreate missing control.
+- Pin creation/renewal/release mutate retention control in the same CAS batch.
+  Control is captured before root validation/inventory, so concurrent root
+  retirement or new protection invalidates a stale cleanup CAS. Missing roots,
+  expired pins, conflicting identities and full budgets fail explicitly.
+- Three protocol and six shared Memory/actual-KV tests pass, including root
+  retirement, rejected stale cleanup, exact old EOF, revision/ABA, expiry,
+  bounded admission and missing-control fencing. An initial retirement fixture
+  incorrectly built a successor from an empty root; it now extends its actual
+  base. Full Protocol/Stream: 361 passed, zero ignored; strict all-target clippy
+  and Rust fmt pass. Logs: `root-pin-{tests2,full-suite,clippy}.log`.
+- This is metadata state, not a read IO lease or completed reclamation. T19 must
+  enforce local conservative deadlines and background renewal. T13 must add
+  expiry/read-IO grace, retirement policy, sealed spans, page/data reachability
+  and bounded conditional cleanup before enabling deletion.
 
 ## Remaining bounded-publication wiring
 

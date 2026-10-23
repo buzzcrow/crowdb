@@ -439,6 +439,24 @@ constrain data and metadata reclamation. Read-only reopening is not a substitute
 for a pin. Trim and cleanup never remove a byte, chunk, or shared page required
 by a retained view.
 
+Each pin stores a complete bounded directory head and a fixed interval
+`[needed_offset, captured_tail]` within that head's visible bounds. Retiring an
+epoch/generation root-index record does not discard an existing pin's view.
+Creating a new pin identity requires that exact published root to remain in
+the index; idempotent acquisition of an existing identical pin and renewal of
+a live reader pin do not require that index record. Pins protect the head's
+directory pages and only their captured interval for data retention.
+
+Pin records are bounded to 1 KiB and 512 identities per stream. Durable consumer
+pins have no expiry; reader pins have at most a 60-second requested lifetime.
+Renewal must extend a still-live deadline. Creation, renewal and release update
+the retention control in the same CAS batch, ordered against root retirement
+and cleanup. A snapshot carries its pin-row revision; stale renewal or release
+cannot affect a renewed pin or a reused identity. Loading metadata does not
+grant an IO lease: readers separately enforce conservative local deadlines,
+and collection must allow clock skew and outstanding read IO before removing
+expired protection. Expiry cannot be renewed into a new live view.
+
 ## 8. Bounds and Observation
 
 Defaults bound admission at 1,024 requests and 64 MiB, a batch at 64 requests

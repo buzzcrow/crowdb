@@ -12,7 +12,12 @@ use crate::frame::ChunkLocation;
 
 pub(super) mod bounded;
 mod codec;
+mod pin;
 mod publication;
+pub use pin::{
+    decode_stream_root_pin, encode_stream_root_pin, StreamRootPin, StreamRootPinId, MAX_STREAM_ROOT_PINS,
+    MAX_STREAM_ROOT_PIN_LEASE_MS,
+};
 mod validation;
 
 pub use codec::{decode_stream_directory_page, encode_stream_directory_page, stream_directory_page_id};
