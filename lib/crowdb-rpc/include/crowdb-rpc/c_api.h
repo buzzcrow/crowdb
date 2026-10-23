@@ -42,12 +42,21 @@ uint32_t            crowdb_rpc_buffer_len(crowdb_rpc_buffer_t buf);
 uint8_t *crowdb_rpc_buffer_mutable_data(crowdb_rpc_buffer_t handle);
 int      crowdb_rpc_buffer_commit(crowdb_rpc_buffer_t handle, uint32_t initialized_length);
 uint32_t crowdb_rpc_buffer_capacity(crowdb_rpc_buffer_t buf);
-uint64_t crowdb_rpc_buffer_request_id(crowdb_rpc_buffer_t buf);
-uint64_t crowdb_rpc_buffer_stream_id(crowdb_rpc_buffer_t buf);
-uint64_t crowdb_rpc_buffer_sequence(crowdb_rpc_buffer_t buf);
-uint64_t crowdb_rpc_buffer_logical_offset(crowdb_rpc_buffer_t buf);
-uint32_t crowdb_rpc_buffer_registration_id(crowdb_rpc_buffer_t buf);
-int      crowdb_rpc_buffer_ownership(crowdb_rpc_buffer_t buf);
+// Canonical backing capacity, independent of a slice's logical view size.
+// Zero means unknown external storage or an invalid/null handle. Allocation
+// identity is opaque and meaningful only while a backing owner is retained.
+uint32_t crowdb_rpc_buffer_allocation_capacity(crowdb_rpc_buffer_t handle);
+uint64_t crowdb_rpc_buffer_allocation_id(crowdb_rpc_buffer_t handle);
+uint32_t crowdb_rpc_buffer_allocation_offset(crowdb_rpc_buffer_t handle);
+// Retains only the canonical allocation's initialized span, including any
+// wire framing. Ordinary logical payload access remains on the original view.
+crowdb_rpc_buffer_t crowdb_rpc_buffer_allocation_ref(crowdb_rpc_buffer_t handle);
+uint64_t            crowdb_rpc_buffer_request_id(crowdb_rpc_buffer_t buf);
+uint64_t            crowdb_rpc_buffer_stream_id(crowdb_rpc_buffer_t buf);
+uint64_t            crowdb_rpc_buffer_sequence(crowdb_rpc_buffer_t buf);
+uint64_t            crowdb_rpc_buffer_logical_offset(crowdb_rpc_buffer_t buf);
+uint32_t            crowdb_rpc_buffer_registration_id(crowdb_rpc_buffer_t buf);
+int                 crowdb_rpc_buffer_ownership(crowdb_rpc_buffer_t buf);
 void crowdb_rpc_buffer_set_metadata(crowdb_rpc_buffer_t buf, uint64_t request_id, uint64_t stream_id, uint64_t sequence,
                                     uint64_t logical_offset, uint32_t registration_id);
 int  crowdb_rpc_buffer_transition(crowdb_rpc_buffer_t buf, int from, int to);

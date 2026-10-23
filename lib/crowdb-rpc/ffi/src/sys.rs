@@ -210,6 +210,10 @@ extern "C" {
         require_registered: c_int,
     ) -> crowdb_rpc_buffer_t;
     pub fn crowdb_rpc_buffer_capacity(buf: crowdb_rpc_buffer_t) -> u32;
+    pub fn crowdb_rpc_buffer_allocation_capacity(buf: crowdb_rpc_buffer_t) -> u32;
+    pub fn crowdb_rpc_buffer_allocation_id(buf: crowdb_rpc_buffer_t) -> u64;
+    pub fn crowdb_rpc_buffer_allocation_offset(buf: crowdb_rpc_buffer_t) -> u32;
+    pub fn crowdb_rpc_buffer_allocation_ref(buf: crowdb_rpc_buffer_t) -> crowdb_rpc_buffer_t;
     pub fn crowdb_rpc_buffer_request_id(buf: crowdb_rpc_buffer_t) -> u64;
     pub fn crowdb_rpc_buffer_stream_id(buf: crowdb_rpc_buffer_t) -> u64;
     pub fn crowdb_rpc_buffer_sequence(buf: crowdb_rpc_buffer_t) -> u64;

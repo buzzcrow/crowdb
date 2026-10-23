@@ -31,10 +31,12 @@ crowdb_rpc_buffer_t wrap_control(Frame &frame)
     return handle;
 }
 
-crowdb_rpc_buffer_t wrap_data(Buffer *buffer)
+crowdb_rpc_buffer_t wrap_data(Buffer *buffer, uint64_t request_id)
 {
     if (buffer == nullptr || buffer->len == 0)
         return nullptr;
+    buffer->set_metadata(request_id, buffer->stream_id, buffer->sequence, buffer->logical_offset,
+                         buffer->registration_id);
     auto handle = std::make_unique<crowdb_rpc_buffer_s>();
     handle->buf = buffer->ref_clone();
     return handle->buf == nullptr ? nullptr : handle.release();
@@ -51,7 +53,7 @@ void frame_to_c_handles(Frame *frame, crowdb_rpc_buffer_t *out_ctrl, crowdb_rpc_
     // Budget-owned controls move their exact storage and admission into the
     // external owner. Ordinary controls preserve their existing copied handle.
     *out_ctrl = wrap_control(*incoming);
-    *out_data = wrap_data(incoming->data_buf);
+    *out_data = wrap_data(incoming->data_buf, incoming->request_id);
 }
 
 void invoke_c_handler(crowdb_rpc_handler_fn callback, void *user_data, Frame *request, Connection *conn)

@@ -497,8 +497,8 @@ unsafe extern "C" fn on_complete_cb(
     let result = if status == sys::CROWDB_RPC_OK {
         Ok(Response {
             request_id,
-            control: standalone_buffer(control),
-            data: receive_data_buffer(data),
+            control: owned_completion_buffer(control),
+            data: owned_completion_buffer(data),
         })
     } else {
         Err(RpcError::from_status(status))
@@ -507,26 +507,11 @@ unsafe extern "C" fn on_complete_cb(
     let _ = tx.send((result, io_thread_ts));
 }
 
-fn standalone_buffer(handle: sys::crowdb_rpc_buffer_t) -> Option<Buffer> {
-    if handle.is_null() {
-        return None;
-    }
-    let pooled = Buffer::from_raw(handle);
-    let bytes = pooled.bytes().to_vec();
-    Some(Buffer::from_bytes(&bytes))
-}
-
-fn receive_data_buffer(handle: sys::crowdb_rpc_buffer_t) -> Option<Buffer> {
-    if handle.is_null() {
-        return None;
-    }
-    let mut buffer = Buffer::from_raw(handle);
-    if buffer.detach() {
-        Some(buffer)
-    } else {
-        let copy = Buffer::from_bytes(buffer.bytes());
-        Some(copy)
-    }
+fn owned_completion_buffer(handle: sys::crowdb_rpc_buffer_t) -> Option<Buffer> {
+    // frame_to_c_handles transfers owned references. System allocations retain
+    // their pool State; registered views retain their arena and final-release
+    // recycler. Control owners also retain logical assembly admission.
+    (!handle.is_null()).then(|| Buffer::from_raw(handle))
 }
 
 // Rust-side histograms (registered with the Rust MetricsRegistry::global(),

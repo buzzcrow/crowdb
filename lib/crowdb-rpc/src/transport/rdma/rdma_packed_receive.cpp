@@ -39,6 +39,7 @@ bool RdmaTransport::release_completed_packed_receive(WorkRequest *work, const ib
         return true;
     }
     queue.charge_receive(wc.byte_len, aggregate.count);
+    slot->len              = wc.byte_len - RDMA_CONTROL_CAPACITY;
     auto connection        = std::move(work->conn);
     auto pools             = std::move(work->pools);
     slot->last_release_cb  = &RdmaTransport::repost_frame_release;

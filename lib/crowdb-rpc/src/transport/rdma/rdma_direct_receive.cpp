@@ -128,6 +128,7 @@ bool RdmaTransport::release_completed_direct_receive(WorkRequest *work, const ib
         return true;
     }
     queue.charge_receive(completion.byte_len);
+    slot->len              = header.data_size;
     auto connection        = std::move(work->conn);
     auto pools             = std::move(work->pools);
     slot->last_release_cb  = &RdmaTransport::repost_frame_release;

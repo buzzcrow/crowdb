@@ -229,10 +229,17 @@ transport acceptance alone cannot establish SDK completion.
 - Basic bucket and point object lookup/delete orchestration is extracted into
   `S3Executor`, and HTTP delegates to it. Streaming GET/PUT, copy, multipart,
   typed native results and real HTTP/native parity are not complete.
-- The existing FFI completion still has detach/copy branches. The initial
-  `BufferLease` tests establish its own storage/credit behavior only; they do
-  not establish end-to-end native RDMA receive ownership or actual-capacity
-  propagation through DiskIO/ChunkIO. Phase 4 must complete that audit and path.
+- FFI completions now retain their owned native handles, including logical
+  control admission and receive recycling. Additive ABI queries expose the
+  canonical allocation identity, actual capacity, view offset and initialized
+  span; unknown external owners never substitute their view length for capacity.
+  `OwnedPayload` preserves this metadata across slices and logical credit owners.
+  DiskIO/ChunkIO propagation and SDK accounting remain outstanding.
+- Explicit shared-HCA FFI acceptance with two posted receives retains both
+  response payloads, observes the third response remain pending, releases one
+  and completes the third. Held data stays readable after connection/server
+  destruction. The complete FFI suite/clippy and native RPC suite pass (211
+  native cases, three explicitly unavailable or separately gated cases).
 - Shared GET now offers typed half-open ranges and `next_verified`, with sticky
   storage/length/integrity failures. Empty full reads also verify their checksum.
   The legacy HTTP `next_chunk` remains fused after its first terminal result.

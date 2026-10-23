@@ -46,6 +46,7 @@ bool RdmaTransport::release_completed_receive(WorkRequest *work, const ibv_wc &w
         return true;
     }
     queue.charge_receive(wc.byte_len, aggregate.count);
+    work->slot->len = wc.byte_len;
 
     auto  connection       = std::move(work->conn);
     auto  pools            = std::move(work->pools);

@@ -24,6 +24,13 @@ pub struct BufferLeaseMetadata {
     pub ownership: BufferOwnership,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BufferAllocationMetadata {
+    pub identity: u64,
+    pub capacity: u32,
+    pub offset: u32,
+}
+
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum BufferOwnership {
@@ -221,6 +228,30 @@ impl Buffer {
                 ownership: BufferOwnership::from_raw(sys::crowdb_rpc_buffer_ownership(self.handle)),
             }
         }
+    }
+
+    /// Returns canonical allocation information when native ownership knows
+    /// the backing capacity. External opaque Bytes wrappers may return None.
+    #[must_use]
+    pub fn allocation_metadata(&self) -> Option<BufferAllocationMetadata> {
+        // SAFETY: the borrowed Buffer retains its native handle and parents.
+        let capacity = unsafe { sys::crowdb_rpc_buffer_allocation_capacity(self.handle) };
+        (capacity != 0).then(|| BufferAllocationMetadata {
+            // SAFETY: identity is read from that same retained allocation.
+            identity: unsafe { sys::crowdb_rpc_buffer_allocation_id(self.handle) },
+            capacity,
+            // SAFETY: the same handle retains the initialized parent span.
+            offset: unsafe { sys::crowdb_rpc_buffer_allocation_offset(self.handle) },
+        })
+    }
+
+    /// Retains the canonical initialized allocation span for shared accounting.
+    /// It can include framing; object data remains the original logical view.
+    #[must_use]
+    pub fn allocation_view(&self) -> Option<Self> {
+        // SAFETY: native code validates and retains the borrowed parent.
+        let handle = unsafe { sys::crowdb_rpc_buffer_allocation_ref(self.handle) };
+        (!handle.is_null()).then(|| Self::from_raw(handle))
     }
 
     pub fn ownership(&self) -> BufferOwnership {
