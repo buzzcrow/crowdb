@@ -33,11 +33,11 @@ impl MultipartRepository {
         part: &MultipartPartRecord,
         now_ms: u64,
     ) -> Result<Option<MultipartPartRecord>, MultipartRepositoryError> {
+        let mut current = self
+            .load(session)
+            .await?
+            .ok_or(MultipartRepositoryError::Conflict)?;
         loop {
-            let current = self
-                .load(session)
-                .await?
-                .ok_or(MultipartRepositoryError::Conflict)?;
             if current.pending.is_some() {
                 self.settle_pending_part(&current).await?;
             } else if let Some(saved) = self.reserve_stream_part(&current, part, now_ms).await? {
@@ -50,6 +50,7 @@ impl MultipartRepository {
             if latest.revision == current.revision {
                 return Ok(None);
             }
+            current = latest;
             // Another publication advanced the durable fence. Re-evaluate our
             // part against that state without uploading its bytes again.
         }
@@ -238,24 +239,22 @@ impl MultipartRepository {
         let mutation = match current {
             Some(before) => {
                 self.store
-                    .compare_exchange(key.clone(), before.encode()?, value.clone())
+                    .compare_exchange_observed(key.clone(), before.encode()?, value.clone())
                     .await
             }
             None => self
                 .store
                 .put_if_absent(key.clone(), value.clone())
                 .await
-                .map(|outcome| matches!(outcome, PutIfAbsentOutcome::Inserted { .. })),
+                .map(|outcome| match outcome {
+                    PutIfAbsentOutcome::Inserted { .. } => (true, None),
+                    PutIfAbsentOutcome::Existing(value) => (false, Some(value)),
+                }),
         };
         match mutation {
-            Ok(true) => Ok(()),
-            Ok(false) => {
-                if self
-                    .store
-                    .get(key)
-                    .await?
-                    .is_some_and(|entry| entry.value == value)
-                {
+            Ok((true, _)) => Ok(()),
+            Ok((false, observed)) => {
+                if observed.is_some_and(|observed| observed.value == value) {
                     Ok(())
                 } else {
                     Err(MultipartRepositoryError::InvalidPart)

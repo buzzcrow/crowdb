@@ -42,7 +42,7 @@ impl DatasetAuthority {
         self.persist_attempt(identity, attempt).await?;
         match state.draft.record.progress {
             DraftProgress::Prepared { .. } => {
-                self.renew_composition_source(identity, &state.draft).await?;
+                self.check_composition_source(identity, &state.draft).await?;
                 let mut next = state.clone();
                 next.edit = None;
                 next.draft.record.progress = DraftProgress::Committing {

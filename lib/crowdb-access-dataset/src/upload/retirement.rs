@@ -11,36 +11,30 @@ impl DatasetUploads {
     /// Returns unknown uploads, corrupt metadata, bounded retirement capacity or storage failures.
     pub async fn retire_owner(&self, location: &[u8], owner: OperationId) -> Result<(), UploadError> {
         OperationId::from_bytes(owner.as_bytes()).map_err(|_| UploadError::Invalid)?;
-        self.register(location).await?;
+        let mut stored = self.store.get(location).await?.ok_or(UploadError::NotFound)?;
         for _ in 0..16 {
-            let stored = self.store.get(location).await?.ok_or(UploadError::NotFound)?;
             let mut record = decode_session(&stored.bytes)?;
             if record.retired_owners.binary_search(&owner).is_ok() {
-                if !record.owners.is_empty() || record.cleanup_complete {
-                    self.untrack(location).await?;
-                }
                 return Ok(());
             }
             if record.retired_owners.len() >= 4096 {
                 return Err(UploadError::Capacity);
             }
-            record.version = 3;
+            record.version = 4;
             record.retired_owners.push(owner);
             record.retired_owners.sort();
             record.owners.retain(|current| *current != owner);
             if record.owners.is_empty() && record.state == UploadState::Claimed {
                 record.state = UploadState::Complete;
             }
-            if matches!(
-                self.store
-                    .compare_exchange(location, Some(&stored.bytes), &encode(&record)?)
-                    .await?,
-                CasOutcome::Applied(_)
-            ) {
-                if !record.owners.is_empty() || record.cleanup_complete {
-                    self.untrack(location).await?;
-                }
-                return Ok(());
+            match self
+                .store
+                .compare_exchange(location, Some(&stored.bytes), &encode(&record)?)
+                .await?
+            {
+                CasOutcome::Applied(_) => return Ok(()),
+                CasOutcome::Conflict(Some(value)) => stored = value,
+                CasOutcome::Conflict(None) => return Err(UploadError::NotFound),
             }
         }
         Err(UploadError::Pending)

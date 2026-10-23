@@ -78,7 +78,7 @@ impl DatasetAuthority {
         if expected_page < current.preview.next_page || current.preview.complete {
             return Ok(current.preview);
         }
-        self.renew_composition_source(identity, &state.draft).await?;
+        self.check_composition_source(identity, &state.draft).await?;
         let step_key = key::page(b"DS\0CW\0", identity, operation, expected_revision, expected_page)?;
         let step = if let Some(value) = self.composition_get(&step_key).await? {
             crate::split::codec::decode::<Step>(&value.bytes)?

@@ -15,6 +15,7 @@ pub struct TestAccessStore {
     inner: dataset_store::TestDatasetStore,
     pub writes: AtomicU64,
     pub reads: AtomicU64,
+    pub upload_conflicts: AtomicU64,
 }
 impl TestAccessStore {
     pub fn shared() -> Arc<Self> {
@@ -50,6 +51,21 @@ impl DatasetStore for TestAccessStore {
         value: &[u8],
     ) -> Result<CasOutcome, StoreError> {
         self.writes.fetch_add(1, Ordering::Relaxed);
+        if self
+            .upload_conflicts
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+            .is_ok()
+        {
+            let old = self.inner.get(key).await?.expect("upload exists");
+            let mut record: serde_json::Value = serde_json::from_slice(&old.bytes).unwrap();
+            record["expires_at"] = (record["expires_at"].as_u64().unwrap() + 1).into();
+            assert!(matches!(
+                self.inner
+                    .compare_exchange(key, Some(&old.bytes), &serde_json::to_vec(&record).unwrap())
+                    .await?,
+                CasOutcome::Applied(_)
+            ));
+        }
         self.inner.compare_exchange(key, expected, value).await
     }
     async fn delete(&self, key: &[u8]) -> Result<(), StoreError> {

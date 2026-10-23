@@ -33,7 +33,7 @@ impl DatasetAuthority {
         if !matches!(state.draft.record.progress, DraftProgress::Evaluated { .. }) {
             return Err(CompositionError::Frozen);
         }
-        self.renew_composition_source(identity, &state.draft).await?;
+        self.check_composition_source(identity, &state.draft).await?;
         let mut preparation = if let Some(preparation) = &state.draft.preparation {
             preparation.clone()
         } else {

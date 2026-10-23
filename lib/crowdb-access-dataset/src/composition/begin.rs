@@ -3,7 +3,7 @@
 
 use super::{
     key,
-    state::{budget, now, CompositionState},
+    state::{budget, CompositionState},
     CompositionDraft, CompositionError, CompositionInput, CompositionRecord, CompositionSource,
     DraftProgress,
 };
@@ -69,7 +69,7 @@ impl DatasetAuthority {
             state.draft.record.progress,
             DraftProgress::Published { .. } | DraftProgress::Abandoned
         ) {
-            self.renew_composition_source(identity, &state.draft).await?;
+            self.check_composition_source(identity, &state.draft).await?;
         }
         Ok(state.draft)
     }
@@ -146,7 +146,7 @@ impl DatasetAuthority {
                 source: input.source.clone(),
                 revision: 1,
                 edit_pages: 0,
-                source_lease_deadline: now().saturating_add(3600),
+                source_lease_deadline: 0,
                 progress: DraftProgress::Editing,
             },
             schema,
@@ -155,7 +155,7 @@ impl DatasetAuthority {
             preparation: None,
         };
         self.validate_composition_splits(identity, &draft).await?;
-        self.renew_composition_source(identity, &draft).await?;
+        self.check_composition_source(identity, &draft).await?;
         let state = CompositionState {
             uploads: None,
             draft,

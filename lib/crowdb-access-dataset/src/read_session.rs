@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Durable scoped reads. Fetch records an issued cursor; only acknowledgement advances it.
+//! Durable scoped progress. Creation and acknowledgement prepare the next token; fetch is read-only.
 
 mod pages;
 mod planning;
@@ -65,6 +65,12 @@ struct SessionRecord {
     closed: bool,
 }
 impl SessionRecord {
+    fn prepare_next(&mut self) {
+        self.version = 3;
+        let end = self.position.saturating_add(self.batch_size).min(self.count);
+        self.issued
+            .get_or_insert_with(|| (OperationId::random().to_string(), end));
+    }
     fn public(&self) -> ReadSession {
         ReadSession {
             id: self.id.to_string(),
@@ -98,7 +104,7 @@ fn encode(record: &SessionRecord) -> Result<Vec<u8>, AuthorityError> {
 }
 fn decode(bytes: &[u8]) -> Result<SessionRecord, AuthorityError> {
     let record: SessionRecord = bincode::deserialize(bytes).map_err(|_| AuthorityError::Corrupt)?;
-    if record.version != 2 {
+    if !matches!(record.version, 2 | 3) || (record.version == 3 && record.issued.is_none()) {
         return Err(AuthorityError::Corrupt);
     }
     Ok(record)

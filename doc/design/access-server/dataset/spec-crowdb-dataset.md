@@ -308,7 +308,10 @@ remain protected until every candidate/Snapshot owner is released. Unowned
 sessions expire; physical cleanup may remain pending and MUST report that state.
 
 Public read handles bind the resolved immutable Snapshot, selection, projection,
-shuffle and worker partition. Fetch MUST NOT acknowledge consumption. The caller
+shuffle and worker partition. Creation and acknowledgement prepare the next token.
+Fetch MUST NOT acknowledge consumption or persist activity. Creation, explicit
+resume and acknowledgement refresh the 60-second admission deadline; fetching
+alone does not extend it. The caller
 explicitly acknowledges an issued next cursor; repeating that acknowledgement
 is idempotent. Progress inspection MUST NOT fetch another batch. Resume restores
 acknowledged progress. Closing one handle MUST NOT cancel another. Worker

@@ -99,6 +99,7 @@ pub struct CompositionRecord {
     pub source: CompositionSource,
     pub revision: u64,
     pub edit_pages: u64,
+    /// Compatibility field; new drafts have no source activity lease and use zero.
     pub source_lease_deadline: u64,
     pub progress: DraftProgress,
 }

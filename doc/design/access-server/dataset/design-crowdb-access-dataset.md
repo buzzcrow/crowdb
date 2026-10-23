@@ -227,6 +227,17 @@ pass integrity checks. Readable but unconfirmed bytes remain pending. A fenced
 abandoned allocation is reclaimed before replacing it under the same part ID.
 Completion verifies every part and the whole declared MD5 with bounded buffers.
 
+Expiry scans bounded pages of upload authorities directly. Each caller retains
+its scan cursor locally; restart repeats the scan and loses no cleanup obligation.
+Independent upload creation writes only its own authority. No shared registry tail,
+registration generation, registry fence or durable scan cursor participates in
+creation, part upload or owner release. Corrupt/failed entries are reported and
+retried next cycle without starving subsequent records. Legacy registry pages are
+ignored. Claimed payloads and terminal owner revocation remain authoritative;
+removing an owner cannot release another owner's bytes. Accepted-part index pages
+remain bounded to 128 entries to avoid a point read for every part during listing
+and completion.
+
 Prepare validates the complete current sample membership, schema, parent and
 operation token, then persists an invisible candidate and claims completed
 uploads. Omitted samples disappear; surviving samples inherit omitted optional
@@ -250,12 +261,16 @@ partition execute before fetching payloads. Projection walks explicit ancestry
 only until all requested fields are resolved. Plans admit at most 100000 IDs;
 metadata is capped at 8 MiB and selection pages contain at most 1024 IDs.
 
-Fetching issues a plan-bound opaque next cursor without advancing acknowledged
-progress. Repeated fetches replay that batch. Acknowledgement CAS-advances only
-its issued cursor and is idempotent; progress inspection performs no payload
-read. Resume restores acknowledged progress. Explicit close affects only that
-handle; a disconnected handle expires after 60 seconds and can resume while its
-Snapshot remains available.
+Creation and acknowledgement persist the next plan-bound opaque token together
+with progress. Fetch reads that token and the immutable ID pages without any
+mutation or activity renewal. Repeated fetches replay the same batch. Acknowledgement
+CAS-advances only the prepared token and is idempotent; progress inspection performs
+no payload read. Creation, acknowledgement and explicit resume set a 60-second
+admission deadline; an expired handle resumes at acknowledged progress while its
+Snapshot remains available. Explicit close affects only that handle. Stream pulls
+check its closed state to preserve remote cancellation; they do not update it.
+CAS conflicts reuse the returned record, while identical resume/close operations
+need no mutation. Legacy sessions without a prepared token acquire one once.
 
 The public binary response streams a bounded JSON header, integrity-checked
 payload frames, field terminators and a batch terminator. Success also requires
@@ -362,12 +377,12 @@ Head envelopes decode legacy versions and use version 3 for commit-attempt
 markers. Access envelopes decode versions 1 through 4 and write version 4 with
 reclaim ownership, terminal deletion, grace deadline, cleanup target and completion.
 Legacy reader activity is ignored; all authority writers must use this contract.
-Upload sessions decode version 2; permanent owner retirement upgrades a session to version 3 so an older writer
-cannot ignore revocation. This metadata upgrade is one-way:
-do not downgrade an upgraded authority or run old and new authority writers
-against the same Dataset store. Immutable Dataset/Snapshot/Manifest encodings
-remain compatible. Upload registry pages also decode the initial array form and
-write generation-tagged entries. Private read-session progress is version 2;
+Upload sessions decode versions 2 through 4 and write version 4 without registry
+fields. Permanent retired-owner identities still reject delayed claims. This
+metadata upgrade is one-way: do not downgrade an upgraded authority or mix old
+and new authority writers against the same Dataset store. Immutable Dataset/Snapshot/Manifest encodings
+remain compatible. Private read-session progress decodes version 2 and writes
+version 3 with a prepared next token;
 public API versions do not expose these private persistence formats.
 
 Hot-path synchronization uses atomics, immutable owned views, CAS and bounded

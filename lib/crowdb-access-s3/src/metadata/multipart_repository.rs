@@ -161,9 +161,13 @@ impl MultipartRepository {
         let key = self.session_key(previous);
         let expected = previous.encode()?;
         let value = next.encode()?;
-        match self.store.compare_exchange(key, expected, value).await {
-            Ok(true) => Ok(true),
-            Ok(false) => Ok(self.load(next).await?.as_ref() == Some(next)),
+        match self
+            .store
+            .compare_exchange_observed(key, expected, value.clone())
+            .await
+        {
+            Ok((true, _)) => Ok(true),
+            Ok((false, observed)) => Ok(observed.is_some_and(|observed| observed.value == value)),
             Err(error) => {
                 if self.load(next).await?.as_ref() == Some(next) {
                     Ok(true)

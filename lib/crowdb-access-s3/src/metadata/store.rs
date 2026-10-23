@@ -137,12 +137,24 @@ impl ChunkKvMetadataStore {
         expected: Vec<u8>,
         value: Vec<u8>,
     ) -> Result<bool, MetadataStoreError> {
-        let (applied, _, _) = mutation_result(
+        Ok(self.compare_exchange_observed(key, expected, value).await?.0)
+    }
+
+    /// Preserves the sequencer's conflict observation for retry and replay checks.
+    /// # Errors
+    /// Returns a client, server, or response-shape failure.
+    pub async fn compare_exchange_observed(
+        &self,
+        key: Vec<u8>,
+        expected: Vec<u8>,
+        value: Vec<u8>,
+    ) -> Result<(bool, Option<RpcValue>), MetadataStoreError> {
+        let (applied, _, observed) = mutation_result(
             self.client
                 .compare_exchange(key, RpcCompareCondition::Value(expected), value)
                 .await?,
         )?;
-        Ok(applied)
+        Ok((applied, observed))
     }
 
     /// Checks whether a bucket currently contains any visible object.

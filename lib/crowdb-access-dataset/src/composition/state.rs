@@ -125,11 +125,15 @@ impl DatasetAuthority {
                 marker: marker.clone(),
                 draft: state.draft.clone(),
             };
-            self.put_composition(
-                &key::edit_receipt(identity, state.draft.record.operation, marker.id)?,
-                &crate::split::codec::encode(&receipt)?,
-            )
-            .await?;
+            let key = key::edit_receipt(identity, state.draft.record.operation, marker.id)?;
+            let bytes = crate::split::codec::encode(&receipt)?;
+            if let Some(existing) = self.composition_get(&key).await? {
+                if existing.bytes != bytes {
+                    return Err(CompositionError::Conflict);
+                }
+            } else {
+                self.put_composition(&key, &bytes).await?;
+            }
         }
         Ok(())
     }
@@ -164,7 +168,7 @@ impl DatasetAuthority {
             CasOutcome::Conflict(_) => Err(CompositionError::Conflict),
         }
     }
-    pub(super) async fn renew_composition_source(
+    pub(super) async fn check_composition_source(
         &self,
         identity: &DatasetIdentity,
         draft: &CompositionDraft,

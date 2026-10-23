@@ -28,61 +28,61 @@ items after recording their verified outcome in the owning design.
 
 ## Execution
 
-- [ ] **Dataset durable read sessions**: `DatasetSessions::{start,next,resume,
-  acknowledge,close}` persists bindings, selected IDs, issued tokens, activity
-  deadlines and cursor changes. `next` writes even when replaying an already
-  issued batch; streaming checks session state repeatedly. Determine which
-  callers need server-persisted restart/ack semantics and whether the ordinary
-  path can use a snapshot-bound client cursor. Keep explicit acknowledged
-  progress separate from fetching. Files: `lib/crowdb-access-dataset/src/read_session/`,
-  `app/crowdb-access-server/src/dataset/api/{session.rs,batch.rs}`.
-- [ ] **Dataset preparation and scratch journals**: Composition/Split evaluation
-  persists work pages, input revisions, candidate links, cleanup cursors and
-  source activity. Separate unpublished scratch that may expire from committed
-  visibility and shared payload ownership. Measure KV mutations per page and
-  evaluate coarser checkpoints/expiry before removing recovery facts. Files:
-  `lib/crowdb-access-dataset/src/{composition,split,inspection}/`.
-- [ ] **Dataset upload shared session updates**: inspect part progress and owner
-  vectors, registry page updates, registration generations and permanent retired
-  owner lists for contention between independent parts/owners. Preserve digest,
-  durable payload publication and shared-owner safety; evaluate independent part
-  records and delayed orphan cleanup. Files:
-  `lib/crowdb-access-dataset/src/upload/{ownership.rs,retirement.rs,registry.rs}`
-  and upload part/completion implementations.
-- [ ] **Iceberg catalog-wide multipart credits**: every reservation/release
-  changes catalog-wide `sessions`, `reserved_bytes`, and `pending` state through
-  `MultipartAdmission`. Independent uploads share a durable coordination point.
-  Evaluate local bounded admission plus coarse distributed quotas, with explicit
-  allowance for quota overshoot; do not weaken memory limits. Files:
-  `lib/crowdb-access-iceberg/src/file/multipart_credits.rs`,
-  `src/file/multipart_credits/settle.rs`, `src/file/multipart_admission.rs`.
-- [ ] **Iceberg parent namespace admission**: namespace mutations and table
-  lifecycle operations CAS the parent's `pending_operation` and
-  `mutation_revision`, persist before/after payloads and journal phases, then
-  release the marker. Independent child creations can help/wait on each other.
-  Evaluate immutable namespace identities plus deletion marks/grace periods;
-  retain same-name uniqueness and reject publication into retired identities.
-  Files: `lib/crowdb-access-iceberg/src/namespace/admission.rs`,
-  `src/table/lifecycle/admission.rs`, their journals/recovery modules.
-- [ ] **Iceberg publication and GC fencing**: distinguish expected table-head
-  CAS conflicts from extra persisted operation phases, payload copies, admission
-  markers and GC `operation_fence` writes. Audit ordinary commit versus create,
-  rename, delete and recovery separately. Simplify only after counting RPCs and
-  identifying the exact guarantee being removed. Files:
-  `lib/crowdb-access-iceberg/src/commit/`, `src/gc/{admission.rs,fence.rs,worker/}`.
-- [ ] **S3 and Iceberg multipart per-upload contention**: part publication and
-  completion use session generations and CAS. Check whether independent parts
-  rewrite shared session state and whether completion/recovery duplicates
-  persistent work. Keep immutable selected-part identity, integrity and
-  lost-reply recovery. Files:
-  `lib/crowdb-access-s3/src/metadata/multipart_repository/`,
-  `lib/crowdb-access-iceberg/src/file/multipart_repository/`.
-- [ ] **Retry hygiene across authority loops**: classify CAS failure as stale
-  base, business precondition failure or uncertain transport outcome. Where
-  retry is valid, use returned observed state and recompute; remove redundant
-  GETs and no-op writes. A transport retry must retain mutation identity while
-  a new logical mutation must get a new identity. Files: Dataset read-session,
-  publication/upload loops, Iceberg journals and S3 multipart repositories.
+- [~] **Verify and deliver the cleanup**: run affected Dataset/S3/native/HTTP
+  regressions, format/lint, rebuild the same server source, and run the unchanged
+  mixed-size workload with restart acceptance. Retain measured limits; do not
+  infer throughput from mutation counts. Commit the coherent implementation and
+  record acceptance here before removing this task.
+
+## Decisions applied to the inventory
+
+- Dataset sessions retain explicit durable acknowledgement and remote close.
+  Normal fetch/replay is read-only; start/ack prepares the next token. Only
+  start/ack/resume extends admission. Legacy unprepared sessions upgrade once.
+  See [Dataset read flow](../design/access-server/dataset/design-crowdb-access-dataset.md#102-read-flow).
+- Composition/Split retain draft-scoped recovery checkpoints and cleanup fences
+  for exact lost-reply recovery and late-writer exclusion. Source activity leases
+  are absent; receipt helping avoids redundant CAS. No reader-shared journal was
+  found. See [control lifecycle](../design/access-server/dataset/design-dataset-control.md).
+- Dataset uploads no longer register in shared tail/pages or persist a scan
+  cursor. Expiry directly scans upload authorities with local continuation.
+  Permanent owner revocation protects other live snapshots; bounded part indexes
+  remain to avoid one metadata point read per part during listing/completion.
+  See [upload flow](../design/access-server/dataset/design-crowdb-access-dataset.md#101-upload-and-publication-flow).
+- Iceberg catalog-wide credits are legacy recovery only. New streamed sessions
+  already use independent session limits; no foreground reserve/release was
+  found. Keep legacy recovery so old outstanding records can settle.
+- **User decision, 2026-10-24**: nonempty namespace deletion must fail. Keep the
+  parent admission protocol where required by creation/rename/drop recovery;
+  do not replace it with cascading deletion. Ordinary table creation already
+  avoids a parent authority mutation. See [Iceberg authority](../design/access-server/iceberge/design-crowdb-iceberg.md#2-authority-model).
+- Ordinary Iceberg commits already use one head CAS; the legacy multi-phase
+  publisher is not the normal HTTP path. Preserve GC/publication fencing because
+  it prevents deleting referenced files, rather than only interrupting a reader.
+- Iceberg streamed parts already publish independently by part number. S3 keeps
+  upload-local accounting and the completion/part-pointer fence; independent
+  uploads do not contend on one global record. Confirmed S3 CAS conflicts now
+  use returned observed bytes, and part retry retains its latest loaded state.
+  See [S3 data flow](../design/access-server/s3/design-crowdb-access-s3.md).
+- Dataset session and upload-owner retry loops use returned observed state.
+  Confirmed stale-base retries and uncertain transport reconciliation remain
+  distinct. Explicit revision preconditions still return conflict; retrying an
+  application mutation against a new base is not universally valid.
+
+## Files and focused checks
+
+- Dataset: `read_session/`, `upload/`, `composition/`, `split/state.rs`; Access
+  Server Dataset cleanup wiring and publication; Dataset design/spec/OpenAPI.
+- S3: `metadata/store.rs`, `metadata/multipart_repository{.rs,/parts.rs}`;
+  owning design. Iceberg design corrections document existing foreground paths.
+- Cost regressions: `session_cost_test`, `draft_cost_test`,
+  `upload_registry_test`; lifecycle regressions retain restart, shared-owner,
+  lost-response, invalid-content and cancellation assertions.
+- Integration: affected Access Server/native/S3 suites; Iceberg namespace drop
+  and admission tests retain the explicitly selected nonempty-delete contract.
+- Gates: Rust fmt and workspace clippy through Pixi. Full workload and restart
+  use `tools/sdk/dataset_workload.py` with its unchanged defaults and same-source
+  image; physical multi-host acceptance remains in its independent plan.
 
 ## Inspection coverage and exclusions
 

@@ -111,7 +111,8 @@ and after a table has disappeared, without a table-ID reverse index:
   identity; creation can precede name/head publication and rename spans two live
   namespaces. Their selected heads carry the frozen storage identity.
 - Multipart sessions and parts are keyed by upload identity/part number. Catalog
-  admission accounts for all sessions, including unpublished and expired uploads.
+  admission records apply only to legacy credited sessions; new streamed sessions
+  use independent per-session bounds.
   Every session and part carries and validates the full storage identity.
 - Write intents/fences track allocated but potentially unpublished native
   extents, including failed creation. Catalog maintenance scans their bounded
@@ -262,6 +263,10 @@ records retain their exact failure outcome before conditional reservation cleanu
 Recursive creation helping shares one bounded phase budget. Root-admission
 backend identities include the individual creation operation, so a different
 creator cannot reuse a cached no-op CAS result from before its reservation.
+
+Namespace drop must reject a nonempty namespace. Parent admission and its recovery
+markers remain required for that strict lifecycle contract; deletion does not turn
+into an unconditional cascading retirement.
 
 Namespace drop persists a Ready-to-Dropping fence before scanning its two child
 index ranges. Durable cursors advance across bounded pages; reservations are

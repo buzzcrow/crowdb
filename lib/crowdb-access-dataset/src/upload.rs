@@ -3,10 +3,10 @@
 
 //! Durable Dataset uploads with independent immutable part records.
 
+mod expiry;
 mod index;
 mod ownership;
 mod parts;
-mod registry;
 mod retirement;
 mod stream;
 pub use stream::VerifiedUploadPart;
@@ -34,7 +34,7 @@ pub enum UploadError {
     Integrity,
     #[error("upload is awaiting durable storage recovery")]
     Pending,
-    #[error("upload registry capacity exhausted")]
+    #[error("upload ownership capacity exhausted")]
     Capacity,
     #[error("upload storage unavailable: {0}")]
     Storage(String),
@@ -72,11 +72,6 @@ pub struct UploadRecord {
     owners: Vec<OperationId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     retired_owners: Vec<OperationId>,
-    registry_page: Option<u64>,
-    #[serde(default)]
-    registry_generation: Option<OperationId>,
-    #[serde(default)]
-    registry_fence: Option<OperationId>,
     pub cleanup_complete: bool,
 }
 
@@ -135,7 +130,7 @@ impl DatasetUploads {
             return Err(UploadError::Invalid);
         }
         let record = UploadRecord {
-            version: 2,
+            version: 4,
             length,
             part_size,
             md5,
@@ -144,9 +139,6 @@ impl DatasetUploads {
             parts: Vec::new(),
             owners: Vec::new(),
             retired_owners: Vec::new(),
-            registry_page: None,
-            registry_generation: None,
-            registry_fence: None,
             cleanup_complete: false,
         };
         let created = match self
@@ -164,7 +156,6 @@ impl DatasetUploads {
             }
             CasOutcome::Conflict(None) => return Err(UploadError::Conflict),
         };
-        self.register(location).await?;
         if created {
             self.session(location).await
         } else {
@@ -283,8 +274,8 @@ fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, UploadError> {
     serde_json::from_slice(bytes).map_err(|_| UploadError::Integrity)
 }
 fn decode_session(bytes: &[u8]) -> Result<UploadRecord, UploadError> {
-    let record: UploadRecord = decode(bytes)?;
-    if !matches!(record.version, 2 | 3)
+    let mut record: UploadRecord = decode(bytes)?;
+    if !matches!(record.version, 2..=4)
         || (record.version == 2 && !record.retired_owners.is_empty())
         || record.retired_owners.len() > 4096
         || record.retired_owners.windows(2).any(|pair| pair[0] >= pair[1])
@@ -300,6 +291,7 @@ fn decode_session(bytes: &[u8]) -> Result<UploadRecord, UploadError> {
     {
         return Err(UploadError::Integrity);
     }
+    record.version = 4;
     Ok(record)
 }
 fn decode_part(bytes: &[u8]) -> Result<PartEntry, UploadError> {

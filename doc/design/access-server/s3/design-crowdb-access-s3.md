@@ -185,6 +185,13 @@ and raw MD5 reuse the retained candidate under the same idempotency rule as a
 published part; different contents select the next unused generation. Generation
 numbers therefore increase monotonically and can have gaps. Retained candidates
 remain immutable, and accounting changes only through the session fence.
+Session and part-pointer replay checks consume the CAS conflict observation;
+a confirmed conflict does not require another GET to test whether the exact
+proposed bytes were installed. An uncertain transport outcome still requires
+reconciliation. Part publication carries its latest loaded session into the next
+iteration instead of discarding it and reading again. This coordination is scoped
+to one upload and preserves exact staged-byte accounting and completion selection;
+independent uploads share no reservation record.
 
 Completion validates the ordered selected part numbers, raw MD5 values,
 minimum nonfinal size, and current generations. It freezes the selection under

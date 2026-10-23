@@ -62,14 +62,14 @@ impl DatasetAuthority {
             )?;
         }
         self.validate_composition_splits(identity, &next.draft).await?;
-        self.renew_composition_source(identity, &next.draft).await?;
-        next.draft.record.source_lease_deadline = super::state::now().saturating_add(3600);
+        self.check_composition_source(identity, &next.draft).await?;
+        next.draft.record.source_lease_deadline = 0;
         next.encode()?;
         let (old, state) = self
             .register_composition_edit(identity, &old, &state, edit.id)
             .await?;
         next = edited_state(&state, edit, marker)?;
-        next.draft.record.source_lease_deadline = super::state::now().saturating_add(3600);
+        next.draft.record.source_lease_deadline = 0;
         // Edit IDs own immutable pages. Losing a root CAS cannot occupy the winner's ordinal.
         let mut page_key = key::scope(b"DS\0CE\0", identity, operation)?;
         page_key.extend_from_slice(edit.id.as_bytes());

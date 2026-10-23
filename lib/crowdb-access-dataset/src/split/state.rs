@@ -124,11 +124,15 @@ impl DatasetAuthority {
                 marker: marker.clone(),
                 record: state.record.clone(),
             };
-            self.put_split_state(
-                &state_key(b"DS\0SX\0", identity, state.record.operation, Some(marker.id))?,
-                &codec::encode(&receipt)?,
-            )
-            .await?;
+            let key = state_key(b"DS\0SX\0", identity, state.record.operation, Some(marker.id))?;
+            let bytes = codec::encode(&receipt)?;
+            if let Some(existing) = self.split_state_get(&key).await? {
+                if existing.bytes != bytes {
+                    return Err(SplitLifecycleError::Conflict);
+                }
+            } else {
+                self.put_split_state(&key, &bytes).await?;
+            }
         }
         Ok(())
     }

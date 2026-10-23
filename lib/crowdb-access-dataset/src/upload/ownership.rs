@@ -17,8 +17,8 @@ impl DatasetUploads {
         owner: OperationId,
         now: u64,
     ) -> Result<UploadRecord, UploadError> {
+        let mut stored = self.store.get(location).await?.ok_or(UploadError::NotFound)?;
         for _ in 0..16 {
-            let stored = self.store.get(location).await?.ok_or(UploadError::NotFound)?;
             let mut record = decode_session(&stored.bytes)?;
             if record.retired_owners.binary_search(&owner).is_ok() {
                 return Err(UploadError::Conflict);
@@ -37,13 +37,14 @@ impl DatasetUploads {
             record.state = UploadState::Claimed;
             record.owners.push(owner);
             record.owners.sort();
-            if matches!(
-                self.store
-                    .compare_exchange(location, Some(&stored.bytes), &encode(&record)?)
-                    .await?,
-                CasOutcome::Applied(_)
-            ) {
-                return Ok(record);
+            match self
+                .store
+                .compare_exchange(location, Some(&stored.bytes), &encode(&record)?)
+                .await?
+            {
+                CasOutcome::Applied(_) => return Ok(record),
+                CasOutcome::Conflict(Some(value)) => stored = value,
+                CasOutcome::Conflict(None) => return Err(UploadError::NotFound),
             }
         }
         Err(UploadError::Pending)
@@ -53,30 +54,24 @@ impl DatasetUploads {
     /// # Errors
     /// Returns unavailable storage, malformed records or exhausted retries.
     pub async fn release(&self, location: &[u8], owner: OperationId) -> Result<(), UploadError> {
-        self.register(location).await?;
+        let mut stored = self.store.get(location).await?.ok_or(UploadError::NotFound)?;
         for _ in 0..16 {
-            let stored = self.store.get(location).await?.ok_or(UploadError::NotFound)?;
             let mut record = decode_session(&stored.bytes)?;
             if !record.owners.contains(&owner) {
-                if record.state == UploadState::Claimed || record.cleanup_complete {
-                    self.untrack(location).await?;
-                }
                 return Ok(());
             }
             record.owners.retain(|v| *v != owner);
             if record.owners.is_empty() {
                 record.state = UploadState::Complete;
             }
-            if matches!(
-                self.store
-                    .compare_exchange(location, Some(&stored.bytes), &encode(&record)?)
-                    .await?,
-                CasOutcome::Applied(_)
-            ) {
-                if !record.owners.is_empty() {
-                    self.untrack(location).await?;
-                }
-                return Ok(());
+            match self
+                .store
+                .compare_exchange(location, Some(&stored.bytes), &encode(&record)?)
+                .await?
+            {
+                CasOutcome::Applied(_) => return Ok(()),
+                CasOutcome::Conflict(Some(value)) => stored = value,
+                CasOutcome::Conflict(None) => return Err(UploadError::NotFound),
             }
         }
         Err(UploadError::Pending)
@@ -108,6 +103,9 @@ impl DatasetUploads {
     }
 
     async fn cleanup(&self, location: &[u8], record: UploadRecord) -> Result<UploadRecord, UploadError> {
+        if record.cleanup_complete {
+            return self.get(location).await;
+        }
         let entries = self.entries(location, &record).await?;
         let mut complete = true;
         for entry in entries {
@@ -120,6 +118,9 @@ impl DatasetUploads {
                 if current.state != UploadState::Aborted {
                     return Err(UploadError::Conflict);
                 }
+                if current.cleanup_complete {
+                    break;
+                }
                 current.cleanup_complete = true;
                 if matches!(
                     self.store
@@ -127,7 +128,6 @@ impl DatasetUploads {
                         .await?,
                     CasOutcome::Applied(_)
                 ) {
-                    self.untrack(location).await?;
                     break;
                 }
             }

@@ -44,7 +44,7 @@ impl DatasetSessions {
             bincode::serialize(&(identity.key()?, snapshot, &spec)).map_err(|_| AuthorityError::Corrupt)?,
         )
         .into();
-        let record = SessionRecord {
+        let mut record = SessionRecord {
             version: 2,
             id: spec.id,
             fields: spec.fields.clone(),
@@ -58,6 +58,7 @@ impl DatasetSessions {
             deadline: now.saturating_add(TTL),
             closed: false,
         };
+        record.prepare_next();
         self.authority.check_snapshot_readable(identity, snapshot).await?;
         match self
             .authority

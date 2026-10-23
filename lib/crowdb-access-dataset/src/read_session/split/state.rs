@@ -100,6 +100,18 @@ impl DatasetSessions {
         key: &[u8],
         bytes: &[u8],
     ) -> Result<(), AuthorityError> {
+        if let Some(existing) = self
+            .authority
+            .store
+            .get_bounded(key, budget(), &ReadCancellation::new())
+            .await?
+        {
+            return if existing.bytes == bytes {
+                Ok(())
+            } else {
+                Err(AuthorityError::CursorConflict)
+            };
+        }
         match self.authority.store.compare_exchange(key, None, bytes).await? {
             CasOutcome::Applied(_) => Ok(()),
             CasOutcome::Conflict(Some(value)) if value.bytes == bytes => Ok(()),
@@ -138,6 +150,9 @@ impl DatasetSessions {
         next: &PreparationProgress,
     ) -> Result<(), AuthorityError> {
         let bytes = encode(next)?;
+        if old.is_some_and(|old| old.bytes == bytes) {
+            return Ok(());
+        }
         match self
             .authority
             .store

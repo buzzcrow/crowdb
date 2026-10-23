@@ -127,13 +127,19 @@ late write keys, including currently absent keys, rather than deleting a value a
 allowing a stale CAS(None) writer to recreate it. Edit IDs are registered before
 payload writes so failed admissions can also be retired. Small receipt/fence records
 remain after bulk cleanup to preserve replay and non-resurrection guarantees.
+Helping an already stored edit receipt only reads and validates it; retries do not
+submit a doomed CAS for the same bytes. Evaluation journals and cleanup cursors
+are scoped to one draft, not to unrelated readers. They retain exact partial-work
+recovery and prevent a delayed writer from reviving cleaned candidate data.
+Sources use read-only availability checks. The compatibility
+`source_lease_deadline` field is zero for new drafts and edits.
 
 Snapshot reclaim checks latest/stable, retained Snapshots, live children, candidate
 ownership under a terminal owner fence. A durable five-minute grace deadline
 separates deletion admission from cleanup. After that deadline it retires upload owners,
 Snapshot-scoped Split drafts, possible index writes and ordinary metadata in phases.
 Completion reports logical retirement; physical upload deletion remains deferred
-to its registry cleanup. There is no independent committed Split revision pruning.
+to the bounded upload-authority scan. There is no independent committed Split revision pruning.
 
 `GET snapshots/{snapshot}/reclaim` is bounded, read-only observation. It returns
 publication operation identity where available, latest/stable/retained flags,

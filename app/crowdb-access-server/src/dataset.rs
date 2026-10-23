@@ -231,6 +231,7 @@ fn start_cleanup(
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(15));
         let mut after = None;
+        let mut upload_after = None;
         loop {
             tick.tick().await;
             if let Err(error) = authority
@@ -243,7 +244,7 @@ fn start_cleanup(
             {
                 tracing::error!(%error, "Dataset snapshot cleanup failed; durable deletion marks retained for retry");
             }
-            if let Err(error) = uploads.expire(unix_seconds()).await {
+            if let Err(error) = uploads.expire(unix_seconds(), &mut upload_after).await {
                 tracing::error!(%error, "Dataset upload cleanup failed; retaining cleanup records for retry");
             }
         }

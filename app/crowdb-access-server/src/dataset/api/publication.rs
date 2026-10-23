@@ -57,11 +57,6 @@ impl DatasetHttpService {
                 .await
         };
         let _snapshot = result?;
-        if let Some(uploads) = &self.uploads {
-            for location in &locations {
-                uploads.untrack(location).await?;
-            }
-        }
         json(&conversion::snapshot(
             authority.publication_status(identity, operation).await?,
             authority.latest(identity).await?,

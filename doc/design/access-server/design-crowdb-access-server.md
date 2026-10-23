@@ -263,6 +263,25 @@ Frontend query failures do not mutate these backend health observations.
   completion can each resume an idle transfer without changing protocol
   publication authority.
 
+Coordination follows the semantic owner, rather than the Access Server process:
+
+- Dataset read admission is read-only. Explicit session acknowledgements persist
+  application progress; normal fetching and snapshot activity do not. Draft
+  journals recover one draft's partial work and fence late writes after cleanup.
+- Dataset upload expiry scans upload authorities; creation does not enter a
+  global registry. Shared payload owner records prevent one snapshot's retirement
+  from reclaiming another snapshot's bytes.
+- Iceberg streamed uploads use independent session bounds and per-part writes.
+  Catalog-wide credit records are retained only for legacy recovery. Ordinary
+  table commits use one head CAS; GC fences protect committed file reachability.
+- Namespace deletion rejects live children. The associated parent admission and
+  recovery state preserves that strict contract and is not a reader lease.
+- S3 multipart coordinates accounting and exact completion selection within one
+  upload. Ordinary object reads do not register persistent activity.
+- A failed CAS observation can supply the next base for an allowed retry. Unknown
+  transport outcomes require reconciliation with the same mutation identity;
+  application preconditions must not silently move to a newer base.
+
 ## 9. Direction and risks
 
 The main architectural direction is to keep HTTP broadly compatible while

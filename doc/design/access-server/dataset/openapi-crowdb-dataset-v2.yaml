@@ -1915,7 +1915,9 @@ components:
           $ref: '#/components/schemas/SplitPolicy'
         progress:
           $ref: '#/components/schemas/DraftProgress'
-        source_lease_deadline: *composition004
+        source_lease_deadline:
+          <<: *composition004
+          description: Compatibility field; new drafts and edits use zero and hold no source lease.
         preparation:
           anyOf:
           - type: object

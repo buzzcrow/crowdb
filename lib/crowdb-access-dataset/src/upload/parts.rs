@@ -52,9 +52,6 @@ impl DatasetUploads {
         let session = self.session(location).await?;
         let length = data.length();
         validate(&session, index, length, now)?;
-        if session.state == UploadState::Open {
-            self.register(location).await?;
-        }
         let key = part_key(location, index);
         let pending = PartEntry {
             version: 1,

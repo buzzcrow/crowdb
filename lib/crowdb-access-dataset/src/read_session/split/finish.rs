@@ -129,7 +129,7 @@ fn split_session_record(
         .map_err(|_| AuthorityError::Corrupt)?,
     )
     .into();
-    Ok(super::super::SessionRecord {
+    let mut record = super::super::SessionRecord {
         version: 2,
         id: bound.spec.read.id,
         fields: bound.spec.read.fields.clone(),
@@ -142,5 +142,7 @@ fn split_session_record(
         issued: None,
         deadline: now.saturating_add(super::super::TTL),
         closed,
-    })
+    };
+    record.prepare_next();
+    Ok(record)
 }

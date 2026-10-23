@@ -2,12 +2,12 @@
 // Licensed under the Apache License, Version 2.0.
 
 use super::{
-    encode, session_key, AuthorityError, CasOutcome, DatasetError, DatasetIdentity, DatasetSessions,
+    decode, encode, session_key, AuthorityError, CasOutcome, DatasetError, DatasetIdentity, DatasetSessions,
     OperationId, ReadSession, SessionBatch, TTL,
 };
 
 impl DatasetSessions {
-    /// Resumes acknowledged progress, including after a disconnected lease expired.
+    /// Resumes acknowledged progress and refreshes its admission deadline.
     /// # Errors
     /// Rejects closed/reclaimed sessions or unavailable storage.
     pub async fn resume(
@@ -16,8 +16,9 @@ impl DatasetSessions {
         id: OperationId,
         now: u64,
     ) -> Result<ReadSession, AuthorityError> {
+        let mut current = self.record(identity, id).await?;
         for _ in 0..64 {
-            let (old, mut record) = self.record(identity, id).await?;
+            let (old, mut record) = current;
             if record.closed {
                 return Err(DatasetError::ReadCancelled.into());
             }
@@ -27,20 +28,27 @@ impl DatasetSessions {
             self.authority
                 .check_snapshot_readable(identity, record.snapshot)
                 .await?;
-            record.deadline = now.saturating_add(TTL);
-            if matches!(
-                self.authority
-                    .store
-                    .compare_exchange(&session_key(identity, id)?, Some(&old), &encode(&record)?)
-                    .await?,
-                CasOutcome::Applied(_)
-            ) {
+            record.deadline = record.deadline.max(now.saturating_add(TTL));
+            record.prepare_next();
+            let bytes = encode(&record)?;
+            if bytes == old {
                 return Ok(record.public());
+            }
+            match self
+                .authority
+                .store
+                .compare_exchange(&session_key(identity, id)?, Some(&old), &bytes)
+                .await?
+            {
+                CasOutcome::Applied(_) => return Ok(record.public()),
+                CasOutcome::Conflict(Some(value)) => current = (value.bytes.clone(), decode(&value.bytes)?),
+                CasOutcome::Conflict(None) => return Err(AuthorityError::NotFound),
             }
         }
         Err(AuthorityError::CursorConflict)
     }
-    /// Fetch never advances acknowledged progress. Identical fetches replay the issued batch.
+    /// Fetch is read-only for prepared sessions and replays the same next token.
+    /// Only creation, explicit resume and acknowledgement refresh admission.
     /// # Errors
     /// Rejects disconnected/closed sessions or unavailable storage.
     pub async fn next(
@@ -49,28 +57,16 @@ impl DatasetSessions {
         id: OperationId,
         now: u64,
     ) -> Result<SessionBatch, AuthorityError> {
+        let mut current = self.record(identity, id).await?;
         for _ in 0..64 {
-            let (old, mut r) = self.record(identity, id).await?;
+            let (old, mut r) = current;
             if r.closed || now >= r.deadline {
                 return Err(DatasetError::ReadCancelled.into());
             }
-            let end = r.position.saturating_add(r.batch_size).min(r.count);
-            let next = r
-                .issued
-                .get_or_insert_with(|| (OperationId::random().to_string(), end))
-                .0
-                .clone();
-            r.deadline = now.saturating_add(TTL);
             self.authority
                 .check_snapshot_readable(identity, r.snapshot)
                 .await?;
-            if matches!(
-                self.authority
-                    .store
-                    .compare_exchange(&session_key(identity, id)?, Some(&old), &encode(&r)?)
-                    .await?,
-                CasOutcome::Applied(_)
-            ) {
+            if let Some((next, end)) = r.issued.clone() {
                 return Ok(SessionBatch {
                     snapshot: r.snapshot,
                     ids: self.load_ids(identity, id, r.position, end).await?,
@@ -78,6 +74,18 @@ impl DatasetSessions {
                     next,
                     end: end == r.count,
                 });
+            }
+            // Old records may not have a prepared token yet. Upgrade once.
+            r.prepare_next();
+            match self
+                .authority
+                .store
+                .compare_exchange(&session_key(identity, id)?, Some(&old), &encode(&r)?)
+                .await?
+            {
+                CasOutcome::Applied(_) => current = (encode(&r)?, r),
+                CasOutcome::Conflict(Some(value)) => current = (value.bytes.clone(), decode(&value.bytes)?),
+                CasOutcome::Conflict(None) => return Err(AuthorityError::NotFound),
             }
         }
         Err(AuthorityError::CursorConflict)
@@ -92,8 +100,9 @@ impl DatasetSessions {
         next: &str,
         now: u64,
     ) -> Result<ReadSession, AuthorityError> {
+        let mut current = self.record(identity, id).await?;
         for _ in 0..64 {
-            let (old, mut r) = self.record(identity, id).await?;
+            let (old, mut r) = current;
             if r.closed || now >= r.deadline {
                 return Err(DatasetError::ReadCancelled.into());
             }
@@ -106,18 +115,24 @@ impl DatasetSessions {
             let (_, position) = r.issued.take().ok_or(AuthorityError::CursorConflict)?;
             r.position = position;
             r.cursor = next.into();
-            r.deadline = now.saturating_add(TTL);
+            r.deadline = r.deadline.max(now.saturating_add(TTL));
+            r.prepare_next();
             self.authority
                 .check_snapshot_readable(identity, r.snapshot)
                 .await?;
-            if matches!(
-                self.authority
-                    .store
-                    .compare_exchange(&session_key(identity, id)?, Some(&old), &encode(&r)?)
-                    .await?,
-                CasOutcome::Applied(_)
-            ) {
+            let bytes = encode(&r)?;
+            if bytes == old {
                 return Ok(r.public());
+            }
+            match self
+                .authority
+                .store
+                .compare_exchange(&session_key(identity, id)?, Some(&old), &bytes)
+                .await?
+            {
+                CasOutcome::Applied(_) => return Ok(r.public()),
+                CasOutcome::Conflict(Some(value)) => current = (value.bytes.clone(), decode(&value.bytes)?),
+                CasOutcome::Conflict(None) => return Err(AuthorityError::NotFound),
             }
         }
         Err(AuthorityError::CursorConflict)
@@ -143,17 +158,23 @@ impl DatasetSessions {
         identity: &DatasetIdentity,
         id: OperationId,
     ) -> Result<ReadSession, AuthorityError> {
+        let mut current = self.record(identity, id).await?;
         for _ in 0..64 {
-            let (old, mut r) = self.record(identity, id).await?;
+            let (old, mut r) = current;
             r.closed = true;
-            if matches!(
-                self.authority
-                    .store
-                    .compare_exchange(&session_key(identity, id)?, Some(&old), &encode(&r)?)
-                    .await?,
-                CasOutcome::Applied(_)
-            ) {
+            let bytes = encode(&r)?;
+            if bytes == old {
                 return Ok(r.public());
+            }
+            match self
+                .authority
+                .store
+                .compare_exchange(&session_key(identity, id)?, Some(&old), &bytes)
+                .await?
+            {
+                CasOutcome::Applied(_) => return Ok(r.public()),
+                CasOutcome::Conflict(Some(value)) => current = (value.bytes.clone(), decode(&value.bytes)?),
+                CasOutcome::Conflict(None) => return Err(AuthorityError::NotFound),
             }
         }
         Err(AuthorityError::CursorConflict)
