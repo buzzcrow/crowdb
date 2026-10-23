@@ -249,3 +249,39 @@ async fn concurrent_readers_and_reclaimers_keep_live_slots_and_owned_payloads() 
     assert_eq!(acc.accepted_log_tip(), Some((2049, 1)));
     assert_eq!(held.payload.as_ref(), b"retained");
 }
+
+#[tokio::test]
+async fn reclaimed_slots_release_payload_owners_while_acceptor_stays_live() {
+    use crate::payload_owner::TestPayload;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let acc = PxAcceptor::new();
+    for slot in 1..=8192 {
+        acc.accept(&PxLogEntry {
+            slot,
+            ballot: PxBallot::new(1, 1),
+            term: 1,
+            payload: bytes::Bytes::from_owner(TestPayload {
+                bytes: vec![42; 1024],
+                dropped: dropped.clone(),
+            }),
+        })
+        .await;
+        if slot % 128 == 0 {
+            let scanned = acc.accepted_iter_range(slot - 127, slot + 1);
+            assert_eq!(scanned.len(), 128);
+            drop(scanned);
+            acc.trim(slot);
+            acc.reclaim();
+        }
+    }
+    assert_eq!(acc.retained_slots(), 1);
+    assert!(
+        dropped.load(Ordering::Relaxed) >= 8192 - 1024,
+        "reclaimed payload owners remain live: {} released",
+        dropped.load(Ordering::Relaxed)
+    );
+}

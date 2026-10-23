@@ -9,6 +9,9 @@
 //! `group`, and `store` test binaries; the slot list has its own `slot`
 //! subsystem binary.
 
+#[path = "common/payload_owner.rs"]
+mod payload_owner;
+
 #[path = "paxos_test/acceptor_test.rs"]
 mod acceptor;
 

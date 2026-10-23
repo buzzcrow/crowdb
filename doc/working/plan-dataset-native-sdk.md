@@ -412,3 +412,41 @@ remaining user design decision and no requirement `Blocked` condition.
 - Next: rebuild/import this source, then rerun the unchanged full workload.
   Metadata history cleanup is verified at component level; full-service memory
   and comparative performance remain unaccepted until that run completes.
+
+- Metadata reclamation is committed as `1c9cc06e`. Standard rootless image build
+  and import pass. Image config:
+  `sha256:2991a6e21f6cb96f544aee0e6d8a3cd295878a7295dbe5aca2e1433a9f8e6a25`;
+  source tree `0f7d29d911eb74e73f07acc116de305ddd0299ec`.
+- Full unchanged workload failed in
+  `dataset-workload/968559deb2cf49158eefc01a19939ca1`, with service error capture
+  enabled. Supplemental read-only observations include cgroup RAM, swap and OOM
+  counters plus retained slots and tree live-value summaries.
+- This run completed HTTP six trials and native Rust singleton three trials;
+  native multi-flight returned `publication lost its head race`. Metadata RSS
+  still approached the 2-GiB limit, although extent cleanup kept live tree data
+  near 1–2 MB and acceptor trim/retained counts advanced. Partial rates remain
+  unaccepted comparative performance.
+- Low-overhead sampled heap evidence is in diagnostic run
+  `dataset-workload/f5bf584463564df8971885734f38fb51`. Live allocations grew from
+  255 MB to 1.76 GB and were dominated by `PxKvStore::encode_kv_payload`. This
+  diagnostic was stopped after locating the leak; it is not a performance run.
+  An earlier full heap-profile run (`212aa76eed8c463d88e406d7faf67a4b`) distorted
+  follower progress and must not be used to attribute normal RPC queue growth.
+- Root cause: crossbeam-skiplist 0.1.3 `base::RefRange::{next,next_back}` replace
+  cursor entries without releasing their prior explicit references. Logical
+  removal succeeds while every scanned payload remains allocated. Acceptor
+  reclamation/log-tip now use the full iterator, and journal range scans walk
+  owned entries from `lower_bound`; both paths release cursor references.
+  The owner-destructor regression previously released 0 of 8192 payloads with
+  only one visible slot; it now passes while the acceptor remains live.
+- Prepare and both accept quorum drains also retained completed tasks: matching
+  `Some(reply)` disabled the exhausted stream branch while cancellation stayed
+  pending. Explicit `None => return` releases completed drains immediately.
+  The real two-voter RPC regression reproduced two leaked group references in
+  both durable and early-ack modes before the fix and passes after it.
+- All KV targets pass, including 53 Paxos and 127 group tests, election,
+  concurrent readers/removers, RPC, store restart and WAL recovery. Workspace
+  all-target/all-feature clippy, `rs-lint`, Rust fmt and diff checks pass.
+  Rebuilt full-workload acceptance remains pending. No C++ source changes, new
+  locks, unsafe exceptions, dependencies, resource limits, request retries or
+  deadline changes.

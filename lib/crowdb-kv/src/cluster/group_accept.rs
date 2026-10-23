@@ -131,9 +131,10 @@ impl PxGroup {
                                     tokio::select! {
                                         biased;
                                         () = cancel.cancelled() => return,
-                                        Some(tagged) = futs.next() =>
-                                            accept_drain_side_effect(&group_drain, slot, tagged),
-                                        else => return,
+                                        tagged = futs.next() => match tagged {
+                                            Some(tagged) => accept_drain_side_effect(&group_drain, slot, tagged),
+                                            None => return,
+                                        },
                                     }
                                 }
                             }
@@ -215,9 +216,10 @@ impl PxGroup {
                                     tokio::select! {
                                         biased;
                                         () = cancel.cancelled() => return,
-                                        Some(tagged) = futs.next() =>
-                                            accept_drain_side_effect(&group_drain, slot, tagged),
-                                        else => return,
+                                        tagged = futs.next() => match tagged {
+                                            Some(tagged) => accept_drain_side_effect(&group_drain, slot, tagged),
+                                            None => return,
+                                        },
                                     }
                                 }
                             }

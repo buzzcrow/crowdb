@@ -15,6 +15,7 @@
 use crate::paxos::roles::{Acceptor, PxAcceptReply, PxBallot, PxLogEntry, PxPrepareReply, SlotIndex};
 use crate::paxos::slot_node::PxSlotNode;
 use crossbeam_skiplist::{map::Entry, SkipMap};
+use std::ops::Bound;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -48,11 +49,16 @@ impl PxAcceptor {
 
     #[must_use]
     pub fn accepted_log_tip(&self) -> Option<(SlotIndex, u64)> {
-        self.slots.range(self.trim_slot()..).rev().find_map(|node| {
-            node.value()
-                .accepted_cloned()
-                .map(|entry| (entry.slot, entry.term))
-        })
+        let before = self.trim_slot();
+        self.slots
+            .iter()
+            .rev()
+            .take_while(|node| *node.key() >= before)
+            .find_map(|node| {
+                node.value()
+                    .accepted_cloned()
+                    .map(|entry| (entry.slot, entry.term))
+            })
     }
 
     /// Slot-ordered iteration over accepted entries in
@@ -75,10 +81,20 @@ impl PxAcceptor {
         if start >= end_slot_exclusive {
             return Vec::new();
         }
-        self.slots
-            .range(start..end_slot_exclusive)
-            .filter_map(|node| node.value().accepted_cloned().map(|entry| (*node.key(), entry)))
-            .collect()
+        // crossbeam-skiplist 0.1.3's range iterator retains previously visited
+        // nodes. Walk RAII entries so scans cannot pin reclaimed payloads.
+        let mut cursor = self.slots.lower_bound(Bound::Included(&start));
+        let mut entries = Vec::new();
+        while let Some(node) = cursor {
+            if *node.key() >= end_slot_exclusive {
+                break;
+            }
+            if let Some(entry) = node.value().accepted_cloned() {
+                entries.push((*node.key(), entry));
+            }
+            cursor = node.next();
+        }
+        entries
     }
 
     /// Current trim slot — slots below this have been GC'd and are no
@@ -222,7 +238,14 @@ impl Acceptor for PxAcceptor {
         self.slots.get(&slot)?.value().promised_cloned()
     }
     fn reclaim(&self) -> usize {
-        self.slots.range(..self.trim_slot()).filter(Entry::remove).count()
+        let before = self.trim_slot();
+        // The full iterator releases its cursor references as it advances;
+        // the dependency's range iterator does not.
+        self.slots
+            .iter()
+            .take_while(|node| *node.key() < before)
+            .filter(Entry::remove)
+            .count()
     }
     fn trim(&self, before_slot: SlotIndex) {
         self.trim_slot.fetch_max(before_slot, Ordering::AcqRel);
