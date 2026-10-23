@@ -18,7 +18,7 @@ bounded owner-backed delivery and independently packaged Python bindings.
   repeats, concurrency, completed requests, per-size p50/p99, throughput,
   process CPU/RSS and separately timed digest work. Preserve exact-byte checks.
   Files: `sdk/crates/crowdb-sdk-dataset/examples/`, `tools/sdk/`.
-- [ ] **Freeze API wiring**: use `DatasetSessions` (including Split preparation),
+- [x] **Freeze API wiring**: use `DatasetSessions` (including Split preparation),
   not legacy `DatasetDirectClient::scan` which acknowledges fetched batches.
   Attach `ChunkKvDatasetStore`, `DatasetUploads` and `DatasetAuthority` to the
   shared runtime's Dataset writer group. Use explicit `DatasetIdentity`; no
@@ -26,30 +26,30 @@ bounded owner-backed delivery and independently packaged Python bindings.
 
 ## Shared payload and native facade
 
-- [~] **Retain payload owners**: extend the existing payload/upload boundary
+- [x] **Retain payload owners**: extend the existing payload/upload boundary
   with lazy `OwnedPayload` delivery and verified lengths/digests. Keep the
   byte-returning HTTP path compatible. Accept frozen producer storage without
   changing publication or durable intent recovery. Files:
   `lib/crowdb-access-dataset/src/payload/`, `src/upload/`.
-- [ ] **Expose authority operations**: admit control calls with the existing
+- [x] **Expose authority operations**: admit control calls with the existing
   `OperationContext`, preserve typed Dataset errors and mutation uncertainty.
   Reuse publication, upload, composition, Split and cleanup services rather
   than duplicating their CAS rules. Files: native `dataset/`, `error.rs`.
-- [ ] **Deliver bounded batches**: separate immutable field metadata, payload
+- [x] **Deliver bounded batches**: separate immutable field metadata, payload
   leases, verified EOF and acknowledgement. Pull at most a bounded part ahead;
   charge retained allocations, preserve pending data if a pull future is
   dropped, and make terminal errors sticky. Renew the existing 60-second
   active-read lease while producing; close/cancel stops production and releases
   protection without acknowledging or invalidating caller-held buffers.
   Files: native `dataset/read/`, shared session/lease code as needed.
-- [ ] **Share topology and lifetime**: expose existing runtime observations
+- [x] **Share topology and lifetime**: expose existing runtime observations
   with Dataset locations as hints only. S3 and Dataset use independent facades
   and writer policies over shared admission/transports; closing a facade or
   read cannot close the runtime. Files: native `dataset/`, `tests/`.
 
 ## Python and acceptance
 
-- [ ] **Add optional native binding**: main-workspace PyO3 extension
+- [~] **Add optional native binding**: main-workspace PyO3 extension
   `crowdb_dataset_native`, with owned runtime, Dataset control/read operations,
   retained immutable payload objects, explicit ack/cancel/close and exception
   mapping. Keep `sdk/` HTTP distribution free of native storage dependencies.
@@ -109,3 +109,15 @@ server dependencies. No production memory or retry policy was relaxed.
 
 The host-only runner is excluded from server-image identity checks; 19 image
 identity tests and the standalone workload fmt/clippy gates pass.
+
+Native implementation evidence: all native SDK target tests pass, including
+Dataset explicit-ack replay, dropped capacity waits, retained owners after
+cancellation/shutdown, and shared S3/Dataset publication. The production framed
+writer test retains the original producer pointer through durable storage;
+composition cleanup retains published upload ownership. Shared upload-stream
+tests validate length/digest and terminal partial failures.
+
+Native/Python all-target, all-feature clippy passes. The release native wheel
+builds, bundles its native shared libraries and imports from a separate installed
+consumer. Full Python semantics, common-snapshot performance and real-service
+restart are pending; the wheel build/import alone is not binding acceptance.

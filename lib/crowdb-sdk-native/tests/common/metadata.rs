@@ -119,6 +119,26 @@ impl ChunkKvTransport for TestMetadataTransport {
             .unwrap();
         Ok(receiver.await.unwrap())
     }
+
+    async fn scan_bounded(
+        &self,
+        endpoint: &str,
+        request: &ScanRequest,
+        max_bytes: usize,
+    ) -> Result<ChunkKvResponse> {
+        let response = self.scan(endpoint, request).await?;
+        if let Ok(OperationResult::Scan { items, .. }) = &response.result {
+            if items
+                .iter()
+                .map(|value| value.key.len() + value.value.len())
+                .sum::<usize>()
+                > max_bytes
+            {
+                return Err(crowdb_chunk_kv_client::ClientError::TooLarge);
+            }
+        }
+        Ok(response)
+    }
 }
 
 fn matches(observed: Option<&RpcValue>, condition: &RpcCompareCondition) -> bool {

@@ -3,7 +3,7 @@
 
 # CrowDB native SDK
 
-`crowdb-sdk-native` embeds trusted internal S3 access through Chunk-KV and
+`crowdb-sdk-native` embeds trusted internal S3 and Dataset access through Chunk-KV and
 ChunkIO/DiskIO. It belongs to the main Rust workspace and links the native RPC
 stack. Supply management seeds, a tenant and per-operation context. The
 embedding process has the same internal-service trust as Access Server; this
@@ -83,6 +83,39 @@ async fn read_object(seeds: Vec<String>) -> Result<(), Box<dyn std::error::Error
   operation identity; do not blindly replay the mutation with a new identity.
 - Small writer pools can retain input owners for open-strip repair after a
   PUT completes. Pool drain/seal releases them; budget this lifetime.
+
+## Dataset
+
+- Attach `dataset::DatasetClient::new(&runtime, identity)` with an explicit
+  `DatasetIdentity`. Its Dataset writer pool shares transport and admission
+  with S3 while preserving the Dataset chunk type. Dropping the facade does
+  not close the shared runtime.
+- `read_batch` binds an immutable snapshot, sample IDs and ordered projection.
+  `ReadBatch.header` describes values, missing fields and tombstones;
+  `body.next()` returns a field index and retained `BufferLease`. Each field
+  has its own logical offset. Read through verified EOF before reporting a
+  complete result; no contiguous field assembly is required.
+- `prepare_read` advances one bounded `SessionSpecV2` preparation page,
+  including Split revision, selection and worker partition. Continue with
+  its `next_page` until complete. `next_batch` fetches without acknowledging;
+  `resume_read` returns the acknowledged cursor. Only `acknowledge(expected,
+  next)` advances it. Releasing buffers or reaching EOF never acknowledges.
+- Active reads renew the existing 60-second storage-protection lease while
+  their operation remains live. Cancelling/dropping a batch stops its producer
+  and releases protection; `close_read` closes the durable session. Caller-held
+  leases survive both. Interrupted cleanup is bounded and retains TTL expiry.
+- Upload parts accept runtime-owned `BufferLease` or `FrozenObjectBuffer`.
+  Complete verifies stored parts before publication. Use `begin_composition`,
+  `edit_composition`, bounded evaluate/prepare, publish and cleanup: these
+  enroll and maintain shared upload owners before publishing a candidate.
+  Inspect `uploads.publication_ready` before publishing with a durable attempt.
+- Advanced authority operations, including Split revision management and
+  inspection, run through `control(context, callback)`. Its scoped authority,
+  uploads and identity use the existing Dataset contracts. Prefer the composed
+  helpers for publication so payload ownership is not omitted. Uncertain
+  writes require inspecting the same operation/attempt identity.
+- The optional [native Python extension](../crowdb-sdk-native-python/README.md)
+  calls this same data plane. It is separate from the portable HTTP package.
 
 ## Budgets, topology and shutdown
 

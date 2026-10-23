@@ -8,6 +8,8 @@ mod ownership;
 mod parts;
 mod registry;
 mod retirement;
+mod stream;
+pub use stream::VerifiedUploadPart;
 
 use bytes::Bytes;
 use md5::{Digest, Md5};

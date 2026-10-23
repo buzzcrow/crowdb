@@ -34,6 +34,7 @@ pub struct TestWriteStorage {
     pub write_started: tokio::sync::Notify,
     pub write_allowed: tokio::sync::Notify,
     producer: ProducerBufferAllocator,
+    allocations: AtomicUsize,
 }
 
 impl TestWriteStorage {
@@ -52,6 +53,7 @@ impl TestWriteStorage {
             write_started: tokio::sync::Notify::new(),
             write_allowed: tokio::sync::Notify::new(),
             producer: ProducerBufferAllocator::new(Arc::new(RpcServer::new(None)), false),
+            allocations: AtomicUsize::new(0),
         })
     }
 
@@ -138,13 +140,17 @@ fn strip(id: ChunkId, index: u32, size: u32, copies: u32) -> ChunkStrip {
 impl ChunkAllocator for TestWriteStorage {
     async fn allocate_chunk(&self, request: AllocateChunkRequest) -> Result<AllocateChunkResponse> {
         assert_eq!(request.strip_type, StripType::Mirror as i32);
-        let id = request.chunk_id.unwrap();
+        let id = request.chunk_id.unwrap_or_else(|| ChunkId {
+            high: 91,
+            low: self.allocations.fetch_add(1, Ordering::Relaxed) as u64 + 1,
+        });
         let chunk = Chunk {
             id: Some(id),
             modify_ts: 1,
             state: ChunkState::Active as i32,
             capacity: request.write_granularity * request.strip_count,
             chunk_type: request.chunk_type,
+            writer_epoch: request.writer_epoch,
             strips: (0..request.strip_count)
                 .map(|index| strip(id, index, request.write_granularity, request.copy_count))
                 .collect(),
@@ -165,7 +171,7 @@ impl ChunkAllocator for TestWriteStorage {
             });
         }
         let start = u32::try_from(previous.strips.len()).unwrap();
-        let size = previous.strips[0].unit_kb * request.strip_size;
+        let size = previous.strips.first().map_or(1024, |strip| strip.unit_kb) * request.strip_size;
         let strips: Vec<_> = (0..request.strip_count)
             .map(|index| strip(id, start + index, size, request.copy_count))
             .collect();
@@ -186,6 +192,20 @@ impl ChunkAllocator for TestWriteStorage {
             chunk.acknowledged_cursor = request.seal_bytes;
         });
         Ok(SealChunkResponse { chunk: Some(chunk) })
+    }
+
+    async fn advance_chunk_write(
+        &self,
+        request: AdvanceChunkWriteRequest,
+    ) -> Result<AdvanceChunkWriteResponse> {
+        let id = request.chunk_id.unwrap();
+        let previous = self.chunk(id);
+        assert_eq!(previous.writer_epoch, request.writer_epoch);
+        assert_eq!(previous.modify_ts, request.expected_modify_ts);
+        let chunk = self.update(id, |chunk| {
+            chunk.acknowledged_cursor = request.acknowledged_cursor;
+        });
+        Ok(AdvanceChunkWriteResponse { chunk: Some(chunk) })
     }
     async fn delete_chunk(&self, request: DeleteChunkRequest) -> Result<DeleteChunkResponse> {
         self.deletes.fetch_add(1, Ordering::AcqRel);

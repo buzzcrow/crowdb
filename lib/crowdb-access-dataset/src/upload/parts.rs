@@ -8,7 +8,7 @@ use super::{
 use crate::{CasOutcome, OperationId};
 use async_trait::async_trait;
 use bytes::Bytes;
-use crowdb_chunk_client::{IoError, SmallWriteIntent};
+use crowdb_chunk_client::{FramedWriteBuffer, IoError, SmallWriteIntent};
 use crowdb_protocol::chunkdb::rpc::Location;
 use md5::{Digest, Md5};
 use std::sync::Arc;
@@ -23,8 +23,35 @@ impl DatasetUploads {
         data: Bytes,
         now: u64,
     ) -> Result<UploadPart, UploadError> {
+        self.put_input(location, index, PartInput::Bytes(data), now).await
+    }
+
+    /// Writes final storage frames with a caller-computed logical digest.
+    /// Completion verifies stored bytes against this digest before publication.
+    /// # Errors
+    /// Rejects divergent identity/length, unsupported storage or failed durability.
+    pub async fn put_framed_part(
+        &self,
+        location: &[u8],
+        index: u32,
+        data: Box<dyn FramedWriteBuffer>,
+        md5: [u8; 16],
+        now: u64,
+    ) -> Result<UploadPart, UploadError> {
+        self.put_input(location, index, PartInput::Framed(data, md5), now)
+            .await
+    }
+
+    async fn put_input(
+        &self,
+        location: &[u8],
+        index: u32,
+        data: PartInput,
+        now: u64,
+    ) -> Result<UploadPart, UploadError> {
         let session = self.session(location).await?;
-        validate(&session, index, &data, now)?;
+        let length = data.length();
+        validate(&session, index, length, now)?;
         if session.state == UploadState::Open {
             self.register(location).await?;
         }
@@ -36,8 +63,8 @@ impl DatasetUploads {
             state: PartState::Reserved,
             part: UploadPart {
                 index,
-                length: data.len() as u64,
-                md5: digest(&data),
+                length,
+                md5: data.digest(),
                 locations: Vec::new(),
             },
         };
@@ -90,7 +117,10 @@ impl DatasetUploads {
             key: key.clone(),
             pending: pending.clone(),
         });
-        let locations = self.payloads.write(&key, data, intent).await?;
+        let locations = match data {
+            PartInput::Bytes(bytes) => self.payloads.write(&key, bytes, intent).await?,
+            PartInput::Framed(buffer, _) => self.payloads.write_framed(&key, buffer, intent).await?,
+        };
         let current = self.store.get(&key).await?.ok_or(UploadError::Integrity)?;
         let entry = decode_part(&current.bytes)?;
         if entry.owner != pending.owner
@@ -230,16 +260,33 @@ impl PartIntent {
         Ok(())
     }
 }
-fn validate(session: &UploadRecord, index: u32, data: &[u8], now: u64) -> Result<(), UploadError> {
+enum PartInput {
+    Bytes(Bytes),
+    Framed(Box<dyn FramedWriteBuffer>, [u8; 16]),
+}
+impl PartInput {
+    fn length(&self) -> u64 {
+        match self {
+            Self::Bytes(bytes) => bytes.len() as u64,
+            Self::Framed(buffer, _) => buffer.logical_len(),
+        }
+    }
+    fn digest(&self) -> [u8; 16] {
+        match self {
+            Self::Bytes(bytes) => digest(bytes),
+            Self::Framed(_, digest) => *digest,
+        }
+    }
+}
+
+fn validate(session: &UploadRecord, index: u32, length: u64, now: u64) -> Result<(), UploadError> {
     if session.state == UploadState::Aborted
         || (session.state != UploadState::Claimed && now >= session.expires_at)
     {
         return Err(UploadError::Conflict);
     }
     let offset = u64::from(index) * u64::from(session.part_size);
-    if offset >= session.length
-        || data.len() as u64 != (session.length - offset).min(u64::from(session.part_size))
-    {
+    if offset >= session.length || length != (session.length - offset).min(u64::from(session.part_size)) {
         return Err(UploadError::Invalid);
     }
     Ok(())

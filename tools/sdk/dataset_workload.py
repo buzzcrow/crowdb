@@ -17,6 +17,7 @@ from access_dataset_fixture import AccessDatasetCluster
 from client import bundle_client
 from fixture import docker
 from image_identity import verify_server_sources
+from native_package import package
 
 
 def interrupted(_signal, _frame):
@@ -63,6 +64,8 @@ def main():
                           labels.get("org.crowdb.source.tree") or None)
     run(["cargo", "build", "--release", "--locked", "--manifest-path", str(ROOT / "sdk/Cargo.toml"),
          "-p", "crowdb-sdk-dataset", "--example", "workload"])
+    run(["cargo", "build", "--release", "--locked", "-p", "crowdb-sdk-native", "--example", "dataset_workload"])
+    native_python = package(output / "native-python")
     os.environ["CROWDB_RDMA_ENABLED"] = "0"
     bundle = bundle_client(output / "client")
 
@@ -77,7 +80,7 @@ def main():
 
     with AccessDatasetCluster(image["Id"], output, bundle, command=pinned_command) as cluster:
         environment = dict(os.environ, CROWDB_DATASET_ENDPOINT=f"http://{cluster.addresses[12]}:7503",
-                           CROWDB_DATASET_NAME="workload", CROWDB_DATASET_READ_TOKEN="token",
+                           CROWDB_DATASET_NAME="workload", CROWDB_MANAGEMENT_SEEDS=",".join(cluster.origins[:3]), CROWDB_DATASET_READ_TOKEN="token",
                            CROWDB_DATASET_CONSUMER_ROOT=str(output), NO_PROXY="*", no_proxy="*")
         manifest = {"image": image["Id"], "labels": labels, "client_cpu": args.client_cpu,
                     "metadata_memory": args.metadata_memory,
@@ -87,15 +90,33 @@ def main():
                     "source_revision": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
                     "scope": "same-host pinned CPU functional workload, not isolated production hardware",
                     "before": server_usage(cluster.servers)}
-        with (output / "http.log").open("w") as log:
-            try:
-                run(["taskset", "-c", args.client_cpu, str(ROOT / "sdk/target/release/examples/workload")],
-                    env=environment, stdout=log, stderr=subprocess.STDOUT)
-            finally:
-                print((output / "http.log").read_text(), end="", flush=True)
-                manifest["after"] = server_usage(cluster.servers)
-                (output / "manifest.json").write_text(json.dumps(manifest, indent=2))
-    print("Dataset HTTP baseline complete", flush=True)
+        tests = ROOT / "lib/crowdb-sdk-native-python/tests"
+        commands = [
+            ("http", [ROOT / "sdk/target/release/examples/workload"]),
+            ("native-rust", [ROOT / "target/release/examples/dataset_workload"]),
+            ("native-python", [native_python, tests / "workload.py"]),
+            ("native-parity", [native_python, tests / "real_consumer.py"]),
+        ]
+        try:
+            for name, command in commands:
+                before = server_usage(cluster.servers)
+                with (output / f"{name}.log").open("w") as log:
+                    try:
+                        run(["taskset", "-c", args.client_cpu, *map(str, command)], env=environment,
+                            stdout=log, stderr=subprocess.STDOUT)
+                    finally:
+                        print((output / f"{name}.log").read_text(), end="", flush=True)
+                        manifest[name] = {"before": before, "after": server_usage(cluster.servers)}
+            for node in (12, 11):
+                cluster.control({"action": "kill", "node": node})
+            for node in (11, 12):
+                cluster.control({"action": "start", "node": node})
+            run([str(native_python), str(tests / "real_consumer.py")],
+                env=dict(environment, CROWDB_DATASET_PHASE="verify"))
+        finally:
+            manifest["after"] = server_usage(cluster.servers)
+            (output / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    print("Dataset HTTP/native comparison and restart acceptance complete", flush=True)
 
 
 if __name__ == "__main__":

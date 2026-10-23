@@ -32,7 +32,10 @@ mod transport;
 mod upload;
 mod wire;
 
-pub use payload::{ChunkPayloadStorage, PayloadDurability, PayloadStorage, UploadedChunkReader};
+pub use payload::{
+    ChunkPayloadStorage, PayloadDurability, PayloadStorage, PayloadStream, UploadedChunkReader,
+};
+pub use upload::VerifiedUploadPart;
 pub use upload::{
     DatasetUploads, SnapshotUploadCleanup, UploadError, UploadPart, UploadReclaimError, UploadRecord,
     UploadState, MAX_UPLOAD_PART_BYTES,

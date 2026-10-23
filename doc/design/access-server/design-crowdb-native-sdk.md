@@ -4,7 +4,7 @@
 # CROWDB - Design: Trusted native storage SDK
 
 The native SDK embeds internal storage access in the application. Its shared
-runtime, topology and host-buffer delivery support a typed S3 frontend.
+runtime, topology and host-buffer delivery support typed S3 and Dataset frontends.
 
 Depends on: [Access Server](design-crowdb-access-server.md),
 [RDMA RPC](../rpc/design-crowdb-rpc-rdma.md),
@@ -38,13 +38,19 @@ preserve S3 generation, checksum, visibility and uncertain-publication rules.
 Copy captures a source generation. Multipart completion binds an exact selected
 part set; a repeated completed request returns its recorded outcome.
 
+`DatasetClient` attaches `DatasetAuthority`, `DatasetUploads` and
+`DatasetSessions` to these same clients. Shared composition helpers enroll
+upload ownership before edits and bind candidate ownership before publication.
+Snapshot/Read Plan/Split selection, worker partition, CAS, durable intent
+recovery and cleanup remain in the existing Dataset services.
+
 ## 2. Shared runtime
 
 `ClientRuntime` owns or borrows control, metadata and data clients. Business
 handles share transport groups, discovery, topology observations and resource
 budgets. Compatible writer policies share one bounded small-writer pool;
 incompatible policies use distinct pools while sharing the transport owners.
-S3 chunks retain type `S3`; native embedding introduces no generic user-data
+S3 and Dataset chunks retain their respective types; native embedding introduces no generic user-data
 chunk type.
 
 `connect` creates owned groups. `adopt_clients` transfers shutdown
@@ -126,14 +132,25 @@ The independent Dataset HTTP distribution has no dependency on this storage/FFI
 runtime. A Dataset facade attaches to the common runtime and delivery contracts
 while retaining Dataset authority, Snapshot/Split binding and explicit
 acknowledgement. Buffer release, download completion and processing
-acknowledgement remain separate events.
+acknowledgement remain separate events. `BatchBody` delivers field metadata and
+lazy payload leases with per-part and whole-field integrity checks. Active
+reads renew the existing 60-second protection while live; cancellation stops
+renewal and releases the active handle, with TTL expiry bounding interrupted
+cleanup. Durable session close is explicit and never acknowledges processing.
+
+The optional native Python extension owns a shared runtime and exposes retained
+immutable leases. Slicing shares allocation ownership; conversion to Python
+bytes explicitly copies. Pulls are serialized per batch with a bounded request
+channel and no automatic payload prefetch. Runtime shutdown preserves already
+delivered leases. Forked processes create new runtimes. Python control commands
+reuse the Rust facade and shared authority schema without another storage path.
 
 ## 7. Correctness invariants
 
 - **NS-I1 — Trusted embedding:** native tenant/context execute inside the
   internal-service trust domain without a per-operation HTTP authentication hop.
-- **NS-I2 — Shared semantics:** HTTP and native S3 use the same selection,
-  durability, publication, multipart and cleanup authorities.
+- **NS-I2 — Shared semantics:** HTTP and native frontends use the same selection,
+  durability, publication, multipart and Dataset cleanup authorities.
 - **NS-I3 — Non-authoritative observation:** topology inspection never changes
   placement or bypasses owner, generation or layout validation.
 - **NS-I4 — Verified completion:** only successful EOF establishes a full read;
@@ -144,3 +161,5 @@ acknowledgement remain separate events.
   invalidate bytes still held by a caller or asynchronous copy.
 - **NS-I7 — Bounded transport failure:** accepted RDMA failures never append
   TCP data or replay an ambiguous mutation.
+- **NS-I8 — Explicit Dataset progress:** fetching, verified EOF and final buffer
+  release cannot advance a read cursor; acknowledgement alone records progress.

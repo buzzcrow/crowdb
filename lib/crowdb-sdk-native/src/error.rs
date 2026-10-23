@@ -70,6 +70,11 @@ pub enum Error {
     BufferRange,
     #[error("S3 operation failed: {0:?}")]
     S3(crowdb_access_s3::S3ErrorCode),
+    #[error("Dataset operation failed: {kind:?}: {detail}")]
+    Dataset {
+        kind: crate::dataset::FailureKind,
+        detail: String,
+    },
     #[error("object was not modified")]
     NotModified,
     #[error("object checksum does not match its published metadata")]

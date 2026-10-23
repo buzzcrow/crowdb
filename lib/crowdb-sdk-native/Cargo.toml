@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Trusted embedded CROWDB runtime and native S3 client"
+description = "Trusted embedded CROWDB runtime and native S3/Dataset clients"
 
 [lints]
 workspace = true
@@ -19,6 +19,7 @@ crossbeam-skiplist = "0.1"
 arc-swap = "1.9"
 bincode = "1"
 crowdb-access-s3 = { path = "../crowdb-access-s3" }
+crowdb-access-dataset = { path = "../crowdb-access-dataset" }
 crowdb-access-multipart = { path = "../crowdb-access-multipart" }
 crowdb-chunk-client = { path = "../crowdb-chunk-client" }
 crowdb-chunk-kv-client = { path = "../crowdb-chunk-kv-client" }
@@ -31,6 +32,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["time", "sync", "macros"] }
 tracing = { workspace = true }
 serde_json = "1"
+md-5 = "0.10"
 
 [dev-dependencies]
 async-trait = "0.1"

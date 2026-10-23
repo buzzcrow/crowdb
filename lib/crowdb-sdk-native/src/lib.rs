@@ -9,6 +9,7 @@
 mod admission;
 pub mod buffer;
 pub mod context;
+pub mod dataset;
 pub mod error;
 pub mod runtime;
 pub mod s3;

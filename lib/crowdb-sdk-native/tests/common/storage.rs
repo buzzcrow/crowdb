@@ -53,6 +53,13 @@ pub async fn runtime() -> ClientRuntime {
 }
 
 pub fn runtime_with_metadata(metadata: Arc<crowdb_chunk_kv_client::ChunkKvClient>) -> ClientRuntime {
+    runtime_with_limits(metadata, RuntimeLimits::default())
+}
+
+pub fn runtime_with_limits(
+    metadata: Arc<crowdb_chunk_kv_client::ChunkKvClient>,
+    limits: RuntimeLimits,
+) -> ClientRuntime {
     let metadata_transport =
         Arc::new(ChunkKvRpcTransport::with_config(8, 1, 1, &ChunkKvRpcTransportConfig::default()).unwrap());
     ClientRuntime::from_clients(
@@ -66,7 +73,7 @@ pub fn runtime_with_metadata(metadata: Arc<crowdb_chunk_kv_client::ChunkKvClient
                 ChunkType::S3,
             )),
         },
-        RuntimeLimits::default(),
+        limits,
     )
     .unwrap()
 }
