@@ -4,9 +4,9 @@
 //! Exact byte sealing and retirement of unused strips.
 
 use super::{
-    close_acknowledged_strips, extract_segments, reservation, seal_written_strips, unix_time_ms, CacheHint,
-    Chunk, ChunkId, ChunkState, LifecycleError, LifecycleHandler, LockPolicy, ProtoChunkState, Segment,
-    StripCleanupIntent, StripReservationState,
+    extract_segments, reservation, seal_written_strips, unix_time_ms, CacheHint, Chunk, ChunkId, ChunkState,
+    LifecycleError, LifecycleHandler, LockPolicy, ProtoChunkState, Segment, StripCleanupIntent,
+    StripReservationState,
 };
 use crowdb_protocol::chunkdb::rpc::ChunkType;
 use tracing::info;
@@ -160,4 +160,27 @@ fn validate_seal_bounds(chunk: &Chunk, seal_bytes: u64, seal_length: u32) -> Res
     }
 
     Ok(())
+}
+
+fn close_acknowledged_strips(chunk: &mut Chunk, now_ms: u64) {
+    if chunk.writer_epoch == 0 || chunk.acknowledged_cursor == 0 {
+        return;
+    }
+    let cursor = chunk.acknowledged_cursor;
+    let mut last_closed = chunk.closed_strip_sequence;
+    for strip in &mut chunk.strips {
+        let start = u64::from(strip.chunk_offset) * 1024;
+        if cursor <= start {
+            break;
+        }
+        let end = u64::from(strip.chunk_offset.saturating_add(strip.capacity)) * 1024;
+        let length = cursor.min(end).saturating_sub(start);
+        strip.sealed_length = u32::try_from(length.div_ceil(1024)).unwrap_or(u32::MAX);
+        strip.sealed_ts_ms = now_ms;
+        last_closed = Some(strip.strip_sequence);
+        if cursor < end {
+            break;
+        }
+    }
+    chunk.closed_strip_sequence = last_closed;
 }

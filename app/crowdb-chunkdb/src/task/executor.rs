@@ -14,6 +14,7 @@ use super::{TaskClaim, TaskManager, TaskManagerError};
 
 pub type TaskFuture<'a> = Pin<Box<dyn Future<Output = TaskOutcome> + Send + 'a>>;
 
+#[derive(Debug)]
 pub enum TaskOutcome {
     Complete,
     Retry {

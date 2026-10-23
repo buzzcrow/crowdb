@@ -260,58 +260,6 @@ impl LifecycleHandler {
         Ok(())
     }
 
-    pub(super) async fn reclaim_unconsumed_reservations(
-        &self,
-        chunk_id: &ChunkId,
-    ) -> Result<u64, LifecycleError> {
-        let groups = self.store.list_reservation_groups(chunk_id).await?;
-        let mut reclaimed = 0_u64;
-        for mut group in groups {
-            validate_group_shape(&group)?;
-            let mut rollback = Vec::new();
-            let mut newly_cancelled = Vec::new();
-            for (index, state) in group.states.iter_mut().enumerate() {
-                if *state == StripReservationState::Reserved as i32 {
-                    *state = StripReservationState::Cancelled as i32;
-                    rollback.push(group.strips[index].clone());
-                    newly_cancelled.push(group.strips[index].clone());
-                } else if *state == StripReservationState::Cancelled as i32 {
-                    rollback.push(group.strips[index].clone());
-                }
-            }
-            if !rollback.is_empty() {
-                self.store.put_reservation_group(&group).await?;
-                self.allocator.rollback_strips(&rollback).await?;
-                for strip in &newly_cancelled {
-                    let usage = strip_usage(strip);
-                    self.reservation_admission.release(usage.0, usage.1);
-                }
-                reclaimed = reclaimed.saturating_add(rollback.len() as u64);
-            }
-            let has_consumed = group.states.contains(&(StripReservationState::Consumed as i32));
-            if !has_consumed
-                && group.states.iter().all(|state| {
-                    *state == StripReservationState::Confirmed as i32
-                        || *state == StripReservationState::Cancelled as i32
-                })
-            {
-                if !group.parity_segments.is_empty() {
-                    self.allocator
-                        .pool()
-                        .free_blocks(group.parity_segments.clone())
-                        .await
-                        .map_err(LifecycleError::Cleanup)?;
-                    let usage = parity_usage(&group);
-                    self.reservation_admission.release(usage.0, usage.1);
-                }
-                if let Some(group_id) = group.group_id {
-                    self.store.delete_reservation_group(chunk_id, &group_id).await?;
-                }
-            }
-        }
-        Ok(reclaimed)
-    }
-
     #[allow(clippy::too_many_lines)]
     pub async fn mutate_strip_reservation(
         &self,

@@ -3,6 +3,9 @@
 
 mod common;
 
+#[path = "finalization_test/grouped.rs"]
+mod grouped;
+
 use common::cluster::{seed_hardware, ChunkdbHarness, DiskdbServer, KvCluster, DATA_GROUP_ID, STORE_ID};
 use crowdb_chunkdb::{
     conversion::io::ConversionDiskIo,
@@ -139,8 +142,7 @@ async fn finalizer_retains_unreadable_acknowledged_frames() {
         .unwrap()
         .unwrap();
     task.eligible_at_ms = 0;
-    // The isolated reader returns zeros, modelling acknowledged frames that
-    // cannot currently be read. Such a scan does not prove an empty chunk.
+    // Missing DiskIO connectivity is an unavailable observation, never an empty tail.
     let finalizer = FinalizeChunkTaskHandler::new(
         Arc::clone(&harness.handler),
         Arc::new(ConversionDiskIo::empty_for_tests()),

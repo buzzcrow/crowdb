@@ -887,11 +887,13 @@ name = "crowdb-chunkdb"
 version = "0.3.0"
 dependencies = [
  "arc-swap",
+ "async-trait",
  "axum",
  "bincode",
  "bytes",
  "clap",
  "crossbeam-skiplist",
+ "crowdb-chunk-client",
  "crowdb-chunkdb",
  "crowdb-chunkdb-client",
  "crowdb-common",

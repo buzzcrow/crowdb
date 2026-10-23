@@ -1344,70 +1344,6 @@ impl LifecycleHandler {
             .map_err(LifecycleError::Storage)
     }
 
-    /// Seal Active shared chunks whose persisted writer lease expired.
-    pub async fn seal_expired_writer_chunks(&self) -> Result<u64, LifecycleError> {
-        let now_ms = unix_time_ms();
-        let mut start_after = None;
-        let mut sealed = 0_u64;
-        loop {
-            let chunks = self.list_chunks(start_after.as_ref(), 1_000).await?;
-            if chunks.is_empty() {
-                break;
-            }
-            for candidate in &chunks {
-                if ChunkState::from_proto(candidate.state) != ChunkState::Active
-                    || candidate.writer_epoch == 0
-                    || candidate.writer_lease_deadline_ms > now_ms
-                {
-                    continue;
-                }
-                let Some(chunk_id) = candidate.id else {
-                    continue;
-                };
-                let mut guard = if let Some(locks) = &self.locks {
-                    Some(
-                        locks
-                            .acquire(&chunk_id, &self.store, &LockPolicy::default(), CacheHint::Cache)
-                            .await?,
-                    )
-                } else {
-                    None
-                };
-                let mut chunk = match &guard {
-                    Some(guard) => guard
-                        .chunk()
-                        .unwrap_or_else(|| unreachable!("acquire guarantees chunk on Ok"))
-                        .clone(),
-                    None => self.store.get_chunk(&chunk_id).await?,
-                };
-                if ChunkState::from_proto(chunk.state) != ChunkState::Active
-                    || chunk.writer_epoch == 0
-                    || chunk.writer_lease_deadline_ms > now_ms
-                {
-                    continue;
-                }
-                self.reclaim_unconsumed_reservations(&chunk_id).await?;
-                chunk.state = ProtoChunkState::Sealed as i32;
-                chunk.modify_ts = chunk.modify_ts.saturating_add(1);
-                chunk.sealed_ts_ms = now_ms;
-                chunk.sealed_length =
-                    u32::try_from(chunk.acknowledged_cursor.div_ceil(1024)).unwrap_or(u32::MAX);
-                close_acknowledged_strips(&mut chunk, now_ms);
-                self.store.put_chunk(&chunk).await?;
-                if let Some(ref mut guard) = guard {
-                    guard.refresh(chunk.clone());
-                }
-                sealed = sealed.saturating_add(1);
-                info!(chunk_id = ?chunk_id, cursor = chunk.acknowledged_cursor, "expired shared writer chunk sealed");
-            }
-            start_after = chunks.last().and_then(|chunk| chunk.id);
-            if chunks.len() < 1_000 {
-                break;
-            }
-        }
-        Ok(sealed)
-    }
-
     /// Commit all segments in the given strips to diskdb (two-phase
     /// commit: mark tentative blocks as permanent after chunk persist).
     async fn commit_strip_segments(&self, strips: &[ChunkStrip]) -> Result<(), LifecycleError> {
@@ -1574,29 +1510,6 @@ fn writer_lease_deadline(now_ms: u64, writer_epoch: u64, writer_lease_ms: u64) -
     } else {
         now_ms.saturating_add(writer_lease_ms)
     }
-}
-
-fn close_acknowledged_strips(chunk: &mut Chunk, now_ms: u64) {
-    if chunk.writer_epoch == 0 || chunk.acknowledged_cursor == 0 {
-        return;
-    }
-    let cursor = chunk.acknowledged_cursor;
-    let mut last_closed = chunk.closed_strip_sequence;
-    for strip in &mut chunk.strips {
-        let start = u64::from(strip.chunk_offset) * 1024;
-        if cursor <= start {
-            break;
-        }
-        let end = u64::from(strip.chunk_offset.saturating_add(strip.capacity)) * 1024;
-        let length = cursor.min(end).saturating_sub(start);
-        strip.sealed_length = u32::try_from(length.div_ceil(1024)).unwrap_or(u32::MAX);
-        strip.sealed_ts_ms = now_ms;
-        last_closed = Some(strip.strip_sequence);
-        if cursor < end {
-            break;
-        }
-    }
-    chunk.closed_strip_sequence = last_closed;
 }
 
 fn seal_written_strips(chunk: &mut Chunk, seal_length: u32, now_ms: u64) {

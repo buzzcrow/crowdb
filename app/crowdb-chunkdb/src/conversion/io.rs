@@ -106,13 +106,6 @@ impl ConversionDiskIo {
         offset: u64,
         length: u32,
     ) -> Result<Bytes, ConversionIoError> {
-        #[cfg(feature = "test-util")]
-        if self.client.load().is_none() {
-            return Ok(Bytes::from(vec![
-                0;
-                usize::try_from(length).expect("u32 fits usize")
-            ]));
-        }
         let target = target(segment, unit_bytes)?;
         let client = self.client()?;
         client

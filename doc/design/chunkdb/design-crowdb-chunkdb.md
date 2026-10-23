@@ -739,14 +739,22 @@ entry and task record in one task-partition transaction; no second expiry is
 stored in chunk metadata. The owner self-fences before that authority can
 expire. The task scanner reads due task-index entries only, never scans the
 chunk table. After claim and the shared request-age/skew safety window, it
-parses frames from offset zero and seals at the last complete verified frame,
-or deletes an empty chunk. A scan must reach at least the persisted
-`acknowledged_cursor` before sealing or deleting. An unreadable or invalid
-frame before that cursor is incomplete evidence: retain the Active chunk and
-all physical segments, and report the scanned boundary, acknowledged cursor
-and chunk identity for diagnosis. Zero readable frames cannot prove emptiness
-when bytes have already been acknowledged. A restarted owner always allocates
-a new Active chunk.
+observes content using at-most-1-MiB windows and the shared bounded frame
+parser. Stream/Wal scans include allocated capacity beyond the persisted
+checkpoint and commit only complete append groups. Ordinary object publication
+already persists its physical cursor; its finalization validates that prefix.
+An exact-capacity end needs no extra header request.
+
+Available mirror candidates run concurrently within one IO deadline. Select
+the shortest healthy complete prefix and verify agreement on overlapping
+contents. Failed, partial or corrupt observations do not become shorter
+candidates; valid conflicting contents fail explicitly. No readable candidate
+means retry while retaining the Active layout, including a Stream/Wal with a
+zero checkpoint. A scan must cover the persisted `acknowledged_cursor` before
+sealing or deleting. The task writer generation must match the chunk epoch.
+Finalization uses this durable task path exclusively; an expired metadata
+checkpoint cannot independently authorize sealing. A restarted owner always
+allocates a new Active chunk.
 
 ## 10. Per-Chunk-ID Lifecycle Lock + Chunk Cache
 

@@ -3271,7 +3271,7 @@ async fn chunkdb_lock_serializes_concurrent_append_delete() {
 }
 
 #[tokio::test]
-async fn chunkdb_shared_writer_cursor_is_fenced_and_orphan_is_sealed() {
+async fn chunkdb_shared_writer_cursor_is_fenced_and_renewable() {
     let cluster = KvCluster::start_pinned().await;
     let hw = cluster.make_hardware_client();
     seed_hardware(&hw).await;
@@ -3319,11 +3319,4 @@ async fn chunkdb_shared_writer_cursor_is_fenced_and_orphan_is_sealed() {
             .await,
         Err(LifecycleError::StateConflict)
     ));
-    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-    assert_eq!(harness.handler.seal_expired_writer_chunks().await.unwrap(), 1);
-    let sealed = harness.handler.query_chunk(&chunk_id).await.unwrap();
-    assert_eq!(sealed.state, ChunkState::Sealed as i32);
-    assert_eq!(sealed.sealed_length, 1024);
-    assert_eq!(sealed.acknowledged_cursor, 1024 * 1024);
-    assert_eq!(sealed.closed_strip_sequence, Some(0));
 }

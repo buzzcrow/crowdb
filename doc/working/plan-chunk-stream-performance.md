@@ -840,6 +840,31 @@ adaptation rather than a new transport or storage engine.
   adaptation and finalizer/main-worker wiring still remain. Do not activate
   deferred ACKs yet. Preserve Q4 read-only capture semantics separately.
 
+## Finalizer shared-prefix integration (partial T16)
+
+- Removed the unused table-scanning expiry API and its cursor-only seal path,
+  plus its now-unused reservation cleanup helper. Durable liveness tasks are
+  the only expiry finalizer. Exact seal still performs its reservation cleanup
+  and strip closure under the existing lifecycle serialization.
+- The finalizer now uses shared complete-prefix observation, at-most-1-MiB
+  physical windows across strips, concurrent mirror candidates, shortest healthy
+  complete group selection and overlap comparison within one 30-second budget.
+  Stream/Wal inspect allocated bytes beyond an old checkpoint; ordinary objects
+  validate their already persisted publication cursor. Required checkpoints
+  remain a lower bound. A task for another writer generation cannot mutate data.
+- Removed the test-util branch fabricating zero reads when ConversionDiskIo
+  has no connected client. Missing IO is now an explicit error in every build.
+  A zero Stream checkpoint with failed IO cannot authorize deletion.
+- Real current-format bytes over the component TCP DiskIO seam cover Stream
+  and Wal, an incomplete 180-KiB append after a complete 100-KiB append, unequal
+  valid tails, corrupt first replica, conflicting valid contents, no connected
+  IO, an interior-group checkpoint and a stale task generation. Ordinary tree
+  frame finalization remains covered. Full ChunkDB targets pass; focused and
+  lint receipts are `finalizer-{integration,full,clippy-final,fmt}.log`.
+- This does not claim the main worker or new owner recovery is integrated.
+  Fresh allocation/unwritten-tail initialization, owner authority/drain, and
+  the last referenced sealed-chunk recovery remain part of T15–T19.
+
 ## Required mirror count evidence (partial T14)
 
 - A regression reproduced a three-copy configuration returning `Ok(())` after
