@@ -4,7 +4,9 @@
 #[path = "common/stream_lease.rs"]
 mod fixture;
 
-use crowdb_kv_client::{StreamProcessLeaseClient, StreamProcessLeaseError};
+use crowdb_kv_client::{
+    StreamProcessAuthority, StreamProcessLeaseClient, StreamProcessLeaseError, StreamProcessLeaseTiming,
+};
 use crowdb_protocol::{
     chunk_stream::StreamPurpose,
     key::{StreamProcessLeaseKey, TextKey},
@@ -155,4 +157,38 @@ async fn replacement_retains_grant_fences_and_rejects_partial_records() {
         client.load(StreamPurpose::Wal, 7).await,
         Err(StreamProcessLeaseError::Invalid(_))
     ));
+}
+
+#[tokio::test]
+async fn confirmed_group0_replacement_revokes_the_old_local_context() {
+    let fixture = TestStreamLeaseKv::start().await;
+    let client = StreamProcessLeaseClient::new(fixture.kv.clone());
+    let first = client
+        .claim(StreamPurpose::Wal, 7, [1; 16], None, 1_000, 12_000)
+        .await
+        .unwrap();
+    let now = std::time::Instant::now();
+    let owner =
+        StreamProcessAuthority::new(first.clone(), StreamProcessLeaseTiming::default(), 1_000, now).unwrap();
+    let context = owner.capture(now).unwrap();
+    let next = client
+        .claim(
+            StreamPurpose::Wal,
+            7,
+            [2; 16],
+            Some(first.identity),
+            1_100,
+            12_000,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        owner.observe(next, 1_100, std::time::Instant::now()),
+        Err(StreamProcessLeaseError::Replaced)
+    ));
+    assert!(matches!(
+        owner.validate_context(&context, std::time::Instant::now()),
+        Err(StreamProcessLeaseError::Expired)
+    ));
+    assert!(owner.status(std::time::Instant::now()).fenced);
 }

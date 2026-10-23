@@ -10,6 +10,11 @@ use crowdb_protocol::key::{StreamProcessLeaseKey, TextKey};
 
 use crate::{CrowdbKvClient, Error, GetOutcome, ReadMode};
 
+mod authority;
+pub use authority::{
+    StreamProcessAuthority, StreamProcessContext, StreamProcessLeaseStatus, StreamProcessLeaseTiming,
+};
+
 #[derive(Debug, thiserror::Error)]
 pub enum StreamProcessLeaseError {
     #[error("invalid Stream process lease: {0}")]

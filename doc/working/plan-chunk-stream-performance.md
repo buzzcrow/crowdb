@@ -1236,6 +1236,23 @@ adaptation rather than a new transport or storage engine.
   or permission to adopt predecessor data. Normal WAL authority still requires
   the existing exact serving grant; preparation IO uses the process scope.
 
+## Local process-authority implementation (partial T18)
+
+- A lock-free local projection captures the fixed process identity and an
+  absolute monotonic IO deadline. Admission and completion checks read local
+  state without Group-0 requests. Continuous renewal preserves ownership but
+  cannot extend an already admitted IO deadline.
+- Expiry, a renewal gap, explicit fencing and confirmed replacement cannot be
+  undone in place. Out-of-order older observations cannot shorten a newer live
+  lease; malformed observations do not revoke accepted authority.
+- Seven local clock/context tests and five Group-0 lease tests pass, including
+  a confirmed replacement invalidating an admitted local context. Strict
+  protocol/client all-target clippy and workspace fmt pass. Receipts:
+  `process-authority-final-focused.log`, `process-authority-clippy-final.log`,
+  and `process-authority-fmt.log` under the requirement artifact directory.
+- This is a tested primitive. Production boot, independent renewal, grant
+  publication and Stream IO still need to use it; this does not complete T18.
+
 ## Ownership execution notes (T18/T19 target)
 
 - `ServingGrant` currently binds a persistent instance ID, not a process boot.

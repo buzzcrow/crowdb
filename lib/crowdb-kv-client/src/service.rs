@@ -12,5 +12,8 @@ pub mod watch_notify;
 pub use discovery::ServiceDiscoveryClient;
 pub use domain_monitor::DomainMonitorClient;
 pub use registry::ServiceRegistryClient;
-pub use stream_lease::{StreamProcessLeaseClient, StreamProcessLeaseError};
+pub use stream_lease::{
+    StreamProcessAuthority, StreamProcessContext, StreamProcessLeaseClient, StreamProcessLeaseError,
+    StreamProcessLeaseStatus, StreamProcessLeaseTiming,
+};
 pub use watch_notify::{WatchNotify, WatchNotifyClient, WatchSubscription};
