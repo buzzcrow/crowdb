@@ -31,7 +31,16 @@ pub async fn publish(
     store: &ChunkKvMetadataStore,
     request: &mut PublicationRequest,
 ) -> Result<(), PublicationError> {
+    publish_versioned(store, request).await.map(|_| ())
+}
+
+/// Publishes once and returns the revision from that same mutation.
+/// # Errors
+/// Returns encoding or routed storage failure without replaying the publication.
+pub async fn publish_versioned(
+    store: &ChunkKvMetadataStore,
+    request: &PublicationRequest,
+) -> Result<u64, PublicationError> {
     let object_key = MetadataKey::object(&request.tenant, request.object.bucket_id, &request.object.key)?;
-    store.put(object_key, request.object.encode()?).await?;
-    Ok(())
+    Ok(store.put(object_key, request.object.encode()?).await?)
 }

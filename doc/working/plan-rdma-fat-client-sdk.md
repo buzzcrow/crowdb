@@ -339,6 +339,15 @@ transport acceptance alone cannot establish SDK completion.
 
 ## Immediate dependent implementation
 
+- Shared writer selection and `PreparedPut` now serve HTTP PUT. Durable
+  completion precedes one versioned publication, retaining the same metadata
+  revision and uncertain timeout classification without a subsequent HEAD.
+  Native physical views require finalization and reject later header/footer
+  rewrites, including a changed chunk destination. The new ownership test,
+  full S3 library suite, affected HTTP tests, three-crate clippy and formatting
+  pass. Explicit HCA native producer framing still sends 1 MiB directly with
+  zero staging-copy bytes. Native PUT attachment is the next task.
+
 - Extract HTTP `ObjectWriter` selection/finalization and publication into
   shared S3 write sessions before native PUT/copy/multipart. Preserve the
   existing digest pipeline, native framed owners, small-writer pools, large

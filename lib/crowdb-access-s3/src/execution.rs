@@ -4,7 +4,11 @@
 //! Trusted S3 execution shared by HTTP parsing and native business handles.
 
 mod namespace;
+mod put;
+mod write;
 pub use namespace::{DeleteObjectFailure, DeleteObjectResult, DeleteObjectStream, ObjectListRequest};
+pub use put::{PreparedPut, PutObjectInfo};
+pub use write::{ObjectWriter, S3WritePolicy};
 
 use std::sync::Arc;
 

@@ -51,6 +51,40 @@ async fn native_owner_rejects_wrong_purposes_before_touching_reserved_regions() 
 }
 
 #[tokio::test]
+async fn native_physical_views_require_finalization_and_cannot_be_rewritten_after_publication() {
+    let allocator = NativeBodyAllocator::new(MAX_FRAME_BYTES, MAX_FRAME_BYTES).unwrap();
+    let provider = allocator.object_receiver();
+    provider.enable_owner_handoff();
+    let mut allocation = poll_fn(|cx| provider.poll_next_buffer(cx, 7)).await.unwrap();
+    for (slot, byte) in allocation.spare_capacity_mut()[..7].iter_mut().zip(*b"payload") {
+        slot.write(byte);
+    }
+    allocation.advance(7).unwrap();
+    drop(provider.on_data_ready(allocation).unwrap());
+    let mut owner = provider.finish_owner().unwrap().unwrap();
+    assert!(owner.views(0..1).is_err());
+    let chunk = ChunkId { high: 17, low: 29 };
+    let range = owner
+        .finalize_frame(0, FrameMagic::RepoLargeV2, chunk, 123)
+        .unwrap();
+    let view = owner.views(range.clone()).unwrap().pop().unwrap();
+    let expected = view.to_vec();
+    assert_eq!(
+        owner
+            .finalize_frame(0, FrameMagic::RepoLargeV2, chunk, 999)
+            .unwrap(),
+        range
+    );
+    assert!(owner
+        .finalize_frame(0, FrameMagic::RepoLargeV2, ChunkId { high: 1, low: 2 }, 999)
+        .is_err());
+    assert!(owner.prepare_frames(FrameMagic::RepoSmallV2, 999).is_err());
+    owner.prepare_frames(FrameMagic::RepoLargeV2, 999).unwrap();
+    assert_eq!(view.as_ref(), expected);
+    assert_eq!(parse_frame(&view, chunk).unwrap().payload, b"payload");
+}
+
+#[tokio::test]
 async fn native_frame_retains_and_releases_allocator_credit() {
     let allocator = NativeBodyAllocator::new(MAX_FRAME_BYTES, MAX_FRAME_BYTES).unwrap();
     let provider = allocator.object_receiver();
