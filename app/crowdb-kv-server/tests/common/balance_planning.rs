@@ -177,7 +177,7 @@ pub async fn recent_split(control: &Group0ControlPlane) {
         parent_epoch: 1,
         parent_next_epoch: 2,
         parent_artifact: artifact(50),
-        retained_parent_artifact: artifact(60),
+        retained_parent_artifact: artifact(50),
         split_key: b"f".to_vec(),
         child: SplitChildAssignment {
             partition_id: Id128 { high: 91, low: 2 },

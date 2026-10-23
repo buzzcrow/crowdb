@@ -10,15 +10,12 @@
     clippy::too_many_lines
 )]
 
-//! Hand-written Rust types replacing the prost-generated `crow.common`
-//! types. API-compatible with the former proto-generated structs — same
-//! field names, types, and derives. No `prost::Message` trait (removed
-//! with the protobuf cutover).
+//! Shared service-registry, hardware and RPC value types.
 
 use serde::{Deserialize, Serialize};
 
 /// Implement `From<Enum> for i32` and `TryFrom<i32> for Enum` for a
-/// `#[repr(i32)]` enum, matching prost's generated conversions.
+/// `#[repr(i32)]` enum.
 macro_rules! impl_enum_conversions {
     ($enum:ident, $($variant:ident = $value:expr),+ $(,)?) => {
         impl From<$enum> for i32 {

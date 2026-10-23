@@ -317,6 +317,9 @@ group-0 monitor advance them in this order:
    writes between the fixed frontier and that dispatch change.
 3. Readiness binds the exact common cutover, the retained-parent next epoch,
    and the child's complete tail overlay.
+   Split plans retain the original parent tree/WAL identity in every phase.
+   The strict readiness record contains one child overlay and rejects unknown
+   fields; the planned timestamp is required.
    It is persisted before catalog publication.
 4. One catalog generation atomically replaces the old parent entry with a
    smaller entry having the same partition/tree/stream identity and the next

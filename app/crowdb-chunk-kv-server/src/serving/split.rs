@@ -107,13 +107,6 @@ impl SplitStateMachine {
             return Err(MonitorError::PlanFailed("split parent was not preparing".into()));
         }
         let mut next = self.transition.clone();
-        if next.retained_parent_artifact.tree_id != next.parent_artifact.tree_id
-            || next.retained_parent_artifact.stream_name != next.parent_artifact.stream_name
-        {
-            next.retained_parent_artifact
-                .tail_overlay
-                .clone_from(&proof.retained_parent_tail_overlay);
-        }
         next.child.artifact.tail_overlay = Some(proof.child_tail_overlay.clone());
         next.readiness_proof = Some(proof);
         next.phase = SplitPhase::ChildPrepared;

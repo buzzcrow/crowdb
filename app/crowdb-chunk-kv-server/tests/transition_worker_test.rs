@@ -322,7 +322,7 @@ fn split_transition() -> SplitTransition {
         parent_owner: owner(1),
         parent_epoch: 3,
         parent_artifact: artifact(11),
-        retained_parent_artifact: artifact(12),
+        retained_parent_artifact: artifact(11),
         parent_next_epoch: 4,
         split_key: b"m".to_vec(),
         child: SplitChildAssignment {
@@ -721,8 +721,8 @@ async fn repeated_local_split_uses_current_retained_writer() {
         },
         parent_owner: owner(1),
         parent_epoch: 4,
-        parent_artifact: first.retained_parent_artifact,
-        retained_parent_artifact: artifact(14),
+        parent_artifact: first.retained_parent_artifact.clone(),
+        retained_parent_artifact: first.retained_parent_artifact,
         parent_next_epoch: 5,
         split_key: b"g".to_vec(),
         child: SplitChildAssignment {

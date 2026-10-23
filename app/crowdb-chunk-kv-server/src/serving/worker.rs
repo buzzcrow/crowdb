@@ -366,16 +366,7 @@ impl TransitionExecutor {
         if artifact.child.applied_seq != artifact.cutover_seq {
             return Err(plan_error("split child does not share the cutover frontier"));
         }
-        let mut retained_parent_tail_overlay = None;
-        let mut retained_parent_artifact = transition.retained_parent_artifact.clone();
-        if retained_parent_artifact.tree_id != transition.parent_artifact.tree_id
-            || retained_parent_artifact.stream_name != transition.parent_artifact.stream_name
-        {
-            retained_parent_tail_overlay = Some(split_tail_overlay(&artifact, &artifact.retained_parent));
-            retained_parent_artifact
-                .tail_overlay
-                .clone_from(&retained_parent_tail_overlay);
-        }
+        let retained_parent_artifact = transition.retained_parent_artifact.clone();
         info!(
             transition_id_high = transition.transition_id.high,
             transition_id_low = transition.transition_id.low,
@@ -399,7 +390,6 @@ impl TransitionExecutor {
             child_applied_seq: artifact.child.applied_seq,
             child_tree_manifest: artifact.child.tree_manifest,
             child_root_manifest_generation: artifact.child.root_manifest_generation,
-            retained_parent_tail_overlay,
             child_tail_overlay: split_tail_overlay(&artifact, &artifact.child),
         })
     }

@@ -1285,6 +1285,27 @@ adaptation rather than a new transport or storage engine.
   preparation IO and ordered physical drain/release remain. This does not yet
   complete the writer-ownership acceptance or enable ordinary append without KV.
 
+## Current split metadata cleanup (partial T04)
+
+- Removed the replacement-parent split variant and its extra retained-parent
+  overlay from protocol records, readiness construction and state reduction.
+  Every split phase retains the original parent tree/WAL identity; only the
+  child carries the range-bounded overlay used by the current design.
+- Split/readiness JSON rejects unknown fields, including the removed overlay;
+  the planned timestamp is required. Tests exercise current-record roundtrip,
+  omitted timestamps, retired fields and replaced parent identity. Fixtures now
+  use the same current parent identity instead of manufacturing old records.
+- Recovery tests retain exact mismatch/phase checks. Independent plain recovery
+  applies to the retained parent; overlay-proof checks apply to the child.
+  The initial focused failure was an old fixture expecting both halves to have
+  overlays, not a production failure. Its setup/assertions now model the actual
+  current artifacts and preserve the mismatch checks.
+- The 31 split-filter cases pass in `split-current-format-focused-2.log`.
+  All four affected crates pass 592 cases across 106 targets with no ignored
+  cases in `split-current-format-tests.log`. Six-package strict all-target
+  clippy and workspace fmt pass in `split-current-format-clippy.log` and
+  `split-current-format-fmt.log`.
+
 ## Ownership execution notes (T18/T19 target)
 
 - Grants and conditional heartbeat now bind one fixed per-boot process lease.

@@ -702,7 +702,7 @@ async fn assert_chunk_kv_split_plan(
         child_applied_seq: 11,
         child_tree_manifest: 1,
         child_root_manifest_generation: 1,
-        retained_parent_tail_overlay: None,
+
         child_tail_overlay: overlay,
     });
     prepared.validate().unwrap();

@@ -28,9 +28,11 @@ async fn committed_split_proves_both_recovered_writers_and_rejects_mismatches() 
         let partition = recovered(&entry).await;
         let service = ChunkKvService::new(test_process::TestProcess::authority(1), 4).unwrap();
         install(&service, &entry, &partition);
-        assert!(service
-            .activate_recovered_partition(entry.partition_id, 2)
-            .is_err());
+        if !retained {
+            assert!(service
+                .activate_recovered_partition(entry.partition_id, 2)
+                .is_err());
+        }
         let mut uncommitted = transition.clone();
         uncommitted.phase = SplitPhase::ChildPrepared;
         assert!(service
@@ -62,7 +64,11 @@ async fn committed_split_proves_both_recovered_writers_and_rejects_mismatches() 
         } else {
             wrong_artifact.child.artifact.tree_id += 1;
         }
-        wrong_artifact.validate().unwrap();
+        if retained {
+            assert!(wrong_artifact.validate().is_err());
+        } else {
+            wrong_artifact.validate().unwrap();
+        }
         assert!(service
             .activate_recovered_split_partition(entry.partition_id, 2, &wrong_artifact)
             .is_err());
@@ -109,7 +115,7 @@ async fn materialized_split_half_recovers_while_sibling_keeps_the_transition_mar
         let sibling = entry(&transition, !retained);
         assert_eq!(
             service.catalog_overlay_transition_id(sibling.partition_id),
-            Some(transition.transition_id),
+            retained.then_some(transition.transition_id),
         );
         service
             .activate_recovered_partition(clean.partition_id, clean.owner_epoch)
@@ -124,7 +130,7 @@ async fn materialized_split_half_recovers_while_sibling_keeps_the_transition_mar
 #[tokio::test]
 async fn materialized_catalog_replaces_unactivated_overlay_with_independent_recovery() {
     let transition = transition();
-    let original = entry(&transition, true);
+    let original = entry(&transition, false);
     let overlay = recovered(&original).await;
     let service = ChunkKvService::new(test_process::TestProcess::authority(1), 4).unwrap();
     install(&service, &original, &overlay);
@@ -145,10 +151,12 @@ async fn materialized_catalog_replaces_unactivated_overlay_with_independent_reco
     service
         .reconcile_partitions(std::slice::from_ref(&page), std::slice::from_ref(&plain))
         .unwrap();
-    let mut sibling = entry(&transition, false);
+    let mut sibling = entry(&transition, true);
     sibling.artifact.tail_overlay = None;
     sibling.transition_id = None;
     page.entries.push(sibling);
+    page.entries
+        .sort_by(|left, right| left.range.start.cmp(&right.range.start));
     page.seal().unwrap();
     let mut head = ChunkKvRangeCatalogHead {
         generation: 2,
@@ -186,9 +194,9 @@ fn transition() -> SplitTransition {
         target_stream_start_seq: 2,
     };
     let retained = PartitionArtifact {
-        tree_id: 2,
-        stream_name: StreamName { high: 1, low: 2 },
-        tail_overlay: Some(overlay.clone()),
+        tree_id: 1,
+        stream_name: StreamName { high: 1, low: 1 },
+        tail_overlay: None,
     };
     let child = PartitionArtifact {
         tree_id: 3,
@@ -239,7 +247,6 @@ fn transition() -> SplitTransition {
             child_applied_seq: 1,
             child_tree_manifest: 1,
             child_root_manifest_generation: 1,
-            retained_parent_tail_overlay: Some(overlay.clone()),
             child_tail_overlay: overlay,
         }),
         failure: None,
