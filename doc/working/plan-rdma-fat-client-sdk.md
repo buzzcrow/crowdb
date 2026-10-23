@@ -339,6 +339,15 @@ transport acceptance alone cannot establish SDK completion.
 
 ## Immediate dependent implementation
 
+- HTTP object copy and upload-part copy now use shared verified copy execution.
+  Native copy accepts ordinary source names or a tenant/authority-bound retained
+  selection; overwrites cannot replace that selection. Metadata COPY/REPLACE,
+  self-copy validation, conditions, source integrity, durable completion and
+  uncertain publication remain shared. Three native cases cover these contracts
+  and lost applied replies. Native/S3 all-target suites (41 native cases),
+  affected HTTP tests, focused clippy and formatting pass. Full service parity
+  and native multipart attachment remain pending.
+
 - Native `begin_put`/`put_vec` now use the shared durable PUT session and return
   the publication's exact revision. Input calls accept at most 1 MiB and retain
   actual allocation capacity; foreign-runtime owners are rejected. Registered

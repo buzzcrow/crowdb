@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 mod body;
 mod config;
+mod copy;
 mod locality;
 mod namespace;
 mod object;
@@ -23,7 +24,9 @@ pub use namespace::{DeleteObjects, ListObject, ListObjects, ListOptions};
 
 pub use body::ObjectBody;
 pub use config::S3ClientConfig;
+pub use copy::CopyOptions;
 pub use crowdb_access_s3::condition::{EtagSelection, ReadPreconditions};
+pub use crowdb_access_s3::execution::CopyMetadata;
 pub use crowdb_access_s3::execution::{PutObjectInfo, S3WritePolicy};
 pub use crowdb_access_s3::metadata::UserMetadata;
 pub use crowdb_access_s3::range::ByteRange;

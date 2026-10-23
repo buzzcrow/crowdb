@@ -6,64 +6,15 @@ mod metadata;
 #[path = "common/write_storage.rs"]
 mod write_storage;
 
-use std::num::NonZeroU64;
+#[path = "common/write_fixture.rs"]
+mod fixture;
+
+use crowdb_protocol::frame::{MAX_FRAME_BYTES, MAX_FRAME_PAYLOAD_BYTES};
+use crowdb_sdk_native::Error;
+use fixture::{context, fixture, options, read};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-
-use crowdb_access_s3::metadata::TenantId;
-use crowdb_protocol::frame::{MAX_FRAME_BYTES, MAX_FRAME_PAYLOAD_BYTES};
-use crowdb_sdk_native::s3::{GetOptions, PutObjectInfo, PutOptions, S3Client, S3ClientConfig, S3WritePolicy};
-use crowdb_sdk_native::{ClientRuntime, Error, OperationContext};
-use write_storage::TestWriteStorage;
-
-fn context(id: u64) -> OperationContext {
-    OperationContext::new(
-        NonZeroU64::new(id).unwrap(),
-        Instant::now() + Duration::from_secs(5),
-    )
-}
-
-async fn fixture(loss: Option<Arc<AtomicBool>>) -> (ClientRuntime, S3Client, Arc<TestWriteStorage>) {
-    let backend = TestWriteStorage::new();
-    let metadata = match loss {
-        Some(loss) => metadata::client_with_loss(loss).await,
-        None => metadata::client().await,
-    };
-    let runtime = backend.runtime(metadata);
-    let mut config = S3ClientConfig::from(TenantId::new(b"tenant".to_vec()).unwrap());
-    let mut policy = S3WritePolicy::basic(0);
-    let large = Arc::make_mut(&mut policy.large_write.client);
-    large.large_mirror_copies = Some(1);
-    large.max_chunk_size = 2 << 20;
-    large.large_parallel_strip_writes = 1;
-    config.write_policy = Some(policy);
-    let client = S3Client::new(runtime.clone(), config).unwrap();
-    client.create_bucket(context(1), b"bucket").await.unwrap();
-    (runtime, client, backend)
-}
-
-fn options(length: usize) -> PutOptions {
-    PutOptions {
-        object: PutObjectInfo {
-            content_length: Some(length as u64),
-            ..PutObjectInfo::default()
-        },
-        ..PutOptions::default()
-    }
-}
-
-async fn read(client: &S3Client, key: &[u8]) -> Vec<u8> {
-    let mut get = client
-        .get_object(context(900), b"bucket", key, &GetOptions::default())
-        .await
-        .unwrap();
-    let mut output = Vec::new();
-    while let Some(lease) = get.body.next().await.unwrap() {
-        output.extend_from_slice(lease.as_slice());
-    }
-    output
-}
+use std::time::Duration;
 
 #[tokio::test]
 async fn ordinary_put_streams_mixed_sizes_and_returns_the_published_revision() {
@@ -178,18 +129,18 @@ async fn invalid_length_checksum_and_cancel_never_publish_an_object() {
             .await,
         Err(Error::Integrity)
     );
-    let context = context(12);
+    let cancellation_context = context(12);
     let mut cancelled = client
-        .begin_put(context.clone(), b"bucket", b"cancel", options(7))
+        .begin_put(cancellation_context.clone(), b"bucket", b"cancel", options(7))
         .await
         .unwrap();
-    context.cancellation.cancel();
+    cancellation_context.cancellation.cancel();
     let input = runtime.resources().retain_vec(vec![1; 7], 12, 12, 0, 0).unwrap();
     assert_eq!(cancelled.write(input).await, Err(Error::Cancelled));
     assert_eq!(cancelled.finish().await, Err(Error::Cancelled));
     for key in [b"short".as_slice(), b"digest", b"cancel"] {
         assert!(matches!(
-            client.resolve_object(self::context(30), b"bucket", key).await,
+            client.resolve_object(context(30), b"bucket", key).await,
             Err(Error::S3(crowdb_access_s3::S3ErrorCode::NoSuchKey))
         ));
     }

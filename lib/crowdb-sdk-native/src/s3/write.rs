@@ -249,7 +249,7 @@ impl PutObject {
     }
 }
 
-fn map_outcome(outcome: PutOutcome, request_id: u64) -> Error {
+pub(super) fn map_outcome(outcome: PutOutcome, request_id: u64) -> Error {
     match outcome {
         PutOutcome::Timeout => Error::UncertainMutation {
             request_id,

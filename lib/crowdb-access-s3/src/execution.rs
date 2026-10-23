@@ -3,9 +3,11 @@
 
 //! Trusted S3 execution shared by HTTP parsing and native business handles.
 
+mod copy;
 mod namespace;
 mod put;
 mod write;
+pub use copy::{CompletedCopy, CopyFailure, CopyMetadata};
 pub use namespace::{DeleteObjectFailure, DeleteObjectResult, DeleteObjectStream, ObjectListRequest};
 pub use put::{PreparedPut, PutObjectInfo};
 pub use write::{ObjectWriter, S3WritePolicy};

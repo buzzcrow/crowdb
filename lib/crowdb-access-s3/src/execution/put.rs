@@ -4,7 +4,7 @@
 //! Durable object completion followed by exactly one metadata publication.
 
 use super::{ObjectWriter, S3Executor, S3WritePolicy};
-use crate::metadata::{ChunkKvMetadataStore, MetadataKey, ObjectRecord, UserMetadata};
+use crate::metadata::{BucketId, ChunkKvMetadataStore, MetadataKey, ObjectRecord, UserMetadata};
 use crate::object::SelectedObject;
 use crate::publication::{publish_versioned, PublicationRequest};
 use crate::streaming::{attach_completed_locations, classify_publication_error, PutErrorCode, PutOutcome};
@@ -47,10 +47,20 @@ impl S3Executor {
         info: PutObjectInfo,
         policy: &S3WritePolicy,
     ) -> Result<PreparedPut, S3ErrorCode> {
+        let bucket_id = self.resolve_bucket(bucket).await?;
+        self.prepare_put_in_bucket(bucket_id, key, info, policy).await
+    }
+
+    pub(super) async fn prepare_put_in_bucket(
+        &self,
+        bucket_id: BucketId,
+        key: &[u8],
+        info: PutObjectInfo,
+        policy: &S3WritePolicy,
+    ) -> Result<PreparedPut, S3ErrorCode> {
         if info.content_type.is_empty() || info.content_length.is_some_and(|length| length > 5 << 40) {
             return Err(S3ErrorCode::InvalidRequest);
         }
-        let bucket_id = self.resolve_bucket(bucket).await?;
         MetadataKey::object(&self.tenant, bucket_id, key).map_err(|_| S3ErrorCode::InvalidRequest)?;
         let mut route_key = Vec::with_capacity(self.tenant.as_bytes().len() + 16 + key.len());
         route_key.extend_from_slice(self.tenant.as_bytes());

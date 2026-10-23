@@ -5,19 +5,16 @@
 
 use crowdb_access_s3::condition::ObjectConditions;
 use crowdb_access_s3::error::S3ErrorCode;
-use crowdb_access_s3::integrity::SinglePartIntegrity;
+use crowdb_access_s3::execution::{CopyFailure, CopyMetadata, S3WritePolicy};
 use crowdb_access_s3::metadata::{MultipartPartRecord, ObjectRecord};
-use crowdb_access_s3::publication::PublicationRequest;
 use crowdb_access_s3::route::{S3Operation, S3Route};
-use crowdb_access_s3::streaming::{publish_completed_locations, PutOutcome};
 use crowdb_access_s3::{copy, retrieval, wire};
-use crowdb_chunk_client::{ChunkIoWriter, ProtoLocation};
 use hyper::{body::Incoming, Request, Response};
 use std::sync::Arc;
 
 use super::multipart::{map_multipart_error, parse_md5};
 use super::{
-    map_put_outcome, map_retrieval, required_bucket, required_key, strict_header, unix_millis, ObjectWriter,
+    map_put_outcome, map_retrieval, required_bucket, required_key, strict_header, unix_millis,
     ProductionS3Operations, ResponseBody,
 };
 
@@ -78,9 +75,8 @@ impl ProductionS3Operations {
             Some("REPLACE") => true,
             _ => return Err(S3ErrorCode::InvalidRequest),
         };
-        let attributes =
-            crowdb_access_s3::metadata::UserMetadata::from_headers(request.headers())?.encode()?;
-        let mut record = self.copy_source(request, false).await?;
+        let attributes = crowdb_access_s3::metadata::UserMetadata::from_headers(request.headers())?;
+        let record = self.copy_source(request, false).await?;
         let destination = self.resolve_bucket(required_bucket(&route)?).await?;
         let key = required_key(&route)?.to_vec();
         copy::validate_object(&record, destination, &key, replace)?;
@@ -91,43 +87,38 @@ impl ProductionS3Operations {
         } else {
             record.content_type.clone()
         };
-        let mut writer_key = self.config.tenant.as_bytes().to_vec();
-        writer_key.extend_from_slice(destination.as_bytes());
-        writer_key.extend_from_slice(&key);
-        let source = record.clone();
-        record.bucket_id = destination;
-        record.key = key;
-        record.content_type = content_type;
-        if replace {
-            record.attributes = attributes;
-        }
+        let metadata = replace.then_some(CopyMetadata {
+            content_type,
+            user_metadata: attributes,
+        });
         let operations = self.clone();
         crate::s3::copy_body::response(
-            async move { operations.finish_object_copy(source, record, writer_key).await },
+            async move {
+                let selected = operations
+                    .execution
+                    .copy_object_record(
+                        &record,
+                        destination,
+                        &key,
+                        metadata,
+                        &S3WritePolicy {
+                            small_object_limit: operations.config.small_object_limit,
+                            large_write: operations.config.large_write.clone(),
+                        },
+                    )
+                    .await
+                    .map_err(|error| match error {
+                        CopyFailure::S3(code) => code,
+                        CopyFailure::Publication(outcome) => map_put_outcome(&outcome),
+                    })?;
+                Ok(wire::copy_result(
+                    &selected.record.etag,
+                    selected.record.modified_at_ms,
+                    false,
+                ))
+            },
             request.uri().path().to_owned(),
         )
-    }
-
-    async fn finish_object_copy(
-        &self,
-        source: ObjectRecord,
-        mut record: ObjectRecord,
-        writer_key: Vec<u8>,
-    ) -> Result<String, S3ErrorCode> {
-        let (etag, checksum, locations) = self.stream_copy(&source, None, &writer_key).await?;
-        let now = unix_millis();
-        record.etag = etag.clone();
-        record.checksum = checksum;
-        record.created_at_ms = now;
-        record.modified_at_ms = now;
-        let mut publication = PublicationRequest {
-            tenant: self.config.tenant.clone(),
-            object: record,
-        };
-        match publish_completed_locations(&self.storage.metadata, &mut publication, &locations).await {
-            PutOutcome::Success => Ok(wire::copy_result(&etag, now, false)),
-            outcome => Err(map_put_outcome(&outcome)),
-        }
     }
 
     pub(super) async fn upload_part_copy(
@@ -157,9 +148,20 @@ impl ProductionS3Operations {
         let operations = self.clone();
         crate::s3::copy_body::response(
             async move {
-                let (etag, _, locations) = operations
-                    .stream_copy(&record, range.as_deref(), &writer_key)
+                let copied = operations
+                    .execution
+                    .stream_copy(
+                        &record,
+                        range.as_deref(),
+                        &writer_key,
+                        &S3WritePolicy {
+                            small_object_limit: operations.config.small_object_limit,
+                            large_write: operations.config.large_write.clone(),
+                        },
+                    )
                     .await?;
+                let etag = copied.etag;
+                let locations = copied.locations;
                 let now = unix_millis();
                 let part = MultipartPartRecord {
                     bucket_id: session.bucket_id,
@@ -182,62 +184,6 @@ impl ProductionS3Operations {
             request.uri().path().to_owned(),
         )
     }
-
-    async fn stream_copy(
-        &self,
-        record: &ObjectRecord,
-        range: Option<&str>,
-        key: &[u8],
-    ) -> Result<(String, Vec<u8>, Vec<ProtoLocation>), S3ErrorCode> {
-        let mut prepared =
-            retrieval::prepare_get(&self.storage.chunks, record, range, &ObjectConditions::default())
-                .map_err(|error| map_retrieval(&error))?;
-        let length = prepared.headers.content_length;
-        let mut writer = self.prepare_writer(Some(length), key).await?;
-        let result = feed_copy(&mut prepared.stream, &mut writer, length).await;
-        match result {
-            Ok((etag, checksum)) => {
-                let Ok(locations) = writer.on_finish().await else {
-                    let _ = writer.on_error().await;
-                    return Err(S3ErrorCode::ServiceUnavailable);
-                };
-                Ok((etag, checksum, locations))
-            }
-            Err(error) => {
-                let _ = writer.on_error().await;
-                Err(error)
-            }
-        }
-    }
-}
-
-async fn feed_copy(
-    stream: &mut Option<retrieval::VerifiedGetStream>,
-    writer: &mut ObjectWriter,
-    length: u64,
-) -> Result<(String, Vec<u8>), S3ErrorCode> {
-    let mut integrity = SinglePartIntegrity::default();
-    let mut actual = 0_u64;
-    if let Some(stream) = stream {
-        while let Some(bytes) = stream.next_chunk().await {
-            let bytes = bytes.map_err(|_| S3ErrorCode::ServiceUnavailable)?;
-            actual = actual
-                .checked_add(bytes.len() as u64)
-                .ok_or(S3ErrorCode::InternalError)?;
-            integrity.update(&bytes);
-            while !writer.require_data() {
-                writer.wait_for_capacity().await;
-            }
-            writer
-                .on_data(bytes)
-                .await
-                .map_err(|_| S3ErrorCode::ServiceUnavailable)?;
-        }
-    }
-    if actual != length {
-        return Err(S3ErrorCode::InternalError);
-    }
-    Ok(integrity.finish())
 }
 
 fn source_conditions(request: &Request<Incoming>) -> Result<ObjectConditions<'_>, S3ErrorCode> {
