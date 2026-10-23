@@ -27,11 +27,7 @@ pub(super) fn ensure_mirror_copies(strip: &ChunkStrip, required: u32) -> Result<
 }
 
 pub(super) fn write_cursor(state: &ChunkStateView) -> u64 {
-    if state.grouped_progress.load(Ordering::Acquire) {
-        state.synchronized_cursor.load(Ordering::Acquire)
-    } else {
-        state.persisted_cursor.load(Ordering::Acquire)
-    }
+    state.synchronized_cursor.load(Ordering::Acquire)
 }
 
 pub(super) fn admit_write(
@@ -40,7 +36,7 @@ pub(super) fn admit_write(
     writer_epoch: u64,
     physical_offset: u64,
     data: &Bytes,
-) -> Result<(bool, u64)> {
+) -> Result<u64> {
     if chunk.writer_epoch != writer_epoch
         || state.sealed.load(Ordering::Acquire)
         || write_cursor(state) != physical_offset
@@ -50,27 +46,23 @@ pub(super) fn admit_write(
     let data_end = physical_offset
         .checked_add(data.len() as u64)
         .ok_or_else(|| StreamError::InvalidRequest("stream write cursor overflows".into()))?;
-    let grouped = parse_header(data).is_ok_and(|header| header.magic == FrameMagic::StreamV2);
-    let grouped_progress = state.grouped_progress.load(Ordering::Acquire);
-    if grouped_progress && !grouped {
+    let header = parse_header(data).map_err(|error| StreamError::InvalidRequest(error.to_string()))?;
+    if header.magic != FrameMagic::StreamV2 || data.get(14) != Some(&1) {
         return Err(StreamError::InvalidRequest(
-            "grouped stream writes require one frame revision".into(),
+            "stream writes require complete append groups".into(),
         ));
     }
-    if grouped && !grouped_progress {
-        if physical_offset != 0
+    if !state.writer_started.load(Ordering::Acquire)
+        && (physical_offset != 0
             || state.synchronized_cursor.load(Ordering::Acquire) != 0
             || state
                 .fresh_grouped_allocation
                 .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
-                .is_err()
-        {
-            return Err(StreamError::InvalidRequest(
-                "first grouped write requires this owner's fresh allocation".into(),
-            ));
-        }
-    } else if !grouped {
-        state.fresh_grouped_allocation.store(false, Ordering::Release);
+                .is_err())
+    {
+        return Err(StreamError::InvalidRequest(
+            "first grouped write requires this owner's fresh allocation".into(),
+        ));
     }
-    Ok((grouped, data_end))
+    Ok(data_end)
 }

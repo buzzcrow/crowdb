@@ -1,12 +1,13 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Rebuild mappings for durable frames beyond the last published directory.
+//! Rebuild complete grouped locations beyond the last directory checkpoint.
 
 use super::{Extent, StreamChunkStore};
 use crate::{ActiveChunkDescriptor, Result, StreamError};
 use crowdb_protocol::frame::{
-    frame_length, parse_frame, parse_header, FrameMagic, FRAME_HEADER_PREFIX_BYTES,
+    FramePrefixScanner, FrameScanConfig, FrameScanMode, FrameScanStop, MAX_FRAME_SCAN_EXTENTS,
+    MAX_FRAME_SCAN_INPUT_BYTES,
 };
 
 pub(super) async fn recover_active_frames(
@@ -15,55 +16,55 @@ pub(super) async fn recover_active_frames(
     durable_offset: u64,
     extents: &mut Vec<Extent>,
 ) -> Result<u64> {
+    let mut scanner = FramePrefixScanner::new(FrameScanConfig {
+        chunk_id: active.chunk_id,
+        mode: FrameScanMode::Grouped,
+        physical_start: active.acknowledged_cursor,
+        physical_limit: durable_offset,
+        required_end: durable_offset,
+        logical_start: active.logical_start,
+        max_append_bytes: active.capacity,
+    })
+    .map_err(|error| frame_error(&error))?;
     let mut physical = active.acknowledged_cursor;
-    let mut logical = active.logical_start;
     while physical < durable_offset {
-        if durable_offset - physical < FRAME_HEADER_PREFIX_BYTES as u64 {
+        let length = usize::try_from((durable_offset - physical).min(MAX_FRAME_SCAN_INPUT_BYTES as u64))
+            .expect("bounded read window");
+        let bytes = chunks.read(active.chunk_id, physical, length).await?;
+        if bytes.len() != length {
+            return Err(StreamError::ReadUnavailable("short grouped recovery read".into()));
+        }
+        let mut consumed = 0;
+        while consumed < bytes.len() && scanner.stop() == FrameScanStop::Running {
+            let batch = scanner
+                .push(
+                    physical + consumed as u64,
+                    &bytes[consumed..],
+                    MAX_FRAME_SCAN_EXTENTS,
+                )
+                .map_err(|error| frame_error(&error))?;
+            consumed += batch.consumed;
+            for extent in batch.extents {
+                extents.push(Extent {
+                    chunk_id: active.chunk_id,
+                    logical_start: extent.logical_offset,
+                    logical_end: extent.logical_offset + extent.logical_length,
+                    frame_start: extent.physical_offset,
+                    frame_length: u32::try_from(extent.physical_length)
+                        .map_err(|_| StreamError::Corruption("grouped location exceeds u32".into()))?,
+                });
+            }
+        }
+        if consumed < bytes.len() {
             return Err(StreamError::Corruption(
-                "durable stream tail ends inside a frame header".into(),
+                "grouped recovery stopped before the required checkpoint".into(),
             ));
         }
-        let prefix = chunks
-            .read(active.chunk_id, physical, FRAME_HEADER_PREFIX_BYTES)
-            .await?;
-        let header = parse_header(&prefix).map_err(|error| frame_error(&error))?;
-        let length = frame_length(header).map_err(|error| frame_error(&error))?;
-        if length as u64 > durable_offset - physical {
-            return Err(StreamError::Corruption(
-                "durable stream tail ends inside a frame".into(),
-            ));
-        }
-        let frame = chunks
-            .read_verified_frame(active.chunk_id, physical, length)
-            .await?;
-        let parsed = parse_frame(&frame, active.chunk_id).map_err(|error| frame_error(&error))?;
-        if parsed.header.magic != FrameMagic::StreamV1 {
-            return Err(StreamError::Corruption(
-                "durable stream tail has the wrong frame kind".into(),
-            ));
-        }
-        if parsed.payload.is_empty() {
-            return Err(StreamError::Corruption(
-                "recovered stream frame has an empty payload".into(),
-            ));
-        }
-        let end = logical
-            .checked_add(parsed.payload.len() as u64)
-            .ok_or_else(|| StreamError::Corruption("recovered logical stream tail overflows".into()))?;
-        extents.push(Extent {
-            chunk_id: active.chunk_id,
-            logical_start: logical,
-            logical_end: end,
-            frame_start: physical,
-            frame_length: u32::try_from(length)
-                .map_err(|_| frame_error(&crowdb_protocol::frame::FrameError::FrameTooLarge))?,
-        });
-        physical += length as u64;
-        logical = end;
+        physical += consumed as u64;
     }
-    Ok(logical)
+    Ok(scanner.finish().map_err(|error| frame_error(&error))?.logical_end)
 }
 
-fn frame_error(error: &crowdb_protocol::frame::FrameError) -> StreamError {
-    StreamError::Corruption(format!("invalid recovered stream frame: {error}"))
+fn frame_error(error: &crowdb_protocol::frame::FrameScanError) -> StreamError {
+    StreamError::Corruption(format!("invalid recovered stream group: {error}"))
 }

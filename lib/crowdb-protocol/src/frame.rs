@@ -19,7 +19,6 @@ pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u16)]
 pub enum FrameMagic {
-    StreamV1 = 0x0301,
     RepoSmallV2 = 0x0102,
     RepoLargeV2 = 0x0202,
     StreamV2 = 0x0302,
@@ -32,7 +31,6 @@ impl TryFrom<u16> for FrameMagic {
 
     fn try_from(value: u16) -> Result<Self, Self::Error> {
         match value {
-            0x0301 => Ok(Self::StreamV1),
             0x0102 => Ok(Self::RepoSmallV2),
             0x0202 => Ok(Self::RepoLargeV2),
             0x0302 => Ok(Self::StreamV2),

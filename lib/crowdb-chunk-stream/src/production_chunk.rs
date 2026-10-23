@@ -36,7 +36,7 @@ struct ChunkStateView {
     modify_ts: AtomicU64,
     persisted_cursor: AtomicU64,
     synchronized_cursor: AtomicU64,
-    grouped_progress: AtomicBool,
+    writer_started: AtomicBool,
     fresh_grouped_allocation: AtomicBool,
     sealed: AtomicBool,
     last_checksum: AtomicU32,
@@ -156,7 +156,7 @@ impl ProductionStreamChunkStore {
             modify_ts: AtomicU64::new(chunk.modify_ts),
             persisted_cursor: AtomicU64::new(chunk.acknowledged_cursor),
             synchronized_cursor: AtomicU64::new(chunk.acknowledged_cursor),
-            grouped_progress: AtomicBool::new(false),
+            writer_started: AtomicBool::new(false),
             fresh_grouped_allocation: AtomicBool::new(false),
             sealed: AtomicBool::new(chunk.state == ChunkState::Sealed as i32),
             last_checksum: AtomicU32::new(0),
@@ -326,7 +326,7 @@ impl StreamChunkStore for ProductionStreamChunkStore {
 
     async fn write_mirrors_with_images(
         &self,
-        _stream_name: StreamName,
+        stream_name: StreamName,
         writer_epoch: u64,
         chunk_id: ChunkId,
         physical_offset: u64,
@@ -335,7 +335,10 @@ impl StreamChunkStore for ProductionStreamChunkStore {
     ) -> Result<()> {
         let state = self.state(chunk_id).await?;
         let mut chunk = (*state.chunk.load_full()).clone();
-        let (grouped, data_end) = admit_write(&state, &chunk, writer_epoch, physical_offset, &data)?;
+        if StreamName::from_chunk_owner_key(&chunk.owner_key) != Some(stream_name) {
+            return Err(StreamError::StaleWriter);
+        }
+        let data_end = admit_write(&state, &chunk, writer_epoch, physical_offset, &data)?;
         let flow = MirrorStripFlow::with_shared_failures(
             Arc::clone(&self.allocator),
             Arc::clone(&self.disk_writer),
@@ -403,15 +406,13 @@ impl StreamChunkStore for ProductionStreamChunkStore {
             ));
         }
         state.synchronized_cursor.fetch_max(data_end, Ordering::AcqRel);
-        if grouped {
-            state.grouped_progress.store(true, Ordering::Release);
-        }
+        state.writer_started.store(true, Ordering::Release);
         Ok(())
     }
 
     async fn advance_cursor(
         &self,
-        _stream_name: StreamName,
+        stream_name: StreamName,
         writer_epoch: u64,
         chunk_id: ChunkId,
         expected_cursor: u64,
@@ -420,9 +421,10 @@ impl StreamChunkStore for ProductionStreamChunkStore {
     ) -> Result<CursorAdvance> {
         let state = self.state(chunk_id).await?;
         if state.chunk.load().writer_epoch != writer_epoch
+            || StreamName::from_chunk_owner_key(&state.chunk.load().owner_key) != Some(stream_name)
             || state.persisted_cursor.load(Ordering::Acquire) != expected_cursor
         {
-            return Ok(CursorAdvance::DefinitelyNotCommitted);
+            return Err(StreamError::StaleWriter);
         }
         let advance = self
             .allocator
@@ -475,8 +477,6 @@ impl StreamChunkStore for ProductionStreamChunkStore {
             state.last_checksum.store(checksum, Ordering::Release);
             state.has_checksum.store(true, Ordering::Release);
             Ok(CursorAdvance::Committed)
-        } else if chunk.acknowledged_cursor == expected_cursor {
-            Ok(CursorAdvance::DefinitelyNotCommitted)
         } else {
             Ok(CursorAdvance::Ambiguous)
         }
@@ -594,7 +594,7 @@ impl StreamChunkStore for ProductionStreamChunkStore {
                 physical_offset,
                 u64::try_from(length)
                     .map_err(|_| StreamError::InvalidRequest("chunk frame length exceeds u64".into()))?,
-                FrameMagic::StreamV1,
+                FrameMagic::StreamV2,
             )
             .await
             .map_err(read_error)

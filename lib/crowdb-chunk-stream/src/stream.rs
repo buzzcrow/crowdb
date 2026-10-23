@@ -11,7 +11,7 @@ use crowdb_protocol::chunk_stream::{
     StreamBinding, StreamBindingState, StreamExtentPage, StreamExtentPageFence, StreamManifest, StreamName,
 };
 use crowdb_protocol::common::ChunkId;
-use crowdb_protocol::frame::{FrameMagic, FRAME_FOOTER_BYTES};
+use crowdb_protocol::frame::FrameLayout;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::extent_cache::ExtentPageCache;
@@ -124,6 +124,9 @@ struct PhysicalRead {
     frame_length: usize,
     payload_start: usize,
     length: usize,
+    group_start: u64,
+    group_length: u64,
+    ordinal: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -144,15 +147,11 @@ impl AppendRequest {
     }
 
     fn physical_len(&self) -> Result<usize> {
-        let header = FrameMagic::StreamV1.ordinary_header_bytes();
-        let count = self
-            .data
-            .len()
-            .div_ceil(FrameMagic::StreamV1.ordinary_payload_capacity());
-        count
-            .checked_mul(header + FRAME_FOOTER_BYTES)
-            .and_then(|overhead| self.data.len().checked_add(overhead))
-            .ok_or_else(|| StreamError::InvalidRequest("framed append exceeds address space".into()))
+        let length = FrameLayout::StreamGroupV2
+            .physical_length(self.data.len() as u64)
+            .map_err(|error| StreamError::InvalidRequest(error.to_string()))?;
+        usize::try_from(length)
+            .map_err(|_| StreamError::InvalidRequest("framed append exceeds address space".into()))
     }
 }
 

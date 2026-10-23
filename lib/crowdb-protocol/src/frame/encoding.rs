@@ -16,7 +16,7 @@ pub fn encode_frame(
     payload: &[u8],
     write_time_ms: u64,
 ) -> Result<Vec<u8>, FrameError> {
-    let mut header = vec![0; magic.ordinary_header_bytes()];
+    let mut header = vec![0; super::FRAME_V2_HEADER_BYTES];
     let mut footer = [0; FRAME_FOOTER_BYTES];
     encode_frame_regions(magic, chunk_id, payload, write_time_ms, &mut header, &mut footer)?;
     let length = header.len() + payload.len() + footer.len();
@@ -63,13 +63,13 @@ pub fn prepare_frame_regions(
     if magic == FrameMagic::StreamV2 {
         return Err(FrameError::InvalidRole);
     }
-    if header_region.len() != magic.ordinary_header_bytes() || footer_region.len() != FRAME_FOOTER_BYTES {
+    if header_region.len() != super::FRAME_V2_HEADER_BYTES || footer_region.len() != FRAME_FOOTER_BYTES {
         return Err(FrameError::InvalidRegionLength);
     }
     let payload_size = u16::try_from(payload.len()).map_err(|_| FrameError::PayloadTooLarge)?;
     let header = FrameHeaderPrefix {
         magic,
-        payload_offset: u16::try_from(magic.ordinary_header_bytes())
+        payload_offset: u16::try_from(super::FRAME_V2_HEADER_BYTES)
             .map_err(|_| FrameError::LengthOverflow)?,
         payload_size,
         write_time_ms,
@@ -99,13 +99,13 @@ pub fn encode_frame_views(
     })?;
     let header = FrameHeaderPrefix {
         magic,
-        payload_offset: u16::try_from(magic.ordinary_header_bytes())
+        payload_offset: u16::try_from(super::FRAME_V2_HEADER_BYTES)
             .map_err(|_| FrameError::LengthOverflow)?,
         payload_size: u16::try_from(length).map_err(|_| FrameError::PayloadTooLarge)?,
         write_time_ms,
     };
     frame_length(header)?;
-    let mut header_region = vec![0; magic.ordinary_header_bytes()];
+    let mut header_region = vec![0; super::FRAME_V2_HEADER_BYTES];
     let mut footer_region = [0; FRAME_FOOTER_BYTES];
     write_header_region(&mut header_region, header);
     let checksum = crc32c_parts(
@@ -149,7 +149,7 @@ pub fn encode_frames(
     write_time_ms: u64,
 ) -> Result<Vec<Vec<u8>>, FrameError> {
     payload
-        .chunks(magic.ordinary_payload_capacity())
+        .chunks(super::MAX_FRAME_V2_PAYLOAD_BYTES)
         .map(|part| encode_frame(magic, chunk_id, part, write_time_ms))
         .collect()
 }
@@ -159,9 +159,7 @@ pub(super) fn write_header_region(region: &mut [u8], header: FrameHeaderPrefix) 
     region[2..4].copy_from_slice(&header.payload_offset.to_le_bytes());
     region[4..6].copy_from_slice(&header.payload_size.to_le_bytes());
     region[6..14].copy_from_slice(&header.write_time_ms.to_le_bytes());
-    if header.magic.is_v2() {
-        region[14] = 0;
-    }
+    region[14] = 0;
 }
 
 pub(super) fn crc32c_parts<'a>(parts: impl IntoIterator<Item = &'a [u8]>) -> u32 {

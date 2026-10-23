@@ -3,7 +3,7 @@
 
 use crowdb_protocol::chunk_stream::{StreamExtentPage, StreamManifest};
 use crowdb_protocol::common::ChunkId;
-use crowdb_protocol::frame::FRAME_HEADER_PREFIX_BYTES;
+use crowdb_protocol::frame::{FrameLayout, FRAME_FOOTER_BYTES, FRAME_GROUP_HEADER_BYTES, MAX_FRAME_BYTES};
 
 use crate::{Result, StreamError};
 
@@ -14,6 +14,9 @@ pub struct ExtentLocation {
     pub frame_length: u32,
     pub payload_offset: u32,
     pub available: u64,
+    pub group_offset: u64,
+    pub group_length: u64,
+    pub ordinal: u32,
 }
 
 /// Validates a complete manifest generation and returns its durable tail.
@@ -131,19 +134,27 @@ pub fn resolve_extent(page: &StreamExtentPage, logical_offset: u64) -> Result<Ex
         ));
     }
     let delta = logical_offset - logical_start;
-    let payload_offset = u32::try_from(FRAME_HEADER_PREFIX_BYTES)
-        .map_err(|_| StreamError::Corruption("frame header length exceeds u32".into()))?
-        .checked_add(
-            u32::try_from(delta)
-                .map_err(|_| StreamError::Corruption("physical extent payload offset overflows".into()))?,
-        )
-        .ok_or_else(|| StreamError::Corruption("physical extent payload offset overflows".into()))?;
+    let capacity = FrameLayout::StreamGroupV2.payload_capacity();
+    let ordinal = delta / capacity;
+    let frame_logical_start = ordinal * capacity;
+    let payload_length = (logical_end - logical_start - frame_logical_start).min(capacity);
+    let within = delta % capacity;
+    let frame_offset = page.physical_offsets[extent]
+        .checked_add(ordinal * MAX_FRAME_BYTES as u64)
+        .ok_or_else(|| StreamError::Corruption("stream frame offset overflows".into()))?;
+    let payload_offset = u32::try_from(FRAME_GROUP_HEADER_BYTES as u64 + within)
+        .map_err(|_| StreamError::Corruption("physical extent payload offset overflows".into()))?;
     Ok(ExtentLocation {
         chunk_id: page.chunk_ids[extent],
-        frame_offset: page.physical_offsets[extent],
-        frame_length: page.frame_lengths[extent],
+        frame_offset,
+        frame_length: u32::try_from(payload_length + (FRAME_GROUP_HEADER_BYTES + FRAME_FOOTER_BYTES) as u64)
+            .map_err(|_| StreamError::Corruption("stream frame length exceeds u32".into()))?,
         payload_offset,
-        available: logical_end - logical_offset,
+        available: payload_length - within,
+        group_offset: page.physical_offsets[extent],
+        group_length: logical_end - logical_start,
+        ordinal: u32::try_from(ordinal)
+            .map_err(|_| StreamError::Corruption("stream frame ordinal exceeds u32".into()))?,
     })
 }
 
@@ -166,6 +177,14 @@ fn validate_extent_page(page: &StreamExtentPage) -> Result<()> {
         }
     }
     for index in 0..count {
+        let expected = FrameLayout::StreamGroupV2
+            .physical_length(page.logical_offsets[index + 1] - page.logical_offsets[index])
+            .map_err(|error| StreamError::Corruption(error.to_string()))?;
+        if expected != u64::from(page.frame_lengths[index]) {
+            return Err(StreamError::Corruption(
+                "append group geometry differs from location".into(),
+            ));
+        }
         page.physical_offsets[index]
             .checked_add(u64::from(page.frame_lengths[index]))
             .ok_or_else(|| StreamError::Corruption("physical extent end overflows".into()))?;

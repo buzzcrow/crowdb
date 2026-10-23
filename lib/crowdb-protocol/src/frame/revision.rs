@@ -20,32 +20,8 @@ pub enum FrameRole {
     Follower { head_offset: u64, ordinal: u32 },
 }
 
-impl FrameMagic {
-    #[must_use]
-    pub const fn is_v2(self) -> bool {
-        self as u16 & 0xff == 2
-    }
-
-    #[must_use]
-    pub const fn ordinary_header_bytes(self) -> usize {
-        if self.is_v2() {
-            FRAME_V2_HEADER_BYTES
-        } else {
-            FRAME_HEADER_PREFIX_BYTES
-        }
-    }
-
-    #[must_use]
-    pub const fn ordinary_payload_capacity(self) -> usize {
-        MAX_FRAME_BYTES - self.ordinary_header_bytes() - FRAME_FOOTER_BYTES
-    }
-}
-
 /// Parse the bounded extension after the fixed prefix has established frame size.
 pub(super) fn parse_role(header: FrameHeaderPrefix, bytes: &[u8]) -> Result<FrameRole, FrameError> {
-    if !header.magic.is_v2() {
-        return Ok(FrameRole::Ordinary);
-    }
     let size = usize::from(header.payload_offset);
     if bytes.len() < size {
         return Err(FrameError::Incomplete { required_bytes: size });

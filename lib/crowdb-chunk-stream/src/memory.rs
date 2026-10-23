@@ -13,7 +13,7 @@ use crowdb_protocol::chunk_stream::{
     ActiveChunkDescriptor, StreamBinding, StreamExtentPage, StreamManifest, StreamName,
 };
 use crowdb_protocol::common::ChunkId;
-use crowdb_protocol::frame::{FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES};
+use crowdb_protocol::frame::FrameLayout;
 use tokio::sync::{Mutex, Notify};
 
 mod allocation;
@@ -38,19 +38,11 @@ impl Drop for ActiveRead<'_> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ChunkWriteMode {
-    Fresh,
-    Legacy,
-    Grouped,
-}
-
 #[derive(Debug)]
 struct Chunk {
     bytes: Vec<u8>,
     cursor: u64,
     synchronized_cursor: u64,
-    write_mode: ChunkWriteMode,
     capacity: u64,
     sealed: bool,
     released: bool,
@@ -97,20 +89,20 @@ pub struct MemoryStreamStore {
 
 impl MemoryStreamStore {
     /// Creates a test store with fixed logical-payload capacity chunks. The
-    /// backing capacity includes one public frame header and footer, so tiny
+    /// backing capacity includes canonical group framing, so tiny
     /// rollover tests retain their payload-oriented meaning.
     ///
     /// # Panics
     ///
-    /// Panics if `chunk_capacity` is zero.
+    /// Panics if `chunk_capacity` is zero or its physical geometry overflows.
     #[must_use]
     pub fn new(chunk_capacity: u64) -> Self {
         assert!(chunk_capacity > 0);
         Self {
             state: Arc::new(Mutex::new(MemoryState::default())),
-            chunk_capacity: chunk_capacity.saturating_add(
-                u64::try_from(FRAME_HEADER_PREFIX_BYTES + FRAME_FOOTER_BYTES).unwrap_or(u64::MAX),
-            ),
+            chunk_capacity: FrameLayout::StreamGroupV2
+                .physical_length(chunk_capacity)
+                .expect("valid test chunk geometry"),
             next_chunk: AtomicU64::new(1),
             metadata_publishes: Arc::new(AtomicU64::new(0)),
             extent_page_loads: AtomicU64::new(0),
@@ -205,6 +197,15 @@ impl MemoryStreamStore {
 
     pub async fn extent_page_count(&self) -> usize {
         self.state.lock().await.pages.len()
+    }
+
+    /// Returns retained physical bytes independently of the metadata checkpoint.
+    /// # Panics
+    /// Panics if the test chunk is absent or its cursor exceeds addressable memory.
+    pub async fn synchronized_bytes_for_tests(&self, chunk_id: ChunkId) -> Bytes {
+        let state = self.state.lock().await;
+        let chunk = state.chunks.get(&chunk_id).expect("allocated test chunk");
+        Bytes::copy_from_slice(&chunk.bytes[..usize::try_from(chunk.synchronized_cursor).unwrap()])
     }
 
     #[must_use]
@@ -327,25 +328,14 @@ impl StreamChunkStore for MemoryStreamStore {
         }
         let grouped = crowdb_protocol::frame::parse_header(&data)
             .is_ok_and(|header| header.magic == crowdb_protocol::frame::FrameMagic::StreamV2);
-        if chunk.write_mode == ChunkWriteMode::Grouped
-            && (!grouped || physical_offset != chunk.synchronized_cursor)
-            || grouped
-                && chunk.write_mode != ChunkWriteMode::Grouped
-                && (chunk.write_mode != ChunkWriteMode::Fresh
-                    || physical_offset != 0
-                    || chunk.synchronized_cursor != 0)
-        {
+        if !grouped || physical_offset != chunk.synchronized_cursor {
             return Err(StreamError::InvalidRequest(
-                "grouped writes require a fresh chunk and contiguous synchronized progress".into(),
+                "stream writes require contiguous complete append groups".into(),
             ));
         }
-        chunk.write_mode = ChunkWriteMode::Legacy;
         chunk.bytes.resize(chunk.bytes.len().max(end), 0);
         chunk.bytes[start..end].copy_from_slice(&data);
         chunk.synchronized_cursor = chunk.synchronized_cursor.max(end as u64);
-        if grouped {
-            chunk.write_mode = ChunkWriteMode::Grouped;
-        }
         Ok(())
     }
 
@@ -438,12 +428,7 @@ impl StreamChunkStore for MemoryStreamStore {
         if writer_epoch != chunk.writer_epoch {
             return Err(StreamError::StaleWriter);
         }
-        if (if chunk.write_mode == ChunkWriteMode::Grouped {
-            chunk.synchronized_cursor
-        } else {
-            chunk.cursor
-        }) != cursor
-        {
+        if chunk.synchronized_cursor != cursor {
             return Err(StreamError::Corruption(
                 "seal cursor differs from durable cursor".into(),
             ));

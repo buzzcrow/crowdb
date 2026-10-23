@@ -1,11 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-#[path = "../common/grouped_write.rs"]
-mod grouped_write;
-
 use super::*;
-use grouped_write::TestGroupedStrip;
 
 #[tokio::test]
 async fn configured_replica_count_cannot_silently_accept_a_two_copy_layout() {
@@ -126,7 +122,7 @@ async fn grouped_progress_survives_checkpoint_query_renew_growth_and_mirror_repa
 }
 
 #[tokio::test]
-async fn a_grouped_chunk_cannot_accept_legacy_frames_after_synchronized_progress() {
+async fn a_grouped_chunk_rejects_removed_magic_after_synchronized_progress() {
     let allocator = Arc::new(Allocator::new());
     let disks = Arc::new(Disks::default());
     let store = ProductionStreamChunkStore::new(
@@ -143,15 +139,16 @@ async fn a_grouped_chunk_cannot_accept_legacy_frames_after_synchronized_progress
         .unwrap();
     let mut strip = TestGroupedStrip::default();
     let offset = strip.append(&store, name, 9, active.chunk_id, b"first").await;
-    let legacy = Bytes::from(
-        crowdb_protocol::frame::encode_frame(
-            crowdb_protocol::frame::FrameMagic::StreamV1,
-            active.chunk_id,
-            b"legacy",
-            1,
-        )
-        .unwrap(),
-    );
+    let mut removed = crowdb_protocol::frame::encode_append_group_views(
+        active.chunk_id,
+        offset,
+        &Bytes::from_static(b"unsupported"),
+        1,
+    )
+    .unwrap()
+    .concat();
+    removed[..2].copy_from_slice(&0x0301_u16.to_le_bytes());
+    let legacy = Bytes::from(removed);
     assert!(matches!(
         store
             .write_mirrors_with_images(

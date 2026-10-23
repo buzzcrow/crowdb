@@ -152,9 +152,7 @@ fn map_stream_error(error: StreamError) -> ChunkKvError {
         StreamError::InvalidRequest(message) => ChunkKvError::InvalidRequest(message),
         StreamError::Backpressure => ChunkKvError::Overloaded,
         StreamError::StaleWriter => ChunkKvError::StaleEpoch,
-        StreamError::DefinitelyNotCommitted(_)
-        | StreamError::ResolvingAmbiguousAppend
-        | StreamError::WriteStalled => ChunkKvError::WriteStalled,
+        StreamError::ResolvingAmbiguousAppend | StreamError::WriteStalled => ChunkKvError::WriteStalled,
         StreamError::ReadUnavailable(message) => ChunkKvError::TreeUnavailable(message),
         StreamError::Corruption(message) => ChunkKvError::JournalCorruption(message),
         StreamError::Internal(message) => ChunkKvError::Internal(message),

@@ -6,13 +6,13 @@
 use super::capacity::rollover;
 use super::publication::publish_state;
 use super::worker::rotate_externally_sealed_active;
-use super::{unix_time_ms, AppendRange, AppendRequest, BatchFailure, Extent, WorkerState};
+use super::{AppendRange, AppendRequest, BatchFailure, WorkerState};
 use crate::perf::{perf, PhaseTimer};
 use crate::{ChunkId, CursorAdvance, Result, StreamError};
-use bytes::BytesMut;
-use crowdb_protocol::frame::{encode_frames, FrameMagic, FRAME_HEADER_PREFIX_BYTES};
 use std::sync::{atomic::Ordering, Arc};
 use std::time::{Duration, Instant};
+
+mod encoding;
 
 pub(super) async fn write_with_recovery(
     state: &mut WorkerState,
@@ -27,10 +27,7 @@ pub(super) async fn write_with_recovery(
                 | StreamError::Corruption(_)
                 | StreamError::InvalidRequest(_)),
             )) => return Err(BatchFailure::Other(error)),
-            Err(
-                BatchFailure::MirrorWrite(error)
-                | BatchFailure::Other(error @ StreamError::DefinitelyNotCommitted(_)),
-            ) => {
+            Err(BatchFailure::MirrorWrite(error)) => {
                 if rotated {
                     return Err(BatchFailure::Other(error));
                 }
@@ -113,48 +110,17 @@ async fn write_batch(
         .clone();
     let encode_timer = PhaseTimer::start(&perf().encode);
     let expected_cursor = active.acknowledged_cursor;
-    let mut new_cursor = expected_cursor;
-    let mut staging = BytesMut::with_capacity(bytes);
-    let logical_begin = state.tail_view.load(Ordering::Acquire);
-    let mut logical_cursor = logical_begin;
-    let mut extents = Vec::new();
-    let mut ranges = Vec::with_capacity(requests.len());
-    for request in requests {
-        let frames = encode_frames(
-            FrameMagic::StreamV1,
-            active.chunk_id,
-            &request.data,
-            unix_time_ms(),
-        )
-        .map_err(|error| BatchFailure::Other(StreamError::InvalidRequest(error.to_string())))?;
-        for frame in frames {
-            let frame_length = u32::try_from(frame.len()).map_err(|_| {
-                BatchFailure::Other(StreamError::InvalidRequest("stream frame exceeds u32".into()))
-            })?;
-            let payload_length = u64::from(frame_length)
-                .checked_sub((FRAME_HEADER_PREFIX_BYTES + crowdb_protocol::frame::FRAME_FOOTER_BYTES) as u64)
-                .ok_or_else(|| {
-                    BatchFailure::Other(StreamError::Corruption("stream frame length underflows".into()))
-                })?;
-            extents.push(Extent {
-                chunk_id: active.chunk_id,
-                logical_start: logical_cursor,
-                logical_end: logical_cursor.saturating_add(payload_length),
-                frame_start: new_cursor,
-                frame_length,
-            });
-            logical_cursor = logical_cursor.saturating_add(payload_length);
-            new_cursor = new_cursor.saturating_add(u64::from(frame_length));
-            staging.extend_from_slice(&frame);
-        }
-        ranges.push(AppendRange {
-            stream_name: state.stream_name,
-            chunk_id: Some(active.chunk_id),
-            begin: logical_cursor.saturating_sub(request.logical_len() as u64),
-            end: logical_cursor,
-        });
-    }
-    let staging = staging.freeze();
+    let encoded = encoding::encode_requests(
+        state.stream_name,
+        &active,
+        state.tail_view.load(Ordering::Acquire),
+        requests,
+        bytes,
+    )
+    .map_err(BatchFailure::Other)?;
+    let staging = encoded.bytes;
+    let new_cursor = encoded.physical_end;
+    let logical_cursor = encoded.logical_end;
     let images = state
         .mirror_shadow
         .stage(active.chunk_id, expected_cursor, &staging)
@@ -192,7 +158,7 @@ async fn write_batch(
     .await
     .map_err(BatchFailure::Other)?;
 
-    state.extents.extend(extents);
+    state.extents.extend(encoded.extents);
     if let Some(active) = &mut state.manifest.active {
         active.acknowledged_cursor = new_cursor;
         active.physical_start = new_cursor;
@@ -201,7 +167,7 @@ async fn write_batch(
     state.manifest.sealed_tail = logical_cursor;
     state.tail_view.store(logical_cursor, Ordering::Release);
     publish_state(state).await.map_err(BatchFailure::Other)?;
-    Ok(ranges)
+    Ok(encoded.ranges)
 }
 
 async fn resolve_cursor_advance(
@@ -212,51 +178,53 @@ async fn resolve_cursor_advance(
     checksum: u32,
 ) -> Result<()> {
     let _timer = PhaseTimer::start(&perf().cursor);
-    let outcome = state
-        .chunks
-        .advance_cursor(
-            state.stream_name,
-            state.writer_epoch,
-            chunk_id,
-            expected_cursor,
-            new_cursor,
-            checksum,
-        )
-        .await;
-    match outcome {
-        Ok(CursorAdvance::Committed) => Ok(()),
-        Ok(CursorAdvance::DefinitelyNotCommitted) => Err(StreamError::DefinitelyNotCommitted(
-            "durable cursor did not advance".into(),
-        )),
-        Ok(CursorAdvance::Ambiguous) | Err(_) => loop {
-            match state.chunks.durable_cursor(chunk_id, state.writer_epoch).await {
-                Ok(durable) if durable.offset == expected_cursor => {
-                    return Err(StreamError::DefinitelyNotCommitted(
-                        "ambiguous write proved absent".into(),
-                    ));
-                }
-                Ok(durable)
-                    if durable.offset == new_cursor && durable.last_advance_checksum == Some(checksum) =>
-                {
-                    return Ok(());
-                }
-                Ok(durable) if durable.offset == new_cursor => {
-                    return Err(StreamError::Corruption(
-                        "committed cursor has an unexpected checksum".into(),
-                    ));
-                }
-                Ok(durable) => {
-                    return Err(StreamError::Corruption(format!(
+    loop {
+        let outcome = state
+            .chunks
+            .advance_cursor(
+                state.stream_name,
+                state.writer_epoch,
+                chunk_id,
+                expected_cursor,
+                new_cursor,
+                checksum,
+            )
+            .await;
+        match outcome {
+            Ok(CursorAdvance::Committed) => return Ok(()),
+            Err(
+                error @ (StreamError::StaleWriter
+                | StreamError::Corruption(_)
+                | StreamError::InvalidRequest(_)),
+            ) => return Err(error),
+            _ => {}
+        }
+        match state.chunks.durable_cursor(chunk_id, state.writer_epoch).await {
+            Ok(durable) if durable.offset == expected_cursor => {
+                // The synchronized data write already completed. An older
+                // metadata checkpoint cannot prove that append absent.
+            }
+            Ok(durable)
+                if durable.offset == new_cursor && durable.last_advance_checksum == Some(checksum) =>
+            {
+                return Ok(());
+            }
+            Ok(durable) if durable.offset == new_cursor => {
+                return Err(StreamError::Corruption(
+                    "committed cursor has an unexpected checksum".into(),
+                ));
+            }
+            Ok(durable) => {
+                return Err(StreamError::Corruption(format!(
                         "durable cursor is outside the append bounds: chunk={chunk_id:?} epoch={} expected={expected_cursor} new={new_cursor} durable={}",
                         state.writer_epoch, durable.offset
                     )));
-                }
-                Err(StreamError::StaleWriter) => return Err(StreamError::StaleWriter),
-                Err(error) => {
-                    tracing::warn!(%error, "chunk-stream cursor resolution remains unavailable");
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
             }
-        },
+            Err(StreamError::StaleWriter) => return Err(StreamError::StaleWriter),
+            Err(error) => {
+                tracing::warn!(%error, "chunk-stream cursor resolution remains unavailable");
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }

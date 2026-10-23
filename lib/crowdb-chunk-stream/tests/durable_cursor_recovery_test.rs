@@ -8,7 +8,7 @@ use crowdb_chunk_stream::{
     memory::MemoryStreamStore, ChunkStream, CursorAdvance, StreamBinding, StreamBindingState,
     StreamChunkStore, StreamConfig, StreamError, StreamMetadataStore, StreamName, StreamPurpose,
 };
-use crowdb_protocol::frame::{encode_frames, FrameMagic};
+use crowdb_protocol::frame::encode_append_group_views;
 
 #[tokio::test]
 async fn durable_cursor_recovers_frames_without_a_new_directory_publication() {
@@ -16,7 +16,7 @@ async fn durable_cursor_recovers_frames_without_a_new_directory_publication() {
 }
 
 #[tokio::test]
-async fn bytes_beyond_the_durable_cursor_do_not_become_recovered_data() {
+async fn an_old_checkpoint_cannot_authorize_discarding_synchronized_bytes() {
     check_tail(false, false).await;
 }
 
@@ -55,7 +55,13 @@ async fn check_tail(advance: bool, corrupt: bool) {
     let published = store.load_current(name).await.unwrap().unwrap();
     let active = published.active.as_ref().unwrap();
     let publication_count = store.metadata_publish_count();
-    let frames = encode_frames(FrameMagic::StreamV1, active.chunk_id, b"new", 1).unwrap();
+    let frames = encode_append_group_views(
+        active.chunk_id,
+        active.acknowledged_cursor,
+        &Bytes::from_static(b"new"),
+        1,
+    )
+    .unwrap();
     let mut staging = BytesMut::new();
     for frame in frames {
         staging.extend_from_slice(&frame);
@@ -107,6 +113,8 @@ async fn check_tail(advance: bool, corrupt: bool) {
     );
     assert_eq!(writer.tail(), 3);
 
+    let store_for_retention_check = store.clone();
+    let retained_bytes = store.synchronized_bytes_for_tests(active.chunk_id).await;
     let reopened = ChunkStream::open(
         name,
         10,
@@ -118,6 +126,21 @@ async fn check_tail(advance: bool, corrupt: bool) {
     .await;
     if corrupt {
         assert!(matches!(reopened, Err(StreamError::Corruption(_))));
+        return;
+    }
+    if !advance {
+        assert!(matches!(reopened, Err(StreamError::Corruption(_))));
+        assert!(!store_for_retention_check.is_released(active.chunk_id).await);
+        assert_eq!(
+            store_for_retention_check
+                .synchronized_bytes_for_tests(active.chunk_id)
+                .await,
+            retained_bytes
+        );
+        assert_eq!(
+            store_for_retention_check.load_current(name).await.unwrap(),
+            Some(published)
+        );
         return;
     }
     let reopened = reopened.unwrap();

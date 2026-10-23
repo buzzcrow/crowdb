@@ -27,10 +27,10 @@ KV work, with compact locations, incremental directories, and bounded recovery.
   No postimplementation performance acceptance is claimed.
 - The two pre-existing unrelated user edits stay outside this requirement.
 
-- With compatibility removed, finish independent directory retention foundations
-  before switching the main worker. T04's remaining predecessor Stream codec is
-  removed together with T08/T20 wiring; the ordinary codec and migration/service
-  fallback cleanup are already committed. No old-format support is reintroduced.
+- The main worker now uses current grouped frames and one location per append.
+  No revision-1 Stream codec, raw-write mode or frame-version negotiation remains.
+  Indexed directory wiring, ownership, content-derived cold recovery and the
+  removal of per-batch cursor/root work remain separate implementation tasks.
 
 ## Gap assessment
 
@@ -839,6 +839,43 @@ adaptation rather than a new transport or storage engine.
 - Runtime owner exclusion, zero-header emission/initialization, sealed-EC tail
   adaptation and finalizer/main-worker wiring still remain. Do not activate
   deferred ACKs yet. Preserve Q4 read-only capture semantics separately.
+
+## Grouped main-worker integration (partial T04/T08/T10)
+
+- Main Stream append now encodes one verifiable head/follower group per request
+  and creates one location for its entire payload. Large append framing and
+  capacity accounting use checked grouped geometry. Logical reads resolve only
+  intersecting complete frames, verify their head/follower association against
+  the published location and retain Bytes slices after validation.
+- Removed the last Stream revision-1 magic, revision dispatch, alternate header
+  helpers, raw/legacy Memory mode and Production write fallback. Production
+  accepts only grouped heads on this owner's fresh allocation; all local writes
+  thereafter use synchronized progress. Cold adapters cannot resume an old chunk.
+  Attributed Stream identity is checked before data IO and checkpoint mutation.
+- Cursor metadata absence no longer proves synchronized data absent. While the
+  checkpoint remains on the current path, retry that metadata operation only;
+  never resubmit the already synchronized payload to a successor. Removed the
+  misleading append-absence result/error and corresponding WAL mapping.
+- Checkpoint-bounded recovery now uses the shared scanner in at-most-1-MiB
+  windows and emits complete groups, not individually valid followers. An
+  older checkpoint cannot authorize shortening locally known synchronized data:
+  the conservative failure preserves its bytes and layout until excluded-owner
+  content recovery is integrated. This is not A06 completion.
+- Focused Stream tests cover mixed sizes through 4 MiB, one location per append,
+  exact physical cursors, head/middle/tail and cross-frame bytes, and physical
+  reads proportional to intersecting frames. Unsupported old magic is rejected
+  by both contiguous/view protocol parsers. Current rollover/repair/read/trim
+  fixtures use actual grouped bytes and canonical capacities.
+- Remaining work: the main worker still coalesces batch views, keeps the flat
+  directory and waits for per-batch cursor/head metadata. Root-index/tail wiring,
+  owner leases, content recovery, finite-view pins and performance acceptance
+  are not implied by the grouped-format switch.
+- Verification: 855 tests across 137 Protocol, Chunk-client, Stream, Chunk-KV,
+  Chunk-KV-server and ChunkDB targets pass, zero failed/ignored. All-target
+  clippy for those six packages and workspace fmt pass. Receipts:
+  `grouped-worker-{full,clippy-final,fmt}.log`. Initial test failures retained
+  in `grouped-worker-{initial,suite}.log` identify stale fixture geometry and
+  the now-rejected attempt to discard synchronized bytes using an older cursor.
 
 ## Finalizer shared-prefix integration (partial T16)
 

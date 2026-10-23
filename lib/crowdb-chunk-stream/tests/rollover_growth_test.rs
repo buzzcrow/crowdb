@@ -190,13 +190,7 @@ async fn stale_stream_capacity_does_not_reject_a_newer_durable_chunk_layout() {
     };
     store.publish(None, manifest.clone(), vec![]).await.unwrap();
     let payload = Bytes::from(vec![0x5a; usize::try_from(INITIAL + INITIAL / 2).unwrap()]);
-    let frames = crowdb_protocol::frame::encode_frames(
-        crowdb_protocol::frame::FrameMagic::StreamV1,
-        active.chunk_id,
-        &payload,
-        1,
-    )
-    .unwrap();
+    let frames = crowdb_protocol::frame::encode_append_group_views(active.chunk_id, 0, &payload, 1).unwrap();
     let data = Bytes::from(frames.concat());
     let end = data.len() as u64;
     assert!(end > INITIAL);

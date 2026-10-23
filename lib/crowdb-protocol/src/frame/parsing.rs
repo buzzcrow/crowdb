@@ -6,9 +6,8 @@
 use super::encoding::crc32c_parts;
 use super::revision::parse_role;
 use super::{
-    ChunkId, FrameError, FrameHeaderPrefix, FrameMagic, FrameRole, ParsedFrame, ParsedFrameViews,
-    FRAME_FOOTER_BYTES, FRAME_GROUP_HEADER_BYTES, FRAME_HEADER_PREFIX_BYTES, FRAME_V2_HEADER_BYTES,
-    MAX_FRAME_BYTES,
+    ChunkId, FrameError, FrameHeaderPrefix, FrameMagic, ParsedFrame, ParsedFrameViews, FRAME_FOOTER_BYTES,
+    FRAME_GROUP_HEADER_BYTES, FRAME_HEADER_PREFIX_BYTES, FRAME_V2_HEADER_BYTES, MAX_FRAME_BYTES,
 };
 
 /// Verify a frame over ordered views without assembling its payload.
@@ -52,13 +51,9 @@ pub fn parse_frame_views(
         }
     }
     let mut extension = [0; FRAME_GROUP_HEADER_BYTES];
-    let role = if header.magic.is_v2() {
-        let size = usize::from(header.payload_offset);
-        copy_view_range(views, 0, &mut extension[..size])?;
-        parse_role(header, &extension[..size])?
-    } else {
-        FrameRole::Ordinary
-    };
+    let size = usize::from(header.payload_offset);
+    copy_view_range(views, 0, &mut extension[..size])?;
+    let role = parse_role(header, &extension[..size])?;
     if crc != expected_crc {
         return Err(FrameError::ChecksumMismatch);
     }
@@ -182,9 +177,7 @@ pub fn parse_header(bytes: &[u8]) -> Result<FrameHeaderPrefix, FrameError> {
             offset: payload_offset,
         });
     }
-    if magic.is_v2()
-        && ![FRAME_V2_HEADER_BYTES, FRAME_GROUP_HEADER_BYTES].contains(&usize::from(payload_offset))
-    {
+    if ![FRAME_V2_HEADER_BYTES, FRAME_GROUP_HEADER_BYTES].contains(&usize::from(payload_offset)) {
         return Err(FrameError::InvalidPayloadOffset {
             offset: payload_offset,
         });

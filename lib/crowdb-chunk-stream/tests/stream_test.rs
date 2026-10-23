@@ -372,7 +372,7 @@ async fn ambiguous_cursor_is_resolved_without_resubmission() {
             .begin,
         2
     );
-    assert_eq!(absent_store.chunk_write_count(), 3);
+    assert_eq!(absent_store.chunk_write_count(), 2);
 }
 
 #[tokio::test]
@@ -433,7 +433,7 @@ async fn trim_hides_prefix_before_reclaiming_complete_chunks() {
     let first = stream.append(&[Bytes::from_static(b"abcd")]).await.unwrap();
     stream.append(&[Bytes::from_static(b"ef")]).await.unwrap();
 
-    assert_eq!(stream.trim_prefix(4).await.unwrap(), 38);
+    assert_eq!(stream.trim_prefix(4).await.unwrap(), 51);
     assert!(store.is_released(first.chunk_id.unwrap()).await);
     assert!(matches!(
         stream.read_at(0, 1).await,
@@ -575,7 +575,8 @@ async fn append_rotates_an_active_chunk_sealed_by_its_writer_lease() {
     let stream = create_stream(&store, 32, StreamConfig::default()).await;
     let first = stream.append(&[Bytes::from_static(b"old")]).await.unwrap();
     let active_chunk = first.chunk_id.unwrap();
-    store.seal(active_chunk, 9, 37).await.unwrap();
+    let physical_end = store.durable_cursor(active_chunk, 9).await.unwrap().offset;
+    store.seal(active_chunk, 9, physical_end).await.unwrap();
 
     let range = stream.append(&[Bytes::from_static(b"new")]).await.unwrap();
 

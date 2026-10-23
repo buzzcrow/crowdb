@@ -239,9 +239,9 @@ fn malformed_extensions_fail_without_panics_and_v2_crc_is_unambiguous() {
 }
 
 #[test]
-fn old_ordinary_magics_are_unsupported() {
+fn removed_magics_are_unsupported() {
     let canonical = encode_frame(FrameMagic::RepoSmallV2, CHUNK, b"data", 42).unwrap();
-    for magic in [0x0101_u16, 0x0201, 0x0401, 0x0501, 0x0103] {
+    for magic in [0x0101_u16, 0x0201, 0x0301, 0x0401, 0x0501, 0x0103] {
         let mut bytes = canonical.clone();
         bytes[..2].copy_from_slice(&magic.to_le_bytes());
         assert!(matches!(parse_frame(&bytes, CHUNK), Err(FrameError::UnknownMagic(value)) if value == magic));

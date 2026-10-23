@@ -28,6 +28,13 @@ use crowdb_protocol::diskdb::rpc::Segment;
 #[path = "production_chunk_test/local_progress.rs"]
 mod local_progress;
 
+#[path = "production_chunk_test/scope.rs"]
+mod scope;
+
+#[path = "common/grouped_write.rs"]
+mod grouped_write;
+use grouped_write::TestGroupedStrip;
+
 struct Allocator {
     chunk: Mutex<Option<Chunk>>,
     stale_query_once: Mutex<Option<Chunk>>,
@@ -424,48 +431,41 @@ async fn production_store_writes_reads_advances_and_releases_one_mirror_chunk() 
         .allocate_mirrored(name, 9, crowdb_protocol::chunk_stream::StreamPurpose::Stream)
         .await
         .unwrap();
-    let data = Bytes::from_static(b"stream");
-    store
-        .write_mirrors_with_images(
-            name,
-            9,
-            active.chunk_id,
-            0,
-            data.clone(),
-            &[MirrorStripImage {
-                block_offset: 0,
-                data: data.clone(),
-                full_image: data,
-            }],
-        )
-        .await
-        .unwrap();
+    let mut strip = TestGroupedStrip::default();
+    let end = strip.append(&store, name, 9, active.chunk_id, b"stream").await;
     assert_eq!(disks.fsyncs.load(Ordering::Relaxed), 2);
     assert_eq!(
         store
-            .advance_cursor(name, 9, active.chunk_id, 0, 6, 17)
+            .advance_cursor(name, 9, active.chunk_id, 0, end, 17)
             .await
             .unwrap(),
         CursorAdvance::Committed
     );
     assert_eq!(
-        store.read(active.chunk_id, 0, 6).await.unwrap(),
+        store
+            .read(
+                active.chunk_id,
+                crowdb_protocol::frame::FRAME_GROUP_HEADER_BYTES as u64,
+                6
+            )
+            .await
+            .unwrap(),
         Bytes::from_static(b"stream")
     );
-    assert!(store.release_trimmed(active.chunk_id, 6, 6).await.is_err());
-    store.seal(active.chunk_id, 9, 6).await.unwrap();
-    assert!(store.release_trimmed(active.chunk_id, 6, 5).await.is_err());
+    assert!(store.release_trimmed(active.chunk_id, 6, end).await.is_err());
+    store.seal(active.chunk_id, 9, end).await.unwrap();
+    assert!(store.release_trimmed(active.chunk_id, 6, end - 1).await.is_err());
     assert_eq!(
         store
-            .release_trimmed(active.chunk_id, 6, 6)
+            .release_trimmed(active.chunk_id, 6, end)
             .await
             .unwrap()
             .reclaimed_bytes,
-        6
+        end
     );
     assert_eq!(
         store
-            .release_trimmed(active.chunk_id, 6, 6)
+            .release_trimmed(active.chunk_id, 6, end)
             .await
             .unwrap()
             .reclaimed_bytes,
@@ -491,51 +491,39 @@ async fn production_store_grows_and_writes_across_mirror_strips() {
         .unwrap()
         .unwrap();
     assert_eq!(grown.capacity, 2 * 1024 * 1024);
-    let offset = active.capacity - 2;
-    assert_eq!(
-        store
-            .advance_cursor(name, 9, active.chunk_id, 0, offset, 0)
-            .await
-            .unwrap(),
-        CursorAdvance::Committed
+    let payload = Bytes::from(vec![0x5a; 1024 * 1024 + 5]);
+    let data = Bytes::from(
+        crowdb_protocol::frame::encode_append_group_views(active.chunk_id, 0, &payload, 1)
+            .unwrap()
+            .concat(),
     );
-    let data = Bytes::from_static(b"split");
-    let first = data.slice(..2);
-    let second = data.slice(2..);
-    let mut prefix = vec![0; usize::try_from(offset).unwrap()];
-    prefix.extend_from_slice(&first);
+    let boundary = usize::try_from(active.capacity).unwrap();
+    let images: Vec<_> = (0..data.len())
+        .step_by(boundary)
+        .map(|start| {
+            let part = data.slice(start..(start + boundary).min(data.len()));
+            MirrorStripImage {
+                block_offset: 0,
+                data: part.clone(),
+                full_image: part,
+            }
+        })
+        .collect();
     store
-        .write_mirrors_with_images(
-            name,
-            9,
-            active.chunk_id,
-            offset,
-            data,
-            &[
-                MirrorStripImage {
-                    block_offset: offset,
-                    data: first,
-                    full_image: Bytes::from(prefix),
-                },
-                MirrorStripImage {
-                    block_offset: 0,
-                    data: second.clone(),
-                    full_image: second,
-                },
-            ],
-        )
+        .write_mirrors_with_images(name, 9, active.chunk_id, 0, data.clone(), &images)
         .await
         .unwrap();
+    let end = data.len() as u64;
     assert_eq!(
         store
-            .advance_cursor(name, 9, active.chunk_id, offset, offset + 5, 0)
+            .advance_cursor(name, 9, active.chunk_id, 0, end, 0)
             .await
             .unwrap(),
         CursorAdvance::Committed
     );
     assert_eq!(
-        store.read(active.chunk_id, offset, 5).await.unwrap(),
-        Bytes::from_static(b"split")
+        store.read(active.chunk_id, active.capacity - 2, 5).await.unwrap(),
+        data.slice(boundary - 2..boundary + 3)
     );
 }
 
@@ -740,29 +728,18 @@ async fn production_store_reconciles_a_post_commit_cursor_timeout() {
         .allocate_mirrored(name, 9, crowdb_protocol::chunk_stream::StreamPurpose::Stream)
         .await
         .unwrap();
-    let data = Bytes::from_static(b"once");
-    store
-        .write_mirrors_with_images(
-            name,
-            9,
-            active.chunk_id,
-            0,
-            data.clone(),
-            &[MirrorStripImage {
-                block_offset: 0,
-                data: data.clone(),
-                full_image: data,
-            }],
-        )
-        .await
-        .unwrap();
+    let mut strip = TestGroupedStrip::default();
+    let end = strip.append(&store, name, 9, active.chunk_id, b"once").await;
     allocator.fail_advance_after_commit.store(true, Ordering::Release);
     assert_eq!(
         store
-            .advance_cursor(name, 9, active.chunk_id, 0, 4, 19)
+            .advance_cursor(name, 9, active.chunk_id, 0, end, 19)
             .await
             .unwrap(),
         CursorAdvance::Committed
     );
-    assert_eq!(store.durable_cursor(active.chunk_id, 9).await.unwrap().offset, 4);
+    assert_eq!(
+        store.durable_cursor(active.chunk_id, 9).await.unwrap().offset,
+        end
+    );
 }

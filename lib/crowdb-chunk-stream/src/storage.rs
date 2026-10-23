@@ -14,7 +14,6 @@ use crate::Result;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CursorAdvance {
     Committed,
-    DefinitelyNotCommitted,
     Ambiguous,
 }
 
@@ -133,7 +132,7 @@ pub trait StreamChunkStore: Send + Sync {
         let frame = self.read(chunk_id, physical_offset, length).await?;
         let parsed = parse_frame(&frame, chunk_id)
             .map_err(|error| crate::StreamError::Corruption(format!("invalid stream frame: {error}")))?;
-        if parsed.header.magic != FrameMagic::StreamV1 {
+        if parsed.header.magic != FrameMagic::StreamV2 {
             return Err(crate::StreamError::Corruption(
                 "stream extent has the wrong frame kind".into(),
             ));

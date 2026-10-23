@@ -11,8 +11,6 @@ pub enum StreamError {
     Backpressure,
     #[error("writer epoch is stale")]
     StaleWriter,
-    #[error("append definitely did not commit: {0}")]
-    DefinitelyNotCommitted(String),
     #[error("append outcome is being resolved")]
     ResolvingAmbiguousAppend,
     #[error("stream writes are stalled pending reopen")]

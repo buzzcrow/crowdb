@@ -1,0 +1,58 @@
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
+
+use super::*;
+
+#[tokio::test]
+async fn another_stream_cannot_write_or_checkpoint_an_attributed_chunk() {
+    let allocator = Arc::new(Allocator::new());
+    let disks = Arc::new(Disks::default());
+    let store = ProductionStreamChunkStore::new(allocator, disks.clone(), 30_000, ChunkReadPolicy::default())
+        .unwrap();
+    let name = StreamName { high: 81, low: 83 };
+    let other = StreamName { high: 81, low: 84 };
+    let active = store
+        .allocate_mirrored(name, 9, crowdb_chunk_stream::StreamPurpose::Stream)
+        .await
+        .unwrap();
+    let data = Bytes::from(
+        crowdb_protocol::frame::encode_append_group_views(
+            active.chunk_id,
+            0,
+            &Bytes::from_static(b"retained"),
+            1,
+        )
+        .unwrap()
+        .concat(),
+    );
+    let end = data.len() as u64;
+    let images = [MirrorStripImage {
+        block_offset: 0,
+        data: data.clone(),
+        full_image: data.clone(),
+    }];
+    assert!(matches!(
+        store
+            .write_mirrors_with_images(other, 9, active.chunk_id, 0, data.clone(), &images)
+            .await,
+        Err(crowdb_chunk_stream::StreamError::StaleWriter)
+    ));
+    assert_eq!(disks.fsyncs.load(Ordering::Acquire), 0);
+    store
+        .write_mirrors_with_images(name, 9, active.chunk_id, 0, data, &images)
+        .await
+        .unwrap();
+    assert!(matches!(
+        store.advance_cursor(other, 9, active.chunk_id, 0, end, 7).await,
+        Err(crowdb_chunk_stream::StreamError::StaleWriter)
+    ));
+    assert_eq!(store.durable_cursor(active.chunk_id, 9).await.unwrap().offset, 0);
+    assert_eq!(
+        store
+            .advance_cursor(name, 9, active.chunk_id, 0, end, 7)
+            .await
+            .unwrap(),
+        CursorAdvance::Committed
+    );
+    assert_eq!(disks.fsyncs.load(Ordering::Acquire), 2);
+}

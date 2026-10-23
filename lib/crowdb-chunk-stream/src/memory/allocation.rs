@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{ActiveChunkDescriptor, Chunk, ChunkId, ChunkWriteMode, MemoryStreamStore, Ordering, Result};
+use super::{ActiveChunkDescriptor, Chunk, ChunkId, MemoryStreamStore, Ordering, Result};
 
 impl MemoryStreamStore {
     pub(super) async fn allocate_active_chunk(
@@ -20,7 +20,6 @@ impl MemoryStreamStore {
                 bytes: Vec::new(),
                 cursor: 0,
                 synchronized_cursor: 0,
-                write_mode: ChunkWriteMode::Fresh,
                 capacity: self.chunk_capacity,
                 sealed: false,
                 released: false,

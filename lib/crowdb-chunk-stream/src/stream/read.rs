@@ -10,7 +10,7 @@ use crate::metadata::resolve_extent;
 use crate::perf::{perf, PhaseTimer};
 use crate::{ChunkId, Result, StreamError, StreamExtentPage, StreamExtentPageFence, StreamManifest};
 use bytes::{Bytes, BytesMut};
-use crowdb_protocol::frame::{parse_frame, FrameMagic, FRAME_HEADER_PREFIX_BYTES};
+use crowdb_protocol::frame::{parse_frame, FrameLayout, FrameMagic, FrameRole, FRAME_GROUP_HEADER_BYTES};
 use std::sync::{atomic::Ordering, Arc};
 use std::time::Instant;
 
@@ -67,6 +67,9 @@ impl ChunkStream {
                     StreamError::Corruption("stream frame payload offset exceeds address space".into())
                 })?,
                 length: read_len,
+                group_start: location.group_offset,
+                group_length: location.group_length,
+                ordinal: location.ordinal,
             });
             cursor += read_len as u64;
         }
@@ -106,35 +109,7 @@ impl ChunkStream {
                             read.logical_start,
                         )
                         .await?;
-                    let parsed = parse_frame(&frame, read.chunk_id)
-                        .map_err(|error| StreamError::Corruption(format!("invalid stream frame: {error}")))?;
-                    if parsed.header.magic != FrameMagic::StreamV1 {
-                        return Err(StreamError::Corruption(
-                            "stream extent has the wrong frame kind".into(),
-                        ));
-                    }
-                    let payload_end = read.payload_start.checked_add(read.length).ok_or_else(|| {
-                        StreamError::Corruption("stream frame payload range overflows".into())
-                    })?;
-                    let data = Bytes::copy_from_slice(
-                        parsed
-                            .payload
-                            .get(
-                                read.payload_start - FRAME_HEADER_PREFIX_BYTES
-                                    ..payload_end - FRAME_HEADER_PREFIX_BYTES,
-                            )
-                            .ok_or_else(|| {
-                                StreamError::Corruption("stream extent exceeds frame payload".into())
-                            })?,
-                    );
-                    Ok::<_, StreamError>((
-                        index,
-                        ReadSegment {
-                            chunk_id: read.chunk_id,
-                            logical_start: read.logical_start,
-                            data,
-                        },
-                    ))
+                    decode_segment(read, &frame).map(|segment| (index, segment))
                 });
                 next += 1;
             }
@@ -250,6 +225,51 @@ impl ChunkStream {
             }
         }
     }
+}
+
+fn decode_segment(read: PhysicalRead, frame: &Bytes) -> Result<ReadSegment> {
+    let parsed = parse_frame(frame, read.chunk_id)
+        .map_err(|error| StreamError::Corruption(format!("invalid stream frame: {error}")))?;
+    let expected_role = if read.ordinal == 0 {
+        FrameRole::Head {
+            logical_length: read.group_length,
+            frame_count: u32::try_from(
+                read.group_length
+                    .div_ceil(FrameLayout::StreamGroupV2.payload_capacity()),
+            )
+            .map_err(|_| StreamError::Corruption("stream group count exceeds u32".into()))?,
+        }
+    } else {
+        FrameRole::Follower {
+            head_offset: read.group_start,
+            ordinal: read.ordinal,
+        }
+    };
+    if parsed.header.magic != FrameMagic::StreamV2
+        || parsed.role != expected_role
+        || parsed.physical_length != read.frame_length
+    {
+        return Err(StreamError::Corruption(
+            "stream extent has the wrong frame kind".into(),
+        ));
+    }
+    let payload_end = read
+        .payload_start
+        .checked_add(read.length)
+        .ok_or_else(|| StreamError::Corruption("stream frame payload range overflows".into()))?;
+    if read.payload_start < FRAME_GROUP_HEADER_BYTES
+        || payload_end > FRAME_GROUP_HEADER_BYTES + parsed.payload.len()
+    {
+        return Err(StreamError::Corruption(
+            "stream extent exceeds frame payload".into(),
+        ));
+    }
+    let data = frame.slice(read.payload_start..payload_end);
+    Ok(ReadSegment {
+        chunk_id: read.chunk_id,
+        logical_start: read.logical_start,
+        data,
+    })
 }
 
 type PrefetchResult = tokio::task::JoinHandle<Result<(u64, Vec<ReadSegment>)>>;

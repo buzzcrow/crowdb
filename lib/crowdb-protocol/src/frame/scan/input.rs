@@ -67,9 +67,6 @@ impl FramePrefixScanner {
                 break;
             }
             let header = parse_header(&self.buffer).map_err(|error| frame_error(frame_start, error))?;
-            if !header.magic.is_v2() {
-                return Err(frame_error(frame_start, crate::frame::FrameError::InvalidRole));
-            }
             let length = frame_length(header).map_err(|error| frame_error(frame_start, error))?;
             if frame_start
                 .checked_add(length as u64)
