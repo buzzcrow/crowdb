@@ -4,12 +4,27 @@
 //! Admission and physical progress are separate from persisted layout checkpoints.
 
 use bytes::Bytes;
-use crowdb_protocol::chunkdb::rpc::Chunk;
+use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkStrip, Strip};
 use crowdb_protocol::frame::{parse_header, FrameMagic};
 use std::sync::atomic::Ordering;
 
 use super::ChunkStateView;
 use crate::{Result, StreamError};
+
+pub(super) fn ensure_mirror_copies(strip: &ChunkStrip, required: u32) -> Result<()> {
+    let Some(Strip::MirrorStrip(mirror)) = &strip.strip else {
+        return Err(StreamError::Corruption(
+            "stream chunk strip is not mirrored".into(),
+        ));
+    };
+    if mirror.segments.len() != required as usize {
+        return Err(StreamError::ReadUnavailable(format!(
+            "stream strip requires {required} synchronized replicas; layout has {}",
+            mirror.segments.len()
+        )));
+    }
+    Ok(())
+}
 
 pub(super) fn write_cursor(state: &ChunkStateView) -> u64 {
     if state.grouped_progress.load(Ordering::Acquire) {

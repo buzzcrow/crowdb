@@ -840,6 +840,20 @@ adaptation rather than a new transport or storage engine.
   adaptation and finalizer/main-worker wiring still remain. Do not activate
   deferred ACKs yet. Preserve Q4 read-only capture semantics separately.
 
+## Required mirror count evidence (partial T14)
+
+- A regression reproduced a three-copy configuration returning `Ok(())` after
+  synchronizing only two copies. The old admission range accepted any count
+  between two and the configured count. The adapter now requires the exact
+  configured count both before IO and after mirror repair, before promoting
+  synchronized progress. Missing protection returns unavailable without changing
+  replica health or persisting a cursor.
+- Three- and five-copy regressions reject a two-copy layout before any write.
+  All 13 production-adapter cases pass, including retained strip repair, growth,
+  checkpoint refresh and the production runtime. Full Client/Stream targets,
+  including synchronized TCP-chain coverage, clippy and fmt pass. Receipts:
+  `required-copies-{before,after,full,clippy,fmt}.log`.
+
 ## Recovery IO execution notes (T15/T16 target)
 
 - Shared parsing uses only current revision-2 ordinary/grouped frames. Separate

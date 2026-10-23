@@ -369,22 +369,7 @@ impl StreamChunkStore for ProductionStreamChunkStore {
                     "stream mirror image does not match data".into(),
                 ));
             }
-            let Some(Strip::MirrorStrip(mirror)) = &strip.strip else {
-                return Err(StreamError::Corruption(
-                    "stream chunk strip is not mirrored".into(),
-                ));
-            };
-            let actual_copies = mirror.segments.len();
-            let protected = if self.mirror_copies == 1 {
-                actual_copies == 1
-            } else {
-                (2..=self.mirror_copies as usize).contains(&actual_copies)
-            };
-            if !protected {
-                return Err(StreamError::Corruption(
-                    "stream chunk mirror count differs from configuration".into(),
-                ));
-            }
+            progress::ensure_mirror_copies(&strip, self.mirror_copies)?;
             let mut pending_advance = None;
             let result = flow
                 .write(
@@ -403,6 +388,12 @@ impl StreamChunkStore for ProductionStreamChunkStore {
                 crowdb_chunk_client::IoError::MetadataConflict(_) => StreamError::StaleWriter,
                 other => io_error(other),
             })?;
+            let written = chunk
+                .strips
+                .iter()
+                .find(|current| current.strip_sequence == strip.strip_sequence)
+                .ok_or_else(|| StreamError::Corruption("written stream strip disappeared".into()))?;
+            progress::ensure_mirror_copies(written, self.mirror_copies)?;
             copied += count;
             image_index += 1;
         }
