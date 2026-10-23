@@ -140,7 +140,7 @@ RDMA plan. Native SDK implementation and acceptance remain outstanding.
 
 ## Phase 4: retained leases, RDMA, and bounded lifecycle
 
-- [ ] **Complete lease ABI**: reuse opaque `crowdb_rpc_buffer_t`,
+- [x] **Complete lease ABI**: reuse opaque `crowdb_rpc_buffer_t`,
   `BufferLeaseMetadata`, and actual buffer length for native `BufferLease`.
   Preserve request/stream identity, sequence, offset, capacity class, and
   single final release. Rust borrowing prevents access after release;
@@ -148,7 +148,7 @@ RDMA plan. Native SDK implementation and acceptance remain outstanding.
   handles is safe. Files: `lib/crowdb-rpc/ffi/src/buffer.rs`,
   `lib/crowdb-rpc/ffi/src/sys.rs`, `lib/crowdb-rpc/include/crowdb-rpc/c_api.h`,
   `lib/crowdb-sdk-native/src/buffer.rs`.
-- [ ] **Preserve completion ownership**: audit C++ completion,
+- [x] **Preserve completion ownership**: audit C++ completion,
   `on_complete_cb`, `receive_data_buffer`, DiskIO conversion, ChunkIO views,
   and S3 adaptation. Retain eligible receive storage through caller release
   rather than a copy/detach shortcut that loses credits. Keep control
@@ -165,7 +165,7 @@ RDMA plan. Native SDK implementation and acceptance remain outstanding.
   `lib/crowdb-rpc/ffi/src/producer_buffer.rs`,
   `lib/crowdb-chunk-client/src/io.rs`, `lib/crowdb-sdk-native/src/buffer.rs`,
   `lib/crowdb-access-s3/src/streaming.rs`.
-- [ ] **Enforce held-capacity budgets**: charge actual allocation capacity
+- [x] **Enforce held-capacity budgets**: charge actual allocation capacity
   once across shared views until final release. Keep request/producer/held
   limits explicit and lock-free; waits honor deadlines/cancellation without
   blocking RPC workers. Release backing storage before waking waiters. Files:
@@ -287,10 +287,24 @@ transport acceptance alone cannot establish SDK completion.
   owner while sharing one physical charge. Shared S3 tests and affected HTTP
   service/inspection tests, all-target clippy and Rust formatting pass.
 - Still outstanding: native S3 PUT/copy/multipart/listing completion and HTTP
-  extraction, explicit data transport configuration, object locality/stale-view
+  extraction, object locality/stale-view
   acceptance, owned transport shutdown, and the complete native/OCI S3 corpus.
   Current read fixtures use real storage reader/framing with injected metadata
   and disk seams; they are not the required real-service TCP/RDMA acceptance.
+- Runtime data transport now accepts an explicit `RdmaConfig`, forwarded
+  through shared ChunkIO discovery before DiskIO connections open. Legacy
+  constructors keep environment defaults. Connection construction is split
+  out of the nearly 1,000-line ChunkIO client.
+- Native GET now also traverses real TCP and shared-HCA RC RPC through the
+  production semantic DiskIO adapter, ChunkIO framing and S3 verification.
+  The RDMA case charges an 8-byte object to its actual 64 KiB receive class,
+  blocks the next delivery until final release and keeps the delivered lease
+  readable after all client/server owners are destroyed. Both profiles report
+  zero SDK compatibility-copy bytes and no read retries. `ServerRequest::reply`
+  retains the original connection/server via a safe owned-handler registration;
+  new native test code adds no unsafe exception. FFI/ChunkIO/native all-target
+  tests, clippy and formatting pass. These focused RPC tests still inject
+  metadata/layout and disk contents; the final corpus must use real services.
 
 ## Subsequent Dataset integration under R220
 

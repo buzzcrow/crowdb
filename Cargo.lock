@@ -1292,6 +1292,7 @@ dependencies = [
  "crowdb-protocol",
  "crowdb-rpc-ffi",
  "crowdb-sdk-native",
+ "flatbuffers",
  "futures",
  "serde_json",
  "thiserror 2.0.18",

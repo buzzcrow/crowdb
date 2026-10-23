@@ -62,6 +62,15 @@ impl RoutedDiskWriter {
             rpc_workers,
             ..DiskioClientConfig::default()
         };
+        Self::connect_with_config(service, hardware, config).await
+    }
+
+    /// Discover owners with typed transport, admission and connection settings.
+    pub async fn connect_with_config(
+        service: &ServiceRegistryClient,
+        hardware: &HardwareClient,
+        config: DiskioClientConfig,
+    ) -> Result<Self> {
         let client = DiskioClient::connect_with_clients(service.clone(), hardware.clone(), config)
             .await
             .map_err(map_topology_error)?;

@@ -27,6 +27,25 @@ pub struct TestReadStorage {
     pub reads: AtomicUsize,
 }
 
+impl TestReadStorage {
+    pub fn new() -> Self {
+        Self {
+            data: [b"original".as_slice(), b"replacement".as_slice()]
+                .into_iter()
+                .enumerate()
+                .map(|(index, payload)| {
+                    let mut frame = Vec::with_capacity(4096);
+                    frame.extend_from_slice(
+                        &encode_frame(FrameMagic::RepoSmallV1, chunk_id(index), payload, 1).unwrap(),
+                    );
+                    OwnedPayload::from(frame)
+                })
+                .collect(),
+            reads: AtomicUsize::new(0),
+        }
+    }
+}
+
 fn chunk_id(index: usize) -> ChunkId {
     ChunkId {
         high: 1,
@@ -122,21 +141,17 @@ pub struct TestFixture {
 }
 
 impl TestFixture {
+    #[allow(dead_code)] // Shared fixture also supports the RPC-only test target.
     pub async fn new(held_bytes: usize) -> Self {
-        let backend = Arc::new(TestReadStorage {
-            data: [b"original".as_slice(), b"replacement".as_slice()]
-                .into_iter()
-                .enumerate()
-                .map(|(index, payload)| {
-                    let mut frame = Vec::with_capacity(4096);
-                    frame.extend_from_slice(
-                        &encode_frame(FrameMagic::RepoSmallV1, chunk_id(index), payload, 1).unwrap(),
-                    );
-                    OwnedPayload::from(frame)
-                })
-                .collect(),
-            reads: AtomicUsize::new(0),
-        });
+        let backend = Arc::new(TestReadStorage::new());
+        Self::with_disk(held_bytes, backend.clone(), backend).await
+    }
+
+    pub async fn with_disk(
+        held_bytes: usize,
+        backend: Arc<TestReadStorage>,
+        disk: Arc<dyn DiskWriter>,
+    ) -> Self {
         let metadata = super::metadata::client().await;
         let runtime = ClientRuntime::from_clients(
             RuntimeClients {
@@ -145,11 +160,7 @@ impl TestFixture {
                 metadata_transport: Arc::new(
                     ChunkKvRpcTransport::with_config(8, 1, 1, &ChunkKvRpcTransportConfig::default()).unwrap(),
                 ),
-                chunks: Arc::new(ChunkIoClient::from_parts(
-                    backend.clone(),
-                    backend.clone(),
-                    ChunkType::S3,
-                )),
+                chunks: Arc::new(ChunkIoClient::from_parts(backend.clone(), disk, ChunkType::S3)),
             },
             RuntimeLimits {
                 held_bytes,

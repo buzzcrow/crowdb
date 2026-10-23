@@ -30,6 +30,8 @@ pub struct RuntimeConfig {
     pub small_write: SmallWritePolicy,
     pub read_policy: ChunkReadPolicy,
     pub chunk_kv_transport: ChunkKvRpcTransportConfig,
+    /// None retains service environment defaults; Some applies before data connections open.
+    pub data_rdma: Option<crowdb_rpc_ffi::RdmaConfig>,
     pub limits: RuntimeLimits,
     pub connect_timeout: Duration,
 }
@@ -44,6 +46,7 @@ impl RuntimeConfig {
             small_write: SmallWritePolicy::new(ChunkType::S3),
             read_policy: ChunkReadPolicy::default(),
             chunk_kv_transport: ChunkKvRpcTransportConfig::default(),
+            data_rdma: None,
             limits: RuntimeLimits::default(),
             connect_timeout: Duration::from_secs(10),
         }

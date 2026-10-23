@@ -55,7 +55,7 @@ impl Storage {
             .await
             .map_err(|error| Error::Storage(error.to_string()))?;
         let catalog_observed_at = Instant::now();
-        let chunks = ChunkIoClient::connect_with_kv_read_policy(
+        let chunks = ChunkIoClient::connect_with_kv_transport(
             ChunkIoClientConfig {
                 management_seeds: config.management_seeds,
                 diskio_connections_per_endpoint: config.diskio_connections_per_endpoint,
@@ -64,6 +64,7 @@ impl Storage {
             },
             Arc::clone(&control),
             config.read_policy,
+            config.data_rdma,
         )
         .await
         .map_err(|error| Error::Storage(error.to_string()))?;

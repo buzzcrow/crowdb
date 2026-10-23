@@ -106,8 +106,7 @@ async fn custom_rust_handler_with_data() {
     let port = server.port();
     assert!(port > 0);
 
-    let server_for_handler = server.clone();
-    server.register_handler(HANDLER_MSG_TYPE, move |req| {
+    server.register_owned_handler(HANDLER_MSG_TYPE, move |req| {
         // Echo the request data back in the response.
         let mut fbb = FlatBufferBuilder::new();
         let resp = ConnectionPingResponse::create(
@@ -123,15 +122,12 @@ async fn custom_rust_handler_with_data() {
         let ctrl_bytes = fbb.finished_data().to_vec();
         let data_bytes = req.data().map(|d| d.to_vec());
         let resp_msg_type = FBMsgType::EConnectionPingResponse.0 as u16;
-        unsafe {
-            let _ = server_for_handler.submit_response(
-                req.conn_handle,
-                &ctrl_bytes,
-                data_bytes.as_deref(),
-                resp_msg_type,
-                req.request_id,
-            );
-        }
+        req.reply(
+            crowdb_rpc_ffi::Buffer::from_vec(ctrl_bytes),
+            data_bytes.map(crowdb_rpc_ffi::Buffer::from_vec),
+            resp_msg_type,
+        )
+        .unwrap();
     });
 
     server.start();

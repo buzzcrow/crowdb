@@ -242,6 +242,22 @@ impl RpcServer {
         }
     }
 
+    /// Registers a handler whose requests retain their original server and can
+    /// use `ServerRequest::reply` without exposing raw connection lifetimes.
+    /// The registry keeps a weak server owner to avoid a reference cycle.
+    pub fn register_owned_handler<F>(self: &Arc<Self>, msg_type: u16, handler: F)
+    where
+        F: Fn(ServerRequest) + Send + 'static,
+    {
+        let server = Arc::downgrade(self);
+        self.register_handler(msg_type, move |mut request| {
+            if let Some(server) = server.upgrade() {
+                request.response_server = Some(server);
+                handler(request);
+            }
+        });
+    }
+
     /// Submit a response on a server-side connection. Thread-safe — may
     /// be called from any thread (e.g. a Rust thread pool worker).
     /// conn_handle is the raw pointer passed to the dispatch callback.
@@ -529,6 +545,8 @@ pub struct ServerRequest {
     pub rpc_create_nano: u64,
     pub msg_type: u16,
     pub conn_handle: *mut std::ffi::c_void,
+    response_connection: *mut std::ffi::c_void,
+    response_server: Option<Arc<RpcServer>>,
     frame_handle: *mut std::ffi::c_void,
     control_ptr: *const u8,
     control_len: u32,
@@ -537,6 +555,24 @@ pub struct ServerRequest {
 }
 
 impl ServerRequest {
+    /// Consumes a request from `register_owned_handler` and transfers immutable
+    /// response buffers to its retained original server/connection.
+    /// # Errors
+    /// Rejects legacy unowned handlers, a closed connection or a full send queue.
+    pub fn reply(
+        self,
+        control: crate::Buffer,
+        data: Option<crate::Buffer>,
+        msg_type: u16,
+    ) -> Result<(), RpcError> {
+        let server = self.response_server.as_ref().ok_or(RpcError::InvalidArg)?;
+        // SAFETY: the private connection was captured by the original callback;
+        // this request retains its Frame connection owner and originating server.
+        unsafe {
+            server.submit_response_buffer(self.response_connection, control, data, msg_type, self.request_id)
+        }
+    }
+
     /// Fail this logical connection when a response cannot be submitted.
     /// The native Frame retains the connection through this request's release.
     pub fn close_connection(&self) {
@@ -613,6 +649,8 @@ unsafe extern "C" fn rust_handler_trampoline(
         rpc_create_nano,
         msg_type,
         conn_handle,
+        response_connection: conn_handle,
+        response_server: None,
         frame_handle,
         control_ptr: control,
         control_len,

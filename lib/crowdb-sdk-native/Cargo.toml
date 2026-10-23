@@ -33,6 +33,8 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 async-trait = "0.1"
+flatbuffers = { workspace = true }
+crowdb-diskio-client = { path = "../crowdb-diskio-client", features = ["test-util"] }
 crowdb-sdk-native = { path = ".", features = ["test-util"] }
 crowdb-chunk-client = { path = "../crowdb-chunk-client", features = ["test-util"] }
 crowdb-rpc-ffi = { path = "../crowdb-rpc/ffi", features = ["test-util"] }
