@@ -72,15 +72,22 @@ fn manifest() -> Vec<u8> {
         samples: (0..3)
             .map(|index| {
                 let value = vec![index; 16];
+                let mut fields = vec![FieldRecord {
+                    name: "value".into(),
+                    value: FieldLocator::Inline {
+                        md5: Md5::digest(&value).into(),
+                        value,
+                    },
+                }];
+                if index == 1 {
+                    fields.push(FieldRecord {
+                        name: "optional".into(),
+                        value: FieldLocator::Tombstone,
+                    });
+                }
                 SampleRecord {
                     sample_id: vec![index + 1],
-                    fields: vec![FieldRecord {
-                        name: "value".into(),
-                        value: FieldLocator::Inline {
-                            md5: Md5::digest(&value).into(),
-                            value,
-                        },
-                    }],
+                    fields,
                 }
             })
             .collect(),

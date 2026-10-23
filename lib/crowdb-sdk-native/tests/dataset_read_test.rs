@@ -88,6 +88,7 @@ async fn fetching_and_releasing_owners_never_acknowledge_progress() {
         .unwrap();
     let mut second = fixture.client.next_batch(context(7), spec.read.id).await.unwrap();
     assert_eq!(second.header.sample_ids, vec![vec![2]]);
+    assert_eq!(second.header.fields[1].state, FieldState::Tombstone);
     let retained = second.body.next().await.unwrap().unwrap().buffer;
     fixture.client.close_read(context(8), spec.read.id).await.unwrap();
     assert!(second.body.next().await.is_err());

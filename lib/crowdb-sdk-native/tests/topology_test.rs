@@ -105,3 +105,84 @@ async fn retained_view_cannot_pin_s3_operations_to_a_moved_owner() {
     );
     runtime.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn dataset_keeps_snapshot_selection_when_stale_owner_refreshes() {
+    use crowdb_access_dataset::{
+        DatasetIdentity, FieldDefinition, FieldLocator, FieldRecord, ManifestRecord, NamespacePath,
+        SampleRecord, SchemaRecord, SnapshotId,
+    };
+    use crowdb_sdk_native::dataset::{BatchRequest, DatasetClient};
+    use md5::{Digest, Md5};
+
+    let source = Arc::new(topology::TestCatalogSource {
+        generation: 1.into(),
+        unavailable: false.into(),
+    });
+    let route = Arc::new(metadata::TestRouteChange {
+        generation: 1.into(),
+        ..Default::default()
+    });
+    let metadata = metadata::client_with_route(source.clone(), route.clone()).await;
+    let runtime = storage::runtime_with_metadata(metadata);
+    let client = DatasetClient::new(
+        &runtime,
+        DatasetIdentity::new(NamespacePath::root(), "routed").unwrap(),
+    )
+    .unwrap();
+    client.create(context(20)).await.unwrap();
+    let snapshot = client
+        .control(context(21), |s| async move {
+            let manifest = ManifestRecord {
+                version: 1,
+                snapshot: SnapshotId::random(),
+                schema: SchemaRecord {
+                    version: 1,
+                    fields: vec![FieldDefinition {
+                        name: "v".into(),
+                        required: true,
+                    }],
+                },
+                samples: vec![SampleRecord {
+                    sample_id: b"id".to_vec(),
+                    fields: vec![FieldRecord {
+                        name: "v".into(),
+                        value: FieldLocator::Inline {
+                            value: b"selected".to_vec(),
+                            md5: Md5::digest(b"selected").into(),
+                        },
+                    }],
+                }],
+            };
+            Ok(s.authority
+                .publish_snapshot(&s.identity, None, bincode::serialize(&manifest).unwrap())
+                .await?)
+        })
+        .await
+        .unwrap();
+    let old = runtime.topology().unwrap();
+    source.generation.store(2, Ordering::Release);
+    route.generation.store(2, Ordering::Release);
+    let mut read = client
+        .read_batch(
+            context(22),
+            BatchRequest {
+                snapshot,
+                sample_ids: vec![b"id".to_vec()],
+                fields: vec!["v".into()],
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(read.header.snapshot, snapshot);
+    assert_eq!(
+        read.body.next().await.unwrap().unwrap().buffer.as_slice(),
+        b"selected"
+    );
+    assert!(read.body.next().await.unwrap().is_none());
+    assert!(route.rejected.load(Ordering::Acquire) >= 1);
+    assert_eq!(route.accepted.load(Ordering::Acquire), 2);
+    assert_eq!(runtime.topology().unwrap().catalog().generation(), 2);
+    assert_eq!(old.catalog().generation(), 1);
+    runtime.shutdown().await.unwrap();
+}

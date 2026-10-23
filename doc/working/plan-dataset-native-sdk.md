@@ -121,3 +121,15 @@ Native/Python all-target, all-feature clippy passes. The release native wheel
 builds, bundles its native shared libraries and imports from a separate installed
 consumer. Full Python semantics, common-snapshot performance and real-service
 restart are pending; the wheel build/import alone is not binding acceptance.
+
+The shared Dataset/Access Server all-target tests, standalone HTTP SDK boundary
+and Rust tests, isolated HTTP sdist/wheel tests (10 Python cases), and 163 fixture
+unit tests pass. Workspace all-feature clippy, rs-lint, version consistency and
+fmt pass. Environment-gated HCA/installed-HTTP-Python cases in the default Rust
+suite remain separate acceptance steps, not implicit passes.
+
+The implementation is committed in `f5fefdfe`. Additional native tests confirm
+Dataset snapshot selection survives stale-owner refresh and that projected
+missing fields and tombstones remain distinct. The service image is being
+rebuilt from the committed source before running the new workload and local-HCA
+scripts. Both scripts own and remove only their own fixture resources.
