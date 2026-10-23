@@ -263,6 +263,22 @@ This `--semantics-only` run is functional evidence, not performance acceptance.
 
 ## Handoff 2026-10-23
 
+### Current stop point
+
+- Metadata memory is fixed at `b18efa9a`: unchanged full run
+  `dataset-workload/c7fd408b216a451e81feb9009e2eeac1` stays below 280 MiB,
+  without swap/OOM. Native multi-flight still exhausts lease CAS attempts.
+- Native EOF/cancel cleanup now retains request admission through its existing
+  bounded task; focused lifecycle tests pass. This is a resource-accounting fix,
+  not a claim that the contention failure or R220 acceptance is complete.
+- After five contention corrections, the slow durable-CAS regression still
+  fails. See [Blocked](#blocked) before further implementation. The unaccepted
+  authority RTT experiment and failing regression are preserved in stash
+  `a6e19f404d9cb614a3004a09575051196d6d0727`; no experiment is discarded.
+- The recorded HCA/Python semantics evidence below predates the final memory
+  and cleanup changes. Full mixed-size comparison, current-source HCA/restart,
+  and requirement/doc cleanup remain outstanding.
+
 ### Scope and resume
 
 - The handoff was committed in `0f5d94a8`. The user has resumed work and
@@ -278,7 +294,8 @@ This `--semantics-only` run is functional evidence, not performance acceptance.
 - Native Dataset implementation: `f5fefdfe`; common workload: `982c1809`.
   Shared read-lease CAS fixes: `93aefa43`, `4127a966`, `a8e1571e` with focused
   competing-renewal regressions. HTTP contention no longer returns 409 in the
-  recorded full HTTP runs; the subsequent failure is metadata process OOM.
+  recorded full HTTP runs. Subsequent metadata OOM is fixed; native contention
+  remains, as recorded at the current stop point above.
 - Packaging/default namespace/bounded multi-owner producer fixes: `d3e285b2`.
   Python fills bounded final-frame owners once; multi-part producer chains
   preserve original pointers through the durable writer. Ordinary Python input
@@ -450,3 +467,96 @@ remaining user design decision and no requirement `Blocked` condition.
   Rebuilt full-workload acceptance remains pending. No C++ source changes, new
   locks, unsafe exceptions, dependencies, resource limits, request retries or
   deadline changes.
+- The payload/drain fix is committed as `b18efa9a`; rootless build/import pass
+  with source tree `f47e633e7c2bc4b3fd519f9ef35e5131372a4200` and image config
+  `sha256:134008ce6622c77355288d34ef8dff7046b46b329ae5484658604d1d392d950f`.
+- Full unchanged run `dataset-workload/c7fd408b216a451e81feb9009e2eeac1` again
+  completes HTTP six trials and native Rust singleton three trials, then fails
+  native multi-flight with `publication lost its head race`. This time all
+  metadata replicas remain alive: observed memory stays below 280 MiB through
+  70,000 log slots, without swap or OOM. The CAS exhaustion is independent of
+  the fixed payload leak. Full performance/restart acceptance remains pending.
+- Diagnostic run `dataset-workload/0df852363785426086b924ad6c744a4d` retains
+  per-attempt native lease-conflict revision/latency histories. Its native
+  library has temporary logging while the frozen server keeps the identical
+  lease algorithm; it is diagnostic evidence, not a source-matched acceptance.
+- The 64 failed native CAS operations took 69–454 ms each (median 126 ms).
+  The existing 32-ms RTT clamp and 256-ms maximum window understate durable
+  sequencer latency. The fourth contention attempt uses actual RTT and full-width
+  random jitter, preserving 64 attempts and all caller deadlines.
+- A paused-time diagnostic with three readers and unbounded detached releases
+  still fails after that change: cleanup can accumulate beyond client request
+  concurrency. That model omitted the SDK's five-second cleanup timeout and is
+  not a bounded production lifecycle. Its failure is retained here, not counted
+  as a passing regression. The authority regression now covers the proposed
+  bounded acquire/read/release lifecycle; the unchanged service workload remains
+  the acceptance gate.
+- The fifth contention correction makes native verified EOF await the existing
+  bounded cleanup task. Cancel/drop remains prompt but the task retains request
+  admission until completion/timeout. Dropped EOF waits reuse the same task;
+  no new lock, caller retry, TTL/deadline increase, or workload reduction.
+  Native regressions cover admission during cleanup, cancellation/drop, one
+  release across interrupted EOF waits, timeout fallback and retained buffers.
+  All six native lifecycle/read tests pass. The slow authority regression
+  initially passed alone but failed in the component suite and again alone;
+  this is not accepted contention evidence.
+
+## Blocked
+
+- Failure: `slow_durable_cas_completes_with_bounded_reader_lifetimes` returns
+  `HeadConflict` at `access_contention_test.rs:154`, after one update exhausts
+  the unchanged 64-attempt bound. The isolated rerun also fails, excluding
+  interference from other component tests. Three readers each perform 96
+  acquire/read/release cycles over a sequencer with 100-ms durable mutations;
+  reads see committed state and failed conditions still consume a mutation.
+- Exact failing commands:
+
+  ```bash
+  pixi run -- cargo test -p crowdb-sdk-native -p crowdb-access-dataset -p crowdb-access-server --all-targets
+  pixi run -- cargo test -p crowdb-access-dataset --test access_contention_test slow_durable_cas_completes_with_bounded_reader_lifetimes -- --exact --nocapture
+  ```
+
+- Attempts and evidence:
+  1. `93aefa43`: recompute from the CAS observation; delay the first HTTP
+     heartbeat. The real workload still exhausts attempts.
+  2. `4127a966`: randomized short contention windows. The real workload still
+     exhausts attempts.
+  3. `a8e1571e`: scale the window with durable RTT, capped at 256 ms. HTTP
+     completes, but native multi-flight still exhausts attempts after memory
+     fixes; its observed CAS RTT is 69–454 ms.
+  4. Remove the RTT clamp and use full-width random jitter. The slow sequencer
+     with detached releases still exhausts attempts.
+  5. Bound native cleanup within the admitted read lifetime. Native lifecycle
+     regressions pass, but the corresponding bounded slow-sequencer model still
+     exhausts attempts in both the suite and the isolated rerun.
+- Diagnosis: independent read/modify/CAS loops on the same snapshot lease
+  record have no fairness guarantee. Queueing latency and freshly arriving
+  updates can repeatedly invalidate a slower contender. Random windows and
+  bounded producer lifetime reduce pressure but do not provide ordered progress.
+  The fifth change has not been rebuilt into a full-service acceptance image:
+  its failing component model prevents claiming end-to-end resolution.
+- Preserve the fourth experiment and slow-store regression with
+  `git stash apply a6e19f404d9cb614a3004a09575051196d6d0727` when resuming.
+  This stash contains only the four shared-authority experimental files,
+  including the untracked sequencer fixture; it does not contain the native
+  cleanup fix. Applying it preserves the stash for recovery.
+- Recommended next direction: bounded per-snapshot scheduling and merging of
+  lease changes, retaining the existing persisted record and remote CAS fences.
+  Specify queue capacity, per-handle completion/cancellation, cleanup ownership,
+  and fairness across processes before implementation. A local queue alone is
+  not a proof of distributed fairness; keep the failing model and real workload.
+- Alternative: independently stored per-reader leases. This reduces contention
+  on one record but changes reclamation fencing, bounded scans, compatibility
+  and crash recovery; it requires a broader protocol/design change.
+- Human choice required by the requirement workflow after five root-cause
+  attempts. Do not raise deadlines/retry limits, suppress the failing test,
+  reduce the workload, or mark R220 complete. The verified native cleanup fix
+  can be committed separately with this blocked record; the failed experiment
+  remains recoverable and explicitly unaccepted.
+- The native cleanup commit passes `clean-env` followed by all targets of
+  `crowdb-sdk-native`, `crowdb-access-dataset`, and `crowdb-access-server`;
+  workspace all-target/all-feature clippy, `rs-lint`, Rust fmt and diff checks
+  also pass. These checks exclude the explicitly preserved, failing authority
+  experiment. Existing environment-gated hardware/installed-Python cases are
+  not claimed as passing acceptance. No new production lock, unsafe exception,
+  C++ change, request retry or deadline increase was introduced.

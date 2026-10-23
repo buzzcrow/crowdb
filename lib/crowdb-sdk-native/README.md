@@ -108,8 +108,11 @@ async fn read_object(seeds: Vec<String>) -> Result<(), Box<dyn std::error::Error
   next)` advances it. Releasing buffers or reaching EOF never acknowledges.
 - Active reads renew the existing 60-second storage-protection lease while
   their operation remains live. Cancelling/dropping a batch stops its producer
-  and releases protection; `close_read` closes the durable session. Caller-held
-  leases survive both. Interrupted cleanup is bounded and retains TTL expiry.
+  and starts protection cleanup; `close_read` closes the durable session.
+  Verified EOF waits for cleanup, bounded by five seconds and the operation
+  context. Cancellation/drop returns promptly, while cleanup retains the request
+  credit until completion or that bound. Interrupted cleanup retains TTL expiry.
+  Caller-held buffer leases remain valid and charged independently.
 - Upload parts accept runtime-owned `BufferLease` or `FrozenObjectBuffer`.
   Complete verifies stored parts before publication. Use `begin_composition`,
   `edit_composition`, bounded evaluate/prepare, publish and cleanup: these

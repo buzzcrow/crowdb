@@ -19,11 +19,12 @@ pub struct BatchBody {
     locators: VecDeque<(usize, FieldLocator)>,
     field: Option<FieldReader>,
     pending: Option<OwnedPayload>,
-    request: Option<RequestLease>,
+    request: Option<Arc<RequestLease>>,
     resources: Arc<RuntimeResources>,
     uploads: Arc<DatasetUploads>,
     protection: Option<ReadProtection>,
     sequence: u64,
+    finishing: bool,
     complete: bool,
     failure: Option<Error>,
 }
@@ -32,7 +33,7 @@ impl BatchBody {
     pub(super) fn new(
         header: Arc<BatchHeader>,
         locators: Vec<(usize, FieldLocator)>,
-        request: RequestLease,
+        request: Arc<RequestLease>,
         resources: Arc<RuntimeResources>,
         uploads: Arc<DatasetUploads>,
         protection: ReadProtection,
@@ -47,6 +48,7 @@ impl BatchBody {
             uploads,
             protection: Some(protection),
             sequence: 0,
+            finishing: false,
             complete: false,
             failure: None,
         }
@@ -62,6 +64,7 @@ impl BatchBody {
     }
 
     /// Successful EOF certifies all field and part digests, never processing ack.
+    /// It waits for bounded read-protection cleanup before returning admission.
     /// # Errors
     /// Returns sticky integrity/transport/cancellation failures or expired admission.
     pub async fn next(&mut self) -> Result<Option<FieldBuffer>> {
@@ -102,13 +105,17 @@ impl BatchBody {
     }
 
     async fn pull(&mut self) -> Result<Option<FieldBuffer>> {
+        if self.finishing {
+            return self.finish().await;
+        }
         let request = self.request.as_ref().ok_or(Error::Cancelled)?;
         let protection = self.protection.as_ref().ok_or(Error::Cancelled)?;
         request.run(protection.check()).await?;
         loop {
             if self.field.is_none() {
                 let Some((index, locator)) = self.locators.pop_front() else {
-                    return Ok(None);
+                    self.finishing = true;
+                    return self.finish().await;
                 };
                 self.field = Some(FieldReader::new(index, locator)?);
             }
@@ -136,5 +143,12 @@ impl BatchBody {
                 buffer,
             }));
         }
+    }
+
+    async fn finish(&mut self) -> Result<Option<FieldBuffer>> {
+        let request = self.request.as_ref().ok_or(Error::Cancelled)?;
+        let protection = self.protection.as_mut().ok_or(Error::Cancelled)?;
+        request.run(protection.finish()).await?;
+        Ok(None)
     }
 }

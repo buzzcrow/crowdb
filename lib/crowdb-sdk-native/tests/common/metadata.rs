@@ -32,6 +32,25 @@ pub struct TestMetadataTransport {
     lose_mutation_reply: Arc<AtomicBool>,
     blackout: Option<Arc<TestMutationBlackout>>,
     route: Option<Arc<TestRouteChange>>,
+    gate: Option<Arc<TestMutationGate>>,
+}
+
+pub struct TestMutationGate {
+    pub hold: AtomicBool,
+    pub entered: tokio::sync::Semaphore,
+    pub permits: tokio::sync::Semaphore,
+    pub calls: std::sync::atomic::AtomicUsize,
+}
+
+impl Default for TestMutationGate {
+    fn default() -> Self {
+        Self {
+            hold: AtomicBool::new(false),
+            entered: tokio::sync::Semaphore::new(0),
+            permits: tokio::sync::Semaphore::new(0),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -78,6 +97,17 @@ impl ChunkKvTransport for TestMetadataTransport {
             ));
         }
         let (sender, receiver) = oneshot::channel();
+        if !matches!(request.operation, PointOperation::Get { .. }) {
+            if let Some(gate) = self
+                .gate
+                .as_ref()
+                .filter(|gate| gate.hold.load(Ordering::Acquire))
+            {
+                gate.calls.fetch_add(1, Ordering::Relaxed);
+                gate.entered.add_permits(1);
+                gate.permits.acquire().await.unwrap().forget();
+            }
+        }
         self.sender
             .send(TestCommand::Point(request.operation.clone(), sender))
             .await
@@ -275,6 +305,7 @@ pub async fn client_with_source(source: Arc<dyn ChunkKvRangeCatalogSource>) -> A
         ClientConfig::default(),
         None,
         None,
+        None,
     )
     .await
 }
@@ -289,6 +320,7 @@ pub async fn client_with_loss(loss: Arc<AtomicBool>) -> Arc<ChunkKvClient> {
             max_attempts: 1,
             ..ClientConfig::default()
         },
+        None,
         None,
         None,
     )
@@ -307,6 +339,7 @@ pub async fn client_with_blackout(blackout: Arc<TestMutationBlackout>) -> Arc<Ch
         },
         Some(blackout),
         None,
+        None,
     )
     .await
 }
@@ -322,6 +355,21 @@ pub async fn client_with_route(
         ClientConfig::default(),
         None,
         Some(route),
+        None,
+    )
+    .await
+}
+
+#[allow(dead_code)] // Used by Dataset read cleanup tests only.
+pub async fn client_with_gate(gate: Arc<TestMutationGate>) -> Arc<ChunkKvClient> {
+    let (head, pages) = catalog(1, 1);
+    client_with_options(
+        Arc::new(TestCatalog(head, pages)),
+        Arc::new(AtomicBool::new(false)),
+        ClientConfig::default(),
+        None,
+        None,
+        Some(gate),
     )
     .await
 }
@@ -332,6 +380,7 @@ async fn client_with_options(
     config: ClientConfig,
     blackout: Option<Arc<TestMutationBlackout>>,
     route: Option<Arc<TestRouteChange>>,
+    gate: Option<Arc<TestMutationGate>>,
 ) -> Arc<ChunkKvClient> {
     let (sender, mut receiver) = mpsc::channel(64);
     tokio::spawn(async move {
@@ -360,6 +409,7 @@ async fn client_with_options(
                 lose_mutation_reply: loss,
                 blackout,
                 route,
+                gate,
             }),
         )
         .unwrap(),

@@ -90,7 +90,9 @@ impl DatasetClient {
         end: bool,
         session: Option<OperationId>,
     ) -> Result<ReadBatch> {
-        let protection = protection::ReadProtection::acquire(self, &request, batch.snapshot, session).await?;
+        let request = Arc::new(request);
+        let protection =
+            protection::ReadProtection::acquire(self, Arc::clone(&request), batch.snapshot, session).await?;
         let samples = if batch.sample_ids.is_empty() {
             Vec::new()
         } else {

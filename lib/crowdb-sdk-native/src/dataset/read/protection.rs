@@ -23,14 +23,16 @@ struct Protection {
 
 pub(super) struct ReadProtection {
     state: Arc<Protection>,
+    request: Option<Arc<RequestLease>>,
     stop: Cancellation,
     worker: tokio::task::JoinHandle<()>,
+    cleanup: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl ReadProtection {
     pub(super) async fn acquire(
         client: &DatasetClient,
-        request: &RequestLease,
+        request: Arc<RequestLease>,
         snapshot: SnapshotId,
         session: Option<OperationId>,
     ) -> Result<Self> {
@@ -64,7 +66,13 @@ impl ReadProtection {
                 worker_state.failed.store(true, Ordering::Release);
             }
         });
-        Ok(Self { state, stop, worker })
+        Ok(Self {
+            state,
+            request: Some(request),
+            stop,
+            worker,
+            cleanup: None,
+        })
     }
 
     pub(super) async fn check(&self) -> Result<()> {
@@ -77,6 +85,44 @@ impl ReadProtection {
                 .await?;
         }
         Ok(())
+    }
+
+    pub(super) async fn finish(&mut self) -> Result<()> {
+        // Keep the task across dropped EOF waits; cancellation detaches the same
+        // bounded cleanup while its request credit still covers the metadata I/O.
+        self.start_cleanup();
+        if let Some(cleanup) = &mut self.cleanup {
+            cleanup
+                .await
+                .map_err(|error| Error::Storage(format!("read cleanup task failed: {error}")))?;
+        }
+        Ok(())
+    }
+
+    fn start_cleanup(&mut self) {
+        let Some(request) = self.request.take() else {
+            return;
+        };
+        self.stop.cancel();
+        self.worker.abort();
+        let state = Arc::clone(&self.state);
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            self.cleanup = Some(runtime.spawn(async move {
+                let release =
+                    state
+                        .authority
+                        .release_read_handle(&state.identity, state.snapshot, state.handle);
+                if !matches!(
+                    tokio::time::timeout(Duration::from_secs(5), release).await,
+                    Ok(Ok(()))
+                ) {
+                    tracing::error!(
+                        "Dataset read release failed; inactivity expiry retains cleanup responsibility"
+                    );
+                }
+                drop(request);
+            }));
+        }
     }
 }
 
@@ -96,24 +142,6 @@ impl Protection {
 
 impl Drop for ReadProtection {
     fn drop(&mut self) {
-        self.stop.cancel();
-        self.worker.abort();
-        let state = Arc::clone(&self.state);
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            runtime.spawn(async move {
-                let release =
-                    state
-                        .authority
-                        .release_read_handle(&state.identity, state.snapshot, state.handle);
-                if !matches!(
-                    tokio::time::timeout(Duration::from_secs(5), release).await,
-                    Ok(Ok(()))
-                ) {
-                    tracing::error!(
-                        "Dataset read release failed; inactivity expiry retains cleanup responsibility"
-                    );
-                }
-            });
-        }
+        self.start_cleanup();
     }
 }

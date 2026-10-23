@@ -27,16 +27,25 @@ pub fn context(id: u64) -> OperationContext {
 }
 
 impl TestFixture {
+    #[allow(dead_code)] // Cleanup tests provide a gated metadata client instead.
     pub async fn new(held: usize) -> Self {
         let metadata = super::metadata::client().await;
-        let authority = DatasetAuthority::new(Arc::new(ChunkKvDatasetStore::new(metadata.clone())));
-        let runtime = super::storage::runtime_with_limits(
-            metadata,
+        Self::with_metadata(
             RuntimeLimits {
                 held_bytes: held,
                 ..RuntimeLimits::default()
             },
-        );
+            metadata,
+        )
+        .await
+    }
+
+    pub async fn with_metadata(
+        limits: RuntimeLimits,
+        metadata: Arc<crowdb_chunk_kv_client::ChunkKvClient>,
+    ) -> Self {
+        let authority = DatasetAuthority::new(Arc::new(ChunkKvDatasetStore::new(metadata.clone())));
+        let runtime = super::storage::runtime_with_limits(metadata, limits);
         let identity = DatasetIdentity::new(NamespacePath::root(), "native").unwrap();
         let client = DatasetClient::new(&runtime, identity.clone()).unwrap();
         client.create(context(1)).await.unwrap();

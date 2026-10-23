@@ -139,7 +139,10 @@ may replay the last unconfirmed batch, but may not skip or change the snapshot.
 Epoch and sampler state remain client state.
 
 An active-read lease protects payloads reachable from the selected snapshot while
-the read is in progress. Normal close or cancel releases it immediately. If the
+the read is in progress. Normal close or cancel starts its release. Native
+verified EOF waits for bounded cleanup; cancellation stops production promptly
+and retains request admission through cleanup completion or its five-second
+bound. Caller-held buffers retain their own byte credits independently. If the
 connection has no activity for 60 seconds, the lease is invalid and GC may treat
 the read as disconnected; this TTL is the crash and network-failure fallback.
 

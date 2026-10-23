@@ -118,6 +118,7 @@ impl RuntimeResources {
 
 /// Request admission lasts through a stream's terminal result or cancellation.
 /// Its release is independent of any buffer leases delivered to the caller.
+/// Dataset cancellation retains admission until its bounded protection cleanup ends.
 pub struct RequestLease {
     resources: Arc<RuntimeResources>,
     context: OperationContext,
