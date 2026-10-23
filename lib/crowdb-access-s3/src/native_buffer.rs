@@ -116,6 +116,7 @@ pub enum NativeBufferConfigError {
 
 mod allocator;
 mod framed;
+mod producer;
 
 impl AllocatorState {
     fn wake_credit_waiters(&self) {
@@ -656,8 +657,10 @@ impl Http1BodyReceiveProvider for NativeBodyReceiver {
 struct NativeOwner {
     pointer: NonNull<u8>,
     capacity: usize,
-    allocator: Arc<AllocatorState>,
+    allocator: Option<Arc<AllocatorState>>,
     native: Option<WritableBuffer>,
+    // Released after the native allocation, including foreign runtime credits.
+    _lifetime: Option<Box<dyn Send + Sync>>,
 }
 
 // SAFETY: provider-issued regions are disjoint physical-frame payload slots.
@@ -678,8 +681,9 @@ impl NativeOwner {
             return Ok(Self {
                 pointer,
                 capacity,
-                allocator,
+                allocator: Some(allocator),
                 native: Some(native),
+                _lifetime: None,
             });
         }
         // SAFETY: malloc returns either a suitably aligned allocation of at
@@ -689,8 +693,9 @@ impl NativeOwner {
         Ok(Self {
             pointer,
             capacity,
-            allocator,
+            allocator: Some(allocator),
             native: None,
+            _lifetime: None,
         })
     }
 }
@@ -705,10 +710,12 @@ impl Drop for NativeOwner {
         }
         // Return native admission before waking credit waiters.
         drop(native);
-        self.allocator
-            .retained_bytes
-            .fetch_sub(self.capacity, Ordering::AcqRel);
-        self.allocator.wake_credit_waiters();
+        if let Some(allocator) = &self.allocator {
+            allocator
+                .retained_bytes
+                .fetch_sub(self.capacity, Ordering::AcqRel);
+            allocator.wake_credit_waiters();
+        }
     }
 }
 

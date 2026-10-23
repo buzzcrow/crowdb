@@ -12,7 +12,9 @@ use crowdb_rpc_ffi::{Buffer, OwnedPayload, ProducerBufferAllocator, WritableBuff
 use crate::admission::Credit;
 use crate::{CapacityKind, Error, Result, RuntimeResources};
 
+mod producer;
 mod receive;
+pub use producer::FrozenObjectBuffer;
 pub(crate) use receive::AllocationRegistry;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -30,7 +32,7 @@ struct Backing {
     // Storage is dropped before admission is returned to another producer.
     bytes: Bytes,
     registration: Option<receive::Registration>,
-    _credit: Credit,
+    credit: Credit,
 }
 
 #[derive(Clone)]
@@ -43,6 +45,10 @@ pub struct BufferLease {
 }
 
 impl BufferLease {
+    pub(crate) fn belongs_to(&self, resources: &RuntimeResources) -> bool {
+        let budget = self.backing.credit.budget();
+        Arc::ptr_eq(budget, &resources.held) || Arc::ptr_eq(budget, &resources.producers)
+    }
     #[must_use]
     pub fn as_slice(&self) -> &[u8] {
         &self.backing.bytes[self.range.clone()]
@@ -86,7 +92,7 @@ impl BufferLease {
             backing: Arc::new(Backing {
                 bytes,
                 registration: None,
-                _credit: credit,
+                credit,
             }),
             metadata,
         }
@@ -190,7 +196,8 @@ impl RuntimeResources {
             .allocate(capacity)
             .ok_or(Error::Capacity(CapacityKind::Producers))?;
         let credit = self.producers.charge(buffer.capacity())?;
+        let lease = WritableLease { buffer, credit };
         self.check_open()?;
-        Ok(WritableLease { buffer, credit })
+        Ok(lease)
     }
 }

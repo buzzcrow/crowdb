@@ -115,7 +115,7 @@ RDMA plan. Native SDK implementation and acceptance remain outstanding.
   `app/crowdb-access-server/src/s3/operations.rs`,
   `lib/crowdb-sdk-native/src/s3/`,
   `lib/crowdb-chunk-client/src/chunk/chunk_reader.rs`.
-- [ ] **Extract PUT and copy**: separate HTTP decoding from bounded input,
+- [~] **Extract PUT and copy**: separate HTTP decoding from bounded input,
   checksums, ChunkIO writes, publication, and definite-failure cleanup. Add
   ordinary-input and frozen native-buffer entry points. Preserve
   `PutOutcome::Timeout` uncertainty; final success requires durable data and
@@ -158,7 +158,7 @@ RDMA plan. Native SDK implementation and acceptance remain outstanding.
   `lib/crowdb-diskio-client/src/semantic.rs`,
   `lib/crowdb-chunk-client/src/chunk/chunk_reader.rs`,
   `lib/crowdb-access-s3/src/retrieval.rs`.
-- [ ] **Wire producer buffers**: reuse `ProducerBufferAllocator` and
+- [~] **Wire producer buffers**: reuse `ProducerBufferAllocator` and
   `WritableBuffer`, expose only initialized frozen prefixes, and retain
   submitted owners through transport/disk completion. Ordinary input
   adapters stay bounded and account for copies. Files:
@@ -338,6 +338,21 @@ transport acceptance alone cannot establish SDK completion.
   service/inspection/multipart tests, three-crate clippy and formatting pass.
 
 ## Immediate dependent implementation
+
+- Native `begin_put`/`put_vec` now use the shared durable PUT session and return
+  the publication's exact revision. Input calls accept at most 1 MiB and retain
+  actual allocation capacity; foreign-runtime owners are rejected. Registered
+  producers initialize payload slots directly with reserved frame space and
+  freeze into `FrozenObjectBuffer`; all physical/payload views retain their
+  producer credit, including initializer failure/panic and shutdown.
+  Large framed streams require aligned interior frames; one small framed owner
+  must hold the complete declared object. Native writer waits are cancellable;
+  dropping a pending input terminates that writer and returns request admission.
+  Seven new cases cover mixed sizes through multiple chunks, original payload
+  addresses, length/checksum/cancellation, pending-input drop and an applied
+  publication whose reply is lost. Native/S3 all-target suites pass (38 native
+  cases), with focused three-crate clippy and formatting. Native RPC write/HCA
+  acceptance, copy and multipart remain outstanding.
 
 - Shared writer selection and `PreparedPut` now serve HTTP PUT. Durable
   completion precedes one versioned publication, retaining the same metadata

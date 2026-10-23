@@ -91,6 +91,18 @@ impl ClientRuntime {
         &self.resources
     }
 
+    /// Allocates unique producer storage from this runtime's data transport.
+    /// # Errors
+    /// Returns unsupported allocation, exhausted actual-capacity budget or shutdown.
+    pub fn allocate_producer(&self, capacity: u32) -> Result<crate::buffer::WritableLease> {
+        self.resources.check_open()?;
+        let allocator =
+            self.storage.chunks.producer_allocator().ok_or_else(|| {
+                Error::Configuration("data transport has no native producer allocator".into())
+            })?;
+        self.resources.allocate(&allocator, capacity)
+    }
+
     #[must_use]
     pub fn writer_group_count(&self) -> usize {
         self.groups.load().len()

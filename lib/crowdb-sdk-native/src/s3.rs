@@ -17,12 +17,15 @@ mod locality;
 mod namespace;
 mod object;
 mod read;
+mod write;
 pub use crowdb_access_s3::execution::{DeleteObjectFailure, DeleteObjectResult};
 pub use namespace::{DeleteObjects, ListObject, ListObjects, ListOptions};
 
 pub use body::ObjectBody;
 pub use config::S3ClientConfig;
 pub use crowdb_access_s3::condition::{EtagSelection, ReadPreconditions};
+pub use crowdb_access_s3::execution::{PutObjectInfo, S3WritePolicy};
+pub use crowdb_access_s3::metadata::UserMetadata;
 pub use crowdb_access_s3::range::ByteRange;
 pub use locality::{
     ChunkLayoutObservation, FragmentPlacement, FragmentRole, LocalityOptions, ObjectExtent, ObjectLocality,
@@ -30,12 +33,14 @@ pub use locality::{
 };
 pub use object::{ObjectMetadata, ResolvedObject};
 pub use read::{GetObject, GetOptions};
+pub use write::{PutObject, PutOptions};
 
 #[derive(Clone)]
 pub struct S3Client {
     runtime: ClientRuntime,
     execution: S3Executor,
     signer: Arc<crowdb_access_s3::continuation::ContinuationTokenSigner>,
+    write_policy: S3WritePolicy,
 }
 
 impl S3Client {
@@ -64,6 +69,27 @@ impl S3Client {
         if runtime.storage.chunk_type != ChunkType::S3 {
             return Err(Error::Configuration("S3 requires an S3 writer group".into()));
         }
+        let write_policy = config.write_policy.unwrap_or_else(|| {
+            S3WritePolicy::basic(
+                runtime
+                    .storage
+                    .policy
+                    .object_limit
+                    .min(16 * crowdb_protocol::frame::MAX_FRAME_PAYLOAD_BYTES),
+            )
+        });
+        if write_policy.small_object_limit > runtime.storage.policy.object_limit
+            || write_policy.large_write.client.chunk_type != ChunkType::S3
+        {
+            return Err(Error::Configuration(
+                "S3 write policy exceeds its writer group".into(),
+            ));
+        }
+        write_policy
+            .large_write
+            .client
+            .validate()
+            .map_err(|error| Error::Configuration(error.to_string()))?;
         let storage = S3StorageClients {
             control: Arc::clone(&runtime.storage.control),
             metadata: Arc::new(ChunkKvMetadataStore::new(Arc::clone(&runtime.storage.metadata))),
@@ -79,6 +105,7 @@ impl S3Client {
             execution: S3Executor::new(storage, config.tenant),
             signer: Arc::new(signer),
             runtime,
+            write_policy,
         })
     }
 

@@ -171,7 +171,7 @@ impl RuntimeResources {
                         key,
                         owner: owner.clone(),
                     }),
-                    _credit: credit,
+                    credit,
                 });
                 let entry = self
                     .allocations

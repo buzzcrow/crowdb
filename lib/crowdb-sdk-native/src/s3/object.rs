@@ -48,6 +48,13 @@ impl S3Client {
             .selected_object(bucket, key)
             .await
             .map_err(Error::S3)?;
+        self.bind_object(selected)
+    }
+
+    pub(super) fn bind_object(
+        &self,
+        selected: crowdb_access_s3::object::SelectedObject,
+    ) -> Result<ResolvedObject> {
         let record = selected.record;
         let user_metadata =
             UserMetadata::decode(&record.attributes).map_err(|_| Error::S3(S3ErrorCode::InternalError))?;

@@ -10,6 +10,8 @@ pub struct S3ClientConfig {
     pub small_write: Option<SmallWritePolicy>,
     /// None shares a runtime-local key. Supply a stable key for cross-runtime cursors.
     pub continuation_key: Option<Vec<u8>>,
+    /// None uses the current S3 small writer and the standard large-write policy.
+    pub write_policy: Option<crowdb_access_s3::execution::S3WritePolicy>,
 }
 
 impl From<TenantId> for S3ClientConfig {
@@ -18,6 +20,7 @@ impl From<TenantId> for S3ClientConfig {
             tenant,
             small_write: None,
             continuation_key: None,
+            write_policy: None,
         }
     }
 }

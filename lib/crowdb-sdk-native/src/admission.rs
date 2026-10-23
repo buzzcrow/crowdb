@@ -81,6 +81,12 @@ pub(crate) struct Credit {
     amount: usize,
 }
 
+impl Credit {
+    pub fn budget(&self) -> &Arc<Budget> {
+        &self.budget
+    }
+}
+
 impl Drop for Credit {
     fn drop(&mut self) {
         self.budget.used.fetch_sub(self.amount, Ordering::AcqRel);
