@@ -1282,6 +1282,7 @@ dependencies = [
  "async-trait",
  "bincode",
  "bytes",
+ "crossbeam-skiplist",
  "crowdb-access-multipart",
  "crowdb-access-s3",
  "crowdb-chunk-client",

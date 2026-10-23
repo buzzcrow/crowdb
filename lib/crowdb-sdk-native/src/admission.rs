@@ -5,6 +5,7 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use tokio::sync::Notify;
 
 use crate::{CapacityKind, Error, Result};
 
@@ -13,6 +14,8 @@ pub(crate) struct Budget {
     used: AtomicUsize,
     high_water: AtomicUsize,
     kind: CapacityKind,
+    waiters: AtomicUsize,
+    pub(crate) wake: Notify,
 }
 
 impl Budget {
@@ -22,6 +25,8 @@ impl Budget {
             used: AtomicUsize::new(0),
             high_water: AtomicUsize::new(0),
             kind,
+            waiters: AtomicUsize::new(0),
+            wake: Notify::new(),
         })
     }
 
@@ -46,6 +51,29 @@ impl Budget {
     pub fn high_water(&self) -> usize {
         self.high_water.load(Ordering::Relaxed)
     }
+
+    pub fn can_fit(&self, amount: usize) -> bool {
+        amount <= self.limit
+    }
+
+    pub fn register(&self) -> WaitRegistration<'_> {
+        self.waiters.fetch_add(1, Ordering::AcqRel);
+        WaitRegistration(self)
+    }
+
+    pub fn changed(&self) {
+        if self.waiters.load(Ordering::Acquire) != 0 {
+            self.wake.notify_waiters();
+        }
+    }
+}
+
+pub(crate) struct WaitRegistration<'a>(&'a Budget);
+
+impl Drop for WaitRegistration<'_> {
+    fn drop(&mut self) {
+        self.0.waiters.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 pub(crate) struct Credit {
@@ -56,5 +84,6 @@ pub(crate) struct Credit {
 impl Drop for Credit {
     fn drop(&mut self) {
         self.budget.used.fetch_sub(self.amount, Ordering::AcqRel);
+        self.budget.changed();
     }
 }

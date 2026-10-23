@@ -2,9 +2,11 @@
 // Licensed under the Apache License, Version 2.0.
 
 use std::future::Future;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::admission::{Budget, Credit};
+use crate::buffer::AllocationRegistry;
 use crate::{Cancellation, CapacityKind, Error, OperationContext, Result};
 
 #[derive(Clone, Copy, Debug)]
@@ -32,13 +34,16 @@ pub struct ResourceStatus {
     pub producer_bytes_high_water: usize,
     pub held_bytes: usize,
     pub held_bytes_high_water: usize,
+    pub compatibility_copy_bytes: u64,
 }
 
 pub struct RuntimeResources {
     pub(crate) producers: Arc<Budget>,
     pub(crate) held: Arc<Budget>,
     requests: Arc<Budget>,
-    closing: Cancellation,
+    pub(crate) allocations: Arc<AllocationRegistry>,
+    pub(crate) compatibility_copy_bytes: AtomicU64,
+    pub(crate) closing: Cancellation,
 }
 
 impl RuntimeResources {
@@ -60,6 +65,8 @@ impl RuntimeResources {
             producers: Budget::new(limits.producer_bytes, CapacityKind::Producers),
             held: Budget::new(limits.held_bytes, CapacityKind::HeldBuffers),
             closing: Cancellation::default(),
+            allocations: Arc::new(AllocationRegistry::default()),
+            compatibility_copy_bytes: AtomicU64::new(0),
         }))
     }
 
@@ -98,6 +105,7 @@ impl RuntimeResources {
             producer_bytes_high_water: self.producers.high_water(),
             held_bytes: self.held.used(),
             held_bytes_high_water: self.held.high_water(),
+            compatibility_copy_bytes: self.compatibility_copy_bytes.load(Ordering::Relaxed),
         }
     }
 }

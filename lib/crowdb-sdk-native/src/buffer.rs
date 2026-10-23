@@ -7,10 +7,13 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use crowdb_rpc_ffi::{Buffer, ProducerBufferAllocator, WritableBuffer};
+use crowdb_rpc_ffi::{Buffer, OwnedPayload, ProducerBufferAllocator, WritableBuffer};
 
 use crate::admission::Credit;
 use crate::{CapacityKind, Error, Result, RuntimeResources};
+
+mod receive;
+pub(crate) use receive::AllocationRegistry;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LeaseMetadata {
@@ -26,11 +29,14 @@ pub struct LeaseMetadata {
 struct Backing {
     // Storage is dropped before admission is returned to another producer.
     bytes: Bytes,
+    registration: Option<receive::Registration>,
     _credit: Credit,
 }
 
 #[derive(Clone)]
 pub struct BufferLease {
+    // Keep each upstream logical read credit, even when physical storage is shared.
+    source: Option<OwnedPayload>,
     backing: Arc<Backing>,
     range: Range<usize>,
     metadata: LeaseMetadata,
@@ -60,6 +66,7 @@ impl BufferLease {
             .ok_or(Error::BufferRange)?;
         metadata.length = range.len();
         Ok(Self {
+            source: self.source.clone(),
             backing: Arc::clone(&self.backing),
             range: self.range.start + range.start..self.range.start + range.end,
             metadata,
@@ -74,9 +81,11 @@ impl BufferLease {
 
     fn new(bytes: Bytes, metadata: LeaseMetadata, credit: Credit) -> Self {
         Self {
+            source: None,
             range: 0..bytes.len(),
             backing: Arc::new(Backing {
                 bytes,
+                registration: None,
                 _credit: credit,
             }),
             metadata,

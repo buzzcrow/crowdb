@@ -260,6 +260,15 @@ transport acceptance alone cannot establish SDK completion.
   address/capacity retention and logical credit lifetime through final Bytes
   release; all existing reader cases pass. Native SDK capacity admission and
   S3 body adaptation are the next dependent tasks.
+- Runtime-wide held allocation accounting now uses the existing lock-free
+  skip-list dependency and weak entries removed at final backing release.
+  Per-view upstream logical read owners remain retained independently of the
+  shared physical charge. Admission waits register before checking capacity
+  and publication, honor request cancellation/deadline and wake on shutdown.
+  Unknown Bytes owners reserve capacity before a bounded copy, counted in
+  `ResourceStatus::compatibility_copy_bytes`. Five focused tests cover shared
+  capacity, 64 concurrent publication/release rounds, bounded copy pressure,
+  cancellation/shutdown and undersized views hiding oversized allocations.
 
 ## Subsequent Dataset integration under R220
 
