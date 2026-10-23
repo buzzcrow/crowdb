@@ -50,7 +50,7 @@ impl ChunkKvService {
         response
     }
 
-    fn request_monotonic_ms(&self, received: u64, started: Instant) -> u64 {
+    pub(super) fn request_monotonic_ms(&self, received: u64, started: Instant) -> u64 {
         let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         self.monotonic_ms().max(received.saturating_add(elapsed))
     }

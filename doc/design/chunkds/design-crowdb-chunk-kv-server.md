@@ -160,6 +160,15 @@ the partition worker; retrying the same identity retrieves the recorded result.
 Reads may carry a mutation's returned journal position for explicit
 read-after-write ordering.
 
+Multi-get and batch mutation validate their complete key group before IO, then
+capture authority for every resolved serving assignment. All captured contexts
+are checked against one grant snapshot before and after each member. Revoking
+any context stops later members from entering the WAL; a replacement grant cannot
+resume the old group. Continuous live renewal preserves the group. Time spent
+waiting for earlier members counts toward the original request deadline.
+Batch mutation preserves each member's stable identity and individual outcome,
+so retry can retrieve already durable results without replaying their mutations.
+
 ## 5. Ordered Reads
 
 Seek provides ceiling, higher, floor, and lower operations within one logical

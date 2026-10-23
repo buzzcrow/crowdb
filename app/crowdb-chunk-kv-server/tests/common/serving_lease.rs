@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::{catalog, policy, EPOCH, INSTANCE_ID};
+use super::{catalog, policy, routing, EPOCH, INSTANCE_ID};
 use crowdb_chunk_kv::memory::MemoryPartitionTree;
 use crowdb_chunk_kv::{
     Partition, PartitionConfig, PartitionId, PartitionJournal, PartitionRange, PartitionTree,
@@ -13,7 +13,10 @@ use crowdb_chunk_stream::{
     ChunkStream, StreamBinding, StreamBindingState, StreamChunkStore, StreamConfig, StreamMetadataStore,
     StreamName, StreamRegistry,
 };
-use crowdb_protocol::chunk_kv::{Id128, ServingAssignment, ServingGrant};
+use crowdb_protocol::chunk_kv::{
+    BatchMutationItem, BatchMutationRequest, Id128, PartitionRouting, PointOperation, ServingAssignment,
+    ServingGrant,
+};
 use std::sync::Arc;
 
 pub struct TestServingLease {
@@ -87,5 +90,62 @@ impl TestServingLease {
             partition,
             store,
         }
+    }
+    pub fn replace_authority(&self) {
+        self.service.authority().clear();
+        self.renew_authority();
+    }
+
+    pub fn renew_authority(&self) {
+        let mut grant = ServingGrant {
+            instance_id: INSTANCE_ID,
+            lease_sequence: 2,
+            catalog_generation: 1,
+            issued_at_ms: 1_100,
+            expires_at_ms: 13_100,
+            assignments: vec![ServingAssignment {
+                partition_id: Id128 { high: 1, low: 2 },
+                owner_epoch: EPOCH,
+            }],
+            assignment_digest: [0; 32],
+        };
+        grant.seal();
+        self.service
+            .authority()
+            .install(grant, &policy(), 1_100, 50_100)
+            .unwrap();
+    }
+    pub fn batch_request() -> BatchMutationRequest {
+        BatchMutationRequest {
+            routing: PartitionRouting {
+                map_revision: 1,
+                partition_id: Id128 { high: 1, low: 2 },
+                owner_epoch: EPOCH,
+                deadline_ms: Some(2_000),
+            },
+            operations: (1_u8..=2)
+                .map(|sequence| BatchMutationItem {
+                    request_id: routing(u64::from(sequence)).request_id,
+                    operation: PointOperation::Put {
+                        key: vec![b'k', sequence],
+                        value: b"value".to_vec(),
+                    },
+                })
+                .collect(),
+        }
+    }
+
+    pub async fn wait_for_write<T: std::fmt::Debug>(
+        &self,
+        mut pending: impl std::future::Future<Output = T> + Unpin,
+    ) {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::select! {
+                () = self.store.wait_for_write() => {}
+                response = &mut pending => panic!("request completed before its gate: {response:?}"),
+            }
+        })
+        .await
+        .unwrap();
     }
 }

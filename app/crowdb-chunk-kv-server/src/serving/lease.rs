@@ -5,10 +5,11 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use arc_swap::ArcSwap;
-use crowdb_protocol::chunk_kv::{
-    DomainMonitorDescriptor, Id128, InstanceHealth, ServingAssignment, ServingGrant,
-};
+use crowdb_protocol::chunk_kv::{DomainMonitorDescriptor, Id128, InstanceHealth, ServingGrant};
 use thiserror::Error;
+
+mod context;
+pub use context::ServingContext;
 
 #[derive(Clone, Debug)]
 struct AuthoritySnapshot {
@@ -21,23 +22,6 @@ struct AuthoritySnapshot {
 struct AuthorityState {
     highest_sequence: u64,
     current: Option<AuthoritySnapshot>,
-}
-
-/// One admitted assignment; later grants cannot revive it after exclusion.
-#[derive(Clone, Copy, Debug)]
-pub struct ServingContext {
-    instance_id: u64,
-    assignment: ServingAssignment,
-    continuity: u64,
-    deadline_ms: u64,
-}
-
-impl ServingContext {
-    /// Original IO admission deadline; renewal does not extend already issued IO.
-    #[must_use]
-    pub const fn deadline_ms(&self) -> u64 {
-        self.deadline_ms
-    }
 }
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -154,62 +138,6 @@ impl ServingAuthority {
             .map(|_| ())
     }
 
-    /// Capture continuity and the original deadline before asynchronous work.
-    /// # Errors
-    /// Rejects expired, unassigned or stale-catalog admission.
-    pub fn capture(
-        &self,
-        catalog_generation: u64,
-        partition_id: Id128,
-        owner_epoch: u64,
-        now_monotonic_ms: u64,
-    ) -> Result<ServingContext, AuthorityError> {
-        let state = self.state.load();
-        let snapshot = live_snapshot(&state, now_monotonic_ms.max(self.monotonic_ms()))?;
-        if catalog_generation != snapshot.grant.catalog_generation {
-            return Err(AuthorityError::StaleCatalog);
-        }
-        let assignment = ServingAssignment {
-            partition_id,
-            owner_epoch,
-        };
-        let index = snapshot
-            .grant
-            .assignments
-            .binary_search(&assignment)
-            .map_err(|_| AuthorityError::NotAssigned)?;
-        Ok(ServingContext {
-            instance_id: self.instance_id,
-            assignment,
-            continuity: snapshot.continuity[index],
-            deadline_ms: snapshot.local_deadline_ms,
-        })
-    }
-
-    /// Validate the admitted assignment before acknowledging asynchronous work.
-    /// # Errors
-    /// Rejects expiry, replacement, removal or a break in lease continuity.
-    pub fn validate_context(
-        &self,
-        context: &ServingContext,
-        now_monotonic_ms: u64,
-    ) -> Result<(), AuthorityError> {
-        if context.instance_id != self.instance_id {
-            return Err(AuthorityError::WrongInstance);
-        }
-        let state = self.state.load();
-        let snapshot = live_snapshot(&state, now_monotonic_ms.max(self.monotonic_ms()))?;
-        let index = snapshot
-            .grant
-            .assignments
-            .binary_search(&context.assignment)
-            .map_err(|_| AuthorityError::LeaseExpired)?;
-        if snapshot.continuity[index] != context.continuity {
-            return Err(AuthorityError::LeaseExpired);
-        }
-        Ok(())
-    }
-
     /// Revoke authority without discarding the accepted sequence fence.
     pub fn clear(&self) {
         self.state.rcu(|state| {
@@ -233,14 +161,6 @@ impl ServingAuthority {
         let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         self.monotonic_ms().max(received.saturating_add(elapsed))
     }
-}
-
-fn live_snapshot(state: &AuthorityState, now: u64) -> Result<&AuthoritySnapshot, AuthorityError> {
-    state
-        .current
-        .as_ref()
-        .filter(|snapshot| now < snapshot.local_deadline_ms)
-        .ok_or(AuthorityError::LeaseExpired)
 }
 
 fn grant_deadline(

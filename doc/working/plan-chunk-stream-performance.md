@@ -1190,8 +1190,29 @@ adaptation rather than a new transport or storage engine.
   all-target clippy and formatting. Two context regressions, continuous renewal
   and the blocked WAL acknowledgment case also pass after retaining grants by
   immutable Arc ownership. Red/green receipts use `lease-continuity-*`.
-  Group-level contexts, process-boot binding, Stream
+  Process-boot binding, Stream
   admission/IO context and independent renewal remain before deferred completion.
+
+## Grouped request authority implementation (partial T18)
+
+- After point-context fencing, a blocked batch regression still reproduced a
+  resurrection: its first member returned LeaseExpired after clear/replacement,
+  but its second member captured the new grant and appended successfully.
+- Multi-get and batch mutation now capture all resolved serving-assignment
+  contexts before IO and retain them across their complete execution. Every
+  member checks the captured set against one immutable grant snapshot before
+  admission and before success. Revocation prevents later WAL admission while
+  preserving durable earlier data and stable-ID retry. A separate paused batch
+  verifies continuous renewal still permits both writes.
+- Elapsed group time advances the original wall/monotonic deadline; member
+  execution does not restart its budget. Catching-up targets retain explicit
+  transfer-artifact validation. This adds no metadata operation or lock.
+- Group execution moved out of the large server root into `server/group.rs`
+  and `server/group/authority.rs`; token capture/validation lives under
+  `serving/lease/context.rs`. Test request/gate helpers stay in tests/common.
+- Verification passes: 907 Rust cases across 149 targets, eleven-package
+  all-target clippy and formatting. The original failure is `group-lease-red.log`;
+  focused and full evidence use `group-lease-*` receipts.
 
 ## Ownership execution notes (T18/T19 target)
 
@@ -1204,8 +1225,8 @@ adaptation rather than a new transport or storage engine.
 - Captured assignment continuity and the sequence high-water fence are implemented
   above. Add the fixed process boot identity to the same context when wiring the
   Group-0 session, so process replacement also permanently fences old work.
-- Point execution now revalidates its captured context after asynchronous WAL
-  work. Grouped RPCs also need a context spanning their whole execution. Bind
+- Point execution and grouped RPCs now revalidate captured contexts around their
+  asynchronous work. Bind
   Stream IO to the minimum captured Group-0/liveness absolute deadline; checking
   only before creating an async future permits a paused producer to resume with
   a fresh request timestamp. Renewal must run independently of blocked data IO.
