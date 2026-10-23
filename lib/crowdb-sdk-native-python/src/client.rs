@@ -132,20 +132,10 @@ impl Dataset {
         if data.is_empty() || data.len() > crowdb_access_dataset::MAX_UPLOAD_PART_BYTES {
             return Err(NativeError::new_err("invalid upload part size"));
         }
-        let capacity = crowdb_protocol::frame::MAX_FRAME_BYTES;
-        let frames = data
-            .len()
-            .div_ceil(crowdb_protocol::frame::MAX_FRAME_PAYLOAD_BYTES);
-        let capacity =
-            u32::try_from(frames * capacity).map_err(|_| NativeError::new_err("frame size overflow"))?;
         let buffer = self
             .resources
             .native()
-            .allocate_producer(capacity)
-            .map_err(|e| failure(&e))?
-            .initialize_framed(data.len(), 0, |offset, output| {
-                output.copy_from_slice(&data[offset..offset + output.len()]);
-            })
+            .prepare_framed(data)
             .map_err(|e| failure(&e))?;
         let result = py
             .detach(|| {

@@ -40,6 +40,10 @@ async fn main() -> Result<(), Failure> {
         }
         Err(error) => return Err(error.into()),
     };
+    if std::env::args().any(|argument| argument == "--publish-only") {
+        println!("Published mixed-size corpus: {snapshot}; no workload measured");
+        return Ok(());
+    }
     for concurrency in [1, 3] {
         trial(&client, &snapshot, concurrency, 2).await?;
         for repeat in 0..3 {

@@ -52,6 +52,8 @@ def main():
     parser.add_argument("--client-cpu", default="2")
     parser.add_argument("--server-cpus", default="4-15")
     parser.add_argument("--metadata-memory", default="2g")
+    parser.add_argument("--semantics-only", action="store_true",
+                        help="Run installed-binding parity and restart without performance trials")
     args = parser.parse_args()
     for number in (signal.SIGTERM, signal.SIGINT):
         signal.signal(number, interrupted)
@@ -88,6 +90,7 @@ def main():
                     "cpu_topology": subprocess.check_output(["lscpu", "-e=CPU,CORE,SOCKET,NODE"], text=True),
                     "seeds": cluster.origins[:3], "endpoints": cluster.addresses,
                     "source_revision": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+                    "semantics_only": args.semantics_only,
                     "scope": "same-host pinned CPU functional workload, not isolated production hardware",
                     "before": server_usage(cluster.servers)}
         tests = ROOT / "lib/crowdb-sdk-native-python/tests"
@@ -97,6 +100,9 @@ def main():
             ("native-python", [native_python, tests / "workload.py"]),
             ("native-parity", [native_python, tests / "real_consumer.py"]),
         ]
+        if args.semantics_only:
+            commands = [("http-publication", [ROOT / "sdk/target/release/examples/workload", "--publish-only"]),
+                        commands[-1]]
         try:
             for name, command in commands:
                 before = server_usage(cluster.servers)
@@ -116,7 +122,8 @@ def main():
         finally:
             manifest["after"] = server_usage(cluster.servers)
             (output / "manifest.json").write_text(json.dumps(manifest, indent=2))
-    print("Dataset HTTP/native comparison and restart acceptance complete", flush=True)
+    print("Dataset installed-binding semantics and restart acceptance complete" if args.semantics_only else
+          "Dataset HTTP/native comparison and restart acceptance complete", flush=True)
 
 
 if __name__ == "__main__":

@@ -201,6 +201,7 @@ tree-ubsan = { cmd = "bash tools/pixi-tasks/tree-ubsan.sh" }
 coverage = { cmd = "cargo tarpaulin --workspace --out Html --output-dir target/coverage --exclude-files '*/tests/*'", depends-on = ["install-deps"] }
 profile-write = { cmd = "bash tools/profiling/profile-write.sh", depends-on = ["build"] }
 
+<<<<<<< HEAD
 ################################################################################
 # OCI containers — build once, run isolated clusters, stop or clean owned resources
 ################################################################################
@@ -224,3 +225,9 @@ test-boto3-copy-error = { cmd = "python tools/pixi-tasks/test.py unit boto3" }
 
 [feature.iceberg-ecosystem.tasks]
 test-iceberg-container-ecosystem = "bash e2e-test/clients/ecosystem/run.sh"
+=======
+[pypi-dependencies]
+maturin = ">=1.15, <2"
+pip = ">=25, <27"
+auditwheel = ">=6, <7"
+>>>>>>> d3e285b2 (Fix native Python packaging and bounded multipart producers)

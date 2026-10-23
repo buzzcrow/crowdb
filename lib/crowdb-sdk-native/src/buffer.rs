@@ -15,6 +15,7 @@ use crate::{CapacityKind, Error, Result, RuntimeResources};
 mod producer;
 mod receive;
 pub use producer::FrozenObjectBuffer;
+mod framed_chain;
 pub(crate) use receive::AllocationRegistry;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

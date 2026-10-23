@@ -78,6 +78,7 @@ SERVER_PATHS = (
     # Independent SDK packaging builds host test consumers only; release staging
     # neither reads this helper nor packages its output.
     ":(exclude)tools/sdk/package.py",
+    ":(exclude)tools/sdk/native_package.py",
     # The pinned Dataset consumer/fixture runner never enters server staging.
     ":(exclude)tools/sdk/dataset_workload.py",
     # This host-only RPC benchmark is not a dependency or staged server binary.

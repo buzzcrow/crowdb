@@ -122,7 +122,9 @@ impl NativeRuntime {
     #[pyo3(signature=(name, namespace=None))]
     fn dataset(&self, py: Python<'_>, name: String, namespace: Option<Vec<String>>) -> PyResult<Dataset> {
         self.resources.check_process()?;
-        Dataset::new(py, self.resources.clone(), name, namespace.unwrap_or_default())
+        let namespace =
+            namespace.unwrap_or_else(|| crowdb_access_dataset::NamespacePath::root().segments().to_vec());
+        Dataset::new(py, self.resources.clone(), name, namespace)
     }
 
     fn close(&self, py: Python<'_>) -> PyResult<()> {

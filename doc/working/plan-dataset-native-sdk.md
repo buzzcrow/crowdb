@@ -176,3 +176,42 @@ are 30.6-36.0 requests/s, while concurrency-three repeats degrade from 17.7 to
 11.5 to 6.1 requests/s and tails reach seconds. The full common-snapshot
 HTTP/native/Python comparison must retain this elapsed-run/state limitation;
 sequential phase results cannot establish a transport speedup by themselves.
+
+Full comparison `8cf0653d34f74e0c955f5ac5642d1316` completes the six HTTP trials
+without lease errors and three native Rust singleton trials with exact bytes.
+The next native multi-flight phase fails with a Chunk-KV deadline because
+metadata replicas 1 and 2 are OOM-killed at their 2-GiB limits (exit 137).
+The metadata group's tree snapshots and immutable extent pages grow throughout
+the run; `ChunkStream::publish_state` rewrites every historical extent page on
+every append, and no production caller currently drives
+`Partition::reclaim_published_checkpoint`. This is unfinished shared-storage
+diagnosis, not accepted native performance. Do not increase memory, shorten
+the workload, or retry the failed requests to count the comparison as passed.
+
+Ordinary `pixi run clean-env && pixi run test-e2e-dataset` passes in
+`container-e2e/run-97e635e2d2054f1b8f6ff8d44e7a475c`, including HTTP publication,
+restart/recovery and installed Rust/Python Split consumers.
+
+Repeated native wheel packaging exposed a cached extension hardlinked to
+Maturin's repaired staging artifact: the second build references wheel-local
+hashed SONAMEs unavailable to its linker search. Packaging now emits an
+unrepaired Linux wheel, then runs external auditwheel repair on that wheel;
+two consecutive build/install/import passes preserve the Cargo cache. Host
+`libibverbs` and `librdmacm` remain external so the installed host providers
+register devices with the same library instance. Bundling a renamed verbs
+library had produced zero devices despite two available HCAs.
+
+The Python default namespace now matches HTTP/Rust `NamespacePath::root()`;
+an empty namespace previously made the HTTP-published snapshot invisible.
+The new `--semantics-only` workload mode preserves real publication, Python
+semantics and restart while independently diagnosing the long-run OOM; it is
+not performance acceptance.
+
+HCA run `abc5aeec5cea4ced80f79ea3392aa521` establishes native connections but
+fails its first 4-MiB upload: producer allocations support at most 1 MiB.
+The native facade now concatenates independently retained final-frame owners;
+Python fills each bounded allocation once. The maximum-part regression
+verifies every original payload address survives the durable writer, while
+partial allocation failure, short interior frames and mixed budgets release
+their credits correctly. Six focused producer/upload tests pass. Real HCA
+and common-snapshot semantics are still pending.

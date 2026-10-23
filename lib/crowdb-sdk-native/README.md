@@ -76,6 +76,12 @@ async fn read_object(seeds: Vec<String>) -> Result<(), Box<dyn std::error::Error
   framing. Each 64 KiB frame carries at most `MAX_FRAME_PAYLOAD_BYTES` bytes;
   each submitted physical buffer is bounded by 1 MiB. Finish the logical
   payload directly in these regions to avoid a later payload staging copy.
+- `prepare_framed(bytes)` copies existing input once into a chain of final
+  allocations of at most 1 MiB. `FrozenObjectBuffer::concatenate` combines
+  prepared owners without copying; all interior frames must be full and all
+  owners must share one runtime budget. Credits follow each allocation until
+  its last view is released. A chain reports registration ID zero if its
+  allocations have different registration identities.
 - `write`/`write_framed` input acceptance is separate from object visibility.
   `finish` waits for durability, checksums and publication. Multipart complete
   binds the selected part generations and preserves repeat-completion results.

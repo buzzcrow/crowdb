@@ -100,3 +100,46 @@ async fn framed_dataset_upload_and_s3_share_runtime_but_preserve_independent_aut
     assert_eq!(held.as_slice(), b"retained");
     assert_eq!(views[0].as_ref(), b"retained");
 }
+
+#[tokio::test]
+async fn maximum_upload_part_keeps_every_producer_allocation_through_durable_write() {
+    let backend = write_storage::TestWriteStorage::new();
+    let runtime = backend.runtime(metadata::client().await);
+    let identity = DatasetIdentity::new(NamespacePath::root(), "large-part").unwrap();
+    let dataset = DatasetClient::new(&runtime, identity).unwrap();
+    dataset.create(context(1)).await.unwrap();
+    let data: Vec<u8> = (0..4 * 1024 * 1024)
+        .map(|i| u8::try_from(i % 251).unwrap())
+        .collect();
+    let upload = OperationId::random();
+    dataset
+        .create_upload(
+            context(2),
+            upload,
+            data.len() as u64,
+            4 << 20,
+            Md5::digest(&data).into(),
+            u64::MAX,
+        )
+        .await
+        .unwrap();
+    let buffer = runtime.prepare_framed(&data).unwrap();
+    let views = buffer.payload_views();
+    dataset
+        .upload_framed_part(context(3), upload, 0, buffer)
+        .await
+        .unwrap();
+    for view in &views {
+        assert!(
+            backend.data.iter().any(|entry| {
+                let bytes = entry.value();
+                let start = bytes.as_ptr() as usize;
+                (start..start + bytes.len()).contains(&(view.as_ptr() as usize))
+            }),
+            "every physical write must retain its original producer allocation"
+        );
+    }
+    dataset.complete_upload(context(4), upload).await.unwrap();
+    assert_eq!(views.concat(), data);
+    runtime.shutdown().await.unwrap();
+}

@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -19,8 +20,18 @@ def package(destination):
     destination = Path(destination).resolve()
     destination.mkdir(parents=True, exist_ok=True)
     project = ROOT / "lib/crowdb-sdk-native-python"
-    run(["maturin", "build", "--release", "--locked", "--interpreter", sys.executable,
-         "--out", str(destination)], cwd=project)
+    build = ["maturin", "build", "--release", "--locked", "--interpreter", sys.executable]
+    if sys.platform == "linux":
+        # Repair an extracted wheel, leaving Cargo's cached extension untouched.
+        # Verbs providers must register with the host's canonical libibverbs.
+        with tempfile.TemporaryDirectory(prefix="crowdb-native-wheel-") as directory:
+            run([*build, "--auditwheel", "skip", "--compatibility", "linux",
+                 "--out", directory], cwd=project)
+            raw, = Path(directory).glob("*.whl")
+            run(["auditwheel", "repair", "--no-update-tags", "--exclude", "libibverbs.so.1",
+                 "--exclude", "librdmacm.so.1", "--wheel-dir", str(destination), str(raw)])
+    else:
+        run([*build, "--out", str(destination)], cwd=project)
     wheel, = destination.glob("crowdb_dataset_native-*.whl")
     environment = destination / "consumer"
     run([sys.executable, "-m", "venv", "--without-pip", str(environment)])
