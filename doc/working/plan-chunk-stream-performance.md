@@ -586,6 +586,26 @@ adaptation rather than a new transport or storage engine.
   expiry/read-IO grace, retirement policy, sealed spans, page/data reachability
   and bounded conditional cleanup before enabling deletion.
 
+## Bounded root-index retirement (partial T13)
+
+- `retire_directory_roots_before` examines at most 128 oldest retained root
+  identities and atomically deletes only those below the supplied generation
+  horizon. The horizon cannot exceed the observed head. It captures control
+  before revalidating the exact head and conditionally mutates control with the
+  deletions. Conflicts retry; unknown outcomes reconcile absence.
+- Current head and exact pins survive; new identities cannot acquire retired
+  roots. This removes no pages or physical bytes. Repeating bounded passes
+  continues from the remaining oldest keys and stops idempotently at the
+  horizon. No migration, tombstone or compatibility representation is added.
+- Shared Memory/actual-KV tests retire four of five roots in two-record passes,
+  reject stale heads and invalid budgets/horizons, keep the current head and
+  all pages unchanged, and read the exact pinned old view afterward. Actual KV
+  leased-reader renewal after retirement now uses this API as well.
+- Full Stream: 90 tests, zero ignored; focused pin tests, strict all-target
+  clippy and Rust fmt pass. Logs: `root-retirement-{tests,full-stream,pin-tests,
+  clippy-final,fmt}.log`. Main worker/consumer wiring and page/data collection
+  remain unfinished.
+
 ## Required current adapters (partial T04/T14)
 
 - `StreamChunkStore::current_capacity` is required and returns a capacity, with

@@ -63,7 +63,7 @@ async fn late_pins_fail_after_root_retirement_but_existing_exact_views_survive()
         .await
         .unwrap();
     let previous = directory.load_directory_head(Test::NAME).await.unwrap().unwrap();
-    directory
+    let successor = directory
         .publish_directory(
             Some(&previous),
             Test::head(&mutation, Some(previous.head())),
@@ -71,12 +71,13 @@ async fn late_pins_fail_after_root_retirement_but_existing_exact_views_survive()
         )
         .await
         .unwrap();
-    let (_, current_revision) = record(&server, &control_key).await;
-    server
-        .client
-        .batch_write_cas(1, 1, &retirement, &control_key, current_revision)
-        .await
-        .unwrap();
+    assert_eq!(
+        directory
+            .retire_directory_roots_before(&successor, successor.head().generation, 1)
+            .await
+            .unwrap(),
+        1
+    );
     assert!(directory
         .load_directory_root(Test::NAME, head.identity())
         .await

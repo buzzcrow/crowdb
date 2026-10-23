@@ -457,6 +457,13 @@ grant an IO lease: readers separately enforce conservative local deadlines,
 and collection must allow clock skew and outstanding read IO before removing
 expired protection. Expiry cannot be renewed into a new live view.
 
+Root-index retirement uses a caller-supplied generation horizon no newer than
+the observed current head. Each pass examines at most 128 oldest root keys and
+deletes only records below that horizon, under a retention-control CAS captured
+before revalidating the head. Concurrent publication or pin changes force a
+retry. Retirement changes neither the head nor directory pages or physical
+chunks; page and data collection require their separate reachability proof.
+
 ## 8. Bounds and Observation
 
 Defaults bound admission at 1,024 requests and 64 MiB, a batch at 64 requests
