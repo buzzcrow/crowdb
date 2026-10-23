@@ -16,9 +16,10 @@ live in the linked document; implementation follows
 - **[R233](R233-sdk-local-cache-checkpoint.md)** — optional local disk read cache
   and recoverable checkpoint staging with explicit remote durability.
   **Area:** SDK. **Complexity:** High. **Status:** Deferred until dedicated HTTP workload measurements.
-- **[R220](R220-dataset-fat-client-plan.md)** — Dataset SDK fat-client direct
-  access and optimization contract. **Area:** Dataset SDK. **Complexity:** High.
-  **Status:** Deferred until the core Dataset contract has workload measurements.
+- **[R220](R220-dataset-fat-client-plan.md)** — trusted internal Dataset adapter
+  on the R242 runtime, measurements, and Python integration.
+  **Area:** Dataset SDK. **Complexity:** High. **Status:** Deferred until R242
+  S3 acceptance and dedicated Dataset HTTP workload measurements.
 
 ## Access server and external data
 
@@ -32,9 +33,11 @@ live in the linked document; implementation follows
 - **[R170](R170-s3-cuobject-rdma.md)** — optional cuObject RDMA data plane.
   **Area:** access server / S3 / DiskIO / RDMA. **Complexity:** High.
   **Status:** Deferred until the basic TCP S3 path is stable and measured.
-- **[R242](R242-rdma-fat-client-sdk.md)** — native fat-client access SDK and
-  FFI buffer leases. **Area:** access server / SDK / RDMA. **Complexity:** High.
-  **Dependencies:** accepted RDMA RPC and Chunk-KV/access integration.
+- **[R242](R242-rdma-fat-client-sdk.md)** — trusted internal cluster runtime,
+  exposed storage topology, native S3 first, and caller-owned buffer leases;
+  Dataset follows under R220. **Area:** access server / SDK / RDMA.
+  **Complexity:** High. **Dependencies:** accepted RDMA RPC and Chunk-KV/access
+  integration.
 - **[R185](R185-access-iceberg-cache-invalidation.md)** — bounded Iceberg cache
   and invalidation. **Area:** access server / Iceberg / Group 0 / Chunk-KV.
   **Complexity:** Medium. **Status:** Deferred pending focused cache measurements.

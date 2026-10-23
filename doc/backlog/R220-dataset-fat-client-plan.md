@@ -3,68 +3,102 @@
 
 ### R220: Dataset — Fat-client direct access plan
 
-Status: Deferred until dedicated CPU HTTP workload measurements establish
-latency, throughput, memory and digest costs. The public Rust HTTP SDK and
-Python wrapper are available under `sdk/` as independent packages; functional
-container acceptance is complete. Performance measurements remain future work.
+Status: Deferred until the shared runtime and first S3 frontend in
+[R242](R242-rdma-fat-client-sdk.md) are accepted and dedicated CPU HTTP
+measurements establish latency, throughput, memory, and digest costs. The
+public Rust HTTP SDK and Python wrapper are independently packaged under
+`sdk/`; functional container acceptance is complete. These Dataset follow-up
+gates do not defer R242's shared foundation or S3 delivery.
 
-Problem: The SDK fat client can avoid HTTP routing and payload relay by connecting
-directly to internal Chunk-KV and DiskIO, but it also takes responsibility for
-routing freshness, retries, buffer lifetime, backpressure, and worker
-partitioning. Implementing it before the HTTP baseline would make optimization
-claims hard to measure and could duplicate authority logic.
+## Problem
+
+Trusted internal data-processing and AI systems need Dataset semantics over
+direct Chunk-KV and ChunkIO/DiskIO access, with exposed storage topology for
+scheduling. Routing freshness, retries, buffer lifetime, backpressure, and
+worker partitioning must remain correct without duplicating authority logic.
+Performance claims need an HTTP workload baseline.
+
 The root contract is [Dataset design](../design/access-server/dataset/design-crowdb-access-dataset.md).
 
-Solution:
+## Solution
 
-- Implement direct access in the Rust SDK core and expose it through the same
-  Python wrapper used by the HTTP client. Routing, buffers, retries and optional
-  RDMA stay in Rust; Python does not implement another data plane. Additional
-  C/C++ bindings can be added later without making a C ABI a prerequisite.
-- Document the SDK direct-client protocol over the same Dataset authority and Read
-  Plan contract used by HTTP.
-- Compare direct Chunk-KV metadata reads and DiskIO/chunk range reads with the
-  HTTP baseline, including routing refresh, stale topology, failure retry, and
-  60-second active-read TTL behavior.
-- Define owner-backed buffer lifetime, bounded prefetch, cache admission,
-  cancellation, and checksum/MD5 verification without adding client-side global
-  locks or unbounded queues.
-- Analyze which work belongs in the client versus Chunk-KV, DiskIO, and Dataset
-  library. The client cannot publish placement or bypass Dataset authority.
-- Reserve GPU/direct-memory delivery for a later design after CPU direct access
-  is measured and correct.
-- Use explicit server capabilities and authorization for direct Chunk-KV/chunk
-  access. Direct access never grants unrestricted internal metadata mutation.
-  Keep HTTP available for unsupported capabilities; choose transport before
-  starting an operation and never replay an ambiguous mutation on a new path.
+1. Attach Dataset after S3 to R242's native runtime in the main workspace.
+   Reuse topology, transports, admission, and buffer leases; do not introduce
+   another runtime or make the independent HTTP SDK depend on storage FFI.
+   The fat client shares Access Server's internal trust domain, takes explicit
+   Dataset identity/context, and needs neither SigV4 verification, the S3
+   user-secret database, nor external-user capability issuance.
+2. Reuse `crowdb-access-dataset` authority, sessions, composition, Split, and
+   upload logic. Preserve Snapshot/Read Plan binding, selection, worker
+   partitioning, integrity, cleanup, and active-read protection. Topology is
+   a supported scheduling surface, not placement authority.
+3. Preserve explicit acknowledgement and resume: fetching data, releasing a
+   buffer, and acknowledging processing are separate events. Native delivery
+   uses the shared owner-backed streams and bounded prefetch. Cancellation
+   stops producers; caller-held leases remain valid and charged until release.
+4. Compare native Chunk-KV and chunk-range reads with the HTTP baseline,
+   including topology refresh, stale owners, failures, digest costs, and the
+   existing 60-second active-read inactivity TTL. Keep placement, fencing,
+   durability, and publication rules in their existing components.
+5. Expose native Dataset through a Python binding to the same Rust data plane.
+   Preserve the portable HTTP distribution without adding mandatory native
+   dependencies. Additional C/C++ business bindings are later work; reuse the
+   existing lease ABI rather than making a new business ABI a prerequisite.
+6. Use the runtime's TCP/RDMA policy, with eligible pre-payload fallback only.
+   Native access does not automatically select HTTP on transport failure or
+   replay ambiguous mutations on another path. GPU delivery reuses R242's
+   host-copy lifetime contract; direct GPU memory remains later work.
 
-Dependencies: the existing public REST API and packaged HTTP SDK, CPU
-E2E/container acceptance, and measured Chunk-KV/DiskIO read flows. R233 caching
-is optional. Unlanded direct access does not block the first HTTP SDK release.
+## Dependencies
 
-Acceptance:
+- Accepted R242 runtime/topology/lease APIs and first native S3 frontend.
+- Existing public REST API, packaged HTTP SDK, Dataset CPU container
+  acceptance, and measured Chunk-KV/DiskIO flows. Keep HTTP available as an
+  explicitly selected client while native work is unlanded.
+- R233 caching is optional. Dataset integration does not block the existing
+  HTTP SDK distribution or require a second transport/buffer implementation.
 
-1. Given HTTP and direct-client prototypes over the same snapshot, produce a
-   comparison of p50/p99 latency, throughput, CPU, memory, and digest cost.
-   Measurement contract. Integration test.
-2. Given stale routing or a disconnected DiskIO endpoint, assert the fat client
-   refreshes or retries without changing Dataset selection or snapshot identity.
-   Non-authoritative topology invariant. Integration test.
-3. Given a slow consumer, assert direct prefetch and in-flight buffers remain
-   bounded and cancellation releases client buffers. Bounded delivery invariant.
-   Integration test.
-4. Given unsupported direct capability or denied direct credentials, select
-   transport and attempt access; assert HTTP fallback where authorized, no
-   authority bypass and no cross-transport replay of ambiguous writes.
-   Transport authority invariant. Integration test.
-5. Given the same direct read through Rust and the Python wrapper, cancel and
-   close the read while retaining returned data; assert equivalent logical
-   results, valid buffer lifetimes and isolated cleanup. Binding invariant.
-   Integration test.
+## Acceptance
 
-Verification commands:
+- Given HTTP and native reads of the same Snapshot/Read Plan/Split, when each
+  executes, bytes, projection, worker partition, integrity, and cleanup agree.
+  Invariant: Dataset surface equivalence. Integration test.
+- Given HTTP/native workloads over the same snapshot, when measured under
+  documented settings, report p50/p99 latency, throughput, CPU, memory, and
+  digest cost. Invariant: comparable measurement contract. Integration test.
+- Given stale routing or a disconnected DiskIO endpoint, when a native read
+  executes, it refreshes, retries where eligible, or fails without changing
+  selection/snapshot or publishing placement. Invariant: non-authoritative
+  topology. Integration test.
+- Given caller-held buffers and a slow consumer, when prefetch or cancellation
+  occurs, memory stays bounded and held data stays valid until final release.
+  Invariant: bounded owner-backed delivery. Integration test.
+- Given a fetched but unacknowledged batch, when its buffers are released and
+  the read resumes, progress has not advanced; explicit acknowledgement alone
+  advances it. Invariant: processing acknowledgement. Integration test.
+- Given a native Dataset facade sharing a runtime with S3, when either facade
+  executes or closes, resource sharing preserves Dataset authority and the
+  other's operations. Invariant: shared runtime, separate semantics.
+  Integration test.
+- Given disabled RDMA, eligible setup failure, or accepted partial failure,
+  when direct access executes, TCP fallback obeys existing rules, with no
+  implicit HTTP retry or ambiguous mutation replay. Invariant: transport
+  failure boundary. Integration test.
+- Given the same native read through Rust and Python, when cancellation and
+  close occur with retained data, logical results, buffer lifetime, isolated
+  cleanup, and explicit acknowledgement agree. Invariant: binding parity.
+  Integration test.
 
-- `pixi run rs-fmt-check`
-- `pixi run rs-lint`
-- `pixi run test-access-server`
-- `pixi run test-unit`
+Run after the R242 native crate is available:
+
+```bash
+pixi run -- cargo fmt --all -- --check
+pixi run -- cargo test -p crowdb-sdk-native --all-targets
+pixi run -- cargo test -p crowdb-access-dataset --all-targets
+pixi run -- cargo test -p crowdb-access-server --all-targets
+pixi run -- cargo clippy --workspace --all-targets --all-features -- -D warnings
+pixi run check-dataset-sdk-boundary
+pixi run test-dataset-sdk
+pixi run test-dataset-sdk-python
+pixi run test-e2e-dataset
+```

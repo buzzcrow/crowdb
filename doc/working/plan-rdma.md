@@ -106,7 +106,10 @@ Accepted registered host buffers and common RPC
 Accepted HTTP/ChunkIO/DiskIO and Chunk-KV/access
                   |
                   v
-       R242 fat client SDK and FFI lease
+ R242 shared runtime/topology, S3 SDK and leases
+                  |
+                  v
+     R220 Dataset adapter and measurements
 ```
 
 The remaining child uses the existing [fat-client SDK plan](plan-rdma-fat-client-sdk.md)
@@ -120,15 +123,20 @@ Transport echo acceptance alone does not prove SDK lease semantics.
 
 ## Phase 4: R242 fat client SDK
 
-- [ ] **Execute R242 child plan**: split access core from HTTP frontend, expose
-  FFI-safe host leases, and reuse the accepted Chunk-KV/ChunkIO transports.
+- [ ] **Execute R242 child plan**: build the shared trusted internal runtime,
+  expose storage topology and FFI-safe host leases, and deliver native S3
+  using existing S3 components and Chunk-KV/ChunkIO transports. Native calls
+  take explicit tenant/context without SigV4 or a user-secret database;
+  Dataset attaches afterward under R220 using the same runtime.
 - [ ] **Host-to-GPU simulation**: hold each lease until the explicit host-to-GPU
   copy completes, then release it; no GPU pointer is exposed by the base API.
 - [ ] **SDK pressure tests**: hold all returned leases, verify bounded admission,
   cancellation, shutdown, and recovery after release.
 
-Exit condition: native SDK and HTTP frontend return equivalent access results,
-and the caller-controlled lease lifetime is visible and testable through FFI.
+Exit condition: native S3 and HTTP return equivalent semantic results, topology
+is exposed for caller scheduling with existing freshness/fencing rules, and
+caller-controlled lease lifetime is testable through FFI. R220's later Dataset
+adapter and measurements do not gate R242 or this RDMA umbrella acceptance.
 
 ## Phase 5: SDK OCI E2E matrix
 
