@@ -304,20 +304,27 @@ CRC, chunk identity, and address arithmetic. It tracks a tentative frame cursor
 inside a group and advances the recovered physical cursor and logical tail only
 after validating the entire group. It then adds one compact location.
 
-Before publishing a fresh attachment, synchronize a zero 14-byte unwritten
-header on every required mirror. Each append carries the next zero header in
-the same synchronized data write, after its complete groups. These bytes do not
-enter append lengths, locations, checkpoints or their checksum. A subsequent
-append overwrites the known header at the exact preceding complete boundary.
-The repair shadow retains at most two strips when that header crosses an edge.
+Before publishing a fresh attachment or admitting writes into newly allocated
+capacity, zero and synchronize each new physical strip on every required mirror.
+Initialization uses one submission per replica, without automatic retries. An
+uncertain result leaves that capacity unavailable to the writer; the owner cannot
+repeat initialization after later data writes. A replacement strip receives its
+complete retained prefix and a zero suffix with the same single-attempt contract
+before its metadata publication.
 
-Capacity preparation reserves the whole header while the chunk can still grow;
-it grows before writing if the next data end would leave too little space.
-Clipping is legal only at the physical chunk limit. This preserves an explicit
-unwritten boundary across later growth on recycled media, without an extra
-commit frame or append RPC. Failed empty initialization exposes no writable
-allocation. Input/availability validation failures before the first data IO do
-not consume that owner's fresh-write admission.
+Ordinary append writes exactly its complete group range. It never writes a marker
+past that end: a delayed duplicate must not overlap the next acknowledged group.
+Unwritten headers are supplied by the initialized suffix. Capacity preparation
+reserves a complete 14-byte header below the hard chunk limit, growing before
+writing when necessary. This keeps the previous complete prefix bounded inside
+already initialized capacity if growth stops before its new strips are ready.
+An exact hard-capacity end requires no extra header. Allocation, initialization
+and repair traffic are accounted separately from ordinary append bytes.
+
+The bounded repair shadow retains only the unfinished strip prefix. Validation
+failures before the first data IO do not consume that owner's fresh-write
+admission. Block alignment must preserve all physical bytes outside the requested
+range even when the partial-block cache is absent.
 
 An unwritten suffix, incomplete final frame, or incomplete group bounds the
 candidate prefix at the previous complete append. No later group can skip that

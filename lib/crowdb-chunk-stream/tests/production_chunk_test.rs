@@ -34,6 +34,9 @@ mod scope;
 #[path = "production_chunk_test/unwritten.rs"]
 mod unwritten;
 
+#[path = "production_chunk_test/duplicate.rs"]
+mod duplicate;
+
 #[path = "common/grouped_write.rs"]
 mod grouped_write;
 use grouped_write::TestGroupedStrip;
@@ -336,6 +339,7 @@ impl ChunkAllocator for Allocator {
 #[derive(Default)]
 struct Disks {
     bytes: Mutex<HashMap<u64, Vec<u8>>>,
+    writes: Mutex<Vec<(Segment, u64, u64, Bytes)>>,
     fsyncs: AtomicUsize,
     fail_disk_once: AtomicU64,
     fail_fsync_once: AtomicU64,
@@ -365,6 +369,18 @@ fn production_runtime_shares_connected_chunk_io_parts() {
 
 #[async_trait]
 impl DiskWriter for Disks {
+    async fn initialize_synchronized_at_byte_offset(
+        &self,
+        segment: &Segment,
+        unit_bytes: u64,
+        offset: u64,
+        data: Bytes,
+    ) -> crowdb_chunk_client::Result<()> {
+        self.write_at_byte_offset(segment, unit_bytes, offset, data)
+            .await?;
+        self.fsync(segment).await
+    }
+
     async fn write(
         &self,
         _segment: &Segment,
@@ -377,7 +393,7 @@ impl DiskWriter for Disks {
     async fn write_at_byte_offset(
         &self,
         segment: &Segment,
-        _unit_bytes: u64,
+        unit_bytes: u64,
         offset: u64,
         data: Bytes,
     ) -> crowdb_chunk_client::Result<()> {
@@ -389,6 +405,10 @@ impl DiskWriter for Disks {
         {
             return Err(IoError::WriteFailed("injected mirror write failure".into()));
         }
+        self.writes
+            .lock()
+            .unwrap()
+            .push((*segment, unit_bytes, offset, data.clone()));
         let mut disks = self.bytes.lock().unwrap();
         let bytes = disks.entry(disk).or_default();
         let start = usize::try_from(offset).unwrap();
@@ -509,9 +529,6 @@ async fn production_store_grows_and_writes_across_mirror_strips() {
             .concat(),
     );
     let complete_end = data.len() as u64;
-    let mut padded = data.to_vec();
-    padded.extend_from_slice(&[0; 14]);
-    let data = Bytes::from(padded);
     let boundary = usize::try_from(active.capacity).unwrap();
     let images: Vec<_> = (0..data.len())
         .step_by(boundary)
@@ -622,10 +639,11 @@ async fn chunk_stream_runs_end_to_end_over_the_production_chunk_adapter() {
     assert_eq!((range.begin, range.end), (0, 5));
     assert_eq!(stream.read_at(0, 5).await.unwrap(), Bytes::from_static(b"frame"));
     assert_eq!(range.chunk_id.unwrap().low, 8);
-    let retained_bytes: usize = disks.bytes.lock().unwrap().values().map(Vec::len).sum();
     assert_eq!(
         stream.metrics().physical_append_bytes,
-        u64::try_from(retained_bytes).unwrap()
+        2 * (5
+            + (crowdb_protocol::frame::FRAME_GROUP_HEADER_BYTES + crowdb_protocol::frame::FRAME_FOOTER_BYTES)
+                as u64)
     );
 }
 

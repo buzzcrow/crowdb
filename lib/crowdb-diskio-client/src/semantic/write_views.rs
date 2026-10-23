@@ -49,8 +49,8 @@ impl DiskioClient {
         let mut views = data.into_iter();
         // All frames belong to one strip's disk block. Wait for each reply
         // before submitting the next frame, even at aligned boundaries: RPC
-        // arrival order across connections is not guaranteed, and server-side
-        // partial-block padding can overwrite a later frame's stored bytes.
+        // arrival order across connections is not guaranteed. This preserves
+        // the contiguous prefix and makes final synchronization cover all data.
         // Callers may overlap independent strip blocks and different disks
         // holding the same strip's shards or mirror replicas.
         loop {

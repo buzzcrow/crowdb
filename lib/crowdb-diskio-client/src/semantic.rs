@@ -56,6 +56,7 @@ pub enum Durability {
 pub struct OperationOptions {
     pub lane: TrafficLane,
     pub deadline: Instant,
+    pub retry_writes: bool,
 }
 
 impl OperationOptions {
@@ -64,12 +65,20 @@ impl OperationOptions {
         Self {
             lane: TrafficLane::Normal,
             deadline: Instant::now() + timeout,
+            retry_writes: true,
         }
     }
 
     #[must_use]
     pub fn priority(mut self) -> Self {
         self.lane = TrafficLane::Priority;
+        self
+    }
+
+    /// Submit a write once; an uncertain response cannot authorize reuse.
+    #[must_use]
+    pub fn without_write_retries(mut self) -> Self {
+        self.retry_writes = false;
         self
     }
 }

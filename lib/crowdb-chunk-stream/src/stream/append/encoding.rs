@@ -22,7 +22,6 @@ pub(super) fn encode_requests(
     active: &ActiveChunkDescriptor,
     logical_begin: u64,
     requests: &[AppendRequest],
-    physical_limit: u64,
 ) -> Result<EncodedBatch> {
     let mut physical = active.acknowledged_cursor;
     let mut logical = logical_begin;
@@ -60,7 +59,6 @@ pub(super) fn encode_requests(
             views.push(view);
         }
     }
-    crate::storage::append_tail_view(&mut views, physical, physical_limit)?;
     Ok(EncodedBatch {
         views,
         checksum: checksum.finalize(),

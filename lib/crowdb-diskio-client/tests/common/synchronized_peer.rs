@@ -10,7 +10,7 @@ use crowdb_protocol::fb::FBMsgType;
 use flatbuffers::FlatBufferBuilder;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -24,6 +24,7 @@ pub struct TestCounts {
     pub sync_requests: AtomicUsize,
     pub fsyncs: AtomicUsize,
     pub bytes: AtomicUsize,
+    pub requests: Mutex<Vec<(u64, u64)>>,
 }
 
 pub struct TestDiskioPeer {
@@ -34,7 +35,7 @@ pub struct TestDiskioPeer {
 }
 
 impl TestDiskioPeer {
-    pub async fn start(modern: bool, delayed: bool, code: FBDiskIoRetCode) -> Self {
+    pub async fn start(sync_proof: bool, delayed: bool, code: FBDiskIoRetCode) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap().to_string();
         let counts = Arc::new(TestCounts::default());
@@ -49,7 +50,7 @@ impl TestDiskioPeer {
                         accepted = listener.accept() => {
                             let (stream, _) = accepted.unwrap();
                             connections.spawn(serve(stream, Arc::clone(&counts),
-                                Arc::clone(&gate), modern, delayed, code));
+                                Arc::clone(&gate), sync_proof, delayed, code));
                         }
                         done = connections.join_next(), if !connections.is_empty() => {
                             done.unwrap().unwrap();
@@ -67,10 +68,14 @@ impl TestDiskioPeer {
     }
 
     pub fn client(&self) -> DiskioClient {
+        self.client_with_attempts(1)
+    }
+
+    pub fn client_with_attempts(&self, retry_attempts: usize) -> DiskioClient {
         DiskioClient::connect_for_tests(
             vec![self.route(DiskId::new(1, 2))],
             DiskioClientConfig {
-                retry_attempts: 1,
+                retry_attempts,
                 ..Default::default()
             },
         )
@@ -110,7 +115,7 @@ async fn serve(
     mut stream: TcpStream,
     counts: Arc<TestCounts>,
     gate: Arc<Notify>,
-    modern: bool,
+    sync_proof: bool,
     delayed: bool,
     code: FBDiskIoRetCode,
 ) {
@@ -134,8 +139,12 @@ async fn serve(
             assert_eq!(data.len(), request.size() as usize);
             assert!(data.iter().all(|byte| *byte == 7));
             assert_eq!(request.ordering_zone_offset(), 0);
-            let offset = counts.bytes.fetch_add(data.len(), Ordering::AcqRel);
-            assert_eq!(request.zone_offset(), offset as u64);
+            counts.bytes.fetch_add(data.len(), Ordering::AcqRel);
+            counts
+                .requests
+                .lock()
+                .unwrap()
+                .push((request.zone_offset(), request.write_create_time_ms()));
             counts.writes.fetch_add(1, Ordering::Release);
             if request.sync() {
                 counts.sync_requests.fetch_add(1, Ordering::Relaxed);
@@ -159,7 +168,7 @@ async fn serve(
                 &FBDiskWriteResponseArgs {
                     id,
                     ret_code: code,
-                    sync_completed: modern && sync && code == FBDiskIoRetCode::Success,
+                    sync_completed: sync_proof && sync && code == FBDiskIoRetCode::Success,
                     ..Default::default()
                 },
             );

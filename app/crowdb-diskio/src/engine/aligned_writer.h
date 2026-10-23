@@ -24,7 +24,7 @@ class Disk;
 class AlignedWriter
 {
   public:
-    static constexpr size_t MAX_ZERO_BYTES = 2 * 1024 * 1024;
+    static constexpr size_t MAX_BLOCK_BYTES = 2 * 1024 * 1024;
 
     explicit AlignedWriter();
     ~AlignedWriter();
@@ -47,6 +47,14 @@ class AlignedWriter
         size_t                   size;
         uint64_t                 ordering_phys_offset;
         std::function<void(int)> on_complete;
+    };
+
+    struct MergeBuffer
+    {
+        std::shared_ptr<uint8_t> bytes;
+        off_t                    offset;
+        size_t                   size;
+        size_t                   block_size;
     };
 
     struct CacheKey
@@ -85,17 +93,17 @@ class AlignedWriter
     std::array<std::unique_ptr<Shard>, SHARD_COUNT> shards_;
     std::atomic<bool>                               stopping_{false};
 
-    size_t shard_index(const Request &request) const;
-    void   try_start(size_t shard_index);
-    void   process_next(size_t shard_index);
-    void   process(size_t shard_index, Request *request);
-    void   submit_buffer(size_t shard_index, Request *request, std::shared_ptr<uint8_t> buffer, off_t aligned_offset,
-                         size_t aligned_size, size_t block_size);
-    void   finish(size_t shard_index, Request *request, int result);
-    void   update_cache(Shard &shard, const Request &request, const uint8_t *buffer, off_t aligned_offset,
-                        size_t aligned_size, size_t block_size);
-    void   invalidate_cache(Shard &shard, const Request &request, off_t aligned_offset, size_t aligned_size,
-                            size_t block_size);
+    [[nodiscard]] size_t shard_index(const Request &request) const;
+    void                 try_start(size_t shard_index);
+    void                 process_next(size_t shard_index);
+    void                 process(size_t shard_index, Request *request);
+    void                 merge_boundaries(size_t shard_index, Request *request, MergeBuffer buffer, size_t boundary);
+    void                 submit_buffer(size_t shard_index, Request *request, MergeBuffer buffer);
+    void                 finish(size_t shard_index, Request *request, int result);
+    void                 update_cache(Shard &shard, const Request &request, const uint8_t *buffer, off_t aligned_offset,
+                                      size_t aligned_size, size_t block_size);
+    void invalidate_cache(Shard &shard, const Request &request, off_t aligned_offset, size_t aligned_size,
+                          size_t block_size);
 };
 
 } // namespace crowdb::diskio

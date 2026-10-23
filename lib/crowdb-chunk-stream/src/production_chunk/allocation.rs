@@ -6,7 +6,7 @@
 use bytes::Bytes;
 use crowdb_chunk_client::STREAM_STRIP_BYTES;
 use crowdb_protocol::chunk_stream::StreamPurpose;
-use crowdb_protocol::chunkdb::rpc::{AllocateChunkRequest, Chunk, ChunkState, Strip, StripType};
+use crowdb_protocol::chunkdb::rpc::{AllocateChunkRequest, Chunk, ChunkState, ChunkStrip, Strip, StripType};
 
 use super::{
     io_error, progress, ActiveChunkDescriptor, Ordering, ProductionStreamChunkStore, Result, StreamError,
@@ -54,7 +54,10 @@ impl ProductionStreamChunkStore {
             ));
         }
         let state = self.install(chunk.clone())?;
-        self.initialize_empty_tail(&chunk).await?;
+        self.initialize_strip(&chunk, &chunk.strips[0]).await?;
+        state
+            .initialized_capacity
+            .store(STREAM_STRIP_BYTES, Ordering::Release);
         state.fresh_grouped_allocation.store(true, Ordering::Release);
         Ok(ActiveChunkDescriptor {
             chunk_id,
@@ -65,8 +68,13 @@ impl ProductionStreamChunkStore {
         })
     }
 
-    async fn initialize_empty_tail(&self, chunk: &Chunk) -> Result<()> {
-        let strip = &chunk.strips[0];
+    pub(super) async fn initialize_strip(&self, chunk: &Chunk, strip: &ChunkStrip) -> Result<()> {
+        progress::ensure_mirror_copies(strip, self.mirror_copies)?;
+        if u64::from(strip.capacity) * 1024 != STREAM_STRIP_BYTES {
+            return Err(StreamError::Corruption(
+                "stream strip has invalid initialization capacity".into(),
+            ));
+        }
         let Some(Strip::MirrorStrip(mirror)) = &strip.strip else {
             return Err(StreamError::Corruption(
                 "fresh stream allocation is not mirrored".into(),
@@ -92,13 +100,11 @@ impl ProductionStreamChunkStore {
                 ));
             }
         }
+        let strip_bytes = usize::try_from(STREAM_STRIP_BYTES).expect("bounded stream strip");
+        let zeroes = Bytes::from(vec![0; strip_bytes]);
         let writes = mirror.segments.iter().map(|segment| {
-            self.disk_writer.write_synchronized_at_byte_offset(
-                segment,
-                unit_bytes,
-                0,
-                Bytes::from_static(&crate::storage::EMPTY_TAIL),
-            )
+            self.disk_writer
+                .initialize_synchronized_at_byte_offset(segment, unit_bytes, 0, zeroes.clone())
         });
         let results = futures::future::join_all(writes).await;
         for result in results {

@@ -31,10 +31,7 @@ impl TestGroupedStrip {
         );
         self.prefix.extend_from_slice(&bytes);
         let complete_end = self.prefix.len() as u64;
-        let mut full_image = self.prefix.clone();
-        full_image.extend_from_slice(&[0; 14]);
-        let mut written = bytes.to_vec();
-        written.extend_from_slice(&[0; 14]);
+        let full_image = Bytes::copy_from_slice(&self.prefix);
         store
             .write_mirrors(
                 name,
@@ -45,8 +42,8 @@ impl TestGroupedStrip {
                     complete_end,
                     images: &[MirrorStripImage {
                         block_offset: offset,
-                        data: Bytes::from(written),
-                        full_image: Bytes::from(full_image),
+                        data: bytes,
+                        full_image,
                     }],
                 },
             )

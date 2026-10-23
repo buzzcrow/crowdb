@@ -100,6 +100,26 @@ impl DiskWriter for MetricsDiskWriter {
         result
     }
 
+    async fn initialize_synchronized_at_byte_offset(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Bytes,
+    ) -> Result<()> {
+        let bytes = data.len() as u64;
+        let mut operation = self.metrics.diskio_write.start();
+        let result = self
+            .inner
+            .initialize_synchronized_at_byte_offset(seg, unit_bytes, byte_offset, data)
+            .await;
+        if result.is_ok() {
+            self.metrics.diskio_write_bytes.observe(bytes);
+            operation.mark_success();
+        }
+        result
+    }
+
     async fn write_priority_at_byte_offset(
         &self,
         seg: &Segment,

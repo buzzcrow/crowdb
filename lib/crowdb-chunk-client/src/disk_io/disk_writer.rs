@@ -68,6 +68,20 @@ pub trait DiskWriter: Send + Sync {
         self.fsync(seg).await
     }
 
+    /// Initialize fresh storage with one synchronized submission and no retries.
+    /// An ambiguous result must never authorize subsequent writes or reuse.
+    async fn initialize_synchronized_at_byte_offset(
+        &self,
+        _seg: &Segment,
+        _unit_bytes: u64,
+        _byte_offset: u64,
+        _data: Bytes,
+    ) -> Result<()> {
+        Err(IoError::WriteFailed(
+            "disk writer does not support single-attempt initialization".into(),
+        ))
+    }
+
     /// Synchronize ordered immutable views while retaining their owners.
     async fn write_synchronized_views_at_byte_offset(
         &self,

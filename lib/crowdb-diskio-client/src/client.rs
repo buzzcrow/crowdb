@@ -37,6 +37,7 @@ pub struct WireWriteTarget {
     pub zone_offset: u64,
     pub ordering_zone_offset: u64,
     pub sync: bool,
+    pub write_create_time_ms: u64,
 }
 
 /// Disk I/O return codes (mirrors `FBDiskIoRetCode`).
@@ -50,10 +51,8 @@ pub enum DiskIoRetCode {
     PartialWrite = 4,
     InvalidAlignment = 5,
     ConnectionError = 6,
-    /// Compatibility response from an older `DiskIO` server.
-    StaleAllocation = 7,
-    OldRequest = 8,
-    FsyncFailed = 9,
+    OldRequest = 7,
+    FsyncFailed = 8,
 }
 
 #[derive(Clone, Copy)]
@@ -64,6 +63,7 @@ struct WriteTarget {
     size: u32,
     ordering_zone_offset: u64,
     sync: bool,
+    write_create_time_ms: u64,
 }
 
 impl From<i16> for DiskIoRetCode {
@@ -75,9 +75,8 @@ impl From<i16> for DiskIoRetCode {
             4 => Self::PartialWrite,
             5 => Self::InvalidAlignment,
             6 => Self::ConnectionError,
-            7 => Self::StaleAllocation,
-            8 => Self::OldRequest,
-            9 => Self::FsyncFailed,
+            7 => Self::OldRequest,
+            8 => Self::FsyncFailed,
             _ => Self::IoError,
         }
     }
@@ -170,6 +169,7 @@ impl WireClient {
                 size,
                 ordering_zone_offset: zone_offset,
                 sync: false,
+                write_create_time_ms: unix_time_ms(),
             },
             Buffer::from_vec(data),
         )
@@ -202,6 +202,7 @@ impl WireClient {
                 size,
                 ordering_zone_offset: zone_offset,
                 sync: false,
+                write_create_time_ms: unix_time_ms(),
             },
             Buffer::from_owned_bytes(data),
         )
@@ -231,6 +232,7 @@ impl WireClient {
                 size,
                 ordering_zone_offset: target.ordering_zone_offset,
                 sync: target.sync,
+                write_create_time_ms: target.write_create_time_ms,
             },
             Buffer::from_owned_bytes(data),
         )
@@ -265,7 +267,7 @@ impl WireClient {
                 zone_offset: target.zone_offset,
                 size,
                 ordering_zone_offset: target.ordering_zone_offset,
-                write_create_time_ms: unix_time_ms(),
+                write_create_time_ms: target.write_create_time_ms,
                 sync: target.sync,
             },
         );
@@ -303,7 +305,7 @@ impl WireClient {
                 zone_offset: target.zone_offset,
                 size: target.size,
                 ordering_zone_offset: target.ordering_zone_offset,
-                write_create_time_ms: unix_time_ms(),
+                write_create_time_ms: target.write_create_time_ms,
                 sync: target.sync,
             },
         );

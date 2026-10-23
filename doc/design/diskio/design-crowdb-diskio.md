@@ -285,26 +285,25 @@ resolves the request and calls `crowdb_rpc_server_submit_response`.
 disk's `IoEngine`. Every write traverses it. `NullDisk` and `MemDisk` use a
 block size of one, so the same path delegates their writes without padding.
 
-For disks with larger blocks, the stage aligns the physical range and owns an
-aligned buffer until the backend completion callback runs. An aligned start
-with a partial tail copies the request bytes into a zero-initialized block and
-writes the padded range immediately. The zero source is a process-lifetime,
-pre-prepared buffer. The RPC completion reports the logical byte count only
-after the padded backend write completes in full.
+For disks with larger blocks, the stage aligns the physical range and retains
+one aligned buffer through backend completion. It preserves every byte outside
+the requested range. Partial head and tail blocks come from valid cache entries
+or exact boundary-block reads; a range spanning both uncached boundaries needs
+at most two reads. Request bytes are overlaid only after those reads complete.
+The RPC reports the logical count only after the complete aligned write succeeds.
 
 The stage caches the last partial physical block by disk and block offset.
-A sequential write beginning inside that block merges into the cached image.
-When the entry is absent, `AlignedWriter` warns, reads the physical block,
-merges the request, and writes it back. Failed and completed full-block writes
-invalidate affected partial entries. The bounded cache may evict an entry;
-the read-merge path preserves correctness after eviction or process restart.
+The bounded cache is an optimization: eviction, invalidation and process restart
+do not change range-write semantics. Failed writes invalidate affected entries;
+full-block writes invalidate prior partial images. An aligned start with a
+partial tail also preserves the rest of that physical block, so a delayed
+immutable retry cannot erase bytes written by a later request.
 
-Writes are assigned to 64 shards by disk. Each shard has a bounded lock-free
-MPSC queue and one active consumer. This preserves submission and completion
-order for every overlapping range on one disk without a mutex. Different disks
-remain independently executable apart from hash collisions, which only
-serialize them. Queue saturation fails the request with `-EAGAIN`; it never
-drops a write silently.
+Writes are assigned to 64 shards by disk and segment ordering base. Each shard
+has a bounded lock-free MPSC queue and one active consumer through write
+completion. Related partial-block writes remain ordered without a mutex.
+Independent segment bases and disks can execute separately apart from hash
+collisions. Queue saturation fails the request with `-EAGAIN`.
 
 Concurrent overlapping writes are not a supported caller contract. As with
 raw `pwrite`, their final contents would otherwise depend on completion order.
@@ -678,8 +677,8 @@ payload.
 
 Related writes are serialized by `ordering_zone_offset` within
 `AlignedWriter`. This ordering protects partial-block read-modify-write state;
-it does not validate allocation ownership. The retired `allocation_ts` wire
-field is ignored and retained only for schema compatibility.
+it does not validate allocation ownership. Write requests carry only the
+current addressing, ordering, request-age and synchronization contract.
 
 Flatbuffer schemas (`diskio.fbs`):
 - `DiskWriteRequest { disk_id, zone_index, zone_offset, size,
@@ -728,14 +727,13 @@ The internal wire transport retains the caller's owned `Bytes` allocation in
 the RPC buffer until completion. This avoids a client-side `Bytes` to `Vec`
 payload copy. On the server, block-size-one and already aligned payloads can
 continue directly into `IoEngine::write`. Other writes are copied once into
-the server-owned aligned buffer that supplies padding and satisfies the
+the server-owned aligned buffer that preserves boundary bytes and satisfies the
 `O_DIRECT` address-alignment requirement.
 
 `write_views` splits oversized view lists into bounded RPC frames without
 copying their payload. Frames within one strip's disk block complete serially
-in byte order, including aligned boundaries. Logical non-overlap does not
-permit concurrent submission: connections can reorder arrivals, and the
-aligned writer's partial-tail padding can overwrite a later frame. Separate
+in byte order, including aligned boundaries. Connections can reorder arrivals;
+serial completion preserves a contiguous prefix before the final flush. Separate
 caller operations on that block must obey the same ordering. Independently
 owned strip blocks and different disks holding EC shards or mirror replicas
 may run concurrently. Only the final frame requests synchronization, after
@@ -745,12 +743,12 @@ a frame error stops the remaining submissions.
 Input arithmetic, segment bounds, and wire-size limits are checked before RPC
 admission. Reads retry transient transport outcomes within the original
 deadline. Writes can retry only the same immutable bytes at the same allocated
-location; partial writes and permanent disk errors return immediately, while
-an unresolved admitted write is reported as ambiguous. Durable writes are not
-acknowledged until successful synchronization. A new server proves this with
-`sync_completed=true` after write and flush, requiring one request/reply. Old
-peers omit that proof; only then the client uses explicit fsync within the same
-original deadline. The compatibility path does not repeat the write. A failed
+location and retain their original creation time; partial writes and permanent
+disk errors return immediately. Expired operations submit no new request.
+Fresh-storage initialization disables automatic retries, and an unresolved
+admitted write is reported as ambiguous. Durable writes require
+`sync_completed=true` after write and flush, using one request/reply. Missing
+proof fails directly. A failed
 flush returns `FsyncFailed`, exposed as `DurabilityFailure`; no failure is a
 proof of synchronization. Independent fsync remains available and can be
 repeated after an ambiguous response. The lifecycle no-reuse window is what
@@ -793,9 +791,9 @@ the crate's `test-util` feature.
   decides the next action.
 - **I8 (partial-block preservation)**: Sequential writes to the same physical
   block complete in submission order. An unaligned continuation merges with
-  the cached acknowledged block image. A cache miss reads and merges the
-  physical block before writing. A partial tail from an aligned start is
-  zero-padded and cached for the next continuation.
+  the cached acknowledged block image. Each uncached partial boundary is read
+  before the request bytes are overlaid. Alignment preserves all bytes outside
+  the requested range, including tails after aligned starts and late retries.
 - **I9 (backend alignment)**: Every backend write to a disk with block size
   greater than one has aligned address, offset, and length.
 

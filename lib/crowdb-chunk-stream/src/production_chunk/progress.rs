@@ -42,8 +42,10 @@ pub(super) fn admit_write(
     {
         return Err(StreamError::StaleWriter);
     }
-    let data_end = crate::storage::validate_write_tail(*write, physical_limit)?;
-    if data_end > super::chunk_capacity(chunk)? {
+    let data_end = crate::storage::validate_write_bounds(*write, physical_limit)?;
+    if crate::storage::padded_end(data_end, physical_limit)?
+        > state.initialized_capacity.load(Ordering::Acquire)
+    {
         return Err(StreamError::InvalidRequest(
             "stream write requires more allocated capacity".into(),
         ));

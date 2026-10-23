@@ -4,9 +4,10 @@
 //! Bounded writes requiring explicit synchronization completion.
 
 use super::{
-    Bytes, DiskioClient, DiskioError, DiskioResult, Durability, Instant, OperationKind, OperationOptions,
-    Ordering, SegmentTarget, WireClient, WireWriteTarget, WritePayload,
+    unix_time_ms, Bytes, DiskioClient, DiskioError, DiskioResult, Durability, Instant, OperationKind,
+    OperationOptions, Ordering, SegmentTarget, WireClient, WireWriteTarget, WritePayload,
 };
+use crate::client::WireError;
 
 impl DiskioClient {
     /// Write caller-owned bytes to an exact segment-relative range.
@@ -41,6 +42,10 @@ impl DiskioClient {
         durability: Durability,
         options: OperationOptions,
     ) -> DiskioResult<()> {
+        if Instant::now() >= options.deadline {
+            return Err(DiskioError::DeadlineExceeded);
+        }
+        let write_create_time_ms = unix_time_ms();
         self.refresh_topology_if_due().await;
         if data.is_empty() {
             return Err(DiskioError::InvalidInput("write data must be nonempty".into()));
@@ -50,7 +55,18 @@ impl DiskioClient {
         let mut backoff = self.config.reconnect_initial_backoff;
         let mut last_error = None;
         let mut only_backpressure = true;
-        for attempt in 0..self.config.retry_attempts {
+        let attempts = if options.retry_writes {
+            self.config.retry_attempts
+        } else {
+            1
+        };
+        for attempt in 0..attempts {
+            if Instant::now() >= options.deadline {
+                if attempt == 0 {
+                    return Err(DiskioError::DeadlineExceeded);
+                }
+                break;
+            }
             let (route, selected) = self.select(target.disk_id, options.lane)?;
             let write_target = WireWriteTarget {
                 disk_id: target.disk_id,
@@ -58,26 +74,15 @@ impl DiskioClient {
                 zone_offset,
                 ordering_zone_offset: target.segment_base,
                 sync: durability == Durability::Fsync,
+                write_create_time_ms,
             };
-            let submitted = match &data {
-                WritePayload::Contiguous(data) => {
-                    self.wire
-                        .write_segment_bytes(&self.server, &selected, write_target, data.clone())
-                }
-                WritePayload::Views(views) => self.wire.write_segment_views(
-                    &self.server,
-                    &selected,
-                    write_target,
-                    views.iter().cloned().collect(),
-                ),
-            };
-            let future = match submitted {
+            let future = match self.submit_payload(&selected, write_target, &data) {
                 Ok(future) => future,
                 Err(error) => {
                     let error = Self::classify_wire(error, OperationKind::Write);
                     only_backpressure &= matches!(error, DiskioError::Backpressure(_));
                     last_error = Some(error);
-                    if attempt + 1 < self.config.retry_attempts {
+                    if attempt + 1 < attempts {
                         if self
                             .prepare_retry(&route, options.lane, &selected, &mut backoff, options.deadline)
                             .await
@@ -111,7 +116,7 @@ impl DiskioClient {
                 Err(error) => {
                     only_backpressure = false;
                     last_error = Some(error);
-                    if attempt + 1 < self.config.retry_attempts
+                    if attempt + 1 < attempts
                         && self
                             .prepare_retry(&route, options.lane, &selected, &mut backoff, options.deadline)
                             .await
@@ -133,6 +138,26 @@ impl DiskioClient {
             || "completion was not observed".into(),
             |error| error.to_string(),
         )))
+    }
+
+    fn submit_payload(
+        &self,
+        connection: &crowdb_rpc_ffi::SelectedConnection,
+        target: WireWriteTarget,
+        data: &WritePayload,
+    ) -> Result<crowdb_rpc_ffi::CallFuture, WireError> {
+        match data {
+            WritePayload::Contiguous(data) => {
+                self.wire
+                    .write_segment_bytes(&self.server, connection, target, data.clone())
+            }
+            WritePayload::Views(views) => self.wire.write_segment_views(
+                &self.server,
+                connection,
+                target,
+                views.iter().cloned().collect(),
+            ),
+        }
     }
 
     async fn await_synchronized_write(

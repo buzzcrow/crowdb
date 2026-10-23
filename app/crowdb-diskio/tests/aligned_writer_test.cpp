@@ -1,8 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-#include "disk/disk.h"
-#include "engine/aligned_writer.h"
+#include "common/aligned_writer.h"
 
 #include <gtest/gtest.h>
 #include <unistd.h>
@@ -23,116 +22,12 @@
 namespace
 {
 
-class RecordingEngine final : public crowdb::diskio::IoEngine
-{
-  public:
-    explicit RecordingEngine(size_t capacity, bool defer_writes = false)
-        : storage(capacity, 0),
-          defer_writes(defer_writes)
-    {
-    }
-
-    void submit_write(crowdb::diskio::Disk *, off_t offset, const uint8_t *data, size_t size,
-                      std::function<void(int)> on_complete) override
-    {
-        write_offsets.push_back(offset);
-        write_sizes.push_back(size);
-        if (offset < 0 || static_cast<size_t>(offset) + size > storage.size()) {
-            on_complete(-1);
-            return;
-        }
-        std::memcpy(storage.data() + offset, data, size);
-        if (defer_writes) {
-            pending_writes.emplace_back(size, std::move(on_complete));
-        }
-        else {
-            on_complete(static_cast<int>(size));
-        }
-    }
-
-    void submit_read(crowdb::diskio::Disk *, off_t offset, uint8_t *buf, size_t size, uint64_t,
-                     std::function<void(int)> on_complete) override
-    {
-        read_count++;
-        if (offset < 0 || static_cast<size_t>(offset) + size > storage.size()) {
-            on_complete(-1);
-            return;
-        }
-        std::memcpy(buf, storage.data() + offset, size);
-        on_complete(static_cast<int>(size));
-    }
-
-    void submit_fsync(crowdb::diskio::Disk *, std::function<void(int)> on_complete) override
-    {
-        on_complete(0);
-    }
-
-    void complete_one_write()
-    {
-        ASSERT_FALSE(pending_writes.empty());
-        auto [size, callback] = std::move(pending_writes.front());
-        pending_writes.pop_front();
-        callback(static_cast<int>(size));
-    }
-
-    std::vector<uint8_t>                                    storage;
-    bool                                                    defer_writes;
-    size_t                                                  read_count{0};
-    std::vector<off_t>                                      write_offsets;
-    std::vector<size_t>                                     write_sizes;
-    std::deque<std::pair<size_t, std::function<void(int)>>> pending_writes;
-};
-
-class TestDisk final : public crowdb::diskio::Disk
-{
-  public:
-    TestDisk(RecordingEngine *engine, size_t block_size) : engine_(engine), block_size_(block_size)
-    {
-    }
-
-    [[nodiscard]] crowdb::diskio::DiskType type() const override
-    {
-        return crowdb::diskio::DiskType::Mem;
-    }
-
-    [[nodiscard]] int fd() const override
-    {
-        return 1;
-    }
-
-    [[nodiscard]] bool is_o_direct() const override
-    {
-        return block_size_ > 1;
-    }
-
-    [[nodiscard]] size_t block_size() const override
-    {
-        return block_size_;
-    }
-
-    crowdb::diskio::IoEngine *engine() override
-    {
-        return engine_;
-    }
-
-    [[nodiscard]] crowdb::diskio::DiskId id() const override
-    {
-        return {7, 9};
-    }
-
-    crowdb::diskio::Zone *find_zone(uint32_t) override
-    {
-        return nullptr;
-    }
-
-  private:
-    RecordingEngine *engine_;
-    size_t           block_size_;
-};
+using crowdb::diskio::test::TestDisk;
+using crowdb::diskio::test::TestRecordingEngine;
 
 TEST(AlignedWriter, BlockSizeOneUsesNoOpPath)
 {
-    RecordingEngine               engine(4096);
+    TestRecordingEngine           engine(4096);
     auto                          disk = std::make_shared<TestDisk>(&engine, 1);
     crowdb::diskio::AlignedWriter writer;
     std::vector<uint8_t>          data{1, 2, 3};
@@ -148,7 +43,7 @@ TEST(AlignedWriter, BlockSizeOneUsesNoOpPath)
 
 TEST(AlignedWriter, SequentialPartialWritesReuseCachedBlock)
 {
-    RecordingEngine               engine(8192);
+    TestRecordingEngine           engine(8192);
     auto                          disk = std::make_shared<TestDisk>(&engine, 4096);
     crowdb::diskio::AlignedWriter writer;
     std::vector<uint8_t>          first(1024, 0x11);
@@ -161,7 +56,7 @@ TEST(AlignedWriter, SequentialPartialWritesReuseCachedBlock)
 
     EXPECT_EQ(first_result, 1024);
     EXPECT_EQ(second_result, 1024);
-    EXPECT_EQ(engine.read_count, 0);
+    EXPECT_EQ(engine.read_count, 1);
     ASSERT_EQ(engine.write_sizes.size(), 2);
     EXPECT_EQ(engine.write_sizes[0], 4096);
     EXPECT_EQ(engine.write_sizes[1], 4096);
@@ -173,7 +68,7 @@ TEST(AlignedWriter, SequentialPartialWritesReuseCachedBlock)
 
 TEST(AlignedWriter, CacheMissReadsAndMergesExistingBlock)
 {
-    RecordingEngine engine(8192);
+    TestRecordingEngine engine(8192);
     std::fill(engine.storage.begin(), engine.storage.begin() + 4096, 0x7a);
     auto                          disk = std::make_shared<TestDisk>(&engine, 4096);
     crowdb::diskio::AlignedWriter writer;
@@ -194,7 +89,7 @@ TEST(AlignedWriter, CacheMissReadsAndMergesExistingBlock)
 
 TEST(AlignedWriter, FullAlignedWriteInvalidatesPartialCache)
 {
-    RecordingEngine               engine(8192);
+    TestRecordingEngine           engine(8192);
     auto                          disk = std::make_shared<TestDisk>(&engine, 4096);
     crowdb::diskio::AlignedWriter writer;
     std::vector<uint8_t>          partial(1024, 0x11);
@@ -208,7 +103,7 @@ TEST(AlignedWriter, FullAlignedWriteInvalidatesPartialCache)
     writer.submit(disk, 0, aligned.get(), 4096, [](int result) { ASSERT_EQ(result, 4096); });
     writer.submit(disk, 1024, continuation.data(), continuation.size(), [](int result) { ASSERT_EQ(result, 1024); });
 
-    EXPECT_EQ(engine.read_count, 1);
+    EXPECT_EQ(engine.read_count, 2);
     EXPECT_TRUE(std::all_of(engine.storage.begin(), engine.storage.begin() + 1024,
                             [](uint8_t value) { return value == 0x44; }));
     EXPECT_TRUE(std::all_of(engine.storage.begin() + 1024, engine.storage.begin() + 2048,
@@ -219,7 +114,7 @@ TEST(AlignedWriter, FullAlignedWriteInvalidatesPartialCache)
 
 TEST(AlignedWriter, FullRangeWriteInvalidatesInteriorPartialCache)
 {
-    RecordingEngine               engine(16384);
+    TestRecordingEngine           engine(16384);
     auto                          disk = std::make_shared<TestDisk>(&engine, 4096);
     crowdb::diskio::AlignedWriter writer;
     std::vector<uint8_t>          partial(1024, 0x11);
@@ -233,7 +128,7 @@ TEST(AlignedWriter, FullRangeWriteInvalidatesInteriorPartialCache)
     writer.submit(disk, 0, aligned.get(), 12288, [](int result) { ASSERT_EQ(result, 12288); });
     writer.submit(disk, 5120, continuation.data(), continuation.size(), [](int result) { ASSERT_EQ(result, 1024); });
 
-    EXPECT_EQ(engine.read_count, 1);
+    EXPECT_EQ(engine.read_count, 2);
     EXPECT_TRUE(std::all_of(engine.storage.begin() + 4096, engine.storage.begin() + 5120,
                             [](uint8_t value) { return value == 0x44; }));
     EXPECT_TRUE(std::all_of(engine.storage.begin() + 5120, engine.storage.begin() + 6144,
@@ -244,7 +139,7 @@ TEST(AlignedWriter, FullRangeWriteInvalidatesInteriorPartialCache)
 
 TEST(AlignedWriter, DestructionWaitsForActiveCompletion)
 {
-    RecordingEngine      engine(8192, true);
+    TestRecordingEngine  engine(8192, true);
     auto                 disk   = std::make_shared<TestDisk>(&engine, 4096);
     auto                 writer = std::make_unique<crowdb::diskio::AlignedWriter>();
     std::vector<uint8_t> data(1024, 0x11);
@@ -264,7 +159,7 @@ TEST(AlignedWriter, DestructionWaitsForActiveCompletion)
 
 TEST(AlignedWriter, SameBlockWritesCompleteInSubmissionOrder)
 {
-    RecordingEngine               engine(8192, true);
+    TestRecordingEngine           engine(8192, true);
     auto                          disk = std::make_shared<TestDisk>(&engine, 4096);
     crowdb::diskio::AlignedWriter writer;
     std::vector<uint8_t>          first(1024, 0x11);
@@ -285,7 +180,7 @@ TEST(AlignedWriter, SameBlockWritesCompleteInSubmissionOrder)
 
 TEST(AlignedWriter, OrderedWritesShareOneSubmissionQueue)
 {
-    RecordingEngine               engine(8192, true);
+    TestRecordingEngine           engine(8192, true);
     auto                          disk = std::make_shared<TestDisk>(&engine, 4096);
     crowdb::diskio::AlignedWriter writer;
     std::vector<uint8_t>          first_data(1024, 0x11);

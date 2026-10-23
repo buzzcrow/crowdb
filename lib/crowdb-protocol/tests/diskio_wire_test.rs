@@ -8,10 +8,10 @@ use crowdb_protocol::diskio_fb::{
 use flatbuffers::FlatBufferBuilder;
 
 #[test]
-fn synchronized_write_appends_fields_without_reusing_the_retired_fence_slot() {
-    assert_eq!(FBDiskWriteRequest::VT_ORDERING_ZONE_OFFSET, 18);
-    assert_eq!(FBDiskWriteRequest::VT_WRITE_CREATE_TIME_MS, 20);
-    assert_eq!(FBDiskWriteRequest::VT_SYNC, 22);
+fn synchronized_write_uses_the_current_compact_layout() {
+    assert_eq!(FBDiskWriteRequest::VT_ORDERING_ZONE_OFFSET, 16);
+    assert_eq!(FBDiskWriteRequest::VT_WRITE_CREATE_TIME_MS, 18);
+    assert_eq!(FBDiskWriteRequest::VT_SYNC, 20);
     assert_eq!(FBDiskWriteResponse::VT_SYNC_COMPLETED, 10);
     let mut builder = FlatBufferBuilder::new();
     let disk = FBInt128([7; 16]);
@@ -42,9 +42,8 @@ fn synchronized_write_appends_fields_without_reusing_the_retired_fence_slot() {
 }
 
 #[test]
-fn old_request_and_response_layouts_do_not_prove_synchronization() {
+fn synchronization_requires_an_explicit_request_and_completion() {
     let mut builder = FlatBufferBuilder::new();
-    // Default false fields are omitted, retaining the pre-sync wire layout.
     let offset = FBDiskWriteRequest::create(
         &mut builder,
         &FBDiskWriteRequestArgs {
@@ -73,7 +72,7 @@ fn old_request_and_response_layouts_do_not_prove_synchronization() {
 
 #[test]
 fn synchronized_response_and_flush_failure_have_explicit_wire_values() {
-    assert_eq!(FBDiskIoRetCode::FsyncFailed.0, 9);
+    assert_eq!(FBDiskIoRetCode::FsyncFailed.0, 8);
     for (code, completed) in [
         (FBDiskIoRetCode::Success, true),
         (FBDiskIoRetCode::FsyncFailed, false),

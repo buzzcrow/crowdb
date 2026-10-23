@@ -2,9 +2,9 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use crowdb_protocol::chunkdb::rpc::{
-    AllocateReplacementSegmentRequest, Chunk, DiscardReplacementSegmentRequest, QueryChunkRequest,
+    AllocateReplacementSegmentRequest, Chunk, ChunkType, DiscardReplacementSegmentRequest, QueryChunkRequest,
     ReplaceChunkStripRangeRequest, Strip,
 };
 use crowdb_protocol::common::ChunkId;
@@ -108,7 +108,24 @@ impl MirrorStripFlow {
                 last_error = "replacement allocation returned no segment".into();
                 continue;
             };
-            let write = if self.sync {
+            let stream_initialization = matches!(
+                ChunkType::try_from(chunk.chunk_type),
+                Ok(ChunkType::Stream | ChunkType::Wal)
+            );
+            let write = if stream_initialization {
+                let capacity = usize::try_from(u64::from(old_strip.capacity) * 1024)
+                    .map_err(|_| IoError::WriteFailed("replacement capacity overflows".into()))?;
+                if image.len() > capacity
+                    || capacity > usize::try_from(crate::STREAM_STRIP_BYTES).expect("bounded stream strip")
+                {
+                    return Err(IoError::WriteFailed("invalid stream replacement image".into()));
+                }
+                let mut initialized = BytesMut::zeroed(capacity);
+                initialized[..image.len()].copy_from_slice(&image);
+                self.disk_writer
+                    .initialize_synchronized_at_byte_offset(&replacement, unit_bytes, 0, initialized.freeze())
+                    .await
+            } else if self.sync {
                 self.disk_writer
                     .write_synchronized_at_byte_offset(&replacement, unit_bytes, 0, image.clone())
                     .await
@@ -122,7 +139,9 @@ impl MirrorStripFlow {
                 if let Some(disk) = replacement.disk_id {
                     self.failed_disks.insert(disk);
                 }
-                self.discard(chunk.id, replacement).await;
+                if !stream_initialization {
+                    self.discard(chunk.id, replacement).await;
+                }
                 continue;
             }
             let Some(slot) = mirror.segments.iter_mut().find(|segment| **segment == failed) else {

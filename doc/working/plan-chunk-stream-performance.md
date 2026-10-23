@@ -15,7 +15,7 @@ KV work, with compact locations, incremental directories, and bounded recovery.
 - T01/T02/T03/T05–T07 foundations are committed. T15 is the active recovery task.
   T13's indexed retention primitives are committed; expiry/read-IO grace and
   runtime/consumer wiring remain. Directory, shared-codec, ordinary writer and local-progress
-  foundations exist; the main Stream worker still needs grouped/indexed wiring,
+  foundations exist; the main Stream worker still needs indexed wiring,
   safe ownership/recovery, bounded retention and production acceptance.
 - User instruction: this product has never shipped. Support only the chosen
   current format and matched service contract. Do not add old-format migration,
@@ -808,8 +808,8 @@ adaptation rather than a new transport or storage engine.
   all-target clippy and Rust fmt pass; logs:
   `frame-observation-{check,tests,full-suite,clippy-final,fmt}.log`.
 - This is the shared observation/replay engine. Current-layout physical readers,
-  old-owner exclusion, initial/tail zero headers, finalizer wiring and replacing
-  the main worker remain unfinished; no production performance result is claimed.
+  and finalizer primitives now exist. Owner exclusion and main-worker recovery
+  remain unfinished; no production performance result is claimed.
 
 ## Pinned mirrored physical layout (partial T15)
 
@@ -866,8 +866,8 @@ adaptation rather than a new transport or storage engine.
   reads proportional to intersecting frames. Unsupported old magic is rejected
   by both contiguous/view protocol parsers. Current rollover/repair/read/trim
   fixtures use actual grouped bytes and canonical capacities.
-- Remaining work: the main worker still coalesces batch views, keeps the flat
-  directory and waits for per-batch cursor/head metadata. Root-index/tail wiring,
+- Remaining work: the main worker keeps the flat directory and waits for
+  per-batch cursor/head metadata. Root-index/tail wiring,
   owner leases, content recovery, finite-view pins and performance acceptance
   are not implied by the grouped-format switch.
 - Verification: 855 tests across 137 Protocol, Chunk-client, Stream, Chunk-KV,
@@ -877,33 +877,47 @@ adaptation rather than a new transport or storage engine.
   in `grouped-worker-{initial,suite}.log` identify stale fixture geometry and
   the now-rejected attempt to discard synchronized bytes using an older cursor.
 
-## Explicit unwritten tail on recycled media (partial T15)
+## Initialized unwritten suffix and immutable retries (partial T15)
 
-- Fresh allocation validates segment ownership/geometry and synchronizes a zero
-  14-byte header on all required mirrors before returning an attachment. Failed
-  initialization leaves no fresh-write token. This is allocation IO, not a
-  Stream checkpoint or an ordinary-append extra request.
-- Complete grouped batches carry the next zero header in their existing image
-  writes. Their cursor, compact locations and checkpoint checksum exclude it;
-  physical append traffic includes it. Capacity preparation reserves the full
-  header below the physical limit, growing first if necessary. At the hard limit
-  the header can be clipped or absent at an exact-capacity end.
-- MirrorShadow keeps at most two necessary strips across a pad boundary. It
-  truncates only the known at-most-14-byte zero pad at the exact prior complete
-  end. Append can overwrite a header split across strips without erasing any
-  prior acknowledged byte. Physical range/image validation and required copy
-  checks precede first-IO token consumption; a restored layout can retry after
-  a validation-only rejection. Uncertain first IO still cannot be blindly resumed.
-- Added real retained-media cases prefilled with nonzero recycled bytes: empty
-  and uncheckpointed-group observation, malformed/missing pad, failed initial
-  synchronization, exact physical capacity, a group ending seven bytes before
-  a strip edge, later growth and the next append. The existing repair case also
-  uses that exact split-pad boundary. Tail reads stop at the explicit header and
-  do not adopt stale media bytes. Ordinary object read bounds stay unchanged.
-- All 858 tests across 137 Protocol, Client, Stream, Chunk-KV, Chunk-KV-server and
-  ChunkDB targets pass, zero failed/ignored. All-target clippy and workspace fmt
-  pass. Receipts: `unwritten-tail-{initial,suite-two,focused,full,clippy-full,fmt}.log`.
-  Root/index wiring, excluded-owner cold recovery and lease integration remain.
+- Fresh allocation validates segment ownership/geometry and zeroes each entire
+  1 MiB strip, synchronized on every required mirror before attachment. Growth
+  initializes only its newly allocated strips. A separate local initialized
+  capacity prevents metadata refresh from authorizing an uninitialized range.
+- Initialization is a single semantic write attempt. An uncertain result cannot
+  open that capacity or trigger another initialization. Stream replacement writes
+  its retained prefix and zero suffix once before publishing the replacement;
+  uncertain initialization does not immediately discard/reuse that segment.
+- Ordinary append images contain only complete groups. No per-append zero marker
+  or rewrite permission remains in MirrorShadow. This is necessary because an
+  earlier request can execute after a successful retry and a later append. The
+  reserved 14-byte unwritten header below the hard limit remains naturally zero
+  inside initialized capacity. Exact hard-capacity ends need no header.
+- The prior `unwritten-tail-*` receipt passed 858 tests but did not cover delayed
+  duplicates. Its per-append marker implementation was unsafe and is superseded;
+  it is not evidence for retry safety. New cases replay actual captured earlier
+  append requests after two successful appends and check both retained payloads.
+  Recycled-media, failed initialization, uncertain growth, strip-edge, growth and
+  exact-capacity cases exercise the new contract.
+- DiskIO retries retain the original creation time and reject an expired operation
+  before submission. Three new native regressions first failed on the original
+  partial-block path: delayed duplicate after cache reset, two uncached boundaries,
+  and cached head with an uncached tail. Reads now preserve each missing boundary;
+  failed/short boundary reads submit no write. All twelve alignment cases pass.
+- Matched protocol cleanup removes the retired allocation slot and response code;
+  current schema fields are contiguous. Malformed synchronization proof still
+  fails directly, with no fallback request or capability negotiation.
+- Verification: 875 tests across 144 targets in Protocol, DiskIO-client,
+  Chunk-client, Stream, ChunkDB, Chunk-KV and Chunk-KV-server pass with zero
+  failures/ignored. Full native tests pass (724 C++ cases plus 85 Rust FFI cases).
+  All-target clippy, changed-file tree-lint and format gates pass. The final
+  focused rerun follows a payload-submission helper extraction and checked size
+  conversions. Receipts: `initialized-suffix-{full-two,native-full,clippy-final-two,
+  native-lint-final,final-focused,fmt-final}.log` and
+  `append-range-native-{red,green}.log`.
+- Indexed worker wiring, excluded-owner cold recovery, IO drains and lease
+  integration remain. Timing defaults alone do not prove that an already submitted
+  kernel write has finished; ordered completion/flush barriers are required before
+  observing an excluded owner or reusing its allocation.
 
 ## Immutable view and bounded repair-image wiring (partial T14/T20/T22)
 
@@ -972,8 +986,8 @@ adaptation rather than a new transport or storage engine.
   frame finalization remains covered. Full ChunkDB targets pass; focused and
   lint receipts are `finalizer-{integration,full,clippy-final,fmt}.log`.
 - This does not claim the main worker or new owner recovery is integrated.
-  Fresh allocation/unwritten-tail initialization, owner authority/drain, and
-  the last referenced sealed-chunk recovery remain part of T15–T19.
+  Owner authority/drain and last referenced sealed-chunk recovery remain
+  part of T15–T19; fresh-strip initialization is covered above.
 
 ## Required mirror count evidence (partial T14)
 
@@ -1004,26 +1018,23 @@ adaptation rather than a new transport or storage engine.
   the selected shortest boundary. Rebuild mappings in bounded batches from the
   chosen validated source rather than retaining a full location vector per copy.
 - Before enabling deferred completion, establish an authoritative unwritten
-  header at the owned tail even on recycled disk units. Raw block reads do not
-  provide an allocation-generation EOF marker. Write the short zero header in
-  the same synchronized payload write after complete groups, excluding it from
-  the logical/physical group cursor; exact-capacity ends need no marker. Initialize
-  an empty new attachment's header before publication. Preserve that pad in
-  repair images while allowing the next append to overwrite it. This adds no
-  commit frame, per-append KV operation or extra ordinary-append sync request.
-  Do not silently reinterpret stale/corrupt bytes as EOF. Ordinary producers keep
-  their existing persisted cursor authority; Stream/Wal get the grouped contract.
-- Reserve the full header before an active chunk can grow again: capacity
-  preparation includes 14 bytes beyond the next complete data end while below
-  the configured physical chunk limit. Clipping is legal only at that hard
-  limit, or after a seal retires excess strips. Otherwise a crash after growth
-  could expose stale bytes after a formerly partial zero header. Memory fixtures
-  include the tail-header space in their physical capacity.
-- StreamMirrorWrite distinguishes complete data end from image coverage. Marker
-  bytes do not enter group locations, checkpoints or their CRC. MirrorShadow may
-  truncate only its known at-most-14-byte zero pad at the exact previous complete
-  boundary. Retain at most two strip images when this pad crosses a strip edge;
-  drop earlier images. The next append must overwrite both halves correctly.
+  suffix on recycled units. Initialize each fresh or newly grown strip once on
+  every required mirror before admitting its first data. Replacement images
+  include the retained prefix and a zero suffix with no automatic retries.
+  An uncertain initialization cannot be repeated, published or immediately
+  reclaimed. Finish the independent old-IO drain/reuse proof before runtime GC.
+- Ordinary writes cover only complete groups. They contain no trailing zero
+  marker, so a delayed immutable duplicate does not overlap the next append.
+  Block alignment reads and preserves all missing partial boundary blocks.
+  Initialization and repair bytes remain separate from append data accounting.
+- Capacity preparation reserves 14 unwritten bytes beyond the next complete end
+  while below the hard chunk limit. A crash after metadata growth but before
+  initializing new strips must still encounter a full zero header inside the
+  previous initialized capacity. Exact hard-capacity ends need no marker.
+- StreamMirrorWrite image coverage equals its complete end. MirrorShadow retains
+  only the unfinished strip prefix and grants no tail truncation/rewrite exception.
+  Do not interpret stale/corrupt bytes or IO errors as EOF. Ordinary object
+  producers retain persisted cursor authority; Stream/Wal use complete groups.
 
 ## Phase 0 — Establish evidence and settle contracts
 
@@ -1067,8 +1078,8 @@ adaptation rather than a new transport or storage engine.
 
 ## Phase 1 — Combine write and synchronization
 
-- [x] **T05 — Add the synchronized wire contract**: append the sync option
-  without reusing retired slots; update contiguous and view wire constructors
+- [x] **T05 — Add the synchronized wire contract**: define the sync option in
+  the current compact schema; update contiguous and view wire constructors
   and protocol tests. Exercise both generated Rust and C++ schemas through
   their existing generators; do not hand-edit generated files. Apply T04's
   compatibility rule. Maps to D02/A02. Files:

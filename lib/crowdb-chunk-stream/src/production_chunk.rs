@@ -16,8 +16,7 @@ use crowdb_chunk_client::{
 };
 use crowdb_protocol::chunk_stream::{ActiveChunkDescriptor, StreamName};
 use crowdb_protocol::chunkdb::rpc::{
-    AdvanceChunkWriteRequest, AppendChunkRequest, Chunk, ChunkState, DeleteChunkRequest, QueryChunkRequest,
-    SealChunkRequest, Strip, StripType,
+    AdvanceChunkWriteRequest, Chunk, ChunkState, DeleteChunkRequest, QueryChunkRequest, SealChunkRequest,
 };
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::frame::FrameMagic;
@@ -27,6 +26,7 @@ use crate::{
 };
 
 mod allocation;
+mod growth;
 mod progress;
 use progress::{admit_write, write_cursor};
 
@@ -37,6 +37,7 @@ struct ChunkStateView {
     synchronized_cursor: AtomicU64,
     writer_started: AtomicBool,
     fresh_grouped_allocation: AtomicBool,
+    initialized_capacity: AtomicU64,
     sealed: AtomicBool,
     last_checksum: AtomicU32,
     has_checksum: AtomicBool,
@@ -157,6 +158,7 @@ impl ProductionStreamChunkStore {
             synchronized_cursor: AtomicU64::new(chunk.acknowledged_cursor),
             writer_started: AtomicBool::new(false),
             fresh_grouped_allocation: AtomicBool::new(false),
+            initialized_capacity: AtomicU64::new(0),
             sealed: AtomicBool::new(chunk.state == ChunkState::Sealed as i32),
             last_checksum: AtomicU32::new(0),
             has_checksum: AtomicBool::new(false),
@@ -239,91 +241,13 @@ impl StreamChunkStore for ProductionStreamChunkStore {
 
     async fn grow_mirrored(
         &self,
-        _stream_name: StreamName,
+        stream_name: StreamName,
         writer_epoch: u64,
         chunk_id: ChunkId,
         required_capacity: u64,
     ) -> Result<Option<ActiveChunkDescriptor>> {
-        if required_capacity > self.chunk_capacity_bytes {
-            return Ok(None);
-        }
-        let state = self.state(chunk_id).await?;
-        for attempt in 0..2 {
-            let chunk = state.chunk.load_full();
-            if chunk.writer_epoch != writer_epoch || state.sealed.load(Ordering::Acquire) {
-                return Err(StreamError::StaleWriter);
-            }
-            let capacity = chunk_capacity(&chunk)?;
-            if capacity >= required_capacity {
-                return Ok(Some(ActiveChunkDescriptor {
-                    chunk_id,
-                    physical_start: write_cursor(&state),
-                    logical_start: 0,
-                    acknowledged_cursor: write_cursor(&state),
-                    capacity,
-                }));
-            }
-            let first = chunk
-                .strips
-                .first()
-                .ok_or_else(|| StreamError::Corruption("stream chunk has no mirror strip".into()))?;
-            let Some(Strip::MirrorStrip(mirror)) = &first.strip else {
-                return Err(StreamError::Corruption(
-                    "stream chunk strip is not mirrored".into(),
-                ));
-            };
-            let unit_count = mirror
-                .segments
-                .first()
-                .map(|segment| segment.unit_count)
-                .filter(|count| *count > 0)
-                .ok_or_else(|| {
-                    StreamError::Corruption("stream mirror strip has no segment geometry".into())
-                })?;
-            let strip_bytes = u64::from(first.capacity) * 1024;
-            let strip_count = u32::try_from((required_capacity - capacity).div_ceil(strip_bytes))
-                .map_err(|_| StreamError::InvalidRequest("stream growth needs too many strips".into()))?;
-            let response = self
-                .allocator
-                .append_chunk(AppendChunkRequest {
-                    chunk_id: Some(chunk_id),
-                    modify_ts: chunk.modify_ts,
-                    strip_size: unit_count,
-                    strip_count,
-                    strip_type: StripType::Mirror as i32,
-                    data_num: 0,
-                    code_num: 0,
-                    copy_count: self.mirror_copies,
-                })
-                .await
-                .map_err(io_error)?;
-            if let Some(current) = response.chunk {
-                update_state(&state, current);
-                if attempt == 0 {
-                    continue;
-                }
-                return Err(StreamError::WriteStalled);
-            }
-            if response.strips.is_empty() {
-                return Err(StreamError::Corruption(
-                    "stream chunk growth returned no strips".into(),
-                ));
-            }
-            let mut updated = (*chunk).clone();
-            updated.strips.extend(response.strips);
-            updated.modify_ts = response.modify_ts;
-            updated.capacity = updated.strips.iter().map(|strip| strip.capacity).sum();
-            let capacity = chunk_capacity(&updated)?;
-            update_state(&state, updated);
-            return Ok(Some(ActiveChunkDescriptor {
-                chunk_id,
-                physical_start: write_cursor(&state),
-                logical_start: 0,
-                acknowledged_cursor: write_cursor(&state),
-                capacity,
-            }));
-        }
-        unreachable!("two append attempts either return or fail")
+        self.grow_active_chunk(stream_name, writer_epoch, chunk_id, required_capacity)
+            .await
     }
 
     async fn write_mirrors(

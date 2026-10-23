@@ -55,9 +55,6 @@ async fn another_stream_cannot_write_or_checkpoint_an_attributed_chunk() {
         .concat(),
     );
     let end = data.len() as u64;
-    let mut padded = data.to_vec();
-    padded.extend_from_slice(&[0; 14]);
-    let data = Bytes::from(padded);
     let images = [MirrorStripImage {
         block_offset: 0,
         data: data.clone(),

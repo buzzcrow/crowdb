@@ -142,8 +142,8 @@ fn disk_io_ret_code_values() {
     assert_eq!(FBDiskIoRetCode::PartialWrite.0, 4);
     assert_eq!(FBDiskIoRetCode::InvalidAlignment.0, 5);
     assert_eq!(FBDiskIoRetCode::ConnectionError.0, 6);
-    assert_eq!(FBDiskIoRetCode::StaleAllocation.0, 7);
-    assert_eq!(FBDiskIoRetCode::OldRequest.0, 8);
+    assert_eq!(FBDiskIoRetCode::OldRequest.0, 7);
+    assert_eq!(FBDiskIoRetCode::FsyncFailed.0, 8);
 }
 
 #[test]

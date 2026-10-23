@@ -43,9 +43,6 @@ async fn configured_replica_count_cannot_silently_accept_a_two_copy_layout() {
             .concat(),
         );
         let complete_end = data.len() as u64;
-        let mut padded = data.to_vec();
-        padded.extend_from_slice(&[0; 14]);
-        let data = Bytes::from(padded);
         let result = store
             .write_mirrors(
                 name,
@@ -227,9 +224,6 @@ async fn a_cold_adapter_cannot_overwrite_the_previous_owners_uncheckpointed_grou
     .unwrap();
     let bytes = Bytes::from(views.concat());
     let complete_end = bytes.len() as u64;
-    let mut padded = bytes.to_vec();
-    padded.extend_from_slice(&[0; 14]);
-    let bytes = Bytes::from(padded);
     assert!(matches!(
         cold.write_mirrors(
             name,

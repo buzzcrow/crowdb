@@ -11,10 +11,8 @@ enum FBDiskIoRetCode : int16 {
     PartialWrite = 4,
     InvalidAlignment = 5,
     ConnectionError = 6,
-    // Retired response value kept so mixed-version peers do not reuse code 7.
-    StaleAllocation = 7,
-    OldRequest = 8,
-    FsyncFailed = 9,
+    OldRequest = 7,
+    FsyncFailed = 8,
 }
 
 // All diskio control messages carry id + rpc_create_nano as their first
@@ -30,8 +28,6 @@ table FBDiskWriteRequest {
     zone_index:uint32;
     zone_offset:uint64;
     size:uint32;
-    // Retired allocation-fence field; keep its slot for wire compatibility.
-    allocation_ts:uint64 (deprecated);
     ordering_zone_offset:uint64;
     write_create_time_ms:uint64;
     // Success requires ordered write and flush when true.
@@ -42,7 +38,7 @@ table FBDiskWriteResponse {
     id:uint64;
     rpc_create_nano:uint64;
     ret_code:FBDiskIoRetCode;
-    // Absent on older peers; callers must explicitly fsync before durable ACK.
+    // True only after the requested write and disk synchronization both succeed.
     sync_completed:bool;
 }
 

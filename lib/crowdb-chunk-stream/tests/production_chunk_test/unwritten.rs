@@ -57,7 +57,7 @@ async fn recycled_bytes_stop_at_the_synchronized_unwritten_header() {
     {
         let media = disks.bytes.lock().unwrap();
         assert_eq!(&media[&1][..14], &[0; 14]);
-        assert_eq!(media[&1][14], 0xcc);
+        assert!(media[&1].iter().all(|byte| *byte == 0));
     }
     let mut strip = TestGroupedStrip::default();
     let end = strip.append(&store, name, 9, active.chunk_id, b"retained").await;
@@ -66,7 +66,7 @@ async fn recycled_bytes_stop_at_the_synchronized_unwritten_header() {
 }
 
 #[tokio::test]
-async fn missing_or_nonzero_tail_padding_is_rejected_before_consuming_the_fresh_writer() {
+async fn bytes_beyond_the_complete_range_are_rejected_before_consuming_the_fresh_writer() {
     let allocator = Arc::new(Allocator::new());
     let disks = Arc::new(Disks::default());
     let store = ProductionStreamChunkStore::new(allocator, disks.clone(), 30_000, ChunkReadPolicy::default())
@@ -77,7 +77,7 @@ async fn missing_or_nonzero_tail_padding_is_rejected_before_consuming_the_fresh_
         .await
         .unwrap();
     let payload = Bytes::from_static(b"retained");
-    for padding in [0, 14] {
+    for padding in [1, 14] {
         let (end, mut image) = prepared_group(active.chunk_id, &payload, padding);
         if padding > 0 {
             let mut bytes = image.full_image.to_vec();
@@ -228,7 +228,7 @@ async fn failed_empty_initialization_cannot_expose_a_writable_allocation() {
         .await
         .is_err());
     let chunk = allocator.chunk.lock().unwrap().clone().unwrap();
-    let (end, image) = prepared_group(chunk.id.unwrap(), &Bytes::from_static(b"blocked"), 14);
+    let (end, image) = prepared_group(chunk.id.unwrap(), &Bytes::from_static(b"blocked"), 0);
     let result = store
         .write_mirrors(
             name,
@@ -250,4 +250,51 @@ async fn failed_empty_initialization_cannot_expose_a_writable_allocation() {
         0
     );
     assert_eq!(disks.fsyncs.load(Ordering::Acquire), 1);
+}
+
+#[tokio::test]
+async fn uncertain_growth_initialization_cannot_be_retried_or_written() {
+    let allocator = Arc::new(Allocator::new());
+    let disks = Arc::new(Disks::default());
+    let store = ProductionStreamChunkStore::new(
+        allocator.clone(),
+        disks.clone(),
+        30_000,
+        ChunkReadPolicy::default(),
+    )
+    .unwrap();
+    let name = StreamName { high: 163, low: 167 };
+    let active = store
+        .allocate_mirrored(name, 9, crowdb_chunk_stream::StreamPurpose::Stream)
+        .await
+        .unwrap();
+    let mut strip = TestGroupedStrip::default();
+    let end = strip.append(&store, name, 9, active.chunk_id, b"retained").await;
+    disks.fail_fsync_once.store(11, Ordering::Release);
+    assert!(store
+        .grow_mirrored(name, 9, active.chunk_id, active.capacity + 1)
+        .await
+        .is_err());
+    let submissions = disks.writes.lock().unwrap().len();
+    assert!(store
+        .grow_mirrored(name, 9, active.chunk_id, active.capacity + 1)
+        .await
+        .is_err());
+    assert_eq!(disks.writes.lock().unwrap().len(), submissions);
+    assert_eq!(observed_end(&allocator, &disks, name).await, end);
+    let (complete_end, image) = prepared_group(active.chunk_id, &Bytes::from(vec![7; 1024 * 1024]), 0);
+    assert!(store
+        .write_mirrors(
+            name,
+            9,
+            active.chunk_id,
+            crowdb_chunk_stream::StreamMirrorWrite {
+                physical_offset: end,
+                complete_end: end + complete_end,
+                images: &[image],
+            }
+        )
+        .await
+        .is_err());
+    assert_eq!(disks.writes.lock().unwrap().len(), submissions);
 }

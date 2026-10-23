@@ -192,6 +192,26 @@ impl DiskWriter for RoutedDiskWriter {
             .map_err(map_write_error)
     }
 
+    async fn initialize_synchronized_at_byte_offset(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Bytes,
+    ) -> Result<()> {
+        let target = Self::target(seg, unit_bytes)?;
+        self.client
+            .write(
+                target,
+                byte_offset,
+                data,
+                Durability::Fsync,
+                self.client.normal_options().without_write_retries(),
+            )
+            .await
+            .map_err(map_write_error)
+    }
+
     async fn write_priority_at_byte_offset(
         &self,
         seg: &Segment,

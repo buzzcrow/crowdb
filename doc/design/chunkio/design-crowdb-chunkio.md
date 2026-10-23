@@ -31,10 +31,12 @@ to mirror or EC recovery based on stored geometry.
 through synchronized `DiskWriter` operations. The production routing and metrics
 adapters preserve that completion contract: matching DiskIO peers perform ordered
 write and flush before one response. Oversized immutable view lists complete in
-byte order and only their final request synchronizes the preceding range. An old
-peer without synchronization proof uses the semantic client's explicit fsync
-compatibility path. A replacement is synchronized before ChunkDB publishes its
-new segment mapping; successful surviving replicas are retained.
+byte order and only their final request synchronizes the preceding range.
+Missing synchronization proof fails directly. A replacement is synchronized
+before ChunkDB publishes its new segment mapping; successful surviving replicas
+are retained. Stream and WAL replacement images initialize their complete strip
+with a retained prefix and zero suffix in one attempt, without automatic retries.
+An uncertain initialization cannot authorize publication or immediate reuse.
 
 EC shard capacity is the persisted segment's `unit_count × unit_kb × 1024`,
 independent of the allocation-unit size. ISA-L consumes only each data shard's

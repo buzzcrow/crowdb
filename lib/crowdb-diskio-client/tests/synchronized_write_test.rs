@@ -44,6 +44,69 @@ async fn synchronized_write_waits_for_its_proof_and_needs_no_fsync_rpc() {
 }
 
 #[tokio::test]
+async fn expired_write_deadline_rejects_before_submission() {
+    let peer = TestDiskioPeer::start(true, false, FBDiskIoRetCode::Success).await;
+    let mut expired = options();
+    expired.deadline = std::time::Instant::now();
+    assert_eq!(
+        peer.client()
+            .write(
+                target(),
+                0,
+                Bytes::from_static(&[7; 32]),
+                Durability::Fsync,
+                expired
+            )
+            .await,
+        Err(DiskioError::DeadlineExceeded)
+    );
+    assert_eq!(peer.counts.writes.load(Ordering::Acquire), 0);
+}
+
+#[tokio::test]
+async fn initialization_never_retries_an_uncertain_response() {
+    let peer = TestDiskioPeer::start(true, false, FBDiskIoRetCode::ConnectionError).await;
+    let result = peer
+        .client_with_attempts(3)
+        .write(
+            target(),
+            0,
+            Bytes::from_static(&[7; 32]),
+            Durability::Fsync,
+            options().without_write_retries(),
+        )
+        .await;
+    assert!(
+        matches!(result, Err(DiskioError::AmbiguousWrite(_))),
+        "{result:?}"
+    );
+    assert_eq!(peer.counts.writes.load(Ordering::Acquire), 1);
+}
+
+#[tokio::test]
+async fn retries_keep_the_original_write_creation_time() {
+    let peer = TestDiskioPeer::start(true, false, FBDiskIoRetCode::ConnectionError).await;
+    let result = peer
+        .client_with_attempts(3)
+        .write(
+            target(),
+            0,
+            Bytes::from_static(&[7; 32]),
+            Durability::Fsync,
+            options(),
+        )
+        .await;
+    assert!(
+        matches!(result, Err(DiskioError::AmbiguousWrite(_))),
+        "{result:?}"
+    );
+    let requests = peer.counts.requests.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[0].1 > 0);
+    assert!(requests.iter().all(|request| request == &requests[0]));
+}
+
+#[tokio::test]
 async fn synchronized_response_without_proof_fails_without_extra_io() {
     let peer = TestDiskioPeer::start(false, false, FBDiskIoRetCode::Success).await;
     let error = peer
@@ -91,6 +154,16 @@ async fn bounded_view_splits_synchronize_only_the_final_ordered_request() {
         .unwrap();
     assert_eq!(peer.counts.bytes.load(Ordering::Relaxed), 17);
     assert_eq!(peer.counts.writes.load(Ordering::Relaxed), 2);
+    assert_eq!(
+        peer.counts
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|request| request.0)
+            .collect::<Vec<_>>(),
+        vec![0, 16]
+    );
     assert_eq!(peer.counts.sync_requests.load(Ordering::Relaxed), 1);
     assert_eq!(peer.counts.fsyncs.load(Ordering::Relaxed), 0);
 }
