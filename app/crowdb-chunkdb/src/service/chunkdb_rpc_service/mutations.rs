@@ -913,13 +913,7 @@ impl ChunkdbRpcService {
                 );
                 return;
             };
-            let seal_length = fb_req.seal_length();
-
-            let result = if fb_req.seal_bytes() == 0 {
-                handler.seal_chunk(&chunk_id, seal_length).await
-            } else {
-                handler.seal_chunk_bytes(&chunk_id, fb_req.seal_bytes()).await
-            };
+            let result = handler.seal_chunk_bytes(&chunk_id, fb_req.seal_bytes()).await;
             if result.is_ok() {
                 request.mark_success();
             }

@@ -906,13 +906,9 @@ adaptation rather than a new transport or storage engine.
 - Matched protocol cleanup removes the retired allocation slot and response code;
   current schema fields are contiguous. Malformed synchronization proof still
   fails directly, with no fallback request or capability negotiation.
-- T04 follow-up: ChunkDB seal RPC still interprets `seal_bytes == 0` as a
-  legacy KiB-only request in `chunkdb_rpc_service/mutations.rs`. Remove that
-  branch, the request's coarse `seal_length` field and LifecycleHandler's KiB
-  wrapper; all current producers already provide exact bytes. Keep the chunk's
-  coarse geometry summaries distinct from this obsolete request compatibility.
-  Update Rust/C++ clients, CLI and fixtures directly, including an exact empty
-  seal. The FBS header also contains obsolete proto-migration commentary.
+- The remaining KiB-only ChunkDB seal request and server fallback are removed;
+  see the exact-byte sealing evidence below. Coarse chunk geometry remains
+  distinct from the exact effective data boundary.
 - Verification: 875 tests across 144 targets in Protocol, DiskIO-client,
   Chunk-client, Stream, ChunkDB, Chunk-KV and Chunk-KV-server pass with zero
   failures/ignored. Full native tests pass (724 C++ cases plus 85 Rust FFI cases).
@@ -965,6 +961,30 @@ adaptation rather than a new transport or storage engine.
   All-target clippy, changed-file tree-lint and Rust/C++ format gates pass.
   Receipts: `ordered-drain-{full,native-full,final-focused,clippy,native-lint-final,
   fmt}.log`; the original two failing cases remain in `ordered-drain-red.log`.
+
+## Exact-byte ChunkDB sealing (partial T04/T08)
+
+- A native RPC regression first failed: sealing four bytes sent zero in the exact
+  byte field and only a rounded KiB count. The legacy server branch interpreted
+  that as 1024 bytes. Native seal responses also lacked exact-boundary validation.
+- Removed the request's KiB field from the current FBS and typed Rust schema,
+  the zero-byte legacy branch and the LifecycleHandler KiB wrapper. Zero always
+  means an exact empty seal. The serde form requires an explicit byte count.
+  No retired slot, alternate request form or forwarding alias remains.
+- Rust ordinary/Stream writers, routing, CLI and native tree RPC now send exact
+  bytes. Existing byte cursors and coarse physical geometry stay distinct.
+  Test allocators preserve exact bytes rather than rounding their read bounds.
+- Native sealing validates returned chunk identity, owner, exact cursor and sealed
+  state before caching success. A sealed empty chunk with zero capacity legitimately
+  has no strips; an active/nonempty chunk without a layout remains malformed.
+- Focused tests cover canonical wire zero/4/1025-byte counts, explicit JSON bytes,
+  exact empty lifecycle state, native empty/partial seals and inconsistent replies.
+  Verification passes: 892 Rust tests across 148 targets in eight core packages,
+  the Iceberg cross-listener recovery case, CLI all-target check, and 734 C++ plus
+  85 Rust FFI cases. All-target clippy in ten packages, changed-file tree-lint
+  and format checks pass. The final small-object rerun passes all 40 cases.
+  Receipts use `exact-seal-*`, including the original `exact-seal-native-red.log`
+  failure. Main indexed worker/lease wiring remains.
 
 ## Immutable view and bounded repair-image wiring (partial T14/T20/T22)
 

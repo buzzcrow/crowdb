@@ -234,7 +234,7 @@ impl ChunkAllocator for Allocator {
         let chunk = guard.as_mut().unwrap();
         assert_eq!(chunk.id, request.chunk_id);
         chunk.state = ChunkState::Sealed as i32;
-        chunk.sealed_length = request.seal_length;
+        chunk.sealed_length = u32::try_from(request.seal_bytes.div_ceil(1024)).unwrap();
         chunk.acknowledged_cursor = request.seal_bytes;
         chunk.modify_ts += 1;
         Ok(SealChunkResponse {

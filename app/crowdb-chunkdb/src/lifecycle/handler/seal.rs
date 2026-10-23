@@ -12,12 +12,7 @@ use crowdb_protocol::chunkdb::rpc::ChunkType;
 use tracing::info;
 
 impl LifecycleHandler {
-    /// Seal a chunk — no more appends allowed.
-    pub async fn seal_chunk(&self, chunk_id: &ChunkId, seal_length: u32) -> Result<Chunk, LifecycleError> {
-        self.seal_chunk_bytes(chunk_id, u64::from(seal_length) * 1024)
-            .await
-    }
-
+    /// Seal a chunk at its exact written byte boundary.
     pub async fn seal_chunk_bytes(
         &self,
         chunk_id: &ChunkId,

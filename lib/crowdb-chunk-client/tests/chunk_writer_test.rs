@@ -207,7 +207,7 @@ struct MockChunkAllocator {
 
 #[derive(Debug, Default)]
 struct MockChunkState {
-    chunks: HashMap<(u64, u64), (Vec<ChunkStrip>, u32, bool)>,
+    chunks: HashMap<(u64, u64), (Vec<ChunkStrip>, u64, bool)>,
     next_segment_offset: u64,
     allocate_calls: usize,
     append_calls: usize,
@@ -353,7 +353,7 @@ impl ChunkAllocator for MockChunkAllocator {
             .chunks
             .get_mut(&(chunk_id.high, chunk_id.low))
             .expect("seal unknown chunk");
-        entry.1 = req.seal_length;
+        entry.1 = req.seal_bytes;
         Ok(SealChunkResponse { chunk: None })
     }
 
@@ -389,8 +389,8 @@ impl ChunkAllocator for MockChunkAllocator {
             } else {
                 ChunkState::Sealed as i32
             },
-            sealed_length: *length,
-            acknowledged_cursor: u64::from(*length) * 1024,
+            sealed_length: u32::try_from(length.div_ceil(1024)).unwrap(),
+            acknowledged_cursor: *length,
             ..Chunk::default()
         };
         Ok(QueryChunkResponse {

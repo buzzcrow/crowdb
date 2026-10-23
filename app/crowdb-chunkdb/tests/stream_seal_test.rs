@@ -89,3 +89,38 @@ async fn stream_seal_can_publish_a_newer_synchronized_byte_boundary() {
     assert_eq!(sealed.state, ChunkState::Sealed as i32);
     assert_eq!(sealed.sealed_length, 1);
 }
+
+#[tokio::test]
+async fn exact_empty_seal_records_zero_bytes_and_zero_physical_capacity() {
+    let cluster = KvCluster::start_pinned().await;
+    seed_hardware(&cluster.make_hardware_client()).await;
+    let _diskdb = DiskdbServer::start(&cluster).await;
+    let harness = ChunkdbHarness::start(&cluster).await;
+    let chunk = harness
+        .handler
+        .allocate_chunk_owned(
+            None,
+            4,
+            1,
+            StripType::Mirror,
+            0,
+            0,
+            2,
+            ChunkType::Stream,
+            9,
+            60_000,
+            StreamName { high: 79, low: 83 }.chunk_owner_key(),
+        )
+        .await
+        .unwrap();
+    let sealed = harness
+        .handler
+        .seal_chunk_bytes(&chunk.id.unwrap(), 0)
+        .await
+        .unwrap();
+    assert_eq!(sealed.state, ChunkState::Sealed as i32);
+    assert_eq!(sealed.acknowledged_cursor, 0);
+    assert_eq!(sealed.sealed_length, 0);
+    assert_eq!(sealed.capacity, 0);
+    assert!(sealed.strips.is_empty());
+}

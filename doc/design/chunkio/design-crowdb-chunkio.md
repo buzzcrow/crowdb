@@ -50,8 +50,8 @@ independent of the allocation-unit size. ISA-L consumes only each data shard's
 actual byte prefix. A partial first shard produces equally short code shards;
 once a full data shard exists, each code shard spans the full shard width.
 No logical padding is written. Device alignment belongs to DiskIO.
-Writers seal with an exact byte cursor; KiB length fields remain coarse
-compatibility fields and must not define the valid data boundary.
+Writers seal through one exact-byte RPC, including zero for an empty chunk.
+Rounded KiB fields summarize chunk/strip geometry and do not define valid bytes.
 
 ## Table of Contents
 

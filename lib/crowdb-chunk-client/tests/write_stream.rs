@@ -170,7 +170,7 @@ struct MockChunkAllocator {
 
 #[derive(Debug, Default)]
 struct MockChunkState {
-    chunks: HashMap<(u64, u64), (Vec<ChunkStrip>, u32, bool)>,
+    chunks: HashMap<(u64, u64), (Vec<ChunkStrip>, u64, bool)>,
     next_segment_offset: u64,
     allocate_calls: usize,
     allocated_strip_counts: Vec<u32>,
@@ -372,7 +372,7 @@ impl ChunkAllocator for MockChunkAllocator {
             .chunks
             .get_mut(&(chunk_id.high, chunk_id.low))
             .expect("seal unknown chunk");
-        entry.1 = req.seal_length;
+        entry.1 = req.seal_bytes;
         Ok(SealChunkResponse { chunk: None })
     }
 
@@ -505,7 +505,7 @@ fn reconstruct_sealed_chunk(
     let strips = state
         .chunks
         .values()
-        .find_map(|(strips, sealed_length, deleted)| (*sealed_length > 0 && !deleted).then_some(strips))
+        .find_map(|(strips, sealed_bytes, deleted)| (*sealed_bytes > 0 && !deleted).then_some(strips))
         .expect("sealed chunk");
     let mut reconstructed = Vec::new();
     let mut remaining = usize::try_from(physical_bytes).expect("physical chunk length");
@@ -628,7 +628,7 @@ async fn write_stream_pads_only_parity_for_unaligned_tail() {
     assert!(state
         .chunks
         .values()
-        .any(|(_, sealed_length, _)| *sealed_length == 5));
+        .any(|(_, sealed_bytes, _)| *sealed_bytes == framed_bytes(data.len())));
 }
 
 #[tokio::test]

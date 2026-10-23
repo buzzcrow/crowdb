@@ -331,7 +331,6 @@ async fn seal(client: &ChunkdbClient, id: ChunkId) -> crowdb_chunkdb_client::Res
     client
         .seal_chunk(SealChunkRequest {
             chunk_id: Some(id),
-            seal_length: 0,
             seal_bytes: 0,
         })
         .await

@@ -792,11 +792,9 @@ impl ChunkWriter {
                     self.finish_completion(handle).await?;
                 }
                 self.completion_wait_time += wait_started.elapsed();
-                let sealed_length_kb = bytes_in_chunk.div_ceil(1024) as u32;
                 self.allocator
                     .seal_chunk(SealChunkRequest {
                         chunk_id: Some(cid),
-                        seal_length: sealed_length_kb,
                         seal_bytes: bytes_in_chunk,
                     })
                     .await?;

@@ -708,9 +708,9 @@ Init ──> Active ──> Sealed ──> Deleted
 
 **State transitions**:
 - `Active → Sealed`: Via `SealChunk` RPC. Validates state and records the exact
-  `seal_bytes` boundary in `acknowledged_cursor`. KiB `sealed_length` fields are
-  compatibility summaries; they do not enlarge the valid byte range. Legacy
-  KiB-only requests retain their original contract. Finalization preserves the
+  `seal_bytes` boundary in `acknowledged_cursor`, including zero for an empty
+  chunk. The RPC has one exact-byte form. KiB `sealed_length` fields summarize
+  geometry and do not enlarge the valid byte range. Finalization preserves the
   exact acknowledged cursor. Data alignment and physical block allocation never
   add logical bytes to the seal boundary.
 - `Active → Deleted`: Persist cleanup intent, free segments, persist tombstone.

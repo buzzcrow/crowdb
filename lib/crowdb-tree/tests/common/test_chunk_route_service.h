@@ -10,10 +10,13 @@
 
 #include <array>
 #include <atomic>
+#include <cstdint>
 #include <vector>
 
 namespace crowdb::tree::detail
 {
+
+enum class TestSealReply : uint8_t { Exact, Active, WrongCursor };
 
 struct TestChunkRouteService
 {
@@ -23,6 +26,9 @@ struct TestChunkRouteService
     std::atomic<uint32_t> queries{0};
     std::atomic<uint32_t> advances{0};
     std::atomic<uint32_t> seals{0};
+    std::atomic<uint64_t> sealed_bytes{0};
+    std::atomic<bool>     sealed{false};
+    TestSealReply         seal_reply = TestSealReply::Exact;
     std::atomic<uint64_t> acknowledged{0};
     bool                  drop_allocation = false;
 
@@ -70,12 +76,18 @@ struct TestChunkRouteService
                 return;
             }
             low = flatbuffers::GetRoot<FBSealChunkRequest>(control)->chunk_id()->low();
+            sealed_bytes.store(flatbuffers::GetRoot<FBSealChunkRequest>(control)->seal_bytes());
+            acknowledged.store(sealed_bytes.load());
+            sealed.store(true);
             seals.fetch_add(1);
         }
         const auto code = low % 2 == parity ? FBChunkdbRetCode_Success : FBChunkdbRetCode_NotMyRange;
         flatbuffers::FlatBufferBuilder builder;
-        const auto                     chunk         = make_chunk(builder, low, acknowledged.load());
-        uint16_t                       response_type = 0;
+        const bool                     is_seal = message == FBMsgType_ESealChunkRequest;
+        const auto cursor = acknowledged.load() + uint64_t{is_seal && seal_reply == TestSealReply::WrongCursor};
+        const auto chunk =
+            make_chunk(builder, low, cursor, sealed.load() && (!is_seal || seal_reply != TestSealReply::Active));
+        uint16_t response_type = 0;
         if (message == FBMsgType_EAllocateChunkRequest) {
             builder.Finish(CreateFBAllocateChunkResponse(builder, request_id, 0, code, 0, 0, 0, chunk));
             response_type = FBMsgType_EAllocateChunkResponse;
@@ -96,12 +108,15 @@ struct TestChunkRouteService
                                                             builder.GetSize(), nullptr, 0, response_type, request_id));
     }
 
-    static flatbuffers::Offset<crowdb::chunkdb::proto::FBChunk> make_chunk(flatbuffers::FlatBufferBuilder &builder,
-                                                                           uint64_t low, uint64_t acknowledged_bytes)
+    static flatbuffers::Offset<crowdb::chunkdb::proto::FBChunk>
+    make_chunk(flatbuffers::FlatBufferBuilder &builder, uint64_t low, uint64_t acknowledged_bytes, bool is_sealed)
     {
         using namespace crowdb::chunkdb::proto;
-        const crowdb::rpc::proto::FBInt128                  id(0x0200'0000'0000'0042ULL, low);
-        const crowdb::rpc::proto::FBInt128                  disk(9, 10);
+        const crowdb::rpc::proto::FBInt128 id(0x0200'0000'0000'0042ULL, low);
+        const crowdb::rpc::proto::FBInt128 disk(9, 10);
+        if (is_sealed && acknowledged_bytes == 0) {
+            return CreateFBChunk(builder, &id, 3, FBChunkState_Sealed, 1, 2, 0, 0, 0, FBChunkType_BtreePage, 17, 0);
+        }
         const std::vector<crowdb::diskdb::proto::FBSegment> segments{
             {disk, id, 0, 1, 2, 4096}
         };
@@ -109,8 +124,8 @@ struct TestChunkRouteService
         const auto strip  = CreateFBChunkStrip(builder, 0, 0, 256U * 1024U, 256U * 1024U, 1, 0, 0, FBStripType_Mirror,
                                                FBStripBody_FBMirrorStrip, mirror.Union());
         const auto strips = builder.CreateVector(std::vector<flatbuffers::Offset<FBChunkStrip>>{strip});
-        return CreateFBChunk(builder, &id, 3, FBChunkState_Active, 1, 0, 256U * 1024U, 0, strips, FBChunkType_BtreePage,
-                             17, acknowledged_bytes);
+        return CreateFBChunk(builder, &id, 3, is_sealed ? FBChunkState_Sealed : FBChunkState_Active, 1, 0, 256U * 1024U,
+                             0, strips, FBChunkType_BtreePage, 17, acknowledged_bytes);
     }
 };
 

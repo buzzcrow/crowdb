@@ -226,7 +226,7 @@ pub struct Chunk {
     pub cleanup_intents: Vec<StripCleanupIntent>,
     /// Most recently committed fenced replacement operation.
     pub last_strip_replacement: Option<ChunkId>,
-    /// Stable logical owner identity. Empty only for legacy unattributed chunks.
+    /// Stream/Wal owner identity; other chunk types leave this empty.
     pub owner_key: Vec<u8>,
 }
 
@@ -453,9 +453,7 @@ pub struct RelocateSegmentHandoffResponse {
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct SealChunkRequest {
     pub chunk_id: Option<ChunkId>,
-    pub seal_length: u32,
-    /// Exact written bytes. Zero selects the legacy KiB-only request.
-    #[serde(default)]
+    /// Exact written bytes, including zero for an empty chunk.
     pub seal_bytes: u64,
 }
 

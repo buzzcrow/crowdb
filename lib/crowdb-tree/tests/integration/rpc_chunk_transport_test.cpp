@@ -273,6 +273,7 @@ TEST(RpcChunkTransport, ResolvesEachChunkOwnerAndReleasesRouteLeases)
         EXPECT_EQ(fixture.services[0].allocations.load(), 1U);
         EXPECT_EQ(fixture.services[0].advances.load(), 1U);
         EXPECT_EQ(fixture.services[0].seals.load(), 1U);
+        EXPECT_EQ(fixture.services[0].sealed_bytes.load(), 4U);
         EXPECT_EQ(fixture.services[1].queries.load(), 1U);
         EXPECT_EQ(fixture.retains.load(), 1U);
         EXPECT_EQ(fixture.leases.load(), 0U);
