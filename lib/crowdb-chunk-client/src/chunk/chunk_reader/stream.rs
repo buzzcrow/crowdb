@@ -1,18 +1,108 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use super::super::read_credit::{retain, ReadLease};
+//! Ordered delivery and logical read-credit lifetime.
+
+use super::super::read_credit::{retain, ReadLease, StreamSlots};
+use super::layout::normalize_locations;
 use super::framing::object_layout;
-use super::{ChunkReadStream, LayoutSnapshot, PartialReadResult, DEFAULT_STREAM_WINDOW};
+use super::{ChunkReader, LayoutSnapshot, PartialReadResult, ReadRangeData, DEFAULT_STREAM_WINDOW};
 use crate::{ReadError, ReadResult};
 use bytes::Bytes;
+use crowdb_protocol::chunkdb::rpc::Location;
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::frame::{ChunkLocation, MAX_FRAME_BYTES};
+use crowdb_rpc_ffi::OwnedPayload;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::task::JoinSet;
+
+impl ChunkReader {
+    pub fn read_stream(&self, locations: &[Location]) -> ReadResult<ChunkReadStream> {
+        self.flow_metrics.location_normalizations.inc();
+        self.flow_metrics
+            .locations_examined
+            .inc_by(u64::try_from(locations.len()).unwrap_or(u64::MAX));
+        let (locations, object_length) = normalize_locations(locations)?;
+        self.range_stream(locations, 0, object_length, object_length)
+    }
+
+    /// Builds a pull-based stream for the exact logical half-open range.
+    pub fn read_range_stream(
+        &self,
+        locations: &[Location],
+        start: u64,
+        end: u64,
+    ) -> ReadResult<ChunkReadStream> {
+        self.flow_metrics.location_normalizations.inc();
+        self.flow_metrics
+            .locations_examined
+            .inc_by(u64::try_from(locations.len()).unwrap_or(u64::MAX));
+        let (locations, object_length) = normalize_locations(locations)?;
+        self.range_stream(locations, start, end, object_length)
+    }
+
+    pub(super) fn range_stream(
+        &self,
+        locations: Vec<Location>,
+        start: u64,
+        end: u64,
+        object_length: u64,
+    ) -> ReadResult<ChunkReadStream> {
+        if start > end || end > object_length {
+            return Err(ReadError::InvalidRange {
+                start,
+                end,
+                object_length,
+            });
+        }
+        Ok(ChunkReadStream {
+            reader: self.clone(),
+            locations: Arc::from(locations),
+            cursor: start,
+            fetch_cursor: start,
+            delivery_cursor: start,
+            end,
+            window_bytes: self.policy.stream_window_bytes as u64,
+            slots: Arc::new(StreamSlots::new(self.policy.stream_slots)),
+            reads: JoinSet::new(),
+            completed: BTreeMap::new(),
+            layouts: Vec::new(),
+            pending_error: None,
+            pending_ranges: Vec::new().into_iter(),
+        })
+    }
+}
+
+type StreamRead = (u64, u64, ReadResult<PartialReadResult>, Arc<ReadLease>);
+
+/// Ordered, bounded read pipeline whose frames retain their read credits.
+pub struct ChunkReadStream {
+    reader: ChunkReader,
+    locations: Arc<[Location]>,
+    cursor: u64,
+    fetch_cursor: u64,
+    delivery_cursor: u64,
+    end: u64,
+    window_bytes: u64,
+    slots: Arc<StreamSlots>,
+    reads: JoinSet<StreamRead>,
+    completed: BTreeMap<u64, StreamRead>,
+    layouts: Vec<LayoutSnapshot>,
+    pending_error: Option<ReadError>,
+    pending_ranges: std::vec::IntoIter<ReadRangeData>,
+}
 
 impl ChunkReadStream {
     pub async fn next_chunk(&mut self) -> Option<ReadResult<Bytes>> {
+        self.next_payload()
+            .await
+            .map(|result| result.map(OwnedPayload::into_bytes))
+    }
+
+    /// Pull a verified logical view retaining its native allocation metadata.
+    pub async fn next_payload(&mut self) -> Option<ReadResult<OwnedPayload>> {
         loop {
             if let Some(pending) = self.next_pending() {
                 return Some(pending);
@@ -207,7 +297,7 @@ impl ChunkReadStream {
         self.pending_error = Some(error);
     }
 
-    fn next_pending(&mut self) -> Option<ReadResult<Bytes>> {
+    fn next_pending(&mut self) -> Option<ReadResult<OwnedPayload>> {
         if let Some(range) = self.pending_ranges.next() {
             self.cursor = range.end;
             return Some(Ok(range.data));

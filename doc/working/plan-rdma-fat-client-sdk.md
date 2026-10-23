@@ -250,6 +250,16 @@ transport acceptance alone cannot establish SDK completion.
   owner-backed payload type with slices preserving one allocation owner; do
   not rediscover receive ranges by scanning connection tables or adding a hot
   lock, and do not substitute a guessed capacity for the actual native class.
+- DiskIO now exposes `read_payload`, and production ChunkIO mirror/direct
+  reads, frame slices, logical stream-credit wrappers and S3 `next_payload`
+  preserve `OwnedPayload`. Existing public `Bytes` adapters erase metadata only
+  at their compatibility boundary. Required EC/physical coalescing uses fresh
+  Vec owners with known capacity; metadata-less injected seams remain explicit.
+  The 1,500-line reader is split by layout, location, frame views, verified
+  frame reads and stream delivery. A focused framing test proves original
+  address/capacity retention and logical credit lifetime through final Bytes
+  release; all existing reader cases pass. Native SDK capacity admission and
+  S3 body adaptation are the next dependent tasks.
 
 ## Subsequent Dataset integration under R220
 

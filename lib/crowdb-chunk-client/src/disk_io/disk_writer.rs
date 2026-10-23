@@ -6,6 +6,7 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use crowdb_protocol::diskdb::rpc::Segment;
+use crowdb_rpc_ffi::OwnedPayload;
 
 use crate::{IoError, Result};
 
@@ -178,6 +179,19 @@ pub trait DiskWriter: Send + Sync {
         Err(IoError::ReadFailed(
             "reads are unsupported by this DiskIO seam".into(),
         ))
+    }
+
+    /// Read while preserving backing metadata when the transport provides it.
+    async fn read_payload(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        segment_offset: u64,
+        length: u32,
+    ) -> Result<OwnedPayload> {
+        self.read(seg, unit_bytes, segment_offset, length)
+            .await
+            .map(OwnedPayload::from)
     }
 
     /// Write a unit-aligned range relative to the start of `seg`.

@@ -8,6 +8,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use crowdb_chunk_client::{ChunkIoClient, ChunkReadStream, ReadError};
 use crowdb_protocol::chunkdb::rpc::Location;
+use crowdb_rpc_ffi::OwnedPayload;
 use hyper::body::Bytes;
 
 use crate::condition::{evaluate, ConditionOutcome, ObjectConditions};
@@ -73,6 +74,15 @@ impl VerifiedGetStream {
     /// # Errors
     /// Returns storage, length or final checksum failure without successful EOF.
     pub async fn next_verified(&mut self) -> Result<Option<Bytes>, GetStreamError> {
+        self.next_payload()
+            .await
+            .map(|data| data.map(OwnedPayload::into_bytes))
+    }
+
+    /// Pulls the same verified logical view with allocation ownership intact.
+    /// # Errors
+    /// Returns sticky storage, length or applicable final checksum failures.
+    pub async fn next_payload(&mut self) -> Result<Option<OwnedPayload>, GetStreamError> {
         if let Some(error) = &self.failure {
             return Err(error.clone());
         }
@@ -80,7 +90,7 @@ impl VerifiedGetStream {
             return Ok(None);
         }
         let next = match &mut self.inner {
-            Some(inner) => inner.next_chunk().await,
+            Some(inner) => inner.next_payload().await,
             None => None,
         };
         match next {
@@ -118,7 +128,7 @@ impl VerifiedGetStream {
         }
     }
 
-    fn fail(&mut self, error: GetStreamError) -> Result<Option<Bytes>, GetStreamError> {
+    fn fail(&mut self, error: GetStreamError) -> Result<Option<OwnedPayload>, GetStreamError> {
         self.terminal = true;
         self.inner = None;
         self.failure = Some(error.clone());

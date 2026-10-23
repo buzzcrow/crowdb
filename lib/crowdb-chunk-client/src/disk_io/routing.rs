@@ -337,10 +337,22 @@ impl DiskWriter for RoutedDiskWriter {
     }
 
     async fn read(&self, seg: &Segment, unit_bytes: u64, segment_offset: u64, length: u32) -> Result<Bytes> {
+        self.read_payload(seg, unit_bytes, segment_offset, length)
+            .await
+            .map(crowdb_rpc_ffi::OwnedPayload::into_bytes)
+    }
+
+    async fn read_payload(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        segment_offset: u64,
+        length: u32,
+    ) -> Result<crowdb_rpc_ffi::OwnedPayload> {
         let target = Self::target(seg, unit_bytes).map_err(|error| IoError::ReadFailed(error.to_string()))?;
         let result = self
             .client
-            .read(target, segment_offset, length, self.client.normal_options())
+            .read_payload(target, segment_offset, length, self.client.normal_options())
             .await;
         match result {
             Err(DiskioError::TransportUnavailable(_) | DiskioError::TopologyUnavailable(_)) => {
@@ -349,7 +361,7 @@ impl DiskWriter for RoutedDiskWriter {
                 // Reads are safe to retry once after an authoritative refresh.
                 self.client.refresh().await.map_err(map_read_error)?;
                 self.client
-                    .read(target, segment_offset, length, self.client.normal_options())
+                    .read_payload(target, segment_offset, length, self.client.normal_options())
                     .await
                     .map_err(map_read_error)
             }

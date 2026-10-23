@@ -14,7 +14,8 @@ use arc_swap::ArcSwap;
 use bytes::Bytes;
 use crowdb_kv_client::{HardwareClient, ServiceRegistryClient};
 use crowdb_rpc_ffi::{
-    ConnectionPoolError, ConnectionPoolIndex, OwnedClientRoute, RpcError, RpcServer, SelectedConnection,
+    ConnectionPoolError, ConnectionPoolIndex, OwnedClientRoute, OwnedPayload, RpcError, RpcServer,
+    SelectedConnection,
 };
 
 use crate::client::{DiskIoRetCode, WireClient, WireError};
@@ -523,10 +524,26 @@ impl DiskioClient {
         length: u32,
         options: OperationOptions,
     ) -> DiskioResult<Bytes> {
+        self.read_payload(target, offset, length, options)
+            .await
+            .map(OwnedPayload::into_bytes)
+    }
+
+    /// Read a view retaining its backing allocation and native receive credit.
+    ///
+    /// # Errors
+    /// Returns the same typed failures and retry boundary as `read`.
+    pub async fn read_payload(
+        &self,
+        target: SegmentTarget,
+        offset: u64,
+        length: u32,
+        options: OperationOptions,
+    ) -> DiskioResult<OwnedPayload> {
         self.refresh_topology_if_due().await;
         let (zone_offset, _) = target.checked_range(offset, length as usize)?;
         if length == 0 {
-            return Ok(Bytes::new());
+            return Ok(OwnedPayload::new());
         }
         let _inflight = self.begin_operation(OperationKind::Read, options.lane)?;
         let mut backoff = self.config.reconnect_initial_backoff;
@@ -796,13 +813,13 @@ impl DiskioClient {
         future: crowdb_rpc_ffi::CallFuture,
         expected: u32,
         deadline: Instant,
-    ) -> DiskioResult<Bytes> {
+    ) -> DiskioResult<OwnedPayload> {
         if Instant::now() >= deadline {
             return Err(DiskioError::DeadlineExceeded);
         }
         let (code, data) = tokio::time::timeout_at(
             tokio::time::Instant::from_std(deadline),
-            WireClient::await_read_response(future),
+            WireClient::await_read_payload(future),
         )
         .await
         .map_err(|_| DiskioError::DeadlineExceeded)?

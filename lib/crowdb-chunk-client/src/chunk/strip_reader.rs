@@ -5,10 +5,11 @@
 
 use std::sync::Arc;
 
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use crowdb_common::ec::{decode, EcScheme};
 use crowdb_protocol::chunkdb::rpc::{ChunkStrip, EcState, Strip};
 use crowdb_protocol::diskdb::rpc::Segment;
+use crowdb_rpc_ffi::OwnedPayload;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
@@ -18,7 +19,7 @@ use crate::{DiskWriter, ReadError, ReadResult};
 /// Result of a strip read together with every segment that failed or was
 /// already marked unavailable while satisfying it.
 pub(crate) struct ObservedStripRead {
-    pub result: ReadResult<Bytes>,
+    pub result: ReadResult<OwnedPayload>,
     pub failed_segments: Vec<Segment>,
     /// Segments whose returned bytes have not yet passed frame validation.
     pub served_segments: Vec<Segment>,
@@ -62,6 +63,7 @@ impl StripReader {
         self.read_observed(strip, 0, durable_bytes, offset, length)
             .await
             .result
+            .map(OwnedPayload::into_bytes)
     }
 
     pub(crate) async fn read_observed(
@@ -96,9 +98,9 @@ impl StripReader {
         durable_bytes: u64,
         offset: u64,
         length: u64,
-    ) -> Result<(Bytes, Vec<Segment>, Vec<Segment>), (ReadError, Vec<Segment>)> {
+    ) -> Result<(OwnedPayload, Vec<Segment>, Vec<Segment>), (ReadError, Vec<Segment>)> {
         if length == 0 {
-            return Ok((Bytes::new(), Vec::new(), Vec::new()));
+            return Ok((OwnedPayload::new(), Vec::new(), Vec::new()));
         }
         let sealed_bytes = kib_to_bytes(strip.sealed_length).map_err(|error| (error, Vec::new()))?;
         let available = if durable_bytes == 0 {
@@ -139,7 +141,7 @@ impl StripReader {
         segments: &[Segment],
         offset: u64,
         length: u64,
-    ) -> Result<(Bytes, Vec<Segment>, Vec<Segment>), (ReadError, Vec<Segment>)> {
+    ) -> Result<(OwnedPayload, Vec<Segment>, Vec<Segment>), (ReadError, Vec<Segment>)> {
         let length = u32::try_from(length).map_err(|_| {
             (
                 ReadError::InvalidLocations("mirror read exceeds RPC size".into()),
@@ -182,7 +184,7 @@ impl StripReader {
         sealed_bytes: u64,
         offset: u64,
         length: u64,
-    ) -> Result<(Bytes, Vec<Segment>, Vec<Segment>), (ReadError, Vec<Segment>)> {
+    ) -> Result<(OwnedPayload, Vec<Segment>, Vec<Segment>), (ReadError, Vec<Segment>)> {
         let geometry = validate_ec_read(strip, ec, offset, length).map_err(|error| (error, Vec::new()))?;
         let EcReadGeometry {
             scheme,
@@ -218,7 +220,7 @@ impl StripReader {
         if let [(_, shard_index, _, _, Ok(data))] = pieces.as_slice() {
             return Ok((data.clone(), failed_segments, vec![ec.segments[*shard_index]]));
         }
-        let mut output = BytesMut::with_capacity(usize::try_from(length).unwrap_or(usize::MAX));
+        let mut output = Vec::with_capacity(usize::try_from(length).unwrap_or(usize::MAX));
         let mut served_segments = Vec::new();
         for (_, shard_index, local_start, read_len, result) in pieces {
             if let Ok(data) = result {
@@ -280,7 +282,7 @@ impl StripReader {
                 output.extend_from_slice(&recovered.data);
             }
         }
-        Ok((output.freeze(), failed_segments, served_segments))
+        Ok((OwnedPayload::from(output), failed_segments, served_segments))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -307,7 +309,7 @@ impl StripReader {
                 Vec::new(),
             ));
         }
-        let mut output = BytesMut::with_capacity(length as usize);
+        let mut output = Vec::with_capacity(length as usize);
         let mut failed_segments = Vec::new();
         let mut consumed = 0u32;
         while consumed < length {
@@ -331,7 +333,7 @@ impl StripReader {
             consumed += part_len;
         }
         Ok(RecoveredSlice {
-            data: output.freeze(),
+            data: OwnedPayload::from(output),
             failed_segments,
         })
     }
@@ -432,7 +434,7 @@ impl StripReader {
         }
         let decoded = decode_recoverable(strip, scheme, shards, &failed_segments)?;
         Ok(RecoveredSlice {
-            data: Bytes::from(decoded[target].clone()),
+            data: OwnedPayload::from(decoded[target].clone()),
             failed_segments,
         })
     }
@@ -443,7 +445,7 @@ impl StripReader {
         unit_bytes: u64,
         offset: u64,
         length: u32,
-    ) -> crate::Result<Bytes> {
+    ) -> crate::Result<OwnedPayload> {
         read_target(&*self.disk_io, segment, unit_bytes, offset, length).await
     }
 }
@@ -454,10 +456,10 @@ async fn read_target(
     unit_bytes: u64,
     offset: u64,
     length: u32,
-) -> crate::Result<Bytes> {
+) -> crate::Result<OwnedPayload> {
     let mut last_error = None;
     for attempt in 0..3 {
-        match disk_io.read(segment, unit_bytes, offset, length).await {
+        match disk_io.read_payload(segment, unit_bytes, offset, length).await {
             Ok(data) => return Ok(data),
             Err(error) => {
                 let connection_failure = matches!(error, crate::IoError::Topology(_));
@@ -491,7 +493,7 @@ fn decode_recoverable(
 }
 
 struct RecoveredSlice {
-    data: Bytes,
+    data: OwnedPayload,
     failed_segments: Vec<Segment>,
 }
 

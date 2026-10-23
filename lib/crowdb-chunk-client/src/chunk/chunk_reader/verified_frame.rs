@@ -3,10 +3,14 @@
 
 //! Verified frame reads under a persisted or owner-synchronized prefix.
 
-use super::{
-    extract_physical_range, mark_served_segments_corrupt, Bytes, ChunkId, ChunkReader, ChunkState, Instant,
-    ReadError, ReadResult, Segment,
-};
+use super::{ChunkReader, ChunkId};
+use super::frame_views::extract_physical_range;
+use super::layout::mark_served_segments_corrupt;
+use crate::{ReadError, ReadResult};
+use bytes::Bytes;
+use crowdb_protocol::chunkdb::rpc::ChunkState;
+use crowdb_protocol::diskdb::rpc::Segment;
+use std::time::Instant;
 use crowdb_protocol::frame::{
     parse_frame, FrameMagic, FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES, MAX_FRAME_BYTES,
 };
@@ -199,7 +203,7 @@ impl ChunkReader {
                         layout.invalidate();
                         self.mark_observed_failures(&mut chunk, observations).await?;
                     }
-                    return Ok(bytes);
+                    return Ok(bytes.into_bytes());
                 }
                 Ok(frame) => {
                     layout.invalidate();

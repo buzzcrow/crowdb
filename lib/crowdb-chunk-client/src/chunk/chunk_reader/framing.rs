@@ -2,12 +2,14 @@
 // Licensed under the Apache License, Version 2.0.
 
 use super::{
-    mark_served_segments_corrupt, ChunkReader, FailedReadRange, LayoutSnapshot, PartialReadResult,
+    ChunkReader, FailedReadRange, LayoutSnapshot, PartialReadResult,
     ReadRangeData,
 };
 use crate::metrics::ReadFlowMetrics;
 use crate::{ReadError, ReadResult};
-use bytes::Bytes;
+use crowdb_rpc_ffi::OwnedPayload;
+use super::layout::mark_served_segments_corrupt;
+use super::frame_views::{extract_physical_views, slice_views};
 use crowdb_protocol::chunkdb::rpc::Location;
 use crowdb_protocol::frame::{
     parse_frame, parse_frame_views, ChunkLocation, FrameLayout, FrameMagic, FRAME_FOOTER_BYTES,
@@ -200,7 +202,7 @@ fn decode_framed_partial(
             parse_frame(&views[0], framed.location.chunk_id)
                 .map(|frame| (frame.header, frame.physical_length))
         } else {
-            let slices: Vec<_> = views.iter().map(Bytes::as_ref).collect();
+            let slices: Vec<_> = views.iter().map(OwnedPayload::as_ref).collect();
             parse_frame_views(&slices, framed.location.chunk_id)
                 .map(|frame| (frame.header, frame.physical_length))
         };
@@ -252,64 +254,4 @@ fn decode_framed_partial(
         }
     }
     Ok(result)
-}
-
-fn extract_physical_views(ranges: &[ReadRangeData], wanted: Range<u64>) -> ReadResult<Vec<Bytes>> {
-    let first = ranges.partition_point(|range| range.end <= wanted.start);
-    let mut output = Vec::new();
-    let mut cursor = wanted.start;
-    for range in &ranges[first..] {
-        if range.start >= wanted.end {
-            break;
-        }
-        if range.end <= cursor {
-            continue;
-        }
-        if range.start > cursor {
-            return Err(ReadError::InvalidLocations(
-                "physical frame data has a gap".into(),
-            ));
-        }
-        let end = wanted.end.min(range.end);
-        let offset = usize::try_from(cursor - range.start)
-            .map_err(|_| ReadError::InvalidLocations("physical frame offset overflows".into()))?;
-        let length = usize::try_from(end - cursor)
-            .map_err(|_| ReadError::InvalidLocations("physical frame length overflows".into()))?;
-        output.push(range.data.slice(offset..offset + length));
-        cursor = end;
-        if cursor == wanted.end {
-            break;
-        }
-    }
-    if cursor != wanted.end {
-        return Err(ReadError::InvalidLocations(
-            "physical frame data is incomplete".into(),
-        ));
-    }
-    Ok(output)
-}
-
-fn slice_views(views: &[Bytes], wanted: Range<usize>) -> ReadResult<Vec<Bytes>> {
-    let mut output = Vec::new();
-    let mut cursor = 0_usize;
-    let mut covered = wanted.start;
-    for view in views {
-        let view_end = cursor.saturating_add(view.len());
-        if view_end > covered && cursor < wanted.end {
-            let start = covered.saturating_sub(cursor);
-            let end = (wanted.end - cursor).min(view.len());
-            output.push(view.slice(start..end));
-            covered += end - start;
-        }
-        cursor = view_end;
-        if covered == wanted.end {
-            break;
-        }
-    }
-    if covered != wanted.end {
-        return Err(ReadError::InvalidLocations(
-            "frame payload views are incomplete".into(),
-        ));
-    }
-    Ok(output)
 }
