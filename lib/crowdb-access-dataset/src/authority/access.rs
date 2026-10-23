@@ -76,8 +76,8 @@ impl DatasetAuthority {
         mut change: impl FnMut(&mut Access) -> Result<(), AuthorityError>,
     ) -> Result<(), AuthorityError> {
         let key = key::read_lease(identity, snapshot)?;
+        let mut old = self.store.get(&key).await?;
         for _ in 0..64 {
-            let old = self.store.get(&key).await?;
             let mut access = old
                 .as_ref()
                 .map(|v| decode_access(&v.bytes))
@@ -85,13 +85,15 @@ impl DatasetAuthority {
                 .unwrap_or_default();
             change(&mut access)?;
             let bytes = encode_access(access)?;
-            if matches!(
-                self.store
-                    .compare_exchange(&key, old.as_ref().map(|v| v.bytes.as_slice()), &bytes)
-                    .await?,
-                CasOutcome::Applied(_)
-            ) {
-                return Ok(());
+            match self
+                .store
+                .compare_exchange(&key, old.as_ref().map(|v| v.bytes.as_slice()), &bytes)
+                .await?
+            {
+                CasOutcome::Applied(_) => return Ok(()),
+                // Recompute against the sequencer's observation without opening another
+                // point-read race against concurrent acquisitions and releases.
+                CasOutcome::Conflict(observed) => old = observed,
             }
         }
         Err(AuthorityError::HeadConflict)

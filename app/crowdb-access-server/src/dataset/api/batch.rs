@@ -89,7 +89,8 @@ impl DatasetHttpService {
         let lease = Lease::acquire(authority.clone(), identity, id, session).await?;
         let weak = Arc::downgrade(&lease);
         tokio::spawn(async move {
-            let mut timer = tokio::time::interval(std::time::Duration::from_secs(15));
+            let period = std::time::Duration::from_secs(15);
+            let mut timer = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
             loop {
                 timer.tick().await;
                 let Some(lease) = weak.upgrade() else { break };

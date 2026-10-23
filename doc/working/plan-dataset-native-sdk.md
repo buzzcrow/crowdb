@@ -133,3 +133,19 @@ Dataset snapshot selection survives stale-owner refresh and that projected
 missing fields and tombstones remain distinct. The service image is being
 rebuilt from the committed source before running the new workload and local-HCA
 scripts. Both scripts own and remove only their own fixture resources.
+
+Real-service comparison exposed a shared read-lease contention bug, independently
+reproduced in runs `3258f05c74d84ecfb76bca7f6065bc27` and
+`f79a47a4449b4035a7c8761f830a9020`. HTTP singleton trials passed; concurrency three
+returned 409 after a lease update lost all 64 CAS attempts. All containers stayed
+alive without OOM. Temporary diagnostics showed another lease update advancing
+the record between each GET and CAS (final expected revision 2925, observed 2930).
+These runs are failed acceptance, not comparable native performance.
+
+The shared authority now recomputes from the CAS conflict observation, preserving
+other handles and reclaim fences without reopening a point-read race each time.
+HTTP heartbeats begin after 15 seconds instead of immediately duplicating lease
+acquisition. A deterministic competing-renewal test fails before this fix and
+passes afterward, including independent release and terminal reclaim protection.
+Temporary diagnostics are removed. Full affected tests and rebuilt real-service
+acceptance are running before this item can close.
