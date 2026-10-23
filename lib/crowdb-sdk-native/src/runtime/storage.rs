@@ -18,6 +18,8 @@ use crate::topology::{CatalogObservation, ServiceObservation};
 use crate::{Error, Result};
 
 pub(crate) struct Storage {
+    pub owns_small_pool: bool,
+    pub owns_transports: bool,
     pub control: Arc<CrowdbKvClient>,
     pub metadata: Arc<ChunkKvClient>,
     pub chunks: Arc<ChunkIoClient>,
@@ -69,6 +71,8 @@ impl Storage {
         .await
         .map_err(|error| Error::Storage(error.to_string()))?;
         Ok(Self {
+            owns_small_pool: true,
+            owns_transports: true,
             control,
             metadata,
             chunks: Arc::new(chunks),

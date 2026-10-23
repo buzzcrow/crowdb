@@ -118,6 +118,10 @@ impl std::fmt::Debug for WireClient {
 }
 
 impl WireClient {
+    pub(crate) fn stop_reaper(&self) {
+        self.rpc.stop_reaper();
+    }
+
     /// Create a wire client. Call `attach()` before issuing requests.
     #[must_use]
     pub fn new() -> Self {

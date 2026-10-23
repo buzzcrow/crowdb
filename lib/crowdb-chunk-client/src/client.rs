@@ -100,10 +100,20 @@ struct ClientTopology {
     service: ServiceRegistryClient,
     hardware: HardwareClient,
     chunkdb: Arc<ChunkdbClient>,
+    chunkdb_transport: Arc<crowdb_chunkdb_client::ChunkdbRpcTransport>,
     disk_writer: Arc<RoutedDiskWriter>,
 }
 
 impl ChunkIoClient {
+    /// Stops owned data and chunk-metadata RPC workers after writer drain.
+    /// Embedded borrowers must leave transport shutdown to their original owner.
+    pub fn shutdown_transports(&self) {
+        if let Some(topology) = &self.topology {
+            topology.chunkdb_transport.shutdown();
+        }
+        self.disk_writer.shutdown();
+    }
+
     /// Reuse the DiskIO transport's bounded native producer allocation source.
     #[must_use]
     pub fn producer_allocator(&self) -> Option<crowdb_rpc_ffi::ProducerBufferAllocator> {

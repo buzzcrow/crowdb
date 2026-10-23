@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 #[cfg(feature = "test-util")]
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -25,6 +25,7 @@ use crate::{DiskId, DiskioError, DiskioResult, DiskioStatus, SegmentTarget};
 mod connection;
 mod native_routes;
 mod observation;
+mod shutdown;
 pub use native_routes::NativeDiskRouteResolver;
 mod drain;
 pub use observation::{DiskPlacement, DiskTopologyView};
@@ -296,6 +297,8 @@ impl Drop for InflightGuard<'_> {
 
 /// Complete routed semantic `DiskIO` client.
 pub struct DiskioClient {
+    closed: AtomicBool,
+    closing: tokio::sync::Notify,
     config: DiskioClientConfig,
     service: Option<ServiceRegistryClient>,
     hardware: Option<HardwareClient>,
@@ -361,6 +364,8 @@ impl DiskioClient {
             .map_err(|error| DiskioError::TransportUnavailable(format!("start RPC client: {error}")))?;
         server.start();
         let client = Self {
+            closed: AtomicBool::new(false),
+            closing: tokio::sync::Notify::new(),
             wire: Arc::new(WireClient::with_completion_capacity(config.max_pending_calls)),
             server,
             normal: ConnectionPoolIndex::new(
@@ -423,6 +428,7 @@ impl DiskioClient {
     /// Returns a control-plane, topology, or connection error without
     /// publishing a partial generation.
     pub async fn refresh(&self) -> DiskioResult<u64> {
+        self.check_open()?;
         let observed = self.routes.load_full();
         let service = self.service.as_ref().ok_or_else(|| {
             DiskioError::TopologyUnavailable("static test topology cannot be refreshed".into())
@@ -442,6 +448,9 @@ impl DiskioClient {
     }
 
     async fn refresh_topology_if_due(&self) {
+        if self.closed.load(Ordering::Acquire) {
+            return;
+        }
         if self.service.is_none() {
             return;
         }
@@ -476,6 +485,7 @@ impl DiskioClient {
         observed: &Arc<RouteSnapshot>,
         draft: topology::TopologyDraft,
     ) -> DiskioResult<u64> {
+        self.check_open()?;
         let mut endpoints = HashMap::<Arc<str>, Arc<str>>::new();
         for route in draft.routes.values() {
             endpoints
@@ -540,6 +550,7 @@ impl DiskioClient {
         length: u32,
         options: OperationOptions,
     ) -> DiskioResult<OwnedPayload> {
+        self.check_open()?;
         self.refresh_topology_if_due().await;
         let (zone_offset, _) = target.checked_range(offset, length as usize)?;
         if length == 0 {
@@ -595,6 +606,7 @@ impl DiskioClient {
     /// Returns a typed topology, transport, durability, protocol, or disk
     /// error.
     pub async fn fsync(&self, disk_id: DiskId, options: OperationOptions) -> DiskioResult<()> {
+        self.check_open()?;
         self.refresh_topology_if_due().await;
         self.fsync_inner(disk_id, options).await
     }
@@ -635,6 +647,7 @@ impl DiskioClient {
     }
 
     fn begin_operation(&self, kind: OperationKind, lane: TrafficLane) -> DiskioResult<InflightGuard<'_>> {
+        self.check_open()?;
         let pending_limit = u64::try_from(self.config.max_pending_calls).unwrap_or(u64::MAX);
         let lane_inflight = match lane {
             TrafficLane::Normal => &self.counters.normal_inflight,
@@ -651,16 +664,19 @@ impl DiskioClient {
             )));
         }
         self.counters.inflight.fetch_add(1, Ordering::Relaxed);
-        Ok(InflightGuard {
+        let guard = InflightGuard {
             counters: &self.counters,
             kind,
             started: Instant::now(),
             counted_inflight: true,
             lane_inflight: Some(lane_inflight),
-        })
+        };
+        self.check_open()?;
+        Ok(guard)
     }
 
     fn select(&self, disk_id: DiskId, lane: TrafficLane) -> DiskioResult<(DiskRoute, SelectedConnection)> {
+        self.check_open()?;
         let route = self.routes.load().routes.get(&disk_id).cloned().ok_or_else(|| {
             DiskioError::TopologyUnavailable(format!(
                 "disk {}:{} has no published route",

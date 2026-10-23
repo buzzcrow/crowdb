@@ -167,7 +167,7 @@ impl TestFixture {
         disk: Arc<dyn DiskWriter>,
     ) -> Self {
         let metadata = super::metadata::client().await;
-        let runtime = ClientRuntime::from_clients(
+        let runtime = ClientRuntime::adopt_clients(
             RuntimeClients {
                 control: Arc::new(CrowdbKvClient::new(ClientConfig::new(Vec::new()))),
                 metadata: metadata.clone(),

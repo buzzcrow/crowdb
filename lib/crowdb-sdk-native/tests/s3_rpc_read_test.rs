@@ -90,6 +90,13 @@ async fn assert_rpc_delivery(rdma: bool) {
     assert_eq!(disk.status().read_operations, 2);
     assert_eq!(disk.status().retries, 0);
     fixture.runtime.shutdown().await.unwrap();
+    let target =
+        crowdb_diskio_client::SegmentTarget::new(crowdb_diskio_client::DiskId::new(1, 1), 0, 0, 1, 1024)
+            .unwrap();
+    assert!(matches!(
+        disk.read(target, 0, 8, disk.normal_options()).await,
+        Err(crowdb_diskio_client::DiskioError::TransportUnavailable(_))
+    ));
     drop(first);
     drop(second);
     drop(fixture);

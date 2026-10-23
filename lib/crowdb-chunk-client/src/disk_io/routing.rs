@@ -128,6 +128,10 @@ impl RoutedDiskWriter {
 
 #[async_trait]
 impl DiskWriter for RoutedDiskWriter {
+    fn shutdown(&self) {
+        self.client.shutdown();
+    }
+
     fn disk_topology(&self) -> Option<crowdb_diskio_client::DiskTopologyView> {
         Some(self.topology())
     }

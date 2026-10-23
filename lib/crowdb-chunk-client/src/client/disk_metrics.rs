@@ -12,6 +12,9 @@ pub(super) struct MetricsDiskWriter {
 
 #[async_trait]
 impl DiskWriter for MetricsDiskWriter {
+    fn shutdown(&self) {
+        self.inner.shutdown();
+    }
     fn producer_allocator(&self) -> Option<crowdb_rpc_ffi::ProducerBufferAllocator> {
         self.inner.producer_allocator()
     }

@@ -103,6 +103,8 @@ impl DiskioClient {
             .map_err(|error| DiskioError::TransportUnavailable(format!("start RPC client: {error}")))?;
         server.start();
         let client = Self {
+            closed: std::sync::atomic::AtomicBool::new(false),
+            closing: tokio::sync::Notify::new(),
             wire: Arc::new(WireClient::with_completion_capacity(config.max_pending_calls)),
             server,
             normal: ConnectionPoolIndex::new(

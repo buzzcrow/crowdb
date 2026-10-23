@@ -22,15 +22,30 @@ pub struct RuntimeClients {
 }
 
 impl ClientRuntime {
+    /// Borrows client groups; SDK shutdown never stops their original owners.
     /// # Errors
     /// Rejects invalid resource limits or a missing initial catalog observation.
     pub fn from_clients(clients: RuntimeClients, limits: RuntimeLimits) -> Result<Self> {
+        Self::attach_clients(clients, limits, false)
+    }
+
+    /// Transfers shutdown responsibility for these client groups to the runtime.
+    /// All external Arc clones of the adopted transports close with this runtime.
+    /// # Errors
+    /// Rejects invalid limits or a missing initial catalog observation.
+    pub fn adopt_clients(clients: RuntimeClients, limits: RuntimeLimits) -> Result<Self> {
+        Self::attach_clients(clients, limits, true)
+    }
+
+    fn attach_clients(clients: RuntimeClients, limits: RuntimeLimits, owned: bool) -> Result<Self> {
         let catalog = clients
             .metadata
             .cached_catalog()
             .ok_or_else(|| Error::Configuration("attached metadata catalog is not initialized".into()))?;
         let policy = clients.chunks.small_write_policy().as_ref().clone();
         let storage = Arc::new(Storage {
+            owns_small_pool: owned,
+            owns_transports: owned,
             control: clients.control,
             metadata: clients.metadata,
             chunks: clients.chunks,
@@ -44,6 +59,7 @@ impl ClientRuntime {
             services: Arc::new(ArcSwap::from_pointee(Vec::new())),
         });
         Ok(Self {
+            shutdown: Arc::new(super::shutdown::ShutdownState::default()),
             groups: Arc::new(ArcSwap::from_pointee(vec![Arc::clone(&storage)])),
             storage,
             resources: RuntimeResources::new(limits)?,

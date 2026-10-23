@@ -46,7 +46,8 @@ impl ChunkIoClient {
         let service = ServiceRegistryClient::from_shared(kv.clone());
         let hardware = HardwareClient::from_shared(kv.clone());
         let range_binding = discover_current_range_bindings(&service, kv.clone()).await?;
-        let mut chunkdb = ChunkdbClient::new(service.clone(), Arc::new(ChunkdbRpcTransport::new()));
+        let chunkdb_transport = Arc::new(ChunkdbRpcTransport::new());
+        let mut chunkdb = ChunkdbClient::new(service.clone(), Arc::clone(&chunkdb_transport));
         if let Some(range_binding) = range_binding {
             chunkdb = chunkdb.with_range_binding(range_binding);
         }
@@ -84,6 +85,7 @@ impl ChunkIoClient {
                 service,
                 hardware,
                 chunkdb,
+                chunkdb_transport,
                 disk_writer,
             })),
             metrics: None,

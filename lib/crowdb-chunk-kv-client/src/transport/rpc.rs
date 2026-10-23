@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crowdb_protocol::chunk_kv::ChunkKvResponse;
@@ -17,6 +17,7 @@ use super::endpoint::{normalize_endpoint, parse_endpoint};
 use crate::{ClientError, Result};
 
 pub(super) struct RpcGroup {
+    closed: AtomicBool,
     pub(super) server: Arc<RpcServer>,
     pub(super) connections: ConnectionPoolIndex,
     pub(super) data_capacity: Option<u32>,
@@ -42,6 +43,7 @@ impl RpcGroup {
         };
         server.start();
         Ok(Self {
+            closed: AtomicBool::new(false),
             server: Arc::new(server),
             connections: ConnectionPoolIndex::new(pool_size, Some(max_owners)),
             data_capacity: config.map_or(Some(capacity), RdmaConfig::control_data_capacity),
@@ -49,6 +51,9 @@ impl RpcGroup {
     }
 
     fn connection(&self, endpoint: &str, rpc: &RpcClient) -> Result<SelectedConnection> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(ClientError::Transport("Chunk-KV transport is closed".into()));
+        }
         let (host, port) = parse_endpoint(endpoint)?;
         self.connections
             .get_or_try_install(endpoint, || {
@@ -79,6 +84,20 @@ pub struct ChunkKvRpcTransport {
 }
 
 impl ChunkKvRpcTransport {
+    /// Closes this owned transport and joins its RPC workers and timeout reaper.
+    /// Existing response buffers retain their storage independently.
+    pub fn shutdown(&self) {
+        if self.metadata.closed.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        self.aggregate.closed.store(true, Ordering::Release);
+        self.metadata.server.stop();
+        self.aggregate.server.stop();
+        self.metadata.connections.clear();
+        self.aggregate.connections.clear();
+        self.rpc.stop_reaper();
+    }
+
     /// Create the fixed service layouts with environment transport policy.
     ///
     /// # Panics

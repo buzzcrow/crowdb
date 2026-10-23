@@ -6,7 +6,7 @@
 //! Builds typed `FlatBuffer` requests, awaits correlated replies and validates
 //! response records before returning them to the routing/retry client.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use flatbuffers::FlatBufferBuilder;
@@ -50,17 +50,17 @@ use crowdb_protocol::fb_wrappers::chunkdb::{
     FBAdvanceChunkWriteResponseRef, FBAllocateChunkResponseRef, FBAppendChunkResponseRef,
     FBDeleteChunkRangeResponseRef, FBListChunksResponseRef, FBQueryChunkResponseRef,
 };
-use crowdb_rpc_ffi::{
-    Buffer, ConnectionPoolError, ConnectionPoolIndex, OwnedClientRoute, RpcClient, RpcError, RpcServer,
-    SelectedConnection,
-};
+use crowdb_rpc_ffi::{Buffer, ConnectionPoolIndex, RpcClient, RpcError, RpcServer, SelectedConnection};
 
 use crate::{ChunkdbClientError, Result};
+
+mod lifecycle;
 
 /// crowdb-rpc transport for `ChunkdbService`. Holds the client-side
 /// `RpcServer` (manages connections), `RpcClient` (request/response
 /// correlation), and a `Connection` cache per endpoint.
 pub struct ChunkdbRpcTransport {
+    closed: AtomicBool,
     server: Arc<RpcServer>,
     rpc: Arc<RpcClient>,
     connections: ConnectionPoolIndex,
@@ -143,93 +143,6 @@ impl ChunkdbRpcTransport {
                 .map_or_else(Vec::new, |data| data.bytes().to_vec()),
         })
     }
-    /// Create a new crowdb-rpc transport with 2 I/O workers (default).
-    /// The `RpcServer` is the client-side transport — it does not listen
-    /// but is used to establish connections to remote endpoints.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::with_pool_size(1, 2)
-    }
-
-    /// Create a new crowdb-rpc transport with `workers` I/O worker threads.
-    #[must_use]
-    pub fn with_workers(workers: u32) -> Self {
-        Self::with_pool_size(1, workers)
-    }
-
-    /// Create a transport with `pool_size` connections per endpoint and
-    /// `workers` crowdb-rpc I/O workers.
-    #[must_use]
-    pub fn with_pool_size(pool_size: usize, workers: u32) -> Self {
-        let server = Arc::new(RpcServer::with_engines(None, 1, workers));
-        server.start();
-        server.register_conn_count_gauge("rpc.client.connections");
-        let rpc = Arc::new(RpcClient::new());
-        rpc.set_completion_pool_size(1024);
-        // A chunk allocation spans DiskDB allocate + commit and two KV state
-        // writes. Keep the client deadline aligned with DiskDB's 10-second
-        // mutation window so a temporary KV tail does not abandon the whole
-        // chunk after its physical blocks have already been allocated.
-        rpc.start_reaper(10_000_000_000, 500_000_000);
-        Self {
-            server,
-            rpc,
-            connections: ConnectionPoolIndex::new(pool_size, None),
-            next_req_id: AtomicU64::new(1),
-        }
-    }
-
-    fn next_id(&self) -> u64 {
-        REQUEST_IDENTITY
-            .try_with(|(transport, id)| (*transport == self as *const Self as usize).then_some(*id))
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| self.next_req_id.fetch_add(1, Ordering::Relaxed))
-    }
-
-    pub(crate) async fn with_request_identity<F: std::future::Future>(&self, future: F) -> F::Output {
-        let id = self.next_req_id.fetch_add(1, Ordering::Relaxed);
-        REQUEST_IDENTITY
-            .scope((self as *const Self as usize, id), future)
-            .await
-    }
-
-    /// Get or create a `Connection` for the given rpc endpoint.
-    fn conn_for(&self, rpc_endpoint: &str) -> Result<SelectedConnection> {
-        let normalized = normalize_endpoint(rpc_endpoint);
-        let (host, port) = parse_endpoint(&normalized).map_err(|reason| {
-            ChunkdbClientError::Unreachable(format!("invalid endpoint {rpc_endpoint}: {reason}"))
-        })?;
-        self.connections
-            .get_or_try_install(&normalized, || {
-                let conn = self.server.connect(&host, port).map_err(|error| {
-                    ChunkdbClientError::ConnectFailed(format!("rpc connect to {host}:{port}: {error:?}"))
-                })?;
-                self.rpc.attach(&conn);
-                Ok(conn)
-            })
-            .map_err(|error| match error {
-                ConnectionPoolError::Closed => {
-                    ChunkdbClientError::ConnectFailed("connection closed during acquisition".into())
-                }
-                ConnectionPoolError::Connect(error) => error,
-                ConnectionPoolError::Capacity { max_endpoints } => ChunkdbClientError::Unreachable(format!(
-                    "endpoint connection limit {max_endpoints} reached"
-                )),
-            })
-    }
-
-    /// Resolve an endpoint and retain every crowdb-rpc owner needed by a
-    /// higher-level FFI transport.
-    pub fn owned_route(&self, rpc_endpoint: &str) -> Result<OwnedClientRoute> {
-        let connection = self.conn_for(rpc_endpoint)?;
-        Ok(OwnedClientRoute::new(
-            Arc::clone(&self.rpc),
-            Arc::clone(&self.server),
-            connection.into_connection(),
-        ))
-    }
-
     // ── AllocateChunk ─────────────────────────────────────────────
 
     /// Send an allocation request and decode its typed response.

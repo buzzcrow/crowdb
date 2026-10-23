@@ -45,7 +45,7 @@ RDMA plan. Native SDK implementation and acceptance remain outstanding.
   Run focused existing S3/RPC/access and standalone SDK baselines before
   moving operation code. Files: `Cargo.toml`, `lib/crowdb-sdk-native/`,
   `lib/crowdb-access-s3/tests/`, `app/crowdb-access-server/tests/`.
-- [~] **Define runtime ownership**: implement `ClientRuntime::connect(config)`
+- [x] **Define runtime ownership**: implement `ClientRuntime::connect(config)`
   and shutdown, sharing discovery, compatible transport groups, producer
   allocation, and hard request/byte limits across handles. Preserve distinct
   S3/Dataset chunk types and writer policies; do not create a generic Repo
@@ -171,7 +171,7 @@ RDMA plan. Native SDK implementation and acceptance remain outstanding.
   blocking RPC workers. Release backing storage before waking waiters. Files:
   `lib/crowdb-sdk-native/src/runtime.rs`, `lib/crowdb-sdk-native/src/buffer.rs`,
   `lib/crowdb-rpc/ffi/tests/`, `lib/crowdb-sdk-native/tests/`.
-- [ ] **Implement cancel and shutdown**: close admission, stop producers,
+- [x] **Implement cancel and shutdown**: close admission, stop producers,
   resolve operations once, and preserve storage through disk/CQ/caller
   ownership. Release after shutdown retires slots without accessing destroyed
   transport. Files: `lib/crowdb-sdk-native/src/runtime.rs`,
@@ -339,6 +339,19 @@ transport acceptance alone cannot establish SDK completion.
 
 ## Immediate dependent implementation
 
+- Owned shutdown now has one lock-free coordinator and retained terminal result.
+  Closing admission starts cleanup independently of any caller's wait future;
+  owned small pools drain before owned ChunkIO/ChunkDB/Chunk-KV RPC workers and
+  reapers join on a blocking worker. Attached `from_clients` groups remain
+  borrowed; `adopt_clients` explicitly transfers shutdown responsibility, and
+  independently created writer policies own only their new small pools.
+  DiskIO closes admission and wakes native-route refresh workers. Held native
+  receive storage remains readable after actual worker shutdown; new DiskIO
+  operations are rejected. Two new cases cover borrowed ownership and cancelled
+  close waiters with a paused owned close. Explicit TCP/HCA receive tests pass
+  with the stronger worker-stop assertion. Native and four affected storage
+  client all-target suites (48 native cases), clippy and formatting pass.
+
 - HTTP and native multipart now share session creation/expiry, part writer
   preparation, copied-part execution, exact generation publication, completion
   freeze and abort. Retained native upload identities are tenant/authority-bound;
@@ -386,17 +399,6 @@ transport acceptance alone cannot establish SDK completion.
   pass. Explicit HCA native producer framing still sends 1 MiB directly with
   zero staging-copy bytes. Native PUT attachment is the next task.
 
-- Extract HTTP `ObjectWriter` selection/finalization and publication into
-  shared S3 write sessions before native PUT/copy/multipart. Preserve the
-  existing digest pipeline, native framed owners, small-writer pools, large
-  EC policy, and `PutOutcome::Timeout`; frontend parsing/encoding stays HTTP.
-  Ordinary native input and frozen registered input must use these sessions,
-  with reserved frame space for in-place preparation when eligible.
-- Complete owned runtime shutdown without prematurely destroying held leases.
-  Distinguish borrowed attached clients from runtime-owned transports and
-  newly created writer groups. Shared shutdown must run once, drain owned
-  producers, close RPC workers/reapers and let all shutdown callers observe
-  the same terminal result. Do not stop externally borrowed clients implicitly.
 - Audit accepted RDMA read failures above semantic DiskIO: the routed adapter
   and strip recovery currently have read retry paths. Ensure a native accepted
   failure cannot turn into a TCP suffix across these layers, while retaining

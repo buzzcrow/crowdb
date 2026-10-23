@@ -5,6 +5,7 @@
 
 mod attachment;
 mod resources;
+mod shutdown;
 mod storage;
 mod writer_policy;
 
@@ -58,6 +59,7 @@ pub struct ClientRuntime {
     pub(crate) storage: Arc<Storage>,
     pub(crate) resources: Arc<RuntimeResources>,
     pub(crate) groups: Arc<ArcSwap<Vec<Arc<Storage>>>>,
+    shutdown: Arc<shutdown::ShutdownState>,
 }
 
 impl ClientRuntime {
@@ -80,6 +82,7 @@ impl ClientRuntime {
                 .map_err(|_| Error::Deadline)??,
         );
         Ok(Self {
+            shutdown: Arc::new(shutdown::ShutdownState::default()),
             groups: Arc::new(ArcSwap::from_pointee(vec![Arc::clone(&storage)])),
             storage,
             resources,
@@ -106,21 +109,5 @@ impl ClientRuntime {
     #[must_use]
     pub fn writer_group_count(&self) -> usize {
         self.groups.load().len()
-    }
-
-    /// Closes shared admission and wakes outstanding cancellable operations.
-    /// Caller-owned leases retain their backing storage after this call.
-    /// # Errors
-    /// Returns a writer group's durability/drain failure after closing admission.
-    pub async fn shutdown(&self) -> Result<()> {
-        self.resources.shutdown();
-        let groups = self.groups.load_full();
-        let mut failure = None;
-        for group in groups.iter() {
-            if let Err(error) = group.chunks.shutdown_small_writes().await {
-                failure.get_or_insert_with(|| Error::Storage(error.to_string()));
-            }
-        }
-        failure.map_or(Ok(()), Err)
     }
 }

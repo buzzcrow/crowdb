@@ -25,6 +25,10 @@ pub struct TestWriteStorage {
     pub data: SkipMap<TestDiskAddress, Bytes>,
     pub writes: AtomicUsize,
     pub deletes: AtomicUsize,
+    pub shutdowns: AtomicUsize,
+    pub pause_shutdown: AtomicBool,
+    pub shutdown_entered: tokio::sync::Notify,
+    pub shutdown_resume: tokio::sync::Notify,
     pub fail_write: AtomicBool,
     pub block_write: AtomicBool,
     pub write_started: tokio::sync::Notify,
@@ -39,6 +43,10 @@ impl TestWriteStorage {
             data: SkipMap::new(),
             writes: AtomicUsize::new(0),
             deletes: AtomicUsize::new(0),
+            shutdowns: AtomicUsize::new(0),
+            pause_shutdown: AtomicBool::new(false),
+            shutdown_entered: tokio::sync::Notify::new(),
+            shutdown_resume: tokio::sync::Notify::new(),
             fail_write: AtomicBool::new(false),
             block_write: AtomicBool::new(false),
             write_started: tokio::sync::Notify::new(),
@@ -69,7 +77,21 @@ impl TestWriteStorage {
     }
 
     pub fn runtime(self: &Arc<Self>, metadata: Arc<ChunkKvClient>) -> ClientRuntime {
-        ClientRuntime::from_clients(
+        self.attach_runtime(metadata, true)
+    }
+
+    #[allow(dead_code)] // Used by shutdown ownership tests.
+    pub fn runtime_borrowed(self: &Arc<Self>, metadata: Arc<ChunkKvClient>) -> ClientRuntime {
+        self.attach_runtime(metadata, false)
+    }
+
+    fn attach_runtime(self: &Arc<Self>, metadata: Arc<ChunkKvClient>, owned: bool) -> ClientRuntime {
+        let attach = if owned {
+            ClientRuntime::adopt_clients
+        } else {
+            ClientRuntime::from_clients
+        };
+        attach(
             RuntimeClients {
                 control: Arc::new(CrowdbKvClient::new(ClientConfig::new(Vec::new()))),
                 metadata,
@@ -188,6 +210,13 @@ impl ChunkAllocator for TestWriteStorage {
 
 #[async_trait]
 impl DiskWriter for TestWriteStorage {
+    fn shutdown(&self) {
+        self.shutdowns.fetch_add(1, Ordering::AcqRel);
+        self.shutdown_entered.notify_one();
+        if self.pause_shutdown.load(Ordering::Acquire) {
+            futures::executor::block_on(self.shutdown_resume.notified());
+        }
+    }
     fn producer_allocator(&self) -> Option<ProducerBufferAllocator> {
         Some(self.producer.clone())
     }

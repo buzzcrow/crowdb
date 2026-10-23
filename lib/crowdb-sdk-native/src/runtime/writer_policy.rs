@@ -22,6 +22,7 @@ impl ClientRuntime {
             let observed = self.groups.load_full();
             if let Some(storage) = observed.iter().find(|group| &group.policy == policy) {
                 return Ok(Self {
+                    shutdown: Arc::clone(&self.shutdown),
                     storage: Arc::clone(storage),
                     resources: Arc::clone(&self.resources),
                     groups: Arc::clone(&self.groups),
@@ -31,6 +32,8 @@ impl ClientRuntime {
                 return Err(Error::Configuration("writer group limit reached".into()));
             }
             let storage = Arc::new(Storage {
+                owns_small_pool: true,
+                owns_transports: false,
                 control: Arc::clone(&self.storage.control),
                 metadata: Arc::clone(&self.storage.metadata),
                 chunks: Arc::new(
@@ -53,6 +56,7 @@ impl ClientRuntime {
                 // A racing shutdown cannot leave an untracked active producer.
                 self.resources.check_open()?;
                 return Ok(Self {
+                    shutdown: Arc::clone(&self.shutdown),
                     storage,
                     resources: Arc::clone(&self.resources),
                     groups: Arc::clone(&self.groups),

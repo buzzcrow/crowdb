@@ -46,6 +46,7 @@ impl DiskioClient {
             return Err(DiskioError::DeadlineExceeded);
         }
         let write_create_time_ms = unix_time_ms();
+        self.check_open()?;
         self.refresh_topology_if_due().await;
         if data.is_empty() && mode != WriteMode::Drain {
             return Err(DiskioError::InvalidInput("write data must be nonempty".into()));
