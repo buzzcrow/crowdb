@@ -18,7 +18,7 @@ RUST_GROUPS = {
     "storage": ("chunkdb-client", "chunk-kv", "chunk-kv-client", "chunk-kv-server",
                 "chunk-stream", "kv-server", "diskdb", "diskdb-client", "chunkdb",
                 "chunk-client", "diskio-client"),
-    "access": ("access-multipart", "access-s3", "access-iceberg", "access-server",
+    "access": ("access-multipart", "access-s3", "sdk-native", "access-iceberg", "access-server",
                "access-dataset", "monitor"),
     "console": ("console-shared", "cli", "web"),
     "cpp": ("tree-ffi", "rpc-ffi", "rpc-test"),

@@ -10,6 +10,9 @@ LABEL = "org.crowdb.e2e.run"
 
 
 def create_network(cluster):
+    if getattr(cluster, "host_network", False):
+        from native_s3_hca import loopback_subnet
+        return loopback_subnet(cluster)
     # Record before allocation because a timed-out request may have succeeded.
     cluster.network_created = True
     network_args, subnet = (), None
@@ -43,6 +46,12 @@ def start_node(cluster, index, data, arguments, address=None, environment=(), mo
         raise ValueError("node PID limit must be a bounded positive count")
     if not running and address is None:
         raise ValueError("a deferred node needs an explicit advertised address")
+    if getattr(cluster, "host_network", False):
+        if not running or preserve_network or network_container is not None:
+            raise ValueError("HCA host profile requires directly running owned nodes")
+        from native_s3_hca import start_host_node
+        return start_host_node(cluster, index, data, arguments, address, environment, mounts,
+                               memory, pids_limit)
     name = f"{cluster.run_id}-node{index}"
     network_owner = None
     if network_container is not None:
@@ -93,3 +102,11 @@ def start_node(cluster, index, data, arguments, address=None, environment=(), mo
             raise AssertionError("deferred node lost its explicit network address")
         return address
     return network["IPAddress"]
+
+
+def observed_address(cluster, info, expected):
+    if getattr(cluster, "host_network", False):
+        if info["HostConfig"]["NetworkMode"] != "host" or info["Config"]["Labels"].get(LABEL) != cluster.run_id:
+            raise ValueError("HCA node lost its owned host network")
+        return expected
+    return info["NetworkSettings"]["Networks"][cluster.run_id]["IPAddress"]

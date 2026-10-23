@@ -67,3 +67,41 @@ async fn retained_catalog_views_do_not_regress_and_independent_refresh_age_is_un
     assert_eq!(old.catalog().route(b"key").unwrap().owner.instance_id, 1);
     assert_eq!(refreshed.catalog().generation(), 2);
 }
+
+#[tokio::test]
+async fn retained_view_cannot_pin_s3_operations_to_a_moved_owner() {
+    use crowdb_access_s3::metadata::TenantId;
+    use crowdb_sdk_native::s3::S3Client;
+
+    let source = Arc::new(topology::TestCatalogSource {
+        generation: 1.into(),
+        unavailable: false.into(),
+    });
+    let route = Arc::new(metadata::TestRouteChange {
+        generation: 1.into(),
+        ..Default::default()
+    });
+    let metadata = metadata::client_with_route(source.clone(), route.clone()).await;
+    let runtime = storage::runtime_with_metadata(metadata);
+    let client = S3Client::new(runtime.clone(), TenantId::new(b"tenant".to_vec()).unwrap()).unwrap();
+    client.create_bucket(context(10), b"bucket").await.unwrap();
+    client.head_bucket(context(11), b"bucket").await.unwrap();
+    let old = runtime.topology().unwrap();
+    source.generation.store(2, Ordering::Release);
+    route.generation.store(2, Ordering::Release);
+    client.head_bucket(context(12), b"bucket").await.unwrap();
+    assert_eq!(route.rejected.load(Ordering::Acquire), 1);
+    assert_eq!(route.accepted.load(Ordering::Acquire), 2);
+    let current = runtime.topology().unwrap();
+    assert_eq!(current.catalog().generation(), 2);
+    assert_eq!(
+        current.catalog().route(b"key").unwrap().owner.rpc_endpoint,
+        "test-owner-2"
+    );
+    assert_eq!(old.catalog().generation(), 1);
+    assert_eq!(
+        old.catalog().route(b"key").unwrap().owner.rpc_endpoint,
+        "test-owner-1"
+    );
+    runtime.shutdown().await.unwrap();
+}

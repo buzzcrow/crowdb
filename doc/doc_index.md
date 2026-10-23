@@ -21,7 +21,7 @@ listed document or section needed by the task.
 | `doc/design/console/design-crowdb-console.md`             | Console architecture and service lifecycle.                |
 | `doc/design/config/design-crowdb-config.md`               | Configuration ownership, precedence, validation, reload.   |
 | `doc/design/deploy/design-crowdb-deploy.md`               | Node discovery, Group-0 bootstrap, multi-node deployment.   |
-| `doc/design/access-server/design-crowdb-access-server.md` | S3, Iceberg, native Dataset access, and GPU delivery.      |
+| `doc/design/access-server/design-crowdb-access-server.md` | S3, Iceberg, Dataset and shared native storage access.     |
 
 ## Backlog (`doc/backlog/`)
 
@@ -127,6 +127,8 @@ Temporary plans live under `doc/working/`; flow analyses live under
 | `doc/design/access-server/dataset/spec-crowdb-dataset.md`                     | Normative Dataset behavior and compatibility.           |
 | `doc/design/access-server/dataset/openapi-crowdb-dataset-v1.yaml`             | Dataset REST v1 schemas, framing, bounds and retries.   |
 | `doc/design/access-server/dataset/openapi-crowdb-dataset-v2.yaml`             | Dataset REST v2 capability-gated control operations.    |
+| `doc/design/access-server/design-crowdb-native-sdk.md`                        | Trusted runtime, topology, S3 and host-lease ownership. |
+| `lib/crowdb-sdk-native/README.md`                                             | Native S3 configuration, streaming and HCA acceptance.  |
 | `sdk/README.md`                                                               | Rust/Python SDK installation and resource ownership.    |
 
 Prefer the most specific match. Open a root design only for cross-topic work;

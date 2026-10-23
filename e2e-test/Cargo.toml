@@ -24,6 +24,7 @@ crowdb-access-server = { path = "../app/crowdb-access-server" }
 crowdb-access-iceberg = { path = "../lib/crowdb-access-iceberg" }
 crowdb-access-dataset = { path = "../lib/crowdb-access-dataset" }
 crowdb-access-s3 = { path = "../lib/crowdb-access-s3" }
+crowdb-sdk-native = { path = "../lib/crowdb-sdk-native" }
 async-trait = "0.1"
 axum = "0.7"
 uuid = { version = "1", features = ["v4"] }

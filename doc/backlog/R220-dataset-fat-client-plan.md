@@ -3,12 +3,12 @@
 
 ### R220: Dataset — Fat-client direct access plan
 
-Status: Deferred until the shared runtime and first S3 frontend in
-[R242](R242-rdma-fat-client-sdk.md) are accepted and dedicated CPU HTTP
-measurements establish latency, throughput, memory, and digest costs. The
-public Rust HTTP SDK and Python wrapper are independently packaged under
-`sdk/`; functional container acceptance is complete. These Dataset follow-up
-gates do not defer R242's shared foundation or S3 delivery.
+Status: Deferred until dedicated CPU HTTP measurements establish latency,
+throughput, memory, and digest costs. The shared native runtime, topology,
+buffer leases and S3 frontend are available in `crowdb-sdk-native`; native and
+unprivileged OCI consumers pass TCP and shared-HCA functional acceptance.
+The public Rust HTTP SDK and Python wrapper remain independently packaged
+under `sdk/`; functional container acceptance is complete.
 
 ## Problem
 
@@ -19,11 +19,14 @@ worker partitioning must remain correct without duplicating authority logic.
 Performance claims need an HTTP workload baseline.
 
 The root contract is [Dataset design](../design/access-server/dataset/design-crowdb-access-dataset.md).
+Reuse the [native runtime contract](../design/access-server/design-crowdb-native-sdk.md)
+and [SDK API guide](../../lib/crowdb-sdk-native/README.md).
 
 ## Solution
 
-1. Attach Dataset after S3 to R242's native runtime in the main workspace.
-   Reuse topology, transports, admission, and buffer leases; do not introduce
+1. Attach Dataset to `ClientRuntime` in the main workspace. Reuse
+   `TopologyView`, `OperationContext`, `BufferLease`, frozen producer storage
+   and resource admission; do not introduce
    another runtime or make the independent HTTP SDK depend on storage FFI.
    The fat client shares Access Server's internal trust domain, takes explicit
    Dataset identity/context, and needs neither SigV4 verification, the S3
@@ -46,12 +49,17 @@ The root contract is [Dataset design](../design/access-server/dataset/design-cro
    existing lease ABI rather than making a new business ABI a prerequisite.
 6. Use the runtime's TCP/RDMA policy, with eligible pre-payload fallback only.
    Native access does not automatically select HTTP on transport failure or
-   replay ambiguous mutations on another path. GPU delivery reuses R242's
+   replay ambiguous mutations on another path. GPU delivery reuses the runtime's
    host-copy lifetime contract; direct GPU memory remains later work.
 
 ## Dependencies
 
-- Accepted R242 runtime/topology/lease APIs and first native S3 frontend.
+- Existing `ClientRuntime`, topology/locality observations, owner-backed
+  delivery and first native S3 frontend. Dataset uses the common transport
+  and budget contracts while retaining its own selection and acknowledgement.
+  Successful stream EOF, durable publication, caller release and owned runtime
+  shutdown remain distinct events. The HCA acceptance is same-host functional
+  evidence; it does not replace Dataset workload or cross-host measurements.
 - Existing public REST API, packaged HTTP SDK, Dataset CPU container
   acceptance, and measured Chunk-KV/DiskIO flows. Keep HTTP available as an
   explicitly selected client while native work is unlanded.
@@ -89,7 +97,7 @@ The root contract is [Dataset design](../design/access-server/dataset/design-cro
   cleanup, and explicit acknowledgement agree. Invariant: binding parity.
   Integration test.
 
-Run after the R242 native crate is available:
+Run:
 
 ```bash
 pixi run -- cargo fmt --all -- --check

@@ -15,7 +15,10 @@ native runtime, implement S3 first, and let Dataset attach to the accepted API.
 Status: mixed-size transport acceptance passes with repeatable CPU/request
 benefit and unchanged per-size latency bounds. Continue this requirement under
 `/implement-requirement`; the accepted prerequisite is recorded in the root
-RDMA plan. Native SDK implementation and acceptance remain outstanding.
+RDMA plan. Native S3 implementation, CPU/TCP/HCA acceptance, workspace gates,
+all 45 S3 fixtures and independent HTTP SDK checks pass. The additional serial
+protocol suite passes all 23 fixtures. Implementation is complete; requirement
+cleanup remains.
 
 ## Scope and current boundary
 
@@ -89,7 +92,7 @@ RDMA plan. Native SDK implementation and acceptance remain outstanding.
   `lib/crowdb-sdk-native/src/topology.rs`,
   `lib/crowdb-access-s3/src/metadata/record.rs`,
   `lib/crowdb-chunk-client/src/client.rs`.
-- [ ] **Handle stale observations**: retain catalog invalidation, endpoint
+- [x] **Handle stale observations**: retain catalog invalidation, endpoint
   refresh, ownership epochs, and generation fencing. Old views stay safe to
   inspect but cannot force execution past validation. Return typed
   stale/fenced/deadline outcomes when refresh fails; never replay ambiguous
@@ -181,7 +184,7 @@ RDMA plan. Native SDK implementation and acceptance remain outstanding.
   transport. Files: `lib/crowdb-sdk-native/src/runtime.rs`,
   `lib/crowdb-sdk-native/src/buffer.rs`, `lib/crowdb-rpc/ffi/src/client.rs`,
   `lib/crowdb-sdk-native/tests/`.
-- [ ] **Verify fallback and GPU-copy lifetime**: retain existing TCP/RDMA
+- [x] **Verify fallback and GPU-copy lifetime**: retain existing TCP/RDMA
   policy, request identity, and eligible pre-payload fallback; fail accepted
   or partial RDMA operations without TCP suffixes or ambiguous replay. Add an
   asynchronous host-to-GPU copy simulation holding a lease beyond stream
@@ -190,13 +193,13 @@ RDMA plan. Native SDK implementation and acceptance remain outstanding.
 
 ## Phase 5: S3 acceptance and Dataset handoff
 
-- [~] **Run native and OCI profiles**: extend accepted launcher/runtime
+- [x] **Run native and OCI profiles**: extend accepted launcher/runtime
   conventions with the S3 SDK corpus, no-device TCP and shared-HCA profiles.
   Record topology, actual path/classes, independent QPs, held-capacity high
   water, errors, and exact HTTP/native parity. Native-only execution must not
   require Access Server. Files: `tools/rdma/`, `e2e-test/tests/access_s3/`,
   `lib/crowdb-sdk-native/tests/`.
-- [ ] **Verify distribution and document API**: run standalone SDK boundary
+- [x] **Verify distribution and document API**: run standalone SDK boundary
   and functional controls; document shared runtime, topology scheduling,
   stream termination, lease release, publication, and shutdown. Record R242
   evidence and the shared API consumed by R220. Files:
@@ -435,8 +438,49 @@ transport acceptance alone cannot establish SDK completion.
   allocation identity and read accounting through the public client facade.
   Both read-owner cases, all-target ChunkIO clippy, Rust formatting and
   tree-lint pass.
-- Next: native RPC write/registered producer and shared-HCA native/OCI corpus,
-  stale endpoint acceptance, distribution documentation and final gates.
+- Full shared-HCA native and OCI S3 corpus passes in
+  `native-s3-hca/ee6b87cbef394f3880d877e0178d7263`: twelve real service containers,
+  explicit HCA `rocep35s0f0`, `10.200.1.1`, separate data directories and CM ports.
+  Both consumers write their own corpus and verify after full storage restart.
+  Data clients disable TCP fallback and use twelve independent data connections;
+  all four reader runs report zero errors/fallback/CQ errors, zero SDK compatibility
+  copies, 8 MiB held high water and 436404224 registered bytes within 512 MiB.
+  Each producer run has 1114112 producer bytes high water, 5374424 held high water
+  and zero SDK compatibility copies. Registered framed input sends 2099385 bytes
+  directly; ordinary input and EC construction still stage 21247554 bytes.
+  The small framed-input delta is explicitly zero transport payload copies.
+  Server control clients retain TCP connectivity; the data client independently
+  enforces RDMA. OCI uses matched system verbs/provider libraries and no root user.
+  This is shared-HCA local-loop functional evidence, not cross-host throughput.
+- Native topology acceptance now moves a catalog owner/endpoint while an old
+  view is retained. S3 receives one typed refresh response, refreshes to the
+  new owner and completes; the retained old view stays unchanged. Existing
+  object-generation, expired-layout and failed-refresh tests cover the remaining
+  authority boundary.
+- Added native SDK README and shared runtime design, updated Access Server
+  trust/semantic boundary and the independent HTTP SDK pointer.
+- Final HCA run `native-s3-hca/3522f5c97f7c46e880e09ff8ed158605` also verifies
+  a nonzero registration identity on the retained pressure-test lease. All
+  native/OCI write and restart/read phases pass with the same counters above.
+  Image identity is `sha256:685c3632b0b27fdb8a684fda65914f509a34972bc2a9b1b8c6959ea5f92fe28b`.
+- Final affected native/S3/RPC/access Rust tests, workspace all-feature clippy,
+  `rs-lint`, formatting and independent SDK gates pass. The HTTP SDK's first
+  sandboxed run could not bind loopback sockets; rerunning with local network
+  permission passes all twenty tests without source changes.
+- Full S3 run `run-677eebfc1cbb43859f96a2492f57f2a0` passes 44 of 45 fixtures.
+  The trailer rejection test races its 110022-byte GET payload against an early
+  403 response, raising `BrokenPipeError` before reading the HTTP response;
+  the exact case passes alone. The raw HTTP test client now reads a complete
+  error response after an interrupted upload without retrying. A missing or
+  malformed response still fails, and a 2xx response cannot conceal incomplete
+  transmission. Four deterministic socket-seam cases preserve these boundaries;
+  all 163 fixture cases pass. The full default-concurrency S3 suite passes
+  all 45 fixtures in `run-c3ded34f0ac84d70aae9f0ff913d63d1`; the additional
+  serial protocol recheck passes all 23 fixtures in
+  `run-6dd0488a66be4fd5bd480fdf157f06cc`. No server code or deadline was changed.
+- R220 now points to the implemented runtime/lease/topology contract and API
+  guide. Its Dataset measurements and Python binding remain separate work.
+- Next: requirement cleanup.
 
 ## Subsequent Dataset integration under R220
 

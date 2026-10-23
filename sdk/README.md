@@ -21,6 +21,10 @@ integrity, worker partition and explicit progress replay.
   defines JSON and binary framing. Legacy bincode routes remain internal
   compatibility interfaces. S3/Iceberg standard access uses ecosystem SDKs.
 
+Trusted internal S3 embedding uses the main-workspace
+[native SDK](../lib/crowdb-sdk-native/README.md), with shared topology and host
+buffer leases. This HTTP distribution has no dependency on that native stack.
+
 ## Python
 
 Build a wheel with the interpreter it will be installed into:

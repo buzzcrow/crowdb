@@ -13,3 +13,8 @@ def request_response(connection, method, path, body, headers):
             raise
         return response
     return connection.getresponse()
+
+
+def exchange(connection, method, path, body, headers):
+    response = request_response(connection, method, path, body, headers)
+    return response.status, dict(response.getheaders()), response.read()

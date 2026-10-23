@@ -1558,6 +1558,7 @@ dependencies = [
  "crowdb-monitor",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
+ "crowdb-sdk-native",
  "flatbuffers",
  "futures",
  "hmac",

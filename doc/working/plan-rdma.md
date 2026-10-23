@@ -4,16 +4,17 @@
 # CROWDB RDMA implementation Plan
 
 Upstream: [R5](../backlog/R5-rdma-alloc.md),
-[RDMA RPC design](../design/rpc/design-crowdb-rpc-rdma.md), and the remaining
-child backlog [R242](../backlog/R242-rdma-fat-client-sdk.md).
+[RDMA RPC design](../design/rpc/design-crowdb-rpc-rdma.md), and the
+[native SDK contract](../design/access-server/design-crowdb-native-sdk.md).
 
 Goal: implement the host-memory RDMA SEND/RECV path end to end, with RDMA as
 the preferred connection path, TCP as the one-way fallback, shared aggregation
 semantics, bounded buffer leases, and automated OCI verification using a
 single-node HCA local-loop with multiple containers.
 
-This root plan persists until the umbrella goal is complete. Completed child
-plans are deleted; remaining child plans retain their implementation detail.
+Persistent-plan exception: retain this root record for accepted local-HCA
+measurements and the physical multi-node handoff. Completed child plans and
+implementation checklists are removed; the evidence remains reproducible.
 
 ## Current implementation status
 
@@ -59,10 +60,9 @@ and RPC flow analysis.
 
 The foundation, transport, datapath and Chunk-KV continuation is complete.
 The subsequent mixed-size send optimization also passes its local-HCA
-acceptance, as recorded below. The user authorized continuation with R242
-after a repeatable benefit; its implementation now follows the existing
-[SDK plan](plan-rdma-fat-client-sdk.md). Physical multi-node validation remains
-in its separate plan.
+acceptance, as recorded below. The resulting shared native runtime and S3
+frontend pass their TCP and shared-HCA ownership profiles. Physical multi-node
+validation remains in its separate plan.
 
 ## Accepted mixed-size send optimization
 
@@ -181,88 +181,78 @@ under `plan-rdma-multi-node.md`.
 - Treat `run-local-loop.sh local` as the smoke test for every local hardware
   setup. The current acceptance scope is one physical node with multiple
   containers sharing the configured HCA and opening independent QPs.
-- Use host networking only for the multi-container profile. Assign each
-  container a `CROWDB_PORT_OFFSET`; apply it uniformly to all default
-  TCP/RPC and RDMA CM service ports, while keeping the HCA physical port
-  unchanged.
+- Use host networking only for the shared-HCA multi-container profile.
+  Benchmark servers use `CROWDB_PORT_OFFSET`. The real-service SDK fixture
+  assigns separate loopback endpoints and nonoverlapping RPC/CM ports, while
+  keeping the HCA physical port unchanged.
 - Physical multi-node testing is deferred to [the separate follow-up plan](plan-rdma-multi-node.md)
   and is not part of the current backlog scope.
 
-## Remaining dependency order
+## Accepted native runtime and S3 delivery
 
-```text
-Accepted registered host buffers and common RPC
-                  |
-Accepted HTTP/ChunkIO/DiskIO and Chunk-KV/access
-                  |
-                  v
- R242 shared runtime/topology, S3 SDK and leases
-                  |
-                  v
-     R220 Dataset adapter and measurements
-```
+- `crowdb-sdk-native` embeds trusted internal S3 over existing metadata and
+  ChunkIO/DiskIO clients. `ClientRuntime` shares transport, topology and
+  lock-free request/producer/held-capacity admission. The portable Dataset
+  HTTP SDK remains independently packaged without storage FFI dependencies.
+- HTTP and native use the same S3 execution for namespace, immutable selection,
+  conditional reads, copy and multipart publication. Native execution needs
+  explicit tenant/context, with no Access listener or credential lookup.
+- `OwnedPayload` preserves physical allocation ownership through RPC, DiskIO,
+  ChunkIO, metrics and S3. Ordered leases expose request, sequence, offset,
+  length, capacity and registration identity. Registered framed producers fill
+  final storage slots before freezing; ordinary input and EC processing retain
+  their required copies.
+- Successful EOF includes final length/checksum verification. Interrupted
+  accepted RDMA reads fail terminally through mirror/EC recovery; they cannot
+  append a TCP suffix or change replicas to conceal an interrupted transfer.
+  Publication uncertainty never authorizes automatic mutation replay.
+- Shared views charge an allocation once until final release. Pressure blocks
+  further delivery at the configured limit. Cancellation and owned shutdown
+  close admission, drain writers and join RPC workers without invalidating
+  caller-held leases. Borrowed groups retain their original shutdown owner.
+- Topology views retain separate source generations/freshness. A moved owner
+  test uses the real routed metadata client with an injected catalog/transport:
+  one stale-owner response refreshes execution while the old view remains
+  inspectable. Selected-object, expired-layout and refresh-failure regressions
+  preserve the logical generation and authority boundary.
+- Native and no-device OCI TCP acceptance passes before and after full storage
+  restart in `container-e2e/run-0ae636d32f1c4b228918a4bf1099708c`. The native-only
+  fixture has twelve real services; the separate thirteen-service parity
+  fixture compares HTTP/native bytes, ETags, metadata, errors, copy and multipart.
+- Final shared-HCA acceptance passes in
+  `native-s3-hca/3522f5c97f7c46e880e09ff8ed158605`, using image
+  `sha256:685c3632b0b27fdb8a684fda65914f509a34972bc2a9b1b8c6959ea5f92fe28b`.
+  Native and non-root OCI consumers each write a corpus, then verify after all
+  storage services restart. Sizes include 0, 7, 513, 65502, 65503, 1048589,
+  2097152 and 4194335 bytes, plus framed producer and multipart cases.
+- Each HCA reader reports twelve data connections, 38 receives, zero
+  fallback/CQ/protocol/post errors, zero SDK compatibility-copy bytes,
+  8 MiB held high water and 436404224 registered bytes within a 512 MiB budget.
+  A registered pressure-test lease survives owned shutdown while a simulated
+  asynchronous host-to-GPU copy holds it; release returns its final charge.
+- Each producer records 1114112 producer bytes high water and 5374424 held
+  bytes high water. Registered framed input directly sends 2099385 bytes;
+  ordinary input and EC construction still stage 21247554 bytes. The small
+  framed-input transport copy delta is zero. Open-strip repair retains small
+  writer inputs until drain; producer and held charges then return to zero.
+- This is shared-HCA local-loop functional evidence. Container io_uring can
+  select its existing blocking fallback; these checks make no cross-host or
+  storage-throughput claim.
+- Final full S3 acceptance passes all 45 fixtures in
+  `container-e2e/run-c3ded34f0ac84d70aae9f0ff913d63d1`, including native/HTTP
+  parity, recovery and Java/JavaScript/Go SDK clients. All 163 fixture tests,
+  affected Rust suites, workspace all-feature clippy, `rs-lint`, formatting and
+  independent HTTP SDK boundary/twenty functional tests pass. The additional
+  serial protocol recheck passes all 23 fixtures in
+  `container-e2e/run-6dd0488a66be4fd5bd480fdf157f06cc`. The final C++ source
+  previously passed tree-lint and the native transport gates above.
 
-The remaining child uses the existing [fat-client SDK plan](plan-rdma-fat-client-sdk.md)
-when the user includes that scope. Do not create a duplicate plan or repeat the
-completed service integration. The shared benchmark/functional `Runtime`
-already launches native, no-device TCP OCI and shared-HCA OCI profiles.
-
-Before changing the SDK frontend, run its focused baseline corpus, retain the
-accepted transport/service settings and compare exact result bytes and errors.
-Transport echo acceptance alone does not prove SDK lease semantics.
-
-## Phase 4: R242 fat client SDK
-
-- [ ] **Execute R242 child plan**: build the shared trusted internal runtime,
-  expose storage topology and FFI-safe host leases, and deliver native S3
-  using existing S3 components and Chunk-KV/ChunkIO transports. Native calls
-  take explicit tenant/context without SigV4 or a user-secret database;
-  Dataset attaches afterward under R220 using the same runtime.
-- [ ] **Host-to-GPU simulation**: hold each lease until the explicit host-to-GPU
-  copy completes, then release it; no GPU pointer is exposed by the base API.
-- [ ] **SDK pressure tests**: hold all returned leases, verify bounded admission,
-  cancellation, shutdown, and recovery after release.
-
-Exit condition: native S3 and HTTP return equivalent semantic results, topology
-is exposed for caller scheduling with existing freshness/fencing rules, and
-caller-controlled lease lifetime is testable through FFI. R220's later Dataset
-adapter and measurements do not gate R242 or this RDMA umbrella acceptance.
-
-## Phase 5: SDK OCI E2E matrix
-
-- [ ] **SDK TCP-only profile**: extend the shared launcher with the SDK corpus,
-  omit RDMA devices and require zero RDMA attempts with exact frontend parity.
-- [ ] **SDK shared-HCA profile**: run the SDK corpus in two non-root host-network
-  containers, requiring independent QPs, retained caller leases, bounded
-  pressure and setup-only TCP fallback.
-- [ ] **SDK topology selection**: reuse existing runtime/readiness/report
-  contracts for the SDK fixture when each profile's prerequisites are present.
-
-Exit condition: SDK profiles report topology, actual path/classes/QPs, fallback,
-held lease pressure, typed errors and exact frontend result equality. Existing
-HTTP/DiskIO and Chunk-KV native/OCI corpora remain regression controls.
-
-## Invariants to retain in SDK work
-
-The accepted transport/service tests already cover these properties. Reapply
-them to the new SDK frontend and its caller-controlled leases:
-
-- [ ] **No mixed stream**: never append TCP bytes to a partially completed RDMA
-  stream.
-- [ ] **Bounded aggregation**: application message boundaries remain intact;
-  transport coalescing preserves complete frames, order and per-RPC identity
-  and stays within both peers' slot limits.
-- [ ] **No premature reuse**: completion, disk completion, and caller release
-  all precede buffer reuse for their respective ownership path.
-- [ ] **Bounded memory**: registered bytes, posted receives, send depth, disk
-  queue bytes, and SDK-held bytes remain within configuration.
-- [ ] **Capability optionality**: a host or OCI container without RDMA remains
-  a supported TCP deployment.
-- [ ] **NIC ownership**: each single-node container uses the explicitly
-  configured shared HCA; no test depends on moving a link or entering a network
-  namespace.
-- [ ] **Shared identity**: request ID, generation, stream sequence, and logical
-  offset retain their meaning across TCP and RDMA.
+The [native SDK guide](../../lib/crowdb-sdk-native/README.md) and
+[architecture](../design/access-server/design-crowdb-native-sdk.md) define the
+supported API. [R220](../backlog/R220-dataset-fat-client-plan.md) attaches
+Dataset authority, Snapshot/Split binding and explicit acknowledgement to the
+same runtime after its HTTP workload measurements. Dataset binding work,
+GPUDirect and physical multi-node measurements remain separate follow-ups.
 
 ## Final verification
 

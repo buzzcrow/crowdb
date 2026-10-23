@@ -31,6 +31,14 @@ pub struct TestMetadataTransport {
     sender: mpsc::Sender<TestCommand>,
     lose_mutation_reply: Arc<AtomicBool>,
     blackout: Option<Arc<TestMutationBlackout>>,
+    route: Option<Arc<TestRouteChange>>,
+}
+
+#[derive(Default)]
+pub struct TestRouteChange {
+    pub generation: std::sync::atomic::AtomicU64,
+    pub rejected: std::sync::atomic::AtomicU64,
+    pub accepted: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Default)]
@@ -41,7 +49,25 @@ pub struct TestMutationBlackout {
 
 #[async_trait]
 impl ChunkKvTransport for TestMetadataTransport {
-    async fn point(&self, _: &str, request: &PointRequest) -> Result<ChunkKvResponse> {
+    async fn point(&self, endpoint: &str, request: &PointRequest) -> Result<ChunkKvResponse> {
+        if let Some(route) = &self.route {
+            let generation = route.generation.load(Ordering::Acquire);
+            if endpoint != format!("test-owner-{generation}") || request.routing.owner_epoch != generation {
+                route.rejected.fetch_add(1, Ordering::Relaxed);
+                return Ok(ChunkKvResponse {
+                    map_revision: generation,
+                    journal_position: None,
+                    result: Err(RpcFailure {
+                        code: ChunkKvRpcErrorCode::RefreshRequired,
+                        message: "owner moved before operation".into(),
+                        retry_after_ms: None,
+                        latest_map_revision: Some(generation),
+                        owner_hint: None,
+                    }),
+                });
+            }
+            route.accepted.store(generation, Ordering::Release);
+        }
         if self
             .blackout
             .as_ref()
@@ -228,6 +254,7 @@ pub async fn client_with_source(source: Arc<dyn ChunkKvRangeCatalogSource>) -> A
         Arc::new(AtomicBool::new(false)),
         ClientConfig::default(),
         None,
+        None,
     )
     .await
 }
@@ -242,6 +269,7 @@ pub async fn client_with_loss(loss: Arc<AtomicBool>) -> Arc<ChunkKvClient> {
             max_attempts: 1,
             ..ClientConfig::default()
         },
+        None,
         None,
     )
     .await
@@ -258,6 +286,22 @@ pub async fn client_with_blackout(blackout: Arc<TestMutationBlackout>) -> Arc<Ch
             ..ClientConfig::default()
         },
         Some(blackout),
+        None,
+    )
+    .await
+}
+
+#[allow(dead_code)] // The catalog-move fixture is only used by topology acceptance.
+pub async fn client_with_route(
+    source: Arc<dyn ChunkKvRangeCatalogSource>,
+    route: Arc<TestRouteChange>,
+) -> Arc<ChunkKvClient> {
+    client_with_options(
+        source,
+        Arc::new(AtomicBool::new(false)),
+        ClientConfig::default(),
+        None,
+        Some(route),
     )
     .await
 }
@@ -267,6 +311,7 @@ async fn client_with_options(
     loss: Arc<AtomicBool>,
     config: ClientConfig,
     blackout: Option<Arc<TestMutationBlackout>>,
+    route: Option<Arc<TestRouteChange>>,
 ) -> Arc<ChunkKvClient> {
     let (sender, mut receiver) = mpsc::channel(64);
     tokio::spawn(async move {
@@ -294,6 +339,7 @@ async fn client_with_options(
                 sender,
                 lose_mutation_reply: loss,
                 blackout,
+                route,
             }),
         )
         .unwrap(),

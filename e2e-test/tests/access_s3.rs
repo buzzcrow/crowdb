@@ -4,6 +4,7 @@
 //! Host S3 clients, credential authority and protected storage recovery.
 
 mod benchmark;
+mod native;
 mod node_failure;
 mod policy;
 mod policy_failure;

@@ -15,6 +15,7 @@ from fixture import Cluster
 from diskdb_fixture import DiskdbCluster
 from chunkdb_fixture import ChunkdbCluster, ChunkdbStorageCluster
 from chunk_kv_fixture import ChunkKvCluster
+from native_s3_fixture import NativeS3Cluster
 from access_s3_fixture import AccessS3Cluster
 from s3_node_fixture import S3NodeCluster
 from access_protocol_fixture import AccessProtocolCluster
@@ -339,6 +340,10 @@ S3_SPECIAL_CASES = tuple(Case("s3.nodes", f"access_s3::node_failure::node_{node}
                     Case("s3.benchmark", "s3.benchmark::s3_request_path", sdk_client=True, s3_script="benchmark"))
 S3_LANGUAGE_CASES = tuple(Case("s3.sdk", "s3.sdk::" + language, sdk_client=True, s3_language=language)
                           for language in ("java", "js", "go"))
+S3_SPECIAL_CASES += (
+    Case("s3.native", "access_s3::native::complete_corpus_survives_storage_restart_without_access_or_credentials", restart=True),
+    Case("s3.native.parity", "access_s3::native::parity::http_and_native_share_bytes_metadata_conditions_copy_and_multipart", access_protocol=True),
+)
 ICEBERG_CASES = (
     Case("iceberg.files.listing", "access_iceberg::file_http::listing::native_list_objects_v2_serves_selected_files_and_rejects_foreign_scope", iceberg_deferred_access=True),
     Case("iceberg.files.listing", "access_iceberg::file_http::listing::official_pyarrow_native_fileio_creates_exact_files_and_lists_table_prefixes", iceberg_deferred_access=True),
@@ -600,6 +605,8 @@ def case_nodes(case):
         return 13
     if case.scope.startswith("iceberg."):
         return 14
+    if case.scope == "s3.native":
+        return 12
     if case.scope.startswith("s3."):
         return 14
     if case.scope.startswith("chunk-kv."):
@@ -718,6 +725,8 @@ def allocate_cluster(case, image, artifacts, bundle, data_root):
         return ChunkKvCluster(image, artifacts, bundle, service_instances=(11, 12, 13),
                               storage_groups=(1, 2, 3), diskio_process_exit=case.diskio_process_exit,
                               data_root=data_root)
+    if case.scope == "s3.native":
+        return NativeS3Cluster(image, artifacts, bundle, data_root=data_root)
     if case.scope.startswith("s3."):
         return AccessS3Cluster(image, artifacts, bundle, data_root=data_root)
     if case.scope.startswith("chunk-kv."):
