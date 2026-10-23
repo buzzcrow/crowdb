@@ -53,13 +53,13 @@ RDMA plan. Native SDK implementation and acceptance remain outstanding.
   shared clients instead of reconnecting for each facade. Files:
   `lib/crowdb-sdk-native/src/runtime.rs`, `lib/crowdb-access-s3/src/storage.rs`,
   `lib/crowdb-chunk-client/src/client.rs`.
-- [ ] **Define business context**: expose `S3Client::new(runtime, config)` with
+- [~] **Define business context**: expose `S3Client::new(runtime, config)` with
   tenant/write policy and typed per-operation request identity, deadline,
   cancellation, conditions, and range. Preserve S3 errors and uncertain
   outcomes without HTTP headers, XML, or `CredentialProvider`. Files:
   `lib/crowdb-sdk-native/src/s3/`, `lib/crowdb-access-s3/src/error.rs`,
   `lib/crowdb-access-s3/src/condition.rs`, `lib/crowdb-access-s3/src/range.rs`.
-- [ ] **Define common delivery**: reads return metadata plus a pull-based
+- [~] **Define common delivery**: reads return metadata plus a pull-based
   `next() -> Result<Option<BufferLease>, _>` body; `Ok(None)` means applicable
   length/integrity checks passed. Preserve terminal failure across subsequent
   polling; early drop is cancellation, not successful EOF. Define unique
@@ -107,7 +107,7 @@ RDMA plan. Native SDK implementation and acceptance remain outstanding.
   `app/crowdb-access-server/src/s3/operations.rs`,
   `app/crowdb-access-server/src/s3/operations/delete.rs`,
   `lib/crowdb-sdk-native/src/s3/`.
-- [ ] **Extract streaming GET**: adapt `PreparedGet`/`VerifiedGetStream` to
+- [~] **Extract streaming GET**: adapt `PreparedGet`/`VerifiedGetStream` to
   typed metadata and a lazy native body with logical offsets. Preserve
   selected generation, range checks, storage checksums, and final checksum
   errors. Do not expose HTTP strings or RPC fragments as native object data.
@@ -269,6 +269,28 @@ transport acceptance alone cannot establish SDK completion.
   `ResourceStatus::compatibility_copy_bytes`. Five focused tests cover shared
   capacity, 64 concurrent publication/release rounds, bounded copy pressure,
   cancellation/shutdown and undersized views hiding oversized allocations.
+- Native S3 now has typed configuration, entity-tag/date conditions, HEAD,
+  lazy GET and half-open ranges. Shared condition evaluation serves HTTP and
+  typed inputs. `ResolvedObject` captures the metadata revision in the same
+  point read, retains its immutable record, and rejects another tenant or
+  metadata authority; identical overwrites have distinct revisions. Native
+  metadata exposes validated user values without HTTP headers.
+- `ObjectBody::next` returns retained `BufferLease` views and verifies final
+  length/integrity before successful EOF. Terminal errors remain sticky;
+  cancellation/early drop return request admission independently of delivered
+  buffers. A cancelled pending pull retains its not-yet-delivered payload, so
+  resuming after capacity release cannot skip it. Seven native read cases
+  cover original pointer/capacity, range offsets, overwrite/authority binding,
+  conditions, empty/corrupt checksum, capacity deadline, cancellation/shutdown
+  and pending-pull cancellation. The native suite now has 22 passing cases;
+  six allocation cases separately verify retention of each upstream logical
+  owner while sharing one physical charge. Shared S3 tests and affected HTTP
+  service/inspection tests, all-target clippy and Rust formatting pass.
+- Still outstanding: native S3 PUT/copy/multipart/listing completion and HTTP
+  extraction, explicit data transport configuration, object locality/stale-view
+  acceptance, owned transport shutdown, and the complete native/OCI S3 corpus.
+  Current read fixtures use real storage reader/framing with injected metadata
+  and disk seams; they are not the required real-service TCP/RDMA acceptance.
 
 ## Subsequent Dataset integration under R220
 

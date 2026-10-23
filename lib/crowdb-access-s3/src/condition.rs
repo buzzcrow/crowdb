@@ -22,35 +22,87 @@ pub enum ConditionOutcome {
     PreconditionFailed,
 }
 
+/// Typed entity-tag selection for trusted callers without HTTP headers.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum EtagSelection {
+    Any,
+    Values(Vec<String>),
+}
+
+impl EtagSelection {
+    fn matches(&self, etag: &str) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Values(values) => values.iter().any(|value| value == etag),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ReadPreconditions {
+    pub if_match: Option<EtagSelection>,
+    pub if_none_match: Option<EtagSelection>,
+    pub if_modified_since_seconds: Option<u64>,
+    pub if_unmodified_since_seconds: Option<u64>,
+}
+
+pub trait ReadCondition {
+    fn evaluate(&self, record: &ObjectRecord) -> ConditionOutcome;
+}
+
+impl ReadCondition for ReadPreconditions {
+    fn evaluate(&self, record: &ObjectRecord) -> ConditionOutcome {
+        evaluate_values(
+            record,
+            self.if_match.as_ref().map(|value| value.matches(&record.etag)),
+            self.if_none_match
+                .as_ref()
+                .map(|value| value.matches(&record.etag)),
+            self.if_modified_since_seconds,
+            self.if_unmodified_since_seconds,
+        )
+    }
+}
+
+impl ReadCondition for ObjectConditions<'_> {
+    fn evaluate(&self, record: &ObjectRecord) -> ConditionOutcome {
+        evaluate(record, self)
+    }
+}
+
 /// Evaluates standard GET/HEAD conditions using fields from one KV value.
 #[must_use]
 pub fn evaluate(record: &ObjectRecord, conditions: &ObjectConditions<'_>) -> ConditionOutcome {
-    if conditions
-        .if_match
-        .is_some_and(|value| !etag_list_matches(value, &record.etag))
-    {
+    evaluate_values(
+        record,
+        conditions
+            .if_match
+            .map(|value| etag_list_matches(value, &record.etag)),
+        conditions
+            .if_none_match
+            .map(|value| etag_list_matches(value, &record.etag)),
+        conditions.if_modified_since.and_then(parse_http_seconds),
+        conditions.if_unmodified_since.and_then(parse_http_seconds),
+    )
+}
+
+fn evaluate_values(
+    record: &ObjectRecord,
+    if_match: Option<bool>,
+    if_none_match: Option<bool>,
+    modified_since: Option<u64>,
+    unmodified_since: Option<u64>,
+) -> ConditionOutcome {
+    if if_match == Some(false) {
         return ConditionOutcome::PreconditionFailed;
     }
-    if conditions.if_match.is_none()
-        && conditions
-            .if_unmodified_since
-            .and_then(parse_http_seconds)
-            .is_some_and(|limit| record.modified_at_ms / 1000 > limit)
-    {
+    if if_match.is_none() && unmodified_since.is_some_and(|limit| record.modified_at_ms / 1000 > limit) {
         return ConditionOutcome::PreconditionFailed;
     }
-    if conditions
-        .if_none_match
-        .is_some_and(|value| etag_list_matches(value, &record.etag))
-    {
+    if if_none_match == Some(true) {
         return ConditionOutcome::NotModified;
     }
-    if conditions.if_none_match.is_none()
-        && conditions
-            .if_modified_since
-            .and_then(parse_http_seconds)
-            .is_some_and(|limit| record.modified_at_ms / 1000 <= limit)
-    {
+    if if_none_match.is_none() && modified_since.is_some_and(|limit| record.modified_at_ms / 1000 <= limit) {
         return ConditionOutcome::NotModified;
     }
     ConditionOutcome::Proceed

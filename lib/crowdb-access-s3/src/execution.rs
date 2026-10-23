@@ -6,10 +6,10 @@
 use std::sync::Arc;
 
 use crate::bucket::{self, BucketError, DeleteBucketResult, RandomBucketIdGenerator};
-use crate::condition::ObjectConditions;
+use crate::condition::{ObjectConditions, ReadCondition};
 use crate::error::S3ErrorCode;
 use crate::metadata::{BucketId, BucketNameRecord, ObjectRecord, TenantId};
-use crate::object::{self, ObjectMetadataError};
+use crate::object::{self, ObjectMetadataError, SelectedObject};
 use crate::retrieval::{self, ObjectHeaders, PreparedGet, RetrievalError};
 use crate::storage::S3StorageClients;
 
@@ -88,8 +88,14 @@ impl S3Executor {
     /// # Errors
     /// Returns missing bucket/key, invalid metadata or routed storage failure.
     pub async fn object(&self, bucket: &[u8], key: &[u8]) -> Result<ObjectRecord, S3ErrorCode> {
+        Ok(self.selected_object(bucket, key).await?.record)
+    }
+
+    /// # Errors
+    /// Resolves one record and revision without an additional metadata read.
+    pub async fn selected_object(&self, bucket: &[u8], key: &[u8]) -> Result<SelectedObject, S3ErrorCode> {
         let bucket_id = self.resolve_bucket(bucket).await?;
-        object::head(&self.storage.metadata, &self.tenant, bucket_id, key)
+        object::head_versioned(&self.storage.metadata, &self.tenant, bucket_id, key)
             .await
             .map_err(|error| object_error(&error))?
             .ok_or(S3ErrorCode::NoSuchKey)
@@ -109,7 +115,7 @@ impl S3Executor {
     pub fn prepare_head(
         &self,
         record: &ObjectRecord,
-        conditions: &ObjectConditions<'_>,
+        conditions: &(impl ReadCondition + ?Sized),
     ) -> Result<ObjectHeaders, RetrievalError> {
         retrieval::prepare_head(record, conditions)
     }

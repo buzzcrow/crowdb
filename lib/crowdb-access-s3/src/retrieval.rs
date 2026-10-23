@@ -11,7 +11,7 @@ use crowdb_protocol::chunkdb::rpc::Location;
 use crowdb_rpc_ffi::OwnedPayload;
 use hyper::body::Bytes;
 
-use crate::condition::{evaluate, ConditionOutcome, ObjectConditions};
+use crate::condition::{ConditionOutcome, ReadCondition};
 use crate::integrity::SinglePartIntegrity;
 use crate::metadata::ObjectRecord;
 use crate::range::{resolve_range, ByteRange, RangeError};
@@ -157,7 +157,7 @@ pub enum RetrievalError {
 /// Returns a conditional outcome; all returned headers come from `record`.
 pub fn prepare_head(
     record: &ObjectRecord,
-    conditions: &ObjectConditions<'_>,
+    conditions: &(impl ReadCondition + ?Sized),
 ) -> Result<ObjectHeaders, RetrievalError> {
     check_conditions(record, conditions)?;
     Ok(headers(record, None))
@@ -172,7 +172,7 @@ pub fn prepare_get(
     client: &ChunkIoClient,
     record: &ObjectRecord,
     range_header: Option<&str>,
-    conditions: &ObjectConditions<'_>,
+    conditions: &(impl ReadCondition + ?Sized),
 ) -> Result<PreparedGet, RetrievalError> {
     check_conditions(record, conditions)?;
     let requested = resolve_range(range_header, record.logical_length).map_err(RetrievalError::Range)?;
@@ -186,7 +186,7 @@ pub fn prepare_get_range(
     client: &ChunkIoClient,
     record: &ObjectRecord,
     requested: Option<ByteRange>,
-    conditions: &ObjectConditions<'_>,
+    conditions: &(impl ReadCondition + ?Sized),
 ) -> Result<PreparedGet, RetrievalError> {
     check_conditions(record, conditions)?;
     if requested.is_some_and(|range| range.start >= range.end || range.end > record.logical_length) {
@@ -233,8 +233,11 @@ fn build_get(
     })
 }
 
-fn check_conditions(record: &ObjectRecord, conditions: &ObjectConditions<'_>) -> Result<(), RetrievalError> {
-    match evaluate(record, conditions) {
+fn check_conditions(
+    record: &ObjectRecord,
+    conditions: &(impl ReadCondition + ?Sized),
+) -> Result<(), RetrievalError> {
+    match conditions.evaluate(record) {
         ConditionOutcome::Proceed => Ok(()),
         ConditionOutcome::NotModified => Err(RetrievalError::NotModified),
         ConditionOutcome::PreconditionFailed => Err(RetrievalError::PreconditionFailed),

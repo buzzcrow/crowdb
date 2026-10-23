@@ -1,6 +1,9 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+#[path = "common/payload_owner.rs"]
+mod owner;
+
 use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -138,5 +141,28 @@ async fn a_short_view_cannot_hide_an_oversized_backing_allocation() {
         .retain_payload(payload(4096).slice(..2), 1, 1, 0, 0)
         .await;
     assert!(matches!(result, Err(Error::Capacity(CapacityKind::HeldBuffers))));
+    assert_eq!(resources.status().held_bytes, 0);
+}
+
+#[tokio::test]
+async fn a_shared_physical_charge_keeps_each_upstream_logical_owner() {
+    let resources = resources(1024);
+    let released = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let base = payload(1024);
+    let mut leases = Vec::new();
+    for id in 1..=2 {
+        let released = released.clone();
+        let logical = base
+            .slice(..3)
+            .with_owner(|bytes| Bytes::from_owner(owner::TestPayloadOwner { bytes, released }));
+        leases.push(resources.retain_payload(logical, id, id, 0, 0).await.unwrap());
+    }
+    assert_eq!(released.load(std::sync::atomic::Ordering::Acquire), 0);
+    assert_eq!(resources.status().held_bytes, 1024);
+    drop(leases.pop());
+    assert_eq!(released.load(std::sync::atomic::Ordering::Acquire), 1);
+    assert_eq!(resources.status().held_bytes, 1024);
+    drop(leases);
+    assert_eq!(released.load(std::sync::atomic::Ordering::Acquire), 2);
     assert_eq!(resources.status().held_bytes, 0);
 }

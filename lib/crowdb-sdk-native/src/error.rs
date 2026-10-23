@@ -17,6 +17,20 @@ pub enum MutationInterruption {
     Shutdown,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReadFailureKind {
+    InvalidLocations,
+    InvalidRange,
+    Deleted,
+    NotAvailable,
+    LayoutExpired,
+    DataLoss,
+    Metadata,
+    DiskIo,
+    EcDecode,
+    FailedRange,
+}
+
 #[derive(Clone, Debug, thiserror::Error, Eq, PartialEq)]
 pub enum Error {
     #[error("invalid native client configuration: {0}")]
@@ -35,6 +49,14 @@ pub enum Error {
     BufferRange,
     #[error("S3 operation failed: {0:?}")]
     S3(crowdb_access_s3::S3ErrorCode),
+    #[error("object was not modified")]
+    NotModified,
+    #[error("object checksum does not match its published metadata")]
+    Integrity,
+    #[error("object length mismatch: expected={expected} delivered={delivered}")]
+    Length { expected: u64, delivered: u64 },
+    #[error("object read failed: {kind:?}: {detail}")]
+    Read { kind: ReadFailureKind, detail: String },
     #[error("mutation outcome is uncertain: request={request_id} reason={reason:?}")]
     UncertainMutation {
         request_id: u64,

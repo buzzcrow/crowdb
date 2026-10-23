@@ -15,6 +15,12 @@ pub struct ObjectListPage {
     pub objects: Vec<ObjectRecord>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SelectedObject {
+    pub record: ObjectRecord,
+    pub revision: u64,
+}
+
 /// Bounded, normalized `ListObjectsV2` inputs.
 pub struct ListObjectsV2Request<'a> {
     pub tenant: &'a TenantId,
@@ -63,11 +69,35 @@ pub async fn head(
     bucket: BucketId,
     key: &[u8],
 ) -> Result<Option<ObjectRecord>, ObjectMetadataError> {
-    let key = MetadataKey::object(tenant, bucket, key)?;
+    Ok(head_versioned(store, tenant, bucket, key)
+        .await?
+        .map(|selected| selected.record))
+}
+
+/// Reads the record and revision in the same point operation, preserving even
+/// an identical overwrite as a distinct selected generation.
+/// # Errors
+/// Returns invalid namespace/record identity or routed storage failure.
+pub async fn head_versioned(
+    store: &ChunkKvMetadataStore,
+    tenant: &TenantId,
+    bucket: BucketId,
+    object_key: &[u8],
+) -> Result<Option<SelectedObject>, ObjectMetadataError> {
+    let key = MetadataKey::object(tenant, bucket, object_key)?;
     store
         .get(key)
         .await?
-        .map(|value| ObjectRecord::decode(&value.value))
+        .map(|value| {
+            let record = ObjectRecord::decode(&value.value)?;
+            if record.bucket_id != bucket || record.key != object_key {
+                return Err(MetadataRecordError::Invalid);
+            }
+            Ok(SelectedObject {
+                record,
+                revision: value.revision,
+            })
+        })
         .transpose()
         .map_err(Into::into)
 }
