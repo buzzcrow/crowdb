@@ -27,6 +27,50 @@ async fn replacement_is_synchronized_before_metadata_publication_and_completion(
 }
 
 #[tokio::test]
+async fn metrics_and_routing_preserve_the_original_owner_deadline() {
+    use std::time::{Duration, Instant};
+    for initialize in [false, true] {
+        let peer = TestDiskioPeer::start(true, true, FBDiskIoRetCode::Success).await;
+        let diskio = Arc::new(
+            DiskioClient::connect_for_tests(
+                vec![peer.route(DiskId::new(1, 0))],
+                DiskioClientConfig::default(),
+            )
+            .unwrap(),
+        );
+        let metrics = Arc::new(ChunkClientMetrics::register(&mut MetricsRegistry::new()));
+        let client = ChunkIoClient::from_parts(
+            Arc::new(allocator::TestAllocator::default()),
+            Arc::new(RoutedDiskWriter::from_client_for_tests(diskio)),
+            ChunkType::Stream,
+        )
+        .with_metrics(&metrics);
+        let (_, writer) = client.storage_parts();
+        let deadline = Instant::now() + Duration::from_millis(100);
+        let operation = tokio::spawn(async move {
+            let segment = allocator::segment(1);
+            let data = Bytes::from_static(&[7; 32]);
+            if initialize {
+                writer
+                    .initialize_synchronized_until(&segment, 4096, 0, data, deadline)
+                    .await
+            } else {
+                writer
+                    .write_synchronized_views_until(&segment, 4096, 0, vec![data], deadline)
+                    .await
+            }
+        });
+        peer.wait_for_write().await;
+        let result = tokio::time::timeout(Duration::from_secs(1), operation)
+            .await
+            .expect("owner deadline must pass through both decorators")
+            .unwrap();
+        assert!(result.is_err());
+        assert_eq!(peer.counts.writes.load(Ordering::Acquire), 1);
+    }
+}
+
+#[tokio::test]
 async fn metrics_and_routing_preserve_single_attempt_initialization() {
     let peer = TestDiskioPeer::start(true, false, FBDiskIoRetCode::ConnectionError).await;
     let diskio = Arc::new(

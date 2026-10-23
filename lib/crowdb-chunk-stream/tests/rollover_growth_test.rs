@@ -22,6 +22,14 @@ struct TestGrowingChunks {
 
 #[async_trait]
 impl StreamChunkStore for TestGrowingChunks {
+    fn bind_writer(
+        &self,
+        name: StreamName,
+        epoch: u64,
+        session: Arc<crowdb_chunk_stream::StreamWriterSession>,
+    ) {
+        self.store.bind_writer(name, epoch, session);
+    }
     fn mirror_copies(&self) -> u32 {
         self.store.mirror_copies()
     }
@@ -85,6 +93,15 @@ impl StreamChunkStore for TestGrowingChunks {
 
     async fn durable_cursor(&self, chunk: ChunkId, epoch: u64) -> Result<DurableCursor> {
         self.store.durable_cursor(chunk, epoch).await
+    }
+
+    async fn recover_tail(
+        &self,
+        name: StreamName,
+        epoch: u64,
+        active: &ActiveChunkDescriptor,
+    ) -> Result<crowdb_chunk_stream::RecoveredStreamTail> {
+        self.store.recover_tail(name, epoch, active).await
     }
 
     async fn renew_liveness(&self, chunk: ChunkId, epoch: u64) -> Result<()> {

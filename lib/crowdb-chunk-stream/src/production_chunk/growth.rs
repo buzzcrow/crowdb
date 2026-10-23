@@ -24,6 +24,7 @@ impl ProductionStreamChunkStore {
         chunk_id: ChunkId,
         required_capacity: u64,
     ) -> Result<Option<ActiveChunkDescriptor>> {
+        self.owner_context(stream_name, writer_epoch)?;
         if required_capacity > self.chunk_capacity_bytes {
             return Ok(None);
         }

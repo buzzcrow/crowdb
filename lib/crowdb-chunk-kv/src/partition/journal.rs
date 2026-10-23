@@ -15,6 +15,10 @@ pub trait PartitionJournal: Send + Sync {
     async fn reclaim_metadata_before(&self, generation: u64, max_pages: usize) -> Result<u64>;
     /// Publishes the ordered WAL prefix before a durable checkpoint or cutover proof.
     async fn checkpoint(&self) -> Result<u64>;
+    /// Drain and release writer authority before publishing an explicit transfer proof.
+    async fn release_writer(&self) -> Result<()> {
+        self.checkpoint().await.map(|_| ())
+    }
     async fn close(&self) -> Result<()>;
     fn stream_name(&self) -> StreamName;
     fn manifest_generation(&self) -> u64;
@@ -127,6 +131,10 @@ impl PartitionJournal for StreamPartitionJournal {
 
     async fn checkpoint(&self) -> Result<u64> {
         self.stream.checkpoint().await.map_err(map_stream_error)
+    }
+
+    async fn release_writer(&self) -> Result<()> {
+        self.stream.release_writer().await.map_err(map_stream_error)
     }
 
     fn stream_name(&self) -> StreamName {

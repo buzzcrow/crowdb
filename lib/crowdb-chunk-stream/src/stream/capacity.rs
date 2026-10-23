@@ -84,21 +84,11 @@ pub(super) async fn rollover(state: &mut WorkerState) -> Result<()> {
         .as_ref()
         .ok_or_else(|| StreamError::Internal("rollover has no active chunk".into()))?;
     let active = active.clone();
-    let durable = state
+    state
         .chunks
-        .durable_cursor(active.chunk_id, state.writer_epoch)
+        .seal(active.chunk_id, state.writer_epoch, active.acknowledged_cursor)
         .await?;
-    if durable.offset != active.acknowledged_cursor {
-        return Err(StreamError::Corruption(
-            "rollover cursor differs from the acknowledged cursor".into(),
-        ));
-    }
-    if !durable.sealed {
-        state
-            .chunks
-            .seal(active.chunk_id, state.writer_epoch, active.acknowledged_cursor)
-            .await?;
-    }
+    state.checkpoint = None;
     let tail = state.tail_view.load(Ordering::Acquire);
     state.manifest.sealed_tail = tail;
     let mut successor = state

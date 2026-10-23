@@ -30,11 +30,19 @@ impl FrameLayoutCache {
         &self.slots[(hash % FRAME_LAYOUT_CACHE_SLOTS as u64) as usize]
     }
 
-    fn get(&self, id: ChunkId, required_end: u64) -> Option<LayoutSnapshot> {
+    fn get(&self, id: ChunkId, required_end: u64, synchronized: bool) -> Option<LayoutSnapshot> {
         self.slot(id)
             .load_full()
             .filter(|layout| {
-                layout.chunk_id == id && layout.usable() && layout.chunk.acknowledged_cursor >= required_end
+                layout.chunk_id == id
+                    && layout.usable()
+                    && if synchronized {
+                        layout.chunk.strips.last().is_some_and(|strip| {
+                            u64::from(strip.chunk_offset + strip.capacity) * 1024 >= required_end
+                        })
+                    } else {
+                        layout.chunk.acknowledged_cursor >= required_end
+                    }
             })
             .map(|layout| (*layout).clone())
     }
@@ -64,8 +72,13 @@ impl LayoutSnapshot {
 }
 
 impl ChunkReader {
-    pub(super) async fn frame_layout(&self, id: ChunkId, required_end: u64) -> ReadResult<LayoutSnapshot> {
-        if let Some(layout) = self.frame_layouts.get(id, required_end) {
+    pub(super) async fn frame_layout(
+        &self,
+        id: ChunkId,
+        required_end: u64,
+        synchronized: bool,
+    ) -> ReadResult<LayoutSnapshot> {
+        if let Some(layout) = self.frame_layouts.get(id, required_end, synchronized) {
             self.flow_metrics.layout_cache_hits.inc();
             return Ok(layout);
         }

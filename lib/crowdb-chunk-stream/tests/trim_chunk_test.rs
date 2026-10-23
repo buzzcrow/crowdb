@@ -43,12 +43,12 @@ async fn trimming_one_frame_cannot_release_a_sealed_chunk_with_a_retained_suffix
         stream.read_at(70_000, 30_000).await.unwrap(),
         payload.slice(70_000..)
     );
-    let physical = store
+    let checkpoint = store
         .durable_cursor(first.chunk_id.unwrap(), 9)
         .await
         .unwrap()
         .offset;
-    assert_eq!(stream.trim_prefix(first.end).await.unwrap(), physical);
+    assert_eq!(stream.trim_prefix(first.end).await.unwrap(), checkpoint);
     assert!(store.is_released(first.chunk_id.unwrap()).await);
     assert_eq!(
         stream.read_at(second.begin, payload.len()).await.unwrap(),
@@ -83,12 +83,21 @@ async fn trimming_a_whole_active_chunk_keeps_it_available_for_later_append() {
         .offset;
     let next = stream.append(&[Bytes::from(vec![0x33; 100_000])]).await.unwrap();
     assert_ne!(next.chunk_id, first.chunk_id);
+    let sealed_physical = store
+        .durable_cursor(first.chunk_id.unwrap(), 9)
+        .await
+        .unwrap()
+        .offset;
+    assert!(
+        sealed_physical > physical,
+        "rollover seals the uncheckpointed final append too"
+    );
     assert_eq!(stream.trim_prefix(second.end).await.unwrap(), 0);
     assert_eq!(
         stream.read_at(tail.begin, 4).await.unwrap(),
         Bytes::from_static(b"tail")
     );
-    assert_eq!(stream.trim_prefix(tail.end).await.unwrap(), physical);
+    assert_eq!(stream.trim_prefix(tail.end).await.unwrap(), sealed_physical);
     assert!(store.is_released(first.chunk_id.unwrap()).await);
 }
 

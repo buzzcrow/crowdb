@@ -95,6 +95,38 @@ pub trait DiskWriter: Send + Sync {
         self.fsync(seg).await
     }
 
+    /// Submit synchronized views under the caller's original owner deadline.
+    async fn write_synchronized_views_until(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        offset: u64,
+        data: Vec<Bytes>,
+        deadline: std::time::Instant,
+    ) -> Result<()> {
+        if std::time::Instant::now() >= deadline {
+            return Err(IoError::WriteFailed("owner IO deadline expired".into()));
+        }
+        self.write_synchronized_views_at_byte_offset(seg, unit_bytes, offset, data)
+            .await
+    }
+
+    /// Initialize once under the original owner deadline; never retry zeroing.
+    async fn initialize_synchronized_until(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        offset: u64,
+        data: Bytes,
+        deadline: std::time::Instant,
+    ) -> Result<()> {
+        if std::time::Instant::now() >= deadline {
+            return Err(IoError::WriteFailed("owner IO deadline expired".into()));
+        }
+        self.initialize_synchronized_at_byte_offset(seg, unit_bytes, offset, data)
+            .await
+    }
+
     /// Write a conversion-data range without queueing behind ordinary writes.
     async fn write_priority_at_byte_offset(
         &self,

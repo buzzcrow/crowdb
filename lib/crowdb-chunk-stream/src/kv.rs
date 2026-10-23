@@ -17,6 +17,7 @@ use futures::{stream, StreamExt, TryStreamExt};
 mod directory;
 mod directory_records;
 pub use directory::{DirectoryCacheSnapshot, DirectoryHeadSnapshot, DIRECTORY_PAGE_CACHE_SLOTS};
+mod owner;
 mod pages;
 
 use crate::perf::{perf, PhaseTimer};
@@ -25,17 +26,28 @@ use crate::{Result, StreamError, StreamMetadataStore, StreamRegistry};
 /// Group-0 readable stream binding registry.
 pub struct KvStreamRegistry {
     kv: Arc<CrowdbKvClient>,
+    processes: owner::OwnerProcesses,
 }
 
 impl KvStreamRegistry {
     #[must_use]
     pub fn new(kv: Arc<CrowdbKvClient>) -> Self {
-        Self { kv }
+        Self {
+            kv,
+            processes: owner::OwnerProcesses::default(),
+        }
     }
 }
 
 #[async_trait]
 impl StreamRegistry for KvStreamRegistry {
+    async fn claim_writer(&self, name: StreamName, epoch: u64) -> Result<Arc<crate::StreamWriterSession>> {
+        let binding = self
+            .load(name)
+            .await?
+            .ok_or_else(|| StreamError::InvalidRequest("stream binding is absent".into()))?;
+        self.acquire_owner(name, epoch, binding.purpose).await
+    }
     async fn load(&self, stream_name: StreamName) -> Result<Option<StreamBinding>> {
         let key = StreamBindingKey { stream_name }.to_path();
         match self

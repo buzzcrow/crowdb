@@ -65,3 +65,31 @@ impl StreamProcessLease {
         Ok(())
     }
 }
+
+/// One stream's owner assignment. Renewal lives in the referenced process row;
+/// this record changes only on acquire or drained release.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StreamWriterOwner {
+    pub stream_name: super::StreamName,
+    pub writer_epoch: u64,
+    pub process: StreamProcessIdentity,
+    pub assignment_nonce: [u8; 16],
+    pub released: bool,
+}
+
+impl StreamWriterOwner {
+    /// # Errors
+    /// Rejects missing writer, process or assignment identity.
+    pub fn validate(&self) -> Result<(), StreamLeaseRecordError> {
+        if self.writer_epoch == 0
+            || self.process.instance_id == 0
+            || self.process.process_epoch == 0
+            || self.process.boot_nonce == [0; 16]
+            || self.assignment_nonce == [0; 16]
+        {
+            return Err(StreamLeaseRecordError::InvalidRecord);
+        }
+        Ok(())
+    }
+}

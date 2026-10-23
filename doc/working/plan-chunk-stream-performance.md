@@ -13,9 +13,12 @@ KV work, with compact locations, incremental directories, and bounded recovery.
 
 - Deployment requirement R243 is complete at `c3d7d64d`; R244 is in progress.
 - T01/T02/T03/T05–T07 foundations and T20a's measured hot-path changes are
-  verified. T20b capacity preparation is verified; T18 is active to wire
-  authority and content recovery before removing ordinary cursor commits.
-  T15's bounded observation primitives await the same runtime authority wiring.
+  verified. T20b capacity preparation is verified; T18 is active. Ordinary
+  append now completes at synchronized mirrors with local owner checks; cursor
+  persistence occurs only at checkpoints. Production recovery scans complete
+  grouped frames past the checkpoint after process exclusion and ordered drains.
+  The affected suite, strict lint and unchanged two-case performance gates
+  pass, including a second measurement of the exact final source.
   T13's indexed retention primitives are committed; expiry/read-IO grace and
   runtime/consumer wiring remain. Directory, shared-codec, ordinary writer and local-progress
   foundations exist; the main Stream worker still needs indexed wiring,
@@ -34,8 +37,91 @@ KV work, with compact locations, incremental directories, and bounded recovery.
 
 - The main worker now uses current grouped frames and one location per append.
   No revision-1 Stream codec, raw-write mode or frame-version negotiation remains.
-  Indexed directory wiring, ownership, content-derived cold recovery and the
-  removal of per-batch cursor work remain separate implementation tasks.
+  Indexed directory wiring and the remaining ownership/recovery acceptance
+  work remain separate implementation tasks. Per-batch cursor work is removed
+  by the current integration, pending the gates recorded below.
+
+## Cursor-free append integration (current)
+
+- Ordinary append performs grouped encoding, synchronized required-mirror IO,
+  owner validation, and local mapping/cursor publication. It makes no ChunkDB
+  advance or Stream directory RPC. `stream.checkpoint.cursor.lh` replaces the
+  old append cursor metric; a focused test asserts zero samples after append,
+  then one after an ordered checkpoint. Checkpoint batches all pending bytes
+  into one cursor advance before publishing its matching directory. Seal and
+  rollover persist the synchronized local boundary directly.
+- Fixed Group-0 writer assignments reference independently renewed per-boot
+  process leases. Admission and acknowledgment validate the local authority;
+  physical submissions retain their original conservative deadline through
+  the metrics and routing decorators. Assignment nonces distinguish concurrent
+  same-process claims and prevent an old release from releasing its successor.
+  Explicit WAL transfer drains admitted writes, checkpoints, and releases the
+  assignment. The service supplies its existing process authority, retaining
+  its existing exact serving-context admission/response checks.
+- Recovery excludes an unreleased prior process using its persisted process
+  and grant expiry plus shared clock/request-age bounds, then drains current
+  mirrored segments. It scans grouped frames beyond persisted progress,
+  selects the shortest healthy complete prefix, verifies/replays it, checks the
+  layout again, seals, and starts a fresh chunk. Live frame reads use the local
+  synchronized bound without changing cached or persisted chunk boundaries.
+- Tests cover a 2 MiB multi-frame acknowledged write recovered with zero cursor
+  commits, incomplete groups, corruption, unequal replica tails, fenced delayed
+  replies, renewal during blocked data IO, exclusive claims and release ABA,
+  release-based immediate takeover, checkpoint aggregation, and WAL transfer.
+  Logs live outside the project in
+  `/home/cj/.cache/crowdb-r244-cursor-results/`.
+- Current failures found during integration were old per-append cursor/metric
+  assertions, finite checkpoint access after drained transfer, an incomplete
+  fixture cut inside a checksummed frame instead of between grouped frames,
+  and trim accounting sampled before rollover persisted the final append.
+  Exact failing commands/output remain in the logs. A decorator inspection
+  found the new IO deadline was not forwarded by metrics; the forwarding and
+  actual gated TCP deadline test were added before measurement.
+- Verification: all 450 affected Stream, Chunk-client, Chunk-KV and server
+  tests pass, plus three protocol owner-record tests. Strict five-crate
+  all-target clippy and workspace fmt pass. After the final cold-path fix,
+  the 42 mirror/recovery/owner tests and 32 partition tests pass again. Repeated
+  completed releases do not touch a successor's owner row; a stalled write
+  cannot produce a clean release proof. Logs: `affected-tests-3.log`,
+  `protocol-tests.log`, `release-tests.log`, `partition-final.log`, and
+  `clippy-final.log` in the evidence directory above.
+- First unchanged two-case retained-MemDisk measurement, after rebuilding all
+  service and benchmark artifacts: `20261023T135751Z/`. Both gates pass with
+  zero errors/watchdogs and source-unchanged receipt. Single producer rises
+  295.63 -> 1639.63 ops/s, average 3.381 -> 0.608 ms, p99 3.997 -> 0.984 ms;
+  32 producers rise 3706.15 -> 14776.94 ops/s, average 8.631 -> 2.164 ms,
+  p99 13.927 -> 4.448 ms. Cursor checkpoint count is zero in both timed cases.
+  The final release-idempotency checks were added afterward and are verified
+  separately; the second run captures the exact final source.
+- Final-source rerun: `20261023T140634Z/`, exit 0, source unchanged,
+  zero errors/watchdogs, both original gates pass. The runner uses the original
+  script's build-skip switch for unchanged service binaries; `cargo bench`
+  rebuilds the changed benchmark before timing. All seven non-benchmark binary
+  hashes match the full rebuild above. Each workload runs for 10 seconds on
+  the same three-node retained-MemDisk fixture; no competing build/test runs
+  during timing. Source snapshots/hashes, eight binary identities, comparisons,
+  raw phase logs and successful fixture-stop receipts are retained.
+- Final 4 KiB/1T: 295.63 -> 1462.28 ops/s (4.95x), average
+  3.381 -> 0.682 ms, p99 3.997 -> 0.988 ms. Mirror synchronization averages
+  0.643 ms; queue dispatch 3.74 us. Only initial attachment waits for capacity.
+  14624 appends cause zero cursor checkpoints and one directory publication.
+- Final 4 KiB/32T: 3706.15 -> 14776.94 ops/s (3.99x), average
+  8.631 -> 2.163 ms, p99 13.927 -> 4.083 ms. Mirror synchronization averages
+  0.907 ms per batch and queue wait 1.006 ms per request. 147847 appends,
+  8697 batches and two rollovers cause zero cursor checkpoints and three
+  directory publications. Rare capacity/rollover waits remain: 21 samples,
+  maximum 367 ms. Higher throughput now reaches rollover during this workload;
+  do not infer that p99 removes this remaining tail. Keep that optimization
+  separate from the verified removal of ordinary cursor RPCs.
+- T18 remains active: the exact serving assignment still needs propagation
+  into the WAL IO context and assignment-specific unreachable-owner exclusion.
+  The current process-level exclusion is conservative and can wait while the
+  prior process remains live; it does not treat serving-grant expiry alone as
+  permission to recover. Failed-open retry within the same live process also
+  remains fail-closed. Recovery currently requires every current replica's
+  drain; safe exclusion of an unreachable allocation remains future work.
+  These limits and indexed directory/retention work prevent declaring R244
+  complete; they do not reintroduce per-append RPCs.
 
 ## Direct hot-path integration
 
@@ -198,7 +284,7 @@ KV work, with compact locations, incremental directories, and bounded recovery.
   additive. Replay physical reads average 13.626 ms per 8 MiB window, compared
   with 87.673 ms in the rejected same-task read implementation.
 - T20a is complete as the measured removal of directory waits and read/growth
-  amplification. T18/T19/T20 still must replace cursor authority safely; the
+  amplification. The later cursor-free integration is recorded above; the
   indexed directory, bounded historical checkpoints and consumer root pins
   remain unfinished. The unchanged final performance gates remain T26 work.
 
@@ -1848,8 +1934,9 @@ adaptation rather than a new transport or storage engine.
   publish lock-free local append mappings, add an ordered checkpoint/finite view,
   flush WAL recovery proofs, validate cached directory pages once, reuse bounded
   valid chunk layouts and preserve parallel multi-frame reads. Amortize physical
-  growth and initialize new strips concurrently with bounded memory. Keep cursor fencing until T18/T19
-  and cold recovery are complete. Verify affected Stream/WAL/server tests and
+  growth and initialize new strips concurrently with bounded memory. Cursor
+  fencing was retained in this earlier step; the current integration replaces
+  it with process authority and complete-frame recovery. Verify affected Stream/WAL/server tests and
   repeat the unchanged seven-case retained-MemDisk benchmark.
   Files: `lib/crowdb-chunk-stream/src/stream/view.rs`,
   `lib/crowdb-chunk-stream/src/stream/{append,read,worker,publication}.rs`,
@@ -1857,9 +1944,10 @@ adaptation rather than a new transport or storage engine.
   `lib/crowdb-chunk-stream/src/production_chunk/{allocation,growth}.rs`,
   `lib/crowdb-chunk-client/src/chunk/chunk_reader{,/layout_cache}.rs`,
   `lib/crowdb-chunk-kv/src/partition/{journal,split}.rs`.
-- [ ] **T20 — Integrate mirror-completion append**: after T05–T19 dependencies
-  pass, replace `resolve_cursor_advance` and per-batch `publish_state` with
-  synchronized-replica completion and bounded in-memory publication. Keep
+- [ ] **T20 — Finish mirror-completion acceptance**: ordinary append now uses
+  synchronized-replica completion and local publication, with the cursor and
+  directory waits removed. Complete remaining T05–T19 integration and acceptance
+  (particularly indexed bounded publication and exact WAL assignment IO). Keep
   admission, exact ranges, queue accounting, ambiguous outcomes, and watchdog
   ownership intact. Optional checkpoints use time/byte budgets and are disabled
   for the strict append sentinel. Maps to D03/D08, A03/A04/A05/A06. Files:

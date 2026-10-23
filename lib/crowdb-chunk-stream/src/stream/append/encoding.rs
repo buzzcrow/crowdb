@@ -10,7 +10,6 @@ use crowdb_protocol::frame::encode_append_group_views;
 
 pub(super) struct EncodedBatch {
     pub views: Vec<Bytes>,
-    pub checksum: u32,
     pub physical_end: u64,
     pub logical_end: u64,
     pub extents: Vec<Extent>,
@@ -26,7 +25,6 @@ pub(super) fn encode_requests(
     let mut physical = active.acknowledged_cursor;
     let mut logical = logical_begin;
     let mut views = Vec::new();
-    let mut checksum = crc32fast::Hasher::new();
     let mut extents = Vec::with_capacity(requests.len());
     let mut ranges = Vec::with_capacity(requests.len());
     for request in requests {
@@ -55,13 +53,11 @@ pub(super) fn encode_requests(
             .checked_add(u64::from(physical_length))
             .ok_or_else(|| StreamError::InvalidRequest("stream physical tail overflows".into()))?;
         for view in group {
-            checksum.update(&view);
             views.push(view);
         }
     }
     Ok(EncodedBatch {
         views,
-        checksum: checksum.finalize(),
         physical_end: physical,
         logical_end: logical,
         extents,

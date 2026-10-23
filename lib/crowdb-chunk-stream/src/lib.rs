@@ -3,6 +3,7 @@
 
 //! Fenced, mirrored logical byte streams assembled from finite chunks.
 
+mod authority;
 mod directory;
 mod error;
 mod extent_cache;
@@ -19,6 +20,7 @@ mod stream;
 #[cfg(feature = "test-util")]
 pub mod memory;
 
+pub use authority::{StreamOwnerAuthority, StreamWriteContext, StreamWriterSession};
 pub use directory::DirectoryMetadataStore;
 pub use directory::{
     DirectoryChunkRelease, DirectoryCollection, DirectoryCollectionStep, DirectoryIndex, DirectoryKeyScan,
@@ -36,8 +38,8 @@ pub use perf::{register_stream_perf_metrics, stream_perf_metrics};
 pub use production::ProductionStreamRuntime;
 pub use production_chunk::ProductionStreamChunkStore;
 pub use storage::{
-    CursorAdvance, DurableCursor, MirrorStripImage, StreamChunkStore, StreamMetadataStore, StreamMirrorWrite,
-    StreamRegistry, TrimmedChunk,
+    CursorAdvance, DurableCursor, MirrorStripImage, RecoveredStreamTail, StreamChunkStore,
+    StreamMetadataStore, StreamMirrorWrite, StreamRegistry, TrimmedChunk,
 };
 pub use stream::{
     AppendRange, ChunkStream, ReadHint, ReadSegment, StreamConfig, StreamMetadataObservation, StreamReader,

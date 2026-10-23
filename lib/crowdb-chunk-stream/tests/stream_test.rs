@@ -56,7 +56,7 @@ async fn first_append_has_no_timer_and_publishes_only_chunk_attachment() {
 
     assert_eq!((range.begin, range.end), (0, 4));
     assert_eq!(store.chunk_write_count(), 1);
-    assert_eq!(store.cursor_advance_count(), 1);
+    assert_eq!(store.cursor_advance_count(), 0);
     assert_eq!(store.metadata_publish_count(), 2);
     assert_eq!(stream.read_at(0, 4).await.unwrap(), Bytes::from_static(b"abcd"));
 }
@@ -66,11 +66,11 @@ async fn idle_active_chunk_renews_liveness_without_advancing_cursor() {
     let store = Arc::new(MemoryStreamStore::new(64));
     let stream = create_stream(&store, 64, StreamConfig::default()).await;
     stream.append(&[Bytes::from_static(b"idle")]).await.unwrap();
-    assert_eq!(store.cursor_advance_count(), 1);
+    assert_eq!(store.cursor_advance_count(), 0);
     tokio::time::advance(Duration::from_secs(12 * 60)).await;
     tokio::task::yield_now().await;
     assert_eq!(store.liveness_renew_count(), 1);
-    assert_eq!(store.cursor_advance_count(), 1);
+    assert_eq!(store.cursor_advance_count(), 0);
 }
 
 #[tokio::test(start_paused = true)]
@@ -256,7 +256,7 @@ async fn queued_requests_aggregate_after_an_inflight_batch() {
         vec![(1, 2), (2, 3), (3, 4)]
     );
     assert_eq!(store.chunk_write_count(), 3);
-    assert_eq!(store.cursor_advance_count(), 3);
+    assert_eq!(store.cursor_advance_count(), 0);
     assert_eq!(stream.read_at(0, 4).await.unwrap(), Bytes::from_static(b"abcd"));
 }
 
@@ -345,7 +345,7 @@ async fn cross_chunk_read_runs_with_bounded_concurrency_and_ordered_output() {
 }
 
 #[tokio::test]
-async fn ambiguous_cursor_is_resolved_without_resubmission() {
+async fn ambiguous_checkpoint_is_resolved_without_resubmitting_append() {
     let committed_store = Arc::new(MemoryStreamStore::new(32));
     committed_store
         .queue_cursor_outcome(CursorAdvance::Ambiguous, true)
@@ -355,6 +355,8 @@ async fn ambiguous_cursor_is_resolved_without_resubmission() {
         committed.append(&[Bytes::from_static(b"yes")]).await.unwrap().end,
         3
     );
+    assert_eq!(committed_store.cursor_advance_count(), 0);
+    committed.checkpoint().await.unwrap();
     assert_eq!(committed_store.chunk_write_count(), 1);
 
     let absent_store = Arc::new(MemoryStreamStore::new(31));
@@ -372,6 +374,8 @@ async fn ambiguous_cursor_is_resolved_without_resubmission() {
             .begin,
         2
     );
+    assert_eq!(absent_store.cursor_advance_count(), 0);
+    absent.checkpoint().await.unwrap();
     assert_eq!(absent_store.chunk_write_count(), 2);
 }
 
@@ -576,7 +580,18 @@ async fn append_rotates_an_active_chunk_sealed_by_its_writer_lease() {
     let stream = create_stream(&store, 32, StreamConfig::default()).await;
     let first = stream.append(&[Bytes::from_static(b"old")]).await.unwrap();
     let active_chunk = first.chunk_id.unwrap();
-    let physical_end = store.durable_cursor(active_chunk, 9).await.unwrap().offset;
+    let active = store
+        .load_current(stream.stream_name())
+        .await
+        .unwrap()
+        .unwrap()
+        .active
+        .unwrap();
+    let physical_end = store
+        .recover_tail(stream.stream_name(), 9, &active)
+        .await
+        .unwrap()
+        .physical_end;
     store.seal(active_chunk, 9, physical_end).await.unwrap();
 
     let range = stream.append(&[Bytes::from_static(b"new")]).await.unwrap();

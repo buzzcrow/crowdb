@@ -83,7 +83,12 @@ impl ChunkStream {
         }
         if self.closed.load(Ordering::Acquire) {
             let view = self.read_view.load_full();
-            return if view.manifest.closed {
+            return if view.manifest.closed
+                || self
+                    .authority
+                    .as_ref()
+                    .is_some_and(|authority| authority.is_released())
+            {
                 Ok(self.captured(view))
             } else {
                 Err(StreamError::WriteStalled)
@@ -100,6 +105,7 @@ impl ChunkStream {
 
     fn captured(&self, view: Arc<ReadView>) -> Self {
         let mut reader = self.clone();
+        reader.authority = None;
         reader.manifest = Arc::new(ArcSwap::from(Arc::clone(&view.manifest)));
         reader.read_view = Arc::new(ArcSwap::from(view));
         reader.closed = Arc::new(AtomicBool::new(true));

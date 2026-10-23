@@ -22,6 +22,7 @@ impl ProductionStreamChunkStore {
         writer_epoch: u64,
         purpose: StreamPurpose,
     ) -> Result<ActiveChunkDescriptor> {
+        let context = self.owner_context(stream_name, writer_epoch)?;
         if writer_epoch == 0 {
             return Err(StreamError::InvalidRequest(
                 "stream allocation requires a writer epoch".into(),
@@ -54,6 +55,9 @@ impl ProductionStreamChunkStore {
             return Err(StreamError::Corruption(
                 "allocator reused a known stream chunk identity".into(),
             ));
+        }
+        if let Some(context) = &context {
+            context.check_io()?;
         }
         let state = self.install(chunk.clone())?;
         self.initialize_strip(&chunk, &chunk.strips[0]).await?;
@@ -124,9 +128,10 @@ impl ProductionStreamChunkStore {
         }
         let strip_bytes = usize::try_from(STREAM_STRIP_BYTES).expect("bounded stream strip");
         let zeroes = Bytes::from(vec![0; strip_bytes]);
+        let name = StreamName::from_chunk_owner_key(&chunk.owner_key).ok_or(StreamError::StaleWriter)?;
+        let disk_writer = self.owned_disk_writer(self.owner_context(name, chunk.writer_epoch)?);
         let writes = mirror.segments.iter().map(|segment| {
-            self.disk_writer
-                .initialize_synchronized_at_byte_offset(segment, unit_bytes, 0, zeroes.clone())
+            disk_writer.initialize_synchronized_at_byte_offset(segment, unit_bytes, 0, zeroes.clone())
         });
         let results = futures::future::join_all(writes).await;
         for result in results {

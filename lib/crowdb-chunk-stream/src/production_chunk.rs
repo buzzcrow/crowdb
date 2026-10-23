@@ -19,16 +19,17 @@ use crowdb_protocol::chunkdb::rpc::{
     AdvanceChunkWriteRequest, Chunk, ChunkState, DeleteChunkRequest, QueryChunkRequest, SealChunkRequest,
 };
 use crowdb_protocol::common::ChunkId;
-use crowdb_protocol::frame::FrameMagic;
 
 use crate::{
     CursorAdvance, DurableCursor, Result, StreamChunkStore, StreamError, StreamMirrorWrite, TrimmedChunk,
 };
 
 mod allocation;
+mod authority;
 mod cursor;
 mod growth;
 mod progress;
+mod recovery;
 use progress::{admit_write, write_cursor};
 
 struct ChunkStateView {
@@ -56,6 +57,7 @@ pub struct ProductionStreamChunkStore {
     chunk_capacity_bytes: u64,
     failed_disks: Arc<FailedDiskList>,
     chunks: SkipMap<(u64, u64), Arc<ChunkStateView>>,
+    owners: SkipMap<StreamName, (u64, Arc<crate::StreamWriterSession>)>,
 }
 
 impl ProductionStreamChunkStore {
@@ -126,6 +128,7 @@ impl ProductionStreamChunkStore {
             chunk_capacity_bytes,
             failed_disks: Arc::new(FailedDiskList::new(Duration::from_secs(60))),
             chunks: SkipMap::new(),
+            owners: SkipMap::new(),
         })
     }
 
@@ -223,6 +226,9 @@ fn update_state(state: &ChunkStateView, chunk: Chunk) {
 
 #[async_trait]
 impl StreamChunkStore for ProductionStreamChunkStore {
+    fn bind_writer(&self, name: StreamName, epoch: u64, session: Arc<crate::StreamWriterSession>) {
+        self.owners.insert(name, (epoch, session));
+    }
     fn mirror_copies(&self) -> u32 {
         self.mirror_copies
     }
@@ -266,9 +272,17 @@ impl StreamChunkStore for ProductionStreamChunkStore {
         let data_end = admit_write(&state, &chunk, writer_epoch, &write, self.chunk_capacity_bytes)?;
         let physical_offset = write.physical_offset;
         let images = write.images;
+        let context = match write.authority {
+            Some(context) => {
+                context.check_io()?;
+                Some(context.clone())
+            }
+            None => self.owner_context(stream_name, writer_epoch)?,
+        };
+        let disk_writer = self.owned_disk_writer(context);
         let flow = MirrorStripFlow::with_shared_failures(
             Arc::clone(&self.allocator),
-            Arc::clone(&self.disk_writer),
+            disk_writer,
             Arc::clone(&self.failed_disks),
             writer_epoch,
             3,
@@ -401,35 +415,97 @@ impl StreamChunkStore for ProductionStreamChunkStore {
         })
     }
 
+    async fn recover_tail(
+        &self,
+        name: StreamName,
+        epoch: u64,
+        active: &ActiveChunkDescriptor,
+    ) -> Result<crate::RecoveredStreamTail> {
+        self.recover_chunk_tail(name, epoch, active).await
+    }
+
     async fn renew_liveness(&self, chunk_id: ChunkId, writer_epoch: u64) -> Result<()> {
         let state = self.state(chunk_id).await?;
-        let cursor = state.persisted_cursor.load(Ordering::Acquire);
-        let response = self
-            .allocator
-            .advance_chunk_write(AdvanceChunkWriteRequest {
-                chunk_id: Some(chunk_id),
-                writer_epoch,
-                expected_modify_ts: state.modify_ts.load(Ordering::Acquire),
-                acknowledged_cursor: cursor,
-                closed_strip_sequence: None,
-                writer_lease_ms: self.writer_lease_ms,
-            })
-            .await
-            .map_err(io_error)?;
-        let chunk = response
-            .chunk
-            .ok_or_else(|| StreamError::Corruption("liveness renewal returned no chunk".into()))?;
-        if chunk.writer_epoch != writer_epoch || chunk.acknowledged_cursor != cursor {
-            return Err(StreamError::StaleWriter);
+        for _ in 0..3 {
+            let current = state.chunk.load_full();
+            let name =
+                StreamName::from_chunk_owner_key(&current.owner_key).ok_or(StreamError::StaleWriter)?;
+            self.owner_context(name, writer_epoch)?;
+            let result = self
+                .allocator
+                .advance_chunk_write(AdvanceChunkWriteRequest {
+                    chunk_id: Some(chunk_id),
+                    writer_epoch,
+                    expected_modify_ts: current.modify_ts,
+                    acknowledged_cursor: current.acknowledged_cursor,
+                    closed_strip_sequence: None,
+                    writer_lease_ms: self.writer_lease_ms,
+                })
+                .await;
+            match result {
+                Ok(response) => {
+                    let chunk = response.chunk.ok_or_else(|| {
+                        StreamError::Corruption("liveness renewal returned no chunk".into())
+                    })?;
+                    if chunk.writer_epoch != writer_epoch
+                        || chunk.acknowledged_cursor < current.acknowledged_cursor
+                    {
+                        return Err(StreamError::StaleWriter);
+                    }
+                    update_state(&state, chunk);
+                    return Ok(());
+                }
+                Err(crowdb_chunk_client::IoError::MetadataConflict(_)) => {
+                    let chunk = self
+                        .allocator
+                        .query_chunk(QueryChunkRequest {
+                            chunk_id: Some(chunk_id),
+                        })
+                        .await
+                        .map_err(io_error)?
+                        .chunk
+                        .ok_or(StreamError::StaleWriter)?;
+                    if chunk.writer_epoch != writer_epoch
+                        || chunk.state != ChunkState::Active as i32
+                        || chunk.owner_key != current.owner_key
+                    {
+                        return Err(StreamError::StaleWriter);
+                    }
+                    update_state(&state, chunk);
+                }
+                Err(error) => return Err(io_error(error)),
+            }
         }
-        update_state(&state, chunk);
-        Ok(())
+        Err(StreamError::ReadUnavailable(
+            "liveness layout kept changing".into(),
+        ))
     }
 
     async fn seal(&self, chunk_id: ChunkId, writer_epoch: u64, cursor: u64) -> Result<()> {
         let state = self.state(chunk_id).await?;
         if state.chunk.load().writer_epoch > writer_epoch || write_cursor(&state) != cursor {
             return Err(StreamError::StaleWriter);
+        }
+        let chunk = state.chunk.load_full();
+        let name = StreamName::from_chunk_owner_key(&chunk.owner_key).ok_or(StreamError::StaleWriter)?;
+        if let Some(context) = self.owner_context(name, writer_epoch)? {
+            if chunk.state != ChunkState::Sealed as i32 {
+                for strip in &chunk.strips {
+                    let Some(crowdb_protocol::chunkdb::rpc::Strip::MirrorStrip(mirror)) = &strip.strip else {
+                        return Err(StreamError::Corruption(
+                            "stream seal has non-mirror layout".into(),
+                        ));
+                    };
+                    for segment in &mirror.segments {
+                        context.check_io()?;
+                        self.disk_writer
+                            .drain_segment(segment, u64::from(strip.unit_kb) * 1024, context.deadline())
+                            .await
+                            .map_err(io_error)?;
+                    }
+                }
+                context.check_io()?;
+            }
         }
         let response = self
             .allocator
@@ -480,13 +556,14 @@ impl StreamChunkStore for ProductionStreamChunkStore {
         physical_offset: u64,
         length: usize,
     ) -> Result<Bytes> {
+        let state = self.state(chunk_id).await?;
         self.reader
-            .read_verified_frame(
+            .read_synchronized_stream_frame(
                 chunk_id,
                 physical_offset,
                 u64::try_from(length)
-                    .map_err(|_| StreamError::InvalidRequest("chunk frame length exceeds u64".into()))?,
-                FrameMagic::StreamV2,
+                    .map_err(|_| StreamError::InvalidRequest("frame length exceeds u64".into()))?,
+                state.synchronized_cursor.load(Ordering::Acquire),
             )
             .await
             .map_err(read_error)

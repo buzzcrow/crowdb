@@ -212,6 +212,40 @@ impl DiskWriter for RoutedDiskWriter {
             .map_err(map_write_error)
     }
 
+    async fn write_synchronized_views_until(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        offset: u64,
+        data: Vec<Bytes>,
+        deadline: std::time::Instant,
+    ) -> Result<()> {
+        let target = Self::target(seg, unit_bytes)?;
+        let mut options = self.client.normal_options();
+        options.deadline = options.deadline.min(deadline);
+        self.client
+            .write_views(target, offset, data, Durability::Fsync, options)
+            .await
+            .map_err(map_write_error)
+    }
+
+    async fn initialize_synchronized_until(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        offset: u64,
+        data: Bytes,
+        deadline: std::time::Instant,
+    ) -> Result<()> {
+        let target = Self::target(seg, unit_bytes)?;
+        let mut options = self.client.normal_options().without_write_retries();
+        options.deadline = options.deadline.min(deadline);
+        self.client
+            .write(target, offset, data, Durability::Fsync, options)
+            .await
+            .map_err(map_write_error)
+    }
+
     async fn write_priority_at_byte_offset(
         &self,
         seg: &Segment,

@@ -91,6 +91,7 @@ async fn bytes_beyond_the_complete_range_are_rejected_before_consuming_the_fresh
                 9,
                 active.chunk_id,
                 crowdb_chunk_stream::StreamMirrorWrite {
+                    authority: None,
                     physical_offset: 0,
                     complete_end: end,
                     images: &[image],
@@ -138,6 +139,7 @@ async fn exact_hard_capacity_needs_no_extra_header() {
             9,
             active.chunk_id,
             crowdb_chunk_stream::StreamMirrorWrite {
+                authority: None,
                 physical_offset: 0,
                 complete_end: end,
                 images: &[image],
@@ -187,10 +189,7 @@ async fn cross_strip_tail_header_survives_later_growth_and_the_next_append() {
     let range = stream.append(std::slice::from_ref(&prefix)).await.unwrap();
     let chunk_id = range.chunk_id.unwrap();
     let complete_end = 1024 * 1024 - 7;
-    assert_eq!(
-        chunks.durable_cursor(chunk_id, 9).await.unwrap().offset,
-        complete_end
-    );
+    assert_eq!(chunks.durable_cursor(chunk_id, 9).await.unwrap().offset, 0);
     assert_eq!(chunks.current_capacity(chunk_id).await.unwrap(), 8 * 1024 * 1024);
     assert_eq!(observed_end(&allocator, &disks, name).await, complete_end);
     let publications = metadata.metadata_publish_count();
@@ -208,6 +207,13 @@ async fn cross_strip_tail_header_survives_later_growth_and_the_next_append() {
         Bytes::from_static(b"next")
     );
     assert_eq!(observed_end(&allocator, &disks, name).await, complete_end + 51);
+    assert_eq!(allocator.advance_calls.load(Ordering::Acquire), 0);
+    stream.checkpoint().await.unwrap();
+    assert_eq!(
+        chunks.durable_cursor(chunk_id, 9).await.unwrap().offset,
+        complete_end + 51
+    );
+    assert_eq!(allocator.advance_calls.load(Ordering::Acquire), 1);
 }
 
 #[tokio::test]
@@ -235,6 +241,7 @@ async fn failed_empty_initialization_cannot_expose_a_writable_allocation() {
             9,
             chunk.id.unwrap(),
             crowdb_chunk_stream::StreamMirrorWrite {
+                authority: None,
                 physical_offset: 0,
                 complete_end: end,
                 images: &[image],
@@ -292,6 +299,7 @@ async fn uncertain_growth_initialization_cannot_be_retried_or_written() {
             9,
             active.chunk_id,
             crowdb_chunk_stream::StreamMirrorWrite {
+                authority: None,
                 physical_offset: end,
                 complete_end: end + complete_end,
                 images: &[image],

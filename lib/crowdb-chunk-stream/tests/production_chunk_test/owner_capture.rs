@@ -78,4 +78,68 @@ async fn runtime_captures_local_owner_and_identifies_older_remote_checkpoint() {
     assert_eq!(owner.open_read_only_current(name, 0).await.unwrap().tail(), 11);
     writer.close().await.unwrap();
     assert_eq!(owner.open_read_only(name, 0, 1).await.unwrap().tail(), 11);
+    let successor = owner.registry().claim_writer(name, 2).await.unwrap();
+    writer.release_writer().await.unwrap();
+    successor.capture().unwrap().check_io().unwrap();
+    successor.release().await.unwrap();
+}
+
+#[tokio::test]
+async fn owner_claim_is_exclusive_and_an_old_release_cannot_release_its_successor() {
+    let (_server, kv) = runtime_kv().await;
+    let registry = crowdb_chunk_stream::KvStreamRegistry::new(kv);
+    let name = StreamName::generate();
+    registry
+        .create(StreamBinding {
+            state: StreamBindingState::Active,
+            ..StreamBinding::creating(name, None, StreamPurpose::Stream)
+        })
+        .await
+        .unwrap();
+    let first = registry.claim_writer(name, 1).await.unwrap();
+    assert!(matches!(
+        registry.claim_writer(name, 1).await,
+        Err(crowdb_chunk_stream::StreamError::StaleWriter)
+    ));
+    first.release().await.unwrap();
+    let (a, b) = tokio::join!(registry.claim_writer(name, 1), registry.claim_writer(name, 1));
+    assert_ne!(a.is_ok(), b.is_ok(), "only one concurrent claim can win");
+    let successor = a.or(b).unwrap();
+    assert!(
+        first.release().await.is_err(),
+        "an old assignment cannot release its successor even at the same epoch"
+    );
+    successor.capture().unwrap().check_io().unwrap();
+    assert!(registry.claim_writer(name, 2).await.is_err());
+    successor.release().await.unwrap();
+    registry
+        .claim_writer(name, 2)
+        .await
+        .unwrap()
+        .release()
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn drained_release_allows_another_runtime_to_take_over_without_waiting_for_process_expiry() {
+    let (_server, kv) = runtime_kv().await;
+    let first = crowdb_chunk_stream::KvStreamRegistry::new(kv.clone());
+    let second = crowdb_chunk_stream::KvStreamRegistry::new(kv);
+    let name = StreamName::generate();
+    first
+        .create(StreamBinding {
+            state: StreamBindingState::Active,
+            ..StreamBinding::creating(name, None, StreamPurpose::Stream)
+        })
+        .await
+        .unwrap();
+    let old = first.claim_writer(name, 1).await.unwrap();
+    old.release().await.unwrap();
+    let new = tokio::time::timeout(std::time::Duration::from_secs(1), second.claim_writer(name, 2))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(old.capture().is_err());
+    new.release().await.unwrap();
 }

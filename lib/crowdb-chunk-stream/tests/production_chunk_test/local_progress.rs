@@ -49,6 +49,7 @@ async fn configured_replica_count_cannot_silently_accept_a_two_copy_layout() {
                 9,
                 active.chunk_id,
                 crowdb_chunk_stream::StreamMirrorWrite {
+                    authority: None,
                     physical_offset: 0,
                     complete_end,
                     images: &[MirrorStripImage {
@@ -170,6 +171,7 @@ async fn a_grouped_chunk_rejects_removed_magic_after_synchronized_progress() {
                 9,
                 active.chunk_id,
                 crowdb_chunk_stream::StreamMirrorWrite {
+                    authority: None,
                     physical_offset: offset,
                     complete_end: offset + legacy.len() as u64,
                     images: &[MirrorStripImage {
@@ -230,6 +232,7 @@ async fn a_cold_adapter_cannot_overwrite_the_previous_owners_uncheckpointed_grou
             9,
             active.chunk_id,
             crowdb_chunk_stream::StreamMirrorWrite {
+                authority: None,
                 physical_offset: 0,
                 complete_end,
                 images: &[MirrorStripImage {

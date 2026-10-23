@@ -1211,38 +1211,6 @@ impl Partition {
         &self.metrics
     }
 
-    /// Stops a transfer source after all previously admitted work completes.
-    ///
-    /// # Errors
-    ///
-    /// Returns a stale-epoch or incompatible-lifecycle error.
-    pub async fn suspend_for_transfer(&self, ownership_epoch: u64) -> Result<()> {
-        self.validate_epoch(ownership_epoch)?;
-        match self.lifecycle.compare_exchange(
-            lifecycle_code(PartitionLifecycle::Serving),
-            lifecycle_code(PartitionLifecycle::TransferFencing),
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
-            Ok(_) => {}
-            Err(observed) if lifecycle_from_code(observed) == PartitionLifecycle::TransferFencing => {}
-            Err(observed) if lifecycle_from_code(observed) == PartitionLifecycle::TransferQuiesced => {}
-            Err(observed) => return Err(write_state_error(lifecycle_from_code(observed))),
-        }
-        self.wait_for_admitted_mutations().await;
-        match self.lifecycle.compare_exchange(
-            lifecycle_code(PartitionLifecycle::TransferFencing),
-            lifecycle_code(PartitionLifecycle::TransferQuiesced),
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
-            Ok(_) => {}
-            Err(observed) if lifecycle_from_code(observed) == PartitionLifecycle::TransferQuiesced => {}
-            Err(observed) => return Err(write_state_error(lifecycle_from_code(observed))),
-        }
-        Ok(())
-    }
-
     /// Starts or idempotently resumes one exact split plan while writes continue.
     ///
     /// # Errors

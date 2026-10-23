@@ -15,19 +15,19 @@ async fn service_perf_log_flushes_registered_stream_histograms_on_shutdown() {
         .registry()
         .lock()
         .unwrap()
-        .snapshot_named("stream.append.cursor.lh", 1.0)
+        .snapshot_named("stream.checkpoint.cursor.lh", 1.0)
         .is_some());
     runner
         .registry()
         .lock()
         .unwrap()
-        .register_histogram("stream.append.cursor.lh")
+        .register_histogram("stream.checkpoint.cursor.lh")
         .observe(2_000_000);
     runner.stop().await;
     let entry = std::fs::read_dir(dir.path()).unwrap().next().unwrap().unwrap();
     let log = std::fs::read_to_string(entry.path()).unwrap();
     assert!(
-        log.contains("stream.append.cursor.lh"),
+        log.contains("stream.checkpoint.cursor.lh"),
         "missing stream phase: {log}"
     );
     assert!(log.contains("p50(us)"));

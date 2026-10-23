@@ -122,23 +122,15 @@ async fn check_tail(advance: bool, corrupt: bool) {
         assert!(matches!(reopened, Err(StreamError::Corruption(_))));
         return;
     }
-    if !advance {
-        assert!(matches!(reopened, Err(StreamError::Corruption(_))));
-        assert!(!store_for_retention_check.is_released(active.chunk_id).await);
-        assert_eq!(
-            store_for_retention_check
-                .synchronized_bytes_for_tests(active.chunk_id)
-                .await,
-            retained_bytes
-        );
-        assert_eq!(
-            store_for_retention_check.load_current(name).await.unwrap(),
-            Some(published)
-        );
-        return;
-    }
     let reopened = reopened.unwrap();
-    let expected = if advance { &b"oldnew"[..] } else { &b"old"[..] };
+    let expected = &b"oldnew"[..];
+    assert!(!store_for_retention_check.is_released(active.chunk_id).await);
+    assert_eq!(
+        store_for_retention_check
+            .synchronized_bytes_for_tests(active.chunk_id)
+            .await,
+        retained_bytes
+    );
     assert_eq!(reopened.tail(), u64::try_from(expected.len()).unwrap());
     assert_eq!(reopened.read_at(0, expected.len()).await.unwrap(), expected);
     assert!(writer.append(&[Bytes::from_static(b"stale")]).await.is_err());

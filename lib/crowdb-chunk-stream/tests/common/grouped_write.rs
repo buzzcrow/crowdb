@@ -38,6 +38,7 @@ impl TestGroupedStrip {
                 epoch,
                 chunk,
                 crowdb_chunk_stream::StreamMirrorWrite {
+                    authority: None,
                     physical_offset: offset,
                     complete_end,
                     images: &[MirrorStripImage {

@@ -30,6 +30,7 @@ async fn a_small_waiting_append_uses_a_smaller_growth_window() {
             9,
             active.chunk_id,
             crowdb_chunk_stream::StreamMirrorWrite {
+                authority: None,
                 physical_offset: 0,
                 complete_end: end,
                 images: &[MirrorStripImage {

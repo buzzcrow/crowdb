@@ -33,6 +33,12 @@ pub struct DurableCursor {
     pub sealed: bool,
 }
 
+pub struct RecoveredStreamTail {
+    pub physical_end: u64,
+    pub logical_end: u64,
+    pub extents: Vec<crowdb_protocol::frame::ScannedFrameExtent>,
+}
+
 #[derive(Clone)]
 pub struct MirrorStripImage {
     pub block_offset: u64,
@@ -44,6 +50,7 @@ pub struct MirrorStripImage {
 /// Image data never extends beyond the complete boundary, including on retries.
 #[derive(Clone, Copy)]
 pub struct StreamMirrorWrite<'a> {
+    pub authority: Option<&'a crate::StreamWriteContext>,
     pub physical_offset: u64,
     pub complete_end: u64,
     pub images: &'a [MirrorStripImage],
@@ -53,6 +60,11 @@ pub struct StreamMirrorWrite<'a> {
 pub trait StreamRegistry: Send + Sync {
     async fn load(&self, stream_name: StreamName) -> Result<Option<StreamBinding>>;
     async fn create(&self, binding: StreamBinding) -> Result<()>;
+    async fn claim_writer(
+        &self,
+        name: StreamName,
+        epoch: u64,
+    ) -> Result<std::sync::Arc<crate::StreamWriterSession>>;
 }
 
 #[async_trait]
@@ -86,6 +98,7 @@ pub trait StreamMetadataStore: Send + Sync {
 pub trait StreamChunkStore: Send + Sync {
     /// Required synchronized replica count for append traffic accounting.
     fn mirror_copies(&self) -> u32;
+    fn bind_writer(&self, name: StreamName, epoch: u64, session: std::sync::Arc<crate::StreamWriterSession>);
     /// Current physical capacity from the chunk layer, independent of a cached
     /// Stream checkpoint.
     /// # Errors
@@ -129,6 +142,14 @@ pub trait StreamChunkStore: Send + Sync {
         checksum: u32,
     ) -> Result<CursorAdvance>;
     async fn durable_cursor(&self, chunk_id: ChunkId, writer_epoch: u64) -> Result<DurableCursor>;
+    /// Scan complete groups beyond the last checkpoint after excluding the old
+    /// producer. Failed IO cannot be interpreted as an empty physical suffix.
+    async fn recover_tail(
+        &self,
+        name: StreamName,
+        writer_epoch: u64,
+        active: &ActiveChunkDescriptor,
+    ) -> Result<RecoveredStreamTail>;
     /// Renews the one Active-chunk liveness task without advancing its cursor.
     async fn renew_liveness(&self, chunk_id: ChunkId, writer_epoch: u64) -> Result<()>;
     async fn seal(&self, chunk_id: ChunkId, writer_epoch: u64, cursor: u64) -> Result<()>;

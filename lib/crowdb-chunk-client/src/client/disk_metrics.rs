@@ -129,6 +129,48 @@ impl DiskWriter for MetricsDiskWriter {
         result
     }
 
+    async fn write_synchronized_views_until(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        offset: u64,
+        data: Vec<Bytes>,
+        deadline: std::time::Instant,
+    ) -> Result<()> {
+        let bytes = data.iter().map(|view| view.len() as u64).sum();
+        let mut operation = self.metrics.diskio_write.start();
+        let result = self
+            .inner
+            .write_synchronized_views_until(seg, unit_bytes, offset, data, deadline)
+            .await;
+        if result.is_ok() {
+            self.metrics.diskio_write_bytes.observe(bytes);
+            operation.mark_success();
+        }
+        result
+    }
+
+    async fn initialize_synchronized_until(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        offset: u64,
+        data: Bytes,
+        deadline: std::time::Instant,
+    ) -> Result<()> {
+        let bytes = data.len() as u64;
+        let mut operation = self.metrics.diskio_write.start();
+        let result = self
+            .inner
+            .initialize_synchronized_until(seg, unit_bytes, offset, data, deadline)
+            .await;
+        if result.is_ok() {
+            self.metrics.diskio_write_bytes.observe(bytes);
+            operation.mark_success();
+        }
+        result
+    }
+
     async fn write_priority_at_byte_offset(
         &self,
         seg: &Segment,

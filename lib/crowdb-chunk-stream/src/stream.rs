@@ -23,8 +23,10 @@ use crate::{Result, StreamError};
 
 mod append;
 mod capacity;
+mod checkpoint;
 mod liveness;
 mod observation;
+mod open;
 mod preparation;
 mod publication;
 mod read;
@@ -141,6 +143,7 @@ pub enum ReadHint {
 
 struct AppendRequest {
     data: Bytes,
+    authority: crate::StreamWriteContext,
     enqueued_at: Instant,
     completion: oneshot::Sender<Result<AppendRange>>,
 }
@@ -167,10 +170,12 @@ enum Command {
         completion: oneshot::Sender<Result<u64>>,
     },
     Close(oneshot::Sender<Result<()>>),
+    Release(oneshot::Sender<Result<()>>),
 }
 
 #[derive(Clone)]
 pub struct ChunkStream {
+    authority: Option<Arc<crate::StreamWriterSession>>,
     stream_name: StreamName,
     writer_epoch: u64,
     config: Arc<StreamConfig>,
@@ -198,6 +203,7 @@ struct Extent {
 }
 
 struct WorkerState {
+    authority: Option<Arc<crate::StreamWriterSession>>,
     stream_name: StreamName,
     writer_epoch: u64,
     config: Arc<StreamConfig>,
@@ -212,9 +218,12 @@ struct WorkerState {
     manifest: StreamManifest,
     extents: Vec<Extent>,
     mirror_shadow: MirrorShadow,
+    checkpoint: Option<checkpoint::PendingCheckpoint>,
     capacity_preparation: Option<preparation::CapacityPreparation>,
     capacity_failure: Option<(ChunkId, StreamError)>,
     capacity_exhausted: Option<ChunkId>,
+    liveness_failed: Arc<AtomicBool>,
+    liveness_changed: Arc<tokio::sync::Notify>,
     stalled: bool,
     last_unavailable_log: Option<Instant>,
     metrics: Arc<StreamMetrics>,
@@ -238,193 +247,6 @@ impl ChunkStream {
     #[must_use]
     pub fn stream_name(&self) -> StreamName {
         self.stream_name
-    }
-
-    /// Creates and publishes a new registered stream.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed storage, validation, fencing, or duplicate-name error.
-    pub async fn create(
-        binding: StreamBinding,
-        writer_epoch: u64,
-        config: StreamConfig,
-        registry: Arc<dyn StreamRegistry>,
-        metadata: Arc<dyn StreamMetadataStore>,
-        chunks: Arc<dyn StreamChunkStore>,
-    ) -> Result<Self> {
-        config.validate()?;
-        if binding.state != StreamBindingState::Active
-            || binding.metadata_group_id == 0
-            || binding.binding_generation == 0
-            || writer_epoch == 0
-        {
-            return Err(StreamError::InvalidRequest(
-                "stream binding or writer epoch is invalid".into(),
-            ));
-        }
-        if registry.load(binding.stream_name).await?.is_some() {
-            return Err(StreamError::InvalidRequest("stream already exists".into()));
-        }
-        registry.create(binding.clone()).await?;
-        Self::initialize(binding, writer_epoch, config, metadata, chunks).await
-    }
-
-    /// Initializes stream metadata for an active binding already published by
-    /// the control plane.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed error if the binding is absent or inactive, metadata
-    /// already exists, or initial metadata publication fails.
-    pub async fn create_registered(
-        stream_name: StreamName,
-        writer_epoch: u64,
-        config: StreamConfig,
-        registry: Arc<dyn StreamRegistry>,
-        metadata: Arc<dyn StreamMetadataStore>,
-        chunks: Arc<dyn StreamChunkStore>,
-    ) -> Result<Self> {
-        config.validate()?;
-        let binding = registry
-            .load(stream_name)
-            .await?
-            .ok_or_else(|| StreamError::InvalidRequest("stream binding does not exist".into()))?;
-        if binding.state != StreamBindingState::Active
-            || binding.metadata_group_id == 0
-            || binding.binding_generation == 0
-            || writer_epoch == 0
-        {
-            return Err(StreamError::InvalidRequest(
-                "stream binding or writer epoch is invalid".into(),
-            ));
-        }
-        if metadata.load_current(stream_name).await?.is_some() {
-            return Err(StreamError::InvalidRequest(
-                "stream metadata already exists".into(),
-            ));
-        }
-        Self::initialize(binding, writer_epoch, config, metadata, chunks).await
-    }
-
-    async fn initialize(
-        binding: StreamBinding,
-        writer_epoch: u64,
-        config: StreamConfig,
-        metadata: Arc<dyn StreamMetadataStore>,
-        chunks: Arc<dyn StreamChunkStore>,
-    ) -> Result<Self> {
-        let manifest = StreamManifest {
-            purpose: binding.purpose,
-            stream_name: binding.stream_name,
-            metadata_group_id: binding.metadata_group_id,
-            writer_epoch,
-            generation: 1,
-            trim_offset: 0,
-            sealed_tail: 0,
-            active: None,
-            extent_pages: Vec::new(),
-            previous_generation: None,
-            closed: false,
-        };
-        metadata.publish(None, manifest.clone(), Vec::new()).await?;
-        Self::start(config, metadata, chunks, manifest, Vec::new(), &[])
-    }
-
-    /// Opens an existing stream and recovers its durable active cursor.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed storage, corruption, or stale-writer error.
-    pub async fn open(
-        stream_name: StreamName,
-        writer_epoch: u64,
-        config: StreamConfig,
-        registry: Arc<dyn StreamRegistry>,
-        metadata: Arc<dyn StreamMetadataStore>,
-        chunks: Arc<dyn StreamChunkStore>,
-    ) -> Result<Self> {
-        config.validate()?;
-        let binding = registry
-            .load(stream_name)
-            .await?
-            .ok_or_else(|| StreamError::InvalidRequest("stream binding does not exist".into()))?;
-        if binding.state != StreamBindingState::Active {
-            return Err(StreamError::InvalidRequest("stream binding is not active".into()));
-        }
-        let mut manifest = metadata
-            .load_current(stream_name)
-            .await?
-            .ok_or_else(|| StreamError::Corruption("stream manifest does not exist".into()))?;
-        if manifest.purpose != binding.purpose {
-            return Err(StreamError::Corruption(
-                "stream binding purpose differs from manifest".into(),
-            ));
-        }
-        if manifest.metadata_group_id != binding.metadata_group_id || manifest.writer_epoch > writer_epoch {
-            return Err(StreamError::StaleWriter);
-        }
-        let pages = load_extent_pages(metadata.as_ref(), &manifest).await?;
-        validate_manifest(&manifest, &pages)?;
-        let expected = (manifest.writer_epoch, manifest.generation);
-        let mut needs_publish = manifest.writer_epoch < writer_epoch;
-        let mut rotate_active = false;
-        let mut extents = collect_extents(&pages);
-        let mut tail = manifest.sealed_tail;
-        if let Some(active) = &mut manifest.active {
-            let durable = chunks.durable_cursor(active.chunk_id, writer_epoch).await?;
-            active.capacity = chunks.current_capacity(active.chunk_id).await?;
-            if durable.offset < active.physical_start || durable.offset > active.capacity {
-                return Err(StreamError::Corruption(
-                    "recovered active cursor is outside chunk bounds".into(),
-                ));
-            }
-            if durable.offset < active.acknowledged_cursor {
-                return Err(StreamError::Corruption(
-                    "recovered active cursor precedes its published cursor".into(),
-                ));
-            }
-            tail = recovery::recover_active_frames(chunks.as_ref(), active, durable.offset, &mut extents)
-                .await?;
-            if !durable.sealed {
-                chunks.seal(active.chunk_id, writer_epoch, durable.offset).await?;
-            }
-            active.acknowledged_cursor = durable.offset;
-            rotate_active = true;
-        }
-        manifest.writer_epoch = writer_epoch;
-        if rotate_active {
-            manifest.active.take();
-            manifest.sealed_tail = tail;
-            let mut successor = chunks
-                .allocate_mirrored(stream_name, writer_epoch, manifest.purpose)
-                .await?;
-            successor.logical_start = tail;
-            manifest.active = Some(successor);
-            needs_publish = true;
-        }
-        if needs_publish {
-            manifest.previous_generation = Some(manifest.generation);
-            manifest.generation = manifest
-                .generation
-                .checked_add(1)
-                .ok_or_else(|| StreamError::Corruption("manifest generation overflows".into()))?;
-            let adopted_pages = build_extent_pages(
-                &extents,
-                manifest.stream_name,
-                writer_epoch,
-                manifest.generation,
-                config.extent_page_entries,
-            );
-            manifest.extent_pages = fences_for(&adopted_pages);
-            validate_manifest(&manifest, &adopted_pages)?;
-            metadata
-                .publish(Some(expected), manifest.clone(), adopted_pages)
-                .await?;
-        }
-        let stream = Self::start(config, metadata, chunks, manifest, extents, &pages)?;
-        stream.tail.store(tail, Ordering::Release);
-        Ok(stream)
     }
 
     /// Opens one immutable view at the exact current writer epoch.
@@ -492,6 +314,7 @@ impl ChunkStream {
             manifest,
             collect_extents(&pages),
             &pages,
+            None,
         )?;
         stream.closed.store(true, Ordering::Release);
         stream.view_source = StreamViewSource::PersistedCheckpoint;
@@ -505,6 +328,7 @@ impl ChunkStream {
         manifest: StreamManifest,
         extents: Vec<Extent>,
         pages: &[StreamExtentPage],
+        authority: Option<Arc<crate::StreamWriterSession>>,
     ) -> Result<Self> {
         let (sender, receiver) = mpsc::channel(config.queue_requests);
         let config = Arc::new(config);
@@ -518,6 +342,7 @@ impl ChunkStream {
         perf();
         let extent_cache = Arc::new(ExtentPageCache::new(&manifest, pages));
         let state = WorkerState {
+            authority: authority.clone(),
             stream_name: manifest.stream_name,
             writer_epoch: manifest.writer_epoch,
             config: Arc::clone(&config),
@@ -532,15 +357,21 @@ impl ChunkStream {
             manifest,
             extents,
             mirror_shadow: MirrorShadow::default(),
+            checkpoint: None,
             capacity_preparation: None,
             capacity_failure: None,
             capacity_exhausted: None,
+            liveness_failed: Arc::new(AtomicBool::new(false)),
+            liveness_changed: Arc::new(tokio::sync::Notify::new()),
             stalled: false,
             last_unavailable_log: None,
             metrics: Arc::clone(&metrics),
         };
-        tokio::spawn(run_worker(state, receiver));
+        if authority.is_some() {
+            tokio::spawn(run_worker(state, receiver));
+        }
         Ok(Self {
+            authority,
             stream_name: state_name(&manifest_view),
             writer_epoch: state_epoch(&manifest_view),
             config,
@@ -559,13 +390,43 @@ impl ChunkStream {
         })
     }
 
+    pub(crate) fn writer_context(&self) -> Result<crate::StreamWriteContext> {
+        self.authority
+            .as_ref()
+            .ok_or(StreamError::WriteStalled)?
+            .capture()
+    }
+
+    /// Stop admission, drain and checkpoint before durably releasing this owner.
+    /// # Errors
+    /// Returns a fencing, checkpoint or release error; an error is not a release proof.
+    pub async fn release_writer(&self) -> Result<()> {
+        if self
+            .authority
+            .as_ref()
+            .is_some_and(|authority| authority.is_released())
+        {
+            return Ok(());
+        }
+        if self.authority.is_none() {
+            return Err(StreamError::WriteStalled);
+        }
+        self.closed.store(true, Ordering::Release);
+        let (completion, result) = oneshot::channel();
+        self.sender
+            .send(Command::Release(completion))
+            .await
+            .map_err(|_| StreamError::WriteStalled)?;
+        result.await.map_err(|_| StreamError::WriteStalled)?
+    }
+
     /// Returns the synchronized logical end visible to this handle.
     #[must_use]
     pub fn tail(&self) -> u64 {
         self.read_view.load().end()
     }
 
-    /// Appends one logical request after its mirror data and cursor are durable.
+    /// Appends one logical request after every required mirror is synchronized.
     ///
     /// # Errors
     ///
@@ -574,6 +435,7 @@ impl ChunkStream {
         if self.closed.load(Ordering::Acquire) {
             return Err(StreamError::WriteStalled);
         }
+        let authority = self.writer_context()?;
         let length = buffers
             .iter()
             .try_fold(0_usize, |total, bytes| total.checked_add(bytes.len()))
@@ -607,6 +469,7 @@ impl ChunkStream {
             .sender
             .try_send(Command::Append(AppendRequest {
                 data,
+                authority,
                 enqueued_at: Instant::now(),
                 completion,
             }))
@@ -675,6 +538,7 @@ impl ChunkStream {
         if self.closed.load(Ordering::Acquire) {
             return Err(StreamError::WriteStalled);
         }
+        let authority = self.writer_context()?;
         let length = data.len();
         if length == 0 || length > self.config.max_append_bytes {
             return Err(StreamError::InvalidRequest("append length is invalid".into()));
@@ -691,6 +555,7 @@ impl ChunkStream {
             .sender
             .try_send(Command::Append(AppendRequest {
                 data,
+                authority,
                 enqueued_at: Instant::now(),
                 completion,
             }))
@@ -740,6 +605,14 @@ impl ChunkStream {
                 "metadata reclaim watermark is outside retained generations".into(),
             ));
         }
+        if self
+            .authority
+            .as_ref()
+            .is_some_and(|authority| authority.is_released())
+        {
+            return Ok(0);
+        }
+        self.writer_context()?;
         self.metadata
             .reclaim_extent_pages_before(self.stream_name, retained_generation, max_pages)
             .await

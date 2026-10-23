@@ -38,3 +38,27 @@ impl TextKey for StreamProcessLeaseKey {
         })
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StreamWriterOwnerKey {
+    pub stream_name: crate::chunk_stream::StreamName,
+}
+
+impl TextKey for StreamWriterOwnerKey {
+    const PATH_MAGIC: &'static str = "/stream-owner";
+    const PATH_TYPE: &'static str = "writer";
+    fn encode_to_path(&self, out: &mut String) {
+        encode_path_header(out, Self::PATH_MAGIC, Self::PATH_TYPE);
+        encode_path_u64(out, self.stream_name.high);
+        encode_path_u64(out, self.stream_name.low);
+    }
+    fn decode_path(parts: &[&str]) -> Result<Self, KeyError> {
+        check_path_exact(parts, 2)?;
+        Ok(Self {
+            stream_name: crate::chunk_stream::StreamName {
+                high: decode_path_u64(parts[0])?,
+                low: decode_path_u64(parts[1])?,
+            },
+        })
+    }
+}

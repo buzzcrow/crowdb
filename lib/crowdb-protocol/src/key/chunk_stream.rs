@@ -19,7 +19,7 @@ mod span;
 pub use directory::{
     StreamDirectoryControlKey, StreamDirectoryPageKey, StreamDirectoryRootKey, StreamPublicationGuardKey,
 };
-pub use ownership::StreamProcessLeaseKey;
+pub use ownership::{StreamProcessLeaseKey, StreamWriterOwnerKey};
 pub use pin::StreamRootPinKey;
 pub use span::StreamSealedChunkSpanKey;
 

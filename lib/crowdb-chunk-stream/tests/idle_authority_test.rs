@@ -73,7 +73,7 @@ async fn assert_retired_idle_writer(new_epoch: u64) {
     assert_eq!(store.load_current(name).await.unwrap(), head);
     assert_eq!(
         old.append(&[Bytes::from_static(b"stale")]).await,
-        Err(StreamError::WriteStalled)
+        Err(StreamError::StaleWriter)
     );
     new.append(&[Bytes::from_static(b"new")]).await.unwrap();
     assert_eq!(new.read_at(0, 6).await.unwrap(), Bytes::from_static(b"oldnew"));

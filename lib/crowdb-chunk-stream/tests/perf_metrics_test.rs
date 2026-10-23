@@ -32,13 +32,18 @@ async fn stream_stages_appear_in_perf_output_and_survive_window_flushes() {
     .unwrap();
     stream.append(&[Bytes::from_static(b"sample")]).await.unwrap();
     assert_eq!(stream.read_at(0, 6).await.unwrap(), Bytes::from_static(b"sample"));
+    assert!(matches!(
+        registry.snapshot_named("stream.checkpoint.cursor.lh", 1.0),
+        Some(MetricPoint::Histogram { count: 0, .. })
+    ));
+    stream.checkpoint().await.unwrap();
     for name in [
         "stream.append.e2e.lh",
         "stream.append.queue.lh",
         "stream.capacity.wait.lh",
         "stream.append.encode.lh",
         "stream.append.mirror.lh",
-        "stream.append.cursor.lh",
+        "stream.checkpoint.cursor.lh",
         "stream.append.local_view.lh",
         "stream.read.e2e.lh",
         "stream.read.plan.lh",
@@ -56,7 +61,7 @@ async fn stream_stages_appear_in_perf_output_and_survive_window_flushes() {
     let mut output = Vec::new();
     registry.flush(&mut output, 1.0, "test");
     let text = String::from_utf8(output).unwrap();
-    assert_eq!(text.matches("stream.append.cursor.lh").count(), 1);
+    assert_eq!(text.matches("stream.checkpoint.cursor.lh").count(), 1);
     assert!(text.contains("stream.metadata.publish.lh"));
     assert!(matches!(
         registry.snapshot_named("stream.append.e2e.lh", 1.0),

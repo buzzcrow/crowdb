@@ -10,7 +10,10 @@ use std::sync::Arc;
 use bytes::{Buf, BytesMut};
 use tokio::sync::oneshot;
 
-use super::{MutationRequest, PartitionJournal, PreparedSplitWriterArtifact};
+use super::{
+    lifecycle_code, lifecycle_from_code, write_state_error, MutationRequest, PartitionJournal,
+    PreparedSplitWriterArtifact,
+};
 use crate::{
     canonical_operation_digest, ChunkKvError, JournalPosition, MutationOperation, MutationResponse,
     MutationResult, PartitionLifecycle, RequestId, Result, WalRecord,
@@ -456,5 +459,42 @@ impl super::Partition {
             .await
             .map_err(|_| ChunkKvError::WriteStalled)?;
         response.await.map_err(|_| ChunkKvError::WriteStalled)?
+    }
+}
+
+impl super::Partition {
+    /// Stops a transfer source after all previously admitted work completes.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stale-epoch or incompatible-lifecycle error.
+    pub async fn suspend_for_transfer(&self, ownership_epoch: u64) -> Result<()> {
+        self.validate_epoch(ownership_epoch)?;
+        match self.lifecycle.compare_exchange(
+            lifecycle_code(PartitionLifecycle::Serving),
+            lifecycle_code(PartitionLifecycle::TransferFencing),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => {}
+            Err(observed) if lifecycle_from_code(observed) == PartitionLifecycle::TransferFencing => {}
+            Err(observed) if lifecycle_from_code(observed) == PartitionLifecycle::TransferQuiesced => {
+                return Ok(())
+            }
+            Err(observed) => return Err(write_state_error(lifecycle_from_code(observed))),
+        }
+        self.wait_for_admitted_mutations().await;
+        self.journal.release_writer().await?;
+        match self.lifecycle.compare_exchange(
+            lifecycle_code(PartitionLifecycle::TransferFencing),
+            lifecycle_code(PartitionLifecycle::TransferQuiesced),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => {}
+            Err(observed) if lifecycle_from_code(observed) == PartitionLifecycle::TransferQuiesced => {}
+            Err(observed) => return Err(write_state_error(lifecycle_from_code(observed))),
+        }
+        Ok(())
     }
 }

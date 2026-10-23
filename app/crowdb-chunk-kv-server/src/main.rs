@@ -198,6 +198,14 @@ async fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
+    if let Err(error) = storage
+        .streams()
+        .registry()
+        .bind_owner_process(process_lease.authority())
+    {
+        error!(%error, "failed to bind WAL stream process authority");
+        return std::process::ExitCode::FAILURE;
+    }
     let service = match ChunkKvService::new(process_lease.authority(), config.max_hosted_partitions) {
         Ok(service) => Arc::new(service),
         Err(error) => {

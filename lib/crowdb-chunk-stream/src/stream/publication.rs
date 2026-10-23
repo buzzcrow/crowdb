@@ -10,6 +10,12 @@ use std::sync::{atomic::Ordering, Arc};
 use std::time::Duration;
 
 pub(super) async fn publish_state(state: &mut WorkerState) -> Result<()> {
+    state
+        .authority
+        .as_ref()
+        .ok_or(StreamError::WriteStalled)?
+        .check()?;
+    super::checkpoint::flush(state).await?;
     let _timer = PhaseTimer::start(&perf().publish);
     let build_timer = PhaseTimer::start(&perf().directory_build);
     let expected = state.manifest.generation;
@@ -25,6 +31,11 @@ pub(super) async fn publish_state(state: &mut WorkerState) -> Result<()> {
     state.manifest.extent_pages = fences_for(&pages);
     drop(build_timer);
     loop {
+        state
+            .authority
+            .as_ref()
+            .ok_or(StreamError::WriteStalled)?
+            .check()?;
         match state
             .metadata
             .publish(

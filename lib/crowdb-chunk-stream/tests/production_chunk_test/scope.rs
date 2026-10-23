@@ -67,6 +67,7 @@ async fn another_stream_cannot_write_or_checkpoint_an_attributed_chunk() {
                 9,
                 active.chunk_id,
                 crowdb_chunk_stream::StreamMirrorWrite {
+                    authority: None,
                     physical_offset: 0,
                     complete_end: end,
                     images: &images
@@ -82,6 +83,7 @@ async fn another_stream_cannot_write_or_checkpoint_an_attributed_chunk() {
             9,
             active.chunk_id,
             crowdb_chunk_stream::StreamMirrorWrite {
+                authority: None,
                 physical_offset: 0,
                 complete_end: end,
                 images: &images,

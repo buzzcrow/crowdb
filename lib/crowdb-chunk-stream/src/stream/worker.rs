@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 pub(super) async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Receiver<Command>) {
+    let _renewal = liveness::start(&state);
     let mut pending = None;
     let mut liveness = tokio::time::interval(state.config.liveness_interval);
     liveness.tick().await;
@@ -29,10 +30,12 @@ pub(super) async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Recei
                     Some(command) => command,
                     None => break,
                 },
+                () = state.liveness_changed.notified() => {
+                    liveness::maintain(&mut state).await;
+                    continue;
+                }
                 _ = liveness.tick() => {
-                    if let Some(chunk_id) = state.manifest.active.as_ref().map(|active| active.chunk_id) {
-                        liveness::maintain(&mut state, chunk_id).await;
-                    }
+                    liveness::maintain(&mut state).await;
                     continue;
                 }
             }
@@ -47,6 +50,9 @@ pub(super) async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Recei
             Command::Capture(completion) => {
                 let _ = completion.send(process_capture(&mut state).await);
             }
+            Command::Release(completion) => {
+                let _ = completion.send(process_release(&mut state).await);
+            }
             Command::Close(completion) => {
                 let result = process_close(&mut state).await;
                 let _ = completion.send(result);
@@ -58,6 +64,9 @@ pub(super) async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Recei
     if let Err(error) = preparation::drain(&mut state).await {
         state.log_unavailable("drain_capacity", &error);
     }
+    if let Some(authority) = &state.authority {
+        authority.fence();
+    }
     state.closed_view.store(true, Ordering::Release);
 }
 
@@ -66,6 +75,11 @@ async fn process_capture(state: &mut WorkerState) -> Result<Arc<ReadView>> {
     if state.stalled {
         return Err(StreamError::WriteStalled);
     }
+    state
+        .authority
+        .as_ref()
+        .ok_or(StreamError::WriteStalled)?
+        .check()?;
     if state.manifest.sealed_tail != state.manifest_view.load().sealed_tail {
         publish_state(state).await?;
     } else if state.metadata.load_current(state.stream_name).await?.as_ref()
@@ -83,8 +97,14 @@ async fn process_append_batch(
     receiver: &mut mpsc::Receiver<Command>,
     pending: &mut Option<Command>,
 ) {
+    liveness::maintain(state).await;
     if state.stalled || state.manifest.closed {
         finish_failed(state, vec![first], &StreamError::WriteStalled);
+        return;
+    }
+    if let Err(error) = first.authority.check_io() {
+        state.stalled = true;
+        finish_failed(state, vec![first], &error);
         return;
     }
     observe(&perf().queue, first.enqueued_at);
@@ -133,13 +153,16 @@ async fn process_append_batch(
                     .queued_bytes
                     .fetch_sub(request.logical_len() as u64, Ordering::AcqRel);
                 state.queued_requests.fetch_sub(1, Ordering::AcqRel);
-                state.metrics.completed.fetch_add(1, Ordering::Relaxed);
-                state
-                    .metrics
-                    .logical_append_bytes
-                    .fetch_add(request.logical_len() as u64, Ordering::Relaxed);
-                observe(&perf().append, request.enqueued_at);
-                let _ = request.completion.send(Ok(range));
+                let result = request.authority.check_ack().map(|()| range);
+                if result.is_ok() {
+                    state.metrics.completed.fetch_add(1, Ordering::Relaxed);
+                    state
+                        .metrics
+                        .logical_append_bytes
+                        .fetch_add(request.logical_len() as u64, Ordering::Relaxed);
+                    observe(&perf().append, request.enqueued_at);
+                }
+                let _ = request.completion.send(result);
             }
         }
         Err(BatchFailure::MirrorWrite(error) | BatchFailure::Other(error)) => {
@@ -188,6 +211,7 @@ pub(super) async fn rotate_externally_sealed_active(state: &mut WorkerState) -> 
     }
 
     let tail = state.tail_view.load(Ordering::Acquire);
+    state.checkpoint = None;
     state.manifest.active = None;
     state.manifest.sealed_tail = tail;
     let mut successor = state
@@ -203,9 +227,25 @@ pub(super) async fn rotate_externally_sealed_active(state: &mut WorkerState) -> 
 }
 
 async fn process_trim(state: &mut WorkerState, offset: u64) -> Result<u64> {
+    if state
+        .authority
+        .as_ref()
+        .is_some_and(|authority| authority.is_released())
+    {
+        return if offset == state.manifest.trim_offset {
+            Ok(0)
+        } else {
+            Err(StreamError::StaleWriter)
+        };
+    }
     if state.stalled {
         return Err(StreamError::WriteStalled);
     }
+    state
+        .authority
+        .as_ref()
+        .ok_or(StreamError::WriteStalled)?
+        .check()?;
     let tail = state.tail_view.load(Ordering::Acquire);
     if offset < state.manifest.trim_offset || offset > tail {
         return Err(StreamError::InvalidRequest(
@@ -268,6 +308,11 @@ async fn process_close(state: &mut WorkerState) -> Result<()> {
     if state.stalled {
         return Err(StreamError::WriteStalled);
     }
+    state
+        .authority
+        .as_ref()
+        .ok_or(StreamError::WriteStalled)?
+        .check()?;
     if state.manifest.closed {
         return Ok(());
     }
@@ -280,8 +325,28 @@ async fn process_close(state: &mut WorkerState) -> Result<()> {
         let tail = state.tail_view.load(Ordering::Acquire);
         state.manifest.sealed_tail = tail;
     }
+    state.checkpoint = None;
     state.manifest.closed = true;
     publish_state(state).await?;
+    if let Some(authority) = &state.authority {
+        authority.release().await?;
+    }
     state.closed_view.store(true, Ordering::Release);
     Ok(())
+}
+
+async fn process_release(state: &mut WorkerState) -> Result<()> {
+    if state.stalled {
+        return Err(StreamError::WriteStalled);
+    }
+    preparation::drain(state).await?;
+    if state.manifest.sealed_tail != state.manifest_view.load().sealed_tail {
+        publish_state(state).await?;
+    }
+    state
+        .authority
+        .as_ref()
+        .ok_or(StreamError::WriteStalled)?
+        .release()
+        .await
 }

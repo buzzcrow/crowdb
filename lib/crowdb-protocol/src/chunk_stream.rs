@@ -14,7 +14,7 @@ mod ownership;
 mod record;
 
 pub use directory::*;
-pub use ownership::{StreamLeaseRecordError, StreamProcessIdentity, StreamProcessLease};
+pub use ownership::{StreamLeaseRecordError, StreamProcessIdentity, StreamProcessLease, StreamWriterOwner};
 pub use record::*;
 
 /// Durable purpose of a logical stream.

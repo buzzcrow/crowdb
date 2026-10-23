@@ -121,6 +121,11 @@ impl ProductionStreamRuntime {
         metadata_store_id: u64,
         writer_epoch: u64,
     ) -> Result<ChunkStream> {
+        if let Some(owner) = self.owners.get(&(metadata_store_id, stream_name)) {
+            if owner.value().writer_epoch() == writer_epoch && owner.value().writer_context().is_ok() {
+                return Ok(owner.value().clone());
+            }
+        }
         let binding = self.active_binding(stream_name).await?;
         let metadata = self.metadata(metadata_store_id, binding.metadata_group_id)?;
         let stream = ChunkStream::open(
@@ -151,7 +156,7 @@ impl ProductionStreamRuntime {
     ) -> Result<ChunkStream> {
         let binding = self.active_binding(stream_name).await?;
         if let Some(owner) = self.owners.get(&(metadata_store_id, stream_name)) {
-            if owner.value().writer_epoch() == writer_epoch {
+            if owner.value().writer_epoch() == writer_epoch && owner.value().writer_context().is_ok() {
                 return owner.value().capture_read_only().await;
             }
         }

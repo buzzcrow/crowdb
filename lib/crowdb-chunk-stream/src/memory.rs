@@ -17,8 +17,10 @@ use crowdb_protocol::frame::FrameLayout;
 use tokio::sync::{Mutex, Notify};
 
 mod allocation;
+mod authority;
 mod directory_records;
 mod metadata;
+mod recovery;
 
 use crate::{
     CursorAdvance, DurableCursor, Result, StreamChunkStore, StreamError, StreamMirrorWrite, StreamRegistry,
@@ -54,6 +56,7 @@ struct Chunk {
 #[derive(Debug, Default)]
 struct MemoryState {
     bindings: HashMap<StreamName, StreamBinding>,
+    owners: HashMap<StreamName, (u64, Arc<crate::StreamWriterSession>)>,
     manifests: HashMap<StreamName, StreamManifest>,
     pages: HashMap<(StreamName, u64, u64, u64), StreamExtentPage>,
     chunks: HashMap<ChunkId, Chunk>,
@@ -256,6 +259,7 @@ impl MemoryStreamStore {
             epoch,
             chunk_id,
             StreamMirrorWrite {
+                authority: None,
                 physical_offset: offset,
                 complete_end,
                 images: &images,
@@ -301,13 +305,16 @@ impl MemoryStreamStore {
     pub async fn flip_durable_byte(&self, chunk_id: ChunkId, offset: usize) {
         let mut state = self.state.lock().await;
         let chunk = state.chunks.get_mut(&chunk_id).expect("test chunk must exist");
-        assert!(offset < usize::try_from(chunk.cursor).expect("test cursor must fit usize"));
+        assert!(offset < usize::try_from(chunk.synchronized_cursor).expect("test cursor must fit usize"));
         chunk.bytes[offset] ^= 1;
     }
 }
 
 #[async_trait]
 impl StreamRegistry for MemoryStreamStore {
+    async fn claim_writer(&self, name: StreamName, epoch: u64) -> Result<Arc<crate::StreamWriterSession>> {
+        self.claim_memory_writer(name, epoch).await
+    }
     async fn load(&self, stream_name: StreamName) -> Result<Option<StreamBinding>> {
         Ok(self.state.lock().await.bindings.get(&stream_name).cloned())
     }
@@ -325,6 +332,7 @@ impl StreamRegistry for MemoryStreamStore {
 
 #[async_trait]
 impl StreamChunkStore for MemoryStreamStore {
+    fn bind_writer(&self, _name: StreamName, _epoch: u64, _session: Arc<crate::StreamWriterSession>) {}
     fn mirror_copies(&self) -> u32 {
         1
     }
@@ -478,6 +486,15 @@ impl StreamChunkStore for MemoryStreamStore {
         })
     }
 
+    async fn recover_tail(
+        &self,
+        _name: StreamName,
+        epoch: u64,
+        active: &ActiveChunkDescriptor,
+    ) -> Result<crate::RecoveredStreamTail> {
+        self.recover_chunk_tail(epoch, active).await
+    }
+
     async fn renew_liveness(&self, chunk_id: ChunkId, writer_epoch: u64) -> Result<()> {
         self.liveness_attempts.fetch_add(1, Ordering::AcqRel);
         if self
@@ -537,7 +554,7 @@ impl StreamChunkStore for MemoryStreamStore {
                 .chunks
                 .get(&chunk_id)
                 .ok_or_else(|| StreamError::ReadUnavailable("chunk is missing".into()))?;
-            if chunk.released || u64::try_from(end).unwrap_or(u64::MAX) > chunk.cursor {
+            if chunk.released || u64::try_from(end).unwrap_or(u64::MAX) > chunk.synchronized_cursor {
                 return Err(StreamError::ReadUnavailable("chunk range is not durable".into()));
             }
             Ok(Bytes::copy_from_slice(&chunk.bytes[start..end]))

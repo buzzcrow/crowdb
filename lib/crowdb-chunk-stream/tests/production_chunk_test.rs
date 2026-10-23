@@ -25,6 +25,9 @@ use crowdb_protocol::chunkdb::rpc::{
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::diskdb::rpc::Segment;
 
+#[path = "production_chunk_test/recovery.rs"]
+mod recovery;
+
 #[path = "production_chunk_test/local_progress.rs"]
 mod local_progress;
 
@@ -415,6 +418,14 @@ fn production_runtime_shares_connected_chunk_io_parts() {
 
 #[async_trait]
 impl DiskWriter for Disks {
+    async fn drain_segment(
+        &self,
+        segment: &Segment,
+        _unit_bytes: u64,
+        _deadline: std::time::Instant,
+    ) -> crowdb_chunk_client::Result<()> {
+        self.fsync(segment).await
+    }
     async fn initialize_synchronized_at_byte_offset(
         &self,
         segment: &Segment,
@@ -599,6 +610,7 @@ async fn production_store_grows_and_writes_across_mirror_strips() {
             9,
             active.chunk_id,
             crowdb_chunk_stream::StreamMirrorWrite {
+                authority: None,
                 physical_offset: 0,
                 complete_end,
                 images: &images,
