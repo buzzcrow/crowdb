@@ -41,6 +41,79 @@ KV work, with compact locations, incremental directories, and bounded recovery.
   work remain separate implementation tasks. Per-batch cursor work is removed
   by the current integration, pending the gates recorded below.
 
+## Synchronized-mirror latency investigation
+
+- The 4 KiB / one-in-flight benchmark uses retained `MemDisk`: Linux
+  `memfd_create`, byte-addressed writes, and the real io_uring submission and
+  completion path. It does not write user data to a physical SSD. The two
+  required mirrors run concurrently, with one write-and-sync RPC per replica.
+  Group-0 `sync_interval_ms` does not gate data synchronization.
+- Added `diskio.uring.{read,write,fsync}.{queue,completion}.lh`: queue spans
+  callback allocation through SQ publication; completion spans publication
+  through CQ dispatch and includes submission, kernel work and scheduling.
+  These are not physical-device service-time measurements. Restored observation
+  of `rpc.response.schedule.lh` using the existing callback timestamp; this
+  includes callback buffer conversion and the wait until the Rust future resumes.
+  The production benchmark now attaches existing ChunkIO metrics and prints
+  per-replica write, RPC round-trip and response-scheduling histograms.
+- Matched source/binary measurements are retained under
+  `/home/cj/.cache/crowdb-r244-mirror-latency-results/`:
+  `20261023T142534Z` uses the default CPU placement;
+  `20261023T143143Z` runs the same fixture and benchmark under
+  `pixi run taskset -c 0-3 bash .../measure.sh`. Binary manifests match and all
+  fixture cleanup receipts report success. Each workload lasts ten seconds;
+  both default-setting repetitions give the same rounded mean in each run.
+
+| Measurement                         | Default CPU placement | CPUs 0–3 only       |
+| ----------------------------------- | --------------------- | ------------------- |
+| Append operations/s                 | 1,449 / 1,450         | 6,477 / 6,468       |
+| Append mean                         | 688 / 688 us          | 153 / 153 us        |
+| Append p50                          | 698 / 698 us          | 145 / 145 us        |
+| Append p99                          | 991 / 989 us          | 295 / 317 us        |
+| Mirrored append mean, first run      | 648.70 us             | 144.71 us           |
+| RPC round-trip mean, first run       | 458.47 us             | 81.18 us            |
+| Response scheduling mean, first run  | 98.61 us              | 22.68 us            |
+| Server write mean, steady windows    | 158.25 us             | 25.80 us            |
+| Server fsync mean, steady windows    | 31.42 us              | 11.21 us            |
+
+- Server means are count-weighted across all nodes, excluding the first two
+  and last one seconds of each case; client histograms also include background
+  initialization and a small number of metadata RPCs. Replica means, mirrored
+  maximums, and different populations must not be added as exclusive phases.
+  The default server write includes 53.88 us waiting for SQ publication and
+  99.74 us through CQ dispatch; the corresponding constrained values are
+  7.53 and 17.12 us. All ten Stream cases have zero errors/watchdogs and zero
+  cursor-checkpoint samples. CPU placement is a diagnostic variable, not a
+  change to the accepted benchmark defaults or a product throughput claim.
+- A direct memfd probe with real readback measured fresh-page `pwrite` at
+  2.56 us and `fsync` at 0.79 us on average (Python call overhead included).
+  The same shared io_uring engine, without RPC, measured 29.09 us for continuous
+  write-plus-sync. Inserting 500 us of idle time **before** each timed operation
+  increased that to 309.70 us; the idle gap is excluded from latency. Confining
+  that probe to one CPU reduced the idle case to 99.39 us. Probe source and
+  output are retained alongside the Stream runs.
+- This host has 16 physical / 32 logical CPUs, `powersave`, and `intel_idle`;
+  the reported C6 exit latency is 92 us with 276 us target residency. The
+  controlled experiments establish a large CPU-placement/idle-wakeup effect.
+  They do not separately identify how much comes from C-states, CPU frequency,
+  migration, cache locality, or scheduler dispatch. System power policy was
+  not modified. Merely reducing Tokio workers to two yields 657 us; reducing
+  connections to one yields 673 us against adjacent 700/702 us controls, and
+  also reducing RPC workers to one yields 694 us.
+- Follow-up implementation should reduce avoidable thread handoffs in the
+  RPC/IO completion path and measure both low-in-flight and saturated loads.
+  Preserve the single-publisher SQ ordering and write/fsync completion proof.
+  Any polling/affinity policy needs explicit CPU-cost measurements. Keep the
+  existing histogram underflow/rank issues visible: below 65.536 us its current
+  percentile bucket is not precise; exact sum/count means and raw benchmark
+  end-to-end percentiles above remain usable.
+- Verification: 14 shared io_uring tests, all 85 DiskIO tests and all 25 Rust
+  RPC FFI tests pass. Strict release all-target clippy passes for RPC FFI and
+  Chunk-Stream; workspace Rust format, changed C++ format, changed-file
+  `tree-lint` and diff whitespace checks pass. The final C++ lint cleanup only
+  changes aggregate initialization spelling and the SQE pointer conversion;
+  both CPU-placement measurements used the identical pre-cleanup binaries.
+
 ## Cursor-free append integration (current)
 
 - Ordinary append performs grouped encoding, synchronized required-mirror IO,

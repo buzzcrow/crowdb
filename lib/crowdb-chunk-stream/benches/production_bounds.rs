@@ -13,8 +13,11 @@ mod workload;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, ChunkReadPolicy, SmallWritePolicy};
+use crowdb_chunk_client::{
+    ChunkClientMetrics, ChunkIoClient, ChunkIoClientConfig, ChunkReadPolicy, SmallWritePolicy,
+};
 use crowdb_chunk_stream::{ProductionStreamRuntime, StreamConfig};
+use crowdb_common::metrics;
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
 
 use config::BenchConfig;
@@ -42,6 +45,9 @@ fn main() -> ExitCode {
 }
 
 async fn run(config: BenchConfig) -> ExitCode {
+    let client_metrics = Arc::new(ChunkClientMetrics::register(
+        &mut metrics::global().lock().unwrap(),
+    ));
     let chunk_io = match ChunkIoClient::connect(ChunkIoClientConfig {
         management_seeds: vec![config.management_seed.clone()],
         diskio_connections_per_endpoint: config.diskio_connections,
@@ -50,7 +56,7 @@ async fn run(config: BenchConfig) -> ExitCode {
     })
     .await
     {
-        Ok(client) => client,
+        Ok(client) => client.with_metrics(&client_metrics),
         Err(error) => {
             eprintln!("chunk-stream benchmark discovery failed: {error}");
             return ExitCode::FAILURE;
@@ -78,6 +84,21 @@ async fn run(config: BenchConfig) -> ExitCode {
             for (name, phase) in crowdb_chunk_stream::stream_perf_metrics() {
                 println!(
                     "stream-phase: name={name} count={} avg_us={:.2} p50_us={} p99_us={} max_us={}",
+                    phase.count,
+                    phase.avg / 1_000.0,
+                    phase.p50 / 1_000,
+                    phase.p99 / 1_000,
+                    phase.max / 1_000,
+                );
+            }
+            for name in [
+                "chunkio.diskio.write.e2e.lh",
+                "rpc.request.e2e",
+                "rpc.response.schedule.lh",
+            ] {
+                let phase = metrics::global_histogram(name).snapshot_total();
+                println!(
+                    "client-phase: name={name} count={} avg_us={:.2} p50_us={} p99_us={} max_us={}",
                     phase.count,
                     phase.avg / 1_000.0,
                     phase.p50 / 1_000,

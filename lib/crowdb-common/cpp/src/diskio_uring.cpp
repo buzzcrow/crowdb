@@ -12,7 +12,9 @@
 #include <sys/resource.h>
 #include <unistd.h>
 
+#include <bit>
 #include <cerrno>
+#include <chrono>
 #include <cstring>
 #include <utility>
 
@@ -22,6 +24,43 @@ namespace crowdb::common
 namespace
 {
 std::atomic<uint64_t> uring_in_flight{0};
+
+struct UringLatencyMetrics
+{
+    metrics::LatencyHistogram *queue;
+    metrics::LatencyHistogram *completion;
+};
+
+const UringLatencyMetrics *uring_latency_metrics(uint8_t opcode)
+{
+    static const auto read = UringLatencyMetrics{
+        .queue      = metrics::MetricsRegistry::global().register_histogram("diskio.uring.read.queue.lh"),
+        .completion = metrics::MetricsRegistry::global().register_histogram("diskio.uring.read.completion.lh")};
+    static const auto write = UringLatencyMetrics{
+        .queue      = metrics::MetricsRegistry::global().register_histogram("diskio.uring.write.queue.lh"),
+        .completion = metrics::MetricsRegistry::global().register_histogram("diskio.uring.write.completion.lh")};
+    static const auto fsync = UringLatencyMetrics{
+        .queue      = metrics::MetricsRegistry::global().register_histogram("diskio.uring.fsync.queue.lh"),
+        .completion = metrics::MetricsRegistry::global().register_histogram("diskio.uring.fsync.completion.lh")};
+    switch (opcode) {
+    case IORING_OP_READ:
+        return &read;
+    case IORING_OP_WRITE:
+    case IORING_OP_WRITEV:
+        return &write;
+    case IORING_OP_FSYNC:
+        return &fsync;
+    default:
+        return nullptr;
+    }
+}
+
+uint64_t steady_nanos()
+{
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+}
 
 crowdb::common::metrics::Counter &uring_sq_full_metric()
 {
@@ -36,6 +75,7 @@ void register_uring_metrics()
         "diskio.uring.inflight.g", [] { return uring_in_flight.load(std::memory_order_relaxed); });
     (void)in_flight;
     (void)uring_sq_full_metric();
+    (void)uring_latency_metrics(IORING_OP_WRITE);
 }
 } // namespace
 
@@ -430,7 +470,8 @@ void DiskIOUring::submit_lockfree(Pipeline &p, int fd, std::function<void(int)> 
     total_in_flight_.fetch_add(1, std::memory_order_relaxed);
     uring_in_flight.fetch_add(1, std::memory_order_relaxed);
 
-    auto *entry = new CallbackEntry{.cb = std::move(on_complete), .fd = fd, .next_free = {}};
+    auto *entry =
+        new CallbackEntry{.cb = std::move(on_complete), .fd = fd, .next_free = {}, .queued_nanos = steady_nanos()};
 
     // CAS loop: check capacity BEFORE claiming a slot.
     bool observed_full = false;
@@ -455,6 +496,7 @@ void DiskIOUring::submit_lockfree(Pipeline &p, int fd, std::function<void(int)> 
             struct io_uring_sqe *sqe = &p.ring.sq.sqes[idx << p.sq_shift];
             io_uring_initialize_sqe(sqe);
             prep(sqe);
+            entry->opcode = sqe->opcode;
             io_uring_sqe_set_data(sqe, entry);
             p.sqe_ready[idx].store(true, std::memory_order_release);
             mark_pending(p);
@@ -482,6 +524,9 @@ void DiskIOUring::publish_ready_sqes(Pipeline &p)
         if (!p.sqe_ready[idx].load(std::memory_order_acquire)) {
             break;
         }
+        auto *entry =
+            std::bit_cast<CallbackEntry *>(static_cast<uintptr_t>(p.ring.sq.sqes[idx << p.sq_shift].user_data));
+        entry->published_nanos = steady_nanos();
         p.sqe_ready[idx].store(false, std::memory_order_relaxed);
         if (p.ring.sq.array != nullptr) {
             p.ring.sq.array[idx] = idx;
@@ -623,6 +668,12 @@ bool DiskIOUring::drain_cqes(Pipeline &p)
         ::io_uring_cqe_seen(&p.ring, cqe);
 
         if (entry != nullptr) {
+            if (const auto *latency = uring_latency_metrics(entry->opcode); latency != nullptr) {
+                latency->queue->observe(entry->published_nanos - entry->queued_nanos);
+                // Includes submission, kernel execution and CQ dispatch; it
+                // is not a measurement of physical-device service time.
+                latency->completion->observe(steady_nanos() - entry->published_nanos);
+            }
             if (entry->fd >= 0 && entry->fd < fd_table_size_) {
                 fd_in_flight_[entry->fd].fetch_sub(1, std::memory_order_acq_rel);
             }

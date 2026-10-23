@@ -476,7 +476,10 @@ impl std::future::Future for CallFuture {
     ) -> std::task::Poll<Self::Output> {
         std::pin::Pin::new(&mut self.rx)
             .poll(cx)
-            .map_ok(|(result, _io_thread_ts)| result)
+            .map_ok(|(result, io_thread_ts)| {
+                response_schedule_histogram().observe(io_thread_ts.elapsed().as_nanos() as u64);
+                result
+            })
             .map(|r| r.unwrap_or(Err(RpcError::ConnectionClosed)))
     }
 }
@@ -561,6 +564,12 @@ fn e2e_histogram() -> std::sync::Arc<metrics::LatencyHistogram> {
     static H: OnceLock<std::sync::Arc<metrics::LatencyHistogram>> = OnceLock::new();
     H.get_or_init(|| metrics::global_histogram("rpc.request.e2e"))
         .clone()
+}
+
+fn response_schedule_histogram() -> &'static metrics::LatencyHistogram {
+    use std::sync::{Arc, OnceLock};
+    static HISTOGRAM: OnceLock<Arc<metrics::LatencyHistogram>> = OnceLock::new();
+    HISTOGRAM.get_or_init(|| metrics::global_histogram("rpc.response.schedule.lh"))
 }
 
 // ── Client-side request handler dispatch (R114) ────────────────────
