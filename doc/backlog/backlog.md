@@ -97,11 +97,6 @@ live in the linked document; implementation follows
 
 - **[R4](R4-bounded-mempool.md)** — bounded memory pool for tree allocations.
   **Area:** crowdb-tree engine. **Complexity:** Medium.
-- **[R5](R5-rdma-alloc.md)** — RDMA host-buffer RPC and data transport umbrella.
-  **Area:** RPC / access server / Chunk-KV / DiskIO / SDK / RDMA.
-  **Complexity:** High. **Status:** Foundation, transport, datapath, Chunk-KV
-  and native SDK accepted; coarse discovery/default-enablement policy
-  questions remain in the requirement.
 - **[R60](R60-tree-scan-sibling-leaf-readahead.md)** — sibling-leaf readahead on
   cold scans. **Area:** crowdb-tree / scan / DiskIO. **Complexity:** Medium.
   **Status:** Deferred pending cold file/block-backed measurements.

@@ -3,8 +3,7 @@
 
 # CROWDB RDMA implementation Plan
 
-Upstream: [R5](../backlog/R5-rdma-alloc.md),
-[RDMA RPC design](../design/rpc/design-crowdb-rpc-rdma.md), and the
+Upstream: [RDMA RPC design](../design/rpc/design-crowdb-rpc-rdma.md), and the
 [native SDK contract](../design/access-server/design-crowdb-native-sdk.md).
 
 Goal: implement the host-memory RDMA SEND/RECV path end to end, with RDMA as
@@ -13,8 +12,7 @@ semantics, bounded buffer leases, and automated OCI verification using a
 single-node HCA local-loop with multiple containers.
 
 Persistent-plan exception: retain this root record for accepted local-HCA
-measurements. Completed child plans and
-implementation checklists are removed; the evidence remains reproducible.
+measurements. Completed child plans and implementation checklists are removed; the evidence remains reproducible.
 
 ## Current implementation status
 
