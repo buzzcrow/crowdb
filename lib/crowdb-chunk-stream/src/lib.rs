@@ -41,6 +41,7 @@ pub use storage::{
 };
 pub use stream::{
     AppendRange, ChunkStream, ReadHint, ReadSegment, StreamConfig, StreamMetadataObservation, StreamReader,
+    StreamViewSource,
 };
 
 pub use crowdb_protocol::chunk_stream::{

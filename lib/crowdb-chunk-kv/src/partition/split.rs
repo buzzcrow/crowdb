@@ -314,6 +314,7 @@ impl Partition {
         child_state
             .child_tree
             .pin_generation(plan.transition_id, child_state.child_base.1)?;
+        self.journal.checkpoint().await?;
         let source = SplitSourceFrontier {
             parent_id: plan.parent_id,
             parent_epoch: plan.parent_epoch,
@@ -371,6 +372,7 @@ impl Partition {
             ));
         }
         let replay_offset = self.retry_replay_offset.load(Ordering::Acquire);
+        self.journal.checkpoint().await?;
         let stream_manifest_generation = self.journal.manifest_generation();
         let (tree_manifest, applied_seq, source) = self.tree.checkpoint_snapshot(replay_offset).await?;
         let root_manifest_generation = self.tree.root_manifest_generation()?;

@@ -170,11 +170,12 @@ async fn install_child_cutover_inner(
     request: &ChildSplitCutoverRequest,
 ) -> Result<(SplitArtifact, PreparedSplitWriter)> {
     let cutover_seq = state.applied_seq.load(Ordering::Acquire);
+    let cutover_offset = state.journal.checkpoint().await?;
     let source = SplitSourceFrontier {
         parent_id: request.plan.parent_id,
         parent_epoch: request.plan.parent_epoch,
         checkpoint: request.base_checkpoint.clone(),
-        cutover_offset: state.journal.tail(),
+        cutover_offset,
         cutover_seq,
         journal: Arc::clone(&request.parent.journal),
     };

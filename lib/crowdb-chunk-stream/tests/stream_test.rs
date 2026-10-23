@@ -42,7 +42,7 @@ async fn create_stream(store: &Arc<MemoryStreamStore>, capacity: u64, config: St
 }
 
 #[tokio::test]
-async fn first_append_has_no_timer_and_publishes_framed_extent() {
+async fn first_append_has_no_timer_and_publishes_only_chunk_attachment() {
     let store = Arc::new(MemoryStreamStore::new(64));
     let stream = create_stream(&store, 64, StreamConfig::default()).await;
 
@@ -57,7 +57,7 @@ async fn first_append_has_no_timer_and_publishes_framed_extent() {
     assert_eq!((range.begin, range.end), (0, 4));
     assert_eq!(store.chunk_write_count(), 1);
     assert_eq!(store.cursor_advance_count(), 1);
-    assert_eq!(store.metadata_publish_count(), 3);
+    assert_eq!(store.metadata_publish_count(), 2);
     assert_eq!(stream.read_at(0, 4).await.unwrap(), Bytes::from_static(b"abcd"));
 }
 
@@ -278,7 +278,7 @@ async fn extent_pages_are_cached_across_independent_reads() {
     assert_eq!(metrics.extent_page_cache_misses, 1);
     assert_eq!(metrics.extent_page_cache_hits, 1);
     assert_eq!(metrics.physical_read_requests, 2);
-    assert_eq!(metrics.metadata_publications, 6);
+    assert_eq!(metrics.metadata_publications, 3);
 }
 
 #[tokio::test]
@@ -543,6 +543,7 @@ async fn read_only_open_observes_tail_without_changing_writer_authority() {
     let writer = create_stream(&store, 32, StreamConfig::default()).await;
     let name = StreamName { high: 1, low: 32 };
     writer.append(&[Bytes::from_static(b"old")]).await.unwrap();
+    writer.checkpoint().await.unwrap();
     let publications = store.metadata_publish_count();
 
     let reader = ChunkStream::open_read_only(

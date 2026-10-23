@@ -28,9 +28,12 @@ mod observation;
 mod publication;
 mod read;
 mod recovery;
+mod view;
 mod worker;
 pub use observation::StreamMetadataObservation;
 pub use read::StreamReader;
+use view::ReadView;
+pub use view::StreamViewSource;
 
 use crate::perf::{observe, perf};
 use publication::{build_extent_pages, fences_for};
@@ -157,6 +160,7 @@ impl AppendRequest {
 
 enum Command {
     Append(AppendRequest),
+    Capture(oneshot::Sender<Result<Arc<ReadView>>>),
     Trim {
         offset: u64,
         completion: oneshot::Sender<Result<u64>>,
@@ -176,6 +180,8 @@ pub struct ChunkStream {
     queued_requests: Arc<AtomicUsize>,
     tail: Arc<AtomicU64>,
     manifest: Arc<ArcSwap<StreamManifest>>,
+    read_view: Arc<ArcSwap<ReadView>>,
+    view_source: StreamViewSource,
     closed: Arc<AtomicBool>,
     metrics: Arc<StreamMetrics>,
     extent_cache: Arc<ExtentPageCache>,
@@ -197,6 +203,7 @@ struct WorkerState {
     metadata: Arc<dyn StreamMetadataStore>,
     chunks: Arc<dyn StreamChunkStore>,
     manifest_view: Arc<ArcSwap<StreamManifest>>,
+    read_view: Arc<ArcSwap<ReadView>>,
     tail_view: Arc<AtomicU64>,
     queued_bytes: Arc<AtomicU64>,
     queued_requests: Arc<AtomicUsize>,
@@ -474,7 +481,7 @@ impl ChunkStream {
             // manifest's acknowledged boundary.
         }
         validate_manifest(&manifest, &pages)?;
-        let stream = Self::start(
+        let mut stream = Self::start(
             config,
             metadata,
             chunks,
@@ -483,6 +490,7 @@ impl ChunkStream {
             &pages,
         )?;
         stream.closed.store(true, Ordering::Release);
+        stream.view_source = StreamViewSource::PersistedCheckpoint;
         Ok(stream)
     }
 
@@ -500,6 +508,7 @@ impl ChunkStream {
         let queued_requests = Arc::new(AtomicUsize::new(0));
         let tail = Arc::new(AtomicU64::new(durable_tail(&manifest)?));
         let manifest_view = Arc::new(ArcSwap::from_pointee(manifest.clone()));
+        let read_view = Arc::new(ArcSwap::from_pointee(ReadView::new(manifest_view.load_full())));
         let closed = Arc::new(AtomicBool::new(manifest.closed));
         let metrics = Arc::new(StreamMetrics::default());
         perf();
@@ -511,6 +520,7 @@ impl ChunkStream {
             metadata: Arc::clone(&metadata),
             chunks: Arc::clone(&chunks),
             manifest_view: Arc::clone(&manifest_view),
+            read_view: Arc::clone(&read_view),
             tail_view: Arc::clone(&tail),
             queued_bytes: Arc::clone(&queued_bytes),
             queued_requests: Arc::clone(&queued_requests),
@@ -534,21 +544,18 @@ impl ChunkStream {
             queued_requests,
             tail,
             manifest: manifest_view,
+            read_view,
+            view_source: StreamViewSource::LiveOwner,
             closed,
             metrics,
             extent_cache,
         })
     }
 
-    /// Returns the durable end of the published read snapshot.
-    ///
-    /// # Panics
-    ///
-    /// Panics if an internally installed manifest violates the validated
-    /// active-cursor bounds.
+    /// Returns the synchronized logical end visible to this handle.
     #[must_use]
     pub fn tail(&self) -> u64 {
-        durable_tail(&self.manifest.load()).expect("validated stream manifest has a durable tail")
+        self.read_view.load().end()
     }
 
     /// Appends one logical request after its mirror data and cursor are durable.

@@ -1713,6 +1713,7 @@ impl Partition {
 
     async fn create_checkpoint(&self) -> Result<Checkpoint> {
         let replay_offset = self.retry_replay_offset.load(Ordering::Acquire);
+        self.journal.checkpoint().await?;
         let stream_manifest_generation = self.journal.manifest_generation();
         let (tree_manifest, applied_seq) = self.tree.checkpoint(replay_offset).await?;
         let root_manifest_generation = self.tree.root_manifest_generation()?;

@@ -6,10 +6,11 @@
 use super::append::write_with_recovery;
 use super::capacity::{fits_active, prepare_active_for_append};
 use super::publication::publish_state;
-use super::{finish_failed, liveness, AppendRequest, BatchFailure, Command, WorkerState};
+use super::{finish_failed, liveness, AppendRequest, BatchFailure, Command, ReadView, WorkerState};
 use crate::perf::{observe, perf, PhaseTimer};
 use crate::{Result, StreamError};
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
@@ -41,6 +42,9 @@ pub(super) async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Recei
             Command::Trim { offset, completion } => {
                 let _ = completion.send(process_trim(&mut state, offset).await);
             }
+            Command::Capture(completion) => {
+                let _ = completion.send(process_capture(&mut state).await);
+            }
             Command::Close(completion) => {
                 let result = process_close(&mut state).await;
                 let _ = completion.send(result);
@@ -49,6 +53,22 @@ pub(super) async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Recei
         }
     }
     state.closed_view.store(true, Ordering::Release);
+}
+
+async fn process_capture(state: &mut WorkerState) -> Result<Arc<ReadView>> {
+    let _timer = PhaseTimer::start(&perf().checkpoint);
+    if state.stalled {
+        return Err(StreamError::WriteStalled);
+    }
+    if state.manifest.sealed_tail != state.manifest_view.load().sealed_tail {
+        publish_state(state).await?;
+    } else if state.metadata.load_current(state.stream_name).await?.as_ref()
+        != Some(state.manifest_view.load().as_ref())
+    {
+        state.stalled = true;
+        return Err(StreamError::StaleWriter);
+    }
+    Ok(Arc::new(ReadView::new(state.manifest_view.load_full())))
 }
 
 async fn process_append_batch(

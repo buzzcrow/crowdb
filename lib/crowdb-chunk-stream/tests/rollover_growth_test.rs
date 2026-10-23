@@ -138,9 +138,10 @@ async fn rollover_grows_a_fresh_successor_before_admitting_the_waiting_append() 
     assert_eq!(stream.metrics().rollovers, 1);
     assert_eq!(
         store.metadata_publish_count(),
-        5,
-        "growth changes only chunkinfo; initial head, attachments and append publications remain"
+        3,
+        "only the initial head and two chunk attachments publish metadata"
     );
+    stream.checkpoint().await.unwrap();
     let reopened = ChunkStream::open_read_only(name, 1, config, store.clone(), store, chunks)
         .await
         .unwrap();

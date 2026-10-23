@@ -38,7 +38,10 @@ async fn stream_stages_appear_in_perf_output_and_survive_window_flushes() {
         "stream.append.encode.lh",
         "stream.append.mirror.lh",
         "stream.append.cursor.lh",
+        "stream.append.local_view.lh",
         "stream.read.e2e.lh",
+        "stream.read.plan.lh",
+        "stream.read.io.lh",
     ] {
         assert!(
             matches!(

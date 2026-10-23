@@ -34,6 +34,7 @@ async fn published_extent_index_is_bounded_fenced_and_reads_no_data() {
     for _ in 0..105 {
         stream.append(&[Bytes::from_static(b"x")]).await.unwrap();
     }
+    stream.checkpoint().await.unwrap();
     let before = stream.metrics();
     let publications = store.metadata_publish_count();
     let first = stream.observe_metadata(None, 0).unwrap();
@@ -51,6 +52,11 @@ async fn published_extent_index_is_bounded_fenced_and_reads_no_data() {
     assert_eq!(stream.metrics(), before);
     assert_eq!(store.metadata_publish_count(), publications);
     stream.append(&[Bytes::from_static(b"y")]).await.unwrap();
+    assert_eq!(
+        stream.observe_metadata(None, 0).unwrap().generation,
+        first.generation
+    );
+    stream.checkpoint().await.unwrap();
     assert!(stream.observe_metadata(Some(first.generation), 100).is_err());
     let current = stream.observe_metadata(None, 0).unwrap();
     assert!(current.generation > first.generation);

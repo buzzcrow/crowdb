@@ -3,14 +3,13 @@
 
 //! Snapshot reads and bounded sequential prefetch.
 
-use super::{
-    durable_tail, find_extent_fence, validate_page_fence, ChunkStream, PhysicalRead, ReadHint, ReadSegment,
-};
-use crate::metadata::resolve_extent;
+use super::{find_extent_fence, validate_page_fence, ChunkStream, PhysicalRead, ReadHint, ReadSegment};
+use crate::metadata::{resolve_validated_extent, validate_extent_page};
 use crate::perf::{perf, PhaseTimer};
 use crate::{ChunkId, Result, StreamError, StreamExtentPage, StreamExtentPageFence, StreamManifest};
 use bytes::{Bytes, BytesMut};
 use crowdb_protocol::frame::{parse_frame, FrameLayout, FrameMagic, FrameRole, FRAME_GROUP_HEADER_BYTES};
+use futures::{stream, StreamExt, TryStreamExt};
 use std::sync::{atomic::Ordering, Arc};
 use std::time::Instant;
 
@@ -37,11 +36,13 @@ impl ChunkStream {
     /// Returns an error for an invalid range, corrupt metadata, or unavailable data.
     pub async fn read_at_with_provenance(&self, offset: u64, length: usize) -> Result<Vec<ReadSegment>> {
         let _timer = PhaseTimer::start(&perf().read);
+        let plan_timer = PhaseTimer::start(&perf().read_plan);
         let end = offset
             .checked_add(length as u64)
             .ok_or_else(|| StreamError::InvalidRequest("read range overflows".into()))?;
-        let manifest = self.manifest.load_full();
-        if offset < manifest.trim_offset || end > durable_tail(&manifest)? {
+        let view = self.read_view.load_full();
+        let manifest = &view.manifest;
+        if offset < manifest.trim_offset || end > view.end() {
             return Err(StreamError::InvalidRequest(
                 "read is outside retained durable range".into(),
             ));
@@ -49,10 +50,14 @@ impl ChunkStream {
         let mut cursor = offset;
         let mut reads = Vec::new();
         while cursor < end {
-            let fence_index = find_extent_fence(&manifest, cursor)?;
-            let fence = &manifest.extent_pages[fence_index];
-            let page = self.load_extent_page(&manifest, fence).await?;
-            let location = resolve_extent(&page, cursor)?;
+            let location = if cursor >= manifest.sealed_tail {
+                view.resolve(cursor)?
+            } else {
+                let fence_index = find_extent_fence(manifest, cursor)?;
+                let fence = &manifest.extent_pages[fence_index];
+                let page = self.load_extent_page(manifest, fence).await?;
+                resolve_validated_extent(&page, cursor)?
+            };
             let read_len = usize::try_from(location.available.min(end - cursor))
                 .map_err(|_| StreamError::InvalidRequest("read length exceeds addressable range".into()))?;
             let read_len = read_len.min(self.config.read_request_bytes);
@@ -73,7 +78,10 @@ impl ChunkStream {
             });
             cursor += read_len as u64;
         }
+        drop(plan_timer);
+        let io_timer = PhaseTimer::start(&perf().read_io);
         let output = self.read_physical_ranges(&reads).await?;
+        drop(io_timer);
         let output_len = output
             .iter()
             .fold(0_usize, |total, segment| total.saturating_add(segment.data.len()));
@@ -92,40 +100,21 @@ impl ChunkStream {
         self.metrics
             .physical_read_requests
             .fetch_add(reads.len() as u64, Ordering::Relaxed);
-        let mut output = vec![None; reads.len()];
-        let mut tasks = tokio::task::JoinSet::new();
-        let mut next = 0_usize;
-        while next < reads.len() || !tasks.is_empty() {
-            while next < reads.len() && tasks.len() < self.config.read_concurrency {
-                let index = next;
-                let read = reads[index];
-                let stream = self.clone();
-                tasks.spawn(async move {
-                    let frame = stream
-                        .read_chunk_with_watchdog(
-                            read.chunk_id,
-                            read.frame_start,
-                            read.frame_length,
-                            read.logical_start,
-                        )
-                        .await?;
-                    decode_segment(read, &frame).map(|segment| (index, segment))
-                });
-                next += 1;
-            }
-            let completed = tasks
-                .join_next()
-                .await
-                .ok_or_else(|| StreamError::Internal("physical read task set ended early".into()))?
-                .map_err(|error| StreamError::Internal(format!("physical read task failed: {error}")))??;
-            output[completed.0] = Some(completed.1);
-        }
-        output
-            .into_iter()
-            .map(|segment| {
-                segment.ok_or_else(|| StreamError::Internal("physical read result is missing".into()))
+        stream::iter(reads.iter().copied())
+            .map(|read| async move {
+                let frame = self
+                    .read_chunk_with_watchdog(
+                        read.chunk_id,
+                        read.frame_start,
+                        read.frame_length,
+                        read.logical_start,
+                    )
+                    .await?;
+                decode_segment(read, &frame)
             })
-            .collect()
+            .buffered(self.config.read_concurrency)
+            .try_collect()
+            .await
     }
 
     /// Creates a bounded sequential reader ending at the current durable tail.
@@ -143,8 +132,9 @@ impl ChunkStream {
     ///
     /// Returns an error if `offset` or its hint is outside the retained range.
     pub fn reader(&self, offset: u64, hint: ReadHint) -> Result<StreamReader> {
-        let manifest = self.manifest.load();
-        let tail = durable_tail(&manifest)?;
+        let view = self.read_view.load();
+        let manifest = &view.manifest;
+        let tail = view.end();
         if offset < manifest.trim_offset || offset > tail {
             return Err(StreamError::InvalidRequest(
                 "read cursor is outside retained range".into(),
@@ -193,6 +183,7 @@ impl ChunkStream {
             .await?
             .ok_or_else(|| StreamError::Corruption("referenced extent page is missing".into()))?;
         validate_page_fence(manifest, fence, &page)?;
+        validate_extent_page(&page)?;
         Ok(self.extent_cache.insert(page))
     }
 

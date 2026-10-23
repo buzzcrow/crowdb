@@ -47,6 +47,7 @@ async fn initial_stream() -> (Arc<MemoryStreamStore>, ChunkStream, StreamName) {
     .await
     .unwrap();
     writer.append(&[Bytes::from_static(b"old")]).await.unwrap();
+    writer.checkpoint().await.unwrap();
     (store, writer, name)
 }
 

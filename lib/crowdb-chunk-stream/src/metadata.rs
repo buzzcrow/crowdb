@@ -117,6 +117,14 @@ pub fn validate_manifest(manifest: &StreamManifest, pages: &[StreamExtentPage]) 
 /// physical address arithmetic overflows.
 pub fn resolve_extent(page: &StreamExtentPage, logical_offset: u64) -> Result<ExtentLocation> {
     validate_extent_page(page)?;
+    resolve_validated_extent(page, logical_offset)
+}
+
+/// The immutable page must have passed validation before entering the read cache.
+pub(crate) fn resolve_validated_extent(
+    page: &StreamExtentPage,
+    logical_offset: u64,
+) -> Result<ExtentLocation> {
     let index = page
         .logical_offsets
         .partition_point(|offset| *offset <= logical_offset);
@@ -133,32 +141,53 @@ pub fn resolve_extent(page: &StreamExtentPage, logical_offset: u64) -> Result<Ex
             "logical offset is outside extent page".into(),
         ));
     }
+    resolve_group(
+        page.chunk_ids[extent],
+        logical_start,
+        logical_end,
+        page.physical_offsets[extent],
+        logical_offset,
+    )
+}
+
+pub(crate) fn resolve_group(
+    chunk_id: ChunkId,
+    logical_start: u64,
+    logical_end: u64,
+    group_offset: u64,
+    logical_offset: u64,
+) -> Result<ExtentLocation> {
+    if !(logical_start..logical_end).contains(&logical_offset) {
+        return Err(StreamError::Corruption(
+            "logical offset is outside append group".into(),
+        ));
+    }
     let delta = logical_offset - logical_start;
     let capacity = FrameLayout::StreamGroupV2.payload_capacity();
     let ordinal = delta / capacity;
     let frame_logical_start = ordinal * capacity;
     let payload_length = (logical_end - logical_start - frame_logical_start).min(capacity);
     let within = delta % capacity;
-    let frame_offset = page.physical_offsets[extent]
+    let frame_offset = group_offset
         .checked_add(ordinal * MAX_FRAME_BYTES as u64)
         .ok_or_else(|| StreamError::Corruption("stream frame offset overflows".into()))?;
     let payload_offset = u32::try_from(FRAME_GROUP_HEADER_BYTES as u64 + within)
         .map_err(|_| StreamError::Corruption("physical extent payload offset overflows".into()))?;
     Ok(ExtentLocation {
-        chunk_id: page.chunk_ids[extent],
+        chunk_id,
         frame_offset,
         frame_length: u32::try_from(payload_length + (FRAME_GROUP_HEADER_BYTES + FRAME_FOOTER_BYTES) as u64)
             .map_err(|_| StreamError::Corruption("stream frame length exceeds u32".into()))?,
         payload_offset,
         available: payload_length - within,
-        group_offset: page.physical_offsets[extent],
+        group_offset,
         group_length: logical_end - logical_start,
         ordinal: u32::try_from(ordinal)
             .map_err(|_| StreamError::Corruption("stream frame ordinal exceeds u32".into()))?,
     })
 }
 
-fn validate_extent_page(page: &StreamExtentPage) -> Result<()> {
+pub(crate) fn validate_extent_page(page: &StreamExtentPage) -> Result<()> {
     let count = page.chunk_ids.len();
     if count == 0
         || page.physical_offsets.len() != count

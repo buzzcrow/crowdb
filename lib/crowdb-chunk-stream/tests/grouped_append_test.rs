@@ -46,6 +46,7 @@ async fn every_append_has_one_location_and_subranges_read_only_intersecting_fram
                 .collect::<Vec<_>>(),
         );
         let range = stream.append(std::slice::from_ref(&payload)).await.unwrap();
+        stream.checkpoint().await.unwrap();
         let manifest = store.load_current(name).await.unwrap().unwrap();
         let active = manifest.active.as_ref().unwrap();
         physical += FrameLayout::StreamGroupV2.physical_length(size as u64).unwrap();

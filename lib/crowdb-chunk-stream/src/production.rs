@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use crossbeam_skiplist::SkipMap;
 use crowdb_chunk_client::{ChunkIoClient, ChunkReadPolicy};
 use crowdb_kv_client::CrowdbKvClient;
 use crowdb_protocol::chunk_stream::{StreamBinding, StreamName};
@@ -20,6 +21,7 @@ pub struct ProductionStreamRuntime {
     registry: Arc<KvStreamRegistry>,
     chunks: Arc<ProductionStreamChunkStore>,
     config: StreamConfig,
+    owners: SkipMap<(u64, StreamName), ChunkStream>,
 }
 
 impl ProductionStreamRuntime {
@@ -70,6 +72,7 @@ impl ProductionStreamRuntime {
             kv,
             chunks,
             config,
+            owners: SkipMap::new(),
         })
     }
 
@@ -93,7 +96,7 @@ impl ProductionStreamRuntime {
     ) -> Result<ChunkStream> {
         let binding = self.active_binding(stream_name).await?;
         let metadata = self.metadata(metadata_store_id, binding.metadata_group_id)?;
-        ChunkStream::create_registered(
+        let stream = ChunkStream::create_registered(
             stream_name,
             writer_epoch,
             self.config.clone(),
@@ -101,7 +104,10 @@ impl ProductionStreamRuntime {
             metadata,
             self.chunks.clone(),
         )
-        .await
+        .await?;
+        self.owners
+            .insert((metadata_store_id, stream_name), stream.clone());
+        Ok(stream)
     }
 
     /// Reopens the authoritative stream binding under a current writer epoch.
@@ -117,7 +123,7 @@ impl ProductionStreamRuntime {
     ) -> Result<ChunkStream> {
         let binding = self.active_binding(stream_name).await?;
         let metadata = self.metadata(metadata_store_id, binding.metadata_group_id)?;
-        ChunkStream::open(
+        let stream = ChunkStream::open(
             stream_name,
             writer_epoch,
             self.config.clone(),
@@ -125,7 +131,10 @@ impl ProductionStreamRuntime {
             metadata,
             self.chunks.clone(),
         )
-        .await
+        .await?;
+        self.owners
+            .insert((metadata_store_id, stream_name), stream.clone());
+        Ok(stream)
     }
 
     /// Opens an exact-epoch read-only stream view without changing writer
@@ -141,6 +150,11 @@ impl ProductionStreamRuntime {
         writer_epoch: u64,
     ) -> Result<ChunkStream> {
         let binding = self.active_binding(stream_name).await?;
+        if let Some(owner) = self.owners.get(&(metadata_store_id, stream_name)) {
+            if owner.value().writer_epoch() == writer_epoch {
+                return owner.value().capture_read_only().await;
+            }
+        }
         let metadata = self.metadata(metadata_store_id, binding.metadata_group_id)?;
         ChunkStream::open_read_only(
             stream_name,
@@ -169,15 +183,8 @@ impl ProductionStreamRuntime {
             .load_current(stream_name)
             .await?
             .ok_or_else(|| StreamError::InvalidRequest("read-only stream manifest does not exist".into()))?;
-        ChunkStream::open_read_only(
-            stream_name,
-            manifest.writer_epoch,
-            self.config.clone(),
-            self.registry.clone(),
-            metadata,
-            self.chunks.clone(),
-        )
-        .await
+        self.open_read_only(stream_name, metadata_store_id, manifest.writer_epoch)
+            .await
     }
 
     async fn active_binding(&self, stream_name: StreamName) -> Result<StreamBinding> {

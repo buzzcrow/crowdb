@@ -173,7 +173,8 @@ async fn observation_keeps_exact_fences_and_does_not_confuse_serving_with_live_a
     assert_eq!(advanced["journal_durable_seq"], "1");
     assert_eq!(advanced["applied_seq"], "1");
     assert_eq!(advanced["tree"]["checkpoint_applied_seq"], "1");
-    assert_eq!(advanced["journal"]["extent_pages"].as_array().unwrap().len(), 1);
+    assert_eq!(advanced["journal"]["extent_pages"].as_array().unwrap().len(), 0);
+    assert_eq!(advanced["journal"]["sealed_tail"], "0");
     assert!(advanced["journal"]["active"]["chunk_id"].is_string());
     assert_eq!(advanced["data_pages_read"], 0);
     let stale = app

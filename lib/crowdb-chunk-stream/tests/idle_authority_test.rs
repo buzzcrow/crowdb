@@ -105,6 +105,7 @@ async fn current_idle_writer_can_rotate_its_own_sealed_chunk() {
     .await
     .unwrap();
     stream.append(&[Bytes::from_static(b"old")]).await.unwrap();
+    stream.checkpoint().await.unwrap();
     let head = store.load_current(name).await.unwrap().unwrap();
     let active = head.active.unwrap();
     store

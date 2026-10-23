@@ -4,7 +4,6 @@
 //! Ordered frame assembly, mirror durability and fenced cursor resolution.
 
 use super::capacity::rollover;
-use super::publication::publish_state;
 use super::worker::rotate_externally_sealed_active;
 use super::{AppendRange, AppendRequest, BatchFailure, WorkerState};
 use crate::perf::{perf, PhaseTimer};
@@ -158,6 +157,8 @@ async fn write_batch(
     .await
     .map_err(BatchFailure::Other)?;
 
+    let _view_timer = PhaseTimer::start(&perf().local_view);
+    state.read_view.load().append(&encoded.extents, logical_cursor);
     state.extents.extend(encoded.extents);
     if let Some(active) = &mut state.manifest.active {
         active.acknowledged_cursor = new_cursor;
@@ -166,7 +167,6 @@ async fn write_batch(
     }
     state.manifest.sealed_tail = logical_cursor;
     state.tail_view.store(logical_cursor, Ordering::Release);
-    publish_state(state).await.map_err(BatchFailure::Other)?;
     Ok(encoded.ranges)
 }
 

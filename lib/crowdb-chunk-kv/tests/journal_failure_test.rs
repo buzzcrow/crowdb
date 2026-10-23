@@ -42,6 +42,10 @@ impl PartitionJournal for FailedJournal {
         Ok(())
     }
 
+    async fn checkpoint(&self) -> crowdb_chunk_kv::Result<u64> {
+        Err(ChunkKvError::WriteStalled)
+    }
+
     fn stream_name(&self) -> StreamName {
         StreamName { high: 1, low: 1 }
     }

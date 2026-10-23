@@ -12,7 +12,8 @@ KV work, with compact locations, incremental directories, and bounded recovery.
 ## Status and scope
 
 - Deployment requirement R243 is complete at `c3d7d64d`; R244 is in progress.
-- T01/T02/T03/T05–T07 foundations are committed. T18 is the active ownership task;
+- T01/T02/T03/T05–T07 foundations are committed. T20a is the active measured
+  hot-path task; T18 remains incomplete and gates removal of cursor commits.
   T15's bounded observation primitives await the same runtime authority wiring.
   T13's indexed retention primitives are committed; expiry/read-IO grace and
   runtime/consumer wiring remain. Directory, shared-codec, ordinary writer and local-progress
@@ -32,7 +33,45 @@ KV work, with compact locations, incremental directories, and bounded recovery.
 - The main worker now uses current grouped frames and one location per append.
   No revision-1 Stream codec, raw-write mode or frame-version negotiation remains.
   Indexed directory wiring, ownership, content-derived cold recovery and the
-  removal of per-batch cursor/root work remain separate implementation tasks.
+  removal of per-batch cursor work remain separate implementation tasks.
+
+## Direct hot-path integration
+
+- The user requests actual measured performance gains after the intermediate
+  rerun. Split directory removal from cursor removal: the existing synchronized
+  write plus fenced cursor still protects append, so local mappings and lifecycle
+  publication can remove the per-batch directory wait before T18 is complete.
+  This is an implementation sequence, not a second format or weaker final contract.
+- `stream/view.rs` retains append-only lock-free mappings since the last published
+  checkpoint. One release/acquire boundary exposes each completed batch; no append
+  clones the historical manifest, active extent vector or completed pages.
+  Checkpoint/rollover installs a new read view. In-flight readers retain the old
+  view until completion.
+- An ordered `Capture` command publishes the current synchronized directory once
+  and returns a finite handle. `StreamViewSource` distinguishes a live owner,
+  owner checkpoint and persisted fallback. A runtime with the local owner routes
+  reads through that barrier. Remote persisted fallback can lag; WAL checkpoints
+  and split cutovers explicitly flush before publishing their recovery proof.
+- Read planning validates each immutable extent page on cache insertion instead
+  of rescanning all entries for every frame. Bounded read futures preserve order
+  without spawning one Tokio task per physical frame. Frame CRC, role and chunk
+  identity checks remain on every data read.
+- Add perf distributions for local mapping publication, owner checkpoint, read
+  planning and physical reads. Retain original performance workloads and gates.
+- Verification: 276 tests across Stream, Chunk-KV and Chunk-KV server pass with
+  no failures/ignored cases (`live-directory-tests-final-2.log`); all-target strict
+  clippy for those three crates passes (`live-directory-clippy.log`). New cases
+  cover 2048 directory-free appends and recovery, finite ordered capture, explicit
+  lagging fallback, stale capture and production runtime owner routing.
+- The expanded test link initially exhausted `/nv`; the preceding successful
+  suite's 33 debug executables and 39 earlier KV-client/server test executables
+  were moved with receipts to
+  `/home/cj/.cache/crowdb-r244-live-directory-debug-archive/`, freeing 16.39 GiB.
+  No source, persistent fixture or release baseline was removed. The complete
+  rerun passed after restoring free space.
+- Matched performance results are pending. The flat directory
+  still rebuilds at lifecycle checkpoints; lazy indexed runtime wiring and
+  process-authorized content recovery remain unfinished. Do not mark R244 complete.
 
 ## Gap assessment
 
@@ -1593,7 +1632,7 @@ adaptation rather than a new transport or storage engine.
   `lib/crowdb-chunk-stream/src/stream/publication.rs`,
   `lib/crowdb-chunk-stream/tests/rollover_growth_test.rs`,
   `lib/crowdb-chunk-stream/tests/stream_test.rs`.
-- [~] **T18 — Enforce the selected Group-0 writer lease**: implement Q3 for busy
+- [ ] **T18 — Enforce the selected Group-0 writer lease**: implement Q3 for busy
   workers, long IO, paused/resumed owners, renewal failure, delayed old writes,
   and takeover. Acknowledgment requires current authority even when all writes
   succeeded; no per-append KV fallback. Compose serving grants and Stream owner
@@ -1630,6 +1669,16 @@ adaptation rather than a new transport or storage engine.
   `lib/crowdb-chunk-stream/src/stream/read.rs`,
   `lib/crowdb-chunk-stream/tests/read_publication_test.rs`,
   `app/crowdb-chunk-kv-server/src/storage.rs`.
+- [~] **T20a — Remove the per-batch directory wait and read amplification**:
+  publish lock-free local append mappings, add an ordered checkpoint/finite view,
+  flush WAL recovery proofs, validate cached directory pages once and execute
+  bounded frame reads without per-frame tasks. Keep cursor fencing until T18/T19
+  and cold recovery are complete. Verify affected Stream/WAL/server tests and
+  repeat the unchanged seven-case retained-MemDisk benchmark.
+  Files: `lib/crowdb-chunk-stream/src/stream/view.rs`,
+  `lib/crowdb-chunk-stream/src/stream/{append,read,worker,publication}.rs`,
+  `lib/crowdb-chunk-stream/src/{metadata,production,perf}.rs`,
+  `lib/crowdb-chunk-kv/src/partition/{journal,split}.rs`.
 - [ ] **T20 — Integrate mirror-completion append**: after T05–T19 dependencies
   pass, replace `resolve_cursor_advance` and per-batch `publish_state` with
   synchronized-replica completion and bounded in-memory publication. Keep

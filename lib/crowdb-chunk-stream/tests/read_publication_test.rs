@@ -64,7 +64,7 @@ impl StreamMetadataStore for TestPublicationGate {
 }
 
 #[tokio::test]
-async fn concurrent_readers_keep_the_published_extent_boundary_until_append_publication() {
+async fn checkpoint_readers_keep_the_published_boundary_while_owner_reads_live_appends() {
     let store = Arc::new(MemoryStreamStore::new(1024));
     let metadata = Arc::new(TestPublicationGate {
         store: store.clone(),
@@ -91,13 +91,15 @@ async fn concurrent_readers_keep_the_published_extent_boundary_until_append_publ
     .await
     .unwrap();
     writer.append(&[Bytes::from_static(b"old")]).await.unwrap();
+    writer.checkpoint().await.unwrap();
+    writer.append(&[Bytes::from_static(b"new")]).await.unwrap();
     metadata.pause.store(true, Ordering::Release);
     let append_writer = writer.clone();
-    let append = tokio::spawn(async move { append_writer.append(&[Bytes::from_static(b"new")]).await });
+    let capture = tokio::spawn(async move { append_writer.capture_read_only().await });
     tokio::time::timeout(std::time::Duration::from_secs(1), metadata.entered.notified())
         .await
         .unwrap();
-    // Mirror cursor has advanced; the corresponding directory is still unpublished.
+    // The owner can read acknowledged bytes before the directory checkpoint completes.
     let reader = ChunkStream::open_read_only(
         name,
         9,
@@ -108,15 +110,22 @@ async fn concurrent_readers_keep_the_published_extent_boundary_until_append_publ
     )
     .await
     .unwrap();
-    assert_eq!(writer.tail(), 3);
+    assert_eq!(writer.tail(), 6);
     assert_eq!(reader.tail(), 3);
     assert_eq!(writer.read_at(0, 3).await.unwrap(), Bytes::from_static(b"old"));
     assert_eq!(reader.read_at(0, 3).await.unwrap(), Bytes::from_static(b"old"));
     metadata.release.notify_one();
-    append.await.unwrap().unwrap();
+    let captured = capture.await.unwrap().unwrap();
     assert_eq!(writer.tail(), 6);
     assert_eq!(writer.read_at(0, 6).await.unwrap(), Bytes::from_static(b"oldnew"));
     assert_eq!(reader.tail(), 3);
+    writer.append(&[Bytes::from_static(b"later")]).await.unwrap();
+    assert_eq!(captured.tail(), 6);
+    assert_eq!(
+        captured.read_at(0, 6).await.unwrap(),
+        Bytes::from_static(b"oldnew")
+    );
+    assert_eq!(writer.tail(), 11);
 }
 
 #[tokio::test]
@@ -156,9 +165,11 @@ async fn verify_crash_recovery(corrupt: bool) {
     .await
     .unwrap();
     writer.append(&[Bytes::from_static(b"old")]).await.unwrap();
+    writer.checkpoint().await.unwrap();
+    writer.append(&[Bytes::from_static(b"new")]).await.unwrap();
     metadata.pause.store(true, Ordering::Release);
     let append_writer = writer.clone();
-    let append = tokio::spawn(async move { append_writer.append(&[Bytes::from_static(b"new")]).await });
+    let capture = tokio::spawn(async move { append_writer.capture_read_only().await });
     tokio::time::timeout(std::time::Duration::from_secs(1), metadata.entered.notified())
         .await
         .unwrap();
@@ -188,7 +199,7 @@ async fn verify_crash_recovery(corrupt: bool) {
             Err(crowdb_chunk_stream::StreamError::Corruption(_))
         ));
         metadata.release.notify_one();
-        append.await.unwrap().unwrap();
+        capture.await.unwrap().unwrap();
         return;
     }
     let recovered = recovered.unwrap();
@@ -198,7 +209,7 @@ async fn verify_crash_recovery(corrupt: bool) {
         Bytes::from_static(b"oldnew")
     );
     metadata.release.notify_one();
-    assert!(append.await.unwrap().is_err());
+    assert!(capture.await.unwrap().is_err());
     recovered.append(&[Bytes::from_static(b"end")]).await.unwrap();
     assert_eq!(
         recovered.read_at(0, 9).await.unwrap(),

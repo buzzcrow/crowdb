@@ -3,7 +3,7 @@
 
 //! Conditional manifest and immutable directory publication.
 
-use super::{Extent, WorkerState};
+use super::{Extent, ReadView, WorkerState};
 use crate::perf::{perf, PhaseTimer};
 use crate::{Result, StreamError, StreamExtentPage, StreamExtentPageFence, StreamName};
 use std::sync::{atomic::Ordering, Arc};
@@ -68,7 +68,11 @@ pub(super) async fn publish_state(state: &mut WorkerState) -> Result<()> {
         .metrics
         .metadata_publications
         .fetch_add(1, Ordering::Relaxed);
-    state.manifest_view.store(Arc::new(state.manifest.clone()));
+    let manifest = Arc::new(state.manifest.clone());
+    state
+        .read_view
+        .store(Arc::new(ReadView::new(Arc::clone(&manifest))));
+    state.manifest_view.store(manifest);
     Ok(())
 }
 

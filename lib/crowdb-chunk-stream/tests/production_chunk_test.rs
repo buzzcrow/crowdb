@@ -37,6 +37,9 @@ mod unwritten;
 #[path = "production_chunk_test/duplicate.rs"]
 mod duplicate;
 
+#[path = "production_chunk_test/owner_capture.rs"]
+mod owner_capture;
+
 #[path = "common/grouped_write.rs"]
 mod grouped_write;
 use grouped_write::TestGroupedStrip;
