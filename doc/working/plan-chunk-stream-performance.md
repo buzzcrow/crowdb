@@ -1084,11 +1084,16 @@ adaptation rather than a new transport or storage engine.
   encoded prefixes; longer observations may need a bounded second pass up to
   the selected shortest boundary. Rebuild mappings in bounded batches from the
   chosen validated source rather than retaining a full location vector per copy.
-- Reserve comparison/replay time inside that budget. `select_frame_prefix`
-  currently lets one hung observation consume its entire deadline before comparing
-  unequal healthy ends; the subsequent comparison or mapping replay can then
-  reject otherwise healthy candidates. Cover short/long healthy mirrors plus a
-  hung mirror with paused time, and bound each phase by the original deadline.
+- `select_frame_prefix` reserves half the original remaining budget for initial
+  observations and ends comparisons at three quarters, retaining the last quarter
+  for mapping replay. No phase resets or extends the original deadline. A paused
+  regression first failed with a comparison timeout after short/long healthy
+  mirrors and a hung third mirror; it now completes comparison and mapping replay.
+  Failed/timed-out comparison sources are excluded and reported; valid conflicting
+  overlap remains fatal. Expired selection submits no physical reads. Focused
+  coverage passes (18 cases). All 441 tests across 69 targets in Chunk-client,
+  Stream and ChunkDB pass, as do all-target clippy and format checks. Receipts:
+  `recovery-budget-{red,focused,full,clippy}.log`.
 - Before enabling deferred completion, establish an authoritative unwritten
   suffix on recycled units. Initialize each fresh or newly grown strip once on
   every required mirror before admitting its first data. Replacement images

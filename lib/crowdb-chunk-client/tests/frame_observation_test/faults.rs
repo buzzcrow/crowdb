@@ -116,3 +116,46 @@ async fn mapping_io_and_past_deadlines_cannot_create_a_new_budget() {
     ));
     assert_eq!(source.calls(), calls);
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_or_hung_comparison_excludes_that_replica_and_preserves_replay_time() {
+    for stall in [false, true] {
+        let first = Test::group(0, b"first");
+        let longer = [first.clone(), Test::group(first.len(), b"second")].concat();
+        let capacity = longer.len() + 14;
+        let short = Arc::new(TestWindowReader::new(Test::backing(&first, capacity)));
+        let mut long = TestWindowReader::new(Test::backing(&longer, capacity));
+        if stall {
+            long.stall_on_call = Some(2);
+        } else {
+            long.fail_on_call = Some(2);
+        }
+        let readers: Vec<Arc<dyn FrameWindowReader>> = vec![short.clone(), Arc::new(long)];
+        let start = Instant::now();
+        let deadline = start + Duration::from_millis(20);
+        let selected = select_frame_prefix(&readers, Test::config(capacity), 1024, deadline)
+            .await
+            .unwrap();
+        assert_eq!(selected.selected_index(), 0);
+        assert_eq!(selected.healthy_replicas(), 1);
+        assert_eq!(selected.failures().len(), 1);
+        assert!(selected.failures()[0].contains("replica 1 comparison"));
+        let mut sink = TestExtentSink::default();
+        replay_frame_prefix(short.as_ref(), selected.observation(), deadline, &mut sink)
+            .await
+            .unwrap();
+        assert_eq!(sink.records.len(), 1);
+        assert!(start.elapsed() < Duration::from_millis(20));
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn expired_selection_does_not_start_physical_reads() {
+    let reader = Arc::new(TestWindowReader::new(Test::backing(&[], 128)));
+    let readers: Vec<Arc<dyn FrameWindowReader>> = vec![reader.clone()];
+    assert!(matches!(
+        select_frame_prefix(&readers, Test::config(128), 1024, Instant::now()).await,
+        Err(FrameObservationError::DeadlineExpired)
+    ));
+    assert_eq!(reader.calls(), 0);
+}

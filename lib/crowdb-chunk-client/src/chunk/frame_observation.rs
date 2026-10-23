@@ -87,11 +87,6 @@ pub enum FrameObservationError {
         second: usize,
         physical_end: u64,
     },
-    #[error("prefix comparison of replica {replica} failed: {source}")]
-    Comparison {
-        replica: usize,
-        source: Box<FrameObservationError>,
-    },
     #[error("replica observation task failed: {0}")]
     Task(String),
     #[error("replayed prefix differs from its validated observation")]

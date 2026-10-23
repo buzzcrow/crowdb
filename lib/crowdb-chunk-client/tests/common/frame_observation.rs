@@ -44,6 +44,8 @@ pub struct TestWindowReader {
     pub delay: Duration,
     pub fail_at: Option<u64>,
     pub short_at: Option<u64>,
+    pub fail_on_call: Option<usize>,
+    pub stall_on_call: Option<usize>,
     calls: AtomicUsize,
     largest: AtomicU32,
     last_end: AtomicU64,
@@ -56,6 +58,8 @@ impl TestWindowReader {
             delay: Duration::ZERO,
             fail_at: None,
             short_at: None,
+            fail_on_call: None,
+            stall_on_call: None,
             calls: AtomicUsize::new(0),
             largest: AtomicU32::new(0),
             last_end: AtomicU64::new(0),
@@ -75,13 +79,16 @@ impl TestWindowReader {
 #[async_trait]
 impl FrameWindowReader for TestWindowReader {
     async fn read_window(&self, offset: u64, length: u32) -> crowdb_chunk_client::Result<Bytes> {
-        self.calls.fetch_add(1, Ordering::Relaxed);
+        let call = self.calls.fetch_add(1, Ordering::Relaxed) + 1;
         self.largest.fetch_max(length, Ordering::Relaxed);
         self.last_end.store(offset + u64::from(length), Ordering::Relaxed);
         if !self.delay.is_zero() {
             tokio::time::sleep(self.delay).await;
         }
-        if self.fail_at.is_some_and(|at| offset >= at) {
+        if self.stall_on_call == Some(call) {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }
+        if self.fail_on_call == Some(call) || self.fail_at.is_some_and(|at| offset >= at) {
             return Err(IoError::ReadFailed("injected replica read failure".into()));
         }
         let start =

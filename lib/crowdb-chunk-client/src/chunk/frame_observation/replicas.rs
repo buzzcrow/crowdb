@@ -39,6 +39,8 @@ impl FrameReplicaSelection {
 
 /// Observes available replicas concurrently, discards incomplete/failed
 /// observations, and compares their shortest complete prefix without arbitration.
+/// The first half of the remaining budget bounds observation; comparison ends
+/// after three quarters, reserving the rest for replay under the same deadline.
 pub async fn select_frame_prefix(
     readers: &[Arc<dyn FrameWindowReader>],
     config: FrameScanConfig,
@@ -48,13 +50,20 @@ pub async fn select_frame_prefix(
     if readers.is_empty() || readers.len() > MAX_FRAME_OBSERVATION_REPLICAS {
         return Err(FrameObservationError::InvalidRequest);
     }
+    let start = Instant::now();
+    if start >= deadline {
+        return Err(FrameObservationError::DeadlineExpired);
+    }
+    let remaining = deadline - start;
+    let observation_deadline = start + remaining / 2;
+    let comparison_deadline = deadline - remaining / 4;
     let mut tasks = JoinSet::new();
     for (index, reader) in readers.iter().enumerate() {
         let reader = Arc::clone(reader);
         tasks.spawn(async move {
             (
                 index,
-                observe_frame_prefix(reader.as_ref(), config, window_bytes, deadline).await,
+                observe_frame_prefix(reader.as_ref(), config, window_bytes, observation_deadline).await,
             )
         });
     }
@@ -74,11 +83,14 @@ pub async fn select_frame_prefix(
     else {
         return Err(FrameObservationError::NoHealthyReplica { failures });
     };
-    compare_prefixes(readers, &healthy, selected_index, selected, deadline).await?;
+    let comparison_failures =
+        compare_prefixes(readers, &healthy, selected_index, selected, comparison_deadline).await?;
+    let healthy_replicas = healthy.len() - comparison_failures.len();
+    failures.extend(comparison_failures);
     Ok(FrameReplicaSelection {
         selected_index,
         selected,
-        healthy_replicas: healthy.len(),
+        healthy_replicas,
         failures,
     })
 }
@@ -89,7 +101,7 @@ async fn compare_prefixes(
     selected_index: usize,
     selected: FrameObservation,
     deadline: Instant,
-) -> FrameObservationResult<()> {
+) -> FrameObservationResult<Vec<String>> {
     let mut tasks = JoinSet::new();
     for &(index, observation) in healthy {
         if observation.summary.physical_end == selected.summary.physical_end {
@@ -107,15 +119,15 @@ async fn compare_prefixes(
             )
         });
     }
+    let mut failures = Vec::new();
     while let Some(result) = tasks.join_next().await {
         let (index, observation) = result.map_err(|error| FrameObservationError::Task(error.to_string()))?;
-        let observation = observation.map_err(|source| FrameObservationError::Comparison {
-            replica: index,
-            source: Box::new(source),
-        })?;
-        check_match(selected_index, selected, index, observation)?;
+        match observation {
+            Ok(observation) => check_match(selected_index, selected, index, observation)?,
+            Err(error) => failures.push(format!("replica {index} comparison: {error}")),
+        }
     }
-    Ok(())
+    Ok(failures)
 }
 
 fn check_match(

@@ -119,8 +119,51 @@ async fn one_shared_io_deadline_bounds_concurrent_replicas_without_per_replica_r
     )
     .await
     .unwrap();
-    assert_eq!(start.elapsed(), Duration::from_millis(20));
+    assert!(start.elapsed() < Duration::from_millis(20));
     assert_eq!(selected.healthy_replicas(), 1);
     assert_eq!(selected.failures().len(), 1);
     assert_eq!(selected.observation().summary().physical_end, bytes.len() as u64);
+    let mut sink = TestExtentSink::default();
+    replay_frame_prefix(
+        readers[selected.selected_index()].as_ref(),
+        selected.observation(),
+        start + Duration::from_millis(20),
+        &mut sink,
+    )
+    .await
+    .unwrap();
+    assert_eq!(sink.records.len(), 1);
+    assert!(start.elapsed() < Duration::from_millis(20));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_hung_mirror_leaves_time_to_compare_unequal_healthy_ends_and_replay() {
+    let first = Test::group(0, b"first");
+    let longer = [first.clone(), Test::group(first.len(), b"second")].concat();
+    let capacity = longer.len() + 14;
+    let mut readers: Vec<Arc<dyn FrameWindowReader>> = Vec::new();
+    for (data, delay) in [
+        (first.as_slice(), Duration::from_millis(1)),
+        (longer.as_slice(), Duration::from_millis(1)),
+        (longer.as_slice(), Duration::from_secs(60)),
+    ] {
+        let mut reader = TestWindowReader::new(Test::backing(data, capacity));
+        reader.delay = delay;
+        readers.push(Arc::new(reader));
+    }
+    let start = Instant::now();
+    let deadline = start + Duration::from_millis(20);
+    let selected = select_frame_prefix(&readers, Test::config(capacity), 1024, deadline)
+        .await
+        .unwrap();
+    assert_eq!(selected.selected_index(), 0);
+    assert_eq!(selected.healthy_replicas(), 2);
+    assert_eq!(selected.failures().len(), 1);
+    let mut sink = TestExtentSink::default();
+    replay_frame_prefix(readers[0].as_ref(), selected.observation(), deadline, &mut sink)
+        .await
+        .unwrap();
+    assert_eq!(sink.records.len(), 1);
+    assert_eq!(sink.records[0].logical_length, 5);
+    assert!(start.elapsed() < Duration::from_millis(20));
 }
